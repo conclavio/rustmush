@@ -49,21 +49,40 @@ fn toy_prepare_token() -> CommitToken {
 /// JSON. Contract gates use this on the exact value handed to a player, bot,
 /// or LLM so a newly nested private field cannot evade a top-level assertion.
 ///
-/// Field matching is ASCII case-insensitive. Fragment matching is exact and
-/// case-sensitive so callers can include opaque identifiers and digests.
+/// Field matching is ASCII case-insensitive. Fragment matching is
+/// case-sensitive so callers can include opaque identifiers and digests. Use
+/// [`projection_json_leaks_with_values`] when a private scalar (especially a
+/// numeric `ObjId`) must be compared by JSON type and exact value.
 #[must_use]
 pub fn projection_json_leaks(
     value: &Value,
     forbidden_fields: &[&str],
     forbidden_fragments: &[&str],
 ) -> Vec<String> {
+    projection_json_leaks_with_values(value, forbidden_fields, forbidden_fragments, &[])
+}
+
+/// Recursively find forbidden fields/fragments plus exact typed JSON values.
+/// Exact-value matching avoids both missing numeric identifiers and treating a
+/// short decimal ID as a substring of an unrelated opaque token.
+#[must_use]
+pub fn projection_json_leaks_with_values(
+    value: &Value,
+    forbidden_fields: &[&str],
+    forbidden_fragments: &[&str],
+    forbidden_values: &[Value],
+) -> Vec<String> {
     fn visit(
         value: &Value,
         path: &str,
         forbidden_fields: &[&str],
         forbidden_fragments: &[&str],
+        forbidden_values: &[Value],
         leaks: &mut Vec<String>,
     ) {
+        if forbidden_values.iter().any(|forbidden| value == forbidden) {
+            leaks.push(format!("forbidden exact value at {path}"));
+        }
         match value {
             Value::Object(object) => {
                 for (key, child) in object {
@@ -84,6 +103,7 @@ pub fn projection_json_leaks(
                         &child_path,
                         forbidden_fields,
                         forbidden_fragments,
+                        forbidden_values,
                         leaks,
                     );
                 }
@@ -95,6 +115,7 @@ pub fn projection_json_leaks(
                         &format!("{path}[{index}]"),
                         forbidden_fields,
                         forbidden_fragments,
+                        forbidden_values,
                         leaks,
                     );
                 }
@@ -116,6 +137,7 @@ pub fn projection_json_leaks(
         "$",
         forbidden_fields,
         forbidden_fragments,
+        forbidden_values,
         &mut leaks,
     );
     leaks
@@ -131,6 +153,24 @@ pub fn assert_projection_json_clean(
     forbidden_fragments: &[&str],
 ) {
     let leaks = projection_json_leaks(value, forbidden_fields, forbidden_fragments);
+    assert!(leaks.is_empty(), "{surface} projection leaked: {leaks:?}");
+}
+
+/// Assert that projected JSON contains none of the supplied private fields,
+/// string fragments, or exact typed values.
+pub fn assert_projection_json_clean_with_values(
+    surface: &str,
+    value: &Value,
+    forbidden_fields: &[&str],
+    forbidden_fragments: &[&str],
+    forbidden_values: &[Value],
+) {
+    let leaks = projection_json_leaks_with_values(
+        value,
+        forbidden_fields,
+        forbidden_fragments,
+        forbidden_values,
+    );
     assert!(leaks.is_empty(), "{surface} projection leaked: {leaks:?}");
 }
 
@@ -2193,17 +2233,19 @@ mod tests {
         let value = json!({
             "public": [{
                 "nested": {
-                    "truth_subject": "hidden-contact-17"
+                    "truth_subject": "hidden-contact-17",
+                    "target": 987654321
                 }
             }]
         });
-        let leaks = projection_json_leaks(&value, &["truth_subject"], &["hidden-contact-17"]);
-        assert_eq!(leaks.len(), 2);
-        assert!(
-            leaks
-                .iter()
-                .all(|leak| leak.contains("$.public[0].nested.truth_subject"))
+        let leaks = projection_json_leaks_with_values(
+            &value,
+            &["truth_subject"],
+            &["hidden-contact-17"],
+            &[json!(987654321)],
         );
+        assert_eq!(leaks.len(), 3);
+        assert!(leaks.iter().all(|leak| leak.contains("$.public[0].nested")));
     }
 
     fn bootstrap_guarded(

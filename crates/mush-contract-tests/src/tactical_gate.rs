@@ -526,6 +526,8 @@ impl GameModule for TacticalPlacementModule {
 struct FireProvider {
     units: StateFamilyHandle<ObjId, TacticalUnit>,
     contacts: StateFamilyHandle<ContactId, ContactState>,
+    #[cfg(test)]
+    control_leases: StateFamilyHandle<ControlLeaseKey, ControlLeaseState>,
     windows: StateFamilyHandle<ActionWindowId, ActionWindowRecord>,
     placements: StateFamilyHandle<ObjId, TacticalPlacement>,
     window: ActionWindowId,
@@ -553,6 +555,63 @@ struct FiredOutcome {
     section: SectionId,
     damage: i64,
     to_hit: u64,
+}
+
+#[cfg(test)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct ProjectedMeter {
+    id: String,
+    minimum: i64,
+    maximum: i64,
+    current: i64,
+}
+
+#[cfg(test)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct ProjectedSection {
+    id: String,
+    condition: String,
+    meters: Vec<ProjectedMeter>,
+}
+
+#[cfg(test)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct ProjectedComponent {
+    id: String,
+    condition: String,
+    meters: Vec<ProjectedMeter>,
+}
+
+#[cfg(test)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct ProjectedOwnUnit {
+    subject: PerceivedRef,
+    state_revision: u64,
+    meters: Vec<ProjectedMeter>,
+    sections: Vec<ProjectedSection>,
+    components: Vec<ProjectedComponent>,
+}
+
+#[cfg(test)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct ProjectedContactUnit {
+    contact: PerceivedRef,
+    observed_at: ClockStamp,
+    condition_band: String,
+}
+
+#[cfg(test)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct ProjectedTacticalSnapshot {
+    observed_at: ClockStamp,
+    own_unit: ProjectedOwnUnit,
+    contacts: Vec<ProjectedContactUnit>,
 }
 
 impl FireProvider {
@@ -681,6 +740,182 @@ impl FireProvider {
             return Err(Self::stale("the selected target is unavailable"));
         }
         Ok(unit)
+    }
+
+    #[cfg(test)]
+    fn projected_meter(id: &CellId, cell: &mush_tactics::ScalarCell) -> ProjectedMeter {
+        ProjectedMeter {
+            id: id.as_str().to_owned(),
+            minimum: cell.min,
+            maximum: cell.max,
+            current: cell.current,
+        }
+    }
+
+    /// Build an observer DTO before any transport or renderer sees the data.
+    /// Exact section/component detail is limited to the operated unit; contact
+    /// truth is reduced to an opaque reference plus a ruleset-level band.
+    #[cfg(test)]
+    fn project_tactical_snapshot(
+        &self,
+        engine: &Engine,
+        principal: &PrincipalId,
+        source_id: ObjId,
+    ) -> Result<ProjectedTacticalSnapshot, ActionError> {
+        let PrincipalId::Object { id: actor } = principal else {
+            return Err(Self::stale("the tactical status view is unavailable"));
+        };
+        let weapons = ChannelId::new("weapons").expect("static channel id");
+        let mut grants = engine
+            .world
+            .command_subjects_of(*actor)
+            .iter()
+            .filter(|grant| {
+                grant.subject == source_id
+                    && grant.owner == TACTICAL_GATE_OWNER
+                    && grant.channels.contains(&weapons)
+            });
+        let Some(grant) = grants.next() else {
+            return Err(Self::stale("the tactical status view is unavailable"));
+        };
+        if grants.next().is_some() {
+            return Err(Self::stale("the tactical status view is unavailable"));
+        }
+        let lease_key = ControlLeaseKey::new(source_id, weapons);
+        let lease = engine
+            .action_state()
+            .get(&self.control_leases, &lease_key)
+            .map_err(|error| Self::state_error(&error))?
+            .ok_or_else(|| Self::stale("the tactical status view is unavailable"))?;
+        if lease.holder() != Some(principal) || lease.epoch() != grant.epoch {
+            return Err(Self::stale("the tactical status view is unavailable"));
+        }
+        let source = engine
+            .action_state()
+            .get(&self.units, &source_id)
+            .map_err(|error| Self::state_error(&error))?
+            .ok_or_else(|| Self::stale("the operated tactical unit is unavailable"))?;
+        let source_placement = engine
+            .action_state()
+            .get(&self.placements, &source_id)
+            .map_err(|error| Self::state_error(&error))?
+            .ok_or_else(|| Self::stale("the operated tactical unit is unavailable"))?;
+        if source.object() != source_id || source_placement.object != source_id {
+            return Err(Self::integrity(
+                "the operated tactical projection has inconsistent identity",
+            ));
+        }
+
+        let meters = source
+            .cells()
+            .filter_map(|(address, cell)| match address {
+                CellAddr::Unit { cell: id } => Some(Self::projected_meter(id, cell)),
+                _ => None,
+            })
+            .collect();
+        let sections = source
+            .sections()
+            .map(|(id, section)| ProjectedSection {
+                id: id.as_str().to_owned(),
+                condition: section.condition.as_str().to_owned(),
+                meters: source
+                    .cells()
+                    .filter_map(|(address, cell)| match address {
+                        CellAddr::Section {
+                            section: owner,
+                            cell: meter,
+                        } if owner == id => Some(Self::projected_meter(meter, cell)),
+                        _ => None,
+                    })
+                    .collect(),
+            })
+            .collect();
+        let components = source
+            .components()
+            .map(|(id, component)| ProjectedComponent {
+                id: id.as_str().to_owned(),
+                condition: component.condition.as_str().to_owned(),
+                meters: source
+                    .cells()
+                    .filter_map(|(address, cell)| match address {
+                        CellAddr::Component {
+                            component: owner,
+                            cell: meter,
+                        } if owner == id => Some(Self::projected_meter(meter, cell)),
+                        _ => None,
+                    })
+                    .collect(),
+            })
+            .collect();
+
+        let page = engine
+            .action_state()
+            .scan_family(
+                &self.contacts,
+                None,
+                mush_core::MAX_STATE_FAMILY_SCAN_RECORDS
+                    .min(mush_core::MAX_PROJECTED_ACTION_CHOICES),
+            )
+            .map_err(|error| Self::state_error(&error))?;
+        let mut contacts = Vec::new();
+        for entry in page.entries() {
+            let contact = entry.value();
+            if !contact.is_visible_to(principal) {
+                continue;
+            }
+            let SubjectKey::Object { id: target_id } = contact.truth_subject() else {
+                continue;
+            };
+            let Some(target) = engine
+                .action_state()
+                .get(&self.units, target_id)
+                .map_err(|error| Self::state_error(&error))?
+            else {
+                continue;
+            };
+            let Some(target_placement) = engine
+                .action_state()
+                .get(&self.placements, target_id)
+                .map_err(|error| Self::state_error(&error))?
+            else {
+                continue;
+            };
+            if target.object() != *target_id
+                || target_placement.object != *target_id
+                || target_placement.arena != source_placement.arena
+            {
+                continue;
+            }
+            let id = ContactId::from_hex(entry.encoded_key())
+                .map_err(|_| Self::integrity("a contact family key is malformed"))?;
+            let condition_band = if target.cells().any(|(_, cell)| cell.current < cell.max) {
+                "damaged"
+            } else {
+                "nominal"
+            };
+            contacts.push(ProjectedContactUnit {
+                contact: PerceivedRef::Contact {
+                    provider: self.contacts.owner().clone(),
+                    id,
+                    generation: contact.generation(),
+                },
+                observed_at: contact.observed_at().clone(),
+                condition_band: condition_band.to_owned(),
+            });
+        }
+        Ok(ProjectedTacticalSnapshot {
+            observed_at: engine
+                .clock_now(&tactical_gate_clock())
+                .map_err(|_| Self::stale("the tactical clock is unavailable"))?,
+            own_unit: ProjectedOwnUnit {
+                subject: PerceivedRef::SelfActor,
+                state_revision: source.revision(),
+                meters,
+                sections,
+                components,
+            },
+            contacts,
+        })
     }
 
     fn prepare_fire(
@@ -857,6 +1092,44 @@ impl FireProvider {
             .with_resolution(resolution)
             .with_eligible_witnesses(vec![invocation.principal().clone()]))
     }
+}
+
+#[cfg(test)]
+fn tactical_snapshot_keyframe(
+    snapshot: &ProjectedTacticalSnapshot,
+    generation: u64,
+    sequence: u64,
+) -> Result<mush_proto::ViewEnvelope, ActionError> {
+    mush_proto::ViewEnvelope::keyframe(
+        "unit.status",
+        1,
+        generation,
+        sequence,
+        serde_json::to_value(snapshot)
+            .map_err(|_| FireProvider::integrity("the tactical snapshot could not be encoded"))?,
+    )
+    .map_err(|_| FireProvider::integrity("the tactical snapshot exceeds public bounds"))
+}
+
+#[cfg(test)]
+fn render_tactical_snapshot_line(snapshot: &ProjectedTacticalSnapshot) -> String {
+    let mut line = format!(
+        "UNIT revision {}: {} section(s), {} component(s)",
+        snapshot.own_unit.state_revision,
+        snapshot.own_unit.sections.len(),
+        snapshot.own_unit.components.len()
+    );
+    for contact in &snapshot.contacts {
+        if let PerceivedRef::Contact { id, generation, .. } = &contact.contact {
+            line.push_str(&format!(
+                " | CONTACT {} generation {}: {}",
+                id.to_hex(),
+                generation,
+                contact.condition_band
+            ));
+        }
+    }
+    line
 }
 
 impl ActionProvider for FireProvider {
@@ -1837,6 +2110,8 @@ impl GameModule for TacticalGateModule {
             FireProvider {
                 units: units.clone(),
                 contacts: contacts.clone(),
+                #[cfg(test)]
+                control_leases: control_leases.clone(),
                 windows: windows.clone(),
                 placements: placements.clone(),
                 window: tactical_gate_window_id(),
@@ -1850,6 +2125,8 @@ impl GameModule for TacticalGateModule {
                 projector: FireProvider {
                     units: units.clone(),
                     contacts: contacts.clone(),
+                    #[cfg(test)]
+                    control_leases: control_leases.clone(),
                     windows: windows.clone(),
                     placements: placements.clone(),
                     window: tactical_gate_volley_window_id(),
@@ -3386,6 +3663,22 @@ mod tests {
             .expect("the pilot operates the independent vehicle");
         assert_eq!(output.into_parts().0.data()["source"], source.0);
         engine.abort_prepared_transaction(prepared);
+        let projector = FireProvider {
+            units: state.units.clone(),
+            contacts: state.contacts.clone(),
+            control_leases: state.control_leases.clone(),
+            windows: state.windows.clone(),
+            placements: state.placements.clone(),
+            window: tactical_gate_window_id(),
+            action: definitions.fire.clone(),
+            outcome: definitions.fired.clone(),
+        };
+        assert!(
+            projector
+                .project_tactical_snapshot(&engine, &principal, source)
+                .is_ok(),
+            "the active lease authorizes the operated-unit projection"
+        );
 
         // A completed safe-boundary revocation invalidates only the lease
         // witness; the transient station projection remains present but is no
@@ -3396,7 +3689,7 @@ mod tests {
                 lease.revision(),
                 ControlHandoffDraft {
                     request: revoke_request,
-                    requested_by: principal,
+                    requested_by: principal.clone(),
                     next_holder: None,
                     requested_at: tactical_gate_tick(8),
                     boundary: tactical_gate_tick(9),
@@ -3430,6 +3723,10 @@ mod tests {
             check.stale_authority()[0],
             AuthorityGuard::ControlLease { .. }
         ));
+        let error = projector
+            .project_tactical_snapshot(&engine, &principal, source)
+            .unwrap_err();
+        assert_eq!(error.code(), ActionErrorCode::Stale);
     }
 
     #[test]
@@ -3862,8 +4159,226 @@ mod tests {
     }
 
     #[test]
+    fn tactical_keyframe_line_receipt_and_llm_surfaces_share_one_redacted_dto() {
+        const HIDDEN_NAME: &str = "CLASSIFIED NIGHTJAR";
+
+        let (mut engine, state, definitions, spec) = tactical_gate_world();
+        let source = spawn_unit_player(&mut engine, &state, &spec, "Projection Pilot");
+        let target = engine
+            .world
+            .create(
+                mush_core::ObjKind::Thing,
+                HIDDEN_NAME,
+                mush_core::GOD,
+                Some(mush_core::LIMBO),
+            )
+            .unwrap();
+        let target_unit = unit(&spec, target.0);
+        let (target_unit, _) = apply(
+            &target_unit,
+            &UnitMutationPlan::new(
+                vec![
+                    UnitMutationOp::SetComponentCondition {
+                        component: ComponentId::new(WEAPON_COMPONENT_ID).unwrap(),
+                        condition: ConditionId::new(DISABLED_CONDITION_ID).unwrap(),
+                    },
+                    UnitMutationOp::SetCell {
+                        addr: CellAddr::Section {
+                            section: SectionId::new("center").unwrap(),
+                            cell: CellId::new(STRUCTURE_CELL_ID).unwrap(),
+                        },
+                        value: 11,
+                    },
+                ],
+                Some(0),
+                None,
+            )
+            .unwrap(),
+            6,
+        )
+        .unwrap();
+        install_tactical_gate_unit(&mut engine, &state, target_unit);
+        install_tactical_gate_placement(&mut engine, &state, target, 1, 0);
+        grant_weapons(&mut engine, &state, source, source);
+        let principal = PrincipalId::Object { id: source };
+        let contact_id = ContactId::from_bytes([0xe1; 16]);
+        let contact = install_tactical_gate_contact(
+            &mut engine,
+            &state,
+            contact_id,
+            target,
+            principal.clone(),
+        );
+        install_tactical_gate_fire_window(&mut engine, &state);
+
+        let projector = FireProvider {
+            units: state.units.clone(),
+            contacts: state.contacts.clone(),
+            control_leases: state.control_leases.clone(),
+            windows: state.windows.clone(),
+            placements: state.placements.clone(),
+            window: tactical_gate_window_id(),
+            action: definitions.fire.clone(),
+            outcome: definitions.fired.clone(),
+        };
+        let snapshot = projector
+            .project_tactical_snapshot(&engine, &principal, source)
+            .expect("the viewer-specific tactical snapshot projects");
+        assert_eq!(snapshot.own_unit.subject, PerceivedRef::SelfActor);
+        assert_eq!(snapshot.contacts.len(), 1);
+        assert_eq!(snapshot.contacts[0].condition_band, "damaged");
+        assert!(matches!(
+            snapshot.contacts[0].contact,
+            PerceivedRef::Contact { id, generation: 1, .. } if id == contact_id
+        ));
+        let snapshot_json = serde_json::to_value(&snapshot).unwrap();
+        assert!(serde_json::from_value::<TacticalUnit>(snapshot_json).is_err());
+        let keyframe = tactical_snapshot_keyframe(&snapshot, 19, 41).unwrap();
+        let panel_json = serde_json::to_value(&keyframe).unwrap();
+        let line = render_tactical_snapshot_line(&snapshot);
+
+        let query = LegalActionQuery::new(
+            principal.clone(),
+            source,
+            SubjectKey::Object { id: source },
+            PerceivedRef::SelfActor,
+            1,
+            Some(tactical_gate_tick(7)),
+        )
+        .unwrap();
+        let offers = engine.project_legal_actions(&query).unwrap();
+        let projected_actions = offers.projected();
+        let projected = projected_actions[0].clone();
+        let ProjectedTargetSchema::Choices { choices, .. } = projected.targets() else {
+            panic!("the tactical action must expose only an opaque contact choice");
+        };
+        let request = RequestUid::from_bytes([0xe2; 16]);
+        let resolved = engine
+            .resolve_legal_action(
+                &offers,
+                OfferExecutionContext {
+                    request,
+                    principal: principal.clone(),
+                    actor: source,
+                    idempotency: ScopedIdempotencyKey::new(
+                        IdempotencyScope {
+                            principal: principal.clone(),
+                            owner: OwnerId::new(TACTICAL_GATE_OWNER).unwrap(),
+                            namespace: CanonicalId::new(FIRE_ACTION_ID).unwrap(),
+                        },
+                        1,
+                        IdempotencyKey::Request(request),
+                    ),
+                    viewer_scope: query.viewer_scope(),
+                    now: None,
+                },
+                OfferSubmission {
+                    offer: projected.offer(),
+                    subject: PerceivedRef::SelfActor,
+                    targets: vec![choices[0].clone()],
+                    parameters: json!({}),
+                },
+            )
+            .unwrap();
+        let (prepared, output) = engine
+            .prepare_registered_resolved_authoritative_action(
+                &definitions.fire,
+                resolved.resolved_invocation(),
+                CommitToken::from_bytes([0xe3; 16]),
+            )
+            .unwrap();
+        let private_outcome = output.into_parts().0;
+        let receipt = engine
+            .registry
+            .action_providers()
+            .unwrap()
+            .receipt_projection_table()
+            .project(&definitions.fire, &private_outcome, &principal)
+            .unwrap()
+            .unwrap();
+        engine.abort_prepared_transaction(prepared);
+
+        let llm_json = json!({
+            "tactical_state": snapshot,
+            "legal_actions": projected_actions,
+            "last_result": receipt,
+        });
+        let receipt_json = llm_json["last_result"].clone();
+        let forbidden_fields = [
+            "truth_subject",
+            "truth_targets",
+            "object",
+            "schema",
+            "capabilities",
+            "asset",
+            "target",
+            "target_revision",
+            "source_revision",
+            "damage",
+            "to_hit",
+        ];
+        let forbidden_fragments = [HIDDEN_NAME, DISABLED_CONDITION_ID];
+        let forbidden_values = [json!(target.0), json!(11)];
+        for (surface, value) in [
+            ("tactical keyframe", &panel_json),
+            ("tactical TUI", &panel_json),
+            ("action receipt", &receipt_json),
+            ("LLM tactical context", &llm_json),
+        ] {
+            crate::assert_projection_json_clean_with_values(
+                surface,
+                value,
+                &forbidden_fields,
+                &forbidden_fragments,
+                &forbidden_values,
+            );
+        }
+        crate::assert_projection_text_clean(
+            "line tactical rendering",
+            &line,
+            &[
+                HIDDEN_NAME,
+                DISABLED_CONDITION_ID,
+                &format!("#{}", target.0),
+                "11",
+            ],
+        );
+
+        let lost = contact
+            .checked_mark_lost(
+                contact.revision(),
+                tactical_gate_tick(7),
+                CanonicalId::new("projection_refresh").unwrap(),
+            )
+            .unwrap();
+        let prepared = {
+            let mut txn = engine.action_transaction(&state.contacts).unwrap();
+            txn.replace(&state.contacts, &contact_id, lost).unwrap();
+            txn.prepare().unwrap()
+        };
+        let (_, installation) = prepared.into_parts();
+        engine.install_prepared_action(installation);
+        let refreshed = projector
+            .project_tactical_snapshot(&engine, &principal, source)
+            .unwrap();
+        assert!(
+            refreshed.contacts.is_empty(),
+            "a refreshed keyframe must omit contacts no longer knowable"
+        );
+        let refreshed_json =
+            serde_json::to_value(tactical_snapshot_keyframe(&refreshed, 20, 0).unwrap()).unwrap();
+        crate::assert_projection_json_clean_with_values(
+            "contact-loss keyframe",
+            &refreshed_json,
+            &forbidden_fields,
+            &forbidden_fragments,
+            &forbidden_values,
+        );
+    }
+
+    #[test]
     fn two_viewers_receive_distinct_contacts_for_the_same_truth_target() {
-        let (mut engine, state, _definitions, spec) = tactical_gate_world();
+        let (mut engine, state, definitions, spec) = tactical_gate_world();
         let first = spawn_unit_player(&mut engine, &state, &spec, "First Viewer");
         let second = spawn_unit_player(&mut engine, &state, &spec, "Second Viewer");
         let hidden_target = ObjId(963);
@@ -3922,5 +4437,36 @@ mod tests {
         assert_eq!(projected_contact(&engine, first), first_contact);
         assert_eq!(projected_contact(&engine, second), second_contact);
         assert_ne!(first_contact, second_contact);
+
+        let projector = FireProvider {
+            units: state.units.clone(),
+            contacts: state.contacts.clone(),
+            control_leases: state.control_leases.clone(),
+            windows: state.windows.clone(),
+            placements: state.placements.clone(),
+            window: tactical_gate_window_id(),
+            action: definitions.fire,
+            outcome: definitions.fired,
+        };
+        for (viewer, expected, forbidden) in [
+            (first, first_contact, second_contact),
+            (second, second_contact, first_contact),
+        ] {
+            let snapshot = projector
+                .project_tactical_snapshot(&engine, &PrincipalId::Object { id: viewer }, viewer)
+                .unwrap();
+            let [ProjectedContactUnit { contact, .. }] = snapshot.contacts.as_slice() else {
+                panic!("each keyframe must contain exactly that viewer's contact");
+            };
+            assert!(matches!(
+                contact,
+                PerceivedRef::Contact { id, .. } if *id == expected
+            ));
+            assert!(
+                !serde_json::to_string(&snapshot)
+                    .unwrap()
+                    .contains(&forbidden.to_hex())
+            );
+        }
     }
 }

@@ -2498,7 +2498,18 @@ against visible opaque contacts, proves the target object is absent from the off
 provider receives the private target and the final contact guard, and proves contact loss between
 projection and submission performs no tactical mutation. It also proves two viewers receive
 different contact IDs for the same truth target without either projection exposing that target.
-Viewer-specific panels/outcomes across all surfaces remain before Gate 3 is complete.
+The same fixture now builds one purpose-specific tactical snapshot before rendering: exact meters,
+sections, and components appear only for the operated unit, while another unit is represented only
+by the viewer's opaque contact, observation stamp, and a coarse ruleset-derived condition band. The
+same DTO feeds a versioned `unit.status` keyframe, line rendering, and an LLM-shaped context; the
+legal actions and projected receipt join that context without introducing a truth-only type.
+Recursive leak checks cover hidden field names, string values, and exact typed JSON values (closing
+the prior test-tool hole where a numeric `ObjId` was not inspected). They reject the hidden target
+ID/name, exact damage, and component condition across keyframe/TUI, line, receipt, and LLM surfaces.
+Two-viewer snapshots retain only each viewer's contact ID, and a new-generation keyframe after
+contact loss omits the no-longer-knowable contact. This closes the fixture projection shape;
+production tactical projection authorization, feed wiring, and transport renderers remain before
+Gate 3 is complete.
 Revision validators now receive a read-only context containing ordinary world state plus typed
 action-state access that still requires the composition-branded family handle. After opaque target
 resolution, an action provider may name a bounded, duplicate-free set of exact revision
