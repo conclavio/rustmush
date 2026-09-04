@@ -115,8 +115,11 @@ pub use action::{
 };
 pub use intel::{INTEL_CAP, IntelKind, IntelRecord, IntelStore, intel_key};
 pub use knowledge::{
-    Familiarity, KNOWLEDGE_ATTR, LoreEntry, LorePool, LorePools, NpcKnowledge, Secrecy,
-    familiarity_of, pool_key,
+    Familiarity, KNOWLEDGE_ATTR, LoreEntry, LorePool, LorePools, LoreValidationError,
+    MAX_LORE_DOCUMENT_BYTES, MAX_LORE_FACT_BYTES, MAX_LORE_POOL_ENTRIES, MAX_LORE_POOLS,
+    MAX_LORE_SOURCE_BYTES, MAX_LORE_SUBJECT_BYTES, MAX_LORE_TAG_BYTES, MAX_NPC_LORE_ENTRIES,
+    MAX_NPC_LORE_TAGS, MAX_RESOLVED_LORE_BYTES, MAX_RESOLVED_LORE_ENTRIES, NpcKnowledge, Secrecy,
+    familiarity_of, pool_key, validate_lore_tag,
 };
 pub use memory::{
     BUFFER_CAP, LongTermStore, MAX_MEMORY_NOTE_BYTES, MAX_MEMORY_NOTES_PER_SUBJECT,

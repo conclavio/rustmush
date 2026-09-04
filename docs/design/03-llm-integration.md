@@ -397,6 +397,14 @@ Volatile suffix (the user turn):
 7. Recent event transcript (script-formatted, token-capped): `Alice says, "…"` / `Bob arrives from the north.`
 8. The triggering stimuli, with player speech wrapped: `<player_speech speaker="Alice">…</player_speech>` with `<` escaped in the payload — framing, plus the engine-frame rule, is the injection posture (§7).
 
+World-knowledge construction is bounded before it becomes a snapshot: at most 64 direct facts and
+16 unique shared-pool tags per NPC, 128 facts per pool, 512 pools per server, and 128 shareable facts
+or 256 KiB in one resolved turn. Tags, fact fields, per-NPC documents, and pool documents have hard
+byte ceilings. Authoring refuses overflow before mutation; boot validates pool key/tag agreement
+and deterministically retains only the lexically first bounded pool set. `Secret` facts are filtered
+before prompt count/byte admission, so they neither leak nor crowd later public facts out of the
+bounded projection.
+
 ### 6.4 Tools → safe actions
 
 ```rust

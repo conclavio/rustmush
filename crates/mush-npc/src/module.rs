@@ -25,8 +25,9 @@ use mush_faction::{FactionId, FactionState, Principal};
 use crate::action::NpcAction;
 use crate::intel::{IntelKind, IntelRecord, IntelStore, intel_key, parse_intel_key_id};
 use crate::knowledge::{
-    Familiarity, KNOWLEDGE_ATTR, LoreEntry, LorePool, NpcKnowledge, Secrecy, familiarity_of,
-    pool_key,
+    Familiarity, KNOWLEDGE_ATTR, LoreEntry, LorePool, MAX_LORE_POOLS, MAX_LORE_TAG_BYTES,
+    MAX_RESOLVED_LORE_BYTES, MAX_RESOLVED_LORE_ENTRIES, NpcKnowledge, Secrecy, familiarity_of,
+    pool_key, validate_lore_tag,
 };
 use crate::memory::{MAX_MEMORY_SUBJECT_BYTES, MemoryRecord, record_key};
 use crate::profile::{AgentProfile, NS, PROFILE_ATTR, SUMMARY_ATTR, THINKING_FEED};
@@ -223,6 +224,8 @@ impl GameModule for NpcModule {
         let mut store = crate::memory::LongTermStore::default();
         let mut pools = crate::knowledge::LorePools::default();
         let mut intel = IntelStore::default();
+        let mut pool_docs = std::collections::BTreeMap::new();
+        let mut dropped_pool_docs = 0_usize;
         for (key, value) in boot.kv {
             if key.starts_with("mem:") {
                 match serde_json::from_value::<MemoryRecord>(value) {
@@ -252,7 +255,18 @@ impl GameModule for NpcModule {
                 }
             } else if key.starts_with("lore:") {
                 match serde_json::from_value::<LorePool>(value) {
-                    Ok(pool) => pools.insert(pool),
+                    Ok(pool) => {
+                        if pool.tag.len() > MAX_LORE_TAG_BYTES || pool_key(&pool.tag) != key {
+                            tracing::error!(%key, "npc: lore pool key does not match its tag; skipped");
+                        } else if let Err(error) = pool.validate() {
+                            tracing::error!(%key, %error, "npc: invalid bounded lore pool skipped");
+                        } else {
+                            pool_docs.insert(key, pool);
+                            if pool_docs.len() > MAX_LORE_POOLS && pool_docs.pop_last().is_some() {
+                                dropped_pool_docs = dropped_pool_docs.saturating_add(1);
+                            }
+                        }
+                    }
                     Err(e) => {
                         tracing::error!(%key, error = %e, "npc: unparseable lore pool skipped")
                     }
@@ -272,6 +286,18 @@ impl GameModule for NpcModule {
                 }
             } else {
                 tracing::warn!(%key, "npc: unknown persisted key ignored");
+            }
+        }
+        if dropped_pool_docs != 0 {
+            tracing::error!(
+                dropped = dropped_pool_docs,
+                max = MAX_LORE_POOLS,
+                "npc: lore pool hard count exceeded; lexically later pools skipped"
+            );
+        }
+        for (key, pool) in pool_docs {
+            if let Err(error) = pools.insert(pool) {
+                tracing::error!(%key, %error, "npc: invalid bounded lore pool skipped");
             }
         }
         if let Some(h) = ctx.state_mut::<NpcHostState>() {
@@ -1693,6 +1719,7 @@ fn cmd_lore(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     if tag.is_empty() {
         return lore_list_all(ctx);
     }
+    validate_lore_tag(&tag).map_err(|error| CmdError::msg(error.to_string()))?;
     let rhs = ctx.args.rhs().map(str::trim).unwrap_or("").to_string();
     if rhs.is_empty() {
         return lore_show(ctx, &tag);
@@ -1776,7 +1803,7 @@ fn lore_add(ctx: &mut Ctx<'_>, tag: &str, entry: LoreEntry) -> Result<(), CmdErr
     pool.entries.push(entry);
     let idx = pool.entries.len();
     let pool_tag = pool.tag.clone();
-    persist_pool(ctx, &pool);
+    persist_pool(ctx, &pool)?;
     ctx.out.info(
         ctx.actor,
         format!("Added entry #{idx} to lore pool {pool_tag}."),
@@ -1804,7 +1831,7 @@ fn lore_del(ctx: &mut Ctx<'_>, tag: &str, arg: &str) -> Result<(), CmdError> {
     }
     let removed = pool.entries.remove(n - 1);
     let pool_tag = pool.tag.clone();
-    persist_pool(ctx, &pool);
+    persist_pool(ctx, &pool)?;
     ctx.out.info(
         ctx.actor,
         format!(
@@ -1849,12 +1876,16 @@ fn parse_lore_spec(rhs: &str) -> Result<LoreEntry, CmdError> {
     if fact.is_empty() {
         return Err(CmdError::msg("The fact can't be empty."));
     }
-    Ok(LoreEntry {
+    let entry = LoreEntry {
         subject,
         fact,
         secrecy,
         source: String::new(),
-    })
+    };
+    entry
+        .validate()
+        .map_err(|error| CmdError::msg(error.to_string()))?;
+    Ok(entry)
 }
 
 /// Parse a secrecy tier word (case-insensitive).
@@ -2072,10 +2103,27 @@ fn resolve_shareable_knowledge(ctx: &Ctx<'_>, npc: ObjId) -> Vec<crate::knowledg
     let knowledge = read_knowledge(ctx.w, npc);
     let mut all = knowledge.lore;
     if let Some(h) = ctx.state::<NpcHostState>() {
-        all.extend(h.lore_pools.resolve(&knowledge.tags));
+        all.extend(h.lore_pools.resolve_shareable(&knowledge.tags));
     }
-    all.retain(|e| e.is_shareable());
-    all
+    let mut resolved = Vec::new();
+    let mut bytes = 0_usize;
+    for entry in all.into_iter().filter(LoreEntry::is_shareable) {
+        if resolved.len() >= MAX_RESOLVED_LORE_ENTRIES {
+            break;
+        }
+        let Ok(encoded) = serde_json::to_vec(&entry) else {
+            continue;
+        };
+        let Some(next_bytes) = bytes.checked_add(encoded.len()) else {
+            break;
+        };
+        if next_bytes > MAX_RESOLVED_LORE_BYTES {
+            break;
+        }
+        bytes = next_bytes;
+        resolved.push(entry);
+    }
+    resolved
 }
 
 fn build_summarize_snapshot(
@@ -2380,6 +2428,7 @@ fn read_knowledge(w: &World, npc: ObjId) -> NpcKnowledge {
     w.attr(npc, KNOWLEDGE_ATTR)
         .and_then(|a| a.as_json())
         .and_then(|v| serde_json::from_value(v.clone()).ok())
+        .filter(|knowledge: &NpcKnowledge| knowledge.validate().is_ok())
         .unwrap_or_default()
 }
 
@@ -2391,6 +2440,9 @@ fn store_knowledge(
     npc: ObjId,
     knowledge: &NpcKnowledge,
 ) -> Result<(), CmdError> {
+    knowledge
+        .validate()
+        .map_err(|error| CmdError::msg(error.to_string()))?;
     let value = serde_json::to_value(knowledge)
         .map_err(|e| CmdError::msg(format!("Could not serialize the knowledge: {e}")))?;
     ctx.w
@@ -2402,17 +2454,16 @@ fn store_knowledge(
 /// mirror it into the in-RAM [`LorePools`] so the resolved view matches the
 /// write (the pattern `remember`/`persist_memory` follows for durable memory).
 /// Wired by the `@lore` staff commands.
-fn persist_pool(ctx: &mut Ctx<'_>, pool: &LorePool) {
+fn persist_pool(ctx: &mut Ctx<'_>, pool: &LorePool) -> Result<(), CmdError> {
+    pool.validate()
+        .map_err(|error| CmdError::msg(error.to_string()))?;
+    let value = serde_json::to_value(pool)
+        .map_err(|error| CmdError::msg(format!("Could not serialize the lore pool: {error}")))?;
     if let Some(h) = ctx.state_mut::<NpcHostState>() {
-        h.lore_pools.set(pool.clone());
+        h.lore_pools
+            .set(pool.clone())
+            .map_err(|error| CmdError::msg(error.to_string()))?;
     }
-    let value = match serde_json::to_value(pool) {
-        Ok(v) => v,
-        Err(e) => {
-            tracing::error!(error = %e, "npc: could not serialize lore pool");
-            return;
-        }
-    };
     ctx.persist(ModuleOp {
         ns: SmolStr::new(NS),
         op: ModuleWrite::JsonSet {
@@ -2420,6 +2471,7 @@ fn persist_pool(ctx: &mut Ctx<'_>, pool: &LorePool) {
             value,
         },
     });
+    Ok(())
 }
 
 /// Delete a shared lore pool: remove the persisted doc AND drop it from the
