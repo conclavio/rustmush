@@ -71,6 +71,7 @@ pub mod perm;
 pub mod resolution;
 pub mod resource;
 pub mod sched;
+pub mod schedule_source;
 pub mod world;
 
 pub use action::{
@@ -105,10 +106,11 @@ pub use action_state::{
     ActionTxn, ActionTxnLimits, CanonicalStateBytes, MAX_ACTION_BUNDLE_BYTES,
     MAX_ACTION_MUTATION_OPERATIONS, MAX_ACTION_STATE_BOOT_BYTES, MAX_ACTION_STATE_BOOT_RECORDS,
     MAX_ACTION_STATE_RECORD_BYTES, MAX_STATE_FAMILIES, MAX_STATE_FAMILIES_PER_OWNER,
-    MAX_STATE_KEY_BYTES, PreparedInstallation, PreparedRecord, PreparedTxn, StateFamilyDescriptor,
-    StateFamilyDescriptorError, StateFamilyHandle, StateFamilyId, StateFamilyRegistry,
-    StateFamilyRegistryBuilder, StateFamilyRegistryError, StateKey, StateKeyCodec,
-    StateValueDecoder, StateValueSerializer, StateValueValidator, is_action_state_persistence_key,
+    MAX_STATE_FAMILY_SCAN_RECORDS, MAX_STATE_KEY_BYTES, PreparedInstallation, PreparedRecord,
+    PreparedTxn, StateFamilyDescriptor, StateFamilyDescriptorError, StateFamilyHandle,
+    StateFamilyId, StateFamilyPage, StateFamilyRegistry, StateFamilyRegistryBuilder,
+    StateFamilyRegistryError, StateFamilyScanEntry, StateKey, StateKeyCodec, StateValueDecoder,
+    StateValueSerializer, StateValueValidator, is_action_state_persistence_key,
 };
 pub use action_window::{
     ActionWindow, ActionWindowDraft, ActionWindowError, ActionWindowId, ActionWindowPhase,
@@ -227,6 +229,12 @@ pub use resource::{
 pub use sched::{
     MAX_PENDING_ENTRIES_PER_INSPECTION, MAX_SCHEDULED_FIRES_PER_STEP, PendingEntrySnapshot,
     ScheduledKind, Scheduler, TimerId,
+};
+pub use schedule_source::{
+    MAX_SCHEDULE_SOURCE_SCAN_RECORDS, MAX_SCHEDULE_SOURCES, MAX_SCHEDULE_SOURCES_PER_OWNER,
+    ScheduleSourceCursor, ScheduleSourceKey, ScheduleSourcePage, ScheduleSourceRegistry,
+    ScheduleSourceRegistryBuilder, ScheduleSourceRegistryError, ScheduleSourceScanError,
+    ScheduledActionCandidate,
 };
 pub use world::{
     ChannelGrant, CommandSubjectLink, MAX_CONTAINMENT_DEPTH, SessionStat, World, WorldError,

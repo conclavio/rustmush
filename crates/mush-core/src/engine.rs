@@ -657,6 +657,23 @@ impl Engine {
         }
     }
 
+    /// Discover a bounded canonical page of durable schedules that need an
+    /// authoritative action under the requested drive cause.
+    pub fn discover_scheduled_actions(
+        &self,
+        cause: crate::durable_schedule::ScheduleDriveCause,
+        cursor: Option<&crate::schedule_source::ScheduleSourceCursor>,
+        limit: usize,
+    ) -> Result<
+        crate::schedule_source::ScheduleSourcePage,
+        crate::schedule_source::ScheduleSourceScanError,
+    > {
+        self.registry
+            .schedule_sources()
+            .ok_or(crate::schedule_source::ScheduleSourceScanError::RegistryUnavailable)?
+            .scan(self, cause, cursor, limit)
+    }
+
     /// Enumerate the current viewer-safe legal actions through the frozen
     /// provider registry and deployment offer key ring.
     pub fn project_legal_actions(

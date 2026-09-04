@@ -37,8 +37,10 @@ particular campaign economy.
   clocks now use the composition-frozen provider registry: the provider validates the requested
   generation and returns only its scalar value, while the kernel owns stamp identity and readiness.
   The durable schedule cursor now supplies bounded oldest/latest catch-up, explicit skipped ranges,
-  resume/skip/suspend restart transitions, and deterministic same-owner coordinator ingress. E7
-  still needs to register its schedule sources with the production wake driver.
+  resume/skip/suspend restart transitions, and deterministic same-owner coordinator ingress.
+  Composition-frozen sources now bind exact owner-local schedule families to exact actions and
+  support bounded canonical restart/live discovery directly from hydrated typed state. E7 still
+  needs its provider-specific candidate-to-invocation adapter and the production wake loop.
 - **K5a station channel grants:** one
   `ChannelGrant { actor, subject, owner, station, channels, priority, epoch }` per occupied station.
   Channel and priority are selected from the same grant; no cross-seat union/max promotion. Exact

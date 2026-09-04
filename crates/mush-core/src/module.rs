@@ -1113,6 +1113,7 @@ impl Registry {
             || self.authority_guard_validators.is_some()
             || self.state_families.is_some()
             || self.clock_providers.is_some()
+            || self.schedule_sources.is_some()
             || self.mechanics_owner_readiness.is_some()
         {
             return Err(ModError::msg("mechanics registries were already frozen"));
@@ -1134,6 +1135,14 @@ impl Registry {
         let clock_providers = std::mem::take(&mut self.clock_provider_builder)
             .freeze_for_owners_with_readiness(module_owners, owner_readiness.clone())
             .map_err(|e| ModError::msg(format!("clock provider registry: {e}")))?;
+        let schedule_sources = std::mem::take(&mut self.schedule_source_builder)
+            .freeze_for_composition(
+                module_owners,
+                &action_providers,
+                &state_families,
+                owner_readiness.clone(),
+            )
+            .map_err(|e| ModError::msg(format!("schedule source registry: {e}")))?;
         let revision_validators = std::mem::take(&mut self.revision_validator_builder)
             .freeze_for_owners_with_readiness(module_owners, owner_readiness.clone())
             .map_err(|e| ModError::msg(format!("revision validator registry: {e}")))?;
@@ -1152,6 +1161,7 @@ impl Registry {
         self.authority_guard_validators = Some(authority_guard_validators);
         self.state_families = Some(state_families);
         self.clock_providers = Some(clock_providers);
+        self.schedule_sources = Some(schedule_sources);
         self.definition_migrations = Some(definition_migrations);
         Ok(())
     }
@@ -1251,6 +1261,12 @@ impl Registry {
         self.clock_providers.as_ref()
     }
 
+    /// Immutable declarative durable schedule sources after composition.
+    #[must_use]
+    pub fn schedule_sources(&self) -> Option<&crate::schedule_source::ScheduleSourceRegistry> {
+        self.schedule_sources.as_ref()
+    }
+
     /// Start a server-owned guard bundle bound to this exact frozen module
     /// composition. A bare or not-yet-composed registry fails closed.
     pub fn server_guard_set_builder(
@@ -1294,8 +1310,9 @@ impl Registry {
         let authority = self.authority_guard_validators.as_ref()?;
         let state_families = self.state_families.as_ref()?;
         let clock_providers = self.clock_providers.as_ref()?;
+        let schedule_sources = self.schedule_sources.as_ref()?;
         crate::mechanics::DefinitionDigest::for_canonical_value(
-            "mechanics_registry.v5",
+            "mechanics_registry.v6",
             &serde_json::json!({
                 "definitions": definitions.fingerprint().to_hex(),
                 "bridges": bridges.fingerprint().to_hex(),
@@ -1305,6 +1322,7 @@ impl Registry {
                 "authority_validators": authority.fingerprint().to_hex(),
                 "state_families": state_families.fingerprint().to_hex(),
                 "clock_providers": clock_providers.fingerprint().to_hex(),
+                "schedule_sources": schedule_sources.fingerprint().to_hex(),
             }),
         )
         .ok()
@@ -1787,6 +1805,46 @@ impl<'a> Registrar<'a> {
             .map_err(|e| {
                 ModError::msg(format!(
                     "module {}: clock provider registration: {e}",
+                    self.module
+                ))
+            })
+    }
+
+    /// Declare a durable schedule family as a bounded wake source for one
+    /// exact authoritative action owned by this module.
+    ///
+    /// Discovery enumerates the engine-owned typed family directly, so a
+    /// provider cannot hide an unbounded process-local queue or index. The
+    /// action remains responsible for advancing the schedule in the same
+    /// authoritative bundle as its domain effects.
+    pub fn schedule_source(
+        &mut self,
+        id: crate::mechanics::CanonicalId,
+        action: crate::mechanics::DefinitionRef,
+        schedules: crate::action_state::StateFamilyHandle<
+            crate::durable_schedule::ScheduleId,
+            crate::durable_schedule::DurableSchedule,
+        >,
+    ) -> Result<(), ModError> {
+        self.require_mechanics_registration_authority()?;
+        if self.reg.schedule_sources.is_some() {
+            return Err(ModError::msg(format!(
+                "module {}: schedule-source registry is already frozen",
+                self.module
+            )));
+        }
+        let owner = crate::mechanics::OwnerId::new(self.module.as_str()).map_err(|e| {
+            ModError::msg(format!(
+                "module {} has no canonical mechanics owner id: {e}",
+                self.module
+            ))
+        })?;
+        self.reg
+            .schedule_source_builder
+            .register(owner, id, action, schedules)
+            .map_err(|e| {
+                ModError::msg(format!(
+                    "module {}: schedule source registration: {e}",
                     self.module
                 ))
             })

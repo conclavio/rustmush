@@ -11,15 +11,16 @@ use mush_core::{
     ActionWindowDraft, ActionWindowError, ActionWindowId, ActionWindowRecord,
     ActionWindowStateCodec, AuthoritativeActionOutput, BoundedScalar, CanonicalHash, CanonicalId,
     ClockRef, ClockStamp, DefinitionDescriptor, DefinitionId, DefinitionKind, DefinitionRef,
-    DefinitionRegistryBuilder, DefinitionValidationContext, EffectDuration, EffectInstance,
-    EffectInstanceId, EffectTarget, Engine, GameModule, IdempotencyKey, IdempotencyScope,
-    LegalActionQuery, ModError, ObjId, OwnerId, PerceivedRef, PrepareCtx, PreparedCausalRef,
-    PreparedTrigger, PrincipalId, ProjectedLegalActionSink, ProjectedParameterSchema,
-    ProjectedTargetSchema, ProviderOfferDraft, Registrar, RequestUid, ResolutionKeyRing,
-    ResolutionSecret, ResourceOperation, RulesValue, SameCommitTrigger, ScopedIdempotencyKey,
-    StateFamilyDescriptor, StateFamilyHandle, StateFamilyId, SubjectKey, WindowIntent, WindowMode,
-    WindowOrderKey, WindowRestartPolicy, WindowTimeoutPolicy,
-    action_window_state_family_descriptor,
+    DefinitionRegistryBuilder, DefinitionValidationContext, DurableSchedule,
+    DurableScheduleStateCodec, EffectDuration, EffectInstance, EffectInstanceId, EffectTarget,
+    Engine, GameModule, IdempotencyKey, IdempotencyScope, LegalActionQuery, ModError, ObjId,
+    OwnerId, PerceivedRef, PrepareCtx, PreparedCausalRef, PreparedTrigger, PrincipalId,
+    ProjectedLegalActionSink, ProjectedParameterSchema, ProjectedTargetSchema, ProviderOfferDraft,
+    Registrar, RequestUid, ResolutionKeyRing, ResolutionSecret, ResourceOperation, RulesValue,
+    SameCommitTrigger, ScheduleId, ScopedIdempotencyKey, StateFamilyDescriptor, StateFamilyHandle,
+    StateFamilyId, SubjectKey, WindowIntent, WindowMode, WindowOrderKey, WindowRestartPolicy,
+    WindowTimeoutPolicy, action_window_state_family_descriptor,
+    durable_schedule_state_family_descriptor,
 };
 use mush_testkit::TestWorld;
 use serde::{Deserialize, Serialize};
@@ -315,6 +316,7 @@ pub struct ToyStateFamilies {
     pub focus: StateFamilyHandle<ObjId, ToyFocusState>,
     pub guarded: StateFamilyHandle<ObjId, ToyGuardedState>,
     pub windows: StateFamilyHandle<ActionWindowId, ActionWindowRecord>,
+    pub schedules: StateFamilyHandle<ScheduleId, DurableSchedule>,
 }
 
 #[derive(Debug)]
@@ -1471,10 +1473,21 @@ impl GameModule for ToyRulesModule {
             ActionWindowStateCodec,
             ActionWindowStateCodec,
         )?;
+        let schedules = registrar.state_family(
+            durable_schedule_state_family_descriptor(
+                StateFamilyId::new("schedules").expect("static family id"),
+            )
+            .map_err(|error| ModError::msg(error.to_string()))?,
+            DurableScheduleStateCodec,
+            DurableScheduleStateCodec,
+            DurableScheduleStateCodec,
+            DurableScheduleStateCodec,
+        )?;
         let families = ToyStateFamilies {
             focus,
             guarded,
             windows,
+            schedules,
         };
         registrar.action_provider(
             actual.brace.clone(),
@@ -1492,6 +1505,11 @@ impl GameModule for ToyRulesModule {
                 expire_definition: actual.guarded_expire.clone(),
                 guarded_definition: actual.guarded.clone(),
             },
+        )?;
+        registrar.schedule_source(
+            CanonicalId::new("guarded_expiry").expect("static schedule source id"),
+            actual.guarded_expire.clone(),
+            families.schedules.clone(),
         )?;
         registrar.action_provider(
             actual.window_action.clone(),
@@ -1554,6 +1572,26 @@ pub fn install_toy_focus(
         txn.insert(&families.focus, &actor, ToyFocusState::new(amount))
             .expect("valid focus bootstrap");
         txn.prepare().expect("focus bootstrap prepares")
+    };
+    let (_, installation) = prepared.into_parts();
+    engine.install_prepared_action(installation);
+}
+
+/// Install one valid durable schedule through the typed family used by the
+/// composition-frozen toy schedule source.
+pub fn install_toy_schedule(
+    engine: &mut Engine,
+    families: &ToyStateFamilies,
+    schedule: DurableSchedule,
+) {
+    let id = schedule.id();
+    let prepared = {
+        let mut txn = engine
+            .action_transaction(&families.schedules)
+            .expect("toy schedule transaction");
+        txn.insert(&families.schedules, &id, schedule)
+            .expect("valid schedule bootstrap");
+        txn.prepare().expect("schedule bootstrap prepares")
     };
     let (_, installation) = prepared.into_parts();
     engine.install_prepared_action(installation);

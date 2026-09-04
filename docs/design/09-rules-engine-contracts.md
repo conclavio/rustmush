@@ -859,7 +859,12 @@ subkey, while one stable pre-state advance key carries the whole selected set, s
 cursor post-image through normal authoritative-coordinator ingress. That ingress deliberately does
 not bind the moving observation time: a post-crash re-evaluation of the same cursor finds its exact
 pending/finalized intent; once reserved, the bundle binds the exact plan. A scheduler callback never
-gains a private mutation or idempotency lane.
+gains a private mutation or idempotency lane. Schedule families are registered during module
+composition against one exact same-owner action and become part of the mechanics fingerprint. The
+kernel discovers work by bounded canonical scans of the engine-owned typed family, validates each
+record's key and owner, reads its exact clock, and rechecks owner readiness. It therefore needs no
+process-local authoritative timer index; the remaining production driver work is to turn each
+candidate into its provider-specific invocation and run normal preflight/commit custody.
 
 ### C5. Deterministic randomness and recorded resolution
 
@@ -2278,8 +2283,11 @@ Work:
    now plan bounded oldest/latest catch-up with explicit skipped ranges and restart
    resume/skip/suspend post-images; action windows expose an equivalent pure live/restart decision.
    The whole advance uses stable pre-state internal ingress through the normal K3 coordinator, and
-   the Gate-1 scheduled effect-expiry path proves that route. A scene-clock adapter and production
-   schedule-source discovery/wake driver remain separate work.
+   the Gate-1 scheduled effect-expiry path proves that route. Composition-frozen schedule sources
+   now enumerate exact typed families in bounded canonical pages without a private in-memory index,
+   including restart skip/suspend transitions that contain no occurrences but still require a
+   durable post-image. A scene-clock adapter and the production candidate-to-invocation wake driver
+   remain separate work.
 3. Add `ResolutionRng`, durable root-secret/version handling, domain-separated streams, draw caps,
    and structured resolution records; adapt `mush-dice` to it.
    **The key-ring/KDF, labeled bounded generator, validated transcript/outcome record, and checked

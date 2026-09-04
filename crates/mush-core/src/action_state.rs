@@ -12,6 +12,7 @@ use std::any::{Any, TypeId, type_name};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::marker::PhantomData;
+use std::ops::Bound;
 use std::sync::Arc;
 
 use serde::de::Error as _;
@@ -45,6 +46,8 @@ pub const MAX_ACTION_MUTATION_OPERATIONS: usize = MAX_CASCADE_OPERATIONS as usiz
 pub const MAX_ACTION_STATE_BOOT_RECORDS: usize = 1_000_000;
 /// Hard maximum canonical record bytes retained during one boot hydration.
 pub const MAX_ACTION_STATE_BOOT_BYTES: usize = 512 * 1024 * 1024;
+/// Maximum typed records returned by one synchronous family scan.
+pub const MAX_STATE_FAMILY_SCAN_RECORDS: usize = 1_024;
 
 /// Reserved module-key root owned exclusively by the action-state coordinator.
 /// Ordinary module boot, migrations, and legacy writes must never consume it.
@@ -228,7 +231,7 @@ impl StateFamilyDescriptor {
         self.max_record_bytes
     }
 
-    fn canonical_value(&self) -> Value {
+    pub(crate) fn canonical_value(&self) -> Value {
         json!({
             "id": self.id,
             "key_codec": self.key_codec,
@@ -605,6 +608,13 @@ impl StateFamilyRegistry {
         Ok(registered)
     }
 
+    pub(crate) fn validate_handle<K: 'static, V: 'static>(
+        &self,
+        handle: &StateFamilyHandle<K, V>,
+    ) -> Result<(), ActionStateError> {
+        self.get_for_handle(handle).map(|_| ())
+    }
+
     pub(crate) fn shares_readiness_with(&self, readiness: &MechanicalOwnerReadiness) -> bool {
         self.owner_readiness.shares_latch_with(readiness)
     }
@@ -790,6 +800,46 @@ pub struct ActionStateStore {
     revision: u64,
     next_reservation: u64,
     pending_reservation: Option<u64>,
+}
+
+/// One immutable entry in a bounded typed-family scan.
+#[derive(Clone, Copy, Debug)]
+pub struct StateFamilyScanEntry<'a, V> {
+    encoded_key: &'a str,
+    value: &'a V,
+}
+
+impl<'a, V> StateFamilyScanEntry<'a, V> {
+    #[must_use]
+    pub const fn encoded_key(&self) -> &'a str {
+        self.encoded_key
+    }
+
+    #[must_use]
+    pub const fn value(&self) -> &'a V {
+        self.value
+    }
+}
+
+/// Canonically ordered bounded page from one exact typed family.
+#[derive(Debug)]
+pub struct StateFamilyPage<'a, V> {
+    entries: Vec<StateFamilyScanEntry<'a, V>>,
+    next_after: Option<SmolStr>,
+}
+
+impl<'a, V> StateFamilyPage<'a, V> {
+    #[must_use]
+    pub fn entries(&self) -> &[StateFamilyScanEntry<'a, V>] {
+        &self.entries
+    }
+
+    /// Encoded key to pass as `after` for the next page, or `None` when this
+    /// page reached the end of the family.
+    #[must_use]
+    pub const fn next_after(&self) -> Option<&SmolStr> {
+        self.next_after.as_ref()
+    }
 }
 
 impl fmt::Debug for ActionStateStore {
@@ -1033,6 +1083,68 @@ impl ActionStateStore {
             .get(&state_key)
             .map(|record| downcast_value::<V>(record.value.as_ref(), &state_key))
             .transpose()
+    }
+
+    /// Scan one exact typed family in canonical encoded-key order.
+    ///
+    /// The cursor is exclusive and opaque to callers: use only a
+    /// [`StateFamilyPage::next_after`] value returned by an earlier call.
+    /// Paging bounds both allocation and synchronous module work even when
+    /// the complete hydrated store contains many records.
+    pub fn scan_family<'a, K, V>(
+        &'a self,
+        handle: &StateFamilyHandle<K, V>,
+        after: Option<&str>,
+        limit: usize,
+    ) -> Result<StateFamilyPage<'a, V>, ActionStateError>
+    where
+        K: Send + Sync + 'static,
+        V: Clone + Send + Sync + 'static,
+    {
+        self.registry.get_for_handle(handle)?;
+        if limit == 0 || limit > MAX_STATE_FAMILY_SCAN_RECORDS {
+            return Err(ActionStateError::InvalidScanLimit {
+                actual: limit,
+                max: MAX_STATE_FAMILY_SCAN_RECORDS,
+            });
+        }
+        if after.is_some_and(|cursor| cursor.len() > handle.descriptor().max_key_bytes()) {
+            return Err(ActionStateError::ScanCursorTooLong {
+                actual: after.map_or(0, str::len),
+                max: handle.descriptor().max_key_bytes(),
+            });
+        }
+        let start = StateKey {
+            owner: handle.owner().clone(),
+            family: handle.descriptor().id.clone(),
+            encoded: SmolStr::new(after.unwrap_or("")),
+        };
+        let lower = if after.is_some() {
+            Bound::Excluded(start)
+        } else {
+            Bound::Included(start)
+        };
+        let mut entries = Vec::with_capacity(limit);
+        let mut next_after = None;
+        for (key, stored) in self.records.range((lower, Bound::Unbounded)) {
+            if key.owner() != handle.owner() || key.family() != &handle.descriptor().id {
+                break;
+            }
+            if entries.len() == limit {
+                next_after = entries
+                    .last()
+                    .map(|entry: &StateFamilyScanEntry<'_, V>| SmolStr::new(entry.encoded_key));
+                break;
+            }
+            entries.push(StateFamilyScanEntry {
+                encoded_key: key.encoded(),
+                value: downcast_value::<V>(stored.value.as_ref(), key)?,
+            });
+        }
+        Ok(StateFamilyPage {
+            entries,
+            next_after,
+        })
     }
 
     /// Exact resolution-secret versions pinned by unresolved durable action
@@ -1967,6 +2079,10 @@ pub enum ActionStateError {
     ReservationExhausted,
     #[error("action-state revision sequence is exhausted")]
     RevisionExhausted,
+    #[error("state-family scan limit {actual} must be in 1..={max}")]
+    InvalidScanLimit { actual: usize, max: usize },
+    #[error("state-family scan cursor is {actual} bytes; maximum is {max}")]
+    ScanCursorTooLong { actual: usize, max: usize },
     #[error("action state can only hydrate into a fresh, unreserved store")]
     HydrationStoreNotEmpty,
     #[error("action-state hydration exceeds the maximum of {max} records")]
@@ -2145,6 +2261,54 @@ mod tests {
         assert_eq!(calls.load(Ordering::SeqCst), 2);
         assert_eq!(restarted.action_state().revision(), 0);
         assert!(!restarted.action_state().has_prepared());
+    }
+
+    #[test]
+    fn typed_family_scan_is_canonical_bounded_and_exclusively_pageable() {
+        let (mut engine, handle, _) = fixture("state_test");
+        let mut txn = engine.action_transaction(&handle).unwrap();
+        for key in [3, 1, 2] {
+            txn.insert(&handle, &key, CounterState { amount: key as u16 })
+                .unwrap();
+        }
+        let prepared = txn.prepare().unwrap();
+        install_direct(&mut engine, prepared);
+
+        let first = engine.action_state().scan_family(&handle, None, 2).unwrap();
+        assert_eq!(
+            first
+                .entries()
+                .iter()
+                .map(StateFamilyScanEntry::encoded_key)
+                .collect::<Vec<_>>(),
+            vec!["1", "2"]
+        );
+        assert_eq!(
+            first
+                .entries()
+                .iter()
+                .map(|entry| entry.value().amount)
+                .collect::<Vec<_>>(),
+            vec![1, 2]
+        );
+        let cursor = first.next_after().cloned().expect("another page");
+        let second = engine
+            .action_state()
+            .scan_family(&handle, Some(cursor.as_str()), 2)
+            .unwrap();
+        assert_eq!(
+            second
+                .entries()
+                .iter()
+                .map(StateFamilyScanEntry::encoded_key)
+                .collect::<Vec<_>>(),
+            vec!["3"]
+        );
+        assert!(second.next_after().is_none());
+        assert!(matches!(
+            engine.action_state().scan_family(&handle, None, 0),
+            Err(ActionStateError::InvalidScanLimit { .. })
+        ));
     }
 
     #[test]
