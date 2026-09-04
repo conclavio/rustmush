@@ -1,3 +1,7 @@
+use mush_contract_tests::{
+    ToyFocusState, ToyGuardedState, install_toy_focus, toy_brace_invocation, toy_definitions,
+    toy_world_with_state,
+};
 use mush_core::{
     ActionInvocation, ActionInvocationDraft, ActionOfferId, CanonicalHash, CanonicalId,
     DefinitionId, DefinitionKey, DefinitionKind, DefinitionRef, Engine, GOD, IdempotencyKey,
@@ -132,6 +136,8 @@ async fn real_provider_is_exactly_once_and_hydrates_before_the_next_action() {
     assert_eq!(bundle.token(), staged.token);
     assert_eq!(bundle.bundle_hash(), staged.bundle_hash);
     assert_eq!(bundle.outcome().data()["revision"], 1);
+    assert_eq!(bundle.semantic_events().len(), 1);
+    assert_eq!(bundle.semantic_events()[0].kind().as_str(), BRACE_ACTION_ID);
 
     let intent = store
         .reserve_authoritative_intent(bundle.clone())
@@ -240,4 +246,115 @@ async fn real_provider_is_exactly_once_and_hydrates_before_the_next_action() {
         StagedActionPersistence::Legacy(_) => panic!("brace used the legacy persistence lane"),
     };
     assert_eq!(bundle.outcome().data()["revision"], 2);
+}
+
+#[tokio::test]
+async fn toy_trigger_cascade_survives_bundle_checkpoint_and_restart() {
+    let store = InMemoryStore::new();
+    let (mut world, families) = toy_world_with_state();
+    install_toy_focus(world.engine_mut(), &families, GOD, 3);
+    let _ = world.drain_write_batch();
+    let request = RequestUid::from_bytes([0xB1; 16]);
+    let invocation = toy_brace_invocation(GOD, 11, request);
+    let envelope = IngressEnvelope::new(
+        request,
+        invocation.principal().clone(),
+        IngressSurfaceVersion::new(CanonicalId::new("test.structured").unwrap(), 1).unwrap(),
+        IngressPayload::structured(json!({"action": "brace", "scene_turn": 11})).unwrap(),
+        invocation.idempotency().clone(),
+    )
+    .unwrap();
+    let permit = match ActionCoordinator::preflight(&store, envelope)
+        .await
+        .unwrap()
+    {
+        ActionPreflight::Vacant(permit) => permit,
+        other => panic!("toy request was not vacant: {other:?}"),
+    };
+    let action = toy_definitions().brace;
+    let action_guards = guards(world.engine(), &action);
+    ActionCoordinator::prepare_and_stage(
+        permit,
+        world.engine_mut(),
+        &action,
+        &invocation,
+        action_guards,
+    )
+    .unwrap();
+    let (persistence, installation) = world
+        .engine_mut()
+        .take_staged_action()
+        .unwrap()
+        .expect("toy cascade staged")
+        .into_parts();
+    let bundle = match persistence {
+        StagedActionPersistence::Authoritative(bundle) => *bundle,
+        StagedActionPersistence::Legacy(_) => panic!("toy cascade used legacy persistence"),
+    };
+    assert_eq!(bundle.writes().len(), 2);
+    assert_eq!(bundle.semantic_events().len(), 2);
+    assert_eq!(bundle.semantic_events()[0].kind().as_str(), "brace");
+    assert_eq!(bundle.semantic_events()[1].kind().as_str(), "apply_guarded");
+    assert_eq!(
+        bundle.semantic_events()[1].cause().parent(),
+        Some(bundle.semantic_events()[0].cause().event_id())
+    );
+
+    store
+        .reserve_authoritative_intent(bundle.clone())
+        .await
+        .unwrap();
+    let receipt = store
+        .reconcile_authoritative(bundle.token(), bundle.bundle_hash())
+        .await
+        .unwrap();
+    assert_eq!(receipt.semantic_events(), bundle.semantic_events());
+    world.engine_mut().install_prepared_action(installation);
+    assert_eq!(
+        world
+            .engine()
+            .action_state()
+            .get(&families.focus, &GOD)
+            .unwrap(),
+        Some(&ToyFocusState { amount: 2 })
+    );
+    assert_eq!(
+        world
+            .engine()
+            .action_state()
+            .get(&families.guarded, &GOD)
+            .unwrap(),
+        Some(&ToyGuardedState {
+            expires_after_scene_turn: 13,
+        })
+    );
+    let checkpoint = store
+        .checkpoint_authoritative(bundle.token(), bundle.bundle_hash())
+        .await
+        .unwrap();
+    assert_eq!(
+        checkpoint.receipt.semantic_events(),
+        bundle.semantic_events()
+    );
+
+    let (mut restarted, restarted_families) = toy_world_with_state();
+    boot_modules(restarted.engine_mut(), &store).await.unwrap();
+    assert_eq!(
+        restarted
+            .engine()
+            .action_state()
+            .get(&restarted_families.focus, &GOD)
+            .unwrap(),
+        Some(&ToyFocusState { amount: 2 })
+    );
+    assert_eq!(
+        restarted
+            .engine()
+            .action_state()
+            .get(&restarted_families.guarded, &GOD)
+            .unwrap(),
+        Some(&ToyGuardedState {
+            expires_after_scene_turn: 13,
+        })
+    );
 }

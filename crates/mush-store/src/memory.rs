@@ -2303,10 +2303,22 @@ mod tests {
             action: action.clone(),
             provider: owner.clone(),
             cause: PreparedCausalRef::new(request, None, 0).unwrap(),
-            definitions: vec![action, outcome_definition.clone()],
+            definitions: vec![action.clone(), outcome_definition.clone()],
             writes,
-            outcome: RulesValue::new(outcome_definition, serde_json::json!({ "ok": true }))
+            outcome: RulesValue::new(
+                outcome_definition.clone(),
+                serde_json::json!({ "ok": true }),
+            )
+            .unwrap(),
+            semantic_events: vec![
+                mush_core::AuthoritativeSemanticEvent::root(
+                    PreparedCausalRef::new(request, None, 0).unwrap(),
+                    &action,
+                    RulesValue::new(outcome_definition, serde_json::json!({ "ok": true })).unwrap(),
+                    vec![principal.clone()],
+                )
                 .unwrap(),
+            ],
             eligible_witnesses: vec![principal],
             durable_outbox,
         })

@@ -86,13 +86,13 @@ pub use action::{
     MAX_CASCADE_BYTES, MAX_CASCADE_OPERATIONS, MAX_CASCADE_TRIGGERS, MAX_GUARD_SET_BYTES,
     MAX_IDEMPOTENCY_KEY_BYTES, MAX_INGRESS_LINE_BYTES, MAX_INGRESS_PAYLOAD_BYTES,
     MAX_REVISION_VALIDATORS, MAX_REVISION_VALIDATORS_PER_OWNER, MAX_SEMANTIC_EVENTS,
-    MAX_TRIGGER_DEPTH, PerceivedRef, PreparedCausalRef, PreparedEventId, PreparedTrigger,
-    PreparedTriggerDraft, PrincipalId, ProviderRegistrationOrdinal, RequestUid, RevisionKey,
-    RevisionKind, RevisionMismatch, RevisionSet, RevisionSetError, RevisionStamp,
-    RevisionValidator, RevisionValidatorEntry, RevisionValidatorLookupError,
-    RevisionValidatorRegistry, RevisionValidatorRegistryBuilder, RevisionValidatorRegistryError,
-    ScopedIdempotencyKey, ServerGuardSetBuilder, SubjectKey, TriggerEnqueue, TriggerHandlerId,
-    TriggerIdentity, TriggerWork,
+    MAX_TRIGGER_DEPTH, PerceivedRef, PreparedAuthoritativeAction, PreparedCausalRef,
+    PreparedEventId, PreparedTrigger, PreparedTriggerDraft, PrincipalId,
+    ProviderRegistrationOrdinal, RequestUid, RevisionKey, RevisionKind, RevisionMismatch,
+    RevisionSet, RevisionSetError, RevisionStamp, RevisionValidator, RevisionValidatorEntry,
+    RevisionValidatorLookupError, RevisionValidatorRegistry, RevisionValidatorRegistryBuilder,
+    RevisionValidatorRegistryError, SameCommitTrigger, ScopedIdempotencyKey, ServerGuardSetBuilder,
+    SubjectKey, TriggerEnqueue, TriggerHandlerId, TriggerIdentity, TriggerWork,
 };
 pub use action_state::{
     ACTION_STATE_PERSISTENCE_ROOT, ActionStateBootRecord, ActionStateError, ActionStateStore,
@@ -107,9 +107,10 @@ pub use action_state::{
 pub use attr::{Attr, AttrFlags, AttrMap, AttrValue, UncasedName};
 pub use authoritative::{
     AuthoritativeBundle, AuthoritativeBundleDraft, AuthoritativeBundleError, AuthoritativeKey,
-    AuthoritativeKeyError, DurableOutboxIntent, MAX_AUTHORITATIVE_BUNDLE_BYTES,
-    MAX_AUTHORITATIVE_DEFINITIONS, MAX_AUTHORITATIVE_REPLAY_WRITES, MAX_AUTHORITATIVE_WITNESSES,
-    MAX_DURABLE_OUTBOX_INTENTS, MAX_DURABLE_OUTBOX_PAYLOAD_BYTES, ReplayWrite,
+    AuthoritativeKeyError, AuthoritativeSemanticEvent, DurableOutboxIntent,
+    MAX_AUTHORITATIVE_BUNDLE_BYTES, MAX_AUTHORITATIVE_DEFINITIONS, MAX_AUTHORITATIVE_REPLAY_WRITES,
+    MAX_AUTHORITATIVE_WITNESSES, MAX_DURABLE_OUTBOX_INTENTS, MAX_DURABLE_OUTBOX_PAYLOAD_BYTES,
+    ReplayWrite,
 };
 pub use behavior::{
     BINDING_SCHEMA_VERSION, BehaviorBinding, BehaviorCommand, BehaviorCommandHandler, BehaviorId,

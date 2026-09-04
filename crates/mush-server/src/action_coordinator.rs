@@ -190,11 +190,12 @@ fn assemble_bundle(
     action: &DefinitionRef,
     invocation: &ActionInvocation,
     prepared: &mush_core::PreparedTxn,
-    output: mush_core::AuthoritativeActionOutput,
+    output: mush_core::PreparedAuthoritativeAction,
 ) -> Result<AuthoritativeBundle, ActionCoordinatorError> {
     let provider = prepared.owner().clone();
     let writes = prepared.authoritative_replay_writes();
-    let (outcome, mut definitions, mut witnesses, durable_outbox) = output.into_parts();
+    let (outcome, mut definitions, mut witnesses, durable_outbox, semantic_events) =
+        output.into_parts();
     definitions.push(action.clone());
     definitions.push(outcome.schema().clone());
     definitions.sort();
@@ -220,6 +221,7 @@ fn assemble_bundle(
             "definitions": definitions,
             "writes": writes,
             "outcome": outcome,
+            "semantic_events": semantic_events,
             "eligible_witnesses": witnesses,
             "durable_outbox": durable_outbox,
         }),
@@ -238,6 +240,7 @@ fn assemble_bundle(
         definitions,
         writes,
         outcome,
+        semantic_events,
         eligible_witnesses: witnesses,
         durable_outbox,
     })?)

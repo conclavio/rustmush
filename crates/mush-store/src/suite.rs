@@ -1108,7 +1108,7 @@ pub async fn module_empty_namespace_list(store: &dyn ObjectStore) {
 // Shared authoritative-store contract
 // -------------------------------------------------------------------------
 
-fn authoritative_bundle(token_byte: u8, request_byte: u8) -> AuthoritativeBundle {
+pub(crate) fn authoritative_bundle(token_byte: u8, request_byte: u8) -> AuthoritativeBundle {
     authoritative_bundle_with(token_byte, request_byte, 0, vec![])
 }
 
@@ -1164,7 +1164,7 @@ fn authoritative_bundle_with(
         action: action.clone(),
         provider: owner.clone(),
         cause: PreparedCausalRef::new(request, None, 0).expect("root cause"),
-        definitions: vec![action, outcome.clone()],
+        definitions: vec![action.clone(), outcome.clone()],
         writes: vec![
             ReplayWrite::ObjectSet {
                 object: Obj::new(ObjId(2), ObjKind::Thing, "guard", GOD, 0),
@@ -1177,8 +1177,17 @@ fn authoritative_bundle_with(
                 value: serde_json::json!({ "amount": 1 }),
             },
         ],
-        outcome: RulesValue::new(outcome, serde_json::json!({ "ok": true }))
+        outcome: RulesValue::new(outcome.clone(), serde_json::json!({ "ok": true }))
             .expect("outcome value"),
+        semantic_events: vec![
+            mush_core::AuthoritativeSemanticEvent::root(
+                PreparedCausalRef::new(request, None, 0).expect("root cause"),
+                &action,
+                RulesValue::new(outcome, serde_json::json!({ "ok": true })).expect("event value"),
+                vec![principal.clone()],
+            )
+            .expect("root event"),
+        ],
         eligible_witnesses: vec![principal],
         durable_outbox,
     })
@@ -1241,6 +1250,7 @@ pub async fn authoritative_exact_lifecycle(store: &dyn AuthoritativeStore) {
         .await
         .expect("reconcile intent");
     assert!(receipt.matches_bundle(&bundle));
+    assert_eq!(receipt.semantic_events(), bundle.semantic_events());
     assert_eq!(
         store.authoritative_status(token, hash).await.unwrap(),
         BundleStatus::FinalizedExact(Box::new(receipt.clone()))
@@ -1258,6 +1268,10 @@ pub async fn authoritative_exact_lifecycle(store: &dyn AuthoritativeStore) {
         .await
         .expect("checkpoint finalized intent");
     assert_eq!(checkpoint.receipt, receipt);
+    assert_eq!(
+        checkpoint.receipt.semantic_events(),
+        bundle.semantic_events()
+    );
     assert!(!checkpoint.resumed);
     assert!(
         store

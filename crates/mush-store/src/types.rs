@@ -456,6 +456,28 @@ pub struct AuthoritativeReceipt {
     provider: OwnerId,
     cause: PreparedCausalRef,
     outcome: RulesValue,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    semantic_events: Vec<mush_core::AuthoritativeSemanticEvent>,
+    eligible_witnesses: Vec<PrincipalId>,
+    bundle_hash: CanonicalHash,
+    receipt_hash: CanonicalHash,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AuthoritativeReceiptV3Wire {
+    schema_version: u16,
+    token: CommitToken,
+    request: RequestUid,
+    idempotency: ScopedIdempotencyKey,
+    ingress_hash: CanonicalHash,
+    request_hash: CanonicalHash,
+    plan_hash: CanonicalHash,
+    action: DefinitionRef,
+    provider: OwnerId,
+    cause: PreparedCausalRef,
+    outcome: RulesValue,
+    semantic_events: Vec<mush_core::AuthoritativeSemanticEvent>,
     eligible_witnesses: Vec<PrincipalId>,
     bundle_hash: CanonicalHash,
     receipt_hash: CanonicalHash,
@@ -489,17 +511,23 @@ struct LegacyAuthoritativeReceiptWire {
 #[derive(Deserialize)]
 #[serde(untagged)]
 enum AuthoritativeReceiptWire {
+    V3(AuthoritativeReceiptV3Wire),
     V2(AuthoritativeReceiptV2Wire),
     Legacy(LegacyAuthoritativeReceiptWire),
 }
 
 impl AuthoritativeReceipt {
-    pub const SCHEMA_VERSION: u16 = 2;
+    pub const SCHEMA_VERSION: u16 = 3;
 
     #[must_use]
     pub fn new(bundle: &AuthoritativeBundle) -> Self {
+        let schema_version = if bundle.semantic_events().is_empty() {
+            2
+        } else {
+            Self::SCHEMA_VERSION
+        };
         let mut receipt = Self {
-            schema_version: Self::SCHEMA_VERSION,
+            schema_version,
             token: bundle.token(),
             request: bundle.request(),
             idempotency: bundle.idempotency().clone(),
@@ -510,6 +538,7 @@ impl AuthoritativeReceipt {
             provider: bundle.provider().clone(),
             cause: bundle.cause(),
             outcome: bundle.outcome().clone(),
+            semantic_events: bundle.semantic_events().to_vec(),
             eligible_witnesses: bundle.eligible_witnesses().to_vec(),
             bundle_hash: bundle.bundle_hash(),
             receipt_hash: CanonicalHash::from_bytes([0; 32]),
@@ -576,6 +605,11 @@ impl AuthoritativeReceipt {
     }
 
     #[must_use]
+    pub fn semantic_events(&self) -> &[mush_core::AuthoritativeSemanticEvent] {
+        &self.semantic_events
+    }
+
+    #[must_use]
     pub fn eligible_witnesses(&self) -> &[PrincipalId] {
         &self.eligible_witnesses
     }
@@ -597,30 +631,58 @@ impl AuthoritativeReceipt {
             && self.provider == *bundle.provider()
             && self.cause == bundle.cause()
             && self.outcome == *bundle.outcome()
+            && self.semantic_events == bundle.semantic_events()
             && self.eligible_witnesses == bundle.eligible_witnesses()
             && self.bundle_hash == bundle.bundle_hash()
     }
 
     fn compute_hash(&self) -> Result<CanonicalHash, mush_core::CanonicalHashError> {
+        let (domain, material) = if self.schema_version == 2 {
+            (
+                "authoritative_receipt.v2",
+                json!({
+                    "schema_version": self.schema_version,
+                    "token": self.token,
+                    "request": self.request,
+                    "idempotency": self.idempotency,
+                    "ingress_hash": self.ingress_hash,
+                    "request_hash": self.request_hash,
+                    "plan_hash": self.plan_hash,
+                    "action": self.action,
+                    "provider": self.provider,
+                    "cause": self.cause,
+                    "outcome": self.outcome,
+                    "eligible_witnesses": self.eligible_witnesses,
+                    "bundle_hash": self.bundle_hash,
+                    "terminal_status": "finalized",
+                }),
+            )
+        } else {
+            (
+                "authoritative_receipt.v3",
+                json!({
+                    "schema_version": self.schema_version,
+                    "token": self.token,
+                    "request": self.request,
+                    "idempotency": self.idempotency,
+                    "ingress_hash": self.ingress_hash,
+                    "request_hash": self.request_hash,
+                    "plan_hash": self.plan_hash,
+                    "action": self.action,
+                    "provider": self.provider,
+                    "cause": self.cause,
+                    "outcome": self.outcome,
+                    "semantic_events": self.semantic_events,
+                    "eligible_witnesses": self.eligible_witnesses,
+                    "bundle_hash": self.bundle_hash,
+                    "terminal_status": "finalized",
+                }),
+            )
+        };
         CanonicalHash::for_canonical_value(
-            "authoritative_receipt.v2",
-            Self::SCHEMA_VERSION,
-            &json!({
-                "schema_version": self.schema_version,
-                "token": self.token,
-                "request": self.request,
-                "idempotency": self.idempotency,
-                "ingress_hash": self.ingress_hash,
-                "request_hash": self.request_hash,
-                "plan_hash": self.plan_hash,
-                "action": self.action,
-                "provider": self.provider,
-                "cause": self.cause,
-                "outcome": self.outcome,
-                "eligible_witnesses": self.eligible_witnesses,
-                "bundle_hash": self.bundle_hash,
-                "terminal_status": "finalized",
-            }),
+            domain,
+            self.schema_version,
+            &material,
             mush_core::MAX_AUTHORITATIVE_BUNDLE_BYTES,
         )
     }
@@ -634,7 +696,7 @@ impl<'de> Deserialize<'de> for AuthoritativeReceipt {
         let wire = AuthoritativeReceiptWire::deserialize(deserializer)?;
         match wire {
             AuthoritativeReceiptWire::Legacy(legacy) => Ok(Self::new(&legacy.bundle)),
-            AuthoritativeReceiptWire::V2(wire) => {
+            AuthoritativeReceiptWire::V3(wire) => {
                 if wire.schema_version != Self::SCHEMA_VERSION {
                     return Err(serde::de::Error::custom(format!(
                         "unsupported authoritative receipt schema {}; expected {}",
@@ -654,6 +716,40 @@ impl<'de> Deserialize<'de> for AuthoritativeReceipt {
                     provider: wire.provider,
                     cause: wire.cause,
                     outcome: wire.outcome,
+                    semantic_events: wire.semantic_events,
+                    eligible_witnesses: wire.eligible_witnesses,
+                    bundle_hash: wire.bundle_hash,
+                    receipt_hash: wire.receipt_hash,
+                };
+                validate_receipt_events(&receipt).map_err(serde::de::Error::custom)?;
+                let computed = receipt.compute_hash().map_err(serde::de::Error::custom)?;
+                if receipt.receipt_hash != computed {
+                    return Err(serde::de::Error::custom(
+                        "authoritative receipt hash mismatch",
+                    ));
+                }
+                Ok(receipt)
+            }
+            AuthoritativeReceiptWire::V2(wire) => {
+                if wire.schema_version != 2 {
+                    return Err(serde::de::Error::custom(format!(
+                        "unsupported authoritative receipt schema {}; expected {}",
+                        wire.schema_version, 2
+                    )));
+                }
+                let receipt = Self {
+                    schema_version: wire.schema_version,
+                    token: wire.token,
+                    request: wire.request,
+                    idempotency: wire.idempotency,
+                    ingress_hash: wire.ingress_hash,
+                    request_hash: wire.request_hash,
+                    plan_hash: wire.plan_hash,
+                    action: wire.action,
+                    provider: wire.provider,
+                    cause: wire.cause,
+                    outcome: wire.outcome,
+                    semantic_events: Vec::new(),
                     eligible_witnesses: wire.eligible_witnesses,
                     bundle_hash: wire.bundle_hash,
                     receipt_hash: wire.receipt_hash,
@@ -668,6 +764,42 @@ impl<'de> Deserialize<'de> for AuthoritativeReceipt {
             }
         }
     }
+}
+
+fn validate_receipt_events(receipt: &AuthoritativeReceipt) -> Result<(), String> {
+    if receipt.semantic_events.is_empty() {
+        return Err("authoritative receipt v3 omits its root semantic event".to_owned());
+    }
+    if receipt.semantic_events.len() > mush_core::MAX_SEMANTIC_EVENTS as usize {
+        return Err(format!(
+            "authoritative receipt has {} semantic events; maximum is {}",
+            receipt.semantic_events.len(),
+            mush_core::MAX_SEMANTIC_EVENTS
+        ));
+    }
+    for (expected, event) in receipt.semantic_events.iter().enumerate() {
+        let expected = u32::try_from(expected).expect("semantic event hard limit fits u32");
+        if event.cause().ordinal() != expected || event.cause().root_request() != receipt.request {
+            return Err(format!(
+                "authoritative receipt semantic event {expected} has invalid causal identity"
+            ));
+        }
+        if event.owner() != &receipt.provider {
+            return Err(format!(
+                "authoritative receipt semantic event {expected} has the wrong owner"
+            ));
+        }
+    }
+    let root = &receipt.semantic_events[0];
+    if root.cause() != receipt.cause
+        || root.truth() != &receipt.outcome
+        || root.eligible_witnesses() != receipt.eligible_witnesses
+    {
+        return Err(
+            "authoritative receipt root semantic event does not match its outcome".to_owned(),
+        );
+    }
+    Ok(())
 }
 
 /// Result of atomically checkpointing one finalized action and releasing its
@@ -1204,5 +1336,26 @@ mod tests {
         assert!(!StoreError::Corrupt("x".into()).is_transient());
         let serde_err = serde_json::from_str::<u32>("{").unwrap_err();
         assert!(!StoreError::Serde(serde_err).is_transient());
+    }
+
+    #[test]
+    fn compact_receipt_preserves_events_and_reads_legacy_v2() {
+        let bundle = crate::suite::authoritative_bundle(0xD1, 0xD2);
+        let current = AuthoritativeReceipt::new(&bundle);
+        assert_eq!(current.schema_version, AuthoritativeReceipt::SCHEMA_VERSION);
+        assert_eq!(current.semantic_events(), bundle.semantic_events());
+        let round_trip: AuthoritativeReceipt =
+            serde_json::from_value(serde_json::to_value(&current).unwrap()).unwrap();
+        assert_eq!(round_trip, current);
+
+        let mut legacy = current;
+        legacy.schema_version = 2;
+        legacy.semantic_events.clear();
+        legacy.receipt_hash = legacy.compute_hash().unwrap();
+        let encoded = serde_json::to_value(&legacy).unwrap();
+        assert!(encoded.get("semantic_events").is_none());
+        let decoded: AuthoritativeReceipt = serde_json::from_value(encoded).unwrap();
+        assert_eq!(decoded, legacy);
+        assert!(decoded.semantic_events().is_empty());
     }
 }

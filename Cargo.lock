@@ -2268,6 +2268,7 @@ dependencies = [
  "mush-canon",
  "mush-comsys",
  "mush-config",
+ "mush-contract-tests",
  "mush-core",
  "mush-economy",
  "mush-faction",

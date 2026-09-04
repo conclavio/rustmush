@@ -5140,12 +5140,25 @@ mod tests {
             request_hash: CanonicalHash::from_bytes([identity.wrapping_add(3); 32]),
             plan_hash: CanonicalHash::from_bytes([identity.wrapping_add(4); 32]),
             action: action.clone(),
-            provider: owner,
+            provider: owner.clone(),
             cause: PreparedCausalRef::new(request, None, 0).unwrap(),
-            definitions: vec![action, outcome_definition.clone()],
+            definitions: vec![action.clone(), outcome_definition.clone()],
             writes: prepared.authoritative_replay_writes(),
-            outcome: RulesValue::new(outcome_definition, serde_json::json!({ "accepted": true }))
+            outcome: RulesValue::new(
+                outcome_definition.clone(),
+                serde_json::json!({ "accepted": true }),
+            )
+            .unwrap(),
+            semantic_events: vec![
+                mush_core::AuthoritativeSemanticEvent::root(
+                    PreparedCausalRef::new(request, None, 0).unwrap(),
+                    &action,
+                    RulesValue::new(outcome_definition, serde_json::json!({ "accepted": true }))
+                        .unwrap(),
+                    vec![principal.clone()],
+                )
                 .unwrap(),
+            ],
             eligible_witnesses: vec![principal],
             durable_outbox: vec![],
         })

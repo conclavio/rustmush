@@ -124,7 +124,7 @@ fn authoritative_bundle_for_epoch_and_outbox(
         action: action.clone(),
         provider: owner.clone(),
         cause: PreparedCausalRef::new(request, None, 0).unwrap(),
-        definitions: vec![action, outcome_definition.clone()],
+        definitions: vec![action.clone(), outcome_definition.clone()],
         writes: vec![
             ReplayWrite::ObjectSet {
                 object: Obj::new(ObjId(2), ObjKind::Thing, "guard", GOD, 0),
@@ -136,7 +136,20 @@ fn authoritative_bundle_for_epoch_and_outbox(
                 value: serde_json::json!({ "amount": 1 }),
             },
         ],
-        outcome: RulesValue::new(outcome_definition, serde_json::json!({ "ok": true })).unwrap(),
+        outcome: RulesValue::new(
+            outcome_definition.clone(),
+            serde_json::json!({ "ok": true }),
+        )
+        .unwrap(),
+        semantic_events: vec![
+            mush_core::AuthoritativeSemanticEvent::root(
+                PreparedCausalRef::new(request, None, 0).unwrap(),
+                &action,
+                RulesValue::new(outcome_definition, serde_json::json!({ "ok": true })).unwrap(),
+                vec![principal.clone()],
+            )
+            .unwrap(),
+        ],
         eligible_witnesses: vec![principal],
         durable_outbox,
     })

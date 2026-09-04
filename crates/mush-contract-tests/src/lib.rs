@@ -7,11 +7,12 @@
 
 use mush_core::{
     ActionError, ActionErrorCode, ActionInvocation, ActionInvocationDraft, ActionOfferId,
-    ActionProvider, ActionStateError, ActionTxn, CanonicalHash, CanonicalId, DefinitionDescriptor,
-    DefinitionId, DefinitionKind, DefinitionRef, DefinitionRegistryBuilder,
-    DefinitionValidationContext, GameModule, IdempotencyKey, IdempotencyScope, ModError, ObjId,
-    OwnerId, PerceivedRef, PrincipalId, Registrar, RequestUid, RulesValue, ScopedIdempotencyKey,
-    StateFamilyDescriptor, StateFamilyHandle, StateFamilyId,
+    ActionProvider, ActionStateError, ActionTxn, AuthoritativeActionOutput, CanonicalHash,
+    CanonicalId, DefinitionDescriptor, DefinitionId, DefinitionKind, DefinitionRef,
+    DefinitionRegistryBuilder, DefinitionValidationContext, Engine, GameModule, IdempotencyKey,
+    IdempotencyScope, ModError, ObjId, OwnerId, PerceivedRef, PreparedTrigger, PrincipalId,
+    Registrar, RequestUid, RulesValue, SameCommitTrigger, ScopedIdempotencyKey,
+    StateFamilyDescriptor, StateFamilyHandle, StateFamilyId, SubjectKey,
 };
 use mush_testkit::TestWorld;
 use serde::{Deserialize, Serialize};
@@ -139,24 +140,65 @@ pub struct ToyStateFamilies {
 struct BraceProvider {
     focus: StateFamilyHandle<ObjId, ToyFocusState>,
     guarded: StateFamilyHandle<ObjId, ToyGuardedState>,
+    brace_definition: DefinitionRef,
+    guarded_definition: DefinitionRef,
 }
 
 impl BraceProvider {
     fn scene_turn(invocation: &ActionInvocation) -> Result<u64, ActionError> {
-        invocation
-            .parameters()
-            .as_object()
-            .filter(|parameters| parameters.len() == 1)
-            .and_then(|parameters| parameters.get("scene_turn"))
+        let parameters = invocation.parameters().as_object().ok_or_else(|| {
+            ActionError::new(
+                ActionErrorCode::InvalidRequest,
+                false,
+                "brace parameters must be an object",
+            )
+            .expect("static action error is bounded")
+        })?;
+        let allowed_len = if parameters.contains_key("cascade_steps") {
+            2
+        } else {
+            1
+        };
+        if parameters.len() != allowed_len
+            || parameters
+                .keys()
+                .any(|key| key != "scene_turn" && key != "cascade_steps")
+        {
+            return Err(ActionError::new(
+                ActionErrorCode::InvalidRequest,
+                false,
+                "brace accepts scene_turn and the fixture-only cascade_steps parameter",
+            )
+            .expect("static action error is bounded"));
+        }
+        parameters
+            .get("scene_turn")
             .and_then(Value::as_u64)
             .ok_or_else(|| {
                 ActionError::new(
                     ActionErrorCode::InvalidRequest,
                     false,
-                    "brace requires exactly one unsigned scene_turn parameter",
+                    "brace requires an unsigned scene_turn parameter",
                 )
                 .expect("static action error is bounded")
             })
+    }
+
+    fn cascade_steps(invocation: &ActionInvocation) -> Result<u64, ActionError> {
+        let steps = invocation
+            .parameters()
+            .get("cascade_steps")
+            .map_or(Some(1), Value::as_u64)
+            .filter(|steps| *steps > 0)
+            .ok_or_else(|| {
+                ActionError::new(
+                    ActionErrorCode::InvalidRequest,
+                    false,
+                    "cascade_steps must be a positive unsigned integer",
+                )
+                .expect("static action error is bounded")
+            })?;
+        Ok(steps)
     }
 
     fn state_error(error: &ActionStateError) -> ActionError {
@@ -239,6 +281,171 @@ impl ActionProvider for BraceProvider {
         .map_err(|error| Self::state_error(&error))?;
         Ok(())
     }
+
+    fn prepare_authoritative(
+        &self,
+        invocation: &ActionInvocation,
+        txn: &mut ActionTxn<'_>,
+    ) -> Result<AuthoritativeActionOutput, ActionError> {
+        self.validate_invocation(invocation)?;
+        let actor = invocation.actor();
+        let turn = Self::scene_turn(invocation)?;
+        let cascade_steps = Self::cascade_steps(invocation)?;
+        let focus = txn
+            .get(&self.focus, &actor)
+            .map_err(|error| Self::state_error(&error))?
+            .cloned()
+            .ok_or_else(|| {
+                ActionError::new(
+                    ActionErrorCode::ProviderRejected,
+                    false,
+                    "the actor has no focus resource",
+                )
+                .expect("static action error is bounded")
+            })?;
+        let amount = focus.amount.checked_sub(1).ok_or_else(|| {
+            ActionError::new(
+                ActionErrorCode::ProviderRejected,
+                false,
+                "insufficient focus",
+            )
+            .expect("static action error is bounded")
+        })?;
+        txn.replace(&self.focus, &actor, ToyFocusState { amount })
+            .map_err(|error| Self::state_error(&error))?;
+        let outcome = RulesValue::new(
+            self.brace_definition.clone(),
+            json!({ "actor": actor.0, "event": "braced", "focus": amount }),
+        )
+        .map_err(|_| {
+            ActionError::new(
+                ActionErrorCode::BoundsExceeded,
+                false,
+                "brace outcome exceeds canonical bounds",
+            )
+            .expect("static action error is bounded")
+        })?;
+        Ok(AuthoritativeActionOutput::new(outcome)
+            .with_eligible_witnesses(vec![invocation.principal().clone()])
+            .with_same_commit_triggers(vec![SameCommitTrigger::new(
+                CanonicalId::new("apply_guarded").expect("static handler id"),
+                SubjectKey::Object { id: actor },
+                0,
+                json!({ "scene_turn": turn, "remaining": cascade_steps }),
+            )]))
+    }
+
+    fn prepare_same_commit_trigger(
+        &self,
+        invocation: &ActionInvocation,
+        trigger: &PreparedTrigger,
+        txn: &mut ActionTxn<'_>,
+    ) -> Result<AuthoritativeActionOutput, ActionError> {
+        if trigger.identity().handler.id().as_str() != "apply_guarded"
+            || trigger.identity().target
+                != (SubjectKey::Object {
+                    id: invocation.actor(),
+                })
+        {
+            return Err(ActionError::new(
+                ActionErrorCode::Integrity,
+                false,
+                "unknown or mistargeted toy same-commit trigger",
+            )
+            .expect("static trigger error is bounded"));
+        }
+        let turn = trigger
+            .payload()
+            .as_object()
+            .filter(|payload| payload.len() == 2)
+            .and_then(|payload| payload.get("scene_turn"))
+            .and_then(Value::as_u64)
+            .ok_or_else(|| {
+                ActionError::new(
+                    ActionErrorCode::Integrity,
+                    false,
+                    "toy guarded trigger payload is invalid",
+                )
+                .expect("static trigger error is bounded")
+            })?;
+        let remaining = trigger
+            .payload()
+            .get("remaining")
+            .and_then(Value::as_u64)
+            .filter(|remaining| *remaining > 0)
+            .ok_or_else(|| {
+                ActionError::new(
+                    ActionErrorCode::Integrity,
+                    false,
+                    "toy guarded trigger remaining count is invalid",
+                )
+                .expect("static trigger error is bounded")
+            })?;
+        if remaining > 1 {
+            let outcome = RulesValue::new(
+                self.guarded_definition.clone(),
+                json!({
+                    "actor": invocation.actor().0,
+                    "event": "guarded_trigger_step",
+                    "remaining": remaining,
+                }),
+            )
+            .map_err(|_| {
+                ActionError::new(
+                    ActionErrorCode::BoundsExceeded,
+                    false,
+                    "guarded trigger step exceeds canonical bounds",
+                )
+                .expect("static trigger error is bounded")
+            })?;
+            return Ok(AuthoritativeActionOutput::new(outcome)
+                .with_definitions(vec![self.guarded_definition.clone()])
+                .with_eligible_witnesses(vec![invocation.principal().clone()])
+                .with_same_commit_triggers(vec![SameCommitTrigger::new(
+                    CanonicalId::new("apply_guarded").expect("static handler id"),
+                    SubjectKey::Object {
+                        id: invocation.actor(),
+                    },
+                    0,
+                    json!({ "scene_turn": turn, "remaining": remaining - 1 }),
+                )]));
+        }
+        let expires_after_scene_turn = turn.checked_add(2).ok_or_else(|| {
+            ActionError::new(
+                ActionErrorCode::BoundsExceeded,
+                false,
+                "guarded expiry exceeds the scene-turn domain",
+            )
+            .expect("static action error is bounded")
+        })?;
+        txn.insert(
+            &self.guarded,
+            &invocation.actor(),
+            ToyGuardedState {
+                expires_after_scene_turn,
+            },
+        )
+        .map_err(|error| Self::state_error(&error))?;
+        let outcome = RulesValue::new(
+            self.guarded_definition.clone(),
+            json!({
+                "actor": invocation.actor().0,
+                "event": "guarded_applied",
+                "expires_after_scene_turn": expires_after_scene_turn,
+            }),
+        )
+        .map_err(|_| {
+            ActionError::new(
+                ActionErrorCode::BoundsExceeded,
+                false,
+                "guarded event exceeds canonical bounds",
+            )
+            .expect("static trigger error is bounded")
+        })?;
+        Ok(AuthoritativeActionOutput::new(outcome)
+            .with_definitions(vec![self.guarded_definition.clone()])
+            .with_eligible_witnesses(vec![invocation.principal().clone()]))
+    }
 }
 
 #[derive(Debug, Default)]
@@ -320,10 +527,12 @@ impl GameModule for ToyRulesModule {
         )?;
         let families = ToyStateFamilies { focus, guarded };
         registrar.action_provider(
-            actual.brace,
+            actual.brace.clone(),
             BraceProvider {
                 focus: families.focus.clone(),
                 guarded: families.guarded.clone(),
+                brace_definition: actual.brace,
+                guarded_definition: actual.guarded,
             },
         )?;
         *self.families.lock().expect("toy family capture poisoned") = Some(families);
@@ -352,11 +561,41 @@ pub fn toy_world_with_state() -> (TestWorld, ToyStateFamilies) {
     (world, families)
 }
 
+/// Install a valid focus pre-state through the same typed state-family path
+/// used by boot hydration. This is fixture setup, not a gameplay mutation API.
+pub fn install_toy_focus(
+    engine: &mut Engine,
+    families: &ToyStateFamilies,
+    actor: ObjId,
+    amount: u8,
+) {
+    let prepared = {
+        let mut txn = engine
+            .action_transaction(&families.focus)
+            .expect("toy focus transaction");
+        txn.insert(&families.focus, &actor, ToyFocusState { amount })
+            .expect("valid focus bootstrap");
+        txn.prepare().expect("focus bootstrap prepares")
+    };
+    let (_, installation) = prepared.into_parts();
+    engine.install_prepared_action(installation);
+}
+
 /// Canonical semantic invocation for the toy `brace` provider.
 pub fn toy_brace_invocation(
     actor: ObjId,
     scene_turn: u64,
     request: RequestUid,
+) -> ActionInvocation {
+    toy_brace_invocation_with_cascade_steps(actor, scene_turn, request, None)
+}
+
+/// Fixture-only variant used to prove cascade bounds abort the whole action.
+pub fn toy_brace_invocation_with_cascade_steps(
+    actor: ObjId,
+    scene_turn: u64,
+    request: RequestUid,
+    cascade_steps: Option<u64>,
 ) -> ActionInvocation {
     let definitions = toy_definitions();
     let owner = OwnerId::new(TOY_OWNER).expect("static owner");
@@ -379,6 +618,10 @@ pub fn toy_brace_invocation(
         )
         .expect("static offer is canonical"),
     );
+    let parameters = cascade_steps.map_or_else(
+        || json!({ "scene_turn": scene_turn }),
+        |steps| json!({ "scene_turn": scene_turn, "cascade_steps": steps }),
+    );
     ActionInvocation::new(ActionInvocationDraft {
         request,
         principal,
@@ -386,7 +629,7 @@ pub fn toy_brace_invocation(
         offered_action,
         subject: PerceivedRef::SelfActor,
         targets: Vec::new(),
-        parameters: json!({ "scene_turn": scene_turn }),
+        parameters,
         idempotency,
     })
     .expect("toy invocation is canonical")
@@ -408,17 +651,7 @@ mod tests {
         actor: ObjId,
         amount: u8,
     ) {
-        let prepared = {
-            let mut txn = world
-                .engine_mut()
-                .action_transaction(&families.focus)
-                .expect("toy focus transaction");
-            txn.insert(&families.focus, &actor, ToyFocusState { amount })
-                .expect("valid focus bootstrap");
-            txn.prepare().expect("focus bootstrap prepares")
-        };
-        let (_, installation) = prepared.into_parts();
-        world.engine_mut().install_prepared_action(installation);
+        install_toy_focus(world.engine_mut(), families, actor, amount);
     }
 
     fn bootstrap_guarded(
@@ -576,6 +809,66 @@ mod tests {
     }
 
     #[test]
+    fn authoritative_brace_expands_guarded_in_one_causal_scratch_transaction() {
+        let (mut world, families) = toy_world_with_state();
+        bootstrap_focus(&mut world, &families, mush_core::GOD, 3);
+        let invocation =
+            toy_brace_invocation(mush_core::GOD, 11, RequestUid::from_bytes([0xA1; 16]));
+        let (prepared, cascade) = world
+            .engine_mut()
+            .prepare_registered_authoritative_action(&toy_definitions().brace, &invocation)
+            .expect("brace and its guarded trigger prepare together");
+        assert_eq!(prepared.operation_count(), 2);
+        assert_eq!(
+            prepared
+                .records()
+                .iter()
+                .map(|record| record.key().family().as_str())
+                .collect::<Vec<_>>(),
+            vec!["focus", "guarded"]
+        );
+        let (_outcome, definitions, witnesses, outbox, events) = cascade.into_parts();
+        assert_eq!(
+            definitions,
+            vec![toy_definitions().brace, toy_definitions().guarded]
+        );
+        assert_eq!(witnesses, vec![PrincipalId::Object { id: mush_core::GOD }]);
+        assert!(outbox.is_empty());
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].cause().ordinal(), 0);
+        assert_eq!(events[0].kind().as_str(), "brace");
+        assert_eq!(events[0].truth().data()["event"], "braced");
+        assert_eq!(events[1].cause().ordinal(), 1);
+        assert_eq!(
+            events[1].cause().parent(),
+            Some(events[0].cause().event_id())
+        );
+        assert_eq!(events[1].kind().as_str(), "apply_guarded");
+        assert_eq!(events[1].truth().data()["event"], "guarded_applied");
+
+        assert_eq!(
+            world
+                .engine()
+                .action_state()
+                .get(&families.focus, &mush_core::GOD)
+                .unwrap(),
+            Some(&ToyFocusState { amount: 3 }),
+            "neither root nor trigger scratch may install before acknowledgement"
+        );
+        assert!(
+            world
+                .engine()
+                .action_state()
+                .get(&families.guarded, &mush_core::GOD)
+                .unwrap()
+                .is_none()
+        );
+        let (_, installation) = prepared.into_parts();
+        world.engine_mut().abort_prepared_action(installation);
+        assert!(!world.engine().action_state().has_prepared());
+    }
+
+    #[test]
     fn brace_abort_discards_both_post_images() {
         let (mut world, families) = toy_world_with_state();
         bootstrap_focus(&mut world, &families, mush_core::GOD, 1);
@@ -697,6 +990,105 @@ mod tests {
                 .unwrap()
                 .as_slice(),
             guarded_before
+        );
+        assert!(!world.engine().action_state().has_prepared());
+    }
+
+    #[test]
+    fn trigger_refusal_discards_the_root_scratch_mutation() {
+        let (mut world, families) = toy_world_with_state();
+        bootstrap_focus(&mut world, &families, mush_core::GOD, 3);
+        bootstrap_guarded(&mut world, &families, mush_core::GOD, 9);
+        let focus_before = world
+            .engine()
+            .action_state()
+            .canonical(&families.focus, &mush_core::GOD)
+            .unwrap()
+            .unwrap()
+            .as_slice()
+            .to_vec();
+        let guarded_before = world
+            .engine()
+            .action_state()
+            .canonical(&families.guarded, &mush_core::GOD)
+            .unwrap()
+            .unwrap()
+            .as_slice()
+            .to_vec();
+        let invocation =
+            toy_brace_invocation(mush_core::GOD, 10, RequestUid::from_bytes([0xA2; 16]));
+        assert!(matches!(
+            world
+                .engine_mut()
+                .prepare_registered_authoritative_action(&toy_definitions().brace, &invocation,),
+            Err(ActionProviderPrepareError::Trigger { .. })
+        ));
+        assert_eq!(
+            world
+                .engine()
+                .action_state()
+                .canonical(&families.focus, &mush_core::GOD)
+                .unwrap()
+                .unwrap()
+                .as_slice(),
+            focus_before
+        );
+        assert_eq!(
+            world
+                .engine()
+                .action_state()
+                .canonical(&families.guarded, &mush_core::GOD)
+                .unwrap()
+                .unwrap()
+                .as_slice(),
+            guarded_before
+        );
+        assert!(!world.engine().action_state().has_prepared());
+    }
+
+    #[test]
+    fn over_depth_trigger_cascade_aborts_the_root_spend() {
+        let (mut world, families) = toy_world_with_state();
+        bootstrap_focus(&mut world, &families, mush_core::GOD, 3);
+        let before = world
+            .engine()
+            .action_state()
+            .canonical(&families.focus, &mush_core::GOD)
+            .unwrap()
+            .unwrap()
+            .as_slice()
+            .to_vec();
+        let invocation = toy_brace_invocation_with_cascade_steps(
+            mush_core::GOD,
+            10,
+            RequestUid::from_bytes([0xA3; 16]),
+            Some(u64::from(mush_core::MAX_TRIGGER_DEPTH) + 2),
+        );
+        assert!(matches!(
+            world
+                .engine_mut()
+                .prepare_registered_authoritative_action(&toy_definitions().brace, &invocation,),
+            Err(ActionProviderPrepareError::Cascade(
+                mush_core::CascadeError::DepthExceeded { .. }
+            ))
+        ));
+        assert_eq!(
+            world
+                .engine()
+                .action_state()
+                .canonical(&families.focus, &mush_core::GOD)
+                .unwrap()
+                .unwrap()
+                .as_slice(),
+            before
+        );
+        assert!(
+            world
+                .engine()
+                .action_state()
+                .get(&families.guarded, &mush_core::GOD)
+                .unwrap()
+                .is_none()
         );
         assert!(!world.engine().action_state().has_prepared());
     }

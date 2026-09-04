@@ -821,7 +821,7 @@ impl Engine {
         action: &crate::mechanics::DefinitionRef,
         invocation: &crate::action::ActionInvocation,
     ) -> Result<
-        (PreparedTxn, crate::action::AuthoritativeActionOutput),
+        (PreparedTxn, crate::action::PreparedAuthoritativeAction),
         crate::action::ActionProviderPrepareError,
     > {
         let providers = self
