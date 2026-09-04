@@ -192,7 +192,7 @@ pub use escalation::{
 pub use sweep::SWEEP_TAG;
 
 // E4b2 — contracts live. E5b adds the lease seam a layered module offers under.
-pub use contract_live::{LeaseSpec, may_view_contract, offer_lease};
+pub use contract_live::{LeaseEnd, LeaseKey, LeaseSpec, end_lease, may_view_contract, offer_lease};
 
 // E4c — facts, events, evidence.
 pub use facts::{FactProvider, FactState, FactTable, WorldFacts};

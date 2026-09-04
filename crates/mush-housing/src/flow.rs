@@ -30,7 +30,7 @@ use crate::ids::TenancyId;
 use crate::module::{
     HousingStore, STORY_QUEUE, live_rooms, put_property, put_tenancy, render_actor,
 };
-use crate::record::{Property, PropertyStatus, Tenancy, TenancyStatus, TenancyStatusKind};
+use crate::record::{Funding, Property, PropertyStatus, Tenancy, TenancyStatus, TenancyStatusKind};
 
 /// How deep the ending sweep walks a property's contents — a lamp, in a bag, in a
 /// coat, on a shelf (verify fold, H5).
@@ -155,8 +155,16 @@ pub(crate) fn activate(ctx: &mut Ctx<'_>, t: &Tenancy) {
 }
 
 /// Clear `Obj.home` for everything this tenancy homed, re-home anybody still on
-/// another live lease, and unlatch the property (08d §3.3, D-E5-11 + fold A5).
+/// another live lease, unlatch the property (08d §3.3, D-E5-11 + fold A5) — and, for
+/// an exact tenancy, **end the lease it stands on** (look-back fold, rent-after-end).
+///
+/// The lease first, and before the property lookup: a tenancy whose property record
+/// is gone (a quarantined orphan being resolved) has no homes this can clear, but it
+/// still has a rent obligation, and that is the one thing an ending must never leave
+/// running.
 pub(crate) fn end(ctx: &mut Ctx<'_>, t: &Tenancy) {
+    let ending = end_lease(ctx, t);
+    report_lease_ending(ctx, t, &ending);
     let Some(p) = ctx.w.module_state::<HousingStore>().and_then(|s| s.property(t.property).cloned())
     else {
         return;
@@ -246,6 +254,116 @@ fn homed_inside_anywhere(w: &World, anchor: ObjId, rooms: &BTreeSet<ObjId>) -> V
         .map(|o| o.id)
         .take(END_SWEEP_MAX)
         .collect()
+}
+
+/// What ending an exact tenancy's lease came to (look-back fold, rent-after-end).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum LeaseEnding {
+    /// Abstract funding, or a lease that was already terminal: nothing to do.
+    Nothing,
+    /// The economy ended it in this step: the pledge is released and the rent is
+    /// `Cancelled`.
+    Ended,
+    /// The economy's unwind was refused; it keeps the transition pending, the sweep
+    /// retries it, and it has paged with the commands that finish it.
+    Retrying,
+    /// The property record is gone, so the lease could not be keyed.
+    NoProperty,
+    /// The economy refused the seam outright (no such contract, a key it does not
+    /// own, a frozen economy). Nothing was written on its side.
+    Refused(String),
+}
+
+/// **End the lease an exact tenancy stands on**, through the economy's own seam
+/// ([`mush_economy::end_lease`]; look-back fold, rent-after-end).
+///
+/// Housing moves no money here and writes no economy record: it names the lease by
+/// the two facts it offered it under — the property's landlord as lessor and its
+/// anchor as the premises ([`mush_economy::LeaseKey`]) — and the economy does the
+/// unwind under its own terminal-transition rule (the refund plan posts under the
+/// contract's deterministic key first, then the state moves), cancelling the rent
+/// obligation as part of that same step. A pending lease (the tenant never accepted)
+/// is ended the same way, so a later acceptance cannot activate a lease whose tenancy
+/// is gone.
+///
+/// Every outcome is returned rather than acted on, because the two callers want
+/// different things of it: [`end`] logs and pages only when it could not be done,
+/// boot's pass pages about every one it finds.
+pub(crate) fn end_lease(ctx: &mut Ctx<'_>, t: &Tenancy) -> LeaseEnding {
+    let Funding::Exact { contract, .. } = &t.funding else { return LeaseEnding::Nothing };
+    let contract = *contract;
+    let Some((lessor, premises)) = ctx
+        .w
+        .module_state::<HousingStore>()
+        .and_then(|s| s.property(t.property).map(|p| (p.landlord.clone(), p.anchor)))
+    else {
+        return LeaseEnding::NoProperty;
+    };
+    let key = mush_economy::LeaseKey { lessor, premises };
+    match mush_economy::end_lease(ctx, contract, &key) {
+        Ok(mush_economy::LeaseEnd::Ended) => LeaseEnding::Ended,
+        Ok(mush_economy::LeaseEnd::AlreadyEnded) => LeaseEnding::Nothing,
+        Ok(mush_economy::LeaseEnd::Retrying) => LeaseEnding::Retrying,
+        Err(e) => LeaseEnding::Refused(e.to_string()),
+    }
+}
+
+/// Log a lease ending, and page when housing could not have it ended: a live lease
+/// behind an ended tenancy is a standing charge against somebody who no longer has
+/// the home, and the only remaining route out of it is a staff act, so the page
+/// carries that verb (`@contract/cancel`, E4b2-D21).
+///
+/// `Retrying` is **not** paged here: the economy already has, with the commands that
+/// finish its own pending transition, and two pages about one contract is the thing
+/// 08a decision 25 exists to prevent.
+fn report_lease_ending(ctx: &mut Ctx<'_>, t: &Tenancy, ending: &LeaseEnding) {
+    let Funding::Exact { contract, .. } = &t.funding else { return };
+    let contract = *contract;
+    match ending {
+        LeaseEnding::Nothing => {}
+        LeaseEnding::Ended => {
+            tracing::info!(
+                tenancy = t.id.0,
+                contract = contract.0,
+                "housing: the tenancy's lease is ended; its rent is cancelled"
+            );
+        }
+        LeaseEnding::Retrying => {
+            tracing::warn!(
+                tenancy = t.id.0,
+                contract = contract.0,
+                "housing: the tenancy's lease could not be unwound yet; the economy is retrying and has paged"
+            );
+        }
+        LeaseEnding::NoProperty | LeaseEnding::Refused(_) => {
+            let why = match ending {
+                LeaseEnding::Refused(e) => e.clone(),
+                _ => "its property record is gone, so the lease cannot be keyed".to_string(),
+            };
+            tracing::error!(
+                tenancy = t.id.0,
+                contract = contract.0,
+                %why,
+                "housing: an ended tenancy's lease is still live and housing could not end it; paging"
+            );
+            mush_economy::open_escalation(
+                ctx,
+                EscalationKind::BootReconciliation,
+                EscalationSubject::HousingTenancy(t.id.0),
+                format!(
+                    "tenancy #{} has ended but lease contract #{contract} behind it is still live \
+                     and housing could not end it ({why}). Its rent obligation keeps falling due \
+                     until the lease ends",
+                    t.id
+                ),
+                vec![
+                    format!("@tenancy/show {}", t.id),
+                    format!("@contract/show #{contract}"),
+                    format!("@contract/cancel #{contract}"),
+                ],
+            );
+        }
+    }
 }
 
 /// Move a property's lifecycle latch, writing nothing when it already says that.

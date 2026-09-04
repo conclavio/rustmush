@@ -54,6 +54,13 @@
 //!    0 every boot, so a kept one names somebody else's scene (T8).
 //! 7. **The `Let`/`Vacant` latch → re-derived** from the live tenancies. `Withdrawn`
 //!    is never re-derived away.
+//! 8. **An ended exact tenancy whose lease contract is still live → the lease is
+//!    ended** through the economy's own seam ([`crate::flow::end_lease`]) and paged
+//!    (look-back fold, rent-after-end). This is the one pass that *does* act, and it
+//!    acts on the economy's record, not the tenancy's: the tenancy was ended by a
+//!    person already, and a lease that outlives it is a standing charge against a
+//!    former tenant — the exact opposite of D-E5-1's "nothing ends a home on its own",
+//!    which is about homes, not about rent for homes that are gone.
 //!
 //! **Pass 0 runs before all of them** (look-back fold, D-LBK-1): the projections are
 //! rebuilt from the loaded records, and every cross-record conflict they represent —
@@ -216,6 +223,7 @@ pub(crate) fn reconcile(ctx: &mut Ctx<'_>) {
     reconcile_cadences(ctx, &mut pages);
     reconcile_scenes(ctx);
     reconcile_let_status(ctx);
+    reconcile_ended_leases(ctx, &mut pages);
     crate::module::persist_meta(ctx);
 }
 
@@ -546,6 +554,96 @@ fn reconcile_let_status(ctx: &mut Ctx<'_>) {
     for p in fixes {
         tracing::warn!(property = p.id.0, status = ?p.status, "housing: re-derived the let latch at boot");
         put_property(ctx, p);
+    }
+}
+
+/// Pass 8 — an **ended** exact tenancy whose lease contract is still live (look-back
+/// fold, rent-after-end).
+///
+/// The command paths end the lease in the same step as the tenancy
+/// ([`crate::flow::end`]); this is the restart-safe catch-up for a world that ended
+/// one before that was true, or whose economy was frozen at the moment the tenancy
+/// ended. The lease is ended through the same seam, so the unwind posts under the
+/// contract's own deterministic key (a replay after a lost doc write resolves to the
+/// first post) and the rent is cancelled by the economy's terminal step. Every one
+/// found is logged and paged, whatever the outcome — a former tenant may have been
+/// charged in the meantime, and that is a person's to look at and reverse.
+///
+/// A contract that is already terminal is not a finding: `end_lease` answers
+/// `Nothing` for it, and a settled or cancelled lease behind an ended tenancy is the
+/// ordinary shape (the observer's `Resolution::Settled`, or a lease ended here).
+fn reconcile_ended_leases(ctx: &mut Ctx<'_>, pages: &mut usize) {
+    let stale: Vec<Tenancy> = {
+        let Some(store) = ctx.w.module_state::<HousingStore>() else { return };
+        let Some(econ) = ctx.w.module_state::<mush_economy::EconomyStore>() else { return };
+        store
+            .tenancies()
+            .filter(|t| t.status.is_ended())
+            .filter(|t| match &t.funding {
+                Funding::Exact { contract, .. } => econ
+                    .snapshot()
+                    .contract(*contract)
+                    .is_some_and(|c| !c.state.is_terminal()),
+                Funding::Abstract { .. } => false,
+            })
+            .cloned()
+            .collect()
+    };
+    for t in stale {
+        let Funding::Exact { contract, obligation } = &t.funding else { continue };
+        let (contract, obligation) = (*contract, *obligation);
+        let ending = crate::flow::end_lease(ctx, &t);
+        let (level, outcome) = match &ending {
+            crate::flow::LeaseEnding::Ended => {
+                ("ended", "it has been ended now and its rent obligation cancelled".to_string())
+            }
+            crate::flow::LeaseEnding::Retrying => (
+                "retrying",
+                "its unwind was refused; the economy is retrying it from the sweep and has \
+                 paged separately"
+                    .to_string(),
+            ),
+            crate::flow::LeaseEnding::NoProperty => (
+                "unkeyed",
+                "its property record is gone, so housing could not key the lease to end it"
+                    .to_string(),
+            ),
+            crate::flow::LeaseEnding::Refused(why) => {
+                ("refused", format!("the economy refused to end it ({why})"))
+            }
+            // Filtered out above: the contract was live a moment ago.
+            crate::flow::LeaseEnding::Nothing => continue,
+        };
+        tracing::error!(
+            tenancy = t.id.0,
+            contract = contract.0,
+            obligation = obligation.0,
+            outcome = level,
+            "housing: an ended tenancy's lease was still live at boot"
+        );
+        if *pages < MAX_BOOT_PAGES {
+            *pages += 1;
+            let mut recommended = vec![
+                format!("@tenancy/show {}", t.id),
+                format!("@contract/show #{contract}"),
+                format!("@obligation/show #{obligation}"),
+            ];
+            if !matches!(ending, crate::flow::LeaseEnding::Ended) {
+                recommended.push(format!("@contract/cancel #{contract}"));
+            }
+            mush_economy::open_escalation(
+                ctx,
+                EscalationKind::BootReconciliation,
+                EscalationSubject::HousingTenancy(t.id.0),
+                format!(
+                    "tenancy #{} had ended but lease contract #{contract} behind it was still live \
+                     at boot: {outcome}. Rent may have been charged since the tenancy ended; \
+                     check the obligation's history",
+                    t.id
+                ),
+                recommended,
+            );
+        }
     }
 }
 

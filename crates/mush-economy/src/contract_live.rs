@@ -3254,3 +3254,113 @@ pub fn offer_lease(ctx: &mut Ctx<'_>, spec: LeaseSpec) -> Result<ContractId, Con
     ctx.gate_on_durable_ack();
     Ok(id)
 }
+
+/// What proves a lease is the caller's to end (look-back fold, rent-after-end).
+///
+/// The economy keeps no record of *which module* offered a contract, and adding one
+/// would be a field nothing else reads. What it does keep is the two facts
+/// [`LeaseSpec`] fixed when the lease was offered — the lessor, who is the issuer and
+/// the `Lease` encumbrance's principal, and the premises pledged as their collateral
+/// — so those are the key: a caller that can name both is ending its own lease, and
+/// a wrong id (the bug this exists for) fails closed on either.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LeaseKey {
+    /// The lessor `offer_lease` was called with.
+    pub lessor: PrincipalId,
+    /// The premises `offer_lease` was called with.
+    pub premises: ObjId,
+}
+
+/// What [`end_lease`] did.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum LeaseEnd {
+    /// The unwind posted under the contract's deterministic key and the contract is
+    /// `Cancelled`: its pledge is released and every obligation it created is
+    /// `Cancelled`.
+    Ended,
+    /// The contract was already terminal. Nothing was written.
+    AlreadyEnded,
+    /// The unwind's plan was refused. The contract stays **live** with
+    /// `pending: PendingTerminal` recorded, the sweep retries it, and staff have been
+    /// paged with the commands that finish it (the E4b2 terminal-transition rule).
+    Retrying,
+}
+
+/// **End a lease** on behalf of the layered module that offered it (look-back fold,
+/// rent-after-end; the counterpart of [`offer_lease`]).
+///
+/// Housing's tenancy is the shadow of the lease, and the lease is the economy's
+/// record: when the tenancy ends — a staff resolution, the last tenant moving out,
+/// an eviction decided — the rent has to stop **in the same step**, or a former
+/// tenant keeps being debited for a home they no longer have. Before this seam the
+/// only routes out of a live lease were `@contract/cancel` (staff, E4b2-D21) and a
+/// staff attestation, and a module could call neither.
+///
+/// It is the ordinary cancellation, through the ordinary machinery, and nothing
+/// else: [`unwind`] writes `pending`, posts the refund plan under
+/// `contract/{id}/refund/{generation}` under a [`ContractAuth`] built for
+/// [`crate::ContractPurpose::Unwind`] — which for a lease releases the `Lease`
+/// encumbrance from the premises (a lease escrows nothing, so there is no hold to
+/// give back) — and only then writes `Cancelled`, which is the step that cancels
+/// every obligation the contract created (`cause: Contract(id)`). Replayed, the key
+/// resolves to the first post (`AlreadyPosted`) and the state write is the only
+/// thing left to do; called on a contract that is already terminal it writes
+/// nothing at all.
+///
+/// A lease that is `Offered` (the tenant never accepted) ends the same way with an
+/// empty plan, so a later `@contract/accept` cannot activate a lease whose tenancy is
+/// gone. A `Disputed` lease ends too: the dispute is a party's, but the home is over,
+/// and the one thing a dispute must never do is keep charging rent for it.
+///
+/// # Errors
+///
+/// [`ContractError::Infeasible`] when there is no such contract, when it is not a
+/// lease this `key` offered (not lease-shaped, a different issuer, or different
+/// premises — nothing is written, and the text does not say which), or when the
+/// economy is frozen (no write can land; housing's boot pass ends it once the
+/// economy is back).
+pub fn end_lease(
+    ctx: &mut Ctx<'_>,
+    contract: ContractId,
+    key: &LeaseKey,
+) -> Result<LeaseEnd, ContractError> {
+    let c = {
+        let store = ctx.w.module_state::<EconomyStore>().ok_or(ContractError::Infeasible("no economy"))?;
+        if store.is_frozen() {
+            return Err(ContractError::Infeasible("the economy is frozen"));
+        }
+        store
+            .snapshot()
+            .contract(contract)
+            .cloned()
+            .ok_or(ContractError::Infeasible("no such lease"))?
+    };
+    if !owns_lease(&c, key) {
+        return Err(ContractError::Infeasible("not a lease this lessor offered on these premises"));
+    }
+    if c.state.is_terminal() {
+        return Ok(LeaseEnd::AlreadyEnded);
+    }
+    unwind(ctx, contract, ContractState::Cancelled);
+    let terminal = live_contract(ctx, contract).is_some_and(|c| c.state.is_terminal());
+    Ok(if terminal { LeaseEnd::Ended } else { LeaseEnd::Retrying })
+}
+
+/// Whether `c` is the lease `key` describes: issued by the lessor, pledging exactly
+/// these premises as the lessor's collateral, and creating an obligation — the shape
+/// [`offer_lease`] builds and [`crate::contract_encumbrance`] reads as a lease.
+fn owns_lease(c: &EconomicContract, key: &LeaseKey) -> bool {
+    if principal_key(&c.issuer) != principal_key(&key.lessor) {
+        return false;
+    }
+    let deliverables = &c.consent.terms.deliverables;
+    let pledged = deliverables.iter().any(|d| {
+        matches!(
+            d,
+            Deliverable::Collateral { object, from }
+                if *object == key.premises && principal_key(from) == principal_key(&key.lessor)
+        )
+    });
+    let rented = deliverables.iter().any(|d| matches!(d, Deliverable::Obligation { .. }));
+    pledged && rented
+}

@@ -589,7 +589,8 @@ property `Withdrawn`, keeps every tenancy as-is, pages level 2 and tells the ten
 No housing code debits anyone anywhere: rent is settled by the economy sweep under the economy's
 own authority, and housing stores two ids.
 
-**The seams consumed in `mush-economy`** (§2 anticipated one; four shipped, all additive):
+**The seams consumed in `mush-economy`** (§2 anticipated one; four shipped, all additive; a fifth
+added by the E1–E5 look-back fold):
 
 1. **`issue_title`** — as planned (§7 item 4). `@property/create` mints the anchor's title to the
    landlord under the wired issuer; `Obj.owner` of the rooms stays the builder.
@@ -607,6 +608,14 @@ own authority, and housing stores two ids.
    ic:<secs>|manual> [catchup=<n>]`, `show <id>`, `list`, and `advance <id> [<n>]` which is
    **`Manual`-only**: hand-advancing a real- or IC-sourced clock would put its `position` ahead of
    the source it derives from, and the next sweep would charge the same periods again.
+5. **`end_lease(ctx, contract, &LeaseKey { lessor, premises })` / `LeaseEnd`** (look-back fold,
+   08g §13 deviation 8 → fixed) — `offer_lease`'s counterpart. `flow::end` calls it for every
+   `Funding::Exact` tenancy on every path into an ending (`@tenancy/resolve <id>=end|waive`,
+   `+home/leave` by the last tenant, the eviction decision, ending a `Pending` draft), and boot's
+   pass 8 calls it for an ended tenancy whose lease is still live. The economy does the unwind
+   under its own terminal-transition rule (the refund plan under `contract/{id}/refund/{n}` first,
+   then `Cancelled`, which cancels every `Contract(id)` obligation); the key is the two facts the
+   lease was offered under, so a wrong id fails closed; `AlreadyEnded` is a no-op.
 
 One seam was added to **`mush-jobs`**: `set_job_status(ctx, id, by, status, note)`, the producing
 module's counterpart to `open_job`. A story window that recovers must close the ST's ticket, or an

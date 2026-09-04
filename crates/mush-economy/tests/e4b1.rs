@@ -27,12 +27,12 @@ use mush_core::{
     ObjKind, World,
 };
 use mush_economy::{
-    AccountId, AccountRevision, AccountStatus, Amount, CadenceId, CustodyError, CustodyProvider,
-    CustodyRef, EconomicCause, EconomicClock, EconomicSchedule, EconomyConfig, EconomyError,
-    EconomyPlan, EconomySnapshot, EconomyStore, EscalationKind, EscalationSubject, ForgiveCause,
-    GracePolicy, HoldId, HoldStatus, IdempotencyKey, InstrumentCaps, ObligationCause,
-    ObligationEvent, ObligationId, ObligationSpec, ObligationStatus, PostOutcome, RequestedLine,
-    SuspendReason, SuspensionKey,
+    AccountId, AccountRevision, AccountStatus, Amount, CadenceId, ContractError, ContractId,
+    ContractState, CustodyError, CustodyProvider, CustodyRef, EconomicCause, EconomicClock,
+    EconomicSchedule, EconomyConfig, EconomyError, EconomyPlan, EconomySnapshot, EconomyStore,
+    Encumbrance, EscalationKind, EscalationSubject, ForgiveCause, GracePolicy, HoldId, HoldStatus,
+    IdempotencyKey, InstrumentCaps, LeaseEnd, ObligationCause, ObligationEvent, ObligationId,
+    ObligationSpec, ObligationStatus, PostOutcome, RequestedLine, SuspendReason, SuspensionKey,
 };
 use mush_proto::OutputEvent;
 use mush_testkit::{TestWorld, text_of};
@@ -1265,6 +1265,10 @@ struct VfState {
     /// Look-back fold: the last `suspend_obligation` / `resume_obligation` outcome
     /// (`@vf/hold`, `@vf/release`), the release's `bool` folded in.
     seam: Option<Result<bool, EconomyError>>,
+    /// Look-back fold, rent-after-end: the last `offer_lease` outcome (`@vf/lease`).
+    lease: Option<Result<ContractId, ContractError>>,
+    /// Look-back fold, rent-after-end: the last `end_lease` outcome (`@vf/endlease`).
+    ended: Option<Result<LeaseEnd, ContractError>>,
 }
 
 #[derive(Clone, Default)]
@@ -1289,6 +1293,17 @@ impl Vf {
     fn seam(&self) -> Result<bool, EconomyError> {
         self.0.lock().expect("probe lock").seam.clone().expect("a seam outcome was recorded")
     }
+    fn lease(&self) -> Result<ContractId, ContractError> {
+        self.0.lock().expect("probe lock").lease.clone().expect("a lease outcome was recorded")
+    }
+    fn ended(&self) -> Result<LeaseEnd, ContractError> {
+        self.0.lock().expect("probe lock").ended.clone().expect("an end_lease outcome was recorded")
+    }
+}
+
+/// `#12`, `12` → 12.
+fn probe_id(s: &str) -> u64 {
+    s.trim().trim_start_matches('#').parse().expect("a numeric id")
 }
 
 struct VfMod(Vf);
@@ -1303,17 +1318,68 @@ impl GameModule for VfMod {
             CommandSpec {
                 name: "@vf".into(),
                 shape: ArgShape::EqPair,
-                switches: ["post", "mint", "instrument", "hold", "release"]
+                switches: ["post", "mint", "instrument", "hold", "release", "lease", "endlease"]
                     .iter()
                     .copied()
                     .map(SmolStr::new)
                     .collect(),
                 help: "verify-fold probe: post a staged plan / mint a staged system obligation / \
-                       register an instrument / hold or release an obligation under a key"
+                       register an instrument / hold or release an obligation under a key / \
+                       offer or end a lease through the layered-module seam"
                     .into(),
                 ..CommandSpec::default()
             },
             Arc::new(move |ctx: &mut Ctx<'_>| -> Result<(), CmdError> {
+                // Look-back fold, rent-after-end: `@vf/lease <name>=<lessor> <tenant>
+                // <premises> <from acct> <to acct>` is `offer_lease` (rent 100 every
+                // 100 s from now), and `@vf/endlease <contract>=<lessor> <premises>`
+                // is `end_lease` under that key.
+                if ctx.switches.has("lease") {
+                    let name = ctx.args.lhs().trim().to_string();
+                    let rhs = ctx.args.rhs().unwrap_or_default().to_string();
+                    let ids: Vec<u64> = rhs.split_whitespace().map(probe_id).collect();
+                    let [lessor, tenant, premises, from, to] = ids[..] else {
+                        return Err(CmdError::msg("@vf/lease <name>=<lessor> <tenant> <premises> <from> <to>"));
+                    };
+                    let lessor = mush_org::PrincipalId::Object(ObjId(u32::try_from(lessor).expect("an obj id")));
+                    let tenant = mush_org::PrincipalId::Object(ObjId(u32::try_from(tenant).expect("an obj id")));
+                    let now = ctx.w.now();
+                    let spec = mush_economy::LeaseSpec {
+                        name: SmolStr::new(name),
+                        lessor: lessor.clone(),
+                        scope: None,
+                        tenants: vec![tenant.clone()],
+                        premises: ObjId(u32::try_from(premises).expect("an obj id")),
+                        rent: mush_economy::ObligationTemplate {
+                            debtor: tenant,
+                            creditor: lessor,
+                            debit_account: AccountId(from),
+                            credit_account: AccountId(to),
+                            amount: Amount::from_minor(100),
+                            schedule: EconomicSchedule::every(now.saturating_add(100), 100),
+                            grace: GracePolicy::new(mush_economy::DEFAULT_GRACE_PERIODS),
+                            notify_on_success: false,
+                        },
+                    };
+                    let outcome = mush_economy::offer_lease(ctx, spec);
+                    st.0.lock().expect("probe lock").lease = Some(outcome);
+                    return Ok(());
+                }
+                if ctx.switches.has("endlease") {
+                    let contract = ContractId(probe_id(ctx.args.lhs()));
+                    let rhs = ctx.args.rhs().unwrap_or_default().to_string();
+                    let ids: Vec<u64> = rhs.split_whitespace().map(probe_id).collect();
+                    let [lessor, premises] = ids[..] else {
+                        return Err(CmdError::msg("@vf/endlease <contract>=<lessor> <premises>"));
+                    };
+                    let key = mush_economy::LeaseKey {
+                        lessor: mush_org::PrincipalId::Object(ObjId(u32::try_from(lessor).expect("an obj id"))),
+                        premises: ObjId(u32::try_from(premises).expect("an obj id")),
+                    };
+                    let outcome = mush_economy::end_lease(ctx, contract, &key);
+                    st.0.lock().expect("probe lock").ended = Some(outcome);
+                    return Ok(());
+                }
                 // Look-back fold, E2-C18: `@vf/instrument <code>` calls the API directly,
                 // past the command's own guard.
                 if ctx.switches.has("instrument") {
@@ -2683,5 +2749,151 @@ fn lb_dlbk1_ack_and_a_module_hold_never_lift_each_other() {
         "the released obligation was not paged about its destroyed creditor: {:?}",
         o.status
     );
+    assert_eq!(bal(&tw, r.pat_acct), 1_000);
+}
+
+// ======================================================================
+// ---- look-back fold: rent-after-end (the economy seam alone) ----
+// ======================================================================
+//
+// `end_lease` is `offer_lease`'s counterpart: the layered module that offered a lease
+// ends it, and the economy does the unwind under its own terminal-transition rule.
+// Driven through the probe module here, with no housing in the world at all.
+
+/// `end_lease` under the owner's key posts the unwind under `contract/{id}/refund/0`
+/// exactly once and lands `Cancelled` with the rent `Cancelled` and the `Lease` claim
+/// off the premises; a second call is `AlreadyEnded` with nothing posted; a replay
+/// after a lost state write converges with no second post; and a key the contract
+/// does not answer to — the wrong lessor, the wrong premises, a contract that is not a
+/// lease, a contract that does not exist — is refused with nothing written.
+#[test]
+fn lb_rent_after_end_end_lease_posts_under_the_key_once_cancels_the_rent_and_refuses_a_foreign_key() {
+    let (mut tw, vf) = boot_probe();
+    let r = rig(&mut tw, 1_000);
+    let flat = thing(&mut tw, "flat");
+    let shed = thing(&mut tw, "shed");
+    ok(&mut tw, GOD, &format!("@asset/title #{}=#{}", flat.0, r.quinn.0));
+    ok(
+        &mut tw,
+        GOD,
+        &format!(
+            "@vf/lease Lease=#{} #{} #{} {} {}",
+            r.quinn.0, r.pat.0, flat.0, r.pat_acct, r.quinn_acct
+        ),
+    );
+    let id = vf.lease().expect("the lease was offered");
+    let state = |tw: &TestWorld| snap(tw).contract(id).expect("the lease").state;
+    let pending = |tw: &TestWorld| snap(tw).contract(id).expect("the lease").pending.clone();
+    let claims = |tw: &TestWorld| snap(tw).asset(flat).expect("the flat").encumbrances.clone();
+    let refunds = |tw: &TestWorld| {
+        let key = mush_economy::refund_key(id);
+        store(tw).transactions().filter(|t| t.idempotency == key).count()
+    };
+    ok(&mut tw, r.pat, &format!("@contract/accept {id}"));
+    assert_eq!(state(&tw), ContractState::Active);
+    assert_eq!(claims(&tw), vec![Encumbrance::Lease { lessor: mush_org::PrincipalId::Object(r.quinn), contract: id }]);
+    let rent = snap(&tw)
+        .obligations()
+        .find(|o| o.cause == ObligationCause::Contract(id))
+        .expect("the rent")
+        .id;
+    assert_eq!(obligation(&tw, rent).status, ObligationStatus::Active);
+    sweep_at(&mut tw, 100);
+    assert_eq!(bal(&tw, r.pat_acct), 900, "one period of rent while the lease is live");
+    let posts = journal_len(&tw);
+
+    // Foreign keys: refused, and nothing written — no state, no pending, no post.
+    ok(&mut tw, GOD, &format!("@vf/endlease {id}=#{} #{}", r.pat.0, flat.0));
+    assert!(matches!(vf.ended(), Err(ContractError::Infeasible(_))), "the wrong lessor was allowed: {:?}", vf.ended());
+    ok(&mut tw, GOD, &format!("@vf/endlease {id}=#{} #{}", r.quinn.0, shed.0));
+    assert!(matches!(vf.ended(), Err(ContractError::Infeasible(_))), "the wrong premises were allowed: {:?}", vf.ended());
+    ok(&mut tw, GOD, &format!("@vf/endlease 999=#{} #{}", r.quinn.0, flat.0));
+    assert!(matches!(vf.ended(), Err(ContractError::Infeasible(_))), "a missing contract was allowed: {:?}", vf.ended());
+    ok(&mut tw, r.quinn, "@contract/draft Plain");
+    let plain = snap(&tw).contracts().find(|c| c.name == "Plain").expect("the draft").id;
+    ok(&mut tw, GOD, &format!("@vf/endlease {plain}=#{} #{}", r.quinn.0, flat.0));
+    assert!(matches!(vf.ended(), Err(ContractError::Infeasible(_))), "a contract that is not a lease was allowed: {:?}", vf.ended());
+    assert_eq!(state(&tw), ContractState::Active);
+    assert_eq!(pending(&tw), None, "a refused key began a transition");
+    assert_eq!(snap(&tw).contract(plain).expect("the draft").state, ContractState::Draft);
+    assert_eq!(obligation(&tw, rent).status, ObligationStatus::Active);
+    assert_eq!(journal_len(&tw), posts, "a refused key posted something");
+    assert_eq!(claims(&tw).len(), 1);
+
+    // The owner's key: the plan first (under the deterministic key), then the state.
+    ok(&mut tw, GOD, &format!("@vf/endlease {id}=#{} #{}", r.quinn.0, flat.0));
+    assert_eq!(vf.ended(), Ok(LeaseEnd::Ended));
+    assert_eq!(state(&tw), ContractState::Cancelled);
+    assert_eq!(pending(&tw), None);
+    assert_eq!(obligation(&tw, rent).status, ObligationStatus::Cancelled, "the rent outlived the lease");
+    assert!(claims(&tw).is_empty(), "the lease claim stranded on the premises: {:?}", claims(&tw));
+    assert_eq!(journal_len(&tw), posts + 1);
+    assert_eq!(refunds(&tw), 1, "the unwind did not post under contract/{id}/refund/0");
+    assert_eq!(held(&tw, r.pat_acct), 0);
+    // Two more rent periods fall due: nothing is charged.
+    sweep_at(&mut tw, 200);
+    sweep_at(&mut tw, 300);
+    assert_eq!(bal(&tw, r.pat_acct), 900, "a cancelled lease charged rent");
+    assert_eq!(bal(&tw, r.quinn_acct), 100);
+
+    // Idempotent: a second end is `AlreadyEnded` and posts nothing.
+    ok(&mut tw, GOD, &format!("@vf/endlease {id}=#{} #{}", r.quinn.0, flat.0));
+    assert_eq!(vf.ended(), Ok(LeaseEnd::AlreadyEnded));
+    assert_eq!(journal_len(&tw), posts + 1);
+
+    // Replay after a lost state write: the journal has the refund, the doc says
+    // Active. The retried unwind finds nothing left to release (the claim is already
+    // off) and lands the state with no second post.
+    let mut kv = fold_kv(&mut tw);
+    patch(&mut kv, &mush_economy::contract_key(id), |v| {
+        v["state"] = serde_json::json!("Active");
+        v["pending"] = serde_json::json!(null);
+    });
+    reboot(&mut tw, kv);
+    assert!(!store(&tw).is_frozen());
+    assert_eq!(state(&tw), ContractState::Active, "the patched doc did not load as Active");
+    assert_eq!(journal_len(&tw), posts + 1, "the journal did not survive the reboot");
+    ok(&mut tw, GOD, &format!("@vf/endlease {id}=#{} #{}", r.quinn.0, flat.0));
+    assert_eq!(vf.ended(), Ok(LeaseEnd::Ended));
+    assert_eq!(state(&tw), ContractState::Cancelled);
+    assert_eq!(journal_len(&tw), posts + 1, "the replay posted a second unwind");
+    assert_eq!(refunds(&tw), 1);
+    assert_eq!(obligation(&tw, rent).status, ObligationStatus::Cancelled);
+    sweep_at(&mut tw, 400);
+    assert_eq!(bal(&tw, r.pat_acct), 900);
+}
+
+/// An `Offered` lease (the tenant never accepted) ends with an empty plan — nothing
+/// was placed, so nothing posts — and a later acceptance is refused rather than
+/// activating a lease whose tenancy is gone.
+#[test]
+fn lb_rent_after_end_end_lease_on_an_offered_lease_writes_the_state_alone() {
+    let (mut tw, vf) = boot_probe();
+    let r = rig(&mut tw, 1_000);
+    let flat = thing(&mut tw, "flat");
+    ok(&mut tw, GOD, &format!("@asset/title #{}=#{}", flat.0, r.quinn.0));
+    ok(
+        &mut tw,
+        GOD,
+        &format!(
+            "@vf/lease Lease=#{} #{} #{} {} {}",
+            r.quinn.0, r.pat.0, flat.0, r.pat_acct, r.quinn_acct
+        ),
+    );
+    let id = vf.lease().expect("the lease was offered");
+    assert_eq!(snap(&tw).contract(id).expect("the lease").state, ContractState::Offered);
+    let posts = journal_len(&tw);
+
+    ok(&mut tw, GOD, &format!("@vf/endlease {id}=#{} #{}", r.quinn.0, flat.0));
+    assert_eq!(vf.ended(), Ok(LeaseEnd::Ended));
+    assert_eq!(snap(&tw).contract(id).expect("the lease").state, ContractState::Cancelled);
+    assert_eq!(journal_len(&tw), posts, "an offered lease's ending posted something");
+    err(&mut tw, r.pat, &format!("@contract/accept {id}"));
+    assert!(
+        snap(&tw).obligations().all(|o| o.cause != ObligationCause::Contract(id)),
+        "a cancelled lease minted rent"
+    );
+    assert!(snap(&tw).asset(flat).expect("the flat").encumbrances.is_empty());
+    sweep_at(&mut tw, 100);
     assert_eq!(bal(&tw, r.pat_acct), 1_000);
 }

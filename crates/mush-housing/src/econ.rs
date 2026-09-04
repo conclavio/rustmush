@@ -32,6 +32,12 @@
 //!    tenancy with [`crate::Resolution::Settled`]. That is not an automatic ending:
 //!    every route into a terminal contract state is somebody's explicit act, which is
 //!    precisely the `Settled` resolution E5a reserved for it (D-E5-1).
+//! 6. And the other way round (look-back fold, rent-after-end): a tenancy that ends
+//!    first — a staff resolution, the last tenant moving out, an eviction decided —
+//!    ends its lease in the same step through [`mush_economy::end_lease`]
+//!    ([`crate::flow::end`]), so the rent obligation is cancelled by the economy's own
+//!    terminal step and a former tenant is never debited for a home they no longer
+//!    have. Boot's pass 8 catches a world that ended one before that was true.
 
 use mush_core::Ctx;
 use mush_economy::{

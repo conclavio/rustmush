@@ -430,6 +430,30 @@ what it pins.
 7. *The tick-budget populations are injected documents.* A thousand tenancies (and a thousand profiles) are
    written as documents and booted, not created by three thousand commands — the invariants are the constructors'
    (`Property::new`, `Tenancy::new`, `accept`), and the boot is the real one.
-8. *Rent after `@tenancy/resolve <id>=end` on an exact tenancy.* Unchanged by this fold: ending the tenancy lifts
-   the quarantine and releases the hold, and the obligation runs on as it did before E5b's fold (the lease is the
-   economy's record; `@obligation/cancel` / `@contract/resolve` end it). Noted for E6a alongside E4b1-C62.
+8. *Rent after `@tenancy/resolve <id>=end` on an exact tenancy* — **was a confirmed money hazard in shipped E5b,
+   fixed in this fold (2026-09-04).** As shipped, every path into `flow::end` (`@tenancy/resolve <id>=end|waive`,
+   `+home/leave` by the last tenant, the eviction decision) cleared the homes and the latch and touched nothing in
+   the economy: the lease contract stayed `Active`, its `Contract(id)`-caused rent obligation stayed `Active`, and
+   the sweep kept debiting the former tenant (the probe watched 1000 → 990 → 980 across the end). The economy's
+   `land_terminal` already cancels a contract's obligations, but nothing a module could call reached it — a live
+   cancel is `@contract/cancel` by staff (E4b2-D21) or a staff attestation, `offer_lease` had no counterpart, and
+   boot looked only at live and pending tenancies (economy `boot.rs` suspends a `Contract(id)` obligation only when
+   its contract is *not* live). Built, game-neutral: **`mush_economy::end_lease(ctx, contract, &LeaseKey { lessor,
+   premises }) -> Result<LeaseEnd, ContractError>`** (`contract_live.rs`, next to `offer_lease`; `LeaseEnd::{Ended,
+   AlreadyEnded, Retrying}`) — the ordinary `unwind`: `pending: PendingTerminal` written, the refund plan posted under
+   `contract/{id}/refund/{n}` under `ContractAuth::unwinding` (for a lease, the `Lease` encumbrance comes off the
+   premises; there is no escrow), then `Cancelled`, which is the step that cancels every `Contract(id)` obligation;
+   the key is the lessor + premises `offer_lease` was called with, so a wrong id, a non-lease, a missing contract
+   and a frozen economy are refused with nothing written; a terminal contract is `AlreadyEnded` with nothing written;
+   an `Offered` lease ends with an empty plan (state write alone); a replay converges with no second post. Housing:
+   `flow::end` calls `flow::end_lease` first, before the property lookup, for every `Funding::Exact` tenancy (all
+   three callers, plus a `Pending` draft's `=end`), logs the outcome and pages (`@contract/cancel` filled in) only
+   when it could not be done (no property record, or the seam refused); `Retrying` is left to the economy's own
+   page. Boot **pass 8** (`boot.rs` `reconcile_ended_leases`) ends a still-live lease behind an ended tenancy and
+   pages once per finding, never fatal. Housing still moves no money. Tests (`// ---- look-back fold:
+   rent-after-end ----`): `lb_rent_after_end_resolve_end_stops_the_rent_and_releases_the_pledge`,
+   `…_the_last_tenant_leaving_ends_the_lease_and_a_co_tenant_leaving_does_not`,
+   `…_an_eviction_end_ends_the_lease`, `…_boot_ends_a_live_lease_behind_an_ended_tenancy_and_pages`,
+   `…_a_terminal_lease_is_a_no_op`, `…_ending_a_pending_tenancy_ends_the_offered_lease` (e5b.rs);
+   `lb_rent_after_end_end_lease_posts_under_the_key_once_cancels_the_rent_and_refuses_a_foreign_key`,
+   `…_end_lease_on_an_offered_lease_writes_the_state_alone` (e4b1.rs). E4b1-C62 stays noted for E6a on its own.

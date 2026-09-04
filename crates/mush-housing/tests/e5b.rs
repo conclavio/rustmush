@@ -2944,3 +2944,361 @@ fn lb_e5bd34_an_old_document_carrying_upkeep_loads_and_is_not_rendered() {
     let help = tw.registry().spec_of("@property").expect("registered").help.to_string();
     assert!(!help.contains("upkeep"), "the help still advertises upkeep");
 }
+
+// ======================================================================
+// ---- look-back fold: rent-after-end ----
+// ======================================================================
+//
+// 08g §13 deviation 8. Ending an exact tenancy cleared the homes and the latch and
+// left the lease contract `Active`, so its rent obligation kept falling due and the
+// former tenant was debited for a home they no longer had — the probe this section
+// began as watched Pat go 1000 → 990 → 980 across `@tenancy/resolve <id>=end`. The
+// end of a tenancy now ends the lease through the economy's own seam
+// (`mush_economy::end_lease`), in the same step, on every path into `flow::end`; and
+// boot's pass 8 catches a world that ended one before that was true.
+
+fn contract_state(tw: &TestWorld, id: mush_economy::ContractId) -> Option<mush_economy::ContractState> {
+    tw.world().module_state::<EconomyStore>().and_then(|s| s.snapshot().contract(id).map(|c| c.state))
+}
+
+fn encumbrances_of(tw: &TestWorld, obj: ObjId) -> Vec<mush_economy::Encumbrance> {
+    tw.world()
+        .module_state::<EconomyStore>()
+        .and_then(|s| s.snapshot().asset(obj).map(|a| a.encumbrances.clone()))
+        .unwrap_or_default()
+}
+
+fn held_of(tw: &TestWorld, acct: u64) -> i64 {
+    tw.world()
+        .module_state::<EconomyStore>()
+        .and_then(|s| s.snapshot().account(mush_economy::AccountId(acct)).map(|a| a.held_amount.minor()))
+        .expect("the account")
+}
+
+/// How many journal transactions carry this contract's refund key (generation 0).
+fn refund_posts(tw: &TestWorld, id: mush_economy::ContractId) -> usize {
+    let key = mush_economy::refund_key(id);
+    tw.world()
+        .module_state::<EconomyStore>()
+        .map(|s| s.transactions().filter(|t| t.idempotency == key).count())
+        .unwrap_or(0)
+}
+
+fn tenancy_pages(tw: &TestWorld, id: TenancyId) -> Vec<mush_economy::Escalation> {
+    alerts(tw)
+        .into_iter()
+        .filter(|e| e.subject == EscalationSubject::HousingTenancy(id.0))
+        .collect()
+}
+
+/// One **bound** exact tenancy of `tenants` on the Loft (Quinn's), rent 10 a day from
+/// Pat's account to Quinn's, with one period already paid (Pat 1000 → 990).
+/// Returns `(tenancy, pat_acct, quinn_acct)`.
+fn bound_lease(tw: &mut TestWorld, r: &mut Rig, tenants: &[ObjId]) -> (TenancyId, u64, u64) {
+    loft(tw, r);
+    let (_faucet, pat_acct, quinn_acct, _rex) = money(tw, r, 1_000);
+    let roster: Vec<String> = tenants.iter().map(|o| format!("#{}", o.0)).collect();
+    ok(
+        tw,
+        GOD,
+        &format!(
+            "@tenancy/create {}={} cadence={} mode=exact rent=10 from={pat_acct} to={quinn_acct}",
+            r.property,
+            roster.join(","),
+            r.cadence
+        ),
+    );
+    let id = store(tw).tenancies().last().expect("tenancy").id;
+    let contract = contract_of(tw, id);
+    for who in tenants {
+        ok(tw, *who, &format!("@contract/accept {contract}"));
+    }
+    assert_eq!(status(tw, id), TenancyStatusKind::Active, "the lease did not bind");
+    skip_wall(tw, 86_400);
+    period(tw, r, 1);
+    assert_eq!(balance(tw, pat_acct), 990, "one period of rent while the tenancy is live");
+    (id, pat_acct, quinn_acct)
+}
+
+/// After `@tenancy/resolve <id>=end` on a bound exact tenancy: the lease is
+/// `Cancelled`, its rent `Cancelled`, the `Lease` pledge is off the anchor, nothing is
+/// held against the tenant, the unwind posted exactly once under the contract's
+/// refund key — and two more rent periods debit **nothing**.
+#[test]
+fn lb_rent_after_end_resolve_end_stops_the_rent_and_releases_the_pledge() {
+    let mut tw = boot();
+    let mut r = rig(&mut tw);
+    let pat = r.pat;
+    let (id, pat_acct, _quinn_acct) = bound_lease(&mut tw, &mut r, &[pat]);
+    let contract = contract_of(&tw, id);
+    let obligation = obligation_of(&tw, id);
+    assert!(
+        encumbrances_of(&tw, r.anchor)
+            .iter()
+            .any(|e| matches!(e, mush_economy::Encumbrance::Lease { contract: c, .. } if *c == contract)),
+        "the lease claim was never placed"
+    );
+
+    ok(&mut tw, GOD, &format!("@tenancy/resolve {id}=end moved out"));
+    assert_eq!(status(&tw, id), TenancyStatusKind::Ended);
+    assert_eq!(
+        contract_state(&tw, contract),
+        Some(mush_economy::ContractState::Cancelled),
+        "the lease outlived the tenancy"
+    );
+    assert_eq!(
+        obligation_status(&tw, obligation),
+        mush_economy::ObligationStatus::Cancelled,
+        "the rent outlived the tenancy"
+    );
+    assert!(
+        encumbrances_of(&tw, r.anchor).is_empty(),
+        "the lease claim stranded on the anchor: {:?}",
+        encumbrances_of(&tw, r.anchor)
+    );
+    assert_eq!(held_of(&tw, pat_acct), 0);
+    assert_eq!(refund_posts(&tw, contract), 1, "the unwind did not post under the refund key exactly once");
+    assert!(tenancy_pages(&tw, id).is_empty(), "a clean ending paged: {:?}", tenancy_pages(&tw, id));
+
+    for _ in 0..2 {
+        skip_wall(&mut tw, 86_400);
+        period(&mut tw, &r, 1);
+    }
+    assert_eq!(balance(&tw, pat_acct), 990, "the former tenant was debited after the end");
+    assert_eq!(obligation_status(&tw, obligation), mush_economy::ObligationStatus::Cancelled);
+    assert_projections_consistent(&tw);
+}
+
+/// `+home/leave`: a co-tenant leaving is a roster change and the lease (and its
+/// rent) runs on; the **last** tenant leaving ends the lease the same way a staff
+/// resolution does.
+#[test]
+fn lb_rent_after_end_the_last_tenant_leaving_ends_the_lease_and_a_co_tenant_leaving_does_not() {
+    let mut tw = boot();
+    let mut r = rig(&mut tw);
+    let (pat, rex) = (r.pat, r.rex);
+    let (id, pat_acct, _quinn_acct) = bound_lease(&mut tw, &mut r, &[pat, rex]);
+    let contract = contract_of(&tw, id);
+    let obligation = obligation_of(&tw, id);
+
+    ok(&mut tw, r.rex, "+home/leave");
+    assert_eq!(status(&tw, id), TenancyStatusKind::Active);
+    assert!(!tenancy(&tw, id).is_tenant(r.rex));
+    assert_eq!(
+        contract_state(&tw, contract),
+        Some(mush_economy::ContractState::Active),
+        "a co-tenant leaving ended the lease"
+    );
+    assert_eq!(obligation_status(&tw, obligation), mush_economy::ObligationStatus::Active);
+    skip_wall(&mut tw, 86_400);
+    period(&mut tw, &r, 1);
+    assert_eq!(balance(&tw, pat_acct), 980, "the live lease stopped charging when a co-tenant left");
+
+    ok(&mut tw, r.pat, "+home/leave");
+    assert_eq!(status(&tw, id), TenancyStatusKind::Ended);
+    assert_eq!(contract_state(&tw, contract), Some(mush_economy::ContractState::Cancelled));
+    assert_eq!(obligation_status(&tw, obligation), mush_economy::ObligationStatus::Cancelled);
+    assert!(encumbrances_of(&tw, r.anchor).is_empty());
+    skip_wall(&mut tw, 86_400);
+    period(&mut tw, &r, 1);
+    assert_eq!(balance(&tw, pat_acct), 980, "the last tenant was debited after moving out");
+    assert_eq!(refund_posts(&tw, contract), 1);
+}
+
+/// An eviction decided at the story window (`@tenancy/resolve <id>=end` on an
+/// `EvictionPending` exact tenancy) ends the lease too — and a former tenant who
+/// later comes into money is charged nothing for it.
+#[test]
+fn lb_rent_after_end_an_eviction_end_ends_the_lease() {
+    let mut tw = boot();
+    let mut r = rig(&mut tw);
+    loft(&mut tw, &mut r);
+    // No funds at all: every settlement misses, and the ladder walks to the window.
+    let (faucet, pat_acct, quinn_acct, _rex) = money(&mut tw, &r, 0);
+    ok(
+        &mut tw,
+        GOD,
+        &format!(
+            "@tenancy/create {}=#{} cadence={} mode=exact rent=10 from={pat_acct} to={quinn_acct}",
+            r.property, r.pat.0, r.cadence
+        ),
+    );
+    let id = store(&tw).tenancies().last().expect("tenancy").id;
+    let contract = contract_of(&tw, id);
+    ok(&mut tw, r.pat, &format!("@contract/accept {contract}"));
+    let obligation = obligation_of(&tw, id);
+    for _ in 0..24 {
+        ok(&mut tw, GOD, &format!("@econ/cadence advance {} 1", r.cadence));
+        let t = tw.world().now().saturating_add(86_400);
+        tw.set_now(t);
+        tw.fire_due(t.saturating_mul(1000));
+        if status(&tw, id) == TenancyStatusKind::EvictionPending {
+            break;
+        }
+    }
+    assert_eq!(
+        status(&tw, id),
+        TenancyStatusKind::EvictionPending,
+        "the exact ladder did not reach the window"
+    );
+    assert_eq!(contract_state(&tw, contract), Some(mush_economy::ContractState::Active));
+
+    ok(&mut tw, GOD, &format!("@tenancy/resolve {id}=end no support was found"));
+    assert_eq!(status(&tw, id), TenancyStatusKind::Ended);
+    assert_eq!(
+        contract_state(&tw, contract),
+        Some(mush_economy::ContractState::Cancelled),
+        "the eviction left the lease live"
+    );
+    assert_eq!(obligation_status(&tw, obligation), mush_economy::ObligationStatus::Cancelled);
+    assert!(encumbrances_of(&tw, r.anchor).is_empty());
+    // Money arrives afterwards: none of it is rent for a home that is gone.
+    ok(&mut tw, GOD, &format!("@econ/mint {faucet}={pat_acct} 1000"));
+    for _ in 0..2 {
+        skip_wall(&mut tw, 86_400);
+        period(&mut tw, &r, 1);
+    }
+    assert_eq!(balance(&tw, pat_acct), 1_000, "an evicted tenant was charged rent afterwards");
+    assert_eq!(balance(&tw, quinn_acct), 0);
+}
+
+/// Boot, pass 8: an **ended** exact tenancy whose lease is still live (a world that
+/// ended one before this fold, restored) — the lease is ended through the same seam
+/// and the tenancy is paged once; the next rent period debits nothing.
+#[test]
+fn lb_rent_after_end_boot_ends_a_live_lease_behind_an_ended_tenancy_and_pages() {
+    let mut tw = boot();
+    let mut r = rig(&mut tw);
+    let pat = r.pat;
+    let (id, pat_acct, _quinn_acct) = bound_lease(&mut tw, &mut r, &[pat]);
+    let contract = contract_of(&tw, id);
+    let obligation = obligation_of(&tw, id);
+
+    // The pre-fold shape: the tenancy document says Ended, and nothing was ever done
+    // to the lease.
+    let mut kv = fold_kv(&mut tw);
+    patch(&mut kv, mush_housing::tenancy_key(id).as_str(), |v| {
+        v["status"] = serde_json::json!({ "Ended": { "how": "TenantLeft" } });
+    });
+    reboot(&mut tw, kv.clone());
+    assert_projections_consistent(&tw);
+    assert_eq!(status(&tw, id), TenancyStatusKind::Ended);
+    assert_eq!(
+        contract_state(&tw, contract),
+        Some(mush_economy::ContractState::Cancelled),
+        "boot left the lease live"
+    );
+    assert_eq!(
+        obligation_status(&tw, obligation),
+        mush_economy::ObligationStatus::Cancelled,
+        "boot left the rent running"
+    );
+    assert!(encumbrances_of(&tw, r.anchor).is_empty());
+    assert_eq!(refund_posts(&tw, contract), 1);
+    assert_eq!(property(&tw, r.property).status, PropertyStatus::Vacant);
+    let pages = tenancy_pages(&tw, id);
+    assert_eq!(pages.len(), 1, "boot did not page exactly once: {pages:?}");
+    assert_eq!(pages[0].kind, mush_economy::EscalationKind::BootReconciliation);
+    assert!(pages[0].is_open());
+    assert!(
+        pages[0].context.contains("still live at boot") && pages[0].context.contains(&format!("#{contract}")),
+        "{}",
+        pages[0].context
+    );
+    assert!(
+        pages[0].recommended.iter().any(|c| c == &format!("@obligation/show #{obligation}")),
+        "{:?}",
+        pages[0].recommended
+    );
+
+    skip_wall(&mut tw, 86_400);
+    period(&mut tw, &r, 1);
+    assert_eq!(balance(&tw, pat_acct), 990, "the former tenant was debited after the boot repair");
+    // A second boot finds nothing: the lease is terminal, so pass 8 has no finding.
+    drain_into(&mut tw, &mut kv);
+    reboot(&mut tw, kv);
+    assert_eq!(tenancy_pages(&tw, id).len(), 1, "a terminal lease was paged again");
+    assert_eq!(refund_posts(&tw, contract), 1);
+}
+
+/// A lease that is already terminal is a no-op: the observer's own ending (staff
+/// `@contract/cancel` → `Resolution::Settled`) reaches `flow::end` with a cancelled
+/// contract, and nothing is posted twice, paged, or refused — across a reboot too.
+#[test]
+fn lb_rent_after_end_a_terminal_lease_is_a_no_op() {
+    let mut tw = boot();
+    let mut r = rig(&mut tw);
+    let pat = r.pat;
+    let (id, pat_acct, _quinn_acct) = bound_lease(&mut tw, &mut r, &[pat]);
+    let contract = contract_of(&tw, id);
+    let obligation = obligation_of(&tw, id);
+
+    ok(&mut tw, GOD, &format!("@contract/cancel #{contract}"));
+    assert_eq!(contract_state(&tw, contract), Some(mush_economy::ContractState::Cancelled));
+    assert_eq!(status(&tw, id), TenancyStatusKind::Ended, "the observer did not end the tenancy");
+    assert!(matches!(
+        tenancy(&tw, id).status,
+        mush_housing::TenancyStatus::Ended { how: mush_housing::Resolution::Settled }
+    ));
+    assert_eq!(obligation_status(&tw, obligation), mush_economy::ObligationStatus::Cancelled);
+    assert_eq!(refund_posts(&tw, contract), 1, "the ending sweep posted a second unwind");
+    assert!(tenancy_pages(&tw, id).is_empty(), "a terminal lease was paged: {:?}", tenancy_pages(&tw, id));
+    assert_eq!(home_of(&tw, r.pat), None);
+
+    let kv = fold_kv(&mut tw);
+    reboot(&mut tw, kv);
+    assert!(tenancy_pages(&tw, id).is_empty(), "boot paged about a terminal lease");
+    assert_eq!(refund_posts(&tw, contract), 1);
+    skip_wall(&mut tw, 86_400);
+    period(&mut tw, &r, 1);
+    assert_eq!(balance(&tw, pat_acct), 990);
+}
+
+/// Ending a **pending** exact tenancy (the tenant never accepted — pass 4's own
+/// recommended repair) ends the `Offered` lease with an empty plan, so a later
+/// `@contract/accept` cannot activate a lease whose tenancy is gone and mint rent for
+/// it.
+#[test]
+fn lb_rent_after_end_ending_a_pending_tenancy_ends_the_offered_lease() {
+    let mut tw = boot();
+    let mut r = rig(&mut tw);
+    loft(&mut tw, &mut r);
+    let (_faucet, pat_acct, quinn_acct, _rex) = money(&mut tw, &r, 1_000);
+    ok(
+        &mut tw,
+        GOD,
+        &format!(
+            "@tenancy/create {}=#{} cadence={} mode=exact rent=10 from={pat_acct} to={quinn_acct}",
+            r.property, r.pat.0, r.cadence
+        ),
+    );
+    let id = store(&tw).tenancies().last().expect("tenancy").id;
+    let contract = contract_of(&tw, id);
+    assert_eq!(status(&tw, id), TenancyStatusKind::Pending);
+    assert_eq!(contract_state(&tw, contract), Some(mush_economy::ContractState::Offered));
+
+    ok(&mut tw, GOD, &format!("@tenancy/resolve {id}=end withdrawn"));
+    assert_eq!(status(&tw, id), TenancyStatusKind::Ended);
+    assert_eq!(
+        contract_state(&tw, contract),
+        Some(mush_economy::ContractState::Cancelled),
+        "the offered lease outlived its tenancy"
+    );
+    // Nothing was ever placed or escrowed, so nothing posted: the state write alone.
+    assert_eq!(refund_posts(&tw, contract), 0);
+    err(&mut tw, r.pat, &format!("@contract/accept {contract}"));
+    let minted = tw
+        .world()
+        .module_state::<EconomyStore>()
+        .map(|s| {
+            s.snapshot()
+                .obligations()
+                .filter(|o| o.cause == mush_economy::ObligationCause::Contract(contract))
+                .count()
+        })
+        .unwrap_or(0);
+    assert_eq!(minted, 0, "a cancelled lease minted rent");
+    skip_wall(&mut tw, 86_400);
+    period(&mut tw, &r, 1);
+    assert_eq!(balance(&tw, pat_acct), 1_000);
+}
