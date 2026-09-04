@@ -200,6 +200,7 @@ pub fn render_event(
         // Routed elsewhere or intentionally silent (mirrors mush_ansi).
         OutputEvent::Who(_)
         | OutputEvent::Panel { .. }
+        | OutputEvent::View(_)
         | OutputEvent::Prompt(_)
         | OutputEvent::Ping { .. }
         | OutputEvent::Resumed { .. } => {}

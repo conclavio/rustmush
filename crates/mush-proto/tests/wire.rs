@@ -6,7 +6,7 @@
 use mush_proto::{
     ClientCaps, ClientCommand, ClientKind, Color, ColorDepth, Envelope, ExitRef, InputMode,
     NarrativeKind, ObjRef, OutputEvent, PROTO_VERSION, PanelFrameKind, PromptSpec, Query, RichText,
-    RoomView, Span, Style, WhoEntry,
+    RoomView, Span, Style, ViewEnvelope, WhoEntry,
 };
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::json;
@@ -112,6 +112,9 @@ fn roundtrip_every_output_event_variant() {
             kind: PanelFrameKind::Delta,
             data: json!({"dice": [8, 10, 3], "successes": 2}),
         },
+        OutputEvent::View(
+            ViewEnvelope::keyframe("legal.actions", 1, 7, 11, json!([{"verb": "brace"}])).unwrap(),
+        ),
         OutputEvent::Weather {
             zone: "docks".into(),
             text: RichText::tag("weather", "Fog rolls in off the bay."),
@@ -301,6 +304,20 @@ fn golden_panel() {
     assert_eq!(
         serde_json::to_string(&ev).unwrap(),
         r#"{"t":"panel","d":{"feed":"wod.roll","kind":"keyframe","data":{"pool":7}}}"#
+    );
+}
+
+#[test]
+fn golden_semantic_view() {
+    let ev = OutputEvent::View(
+        ViewEnvelope::delta("unit.status", 2, 9, 43, 42, json!({"speed": 3}))
+            .unwrap()
+            .with_commit("txn-public-17")
+            .unwrap(),
+    );
+    assert_eq!(
+        serde_json::to_string(&ev).unwrap(),
+        r#"{"t":"view","d":{"view":"unit.status","schema_version":2,"generation":9,"sequence":43,"base_sequence":42,"commit":"txn-public-17","data":{"speed":3}}}"#
     );
 }
 

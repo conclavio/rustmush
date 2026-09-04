@@ -11,8 +11,8 @@ finalization/RAM install. The world regenerates and verifies the offer before pl
 provider definitions never cross the gateway boundary. The shared public adapter now serves line
 `+actions`/`+act`, the `legal.actions` web/TUI panel, deterministic NPC selection, and a mock LLM
 tool snapshot from that same projected DTO and opaque submission path; the all-in-one world handle
-also waits for exact durable ownership before reporting acceptance. Grant witnesses, semantic view
-envelopes, and the remaining process-kill matrix remain open. K3's
+also waits for exact durable ownership before reporting acceptance. Grant witnesses and the
+remaining process-kill matrix remain open. K3's
 persistence kernel and durability-audit closeout are implemented: exact bundle
 reservation/reconciliation, pre-hydration recovery, store-owned authoritative prefixes, compact
 checkpoints, watermark-first epoch retirement, a production coordinator plus first tactics provider,
@@ -25,9 +25,12 @@ coordinator route into the same Gate-1 provider. The version-3 IPC boundary now 
 legal-action discovery and opaque offer-only submission, including transport revalidation,
 tamper rejection before intent, and exact finalized replay after disconnect. Line, TUI-shaped,
 web-shaped, deterministic-NPC, and mock-LLM callers now share the offer/provider contract without
-receiving its exact action identity. Semantic view envelopes, active grant witnesses, real NPC/LLM
-runtime scheduling, and the remaining Gate 5 matrix remain cross-cut work; all five complete
-end-to-end proving gates remain open.
+receiving its exact action identity. K5 semantic views now add a bounded `OutputEvent::View` with
+schema version, restart generation, sequence, exact delta base, optional projected commit token,
+and shared Rust/TypeScript cursor classification; the first `legal.actions` view and TUI/web clients
+discard unsafe controls and coalesce a keyframe resync on gaps. Active grant witnesses, real NPC/LLM
+runtime scheduling, projected receipts, and the remaining Gate 5 matrix remain cross-cut work; all
+five complete end-to-end proving gates remain open.
 
 **Scope:** the shared contracts that must be stable before RustMUSH substantially expands character,
 tactical, economic, and AI-driven rules
@@ -1386,19 +1389,20 @@ Rules providers emit projected semantic records, never terminal-shaped authorita
 pub struct ViewEnvelope {
     pub view: ViewId,                    // e.g. "unit.status"
     pub schema_version: u32,
-    pub viewer_scope: ProjectionScopeId,
-    pub subject: PerceivedRef,
-    pub state_revision: u64,
-    pub projection_revision: u64,
+    pub generation: u64,                 // public view-stream generation
     pub sequence: u64,
     pub base_sequence: Option<u64>,
-    pub commit: Option<CommitToken>,
+    pub commit: Option<ProjectedCommitToken>,
     pub data: serde_json::Value,
 }
 ```
 
 Keyframes replace a view. A delta names the exact base sequence it extends; a gap, stale projection
-generation, or unknown schema forces a keyframe request. Payload and delta sizes are bounded.
+generation carried by its view-specific DTO, changed stream generation, or unknown schema forces a
+keyframe request. Payload and delta sizes are bounded. Wire counters are restricted to JavaScript's
+exact integer range. The private `ProjectionScopeId` used to authenticate an offer is never a wire
+field; perceived subjects, state/projection revisions, and contact generations belong in each
+registered view schema's already-redacted `data`.
 
 Initial stable view names include:
 
@@ -1826,7 +1830,7 @@ The repository already contains useful local proofs. They should be adapted, not
 | C9 projection | per-observer perception and delivery, witness-aware power events | opaque contact references, dedicated view DTOs, shared legal-action/error/LLM projection |
 | C10 ownership | registrar-stamped definition/action/state-family owners; composition-bound opaque typed state handles; provider-stamped transactions that reject cross-owner handles; fail-closed cross-owner tactical references; immutable directional exact-definition bridge registry; shared owner-readiness gates on executable definitions/providers/validators/bridge routes | ownership migration for state outside `ActionStateStore`, executable bridge preparation across typed transactions, freeze aggregation from remaining owner adapters |
 | C11 lifecycle | pre-boot validated unified poison spool; v1 Ledger read compatibility plus tagged v2 Ledger/bundle records sharing one lock, capacity gate, and evidence archive; exact seal retention/isolation; structural world modes; bounded recovery incidents/reports; tactical Active/Frozen/Migrating/Quarantined records; tactics owner-scoped digest-conflict freeze; prepared typed images install or abort on the matching legacy serial or K3 token/hash receipt; strict atomic state-family decode/validate/canonical boot hydration; legacy isolation of `action-state/*`; store-enforced ownership of authoritative module prefixes; bounded in-memory and Redis pending indexes plus independent paged full-intent discovery; exhaustive bounded boot reconciliation before world hydration or writable bootstrap; exact retry repair of stale pending-index membership; canonical retained-intent storage validation; atomic reconstruction of derived Redis count/byte counters from exhaustive boot discovery; exact bundle quarantine recovery with live Redis WRONGTYPE proof; coordinator abort of typed reservations on pre-stage assembly failure; exact checkpoint/epoch/outbox cleanup and retry | exhaustive orphan-owner discovery; full C11 resolution receipts; owner freezes in remaining lifecycle adapters; authoritative account ingress; automated runbook |
-| C12 presentation | `OutputEvent::Panel`, registered panel feeds, keyframe/delta kind, line fallback renderers | schema/projection/state revisions, delta base/sequence, commit receipt, resync/deduplication |
+| C12 presentation | `OutputEvent::Panel`, registered panel feeds, keyframe/delta kind, line fallback renderers; bounded `OutputEvent::View` with stable view id/schema, restart generation, sequence/exact delta base, optional projected commit token, strict decode validation, Rust/TypeScript gap classification, and `legal.actions` TUI/web keyframe resync | view-specific projection/state revisions, projected receipt/status frames, migration of remaining panel feeds, structured acknowledgement/deduplication |
 
 None of the five gates currently traverses all of these through one action pipeline. The first real
 `tactics:brace` slice now crosses early idempotency, provider preparation, whole-bundle durability,
@@ -1836,7 +1840,7 @@ and a regenerated opaque offer reaches that same provider without serializing it
 truth subject, fixed clock input, or guards. The first real tactics provider is now discoverable and
 submittable through line and structured panel adapters, while a four-consumer contract proves the
 same DTO/provider seam for line, structured, deterministic NPC, and mock LLM callers. Active grant
-witnesses, semantic views, real AI scheduling, and registered clock/window policy remain K4/K5
+witnesses, real AI scheduling, projected receipts, and registered clock/window policy remain K4/K5
 work.
 That is the reason for using toy vertical slices rather than declaring the contracts finished from
 their local precursors.
@@ -2212,7 +2216,11 @@ two kernel primitives forward before finishing the rest of K4/K5:
    `+actions`/`+act`, the `legal.actions` web/TUI panel, deterministic NPC selection, and mock LLM
    selection without exposing a token to presentation; split mode transfers bounded replay custody
    while all-in-one mode runs the same preflight and waits for exact intent ownership. Active grant
-   witnesses and real delayed NPC/LLM scheduling remain later K5/K7 cuts.
+   witnesses and real delayed NPC/LLM scheduling remain later K5/K7 cuts. A bounded additive
+   `OutputEvent::View` now wraps `legal.actions` with stable schema, gateway-lifetime generation,
+   per-connection sequence, exact delta base, and optional projected commit token. Both TUI and web
+   consumers classify cursors identically, remove stale action controls on a gap, and coalesce one
+   ordinary `legal.actions` query until a valid replacement keyframe arrives.
 
 The K3.1 checkpoint-readback and pending-allocator findings are already closed in both memory and
 Redis and therefore are not prerequisites. Mixed authoritative write sets, synchronous typed-family

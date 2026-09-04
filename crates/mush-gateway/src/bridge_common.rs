@@ -21,8 +21,9 @@
 //!   transport gates on [`GameBridge::is_ip_blocked`] before every auth
 //!   attempt.
 
+use std::collections::HashMap;
 use std::net::IpAddr;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use mush_core::{DisconnectKind, ObjId, PerceivedRef, ProjectedLegalAction, ProjectedTargetSchema};
@@ -33,7 +34,7 @@ use mush_ipc::{
 // Shared with the SSH transport's own line cap (`mush-net-ssh::editor`) so
 // both agree on one bound (MEDIUM finding).
 use mush_net_ssh::MAX_LINE_CHARS;
-use mush_proto::{ObjRef, OutputEvent, PanelFrameKind, RichText};
+use mush_proto::{MAX_VIEW_WIRE_INTEGER, ObjRef, OutputEvent, RichText, ViewEnvelope};
 use mush_session::{
     ConnId, ConnectionHandle, DetachOutcome, DetachReason, FloodVerdict, SessId, SessionManager,
     sanitize_line,
@@ -128,6 +129,14 @@ pub struct GameBridge<A: AuthBackend + 'static> {
     /// M16b swaps in a socket client.
     pub(crate) link: Arc<dyn GatewayLink>,
     pub(crate) guard: Arc<IpGuard>,
+    /// Public semantic-view generation for this gateway lifetime. A gateway
+    /// restart changes it, so replayed deltas can never attach to pre-restart
+    /// client state accidentally.
+    view_generation: u64,
+    /// Per-connection/per-view sequence. Entries are removed with the
+    /// connection, keeping projection bookkeeping bounded by live transport
+    /// state rather than historical connection IDs.
+    view_sequences: Mutex<HashMap<(u64, &'static str), u64>>,
 }
 
 impl<A: AuthBackend + 'static> GameBridge<A> {
@@ -159,7 +168,35 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
             sessions,
             link,
             guard,
+            view_generation: (rand::random::<u64>() & MAX_VIEW_WIRE_INTEGER).max(1),
+            view_sequences: Mutex::new(HashMap::new()),
         }
+    }
+
+    fn next_view_sequence(&self, conn: ConnId, view: &'static str) -> Option<u64> {
+        let mut sequences = self
+            .view_sequences
+            .lock()
+            .expect("semantic-view sequence table poisoned");
+        // Some server-initiated closes bypass `GameBridge::disconnected`.
+        // Opportunistic exact pruning against the authoritative local
+        // connection table keeps this side index bounded in those paths too.
+        sequences.retain(|(owned_conn, _), _| {
+            self.sessions.session_of_conn(ConnId(*owned_conn)).is_some()
+        });
+        let sequence = sequences.entry((conn.0, view)).or_insert(0);
+        let next = sequence
+            .checked_add(1)
+            .filter(|next| *next <= MAX_VIEW_WIRE_INTEGER)?;
+        *sequence = next;
+        Some(next)
+    }
+
+    fn forget_view_sequences(&self, conn: ConnId) {
+        self.view_sequences
+            .lock()
+            .expect("semantic-view sequence table poisoned")
+            .retain(|(owned_conn, _), _| *owned_conn != conn.0);
     }
 
     /// Await the exact world-delivery barrier used before a local transport
@@ -377,12 +414,18 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
 
     pub(crate) async fn legal_actions_panel(&self, conn: ConnId, id: u64, actor: ObjId) {
         let event = match self.self_legal_actions(conn, actor).await {
-            Ok(offers) => match serde_json::to_value(offers) {
-                Ok(data) => OutputEvent::Panel {
-                    feed: "legal.actions".into(),
-                    kind: PanelFrameKind::Keyframe,
-                    data,
-                },
+            Ok(offers) => match serde_json::to_value(offers).and_then(|data| {
+                let sequence = self
+                    .next_view_sequence(conn, "legal.actions")
+                    .ok_or_else(|| {
+                        serde_json::Error::io(std::io::Error::other(
+                            "legal-action view sequence exhausted",
+                        ))
+                    })?;
+                ViewEnvelope::keyframe("legal.actions", 1, self.view_generation, sequence, data)
+                    .map_err(|error| serde_json::Error::io(std::io::Error::other(error)))
+            }) {
+                Ok(view) => OutputEvent::View(view),
                 Err(error) => {
                     tracing::error!(conn = conn.0, error = %error, "legal-action panel serialization failed");
                     OutputEvent::Sys(RichText::tag("error", "Legal actions are unavailable."))
@@ -732,6 +775,7 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
     pub async fn disconnected(&self, conn: ConnId) {
         let actor = self.actor_of(conn);
         let outcome = self.sessions.detach(conn, DetachReason::Lost);
+        self.forget_view_sequences(conn);
         let (Some(actor), Some(outcome)) = (actor, outcome) else {
             // Already detached (QUIT raced the transport teardown) or never
             // attached: nothing game-side.
@@ -815,6 +859,7 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
             },
         );
         self.sessions.detach(conn, DetachReason::Quit);
+        self.forget_view_sequences(conn);
     }
 
     /// Arm one reaper for a session that just went linkdead: after the
@@ -857,6 +902,7 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
             );
             self.arm_linkdead_reaper(grace);
         }
+        self.forget_view_sequences(conn);
     }
 
     /// Undo an attach after `ConnUp` entered world custody. The compensating

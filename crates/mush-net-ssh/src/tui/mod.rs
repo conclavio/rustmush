@@ -48,8 +48,8 @@ impl TuiSession {
     }
 
     /// Apply one event to the app state (no paint).
-    pub fn apply_event(&mut self, event: &OutputEvent) {
-        self.app.apply_event(event);
+    pub fn apply_event(&mut self, event: &OutputEvent) -> Option<&'static str> {
+        self.app.apply_event(event)
     }
 
     /// Feed a burst of raw input bytes; see [`InputResult`].

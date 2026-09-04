@@ -36,8 +36,9 @@ pub use caps::{ClientCaps, ClientKind, ColorDepth};
 pub use client::{ClientCommand, Query};
 pub use envelope::Envelope;
 pub use event::{
-    ExitRef, InputMode, NarrativeKind, ObjRef, OutputEvent, PanelFrameKind, PromptSpec, RoomView,
-    WhoEntry,
+    ExitRef, InputMode, MAX_VIEW_COMMIT_BYTES, MAX_VIEW_DATA_BYTES, MAX_VIEW_ID_BYTES,
+    MAX_VIEW_WIRE_INTEGER, NarrativeKind, ObjRef, OutputEvent, PanelFrameKind, PromptSpec,
+    RoomView, ViewCursor, ViewEnvelope, ViewEnvelopeError, ViewFrameDisposition, WhoEntry,
 };
 pub use text::{Color, CommandLink, RichText, Span, Style};
 

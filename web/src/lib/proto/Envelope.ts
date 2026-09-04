@@ -6,6 +6,7 @@ import type { PanelFrameKind } from "./PanelFrameKind";
 import type { PromptSpec } from "./PromptSpec";
 import type { RichText } from "./RichText";
 import type { RoomView } from "./RoomView";
+import type { ViewEnvelope } from "./ViewEnvelope";
 import type { WhoEntry } from "./WhoEntry";
 import type { JsonValue } from "./serde_json/JsonValue";
 
@@ -89,7 +90,7 @@ id: number,
  */
 unread: number, } } | { "t": "who", "d": Array<WhoEntry> } | { "t": "panel", "d": { 
 /**
- * Panel feed id, e.g. `"wod.roll"`, `"btech.map"`.
+ * Panel feed id, e.g. `"wod.roll"`, `"tactics.map"`.
  */
 feed: string, 
 /**
@@ -99,7 +100,7 @@ kind: PanelFrameKind,
 /**
  * Module-defined payload; opaque to this crate.
  */
-data: JsonValue, } } | { "t": "weather", "d": { 
+data: JsonValue, } } | { "t": "view", "d": ViewEnvelope } | { "t": "weather", "d": {
 /**
  * Zone identifier.
  */

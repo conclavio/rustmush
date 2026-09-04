@@ -1,5 +1,5 @@
 <script lang="ts">
-  // Right rail: tabbed Mail / Room / Sheet / Rolls / Build / LLM panels.
+  // Right rail: tabbed Mail / Room / Actions / Sheet / Rolls / Build / LLM panels.
   // Mail/Sheet/Rolls/Build are gated on the server's hello features/panels —
   // Sheet and Rolls key off any panel feed ending `.sheet`/`.roll`
   // (SessionStore.sheetFeed / .rollFeed), never a hardcoded ruleset id, so
@@ -13,6 +13,7 @@
   // Build's BUILDER_LLM gate.
   import type { GameApp } from "$lib/game.svelte";
 
+  import ActionsPanel from "./ActionsPanel.svelte";
   import LlmPanel from "./LlmPanel.svelte";
   import MailPanel from "./MailPanel.svelte";
   import RollsPanel from "./RollsPanel.svelte";
@@ -24,11 +25,12 @@
 
   const mailEnabled = $derived(app.session.hasFeature("mail") || app.session.hasPanel("mail"));
   const sheetEnabled = $derived(app.session.sheetFeed !== null);
+  const actionsEnabled = $derived(app.session.hasPanel("legal.actions"));
   const rollsEnabled = $derived(app.session.rollFeed !== null);
   const worldgenEnabled = $derived(app.session.worldgenAvailable);
   const llmEnabled = $derived(app.session.llmDashboardAvailable);
 
-  type Tab = "mail" | "room" | "sheet" | "rolls" | "worldgen" | "llm";
+  type Tab = "mail" | "room" | "actions" | "sheet" | "rolls" | "worldgen" | "llm";
   let tab = $state<Tab>("room");
 
   // If mail turns out to be enabled once hello lands, prefer it as the
@@ -44,6 +46,7 @@
   const activeTab = $derived<Tab>(
     (tab === "mail" && !mailEnabled) ||
       (tab === "sheet" && !sheetEnabled) ||
+      (tab === "actions" && !actionsEnabled) ||
       (tab === "rolls" && !rollsEnabled) ||
       (tab === "worldgen" && !worldgenEnabled) ||
       (tab === "llm" && !llmEnabled)
@@ -77,6 +80,19 @@
     >
       Room
     </button>
+    {#if actionsEnabled}
+      <button
+        type="button"
+        role="tab"
+        class="tab"
+        class:active={activeTab === "actions"}
+        aria-selected={activeTab === "actions"}
+        onclick={() => (tab = "actions")}
+      >
+        Actions
+        {#if app.actions.actions.length > 0}<span class="badge">{app.actions.actions.length}</span>{/if}
+      </button>
+    {/if}
     {#if sheetEnabled}
       <button
         type="button"
@@ -132,6 +148,8 @@
   <div class="body">
     {#if activeTab === "mail" && mailEnabled}
       <MailPanel {app} />
+    {:else if activeTab === "actions" && actionsEnabled}
+      <ActionsPanel {app} {onCmd} />
     {:else if activeTab === "sheet" && sheetEnabled}
       <SheetPanel {app} />
     {:else if activeTab === "rolls" && rollsEnabled}

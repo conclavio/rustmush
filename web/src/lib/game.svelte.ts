@@ -7,7 +7,7 @@
 
 import { login as apiLogin, logout as apiLogout, register as apiRegister } from "./auth";
 import type { CharSummary, LoginOk } from "./auth";
-import type { ClientCaps, OutputEvent, RichText, RoomView } from "./proto";
+import type { ClientCaps, OutputEvent, RichText, RoomView, ViewEnvelope } from "./proto";
 import {
   channelLine,
   fmtDuration,
@@ -18,6 +18,7 @@ import {
 } from "./render";
 import { storageDel, storageGet, storageGetJson, storageSet, storageSetJson } from "./storage";
 import { ChannelsStore } from "./stores/channels.svelte";
+import { LegalActionsStore } from "./stores/actions.svelte";
 import { LlmDashboardStore } from "./stores/llm.svelte";
 import { MailStore } from "./stores/mail.svelte";
 import { RollsStore } from "./stores/rolls.svelte";
@@ -55,6 +56,7 @@ type PendingReq =
   | { kind: "mail.list" }
   | { kind: "backlog"; channel: string }
   | { kind: "sheet" }
+  | { kind: "legal.actions" }
   | { kind: "llm_dashboard" };
 
 const HELP_LINES = [
@@ -70,6 +72,7 @@ export class GameApp {
   session = new SessionStore();
   scrollback = new ScrollbackStore();
   channels = new ChannelsStore();
+  actions = new LegalActionsStore();
   who = new WhoStore();
   mail = new MailStore();
   sheet = new SheetStore();
@@ -223,6 +226,7 @@ export class GameApp {
   #resetGameState(): void {
     this.scrollback.clear();
     this.channels.clear();
+    this.actions.clear();
     this.who.clear();
     this.mail.clear();
     this.sheet.clear();
@@ -292,6 +296,7 @@ export class GameApp {
       this.scrollback.push("ev-weather", [renderRich(env.d.text)], env.ts);
     });
     c.on("panel", (env) => this.#routePanel(env.d, null));
+    c.on("view", (env) => this.#routeView(env.d, null));
     c.on("reply", (env) => {
       const pending = this.#pending.get(env.d.id);
       this.#pending.delete(env.d.id);
@@ -359,6 +364,9 @@ export class GameApp {
     if (this.session.sheetFeed !== null) {
       this.#req({ kind: "sheet" }, { t: "sheet" });
     }
+    if (this.session.hasPanel("legal.actions")) {
+      this.#requestLegalActions();
+    }
   }
 
   #req(pending: PendingReq, q: Parameters<WsClient["req"]>[0]): void {
@@ -376,6 +384,9 @@ export class GameApp {
       case "panel":
         this.#routePanel(event.d, pending);
         return;
+      case "view":
+        this.#routeView(event.d, pending);
+        return;
       case "sys":
         // Errors and polite refusals ride Sys inside the reply. Backlog
         // errors mark the channel fetched so tab opens don't loop; a Sheet
@@ -386,6 +397,10 @@ export class GameApp {
         }
         if (pending?.kind === "sheet") {
           this.sheet.markUnavailable();
+        }
+        if (pending?.kind === "legal.actions") {
+          this.actions.clear();
+          return;
         }
         if (pending?.kind === "llm_dashboard") {
           // A Sys reply to this Req is always a refusal (staff-only gate)
@@ -435,6 +450,43 @@ export class GameApp {
       this.llm.applyKeyframe(d.data);
     }
     // Unknown feeds (future modules): ignored — additive evolution.
+  }
+
+  #routeView(view: ViewEnvelope, pending: PendingReq | null): void {
+    if (view.view !== "legal.actions") {
+      return;
+    }
+    // A reply consumes the outstanding resync attempt before classification.
+    // If the replacement is itself malformed/gapped, one new bounded request
+    // may be issued rather than leaving the feed permanently wedged.
+    if (pending?.kind === "legal.actions") {
+      this.actions.resyncPending = false;
+    }
+    const alreadyPending = this.actions.resyncPending;
+    if (this.actions.apply(view) === "resync" && !alreadyPending) {
+      this.#req(
+        { kind: "legal.actions" },
+        { t: "panel_subscribe", d: { feed: "legal.actions" } },
+      );
+    }
+  }
+
+  #requestLegalActions(): void {
+    if (!this.actions.requireResync()) {
+      return;
+    }
+    this.#req(
+      { kind: "legal.actions" },
+      { t: "panel_subscribe", d: { feed: "legal.actions" } },
+    );
+  }
+
+  /** Explicit refresh used by a future legal-actions control surface. */
+  refreshLegalActions(): void {
+    if (this.session.hasPanel("legal.actions")) {
+      this.actions.resyncPending = false;
+      this.#requestLegalActions();
+    }
   }
 
   // -- input --------------------------------------------------------------

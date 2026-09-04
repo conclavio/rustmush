@@ -15,7 +15,7 @@
 use std::collections::VecDeque;
 
 use mush_ansi::AnsiTheme;
-use mush_proto::{ClientCaps, InputMode, OutputEvent, WhoEntry};
+use mush_proto::{ClientCaps, InputMode, OutputEvent, ViewCursor, ViewFrameDisposition, WhoEntry};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Position, Rect};
 use ratatui::style::{Modifier, Style};
@@ -107,6 +107,10 @@ pub struct TuiApp {
     intel: Option<serde_json::Value>,
     /// Latest `legal.actions` keyframe data (`None` until the query replies).
     actions: Option<serde_json::Value>,
+    /// Last safely applied `legal.actions` semantic-view cursor.
+    actions_cursor: Option<ViewCursor>,
+    /// Suppresses query storms while a replacement keyframe is outstanding.
+    actions_resync_pending: bool,
 }
 
 impl TuiApp {
@@ -129,6 +133,8 @@ impl TuiApp {
             mail: None,
             intel: None,
             actions: None,
+            actions_cursor: None,
+            actions_resync_pending: false,
         }
     }
 
@@ -146,10 +152,10 @@ impl TuiApp {
     /// Apply one event to the app state. `Who` (bare or `Reply`-wrapped)
     /// refreshes the rail, `Prompt` drives the input line, everything else
     /// with a scrollback rendering appends to history.
-    pub fn apply_event(&mut self, event: &OutputEvent) {
+    pub fn apply_event(&mut self, event: &OutputEvent) -> Option<&'static str> {
         if let Some(entries) = who_entries(event) {
             self.set_who(entries);
-            return;
+            return None;
         }
         if let OutputEvent::Prompt(spec) = unwrap_reply(event) {
             self.input_mode = spec.mode;
@@ -158,7 +164,32 @@ impl TuiApp {
                 .as_ref()
                 .map(|t| sanitize_prompt(&t.to_plain_text()))
                 .unwrap_or_default();
-            return;
+            return None;
+        }
+        if let OutputEvent::View(view) = unwrap_reply(event) {
+            if view.view() != "legal.actions" {
+                return None;
+            }
+            match view.disposition("legal.actions", 1, self.actions_cursor.as_ref()) {
+                ViewFrameDisposition::Replace => {
+                    self.actions = Some(view.data().clone());
+                    self.actions_cursor = Some(view.cursor());
+                    self.actions_resync_pending = false;
+                    return None;
+                }
+                ViewFrameDisposition::IgnoreStale => return None,
+                // This first feed intentionally emits keyframes only. A valid
+                // delta still cannot be guessed at generically: until the
+                // feed registers a merge contract, fail closed and rehydrate.
+                ViewFrameDisposition::ApplyDelta | ViewFrameDisposition::ResyncRequired => {
+                    self.actions = None;
+                    if !self.actions_resync_pending {
+                        self.actions_resync_pending = true;
+                        return Some("legal.actions");
+                    }
+                    return None;
+                }
+            }
         }
         // Widget keyframes: route the mail/intel/legal-action panel data to
         // the secondary pane (they never touch scrollback).
@@ -169,7 +200,7 @@ impl TuiApp {
                 "legal.actions" => self.actions = Some(data.clone()),
                 _ => {}
             }
-            return;
+            return None;
         }
         let following = self.scroll_off == 0;
         let lines = render_event(event, &self.caps, &self.theme);
@@ -183,6 +214,7 @@ impl TuiApp {
         if following {
             self.scroll_off = 0;
         }
+        None
     }
 
     fn set_who(&mut self, entries: &[WhoEntry]) {
@@ -714,6 +746,42 @@ mod tests {
         });
         assert_eq!(app.intel.as_ref(), Some(&data));
         assert!(app.scrollback.is_empty());
+    }
+
+    #[test]
+    fn legal_actions_view_accepts_keyframe_and_requests_resync_on_gap() {
+        let mut app = TuiApp::new(caps());
+        let data = serde_json::json!([{"presentation": {"verb": "brace"}}]);
+        let keyframe =
+            mush_proto::ViewEnvelope::keyframe("legal.actions", 1, 7, 3, data.clone()).unwrap();
+        assert_eq!(app.apply_event(&OutputEvent::View(keyframe)), None);
+        assert_eq!(app.actions.as_ref(), Some(&data));
+
+        let gap = mush_proto::ViewEnvelope::delta(
+            "legal.actions",
+            1,
+            7,
+            5,
+            4,
+            serde_json::json!({"remove": 0}),
+        )
+        .unwrap();
+        assert_eq!(
+            app.apply_event(&OutputEvent::View(gap.clone())),
+            Some("legal.actions")
+        );
+        assert!(app.actions.is_none(), "stale action buttons must disappear");
+        assert_eq!(
+            app.apply_event(&OutputEvent::View(gap)),
+            None,
+            "one missing keyframe must not create a resync query storm"
+        );
+
+        let replacement =
+            mush_proto::ViewEnvelope::keyframe("legal.actions", 1, 7, 6, data.clone()).unwrap();
+        assert_eq!(app.apply_event(&OutputEvent::View(replacement)), None);
+        assert_eq!(app.actions.as_ref(), Some(&data));
+        assert!(!app.actions_resync_pending);
     }
 
     #[test]

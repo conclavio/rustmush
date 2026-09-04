@@ -59,7 +59,7 @@ pub fn render(event: &OutputEvent, caps: &ClientCaps, theme: &AnsiTheme, out: &m
         OutputEvent::Who(entries) => render_who(&mut w, entries),
         // Module text fallbacks register in M3 with the Registrar; until
         // then panel frames are web-only and SSH skips them silently.
-        OutputEvent::Panel { .. } => {}
+        OutputEvent::Panel { .. } | OutputEvent::View(_) => {}
         OutputEvent::Weather { text, .. } => {
             w.rich(text);
             w.end_line();

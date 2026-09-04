@@ -19,5 +19,6 @@ export type * from "./RichText";
 export type * from "./RoomView";
 export type * from "./Span";
 export type * from "./Style";
+export type * from "./ViewEnvelope";
 export type * from "./WhoEntry";
 export type * from "./serde_json/JsonValue";

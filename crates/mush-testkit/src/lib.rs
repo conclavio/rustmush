@@ -425,6 +425,7 @@ pub fn text_of(event: &OutputEvent) -> String {
         OutputEvent::Ping { nonce } => format!("[ping {nonce}]"),
         OutputEvent::Resumed { replayed } => format!("[resumed replayed={replayed}]"),
         OutputEvent::Panel { feed, .. } => format!("[panel {feed}]"),
+        OutputEvent::View(view) => format!("[view {}]", view.view()),
         OutputEvent::Weather { text, .. } => text.to_plain_text(),
         OutputEvent::Prompt(p) => p
             .text

@@ -1,6 +1,8 @@
 //! Server → client events: [`OutputEvent`] and its payload types.
 
-use serde::{Deserialize, Serialize};
+use std::fmt;
+
+use serde::{Deserialize, Deserializer, Serialize};
 use smol_str::SmolStr;
 
 use crate::text::RichText;
@@ -119,6 +121,425 @@ pub enum PanelFrameKind {
     Delta,
 }
 
+/// Maximum UTF-8 bytes in a stable semantic-view identifier.
+pub const MAX_VIEW_ID_BYTES: usize = 96;
+/// Maximum serialized JSON bytes in one semantic-view frame.
+pub const MAX_VIEW_DATA_BYTES: usize = 1024 * 1024;
+/// Maximum bytes in a projected commit/deduplication token.
+pub const MAX_VIEW_COMMIT_BYTES: usize = 128;
+/// Largest integer represented exactly by every JSON/JavaScript consumer.
+pub const MAX_VIEW_WIRE_INTEGER: u64 = (1_u64 << 53) - 1;
+
+/// A client-side position in one versioned semantic view.
+///
+/// Cursors contain only public routing/version information. They never carry
+/// a server-side projection scope, truth revision, or provider guard.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct ViewCursor {
+    /// Stable view identifier, e.g. `"legal.actions"`.
+    pub view: SmolStr,
+    /// Payload schema understood at this cursor.
+    pub schema_version: u32,
+    /// View-stream generation. A changed generation invalidates deltas.
+    pub generation: u64,
+    /// Last applied frame sequence inside the generation.
+    pub sequence: u64,
+}
+
+/// What a consumer may safely do with an incoming semantic-view frame.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ViewFrameDisposition {
+    /// Replace all local state with this keyframe.
+    Replace,
+    /// Apply this delta to the exact cursor named by `base_sequence`.
+    ApplyDelta,
+    /// The frame was already applied or arrived behind the local cursor.
+    IgnoreStale,
+    /// Do not apply the frame; request a fresh keyframe.
+    ResyncRequired,
+}
+
+/// A versioned, gap-detecting semantic view sent to structured consumers.
+///
+/// This is intentionally distinct from the legacy opaque [`OutputEvent::Panel`]
+/// payload. A keyframe has no `base_sequence`; a delta names the exact cursor
+/// it extends. `generation` is public projection metadata, not the private
+/// server-side projection-scope identifier used to sign action offers.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct ViewEnvelope {
+    view: SmolStr,
+    schema_version: u32,
+    generation: u64,
+    sequence: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    base_sequence: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    commit: Option<String>,
+    data: serde_json::Value,
+}
+
+impl ViewEnvelope {
+    /// Construct a full-state keyframe.
+    pub fn keyframe(
+        view: impl Into<SmolStr>,
+        schema_version: u32,
+        generation: u64,
+        sequence: u64,
+        data: serde_json::Value,
+    ) -> Result<Self, ViewEnvelopeError> {
+        Self::new(
+            view.into(),
+            schema_version,
+            generation,
+            sequence,
+            None,
+            None,
+            data,
+        )
+    }
+
+    /// Construct a delta extending exactly `base_sequence`.
+    pub fn delta(
+        view: impl Into<SmolStr>,
+        schema_version: u32,
+        generation: u64,
+        sequence: u64,
+        base_sequence: u64,
+        data: serde_json::Value,
+    ) -> Result<Self, ViewEnvelopeError> {
+        Self::new(
+            view.into(),
+            schema_version,
+            generation,
+            sequence,
+            Some(base_sequence),
+            None,
+            data,
+        )
+    }
+
+    fn new(
+        view: SmolStr,
+        schema_version: u32,
+        generation: u64,
+        sequence: u64,
+        base_sequence: Option<u64>,
+        commit: Option<String>,
+        data: serde_json::Value,
+    ) -> Result<Self, ViewEnvelopeError> {
+        let envelope = Self {
+            view,
+            schema_version,
+            generation,
+            sequence,
+            base_sequence,
+            commit,
+            data,
+        };
+        envelope.validate()?;
+        Ok(envelope)
+    }
+
+    /// Attach the projected stable transaction token used for deduplication.
+    pub fn with_commit(mut self, commit: impl Into<String>) -> Result<Self, ViewEnvelopeError> {
+        self.commit = Some(commit.into());
+        self.validate()?;
+        Ok(self)
+    }
+
+    /// Validate invariants and frame bounds after construction or decoding.
+    pub fn validate(&self) -> Result<(), ViewEnvelopeError> {
+        validate_view_id(&self.view)?;
+        if self.schema_version == 0 {
+            return Err(ViewEnvelopeError::ZeroSchemaVersion);
+        }
+        if self.generation == 0 {
+            return Err(ViewEnvelopeError::ZeroGeneration);
+        }
+        if self.generation > MAX_VIEW_WIRE_INTEGER {
+            return Err(ViewEnvelopeError::IntegerTooLarge {
+                field: "generation",
+                value: self.generation,
+                max: MAX_VIEW_WIRE_INTEGER,
+            });
+        }
+        if self.sequence > MAX_VIEW_WIRE_INTEGER {
+            return Err(ViewEnvelopeError::IntegerTooLarge {
+                field: "sequence",
+                value: self.sequence,
+                max: MAX_VIEW_WIRE_INTEGER,
+            });
+        }
+        if let Some(base) = self.base_sequence
+            && base >= self.sequence
+        {
+            return Err(ViewEnvelopeError::InvalidDeltaSequence {
+                base,
+                sequence: self.sequence,
+            });
+        }
+        if let Some(base) = self.base_sequence
+            && base > MAX_VIEW_WIRE_INTEGER
+        {
+            return Err(ViewEnvelopeError::IntegerTooLarge {
+                field: "base_sequence",
+                value: base,
+                max: MAX_VIEW_WIRE_INTEGER,
+            });
+        }
+        if let Some(commit) = &self.commit {
+            if commit.is_empty() {
+                return Err(ViewEnvelopeError::EmptyCommit);
+            }
+            if commit.len() > MAX_VIEW_COMMIT_BYTES {
+                return Err(ViewEnvelopeError::CommitTooLarge {
+                    actual: commit.len(),
+                    max: MAX_VIEW_COMMIT_BYTES,
+                });
+            }
+        }
+        let bytes = serde_json::to_vec(&self.data)
+            .map_err(|_| ViewEnvelopeError::DataSerialization)?
+            .len();
+        if bytes > MAX_VIEW_DATA_BYTES {
+            return Err(ViewEnvelopeError::DataTooLarge {
+                actual: bytes,
+                max: MAX_VIEW_DATA_BYTES,
+            });
+        }
+        Ok(())
+    }
+
+    #[must_use]
+    pub fn view(&self) -> &str {
+        &self.view
+    }
+
+    #[must_use]
+    pub const fn schema_version(&self) -> u32 {
+        self.schema_version
+    }
+
+    #[must_use]
+    pub const fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    #[must_use]
+    pub const fn sequence(&self) -> u64 {
+        self.sequence
+    }
+
+    #[must_use]
+    pub const fn base_sequence(&self) -> Option<u64> {
+        self.base_sequence
+    }
+
+    #[must_use]
+    pub fn commit(&self) -> Option<&str> {
+        self.commit.as_deref()
+    }
+
+    #[must_use]
+    pub const fn data(&self) -> &serde_json::Value {
+        &self.data
+    }
+
+    #[must_use]
+    pub const fn is_keyframe(&self) -> bool {
+        self.base_sequence.is_none()
+    }
+
+    /// Classify this frame against a consumer's supported schema and cursor.
+    /// A caller updates its cursor only for `Replace` or `ApplyDelta`.
+    #[must_use]
+    pub fn disposition(
+        &self,
+        expected_view: &str,
+        supported_schema_version: u32,
+        current: Option<&ViewCursor>,
+    ) -> ViewFrameDisposition {
+        if self.validate().is_err()
+            || self.view != expected_view
+            || self.schema_version != supported_schema_version
+        {
+            return ViewFrameDisposition::ResyncRequired;
+        }
+        if self.is_keyframe() {
+            return match current {
+                Some(cursor)
+                    if cursor.view == self.view
+                        && cursor.schema_version == self.schema_version
+                        && cursor.generation == self.generation
+                        && cursor.sequence >= self.sequence =>
+                {
+                    ViewFrameDisposition::IgnoreStale
+                }
+                _ => ViewFrameDisposition::Replace,
+            };
+        }
+        let Some(cursor) = current else {
+            return ViewFrameDisposition::ResyncRequired;
+        };
+        if cursor.view != self.view
+            || cursor.schema_version != self.schema_version
+            || cursor.generation != self.generation
+        {
+            return ViewFrameDisposition::ResyncRequired;
+        }
+        if self.sequence <= cursor.sequence {
+            return ViewFrameDisposition::IgnoreStale;
+        }
+        if self.base_sequence == Some(cursor.sequence) {
+            ViewFrameDisposition::ApplyDelta
+        } else {
+            ViewFrameDisposition::ResyncRequired
+        }
+    }
+
+    /// Cursor produced after safely applying this frame.
+    #[must_use]
+    pub fn cursor(&self) -> ViewCursor {
+        ViewCursor {
+            view: self.view.clone(),
+            schema_version: self.schema_version,
+            generation: self.generation,
+            sequence: self.sequence,
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct ViewEnvelopeWire {
+    view: SmolStr,
+    schema_version: u32,
+    generation: u64,
+    sequence: u64,
+    #[serde(default)]
+    base_sequence: Option<u64>,
+    #[serde(default)]
+    commit: Option<String>,
+    data: serde_json::Value,
+}
+
+impl<'de> Deserialize<'de> for ViewEnvelope {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let wire = ViewEnvelopeWire::deserialize(deserializer)?;
+        Self::new(
+            wire.view,
+            wire.schema_version,
+            wire.generation,
+            wire.sequence,
+            wire.base_sequence,
+            wire.commit,
+            wire.data,
+        )
+        .map_err(serde::de::Error::custom)
+    }
+}
+
+fn validate_view_id(view: &str) -> Result<(), ViewEnvelopeError> {
+    if view.is_empty() {
+        return Err(ViewEnvelopeError::EmptyView);
+    }
+    if view.len() > MAX_VIEW_ID_BYTES {
+        return Err(ViewEnvelopeError::ViewTooLarge {
+            actual: view.len(),
+            max: MAX_VIEW_ID_BYTES,
+        });
+    }
+    if let Some((offset, byte)) = view
+        .bytes()
+        .enumerate()
+        .find(|(_, byte)| !matches!(byte, b'a'..=b'z' | b'0'..=b'9' | b'.' | b'_' | b'-'))
+    {
+        return Err(ViewEnvelopeError::InvalidViewByte { offset, byte });
+    }
+    Ok(())
+}
+
+/// Checked semantic-view construction/decoding failure.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ViewEnvelopeError {
+    EmptyView,
+    ViewTooLarge {
+        actual: usize,
+        max: usize,
+    },
+    InvalidViewByte {
+        offset: usize,
+        byte: u8,
+    },
+    ZeroSchemaVersion,
+    ZeroGeneration,
+    IntegerTooLarge {
+        field: &'static str,
+        value: u64,
+        max: u64,
+    },
+    InvalidDeltaSequence {
+        base: u64,
+        sequence: u64,
+    },
+    EmptyCommit,
+    CommitTooLarge {
+        actual: usize,
+        max: usize,
+    },
+    DataSerialization,
+    DataTooLarge {
+        actual: usize,
+        max: usize,
+    },
+}
+
+impl fmt::Display for ViewEnvelopeError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::EmptyView => formatter.write_str("semantic view id is empty"),
+            Self::ViewTooLarge { actual, max } => {
+                write!(
+                    formatter,
+                    "semantic view id has {actual} bytes; maximum is {max}"
+                )
+            }
+            Self::InvalidViewByte { offset, byte } => write!(
+                formatter,
+                "semantic view id has invalid byte 0x{byte:02x} at offset {offset}"
+            ),
+            Self::ZeroSchemaVersion => formatter.write_str("semantic view schema version is zero"),
+            Self::ZeroGeneration => formatter.write_str("semantic view generation is zero"),
+            Self::IntegerTooLarge { field, value, max } => write!(
+                formatter,
+                "semantic view {field} value {value} exceeds exact JSON integer maximum {max}"
+            ),
+            Self::InvalidDeltaSequence { base, sequence } => write!(
+                formatter,
+                "semantic view delta base {base} must be less than sequence {sequence}"
+            ),
+            Self::EmptyCommit => formatter.write_str("semantic view commit token is empty"),
+            Self::CommitTooLarge { actual, max } => write!(
+                formatter,
+                "semantic view commit token has {actual} bytes; maximum is {max}"
+            ),
+            Self::DataSerialization => {
+                formatter.write_str("semantic view payload could not be serialized")
+            }
+            Self::DataTooLarge { actual, max } => write!(
+                formatter,
+                "semantic view payload has {actual} bytes; maximum is {max}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for ViewEnvelopeError {}
+
 /// How the client should treat subsequent input.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
@@ -222,6 +643,11 @@ pub enum OutputEvent {
         /// Module-defined payload; opaque to this crate.
         data: serde_json::Value,
     },
+    /// A bounded, schema-versioned and gap-detecting semantic view.
+    ///
+    /// Unlike `Panel`, consumers never apply a delta without matching its
+    /// exact generation/base cursor. A mismatch requests a fresh keyframe.
+    View(ViewEnvelope),
     /// Ambient weather line for the zone the character is in.
     Weather {
         /// Zone identifier.
