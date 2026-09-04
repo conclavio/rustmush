@@ -775,21 +775,40 @@ impl GameModule for TacticsModule {
         )?;
         reg.authority_guard_validator(
             AuthorityGuardKind::Contact,
-            ContactGuardValidator::new(contacts),
+            ContactGuardValidator::new(contacts.clone()),
         )?;
 
         let outcome_descriptor = braced_outcome_descriptor()?;
+        let contact_outcome_descriptor = crate::contact::outcome_descriptor()?;
         reg.definition_validator(
             DefinitionKind::new("outcome").map_err(|error| ModError::msg(error.to_string()))?,
-            exact_definition_validator(std::slice::from_ref(&outcome_descriptor)),
+            exact_definition_validator(&[
+                outcome_descriptor.clone(),
+                contact_outcome_descriptor.clone(),
+            ]),
         )?;
         let outcome = reg.definition(outcome_descriptor)?;
+        let contact_outcome = reg.definition(contact_outcome_descriptor)?;
         let action_descriptor = brace_action_descriptor(outcome.clone())?;
+        let contact_action_descriptors = crate::contact::action_descriptors(&contact_outcome)?;
+        let mut action_descriptors = Vec::with_capacity(1 + contact_action_descriptors.len());
+        action_descriptors.push(action_descriptor.clone());
+        action_descriptors.extend(
+            contact_action_descriptors
+                .iter()
+                .map(|(_, descriptor)| descriptor.clone()),
+        );
         reg.definition_validator(
             DefinitionKind::new("action").map_err(|error| ModError::msg(error.to_string()))?,
-            exact_definition_validator(std::slice::from_ref(&action_descriptor)),
+            exact_definition_validator(&action_descriptors),
         )?;
         let action = reg.definition(action_descriptor)?;
+        let contact_actions = contact_action_descriptors
+            .into_iter()
+            .map(|(operation, descriptor)| {
+                reg.definition(descriptor).map(|action| (operation, action))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         reg.action_provider(
             action.clone(),
             BraceProvider {
@@ -798,6 +817,7 @@ impl GameModule for TacticsModule {
                 outcome,
             },
         )?;
+        crate::contact::register_providers(reg, contacts, contact_outcome, contact_actions)?;
 
         // The record format itself is versioned so an old untagged unit can be
         // dry-run through the shared migration registry. The callback captures

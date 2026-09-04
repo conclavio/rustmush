@@ -495,6 +495,19 @@ impl ActionProvider for HandoffProvider {
         self.validate(invocation)
     }
 
+    fn prepare_invocation(
+        &self,
+        _invocation: &ActionInvocation,
+        _txn: &mut ActionTxn<'_>,
+    ) -> Result<(), ActionError> {
+        Err(ActionError::new(
+            ActionErrorCode::Unavailable,
+            false,
+            "control handoffs require the authoritative action coordinator",
+        )
+        .expect("static control-handoff migration error is bounded"))
+    }
+
     fn prepare_authoritative(
         &self,
         invocation: &ActionInvocation,
@@ -920,6 +933,14 @@ mod tests {
                 "expected_revision": 0,
             }),
         );
+        let error = engine
+            .prepare_registered_action(&request_action, &request_invocation)
+            .expect_err("control handoffs must not bypass the authoritative coordinator");
+        assert!(matches!(
+            error,
+            mush_core::ActionProviderPrepareError::Provider { source, .. }
+                if source.code() == ActionErrorCode::Unavailable
+        ));
         let (prepared, _) = prepare(&mut engine, &request_action, &request_invocation, 1);
         assert_eq!(prepared.operation_count(), 3);
         let requested_ops = install(&mut engine, prepared);

@@ -69,7 +69,12 @@ particular campaign economy.
   immutable truth mapping, explicit audience, typed observation clock, and monotonic
   generation/revision across loss and reacquisition. The exact owner issues a private witness;
   core validates it, resolves the truth subject synchronously, and retains the contact guard in
-  regenerated offers. Sensor policy and production contact-lifecycle actions remain tactics work.
+  regenerated offers. Tactics now registers internal exact authoritative providers for observe,
+  refresh, share, unshare, loss, and reacquisition. Observation derives an opaque ID from the full
+  scoped idempotency identity without hashing the truth subject; every later transition preserves
+  that ID and uses checked revision/generation post-images. The generic outcome deliberately omits
+  the private truth mapping. Sensor formulas, confidence/classification payloads, network-based
+  automatic sharing, and the trusted policy ingress remain tactics/ruleset work.
 
 These primitives unblock E7 record design and early gameplay without waiting for every K4/K5
 feature.
