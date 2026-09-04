@@ -665,6 +665,12 @@ helpers without an engine store construct an explicitly unavailable reader; prod
 dispatch must always use the live store. Hook code treats unavailable typed truth as fail-closed,
 never as permission.
 
+This hook context is implemented across movement/carry vetoes, room rendering, perception-based
+behavior discovery and legal-action projection, NPC observation, gateway fan-out, and the offline
+REPL. The off-loop script compatibility path is deliberately stamped with the registering owner
+but exposes an unavailable typed reader; a hook which depends on typed truth therefore vetoes
+rather than silently consulting a stale or partial snapshot.
+
 At boot, the server partitions every `action-state/*` document found in a composed module's
 namespace away from legacy `ModuleBootData` and module migrations. It resolves the exact registered
 family, cross-checks namespace/path/envelope/schema identity, decodes to the typed value, validates
@@ -2591,8 +2597,8 @@ Redis-gated suites. Do not begin K7 on an unreviewed or format-divergent E5/K6 b
 
 The merged-main review is recorded in `08i-e-k-dependencies.md`; the K6 production-versus-fixture
 status and resulting ownership handoffs are recorded in `09a-k6-look-back.md`. The reformat and
-required CI format check have landed. K7.0 may proceed after the two API gaps named by that review
-(dynamic domain clocks and immutable typed-state hook reads) are frozen in this contract.
+required CI format check have landed. The two API gaps named by that review—dynamic domain clocks
+and immutable typed-state hook reads—are implemented and contract-tested; K7.0 may proceed.
 
 ### K7. Asynchronous decision re-entry
 

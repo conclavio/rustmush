@@ -77,8 +77,8 @@ use mush_core::{
     OfferRouteTable, OfferSubmission, Outbox, PerceivedRef, PreparedInstallation, PrincipalId,
     ProjectedLegalAction, ReceiptProjectionTable, Registry, Role, ScheduledKind, StagedAction,
     StagedActionPersistence, StepOutcome, TickCadence, World, WorldCommand, WorldEvent,
-    can_perceive, event_subject, is_ignoring, narrative_actor, register_core_commands,
-    register_engine_commands,
+    can_perceive, can_perceive_with_action_state, event_subject, is_ignoring, narrative_actor,
+    register_core_commands, register_engine_commands,
 };
 use mush_ipc::{
     ActionSend, GatewayAction, GatewayInput, GatewayRequest, MAX_IN_FLIGHT_LIFECYCLE_OBLIGATIONS,
@@ -2751,8 +2751,12 @@ async fn run(
         if let Some((gate_actor, _strict)) = engine.take_durable_gate() {
             failure_actor = Some(gate_actor);
         }
-        let mut classified_sends =
-            resolve_classified_sends(&engine.registry, &engine.world, &mut out);
+        let mut classified_sends = resolve_classified_sends(
+            &engine.registry,
+            &engine.world,
+            &mut out,
+            Some(engine.action_state()),
+        );
         let mut classified_effects = fx.drain_classified();
         if let Some(pending) = pending_commit.as_mut() {
             debug_assert!(create_completion.is_none());
@@ -2975,7 +2979,12 @@ async fn run(
                 llm.as_ref(),
                 &metrics,
             );
-            let mut sends = resolve_classified_sends(&engine.registry, &engine.world, &mut out);
+            let mut sends = resolve_classified_sends(
+                &engine.registry,
+                &engine.world,
+                &mut out,
+                Some(engine.action_state()),
+            );
             let mut effects = fx.drain_classified();
             match flush_dirty(
                 &mut engine,
@@ -3154,7 +3163,12 @@ async fn run(
             // drain → BGSAVE) runs when this task's join resolves.
             let outcome = engine.step(Inbound::Control(ControlMsg::Shutdown), &mut out, &mut fx);
             debug_assert_eq!(outcome, StepOutcome::Shutdown);
-            let mut sends = resolve_classified_sends(&engine.registry, &engine.world, &mut out);
+            let mut sends = resolve_classified_sends(
+                &engine.registry,
+                &engine.world,
+                &mut out,
+                Some(engine.action_state()),
+            );
             let mut effects = fx.drain_classified();
             match flush_dirty(
                 &mut engine,
@@ -5127,7 +5141,7 @@ fn resolve_sends(
     world: &World,
     out: &mut Outbox,
 ) -> Vec<(SendTarget, Arc<OutputEvent>)> {
-    resolve_classified_sends(reg, world, out)
+    resolve_classified_sends(reg, world, out, None)
         .into_iter()
         .map(|(_class, target, event)| (target, event))
         .collect()
@@ -5140,6 +5154,7 @@ fn resolve_classified_sends(
     reg: &Registry,
     world: &World,
     out: &mut Outbox,
+    action_state: Option<&mush_core::ActionStateStore>,
 ) -> Vec<ClassifiedSend> {
     let mut sends = Vec::new();
     for (class, audience, event) in out.take_classified() {
@@ -5182,10 +5197,16 @@ fn resolve_classified_sends(
                     {
                         continue;
                     }
-                    if let Some(subject) = subject
-                        && !can_perceive(reg, world, occupant, subject)
-                    {
-                        continue;
+                    if let Some(subject) = subject {
+                        let visible = action_state.map_or_else(
+                            || can_perceive(reg, world, occupant, subject),
+                            |store| {
+                                can_perceive_with_action_state(reg, world, occupant, subject, store)
+                            },
+                        );
+                        if !visible {
+                            continue;
+                        }
                     }
                     sends.push((
                         class,
@@ -5510,7 +5531,12 @@ fn finish_pending_operational(engine: &mut Engine, gateway: &Gateway, completed:
         let count = recs.len();
         let mut reattach_out = Outbox::new();
         apply_reattach_snapshot(engine, &recs, &mut reattach_out);
-        let sends = resolve_classified_sends(&engine.registry, &engine.world, &mut reattach_out);
+        let sends = resolve_classified_sends(
+            &engine.registry,
+            &engine.world,
+            &mut reattach_out,
+            Some(engine.action_state()),
+        );
         release_classified_sends(gateway, sends, completed.outcome);
         tracing::info!(
             count,
@@ -8477,7 +8503,7 @@ mod tests {
     impl mush_core::module::EventHook for CloakPair {
         fn perceives(
             &self,
-            _w: &World,
+            _ctx: &mush_core::HookReadContext<'_>,
             observer: ObjId,
             subject: ObjId,
         ) -> mush_core::module::Perceive {

@@ -11,8 +11,8 @@
 use std::io::Write as _;
 
 use mush_core::{
-    Audience, Effect, Effects, GOD, Inbound, Outbox, Registry, StepOutcome, World, WorldCommand,
-    can_perceive, event_subject,
+    Audience, Effect, Effects, GOD, Inbound, Outbox, StepOutcome, WorldCommand,
+    can_perceive_with_action_state, event_subject,
 };
 use mush_testkit::text_of;
 
@@ -81,7 +81,7 @@ pub fn run() {
                 &mut fx,
             );
         }
-        print_gods_view(&engine.registry, &engine.world, &mut out);
+        print_gods_view(&engine, &mut out);
         run_effects_sync(&mut engine, &mut fx, &mut out);
         if outcome == StepOutcome::Shutdown {
             break;
@@ -92,7 +92,9 @@ pub fn run() {
 /// Drain the outbox, printing every event whose audience reaches God: God's
 /// own actor stream, broadcasts, and events for God's room (unless
 /// excluded). `Conn` audiences other than the REPL's own never deliver.
-fn print_gods_view(reg: &Registry, world: &World, out: &mut Outbox) {
+fn print_gods_view(engine: &mush_core::Engine, out: &mut Outbox) {
+    let reg = &engine.registry;
+    let world = &engine.world;
     for (audience, event) in out.take() {
         let reaches = match &audience {
             Audience::Actor(a) => *a == GOD,
@@ -108,7 +110,15 @@ fn print_gods_view(reg: &Registry, world: &World, out: &mut Outbox) {
                     && world.get(GOD).and_then(|o| o.location) == Some(*room)
                     && subject
                         .or_else(|| event_subject(&event))
-                        .is_none_or(|subj| can_perceive(reg, world, GOD, subj))
+                        .is_none_or(|subj| {
+                            can_perceive_with_action_state(
+                                reg,
+                                world,
+                                GOD,
+                                subj,
+                                engine.action_state(),
+                            )
+                        })
             }
             Audience::Conn(c) => *c == REPL_CONN,
         };
@@ -161,7 +171,7 @@ fn run_effects_sync(engine: &mut mush_core::Engine, fx: &mut Effects, out: &mut 
                     );
                 }
             }
-            print_gods_view(&engine.registry, &engine.world, out);
+            print_gods_view(engine, out);
         }
     }
 }

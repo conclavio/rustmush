@@ -14,12 +14,14 @@ use mush_proto::{OutputEvent, RichText};
 use crate::cmd::{ArgShape, CmdError, CommandSpec, Ctx, Registry, RegistryError};
 use crate::flags::Flags;
 use crate::lock::{LockType, MAX_LOCK_DEPTH, eval_lock};
-use crate::module::{WorldEvent, check_move_attempt, emit_world_event};
+use crate::module::{
+    WorldEvent, check_move_attempt_with_action_state, emit_world_event_with_action_state,
+};
 use crate::obj::{LIMBO, Obj, ObjId};
 use crate::output::{Outbox, name_span, primary_name};
 use crate::world::World;
 
-use super::{attr_text, narrative_emit, show_room};
+use super::{attr_text, narrative_emit, show_room_with_action_state};
 
 /// Find an exit matching `name` from `actor`'s position: the room's own
 /// exits, then exits attached to the room's Zone Master Object, then
@@ -65,6 +67,17 @@ fn exit_name_matches(o: &Obj, q: &str) -> bool {
 /// move that failed (e.g. a destination destroyed after the exit was
 /// linked).
 pub fn traverse_exit(reg: &Registry, w: &mut World, actor: ObjId, exit: ObjId, out: &mut Outbox) {
+    traverse_exit_with_action_state(reg, w, actor, exit, out, None);
+}
+
+pub(crate) fn traverse_exit_with_action_state(
+    reg: &Registry,
+    w: &mut World,
+    actor: ObjId,
+    exit: ObjId,
+    out: &mut Outbox,
+    action_state: Option<&crate::action_state::ActionStateStore>,
+) {
     let Some(e) = w.get(exit) else { return };
     let exit_name = primary_name(&e.name).to_string();
     let lock = e.locks.get(&LockType::Basic).cloned();
@@ -95,7 +108,9 @@ pub fn traverse_exit(reg: &Registry, w: &mut World, actor: ObjId, exit: ObjId, o
 
     // Module veto (tactics hex movement, wod barriers): the reason is shown
     // to the mover, the room sees nothing.
-    if let Err(reason) = check_move_attempt(reg, w, actor, Some(exit), dest) {
+    if let Err(reason) =
+        check_move_attempt_with_action_state(reg, w, actor, Some(exit), dest, action_state)
+    {
         out.to_actor(actor, OutputEvent::Sys(reason));
         return;
     }
@@ -119,8 +134,8 @@ pub fn traverse_exit(reg: &Registry, w: &mut World, actor: ObjId, exit: ObjId, o
         .map_or_else(|| " has arrived.".to_string(), |m| format!(" {m}"));
     let text = RichText::new().span(name_span(w, actor)).text(arrive);
     out.to_room_from(dest, vec![actor], actor, narrative_emit(text));
-    show_room(reg, w, actor, dest, out);
-    emit_world_event(
+    show_room_with_action_state(reg, w, actor, dest, out, action_state);
+    emit_world_event_with_action_state(
         reg,
         w,
         out,
@@ -129,6 +144,7 @@ pub fn traverse_exit(reg: &Registry, w: &mut World, actor: ObjId, exit: ObjId, o
             from,
             to: dest,
         },
+        action_state,
     );
 }
 
@@ -137,6 +153,16 @@ pub fn traverse_exit(reg: &Registry, w: &mut World, actor: ObjId, exit: ObjId, o
 /// locked battle hex, a warded room) is vetoed even when it happens to be
 /// someone's home.
 pub fn go_home(reg: &Registry, w: &mut World, actor: ObjId, out: &mut Outbox) {
+    go_home_with_action_state(reg, w, actor, out, None);
+}
+
+pub(crate) fn go_home_with_action_state(
+    reg: &Registry,
+    w: &mut World,
+    actor: ObjId,
+    out: &mut Outbox,
+    action_state: Option<&crate::action_state::ActionStateStore>,
+) {
     let Some(home) = w.get(actor).and_then(|o| o.home) else {
         out.error(actor, "You have no home.");
         return;
@@ -151,7 +177,9 @@ pub fn go_home(reg: &Registry, w: &mut World, actor: ObjId, out: &mut Outbox) {
         return;
     }
     // Module veto (`exit: None` — home is not an exit traversal).
-    if let Err(reason) = check_move_attempt(reg, w, actor, None, home) {
+    if let Err(reason) =
+        check_move_attempt_with_action_state(reg, w, actor, None, home, action_state)
+    {
         out.to_actor(actor, OutputEvent::Sys(reason));
         return;
     }
@@ -171,8 +199,8 @@ pub fn go_home(reg: &Registry, w: &mut World, actor: ObjId, out: &mut Outbox) {
         .span(name_span(w, actor))
         .text(" arrives home.");
     out.to_room_from(home, vec![actor], actor, narrative_emit(text));
-    show_room(reg, w, actor, home, out);
-    emit_world_event(
+    show_room_with_action_state(reg, w, actor, home, out, action_state);
+    emit_world_event_with_action_state(
         reg,
         w,
         out,
@@ -181,6 +209,7 @@ pub fn go_home(reg: &Registry, w: &mut World, actor: ObjId, out: &mut Outbox) {
             from,
             to: home,
         },
+        action_state,
     );
 }
 
@@ -190,12 +219,19 @@ fn goto_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         return Err(CmdError::msg("Go where?"));
     }
     if dir.eq_ignore_ascii_case("home") {
-        go_home(ctx.reg, ctx.w, ctx.actor, ctx.out);
+        go_home_with_action_state(ctx.reg, ctx.w, ctx.actor, ctx.out, ctx.typed_state.store());
         return Ok(());
     }
     match find_exit(ctx.w, ctx.actor, &dir) {
         Some(e) => {
-            traverse_exit(ctx.reg, ctx.w, ctx.actor, e, ctx.out);
+            traverse_exit_with_action_state(
+                ctx.reg,
+                ctx.w,
+                ctx.actor,
+                e,
+                ctx.out,
+                ctx.typed_state.store(),
+            );
             Ok(())
         }
         None => Err(CmdError::msg("You can't go that way.")),
@@ -203,7 +239,7 @@ fn goto_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 }
 
 fn home_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
-    go_home(ctx.reg, ctx.w, ctx.actor, ctx.out);
+    go_home_with_action_state(ctx.reg, ctx.w, ctx.actor, ctx.out, ctx.typed_state.store());
     Ok(())
 }
 

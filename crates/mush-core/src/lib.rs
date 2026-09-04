@@ -210,11 +210,12 @@ pub use mechanics::{
     canonical_json_bytes_with_limit,
 };
 pub use module::{
-    AsyncCompletion, ContextOutcome, EventHook, GameModule, HookPoint, InputContext, JobQueueSpec,
-    MAX_MODULE_KEY_BYTES, MAX_MODULE_NAMESPACE_BYTES, Migration, ModError, ModuleBootData,
-    ModuleCtx, ModuleOp, ModuleWrite, PanelFeedHandle, Perceive, QueryHandler, RecoveryReporter,
-    Registrar, Scene, SceneId, StackedContext, TickCadence, TickHandler, WeatherQuery, WorldEvent,
-    WorldEventKind, WorldObserver, WxSnapshot, can_perceive, is_concealed, perceives_via,
+    AsyncCompletion, ContextOutcome, EventHook, GameModule, HookPoint, HookReadContext,
+    InputContext, JobQueueSpec, MAX_MODULE_KEY_BYTES, MAX_MODULE_NAMESPACE_BYTES, Migration,
+    ModError, ModuleBootData, ModuleCtx, ModuleOp, ModuleWrite, PanelFeedHandle, Perceive,
+    QueryHandler, RecoveryReporter, Registrar, Scene, SceneId, StackedContext, TickCadence,
+    TickHandler, WeatherQuery, WorldEvent, WorldEventKind, WorldObserver, WxSnapshot, can_perceive,
+    can_perceive_with_action_state, is_concealed, is_concealed_with_action_state, perceives_via,
 };
 pub use obj::{GOD, LIMBO, Obj, ObjId, ObjKind};
 pub use offer::{

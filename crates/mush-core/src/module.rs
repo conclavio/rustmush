@@ -303,6 +303,80 @@ pub enum Perceive {
     Conceal,
 }
 
+/// Immutable, owner-scoped truth available to veto and projection hooks.
+///
+/// The context exposes no mutation, output, scheduling, or clock surface.
+/// Its typed reader is stamped from the hook's registering module, so an
+/// opaque family handle cannot be used across owners.
+pub struct HookReadContext<'a> {
+    world: &'a World,
+    typed_state: crate::action_state::ModuleActionState<'a>,
+}
+
+impl<'a> HookReadContext<'a> {
+    /// Construct a compatibility context for an off-loop hook call.
+    ///
+    /// Typed state is deliberately unavailable in this context. Engine-owned
+    /// dispatch paths use the private constructor below to attach the live
+    /// authoritative snapshot.
+    #[must_use]
+    pub fn without_typed_state(world: &'a World, module: &str) -> Self {
+        Self::for_module(world, None, module)
+    }
+
+    pub(crate) fn for_module(
+        world: &'a World,
+        action_state: Option<&'a crate::action_state::ActionStateStore>,
+        module: &str,
+    ) -> Self {
+        Self {
+            world,
+            typed_state: crate::action_state::ModuleActionState::for_module(
+                action_state,
+                Some(module),
+            ),
+        }
+    }
+
+    #[must_use]
+    pub const fn world(&self) -> &'a World {
+        self.world
+    }
+
+    #[must_use]
+    pub const fn typed_state_available(&self) -> bool {
+        self.typed_state.is_available()
+    }
+
+    pub fn action_state<K, V>(
+        &self,
+        handle: &crate::action_state::StateFamilyHandle<K, V>,
+        key: &K,
+    ) -> Result<Option<&'a V>, crate::action_state::ModuleActionStateReadError>
+    where
+        K: Send + Sync + 'static,
+        V: Clone + Send + Sync + 'static,
+    {
+        self.typed_state.get(handle, key)
+    }
+
+    pub fn scan_action_state<K, V>(
+        &self,
+        handle: &crate::action_state::StateFamilyHandle<K, V>,
+        after: Option<&str>,
+        limit: usize,
+    ) -> Result<
+        crate::action_state::StateFamilyPage<'a, V>,
+        crate::action_state::ModuleActionStateReadError,
+    >
+    where
+        K: Send + Sync + 'static,
+        V: Clone + Send + Sync + 'static,
+    {
+        self.typed_state.scan_family(handle, after, limit)
+    }
+}
+
 /// A module hook. Default methods are no-ops; a module implements only the
 /// points it registers for (registering under a point whose method is left
 /// defaulted is legal and does nothing).
@@ -312,7 +386,7 @@ pub trait EventHook: Send + Sync {
     /// `Err(reason)` to block; the reason is shown to the mover.
     fn move_attempt(
         &self,
-        w: &mut World,
+        ctx: &HookReadContext<'_>,
         actor: ObjId,
         exit: Option<ObjId>,
         dest: ObjId,
@@ -325,7 +399,7 @@ pub trait EventHook: Send + Sync {
     /// `Err(reason)` to block; the reason is shown to the mover.
     fn carry_attempt(
         &self,
-        w: &mut World,
+        ctx: &HookReadContext<'_>,
         mover: ObjId,
         obj: ObjId,
         dest: ObjId,
@@ -334,7 +408,12 @@ pub trait EventHook: Send + Sync {
     }
 
     /// Extra lines appended after a room render for `looker`.
-    fn look_rendered(&self, w: &World, looker: ObjId, room: ObjId) -> Vec<RichText> {
+    fn look_rendered(
+        &self,
+        ctx: &HookReadContext<'_>,
+        looker: ObjId,
+        room: ObjId,
+    ) -> Vec<RichText> {
         Vec::new()
     }
 
@@ -345,7 +424,7 @@ pub trait EventHook: Send + Sync {
     /// writes; a ruleset rolls and caches in its mutable paths and only reads
     /// the cache here). Default [`Perceive::Abstain`] leaves the subject
     /// visible. See [`can_perceive`].
-    fn perceives(&self, w: &World, observer: ObjId, subject: ObjId) -> Perceive {
+    fn perceives(&self, ctx: &HookReadContext<'_>, observer: ObjId, subject: ObjId) -> Perceive {
         Perceive::Abstain
     }
 
@@ -355,7 +434,7 @@ pub trait EventHook: Send + Sync {
     /// projection). Read-only by the same contract as `perceives`: a cheap
     /// cache lookup, never a mutation. Default `false` — with no concealment
     /// ruleset a subject is never concealed. See [`is_concealed`].
-    fn is_concealed(&self, w: &World, subject: ObjId) -> bool {
+    fn is_concealed(&self, ctx: &HookReadContext<'_>, subject: ObjId) -> bool {
         false
     }
 
@@ -2569,13 +2648,25 @@ impl<'a> Registrar<'a> {
 /// for `@teleport`.
 pub fn check_move_attempt(
     reg: &Registry,
-    w: &mut World,
+    w: &World,
     actor: ObjId,
     exit: Option<ObjId>,
     dest: ObjId,
 ) -> Result<(), RichText> {
+    check_move_attempt_with_action_state(reg, w, actor, exit, dest, None)
+}
+
+pub(crate) fn check_move_attempt_with_action_state(
+    reg: &Registry,
+    w: &World,
+    actor: ObjId,
+    exit: Option<ObjId>,
+    dest: ObjId,
+    action_state: Option<&crate::action_state::ActionStateStore>,
+) -> Result<(), RichText> {
     for h in reg.hooks(HookPoint::MoveAttempt) {
-        h.hook.move_attempt(w, actor, exit, dest)?;
+        let ctx = HookReadContext::for_module(w, action_state, &h.module);
+        h.hook.move_attempt(&ctx, actor, exit, dest)?;
     }
     Ok(())
 }
@@ -2584,13 +2675,25 @@ pub fn check_move_attempt(
 /// (`get`/`drop`/`give`); the first veto wins.
 pub fn check_carry_attempt(
     reg: &Registry,
-    w: &mut World,
+    w: &World,
     mover: ObjId,
     obj: ObjId,
     dest: ObjId,
 ) -> Result<(), RichText> {
+    check_carry_attempt_with_action_state(reg, w, mover, obj, dest, None)
+}
+
+pub(crate) fn check_carry_attempt_with_action_state(
+    reg: &Registry,
+    w: &World,
+    mover: ObjId,
+    obj: ObjId,
+    dest: ObjId,
+    action_state: Option<&crate::action_state::ActionStateStore>,
+) -> Result<(), RichText> {
     for h in reg.hooks(HookPoint::CarryAttempt) {
-        h.hook.carry_attempt(w, mover, obj, dest)?;
+        let ctx = HookReadContext::for_module(w, action_state, &h.module);
+        h.hook.carry_attempt(&ctx, mover, obj, dest)?;
     }
     Ok(())
 }
@@ -2607,8 +2710,19 @@ pub fn check_carry_attempt(
 /// never drift.
 #[must_use]
 pub fn perceives_via(hooks: &[HookReg], w: &World, observer: ObjId, subject: ObjId) -> bool {
+    perceives_via_action_state(hooks, w, observer, subject, None)
+}
+
+pub(crate) fn perceives_via_action_state(
+    hooks: &[HookReg],
+    w: &World,
+    observer: ObjId,
+    subject: ObjId,
+    action_state: Option<&crate::action_state::ActionStateStore>,
+) -> bool {
     for h in hooks {
-        if h.hook.perceives(w, observer, subject) == Perceive::Conceal {
+        let ctx = HookReadContext::for_module(w, action_state, &h.module);
+        if h.hook.perceives(&ctx, observer, subject) == Perceive::Conceal {
             return false;
         }
     }
@@ -2625,6 +2739,25 @@ pub fn can_perceive(reg: &Registry, w: &World, observer: ObjId, subject: ObjId) 
     perceives_via(reg.hooks(HookPoint::Perceive), w, observer, subject)
 }
 
+/// Production form of [`can_perceive`] with the live authoritative typed-state
+/// snapshot attached to every owner-stamped hook context.
+#[must_use]
+pub fn can_perceive_with_action_state(
+    reg: &Registry,
+    w: &World,
+    observer: ObjId,
+    subject: ObjId,
+    action_state: &crate::action_state::ActionStateStore,
+) -> bool {
+    perceives_via_action_state(
+        reg.hooks(HookPoint::Perceive),
+        w,
+        observer,
+        subject,
+        Some(action_state),
+    )
+}
+
 /// Whether `subject` is under an active concealment effect according to ANY
 /// registered `Perceive`-point hook (first-true-wins). The ruleset-agnostic
 /// **notability** query — distinct from [`can_perceive`], which is the
@@ -2634,17 +2767,49 @@ pub fn can_perceive(reg: &Registry, w: &World, observer: ObjId, subject: ObjId) 
 /// to a game with no concealment ruleset.
 #[must_use]
 pub fn is_concealed(reg: &Registry, w: &World, subject: ObjId) -> bool {
-    reg.hooks(HookPoint::Perceive)
-        .iter()
-        .any(|h| h.hook.is_concealed(w, subject))
+    is_concealed_via_action_state(reg, w, subject, None)
+}
+
+/// Production form of [`is_concealed`] with live typed-state reads.
+#[must_use]
+pub fn is_concealed_with_action_state(
+    reg: &Registry,
+    w: &World,
+    subject: ObjId,
+    action_state: &crate::action_state::ActionStateStore,
+) -> bool {
+    is_concealed_via_action_state(reg, w, subject, Some(action_state))
+}
+
+pub(crate) fn is_concealed_via_action_state(
+    reg: &Registry,
+    w: &World,
+    subject: ObjId,
+    action_state: Option<&crate::action_state::ActionStateStore>,
+) -> bool {
+    reg.hooks(HookPoint::Perceive).iter().any(|h| {
+        let ctx = HookReadContext::for_module(w, action_state, &h.module);
+        h.hook.is_concealed(&ctx, subject)
+    })
 }
 
 /// Collect every `LookRendered` hook's extra lines for a room render.
 #[must_use]
 pub fn look_rendered_lines(reg: &Registry, w: &World, looker: ObjId, room: ObjId) -> Vec<RichText> {
+    look_rendered_lines_with_action_state(reg, w, looker, room, None)
+}
+
+pub(crate) fn look_rendered_lines_with_action_state(
+    reg: &Registry,
+    w: &World,
+    looker: ObjId,
+    room: ObjId,
+    action_state: Option<&crate::action_state::ActionStateStore>,
+) -> Vec<RichText> {
     let mut lines = Vec::new();
     for h in reg.hooks(HookPoint::LookRendered) {
-        lines.extend(h.hook.look_rendered(w, looker, room));
+        let ctx = HookReadContext::for_module(w, action_state, &h.module);
+        lines.extend(h.hook.look_rendered(&ctx, looker, room));
     }
     lines
 }
@@ -2839,6 +3004,82 @@ pub(crate) fn fire_scene_hook_with_action_state(
 // ----------------------------------------------------------------------
 
 impl Ctx<'_> {
+    /// Build the immutable view used when a command invokes a registered
+    /// hook directly (for example, while deliberately skipping its own
+    /// module's veto). The hook is stamped with its registering owner and
+    /// receives the same live typed-state snapshot as ordinary dispatch.
+    #[must_use]
+    pub fn hook_read_context<'a>(&'a self, module: &str) -> HookReadContext<'a> {
+        HookReadContext::for_module(self.w, self.typed_state.store(), module)
+    }
+
+    /// Consult the registered movement veto chain with this command's live
+    /// typed-state snapshot.
+    pub fn check_move_attempt(
+        &self,
+        actor: ObjId,
+        exit: Option<ObjId>,
+        dest: ObjId,
+    ) -> Result<(), RichText> {
+        check_move_attempt_with_action_state(
+            self.reg,
+            self.w,
+            actor,
+            exit,
+            dest,
+            self.typed_state.store(),
+        )
+    }
+
+    /// Consult the registered custody veto chain with this command's live
+    /// typed-state snapshot.
+    pub fn check_carry_attempt(
+        &self,
+        mover: ObjId,
+        obj: ObjId,
+        dest: ObjId,
+    ) -> Result<(), RichText> {
+        check_carry_attempt_with_action_state(
+            self.reg,
+            self.w,
+            mover,
+            obj,
+            dest,
+            self.typed_state.store(),
+        )
+    }
+
+    /// Resolve per-observer visibility with this command's live typed state.
+    #[must_use]
+    pub fn can_perceive(&self, observer: ObjId, subject: ObjId) -> bool {
+        perceives_via_action_state(
+            self.reg.hooks(HookPoint::Perceive),
+            self.w,
+            observer,
+            subject,
+            self.typed_state.store(),
+        )
+    }
+
+    /// Resolve ruleset-agnostic concealment with this command's live typed state.
+    #[must_use]
+    pub fn is_concealed(&self, subject: ObjId) -> bool {
+        is_concealed_via_action_state(self.reg, self.w, subject, self.typed_state.store())
+    }
+
+    /// Render a room through perception and look hooks using this command's
+    /// live typed-state snapshot.
+    pub fn show_room(&mut self, looker: ObjId, room: ObjId) {
+        crate::commands::show_room_with_action_state(
+            self.reg,
+            self.w,
+            looker,
+            room,
+            self.out,
+            self.typed_state.store(),
+        );
+    }
+
     /// Queue a module persistence op onto the command's deferred
     /// side-channel. The world task drains these into the current
     /// `WriteBatch` — the write commits atomically with this command's
@@ -3260,7 +3501,7 @@ mod concealment_tests {
     fn is_concealed_true_when_a_hook_claims_it() {
         struct AlwaysConcealed;
         impl EventHook for AlwaysConcealed {
-            fn is_concealed(&self, _w: &World, _subject: ObjId) -> bool {
+            fn is_concealed(&self, _ctx: &HookReadContext<'_>, _subject: ObjId) -> bool {
                 true
             }
         }

@@ -15,7 +15,7 @@ use mush_core::module::{AsyncCompletion, WorldEvent};
 use mush_core::{
     ArgShape, Attr, CmdError, CommandSpec, Ctx, Deferred, Effect, GameModule, ModError,
     ModuleBootData, ModuleCtx, ModuleOp, ModuleWrite, ObjId, ObjKind, Powers, Registrar, Role,
-    TickCadence, World, WorldEventKind, WorldObserver, can_perceive, is_concealed, obj_ref, perm,
+    TickCadence, World, WorldEventKind, WorldObserver, obj_ref, perm,
 };
 use mush_proto::{NarrativeKind, OutputEvent, RichText};
 use smol_str::SmolStr;
@@ -378,7 +378,7 @@ fn on_said(ctx: &mut Ctx<'_>, who: ObjId, room: ObjId, kind: NarrativeKind, text
         // (a vampire Obfuscated past its Auspex) neither remembers nor wakes to
         // the speech — true silence, exactly as for a player who fails to
         // notice. Free pass with no concealment ruleset registered.
-        if !can_perceive(ctx.reg, ctx.w, npc, who) {
+        if !ctx.can_perceive(npc, who) {
             continue;
         }
         let Some(profile) = read_profile(ctx.w, npc) else {
@@ -426,7 +426,7 @@ fn on_moved(ctx: &mut Ctx<'_>, who: ObjId, from: Option<ObjId>, to: ObjId) {
             continue;
         }
         // M11: an unseen (Obfuscated) arrival triggers no stimulus.
-        if !can_perceive(ctx.reg, ctx.w, npc, who) {
+        if !ctx.can_perceive(npc, who) {
             continue;
         }
         file_intel(ctx, npc, who, IntelKind::Arrived, "arrived");
@@ -444,7 +444,7 @@ fn on_moved(ctx: &mut Ctx<'_>, who: ObjId, from: Option<ObjId>, to: ObjId) {
             if npc == who || !enabled_npc(ctx.w, npc) {
                 continue;
             }
-            if !can_perceive(ctx.reg, ctx.w, npc, who) {
+            if !ctx.can_perceive(npc, who) {
                 continue;
             }
             file_intel(ctx, npc, who, IntelKind::Departed, "left");
@@ -489,7 +489,7 @@ fn on_presence(ctx: &mut Ctx<'_>, who: ObjId, connected: bool) {
             continue;
         }
         // M11: a connect/disconnect by an unseen character wakes no NPC.
-        if !can_perceive(ctx.reg, ctx.w, npc, who) {
+        if !ctx.can_perceive(npc, who) {
             continue;
         }
         file_intel(ctx, npc, who, kind, detail);
@@ -586,7 +586,7 @@ fn file_intel(ctx: &mut Ctx<'_>, npc: ObjId, subject: ObjId, kind: IntelKind, de
     }
     // Notability: a pierced concealment and a witnessed power use are always
     // reported; otherwise the subject must be on the watch list.
-    let concealed = is_concealed(ctx.reg, ctx.w, subject);
+    let concealed = ctx.is_concealed(subject);
     let inherently_notable = matches!(kind, IntelKind::PowerUse);
     if !concealed && !inherently_notable && !subject_on_watch(ctx.w, &profile, subject) {
         return;

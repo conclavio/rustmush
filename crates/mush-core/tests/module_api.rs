@@ -12,9 +12,9 @@ use std::time::Duration;
 
 use mush_core::engine::{Effects, Engine, Inbound};
 use mush_core::module::{
-    ContextOutcome, EventHook, GameModule, HookPoint, InputContext, JobQueueSpec, Migration,
-    ModError, ModuleBootData, ModuleCtx, ModuleOp, ModuleWrite, PanelFeedHandle, QueryHandler,
-    RecoveryReporter, Registrar, SceneId, TickCadence, WorldEvent, WorldEventKind,
+    ContextOutcome, EventHook, GameModule, HookPoint, HookReadContext, InputContext, JobQueueSpec,
+    Migration, ModError, ModuleBootData, ModuleCtx, ModuleOp, ModuleWrite, PanelFeedHandle,
+    QueryHandler, RecoveryReporter, Registrar, SceneId, TickCadence, WorldEvent, WorldEventKind,
 };
 use mush_core::{
     ActionError, ActionInvocation, ActionProvider, AliasOutcome, AliasStage, ArgShape,
@@ -67,18 +67,23 @@ struct ToyHook;
 impl EventHook for ToyHook {
     fn move_attempt(
         &self,
-        w: &mut World,
+        ctx: &HookReadContext<'_>,
         _actor: ObjId,
         _exit: Option<ObjId>,
         dest: ObjId,
     ) -> Result<(), RichText> {
-        if w.get(dest).is_some_and(|o| o.name == "Vault") {
+        if ctx.world().get(dest).is_some_and(|o| o.name == "Vault") {
             return Err(RichText::plain("The wards flare."));
         }
         Ok(())
     }
 
-    fn look_rendered(&self, _w: &World, _looker: ObjId, _room: ObjId) -> Vec<RichText> {
+    fn look_rendered(
+        &self,
+        _ctx: &HookReadContext<'_>,
+        _looker: ObjId,
+        _room: ObjId,
+    ) -> Vec<RichText> {
         vec![RichText::plain("A toy glows here.")]
     }
 

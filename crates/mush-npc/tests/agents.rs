@@ -10,8 +10,8 @@ use std::sync::Arc;
 
 use mush_core::module::TickHandler;
 use mush_core::{
-    Attr, ConnId, Ctx, Effect, Effects, Engine, GOD, Inbound, ObjId, ObjKind, Outbox, ParsedArgs,
-    Registry, SwitchSet, World, register_core_commands,
+    Attr, ConnId, Ctx, Effect, Effects, Engine, GOD, HookReadContext, Inbound, ObjId, ObjKind,
+    Outbox, ParsedArgs, Registry, SwitchSet, World, register_core_commands,
 };
 use mush_faction::Principal;
 use mush_llm::{
@@ -1415,16 +1415,21 @@ impl mush_core::GameModule for CloakModule {
 struct CloakHook;
 
 impl mush_core::EventHook for CloakHook {
-    fn perceives(&self, w: &World, _observer: ObjId, subject: ObjId) -> mush_core::Perceive {
-        if attr_flag(w, subject, "cloaked") {
+    fn perceives(
+        &self,
+        ctx: &HookReadContext<'_>,
+        _observer: ObjId,
+        subject: ObjId,
+    ) -> mush_core::Perceive {
+        if attr_flag(ctx.world(), subject, "cloaked") {
             mush_core::Perceive::Conceal
         } else {
             mush_core::Perceive::Abstain
         }
     }
 
-    fn is_concealed(&self, w: &World, subject: ObjId) -> bool {
-        attr_flag(w, subject, "notable")
+    fn is_concealed(&self, ctx: &HookReadContext<'_>, subject: ObjId) -> bool {
+        attr_flag(ctx.world(), subject, "notable")
     }
 }
 

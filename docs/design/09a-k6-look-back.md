@@ -87,9 +87,10 @@ has been explicitly handed to the E cuts named in section 3.
   prerequisites before that matrix expands.
 
 The separate typed-state migration accounting remains: mixed Ledger replay is open; owner-scoped
-typed reads are closed for ordinary module contexts but open for movement/carry/render/perception
-hooks; folding the Ledger seal into the bundle is open. This is why economy/housing records may be
-valid domain work without yet being eligible for authoritative migration.
+typed reads are now closed for ordinary module contexts and for movement/carry/render/perception
+hooks through `HookReadContext`; folding the Ledger seal into the bundle is open. This is why
+economy/housing records may be valid domain work without yet being eligible for authoritative
+migration.
 
 ## 6. K7 entry decision
 

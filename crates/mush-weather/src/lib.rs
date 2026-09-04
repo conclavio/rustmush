@@ -48,9 +48,9 @@ use std::time::Duration;
 
 use mush_core::output::display_name;
 use mush_core::{
-    Audience, Ctx, EventHook, Flags, GameModule, HookPoint, ModError, ModuleBootData, ModuleCtx,
-    ModuleOp, ModuleWrite, ObjId, ObjKind, PanelFeedHandle, Registrar, TickCadence, TickHandler,
-    WeatherQuery, World, WorldEvent, WorldEventKind, WxSnapshot,
+    Audience, Ctx, EventHook, Flags, GameModule, HookPoint, HookReadContext, ModError,
+    ModuleBootData, ModuleCtx, ModuleOp, ModuleWrite, ObjId, ObjKind, PanelFeedHandle, Registrar,
+    TickCadence, TickHandler, WeatherQuery, World, WorldEvent, WorldEventKind, WxSnapshot,
 };
 use mush_proto::{OutputEvent, RichText};
 use smol_str::SmolStr;
@@ -485,8 +485,14 @@ struct WeatherLook {
 }
 
 impl EventHook for WeatherLook {
-    fn look_rendered(&self, w: &World, _looker: ObjId, room: ObjId) -> Vec<RichText> {
-        let Some((cell, def, sheltered)) = resolve_room_weather(w, &self.climates, room) else {
+    fn look_rendered(
+        &self,
+        ctx: &HookReadContext<'_>,
+        _looker: ObjId,
+        room: ObjId,
+    ) -> Vec<RichText> {
+        let Some((cell, def, sheltered)) = resolve_room_weather(ctx.world(), &self.climates, room)
+        else {
             return Vec::new();
         };
         vec![RichText::tag(

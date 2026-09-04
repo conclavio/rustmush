@@ -41,8 +41,8 @@ mod data;
 use std::sync::Arc;
 
 use mush_core::module::{
-    EventHook, GameModule, HookPoint, ModError, ModuleBootData, ModuleCtx, Registrar, WorldEvent,
-    WorldEventKind,
+    EventHook, GameModule, HookPoint, HookReadContext, ModError, ModuleBootData, ModuleCtx,
+    Registrar, WorldEvent, WorldEventKind,
 };
 use mush_core::output::display_name;
 use mush_core::{
@@ -261,11 +261,12 @@ struct TimestopMoveGate;
 impl EventHook for TimestopMoveGate {
     fn move_attempt(
         &self,
-        w: &mut World,
+        ctx: &HookReadContext<'_>,
         actor: ObjId,
         _exit: Option<ObjId>,
         _dest: ObjId,
     ) -> Result<(), RichText> {
+        let w = ctx.world();
         if !w.in_exclusive_scene(actor) {
             return Ok(());
         }

@@ -32,7 +32,7 @@ use smol_str::SmolStr;
 use crate::cmd::{ArgShape, CmdError, CommandSpec, Ctx, Registry, RegistryError};
 use crate::flags::{Flags, Role};
 use crate::matchit::match_object;
-use crate::module::can_perceive;
+use crate::module::{HookPoint, perceives_via_action_state};
 use crate::obj::{ObjId, ObjKind};
 use crate::perm;
 use crate::world::{ChannelGrant, World};
@@ -549,6 +549,16 @@ pub fn resolve_behavior_command(
     actor: ObjId,
     verb: &str,
 ) -> BehaviorResolution {
+    resolve_behavior_command_with_action_state(reg, w, actor, verb, None)
+}
+
+pub(crate) fn resolve_behavior_command_with_action_state(
+    reg: &Registry,
+    w: &World,
+    actor: ObjId,
+    verb: &str,
+    action_state: Option<&crate::action_state::ActionStateStore>,
+) -> BehaviorResolution {
     if verb.is_empty() {
         return BehaviorResolution::None;
     }
@@ -598,7 +608,15 @@ pub fn resolve_behavior_command(
         if obj.flags.contains(Flags::GOING) {
             continue;
         }
-        if subject != actor && !can_perceive(reg, w, actor, subject) {
+        if subject != actor
+            && !perceives_via_action_state(
+                reg.hooks(HookPoint::Perceive),
+                w,
+                actor,
+                subject,
+                action_state,
+            )
+        {
             continue;
         }
         for bid in obj.behaviors.keys() {

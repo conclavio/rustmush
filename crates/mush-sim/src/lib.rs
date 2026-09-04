@@ -27,8 +27,8 @@ use std::time::Duration;
 use mush_core::{
     AuthorityGuardKind, BehaviorId, BehaviorSpec, ControlLeaseGuardValidator,
     ControlLeaseStateCodec, Ctx, DefinitionKind, DestroyGate, DestroyPolicy, DetachGate, EventHook,
-    GameModule, HookPoint, ModError, ModuleBootData, ModuleCtx, ObjId, ObjKind, Registrar,
-    Registry, Role, StateFamilyId, TickCadence, World, WorldEvent, WorldEventKind,
+    GameModule, HookPoint, HookReadContext, ModError, ModuleBootData, ModuleCtx, ObjId, ObjKind,
+    Registrar, Registry, Role, StateFamilyId, TickCadence, World, WorldEvent, WorldEventKind,
     control_lease_state_family_descriptor,
 };
 use mush_proto::RichText;
@@ -162,24 +162,24 @@ fn placed_or_quarantined(w: &World, obj: ObjId) -> Option<String> {
 impl EventHook for PlacementGate {
     fn move_attempt(
         &self,
-        w: &mut World,
+        ctx: &HookReadContext<'_>,
         actor: ObjId,
         _exit: Option<ObjId>,
         _dest: ObjId,
     ) -> Result<(), RichText> {
-        match gate_reason(w, actor) {
+        match gate_reason(ctx.world(), actor) {
             Some(reason) => Err(RichText::tag("error", reason)),
             None => Ok(()),
         }
     }
     fn carry_attempt(
         &self,
-        w: &mut World,
+        ctx: &HookReadContext<'_>,
         _mover: ObjId,
         obj: ObjId,
         _dest: ObjId,
     ) -> Result<(), RichText> {
-        match gate_reason(w, obj) {
+        match gate_reason(ctx.world(), obj) {
             Some(reason) => Err(RichText::tag("error", reason)),
             None => Ok(()),
         }

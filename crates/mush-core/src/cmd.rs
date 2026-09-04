@@ -39,7 +39,7 @@ use mush_proto::OutputEvent;
 
 use crate::behavior::{
     BehaviorId, BehaviorRegError, BehaviorResolution, BehaviorSpec, DestroyGate, DestroyPolicy,
-    DetachGate, resolve_behavior_command,
+    DetachGate, resolve_behavior_command_with_action_state,
 };
 use crate::commands::movement;
 use crate::flags::{Powers, Role};
@@ -1055,13 +1055,13 @@ pub(crate) fn dispatch_with_action_state(
 
     // 4. HOME keyword.
     if cur.trim().eq_ignore_ascii_case("home") {
-        movement::go_home(reg, w, actor, out);
+        movement::go_home_with_action_state(reg, w, actor, out, action_state);
         return;
     }
 
     // 5. Exit match (room → zone → global) against the whole line.
     if let Some(exit) = movement::find_exit(w, actor, cur.trim()) {
-        movement::traverse_exit(reg, w, actor, exit, out);
+        movement::traverse_exit_with_action_state(reg, w, actor, exit, out, action_state);
         return;
     }
 
@@ -1077,7 +1077,7 @@ pub(crate) fn dispatch_with_action_state(
             // missed, so a behavior verb can never shadow a core verb, a staff
             // command, or an exit. The first tier with a match wins; an
             // ambiguous tier refuses and never falls through.
-            match resolve_behavior_command(reg, w, actor, verb) {
+            match resolve_behavior_command_with_action_state(reg, w, actor, verb, action_state) {
                 BehaviorResolution::One { target, index } => {
                     let Some(bspec) = reg.behavior_spec(&target.behavior) else {
                         huh(reg, actor, verb, out);

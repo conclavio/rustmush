@@ -846,12 +846,12 @@ struct BoltedAndVault;
 impl mush_core::EventHook for BoltedAndVault {
     fn carry_attempt(
         &self,
-        w: &mut World,
+        ctx: &mush_core::HookReadContext<'_>,
         _mover: ObjId,
         obj: ObjId,
         _dest: ObjId,
     ) -> Result<(), mush_proto::RichText> {
-        if w.get(obj).is_some_and(|o| o.name == "Bolted") {
+        if ctx.world().get(obj).is_some_and(|o| o.name == "Bolted") {
             Err(mush_proto::RichText::tag("error", "It is bolted down."))
         } else {
             Ok(())
@@ -859,12 +859,12 @@ impl mush_core::EventHook for BoltedAndVault {
     }
     fn move_attempt(
         &self,
-        w: &mut World,
+        ctx: &mush_core::HookReadContext<'_>,
         _actor: ObjId,
         _exit: Option<ObjId>,
         dest: ObjId,
     ) -> Result<(), mush_proto::RichText> {
-        if w.get(dest).is_some_and(|o| o.name == "Vault") {
+        if ctx.world().get(dest).is_some_and(|o| o.name == "Vault") {
             Err(mush_proto::RichText::tag("error", "The vault is sealed."))
         } else {
             Ok(())

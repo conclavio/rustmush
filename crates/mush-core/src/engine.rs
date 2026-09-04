@@ -772,7 +772,13 @@ impl Engine {
             ),
             crate::action::PerceivedRef::KnownObject { id, revision } => {
                 if self.world.get(*id).is_none()
-                    || !module::can_perceive(&self.registry, &self.world, actor, *id)
+                    || !module::can_perceive_with_action_state(
+                        &self.registry,
+                        &self.world,
+                        actor,
+                        *id,
+                        &self.action_state,
+                    )
                 {
                     return Err(crate::offer::LegalActionSubjectError::Invalid);
                 }
@@ -883,7 +889,13 @@ impl Engine {
                     // well; unlike an operated subject, a target needs no
                     // station grant merely to be targetable.
                     if self.world.get(*id).is_none()
-                        || !module::can_perceive(&self.registry, &self.world, actor, *id)
+                        || !module::can_perceive_with_action_state(
+                            &self.registry,
+                            &self.world,
+                            actor,
+                            *id,
+                            &self.action_state,
+                        )
                     {
                         return Err(crate::offer::LegalActionResolutionError::Resolve(
                             crate::offer::OfferResolveError::Unavailable,
@@ -1918,7 +1930,14 @@ impl Engine {
             && self.world.input_depth(actor) == 0
             && let Some(room) = self.world.get(actor).and_then(|record| record.location)
         {
-            crate::commands::show_room(&self.registry, &self.world, actor, room, out);
+            crate::commands::show_room_with_action_state(
+                &self.registry,
+                &self.world,
+                actor,
+                room,
+                out,
+                Some(&self.action_state),
+            );
         }
     }
 
@@ -2597,6 +2616,128 @@ mod tests {
                 ActionStateError::OwnerNotReady(_)
             ))
         ));
+    }
+
+    #[test]
+    fn engine_move_hooks_receive_owner_scoped_live_typed_state() {
+        use std::sync::Mutex;
+
+        use crate::action_state::{
+            ModuleActionStateReadError, StateFamilyDescriptor, StateFamilyHandle, StateFamilyId,
+        };
+        use crate::mechanics::CanonicalId;
+        use crate::module::{EventHook, HookPoint, HookReadContext};
+
+        struct TypedHook {
+            handle: StateFamilyHandle<u32, u32>,
+        }
+
+        impl EventHook for TypedHook {
+            fn move_attempt(
+                &self,
+                ctx: &HookReadContext<'_>,
+                _actor: ObjId,
+                _exit: Option<ObjId>,
+                _dest: ObjId,
+            ) -> Result<(), mush_proto::RichText> {
+                match ctx.action_state(&self.handle, &7) {
+                    Ok(Some(41)) => Err(mush_proto::RichText::plain("typed veto")),
+                    Err(ModuleActionStateReadError::Unavailable) => {
+                        Err(mush_proto::RichText::plain("typed unavailable"))
+                    }
+                    other => Err(mush_proto::RichText::plain(format!(
+                        "unexpected typed hook state: {other:?}"
+                    ))),
+                }
+            }
+        }
+
+        struct TypedHookModule {
+            captured: Arc<Mutex<Option<StateFamilyHandle<u32, u32>>>>,
+        }
+
+        impl GameModule for TypedHookModule {
+            fn name(&self) -> &'static str {
+                "typed_hook"
+            }
+
+            fn register(&mut self, reg: &mut module::Registrar<'_>) -> Result<(), ModError> {
+                let handle = reg.state_family(
+                    StateFamilyDescriptor::new(
+                        StateFamilyId::new("records").unwrap(),
+                        CanonicalId::new("u32.decimal.v1").unwrap(),
+                        CanonicalId::new("u32.value.v1").unwrap(),
+                        1,
+                        CanonicalId::new("u32.decode.v1").unwrap(),
+                        CanonicalId::new("u32.validate.v1").unwrap(),
+                        CanonicalId::new("u32.serialize.v1").unwrap(),
+                    )
+                    .unwrap(),
+                    |key: &u32| Ok(key.to_string()),
+                    |value: &serde_json::Value| {
+                        serde_json::from_value(value.clone()).map_err(|error| error.to_string())
+                    },
+                    |_value: &u32| Ok(()),
+                    |value: &u32| serde_json::to_value(value).map_err(|error| error.to_string()),
+                )?;
+                reg.hook(
+                    HookPoint::MoveAttempt,
+                    Arc::new(TypedHook {
+                        handle: handle.clone(),
+                    }),
+                );
+                *self.captured.lock().unwrap() = Some(handle);
+                Ok(())
+            }
+        }
+
+        let captured = Arc::new(Mutex::new(None));
+        let mut world = World::new_minimal();
+        let destination = world.create(ObjKind::Room, "North", GOD, None).unwrap();
+        let exit = world
+            .create(ObjKind::Exit, "north", GOD, Some(LIMBO))
+            .unwrap();
+        world.link_exit(exit, Some(destination)).unwrap();
+        let mut engine = Engine::with_modules(
+            world,
+            Registry::new(),
+            vec![Box::new(TypedHookModule {
+                captured: Arc::clone(&captured),
+            })],
+        )
+        .unwrap();
+        let handle = captured.lock().unwrap().clone().unwrap();
+        let mut transaction = engine.action_transaction(&handle).unwrap();
+        transaction.insert(&handle, &7, 41).unwrap();
+        let (_, installation) = transaction.prepare().unwrap().into_parts();
+        engine.install_prepared_action(installation);
+
+        let mut out = Outbox::new();
+        let mut effects = Effects::new();
+        engine.step(
+            Inbound::Cmd {
+                conn: 1,
+                actor: GOD,
+                line: "north".into(),
+            },
+            &mut out,
+            &mut effects,
+        );
+        assert_eq!(
+            engine.world.get(GOD).and_then(|obj| obj.location),
+            Some(LIMBO)
+        );
+        assert!(texts(&out).iter().any(|line| line == "typed veto"));
+
+        let compatibility = crate::module::check_move_attempt(
+            &engine.registry,
+            &engine.world,
+            GOD,
+            Some(exit),
+            destination,
+        )
+        .unwrap_err();
+        assert_eq!(compatibility.to_plain_text(), "typed unavailable");
     }
 
     fn room_saw(out: &Outbox, room: ObjId, needle: &str) -> bool {

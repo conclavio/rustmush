@@ -36,8 +36,9 @@
 use std::sync::Arc;
 
 use mush_core::{
-    ArgShape, CmdError, CommandSpec, Ctx, EventHook, HookPoint, ModError, ObjId, ObjKind, Outbox,
-    Perceive, Registrar, World, WorldEvent, WorldEventKind, WorldObserver, obj_ref,
+    ArgShape, CmdError, CommandSpec, Ctx, EventHook, HookPoint, HookReadContext, ModError, ObjId,
+    ObjKind, Outbox, Perceive, Registrar, World, WorldEvent, WorldEventKind, WorldObserver,
+    obj_ref,
 };
 use mush_dice::RollCtx;
 use mush_dice::owod20::{Owod20Opts, Owod20Pool};
@@ -64,12 +65,12 @@ use crate::state::{RollLogEntry, WodState};
 pub struct PerceptionHook;
 
 impl EventHook for PerceptionHook {
-    fn perceives(&self, w: &World, observer: ObjId, subject: ObjId) -> Perceive {
+    fn perceives(&self, ctx: &HookReadContext<'_>, observer: ObjId, subject: ObjId) -> Perceive {
         // You always perceive yourself.
         if observer == subject {
             return Perceive::Abstain;
         }
-        let Some(st) = w.module_state::<WodState>() else {
+        let Some(st) = ctx.world().module_state::<WodState>() else {
             return Perceive::Abstain;
         };
         if !st.is_concealed(subject) {
@@ -85,8 +86,9 @@ impl EventHook for PerceptionHook {
     /// [`mush_core::is_concealed`]): `subject` is concealed exactly when it is
     /// under active Obfuscate. Observer-independent — a pure read of the
     /// concealment set, no roll, no cache write.
-    fn is_concealed(&self, w: &World, subject: ObjId) -> bool {
-        w.module_state::<WodState>()
+    fn is_concealed(&self, ctx: &HookReadContext<'_>, subject: ObjId) -> bool {
+        ctx.world()
+            .module_state::<WodState>()
             .is_some_and(|st| st.is_concealed(subject))
     }
 }
