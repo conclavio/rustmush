@@ -1107,6 +1107,11 @@ pub enum LegalActionProjectionError {
     },
     #[error("provider owner became unavailable while projecting {action}")]
     ProviderUnavailable { action: Box<DefinitionRef> },
+    #[error("kernel could not bind an exact station grant to {action}: {source}")]
+    ChannelGrant {
+        action: Box<DefinitionRef>,
+        source: Box<crate::action::GuardSetBuildError>,
+    },
     #[error("provider {action} produced an invalid offer: {source}")]
     Offer {
         action: Box<DefinitionRef>,

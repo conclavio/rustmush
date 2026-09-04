@@ -14,6 +14,7 @@ use serde::de::Error as _;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::{Value, json};
 use sha2::{Digest as _, Sha256};
+use smol_str::SmolStr;
 use thiserror::Error;
 
 use crate::action_state::{ActionStateError, ActionStateStore, ActionTxn, PreparedTxn};
@@ -1053,6 +1054,23 @@ pub enum AuthorityGuard {
         capability: CanonicalId,
         generation: u64,
     },
+    /// Exact transient station grant selected while projecting an offer.
+    ///
+    /// This is distinct from a durable [`Self::ControlLease`]. A rules owner
+    /// rebuilds station grants from its authoritative assignments at boot;
+    /// core binds the chosen grant into the private offer and re-reads the
+    /// projection immediately before commit. One witness is retained per
+    /// required channel so authority can never be assembled by unioning
+    /// channels or priority across seats.
+    ChannelGrant {
+        provider: OwnerId,
+        actor: ObjId,
+        subject: ObjId,
+        station: SmolStr,
+        channel: ChannelId,
+        priority: u16,
+        epoch: u64,
+    },
     ControlLease {
         provider: OwnerId,
         subject: ObjId,
@@ -1078,6 +1096,7 @@ pub enum AuthorityGuard {
 #[serde(rename_all = "snake_case")]
 pub enum AuthorityGuardKind {
     Capability,
+    ChannelGrant,
     ControlLease,
     Reservation,
     Window,
@@ -1089,6 +1108,7 @@ impl AuthorityGuard {
     pub const fn kind(&self) -> AuthorityGuardKind {
         match self {
             Self::Capability { .. } => AuthorityGuardKind::Capability,
+            Self::ChannelGrant { .. } => AuthorityGuardKind::ChannelGrant,
             Self::ControlLease { .. } => AuthorityGuardKind::ControlLease,
             Self::Reservation { .. } => AuthorityGuardKind::Reservation,
             Self::Window { .. } => AuthorityGuardKind::Window,
@@ -1102,6 +1122,7 @@ impl AuthorityGuard {
     pub const fn provider(&self) -> Option<&OwnerId> {
         match self {
             Self::Capability { provider, .. }
+            | Self::ChannelGrant { provider, .. }
             | Self::ControlLease { provider, .. }
             | Self::Reservation { provider, .. } => Some(provider),
             Self::Window { owner, .. } => Some(owner),
@@ -1122,6 +1143,24 @@ impl AuthorityGuard {
                 "actor": actor,
                 "capability": capability,
                 "generation": generation,
+            }),
+            Self::ChannelGrant {
+                provider,
+                actor,
+                subject,
+                station,
+                channel,
+                priority,
+                epoch,
+            } => json!({
+                "kind": "channel_grant",
+                "provider": provider,
+                "actor": actor,
+                "subject": subject,
+                "station": station,
+                "channel": channel,
+                "priority": priority,
+                "epoch": epoch,
             }),
             Self::ControlLease {
                 provider,
@@ -1445,8 +1484,11 @@ impl AuthorityGuardValidatorRegistryBuilder {
         kind: AuthorityGuardKind,
         validator: Arc<dyn AuthorityGuardValidator>,
     ) -> Result<(), AuthorityGuardValidatorRegistryError> {
-        if kind == AuthorityGuardKind::Definition {
-            return Err(AuthorityGuardValidatorRegistryError::ReservedDefinitionKind);
+        if matches!(
+            kind,
+            AuthorityGuardKind::ChannelGrant | AuthorityGuardKind::Definition
+        ) {
+            return Err(AuthorityGuardValidatorRegistryError::ReservedKernelKind { kind });
         }
         if self.entries.len() >= MAX_AUTHORITY_VALIDATORS {
             return Err(AuthorityGuardValidatorRegistryError::ValidatorLimit {
@@ -1539,8 +1581,14 @@ impl AuthorityGuardValidatorRegistry {
         &self,
         guard: &AuthorityGuard,
     ) -> Result<&AuthorityGuardValidatorEntry, AuthorityGuardValidatorLookupError> {
+        if matches!(
+            guard,
+            AuthorityGuard::ChannelGrant { .. } | AuthorityGuard::Definition(_)
+        ) {
+            return Err(AuthorityGuardValidatorLookupError::KernelGuardIsCentral);
+        }
         let Some(owner) = guard.provider() else {
-            return Err(AuthorityGuardValidatorLookupError::DefinitionIsCentral);
+            return Err(AuthorityGuardValidatorLookupError::KernelGuardIsCentral);
         };
         let entry = self
             .entries
@@ -1571,8 +1619,8 @@ pub enum AuthorityGuardValidatorRegistryError {
         owner: OwnerId,
         kind: AuthorityGuardKind,
     },
-    #[error("definition authority is validated centrally and cannot register an evaluator")]
-    ReservedDefinitionKind,
+    #[error("{kind:?} authority is validated centrally and cannot register an evaluator")]
+    ReservedKernelKind { kind: AuthorityGuardKind },
     #[error("authority-validator registry exceeds its hard limit of {max}")]
     ValidatorLimit { max: usize },
     #[error("owner {owner} exceeds its authority-validator limit of {max}")]
@@ -1586,8 +1634,8 @@ pub enum AuthorityGuardValidatorRegistryError {
 /// Missing exact `(owner, authority kind)` validator.
 #[derive(Clone, Debug, Eq, Error, PartialEq)]
 pub enum AuthorityGuardValidatorLookupError {
-    #[error("definition guards use central exact-definition validation")]
-    DefinitionIsCentral,
+    #[error("kernel-owned guards use central validation")]
+    KernelGuardIsCentral,
     #[error("no authority validator is registered for {guard:?}")]
     Missing { guard: Box<AuthorityGuard> },
     #[error("authority validator owner is not ready for {guard:?}: {source}")]
@@ -1653,6 +1701,43 @@ impl GuardSet {
         &self.authority
     }
 
+    /// Add the kernel-selected exact station witnesses for one legal offer.
+    ///
+    /// Kept crate-private so providers cannot claim that arbitrary projected
+    /// station data was selected by the kernel. The provider declares only
+    /// public required channels; registry projection chooses one current
+    /// station and adds these private guards.
+    pub(crate) fn with_channel_grant(
+        self,
+        grant_owner: &OwnerId,
+        grant: &crate::world::ChannelGrant,
+        required_channels: &[ChannelId],
+    ) -> Result<Self, GuardSetBuildError> {
+        self.owner_readiness
+            .require_ready(grant_owner)
+            .map_err(|source| GuardSetBuildError::GrantOwnerUnavailable {
+                owner: grant_owner.clone(),
+                source: Box::new(source),
+            })?;
+        let mut builder = ServerGuardSetBuilder {
+            revisions: self.revisions,
+            authority: self.authority.into_iter().collect(),
+            owner_readiness: self.owner_readiness,
+        };
+        for channel in required_channels {
+            builder.add(AuthorityGuard::ChannelGrant {
+                provider: grant_owner.clone(),
+                actor: grant.actor,
+                subject: grant.subject,
+                station: grant.station.clone(),
+                channel: channel.clone(),
+                priority: grant.priority,
+                epoch: grant.epoch,
+            })?;
+        }
+        builder.finish()
+    }
+
     /// Re-read every registered source against immutable world truth.
     ///
     /// This method is deliberately pure. The world-task coordinator must use
@@ -1701,6 +1786,39 @@ impl GuardSet {
         let mut stale_authority = Vec::new();
         for guard in &self.authority {
             let is_current = match guard {
+                AuthorityGuard::ChannelGrant {
+                    provider,
+                    actor,
+                    subject,
+                    station,
+                    channel,
+                    priority,
+                    epoch,
+                } => {
+                    self.owner_readiness
+                        .require_ready(provider)
+                        .map_err(|source| GuardRevalidationError::ChannelGrantUnavailable {
+                            guard: Box::new(guard.clone()),
+                            source: Box::new(source),
+                        })?;
+                    let current = world
+                        .channel_grant(*actor, *subject, provider.as_str(), station.as_str())
+                        .is_some_and(|grant| {
+                            grant.priority == *priority
+                                && grant.epoch == *epoch
+                                && grant.channels.contains(channel)
+                        });
+                    // Readiness may be frozen independently of the world task.
+                    // Discard an apparent match if the owner froze during the
+                    // projection read.
+                    self.owner_readiness
+                        .require_ready(provider)
+                        .map_err(|source| GuardRevalidationError::ChannelGrantUnavailable {
+                            guard: Box::new(guard.clone()),
+                            source: Box::new(source),
+                        })?;
+                    current
+                }
                 AuthorityGuard::Definition(reference) => match definitions.get_exact(reference) {
                     Ok(_) => true,
                     Err(
@@ -1854,6 +1972,11 @@ pub enum GuardRevalidationError {
         reference: Box<DefinitionRef>,
         source: Box<DefinitionLookupError>,
     },
+    #[error("channel-grant guard {guard:?} cannot be evaluated: {source}")]
+    ChannelGrantUnavailable {
+        guard: Box<AuthorityGuard>,
+        source: Box<MechanicalOwnerReadinessError>,
+    },
 }
 
 /// Builder with an explicitly trusted/server-owned construction name.
@@ -1942,6 +2065,11 @@ pub enum GuardSetBuildError {
     Definition(#[source] Box<DefinitionLookupError>),
     #[error("definition guards must be added through exact registry validation")]
     DefinitionRequiresRegistry,
+    #[error("channel-grant publisher {owner} is not a ready composed mechanics owner: {source}")]
+    GrantOwnerUnavailable {
+        owner: OwnerId,
+        source: Box<MechanicalOwnerReadinessError>,
+    },
     #[error("canonical guard set exceeds its hard byte limit of {max}")]
     EncodedTooLarge { max: usize },
 }
@@ -3599,6 +3727,38 @@ impl fmt::Debug for ActionProviderRegistry {
     }
 }
 
+/// Select the one exact station that supplies every channel required by an
+/// offer. Higher priority wins, but an equal-priority tie is authority
+/// ambiguity and projects no action. In particular, channels can never be
+/// assembled across two grants.
+fn select_offer_channel_grant<'a>(
+    world: &'a World,
+    query: &crate::offer::LegalActionQuery,
+    required_channels: &[ChannelId],
+) -> Option<(OwnerId, &'a crate::world::ChannelGrant)> {
+    if required_channels.is_empty() {
+        return None;
+    }
+    let SubjectKey::Object { id: subject } = query.truth_subject() else {
+        return None;
+    };
+    let mut eligible = world
+        .command_subjects_of(query.actor())
+        .iter()
+        .filter(|grant| {
+            grant.subject == *subject
+                && required_channels
+                    .iter()
+                    .all(|channel| grant.channels.contains(channel))
+        });
+    let best = eligible.next()?;
+    if eligible.any(|candidate| candidate.priority == best.priority) {
+        return None;
+    }
+    let publisher = OwnerId::parse_canonical(best.owner.as_str()).ok()?;
+    Some((publisher, best))
+}
+
 impl ActionProviderRegistry {
     pub fn get_exact(
         &self,
@@ -3690,9 +3850,25 @@ impl ActionProviderRegistry {
                         action: Box::new(entry.action().clone()),
                     },
                 )?;
-            let Some(projected) = projected else {
+            let Some(mut projected) = projected else {
                 continue;
             };
+            if !projected.required_channels.is_empty() {
+                let Some((grant_owner, grant)) =
+                    select_offer_channel_grant(&engine.world, query, &projected.required_channels)
+                else {
+                    continue;
+                };
+                projected.guards = projected
+                    .guards
+                    .with_channel_grant(&grant_owner, grant, &projected.required_channels)
+                    .map_err(
+                        |source| crate::offer::LegalActionProjectionError::ChannelGrant {
+                            action: Box::new(entry.action().clone()),
+                            source: Box::new(source),
+                        },
+                    )?;
+            }
             let offer = crate::offer::InternalOffer::new(
                 crate::offer::InternalOfferDraft {
                     action: entry.action().clone(),
@@ -4470,6 +4646,292 @@ mod tests {
         );
     }
 
+    fn test_channel_grant(
+        station: &str,
+        priority: u16,
+        epoch: u64,
+        channels: &[ChannelId],
+    ) -> crate::world::ChannelGrant {
+        crate::world::ChannelGrant {
+            actor: crate::GOD,
+            subject: crate::LIMBO,
+            station: SmolStr::new(station),
+            relation: SmolStr::new_static("operator"),
+            owner: SmolStr::new(owner().as_str()),
+            priority,
+            channels: channels.iter().cloned().collect(),
+            epoch,
+        }
+    }
+
+    fn operated_query() -> crate::offer::LegalActionQuery {
+        crate::offer::LegalActionQuery::new(
+            PrincipalId::Object { id: crate::GOD },
+            crate::GOD,
+            SubjectKey::Object { id: crate::LIMBO },
+            PerceivedRef::KnownObject {
+                id: crate::LIMBO,
+                revision: 1,
+            },
+            1,
+            None,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn channel_offer_selects_one_whole_unambiguous_station_grant() {
+        let movement = ChannelId::new("movement").unwrap();
+        let weapons = ChannelId::new("weapons").unwrap();
+        let required = vec![movement.clone(), weapons.clone()];
+        let mut world = World::new_minimal();
+
+        // No cross-seat union: neither specialist grants the complete set.
+        world.publish_command_subject(test_channel_grant(
+            "driver",
+            20,
+            4,
+            std::slice::from_ref(&movement),
+        ));
+        world.publish_command_subject(test_channel_grant(
+            "gunner",
+            20,
+            9,
+            std::slice::from_ref(&weapons),
+        ));
+        assert!(select_offer_channel_grant(&world, &operated_query(), &required).is_none());
+
+        world.publish_command_subject(test_channel_grant("commander", 30, 11, &required));
+        let (publisher, selected) =
+            select_offer_channel_grant(&world, &operated_query(), &required).unwrap();
+        assert_eq!(publisher, owner());
+        assert_eq!(selected.station, "commander");
+        assert_eq!(selected.priority, 30);
+
+        // Equal best priority is an authority ambiguity, not a lexical tie
+        // break that silently chooses a seat.
+        world.publish_command_subject(test_channel_grant("remote", 30, 12, &required));
+        assert!(select_offer_channel_grant(&world, &operated_query(), &required).is_none());
+    }
+
+    #[test]
+    fn channel_grant_guard_revalidates_station_priority_epoch_and_channel() {
+        let channel = ChannelId::new("movement").unwrap();
+        let mut world = World::new_minimal();
+        let grant = test_channel_grant("cockpit", 40, 7, std::slice::from_ref(&channel));
+        world.publish_command_subject(grant.clone());
+
+        let readiness = MechanicalOwnerReadiness::for_owners(&owner_roster());
+        let (definitions, action) = action_definition();
+        let definitions = bind_definitions(definitions, &readiness);
+        let mut builder = ServerGuardSetBuilder::new(RevisionSet::default(), readiness.clone());
+        builder.add_definition(action, &definitions).unwrap();
+        let guards = builder
+            .finish()
+            .unwrap()
+            .with_channel_grant(&owner(), &grant, std::slice::from_ref(&channel))
+            .unwrap();
+        let revisions = RevisionValidatorRegistryBuilder::new()
+            .freeze_for_owners_with_readiness(&owner_roster(), readiness.clone())
+            .unwrap();
+        let authority = AuthorityGuardValidatorRegistryBuilder::new()
+            .freeze_for_owners_with_readiness(&owner_roster(), readiness)
+            .unwrap();
+
+        assert!(
+            guards
+                .revalidate(&world, &revisions, &authority, &definitions)
+                .unwrap()
+                .is_current()
+        );
+
+        // Even if a buggy publisher forgets to bump the epoch, priority is
+        // part of the exact private witness and invalidates queued work.
+        world.publish_command_subject(test_channel_grant(
+            "cockpit",
+            41,
+            7,
+            std::slice::from_ref(&channel),
+        ));
+        let stale = guards
+            .revalidate(&world, &revisions, &authority, &definitions)
+            .unwrap();
+        assert_eq!(stale.stale_authority().len(), 1);
+        assert!(matches!(
+            stale.stale_authority()[0],
+            AuthorityGuard::ChannelGrant { .. }
+        ));
+    }
+
+    struct ChannelOfferProvider {
+        guards: GuardSet,
+        channels: Vec<ChannelId>,
+    }
+
+    impl ActionProvider for ChannelOfferProvider {
+        fn validate_invocation(&self, _invocation: &ActionInvocation) -> Result<(), ActionError> {
+            Ok(())
+        }
+
+        fn project_offer(
+            &self,
+            _action: &DefinitionRef,
+            _query: &crate::offer::LegalActionQuery,
+            _engine: &crate::engine::Engine,
+        ) -> Result<Option<crate::offer::ProviderOfferDraft>, ActionError> {
+            Ok(Some(crate::offer::ProviderOfferDraft {
+                fixed_parameters: json!({}),
+                parameters: crate::offer::ProjectedParameterSchema::empty(),
+                targets: crate::offer::ProjectedTargetSchema::None,
+                required_channels: self.channels.clone(),
+                expires: None,
+                presentation: crate::offer::ActionPresentation::new(
+                    "operate",
+                    "Operate",
+                    "Use the selected station.",
+                )
+                .unwrap(),
+                guards: self.guards.clone(),
+            }))
+        }
+    }
+
+    #[test]
+    fn provider_registry_privately_binds_required_channels_to_selected_grant() {
+        let movement = ChannelId::new("movement").unwrap();
+        let weapons = ChannelId::new("weapons").unwrap();
+        let channels = vec![movement, weapons];
+        let control_owner = OwnerId::new("control").unwrap();
+        let roster = BTreeSet::from([owner(), control_owner.clone()]);
+        let readiness = MechanicalOwnerReadiness::for_owners(&roster);
+        let (definitions, action) = action_definition();
+        let definitions = bind_definitions(definitions, &readiness);
+        let mut guard_builder =
+            ServerGuardSetBuilder::new(RevisionSet::default(), readiness.clone());
+        guard_builder
+            .add_definition(action.clone(), &definitions)
+            .unwrap();
+        let mut provider_builder = ActionProviderRegistryBuilder::new();
+        provider_builder
+            .register(
+                owner(),
+                action.clone(),
+                Arc::new(ChannelOfferProvider {
+                    guards: guard_builder.finish().unwrap(),
+                    channels: channels.clone(),
+                }),
+            )
+            .unwrap();
+        let providers = provider_builder
+            .freeze_for_owners_with_readiness(&definitions, &roster, readiness.clone())
+            .unwrap();
+        let keys = crate::offer::OfferKeyRing::new(
+            crate::offer::OfferSecret::new(1, [0x44; 32]).unwrap(),
+            [],
+        )
+        .unwrap();
+        let mut engine = crate::engine::Engine::new(World::new_minimal(), crate::Registry::new());
+
+        // A required-channel offer is absent until one exact grant supplies
+        // the complete set.
+        assert!(
+            providers
+                .project_legal_actions(&engine, &operated_query(), &keys)
+                .unwrap()
+                .is_empty()
+        );
+        let mut rogue = test_channel_grant("rogue", 99, 1, &channels);
+        rogue.owner = SmolStr::new_static("uncomposed");
+        engine.world.publish_command_subject(rogue);
+        assert!(matches!(
+            providers.project_legal_actions(&engine, &operated_query(), &keys),
+            Err(crate::offer::LegalActionProjectionError::ChannelGrant { source, .. })
+                if matches!(
+                    *source,
+                    GuardSetBuildError::GrantOwnerUnavailable { .. }
+                )
+        ));
+        engine
+            .world
+            .retract_command_subjects("uncomposed", Some(crate::GOD));
+        let mut grant = test_channel_grant("cockpit", 50, 13, &channels);
+        grant.owner = SmolStr::new(control_owner.as_str());
+        engine.world.publish_command_subject(grant.clone());
+        let offers = providers
+            .project_legal_actions(&engine, &operated_query(), &keys)
+            .unwrap();
+        let projected = offers.projected().into_iter().next().unwrap();
+        let public_json = serde_json::to_string(&projected).unwrap();
+        assert!(!public_json.contains("cockpit"));
+        assert!(!public_json.contains("epoch"));
+        assert!(!public_json.contains("priority"));
+
+        let request = request(0x45);
+        let resolved = offers
+            .resolve(
+                &keys,
+                crate::offer::OfferExecutionContext {
+                    request,
+                    principal: PrincipalId::Object { id: crate::GOD },
+                    actor: crate::GOD,
+                    idempotency: ScopedIdempotencyKey::new(
+                        IdempotencyScope {
+                            principal: PrincipalId::Object { id: crate::GOD },
+                            owner: owner(),
+                            namespace: CanonicalId::new("operate").unwrap(),
+                        },
+                        1,
+                        IdempotencyKey::Request(request),
+                    ),
+                    viewer_scope: operated_query().viewer_scope(),
+                    now: None,
+                },
+                crate::offer::OfferSubmission {
+                    offer: projected.offer(),
+                    subject: projected.subject().clone(),
+                    targets: Vec::new(),
+                    parameters: json!({}),
+                },
+            )
+            .unwrap();
+        let grant_guards = resolved
+            .guards()
+            .authority()
+            .iter()
+            .filter(|guard| {
+                matches!(
+                    guard,
+                    AuthorityGuard::ChannelGrant { provider, .. }
+                        if provider == &control_owner
+                )
+            })
+            .count();
+        assert_eq!(grant_guards, channels.len());
+
+        let revisions = RevisionValidatorRegistryBuilder::new()
+            .freeze_for_owners_with_readiness(&roster, readiness.clone())
+            .unwrap();
+        let authority = AuthorityGuardValidatorRegistryBuilder::new()
+            .freeze_for_owners_with_readiness(&roster, readiness)
+            .unwrap();
+        assert!(
+            resolved
+                .guards()
+                .revalidate(&engine.world, &revisions, &authority, &definitions)
+                .unwrap()
+                .is_current()
+        );
+
+        let mut changed_grant = grant.clone();
+        changed_grant.epoch += 1;
+        engine.world.publish_command_subject(changed_grant);
+        let stale = resolved
+            .guards()
+            .revalidate(&engine.world, &revisions, &authority, &definitions)
+            .unwrap();
+        assert_eq!(stale.stale_authority().len(), channels.len());
+    }
+
     struct ConstantRevision(Option<u64>);
 
     impl RevisionValidator for ConstantRevision {
@@ -4597,7 +5059,19 @@ mod tests {
                 AuthorityGuardKind::Definition,
                 Arc::new(ConstantAuthority(true)),
             ),
-            Err(AuthorityGuardValidatorRegistryError::ReservedDefinitionKind)
+            Err(AuthorityGuardValidatorRegistryError::ReservedKernelKind {
+                kind: AuthorityGuardKind::Definition
+            })
+        ));
+        assert!(matches!(
+            AuthorityGuardValidatorRegistryBuilder::new().register(
+                owner(),
+                AuthorityGuardKind::ChannelGrant,
+                Arc::new(ConstantAuthority(true)),
+            ),
+            Err(AuthorityGuardValidatorRegistryError::ReservedKernelKind {
+                kind: AuthorityGuardKind::ChannelGrant
+            })
         ));
 
         let build_authority = |reverse: bool| {
