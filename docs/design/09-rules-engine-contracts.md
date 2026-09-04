@@ -2464,8 +2464,8 @@ to-hit/location/damage transcript and a private durable outcome; its receipt pro
 unit IDs, revisions, section, exact damage, or draw. Tests prove the two live records remain
 byte-identical before installation, a stale/disabled source or un-damageable target leaves both
 unchanged, and identical inputs reproduce replay writes, outcome, and RNG evidence. This is a
-transaction-shape proof, not a second production unit authority. Production placement migration,
-durable simultaneous resolution, and the cross-owner bridge remain before Gates 2-3 can be claimed
+transaction-shape proof, not a second production unit authority. Production placement migration
+and the live simultaneous-intent collection provider remain before Gates 2-3 can be claimed
 complete. The fixture now also registers its own composition-branded control-lease family and
 requires the `weapons` channel. Neither a station grant nor a lease alone projects `fire`; the
 complete exact pair does, and the internal offer carries both final witnesses. An operated-fire
@@ -2475,11 +2475,11 @@ set stale even while the transient station grant remains published.
 The reusable action-window family now has a typed `ActionWindowGuardValidator`; the guard names an
 exact `ActionWindowId` and remains current only while that exact generation is durably open.
 Before the first production simultaneous window, its record schema was advanced to v2 so each
-accepted `WindowIntent` retains ordered server-private truth targets alongside the projected
-invocation. Construction and strict decode require exactly one truth target per projected target.
-Without this field, a durably closed intent containing an opaque contact could not identify the
-accepted target after contact loss or restart. The truth list remains inside authoritative window
-state and never enters the projected invocation or client/LLM payload.
+accepted `WindowIntent` retains ordered server-private truth targets, then to v3 when the exact
+admitted action definition was added. Construction and strict decode require exactly one truth
+target per projected target. Without these fields, a durably closed set could mix action semantics
+or lose the accepted target after contact loss/restart. They remain inside authoritative window
+state and never enter the projected invocation or client/LLM payload.
 Tactical `fire` reads its owner-stamped domain clock synchronously, projects only inside the
 half-open window, binds the window guard, and carries the close stamp as its offer expiry. Engine
 resolution obtains that expiry clock itself rather than trusting `OfferExecutionContext.now`.
@@ -2515,6 +2515,15 @@ the source and chosen target placements plus the exact bridge definition. Moving
 contact does not invalidate it, while moving the selected target does. These remain fixture
 authorities; production `mush-sim` placement migration must reuse this bridge-gated path rather
 than pass its typed family handle to an unregistered owner.
+The fixture now also has an internal simultaneous-fire resolver. A durably closed, canonically
+ordered window containing two exact fire intents is resolved through one root RNG transcript; all
+affected units are preflighted against their opening revisions, complete post-images are computed
+in stable ruleset order, and the changed units plus the window's `Consumed { commit }` transition
+are staged once in the same prepared bundle. Tests prove RAM and the closed window remain unchanged
+before installation, installation lands both attacks and the consume marker together, and one stale
+intent leaves every unit and the entire closed set byte-identical with no prepared transaction.
+The fixture currently bootstraps the accepted/closed set; connecting ordinary resolved offer
+submission to `checked_submit` is the remaining simultaneous collection cut.
 
 Exit criteria:
 

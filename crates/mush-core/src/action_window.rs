@@ -451,6 +451,7 @@ pub struct WindowIntent {
     window_generation: u64,
     truth_subject: SubjectKey,
     truth_targets: Vec<SubjectKey>,
+    action: crate::mechanics::DefinitionRef,
     invocation: ActionInvocation,
     order: WindowOrderKey,
 }
@@ -462,6 +463,7 @@ struct WindowIntentWire {
     window_generation: u64,
     truth_subject: SubjectKey,
     truth_targets: Vec<SubjectKey>,
+    action: crate::mechanics::DefinitionRef,
     invocation: ActionInvocation,
     order: WindowOrderKey,
 }
@@ -477,6 +479,7 @@ impl<'de> Deserialize<'de> for WindowIntent {
             wire.window_generation,
             wire.truth_subject,
             wire.truth_targets,
+            wire.action,
             wire.invocation,
             wire.order,
         )
@@ -490,6 +493,7 @@ impl WindowIntent {
         window_generation: u64,
         truth_subject: SubjectKey,
         truth_targets: Vec<SubjectKey>,
+        action: crate::mechanics::DefinitionRef,
         invocation: ActionInvocation,
         order: WindowOrderKey,
     ) -> Result<Self, ActionWindowError> {
@@ -507,6 +511,7 @@ impl WindowIntent {
             window_generation,
             truth_subject,
             truth_targets,
+            action,
             invocation,
             order,
         })
@@ -533,6 +538,12 @@ impl WindowIntent {
     #[must_use]
     pub fn truth_targets(&self) -> &[SubjectKey] {
         &self.truth_targets
+    }
+
+    /// Exact action definition admitted into this window slot.
+    #[must_use]
+    pub const fn action(&self) -> &crate::mechanics::DefinitionRef {
+        &self.action
     }
 
     #[must_use]
@@ -659,7 +670,7 @@ impl<'de> Deserialize<'de> for ActionWindowRecord {
 }
 
 impl ActionWindowRecord {
-    pub const SCHEMA_VERSION: u16 = 2;
+    pub const SCHEMA_VERSION: u16 = 3;
 
     /// Start an empty open record at revision one.
     #[must_use]
@@ -1266,6 +1277,25 @@ mod tests {
         ActionInvocationDraft, ActionOfferId, ContactId, IdempotencyKey, IdempotencyScope,
         PerceivedRef, PrincipalId, ScopedIdempotencyKey,
     };
+    use crate::mechanics::{
+        DefinitionDescriptor, DefinitionId, DefinitionKind, DefinitionRegistryBuilder,
+    };
+
+    fn action_definition() -> crate::mechanics::DefinitionRef {
+        let mut definitions = DefinitionRegistryBuilder::new();
+        definitions
+            .register(
+                OwnerId::new("toy").unwrap(),
+                DefinitionDescriptor::new(
+                    DefinitionKind::new("action").unwrap(),
+                    DefinitionId::new("window_action").unwrap(),
+                    1,
+                    json!({}),
+                )
+                .unwrap(),
+            )
+            .unwrap()
+    }
 
     fn turn(at: i64) -> ClockStamp {
         ClockStamp {
@@ -1342,6 +1372,7 @@ mod tests {
                 id: crate::obj::ObjId(actor),
             },
             Vec::new(),
+            action_definition(),
             invocation(actor, request_byte, order),
             WindowOrderKey::new(vec![order]).unwrap(),
         )
@@ -1409,6 +1440,7 @@ mod tests {
                 id: crate::obj::ObjId(7),
             },
             vec![truth_target.clone()],
+            action_definition(),
             invocation.clone(),
             WindowOrderKey::new(vec![1]).unwrap(),
         )
@@ -1426,6 +1458,7 @@ mod tests {
                     id: crate::obj::ObjId(7),
                 },
                 Vec::new(),
+                action_definition(),
                 invocation,
                 WindowOrderKey::new(vec![1]).unwrap(),
             )

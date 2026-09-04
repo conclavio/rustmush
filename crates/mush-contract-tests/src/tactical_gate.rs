@@ -25,8 +25,8 @@ use mush_core::{
     ProviderOfferDraft, Registrar, RequestUid, ResolutionKeyRing, ResolutionSecret,
     ResolvedActionInvocation, RevisionKey, RevisionKind, RevisionSet, RevisionValidator,
     RevisionValidatorContext, RulesValue, ScopedIdempotencyKey, StateFamilyDescriptor,
-    StateFamilyHandle, StateFamilyId, SubjectKey, WindowMode, WindowRestartPolicy,
-    WindowTimeoutPolicy, World, action_window_state_family_descriptor,
+    StateFamilyHandle, StateFamilyId, SubjectKey, WindowIntent, WindowMode, WindowOrderKey,
+    WindowRestartPolicy, WindowTimeoutPolicy, World, action_window_state_family_descriptor,
     contact_state_family_descriptor, control_lease_state_family_descriptor,
 };
 use mush_tactics::{
@@ -52,6 +52,10 @@ pub const CONTROL_LEASE_FAMILY: &str = "control_leases";
 pub const ACTION_WINDOW_FAMILY: &str = "action_windows";
 /// Engine-owned family holding the fixture's map placement records.
 pub const PLACEMENT_FAMILY: &str = "placements";
+/// Internal action that consumes one durably closed simultaneous fire set.
+pub const RESOLVE_VOLLEY_ACTION_ID: &str = "resolve_volley";
+/// Private durable outcome for simultaneous fire resolution.
+pub const VOLLEY_RESOLVED_OUTCOME_ID: &str = "volley_resolved";
 
 const UNIT_RULES_ID: &str = "unit_state";
 const WEAPON_DEFINITION_ID: &str = "weapon";
@@ -72,6 +76,8 @@ pub struct TacticalGateDefinitions {
     pub fire: DefinitionRef,
     pub fired: DefinitionRef,
     pub placement_bridge: DefinitionRef,
+    pub resolve_volley: DefinitionRef,
+    pub volley_resolved: DefinitionRef,
 }
 
 #[derive(Clone, Debug)]
@@ -227,9 +233,44 @@ fn definition_fixture() -> Result<DefinitionFixture, String> {
     .with_references(vec![fire.clone()])
     .as_current();
     let placement_bridge = registry
-        .register(owner, placement_bridge_descriptor.clone())
+        .register(owner.clone(), placement_bridge_descriptor.clone())
         .map_err(|error| error.to_string())?;
     descriptors.push(placement_bridge_descriptor);
+
+    let volley_resolved_descriptor = descriptor(
+        "outcome",
+        VOLLEY_RESOLVED_OUTCOME_ID,
+        json!({
+            "private_fields": ["window", "shots"],
+            "projected_result": "volley_resolved"
+        }),
+    )?
+    .as_current();
+    let volley_resolved = registry
+        .register(owner.clone(), volley_resolved_descriptor.clone())
+        .map_err(|error| error.to_string())?;
+    descriptors.push(volley_resolved_descriptor);
+
+    let resolve_volley_descriptor = descriptor(
+        "action",
+        RESOLVE_VOLLEY_ACTION_ID,
+        json!({
+            "internal": true,
+            "consumes": "closed_action_window",
+            "resolution": "stable_window_order"
+        }),
+    )?
+    .with_references(vec![
+        unit.clone(),
+        weapon.clone(),
+        fire.clone(),
+        volley_resolved.clone(),
+    ])
+    .as_current();
+    let resolve_volley = registry
+        .register(owner, resolve_volley_descriptor.clone())
+        .map_err(|error| error.to_string())?;
+    descriptors.push(resolve_volley_descriptor);
 
     Ok(DefinitionFixture {
         descriptors,
@@ -239,6 +280,8 @@ fn definition_fixture() -> Result<DefinitionFixture, String> {
             fire,
             fired,
             placement_bridge,
+            resolve_volley,
+            volley_resolved,
         },
         unit_spec,
     })
@@ -1023,6 +1066,336 @@ impl ActionProvider for FireProvider {
     }
 }
 
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct VolleyShotOutcome {
+    source: ObjId,
+    target: ObjId,
+    section: SectionId,
+    damage: i64,
+    to_hit: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct VolleyResolvedOutcome {
+    event: String,
+    window: ActionWindowId,
+    shots: Vec<VolleyShotOutcome>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ResolveVolleyParameters {
+    expected_revision: u64,
+    now: ClockStamp,
+}
+
+#[derive(Debug)]
+struct VolleyResolver {
+    units: StateFamilyHandle<ObjId, TacticalUnit>,
+    windows: StateFamilyHandle<ActionWindowId, ActionWindowRecord>,
+    window: ActionWindowId,
+    fire: DefinitionRef,
+    action: DefinitionRef,
+    outcome: DefinitionRef,
+}
+
+impl VolleyResolver {
+    fn parameters(invocation: &ActionInvocation) -> Result<ResolveVolleyParameters, ActionError> {
+        let parameters: ResolveVolleyParameters =
+            serde_json::from_value(invocation.parameters().clone())
+                .map_err(|_| FireProvider::invalid("volley resolution parameters are malformed"))?;
+        if parameters.expected_revision == 0 || parameters.now.clock != tactical_gate_clock() {
+            return Err(FireProvider::invalid(
+                "volley resolution requires an exact revision and domain clock",
+            ));
+        }
+        Ok(parameters)
+    }
+
+    fn window_error() -> ActionError {
+        FireProvider::stale("the simultaneous fire window is no longer resolvable")
+    }
+}
+
+impl ActionProvider for VolleyResolver {
+    fn validate_invocation(&self, invocation: &ActionInvocation) -> Result<(), ActionError> {
+        if invocation.subject() != &PerceivedRef::SelfActor || !invocation.targets().is_empty() {
+            return Err(FireProvider::invalid(
+                "volley resolution is an internal actor-self action",
+            ));
+        }
+        Self::parameters(invocation)?;
+        Ok(())
+    }
+
+    fn prepare_invocation(
+        &self,
+        _invocation: &ActionInvocation,
+        _txn: &mut ActionTxn<'_>,
+    ) -> Result<(), ActionError> {
+        Err(ActionError::new(
+            ActionErrorCode::Unavailable,
+            false,
+            "volley resolution requires the authoritative action coordinator",
+        )
+        .expect("static volley migration error is bounded"))
+    }
+
+    fn prepare_authoritative_with_context(
+        &self,
+        invocation: &ActionInvocation,
+        txn: &mut ActionTxn<'_>,
+        context: &mut PrepareCtx<'_>,
+    ) -> Result<AuthoritativeActionOutput, ActionError> {
+        self.validate_invocation(invocation)?;
+        let parameters = Self::parameters(invocation)?;
+        let record = txn
+            .get(&self.windows, &self.window)
+            .map_err(|error| FireProvider::state_error(&error))?
+            .cloned()
+            .ok_or_else(Self::window_error)?;
+        if record.revision() != parameters.expected_revision
+            || record.phase() != ActionWindowPhase::Closed
+        {
+            return Err(Self::window_error());
+        }
+        let intents: Vec<_> = record
+            .resolution_order()
+            .map_err(|_| Self::window_error())?
+            .into_iter()
+            .cloned()
+            .collect();
+        if intents.is_empty() {
+            return Err(FireProvider::rejected(
+                "an empty simultaneous window has no fire to resolve",
+            ));
+        }
+
+        let weapon_id = ComponentId::new(WEAPON_COMPONENT_ID).expect("static component id");
+        let ammo_addr = CellAddr::Component {
+            component: weapon_id.clone(),
+            cell: CellId::new(AMMO_CELL_ID).expect("static cell id"),
+        };
+        let heat_addr = CellAddr::Unit {
+            cell: CellId::new(HEAT_CELL_ID).expect("static cell id"),
+        };
+        let ready = ConditionId::new(READY_CONDITION_ID).expect("static condition id");
+        let mut decoded = Vec::with_capacity(intents.len());
+        let mut unit_ids = BTreeSet::new();
+        for intent in &intents {
+            if intent.action() != &self.fire {
+                return Err(Self::window_error());
+            }
+            let SubjectKey::Object { id: source } = intent.truth_subject() else {
+                return Err(Self::window_error());
+            };
+            let [SubjectKey::Object { id: target }] = intent.truth_targets() else {
+                return Err(Self::window_error());
+            };
+            if source == target {
+                return Err(Self::window_error());
+            }
+            let fire_parameters = FireProvider::decode_parameters(intent.invocation())?;
+            decoded.push((*source, *target, fire_parameters));
+            unit_ids.insert(*source);
+            unit_ids.insert(*target);
+        }
+
+        let mut originals = BTreeMap::new();
+        for id in unit_ids {
+            let unit = txn
+                .get(&self.units, &id)
+                .map_err(|error| FireProvider::state_error(&error))?
+                .cloned()
+                .ok_or_else(Self::window_error)?;
+            if unit.object() != id {
+                return Err(FireProvider::integrity(
+                    "a volley unit disagrees with its family key",
+                ));
+            }
+            originals.insert(id, unit);
+        }
+        for (source, target, fire_parameters) in &decoded {
+            let source_unit = originals.get(source).ok_or_else(Self::window_error)?;
+            let target_unit = originals.get(target).ok_or_else(Self::window_error)?;
+            if source_unit.revision() != fire_parameters.source_revision
+                || fire_parameters
+                    .target_revision
+                    .is_some_and(|revision| target_unit.revision() != revision)
+            {
+                return Err(Self::window_error());
+            }
+            let weapon = source_unit
+                .component(&weapon_id)
+                .ok_or_else(Self::window_error)?;
+            if weapon.condition != ready
+                || source_unit
+                    .cell(&ammo_addr)
+                    .is_none_or(|cell| cell.current <= cell.min)
+                || source_unit
+                    .cell(&heat_addr)
+                    .is_none_or(|cell| cell.current >= cell.max)
+            {
+                return Err(Self::window_error());
+            }
+        }
+
+        let input_units: Vec<_> = originals.values().collect();
+        let inputs_hash = CanonicalHash::for_canonical_value(
+            "toytactics.volley.inputs.v1",
+            1,
+            &json!({ "window": record, "units": input_units }),
+            256 * 1024,
+        )
+        .map_err(|_| FireProvider::integrity("the volley inputs are not canonical"))?;
+        let mut rng = context
+            .start_resolution(
+                &CanonicalId::new("toytactics.volley").expect("static resolution domain"),
+                inputs_hash,
+            )
+            .map_err(|_| FireProvider::integrity("the volley resolution RNG is unavailable"))?;
+        let mut working = originals.clone();
+        let mut shots = Vec::with_capacity(decoded.len());
+        for (index, (source, target, _)) in decoded.iter().enumerate() {
+            let to_hit = rng
+                .draw_bounded_u64(
+                    &CanonicalId::new(format!("to_hit_{index}"))
+                        .expect("bounded volley index is canonical"),
+                    12,
+                )
+                .map_err(|_| FireProvider::integrity("the volley to-hit draw was refused"))?;
+            let location = rng
+                .draw_bounded_u64(
+                    &CanonicalId::new(format!("location_{index}"))
+                        .expect("bounded volley index is canonical"),
+                    SECTION_IDS.len() as u64,
+                )
+                .map_err(|_| FireProvider::integrity("the volley location draw was refused"))?;
+            let damage = rng
+                .draw_bounded_u64(
+                    &CanonicalId::new(format!("damage_{index}"))
+                        .expect("bounded volley index is canonical"),
+                    4,
+                )
+                .map_err(|_| FireProvider::integrity("the volley damage draw was refused"))?
+                + 1;
+            let section = SectionId::new(SECTION_IDS[location as usize])
+                .expect("static section id is canonical");
+            let target_structure = CellAddr::Section {
+                section: section.clone(),
+                cell: CellId::new(STRUCTURE_CELL_ID).expect("static cell id"),
+            };
+
+            let source_unit = working
+                .get(source)
+                .cloned()
+                .ok_or_else(Self::window_error)?;
+            let source_plan = UnitMutationPlan::new(
+                vec![
+                    UnitMutationOp::AdjustCell {
+                        addr: ammo_addr.clone(),
+                        delta: -1,
+                    },
+                    UnitMutationOp::AdjustCell {
+                        addr: heat_addr.clone(),
+                        delta: 1,
+                    },
+                ],
+                Some(source_unit.revision()),
+                None,
+            )
+            .map_err(|_| FireProvider::integrity("the volley source plan was refused"))?;
+            let (source_post, _) = apply(&source_unit, &source_plan, parameters.now.at)
+                .map_err(|_| Self::window_error())?;
+            working.insert(*source, source_post);
+
+            let target_unit = working
+                .get(target)
+                .cloned()
+                .ok_or_else(Self::window_error)?;
+            let structure = target_unit
+                .cell(&target_structure)
+                .ok_or_else(Self::window_error)?;
+            if structure.current <= structure.min {
+                return Err(Self::window_error());
+            }
+            let applied_damage = i64::try_from(damage)
+                .map_err(|_| FireProvider::integrity("volley damage exceeds the scalar domain"))?
+                .min(structure.current - structure.min);
+            let target_plan = UnitMutationPlan::new(
+                vec![UnitMutationOp::AdjustCell {
+                    addr: target_structure,
+                    delta: -applied_damage,
+                }],
+                Some(target_unit.revision()),
+                None,
+            )
+            .map_err(|_| FireProvider::integrity("the volley target plan was refused"))?;
+            let (target_post, _) = apply(&target_unit, &target_plan, parameters.now.at)
+                .map_err(|_| Self::window_error())?;
+            working.insert(*target, target_post);
+            shots.push(VolleyShotOutcome {
+                source: *source,
+                target: *target,
+                section,
+                damage: applied_damage,
+                to_hit,
+            });
+        }
+
+        for (id, post) in &working {
+            if originals.get(id) != Some(post) {
+                txn.replace(&self.units, id, post.clone())
+                    .map_err(|error| FireProvider::state_error(&error))?;
+            }
+        }
+        let consumed = record
+            .checked_consume(
+                record.revision(),
+                invocation.request(),
+                context.commit_token(),
+                &parameters.now,
+            )
+            .map_err(|_| Self::window_error())?
+            .into_record();
+        txn.replace(&self.windows, &self.window, consumed)
+            .map_err(|error| FireProvider::state_error(&error))?;
+
+        let outcome = RulesValue::new(
+            self.outcome.clone(),
+            serde_json::to_value(VolleyResolvedOutcome {
+                event: "volley_resolved".to_owned(),
+                window: self.window,
+                shots: shots.clone(),
+            })
+            .map_err(|_| FireProvider::integrity("the volley outcome could not be encoded"))?,
+        )
+        .map_err(|_| FireProvider::integrity("the volley outcome exceeds canonical bounds"))?;
+        let mut resolution_definitions = vec![self.action.clone(), self.fire.clone()];
+        for unit in originals.values() {
+            resolution_definitions.extend(unit.definition_references());
+        }
+        resolution_definitions.sort();
+        resolution_definitions.dedup();
+        let resolution = rng
+            .into_prepared(
+                resolution_definitions,
+                RulesValue::new(
+                    self.action.clone(),
+                    json!({ "window_revision": record.revision(), "shot_count": shots.len() }),
+                )
+                .map_err(|_| FireProvider::integrity("the volley modifiers are invalid"))?,
+                outcome.clone(),
+            )
+            .map_err(|_| FireProvider::integrity("the volley transcript is invalid"))?;
+        Ok(AuthoritativeActionOutput::new(outcome)
+            .with_resolution(resolution)
+            .with_eligible_witnesses(vec![invocation.principal().clone()]))
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct TacticalGateModule {
     captured: Arc<Mutex<Option<(TacticalGateState, TacticalGateDefinitions, UnitSpec)>>>,
@@ -1051,10 +1424,10 @@ impl GameModule for TacticalGateModule {
         for (kind, expected) in expected_by_kind(&fixture) {
             registrar.definition_validator(kind, FixtureDefinitionValidator { expected })?;
         }
-        let mut registered = BTreeMap::new();
+        let mut registered = BTreeSet::new();
         for descriptor in fixture.descriptors.clone() {
             let reference = registrar.definition(descriptor)?;
-            registered.insert(reference.key().kind.clone(), reference);
+            registered.insert(reference);
         }
         // Comparing the complete known references catches accidental descriptor
         // order/content drift before the provider receives any capability.
@@ -1064,8 +1437,10 @@ impl GameModule for TacticalGateModule {
             &fixture.definitions.fire,
             &fixture.definitions.fired,
             &fixture.definitions.placement_bridge,
+            &fixture.definitions.resolve_volley,
+            &fixture.definitions.volley_resolved,
         ] {
-            if !registered.values().any(|actual| actual == expected) {
+            if !registered.contains(expected) {
                 return Err(ModError::msg("Gate-2 definition identity drift"));
             }
         }
@@ -1183,6 +1558,17 @@ impl GameModule for TacticalGateModule {
                 window: tactical_gate_window_id(),
                 action: fixture.definitions.fire.clone(),
                 outcome: fixture.definitions.fired.clone(),
+            },
+        )?;
+        registrar.action_provider(
+            fixture.definitions.resolve_volley.clone(),
+            VolleyResolver {
+                units: units.clone(),
+                windows: windows.clone(),
+                window: tactical_gate_volley_window_id(),
+                fire: fixture.definitions.fire.clone(),
+                action: fixture.definitions.resolve_volley.clone(),
+                outcome: fixture.definitions.volley_resolved.clone(),
             },
         )?;
         *self.captured.lock().expect("Gate-2 capture poisoned") = Some((
@@ -1426,6 +1812,67 @@ pub fn install_tactical_gate_fire_window(
     record
 }
 
+/// Fixture-only durable collection/close path for simultaneous fire intents.
+pub fn install_tactical_gate_closed_volley(
+    engine: &mut Engine,
+    state: &TacticalGateState,
+    definitions: &TacticalGateDefinitions,
+    submissions: &[(ObjId, ObjId, i64, RequestUid)],
+) -> ActionWindowRecord {
+    let window = ActionWindow::new(ActionWindowDraft {
+        id: tactical_gate_volley_window_id(),
+        clock: tactical_gate_clock(),
+        opens: tactical_gate_tick(0),
+        closes: tactical_gate_tick(10),
+        generation: 1,
+        mode: WindowMode::CollectSimultaneous,
+        capacity: u32::try_from(submissions.len().max(1)).expect("fixture volley capacity"),
+        restart: WindowRestartPolicy::Resume,
+        timeout: WindowTimeoutPolicy::Close,
+        max_catch_up: 1,
+        resolution_secret_version: Some(1),
+    })
+    .expect("valid simultaneous fire window");
+    let mut record = ActionWindowRecord::open(window.clone());
+    for (source, target, order, request) in submissions {
+        let invocation = tactical_gate_fire_invocation(*source, *target, 0, 0, *request);
+        let intent = WindowIntent::new(
+            window.id(),
+            window.generation(),
+            SubjectKey::Object { id: *source },
+            vec![SubjectKey::Object { id: *target }],
+            definitions.fire.clone(),
+            invocation,
+            WindowOrderKey::new(vec![*order]).expect("fixture order key"),
+        )
+        .expect("valid simultaneous fire intent");
+        record = record
+            .checked_submit(record.revision(), &tactical_gate_tick(7), intent)
+            .expect("simultaneous intent is admitted")
+            .into_record();
+    }
+    record = record
+        .checked_close_due(
+            record.revision(),
+            RequestUid::from_bytes([0xa0; 16]),
+            &tactical_gate_tick(10),
+        )
+        .expect("simultaneous fire window closes")
+        .into_record();
+    let id = record.window().id();
+    let prepared = {
+        let mut txn = engine
+            .action_transaction(&state.windows)
+            .expect("volley window bootstrap transaction");
+        txn.insert(&state.windows, &id, record.clone())
+            .expect("valid closed volley bootstrap");
+        txn.prepare().expect("closed volley bootstrap prepares")
+    };
+    let (_, installation) = prepared.into_parts();
+    engine.install_prepared_action(installation);
+    record
+}
+
 /// Exact domain clock routed through the fixture's composed provider.
 #[must_use]
 pub fn tactical_gate_clock() -> ClockRef {
@@ -1444,6 +1891,16 @@ pub fn tactical_gate_window_id() -> ActionWindowId {
         &CanonicalId::new("fire_window").expect("static window id"),
     )
     .expect("static Gate-3 window identity")
+}
+
+/// Stable simultaneous-fire window identity for the fixture owner.
+#[must_use]
+pub fn tactical_gate_volley_window_id() -> ActionWindowId {
+    ActionWindowId::derive(
+        &OwnerId::new(TACTICAL_GATE_OWNER).expect("static owner"),
+        &CanonicalId::new("volley_window").expect("static window id"),
+    )
+    .expect("static simultaneous window identity")
 }
 
 /// Canonical domain clock used by the fixture.
@@ -1503,6 +1960,47 @@ pub fn tactical_gate_fire_invocation(
         ),
     })
     .expect("Gate-2 invocation is canonical")
+}
+
+/// Construct the internal action that consumes a closed simultaneous window.
+#[must_use]
+pub fn tactical_gate_resolve_volley_invocation(
+    definitions: &TacticalGateDefinitions,
+    expected_revision: u64,
+    request: RequestUid,
+) -> ActionInvocation {
+    let principal = PrincipalId::Object { id: mush_core::GOD };
+    ActionInvocation::new(ActionInvocationDraft {
+        request,
+        principal: principal.clone(),
+        actor: mush_core::GOD,
+        offered_action: ActionOfferId(
+            CanonicalHash::for_canonical_value(
+                "toytactics.internal_offer.v1",
+                1,
+                &json!({ "action": definitions.resolve_volley }),
+                4 * 1024,
+            )
+            .expect("volley resolver identity is canonical"),
+        ),
+        subject: PerceivedRef::SelfActor,
+        targets: Vec::new(),
+        parameters: json!({
+            "expected_revision": expected_revision,
+            "now": tactical_gate_tick(10),
+        }),
+        idempotency: ScopedIdempotencyKey::new(
+            IdempotencyScope {
+                principal,
+                owner: OwnerId::new(TACTICAL_GATE_OWNER).expect("static owner"),
+                namespace: CanonicalId::new(RESOLVE_VOLLEY_ACTION_ID)
+                    .expect("static action namespace"),
+            },
+            1,
+            IdempotencyKey::Request(request),
+        ),
+    })
+    .expect("volley resolution invocation is canonical")
 }
 
 /// Fixed commit token for provider-level Gate-2 tests.
@@ -1868,6 +2366,250 @@ mod tests {
         }
 
         assert_eq!(prepare_once(), prepare_once());
+    }
+
+    #[test]
+    fn closed_simultaneous_fire_resolves_and_consumes_in_one_prepared_bundle() {
+        let (mut engine, state, definitions, spec) = tactical_gate_world();
+        let first = ObjId(921);
+        let second = ObjId(922);
+        let target = ObjId(923);
+        for id in [first, second, target] {
+            install_tactical_gate_unit(&mut engine, &state, unit(&spec, id.0));
+        }
+        let closed = install_tactical_gate_closed_volley(
+            &mut engine,
+            &state,
+            &definitions,
+            &[
+                (first, target, 20, RequestUid::from_bytes([0xb1; 16])),
+                (second, target, 10, RequestUid::from_bytes([0xb2; 16])),
+            ],
+        );
+        assert_eq!(closed.phase(), ActionWindowPhase::Closed);
+        assert_eq!(closed.intents().len(), 2);
+        assert!(closed.intents().iter().all(|intent| {
+            intent.action() == &definitions.fire
+                && intent.truth_targets() == [SubjectKey::Object { id: target }]
+        }));
+        let window_id = tactical_gate_volley_window_id();
+        let unit_before: BTreeMap<_, _> = [first, second, target]
+            .into_iter()
+            .map(|id| {
+                (
+                    id,
+                    engine
+                        .action_state()
+                        .canonical(&state.units, &id)
+                        .unwrap()
+                        .unwrap()
+                        .as_slice()
+                        .to_vec(),
+                )
+            })
+            .collect();
+        let window_before = engine
+            .action_state()
+            .canonical(&state.windows, &window_id)
+            .unwrap()
+            .unwrap()
+            .as_slice()
+            .to_vec();
+        let request = RequestUid::from_bytes([0xb3; 16]);
+        let invocation =
+            tactical_gate_resolve_volley_invocation(&definitions, closed.revision(), request);
+        let token = CommitToken::from_bytes([0xb4; 16]);
+        let (prepared, output) = engine
+            .prepare_registered_authoritative_action(
+                &definitions.resolve_volley,
+                &invocation,
+                token,
+            )
+            .expect("closed simultaneous fire resolves");
+        assert_eq!(prepared.operation_count(), 4);
+        for (id, before) in &unit_before {
+            assert_eq!(
+                engine
+                    .action_state()
+                    .canonical(&state.units, id)
+                    .unwrap()
+                    .unwrap()
+                    .as_slice(),
+                before
+            );
+        }
+        assert_eq!(
+            engine
+                .action_state()
+                .canonical(&state.windows, &window_id)
+                .unwrap()
+                .unwrap()
+                .as_slice(),
+            window_before
+        );
+        let (outcome, resolution, _, _, _, _) = output.into_parts();
+        let decoded: VolleyResolvedOutcome =
+            serde_json::from_value(outcome.data().clone()).unwrap();
+        assert_eq!(decoded.shots.len(), 2);
+        assert_eq!(decoded.shots[0].source, second);
+        assert_eq!(decoded.shots[1].source, first);
+        assert!(resolution.is_some());
+
+        let (_, installation) = prepared.into_parts();
+        engine.install_prepared_action(installation);
+        assert_eq!(
+            engine
+                .action_state()
+                .get(&state.units, &first)
+                .unwrap()
+                .unwrap()
+                .revision(),
+            1
+        );
+        assert_eq!(
+            engine
+                .action_state()
+                .get(&state.units, &second)
+                .unwrap()
+                .unwrap()
+                .revision(),
+            1
+        );
+        assert_eq!(
+            engine
+                .action_state()
+                .get(&state.units, &target)
+                .unwrap()
+                .unwrap()
+                .revision(),
+            2
+        );
+        assert_eq!(
+            engine
+                .action_state()
+                .get(&state.windows, &window_id)
+                .unwrap()
+                .unwrap()
+                .phase(),
+            ActionWindowPhase::Consumed { commit: token }
+        );
+    }
+
+    #[test]
+    fn one_stale_simultaneous_intent_leaves_the_entire_closed_set_unconsumed() {
+        let (mut engine, state, definitions, spec) = tactical_gate_world();
+        let first = ObjId(931);
+        let stale_source = ObjId(932);
+        let target = ObjId(933);
+        for id in [first, stale_source, target] {
+            install_tactical_gate_unit(&mut engine, &state, unit(&spec, id.0));
+        }
+        let closed = install_tactical_gate_closed_volley(
+            &mut engine,
+            &state,
+            &definitions,
+            &[
+                (first, target, 1, RequestUid::from_bytes([0xc1; 16])),
+                (stale_source, target, 2, RequestUid::from_bytes([0xc2; 16])),
+            ],
+        );
+        let stale_pre = engine
+            .action_state()
+            .get(&state.units, &stale_source)
+            .unwrap()
+            .unwrap();
+        let (stale_post, _) = apply(
+            stale_pre,
+            &UnitMutationPlan::new(
+                vec![UnitMutationOp::AdjustCell {
+                    addr: CellAddr::Unit {
+                        cell: CellId::new(HEAT_CELL_ID).unwrap(),
+                    },
+                    delta: 1,
+                }],
+                Some(stale_pre.revision()),
+                None,
+            )
+            .unwrap(),
+            8,
+        )
+        .unwrap();
+        let prepared = {
+            let mut txn = engine.action_transaction(&state.units).unwrap();
+            txn.replace(&state.units, &stale_source, stale_post)
+                .unwrap();
+            txn.prepare().unwrap()
+        };
+        let (_, installation) = prepared.into_parts();
+        engine.install_prepared_action(installation);
+
+        let unit_before: BTreeMap<_, _> = [first, stale_source, target]
+            .into_iter()
+            .map(|id| {
+                (
+                    id,
+                    engine
+                        .action_state()
+                        .canonical(&state.units, &id)
+                        .unwrap()
+                        .unwrap()
+                        .as_slice()
+                        .to_vec(),
+                )
+            })
+            .collect();
+        let window_id = tactical_gate_volley_window_id();
+        let window_before = engine
+            .action_state()
+            .canonical(&state.windows, &window_id)
+            .unwrap()
+            .unwrap()
+            .as_slice()
+            .to_vec();
+        let invocation = tactical_gate_resolve_volley_invocation(
+            &definitions,
+            closed.revision(),
+            RequestUid::from_bytes([0xc3; 16]),
+        );
+        assert!(
+            engine
+                .prepare_registered_authoritative_action(
+                    &definitions.resolve_volley,
+                    &invocation,
+                    CommitToken::from_bytes([0xc4; 16]),
+                )
+                .is_err()
+        );
+        assert!(!engine.action_state().has_prepared());
+        for (id, before) in &unit_before {
+            assert_eq!(
+                engine
+                    .action_state()
+                    .canonical(&state.units, id)
+                    .unwrap()
+                    .unwrap()
+                    .as_slice(),
+                before
+            );
+        }
+        assert_eq!(
+            engine
+                .action_state()
+                .canonical(&state.windows, &window_id)
+                .unwrap()
+                .unwrap()
+                .as_slice(),
+            window_before
+        );
+        assert_eq!(
+            engine
+                .action_state()
+                .get(&state.windows, &window_id)
+                .unwrap()
+                .unwrap()
+                .phase(),
+            ActionWindowPhase::Closed
+        );
     }
 
     #[test]
