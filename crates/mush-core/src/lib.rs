@@ -64,6 +64,7 @@ pub mod module;
 pub mod obj;
 pub mod output;
 pub mod perm;
+pub mod resource;
 pub mod sched;
 pub mod world;
 
@@ -174,6 +175,12 @@ pub use module::{
 pub use obj::{GOD, LIMBO, Obj, ObjId, ObjKind};
 pub use output::{
     Audience, ConnId, DeliveryClass, DeliveryOutcome, Outbox, name_span, obj_ref, room_view,
+};
+pub use resource::{
+    BoundedScalar, EffectDuration, EffectInstance, EffectInstanceError, EffectInstanceId,
+    EffectTarget, MAX_EFFECT_STACKS, MAX_RESOURCE_RESERVATIONS, ReservationAvailabilityError,
+    ReservationError, ReservationId, ReservationRecord, ReservationState, ResourceOperation,
+    ResourceRef, ResourceValueError, checked_resource_availability,
 };
 pub use sched::{
     MAX_PENDING_ENTRIES_PER_INSPECTION, MAX_SCHEDULED_FIRES_PER_STEP, PendingEntrySnapshot,

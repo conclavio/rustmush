@@ -1,6 +1,6 @@
 use mush_contract_tests::{
-    ToyFocusState, ToyGuardedState, install_toy_focus, toy_brace_invocation, toy_definitions,
-    toy_world_with_state,
+    install_toy_focus, toy_brace_invocation, toy_definitions, toy_guarded_expiry_invocation,
+    toy_scene_turn, toy_world_with_state,
 };
 use mush_core::{
     ActionInvocation, ActionInvocationDraft, ActionOfferId, CanonicalHash, CanonicalId,
@@ -315,18 +315,20 @@ async fn toy_trigger_cascade_survives_bundle_checkpoint_and_restart() {
             .engine()
             .action_state()
             .get(&families.focus, &GOD)
-            .unwrap(),
-        Some(&ToyFocusState { amount: 2 })
+            .unwrap()
+            .unwrap()
+            .amount(),
+        2
     );
     assert_eq!(
         world
             .engine()
             .action_state()
             .get(&families.guarded, &GOD)
-            .unwrap(),
-        Some(&ToyGuardedState {
-            expires_after_scene_turn: 13,
-        })
+            .unwrap()
+            .unwrap()
+            .expires_at(),
+        &toy_scene_turn(13)
     );
     let checkpoint = store
         .checkpoint_authoritative(bundle.token(), bundle.bundle_hash())
@@ -339,22 +341,122 @@ async fn toy_trigger_cascade_survives_bundle_checkpoint_and_restart() {
 
     let (mut restarted, restarted_families) = toy_world_with_state();
     boot_modules(restarted.engine_mut(), &store).await.unwrap();
+    let _ = restarted.engine_mut().world.take_dirty();
+    assert!(restarted.engine_mut().take_module_ops().is_empty());
     assert_eq!(
         restarted
             .engine()
             .action_state()
             .get(&restarted_families.focus, &GOD)
-            .unwrap(),
-        Some(&ToyFocusState { amount: 2 })
+            .unwrap()
+            .unwrap()
+            .amount(),
+        2
     );
     assert_eq!(
         restarted
             .engine()
             .action_state()
             .get(&restarted_families.guarded, &GOD)
+            .unwrap()
+            .unwrap()
+            .expires_at(),
+        &toy_scene_turn(13)
+    );
+
+    let effect = restarted
+        .engine()
+        .action_state()
+        .get(&restarted_families.guarded, &GOD)
+        .unwrap()
+        .unwrap()
+        .effect
+        .id();
+    let expiry_request = RequestUid::from_bytes([0xB2; 16]);
+    let expiry = toy_guarded_expiry_invocation(GOD, effect, 13, expiry_request);
+    let expiry_envelope = IngressEnvelope::new(
+        expiry_request,
+        expiry.principal().clone(),
+        IngressSurfaceVersion::new(CanonicalId::new("test.scheduler").unwrap(), 1).unwrap(),
+        IngressPayload::structured(json!({
+            "action": "guarded_expire",
+            "effect": effect,
+            "now": toy_scene_turn(13),
+        }))
+        .unwrap(),
+        expiry.idempotency().clone(),
+    )
+    .unwrap();
+    let expiry_permit = match ActionCoordinator::preflight(&store, expiry_envelope.clone())
+        .await
+        .unwrap()
+    {
+        ActionPreflight::Vacant(permit) => permit,
+        other => panic!("expiry request was not vacant: {other:?}"),
+    };
+    let expiry_action = toy_definitions().guarded_expire;
+    let expiry_guards = guards(restarted.engine(), &expiry_action);
+    ActionCoordinator::prepare_and_stage(
+        expiry_permit,
+        restarted.engine_mut(),
+        &expiry_action,
+        &expiry,
+        expiry_guards,
+    )
+    .unwrap();
+    let (persistence, installation) = restarted
+        .engine_mut()
+        .take_staged_action()
+        .unwrap()
+        .expect("expiry staged")
+        .into_parts();
+    let expiry_bundle = match persistence {
+        StagedActionPersistence::Authoritative(bundle) => *bundle,
+        StagedActionPersistence::Legacy(_) => panic!("expiry used legacy persistence"),
+    };
+    assert_eq!(expiry_bundle.writes().len(), 1);
+    assert_eq!(
+        expiry_bundle.semantic_events()[0].kind().as_str(),
+        "guarded_expire"
+    );
+    store
+        .reserve_authoritative_intent(expiry_bundle.clone())
+        .await
+        .unwrap();
+    store
+        .reconcile_authoritative(expiry_bundle.token(), expiry_bundle.bundle_hash())
+        .await
+        .unwrap();
+    restarted.engine_mut().install_prepared_action(installation);
+    store
+        .checkpoint_authoritative(expiry_bundle.token(), expiry_bundle.bundle_hash())
+        .await
+        .unwrap();
+    assert!(
+        restarted
+            .engine()
+            .action_state()
+            .get(&restarted_families.guarded, &GOD)
+            .unwrap()
+            .is_none()
+    );
+    assert!(matches!(
+        ActionCoordinator::preflight(&store, expiry_envelope)
+            .await
             .unwrap(),
-        Some(&ToyGuardedState {
-            expires_after_scene_turn: 13,
-        })
+        ActionPreflight::Finalized(_)
+    ));
+
+    let (mut after_expiry_restart, after_expiry_families) = toy_world_with_state();
+    boot_modules(after_expiry_restart.engine_mut(), &store)
+        .await
+        .unwrap();
+    assert!(
+        after_expiry_restart
+            .engine()
+            .action_state()
+            .get(&after_expiry_families.guarded, &GOD)
+            .unwrap()
+            .is_none()
     );
 }

@@ -7,12 +7,14 @@
 
 use mush_core::{
     ActionError, ActionErrorCode, ActionInvocation, ActionInvocationDraft, ActionOfferId,
-    ActionProvider, ActionStateError, ActionTxn, AuthoritativeActionOutput, CanonicalHash,
-    CanonicalId, DefinitionDescriptor, DefinitionId, DefinitionKind, DefinitionRef,
-    DefinitionRegistryBuilder, DefinitionValidationContext, Engine, GameModule, IdempotencyKey,
-    IdempotencyScope, ModError, ObjId, OwnerId, PerceivedRef, PreparedTrigger, PrincipalId,
-    Registrar, RequestUid, RulesValue, SameCommitTrigger, ScopedIdempotencyKey,
-    StateFamilyDescriptor, StateFamilyHandle, StateFamilyId, SubjectKey,
+    ActionProvider, ActionStateError, ActionTxn, AuthoritativeActionOutput, BoundedScalar,
+    CanonicalHash, CanonicalId, ClockRef, ClockStamp, DefinitionDescriptor, DefinitionId,
+    DefinitionKind, DefinitionRef, DefinitionRegistryBuilder, DefinitionValidationContext,
+    EffectDuration, EffectInstance, EffectInstanceId, EffectTarget, Engine, GameModule,
+    IdempotencyKey, IdempotencyScope, ModError, ObjId, OwnerId, PerceivedRef, PreparedCausalRef,
+    PreparedTrigger, PrincipalId, Registrar, RequestUid, ResourceOperation, RulesValue,
+    SameCommitTrigger, ScopedIdempotencyKey, StateFamilyDescriptor, StateFamilyHandle,
+    StateFamilyId, SubjectKey,
 };
 use mush_testkit::TestWorld;
 use serde::{Deserialize, Serialize};
@@ -28,6 +30,7 @@ pub struct ToyDefinitions {
     pub focus: DefinitionRef,
     pub guarded: DefinitionRef,
     pub brace: DefinitionRef,
+    pub guarded_expire: DefinitionRef,
 }
 
 fn focus_descriptor() -> DefinitionDescriptor {
@@ -67,16 +70,30 @@ fn brace_descriptor(focus: DefinitionRef, guarded: DefinitionRef) -> DefinitionD
     .as_current()
 }
 
+fn guarded_expire_descriptor(guarded: DefinitionRef) -> DefinitionDescriptor {
+    DefinitionDescriptor::new(
+        DefinitionKind::new("action").expect("static definition kind"),
+        DefinitionId::new("guarded_expire").expect("static definition id"),
+        1,
+        json!({ "expires": "guarded", "scheduler_only": true }),
+    )
+    .expect("nonzero static version")
+    .with_references(vec![guarded])
+    .as_current()
+}
+
 fn register_definitions(
     mut register: impl FnMut(DefinitionDescriptor) -> Result<DefinitionRef, String>,
 ) -> Result<ToyDefinitions, String> {
     let focus = register(focus_descriptor())?;
     let guarded = register(guarded_descriptor())?;
     let brace = register(brace_descriptor(focus.clone(), guarded.clone()))?;
+    let guarded_expire = register(guarded_expire_descriptor(guarded.clone()))?;
     Ok(ToyDefinitions {
         focus,
         guarded,
         brace,
+        guarded_expire,
     })
 }
 
@@ -88,7 +105,9 @@ fn validate_toy_definition(context: &DefinitionValidationContext<'_>) -> Result<
     } else if entry.reference() == &definitions.guarded {
         guarded_descriptor()
     } else if entry.reference() == &definitions.brace {
-        brace_descriptor(definitions.focus, definitions.guarded)
+        brace_descriptor(definitions.focus.clone(), definitions.guarded.clone())
+    } else if entry.reference() == &definitions.guarded_expire {
+        guarded_expire_descriptor(definitions.guarded.clone())
     } else {
         return Err("unknown toy definition".into());
     };
@@ -120,13 +139,37 @@ pub fn toy_definitions() -> ToyDefinitions {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ToyFocusState {
-    pub amount: u8,
+    pub value: BoundedScalar,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+impl ToyFocusState {
+    pub fn new(amount: u8) -> Self {
+        Self {
+            value: BoundedScalar::new(0, 3, i64::from(amount), 0)
+                .expect("toy focus bootstrap is bounded"),
+        }
+    }
+
+    #[must_use]
+    pub fn amount(&self) -> i64 {
+        self.value.current()
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ToyGuardedState {
-    pub expires_after_scene_turn: u64,
+    pub effect: EffectInstance,
+}
+
+impl ToyGuardedState {
+    #[must_use]
+    pub fn expires_at(&self) -> &ClockStamp {
+        match self.effect.duration() {
+            EffectDuration::Until { expires } => expires,
+            EffectDuration::Permanent => unreachable!("toy guarded is always temporary"),
+        }
+    }
 }
 
 /// Opaque capabilities captured from the actual toy module composition.
@@ -145,7 +188,7 @@ struct BraceProvider {
 }
 
 impl BraceProvider {
-    fn scene_turn(invocation: &ActionInvocation) -> Result<u64, ActionError> {
+    fn scene_turn(invocation: &ActionInvocation) -> Result<ClockStamp, ActionError> {
         let parameters = invocation.parameters().as_object().ok_or_else(|| {
             ActionError::new(
                 ActionErrorCode::InvalidRequest,
@@ -171,17 +214,27 @@ impl BraceProvider {
             )
             .expect("static action error is bounded"));
         }
-        parameters
+        let stamp = parameters
             .get("scene_turn")
-            .and_then(Value::as_u64)
+            .cloned()
+            .and_then(|value| serde_json::from_value::<ClockStamp>(value).ok())
             .ok_or_else(|| {
                 ActionError::new(
                     ActionErrorCode::InvalidRequest,
                     false,
-                    "brace requires an unsigned scene_turn parameter",
+                    "brace requires a typed scene_turn clock stamp",
                 )
                 .expect("static action error is bounded")
-            })
+            })?;
+        if !matches!(stamp.clock, ClockRef::SceneTurn { .. }) {
+            return Err(ActionError::new(
+                ActionErrorCode::InvalidRequest,
+                false,
+                "brace requires the scene-turn clock domain",
+            )
+            .expect("static action error is bounded"));
+        }
+        Ok(stamp)
     }
 
     fn cascade_steps(invocation: &ActionInvocation) -> Result<u64, ActionError> {
@@ -218,6 +271,73 @@ impl BraceProvider {
         ActionError::new(code, false, "toy action-state operation was refused")
             .expect("static action error is bounded")
     }
+
+    fn guarded_effect(
+        &self,
+        invocation: &ActionInvocation,
+        applied_at: ClockStamp,
+    ) -> Result<EffectInstance, ActionError> {
+        let expires_at = applied_at.at.checked_add(2).ok_or_else(|| {
+            ActionError::new(
+                ActionErrorCode::BoundsExceeded,
+                false,
+                "guarded expiry exceeds the scene-turn domain",
+            )
+            .expect("static action error is bounded")
+        })?;
+        let expires = ClockStamp {
+            clock: applied_at.clock.clone(),
+            at: expires_at,
+        };
+        let target = EffectTarget::Subject {
+            subject: SubjectKey::Object {
+                id: invocation.actor(),
+            },
+        };
+        let id =
+            EffectInstanceId::derive(invocation.request(), &self.guarded_definition, &target, 1)
+                .map_err(|_| {
+                    ActionError::new(
+                        ActionErrorCode::BoundsExceeded,
+                        false,
+                        "guarded identity exceeds canonical bounds",
+                    )
+                    .expect("static action error is bounded")
+                })?;
+        let state = RulesValue::new(self.guarded_definition.clone(), json!({})).map_err(|_| {
+            ActionError::new(
+                ActionErrorCode::BoundsExceeded,
+                false,
+                "guarded state exceeds canonical bounds",
+            )
+            .expect("static action error is bounded")
+        })?;
+        EffectInstance::new(
+            id,
+            self.guarded_definition.clone(),
+            PreparedCausalRef::new(invocation.request(), None, 0).map_err(|_| {
+                ActionError::new(
+                    ActionErrorCode::Integrity,
+                    false,
+                    "guarded source causality is invalid",
+                )
+                .expect("static action error is bounded")
+            })?,
+            target,
+            applied_at,
+            EffectDuration::Until { expires },
+            1,
+            state,
+        )
+        .map_err(|_| {
+            ActionError::new(
+                ActionErrorCode::Integrity,
+                false,
+                "guarded effect invariants were refused",
+            )
+            .expect("static action error is bounded")
+        })
+    }
 }
 
 impl ActionProvider for BraceProvider {
@@ -253,32 +373,22 @@ impl ActionProvider for BraceProvider {
                 )
                 .expect("static action error is bounded")
             })?;
-        let amount = focus.amount.checked_sub(1).ok_or_else(|| {
-            ActionError::new(
-                ActionErrorCode::ProviderRejected,
-                false,
-                "insufficient focus",
-            )
-            .expect("static action error is bounded")
-        })?;
-        let expires_after_scene_turn = turn.checked_add(2).ok_or_else(|| {
-            ActionError::new(
-                ActionErrorCode::BoundsExceeded,
-                false,
-                "guarded expiry exceeds the scene-turn domain",
-            )
-            .expect("static action error is bounded")
-        })?;
-        txn.replace(&self.focus, &actor, ToyFocusState { amount })
+        let value = focus
+            .value
+            .checked_apply(ResourceOperation::Decrease { amount: 1 })
+            .map_err(|_| {
+                ActionError::new(
+                    ActionErrorCode::ProviderRejected,
+                    false,
+                    "insufficient focus",
+                )
+                .expect("static action error is bounded")
+            })?;
+        let effect = self.guarded_effect(invocation, turn)?;
+        txn.replace(&self.focus, &actor, ToyFocusState { value })
             .map_err(|error| Self::state_error(&error))?;
-        txn.insert(
-            &self.guarded,
-            &actor,
-            ToyGuardedState {
-                expires_after_scene_turn,
-            },
-        )
-        .map_err(|error| Self::state_error(&error))?;
+        txn.insert(&self.guarded, &actor, ToyGuardedState { effect })
+            .map_err(|error| Self::state_error(&error))?;
         Ok(())
     }
 
@@ -303,19 +413,22 @@ impl ActionProvider for BraceProvider {
                 )
                 .expect("static action error is bounded")
             })?;
-        let amount = focus.amount.checked_sub(1).ok_or_else(|| {
-            ActionError::new(
-                ActionErrorCode::ProviderRejected,
-                false,
-                "insufficient focus",
-            )
-            .expect("static action error is bounded")
-        })?;
-        txn.replace(&self.focus, &actor, ToyFocusState { amount })
+        let value = focus
+            .value
+            .checked_apply(ResourceOperation::Decrease { amount: 1 })
+            .map_err(|_| {
+                ActionError::new(
+                    ActionErrorCode::ProviderRejected,
+                    false,
+                    "insufficient focus",
+                )
+                .expect("static action error is bounded")
+            })?;
+        txn.replace(&self.focus, &actor, ToyFocusState { value })
             .map_err(|error| Self::state_error(&error))?;
         let outcome = RulesValue::new(
             self.brace_definition.clone(),
-            json!({ "actor": actor.0, "event": "braced", "focus": amount }),
+            json!({ "actor": actor.0, "event": "braced", "focus": value.current() }),
         )
         .map_err(|_| {
             ActionError::new(
@@ -359,7 +472,8 @@ impl ActionProvider for BraceProvider {
             .as_object()
             .filter(|payload| payload.len() == 2)
             .and_then(|payload| payload.get("scene_turn"))
-            .and_then(Value::as_u64)
+            .cloned()
+            .and_then(|value| serde_json::from_value::<ClockStamp>(value).ok())
             .ok_or_else(|| {
                 ActionError::new(
                     ActionErrorCode::Integrity,
@@ -410,20 +524,15 @@ impl ActionProvider for BraceProvider {
                     json!({ "scene_turn": turn, "remaining": remaining - 1 }),
                 )]));
         }
-        let expires_after_scene_turn = turn.checked_add(2).ok_or_else(|| {
-            ActionError::new(
-                ActionErrorCode::BoundsExceeded,
-                false,
-                "guarded expiry exceeds the scene-turn domain",
-            )
-            .expect("static action error is bounded")
-        })?;
+        let effect = self.guarded_effect(invocation, turn)?;
+        let expires = match effect.duration() {
+            EffectDuration::Until { expires } => expires.at,
+            EffectDuration::Permanent => unreachable!("toy guarded is temporary"),
+        };
         txn.insert(
             &self.guarded,
             &invocation.actor(),
-            ToyGuardedState {
-                expires_after_scene_turn,
-            },
+            ToyGuardedState { effect },
         )
         .map_err(|error| Self::state_error(&error))?;
         let outcome = RulesValue::new(
@@ -431,7 +540,7 @@ impl ActionProvider for BraceProvider {
             json!({
                 "actor": invocation.actor().0,
                 "event": "guarded_applied",
-                "expires_after_scene_turn": expires_after_scene_turn,
+                "expires_after_scene_turn": expires,
             }),
         )
         .map_err(|_| {
@@ -441,6 +550,146 @@ impl ActionProvider for BraceProvider {
                 "guarded event exceeds canonical bounds",
             )
             .expect("static trigger error is bounded")
+        })?;
+        Ok(AuthoritativeActionOutput::new(outcome)
+            .with_definitions(vec![self.guarded_definition.clone()])
+            .with_eligible_witnesses(vec![invocation.principal().clone()]))
+    }
+}
+
+#[derive(Debug)]
+struct GuardedExpiryProvider {
+    guarded: StateFamilyHandle<ObjId, ToyGuardedState>,
+    expire_definition: DefinitionRef,
+    guarded_definition: DefinitionRef,
+}
+
+impl GuardedExpiryProvider {
+    fn parameters(
+        invocation: &ActionInvocation,
+    ) -> Result<(EffectInstanceId, ClockStamp), ActionError> {
+        let parameters = invocation.parameters().as_object().filter(|value| {
+            value.len() == 2 && value.contains_key("effect") && value.contains_key("now")
+        });
+        let Some(parameters) = parameters else {
+            return Err(ActionError::new(
+                ActionErrorCode::InvalidRequest,
+                false,
+                "guarded expiry requires exact effect and now parameters",
+            )
+            .expect("static expiry error is bounded"));
+        };
+        let effect = serde_json::from_value::<EffectInstanceId>(parameters["effect"].clone())
+            .map_err(|_| {
+                ActionError::new(
+                    ActionErrorCode::InvalidRequest,
+                    false,
+                    "guarded expiry effect identity is invalid",
+                )
+                .expect("static expiry error is bounded")
+            })?;
+        let now =
+            serde_json::from_value::<ClockStamp>(parameters["now"].clone()).map_err(|_| {
+                ActionError::new(
+                    ActionErrorCode::InvalidRequest,
+                    false,
+                    "guarded expiry clock stamp is invalid",
+                )
+                .expect("static expiry error is bounded")
+            })?;
+        Ok((effect, now))
+    }
+}
+
+impl ActionProvider for GuardedExpiryProvider {
+    fn validate_invocation(&self, invocation: &ActionInvocation) -> Result<(), ActionError> {
+        if invocation.subject() != &PerceivedRef::SelfActor || !invocation.targets().is_empty() {
+            return Err(ActionError::new(
+                ActionErrorCode::InvalidRequest,
+                false,
+                "guarded expiry targets only its scheduled actor",
+            )
+            .expect("static expiry error is bounded"));
+        }
+        Self::parameters(invocation).map(|_| ())
+    }
+
+    fn prepare_invocation(
+        &self,
+        _invocation: &ActionInvocation,
+        _txn: &mut ActionTxn<'_>,
+    ) -> Result<(), ActionError> {
+        Err(ActionError::new(
+            ActionErrorCode::Unavailable,
+            false,
+            "guarded expiry requires the authoritative action coordinator",
+        )
+        .expect("static expiry error is bounded"))
+    }
+
+    fn prepare_authoritative(
+        &self,
+        invocation: &ActionInvocation,
+        txn: &mut ActionTxn<'_>,
+    ) -> Result<AuthoritativeActionOutput, ActionError> {
+        self.validate_invocation(invocation)?;
+        let (expected_id, now) = Self::parameters(invocation)?;
+        let actor = invocation.actor();
+        let guarded = txn
+            .get(&self.guarded, &actor)
+            .map_err(|error| BraceProvider::state_error(&error))?
+            .cloned()
+            .ok_or_else(|| {
+                ActionError::new(
+                    ActionErrorCode::Stale,
+                    false,
+                    "guarded effect is no longer current",
+                )
+                .expect("static expiry error is bounded")
+            })?;
+        if guarded.effect.id() != expected_id {
+            return Err(ActionError::new(
+                ActionErrorCode::Stale,
+                false,
+                "guarded effect identity is stale",
+            )
+            .expect("static expiry error is bounded"));
+        }
+        if !guarded.effect.is_expired_at(&now).map_err(|_| {
+            ActionError::new(
+                ActionErrorCode::Stale,
+                false,
+                "guarded expiry clock generation is stale",
+            )
+            .expect("static expiry error is bounded")
+        })? {
+            return Err(ActionError::new(
+                ActionErrorCode::ProviderRejected,
+                false,
+                "guarded effect has not expired",
+            )
+            .expect("static expiry error is bounded"));
+        }
+        txn.remove(&self.guarded, &actor)
+            .map_err(|error| BraceProvider::state_error(&error))?;
+        let source = guarded.effect.source();
+        let outcome = RulesValue::new(
+            self.expire_definition.clone(),
+            json!({
+                "actor": actor.0,
+                "effect": guarded.effect.id(),
+                "event": "guarded_expired",
+                "source": source,
+                "expired_at": now,
+            }),
+        )
+        .map_err(|_| {
+            ActionError::new(
+                ActionErrorCode::BoundsExceeded,
+                false,
+                "guarded expiry outcome exceeds canonical bounds",
+            )
+            .expect("static expiry error is bounded")
         })?;
         Ok(AuthoritativeActionOutput::new(outcome)
             .with_definitions(vec![self.guarded_definition.clone()])
@@ -497,14 +746,15 @@ impl GameModule for ToyRulesModule {
                 serde_json::from_value(value.clone()).map_err(|error| error.to_string())
             },
             |value: &ToyFocusState| {
-                if value.amount <= 3 {
+                if value.value.minimum() == 0 && value.value.maximum() == 3 {
                     Ok(())
                 } else {
-                    Err("focus must remain within 0..=3".to_owned())
+                    Err("focus bounds must remain exactly 0..=3".to_owned())
                 }
             },
             |value: &ToyFocusState| serde_json::to_value(value).map_err(|error| error.to_string()),
         )?;
+        let guarded_definition = actual.guarded.clone();
         let guarded = registrar.state_family(
             StateFamilyDescriptor::new(
                 StateFamilyId::new("guarded").expect("static family id"),
@@ -520,7 +770,32 @@ impl GameModule for ToyRulesModule {
             |value: &Value| {
                 serde_json::from_value(value.clone()).map_err(|error| error.to_string())
             },
-            |_value: &ToyGuardedState| Ok(()),
+            move |value: &ToyGuardedState| {
+                let target_is_subject = matches!(
+                    value.effect.target(),
+                    EffectTarget::Subject {
+                        subject: SubjectKey::Object { .. }
+                    }
+                );
+                let duration_is_scene_turn = matches!(
+                    value.effect.duration(),
+                    EffectDuration::Until {
+                        expires: ClockStamp {
+                            clock: ClockRef::SceneTurn { .. },
+                            ..
+                        }
+                    }
+                );
+                if value.effect.definition() == &guarded_definition
+                    && value.effect.state().schema() == &guarded_definition
+                    && target_is_subject
+                    && duration_is_scene_turn
+                {
+                    Ok(())
+                } else {
+                    Err("guarded instance does not match its exact toy contract".to_owned())
+                }
+            },
             |value: &ToyGuardedState| {
                 serde_json::to_value(value).map_err(|error| error.to_string())
             },
@@ -531,8 +806,16 @@ impl GameModule for ToyRulesModule {
             BraceProvider {
                 focus: families.focus.clone(),
                 guarded: families.guarded.clone(),
-                brace_definition: actual.brace,
-                guarded_definition: actual.guarded,
+                brace_definition: actual.brace.clone(),
+                guarded_definition: actual.guarded.clone(),
+            },
+        )?;
+        registrar.action_provider(
+            actual.guarded_expire.clone(),
+            GuardedExpiryProvider {
+                guarded: families.guarded.clone(),
+                expire_definition: actual.guarded_expire.clone(),
+                guarded_definition: actual.guarded.clone(),
             },
         )?;
         *self.families.lock().expect("toy family capture poisoned") = Some(families);
@@ -573,7 +856,7 @@ pub fn install_toy_focus(
         let mut txn = engine
             .action_transaction(&families.focus)
             .expect("toy focus transaction");
-        txn.insert(&families.focus, &actor, ToyFocusState { amount })
+        txn.insert(&families.focus, &actor, ToyFocusState::new(amount))
             .expect("valid focus bootstrap");
         txn.prepare().expect("focus bootstrap prepares")
     };
@@ -588,6 +871,19 @@ pub fn toy_brace_invocation(
     request: RequestUid,
 ) -> ActionInvocation {
     toy_brace_invocation_with_cascade_steps(actor, scene_turn, request, None)
+}
+
+/// Canonical scene clock used by the Gate-1 fixture. The scene and generation
+/// are stable across a simulated restart; changing either makes old stamps
+/// intentionally incomparable.
+pub fn toy_scene_turn(at: u64) -> ClockStamp {
+    ClockStamp {
+        clock: ClockRef::SceneTurn {
+            scene: 1,
+            generation: 1,
+        },
+        at: i64::try_from(at).expect("toy scene turn fits i64"),
+    }
 }
 
 /// Fixture-only variant used to prove cascade bounds abort the whole action.
@@ -619,8 +915,8 @@ pub fn toy_brace_invocation_with_cascade_steps(
         .expect("static offer is canonical"),
     );
     let parameters = cascade_steps.map_or_else(
-        || json!({ "scene_turn": scene_turn }),
-        |steps| json!({ "scene_turn": scene_turn, "cascade_steps": steps }),
+        || json!({ "scene_turn": toy_scene_turn(scene_turn) }),
+        |steps| json!({ "scene_turn": toy_scene_turn(scene_turn), "cascade_steps": steps }),
     );
     ActionInvocation::new(ActionInvocationDraft {
         request,
@@ -633,6 +929,59 @@ pub fn toy_brace_invocation_with_cascade_steps(
         idempotency,
     })
     .expect("toy invocation is canonical")
+}
+
+/// Server-scheduled authoritative expiry for one exact guarded instance.
+/// The deterministic idempotency key is the instance identity, so restart or
+/// duplicate timer delivery cannot remove a replacement effect.
+pub fn toy_guarded_expiry_invocation(
+    actor: ObjId,
+    effect: EffectInstanceId,
+    scene_turn: u64,
+    request: RequestUid,
+) -> ActionInvocation {
+    toy_guarded_expiry_invocation_at(actor, effect, toy_scene_turn(scene_turn), request)
+}
+
+/// Clock-explicit variant used by the scheduler adapter and generation tests.
+pub fn toy_guarded_expiry_invocation_at(
+    actor: ObjId,
+    effect: EffectInstanceId,
+    now: ClockStamp,
+    request: RequestUid,
+) -> ActionInvocation {
+    let definitions = toy_definitions();
+    let owner = OwnerId::new(TOY_OWNER).expect("static owner");
+    let principal = PrincipalId::Object { id: actor };
+    let idempotency = ScopedIdempotencyKey::new(
+        IdempotencyScope {
+            principal: principal.clone(),
+            owner,
+            namespace: CanonicalId::new("guarded_expire").expect("static namespace"),
+        },
+        0,
+        IdempotencyKey::Deterministic(effect.0),
+    );
+    let offered_action = ActionOfferId(
+        CanonicalHash::for_canonical_value(
+            "toy.offer.v1",
+            1,
+            &json!({ "action": definitions.guarded_expire }),
+            4 * 1024,
+        )
+        .expect("static offer is canonical"),
+    );
+    ActionInvocation::new(ActionInvocationDraft {
+        request,
+        principal,
+        actor,
+        offered_action,
+        subject: PerceivedRef::SelfActor,
+        targets: Vec::new(),
+        parameters: json!({ "effect": effect, "now": now }),
+        idempotency,
+    })
+    .expect("toy expiry invocation is canonical")
 }
 
 /// Build a bounded exact rules value for gate fixtures.
@@ -660,19 +1009,32 @@ mod tests {
         actor: ObjId,
         expiry: u64,
     ) {
+        let definitions = toy_definitions();
+        let request = RequestUid::from_bytes([0xEE; 16]);
+        let target = EffectTarget::Subject {
+            subject: SubjectKey::Object { id: actor },
+        };
+        let id = EffectInstanceId::derive(request, &definitions.guarded, &target, 1).unwrap();
+        let effect = EffectInstance::new(
+            id,
+            definitions.guarded.clone(),
+            PreparedCausalRef::new(request, None, 0).unwrap(),
+            target,
+            toy_scene_turn(expiry.checked_sub(2).unwrap()),
+            EffectDuration::Until {
+                expires: toy_scene_turn(expiry),
+            },
+            1,
+            RulesValue::new(definitions.guarded, json!({})).unwrap(),
+        )
+        .unwrap();
         let prepared = {
             let mut txn = world
                 .engine_mut()
                 .action_transaction(&families.guarded)
                 .expect("toy guarded transaction");
-            txn.insert(
-                &families.guarded,
-                &actor,
-                ToyGuardedState {
-                    expires_after_scene_turn: expiry,
-                },
-            )
-            .expect("valid guarded bootstrap");
+            txn.insert(&families.guarded, &actor, ToyGuardedState { effect })
+                .expect("valid guarded bootstrap");
             txn.prepare().expect("guarded bootstrap prepares")
         };
         let (_, installation) = prepared.into_parts();
@@ -744,8 +1106,10 @@ mod tests {
                 .engine()
                 .action_state()
                 .get(&families.focus, &mush_core::GOD)
-                .unwrap(),
-            Some(&ToyFocusState { amount: 3 })
+                .unwrap()
+                .unwrap()
+                .amount(),
+            3
         );
         assert!(
             world
@@ -793,18 +1157,20 @@ mod tests {
                 .engine()
                 .action_state()
                 .get(&families.focus, &mush_core::GOD)
-                .unwrap(),
-            Some(&ToyFocusState { amount: 2 })
+                .unwrap()
+                .unwrap()
+                .amount(),
+            2
         );
         assert_eq!(
             world
                 .engine()
                 .action_state()
                 .get(&families.guarded, &mush_core::GOD)
-                .unwrap(),
-            Some(&ToyGuardedState {
-                expires_after_scene_turn: 13,
-            })
+                .unwrap()
+                .unwrap()
+                .expires_at(),
+            &toy_scene_turn(13)
         );
     }
 
@@ -851,8 +1217,10 @@ mod tests {
                 .engine()
                 .action_state()
                 .get(&families.focus, &mush_core::GOD)
-                .unwrap(),
-            Some(&ToyFocusState { amount: 3 }),
+                .unwrap()
+                .unwrap()
+                .amount(),
+            3,
             "neither root nor trigger scratch may install before acknowledgement"
         );
         assert!(
@@ -1091,5 +1459,99 @@ mod tests {
                 .is_none()
         );
         assert!(!world.engine().action_state().has_prepared());
+    }
+
+    #[test]
+    fn guarded_expiry_is_exact_clocked_and_removes_only_its_instance() {
+        let (mut world, families) = toy_world_with_state();
+        bootstrap_focus(&mut world, &families, mush_core::GOD, 3);
+        let brace_request = RequestUid::from_bytes([0xC1; 16]);
+        let brace = toy_brace_invocation(mush_core::GOD, 11, brace_request);
+        let (prepared, _) = world
+            .engine_mut()
+            .prepare_registered_authoritative_action(&toy_definitions().brace, &brace)
+            .expect("brace prepares");
+        let (_, installation) = prepared.into_parts();
+        world.engine_mut().install_prepared_action(installation);
+        let guarded = world
+            .engine()
+            .action_state()
+            .get(&families.guarded, &mush_core::GOD)
+            .unwrap()
+            .unwrap()
+            .clone();
+
+        let early = toy_guarded_expiry_invocation(
+            mush_core::GOD,
+            guarded.effect.id(),
+            12,
+            RequestUid::from_bytes([0xC2; 16]),
+        );
+        assert!(matches!(
+            world.engine_mut().prepare_registered_authoritative_action(
+                &toy_definitions().guarded_expire,
+                &early
+            ),
+            Err(ActionProviderPrepareError::Provider { source, .. })
+                if source.code() == ActionErrorCode::ProviderRejected
+        ));
+        assert_eq!(
+            world
+                .engine()
+                .action_state()
+                .get(&families.guarded, &mush_core::GOD)
+                .unwrap(),
+            Some(&guarded)
+        );
+
+        let stale_clock = toy_guarded_expiry_invocation_at(
+            mush_core::GOD,
+            guarded.effect.id(),
+            ClockStamp {
+                clock: ClockRef::SceneTurn {
+                    scene: 1,
+                    generation: 2,
+                },
+                at: 13,
+            },
+            RequestUid::from_bytes([0xC3; 16]),
+        );
+        assert!(matches!(
+            world.engine_mut().prepare_registered_authoritative_action(
+                &toy_definitions().guarded_expire,
+                &stale_clock
+            ),
+            Err(ActionProviderPrepareError::Provider { source, .. })
+                if source.code() == ActionErrorCode::Stale
+        ));
+
+        let due = toy_guarded_expiry_invocation(
+            mush_core::GOD,
+            guarded.effect.id(),
+            13,
+            RequestUid::from_bytes([0xC4; 16]),
+        );
+        let (prepared, cascade) = world
+            .engine_mut()
+            .prepare_registered_authoritative_action(&toy_definitions().guarded_expire, &due)
+            .expect("due expiry prepares");
+        assert_eq!(prepared.operation_count(), 1);
+        let (outcome, _, _, _, events) = cascade.into_parts();
+        assert_eq!(
+            outcome.data()["source"]["root_request"],
+            brace_request.to_hex()
+        );
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind().as_str(), "guarded_expire");
+        let (_, installation) = prepared.into_parts();
+        world.engine_mut().install_prepared_action(installation);
+        assert!(
+            world
+                .engine()
+                .action_state()
+                .get(&families.guarded, &mush_core::GOD)
+                .unwrap()
+                .is_none()
+        );
     }
 }

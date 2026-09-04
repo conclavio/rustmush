@@ -1,9 +1,10 @@
 # E7 implementation plan — requisition and production vertical slice
 
-**Status:** Draft 0.1, 2026-09-04. The two early kernel dependencies are pulled forward as K4a/K5a
-in doc 09 and implemented on the K branch. This plan deliberately keeps E7's first journal-backed
-records on the existing economy durability path; it does not pretend the remaining kernel migration
-gates are complete.
+**Status:** Draft 0.2, 2026-09-04. The two early kernel dependencies are pulled forward as K4a/K5a
+in doc 09 and implemented on the K branch. K4b's checked scalar, reservation-record, and typed
+effect-instance primitives are also implemented and exercised by the restart-safe Gate-1 toy.
+This plan deliberately keeps E7's first journal-backed records on the existing economy durability
+path; it does not pretend the remaining kernel migration gates are complete.
 
 ## 1. Outcome
 
@@ -40,6 +41,11 @@ particular campaign economy.
 
 These primitives unblock E7 record design and early gameplay without waiting for every K4/K5
 feature.
+
+The next enabling slice is K5's bounded, signed legal-offer store and provider routing, followed by
+E7a's recipe/facility/work-order definitions. E7b may use the existing economy journal for its first
+real holds, but it must use K4b's state-machine semantics and typed expiry shape so the later kernel
+migration is a storage-boundary change rather than a model rewrite.
 
 ### 2.2 Already satisfied
 

@@ -1,6 +1,6 @@
 # Cross-ruleset mechanical contracts and proving gates
 
-**Status:** Implementing 0.11 — K0/K1 formal exit criteria landed. K2 has strict atomic boot
+**Status:** Implementing 0.12 — K0/K1 formal exit criteria landed. K2 has strict atomic boot
 hydration, bounded typed transactions, final guard revalidation, provider registration, and a
 versioned split-gateway request custody protocol. Same-owner causal triggers now execute against
 one root scratch transaction and persist their complete event graph in the same bundle and compact
@@ -11,8 +11,11 @@ shape and the remaining process-kill matrix remain open. K3's
 persistence kernel and durability-audit closeout are implemented: exact bundle
 reservation/reconciliation, pre-hydration recovery, store-owned authoritative prefixes, compact
 checkpoints, watermark-first epoch retirement, a production coordinator plus first tactics provider,
-and recovery-driven durable-outbox dispatch. Transport/legal-offer integration and the IPC portions
-of Gate 5 remain cross-cut work with K2/K5; all five end-to-end proving gates remain open.
+and recovery-driven durable-outbox dispatch. K4 now also has checked bounded scalars, exact durable
+reservation transitions, inert typed effect instances, and a Gate-1 `focus -> brace -> guarded ->
+expiry` history that survives checkpoint/restart. Transport/legal-offer integration and the IPC
+portions of Gate 5 remain cross-cut work with K2/K5; all five complete end-to-end proving gates
+remain open.
 
 **Scope:** the shared contracts that must be stable before RustMUSH substantially expands character,
 tactical, economic, and AI-driven rules
@@ -1799,7 +1802,7 @@ The repository already contains useful local proofs. They should be adapted, not
 | C4 time/windows | scheduler; strict `ClockRef`/`ClockStamp`; bounded append-only world-IC epoch history `{ real_anchor, ic_anchor, rate, generation }`; continuous rate changes; atomic epoch/head persistence; boot hydration before modules; synchronous `(ic_now, generation)` module-context read; Timestop turns, passive domain clock, Journey timing, mobility switching | registered provider lookup, typed deadline validation, generic window generations, simultaneous intent collection/order, restart/catch-up policy |
 | C5 RNG | injectable `mush-dice::RollCtx`; test-seeded ChaCha in rulesets | idempotency-derived resolution streams, draw transcript, algorithm/version and durable outcome record |
 | C6 causality | `WorldEvent`, scene/canon ledgers, module observers; stable pre-commit request/event IDs and causal references; bounded deterministic trigger queue with duplicate suppression and non-droppable active-work custody; queue execution inside one root `ActionTxn`; v2 bundles and v3 compact receipts retaining ordered root/derived semantic events and event-time witnesses | public commit-token-bound event IDs, intent-resolution-commit-observation integration, cross-owner trigger execution through validated bridges |
-| C7 tracks/effects | sheet tracks, tactical `ScalarCell`, ruleset-specific damage/effect state | common checked operations, resource/effect addressing, provenance/duration/revision contract and adapters |
+| C7 tracks/effects | sheet tracks and tactical `ScalarCell`; common `BoundedScalar` operations; exact `ResourceRef`; revision/clock-checked `ReservationRecord`; exact-identity/provenance/typed-duration inert `EffectInstance`; Gate-1 toy storage adapted without moving owner truth | composition-frozen resource/effect adapter registries, reservation storage/contention gate, broader owner adapters |
 | C8 guards | per-station channel grants (no cross-seat union/max promotion), persisted unit `control_gen` carried as each grant's epoch, exact station/channel/epoch stale-intent revalidation, expected unit revision, economy plan draft; canonical `RevisionSet`, owner-stamped validator registries, explicit server-created `GuardSet` on every staged typed action, final fail-closed revalidation at the synchronous writer-custody transition, durable exact-bundle reservation, and coordinator-owned early idempotency preflight | active per-channel leases, safe-boundary handoff, and wiring every delayed result/offer through the exact grant plus lease guards |
 | C9 projection | per-observer perception and delivery, witness-aware power events | opaque contact references, dedicated view DTOs, shared legal-action/error/LLM projection |
 | C10 ownership | registrar-stamped definition/action/state-family owners; composition-bound opaque typed state handles; provider-stamped transactions that reject cross-owner handles; fail-closed cross-owner tactical references; immutable directional exact-definition bridge registry; shared owner-readiness gates on executable definitions/providers/validators/bridge routes | ownership migration for state outside `ActionStateStore`, executable bridge preparation across typed transactions, freeze aggregation from remaining owner adapters |
@@ -1809,8 +1812,9 @@ The repository already contains useful local proofs. They should be adapted, not
 None of the five gates currently traverses all of these through one action pipeline. The first real
 `tactics:brace` slice now crosses early idempotency, provider preparation, whole-bundle durability,
 compact retry, fresh-engine typed-state hydration, and the structured split-process custody path.
-It does not yet have a public line/panel producer because legal-offer verification, clock expiry,
-projection, and presentation remain K4/K5 work.
+Its toy variant now also checkpoints, rehydrates, and expires a typed two-turn effect exactly once.
+It does not yet have a public line/panel producer because legal-offer verification, registered
+clock/window policy, projection, and presentation remain K4/K5 work.
 That is the reason for using toy vertical slices rather than declaring the contracts finished from
 their local precursors.
 
@@ -2160,6 +2164,14 @@ two kernel primitives forward before finishing the rest of K4/K5:
    delayed intents can revalidate the exact station/channel/epoch. The existing persisted unit
    `control_gen` is a conservative grant epoch: any control-surface change invalidates every grant
    on that unit. Per-channel active leases and safe-boundary transfer remain K6 work.
+3. **K4b — checked resources and typed effects (implemented):** rules-neutral `ResourceRef` and
+   `BoundedScalar` enforce exact addressing, checked integer bounds, and monotonic revisions;
+   `ReservationRecord` enforces deterministic identity, amount, clock, revision, and terminal
+   transitions; `EffectInstance` enforces exact definition/owner, causal source, typed duration,
+   stack bounds, and revision. The Gate-1 toy now spends `focus`, creates `guarded` in the same
+   causal bundle, rehydrates it after restart, and removes only that exact instance through a
+   deterministic authoritative expiry action. Provider registries, reservation contention, and
+   registered clock/window scheduling remain later K4 work.
 
 The K3.1 checkpoint-readback and pending-allocator findings are already closed in both memory and
 Redis and therefore are not prerequisites. Mixed authoritative write sets, synchronous typed-family
