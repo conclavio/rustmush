@@ -24,6 +24,15 @@ pub const META_KEY: &str = "meta";
 /// The core player-request queue, registered by the jobs module itself.
 pub const REQ_QUEUE: &str = "REQ";
 
+/// Maximum UTF-8 bytes in one job title.
+pub const MAX_JOB_TITLE_BYTES: usize = 512;
+/// Maximum UTF-8 bytes in one job comment.
+pub const MAX_JOB_COMMENT_BYTES: usize = 16 * 1024;
+/// Hard persisted comment cap, including terminal staff audit comments.
+pub const MAX_JOB_COMMENTS: usize = 256;
+/// Ordinary comment cap. The remainder is reserved for terminal staff actions.
+pub const MAX_ORDINARY_JOB_COMMENTS: usize = 252;
+
 /// Where a job stands.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum JobStatus {
@@ -173,15 +182,78 @@ pub(crate) struct JobsState {
 }
 
 impl JobsState {
-    /// Allocate the next sequential job id.
-    pub fn alloc_id(&mut self) -> u64 {
+    /// Allocate the next sequential job id, or return `None` when the counter
+    /// cannot advance without wrapping.
+    pub fn alloc_id(&mut self) -> Option<u64> {
         if self.next_id == 0 {
             self.next_id = 1;
         }
         let id = self.next_id;
-        self.next_id += 1;
-        id
+        self.next_id = self.next_id.checked_add(1)?;
+        Some(id)
     }
+}
+
+/// Validate one comment's content independently of trail capacity.
+pub(crate) fn validate_comment_text(text: &str) -> Result<(), String> {
+    if text.trim().is_empty() {
+        return Err("a job comment cannot be empty".to_string());
+    }
+    if text.len() > MAX_JOB_COMMENT_BYTES {
+        return Err(format!(
+            "a job comment may contain at most {MAX_JOB_COMMENT_BYTES} UTF-8 bytes"
+        ));
+    }
+    Ok(())
+}
+
+/// Validate an ordinary comment append, preserving terminal audit capacity.
+pub(crate) fn validate_ordinary_comment(job: &Job, text: &str) -> Result<(), String> {
+    validate_comment_text(text)?;
+    if job.comments.len() >= MAX_ORDINARY_JOB_COMMENTS {
+        return Err(format!(
+            "job {} has reached its ordinary comment limit of {MAX_ORDINARY_JOB_COMMENTS}",
+            job.id
+        ));
+    }
+    Ok(())
+}
+
+/// Validate a terminal approve/deny comment against the absolute trail cap.
+pub(crate) fn validate_terminal_comment(job: &Job, text: &str) -> Result<(), String> {
+    validate_comment_text(text)?;
+    if job.comments.len() >= MAX_JOB_COMMENTS {
+        return Err(format!(
+            "job {} has reached its hard comment limit of {MAX_JOB_COMMENTS}",
+            job.id
+        ));
+    }
+    Ok(())
+}
+
+/// Validate the bounded portions of a persisted job document.
+pub(crate) fn validate_job(job: &Job) -> Result<(), String> {
+    if job.id == 0 {
+        return Err("job id zero is reserved".to_string());
+    }
+    if job.title.trim().is_empty() || job.title.len() > MAX_JOB_TITLE_BYTES {
+        return Err(format!(
+            "job {} title is empty or exceeds {MAX_JOB_TITLE_BYTES} UTF-8 bytes",
+            job.id
+        ));
+    }
+    if job.comments.len() > MAX_JOB_COMMENTS {
+        return Err(format!(
+            "job {} has {} comments; maximum is {MAX_JOB_COMMENTS}",
+            job.id,
+            job.comments.len()
+        ));
+    }
+    for comment in &job.comments {
+        validate_comment_text(&comment.text)
+            .map_err(|detail| format!("job {}: {detail}", job.id))?;
+    }
+    Ok(())
 }
 
 /// The persistence key of a job document.
@@ -247,11 +319,14 @@ mod tests {
     #[test]
     fn id_allocation_is_sequential_from_one() {
         let mut st = JobsState::default();
-        assert_eq!(st.alloc_id(), 1);
-        assert_eq!(st.alloc_id(), 2);
+        assert_eq!(st.alloc_id(), Some(1));
+        assert_eq!(st.alloc_id(), Some(2));
         st.next_id = 42;
-        assert_eq!(st.alloc_id(), 42);
+        assert_eq!(st.alloc_id(), Some(42));
         assert_eq!(st.next_id, 43);
+        st.next_id = u64::MAX;
+        assert_eq!(st.alloc_id(), None);
+        assert_eq!(st.next_id, u64::MAX);
     }
 
     #[test]
@@ -319,5 +394,34 @@ mod tests {
         let j: Job = serde_json::from_value(minimal).unwrap();
         assert_eq!(j.assignee, None);
         assert!(j.tags.is_empty() && j.comments.is_empty() && j.payload.is_none());
+    }
+
+    #[test]
+    fn persisted_job_bounds_are_validated() {
+        let mut job = Job {
+            id: 1,
+            queue: REQ_QUEUE.into(),
+            title: "bounded".into(),
+            opener: ObjId(2),
+            assignee: None,
+            status: JobStatus::Open,
+            tags: Vec::new(),
+            comments: Vec::new(),
+            payload: None,
+            opened_at: 1,
+            updated_at: 1,
+        };
+        assert!(validate_job(&job).is_ok());
+        job.title = "x".repeat(MAX_JOB_TITLE_BYTES + 1);
+        assert!(validate_job(&job).is_err());
+        job.title = "bounded".into();
+        job.comments = (0..=MAX_JOB_COMMENTS)
+            .map(|n| JobComment {
+                who: ObjId(2),
+                ts: n as i64,
+                text: format!("comment {n}"),
+            })
+            .collect();
+        assert!(validate_job(&job).is_err());
     }
 }

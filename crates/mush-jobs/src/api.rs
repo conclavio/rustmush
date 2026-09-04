@@ -42,8 +42,8 @@ use mush_core::{Ctx, ModuleOp, ModuleWrite, ObjId, Registry, World};
 use smol_str::SmolStr;
 
 use crate::data::{
-    Job, JobComment, JobPayload, JobStatus, JobsState, META_KEY, NS, Note, canon_category, job_key,
-    meta_value,
+    Job, JobComment, JobPayload, JobStatus, JobsState, MAX_JOB_TITLE_BYTES, META_KEY, NS, Note,
+    canon_category, job_key, meta_value, validate_comment_text, validate_ordinary_comment,
 };
 
 /// A registered payload applier. Invoked by `+job/approve` with the full
@@ -119,19 +119,29 @@ pub fn open_job(ctx: &mut Ctx<'_>, spec: OpenJob) -> Result<u64, String> {
     if title.is_empty() {
         return Err("a job needs a title".to_string());
     }
+    if title.len() > MAX_JOB_TITLE_BYTES {
+        return Err(format!(
+            "a job title may contain at most {MAX_JOB_TITLE_BYTES} UTF-8 bytes"
+        ));
+    }
+    let opening_text = spec
+        .text
+        .as_deref()
+        .map(str::trim)
+        .filter(|text| !text.is_empty());
+    if let Some(text) = opening_text {
+        validate_comment_text(text)?;
+    }
     let now = ctx.w.now();
     let st = ctx
         .w
         .module_state_mut::<JobsState>()
         .ok_or_else(|| "the jobs module is not loaded".to_string())?;
-    let id = st.alloc_id();
+    let id = st
+        .alloc_id()
+        .ok_or_else(|| "the job id space is exhausted".to_string())?;
     let mut comments = Vec::new();
-    if let Some(text) = spec
-        .text
-        .as_deref()
-        .map(str::trim)
-        .filter(|t| !t.is_empty())
-    {
+    if let Some(text) = opening_text {
         comments.push(JobComment {
             who: spec.opener,
             ts: now,
@@ -186,7 +196,8 @@ pub fn get_job(w: &World, id: u64) -> Option<&Job> {
 ///
 /// # Errors
 ///
-/// Errors if the jobs module is not loaded or no job has that id.
+/// Errors if the jobs module is not loaded, no job has that id, or the
+/// comment exceeds its byte/count limits.
 pub fn add_comment(ctx: &mut Ctx<'_>, id: u64, who: ObjId, text: &str) -> Result<String, String> {
     let now = ctx.w.now();
     let st = ctx
@@ -197,6 +208,7 @@ pub fn add_comment(ctx: &mut Ctx<'_>, id: u64, who: ObjId, text: &str) -> Result
         .jobs
         .get_mut(&id)
         .ok_or_else(|| format!("no such job: {id}"))?;
+    validate_ordinary_comment(job, text)?;
     job.comments.push(JobComment {
         who,
         ts: now,

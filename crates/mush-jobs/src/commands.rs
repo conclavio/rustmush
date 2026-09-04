@@ -19,10 +19,10 @@ use mush_core::{
 };
 use smol_str::SmolStr;
 
-use crate::api::{JobsApi, OpenJob, job_doc, note_doc, open_job, queue_spec};
+use crate::api::{JobsApi, OpenJob, add_comment, job_doc, note_doc, open_job, queue_spec};
 use crate::data::{
     Approval, Job, JobComment, JobStatus, JobsState, NS, Note, REQ_QUEUE, canon_category, fmt_ago,
-    note_key,
+    note_key, validate_terminal_comment,
 };
 
 /// Minimum role treated as "staff" for character notes.
@@ -398,15 +398,8 @@ fn job_comment(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     if !may_view_job(ctx.w, ctx.reg, ctx.actor, &job) {
         return Err(CmdError::msg("Permission denied."));
     }
-    let (who, ts) = (ctx.actor, ctx.w.now());
-    let comment_text = text.clone();
-    let job = update_job(ctx, id, move |j| {
-        j.comments.push(JobComment {
-            who,
-            ts,
-            text: comment_text,
-        });
-    })?;
+    let who = ctx.actor;
+    add_comment(ctx, id, who, &text).map_err(CmdError::msg)?;
     ctx.out
         .info(ctx.actor, format!("Comment added to job {id}."));
     let msg = format!(
@@ -478,6 +471,9 @@ fn job_approve(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             job.status.to_string().to_lowercase()
         )));
     }
+    if let Some(text) = &comment {
+        validate_terminal_comment(&job, text).map_err(CmdError::msg)?;
+    }
     // Apply the structured payload first: a missing handler or a handler
     // error aborts here, leaving the job untouched. On success the
     // handler's mutations and the status flip below commit atomically
@@ -546,6 +542,7 @@ fn job_deny(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             job.status.to_string().to_lowercase()
         )));
     }
+    validate_terminal_comment(&job, &reason).map_err(CmdError::msg)?;
     let (who, ts) = (ctx.actor, ctx.w.now());
     let reason_comment = reason.clone();
     let job = update_job(ctx, id, move |j| {

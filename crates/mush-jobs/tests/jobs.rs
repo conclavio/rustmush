@@ -16,8 +16,8 @@ use mush_core::{
     register_engine_commands,
 };
 use mush_jobs::{
-    Job, JobPayload, JobStatus, JobsModule, OpenJob, get_job, get_note, open_job,
-    register_payload_handler,
+    Job, JobPayload, JobStatus, JobsModule, MAX_JOB_COMMENT_BYTES, MAX_JOB_TITLE_BYTES,
+    MAX_ORDINARY_JOB_COMMENTS, OpenJob, get_job, get_note, open_job, register_payload_handler,
 };
 use mush_proto::OutputEvent;
 use serde_json::json;
@@ -573,9 +573,46 @@ fn open_job_validations() {
     assert!(err.contains("no such job queue"), "{err}");
     let err = ctx_open(&mut ctx, "REQ", "   ").unwrap_err();
     assert!(err.contains("needs a title"), "{err}");
+    let err = ctx_open(&mut ctx, "REQ", &"x".repeat(MAX_JOB_TITLE_BYTES + 1)).unwrap_err();
+    assert!(err.contains("at most"), "{err}");
+    let actor = ctx.actor;
+    let err = open_job(
+        &mut ctx,
+        OpenJob {
+            queue: "REQ".into(),
+            title: "Oversized opening comment".into(),
+            opener: actor,
+            text: Some("x".repeat(MAX_JOB_COMMENT_BYTES + 1)),
+            payload: None,
+            tags: Vec::new(),
+        },
+    )
+    .unwrap_err();
+    assert!(err.contains("comment may contain"), "{err}");
     // Queue names match case-insensitively and canonicalize.
     let id = ctx_open(&mut ctx, "req", "Lower").unwrap();
     assert_eq!(get_job(ctx.w, id).unwrap().queue, "REQ");
+}
+
+#[test]
+fn ordinary_comments_are_bounded_but_leave_terminal_audit_capacity() {
+    let mut env = setup();
+    run(env.nick, &mut env, "+request Busy=opening");
+    for n in 1..MAX_ORDINARY_JOB_COMMENTS {
+        let nick = env.nick;
+        let out = run(nick, &mut env, &format!("+job/comment 1=comment {n}"));
+        assert!(has_text(&out, "Comment added"), "comment {n}");
+    }
+    let nick = env.nick;
+    let out = run(nick, &mut env, "+job/comment 1=one too many");
+    assert!(has_text(&out, "ordinary comment limit"));
+
+    let rita = env.rita;
+    let out = run(rita, &mut env, "+job/deny 1=terminal reason");
+    assert!(has_text(&out, "Job 1 denied"));
+    let job = get_job(&env.engine.world, 1).unwrap();
+    assert_eq!(job.comments.len(), MAX_ORDINARY_JOB_COMMENTS + 1);
+    assert_eq!(job.status, JobStatus::Denied);
 }
 
 fn ctx_open(ctx: &mut Ctx<'_>, queue: &str, title: &str) -> Result<u64, String> {
@@ -882,6 +919,13 @@ fn boot_tolerates_corrupt_and_unknown_documents() {
     let kv = vec![
         (SmolStr::new("job:1"), json!({"garbage": true})), // corrupt: skipped
         (SmolStr::new("job:4"), good),                     // healthy: loaded
+        (
+            SmolStr::new("job:max"),
+            json!({
+                "id": u64::MAX, "queue": "REQ", "title": "Exhausted", "opener": 2,
+                "status": "Open", "opened_at": 1, "updated_at": 1
+            }),
+        ), // valid shape, impossible successor: quarantined
         (SmolStr::new("note:1:x"), json!(42)),             // corrupt: skipped
         (SmolStr::new("meta"), json!({"wrong": 1})),       // bad meta: self-heals
         (SmolStr::new("mystery:key"), json!({})),          // unknown: ignored

@@ -40,4 +40,7 @@ Notes:
 
 - Ruleset modules register their own queues (chargen approval, XP) with
   a minimum staff role per queue.
+- Titles are limited to 512 UTF-8 bytes. Ordinary comments are limited to
+  16 KiB each and 252 per ticket; four additional trail slots are reserved
+  for terminal staff audit comments so a busy ticket can still be closed.
 - Tickets persist across restarts and are audit-logged.
