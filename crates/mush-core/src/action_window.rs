@@ -15,6 +15,10 @@ use crate::action::{
 };
 use crate::clock::{ClockMismatch, ClockRef, ClockStamp};
 use crate::mechanics::{CanonicalId, OwnerId};
+use crate::{
+    StateFamilyDescriptor, StateFamilyDescriptorError, StateFamilyId, StateKeyCodec,
+    StateValueDecoder, StateValueSerializer, StateValueValidator,
+};
 
 /// Hard cap on simultaneous intents retained by one window.
 pub const MAX_WINDOW_CAPACITY: u32 = 256;
@@ -45,6 +49,54 @@ impl ActionWindowId {
         )
         .map(Self)
     }
+
+    #[must_use]
+    pub const fn canonical_hash(self) -> CanonicalHash {
+        self.0
+    }
+}
+
+/// Canonical engine contract for owner-registered action-window state.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ActionWindowStateCodec;
+
+impl StateKeyCodec<ActionWindowId> for ActionWindowStateCodec {
+    fn encode_key(&self, key: &ActionWindowId) -> Result<String, String> {
+        Ok(key.canonical_hash().to_hex())
+    }
+}
+
+impl StateValueDecoder<ActionWindowRecord> for ActionWindowStateCodec {
+    fn decode_value(&self, value: &serde_json::Value) -> Result<ActionWindowRecord, String> {
+        serde_json::from_value(value.clone()).map_err(|error| error.to_string())
+    }
+}
+
+impl StateValueValidator<ActionWindowRecord> for ActionWindowStateCodec {
+    fn validate_value(&self, value: &ActionWindowRecord) -> Result<(), String> {
+        value.validate().map_err(|error| error.to_string())
+    }
+}
+
+impl StateValueSerializer<ActionWindowRecord> for ActionWindowStateCodec {
+    fn serialize_value(&self, value: &ActionWindowRecord) -> Result<serde_json::Value, String> {
+        serde_json::to_value(value).map_err(|error| error.to_string())
+    }
+}
+
+/// Build the exact reusable descriptor for an owner-local window family.
+pub fn action_window_state_family_descriptor(
+    family: StateFamilyId,
+) -> Result<StateFamilyDescriptor, StateFamilyDescriptorError> {
+    StateFamilyDescriptor::new(
+        family,
+        CanonicalId::new("action_window_id.v1").expect("static canonical id"),
+        CanonicalId::new("action_window_record.v1").expect("static canonical id"),
+        ActionWindowRecord::SCHEMA_VERSION,
+        CanonicalId::new("action_window_decode.v1").expect("static canonical id"),
+        CanonicalId::new("action_window_validate.v1").expect("static canonical id"),
+        CanonicalId::new("action_window_serialize.v1").expect("static canonical id"),
+    )
 }
 
 /// Whether an eligible action resolves immediately or joins a frozen set.
@@ -579,6 +631,19 @@ impl ActionWindowRecord {
             intents,
             receipts,
         })
+    }
+
+    /// Re-run every durable structural and lifecycle invariant.
+    pub fn validate(&self) -> Result<(), ActionWindowError> {
+        Self::from_parts(
+            self.schema_version,
+            self.window.clone(),
+            self.phase,
+            self.revision,
+            self.intents.clone(),
+            self.receipts.clone(),
+        )
+        .map(|_| ())
     }
 
     #[must_use]
@@ -1261,5 +1326,33 @@ mod tests {
             ]))
             .is_err()
         );
+    }
+
+    #[test]
+    fn state_family_codec_has_canonical_key_and_strict_round_trip() {
+        let definition = window(2);
+        let record = ActionWindowRecord::open(definition.clone());
+        let codec = ActionWindowStateCodec;
+        assert_eq!(
+            codec.encode_key(&definition.id()).unwrap(),
+            definition.id().canonical_hash().to_hex()
+        );
+        let descriptor = action_window_state_family_descriptor(
+            StateFamilyId::new("windows").expect("static family id"),
+        )
+        .unwrap();
+        assert_eq!(
+            descriptor.schema_version(),
+            ActionWindowRecord::SCHEMA_VERSION
+        );
+
+        let encoded = codec.serialize_value(&record).unwrap();
+        let decoded = codec.decode_value(&encoded).unwrap();
+        codec.validate_value(&decoded).unwrap();
+        assert_eq!(decoded, record);
+
+        let mut tampered = encoded;
+        tampered["revision"] = json!(99);
+        assert!(codec.decode_value(&tampered).is_err());
     }
 }

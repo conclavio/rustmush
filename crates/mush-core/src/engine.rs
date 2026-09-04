@@ -885,6 +885,7 @@ impl Engine {
         &mut self,
         action: &crate::mechanics::DefinitionRef,
         invocation: &crate::action::ActionInvocation,
+        commit_token: crate::action::CommitToken,
     ) -> Result<
         (PreparedTxn, crate::action::PreparedAuthoritativeAction),
         crate::action::ActionProviderPrepareError,
@@ -896,6 +897,7 @@ impl Engine {
         providers.prepare_authoritative_invocation(
             action,
             invocation,
+            commit_token,
             &mut self.action_state,
             self.resolution_keys.as_ref(),
         )

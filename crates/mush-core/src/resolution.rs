@@ -173,6 +173,7 @@ pub enum ResolutionSecretError {
 /// resolution-scoped generator for the invocation's exact idempotency scope.
 pub struct PrepareCtx<'a> {
     idempotency: &'a ScopedIdempotencyKey,
+    commit_token: CommitToken,
     keys: Option<&'a ResolutionKeyRing>,
     resolution_opened: bool,
 }
@@ -182,6 +183,7 @@ impl fmt::Debug for PrepareCtx<'_> {
         formatter
             .debug_struct("PrepareCtx")
             .field("idempotency", self.idempotency)
+            .field("commit_token", &self.commit_token)
             .field(
                 "current_secret_version",
                 &self.keys.map(ResolutionKeyRing::current_version),
@@ -194,13 +196,22 @@ impl fmt::Debug for PrepareCtx<'_> {
 impl<'a> PrepareCtx<'a> {
     pub(crate) const fn new(
         idempotency: &'a ScopedIdempotencyKey,
+        commit_token: CommitToken,
         keys: Option<&'a ResolutionKeyRing>,
     ) -> Self {
         Self {
             idempotency,
+            commit_token,
             keys,
             resolution_opened: false,
         }
+    }
+
+    /// Coordinator-derived immutable identity of the bundle being prepared.
+    /// Providers may reference it in exact post-images but cannot replace it.
+    #[must_use]
+    pub const fn commit_token(&self) -> CommitToken {
+        self.commit_token
     }
 
     /// Open the only RNG stream set available to this action preparation.
@@ -915,14 +926,16 @@ mod tests {
     fn prepare_context_is_key_opaque_and_single_use() {
         let idempotency = key(1);
         let domain = CanonicalId::new("attack").unwrap();
-        let mut missing = PrepareCtx::new(&idempotency, None);
+        let token = CommitToken::from_bytes([0x44; 16]);
+        let mut missing = PrepareCtx::new(&idempotency, token, None);
         assert_eq!(
             missing.start_resolution(&domain, inputs()).unwrap_err(),
             PrepareContextError::KeyRingUnavailable
         );
 
         let ring = ring();
-        let mut context = PrepareCtx::new(&idempotency, Some(&ring));
+        let mut context = PrepareCtx::new(&idempotency, token, Some(&ring));
+        assert_eq!(context.commit_token(), token);
         assert_eq!(
             context
                 .start_resolution(&domain, inputs())

@@ -3749,6 +3749,7 @@ impl ActionProviderRegistry {
         &self,
         action: &DefinitionRef,
         invocation: &ActionInvocation,
+        commit_token: CommitToken,
         state: &mut ActionStateStore,
         resolution_keys: Option<&crate::resolution::ResolutionKeyRing>,
     ) -> Result<(PreparedTxn, PreparedAuthoritativeAction), ActionProviderPrepareError> {
@@ -3757,8 +3758,11 @@ impl ActionProviderRegistry {
         let mut queue = CausalTriggerQueue::new(invocation.request(), self.owner_readiness.clone());
         let root_cause = queue.allocate_root_event()?;
         let root_before_operations = txn.operation_count();
-        let mut prepare_context =
-            crate::resolution::PrepareCtx::new(invocation.idempotency(), resolution_keys);
+        let mut prepare_context = crate::resolution::PrepareCtx::new(
+            invocation.idempotency(),
+            commit_token,
+            resolution_keys,
+        );
         let root_output = entry
             .provider()
             .prepare_authoritative_with_context(invocation, &mut txn, &mut prepare_context)
@@ -3796,6 +3800,9 @@ impl ActionProviderRegistry {
             definitions.push(prepared.outcome().schema().clone());
         }
         definitions.push(outcome.schema().clone());
+        if eligible_witnesses.is_empty() {
+            eligible_witnesses.push(invocation.principal().clone());
+        }
         let root_event = AuthoritativeSemanticEvent::new(
             root_cause,
             entry.owner.clone(),

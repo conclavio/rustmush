@@ -216,10 +216,18 @@ impl ActionCoordinator {
         guards: GuardSet,
     ) -> Result<StagedAuthoritativeAction, ActionCoordinatorError> {
         validate_invocation_identity(&permit.ingress, invocation)?;
+        let token = deterministic_commit_token(&permit.ingress)?;
         let (prepared, output) = engine
-            .prepare_registered_authoritative_action(action, invocation)
+            .prepare_registered_authoritative_action(action, invocation, token)
             .map_err(ActionCoordinatorError::Provider)?;
-        let bundle = match assemble_bundle(&permit.ingress, action, invocation, &prepared, output) {
+        let bundle = match assemble_bundle(
+            &permit.ingress,
+            action,
+            invocation,
+            token,
+            &prepared,
+            output,
+        ) {
             Ok(bundle) => bundle,
             Err(error) => {
                 engine.abort_prepared_transaction(prepared);
@@ -250,6 +258,7 @@ fn assemble_bundle(
     ingress: &IngressEnvelope,
     action: &DefinitionRef,
     invocation: &ActionInvocation,
+    token: CommitToken,
     prepared: &mush_core::PreparedTxn,
     output: mush_core::PreparedAuthoritativeAction,
 ) -> Result<AuthoritativeBundle, ActionCoordinatorError> {
@@ -276,7 +285,6 @@ fn assemble_bundle(
     durable_outbox.sort_by_key(mush_core::DurableOutboxIntent::ordinal);
     let cause = PreparedCausalRef::new(invocation.request(), None, 0)
         .map_err(ActionCoordinatorError::Causality)?;
-    let token = deterministic_commit_token(ingress)?;
     let resolution = prepared_resolution.map(|prepared| prepared.bind(token));
     let plan_hash = CanonicalHash::for_canonical_value(
         "authoritative_action_plan.v1",

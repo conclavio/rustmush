@@ -1,11 +1,12 @@
 use mush_contract_tests::{
-    TOY_OWNER, install_toy_focus, toy_brace_invocation, toy_brace_offers, toy_definitions,
-    toy_guarded_expiry_invocation, toy_scene_turn, toy_world_with_state,
+    TOY_OWNER, install_toy_focus, toy_action_window, toy_brace_invocation, toy_brace_offers,
+    toy_definitions, toy_guarded_expiry_invocation, toy_scene_turn, toy_window_invocation,
+    toy_world_with_state,
 };
 use mush_core::{
-    ActionInvocation, ActionInvocationDraft, ActionOfferId, CanonicalHash, CanonicalId,
-    DefinitionId, DefinitionKey, DefinitionKind, DefinitionRef, Engine, GOD, IdempotencyKey,
-    IdempotencyScope, IngressEnvelope, IngressPayload, IngressSurfaceVersion,
+    ActionInvocation, ActionInvocationDraft, ActionOfferId, ActionWindowPhase, AuthoritativeBundle,
+    CanonicalHash, CanonicalId, DefinitionId, DefinitionKey, DefinitionKind, DefinitionRef, Engine,
+    GOD, IdempotencyKey, IdempotencyScope, IngressEnvelope, IngressPayload, IngressSurfaceVersion,
     OfferExecutionContext, OfferKeyRing, OfferSecret, OfferSubmission, OwnerId, PerceivedRef,
     PrincipalId, ProjectionScopeId, RequestUid, RevisionSet, ScopedIdempotencyKey,
     StagedActionPersistence,
@@ -14,7 +15,7 @@ use mush_server::action_coordinator::{ActionCoordinator, ActionPreflight, Semant
 use mush_server::modules::boot_modules;
 use mush_store::{AuthoritativeStore, InMemoryStore};
 use mush_tactics::{BRACE_ACTION_ID, TacticsModule};
-use mush_testkit::boot_world;
+use mush_testkit::{TestWorld, boot_world};
 use serde_json::{Value, json};
 
 fn fresh_engine() -> Engine {
@@ -89,6 +90,215 @@ fn guards(engine: &Engine, action: &DefinitionRef) -> mush_core::GuardSet {
         .unwrap();
     builder.add_definition(action.clone(), definitions).unwrap();
     builder.finish().unwrap()
+}
+
+async fn commit_toy_window_operation(
+    store: &InMemoryStore,
+    world: &mut TestWorld,
+    invocation: &ActionInvocation,
+) -> (AuthoritativeBundle, IngressEnvelope) {
+    let envelope = IngressEnvelope::new(
+        invocation.request(),
+        invocation.principal().clone(),
+        IngressSurfaceVersion::new(CanonicalId::new("test.window").unwrap(), 1).unwrap(),
+        IngressPayload::structured(json!({
+            "action": "window_operation",
+            "parameters": invocation.parameters(),
+        }))
+        .unwrap(),
+        invocation.idempotency().clone(),
+    )
+    .unwrap();
+    let permit = match ActionCoordinator::preflight(store, envelope.clone())
+        .await
+        .unwrap()
+    {
+        ActionPreflight::Vacant(permit) => permit,
+        other => panic!("window operation was not vacant: {other:?}"),
+    };
+    let action = toy_definitions().window_action;
+    let action_guards = guards(world.engine(), &action);
+    ActionCoordinator::prepare_and_stage(
+        permit,
+        world.engine_mut(),
+        &action,
+        invocation,
+        action_guards,
+    )
+    .unwrap();
+    let (persistence, installation) = world
+        .engine_mut()
+        .take_staged_action()
+        .unwrap()
+        .expect("window operation staged")
+        .into_parts();
+    let bundle = match persistence {
+        StagedActionPersistence::Authoritative(bundle) => *bundle,
+        StagedActionPersistence::Legacy(_) => panic!("window operation used legacy persistence"),
+    };
+    store
+        .reserve_authoritative_intent(bundle.clone())
+        .await
+        .unwrap();
+    let receipt = store
+        .reconcile_authoritative(bundle.token(), bundle.bundle_hash())
+        .await
+        .unwrap();
+    assert!(receipt.matches_bundle(&bundle));
+    world.engine_mut().install_prepared_action(installation);
+    let checkpoint = store
+        .checkpoint_authoritative(bundle.token(), bundle.bundle_hash())
+        .await
+        .unwrap();
+    assert!(checkpoint.receipt.matches_bundle(&bundle));
+    (bundle, envelope)
+}
+
+#[tokio::test]
+async fn action_window_close_restart_and_resolution_share_exact_authority() {
+    let store = InMemoryStore::new();
+    let (mut world, families) = toy_world_with_state();
+    let _ = world.drain_write_batch();
+    let window_id = toy_action_window().id();
+
+    let open = toy_window_invocation(
+        GOD,
+        RequestUid::from_bytes([0xD0; 16]),
+        json!({ "operation": "open" }),
+    );
+    let (open_bundle, _) = commit_toy_window_operation(&store, &mut world, &open).await;
+    assert!(open_bundle.resolution().is_none());
+    assert_eq!(
+        world
+            .engine()
+            .action_state()
+            .get(&families.windows, &window_id)
+            .unwrap()
+            .unwrap()
+            .phase(),
+        ActionWindowPhase::Open
+    );
+
+    let first = toy_window_invocation(
+        mush_core::ObjId(2),
+        RequestUid::from_bytes([0xD1; 16]),
+        json!({
+            "operation": "submit",
+            "expected_revision": 1,
+            "now": toy_scene_turn(11),
+            "order": 10,
+        }),
+    );
+    commit_toy_window_operation(&store, &mut world, &first).await;
+    let second = toy_window_invocation(
+        mush_core::ObjId(3),
+        RequestUid::from_bytes([0xD2; 16]),
+        json!({
+            "operation": "submit",
+            "expected_revision": 2,
+            "now": toy_scene_turn(12),
+            "order": 1,
+        }),
+    );
+    commit_toy_window_operation(&store, &mut world, &second).await;
+
+    let close = toy_window_invocation(
+        GOD,
+        RequestUid::from_bytes([0xD3; 16]),
+        json!({
+            "operation": "close",
+            "expected_revision": 3,
+            "now": toy_scene_turn(20),
+        }),
+    );
+    let (close_bundle, _) = commit_toy_window_operation(&store, &mut world, &close).await;
+    assert!(close_bundle.resolution().is_none());
+    assert_eq!(close_bundle.outcome().data()["intent_count"], 2);
+
+    // The frozen set must be independently durable before any resolver runs.
+    let (mut restarted, restarted_families) = toy_world_with_state();
+    boot_modules(restarted.engine_mut(), &store).await.unwrap();
+    let _ = restarted.engine_mut().world.take_dirty();
+    assert!(restarted.engine_mut().take_module_ops().is_empty());
+    let closed = restarted
+        .engine()
+        .action_state()
+        .get(&restarted_families.windows, &window_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(closed.phase(), ActionWindowPhase::Closed);
+    assert_eq!(closed.revision(), 4);
+    assert_eq!(
+        closed
+            .resolution_order()
+            .unwrap()
+            .into_iter()
+            .map(|intent| intent.invocation().actor().0)
+            .collect::<Vec<_>>(),
+        vec![3, 2]
+    );
+
+    let resolve = toy_window_invocation(
+        GOD,
+        RequestUid::from_bytes([0xD4; 16]),
+        json!({
+            "operation": "resolve",
+            "expected_revision": 4,
+            "now": toy_scene_turn(21),
+        }),
+    );
+    let (resolve_bundle, resolve_envelope) =
+        commit_toy_window_operation(&store, &mut restarted, &resolve).await;
+    assert_eq!(resolve_bundle.writes().len(), 1);
+    assert_eq!(resolve_bundle.outcome().data()["order"], json!([3, 2]));
+    let resolution = resolve_bundle
+        .resolution()
+        .expect("window resolution retains its RNG transcript");
+    assert_eq!(resolution.action(), resolve_bundle.token());
+    assert_eq!(resolution.outcome(), resolve_bundle.outcome());
+    assert_eq!(resolution.draws().len(), 1);
+    let consumed = restarted
+        .engine()
+        .action_state()
+        .get(&restarted_families.windows, &window_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        consumed.phase(),
+        ActionWindowPhase::Consumed {
+            commit: resolve_bundle.token(),
+        }
+    );
+    assert_eq!(consumed.revision(), 5);
+
+    match ActionCoordinator::preflight(&store, resolve_envelope)
+        .await
+        .unwrap()
+    {
+        ActionPreflight::Finalized(receipt) => {
+            assert_eq!(receipt.resolution(), resolve_bundle.resolution());
+            assert_eq!(receipt.outcome(), resolve_bundle.outcome());
+        }
+        other => panic!("resolved-window retry was not compact and final: {other:?}"),
+    }
+
+    let (mut after_resolution, after_families) = toy_world_with_state();
+    boot_modules(after_resolution.engine_mut(), &store)
+        .await
+        .unwrap();
+    let restored = after_resolution
+        .engine()
+        .action_state()
+        .get(&after_families.windows, &window_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(restored, consumed);
+    assert_eq!(
+        restored.phase(),
+        ActionWindowPhase::Consumed {
+            commit: resolve_bundle.token(),
+        }
+    );
 }
 
 #[tokio::test]

@@ -7,24 +7,35 @@
 
 use mush_core::{
     ActionError, ActionErrorCode, ActionInvocation, ActionInvocationDraft, ActionOfferId,
-    ActionPresentation, ActionProvider, ActionStateError, ActionTxn, AuthoritativeActionOutput,
-    BoundedScalar, CanonicalHash, CanonicalId, ClockRef, ClockStamp, DefinitionDescriptor,
-    DefinitionId, DefinitionKind, DefinitionRef, DefinitionRegistryBuilder,
-    DefinitionValidationContext, EffectDuration, EffectInstance, EffectInstanceId, EffectTarget,
-    Engine, GameModule, IdempotencyKey, IdempotencyScope, LegalActionQuery, ModError, ObjId,
-    OwnerId, PerceivedRef, PrepareCtx, PreparedCausalRef, PreparedTrigger, PrincipalId,
-    ProjectedLegalActionSink, ProjectedParameterSchema, ProjectedTargetSchema, ProviderOfferDraft,
-    Registrar, RequestUid, ResolutionKeyRing, ResolutionSecret, ResourceOperation, RulesValue,
-    SameCommitTrigger, ScopedIdempotencyKey, StateFamilyDescriptor, StateFamilyHandle,
-    StateFamilyId, SubjectKey,
+    ActionPresentation, ActionProvider, ActionStateError, ActionTxn, ActionWindow,
+    ActionWindowDraft, ActionWindowError, ActionWindowId, ActionWindowRecord,
+    ActionWindowStateCodec, AuthoritativeActionOutput, BoundedScalar, CanonicalHash, CanonicalId,
+    ClockRef, ClockStamp, DefinitionDescriptor, DefinitionId, DefinitionKind, DefinitionRef,
+    DefinitionRegistryBuilder, DefinitionValidationContext, EffectDuration, EffectInstance,
+    EffectInstanceId, EffectTarget, Engine, GameModule, IdempotencyKey, IdempotencyScope,
+    LegalActionQuery, ModError, ObjId, OwnerId, PerceivedRef, PrepareCtx, PreparedCausalRef,
+    PreparedTrigger, PrincipalId, ProjectedLegalActionSink, ProjectedParameterSchema,
+    ProjectedTargetSchema, ProviderOfferDraft, Registrar, RequestUid, ResolutionKeyRing,
+    ResolutionSecret, ResourceOperation, RulesValue, SameCommitTrigger, ScopedIdempotencyKey,
+    StateFamilyDescriptor, StateFamilyHandle, StateFamilyId, SubjectKey, WindowIntent, WindowMode,
+    WindowOrderKey, WindowRestartPolicy, WindowTimeoutPolicy,
+    action_window_state_family_descriptor,
 };
 use mush_testkit::TestWorld;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::sync::{Arc, Mutex};
 
+#[cfg(test)]
+use mush_core::CommitToken;
+
 /// Canonical owner stamped on every toy definition.
 pub const TOY_OWNER: &str = "toy";
+
+#[cfg(test)]
+fn toy_prepare_token() -> CommitToken {
+    CommitToken::from_bytes([0xC0; 16])
+}
 
 /// Recursively find forbidden field names or string fragments in projected
 /// JSON. Contract gates use this on the exact value handed to a player, bot,
@@ -138,6 +149,7 @@ pub struct ToyDefinitions {
     pub guarded: DefinitionRef,
     pub brace: DefinitionRef,
     pub guarded_expire: DefinitionRef,
+    pub window_action: DefinitionRef,
 }
 
 fn focus_descriptor() -> DefinitionDescriptor {
@@ -189,6 +201,20 @@ fn guarded_expire_descriptor(guarded: DefinitionRef) -> DefinitionDescriptor {
     .as_current()
 }
 
+fn window_action_descriptor() -> DefinitionDescriptor {
+    DefinitionDescriptor::new(
+        DefinitionKind::new("action").expect("static definition kind"),
+        DefinitionId::new("window_operation").expect("static definition id"),
+        1,
+        json!({
+            "operations": ["open", "submit", "close", "resolve"],
+            "window": "round_7",
+        }),
+    )
+    .expect("nonzero static version")
+    .as_current()
+}
+
 fn register_definitions(
     mut register: impl FnMut(DefinitionDescriptor) -> Result<DefinitionRef, String>,
 ) -> Result<ToyDefinitions, String> {
@@ -196,11 +222,13 @@ fn register_definitions(
     let guarded = register(guarded_descriptor())?;
     let brace = register(brace_descriptor(focus.clone(), guarded.clone()))?;
     let guarded_expire = register(guarded_expire_descriptor(guarded.clone()))?;
+    let window_action = register(window_action_descriptor())?;
     Ok(ToyDefinitions {
         focus,
         guarded,
         brace,
         guarded_expire,
+        window_action,
     })
 }
 
@@ -215,6 +243,8 @@ fn validate_toy_definition(context: &DefinitionValidationContext<'_>) -> Result<
         brace_descriptor(definitions.focus.clone(), definitions.guarded.clone())
     } else if entry.reference() == &definitions.guarded_expire {
         guarded_expire_descriptor(definitions.guarded.clone())
+    } else if entry.reference() == &definitions.window_action {
+        window_action_descriptor()
     } else {
         return Err("unknown toy definition".into());
     };
@@ -284,6 +314,7 @@ impl ToyGuardedState {
 pub struct ToyStateFamilies {
     pub focus: StateFamilyHandle<ObjId, ToyFocusState>,
     pub guarded: StateFamilyHandle<ObjId, ToyGuardedState>,
+    pub windows: StateFamilyHandle<ActionWindowId, ActionWindowRecord>,
 }
 
 #[derive(Debug)]
@@ -975,6 +1006,333 @@ impl ActionProvider for GuardedExpiryProvider {
     }
 }
 
+/// Exact simultaneous window used by the K4 durability fixture.
+#[must_use]
+pub fn toy_action_window() -> ActionWindow {
+    let owner = OwnerId::new(TOY_OWNER).expect("static owner");
+    let local = CanonicalId::new("round_7").expect("static window id");
+    ActionWindow::new(ActionWindowDraft {
+        id: ActionWindowId::derive(&owner, &local).expect("static window identity"),
+        clock: toy_scene_turn(0).clock,
+        opens: toy_scene_turn(10),
+        closes: toy_scene_turn(20),
+        generation: 7,
+        mode: WindowMode::CollectSimultaneous,
+        capacity: 4,
+        restart: WindowRestartPolicy::CloseIfElapsed,
+        timeout: WindowTimeoutPolicy::Close,
+        max_catch_up: 3,
+    })
+    .expect("static toy window is valid")
+}
+
+#[derive(Debug)]
+struct ActionWindowProvider {
+    windows: StateFamilyHandle<ActionWindowId, ActionWindowRecord>,
+    action: DefinitionRef,
+}
+
+impl ActionWindowProvider {
+    fn invalid(message: &'static str) -> ActionError {
+        ActionError::new(ActionErrorCode::InvalidRequest, false, message)
+            .expect("static window error is bounded")
+    }
+
+    fn rejected(error: ActionWindowError) -> ActionError {
+        let code = match error {
+            ActionWindowError::StaleRevision { .. } => ActionErrorCode::Stale,
+            ActionWindowError::OperationConflict { .. } => ActionErrorCode::Conflict,
+            ActionWindowError::CapacityReached { .. }
+            | ActionWindowError::InputOperationLimit
+            | ActionWindowError::ReceiptLimit
+            | ActionWindowError::OrderKeyTooLong { .. }
+            | ActionWindowError::RevisionExhausted => ActionErrorCode::BoundsExceeded,
+            _ => ActionErrorCode::ProviderRejected,
+        };
+        ActionError::new(
+            code,
+            false,
+            format!("window operation was refused: {error}"),
+        )
+        .expect("bounded window error remains bounded")
+    }
+
+    fn parameters(
+        invocation: &ActionInvocation,
+    ) -> Result<&serde_json::Map<String, Value>, ActionError> {
+        invocation
+            .parameters()
+            .as_object()
+            .ok_or_else(|| Self::invalid("window parameters must be an object"))
+    }
+
+    fn operation(invocation: &ActionInvocation) -> Result<&str, ActionError> {
+        Self::parameters(invocation)?
+            .get("operation")
+            .and_then(Value::as_str)
+            .ok_or_else(|| Self::invalid("window operation is required"))
+    }
+
+    fn require_fields(
+        parameters: &serde_json::Map<String, Value>,
+        fields: &[&str],
+    ) -> Result<(), ActionError> {
+        if parameters.len() == fields.len()
+            && parameters
+                .keys()
+                .all(|candidate| fields.contains(&candidate.as_str()))
+        {
+            Ok(())
+        } else {
+            Err(Self::invalid("window operation has unexpected parameters"))
+        }
+    }
+
+    fn expected_revision(parameters: &serde_json::Map<String, Value>) -> Result<u64, ActionError> {
+        parameters
+            .get("expected_revision")
+            .and_then(Value::as_u64)
+            .filter(|revision| *revision > 0)
+            .ok_or_else(|| Self::invalid("window expected_revision must be positive"))
+    }
+
+    fn now(parameters: &serde_json::Map<String, Value>) -> Result<ClockStamp, ActionError> {
+        parameters
+            .get("now")
+            .cloned()
+            .and_then(|value| serde_json::from_value(value).ok())
+            .ok_or_else(|| Self::invalid("window now must be a typed clock stamp"))
+    }
+
+    fn load(
+        &self,
+        txn: &mut ActionTxn<'_>,
+        id: &ActionWindowId,
+    ) -> Result<ActionWindowRecord, ActionError> {
+        txn.get(&self.windows, id)
+            .map_err(|error| BraceProvider::state_error(&error))?
+            .cloned()
+            .ok_or_else(|| {
+                ActionError::new(
+                    ActionErrorCode::Stale,
+                    false,
+                    "action window no longer exists",
+                )
+                .expect("static window error is bounded")
+            })
+    }
+
+    fn outcome(&self, data: Value) -> Result<RulesValue, ActionError> {
+        RulesValue::new(self.action.clone(), data).map_err(|_| {
+            ActionError::new(
+                ActionErrorCode::BoundsExceeded,
+                false,
+                "window outcome exceeds canonical bounds",
+            )
+            .expect("static window error is bounded")
+        })
+    }
+}
+
+impl ActionProvider for ActionWindowProvider {
+    fn validate_invocation(&self, invocation: &ActionInvocation) -> Result<(), ActionError> {
+        if invocation.subject() != &PerceivedRef::SelfActor || !invocation.targets().is_empty() {
+            return Err(Self::invalid("window operations are actor-self scoped"));
+        }
+        match Self::operation(invocation)? {
+            "open" | "submit" | "close" | "resolve" => Ok(()),
+            _ => Err(Self::invalid("unknown window operation")),
+        }
+    }
+
+    fn prepare_invocation(
+        &self,
+        _invocation: &ActionInvocation,
+        _txn: &mut ActionTxn<'_>,
+    ) -> Result<(), ActionError> {
+        Err(ActionError::new(
+            ActionErrorCode::Unavailable,
+            false,
+            "window operations require the authoritative action coordinator",
+        )
+        .expect("static window error is bounded"))
+    }
+
+    fn prepare_authoritative_with_context(
+        &self,
+        invocation: &ActionInvocation,
+        txn: &mut ActionTxn<'_>,
+        context: &mut PrepareCtx<'_>,
+    ) -> Result<AuthoritativeActionOutput, ActionError> {
+        self.validate_invocation(invocation)?;
+        let parameters = Self::parameters(invocation)?;
+        let operation = Self::operation(invocation)?;
+        let definition = toy_action_window();
+        let window_id = definition.id();
+
+        match operation {
+            "open" => {
+                Self::require_fields(parameters, &["operation"])?;
+                let record = ActionWindowRecord::open(definition);
+                txn.insert(&self.windows, &window_id, record.clone())
+                    .map_err(|error| BraceProvider::state_error(&error))?;
+                // Exercise the kernel's principal-as-root-witness default
+                // before it constructs the root semantic event.
+                Ok(AuthoritativeActionOutput::new(self.outcome(json!({
+                    "event": "window_opened",
+                    "window": window_id,
+                    "revision": record.revision(),
+                }))?))
+            }
+            "submit" => {
+                Self::require_fields(
+                    parameters,
+                    &["operation", "expected_revision", "now", "order"],
+                )?;
+                let expected_revision = Self::expected_revision(parameters)?;
+                let now = Self::now(parameters)?;
+                let order = parameters
+                    .get("order")
+                    .and_then(Value::as_i64)
+                    .ok_or_else(|| Self::invalid("window order must be an integer"))?;
+                let record = self.load(txn, &window_id)?;
+                let intent = WindowIntent::new(
+                    window_id,
+                    definition.generation(),
+                    SubjectKey::Object {
+                        id: invocation.actor(),
+                    },
+                    invocation.clone(),
+                    WindowOrderKey::new(vec![order]).map_err(Self::rejected)?,
+                )
+                .map_err(Self::rejected)?;
+                let transition = record
+                    .checked_submit(expected_revision, &now, intent)
+                    .map_err(Self::rejected)?;
+                let result = transition.receipt().result().clone();
+                let record = transition.into_record();
+                txn.replace(&self.windows, &window_id, record.clone())
+                    .map_err(|error| BraceProvider::state_error(&error))?;
+                Ok(AuthoritativeActionOutput::new(self.outcome(json!({
+                    "event": "window_intent_submitted",
+                    "window": window_id,
+                    "revision": record.revision(),
+                    "result": result,
+                }))?)
+                .with_eligible_witnesses(vec![invocation.principal().clone()]))
+            }
+            "close" => {
+                Self::require_fields(parameters, &["operation", "expected_revision", "now"])?;
+                let expected_revision = Self::expected_revision(parameters)?;
+                let now = Self::now(parameters)?;
+                let record = self.load(txn, &window_id)?;
+                let transition = record
+                    .checked_close_due(expected_revision, invocation.request(), &now)
+                    .map_err(Self::rejected)?;
+                let record = transition.into_record();
+                txn.replace(&self.windows, &window_id, record.clone())
+                    .map_err(|error| BraceProvider::state_error(&error))?;
+                Ok(AuthoritativeActionOutput::new(self.outcome(json!({
+                    "event": "window_closed",
+                    "window": window_id,
+                    "intent_count": record.intents().len(),
+                    "revision": record.revision(),
+                }))?)
+                .with_eligible_witnesses(vec![invocation.principal().clone()]))
+            }
+            "resolve" => {
+                Self::require_fields(parameters, &["operation", "expected_revision", "now"])?;
+                let expected_revision = Self::expected_revision(parameters)?;
+                let now = Self::now(parameters)?;
+                let record = self.load(txn, &window_id)?;
+                let actors: Vec<_> = record
+                    .resolution_order()
+                    .map_err(Self::rejected)?
+                    .into_iter()
+                    .map(|intent| intent.invocation().actor().0)
+                    .collect();
+                let inputs_hash = CanonicalHash::for_canonical_value(
+                    "toy_window_resolution_inputs.v1",
+                    1,
+                    &json!({ "record": record, "actors": actors }),
+                    256 * 1024,
+                )
+                .map_err(|_| {
+                    ActionError::new(
+                        ActionErrorCode::BoundsExceeded,
+                        false,
+                        "window resolution inputs exceed canonical bounds",
+                    )
+                    .expect("static window error is bounded")
+                })?;
+                let consumed = record
+                    .checked_consume(
+                        expected_revision,
+                        invocation.request(),
+                        context.commit_token(),
+                        &now,
+                    )
+                    .map_err(Self::rejected)?
+                    .into_record();
+                txn.replace(&self.windows, &window_id, consumed.clone())
+                    .map_err(|error| BraceProvider::state_error(&error))?;
+
+                let mut rng = context
+                    .start_resolution(
+                        &CanonicalId::new("toy_window_resolve").expect("static resolution domain"),
+                        inputs_hash,
+                    )
+                    .map_err(|_| {
+                        ActionError::new(
+                            ActionErrorCode::Unavailable,
+                            false,
+                            "authoritative resolution RNG is unavailable",
+                        )
+                        .expect("static window error is bounded")
+                    })?;
+                let tiebreak = rng
+                    .draw_bounded_u64(
+                        &CanonicalId::new("window_tiebreak").expect("static draw label"),
+                        100,
+                    )
+                    .map_err(|_| {
+                        ActionError::new(
+                            ActionErrorCode::BoundsExceeded,
+                            false,
+                            "window resolution draw was refused",
+                        )
+                        .expect("static window error is bounded")
+                    })?;
+                let outcome = self.outcome(json!({
+                    "event": "window_resolved",
+                    "window": window_id,
+                    "order": actors,
+                    "revision": consumed.revision(),
+                    "tiebreak": tiebreak,
+                }))?;
+                let resolution = rng
+                    .into_prepared(
+                        vec![self.action.clone()],
+                        self.outcome(json!({ "intent_count": consumed.intents().len() }))?,
+                        outcome.clone(),
+                    )
+                    .map_err(|_| {
+                        ActionError::new(
+                            ActionErrorCode::Integrity,
+                            false,
+                            "window resolution transcript is invalid",
+                        )
+                        .expect("static window error is bounded")
+                    })?;
+                Ok(AuthoritativeActionOutput::new(outcome)
+                    .with_resolution(resolution)
+                    .with_eligible_witnesses(vec![invocation.principal().clone()]))
+            }
+            _ => unreachable!("validate_invocation rejects unknown operations"),
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct ToyRulesModule {
     families: Arc<Mutex<Option<ToyStateFamilies>>>,
@@ -1078,7 +1436,21 @@ impl GameModule for ToyRulesModule {
                 serde_json::to_value(value).map_err(|error| error.to_string())
             },
         )?;
-        let families = ToyStateFamilies { focus, guarded };
+        let windows = registrar.state_family(
+            action_window_state_family_descriptor(
+                StateFamilyId::new("action_windows").expect("static family id"),
+            )
+            .map_err(|error| ModError::msg(error.to_string()))?,
+            ActionWindowStateCodec,
+            ActionWindowStateCodec,
+            ActionWindowStateCodec,
+            ActionWindowStateCodec,
+        )?;
+        let families = ToyStateFamilies {
+            focus,
+            guarded,
+            windows,
+        };
         registrar.action_provider(
             actual.brace.clone(),
             BraceProvider {
@@ -1094,6 +1466,13 @@ impl GameModule for ToyRulesModule {
                 guarded: families.guarded.clone(),
                 expire_definition: actual.guarded_expire.clone(),
                 guarded_definition: actual.guarded.clone(),
+            },
+        )?;
+        registrar.action_provider(
+            actual.window_action.clone(),
+            ActionWindowProvider {
+                windows: families.windows.clone(),
+                action: actual.window_action.clone(),
             },
         )?;
         *self.families.lock().expect("toy family capture poisoned") = Some(families);
@@ -1175,6 +1554,46 @@ pub fn toy_scene_turn(at: u64) -> ClockStamp {
         },
         at: i64::try_from(at).expect("toy scene turn fits i64"),
     }
+}
+
+/// Canonical invocation for one K4 action-window lifecycle operation.
+pub fn toy_window_invocation(
+    actor: ObjId,
+    request: RequestUid,
+    parameters: Value,
+) -> ActionInvocation {
+    let definitions = toy_definitions();
+    let owner = OwnerId::new(TOY_OWNER).expect("static owner");
+    let principal = PrincipalId::Object { id: actor };
+    let idempotency = ScopedIdempotencyKey::new(
+        IdempotencyScope {
+            principal: principal.clone(),
+            owner,
+            namespace: CanonicalId::new("window_operation").expect("static namespace"),
+        },
+        0,
+        IdempotencyKey::Request(request),
+    );
+    let offered_action = ActionOfferId(
+        CanonicalHash::for_canonical_value(
+            "toy.offer.v1",
+            1,
+            &json!({ "action": definitions.window_action }),
+            4 * 1024,
+        )
+        .expect("static offer is canonical"),
+    );
+    ActionInvocation::new(ActionInvocationDraft {
+        request,
+        principal,
+        actor,
+        offered_action,
+        subject: PerceivedRef::SelfActor,
+        targets: Vec::new(),
+        parameters,
+        idempotency,
+    })
+    .expect("toy window invocation is canonical")
 }
 
 /// Regenerate the viewer's bounded Gate-1 offer set from current typed truth.
@@ -1518,7 +1937,11 @@ mod tests {
             toy_brace_invocation(mush_core::GOD, 11, RequestUid::from_bytes([0xA1; 16]));
         let (prepared, cascade) = world
             .engine_mut()
-            .prepare_registered_authoritative_action(&toy_definitions().brace, &invocation)
+            .prepare_registered_authoritative_action(
+                &toy_definitions().brace,
+                &invocation,
+                toy_prepare_token(),
+            )
             .expect("brace and its guarded trigger prepare together");
         assert_eq!(prepared.operation_count(), 2);
         assert_eq!(
@@ -1723,9 +2146,11 @@ mod tests {
         let invocation =
             toy_brace_invocation(mush_core::GOD, 10, RequestUid::from_bytes([0xA2; 16]));
         assert!(matches!(
-            world
-                .engine_mut()
-                .prepare_registered_authoritative_action(&toy_definitions().brace, &invocation,),
+            world.engine_mut().prepare_registered_authoritative_action(
+                &toy_definitions().brace,
+                &invocation,
+                toy_prepare_token(),
+            ),
             Err(ActionProviderPrepareError::Trigger { .. })
         ));
         assert_eq!(
@@ -1770,9 +2195,11 @@ mod tests {
             Some(u64::from(mush_core::MAX_TRIGGER_DEPTH) + 2),
         );
         assert!(matches!(
-            world
-                .engine_mut()
-                .prepare_registered_authoritative_action(&toy_definitions().brace, &invocation,),
+            world.engine_mut().prepare_registered_authoritative_action(
+                &toy_definitions().brace,
+                &invocation,
+                toy_prepare_token(),
+            ),
             Err(ActionProviderPrepareError::Cascade(
                 mush_core::CascadeError::DepthExceeded { .. }
             ))
@@ -1899,7 +2326,7 @@ mod tests {
         let (action, invocation, _guards) = resolved.into_parts();
         let (prepared, _) = world
             .engine_mut()
-            .prepare_registered_authoritative_action(&action, &invocation)
+            .prepare_registered_authoritative_action(&action, &invocation, toy_prepare_token())
             .expect("resolved offer reaches the canonical provider");
         world.engine_mut().abort_prepared_transaction(prepared);
 
@@ -2008,7 +2435,7 @@ mod tests {
             let (action, invocation, _) = resolved.into_parts();
             let (prepared, _) = world
                 .engine_mut()
-                .prepare_registered_authoritative_action(&action, &invocation)
+                .prepare_registered_authoritative_action(&action, &invocation, toy_prepare_token())
                 .unwrap_or_else(|error| panic!("{caller:?} missed shared provider: {error}"));
             world.engine_mut().abort_prepared_transaction(prepared);
         }
@@ -2055,7 +2482,11 @@ mod tests {
         let brace = toy_brace_invocation(mush_core::GOD, 11, brace_request);
         let (prepared, _) = world
             .engine_mut()
-            .prepare_registered_authoritative_action(&toy_definitions().brace, &brace)
+            .prepare_registered_authoritative_action(
+                &toy_definitions().brace,
+                &brace,
+                toy_prepare_token(),
+            )
             .expect("brace prepares");
         let (_, installation) = prepared.into_parts();
         world.engine_mut().install_prepared_action(installation);
@@ -2076,7 +2507,8 @@ mod tests {
         assert!(matches!(
             world.engine_mut().prepare_registered_authoritative_action(
                 &toy_definitions().guarded_expire,
-                &early
+                &early,
+                toy_prepare_token(),
             ),
             Err(ActionProviderPrepareError::Provider { source, .. })
                 if source.code() == ActionErrorCode::ProviderRejected
@@ -2105,7 +2537,8 @@ mod tests {
         assert!(matches!(
             world.engine_mut().prepare_registered_authoritative_action(
                 &toy_definitions().guarded_expire,
-                &stale_clock
+                &stale_clock,
+                toy_prepare_token(),
             ),
             Err(ActionProviderPrepareError::Provider { source, .. })
                 if source.code() == ActionErrorCode::Stale
@@ -2119,7 +2552,11 @@ mod tests {
         );
         let (prepared, cascade) = world
             .engine_mut()
-            .prepare_registered_authoritative_action(&toy_definitions().guarded_expire, &due)
+            .prepare_registered_authoritative_action(
+                &toy_definitions().guarded_expire,
+                &due,
+                toy_prepare_token(),
+            )
             .expect("due expiry prepares");
         assert_eq!(prepared.operation_count(), 1);
         let (outcome, _, _, _, _, events) = cascade.into_parts();
