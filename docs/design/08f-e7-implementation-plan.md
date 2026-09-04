@@ -56,8 +56,9 @@ particular campaign economy.
   `PrincipalId` holder of each `(subject, channel)`, retains a single pending transfer/revocation,
   and changes holder plus epoch together only at or after an exact comparable `ClockStamp` boundary.
   Final authority validation reads that record through its composition-branded family handle;
-  `mush-sim` owns the first registered family. Controller-selection and safe-boundary policy remain
-  campaign/domain concerns.
+  `mush-sim` owns the first registered family. Every required-channel legal action now binds the
+  current principal's exact lease in addition to its station grant and is absent without it.
+  Controller-selection and safe-boundary policy remain campaign/domain concerns.
 - **K6b private-contact foundation:** a bounded authoritative contact record now holds an opaque ID,
   immutable truth mapping, explicit audience, typed observation clock, and monotonic
   generation/revision across loss and reacquisition. The exact owner issues a private witness;

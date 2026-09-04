@@ -1135,6 +1135,13 @@ pub enum LegalActionProjectionError {
     },
     #[error("provider owner became unavailable while projecting {action}")]
     ProviderUnavailable { action: Box<DefinitionRef> },
+    #[error("authority-witness registry is unavailable while projecting {action}")]
+    AuthorityRegistryUnavailable { action: Box<DefinitionRef> },
+    #[error("control-lease authority for {action} could not be witnessed: {source}")]
+    ControlLeaseAuthority {
+        action: Box<DefinitionRef>,
+        source: Box<crate::action::AuthorityWitnessError>,
+    },
     #[error("subject authority for {action} could not be bound: {source}")]
     SubjectAuthority {
         action: Box<DefinitionRef>,

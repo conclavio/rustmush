@@ -4219,6 +4219,52 @@ impl ActionProviderRegistry {
                             source: Box::new(source),
                         },
                     )?;
+                let validators = engine
+                    .registry
+                    .authority_guard_validators()
+                    .ok_or_else(|| {
+                        crate::offer::LegalActionProjectionError::AuthorityRegistryUnavailable {
+                            action: Box::new(entry.action().clone()),
+                        }
+                    })?;
+                let context = AuthorityGuardContext::new(&engine.world, engine.action_state());
+                let mut lease_guards = Vec::with_capacity(projected.required_channels.len());
+                let mut all_leased = true;
+                for channel in &projected.required_channels {
+                    let request = AuthorityWitnessRequest::ControlLease {
+                        provider: grant_owner.clone(),
+                        subject: grant.subject,
+                        channel: channel.clone(),
+                        holder: query.principal().clone(),
+                    };
+                    match validators.witness(&context, &request) {
+                        Ok(Some(witness)) => lease_guards.push(witness.guard().clone()),
+                        Ok(None) => {
+                            all_leased = false;
+                            break;
+                        }
+                        Err(source) => {
+                            return Err(
+                                crate::offer::LegalActionProjectionError::ControlLeaseAuthority {
+                                    action: Box::new(entry.action().clone()),
+                                    source: Box::new(source),
+                                },
+                            );
+                        }
+                    }
+                }
+                if !all_leased {
+                    continue;
+                }
+                projected.guards = projected
+                    .guards
+                    .with_authority_guards(&lease_guards)
+                    .map_err(|source| {
+                        crate::offer::LegalActionProjectionError::SubjectAuthority {
+                            action: Box::new(entry.action().clone()),
+                            source: Box::new(source),
+                        }
+                    })?;
             }
             let offer = crate::offer::InternalOffer::new(
                 crate::offer::InternalOfferDraft {
@@ -5119,6 +5165,48 @@ mod tests {
         channels: Vec<ChannelId>,
     }
 
+    struct CurrentLeaseAuthority {
+        epoch: u64,
+    }
+
+    impl AuthorityGuardValidator for CurrentLeaseAuthority {
+        fn is_current(
+            &self,
+            _context: &AuthorityGuardContext<'_>,
+            guard: &AuthorityGuard,
+        ) -> Result<bool, ActionError> {
+            Ok(matches!(
+                guard,
+                AuthorityGuard::ControlLease { epoch, .. } if *epoch == self.epoch
+            ))
+        }
+
+        fn witness(
+            &self,
+            _context: &AuthorityGuardContext<'_>,
+            request: &AuthorityWitnessRequest,
+        ) -> Result<Option<AuthorityWitness>, ActionError> {
+            let AuthorityWitnessRequest::ControlLease {
+                provider,
+                subject,
+                channel,
+                holder,
+            } = request
+            else {
+                return Ok(None);
+            };
+            Ok(Some(AuthorityWitness::Guard(
+                AuthorityGuard::ControlLease {
+                    provider: provider.clone(),
+                    subject: *subject,
+                    channel: channel.clone(),
+                    holder: holder.clone(),
+                    epoch: self.epoch,
+                },
+            )))
+        }
+    }
+
     impl ActionProvider for ChannelOfferProvider {
         fn validate_invocation(&self, _invocation: &ActionInvocation) -> Result<(), ActionError> {
             Ok(())
@@ -5182,6 +5270,19 @@ mod tests {
         )
         .unwrap();
         let mut engine = crate::engine::Engine::new(World::new_minimal(), crate::Registry::new());
+        let mut authority_builder = AuthorityGuardValidatorRegistryBuilder::new();
+        authority_builder
+            .register(
+                control_owner.clone(),
+                AuthorityGuardKind::ControlLease,
+                Arc::new(CurrentLeaseAuthority { epoch: 29 }),
+            )
+            .unwrap();
+        engine.registry.authority_guard_validators = Some(
+            authority_builder
+                .freeze_for_owners_with_readiness(&roster, readiness.clone())
+                .unwrap(),
+        );
 
         // A required-channel offer is absent until one exact grant supplies
         // the complete set.
@@ -5258,17 +5359,31 @@ mod tests {
             })
             .count();
         assert_eq!(grant_guards, channels.len());
+        let lease_guards = resolved
+            .guards()
+            .authority()
+            .iter()
+            .filter(|guard| {
+                matches!(
+                    guard,
+                    AuthorityGuard::ControlLease {
+                        provider,
+                        epoch: 29,
+                        ..
+                    } if provider == &control_owner
+                )
+            })
+            .count();
+        assert_eq!(lease_guards, channels.len());
 
         let revisions = RevisionValidatorRegistryBuilder::new()
             .freeze_for_owners_with_readiness(&roster, readiness.clone())
             .unwrap();
-        let authority = AuthorityGuardValidatorRegistryBuilder::new()
-            .freeze_for_owners_with_readiness(&roster, readiness)
-            .unwrap();
+        let authority = engine.registry.authority_guard_validators().unwrap();
         assert!(
             resolved
                 .guards()
-                .revalidate(&engine.world, &revisions, &authority, &definitions)
+                .revalidate(&engine.world, &revisions, authority, &definitions)
                 .unwrap()
                 .is_current()
         );
@@ -5278,7 +5393,7 @@ mod tests {
         engine.world.publish_command_subject(changed_grant);
         let stale = resolved
             .guards()
-            .revalidate(&engine.world, &revisions, &authority, &definitions)
+            .revalidate(&engine.world, &revisions, authority, &definitions)
             .unwrap();
         assert_eq!(stale.stale_authority().len(), channels.len());
     }
