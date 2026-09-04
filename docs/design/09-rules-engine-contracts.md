@@ -1045,10 +1045,12 @@ Four concepts remain distinct:
 3. **Reservation:** a claim on consumable value or capacity that prevents double allocation.
 4. **Revision:** evidence that all other observed state is still current.
 
-The server-side `PendingDecision` retains the exact `GuardSet` and internal offer it observed. The
-LLM/pathfinder/client-facing prompt receives only projected choices and an opaque decision token;
-its result cannot echo or modify guards. Completion resolves that token, enters the ordinary action
-protocol, and revalidates server-held state; it never resumes from the middle of an old handler.
+The server-side `PendingDecision` retains the private prompt-time witness coordinates needed to
+reconstruct the selected offer's exact `GuardSet`; it never makes `AuthorityGuard` a persisted or
+client-decodable wire type. The LLM/pathfinder/client-facing prompt receives only projected choices
+and an opaque decision token; its result cannot echo or modify witnesses or guards. Completion
+resolves that token, enters the ordinary action protocol, and revalidates server-held state; it
+never resumes from the middle of an old handler.
 
 Physical assignment to a station grants lease eligibility, not necessarily the active lease. This
 allows a linkdead human to remain seated while deterministic fallback acquires the movement lease.
@@ -2567,9 +2569,9 @@ Redis-gated suites. Do not begin K7 on an unreviewed or format-divergent E5/K6 b
 
 Work:
 
-1. Define durable server-side `PendingDecision` with internal prompt-time witnesses,
-   deadline/cause/idempotency, and a separate LLM-facing `DecisionPrompt` containing only projected
-   legal actions plus an opaque token.
+1. Define durable server-side `PendingDecision` with internal prompt-time witnesses and
+   deadline/cause/idempotency, plus an exact durable `DecisionPromptRecord` whose LLM-facing prompt
+   contains only projected legal actions and an opaque token.
 2. Make NPC/LLM tasks hold no world references or guards and return only an offered action ID,
    perceived targets, bounded parameters, and the decision token.
 3. Re-enter through the ordinary action invocation service; remove bespoke mechanical LLM ability
@@ -2587,9 +2589,9 @@ from these explicit seams:
 
 | Current seam | Reuse | K7 replacement or closure |
 |---|---|---|
-| `TurnSnapshot` is owned data and the worker holds no `World` reference, but it contains truth `ObjId`s, scene names, and ruleset tool descriptions. | Keep snapshot-before-await and projection-before-provider. | Build `DecisionPrompt` only from projection DTOs; keep private truth/revision witnesses solely in `PendingDecision`. Never serialize the private record into the LLM request. |
-| `NpcRuntime::{in_flight, correlation}` is volatile process memory. Exact correlation matching now rejects delayed/duplicate legacy completions, and its stimulus mailbox has hard count/byte bounds, but restart loses the turn and effect. | Keep per-controller coalescing as an admission policy. | Make the typed pending family authoritative; derive live indicators from it and repair pending/outbox/schedule linkage at boot. |
-| `Effect::ModuleAsync` dispatch is hard-coded by module name and spawns a task before the service concurrency permit. Missing service/routing, process death, or an apply refused by a non-writable world can abandon the result. | Keep the driver-owned service handle and bounded world-channel re-entry. | Dispatch only a stable-ID durable-outbox effect after the capture bundle commits. Bound admitted decisions and dispatcher workers before spawn; retry/terminalize from durable state. |
+| `TurnSnapshot` is owned data and the worker holds no `World` reference, but it contains truth `ObjId`s, scene names, and ruleset tool descriptions. | Keep snapshot-before-await and projection-before-provider. | Build `DecisionPrompt` only from projection DTOs; keep the truth subject and private revision witnesses solely in `PendingDecision`. Never serialize the private record into the LLM request. |
+| `NpcRuntime::{in_flight, correlation}` is volatile process memory. Exact correlation matching now rejects delayed/duplicate legacy completions, and its stimulus mailbox has hard count/byte bounds, but restart loses the turn and effect. | Keep per-controller coalescing as an admission policy. | Make the typed pending/prompt families authoritative; derive live indicators from them and repair pending/schedule linkage at boot. |
+| `Effect::ModuleAsync` dispatch is hard-coded by module name and spawns a task before the service concurrency permit. Missing service/routing, process death, or an apply refused by a non-writable world can abandon the result. | Keep the driver-owned service handle and bounded world-channel re-entry. | Dispatch a small stable-ID durable-outbox wake only after the capture bundle commits. The authoritative pending/prompt pair, not the outbox item or volatile worker, owns the obligation. Bound admitted decisions and dispatcher workers before spawn; retry/terminalize from durable state. |
 | `ModuleAsyncDone` carries opaque JSON plus actor/correlation. NPC completion currently applies `say`, `move`, `remember`, and `UseAbility` directly; the last path invokes ruleset mechanics outside the action coordinator. | Keep hostile decoding, bounded typed response parsing, and current-state checks for non-mechanical legacy dialogue during migration. | Authenticate `DecisionToken`, load the exact record revision, reconstruct one offered invocation, then enter `ActionCoordinator::preflight` and `prepare_and_stage_resolved`. Delete migrated bespoke mutation arms. |
 | `ActionCoordinator` already provides exact authoritative idempotency preflight, resolved-offer preparation, one-shot staging, and durable semantic status. | Reuse it as the sole mechanical execution path and race arbiter. | Add delayed-decision ingress construction and terminal-status reconciliation; do not create an LLM-specific commit lane. |
 | `LlmService` bounds active calls, queued semaphore waiters, provider wire bytes (4 MiB), and its backpressured SSE event handoff. The legacy driver still spawns before service admission, and total gameplay decisions are not durably/count bounded. | Keep budgets, bounded admission/streaming, circuit breaking, and request timeouts. | Enforce global/controller/actor decision admission before capture and a bounded durable dispatcher. HTTP timeout is transport policy, not the authoritative gameplay deadline. |
@@ -2611,13 +2613,18 @@ recovery. This keeps correctness independent of cleanup timing.
 Add these bounded wire/storage types (names may move, semantics may not):
 
 ```rust
+pub struct DecisionControllerId {
+    pub owner: OwnerId,
+    pub key: CanonicalId,
+}
+
 pub struct PendingDecision {
     pub id: DecisionId,
     pub revision: u64,
-    pub controller: OwnerId,
+    pub controller: DecisionControllerId,
     pub principal: PrincipalId,
     pub actor: ObjId,
-    pub subject: PerceivedRef,
+    pub truth_subject: SubjectKey,
     pub viewer_scope: ProjectionScopeId,
     pub cause: DecisionCause,
     pub offered: Vec<PendingOfferWitness>,
@@ -2648,6 +2655,19 @@ pub struct DecisionPrompt {
     pub context: ProjectedDecisionContext,
 }
 
+pub struct DecisionPromptRecord {
+    pub id: DecisionId,
+    pub revision: u64,
+    pub prompt_digest: CanonicalHash,
+    pub prompt: DecisionPrompt,
+}
+
+pub struct DecisionWake {
+    pub id: DecisionId,
+    pub revision: u64,
+    pub prompt_digest: CanonicalHash,
+}
+
 pub struct DecisionResponse {
     pub token: DecisionToken,
     pub offer: ActionOfferId,
@@ -2656,13 +2676,26 @@ pub struct DecisionResponse {
 }
 ```
 
+`DecisionControllerId` identifies one stable controller instance inside its owning provider; it is
+not an `OwnerId` alias. This lets admission and coalescing distinguish two NPCs, one group planner,
+and one link-loss autopilot owned by the same module without pretending that controller identity is
+mechanical ownership. `PendingDecision.truth_subject` is the private subject used to regenerate
+legal actions. Only its already-authorized projected form may appear inside the prompt.
+
 `PendingDecision` is trusted server persistence, but it does **not** serialize `GuardSet` or make
 `AuthorityGuard` client-decodable. The kernel reconstructs a final guard set through frozen
 registries. The pending record may retain private revision coordinates needed for revalidation;
-`DecisionPrompt`, adapter logs, metrics, errors, and `DecisionResponse` may not. The opaque token is
-an HMAC over decision id/revision, prompt digest, and key version; it is not a bearer form of any
-guard. Persist the public prompt payload as a stable-ID durable-outbox effect so ambiguous dispatch
-is safely redelivered after restart.
+`DecisionPrompt`, adapter logs, metrics, errors, and `DecisionResponse` may not contain them. Define
+`prompt_digest` over the canonical prompt body before adding the token, then HMAC the decision id,
+revision, prompt digest, and key version. The token is not a bearer form of any guard.
+
+Persist `PendingDecision` and its exact public-safe `DecisionPromptRecord` as separate typed family
+records in the same capture bundle. The durable-outbox payload is only the bounded `DecisionWake`;
+it must never be the sole custodian of the prompt. This separation is mandatory because a generic
+outbox item becomes `Delivered` when its adapter accepts it and its parent action may then
+checkpoint. If a process dies after enqueue but before provider consumption, the typed prompt
+record still supplies exactly the original projection rather than regenerating it from newer truth.
+The pair is digest- and revision-linked and remains authoritative until terminal decision cleanup.
 
 The prompt-time witness snapshot is required in addition to ordinary offer regeneration. Today an
 immediate action adds exact source/selected-target placement stamps only after the caller chooses an
@@ -2674,20 +2707,39 @@ same-owner or bridge route, and requires the recorded generation. Unselected-tar
 not stale the decision. Contact loss/generation, source/component revisions, lease/window/definition
 guards, and offer shape are still checked by exact offer regeneration and normal final validation.
 
-**K7.1 — durable capture and dispatch.** Register one typed pending-decision family and strict
-codec. Add a provider callback that names prompt-time common and per-choice revision coordinates;
-the kernel supplies all generations, bridge definitions, and bounds. Capture the projected prompt,
-private witnesses, one-shot deadline schedule, and stable-ID LLM durable-outbox request in one
-authoritative bundle. Enforce global/per-controller/per-actor count and canonical-byte ceilings
-before staging. Coalesce only an explicitly replaceable cause key; otherwise refuse admission.
+**K7.1 — durable capture and dispatch.** Register strict typed codecs for the private pending family
+and exact public prompt family. Add a provider callback that names prompt-time common and
+per-choice revision coordinates; the kernel supplies all generations, bridge definitions, and
+bounds. Capture the pending record, exact projected prompt record, private witnesses, one-shot
+deadline schedule, and stable-ID `DecisionWake` outbox item in one authoritative bundle. Enforce
+global/per-controller/per-actor count and canonical-byte ceilings before staging. Coalesce only an
+explicitly replaceable cause key, transitioning the old record and admitting the replacement in
+one bundle; otherwise refuse admission.
+
+The outbox adapter does no provider I/O. It validates the wake linkage and offers the ID to a
+bounded dispatcher mailbox; a full or unavailable mailbox returns retryable delivery. Once the
+mailbox accepts the ID the generic outbox item may be acknowledged: the pending/prompt pair and a
+bounded boot/periodic scan own rediscovery if that volatile wake is lost. Before spawning any
+provider future, the dispatcher commits an exact `Ready -> Leased { attempt, lease_until }`
+transition. A crash after lease commit but before spawn is retried only after bounded lease expiry.
+The worker returns a response tagged with the exact decision revision, attempt, and lease; stale
+worker results cannot release or advance a newer lease.
 
 **K7.2 — untrusted response ingress.** The async worker owns only the projected prompt and returns
-`DecisionResponse`. On re-entry, authenticate the token, load the exact pending revision, enforce
-payload limits, locate the exact offered action and opaque targets, regenerate legal actions, and
-require the same offer identity. Rebuild prompt-time guards from the private witness table, then use
-the ordinary resolved authoritative coordinator. Returned truth IDs, revisions, definitions,
-guards, clocks, actor substitutions, or idempotency data are structurally impossible or rejected
-before intent/RNG/mutation.
+the bounded parsed `DecisionResponse`; raw model prose or reasoning never enters authoritative
+decision state. On re-entry, authenticate the token, load the exact pending/prompt revision pair,
+enforce payload limits, locate the exact offered action and opaque targets, regenerate legal
+actions, and require the same offer identity. Rebuild prompt-time guards from the private witness
+table, then use the ordinary resolved authoritative coordinator. Returned truth IDs, revisions,
+definitions, guards, clocks, actor substitutions, or idempotency data are structurally impossible
+or rejected before intent/RNG/mutation.
+
+Worker completion is not acknowledged merely because it reached the world task. Custody ends only
+after the response either enters the normal action coordinator and gains a durable action
+status/binding, or the exact decision revision is already terminal or stale. The pending record's
+`Resolving` state retains that binding so recovery can reconcile it without resubmitting a
+different request. Provider exceptions and malformed results instead commit an attempt transition
+or deterministic fallback trigger; no volatile return path owns correctness.
 
 **K7.3 — cancellation, deadlines, and fallback.** Cancellation is an exact revision transition and
 invalidates the token before acknowledging success. A durable one-shot schedule owns the deadline.
@@ -2697,10 +2749,52 @@ fallback races therefore have one durable winner. Late, duplicate, and out-of-or
 the identical winner or receive a projected terminal/stale result; they never run a second action.
 
 **K7.4 — recovery and bounds.** On boot, discover pending records by bounded canonical family scan,
-validate the prompt/outbox/schedule/idempotency linkage, reconcile any action already pending or
-finalized, and recreate only missing reconstructible work. Invalid linkage freezes the decision
-owner with a bounded recovery incident. Terminal records compact only after the action receipt and
-external dispatch status are durably attributable.
+validate the prompt/schedule/idempotency linkage, reconcile any action already pending or
+finalized, and re-enqueue `Ready` or expired-lease decisions from their exact prompt records.
+Periodic bounded discovery performs the same repair after a delivered wake is lost. It never
+recreates a missing prompt by rerunning projection. A missing/mismatched pair, duplicate identity,
+or impossible transition freezes the decision owner with a bounded recovery incident. Terminal
+records compact only after the action receipt or terminal no-action outcome and attempt audit are
+durably attributable; the old wake's generic outbox/checkpoint lifetime is irrelevant.
+
+Use this minimum state machine; implementations may split audit fields but may not weaken its
+custody transitions:
+
+```text
+Ready(attempt)
+  -> Leased(attempt, lease_until)
+  -> Resolving(attempt, action_binding)
+  -> Terminal(executed | fallback | cancelled | exhausted | stale)
+
+Leased --lease expires--> Ready(next_attempt)
+Ready/Leased --deadline or exact cancellation--> Terminal or deterministic fallback submission
+Resolving --recovery reads ordinary action status--> Resolving or Terminal
+```
+
+K7 adds stricter limits than the general human offer projector because the latter permits 128
+offers and a 1 MiB set, which cannot fit the 256 KiB typed-record/outbox ceilings. These are kernel
+hard maxima; deployment defaults may be lower, and configuration above a hard maximum fails boot:
+
+| Resource | Hard maximum | Required behavior at the limit |
+|---|---:|---|
+| Non-terminal decisions | 512 global, 8 per controller, 2 per actor | Refuse or atomically coalesce before capture; never capture then shed. |
+| Total non-terminal decision storage | 64 MiB canonical bytes | Count both private and prompt records before staging. |
+| AI-facing offers | 32 per prompt | Select from the full legal set by provider-declared projection-only rank and stable definition/offer tie-break; persist exactly the selected set. |
+| Exact `DecisionPromptRecord` | 192 KiB canonical bytes | Refuse decision capture; never truncate after digest/token construction. |
+| Private `PendingDecision` | 256 KiB canonical bytes | Refuse decision capture. |
+| Response | 64 KiB canonical bytes, 32 targets | Reject before token/offer resolution; use existing parameter and perceived-reference validators. |
+| Selected action witnesses | 256 revision stamps | Capture must prove common plus any one selectable target fits; total alternatives must also fit the private-record byte cap. |
+| Wake payload / volatile dispatcher mailbox | 1 KiB / 128 IDs | Oversized wake is corruption; mailbox pressure is retryable outbox delivery. |
+| Provider workers | 32 hard, 8 default | Obtain a durable lease before spawn; the existing `LlmService` budgets remain the downstream provider limit. |
+| Provider/malformed attempts | 8 hard, 3 default | Commit each attempt; exhaustion enters deterministic fallback/terminal policy before the deadline. |
+| Recovery scan | 128 records per page | Continue in bounded pages; exceeding global count/bytes freezes the owner rather than loading unbounded state. |
+
+The decision projector may expose fewer actions than an interactive human view, but every exposed
+action remains an unchanged `ProjectedLegalAction`. Its ranking may use only already-projected data
+and stable policy, never hidden truth. Deterministic fallback selects from that same persisted set.
+No alternative may be admitted unless its common plus selected-target witnesses can reconstruct a
+final guard set within `MAX_ACTION_REVISIONS`; movement of an unselected alternative remains
+irrelevant.
 
 **K7.5 — Gate-4 matrix.** For capability/station/lease, source/component/resource, selected target
 placement, contact, window/clock generation, definition/bridge, cancellation, and deadline changes,
