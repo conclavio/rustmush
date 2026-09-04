@@ -58,6 +58,7 @@ pub mod cmd;
 pub mod commands;
 pub mod contact;
 pub mod control;
+pub mod decision;
 pub mod durable_schedule;
 pub mod engine;
 pub mod flags;
@@ -171,6 +172,20 @@ pub use control::{
     ControlHandoff, ControlHandoffDraft, ControlLeaseError, ControlLeaseGuardValidator,
     ControlLeaseKey, ControlLeaseState, ControlLeaseStateCodec, MAX_CONTROL_LEASE_BYTES,
     control_lease_state_family_descriptor,
+};
+pub use decision::{
+    DecisionActionBinding, DecisionCause, DecisionControllerId, DecisionError, DecisionId,
+    DecisionKeyRing, DecisionPrompt, DecisionPromptRecord, DecisionPromptStateCodec,
+    DecisionResponse, DecisionSecret, DecisionSecretError, DecisionTargetWitnessKeys,
+    DecisionTerminalOutcome, DecisionToken, DecisionWake, DecisionWitnessKeys, FallbackPolicyRef,
+    MAX_DECISION_ATTEMPTS, MAX_DECISION_BRIDGE_DEFINITIONS, MAX_DECISION_CONTEXT_BYTES,
+    MAX_DECISION_MAILBOX_IDS, MAX_DECISION_OFFERS, MAX_DECISION_PENDING_BYTES,
+    MAX_DECISION_PROMPT_BYTES, MAX_DECISION_PROVIDER_WORKERS, MAX_DECISION_RECOVERY_PAGE,
+    MAX_DECISION_RESPONSE_BYTES, MAX_DECISION_SECRET_VERSIONS, MAX_DECISION_TARGET_WITNESSES,
+    MAX_DECISION_TARGETS, MAX_DECISION_TOTAL_BYTES, MAX_DECISION_WAKE_BYTES, PendingDecision,
+    PendingDecisionStateCodec, PendingDecisionStatus, PendingOfferWitness, PendingTargetWitness,
+    ProjectedDecisionContext, decision_prompt_state_family_descriptor,
+    pending_decision_state_family_descriptor,
 };
 pub use durable_schedule::{
     DurableSchedule, DurableScheduleDraft, DurableScheduleError, DurableScheduleStateCodec,

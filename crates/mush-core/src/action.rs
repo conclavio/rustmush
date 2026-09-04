@@ -3777,6 +3777,33 @@ pub trait ActionProvider: Send + Sync {
         Ok(None)
     }
 
+    /// Name provider-owned prompt-time revision coordinates for one projected
+    /// delayed-decision offer. The provider supplies keys only; the kernel
+    /// reads current generations, proves cross-owner bridges, canonicalizes
+    /// ordering, and enforces the delayed-decision bounds. The default keeps
+    /// existing providers source-compatible and declares no extra witnesses.
+    fn delayed_decision_witness_keys(
+        &self,
+        _action: &DefinitionRef,
+        _query: &crate::offer::LegalActionQuery,
+        _offer: &crate::offer::ProjectedLegalAction,
+    ) -> Result<crate::decision::DecisionWitnessKeys, ActionError> {
+        Ok(crate::decision::DecisionWitnessKeys::default())
+    }
+
+    /// Projection-only rank used when an async controller must select at most
+    /// 32 offers from the full legal set. Larger values sort first; canonical
+    /// action/offer identity is the stable tie-break. Hidden truth must not
+    /// influence this callback.
+    fn delayed_decision_rank(
+        &self,
+        _action: &DefinitionRef,
+        _query: &crate::offer::LegalActionQuery,
+        _offer: &crate::offer::ProjectedLegalAction,
+    ) -> Result<i32, ActionError> {
+        Ok(0)
+    }
+
     /// Project a durable root outcome for one event-time eligible viewer.
     ///
     /// This callback is deliberately pure: it receives only the exact frozen
@@ -4558,6 +4585,134 @@ impl ActionProviderRegistry {
         })
     }
 
+    /// Obtain and canonicalize the prompt-time witness plan for one exact
+    /// projected offer. Providers name only revision keys. This registry
+    /// proves cross-owner bridges, fills projected choices that need no extra
+    /// keys, and returns the projection-only rank used by bounded selection.
+    pub fn delayed_decision_witness_keys(
+        &self,
+        action: &DefinitionRef,
+        query: &crate::offer::LegalActionQuery,
+        offer: &crate::offer::ProjectedLegalAction,
+        definitions: &DefinitionRegistry,
+        bridges: &BridgeRegistry,
+    ) -> Result<
+        (
+            crate::decision::DecisionWitnessKeys,
+            Vec<DefinitionRef>,
+            i32,
+        ),
+        ActionProviderDispatchError,
+    > {
+        let entry = self.get_exact(action)?;
+        let mut witnesses = entry
+            .provider()
+            .delayed_decision_witness_keys(action, query, offer)
+            .map_err(|source| ActionProviderDispatchError::Provider {
+                action: Box::new(action.clone()),
+                source: Box::new(source),
+            })?;
+        let rank = entry
+            .provider()
+            .delayed_decision_rank(action, query, offer)
+            .map_err(|source| ActionProviderDispatchError::Provider {
+                action: Box::new(action.clone()),
+                source: Box::new(source),
+            })?;
+        self.owner_readiness
+            .require_ready(&entry.owner)
+            .map_err(|source| ActionProviderLookupError::OwnerNotReady {
+                requested: Box::new(action.clone()),
+                source: Box::new(source),
+            })?;
+
+        canonicalize_decision_revision_keys(&mut witnesses.common)?;
+        if witnesses.targets.len() > crate::decision::MAX_DECISION_TARGET_WITNESSES {
+            return Err(ActionProviderDispatchError::DecisionTargetLimit {
+                max: crate::decision::MAX_DECISION_TARGET_WITNESSES,
+            });
+        }
+        let mut provided_targets = BTreeMap::new();
+        for mut target in witnesses.targets {
+            canonicalize_decision_revision_keys(&mut target.revisions)?;
+            if provided_targets
+                .insert(target.perceived, target.revisions)
+                .is_some()
+            {
+                return Err(ActionProviderDispatchError::DuplicateDecisionTarget);
+            }
+        }
+
+        let (maximum, mut choices) = match offer.targets() {
+            crate::offer::ProjectedTargetSchema::None => {
+                if !provided_targets.is_empty() {
+                    return Err(ActionProviderDispatchError::DecisionTargetMismatch);
+                }
+                (0, Vec::new())
+            }
+            crate::offer::ProjectedTargetSchema::Choices {
+                maximum, choices, ..
+            } => (*maximum, choices.clone()),
+        };
+        let choice_set: BTreeSet<_> = choices.iter().cloned().collect();
+        if provided_targets
+            .keys()
+            .any(|target| !choice_set.contains(target))
+        {
+            return Err(ActionProviderDispatchError::DecisionTargetMismatch);
+        }
+        choices.sort();
+        let targets: Vec<_> = choices
+            .into_iter()
+            .map(|perceived| crate::decision::DecisionTargetWitnessKeys {
+                revisions: provided_targets.remove(&perceived).unwrap_or_default(),
+                perceived,
+            })
+            .collect();
+
+        let mut largest: Vec<usize> = targets
+            .iter()
+            .map(|target| target.revisions.len())
+            .collect();
+        largest.sort_unstable_by(|left, right| right.cmp(left));
+        if witnesses.common.len() + largest.into_iter().take(maximum).sum::<usize>()
+            > MAX_ACTION_REVISIONS
+        {
+            return Err(ActionProviderDispatchError::DecisionRevisionLimit {
+                max: MAX_ACTION_REVISIONS,
+            });
+        }
+
+        let mut bridge_definitions = BTreeSet::new();
+        for key in witnesses
+            .common
+            .iter()
+            .chain(targets.iter().flat_map(|target| &target.revisions))
+            .filter(|key| key.owner != entry.owner)
+        {
+            let route = bridges
+                .require_interaction(definitions, &entry.owner, &key.owner, action)
+                .map_err(|source| ActionProviderDispatchError::RevisionBridge {
+                    key: Box::new(key.clone()),
+                    source: Box::new(source),
+                })?;
+            let InteractionRoute::Bridge(definition) = route else {
+                return Err(ActionProviderDispatchError::RevisionBridgeRoute {
+                    key: Box::new(key.clone()),
+                });
+            };
+            bridge_definitions.insert(definition);
+        }
+        Ok((
+            crate::decision::DecisionWitnessKeys {
+                common: witnesses.common,
+                targets,
+            },
+            bridge_definitions.into_iter().collect(),
+            rank,
+        ))
+    }
+
     /// Ask one exact provider which revision coordinates are selected by the
     /// privately resolved invocation. Readiness is checked on both sides of
     /// the callback. Cross-owner coordinates require the unique exact bridge
@@ -5049,6 +5204,29 @@ pub enum ActionProviderDispatchError {
     RevisionBridgeRoute { key: Box<RevisionKey> },
     #[error("resolved revision coordinates contain a duplicate")]
     DuplicateRevisionKey,
+    #[error("delayed-decision revision witnesses exceed the selected-action limit of {max}")]
+    DecisionRevisionLimit { max: usize },
+    #[error("delayed-decision target witnesses exceed their hard limit of {max}")]
+    DecisionTargetLimit { max: usize },
+    #[error("delayed-decision target witness was supplied more than once")]
+    DuplicateDecisionTarget,
+    #[error("delayed-decision target witnesses do not belong to the projected choices")]
+    DecisionTargetMismatch,
+}
+
+fn canonicalize_decision_revision_keys(
+    keys: &mut [RevisionKey],
+) -> Result<(), ActionProviderDispatchError> {
+    if keys.len() > MAX_ACTION_REVISIONS {
+        return Err(ActionProviderDispatchError::DecisionRevisionLimit {
+            max: MAX_ACTION_REVISIONS,
+        });
+    }
+    keys.sort();
+    if keys.windows(2).any(|pair| pair[0] == pair[1]) {
+        return Err(ActionProviderDispatchError::DuplicateRevisionKey);
+    }
+    Ok(())
 }
 
 /// Action-provider composition failure.
