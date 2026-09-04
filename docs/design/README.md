@@ -22,6 +22,7 @@ critique pass. They are the *reference* design; where they conflict with each ot
 | [08d-e5-implementation-plan.md](08d-e5-implementation-plan.md) | E5 implementation plan (Draft 0.2, as built through E5b): WoD housing, careers, stances, prompts; owner answers binding |
 | [08e-e6-owner-questions.md](08e-e6-owner-questions.md) | E6 owner survey (answered): the Shadowrun run-and-pay economy, 24 binding decisions |
 | [08f-e6-implementation-plan.md](08f-e6-implementation-plan.md) | E6 implementation plan (Draft 0.2, defaults accepted): run and pay, outcomes/fences/custody, the neutral market crate |
+| [08g-e1-e5-look-back.md](08g-e1-e5-look-back.md) | E1–E5 look-back (Draft 0.1): 2,127 claims audited, 32 confirmed gaps ranked, the handoff chain, standing debt, doc 08 vs shipped, K integration, the single fold list (§11), owner decisions (§12) |
 | [08h-e5-interim-review-response.md](08h-e5-interim-review-response.md) | E-side response to the K side interim E5 review (Draft 0.2, refinements folded): five findings adjudicated, six questions answered, decisions D-LBK-1..7, the fold table for the E5/K6 gate |
 | [10-tacsim-foundations.md](10-tacsim-foundations.md) | TacSim foundations (Draft 0.4): scope, decisions 1A–7A and C1A–C30A, addenda T1–T16, sharpenings R1–R7, the E7 backlog |
 | [10a-tacsim-e7-owner-questions.md](10a-tacsim-e7-owner-questions.md) | E7 owner survey (Draft 0.2, answered): 22 decisions, the eleven-cut structure, handbacks to E5/E6 |
