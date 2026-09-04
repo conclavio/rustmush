@@ -844,14 +844,95 @@ impl Engine {
         offers: &crate::offer::ProjectedLegalActionSink,
         execution: crate::offer::OfferExecutionContext,
         submission: crate::offer::OfferSubmission,
-    ) -> Result<crate::offer::ResolvedOffer, crate::offer::LegalActionResolutionError> {
+    ) -> Result<crate::offer::ResolvedAuthoritativeOffer, crate::offer::LegalActionResolutionError>
+    {
         let keys = self
             .offer_keys
             .as_ref()
             .ok_or(crate::offer::LegalActionResolutionError::KeyRingUnavailable)?;
-        offers
+        let resolved = offers
             .resolve(keys, execution, submission)
-            .map_err(crate::offer::LegalActionResolutionError::from)
+            .map_err(crate::offer::LegalActionResolutionError::from)?;
+        let (action, invocation, truth_subject, guards) = resolved.into_resolution_parts();
+        let principal = invocation.principal().clone();
+        let actor = invocation.actor();
+        let mut truth_targets = Vec::with_capacity(invocation.targets().len());
+        let mut target_guards = Vec::new();
+        for target in invocation.targets() {
+            let (truth, guard) = match target {
+                crate::action::PerceivedRef::SelfActor => {
+                    (crate::action::SubjectKey::Object { id: actor }, None)
+                }
+                crate::action::PerceivedRef::KnownObject { id, .. } => {
+                    // The regenerated offer HMAC binds the provider-controlled
+                    // public revision. Recheck current existence/perception as
+                    // well; unlike an operated subject, a target needs no
+                    // station grant merely to be targetable.
+                    if self.world.get(*id).is_none()
+                        || !module::can_perceive(&self.registry, &self.world, actor, *id)
+                    {
+                        return Err(crate::offer::LegalActionResolutionError::Resolve(
+                            crate::offer::OfferResolveError::Unavailable,
+                        ));
+                    }
+                    (crate::action::SubjectKey::Object { id: *id }, None)
+                }
+                crate::action::PerceivedRef::Contact {
+                    provider,
+                    id,
+                    generation,
+                } => {
+                    let validators = self.registry.authority_guard_validators().ok_or(
+                        crate::offer::LegalActionResolutionError::Resolve(
+                            crate::offer::OfferResolveError::Unavailable,
+                        ),
+                    )?;
+                    let context =
+                        crate::action::AuthorityGuardContext::new(&self.world, &self.action_state);
+                    let request = crate::action::AuthorityWitnessRequest::Contact {
+                        provider: provider.clone(),
+                        principal: principal.clone(),
+                        id: *id,
+                        generation: *generation,
+                    };
+                    let issued = validators.witness(&context, &request).map_err(|_| {
+                        crate::offer::LegalActionResolutionError::Resolve(
+                            crate::offer::OfferResolveError::Unavailable,
+                        )
+                    })?;
+                    let Some(crate::action::AuthorityWitness::Contact {
+                        truth_subject,
+                        guard,
+                    }) = issued
+                    else {
+                        return Err(crate::offer::LegalActionResolutionError::Resolve(
+                            crate::offer::OfferResolveError::Unavailable,
+                        ));
+                    };
+                    (truth_subject, Some(guard))
+                }
+            };
+            truth_targets.push(truth);
+            if let Some(guard) = guard
+                && !guards.authority().contains(&guard)
+                && !target_guards.contains(&guard)
+            {
+                target_guards.push(guard);
+            }
+        }
+        let guards = guards.with_authority_guards(&target_guards).map_err(|_| {
+            crate::offer::LegalActionResolutionError::Resolve(
+                crate::offer::OfferResolveError::Unavailable,
+            )
+        })?;
+        let resolved =
+            crate::action::ResolvedActionInvocation::new(invocation, truth_subject, truth_targets)
+                .ok_or(crate::offer::LegalActionResolutionError::Resolve(
+                    crate::offer::OfferResolveError::Unavailable,
+                ))?;
+        Ok(crate::offer::ResolvedAuthoritativeOffer::new(
+            action, resolved, guards,
+        ))
     }
 
     /// Record one loop-iteration duration from the driving loop's watchdog
@@ -1122,6 +1203,31 @@ impl Engine {
         providers.prepare_authoritative_invocation(
             action,
             invocation,
+            commit_token,
+            &mut self.action_state,
+            self.resolution_keys.as_ref(),
+        )
+    }
+
+    /// Prepare an action after the engine has privately resolved its subject
+    /// and selected targets. This is the production path for contact-targeted
+    /// actions; the projected invocation remains the durable request identity.
+    pub fn prepare_registered_resolved_authoritative_action(
+        &mut self,
+        action: &crate::mechanics::DefinitionRef,
+        resolved: &crate::action::ResolvedActionInvocation,
+        commit_token: crate::action::CommitToken,
+    ) -> Result<
+        (PreparedTxn, crate::action::PreparedAuthoritativeAction),
+        crate::action::ActionProviderPrepareError,
+    > {
+        let providers = self
+            .registry
+            .action_providers()
+            .ok_or(crate::action::ActionProviderPrepareError::RegistryUnavailable)?;
+        providers.prepare_resolved_authoritative_invocation(
+            action,
+            resolved,
             commit_token,
             &mut self.action_state,
             self.resolution_keys.as_ref(),

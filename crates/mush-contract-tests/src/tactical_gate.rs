@@ -11,13 +11,16 @@ use std::sync::{Arc, Mutex};
 
 use mush_core::{
     ActionError, ActionErrorCode, ActionInvocation, ActionInvocationDraft, ActionOfferId,
-    ActionProvider, ActionStateError, ActionTxn, AuthoritativeActionOutput, CanonicalHash,
-    CanonicalId, ClockRef, ClockStamp, CommitToken, DefinitionDescriptor, DefinitionId,
-    DefinitionKind, DefinitionRef, DefinitionRegistryBuilder, DefinitionValidationContext,
-    DefinitionValidator, Engine, GameModule, IdempotencyKey, IdempotencyScope, ModError, ObjId,
-    OwnerId, PerceivedRef, PrepareCtx, PrincipalId, Registrar, RequestUid, ResolutionKeyRing,
-    ResolutionSecret, RulesValue, ScopedIdempotencyKey, StateFamilyDescriptor, StateFamilyHandle,
-    StateFamilyId, World,
+    ActionPresentation, ActionProvider, ActionStateError, ActionTxn, AuthoritativeActionOutput,
+    AuthorityGuardKind, CanonicalHash, CanonicalId, ClockRef, ClockStamp, CommitToken,
+    ContactGuardValidator, ContactId, ContactState, ContactStateCodec, ContactStateDraft,
+    DefinitionDescriptor, DefinitionId, DefinitionKind, DefinitionRef, DefinitionRegistryBuilder,
+    DefinitionValidationContext, DefinitionValidator, Engine, GameModule, IdempotencyKey,
+    IdempotencyScope, LegalActionQuery, ModError, ObjId, OfferKeyRing, OfferSecret, OwnerId,
+    PerceivedRef, PrepareCtx, PrincipalId, ProjectedParameterSchema, ProjectedTargetSchema,
+    ProviderOfferDraft, Registrar, RequestUid, ResolutionKeyRing, ResolutionSecret,
+    ResolvedActionInvocation, RevisionSet, RulesValue, ScopedIdempotencyKey, StateFamilyDescriptor,
+    StateFamilyHandle, StateFamilyId, SubjectKey, World, contact_state_family_descriptor,
 };
 use mush_tactics::{
     CellAddr, CellId, CellSpec, ComponentId, ComponentSpec, ConditionId, InstallPoint, SectionId,
@@ -58,6 +61,7 @@ pub struct TacticalGateDefinitions {
 #[derive(Clone, Debug)]
 pub struct TacticalGateState {
     pub units: StateFamilyHandle<ObjId, TacticalUnit>,
+    pub contacts: StateFamilyHandle<ContactId, ContactState>,
 }
 
 #[derive(Clone)]
@@ -263,6 +267,7 @@ impl DefinitionValidator for FixtureDefinitionValidator {
 #[derive(Debug)]
 struct FireProvider {
     units: StateFamilyHandle<ObjId, TacticalUnit>,
+    contacts: StateFamilyHandle<ContactId, ContactState>,
     action: DefinitionRef,
     outcome: DefinitionRef,
 }
@@ -271,7 +276,8 @@ struct FireProvider {
 #[serde(deny_unknown_fields)]
 struct FireParameters {
     source_revision: u64,
-    target_revision: u64,
+    #[serde(default)]
+    target_revision: Option<u64>,
     now: ClockStamp,
 }
 
@@ -326,17 +332,11 @@ impl FireProvider {
             .expect("static Gate-2 state error is bounded")
     }
 
-    fn decode(invocation: &ActionInvocation) -> Result<(ObjId, FireParameters), ActionError> {
+    fn decode_parameters(invocation: &ActionInvocation) -> Result<FireParameters, ActionError> {
         if invocation.subject() != &PerceivedRef::SelfActor || invocation.targets().len() != 1 {
             return Err(Self::invalid(
-                "fire requires the acting unit as subject and exactly one known target",
+                "fire requires the acting unit as subject and exactly one target",
             ));
-        }
-        let PerceivedRef::KnownObject { id: target, .. } = invocation.targets()[0] else {
-            return Err(Self::invalid("Gate-2 fire requires a known-object target"));
-        };
-        if target == invocation.actor() {
-            return Err(Self::invalid("a Gate-2 unit cannot fire on itself"));
         }
         let parameters: FireParameters = serde_json::from_value(invocation.parameters().clone())
             .map_err(|_| Self::invalid("fire parameters are malformed"))?;
@@ -350,7 +350,25 @@ impl FireProvider {
                 && *generation > 0 => {}
             _ => return Err(Self::invalid("fire requires the exact Gate-2 domain clock")),
         }
-        Ok((target, parameters))
+        Ok(parameters)
+    }
+
+    fn known_target(invocation: &ActionInvocation) -> Result<ObjId, ActionError> {
+        let PerceivedRef::KnownObject { id: target, .. } = invocation.targets()[0] else {
+            return Err(Self::invalid(
+                "direct Gate-2 fire requires a known-object target",
+            ));
+        };
+        Ok(target)
+    }
+
+    fn resolved_target(resolved: &ResolvedActionInvocation) -> Result<ObjId, ActionError> {
+        let [SubjectKey::Object { id: target }] = resolved.truth_targets() else {
+            return Err(Self::integrity(
+                "resolved fire must name exactly one object target",
+            ));
+        };
+        Ok(*target)
     }
 
     fn read_unit(&self, txn: &mut ActionTxn<'_>, id: ObjId) -> Result<TacticalUnit, ActionError> {
@@ -367,20 +385,44 @@ impl FireProvider {
         Ok(unit)
     }
 
+    fn read_target_unit(
+        &self,
+        txn: &mut ActionTxn<'_>,
+        id: ObjId,
+    ) -> Result<TacticalUnit, ActionError> {
+        let unit = txn
+            .get(&self.units, &id)
+            .map_err(|_| Self::stale("the selected target is unavailable"))?
+            .cloned()
+            .ok_or_else(|| Self::stale("the selected target is unavailable"))?;
+        if unit.object() != id {
+            return Err(Self::stale("the selected target is unavailable"));
+        }
+        Ok(unit)
+    }
+
     fn prepare_fire(
         &self,
         invocation: &ActionInvocation,
+        target_id: ObjId,
         txn: &mut ActionTxn<'_>,
         context: &mut PrepareCtx<'_>,
     ) -> Result<AuthoritativeActionOutput, ActionError> {
-        let (target_id, parameters) = Self::decode(invocation)?;
+        let parameters = Self::decode_parameters(invocation)?;
         let source_id = invocation.actor();
+        if target_id == source_id {
+            return Err(Self::invalid("a Gate-2 unit cannot fire on itself"));
+        }
         let source = self.read_unit(txn, source_id)?;
-        let target = self.read_unit(txn, target_id)?;
-        if source.revision() != parameters.source_revision
-            || target.revision() != parameters.target_revision
-        {
+        let target = self.read_target_unit(txn, target_id)?;
+        if source.revision() != parameters.source_revision {
             return Err(Self::stale("a Gate-2 unit revision changed"));
+        }
+        if parameters
+            .target_revision
+            .is_some_and(|expected| target.revision() != expected)
+        {
+            return Err(Self::stale("the selected target is unavailable"));
         }
 
         let weapon_id = ComponentId::new(WEAPON_COMPONENT_ID).expect("static component id");
@@ -451,11 +493,9 @@ impl FireProvider {
         };
         let structure = target
             .cell(&target_structure)
-            .ok_or_else(|| Self::integrity("the selected target section has no structure cell"))?;
+            .ok_or_else(|| Self::stale("the selected target is unavailable"))?;
         if structure.current <= structure.min {
-            return Err(Self::rejected(
-                "the selected target section cannot take more damage",
-            ));
+            return Err(Self::stale("the selected target is unavailable"));
         }
         let applied_damage = i64::try_from(damage)
             .map_err(|_| Self::integrity("the damage draw exceeds the scalar domain"))?
@@ -539,7 +579,142 @@ impl FireProvider {
 
 impl ActionProvider for FireProvider {
     fn validate_invocation(&self, invocation: &ActionInvocation) -> Result<(), ActionError> {
-        Self::decode(invocation).map(|_| ())
+        Self::decode_parameters(invocation)?;
+        if !matches!(
+            invocation.targets()[0],
+            PerceivedRef::KnownObject { .. } | PerceivedRef::Contact { .. }
+        ) {
+            return Err(Self::invalid("fire target reference is unsupported"));
+        }
+        Ok(())
+    }
+
+    fn project_offer(
+        &self,
+        action: &DefinitionRef,
+        query: &LegalActionQuery,
+        engine: &Engine,
+    ) -> Result<Option<ProviderOfferDraft>, ActionError> {
+        let SubjectKey::Object { id: source_id } = query.truth_subject() else {
+            return Ok(None);
+        };
+        if *source_id != query.actor() || query.projected_subject() != &PerceivedRef::SelfActor {
+            return Ok(None);
+        }
+        let Some(now) = query.now() else {
+            return Ok(None);
+        };
+        if !matches!(
+            &now.clock,
+            ClockRef::DomainTick { owner, id, generation }
+                if owner.as_str() == TACTICAL_GATE_OWNER
+                    && id.as_str() == "arena"
+                    && *generation > 0
+        ) {
+            return Ok(None);
+        }
+        let Some(source) = engine
+            .action_state()
+            .get(&self.units, source_id)
+            .map_err(|error| Self::state_error(&error))?
+        else {
+            return Ok(None);
+        };
+        let weapon_id = ComponentId::new(WEAPON_COMPONENT_ID).expect("static component id");
+        let ready = ConditionId::new(READY_CONDITION_ID).expect("static condition id");
+        let ammo = CellAddr::Component {
+            component: weapon_id.clone(),
+            cell: CellId::new(AMMO_CELL_ID).expect("static cell id"),
+        };
+        let heat = CellAddr::Unit {
+            cell: CellId::new(HEAT_CELL_ID).expect("static cell id"),
+        };
+        if source
+            .component(&weapon_id)
+            .is_none_or(|weapon| weapon.condition != ready)
+            || source
+                .cell(&ammo)
+                .is_none_or(|cell| cell.current <= cell.min)
+            || source
+                .cell(&heat)
+                .is_none_or(|cell| cell.current >= cell.max)
+        {
+            return Ok(None);
+        }
+
+        let page = engine
+            .action_state()
+            .scan_family(
+                &self.contacts,
+                None,
+                mush_core::MAX_STATE_FAMILY_SCAN_RECORDS
+                    .min(mush_core::MAX_PROJECTED_ACTION_CHOICES),
+            )
+            .map_err(|error| Self::state_error(&error))?;
+        let mut choices = Vec::new();
+        for entry in page.entries() {
+            let contact = entry.value();
+            let actionable_target = match contact.truth_subject() {
+                SubjectKey::Object { id } => engine
+                    .action_state()
+                    .get(&self.units, id)
+                    .map_err(|error| Self::state_error(&error))?
+                    .is_some(),
+                SubjectKey::Scoped { .. } => false,
+            };
+            if actionable_target
+                && contact.is_visible_to(query.principal())
+                && contact.truth_subject() != query.truth_subject()
+            {
+                let id = ContactId::from_hex(entry.encoded_key())
+                    .map_err(|_| Self::integrity("a contact family key is malformed"))?;
+                choices.push(PerceivedRef::Contact {
+                    provider: self.contacts.owner().clone(),
+                    id,
+                    generation: contact.generation(),
+                });
+            }
+        }
+        if choices.is_empty() {
+            return Ok(None);
+        }
+
+        let definitions = engine
+            .registry
+            .definitions()
+            .ok_or_else(|| Self::integrity("the definition registry is unavailable"))?;
+        let mut guards = engine
+            .registry
+            .server_guard_set_builder(RevisionSet::default())
+            .map_err(|_| Self::integrity("the guard registry is unavailable"))?;
+        guards
+            .add_definition(action.clone(), definitions)
+            .map_err(|_| Self::integrity("the fire definition guard is unavailable"))?;
+        Ok(Some(ProviderOfferDraft {
+            fixed_parameters: json!({
+                "source_revision": source.revision(),
+                "now": now,
+            }),
+            parameters: ProjectedParameterSchema::empty(),
+            targets: ProjectedTargetSchema::Choices {
+                minimum: 1,
+                maximum: 1,
+                choices,
+            },
+            // The Gate-2/3 fixture proves contact targeting first. Wiring this
+            // to the already-implemented weapons lease is the next slice.
+            required_channels: Vec::new(),
+            expires: None,
+            presentation: ActionPresentation::new(
+                "fire",
+                "Fire",
+                "Fire the ready weapon at one currently perceived contact.",
+            )
+            .map_err(|_| Self::integrity("the fire presentation is invalid"))?,
+            guards: guards
+                .finish()
+                .map_err(|_| Self::integrity("the fire guard set is invalid"))?,
+        }))
     }
 
     fn prepare_invocation(
@@ -561,7 +736,18 @@ impl ActionProvider for FireProvider {
         txn: &mut ActionTxn<'_>,
         context: &mut PrepareCtx<'_>,
     ) -> Result<AuthoritativeActionOutput, ActionError> {
-        self.prepare_fire(invocation, txn, context)
+        let target = Self::known_target(invocation)?;
+        self.prepare_fire(invocation, target, txn, context)
+    }
+
+    fn prepare_resolved_authoritative_with_context(
+        &self,
+        resolved: &ResolvedActionInvocation,
+        txn: &mut ActionTxn<'_>,
+        context: &mut PrepareCtx<'_>,
+    ) -> Result<AuthoritativeActionOutput, ActionError> {
+        let target = Self::resolved_target(resolved)?;
+        self.prepare_fire(resolved.invocation(), target, txn, context)
     }
 
     fn project_receipt(
@@ -663,16 +849,35 @@ impl GameModule for TacticalGateModule {
             },
             |value: &TacticalUnit| serde_json::to_value(value).map_err(|error| error.to_string()),
         )?;
+        let contact_codec = ContactStateCodec;
+        let contacts = registrar.state_family(
+            contact_state_family_descriptor(
+                StateFamilyId::new("contacts").map_err(|error| ModError::msg(error.to_string()))?,
+            )
+            .map_err(|error| ModError::msg(error.to_string()))?,
+            contact_codec,
+            contact_codec,
+            contact_codec,
+            contact_codec,
+        )?;
+        registrar.authority_guard_validator(
+            AuthorityGuardKind::Contact,
+            ContactGuardValidator::new(contacts.clone()),
+        )?;
         registrar.action_provider(
             fixture.definitions.fire.clone(),
             FireProvider {
                 units: units.clone(),
+                contacts: contacts.clone(),
                 action: fixture.definitions.fire.clone(),
                 outcome: fixture.definitions.fired.clone(),
             },
         )?;
-        *self.captured.lock().expect("Gate-2 capture poisoned") =
-            Some((TacticalGateState { units }, fixture.definitions, unit_spec));
+        *self.captured.lock().expect("Gate-2 capture poisoned") = Some((
+            TacticalGateState { units, contacts },
+            fixture.definitions,
+            unit_spec,
+        ));
         Ok(())
     }
 }
@@ -694,6 +899,13 @@ pub fn tactical_gate_world() -> (Engine, TacticalGateState, TacticalGateDefiniti
             [],
         )
         .expect("Gate-2 resolution ring"),
+    );
+    engine.set_offer_keys(
+        OfferKeyRing::new(
+            OfferSecret::new(1, [0x63; 32]).expect("Gate-3 offer key"),
+            [],
+        )
+        .expect("Gate-3 offer key ring"),
     );
     let (state, definitions, unit_spec) = captured
         .lock()
@@ -720,6 +932,33 @@ pub fn install_tactical_gate_unit(
     };
     let (_, installation) = prepared.into_parts();
     engine.install_prepared_action(installation);
+}
+
+/// Fixture-only private contact bootstrap.
+pub fn install_tactical_gate_contact(
+    engine: &mut Engine,
+    state: &TacticalGateState,
+    id: ContactId,
+    target: ObjId,
+    viewer: PrincipalId,
+) -> ContactState {
+    let contact = ContactState::new(ContactStateDraft {
+        truth_subject: SubjectKey::Object { id: target },
+        audience: vec![viewer],
+        observed_at: tactical_gate_tick(6),
+    })
+    .expect("valid Gate-3 contact");
+    let prepared = {
+        let mut txn = engine
+            .action_transaction(&state.contacts)
+            .expect("Gate-3 contact bootstrap transaction");
+        txn.insert(&state.contacts, &id, contact.clone())
+            .expect("valid Gate-3 contact bootstrap");
+        txn.prepare().expect("Gate-3 contact bootstrap prepares")
+    };
+    let (_, installation) = prepared.into_parts();
+    engine.install_prepared_action(installation);
+    contact
 }
 
 /// Canonical domain clock used by the fixture.
@@ -794,7 +1033,10 @@ pub const fn tactical_gate_token() -> CommitToken {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mush_core::ActionProviderPrepareError;
+    use mush_core::{
+        ActionProviderPrepareError, AuthorityGuard, LegalActionResolutionError,
+        OfferExecutionContext, OfferResolveError, OfferSubmission,
+    };
 
     fn unit(spec: &UnitSpec, id: u32) -> TacticalUnit {
         TacticalUnit::from_spec(spec, ObjId(id)).expect("valid Gate-2 unit")
@@ -1005,7 +1247,7 @@ mod tests {
     }
 
     #[test]
-    fn target_refusal_cannot_stage_the_source_ammo_and_heat_spend() {
+    fn unavailable_target_cannot_stage_the_source_ammo_and_heat_spend() {
         let (mut engine, state, definitions, spec) = tactical_gate_world();
         let source_id = ObjId(921);
         let target_id = ObjId(922);
@@ -1057,7 +1299,7 @@ mod tests {
                 tactical_gate_token(),
             ),
             Err(ActionProviderPrepareError::Provider { source, .. })
-                if source.code() == ActionErrorCode::ProviderRejected
+                if source.code() == ActionErrorCode::Stale
         ));
         assert_eq!(
             engine
@@ -1113,5 +1355,252 @@ mod tests {
         }
 
         assert_eq!(prepare_once(), prepare_once());
+    }
+
+    #[test]
+    fn opaque_contact_target_resolves_privately_and_adds_a_final_guard() {
+        let (mut engine, state, definitions, spec) = tactical_gate_world();
+        let source_id = ObjId(941);
+        let hidden_target_id = ObjId(987_654_321);
+        install_tactical_gate_unit(&mut engine, &state, unit(&spec, source_id.0));
+        install_tactical_gate_unit(&mut engine, &state, unit(&spec, hidden_target_id.0));
+        let principal = PrincipalId::Object { id: source_id };
+        let contact_id = ContactId::from_bytes([0x71; 16]);
+        install_tactical_gate_contact(
+            &mut engine,
+            &state,
+            contact_id,
+            hidden_target_id,
+            principal.clone(),
+        );
+        let query = LegalActionQuery::new(
+            principal.clone(),
+            source_id,
+            SubjectKey::Object { id: source_id },
+            PerceivedRef::SelfActor,
+            1,
+            Some(tactical_gate_tick(7)),
+        )
+        .unwrap();
+        let offers = engine.project_legal_actions(&query).unwrap();
+        let projected = offers.projected().pop().expect("contact enables fire");
+        let ProjectedTargetSchema::Choices { choices, .. } = projected.targets() else {
+            panic!("fire must project an opaque target choice");
+        };
+        let [contact_ref @ PerceivedRef::Contact { .. }] = choices.as_slice() else {
+            panic!("fire must expose exactly one opaque contact");
+        };
+        let projected_json = serde_json::to_string(&projected).unwrap();
+        assert!(!projected_json.contains(&hidden_target_id.0.to_string()));
+        assert!(!projected_json.contains("truth_subject"));
+
+        let request = RequestUid::from_bytes([0x72; 16]);
+        let resolved = engine
+            .resolve_legal_action(
+                &offers,
+                OfferExecutionContext {
+                    request,
+                    principal: principal.clone(),
+                    actor: source_id,
+                    idempotency: ScopedIdempotencyKey::new(
+                        IdempotencyScope {
+                            principal: principal.clone(),
+                            owner: OwnerId::new(TACTICAL_GATE_OWNER).unwrap(),
+                            namespace: CanonicalId::new(FIRE_ACTION_ID).unwrap(),
+                        },
+                        1,
+                        IdempotencyKey::Request(request),
+                    ),
+                    viewer_scope: query.viewer_scope(),
+                    now: None,
+                },
+                OfferSubmission {
+                    offer: projected.offer(),
+                    subject: PerceivedRef::SelfActor,
+                    targets: vec![contact_ref.clone()],
+                    parameters: json!({}),
+                },
+            )
+            .expect("selected contact resolves privately");
+        assert_eq!(
+            resolved.resolved_invocation().truth_targets(),
+            &[SubjectKey::Object {
+                id: hidden_target_id,
+            }]
+        );
+        assert!(resolved.guards().authority().iter().any(|guard| {
+            matches!(
+                guard,
+                AuthorityGuard::Contact {
+                    provider,
+                    principal: guarded_principal,
+                    id,
+                    generation: 1,
+                } if provider.as_str() == TACTICAL_GATE_OWNER
+                    && guarded_principal == &principal
+                    && id == &contact_id
+            )
+        }));
+        let (prepared, output) = engine
+            .prepare_registered_resolved_authoritative_action(
+                &definitions.fire,
+                resolved.resolved_invocation(),
+                tactical_gate_token(),
+            )
+            .expect("the provider receives private target truth");
+        let outcome = output.into_parts().0;
+        assert_eq!(outcome.data()["target"], hidden_target_id.0);
+        let (_, installation) = prepared.into_parts();
+        engine.install_prepared_action(installation);
+        assert_eq!(
+            engine
+                .action_state()
+                .get(&state.units, &hidden_target_id)
+                .unwrap()
+                .unwrap()
+                .revision(),
+            1
+        );
+    }
+
+    #[test]
+    fn contact_loss_after_projection_collapses_to_generic_unavailable() {
+        let (mut engine, state, _definitions, spec) = tactical_gate_world();
+        let source_id = ObjId(951);
+        let target_id = ObjId(952);
+        install_tactical_gate_unit(&mut engine, &state, unit(&spec, source_id.0));
+        install_tactical_gate_unit(&mut engine, &state, unit(&spec, target_id.0));
+        let principal = PrincipalId::Object { id: source_id };
+        let contact_id = ContactId::from_bytes([0x73; 16]);
+        let contact = install_tactical_gate_contact(
+            &mut engine,
+            &state,
+            contact_id,
+            target_id,
+            principal.clone(),
+        );
+        let query = LegalActionQuery::new(
+            principal.clone(),
+            source_id,
+            SubjectKey::Object { id: source_id },
+            PerceivedRef::SelfActor,
+            1,
+            Some(tactical_gate_tick(7)),
+        )
+        .unwrap();
+        let offers = engine.project_legal_actions(&query).unwrap();
+        let projected = offers.projected().pop().unwrap();
+        let ProjectedTargetSchema::Choices { choices, .. } = projected.targets() else {
+            panic!("fire must project contacts");
+        };
+        let contact_ref = choices[0].clone();
+        let lost = contact
+            .checked_mark_lost(
+                contact.revision(),
+                tactical_gate_tick(7),
+                CanonicalId::new("occluded").unwrap(),
+            )
+            .unwrap();
+        let prepared = {
+            let mut txn = engine.action_transaction(&state.contacts).unwrap();
+            txn.replace(&state.contacts, &contact_id, lost).unwrap();
+            txn.prepare().unwrap()
+        };
+        let (_, installation) = prepared.into_parts();
+        engine.install_prepared_action(installation);
+
+        let request = RequestUid::from_bytes([0x74; 16]);
+        let error = engine
+            .resolve_legal_action(
+                &offers,
+                OfferExecutionContext {
+                    request,
+                    principal: principal.clone(),
+                    actor: source_id,
+                    idempotency: ScopedIdempotencyKey::new(
+                        IdempotencyScope {
+                            principal,
+                            owner: OwnerId::new(TACTICAL_GATE_OWNER).unwrap(),
+                            namespace: CanonicalId::new(FIRE_ACTION_ID).unwrap(),
+                        },
+                        1,
+                        IdempotencyKey::Request(request),
+                    ),
+                    viewer_scope: query.viewer_scope(),
+                    now: None,
+                },
+                OfferSubmission {
+                    offer: projected.offer(),
+                    subject: PerceivedRef::SelfActor,
+                    targets: vec![contact_ref],
+                    parameters: json!({}),
+                },
+            )
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            LegalActionResolutionError::Resolve(OfferResolveError::Unavailable)
+        ));
+    }
+
+    #[test]
+    fn two_viewers_receive_distinct_contacts_for_the_same_truth_target() {
+        let (mut engine, state, _definitions, spec) = tactical_gate_world();
+        let first = ObjId(961);
+        let second = ObjId(962);
+        let hidden_target = ObjId(963);
+        for id in [first, second, hidden_target] {
+            install_tactical_gate_unit(&mut engine, &state, unit(&spec, id.0));
+        }
+        let first_contact = ContactId::from_bytes([0x81; 16]);
+        let second_contact = ContactId::from_bytes([0x82; 16]);
+        install_tactical_gate_contact(
+            &mut engine,
+            &state,
+            first_contact,
+            hidden_target,
+            PrincipalId::Object { id: first },
+        );
+        install_tactical_gate_contact(
+            &mut engine,
+            &state,
+            second_contact,
+            hidden_target,
+            PrincipalId::Object { id: second },
+        );
+
+        let projected_contact = |engine: &Engine, viewer: ObjId| {
+            let query = LegalActionQuery::new(
+                PrincipalId::Object { id: viewer },
+                viewer,
+                SubjectKey::Object { id: viewer },
+                PerceivedRef::SelfActor,
+                1,
+                Some(tactical_gate_tick(7)),
+            )
+            .unwrap();
+            let projected = engine
+                .project_legal_actions(&query)
+                .unwrap()
+                .projected()
+                .pop()
+                .unwrap();
+            let ProjectedTargetSchema::Choices { choices, .. } = projected.targets() else {
+                panic!("fire must project contacts");
+            };
+            assert!(
+                !serde_json::to_string(&projected)
+                    .unwrap()
+                    .contains(&hidden_target.0.to_string())
+            );
+            let PerceivedRef::Contact { id, .. } = choices[0] else {
+                panic!("fire target must remain opaque");
+            };
+            id
+        };
+
+        assert_eq!(projected_contact(&engine, first), first_contact);
+        assert_eq!(projected_contact(&engine, second), second_contact);
+        assert_ne!(first_contact, second_contact);
     }
 }

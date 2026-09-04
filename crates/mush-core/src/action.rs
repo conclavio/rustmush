@@ -837,6 +837,66 @@ impl TryFrom<ActionInvocationWire> for ActionInvocation {
     }
 }
 
+/// Server-private interpretation of one projected invocation.
+///
+/// The durable/wire [`ActionInvocation`] retains only references the caller was
+/// allowed to see. This wrapper is constructed by the engine after resolving
+/// the subject and every selected target through current perception/authority
+/// providers. It is intentionally neither serializable nor constructible by a
+/// client, module, or action provider.
+#[derive(Clone)]
+pub struct ResolvedActionInvocation {
+    invocation: ActionInvocation,
+    truth_subject: SubjectKey,
+    truth_targets: Vec<SubjectKey>,
+}
+
+impl fmt::Debug for ResolvedActionInvocation {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ResolvedActionInvocation")
+            .field("invocation", &self.invocation)
+            .field("truth_subject", &"[REDACTED]")
+            .field("truth_target_count", &self.truth_targets.len())
+            .finish()
+    }
+}
+
+impl ResolvedActionInvocation {
+    pub(crate) fn new(
+        invocation: ActionInvocation,
+        truth_subject: SubjectKey,
+        truth_targets: Vec<SubjectKey>,
+    ) -> Option<Self> {
+        if invocation.targets().len() != truth_targets.len() {
+            return None;
+        }
+        Some(Self {
+            invocation,
+            truth_subject,
+            truth_targets,
+        })
+    }
+
+    /// The canonical projected invocation retained in durable action records.
+    #[must_use]
+    pub const fn invocation(&self) -> &ActionInvocation {
+        &self.invocation
+    }
+
+    /// Private authoritative subject selected by the regenerated offer.
+    #[must_use]
+    pub const fn truth_subject(&self) -> &SubjectKey {
+        &self.truth_subject
+    }
+
+    /// Private authoritative targets in the exact order of projected targets.
+    #[must_use]
+    pub fn truth_targets(&self) -> &[SubjectKey] {
+        &self.truth_targets
+    }
+}
+
 fn semantic_request_hash(
     draft: &ActionInvocationDraft,
 ) -> Result<CanonicalHash, ActionMetadataError> {
@@ -3629,6 +3689,22 @@ pub trait ActionProvider: Send + Sync {
         self.prepare_authoritative(invocation, txn)
     }
 
+    /// Prepare an invocation whose projected subject/targets have been
+    /// privately resolved by the engine immediately before provider entry.
+    ///
+    /// Existing providers remain source-compatible and receive the durable
+    /// projected invocation. Providers that act on opaque contacts override
+    /// this method and use only `truth_subject`/`truth_targets` for mechanical
+    /// addressing; those identities never enter the wire invocation.
+    fn prepare_resolved_authoritative_with_context(
+        &self,
+        resolved: &ResolvedActionInvocation,
+        txn: &mut ActionTxn<'_>,
+        context: &mut crate::resolution::PrepareCtx<'_>,
+    ) -> Result<AuthoritativeActionOutput, ActionError> {
+        self.prepare_authoritative_with_context(resolved.invocation(), txn, context)
+    }
+
     /// Expand one provider-owned same-commit trigger against the root
     /// action's still-unprepared scratch transaction. Trigger callbacks have
     /// the same mutation authority as the root provider, but no persistence,
@@ -4375,10 +4451,57 @@ impl ActionProviderRegistry {
         )
     }
 
+    /// Run one exact provider with server-private resolved subject/target
+    /// identities. The durable bundle still binds the projected invocation;
+    /// only provider preparation sees this non-serializable wrapper.
+    pub fn prepare_resolved_authoritative_invocation(
+        &self,
+        action: &DefinitionRef,
+        resolved: &ResolvedActionInvocation,
+        commit_token: CommitToken,
+        state: &mut ActionStateStore,
+        resolution_keys: Option<&crate::resolution::ResolutionKeyRing>,
+    ) -> Result<(PreparedTxn, PreparedAuthoritativeAction), ActionProviderPrepareError> {
+        self.prepare_authoritative_invocation_seeded_inner(
+            action,
+            resolved.invocation(),
+            Some(resolved),
+            commit_token,
+            state,
+            resolution_keys,
+            |_| Ok(()),
+        )
+    }
+
     pub(crate) fn prepare_authoritative_invocation_seeded<F>(
         &self,
         action: &DefinitionRef,
         invocation: &ActionInvocation,
+        commit_token: CommitToken,
+        state: &mut ActionStateStore,
+        resolution_keys: Option<&crate::resolution::ResolutionKeyRing>,
+        seed: F,
+    ) -> Result<(PreparedTxn, PreparedAuthoritativeAction), ActionProviderPrepareError>
+    where
+        F: FnOnce(&mut ActionTxn<'_>) -> Result<(), ActionProviderPrepareError>,
+    {
+        self.prepare_authoritative_invocation_seeded_inner(
+            action,
+            invocation,
+            None,
+            commit_token,
+            state,
+            resolution_keys,
+            seed,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn prepare_authoritative_invocation_seeded_inner<F>(
+        &self,
+        action: &DefinitionRef,
+        invocation: &ActionInvocation,
+        resolved: Option<&ResolvedActionInvocation>,
         commit_token: CommitToken,
         state: &mut ActionStateStore,
         resolution_keys: Option<&crate::resolution::ResolutionKeyRing>,
@@ -4398,13 +4521,24 @@ impl ActionProviderRegistry {
             commit_token,
             resolution_keys,
         );
-        let root_output = entry
-            .provider()
-            .prepare_authoritative_with_context(invocation, &mut txn, &mut prepare_context)
-            .map_err(|source| ActionProviderPrepareError::Provider {
-                action: Box::new(action.clone()),
-                source: Box::new(source),
-            })?;
+        let root_output = match resolved {
+            Some(resolved) => entry
+                .provider()
+                .prepare_resolved_authoritative_with_context(
+                    resolved,
+                    &mut txn,
+                    &mut prepare_context,
+                ),
+            None => entry.provider().prepare_authoritative_with_context(
+                invocation,
+                &mut txn,
+                &mut prepare_context,
+            ),
+        }
+        .map_err(|source| ActionProviderPrepareError::Provider {
+            action: Box::new(action.clone()),
+            source: Box::new(source),
+        })?;
         validate_resolution_custody(
             prepare_context.resolution_opened(),
             root_output.resolution().is_some(),
@@ -5346,21 +5480,20 @@ mod tests {
                 },
             )
             .unwrap();
-        let grant_guards = resolved
-            .guards()
+        let (_, _, _, guards) = resolved.into_resolution_parts();
+        let grant_guards = guards
             .authority()
             .iter()
             .filter(|guard| {
                 matches!(
                     guard,
                     AuthorityGuard::ChannelGrant { provider, .. }
-                        if provider == &control_owner
+                        if provider.as_str() == control_owner.as_str()
                 )
             })
             .count();
         assert_eq!(grant_guards, channels.len());
-        let lease_guards = resolved
-            .guards()
+        let lease_guards = guards
             .authority()
             .iter()
             .filter(|guard| {
@@ -5370,7 +5503,7 @@ mod tests {
                         provider,
                         epoch: 29,
                         ..
-                    } if provider == &control_owner
+                    } if provider.as_str() == control_owner.as_str()
                 )
             })
             .count();
@@ -5381,8 +5514,7 @@ mod tests {
             .unwrap();
         let authority = engine.registry.authority_guard_validators().unwrap();
         assert!(
-            resolved
-                .guards()
+            guards
                 .revalidate(&engine.world, &revisions, authority, &definitions)
                 .unwrap()
                 .is_current()
@@ -5391,8 +5523,7 @@ mod tests {
         let mut changed_grant = grant.clone();
         changed_grant.epoch += 1;
         engine.world.publish_command_subject(changed_grant);
-        let stale = resolved
-            .guards()
+        let stale = guards
             .revalidate(&engine.world, &revisions, authority, &definitions)
             .unwrap();
         assert_eq!(stale.stale_authority().len(), channels.len());

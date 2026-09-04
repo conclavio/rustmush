@@ -18,7 +18,7 @@ use thiserror::Error;
 use crate::action::{
     ActionError, ActionInvocation, ActionInvocationDraft, ActionMetadataError, ActionOfferId,
     CanonicalHash, CanonicalHashError, GuardSet, PerceivedRef, PrincipalId, RequestUid,
-    ScopedIdempotencyKey, SubjectKey,
+    ResolvedActionInvocation, ScopedIdempotencyKey, SubjectKey,
 };
 use crate::behavior::ChannelId;
 use crate::clock::ClockStamp;
@@ -908,7 +908,7 @@ impl ProjectedLegalActionSink {
 
     /// Resolve one opaque submission without distinguishing unknown, expired,
     /// changed, or wrong-viewer offers to the caller.
-    pub fn resolve(
+    pub(crate) fn resolve(
         &self,
         keys: &OfferKeyRing,
         execution: OfferExecutionContext,
@@ -968,6 +968,7 @@ impl ProjectedLegalActionSink {
         Ok(ResolvedOffer {
             action: offer.action.clone(),
             invocation,
+            truth_subject: offer.truth_subject.clone(),
             guards: offer.guards.clone(),
         })
     }
@@ -1008,15 +1009,52 @@ pub struct OfferSubmission {
     pub parameters: Value,
 }
 
-/// Exact provider input after successful opaque-offer resolution.
+/// Intermediate offer after opaque binding resolution but before selected
+/// targets have been privately interpreted by the engine.
 #[derive(Debug)]
-pub struct ResolvedOffer {
+pub(crate) struct ResolvedOffer {
     action: DefinitionRef,
     invocation: ActionInvocation,
+    truth_subject: SubjectKey,
     guards: GuardSet,
 }
 
 impl ResolvedOffer {
+    pub(crate) fn into_resolution_parts(
+        self,
+    ) -> (DefinitionRef, ActionInvocation, SubjectKey, GuardSet) {
+        (
+            self.action,
+            self.invocation,
+            self.truth_subject,
+            self.guards,
+        )
+    }
+}
+
+/// Offer after the engine has privately resolved every selected target and
+/// attached its current authority witnesses. Only this type may enter the
+/// production authoritative coordinator.
+#[derive(Debug)]
+pub struct ResolvedAuthoritativeOffer {
+    action: DefinitionRef,
+    resolved: ResolvedActionInvocation,
+    guards: GuardSet,
+}
+
+impl ResolvedAuthoritativeOffer {
+    pub(crate) const fn new(
+        action: DefinitionRef,
+        resolved: ResolvedActionInvocation,
+        guards: GuardSet,
+    ) -> Self {
+        Self {
+            action,
+            resolved,
+            guards,
+        }
+    }
+
     #[must_use]
     pub const fn action(&self) -> &DefinitionRef {
         &self.action
@@ -1024,7 +1062,12 @@ impl ResolvedOffer {
 
     #[must_use]
     pub const fn invocation(&self) -> &ActionInvocation {
-        &self.invocation
+        self.resolved.invocation()
+    }
+
+    #[must_use]
+    pub const fn resolved_invocation(&self) -> &ResolvedActionInvocation {
+        &self.resolved
     }
 
     #[must_use]
@@ -1033,8 +1076,8 @@ impl ResolvedOffer {
     }
 
     #[must_use]
-    pub fn into_parts(self) -> (DefinitionRef, ActionInvocation, GuardSet) {
-        (self.action, self.invocation, self.guards)
+    pub fn into_authoritative_parts(self) -> (DefinitionRef, ResolvedActionInvocation, GuardSet) {
+        (self.action, self.resolved, self.guards)
     }
 }
 
@@ -1308,10 +1351,10 @@ mod tests {
                 },
             )
             .unwrap();
-        assert_eq!(resolved.action().key().id.as_str(), "brace");
+        assert_eq!(resolved.action.key().id.as_str(), "brace");
         assert_eq!(
             serde_json::from_value::<ClockStamp>(
-                resolved.invocation().parameters()["scene_turn"].clone()
+                resolved.invocation.parameters()["scene_turn"].clone()
             )
             .unwrap(),
             stamp(11)

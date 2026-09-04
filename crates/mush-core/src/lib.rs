@@ -100,11 +100,11 @@ pub use action::{
     MAX_TRIGGER_DEPTH, PerceivedRef, PreparedAuthoritativeAction, PreparedCausalRef,
     PreparedEventId, PreparedTrigger, PreparedTriggerDraft, PrincipalId,
     ProviderRegistrationOrdinal, ReceiptProjectionError, ReceiptProjectionTable, RequestUid,
-    RevisionKey, RevisionKind, RevisionMismatch, RevisionSet, RevisionSetError, RevisionStamp,
-    RevisionValidator, RevisionValidatorEntry, RevisionValidatorLookupError,
-    RevisionValidatorRegistry, RevisionValidatorRegistryBuilder, RevisionValidatorRegistryError,
-    SameCommitTrigger, ScopedIdempotencyKey, ServerGuardSetBuilder, SubjectKey, TriggerEnqueue,
-    TriggerHandlerId, TriggerIdentity, TriggerWork,
+    ResolvedActionInvocation, RevisionKey, RevisionKind, RevisionMismatch, RevisionSet,
+    RevisionSetError, RevisionStamp, RevisionValidator, RevisionValidatorEntry,
+    RevisionValidatorLookupError, RevisionValidatorRegistry, RevisionValidatorRegistryBuilder,
+    RevisionValidatorRegistryError, SameCommitTrigger, ScopedIdempotencyKey, ServerGuardSetBuilder,
+    SubjectKey, TriggerEnqueue, TriggerHandlerId, TriggerIdentity, TriggerWork,
 };
 pub use action_state::{
     ACTION_STATE_PERSISTENCE_ROOT, ActionStateBootRecord, ActionStateError, ActionStateStore,
@@ -224,7 +224,7 @@ pub use offer::{
     OfferResolveError, OfferRouteId, OfferRouteTable, OfferSecret, OfferSecretError,
     OfferSubmission, ProjectedLegalAction, ProjectedLegalActionSink, ProjectedParameter,
     ProjectedParameterKind, ProjectedParameterSchema, ProjectedTargetSchema, ProjectionScopeId,
-    ProviderOfferDraft, ResolvedOffer,
+    ProviderOfferDraft, ResolvedAuthoritativeOffer,
 };
 pub use output::{
     Audience, ConnId, DeliveryClass, DeliveryOutcome, Outbox, name_span, obj_ref, room_view,

@@ -12,7 +12,7 @@ use mush_core::{
     CommitToken, DefinitionRef, Engine, GuardSet, IdempotencyKey, IdempotencyKeyTextError,
     IdempotencyScope, IngressEnvelope, IngressPayload, IngressSurfaceVersion,
     MAX_AUTHORITATIVE_BUNDLE_BYTES, OfferRouteTable, PreparedCausalRef, PrincipalId,
-    ReceiptProjectionTable, ResolvedOffer, ScheduleAdvance, ScopedIdempotencyKey,
+    ReceiptProjectionTable, ResolvedAuthoritativeOffer, ScheduleAdvance, ScopedIdempotencyKey,
     StagePreparedActionError,
 };
 use mush_ipc::{GatewayInput, GatewayRequest};
@@ -406,10 +406,35 @@ impl ActionCoordinator {
     pub fn prepare_and_stage_resolved(
         permit: Box<ActionPermit>,
         engine: &mut Engine,
-        resolved: ResolvedOffer,
+        resolved: ResolvedAuthoritativeOffer,
     ) -> Result<StagedAuthoritativeAction, ActionCoordinatorError> {
-        let (action, invocation, guards) = resolved.into_parts();
-        Self::prepare_and_stage(permit, engine, &action, &invocation, guards)
+        let (action, resolved, guards) = resolved.into_authoritative_parts();
+        let invocation = resolved.invocation();
+        validate_invocation_identity(&permit.ingress, invocation)?;
+        let token = deterministic_commit_token(&permit.ingress)?;
+        let (prepared, output) = engine
+            .prepare_registered_resolved_authoritative_action(&action, &resolved, token)
+            .map_err(ActionCoordinatorError::Provider)?;
+        let bundle = match assemble_bundle(
+            &permit.ingress,
+            &action,
+            invocation,
+            token,
+            &prepared,
+            output,
+        ) {
+            Ok(bundle) => bundle,
+            Err(error) => {
+                engine.abort_prepared_transaction(prepared);
+                return Err(error);
+            }
+        };
+        let token = bundle.token();
+        let bundle_hash = bundle.bundle_hash();
+        engine
+            .stage_authoritative_action(prepared, guards, bundle)
+            .map_err(ActionCoordinatorError::Stage)?;
+        Ok(StagedAuthoritativeAction { token, bundle_hash })
     }
 
     /// Plan and prepare one discovered durable schedule after its canonical

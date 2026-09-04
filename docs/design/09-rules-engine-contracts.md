@@ -2464,9 +2464,23 @@ to-hit/location/damage transcript and a private durable outcome; its receipt pro
 unit IDs, revisions, section, exact damage, or draw. Tests prove the two live records remain
 byte-identical before installation, a stale/disabled source or un-damageable target leaves both
 unchanged, and identical inputs reproduce replay writes, outcome, and RNG evidence. This is a
-transaction-shape proof, not a second production unit authority. Placement/window/lease guards,
-legal-offer enablement, durable simultaneous resolution, opaque contact targets, and the
-cross-owner bridge remain before Gates 2-3 can be claimed complete.
+transaction-shape proof, not a second production unit authority. Placement/window guards,
+lease-gated legal-offer enablement, durable simultaneous resolution, and the cross-owner bridge
+remain before Gates 2-3 can be claimed complete.
+Selected target contacts now cross the same private resolution boundary as contact subjects. After
+an opaque offer is HMAC-matched and its projected target choices validate, the engine re-reads each
+selected contact through its exact authority provider, builds a non-serializable
+`ResolvedActionInvocation` containing ordered truth targets, and adds each contact witness to the
+final guard set. `ActionInvocation`, IPC, and the authoritative request hash retain only the
+projected references. The production coordinator accepts only the fully resolved offer type for
+this path; an ordinary provider remains source-compatible, while a contact-aware provider must
+explicitly opt into the resolved callback. Missing, lost, wrong-viewer, and unevaluable contacts
+all collapse to the same projected unavailable result. The Gate-3 fixture now projects `fire` only
+against visible opaque contacts, proves the target object is absent from the offer, verifies the
+provider receives the private target and the final contact guard, and proves contact loss between
+projection and submission performs no tactical mutation. It also proves two viewers receive
+different contact IDs for the same truth target without either projection exposing that target.
+Viewer-specific panels/outcomes across all surfaces remain before Gate 3 is complete.
 
 Exit criteria:
 

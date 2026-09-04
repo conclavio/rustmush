@@ -3053,10 +3053,14 @@ mod tests {
             .unwrap(),
             toy_scene_turn(11)
         );
-        let (action, invocation, _guards) = resolved.into_parts();
+        let (action, invocation, _guards) = resolved.into_authoritative_parts();
         let (prepared, output) = world
             .engine_mut()
-            .prepare_registered_authoritative_action(&action, &invocation, toy_prepare_token())
+            .prepare_registered_resolved_authoritative_action(
+                &action,
+                &invocation,
+                toy_prepare_token(),
+            )
             .expect("resolved offer reaches the canonical provider");
         let outcome = output.into_parts().0;
         world.engine_mut().abort_prepared_transaction(prepared);
@@ -3215,10 +3219,14 @@ mod tests {
                 )
                 .unwrap_or_else(|error| panic!("{caller:?} failed shared resolution: {error}"));
             assert_eq!(resolved.action(), &toy_definitions().brace);
-            let (action, invocation, _) = resolved.into_parts();
+            let (action, invocation, _) = resolved.into_authoritative_parts();
             let (prepared, _) = world
                 .engine_mut()
-                .prepare_registered_authoritative_action(&action, &invocation, toy_prepare_token())
+                .prepare_registered_resolved_authoritative_action(
+                    &action,
+                    &invocation,
+                    toy_prepare_token(),
+                )
                 .unwrap_or_else(|error| panic!("{caller:?} missed shared provider: {error}"));
             world.engine_mut().abort_prepared_transaction(prepared);
         }
