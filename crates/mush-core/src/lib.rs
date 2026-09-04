@@ -48,6 +48,7 @@
 
 pub mod action;
 pub mod action_state;
+pub mod action_window;
 pub mod attr;
 pub mod authoritative;
 pub mod behavior;
@@ -105,6 +106,13 @@ pub use action_state::{
     StateFamilyDescriptorError, StateFamilyHandle, StateFamilyId, StateFamilyRegistry,
     StateFamilyRegistryBuilder, StateFamilyRegistryError, StateKey, StateKeyCodec,
     StateValueDecoder, StateValueSerializer, StateValueValidator, is_action_state_persistence_key,
+};
+pub use action_window::{
+    ActionWindow, ActionWindowDraft, ActionWindowError, ActionWindowId, ActionWindowPhase,
+    ActionWindowRecord, MAX_WINDOW_CAPACITY, MAX_WINDOW_CATCH_UP, MAX_WINDOW_INPUT_OPERATIONS,
+    MAX_WINDOW_OPERATION_RECEIPTS, MAX_WINDOW_ORDER_KEY_PARTS, WindowIntent, WindowIntentSlot,
+    WindowMode, WindowMutationReceipt, WindowMutationResult, WindowOrderKey, WindowRestartPolicy,
+    WindowTimeoutPolicy, WindowTransition,
 };
 pub use attr::{Attr, AttrFlags, AttrMap, AttrValue, UncasedName};
 pub use authoritative::{
