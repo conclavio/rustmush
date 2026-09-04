@@ -1,5 +1,7 @@
 # 10a — TacSim E7: owner questions
 
+**Answered 2026-09-03: the owner accepted every recommended option (1A 2D 3A 4A 5D 6A 7A 8D 9A 10D 11A 12A 13A–22A) and the doc 10 R6 amendment (doc 10 is now Draft 0.4); all binding.**
+
 **Draft 0.2 — 2026-09-03 (Draft 0.1 + an external review, adjudicated; §6).** The survey the owner answers before the E7
 implementation plan is written, in the shape of [08e](08e-e6-owner-questions.md): numbered questions, lettered options
 with a **recommended** default, and the code fact each recommendation rests on. Answer `1A, 2D, …`, or `defaults` to

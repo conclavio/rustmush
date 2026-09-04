@@ -1,6 +1,6 @@
 # 10 — TacSim Foundations
 
-**Draft 0.3 — 2026-09-03.** The definitional record for the TacSim programme (build units E7+):
+**Draft 0.4 — 2026-09-03** (R6 amended per 10a Q10, accepted by the owner). The definitional record for the TacSim programme (build units E7+):
 the owner's scope note, the foundational survey with the **locked decisions 1A–7A**, the
 character-first survey with the **locked decisions C1A–C30A**, the accepted addenda **T1–T16**,
 the Draft 0.2 review's **sharpenings R1–R7** (§21, accepted), the remaining qualifications, and
@@ -378,10 +378,12 @@ Recorded here so the in-flight plans pick them up; each is small.
 - **`mush-scenes` (6A).** A scene gains a monotonic **IC time floor** that `scene_ic_time` respects;
   journey arrival raises it and emits a typed arrival event. Doc 09's `SceneTurn` clock is the
   natural carrier; this is E7 scope but the field is worth adding when scenes are next touched.
-- **Contract templates from the character-first decisions (R6).** A T10 proxy-seat invitation is
-  a contract with audience visibility whose consent surface freezes station, channels, mission
-  order, rules of engagement, window, and revocation at acceptance — E4b2's machinery, a template
-  only. C15A's readiness obligation is an E4b1 obligation on the operation cadence with success
+- **Consent shapes from the character-first decisions (R6, as amended).** A T10 proxy-seat
+  invitation is a **consent grant** — a campaign/control record sharing E4b2's consent-hash helper
+  (station, channels, mission order, rules of engagement, window, revocation frozen at acceptance;
+  the account reference audit-only) — not an economy contract, because an OOC proxy player is not
+  an in-world principal (10a Q10/Q19); an E4 contract is linked only where a fictional principal has
+  economic terms. C15A's readiness obligation is an E4b1 obligation on the operation cadence with success
   notifications off. C18A's passage contract is a deliverable-free contract granting bounded
   onboard rights. None needs new engine work.
 - **Participation facts (R6, T13).** "An absent character earns nothing" means settlement splits
@@ -724,8 +726,11 @@ object is following", keyed by traveler) and folded these sharpenings, all accep
   share one "what has reached whom" substrate; backlog items 4 and 14 are one layer.
 - **R5. Switching meets E5's fallback rules.** A character left aboard after a switch is governed by
   E5's attention budget and non-response semantics; no second fallback model.
-- **R6. New decisions are contract shapes.** T10 invitations, C15A readiness, C18A passage, and T13's
-  participation-indexed settlement are templates and fact kinds over E4b1/E4b2/E4c (§15).
-  Matchmaking standing is a policy input only.
+- **R6. New decisions are consent shapes.** **T10 invitations are consent grants that share the
+  contract's consent-hash discipline; an E4 contract exists only where a fictional principal has
+  economic terms** (amended 2026-09-03 from "audience contracts": an OOC proxy player is not an
+  in-world principal — 10a Q10). C15A readiness, C18A passage, and T13's participation-indexed
+  settlement remain templates and fact kinds over E4b1/E4b2/E4c (§15). Matchmaking standing is a
+  policy input only.
 - **R7. Storage rule for the account id.** Opaque, audit-only, staff-visible through an audit verb;
   never in a journaled or canon record.
