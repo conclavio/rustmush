@@ -2465,8 +2465,13 @@ unit IDs, revisions, section, exact damage, or draw. Tests prove the two live re
 byte-identical before installation, a stale/disabled source or un-damageable target leaves both
 unchanged, and identical inputs reproduce replay writes, outcome, and RNG evidence. This is a
 transaction-shape proof, not a second production unit authority. Placement/window guards,
-lease-gated legal-offer enablement, durable simultaneous resolution, and the cross-owner bridge
-remain before Gates 2-3 can be claimed complete.
+durable simultaneous resolution, and the cross-owner bridge remain before Gates 2-3 can be claimed
+complete. The fixture now also registers its own composition-branded control-lease family and
+requires the `weapons` channel. Neither a station grant nor a lease alone projects `fire`; the
+complete exact pair does, and the internal offer carries both final witnesses. An operated-fire
+test keeps the player actor distinct from the vehicle subject, proves the provider mutates the
+vehicle rather than the pilot, and proves safe-boundary lease revocation makes the retained guard
+set stale even while the transient station grant remains published.
 Selected target contacts now cross the same private resolution boundary as contact subjects. After
 an opaque offer is HMAC-matched and its projected target choices validate, the engine re-reads each
 selected contact through its exact authority provider, builds a non-serializable
