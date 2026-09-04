@@ -51,6 +51,14 @@ pub const DEFAULT_QUOTA: usize = 300;
 pub const MAX_USER_FOLDERS: usize = 16;
 /// Maximum folder-name length (after lowercasing).
 pub const MAX_FOLDER_NAME: usize = 16;
+/// Maximum recipients retained in one message and fanned out in one commit.
+pub const MAX_MAIL_RECIPIENTS: usize = 32;
+/// Maximum UTF-8 bytes in one subject.
+pub const MAX_MAIL_SUBJECT_BYTES: usize = 512;
+/// Maximum UTF-8 bytes in one message body.
+pub const MAX_MAIL_BODY_BYTES: usize = 64 * 1024;
+/// Maximum lines in one message body (also bounds compose preview fan-out).
+pub const MAX_MAIL_BODY_LINES: usize = 512;
 
 /// The `next_id` kv key.
 pub const NEXT_ID_KEY: &str = "next_id";
@@ -280,11 +288,12 @@ impl MailState {
         self.next_id
     }
 
-    /// Allocate the next mail id.
-    pub(crate) fn alloc_id(&mut self) -> u64 {
+    /// Allocate the next mail id, or return `None` when the counter cannot
+    /// advance without wrapping.
+    pub(crate) fn alloc_id(&mut self) -> Option<u64> {
         let id = self.next_id;
-        self.next_id += 1;
-        id
+        self.next_id = self.next_id.checked_add(1)?;
+        Some(id)
     }
 
     /// `owner`'s mailbox, created on first touch.
@@ -395,6 +404,50 @@ pub(crate) fn del_op(key: SmolStr) -> ModuleOp {
     }
 }
 
+/// Number of logical lines in a stored body. The empty body has zero lines.
+#[must_use]
+pub(crate) fn body_line_count(body: &str) -> usize {
+    if body.is_empty() {
+        0
+    } else {
+        body.as_bytes().iter().filter(|&&b| b == b'\n').count() + 1
+    }
+}
+
+/// Validate the hard per-message storage/fan-out bounds.
+pub(crate) fn validate_message(msg: &MailMsg) -> Result<(), String> {
+    if msg.id == 0 {
+        return Err("message id zero is reserved".to_string());
+    }
+    validate_message_content(&msg.to, &msg.subject, &msg.body)
+        .map_err(|detail| format!("message {} {detail}", msg.id))
+}
+
+/// Validate content before allocating an id or mutating live mail state.
+pub(crate) fn validate_message_content(
+    to: &[ObjId],
+    subject: &str,
+    body: &str,
+) -> Result<(), String> {
+    if to.is_empty() || to.len() > MAX_MAIL_RECIPIENTS {
+        return Err(format!(
+            "has {} recipients; expected 1..={MAX_MAIL_RECIPIENTS}",
+            to.len()
+        ));
+    }
+    if subject.trim().is_empty() || subject.len() > MAX_MAIL_SUBJECT_BYTES {
+        return Err(format!(
+            "subject is empty or exceeds {MAX_MAIL_SUBJECT_BYTES} bytes"
+        ));
+    }
+    if body.len() > MAX_MAIL_BODY_BYTES || body_line_count(body) > MAX_MAIL_BODY_LINES {
+        return Err(format!(
+            "body exceeds {MAX_MAIL_BODY_BYTES} bytes or {MAX_MAIL_BODY_LINES} lines"
+        ));
+    }
+    Ok(())
+}
+
 // ----------------------------------------------------------------------
 // Boot rebuild
 // ----------------------------------------------------------------------
@@ -423,6 +476,8 @@ pub(crate) fn rebuild(data: &ModuleBootData) -> Result<MailState, ModError> {
         } else if key.starts_with("msg:") {
             let msg: MailMsg = serde_json::from_value(value.clone())
                 .map_err(|e| ModError::msg(format!("mail: bad document {key:?}: {e}")))?;
+            validate_message(&msg)
+                .map_err(|detail| ModError::msg(format!("mail: bad document {key:?}: {detail}")))?;
             st.msgs.insert(msg.id, msg);
         } else if key.starts_with("box:") {
             let entry: MailboxEntry = serde_json::from_value(value.clone())
@@ -448,7 +503,10 @@ pub(crate) fn rebuild(data: &ModuleBootData) -> Result<MailState, ModError> {
     }
 
     let max_msg = st.msgs.keys().next_back().copied().unwrap_or(0);
-    st.next_id = stored_next.max(max_msg + 1).max(1);
+    let derived_next = max_msg
+        .checked_add(1)
+        .ok_or_else(|| ModError::msg("mail: message id space is exhausted"))?;
+    st.next_id = stored_next.max(derived_next).max(1);
     Ok(st)
 }
 
@@ -529,6 +587,48 @@ mod tests {
             streams: std::collections::HashMap::new(),
         };
         assert!(rebuild(&data).is_err());
+    }
+
+    #[test]
+    fn rebuild_rejects_oversized_content_and_exhausted_ids() {
+        let oversized = MailMsg {
+            id: 1,
+            from: ObjId(2),
+            to: vec![ObjId(3)],
+            subject: "hi".into(),
+            body: "x".repeat(MAX_MAIL_BODY_BYTES + 1),
+            reply_to: None,
+            sent_at: 100,
+        };
+        let data = ModuleBootData {
+            kv: vec![(msg_key(1), serde_json::to_value(oversized).unwrap())],
+            streams: std::collections::HashMap::new(),
+        };
+        assert!(rebuild(&data).is_err());
+
+        let exhausted = MailMsg {
+            id: u64::MAX,
+            from: ObjId(2),
+            to: vec![ObjId(3)],
+            subject: "hi".into(),
+            body: "there".into(),
+            reply_to: None,
+            sent_at: 100,
+        };
+        let data = ModuleBootData {
+            kv: vec![(msg_key(u64::MAX), serde_json::to_value(exhausted).unwrap())],
+            streams: std::collections::HashMap::new(),
+        };
+        assert!(rebuild(&data).is_err());
+
+        let mut state = MailState {
+            next_id: u64::MAX - 1,
+            ..MailState::default()
+        };
+        assert_eq!(state.alloc_id(), Some(u64::MAX - 1));
+        assert_eq!(state.next_id(), u64::MAX);
+        assert_eq!(state.alloc_id(), None);
+        assert_eq!(state.next_id(), u64::MAX, "refusal must not wrap");
     }
 
     #[test]

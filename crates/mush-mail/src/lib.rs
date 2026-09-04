@@ -16,7 +16,8 @@
 //! - **Commands**: `@mail` (list), `@mail <n>` (read), and the
 //!   `/send /quick /reply /replyall /fwd /file /folder /newfolder
 //!   /rmfolder /delete /purge /unread /urgent` switches — see the in-game
-//!   help.
+//!   help. Compose retention, message size, and recipient fan-out all have
+//!   hard bounds; persisted messages are validated against the same bounds.
 //! - **Notifications**: a live [`OutputEvent::MailNotice`] per delivery
 //!   and a connect-time summary line via the `Connected` hook.
 //! - **Timezone policy**: timestamps are Unix UTC seconds; the terminal
@@ -39,8 +40,9 @@ pub mod date;
 pub mod query;
 
 pub use data::{
-    ARCHIVE, DEFAULT_QUOTA, INBOX, MAX_FOLDER_NAME, MAX_USER_FOLDERS, MailMsg, MailState,
-    MailStatus, Mailbox, MailboxEntry, NS, SENT, TRASH,
+    ARCHIVE, DEFAULT_QUOTA, INBOX, MAX_FOLDER_NAME, MAX_MAIL_BODY_BYTES, MAX_MAIL_BODY_LINES,
+    MAX_MAIL_RECIPIENTS, MAX_MAIL_SUBJECT_BYTES, MAX_USER_FOLDERS, MailMsg, MailState, MailStatus,
+    Mailbox, MailboxEntry, NS, SENT, TRASH,
 };
 pub use date::{format_date, format_datetime};
 pub use query::ListQuery;

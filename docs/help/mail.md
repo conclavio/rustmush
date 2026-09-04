@@ -40,6 +40,8 @@ Notes:
 - New mail is announced when it arrives and when you connect.
 - Quotas apply: staff configure how much mail one player may store.
   Trashed messages do not count — delete then purge always frees space.
+- One message may address at most 32 recipients and contain at most 512 body
+  lines / 64 KiB of UTF-8 text (subjects are limited to 512 bytes).
 - A player can lock who may mail them: @lock/mail me=<expression>
   (see "help locks").
 - The web client shows mail as a panel with threads derived from
