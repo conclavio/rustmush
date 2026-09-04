@@ -153,6 +153,21 @@ pub trait ClockProvider: Send + Sync {
     ) -> Result<i64, ClockProviderFailure>;
 }
 
+/// Pure synchronous provider for one owner's dynamic domain-clock namespace.
+///
+/// The provider is registered once during composition. Runtime domain ids are
+/// carried by [`ClockRef::DomainTick`] and passed into the provider; promoting
+/// a domain therefore never mutates the frozen registry.
+pub trait DomainClockProvider: Send + Sync {
+    /// Return the scalar current value for one exact domain and generation.
+    fn now(
+        &self,
+        context: &ClockProviderContext<'_>,
+        domain: &CanonicalId,
+        generation: u64,
+    ) -> Result<i64, ClockProviderFailure>;
+}
+
 /// Pure synchronous provider for the one first-class scene-clock namespace.
 ///
 /// [`ClockRef::SceneTurn`] intentionally carries no module owner: durable
@@ -182,6 +197,26 @@ where
         generation: u64,
     ) -> Result<i64, ClockProviderFailure> {
         self(context, scene, generation)
+    }
+}
+
+impl<F> DomainClockProvider for F
+where
+    F: for<'a> Fn(
+            &ClockProviderContext<'a>,
+            &CanonicalId,
+            u64,
+        ) -> Result<i64, ClockProviderFailure>
+        + Send
+        + Sync,
+{
+    fn now(
+        &self,
+        context: &ClockProviderContext<'_>,
+        domain: &CanonicalId,
+        generation: u64,
+    ) -> Result<i64, ClockProviderFailure> {
+        self(context, domain, generation)
     }
 }
 
@@ -223,6 +258,20 @@ struct SceneClockProviderEntry {
     provider: Arc<dyn SceneClockProvider>,
 }
 
+struct DomainClockProviderEntry {
+    owner: OwnerId,
+    provider: Arc<dyn DomainClockProvider>,
+}
+
+impl fmt::Debug for DomainClockProviderEntry {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("DomainClockProviderEntry")
+            .field("owner", &self.owner)
+            .finish_non_exhaustive()
+    }
+}
+
 impl fmt::Debug for SceneClockProviderEntry {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
@@ -245,6 +294,7 @@ impl fmt::Debug for ClockProviderEntry {
 #[derive(Default)]
 pub struct ClockProviderRegistryBuilder {
     entries: BTreeMap<ClockProviderKey, ClockProviderEntry>,
+    domains: BTreeMap<OwnerId, DomainClockProviderEntry>,
     scene: Option<SceneClockProviderEntry>,
     owner_counts: BTreeMap<OwnerId, usize>,
 }
@@ -254,6 +304,7 @@ impl fmt::Debug for ClockProviderRegistryBuilder {
         formatter
             .debug_struct("ClockProviderRegistryBuilder")
             .field("keys", &self.entries.keys().collect::<Vec<_>>())
+            .field("domain_owners", &self.domains.keys().collect::<Vec<_>>())
             .field(
                 "scene_owner",
                 &self.scene.as_ref().map(|entry| &entry.owner),
@@ -328,8 +379,39 @@ impl ClockProviderRegistryBuilder {
         Ok(())
     }
 
+    pub(crate) fn register_domain(
+        &mut self,
+        owner: OwnerId,
+        provider: Arc<dyn DomainClockProvider>,
+    ) -> Result<(), ClockProviderRegistryError> {
+        if self.len() >= MAX_CLOCK_PROVIDERS {
+            return Err(ClockProviderRegistryError::ProviderLimit {
+                max: MAX_CLOCK_PROVIDERS,
+            });
+        }
+        let owner_count = self.owner_counts.get(&owner).copied().unwrap_or(0);
+        if owner_count >= MAX_CLOCK_PROVIDERS_PER_OWNER {
+            return Err(ClockProviderRegistryError::OwnerProviderLimit {
+                owner,
+                max: MAX_CLOCK_PROVIDERS_PER_OWNER,
+            });
+        }
+        if self.domains.contains_key(&owner) {
+            return Err(ClockProviderRegistryError::DuplicateDomain { owner });
+        }
+        self.domains.insert(
+            owner.clone(),
+            DomainClockProviderEntry {
+                owner: owner.clone(),
+                provider,
+            },
+        );
+        self.owner_counts.insert(owner, owner_count + 1);
+        Ok(())
+    }
+
     fn len(&self) -> usize {
-        self.entries.len() + usize::from(self.scene.is_some())
+        self.entries.len() + self.domains.len() + usize::from(self.scene.is_some())
     }
 
     pub(crate) fn freeze_for_owners_with_readiness(
@@ -351,15 +433,26 @@ impl ClockProviderRegistryBuilder {
                 owner: scene.owner.clone(),
             });
         }
+        if let Some(owner) = self
+            .domains
+            .keys()
+            .find(|owner| !module_owners.contains(*owner))
+        {
+            return Err(ClockProviderRegistryError::UnknownDomainOwner {
+                owner: owner.clone(),
+            });
+        }
         let fingerprint = DefinitionDigest::for_canonical_value(
-            "clock_provider_registry.v2",
+            "clock_provider_registry.v3",
             &serde_json::json!({
                 "registered": self.entries.keys().collect::<Vec<_>>(),
+                "domain_owners": self.domains.keys().collect::<Vec<_>>(),
                 "scene_owner": self.scene.as_ref().map(|entry| &entry.owner),
             }),
         )?;
         Ok(ClockProviderRegistry {
             entries: self.entries,
+            domains: self.domains,
             scene: self.scene,
             fingerprint,
             owner_readiness,
@@ -370,6 +463,7 @@ impl ClockProviderRegistryBuilder {
 /// Frozen owner-stamped clock-provider table.
 pub struct ClockProviderRegistry {
     entries: BTreeMap<ClockProviderKey, ClockProviderEntry>,
+    domains: BTreeMap<OwnerId, DomainClockProviderEntry>,
     scene: Option<SceneClockProviderEntry>,
     fingerprint: DefinitionDigest,
     owner_readiness: MechanicalOwnerReadiness,
@@ -380,6 +474,7 @@ impl fmt::Debug for ClockProviderRegistry {
         formatter
             .debug_struct("ClockProviderRegistry")
             .field("keys", &self.entries.keys().collect::<Vec<_>>())
+            .field("domain_owners", &self.domains.keys().collect::<Vec<_>>())
             .field(
                 "scene_owner",
                 &self.scene.as_ref().map(|entry| &entry.owner),
@@ -397,12 +492,12 @@ impl ClockProviderRegistry {
 
     #[must_use]
     pub fn len(&self) -> usize {
-        self.entries.len() + usize::from(self.scene.is_some())
+        self.entries.len() + self.domains.len() + usize::from(self.scene.is_some())
     }
 
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.entries.is_empty() && self.scene.is_none()
+        self.entries.is_empty() && self.domains.is_empty() && self.scene.is_none()
     }
 
     pub(crate) fn read(
@@ -475,6 +570,50 @@ impl ClockProviderRegistry {
             at,
         })
     }
+
+    pub(crate) fn read_domain(
+        &self,
+        world: &World,
+        action_state: &ActionStateStore,
+        clock: &ClockRef,
+    ) -> Result<ClockStamp, ClockReadError> {
+        let ClockRef::DomainTick {
+            owner,
+            id,
+            generation,
+        } = clock
+        else {
+            return Err(ClockReadError::UnsupportedClock {
+                clock: clock.clone(),
+            });
+        };
+        if *generation == 0 {
+            return Err(ClockReadError::ZeroGeneration {
+                clock: clock.clone(),
+            });
+        }
+        let entry =
+            self.domains
+                .get(owner)
+                .ok_or_else(|| ClockReadError::DomainProviderMissing {
+                    owner: owner.clone(),
+                })?;
+        self.owner_readiness.require_ready(owner)?;
+        let context = ClockProviderContext::new(world, action_state);
+        let at = entry
+            .provider
+            .now(&context, id, *generation)
+            .map_err(|source| ClockReadError::DomainProvider {
+                owner: owner.clone(),
+                id: id.clone(),
+                source,
+            })?;
+        self.owner_readiness.require_ready(owner)?;
+        Ok(ClockStamp {
+            clock: clock.clone(),
+            at,
+        })
+    }
 }
 
 /// Composition failure for the registered clock table.
@@ -493,10 +632,14 @@ pub enum ClockProviderRegistryError {
         existing_owner: OwnerId,
         requested_owner: OwnerId,
     },
+    #[error("domain clock provider is already registered for owner {owner}")]
+    DuplicateDomain { owner: OwnerId },
     #[error("clock provider names an uncomposed owner: {key:?}")]
     UnknownOwner { key: ClockProviderKey },
     #[error("scene clock provider names an uncomposed owner: {owner}")]
     UnknownSceneOwner { owner: OwnerId },
+    #[error("domain clock provider names an uncomposed owner: {owner}")]
+    UnknownDomainOwner { owner: OwnerId },
     #[error("clock provider registry fingerprint is not canonical: {0}")]
     Fingerprint(#[from] CanonicalEncodingError),
 }
@@ -514,9 +657,17 @@ pub enum ClockReadError {
     ProviderMissing { key: ClockProviderKey },
     #[error("no first-class scene clock provider is registered")]
     SceneProviderMissing,
+    #[error("no domain clock provider is registered for owner {owner}")]
+    DomainProviderMissing { owner: OwnerId },
     #[error("scene clock provider owned by {owner} failed: {source}")]
     SceneProvider {
         owner: OwnerId,
+        source: ClockProviderFailure,
+    },
+    #[error("domain clock provider {owner}/{id} failed: {source}")]
+    DomainProvider {
+        owner: OwnerId,
+        id: CanonicalId,
         source: ClockProviderFailure,
     },
     #[error("clock provider {key:?} failed: {source}")]

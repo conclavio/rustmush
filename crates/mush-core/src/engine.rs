@@ -649,8 +649,12 @@ impl Engine {
                 .clock_providers()
                 .ok_or(crate::clock_provider::ClockReadError::RegistryUnavailable)?
                 .read_scene(&self.world, &self.action_state, clock),
-            crate::clock::ClockRef::DomainTick { .. }
-            | crate::clock::ClockRef::Registered { .. } => self
+            crate::clock::ClockRef::DomainTick { .. } => self
+                .registry
+                .clock_providers()
+                .ok_or(crate::clock_provider::ClockReadError::RegistryUnavailable)?
+                .read_domain(&self.world, &self.action_state, clock),
+            crate::clock::ClockRef::Registered { .. } => self
                 .registry
                 .clock_providers()
                 .ok_or(crate::clock_provider::ClockReadError::RegistryUnavailable)?

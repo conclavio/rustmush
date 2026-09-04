@@ -1818,6 +1818,11 @@ impl<'a> Registrar<'a> {
     where
         P: crate::clock_provider::ClockProvider + 'static,
     {
+        if kind == crate::clock_provider::ClockProviderKind::DomainTick {
+            return Err(ModError::msg(
+                "dynamic domain clocks must use domain_clock_provider",
+            ));
+        }
         self.require_mechanics_registration_authority()?;
         if self.reg.clock_providers.is_some() {
             return Err(ModError::msg(format!(
@@ -1837,6 +1842,39 @@ impl<'a> Registrar<'a> {
             .map_err(|e| {
                 ModError::msg(format!(
                     "module {}: clock provider registration: {e}",
+                    self.module
+                ))
+            })
+    }
+
+    /// Register this module's one provider for dynamic domain clocks.
+    ///
+    /// The registrar stamps the owner once at composition. Runtime domain ids
+    /// arrive from `ClockRef::DomainTick`; promoting a domain never mutates the
+    /// frozen provider registry.
+    pub fn domain_clock_provider<P>(&mut self, provider: P) -> Result<(), ModError>
+    where
+        P: crate::clock_provider::DomainClockProvider + 'static,
+    {
+        self.require_mechanics_registration_authority()?;
+        if self.reg.clock_providers.is_some() {
+            return Err(ModError::msg(format!(
+                "module {}: clock-provider registry is already frozen",
+                self.module
+            )));
+        }
+        let owner = crate::mechanics::OwnerId::new(self.module.as_str()).map_err(|e| {
+            ModError::msg(format!(
+                "module {} has no canonical mechanics owner id: {e}",
+                self.module
+            ))
+        })?;
+        self.reg
+            .clock_provider_builder
+            .register_domain(owner, Arc::new(provider))
+            .map_err(|e| {
+                ModError::msg(format!(
+                    "module {}: domain clock provider registration: {e}",
                     self.module
                 ))
             })

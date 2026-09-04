@@ -15,20 +15,19 @@ use mush_core::{
     ActionWindowDraft, ActionWindowError, ActionWindowGuardValidator, ActionWindowId,
     ActionWindowPhase, ActionWindowRecord, ActionWindowStateCodec, AuthoritativeActionOutput,
     AuthorityGuardKind, BridgeDescriptor, CanonicalHash, CanonicalId, ChannelGrant, ChannelId,
-    ClockProviderFailure, ClockProviderKind, ClockRef, ClockStamp, CommitToken,
-    ContactGuardValidator, ContactId, ContactState, ContactStateCodec, ContactStateDraft,
-    ControlHandoffDraft, ControlLeaseGuardValidator, ControlLeaseKey, ControlLeaseState,
-    ControlLeaseStateCodec, DefinitionDescriptor, DefinitionId, DefinitionKind, DefinitionRef,
-    DefinitionRegistryBuilder, DefinitionValidationContext, DefinitionValidator, Engine,
-    GameModule, IdempotencyKey, IdempotencyScope, LegalActionQuery, ModError, ObjId, OfferKeyRing,
-    OfferSecret, OwnerId, PerceivedRef, PrepareCtx, PrincipalId, ProjectedParameterSchema,
-    ProjectedTargetSchema, ProviderOfferDraft, Registrar, RequestUid, ResolutionKeyRing,
-    ResolutionSecret, ResolvedActionInvocation, RevisionKey, RevisionKind, RevisionSet,
-    RevisionValidator, RevisionValidatorContext, RulesValue, ScopedIdempotencyKey,
-    StateFamilyDescriptor, StateFamilyHandle, StateFamilyId, SubjectKey, WindowIntent, WindowMode,
-    WindowOrderKey, WindowRestartPolicy, WindowTimeoutPolicy, World,
-    action_window_state_family_descriptor, contact_state_family_descriptor,
-    control_lease_state_family_descriptor,
+    ClockProviderFailure, ClockRef, ClockStamp, CommitToken, ContactGuardValidator, ContactId,
+    ContactState, ContactStateCodec, ContactStateDraft, ControlHandoffDraft,
+    ControlLeaseGuardValidator, ControlLeaseKey, ControlLeaseState, ControlLeaseStateCodec,
+    DefinitionDescriptor, DefinitionId, DefinitionKind, DefinitionRef, DefinitionRegistryBuilder,
+    DefinitionValidationContext, DefinitionValidator, Engine, GameModule, IdempotencyKey,
+    IdempotencyScope, LegalActionQuery, ModError, ObjId, OfferKeyRing, OfferSecret, OwnerId,
+    PerceivedRef, PrepareCtx, PrincipalId, ProjectedParameterSchema, ProjectedTargetSchema,
+    ProviderOfferDraft, Registrar, RequestUid, ResolutionKeyRing, ResolutionSecret,
+    ResolvedActionInvocation, RevisionKey, RevisionKind, RevisionSet, RevisionValidator,
+    RevisionValidatorContext, RulesValue, ScopedIdempotencyKey, StateFamilyDescriptor,
+    StateFamilyHandle, StateFamilyId, SubjectKey, WindowIntent, WindowMode, WindowOrderKey,
+    WindowRestartPolicy, WindowTimeoutPolicy, World, action_window_state_family_descriptor,
+    contact_state_family_descriptor, control_lease_state_family_descriptor,
 };
 use mush_tactics::{
     CellAddr, CellId, CellSpec, ComponentId, ComponentSpec, ConditionId, InstallPoint, SectionId,
@@ -2091,10 +2090,11 @@ impl GameModule for TacticalGateModule {
             AuthorityGuardKind::Window,
             ActionWindowGuardValidator::new(windows.clone()),
         )?;
-        registrar.clock_provider(
-            ClockProviderKind::DomainTick,
-            CanonicalId::new("arena").map_err(|error| ModError::msg(error.to_string()))?,
-            |_context: &mush_core::ClockProviderContext<'_>, generation| {
+        registrar.domain_clock_provider(
+            |_context: &mush_core::ClockProviderContext<'_>, domain: &CanonicalId, generation| {
+                if domain.as_str() != "arena" {
+                    return Err(ClockProviderFailure::Unavailable);
+                }
                 if generation == 1 {
                     Ok(7)
                 } else {

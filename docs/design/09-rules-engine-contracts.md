@@ -656,6 +656,15 @@ ordered by canonical `StateKey`, each key may be mutated only once in the initia
 and `prepare` produces one non-cloneable materialization plus private typed install images without
 running a provider or serializer after that point.
 
+Every ordinary module callback that can gate or project gameplay receives an owner-scoped,
+read-only view of the same store. Commands, ticks, boot callbacks, observers, async completions,
+and contextual connection/scene hooks use `ModuleActionState` through `Ctx`. Movement, carry,
+render, and perception hooks use a narrower `HookReadContext`: immutable `World`, the registering
+module's `ModuleActionState`, and no output, mutation, clock, or scheduling surface. Compatibility
+helpers without an engine store construct an explicitly unavailable reader; production engine
+dispatch must always use the live store. Hook code treats unavailable typed truth as fail-closed,
+never as permission.
+
 At boot, the server partitions every `action-state/*` document found in a composed module's
 namespace away from legacy `ModuleBootData` and module migrations. It resolves the exact registered
 family, cross-checks namespace/path/envelope/schema identity, decodes to the typed value, validates
@@ -858,6 +867,14 @@ messages or response arrival times.
 Existing UTC scheduler jobs, world IC time, Timestop turns, domain ticks, journeys, production, and
 obligations become `ClockProvider` adapters. They do not collapse into one universal initiative
 model.
+
+Exact declared clocks, including configured economy cadences, register by `(owner, kind, id)` at
+composition. Dynamic simulation domains use a distinct owner-scoped `DomainClockProvider`
+registration whose synchronous `now` receives `(context, domain_id, generation)`. There is at most
+one such provider per owner; the kernel obtains the id from `ClockRef::DomainTick` and constructs
+the returned stamp. Runtime domain promotion mutates only owner state and never the frozen
+registry. Missing owner provider, unknown domain, stale generation, or unreadable owner state
+fails the clock read closed.
 
 The in-memory timer heap is only a wake hint. A durable recurring cursor carries its exact clock,
 next deadline, cadence, generation, ordinal, revision, restart policy, catch-up order, and cap.
@@ -1965,8 +1982,15 @@ types. Each phase leaves one executable path that the next phase extends:
 
 Until K8 closes, new work follows four anti-debt rules: no new mutating legacy handlers, no direct
 LLM mechanical mutation, no trigger side effect in a later commit, and no backend-specific
-authoritative behavior without a shared conformance assertion. Existing legacy outcome/effect
-construction remains compatibility debt and may not gain new unbounded item or payload shapes.
+authoritative behavior without a shared conformance assertion. The first rule has one narrow,
+temporary exception: a bounded whole-document workflow or catalog record may remain on the legacy
+post-image lane when it has strict decode/validation, a deterministic key, a named future typed
+family and migration slot, and no participation in authority, action legality, reservations,
+contacts, leases, windows, production state, or prepared mechanics. Economy uses this exception
+only where the missing mixed-Ledger/seal bundle gates prevent migration. A checked-in allowlist
+classifies every command as read-only, legacy-post-image, authoritative, or economy-carve-out;
+K8.5 replaces that tripwire with registrar metadata. Existing legacy outcome/effect construction
+remains compatibility debt and may not gain new unbounded item or payload shapes.
 
 ### K0. Integrity prerequisites and contract harness
 
@@ -2192,11 +2216,13 @@ Gate-5 work:
 
 Economy obligations/contracts remain on their legacy durable path until mixed authoritative write
 sets can include the Ledger append and the Ledger seal participates in the same bundle instead of
-blocking it. The module-read prerequisite is now closed: engine-dispatched commands, hooks,
-observers, ticks, boot callbacks, async completions, and nested scene/event callbacks receive an
+blocking it. The module-read prerequisite is closed for engine-dispatched commands, observers,
+ticks, boot callbacks, async completions, and connection/scene/event callbacks: each receives an
 owner-scoped read-only `ModuleActionState`; exact opaque handles enforce family ownership, bounded
-canonical scans are available to drivers, and no mutation surface crosses the context. The two
-remaining persistence changes are a later provider milestone, not part of K3.1's kernel repair.
+canonical scans are available to drivers, and no mutation surface crosses the context. It remains
+open for movement, carry, render, and perception hooks until their narrow immutable hook-read
+context lands. The two remaining persistence changes are K8.0 work, not part of K3.1's kernel
+repair.
 
 Work:
 
@@ -2563,6 +2589,11 @@ dedicated semantic-free whole-tree `cargo fmt --all` commit and have both develo
 onto it once. Then require `cargo fmt --all -- --check` alongside the combined workspace and
 Redis-gated suites. Do not begin K7 on an unreviewed or format-divergent E5/K6 boundary.
 
+The merged-main review is recorded in `08i-e-k-dependencies.md`; the K6 production-versus-fixture
+status and resulting ownership handoffs are recorded in `09a-k6-look-back.md`. The reformat and
+required CI format check have landed. K7.0 may proceed after the two API gaps named by that review
+(dynamic domain clocks and immutable typed-state hook reads) are frozen in this contract.
+
 ### K7. Asynchronous decision re-entry
 
 **Contracts:** C2-C6, C8, C9, C11; **passes Gate 4**.
@@ -2609,6 +2640,14 @@ request reaches durable intent first wins; a different later semantic request co
 identical retry joins. The decision record is then finalized from the terminal action receipt. A
 crash between those steps is repaired by comparing the exact action status during pending-decision
 recovery. This keeps correctness independent of cleanup timing.
+
+An immediate deterministic controller that performs no asynchronous provider call may select a
+currently projected legal action and enter the ordinary coordinator directly without creating a
+`PendingDecision`, lease, wake, or dispatch record. Its deterministic cause still owns a scoped
+action-idempotency key. Once an asynchronous decision has been captured, every competing fallback
+uses that pending record's exact key and lifecycle; it may not escape the LLM/fallback race by
+taking the immediate path. `DecisionControllerId.owner` admits any composed owner, including
+`mush-sim` and `mush-campaign`; it does not confer mechanical ownership.
 
 Add these bounded wire/storage types (names may move, semantics may not):
 
@@ -2741,6 +2780,10 @@ status/binding, or the exact decision revision is already terminal or stale. The
 different request. Provider exceptions and malformed results instead commit an attempt transition
 or deterministic fallback trigger; no volatile return path owns correctness.
 
+K7.2 adds a sibling authenticated decision-response ingress that ends in the existing coordinator.
+It does not change `ScheduleActionDraft`, the canonical `scheduler` principal class, or
+`ActionCoordinator::prepare_and_stage_resolved`'s signature.
+
 **K7.3 — cancellation, deadlines, and fallback.** Cancellation is an exact revision transition and
 invalidates the token before acknowledging success. A durable one-shot schedule owns the deadline.
 At expiry, malformed-output exhaustion, or provider-unavailable policy, choose a deterministic
@@ -2815,6 +2858,14 @@ Exit criteria:
 ### K8. Full restart matrix and production migrations
 
 **Contracts:** all; **passes Gate 5 using Gates 1-4 actions**.
+
+**K8.0 — mixed Ledger bundle closure.** Before expanding the fault harness, make a Ledger append an
+idempotently replayable authoritative write and carry its exact seal inside the same bundle. Define
+canonical identities and collision behavior without exposing a generic non-idempotent stream
+append. Run the unchanged lifecycle/materialization/readback assertions against memory and Redis,
+then add failure and restart probes at reserve, partial materialization, seal publication,
+finalization, acknowledgement loss, and checkpoint. K8.0 closes migration gates 1 and 3; the E
+side does not provide a fallback implementation in domain code.
 
 Work:
 
