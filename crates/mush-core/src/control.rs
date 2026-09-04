@@ -15,7 +15,7 @@ use thiserror::Error;
 
 use crate::action::{
     ActionError, ActionErrorCode, AuthorityGuard, AuthorityGuardContext, AuthorityGuardValidator,
-    PrincipalId, RequestUid,
+    AuthorityWitness, AuthorityWitnessRequest, PrincipalId, RequestUid,
 };
 use crate::action_state::{
     StateFamilyDescriptor, StateFamilyDescriptorError, StateFamilyHandle, StateFamilyId,
@@ -589,6 +589,38 @@ impl AuthorityGuardValidator for ControlLeaseGuardValidator {
             .expect("static control-lease read error is bounded")
         })?;
         Ok(current.is_some_and(|lease| lease.matches_guard(provider, guard)))
+    }
+
+    fn witness(
+        &self,
+        context: &AuthorityGuardContext<'_>,
+        request: &AuthorityWitnessRequest,
+    ) -> Result<Option<AuthorityWitness>, ActionError> {
+        let AuthorityWitnessRequest::ControlLease {
+            provider,
+            subject,
+            channel,
+            holder,
+        } = request
+        else {
+            return Ok(None);
+        };
+        if provider != self.leases.owner() {
+            return Ok(None);
+        }
+        let key = ControlLeaseKey::new(*subject, channel.clone());
+        let current = context.action_state(&self.leases, &key).map_err(|_| {
+            ActionError::new(
+                ActionErrorCode::Integrity,
+                false,
+                "control-lease authority state is unavailable",
+            )
+            .expect("static control-lease read error is bounded")
+        })?;
+        Ok(current
+            .filter(|lease| lease.holder() == Some(holder))
+            .and_then(|lease| lease.authority_guard(provider.clone()))
+            .map(AuthorityWitness::Guard))
     }
 }
 

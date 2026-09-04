@@ -743,6 +743,98 @@ impl Engine {
         providers.project_legal_actions(self, query, keys)
     }
 
+    /// Resolve an untrusted perceived reference into the private truth query
+    /// consumed by action providers.
+    ///
+    /// Known objects must still be ordinarily visible and carry the one
+    /// unambiguous current station-grant epoch. Opaque contacts instead route
+    /// through their exact registered witness provider; only that trusted
+    /// provider may reveal the truth subject and mint the authority guard that
+    /// is retained in every resulting offer.
+    pub fn legal_action_query(
+        &self,
+        principal: crate::action::PrincipalId,
+        actor: ObjId,
+        subject: crate::action::PerceivedRef,
+    ) -> Result<crate::offer::LegalActionQuery, crate::offer::LegalActionSubjectError> {
+        const BOOTSTRAP_SELF_PROJECTION_GENERATION: u64 = 1;
+
+        let (truth_subject, projection_generation, witness) = match &subject {
+            crate::action::PerceivedRef::SelfActor => (
+                crate::action::SubjectKey::Object { id: actor },
+                BOOTSTRAP_SELF_PROJECTION_GENERATION,
+                None,
+            ),
+            crate::action::PerceivedRef::KnownObject { id, revision } => {
+                if self.world.get(*id).is_none()
+                    || !module::can_perceive(&self.registry, &self.world, actor, *id)
+                {
+                    return Err(crate::offer::LegalActionSubjectError::Invalid);
+                }
+                let mut epochs = self
+                    .world
+                    .command_subjects_of(actor)
+                    .iter()
+                    .filter(|grant| grant.subject == *id)
+                    .map(|grant| grant.epoch);
+                let Some(epoch) = epochs.next() else {
+                    return Err(crate::offer::LegalActionSubjectError::Invalid);
+                };
+                if epoch != *revision || epochs.any(|candidate| candidate != epoch) {
+                    return Err(crate::offer::LegalActionSubjectError::Invalid);
+                }
+                (crate::action::SubjectKey::Object { id: *id }, epoch, None)
+            }
+            crate::action::PerceivedRef::Contact {
+                provider,
+                id,
+                generation,
+            } => {
+                let validators = self
+                    .registry
+                    .authority_guard_validators()
+                    .ok_or(crate::offer::LegalActionSubjectError::Unavailable)?;
+                let context =
+                    crate::action::AuthorityGuardContext::new(&self.world, &self.action_state);
+                let request = crate::action::AuthorityWitnessRequest::Contact {
+                    provider: provider.clone(),
+                    principal: principal.clone(),
+                    id: *id,
+                    generation: *generation,
+                };
+                let issued = match validators.witness(&context, &request) {
+                    Ok(Some(witness)) => witness,
+                    Ok(None) | Err(crate::action::AuthorityWitnessError::Missing { .. }) => {
+                        return Err(crate::offer::LegalActionSubjectError::Invalid);
+                    }
+                    Err(_) => return Err(crate::offer::LegalActionSubjectError::Unavailable),
+                };
+                let crate::action::AuthorityWitness::Contact {
+                    truth_subject,
+                    guard,
+                } = issued
+                else {
+                    return Err(crate::offer::LegalActionSubjectError::Unavailable);
+                };
+                (truth_subject, *generation, Some(guard))
+            }
+        };
+
+        let query = crate::offer::LegalActionQuery::new(
+            principal,
+            actor,
+            truth_subject,
+            subject,
+            projection_generation,
+            None,
+        )
+        .map_err(|_| crate::offer::LegalActionSubjectError::Unavailable)?;
+        Ok(match witness {
+            Some(guard) => query.with_authority_guard(guard),
+            None => query,
+        })
+    }
+
     /// Resolve one untrusted opaque submission against a freshly regenerated
     /// internal set without exposing the deployment key ring to providers or
     /// interface code.
@@ -2024,6 +2116,127 @@ mod tests {
         assert_eq!(
             engine.world.module_state::<DeferredState>(),
             Some(&DeferredState(7))
+        );
+    }
+
+    #[test]
+    fn contact_subject_resolution_is_private_current_and_guarded() {
+        use std::sync::Mutex;
+
+        use crate::action::{AuthorityGuard, ContactId, PerceivedRef, PrincipalId, SubjectKey};
+        use crate::action_state::{StateFamilyHandle, StateFamilyId};
+        use crate::clock::{ClockRef, ClockStamp};
+        use crate::contact::{
+            ContactGuardValidator, ContactState, ContactStateCodec, ContactStateDraft,
+            contact_state_family_descriptor,
+        };
+        use crate::mechanics::{CanonicalId, OwnerId};
+
+        struct ContactModule {
+            captured: Arc<Mutex<Option<StateFamilyHandle<ContactId, ContactState>>>>,
+        }
+
+        impl GameModule for ContactModule {
+            fn name(&self) -> &'static str {
+                "test_contacts"
+            }
+
+            fn register(&mut self, reg: &mut module::Registrar<'_>) -> Result<(), ModError> {
+                let codec = ContactStateCodec;
+                let handle = reg.state_family(
+                    contact_state_family_descriptor(StateFamilyId::new("contacts").unwrap())
+                        .unwrap(),
+                    codec,
+                    codec,
+                    codec,
+                    codec,
+                )?;
+                reg.authority_guard_validator(
+                    crate::action::AuthorityGuardKind::Contact,
+                    ContactGuardValidator::new(handle.clone()),
+                )?;
+                *self.captured.lock().unwrap() = Some(handle);
+                Ok(())
+            }
+        }
+
+        let captured = Arc::new(Mutex::new(None));
+        let mut engine = Engine::with_modules(
+            World::new_minimal(),
+            Registry::new(),
+            vec![Box::new(ContactModule {
+                captured: Arc::clone(&captured),
+            })],
+        )
+        .unwrap();
+        let handle = captured.lock().unwrap().clone().unwrap();
+        let provider = OwnerId::new("test_contacts").unwrap();
+        let principal = PrincipalId::Object { id: GOD };
+        let id = ContactId::from_bytes([0x43; 16]);
+        let observed_at = ClockStamp {
+            clock: ClockRef::DomainTick {
+                owner: provider.clone(),
+                id: CanonicalId::new("field").unwrap(),
+                generation: 4,
+            },
+            at: 10,
+        };
+        let contact = ContactState::new(ContactStateDraft {
+            truth_subject: SubjectKey::Object { id: ObjId(90) },
+            audience: vec![principal.clone()],
+            observed_at: observed_at.clone(),
+        })
+        .unwrap();
+        let mut transaction = engine.action_transaction(&handle).unwrap();
+        transaction.insert(&handle, &id, contact.clone()).unwrap();
+        let (_, installation) = transaction.prepare().unwrap().into_parts();
+        engine.install_prepared_action(installation);
+
+        let perceived = PerceivedRef::Contact {
+            provider: provider.clone(),
+            id,
+            generation: 1,
+        };
+        let query = engine
+            .legal_action_query(principal.clone(), GOD, perceived.clone())
+            .unwrap();
+        assert_eq!(query.truth_subject(), contact.truth_subject());
+        assert_eq!(query.projected_subject(), &perceived);
+        assert_eq!(
+            query.authority_guards(),
+            &[AuthorityGuard::Contact {
+                provider: provider.clone(),
+                principal: principal.clone(),
+                id,
+                generation: 1,
+            }]
+        );
+        assert_eq!(
+            engine
+                .legal_action_query(PrincipalId::Object { id: ObjId(2) }, GOD, perceived.clone(),)
+                .unwrap_err(),
+            crate::offer::LegalActionSubjectError::Invalid
+        );
+
+        let lost = contact
+            .checked_mark_lost(
+                1,
+                ClockStamp {
+                    at: 11,
+                    ..observed_at
+                },
+                CanonicalId::new("occluded").unwrap(),
+            )
+            .unwrap();
+        let mut transaction = engine.action_transaction(&handle).unwrap();
+        transaction.replace(&handle, &id, lost).unwrap();
+        let (_, installation) = transaction.prepare().unwrap().into_parts();
+        engine.install_prepared_action(installation);
+        assert_eq!(
+            engine
+                .legal_action_query(principal, GOD, perceived)
+                .unwrap_err(),
+            crate::offer::LegalActionSubjectError::Invalid
         );
     }
 

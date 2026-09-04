@@ -76,7 +76,7 @@ use mush_core::{
     Flags, Inbound, IncidentId, LegalActionQuery, ObjId, ObjKind, OfferExecutionContext,
     OfferRouteTable, OfferSubmission, Outbox, PerceivedRef, PreparedInstallation, PrincipalId,
     ProjectedLegalAction, ReceiptProjectionTable, Registry, Role, ScheduledKind, StagedAction,
-    StagedActionPersistence, StepOutcome, SubjectKey, TickCadence, World, WorldCommand, WorldEvent,
+    StagedActionPersistence, StepOutcome, TickCadence, World, WorldCommand, WorldEvent,
     can_perceive, event_subject, is_ignoring, narrative_actor, register_core_commands,
     register_engine_commands,
 };
@@ -327,55 +327,18 @@ pub enum LegalActionReadError {
     InvalidSubject,
 }
 
-// K5's first public provider is actor-self scoped. K6 admits an operated
-// KnownObject only when its projected revision is the one unambiguous current
-// station-grant epoch for this actor/subject and ordinary perception policy
-// permits the dbref disclosure. Contact references remain closed until their
-// private authoritative lifecycle store exists.
-const BOOTSTRAP_SELF_PROJECTION_GENERATION: u64 = 1;
-
 fn legal_action_query(
     engine: &Engine,
     principal: PrincipalId,
     actor: ObjId,
     subject: PerceivedRef,
 ) -> Result<LegalActionQuery, LegalActionReadError> {
-    let (truth_subject, projection_generation) = match &subject {
-        PerceivedRef::SelfActor => (
-            SubjectKey::Object { id: actor },
-            BOOTSTRAP_SELF_PROJECTION_GENERATION,
-        ),
-        PerceivedRef::KnownObject { id, revision } => {
-            if engine.world.get(*id).is_none()
-                || !can_perceive(&engine.registry, &engine.world, actor, *id)
-            {
-                return Err(LegalActionReadError::InvalidSubject);
-            }
-            let mut epochs = engine
-                .world
-                .command_subjects_of(actor)
-                .iter()
-                .filter(|grant| grant.subject == *id)
-                .map(|grant| grant.epoch);
-            let Some(epoch) = epochs.next() else {
-                return Err(LegalActionReadError::InvalidSubject);
-            };
-            if epoch != *revision || epochs.any(|candidate| candidate != epoch) {
-                return Err(LegalActionReadError::InvalidSubject);
-            }
-            (SubjectKey::Object { id: *id }, epoch)
-        }
-        PerceivedRef::Contact { .. } => return Err(LegalActionReadError::InvalidSubject),
-    };
-    LegalActionQuery::new(
-        principal,
-        actor,
-        truth_subject,
-        subject,
-        projection_generation,
-        None,
-    )
-    .map_err(|_| LegalActionReadError::Unavailable)
+    engine
+        .legal_action_query(principal, actor, subject)
+        .map_err(|error| match error {
+            mush_core::LegalActionSubjectError::Invalid => LegalActionReadError::InvalidSubject,
+            mush_core::LegalActionSubjectError::Unavailable => LegalActionReadError::Unavailable,
+        })
 }
 
 /// Immediate refusal before an authoritative intent can exist.

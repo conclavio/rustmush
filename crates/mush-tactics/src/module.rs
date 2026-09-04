@@ -33,9 +33,10 @@ use mush_core::module::{
 use mush_core::output::display_name;
 use mush_core::{
     ActionError, ActionErrorCode, ActionInvocation, ActionPresentation, ActionProvider,
-    ActionStateError, ActionTxn, ArgShape, Audience, AuthoritativeActionOutput, BehaviorBinding,
-    BehaviorId, BehaviorSpec, CanonicalId, CmdError, CommandSpec, Ctx, Deferred,
-    DefinitionDescriptor, DefinitionDigest, DefinitionId, DefinitionKind, DefinitionLookupError,
+    ActionStateError, ActionTxn, ArgShape, Audience, AuthoritativeActionOutput, AuthorityGuardKind,
+    BehaviorBinding, BehaviorId, BehaviorSpec, CanonicalId, CmdError, CommandSpec,
+    ContactGuardValidator, ContactStateCodec, Ctx, Deferred, DefinitionDescriptor,
+    DefinitionDigest, DefinitionId, DefinitionKind, DefinitionLookupError,
     DefinitionMigrationDescriptor, DefinitionRef, DefinitionValidationContext, DestroyGate,
     DetachGate, Engine, Flags, IncidentId, IncidentState, LegalActionQuery,
     MAX_BOOT_REPORT_DETAILS, MechanicalState, MigrationPlanSummary, ModuleBootReport, ModuleOp,
@@ -44,7 +45,7 @@ use mush_core::{
     RecoveryIncident, RecoveryReason, RecoveryReporter, RecoveryScope, RecoverySeverity,
     RecoverySubject, Registry, RevisionSet, Role, RulesValue, StateFamilyDescriptor,
     StateFamilyHandle, StateFamilyId, SubjectKey, World, canonical_json_bytes_with_limit,
-    match_object, perm,
+    contact_state_family_descriptor, match_object, perm,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -77,6 +78,8 @@ pub const BRACE_ACTION_ID: &str = "brace";
 pub const BRACED_OUTCOME_ID: &str = "braced";
 /// Engine-owned typed family mutated by the brace provider.
 pub const STANCE_STATE_FAMILY: &str = "stance";
+/// Private authoritative mapping for projected tactical contact IDs.
+pub const CONTACT_STATE_FAMILY: &str = "contacts";
 
 /// Minimal rules-neutral posture state used by the first production K3
 /// provider. It intentionally lives beside, rather than inside,
@@ -757,6 +760,22 @@ impl GameModule for TacticsModule {
                 }
             },
             |value: &TacticalStance| serde_json::to_value(value).map_err(|error| error.to_string()),
+        )?;
+        let contact_codec = ContactStateCodec;
+        let contacts = reg.state_family(
+            contact_state_family_descriptor(
+                StateFamilyId::new(CONTACT_STATE_FAMILY)
+                    .map_err(|error| ModError::msg(error.to_string()))?,
+            )
+            .map_err(|error| ModError::msg(error.to_string()))?,
+            contact_codec,
+            contact_codec,
+            contact_codec,
+            contact_codec,
+        )?;
+        reg.authority_guard_validator(
+            AuthorityGuardKind::Contact,
+            ContactGuardValidator::new(contacts),
         )?;
 
         let outcome_descriptor = braced_outcome_descriptor()?;

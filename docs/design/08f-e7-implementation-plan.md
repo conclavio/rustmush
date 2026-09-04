@@ -58,6 +58,11 @@ particular campaign economy.
   Final authority validation reads that record through its composition-branded family handle;
   `mush-sim` owns the first registered family. Controller-selection and safe-boundary policy remain
   campaign/domain concerns.
+- **K6b private-contact foundation:** a bounded authoritative contact record now holds an opaque ID,
+  immutable truth mapping, explicit audience, typed observation clock, and monotonic
+  generation/revision across loss and reacquisition. The exact owner issues a private witness;
+  core validates it, resolves the truth subject synchronously, and retains the contact guard in
+  regenerated offers. Sensor policy and production contact-lifecycle actions remain tactics work.
 
 These primitives unblock E7 record design and early gameplay without waiting for every K4/K5
 feature.

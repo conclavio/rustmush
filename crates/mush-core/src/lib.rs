@@ -56,6 +56,7 @@ pub mod clock;
 pub mod clock_provider;
 pub mod cmd;
 pub mod commands;
+pub mod contact;
 pub mod control;
 pub mod durable_schedule;
 pub mod engine;
@@ -85,24 +86,25 @@ pub use action::{
     ActionReceiptMetadataError, AuthoritativeActionOutput, AuthorityGuard, AuthorityGuardContext,
     AuthorityGuardKind, AuthorityGuardValidator, AuthorityGuardValidatorEntry,
     AuthorityGuardValidatorLookupError, AuthorityGuardValidatorRegistry,
-    AuthorityGuardValidatorRegistryBuilder, AuthorityGuardValidatorRegistryError, CanonicalHash,
-    CanonicalHashError, CascadeError, CausalMetadataError, CausalTriggerQueue, CommitToken,
-    ContactId, FixedHexIdError, GuardRevalidation, GuardRevalidationError, GuardSet,
-    GuardSetBuildError, IdempotencyKey, IdempotencyKeyText, IdempotencyKeyTextError,
-    IdempotencyScope, IngressEnvelope, IngressPayload, IngressSurfaceVersion,
-    MAX_ACTION_ERROR_BYTES, MAX_ACTION_PARAMETER_BYTES, MAX_ACTION_PROVIDERS,
-    MAX_ACTION_PROVIDERS_PER_OWNER, MAX_ACTION_REVISIONS, MAX_ACTION_TARGETS, MAX_AUTHORITY_GUARDS,
-    MAX_AUTHORITY_VALIDATORS, MAX_AUTHORITY_VALIDATORS_PER_OWNER, MAX_CASCADE_BYTES,
-    MAX_CASCADE_OPERATIONS, MAX_CASCADE_TRIGGERS, MAX_GUARD_SET_BYTES, MAX_IDEMPOTENCY_KEY_BYTES,
-    MAX_INGRESS_LINE_BYTES, MAX_INGRESS_PAYLOAD_BYTES, MAX_REVISION_VALIDATORS,
-    MAX_REVISION_VALIDATORS_PER_OWNER, MAX_SEMANTIC_EVENTS, MAX_TRIGGER_DEPTH, PerceivedRef,
-    PreparedAuthoritativeAction, PreparedCausalRef, PreparedEventId, PreparedTrigger,
-    PreparedTriggerDraft, PrincipalId, ProviderRegistrationOrdinal, ReceiptProjectionError,
-    ReceiptProjectionTable, RequestUid, RevisionKey, RevisionKind, RevisionMismatch, RevisionSet,
-    RevisionSetError, RevisionStamp, RevisionValidator, RevisionValidatorEntry,
-    RevisionValidatorLookupError, RevisionValidatorRegistry, RevisionValidatorRegistryBuilder,
-    RevisionValidatorRegistryError, SameCommitTrigger, ScopedIdempotencyKey, ServerGuardSetBuilder,
-    SubjectKey, TriggerEnqueue, TriggerHandlerId, TriggerIdentity, TriggerWork,
+    AuthorityGuardValidatorRegistryBuilder, AuthorityGuardValidatorRegistryError, AuthorityWitness,
+    AuthorityWitnessError, AuthorityWitnessRequest, CanonicalHash, CanonicalHashError,
+    CascadeError, CausalMetadataError, CausalTriggerQueue, CommitToken, ContactId, FixedHexIdError,
+    GuardRevalidation, GuardRevalidationError, GuardSet, GuardSetBuildError, IdempotencyKey,
+    IdempotencyKeyText, IdempotencyKeyTextError, IdempotencyScope, IngressEnvelope, IngressPayload,
+    IngressSurfaceVersion, MAX_ACTION_ERROR_BYTES, MAX_ACTION_PARAMETER_BYTES,
+    MAX_ACTION_PROVIDERS, MAX_ACTION_PROVIDERS_PER_OWNER, MAX_ACTION_REVISIONS, MAX_ACTION_TARGETS,
+    MAX_AUTHORITY_GUARDS, MAX_AUTHORITY_VALIDATORS, MAX_AUTHORITY_VALIDATORS_PER_OWNER,
+    MAX_CASCADE_BYTES, MAX_CASCADE_OPERATIONS, MAX_CASCADE_TRIGGERS, MAX_GUARD_SET_BYTES,
+    MAX_IDEMPOTENCY_KEY_BYTES, MAX_INGRESS_LINE_BYTES, MAX_INGRESS_PAYLOAD_BYTES,
+    MAX_REVISION_VALIDATORS, MAX_REVISION_VALIDATORS_PER_OWNER, MAX_SEMANTIC_EVENTS,
+    MAX_TRIGGER_DEPTH, PerceivedRef, PreparedAuthoritativeAction, PreparedCausalRef,
+    PreparedEventId, PreparedTrigger, PreparedTriggerDraft, PrincipalId,
+    ProviderRegistrationOrdinal, ReceiptProjectionError, ReceiptProjectionTable, RequestUid,
+    RevisionKey, RevisionKind, RevisionMismatch, RevisionSet, RevisionSetError, RevisionStamp,
+    RevisionValidator, RevisionValidatorEntry, RevisionValidatorLookupError,
+    RevisionValidatorRegistry, RevisionValidatorRegistryBuilder, RevisionValidatorRegistryError,
+    SameCommitTrigger, ScopedIdempotencyKey, ServerGuardSetBuilder, SubjectKey, TriggerEnqueue,
+    TriggerHandlerId, TriggerIdentity, TriggerWork,
 };
 pub use action_state::{
     ACTION_STATE_PERSISTENCE_ROOT, ActionStateBootRecord, ActionStateError, ActionStateStore,
@@ -157,6 +159,10 @@ pub use cmd::{
 pub use commands::{
     event_subject, ignore_list, is_ignoring, narrative_actor, register_core_commands,
 };
+pub use contact::{
+    ContactGuardValidator, ContactLifecycle, ContactState, ContactStateCodec, ContactStateDraft,
+    ContactStateError, MAX_CONTACT_AUDIENCE, MAX_CONTACT_BYTES, contact_state_family_descriptor,
+};
 pub use control::{
     ControlHandoff, ControlHandoffDraft, ControlLeaseError, ControlLeaseGuardValidator,
     ControlLeaseKey, ControlLeaseState, ControlLeaseStateCodec, MAX_CONTROL_LEASE_BYTES,
@@ -209,14 +215,15 @@ pub use module::{
 pub use obj::{GOD, LIMBO, Obj, ObjId, ObjKind};
 pub use offer::{
     ActionPresentation, InternalOffer, InternalOfferDraft, LegalActionProjectionError,
-    LegalActionQuery, LegalActionResolutionError, MAX_OFFER_SECRET_VERSIONS,
-    MAX_PROJECTED_ACTION_CHANNELS, MAX_PROJECTED_ACTION_CHOICES, MAX_PROJECTED_ACTION_PARAMETERS,
-    MAX_PROJECTED_ACTION_TEXT_BYTES, MAX_PROJECTED_LEGAL_ACTION_BYTES,
-    MAX_PROJECTED_LEGAL_ACTION_SET_BYTES, MAX_PROJECTED_LEGAL_ACTIONS, OfferBuildError,
-    OfferExecutionContext, OfferKeyRing, OfferResolveError, OfferRouteId, OfferRouteTable,
-    OfferSecret, OfferSecretError, OfferSubmission, ProjectedLegalAction, ProjectedLegalActionSink,
-    ProjectedParameter, ProjectedParameterKind, ProjectedParameterSchema, ProjectedTargetSchema,
-    ProjectionScopeId, ProviderOfferDraft, ResolvedOffer,
+    LegalActionQuery, LegalActionResolutionError, LegalActionSubjectError,
+    MAX_OFFER_SECRET_VERSIONS, MAX_PROJECTED_ACTION_CHANNELS, MAX_PROJECTED_ACTION_CHOICES,
+    MAX_PROJECTED_ACTION_PARAMETERS, MAX_PROJECTED_ACTION_TEXT_BYTES,
+    MAX_PROJECTED_LEGAL_ACTION_BYTES, MAX_PROJECTED_LEGAL_ACTION_SET_BYTES,
+    MAX_PROJECTED_LEGAL_ACTIONS, OfferBuildError, OfferExecutionContext, OfferKeyRing,
+    OfferResolveError, OfferRouteId, OfferRouteTable, OfferSecret, OfferSecretError,
+    OfferSubmission, ProjectedLegalAction, ProjectedLegalActionSink, ProjectedParameter,
+    ProjectedParameterKind, ProjectedParameterSchema, ProjectedTargetSchema, ProjectionScopeId,
+    ProviderOfferDraft, ResolvedOffer,
 };
 pub use output::{
     Audience, ConnId, DeliveryClass, DeliveryOutcome, Outbox, name_span, obj_ref, room_view,

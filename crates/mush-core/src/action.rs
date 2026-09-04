@@ -1081,6 +1081,12 @@ pub enum AuthorityGuard {
         holder: PrincipalId,
         epoch: u64,
     },
+    Contact {
+        provider: OwnerId,
+        principal: PrincipalId,
+        id: ContactId,
+        generation: u64,
+    },
     Reservation {
         provider: OwnerId,
         id: IdempotencyKeyText,
@@ -1101,6 +1107,7 @@ pub enum AuthorityGuardKind {
     Capability,
     ChannelGrant,
     ControlLease,
+    Contact,
     Reservation,
     Window,
     Definition,
@@ -1113,6 +1120,7 @@ impl AuthorityGuard {
             Self::Capability { .. } => AuthorityGuardKind::Capability,
             Self::ChannelGrant { .. } => AuthorityGuardKind::ChannelGrant,
             Self::ControlLease { .. } => AuthorityGuardKind::ControlLease,
+            Self::Contact { .. } => AuthorityGuardKind::Contact,
             Self::Reservation { .. } => AuthorityGuardKind::Reservation,
             Self::Window { .. } => AuthorityGuardKind::Window,
             Self::Definition(_) => AuthorityGuardKind::Definition,
@@ -1127,6 +1135,7 @@ impl AuthorityGuard {
             Self::Capability { provider, .. }
             | Self::ChannelGrant { provider, .. }
             | Self::ControlLease { provider, .. }
+            | Self::Contact { provider, .. }
             | Self::Reservation { provider, .. } => Some(provider),
             Self::Window { owner, .. } => Some(owner),
             Self::Definition(_) => None,
@@ -1178,6 +1187,18 @@ impl AuthorityGuard {
                 "channel": channel,
                 "holder": holder,
                 "epoch": epoch,
+            }),
+            Self::Contact {
+                provider,
+                principal,
+                id,
+                generation,
+            } => json!({
+                "kind": "contact",
+                "provider": provider,
+                "principal": principal,
+                "id": id,
+                "generation": generation,
             }),
             Self::Reservation {
                 provider,
@@ -1429,6 +1450,119 @@ pub struct AuthorityGuardContext<'a> {
     action_state: &'a ActionStateStore,
 }
 
+/// A pure request for a provider to issue current private authority evidence.
+/// The registry stamps the provider route and validates the returned witness;
+/// callers cannot turn this into authority by supplying their own guard.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum AuthorityWitnessRequest {
+    ControlLease {
+        provider: OwnerId,
+        subject: ObjId,
+        channel: ChannelId,
+        holder: PrincipalId,
+    },
+    Contact {
+        provider: OwnerId,
+        principal: PrincipalId,
+        id: ContactId,
+        generation: u64,
+    },
+}
+
+impl AuthorityWitnessRequest {
+    #[must_use]
+    pub const fn provider(&self) -> &OwnerId {
+        match self {
+            Self::ControlLease { provider, .. } | Self::Contact { provider, .. } => provider,
+        }
+    }
+
+    #[must_use]
+    pub const fn kind(&self) -> AuthorityGuardKind {
+        match self {
+            Self::ControlLease { .. } => AuthorityGuardKind::ControlLease,
+            Self::Contact { .. } => AuthorityGuardKind::Contact,
+        }
+    }
+}
+
+/// Provider-issued current evidence. Contact resolution additionally carries
+/// its server-private truth subject; lease evidence never needs one.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum AuthorityWitness {
+    Guard(AuthorityGuard),
+    Contact {
+        truth_subject: SubjectKey,
+        guard: AuthorityGuard,
+    },
+}
+
+impl AuthorityWitness {
+    #[must_use]
+    pub const fn guard(&self) -> &AuthorityGuard {
+        match self {
+            Self::Guard(guard) | Self::Contact { guard, .. } => guard,
+        }
+    }
+
+    #[must_use]
+    pub const fn truth_subject(&self) -> Option<&SubjectKey> {
+        match self {
+            Self::Guard(_) => None,
+            Self::Contact { truth_subject, .. } => Some(truth_subject),
+        }
+    }
+
+    fn matches_request(&self, request: &AuthorityWitnessRequest) -> bool {
+        match (request, self) {
+            (
+                AuthorityWitnessRequest::ControlLease {
+                    provider,
+                    subject,
+                    channel,
+                    holder,
+                },
+                Self::Guard(AuthorityGuard::ControlLease {
+                    provider: actual_provider,
+                    subject: actual_subject,
+                    channel: actual_channel,
+                    holder: actual_holder,
+                    ..
+                }),
+            ) => {
+                actual_provider == provider
+                    && actual_subject == subject
+                    && actual_channel == channel
+                    && actual_holder == holder
+            }
+            (
+                AuthorityWitnessRequest::Contact {
+                    provider,
+                    principal,
+                    id,
+                    generation,
+                },
+                Self::Contact {
+                    guard:
+                        AuthorityGuard::Contact {
+                            provider: actual_provider,
+                            principal: actual_principal,
+                            id: actual_id,
+                            generation: actual_generation,
+                        },
+                    ..
+                },
+            ) => {
+                actual_provider == provider
+                    && actual_principal == principal
+                    && actual_id == id
+                    && actual_generation == generation
+            }
+            _ => false,
+        }
+    }
+}
+
 impl fmt::Debug for AuthorityGuardContext<'_> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
@@ -1478,6 +1612,16 @@ pub trait AuthorityGuardValidator: Send + Sync {
         context: &AuthorityGuardContext<'_>,
         guard: &AuthorityGuard,
     ) -> Result<bool, ActionError>;
+
+    /// Issue current private evidence for a trusted kernel request. Most
+    /// validators only check guards and therefore inherit no witness.
+    fn witness(
+        &self,
+        _context: &AuthorityGuardContext<'_>,
+        _request: &AuthorityWitnessRequest,
+    ) -> Result<Option<AuthorityWitness>, ActionError> {
+        Ok(None)
+    }
 }
 
 /// Immutable, owner-stamped authority validator entry.
@@ -1662,10 +1806,112 @@ impl AuthorityGuardValidatorRegistry {
         Ok(entry)
     }
 
+    /// Route one witness request through the exact ready owner/kind provider,
+    /// then centrally verify both its requested identity and currentness.
+    pub fn witness(
+        &self,
+        context: &AuthorityGuardContext<'_>,
+        request: &AuthorityWitnessRequest,
+    ) -> Result<Option<AuthorityWitness>, AuthorityWitnessError> {
+        let key = (request.provider().clone(), request.kind());
+        let entry = self
+            .entries
+            .get(&key)
+            .ok_or_else(|| AuthorityWitnessError::Missing {
+                provider: key.0.clone(),
+                kind: key.1,
+            })?;
+        self.owner_readiness
+            .require_ready(&entry.owner)
+            .map_err(|source| AuthorityWitnessError::OwnerNotReady {
+                provider: entry.owner.clone(),
+                kind: entry.kind,
+                source: Box::new(source),
+            })?;
+        let witness = entry
+            .validator()
+            .witness(context, request)
+            .map_err(|source| AuthorityWitnessError::Provider {
+                provider: entry.owner.clone(),
+                kind: entry.kind,
+                source: Box::new(source),
+            })?;
+        self.owner_readiness
+            .require_ready(&entry.owner)
+            .map_err(|source| AuthorityWitnessError::OwnerNotReady {
+                provider: entry.owner.clone(),
+                kind: entry.kind,
+                source: Box::new(source),
+            })?;
+        let Some(witness) = witness else {
+            return Ok(None);
+        };
+        if !witness.matches_request(request) {
+            return Err(AuthorityWitnessError::Malformed {
+                provider: entry.owner.clone(),
+                kind: entry.kind,
+            });
+        }
+        if !entry
+            .validator()
+            .is_current(context, witness.guard())
+            .map_err(|source| AuthorityWitnessError::Provider {
+                provider: entry.owner.clone(),
+                kind: entry.kind,
+                source: Box::new(source),
+            })?
+        {
+            return Err(AuthorityWitnessError::Stale {
+                provider: entry.owner.clone(),
+                kind: entry.kind,
+            });
+        }
+        self.owner_readiness
+            .require_ready(&entry.owner)
+            .map_err(|source| AuthorityWitnessError::OwnerNotReady {
+                provider: entry.owner.clone(),
+                kind: entry.kind,
+                source: Box::new(source),
+            })?;
+        Ok(Some(witness))
+    }
+
     #[must_use]
     pub const fn fingerprint(&self) -> DefinitionDigest {
         self.fingerprint
     }
+}
+
+/// Failure while issuing server-private authority evidence.
+#[derive(Debug, Error)]
+pub enum AuthorityWitnessError {
+    #[error("no witness provider is registered for {provider}:{kind:?}")]
+    Missing {
+        provider: OwnerId,
+        kind: AuthorityGuardKind,
+    },
+    #[error("witness provider {provider}:{kind:?} is not ready: {source}")]
+    OwnerNotReady {
+        provider: OwnerId,
+        kind: AuthorityGuardKind,
+        source: Box<MechanicalOwnerReadinessError>,
+    },
+    #[error("witness provider {provider}:{kind:?} failed: {source}")]
+    Provider {
+        provider: OwnerId,
+        kind: AuthorityGuardKind,
+        source: Box<ActionError>,
+    },
+    #[error("witness provider {provider}:{kind:?} returned mismatched evidence")]
+    Malformed {
+        provider: OwnerId,
+        kind: AuthorityGuardKind,
+    },
+    #[error("witness provider {provider}:{kind:?} returned evidence that was not current")]
+    Stale {
+        provider: OwnerId,
+        kind: AuthorityGuardKind,
+    },
 }
 
 /// Authority validator composition failure.
@@ -1791,6 +2037,27 @@ impl GuardSet {
                 priority: grant.priority,
                 epoch: grant.epoch,
             })?;
+        }
+        builder.finish()
+    }
+
+    /// Add authority evidence issued by the kernel's subject resolver. Kept
+    /// crate-private so an action provider cannot replace the resolver's
+    /// private contact/lease witness with self-asserted data.
+    pub(crate) fn with_authority_guards(
+        self,
+        guards: &[AuthorityGuard],
+    ) -> Result<Self, GuardSetBuildError> {
+        if guards.is_empty() {
+            return Ok(self);
+        }
+        let mut builder = ServerGuardSetBuilder {
+            revisions: self.revisions,
+            authority: self.authority.into_iter().collect(),
+            owner_readiness: self.owner_readiness,
+        };
+        for guard in guards {
+            builder.add(guard.clone())?;
         }
         builder.finish()
     }
@@ -3928,6 +4195,15 @@ impl ActionProviderRegistry {
             let Some(mut projected) = projected else {
                 continue;
             };
+            projected.guards = projected
+                .guards
+                .with_authority_guards(query.authority_guards())
+                .map_err(
+                    |source| crate::offer::LegalActionProjectionError::SubjectAuthority {
+                        action: Box::new(entry.action().clone()),
+                        source: Box::new(source),
+                    },
+                )?;
             if !projected.required_channels.is_empty() {
                 let Some((grant_owner, grant)) =
                     select_offer_channel_grant(&engine.world, query, &projected.required_channels)

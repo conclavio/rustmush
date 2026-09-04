@@ -155,6 +155,22 @@ pub struct LegalActionQuery {
     projected_subject: PerceivedRef,
     viewer_scope: ProjectionScopeId,
     now: Option<ClockStamp>,
+    authority_guards: Vec<crate::action::AuthorityGuard>,
+}
+
+/// Failure while turning an untrusted perceived subject into a trusted,
+/// server-private legal-action query.
+///
+/// `Invalid` deliberately collapses nonexistent, unobservable, stale, and
+/// unauthorized references. `Unavailable` is reserved for a missing or
+/// unhealthy authority service so interfaces can retry without learning
+/// private subject truth.
+#[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
+pub enum LegalActionSubjectError {
+    #[error("the perceived subject has no current authoritative projection")]
+    Invalid,
+    #[error("subject authority is unavailable")]
+    Unavailable,
 }
 
 impl LegalActionQuery {
@@ -174,6 +190,7 @@ impl LegalActionQuery {
             projected_subject,
             viewer_scope,
             now,
+            authority_guards: Vec::new(),
         })
     }
 
@@ -205,6 +222,17 @@ impl LegalActionQuery {
     #[must_use]
     pub const fn now(&self) -> Option<&ClockStamp> {
         self.now.as_ref()
+    }
+
+    #[must_use]
+    pub(crate) fn with_authority_guard(mut self, guard: crate::action::AuthorityGuard) -> Self {
+        self.authority_guards.push(guard);
+        self
+    }
+
+    #[must_use]
+    pub(crate) fn authority_guards(&self) -> &[crate::action::AuthorityGuard] {
+        &self.authority_guards
     }
 }
 
@@ -1107,6 +1135,11 @@ pub enum LegalActionProjectionError {
     },
     #[error("provider owner became unavailable while projecting {action}")]
     ProviderUnavailable { action: Box<DefinitionRef> },
+    #[error("subject authority for {action} could not be bound: {source}")]
+    SubjectAuthority {
+        action: Box<DefinitionRef>,
+        source: Box<crate::action::GuardSetBuildError>,
+    },
     #[error("kernel could not bind an exact station grant to {action}: {source}")]
     ChannelGrant {
         action: Box<DefinitionRef>,
