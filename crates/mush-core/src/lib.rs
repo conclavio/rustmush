@@ -66,6 +66,7 @@ pub mod obj;
 pub mod offer;
 pub mod output;
 pub mod perm;
+pub mod resolution;
 pub mod resource;
 pub mod sched;
 pub mod world;
@@ -195,6 +196,12 @@ pub use offer::{
 };
 pub use output::{
     Audience, ConnId, DeliveryClass, DeliveryOutcome, Outbox, name_span, obj_ref, room_view,
+};
+pub use resolution::{
+    MAX_RESOLUTION_DEFINITIONS, MAX_RESOLUTION_DRAWS, MAX_RESOLUTION_SECRET_VERSIONS,
+    MAX_RESOLUTION_STREAMS, MAX_RNG_REJECTION_ATTEMPTS, RecordedDraw, RecordedDrawValue,
+    ResolutionKeyRing, ResolutionRecord, ResolutionRecordError, ResolutionRng, ResolutionRngError,
+    ResolutionSecret, ResolutionSecretError, RngAlgorithmVersion,
 };
 pub use resource::{
     BoundedScalar, EffectDuration, EffectInstance, EffectInstanceError, EffectInstanceId,

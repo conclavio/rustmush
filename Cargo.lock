@@ -1999,6 +1999,7 @@ dependencies = [
 name = "mush-dice"
 version = "0.1.0"
 dependencies = [
+ "mush-core",
  "proptest",
  "rand 0.9.5",
  "rand_chacha 0.9.0",
