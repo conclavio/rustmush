@@ -126,7 +126,9 @@ reasoning = "off"
 
 [llm.concurrency]
 max_interactive = 8
+max_interactive_queued = 32
 max_background = 3
+max_background_queued = 12
 
 [llm.budgets]
 global = { tokens = 5_000_000, cost_usd = 5.0 }

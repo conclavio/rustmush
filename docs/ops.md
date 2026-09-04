@@ -739,8 +739,11 @@ only — so a clone with only one key still runs the routes it can serve.
   **pre-flight** if any applicable layer would be exceeded. OpenRouter reports
   real spend (`usage.cost`); Anthropic cost is estimated from the route
   provider's per-MTok prices.
-- `[llm.concurrency]` — `max_interactive` / `max_background` in-flight caps
-  (plus optional `[llm.retry]` / `[llm.circuit_breaker]`).
+- `[llm.concurrency]` — `max_interactive` / `max_background` in-flight caps and
+  `max_interactive_queued` / `max_background_queued` waiter caps. Calls beyond
+  the active-plus-queued envelope fail fast as overloaded instead of growing an
+  unbounded semaphore wait list (plus optional `[llm.retry]` /
+  `[llm.circuit_breaker]`).
 - **Kill switch** — `[llm].enabled = false` disables everything; staff toggle it
   live (no restart) with `@llm/disable` / `@llm/enable`, inspect spend with
   `@llm/budget`, and read recent calls with `@llm/log [<feature>]` (Wizard).

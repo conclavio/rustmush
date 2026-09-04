@@ -274,6 +274,8 @@ pub struct LlmService {
     kill: KillSwitch,
     sem_interactive: Arc<Semaphore>,
     sem_background: Arc<Semaphore>,
+    admit_interactive: Arc<Semaphore>,
+    admit_background: Arc<Semaphore>,
     limiters: HashMap<ProviderId, Arc<DefaultDirectRateLimiter>>,
     breakers: HashMap<ProviderId, CircuitBreaker>,
     retry: RetryConfig,
@@ -495,7 +497,28 @@ impl LlmService {
             return Err(LlmError::BudgetExceeded { scope });
         }
 
-        // 4. Priority semaphore.
+        // 4. Bounded admission, then priority semaphore. Tokio semaphores have
+        // an unbounded waiter list; the outer permit caps active + queued calls
+        // before this future is allowed to wait on the in-flight permit.
+        let admission = match ctx.priority {
+            Priority::Interactive => Arc::clone(&self.admit_interactive),
+            Priority::Background => Arc::clone(&self.admit_background),
+        };
+        let _admission = match admission.try_acquire_owned() {
+            Ok(permit) => permit,
+            Err(_) => {
+                self.write_audit(
+                    &ctx,
+                    provider_id.as_str(),
+                    &model,
+                    &eff,
+                    Outcome::Error,
+                    None,
+                    start,
+                );
+                return Err(LlmError::Overloaded);
+            }
+        };
         let sem = match ctx.priority {
             Priority::Interactive => &self.sem_interactive,
             Priority::Background => &self.sem_background,
@@ -630,6 +653,25 @@ impl LlmService {
             return Err(LlmError::BudgetExceeded { scope });
         }
 
+        let admission = match ctx.priority {
+            Priority::Interactive => Arc::clone(&self.admit_interactive),
+            Priority::Background => Arc::clone(&self.admit_background),
+        };
+        let admission_permit = match admission.try_acquire_owned() {
+            Ok(permit) => permit,
+            Err(_) => {
+                self.write_audit(
+                    &ctx,
+                    provider_id.as_str(),
+                    &model,
+                    &eff,
+                    Outcome::Error,
+                    None,
+                    start,
+                );
+                return Err(LlmError::Overloaded);
+            }
+        };
         let sem = match ctx.priority {
             Priority::Interactive => Arc::clone(&self.sem_interactive),
             Priority::Background => Arc::clone(&self.sem_background),
@@ -686,6 +728,7 @@ impl LlmService {
         let state = SettleState {
             inner,
             permit,
+            _admission_permit: admission_permit,
             ledger: Arc::clone(&self.ledger),
             audit: Arc::clone(&self.audit),
             limits,
@@ -818,6 +861,7 @@ struct AuditMeta {
 struct SettleState {
     inner: LlmStream,
     permit: tokio::sync::OwnedSemaphorePermit,
+    _admission_permit: tokio::sync::OwnedSemaphorePermit,
     ledger: Arc<BudgetLedger>,
     audit: Arc<AuditSink>,
     limits: ScopeLimits,
@@ -1065,6 +1109,8 @@ impl LlmServiceBuilder {
     #[must_use]
     pub fn build(self) -> LlmService {
         let concurrency = self.concurrency.unwrap_or_default();
+        let max_interactive = active_capacity(concurrency.max_interactive);
+        let max_background = active_capacity(concurrency.max_background);
         let breaker_cfg = self.breaker.unwrap_or_default();
         let breakers = self
             .providers
@@ -1089,14 +1135,30 @@ impl LlmServiceBuilder {
             ledger: self.ledger.unwrap_or_else(|| Arc::new(BudgetLedger::new())),
             audit: self.audit.unwrap_or_else(|| Arc::new(AuditSink::default())),
             kill: KillSwitch::new(!self.global_enabled.unwrap_or(true)),
-            sem_interactive: Arc::new(Semaphore::new(concurrency.max_interactive.max(1))),
-            sem_background: Arc::new(Semaphore::new(concurrency.max_background.max(1))),
+            sem_interactive: Arc::new(Semaphore::new(max_interactive)),
+            sem_background: Arc::new(Semaphore::new(max_background)),
+            admit_interactive: Arc::new(Semaphore::new(admission_capacity(
+                max_interactive,
+                concurrency.max_interactive_queued,
+            ))),
+            admit_background: Arc::new(Semaphore::new(admission_capacity(
+                max_background,
+                concurrency.max_background_queued,
+            ))),
             limiters,
             breakers,
             retry: self.retry.unwrap_or_default(),
             breaker_cfg,
         }
     }
+}
+
+fn active_capacity(configured: usize) -> usize {
+    configured.clamp(1, Semaphore::MAX_PERMITS)
+}
+
+fn admission_capacity(active: usize, queued: usize) -> usize {
+    active.saturating_add(queued).min(Semaphore::MAX_PERMITS)
 }
 
 /// Convenience: a single-user-turn request whose model/max_tokens/reasoning the
