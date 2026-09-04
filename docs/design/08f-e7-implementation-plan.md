@@ -1,6 +1,6 @@
 # E7 implementation plan — requisition and production vertical slice
 
-**Status:** Draft 0.3, 2026-09-04. The two early kernel dependencies are pulled forward as K4a/K5a
+**Status:** Draft 0.4, 2026-09-04. The two early kernel dependencies are pulled forward as K4a/K5a
 in doc 09 and implemented on the K branch. K4b's checked scalar, reservation-record, and typed
 effect-instance primitives are also implemented and exercised by the restart-safe Gate-1 toy.
 This plan deliberately keeps E7's first journal-backed records on the existing economy durability
@@ -57,8 +57,14 @@ particular campaign economy.
   and changes holder plus epoch together only at or after an exact comparable `ClockStamp` boundary.
   Final authority validation reads that record through its composition-branded family handle;
   `mush-sim` owns the first registered family. Every required-channel legal action now binds the
-  current principal's exact lease in addition to its station grant and is absent without it.
-  Controller-selection and safe-boundary policy remain campaign/domain concerns.
+  current principal's exact lease in addition to its station grant and is absent without it. Sim
+  also registers exact request/cancel/apply providers and one reusable durable one-shot schedule
+  per `(subject, channel)`: the pending lease, job, and cursor are created atomically, and cursor
+  completion plus holder/epoch transition commit atomically. A cancellation removes the job and
+  cursor in the same action; retained stale scheduler candidates are discarded and rescanned rather
+  than retried forever or treated as world corruption. Controller selection, trusted request
+  authorization, handoff reason, and selection of a genuinely safe boundary remain campaign/domain
+  policy.
 - **K6b private-contact foundation:** a bounded authoritative contact record now holds an opaque ID,
   immutable truth mapping, explicit audience, typed observation clock, and monotonic
   generation/revision across loss and reacquisition. The exact owner issues a private witness;
@@ -102,14 +108,18 @@ workflow records. Every record is shaped for a mechanical migration: canonical w
 post-images, one mutation per key per transition, explicit revisions, deterministic idempotency
 keys, and no hidden side effects after the final fallible preflight.
 
-### 2.4 Still required before E7 control handoff
+### 2.4 Still required before E7 exposes control handoff
 
 K5a grants establish eligibility and stale-intent witnesses; they are not active exclusive leases.
 K6a now supplies the per-channel record, checked pending-handoff transition, and exact lease guard.
-Direct/proxy control changes still require production request/cancel/apply providers, a domain or
-scene driver that chooses and reaches the safe boundary, and lease-aware offer projection. The first
-production slice may assign title, maintenance, and custody, but it must not silently evict a live
-operator or transfer an active movement/weapons lease.
+The registered sim providers and generic durable schedule path now perform atomic request, cancel,
+and boundary application, and lease-aware offer projection is live. E7 still needs a trusted
+campaign ingress that authorizes who may request/cancel each direct or proxy transfer, selects the
+next holder and reason, and obtains the boundary from the relevant scene/domain policy. `Utc`,
+world-IC, and scene-turn boundaries have live clock providers; a `DomainTick` boundary additionally
+requires that domain's production clock driver. The first production slice may assign title,
+maintenance, and custody, but it must not silently evict a live operator or transfer an active
+movement/weapons lease.
 
 ## 3. Engine and ruleset boundary
 

@@ -15,6 +15,7 @@ pub mod commands;
 pub mod custody;
 pub mod data;
 pub mod graph;
+mod handoff;
 pub mod links;
 pub mod route;
 pub mod transition;
@@ -581,8 +582,9 @@ impl GameModule for SimulationModule {
         )?;
         reg.authority_guard_validator(
             AuthorityGuardKind::ControlLease,
-            ControlLeaseGuardValidator::new(control_leases),
+            ControlLeaseGuardValidator::new(control_leases.clone()),
         )?;
+        handoff::register(reg, control_leases)?;
         reg.state(SpatialState::new(self.config.recovery_room));
         reg.state(route::RouteState::default());
         reg.behavior(domain_spec())?;

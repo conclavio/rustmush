@@ -1720,6 +1720,10 @@ impl DurableScheduleDriver {
                         permit, engine, candidate,
                     ) {
                         Ok(staged) => staged,
+                        Err(error) if scheduled_prepare_stale(&error) => {
+                            self.retry = None;
+                            return Ok(DurableScheduleDrive::DiscardedStale(error.to_string()));
+                        }
                         Err(error) if scheduled_prepare_retryable(&error) => {
                             return Ok(DurableScheduleDrive::Transient(error.to_string()));
                         }
@@ -1757,6 +1761,7 @@ impl DurableScheduleDriver {
 enum DurableScheduleDrive {
     Idle,
     DeferredByLegacyPredecessor,
+    DiscardedStale(String),
     Transient(String),
     Staged(StagedAuthoritativeAction),
 }
@@ -1784,6 +1789,27 @@ fn scheduled_prepare_retryable(error: &crate::action_coordinator::ActionCoordina
         crate::action_coordinator::ActionCoordinatorError::Provider(
             mush_core::ActionProviderPrepareError::Provider { source, .. },
         ) => source.retryable(),
+        _ => false,
+    }
+}
+
+fn scheduled_prepare_stale(error: &crate::action_coordinator::ActionCoordinatorError) -> bool {
+    match error {
+        crate::action_coordinator::ActionCoordinatorError::SchedulePlan(source) => matches!(
+            source.as_ref(),
+            mush_core::ScheduleActionPlanError::Adapter { source, .. }
+                if source.code() == mush_core::ActionErrorCode::Stale
+        ),
+        crate::action_coordinator::ActionCoordinatorError::Provider(
+            mush_core::ActionProviderPrepareError::Provider { source, .. },
+        ) => source.code() == mush_core::ActionErrorCode::Stale,
+        crate::action_coordinator::ActionCoordinatorError::Provider(
+            mush_core::ActionProviderPrepareError::Schedule(source),
+        ) => matches!(
+            source.as_ref(),
+            mush_core::ScheduleAdvanceAdmissionError::MissingSchedule { .. }
+                | mush_core::ScheduleAdvanceAdmissionError::StalePlan { .. }
+        ),
         _ => false,
     }
 }
@@ -2603,6 +2629,13 @@ async fn run(
                         | DurableScheduleDrive::DeferredByLegacyPredecessor,
                     ) => {
                         durable_schedule_transient_alarmed = false;
+                    }
+                    Ok(DurableScheduleDrive::DiscardedStale(detail)) => {
+                        durable_schedule_transient_alarmed = false;
+                        tracing::debug!(
+                            error = %detail,
+                            "discarded stale durable schedule candidate"
+                        );
                     }
                     Ok(DurableScheduleDrive::Transient(detail)) => {
                         if !durable_schedule_transient_alarmed {
@@ -6079,6 +6112,97 @@ mod tests {
         assert_eq!(bundle.idempotency().epoch(), 9);
         assert_eq!(driver.idempotency_epoch, 9);
         engine.abort_prepared_action(installation);
+    }
+
+    #[tokio::test]
+    async fn durable_schedule_driver_discards_stale_retained_candidate() {
+        use mush_contract_tests::{
+            TOY_OWNER, install_toy_focus, install_toy_scheduled_expiry, toy_brace_invocation,
+            toy_definitions, toy_world_with_state,
+        };
+        use mush_core::{
+            DurableSchedule, DurableScheduleDraft, ScheduleCatchUpOrder, ScheduleId,
+            ScheduleRestartPolicy,
+        };
+
+        let (mut world, families) = toy_world_with_state();
+        install_toy_focus(world.engine_mut(), &families, GOD, 1);
+        let invocation = toy_brace_invocation(GOD, 11, RequestUid::from_bytes([0x51; 16]));
+        let (prepared, _) = world
+            .engine_mut()
+            .prepare_registered_authoritative_action(
+                &toy_definitions().brace,
+                &invocation,
+                DurableCommitToken::from_bytes([0x52; 16]),
+            )
+            .expect("prepare guarded fixture");
+        let (_, installation) = prepared.into_parts();
+        world.engine_mut().install_prepared_action(installation);
+        let effect = world
+            .engine()
+            .action_state()
+            .get(&families.guarded, &GOD)
+            .unwrap()
+            .unwrap()
+            .effect
+            .id();
+        let owner = OwnerId::new(TOY_OWNER).unwrap();
+        let schedule = DurableSchedule::new(DurableScheduleDraft {
+            id: ScheduleId::derive(&owner, &CanonicalId::new("stale_retained").unwrap()).unwrap(),
+            owner,
+            clock: mush_core::ClockRef::Utc,
+            next_due: mush_core::ClockStamp {
+                clock: mush_core::ClockRef::Utc,
+                at: 90,
+            },
+            cadence: None,
+            generation: 1,
+            next_ordinal: 0,
+            restart: ScheduleRestartPolicy::Resume,
+            catch_up_order: ScheduleCatchUpOrder::OldestFirst,
+            max_catch_up: 1,
+        })
+        .unwrap();
+        let schedule_id = schedule.id();
+        install_toy_scheduled_expiry(world.engine_mut(), &families, schedule, GOD, effect);
+        world.world_mut().set_now(100);
+        let candidate = world
+            .engine()
+            .discover_scheduled_actions(mush_core::ScheduleDriveCause::Live, None, 1)
+            .unwrap()
+            .candidates()[0]
+            .clone();
+
+        // A competing authoritative transition changes the cursor after this
+        // candidate was retained for retry. The old candidate is ordinary
+        // optimistic-concurrency loss, not an integrity breach.
+        let mut transaction = world
+            .engine_mut()
+            .action_transaction(&families.schedules)
+            .expect("schedule update transaction");
+        transaction
+            .replace(
+                &families.schedules,
+                &schedule_id,
+                candidate.advance().post_image().clone(),
+            )
+            .expect("install competing cursor advance");
+        let prepared = transaction.prepare().expect("prepare cursor update");
+        let (_, installation) = prepared.into_parts();
+        world.engine_mut().install_prepared_action(installation);
+        let _ = world.drain_write_batch();
+
+        let mut engine = world.into_engine();
+        let mut driver = DurableScheduleDriver::new(1);
+        driver.retry = Some(candidate);
+        let store = mush_store::InMemoryStore::new();
+        assert!(matches!(
+            driver.drive_one(&mut engine, &store).await.unwrap(),
+            DurableScheduleDrive::DiscardedStale(_)
+        ));
+        assert!(driver.retry.is_none());
+        assert!(!engine.action_state().has_prepared());
+        assert!(engine.take_staged_action().unwrap().is_none());
     }
 
     #[derive(Default)]
