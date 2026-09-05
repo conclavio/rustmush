@@ -15,8 +15,8 @@ use smol_str::SmolStr;
 use crate::amount::Amount;
 use crate::clock::EconomicDeadline;
 use crate::ids::{
-    AccountId, ApprovalRequestId, ContractId, HoldId, InstrumentId, ObligationId, TransactionId,
-    VaultId,
+    AccountId, ApprovalRequestId, ContractId, EscalationId, HoldId, InstrumentId, ObligationId,
+    TransactionId, VaultId,
 };
 
 // ---- instruments ----------------------------------------------------------
@@ -43,8 +43,73 @@ pub struct InstrumentDef {
     pub negative_policy: NegativePolicy,
     /// Lifecycle.
     pub status: InstrumentStatus,
+    /// How a player-facing render writes an amount of this instrument (E6a step 1,
+    /// E2-C16 / 08g §12.1 item 4): `¥1000`, `12.50€`. `None` (the default, so every
+    /// E2 instrument doc still deserializes) renders the bare decimal.
+    #[serde(default)]
+    pub display: Option<InstrumentDisplay>,
     /// Staleness stamp.
     pub revision: u64,
+}
+
+/// The largest symbol an [`InstrumentDisplay`] carries (the crate's bounded-string
+/// discipline; `¥`, `€`, `nuyen` and `¢` all fit).
+pub const MAX_SYMBOL_BYTES: usize = 8;
+
+/// Where an instrument's symbol goes relative to the digits.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SymbolPosition {
+    /// `¥1000` — the sign, when any, comes before the symbol: `-¥5`.
+    Prefix,
+    /// `1000¥`.
+    Suffix,
+}
+
+/// How an instrument renders (E6a step 1, D-E6-1's `¥`): a bounded symbol and its
+/// position. Loading re-checks the bound — an empty symbol, one over
+/// [`MAX_SYMBOL_BYTES`], or one carrying whitespace or a control character refuses
+/// to deserialize — so a hand-written document cannot put a paragraph in front of
+/// every balance.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "InstrumentDisplayWire")]
+pub struct InstrumentDisplay {
+    /// The symbol (1..=[`MAX_SYMBOL_BYTES`] bytes, no whitespace).
+    pub symbol: SmolStr,
+    /// Before or after the digits.
+    pub position: SymbolPosition,
+}
+
+#[derive(Deserialize)]
+struct InstrumentDisplayWire {
+    symbol: SmolStr,
+    position: SymbolPosition,
+}
+
+impl InstrumentDisplay {
+    /// Build a display, refusing an empty, oversized, or whitespace-bearing symbol.
+    #[must_use]
+    pub fn new(symbol: &str, position: SymbolPosition) -> Option<InstrumentDisplay> {
+        if symbol.is_empty()
+            || symbol.len() > MAX_SYMBOL_BYTES
+            || symbol.chars().any(|c| c.is_whitespace() || c.is_control())
+        {
+            return None;
+        }
+        Some(InstrumentDisplay {
+            symbol: SmolStr::new(symbol),
+            position,
+        })
+    }
+}
+
+impl TryFrom<InstrumentDisplayWire> for InstrumentDisplay {
+    type Error = String;
+
+    fn try_from(w: InstrumentDisplayWire) -> Result<InstrumentDisplay, String> {
+        InstrumentDisplay::new(w.symbol.as_str(), w.position).ok_or_else(|| {
+            format!("an instrument symbol is 1..={MAX_SYMBOL_BYTES} bytes with no whitespace")
+        })
+    }
 }
 
 /// What an instrument represents.
@@ -665,6 +730,70 @@ pub struct ApprovalRule {
     pub threshold: Amount,
     /// The policy that must be satisfied above it.
     pub policy: ApprovalPolicy,
+    /// The **rolling budget** beside the threshold (E6a step 1, D-E6-21 / DL-10):
+    /// a debit that would take the account's spend over the trailing `period_secs`
+    /// past `total` needs the same approval an over-threshold debit does. `None`
+    /// (the default, so every E3 account doc still deserializes) keeps the
+    /// threshold-only behaviour; there is deliberately no default window.
+    #[serde(default)]
+    pub window: Option<ApprovalWindow>,
+}
+
+/// The longest trailing period an [`ApprovalWindow`] may declare (90 days). It is
+/// what bounds the RAM-only per-account debit tail the window is computed from: an
+/// entry older than this is dropped at index time, so the tail is O(entries in the
+/// widest window) and never O(journal).
+pub const MAX_APPROVAL_WINDOW_SECS: i64 = 90 * 86_400;
+
+/// A rolling spending budget on one account (E6a step 1, D-E6-21): the account's
+/// debits **plus placed holds** over the trailing `period_secs` (wall clock), with a
+/// refund never re-opening the window, must not exceed `total` — or the post needs
+/// approval on the threshold's own path.
+///
+/// It closes the ≤-threshold drip against an org treasury (08f review M3): a
+/// per-transaction threshold is not a budget, and an officer with `economy.account.post`
+/// could otherwise fund runs of ≤ threshold each, forever. Loading re-checks the
+/// bounds (a `period_secs` of 0 or past [`MAX_APPROVAL_WINDOW_SECS`], or a negative
+/// `total`, refuses to deserialize), so a hand-written document cannot declare a
+/// window the engine cannot compute.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "ApprovalWindowWire")]
+pub struct ApprovalWindow {
+    /// The most the account may spend inside one trailing period, in its instrument.
+    pub total: Amount,
+    /// The trailing period, in wall-clock seconds (`1..=MAX_APPROVAL_WINDOW_SECS`).
+    pub period_secs: i64,
+}
+
+#[derive(Deserialize)]
+struct ApprovalWindowWire {
+    total: Amount,
+    period_secs: i64,
+}
+
+impl ApprovalWindow {
+    /// Build a window, refusing a negative total or a period outside
+    /// `1..=`[`MAX_APPROVAL_WINDOW_SECS`].
+    #[must_use]
+    pub fn new(total: Amount, period_secs: i64) -> Option<ApprovalWindow> {
+        if total.is_negative() || period_secs <= 0 || period_secs > MAX_APPROVAL_WINDOW_SECS {
+            return None;
+        }
+        Some(ApprovalWindow { total, period_secs })
+    }
+}
+
+impl TryFrom<ApprovalWindowWire> for ApprovalWindow {
+    type Error = String;
+
+    fn try_from(w: ApprovalWindowWire) -> Result<ApprovalWindow, String> {
+        ApprovalWindow::new(w.total, w.period_secs).ok_or_else(|| {
+            format!(
+                "an approval window needs a non-negative total and a period of \
+                 1..={MAX_APPROVAL_WINDOW_SECS} seconds"
+            )
+        })
+    }
 }
 
 /// A collected approval for one exact plan hash. There is deliberately **no
@@ -1026,5 +1155,20 @@ pub enum EconomicEvent {
         object: ObjId,
         /// Its new revision.
         revision: u64,
+    },
+    /// The ladder **opened, reopened, or re-notified** a level-2/3 record (E6a
+    /// step 1, DL-05): the staff-channel fan-out E4b1 deviation 5 left to the
+    /// server's observer glue. Emitted on every step of the ladder's own re-notify
+    /// schedule (open → 1 h → daily; a reopen restarts it), so an observer that
+    /// pages staff follows that schedule and dedupes on the record's step — never a
+    /// storm. Ids and kinds only, as every event: the diagnosis is read off the
+    /// record under the viewer's own standing.
+    EscalationOpened {
+        /// Which record.
+        id: EscalationId,
+        /// What it is about.
+        subject: crate::escalation::EscalationSubject,
+        /// 2 = page, 3 = the whole-economy stop's companion.
+        level: u8,
     },
 }

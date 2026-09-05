@@ -49,6 +49,7 @@ fn instrument(id: &str) -> InstrumentDef {
         transferable: true,
         negative_policy: NegativePolicy::SystemOnly,
         status: InstrumentStatus::Active,
+        display: None,
         revision: 1,
     }
 }
@@ -246,6 +247,7 @@ fn env<'a>(auth: &'a dyn AuthEval, custody: &'a dyn CustodyEval) -> ValidateEnv<
         now: NOW,
         ic_now: NOW,
         next_hold_id: 1,
+        spent: std::collections::BTreeMap::new(),
     }
 }
 fn prepare(s: &EconomySnapshot, p: &EconomyPlan, auth: &Auth, custody: &Custody) -> Prepared {
@@ -1081,6 +1083,7 @@ fn rule(threshold: i64, approvals: u8) -> ApprovalRule {
             approvals,
             from_role: None,
         },
+        window: None,
     }
 }
 /// Snapshot with account #1 carrying an approval rule.
@@ -1270,6 +1273,7 @@ fn one_authorized_actor_can_never_gate_anything_and_is_refused() {
     a.approval = Some(ApprovalRule {
         threshold: Amount::from_minor(100),
         policy: ApprovalPolicy::OneAuthorizedActor,
+        window: None,
     });
     s.put_account(a);
     let p = plan("inert", who(1), vec![line(1, -500), line(2, 500)]);

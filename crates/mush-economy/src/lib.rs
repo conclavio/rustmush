@@ -113,6 +113,8 @@ mod config;
 mod custody;
 mod declared;
 mod module;
+mod notice;
+mod render;
 
 pub use amount::{Amount, MAX_SCALE};
 pub use engine::{
@@ -136,15 +138,24 @@ pub use plan::{
 };
 pub use record::{
     Account, AccountStatus, AcquisitionRecord, Approval, ApprovalRequest, ApprovalRule,
-    ApprovalStatus, AssetAssignment, AssetEffect, AssetEffectKind, AssetLifecycle, CatalogRef,
-    CausalRef, ContractStateKind, CreditPolicy, CustodyDirection, CustodyEffect, CustodyRef,
-    Decision, EconomicAsset, EconomicCause, EconomicEvent, EconomicTransaction, EconomicVisibility,
-    Encumbrance, ExternalRef, Hold, HoldEffect, HoldEffectKind, HoldPurpose, HoldStatus,
-    IdempotencyKey, IdempotencyRecord, InstrumentDef, InstrumentKind, InstrumentStatus,
-    JournalLine, MAX_AUDIENCE, NegativePolicy, ObligationStatusKind, Vault, VaultStatus, Verdict,
-    object_principal,
+    ApprovalStatus, ApprovalWindow, AssetAssignment, AssetEffect, AssetEffectKind, AssetLifecycle,
+    CatalogRef, CausalRef, ContractStateKind, CreditPolicy, CustodyDirection, CustodyEffect,
+    CustodyRef, Decision, EconomicAsset, EconomicCause, EconomicEvent, EconomicTransaction,
+    EconomicVisibility, Encumbrance, ExternalRef, Hold, HoldEffect, HoldEffectKind, HoldPurpose,
+    HoldStatus, IdempotencyKey, IdempotencyRecord, InstrumentDef, InstrumentDisplay,
+    InstrumentKind, InstrumentStatus, JournalLine, MAX_APPROVAL_WINDOW_SECS, MAX_AUDIENCE,
+    MAX_SYMBOL_BYTES, NegativePolicy, ObligationStatusKind, SymbolPosition, Vault, VaultStatus,
+    Verdict, object_principal,
 };
+pub use render::{render_amount, render_amount_on};
 pub use snapshot::EconomySnapshot;
+
+// E6a step 1 (DL-04) — the notice queue and the "who is told" predicates a server
+// observer delivers an organization's notices through.
+pub use notice::{
+    MAX_NOTICE_BYTES, MAX_PENDING_NOTICES, PendingNotice, acts_for, deliver_notice, notice_key,
+    principal_holders, queue_notice,
+};
 
 // E4a — clocks, holds, obligations, contracts.
 pub use clock::{
@@ -165,8 +176,9 @@ pub use contract::{
     TypedCondition, activate_key, activation_asset_ops, apply_outcome, apply_split,
     canon_set_accepts, canonical_visibility, check_offerable, check_structure, condition_holds,
     conditions_met, consent_hash, contract_encumbrance, contract_op_key, forfeit_key, forfeit_plan,
-    outcome_conditions, principal_key, qualifying_escrow, readiness, refund_key, refund_plan,
-    release_asset_ops, resolve_outcome, reverify, settle_key, settlement_plan, stamp_observed,
+    outcome_conditions, party_escrow_backed, principal_key, qualifying_claims, qualifying_escrow,
+    readiness, refund_key, refund_plan, refund_plan_except, release_asset_ops, resolve_outcome,
+    reverify, settle_key, settlement_plan, stamp_observed,
 };
 pub use obligation::{
     DEFAULT_GRACE_PERIODS, ForgiveCause, GracePolicy, MAX_GRACE_PERIODS, MAX_OBLIGATION_HISTORY,
@@ -191,8 +203,13 @@ pub use escalation::{
 };
 pub use sweep::SWEEP_TAG;
 
-// E4b2 — contracts live. E5b adds the lease seam a layered module offers under.
-pub use contract_live::{LeaseEnd, LeaseKey, LeaseSpec, end_lease, may_view_contract, offer_lease};
+// E4b2 — contracts live. E5b adds the lease seam a layered module offers under;
+// E6a step 1 adds the programmatic offer/accept/amend seams a ruleset runs a board on.
+pub use contract_live::{
+    AcceptOutcome, AmendOutcome, ConsiderationSpec, ContractAmendment, ContractSpec, LeaseEnd,
+    LeaseKey, LeaseSpec, accept_contract, amend_contract, contract_notice, end_lease,
+    may_view_contract, offer_contract, offer_lease, refuse_contract, refuse_contract_offer,
+};
 
 // E4c — facts, events, evidence.
 pub use attest::MAX_OBSERVER_SETTLEMENTS_PER_EVENT;
@@ -204,14 +221,21 @@ pub use sweep::MAX_REPUBLISH_PER_SWEEP;
 // E2b/E3b1 public surface.
 pub use api::{
     CadenceError, MAX_CADENCE_NAME_BYTES, MAX_CADENCES, META_KEY, ObligationSpec, PostOutcome,
-    account_key, acknowledge_escalation, approval_key, asset_key, cadence_key, contract_key,
-    create_cadence, create_system_obligation, create_vault, hold_key, instrument_key, issue_title,
-    mark_canon_published, obligation_key as obligation_doc_key, open_account, open_escalation,
-    post, post_capability, register_instrument, resume_obligation, reverse, set_account_approval,
+    account_key, acknowledge_escalation, approval_key, asset_key, cadence_key, cancel_obligation,
+    contract_key, create_cadence, create_obligation, create_system_obligation, create_vault,
+    hold_key, instrument_key, issue_title, mark_canon_published,
+    obligation_key as obligation_doc_key, open_account, open_escalation, post, post_capability,
+    register_instrument, reinstate_obligation, resume_obligation, reverse, set_account_approval,
     set_account_status, set_asset_frozen, set_economy_frozen, set_system_obligation,
     set_vault_status, suspend_obligation, vault_key,
 };
 pub use commands::{may_view_account, may_view_hold, may_view_obligation};
+// E6a step 1 (E5b-D36/D37): the parsing and existence-hiding helpers a ruleset
+// layered on the economy needs, exported so it never keeps a third copy.
+pub use commands::{
+    is_hidden, mask_account, money, money_on, parse_account, parse_amount, parse_opts,
+    parse_principal, refuse, refuse_named, render_principal,
+};
 pub use custody::{ContainerProvider, CustodyError, CustodyProvider, CustodyTable};
 pub use module::{
     CHECKPOINT_REVIEW_ENTRIES, CHECKPOINT_REVIEW_SECS, EconomyModule, EconomyScopeUse,

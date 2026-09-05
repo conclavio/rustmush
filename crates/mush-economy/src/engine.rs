@@ -345,6 +345,15 @@ pub struct ValidateEnv<'a> {
     /// [`crate::HoldEffect`]s with kind `Placed`. It is **not** hashed: two
     /// validations of one plan at different allocator states are the same plan.
     pub next_hold_id: u64,
+    /// What each account this plan debits (or places a hold on) has **already
+    /// spent inside its [`crate::ApprovalWindow`]** — the trailing-period sum of its
+    /// negative lines plus placed holds, a refund never subtracted (E6a step 1,
+    /// D-E6-21). The pure snapshot carries no journal, so the module computes it
+    /// from its RAM-only per-account tail and hands it in; an account absent here is
+    /// read as having spent nothing, which is exactly right for one with no window.
+    /// Not hashed, like the allocator floor: it is a fact about the world at post
+    /// time, not about the plan.
+    pub spent: BTreeMap<AccountId, Amount>,
 }
 
 impl ValidateEnv<'_> {
@@ -1465,6 +1474,12 @@ fn evaluate_approvals(
     // Which accounts' rules fire? A rule escalates on the NET DEBIT: an account that
     // nets a credit, or nets a debit at or below the threshold, is unaffected. A
     // per-op limit is not a budget (A12) — two approved plans both post.
+    //
+    // E6a step 1 (D-E6-21): a rule with a `window` ALSO escalates when this debit
+    // would take the account's trailing-period spend (`env.spent`, placements
+    // included, refunds never subtracted) past the window's total. Same path, same
+    // request, same approvers: the budget is the threshold's own escalation applied
+    // to a sum instead of a single line.
     let mut firing: Vec<(AccountId, &ApprovalRule)> = Vec::new();
     for (&account_id, &net) in balance_deltas {
         let account = snapshot.account(account_id).expect("resolved above");
@@ -1476,8 +1491,16 @@ fn evaluate_approvals(
         }
         // `i64::MIN` has no positive counterpart; treat it as exceeding any threshold
         // rather than wrapping into a credit.
-        let exceeds = net.checked_neg().is_none_or(|debit| debit > rule.threshold);
-        if exceeds {
+        let debit = net.checked_neg();
+        let exceeds = debit.is_none_or(|debit| debit > rule.threshold);
+        let over_window = rule.window.as_ref().is_some_and(|window| {
+            let spent = env.spent.get(&account_id).copied().unwrap_or(Amount::ZERO);
+            // An unrepresentable sum is over any window: fail closed.
+            debit
+                .and_then(|d| spent.checked_add(d))
+                .is_none_or(|sum| sum > window.total)
+        });
+        if exceeds || over_window {
             firing.push((account_id, rule));
         }
     }
@@ -1819,6 +1842,8 @@ pub fn plan_reversal(
         now: original.posted_at,
         ic_now: original.posted_at,
         next_hold_id: 0,
+        // Invariant 17 is skipped on this path, so no window is ever consulted.
+        spent: BTreeMap::new(),
     };
     match validate_inner(&plan, snapshot, &env, hash, true) {
         Ok(mut prepared) => {

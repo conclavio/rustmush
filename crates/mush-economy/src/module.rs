@@ -27,6 +27,7 @@ use mush_core::module::{
 use mush_core::{Ctx, Ledger, ObjId};
 use smol_str::SmolStr;
 
+use crate::amount::Amount;
 use crate::boot;
 use crate::config::EconomyConfig;
 use crate::custody::{ContainerProvider, CustodyProvider, CustodyTable};
@@ -124,6 +125,24 @@ pub struct EconomyStore {
     /// How many **consecutive** sweep fires have deferred each obligation's
     /// settlement as transient (S7). RAM-only for the same reason.
     pub(crate) obligation_defers: BTreeMap<ObligationId, u32>,
+    /// Each account's recent **debits**, `(posted_at, amount)` oldest first — what
+    /// an [`crate::ApprovalWindow`] is summed over (E6a step 1, D-E6-21). RAM-only
+    /// and journal-derived exactly like [`EconomyStore::hold_terminal_at`]: it is a
+    /// budget index, not economic truth, so it is rebuilt at boot from replay and
+    /// never stored. Bounded by [`crate::MAX_APPROVAL_WINDOW_SECS`]: an entry older
+    /// than the widest window any rule may declare is dropped at index time, so the
+    /// tail is O(entries in that window) per account and a post reads only its own
+    /// account's tail. One entry per transaction per account: the account's negative
+    /// lines plus its placed holds, **less what the same transaction captured** — a
+    /// capture spends a reservation the window already counted when it was placed,
+    /// and counting it twice would make an escrowed run cost double. A refund never
+    /// subtracts anything (conservative by design).
+    pub(crate) debit_window: BTreeMap<AccountId, std::collections::VecDeque<(i64, Amount)>>,
+    /// The notices queued for objects that were not connected when the economy had
+    /// something to tell them (E6a step 1, DL-04): `econ:notice:{obj}` leaf docs,
+    /// ≤ [`crate::MAX_PENDING_NOTICES`] per object, delivered and deleted at their
+    /// next connect ([`crate::notice`]).
+    pub(crate) notices: BTreeMap<ObjId, Vec<crate::notice::PendingNotice>>,
     /// Where the contract step starts scanning next fire (E4b2 verify fold, B4).
     ///
     /// The per-fire cap bounds *work*, and id order decided who got it: sixty-five
@@ -246,6 +265,8 @@ pub(crate) struct BootParts {
     pub(crate) next_escalation: u64,
     pub(crate) next_contract: u64,
     pub(crate) last_custody: BTreeMap<ObjId, CustodyMark>,
+    pub(crate) debit_window: BTreeMap<AccountId, std::collections::VecDeque<(i64, Amount)>>,
+    pub(crate) notices: BTreeMap<ObjId, Vec<crate::notice::PendingNotice>>,
     pub(crate) sweep_contract_cursor: u64,
     pub(crate) last_sweep_real: i64,
     pub(crate) last_sweep_ic: i64,
@@ -277,6 +298,8 @@ impl EconomyStore {
             sweep_contract_cursor: p.sweep_contract_cursor,
             hold_expiry_failures: BTreeMap::new(),
             obligation_defers: BTreeMap::new(),
+            debit_window: p.debit_window,
+            notices: p.notices,
             last_sweep_real: p.last_sweep_real,
             last_sweep_ic: p.last_sweep_ic,
             last_boot_real: p.last_boot_real,
@@ -537,6 +560,8 @@ impl EconomyStore {
     /// allocator floor may never come from the surviving docs (GC deletes terminal
     /// ones), so it is maintained here and at boot from the journal alone.
     pub(crate) fn index_transaction(&mut self, tx: EconomicTransaction) {
+        // E6a step 1 (D-E6-21): the rolling-window tail, the same fold boot replays.
+        note_window_debits(&mut self.debit_window, &tx);
         // E4b2: the last-custody mark, with the depositor the journal names.
         for effect in &tx.custody_effects {
             self.last_custody.insert(
@@ -568,6 +593,80 @@ impl EconomyStore {
     pub(crate) fn stamp_sweep(&mut self, real: i64, ic: i64) {
         self.last_sweep_real = real;
         self.last_sweep_ic = ic;
+    }
+
+    /// The notices queued for `who` while they were away (E6a step 1, DL-04), oldest
+    /// first.
+    #[must_use]
+    pub fn pending_notices(&self, who: ObjId) -> Vec<crate::notice::PendingNotice> {
+        self.notices.get(&who).cloned().unwrap_or_default()
+    }
+
+    /// What `account` has spent inside the trailing `period_secs` ending at `now`
+    /// (E6a step 1, D-E6-21): the sum of its [`EconomyStore::debit_window`] entries
+    /// with `posted_at > now − period_secs`. An unrepresentable sum saturates, which
+    /// is over any window — fail closed.
+    #[must_use]
+    pub fn spent_in_window(&self, account: AccountId, now: i64, period_secs: i64) -> Amount {
+        let since = now.saturating_sub(period_secs);
+        let sum: i128 = self
+            .debit_window
+            .get(&account)
+            .into_iter()
+            .flat_map(|tail| tail.iter())
+            .filter(|(at, _)| *at > since)
+            .map(|(_, amount)| amount.widen())
+            .sum();
+        Amount::from_widened(sum).unwrap_or(Amount::from_minor(i64::MAX))
+    }
+}
+
+/// Fold one transaction into the rolling-window tails (E6a step 1, D-E6-21) — the
+/// ONE place the per-account debit an [`crate::ApprovalWindow`] counts is defined,
+/// shared by [`EconomyStore::index_transaction`] and boot's replay so the two can
+/// never disagree.
+///
+/// Per account: the negative lines plus the placed holds, **less what the same
+/// transaction captured** (the placement already counted; a settlement that captures
+/// escrow is not a second spend). Releases and expiries subtract nothing — a refund
+/// never re-opens the window. Entries older than [`crate::MAX_APPROVAL_WINDOW_SECS`]
+/// before this post are dropped from the front, which bounds every tail.
+pub(crate) fn note_window_debits(
+    window: &mut BTreeMap<AccountId, std::collections::VecDeque<(i64, Amount)>>,
+    tx: &EconomicTransaction,
+) {
+    let mut debits: BTreeMap<AccountId, i128> = BTreeMap::new();
+    for line in &tx.lines {
+        if line.delta.is_negative() {
+            *debits.entry(line.account).or_insert(0) -= line.delta.widen();
+        }
+    }
+    for effect in &tx.hold_effects {
+        match effect.kind {
+            crate::record::HoldEffectKind::Placed => {
+                *debits.entry(effect.hold.account).or_insert(0) += effect.hold.amount.widen();
+            }
+            crate::record::HoldEffectKind::Captured => {
+                if let crate::record::HoldStatus::Consumed { amount, .. } = &effect.hold.status {
+                    *debits.entry(effect.hold.account).or_insert(0) -= amount.widen();
+                }
+            }
+            crate::record::HoldEffectKind::Released | crate::record::HoldEffectKind::Expired => {}
+        }
+    }
+    let cutoff = tx
+        .posted_at
+        .saturating_sub(crate::record::MAX_APPROVAL_WINDOW_SECS);
+    for (account, debit) in debits {
+        if debit <= 0 {
+            continue;
+        }
+        let amount = Amount::from_widened(debit).unwrap_or(Amount::from_minor(i64::MAX));
+        let tail = window.entry(account).or_default();
+        while tail.front().is_some_and(|(at, _)| *at < cutoff) {
+            tail.pop_front();
+        }
+        tail.push_back((tx.posted_at, amount));
     }
 }
 
@@ -695,6 +794,12 @@ impl GameModule for EconomyModule {
             Arc::new(crate::attest::on_canon_recorded),
         );
         reg.destroy_gate(Arc::new(EconomicDestroyGate));
+        // E6a step 1 (DL-04): the notices an org's officers missed while away are
+        // rendered at their next connect (the housing `notice.rs` pattern).
+        reg.hook(
+            mush_core::HookPoint::Connected,
+            crate::notice::reconnect_hook(),
+        );
         // SP1 (D-LBK-7 as decided): one composition-frozen `ClockRef::Registered`
         // provider per `[economy.cadences]` stanza, under `cadence.<name>`. The list is
         // validated whole first; a runtime cadence registers nothing.

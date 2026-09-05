@@ -192,6 +192,12 @@ pub fn server_modules_with(
             .with_observers(vec![
                 Arc::new(crate::econ_canon::CanonEvidenceBridge),
                 Arc::new(mush_housing::HousingEconomyObserver),
+                // E6a step 1 (DL-04): an organization's officers are told, kinds
+                // only, what its contracts and obligations did.
+                Arc::new(crate::econ_inbox::OrgInbox),
+                // E6a step 1 (DL-05): the ladder's pages reach connected wizards on
+                // the ladder's own re-notify schedule, deduped per step.
+                Arc::new(crate::econ_alerts::StaffAlerts::default()),
             ])
             // E5b: `system:wod.housing` mints the title record on a property's anchor
             // room through `mush_economy::issue_title` (D-E3-13, 08d §2). The same

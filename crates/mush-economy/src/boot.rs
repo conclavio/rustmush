@@ -111,6 +111,7 @@ pub(crate) fn load_boot(
     let mut stored_cadences: BTreeMap<CadenceId, CadenceClock> = BTreeMap::new();
     let mut stored_escalations: BTreeMap<EscalationId, Escalation> = BTreeMap::new();
     let mut stored_contracts: BTreeMap<ContractId, EconomicContract> = BTreeMap::new();
+    let mut stored_notices: BTreeMap<ObjId, Vec<crate::notice::PendingNotice>> = BTreeMap::new();
     let mut chunks: Vec<LedgerChunk> = Vec::new();
     let mut meta: Option<serde_json::Value> = None;
     // Every `approval:{id}` key seen, readable or not (the allocator floor).
@@ -295,6 +296,41 @@ pub(crate) fn load_boot(
                     tracing::warn!(%key, error = %e, "economy: corrupt escalation doc; skipping")
                 }
             }
+        } else if let Some(id) = key.strip_prefix("econ:notice:") {
+            // E6a step 1 (DL-04): a **leaf**, like an escalation — an unreadable queue
+            // costs somebody a notice about a fact they can still read off
+            // `@contract/show`, never the money it was about. Each entry is
+            // re-checked against its byte cap through the `TryFrom` wire; an
+            // oversized one is dropped with a log line and the rest are kept, and a
+            // list over the count cap keeps its newest entries.
+            let Ok(parsed) = id.parse::<u32>() else {
+                tracing::warn!(%key, "economy: bad notice key; skipping");
+                continue;
+            };
+            match serde_json::from_value::<Vec<serde_json::Value>>(value.clone()) {
+                Ok(entries) => {
+                    let mut list: Vec<crate::notice::PendingNotice> = Vec::new();
+                    for entry in entries {
+                        match serde_json::from_value::<crate::notice::PendingNotice>(entry) {
+                            Ok(n) => list.push(n),
+                            Err(e) => {
+                                tracing::warn!(%key, error = %e, "economy: dropping one unreadable pending notice");
+                            }
+                        }
+                    }
+                    if list.len() > crate::notice::MAX_PENDING_NOTICES {
+                        let drop = list.len() - crate::notice::MAX_PENDING_NOTICES;
+                        tracing::warn!(%key, dropped = drop, "economy: an over-cap notice queue keeps only its newest entries");
+                        list.drain(..drop);
+                    }
+                    if !list.is_empty() {
+                        stored_notices.insert(ObjId(parsed), list);
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(%key, error = %e, "economy: corrupt notice doc; skipping");
+                }
+            }
         } else {
             tracing::warn!(%key, "economy: unknown persisted key ignored");
         }
@@ -327,6 +363,10 @@ pub(crate) fn load_boot(
     let mut journal_assets: BTreeMap<ObjId, EconomicAsset> = BTreeMap::new();
     let mut asset_at_stored: BTreeMap<ObjId, EconomicAsset> = BTreeMap::new();
     let mut last_custody: BTreeMap<ObjId, CustodyMark> = BTreeMap::new();
+    // E6a step 1 (D-E6-21): the rolling-window tails, folded by the same function
+    // `index_transaction` uses, so replay and live indexing cannot disagree.
+    let mut debit_window: BTreeMap<AccountId, std::collections::VecDeque<(i64, Amount)>> =
+        BTreeMap::new();
     let mut max_custody_vault: Option<u64> = None;
     let mut consumed_approval: BTreeMap<ApprovalRequestId, TransactionId> = BTreeMap::new();
     let mut max_consumed_approval: Option<u64> = None;
@@ -472,6 +512,7 @@ pub(crate) fn load_boot(
         if let Some(target) = tx.reverses {
             snapshot.mark_reversed(target);
         }
+        crate::module::note_window_debits(&mut debit_window, tx);
         max_txid = max_txid.max(tx.id.0);
         transactions.insert(tx.id, tx.clone());
     }
@@ -1409,6 +1450,8 @@ pub(crate) fn load_boot(
         next_escalation,
         next_contract,
         last_custody,
+        debit_window,
+        notices: stored_notices,
         sweep_contract_cursor,
         last_sweep_real,
         last_sweep_ic,

@@ -269,6 +269,48 @@ fn accept_all(tw: &mut TestWorld, r: &Run, id: ContractId) {
     }
 }
 
+/// The rig's faucet account.
+fn faucet(tw: &TestWorld) -> AccountId {
+    snap(tw)
+        .accounts()
+        .find(|x| matches!(x.owner, PrincipalId::System(_)))
+        .expect("faucet")
+        .id
+}
+
+/// The **fixer-issuer** shape (E6a step 1): the Johnson drafts and offers, but the
+/// PAYER is Alder, who adds her own consideration to the draft (A1's
+/// self-consideration) and is minted 500 to fund it. Bex is paid on settlement.
+/// Under A′ an amendment by the Johnson voids and refunds Alder's acceptance — he is
+/// not the party whose escrow stands.
+fn fixer_issued_run(tw: &mut TestWorld, r: &Run, pay: i64) -> ContractId {
+    let faucet = faucet(tw);
+    ok(tw, GOD, &format!("@econ/mint {faucet}={} 500", r.a_acct));
+    ok(tw, r.johnson, "@contract/draft Brokered");
+    let id = only_contract(tw);
+    for who in [r.a, r.b] {
+        ok(tw, r.johnson, &format!("@contract/party {id}=#{}", who.0));
+    }
+    ok(tw, r.a, &format!("@contract/pay {id}={} {pay}", r.a_acct));
+    ok(
+        tw,
+        r.johnson,
+        &format!("@contract/split {id}={} 1000‰", r.b_acct),
+    );
+    ok(
+        tw,
+        r.johnson,
+        &format!("@contract/remainder {id}={}", r.a_acct),
+    );
+    ok(
+        tw,
+        r.johnson,
+        &format!("@contract/condition {id}=attest party:#{}", r.johnson.0),
+    );
+    ok(tw, r.johnson, &format!("@contract/offer {id}"));
+    id
+}
+
 // ======================================================================
 // Scenario 16 — the run, end to end
 // ======================================================================
@@ -389,6 +431,7 @@ fn the_settlement_key_is_deterministic_and_the_plan_guards_every_escrow_revision
             now: 0,
             ic_now: 0,
             next_hold_id: s.next_hold_floor(),
+            spent: std::collections::BTreeMap::new(),
         };
         mush_economy::settlement_plan(&c, s, &env).expect("a condition-less contract settles")
     };
@@ -1716,8 +1759,13 @@ fn the_roster_locks_on_the_first_acceptance_and_refuses_a_late_party() {
     );
 }
 
+/// Re-pinned to consent by authorship (E6a step 1, DL-01 Option A′): an amendment
+/// voids and refunds every acceptance **but the author's own**. The Johnson wrote
+/// the terms and accepted them, so his acceptance and his escrow stand; Alder's
+/// acceptance — which escrowed nothing — is voided, and the amended terms are
+/// re-collected from everyone else.
 #[test]
-fn an_amendment_refunds_every_acceptance_and_re_collects_them() {
+fn an_amendment_refunds_every_other_partys_acceptance_and_keeps_the_authors() {
     let mut tw = boot();
     let r = run_rig(&mut tw, 3_000);
     let id = offered_run(&mut tw, &r, 300);
@@ -1732,19 +1780,32 @@ fn an_amendment_refunds_every_acceptance_and_re_collects_them() {
         ContractState::Draft,
         "an amendment did not re-open the surface"
     );
-    assert!(c.acceptances.is_empty(), "an amendment kept an acceptance");
+    assert_eq!(
+        c.acceptances.len(),
+        1,
+        "an amendment did not keep exactly the author's acceptance"
+    );
+    assert_eq!(c.acceptances[0].party, PrincipalId::Object(r.johnson));
     assert!(!c.roster_locked, "an amendment kept the roster locked");
-    assert_eq!(held(&tw, r.j_acct), 0, "an amendment kept the escrow");
+    assert_eq!(
+        held(&tw, r.j_acct),
+        300,
+        "an amendment moved the author's escrow"
+    );
     assert_eq!(bal(&tw, r.j_acct), 3_000, "an amendment moved money");
 
-    // Amend the shares, re-offer, re-collect, and settle on the NEW terms.
+    // Amend the shares, re-offer, re-collect from the OTHERS, and settle on the NEW
+    // terms — the Johnson never re-accepts.
     ok(
         &mut tw,
         r.johnson,
         &format!("@contract/split {id}={} 1000‰", r.a_acct),
     );
     ok(&mut tw, r.johnson, &format!("@contract/offer {id}"));
-    accept_all(&mut tw, &r, id);
+    for who in [r.a, r.b, r.c] {
+        ok(&mut tw, who, &format!("@contract/accept {id}"));
+    }
+    assert_eq!(state(&tw, id), ContractState::Active);
     ok(&mut tw, r.johnson, &format!("@contract/attest {id}=0"));
     assert_eq!(
         bal(&tw, r.a_acct),
@@ -1752,35 +1813,40 @@ fn an_amendment_refunds_every_acceptance_and_re_collects_them() {
         "the amended split did not take effect"
     );
     assert_eq!(bal(&tw, r.b_acct), 0);
+    assert_eq!(held(&tw, r.j_acct), 0);
 }
 
+/// Re-pinned to A′: a refund posts only for a party **other than** the author, so
+/// the generation moves on a fixer-issuer's amendment (the payer's escrow comes
+/// back) and the next refund of the same id must not hit that spent key.
 #[test]
 fn an_amended_contract_refunds_again_instead_of_hitting_its_first_refunds_key() {
     let mut tw = boot();
     let r = run_rig(&mut tw, 3_000);
-    let id = offered_run(&mut tw, &r, 300);
-    ok(&mut tw, r.johnson, &format!("@contract/accept {id}"));
+    let id = fixer_issued_run(&mut tw, &r, 300);
+    ok(&mut tw, r.a, &format!("@contract/accept {id}"));
+    assert_eq!(held(&tw, r.a_acct), 300);
     ok(&mut tw, r.johnson, &format!("@contract/amend {id}"));
     assert_eq!(
         contract(&tw, id).amendments,
         1,
         "the amendment did not advance the key generation"
     );
-    assert_eq!(held(&tw, r.j_acct), 0);
+    assert_eq!(held(&tw, r.a_acct), 0);
 
     // The SAME contract id, offered and funded again, and then cancelled. Its refund
     // must actually run: at generation 0 the key would resolve to the amendment's own
     // refund as an idempotency HIT and hand nothing back.
     ok(&mut tw, r.johnson, &format!("@contract/offer {id}"));
-    ok(&mut tw, r.johnson, &format!("@contract/accept {id}"));
-    assert_eq!(held(&tw, r.j_acct), 300);
+    ok(&mut tw, r.a, &format!("@contract/accept {id}"));
+    assert_eq!(held(&tw, r.a_acct), 300);
     ok(&mut tw, r.johnson, &format!("@contract/cancel {id}"));
     assert_eq!(
-        held(&tw, r.j_acct),
+        held(&tw, r.a_acct),
         0,
         "the second refund hit the first refund's key"
     );
-    assert_eq!(bal(&tw, r.j_acct), 3_000);
+    assert_eq!(bal(&tw, r.a_acct), 500);
 
     // Generation 0 is byte-identical to what E4a specified, so every stored record
     // keeps resolving; only the amended generations move.
@@ -3388,9 +3454,12 @@ fn vf_m3_a_refused_unwind_stays_live_and_blocks_an_amendment() {
     assert_eq!(state(&tw, id), ContractState::Offered);
     assert_eq!(held(&tw, r.j_acct), 300, "the reboot lost the escrow");
 
+    // E6a step 1 (A′): the Johnson's own acceptance would survive an amendment, so
+    // nothing needs unwinding — and a tampered surface is refused outright rather
+    // than laundered into a fresh draft under that acceptance. Nothing changes.
     let seen = err(&mut tw, r.johnson, &format!("@contract/amend {id}"));
     assert!(
-        seen.contains("could not be released"),
+        seen.contains("consent surface has changed"),
         "wrong refusal: {seen}"
     );
     let c = contract(&tw, id);
@@ -3413,6 +3482,21 @@ fn vf_m3_a_refused_unwind_stays_live_and_blocks_an_amendment() {
         300,
         "a failed amendment stranded the escrow"
     );
+    assert!(
+        c.pending.is_none(),
+        "a refused amendment parked a pending transition"
+    );
+
+    // The TERMINAL path keeps M2+M3's shape: a cancellation whose refund is refused
+    // stays live, records `pending`, and pages — and an amendment cannot run over it.
+    ok(&mut tw, r.johnson, &format!("@contract/cancel {id}"));
+    let c = contract(&tw, id);
+    assert_eq!(
+        c.state,
+        ContractState::Offered,
+        "a refused unwind moved the state"
+    );
+    assert_eq!(held(&tw, r.j_acct), 300, "a refused unwind lost the escrow");
     assert!(
         c.pending.is_some(),
         "the refused unwind was not recorded as pending"
@@ -4177,4 +4261,1397 @@ fn vf_b6_boot_quarantines_a_stored_surface_that_could_never_settle() {
     // The escrow is untouched: quarantine reserves no value and moves none.
     assert_eq!(held(&tw, r.j_acct), 300, "quarantine moved the escrow");
     assert_eq!(bal(&tw, r.j_acct), 3_000);
+}
+
+// ======================================================================
+// ---- E6a step 1: S1 — consent by authorship (DL-01 Option A′) ----
+//
+// An amendment authored by a party never voids that party's own acceptance: the
+// author's escrow stands, every other acceptance is voided and refunded as E4b2
+// did for all of them, and the re-offer re-stamps the survivor onto the amended
+// surface. The tests below hold to 08f §2 item 1's five shapes plus the sweep's
+// `Draft`-with-escrow expiry (M10) and M16's generation rule.
+// ======================================================================
+
+/// The run rig with the Johnson accepted and then amending: the A′ shape every
+/// test in this section starts from.
+fn payer_amended_run(tw: &mut TestWorld, r: &Run) -> (ContractId, Vec<HoldId>) {
+    let id = offered_run(tw, r, 300);
+    ok(tw, r.johnson, &format!("@contract/accept {id}"));
+    let hold = contract(tw, id).escrow.clone();
+    assert_eq!(hold.len(), 1, "the accept did not place one escrow hold");
+    ok(tw, r.johnson, &format!("@contract/amend {id}"));
+    (id, hold)
+}
+
+#[test]
+fn e6s1_s1_a_payer_amend_keeps_its_acceptance_and_the_escrow_never_moves() {
+    let mut tw = boot();
+    let r = run_rig(&mut tw, 3_000);
+    let id = offered_run(&mut tw, &r, 300);
+    ok(&mut tw, r.johnson, &format!("@contract/accept {id}"));
+    ok(&mut tw, r.a, &format!("@contract/accept {id}"));
+    let before = journal_len(&tw);
+    let hold = contract(&tw, id).escrow.clone();
+
+    let seen = ok(&mut tw, r.johnson, &format!("@contract/amend {id}"));
+    assert!(
+        seen.contains("is back to draft"),
+        "unexpected reply: {seen}"
+    );
+    let c = contract(&tw, id);
+    assert_eq!(c.state, ContractState::Draft);
+    assert_eq!(
+        c.acceptances
+            .iter()
+            .map(|a| a.party.clone())
+            .collect::<Vec<_>>(),
+        vec![PrincipalId::Object(r.johnson)],
+        "the author's acceptance did not survive alone"
+    );
+    assert_eq!(c.escrow, hold, "the author's hold left the record");
+    assert!(
+        snap(&tw).hold(hold[0]).is_some_and(|h| h.status.is_held()),
+        "the author's escrow was released"
+    );
+    assert_eq!(held(&tw, r.j_acct), 300, "the escrow moved");
+    assert_eq!(bal(&tw, r.j_acct), 3_000);
+    assert_eq!(
+        journal_len(&tw),
+        before,
+        "an amendment that refunded nothing posted a transaction"
+    );
+    assert_eq!(
+        c.amendments, 0,
+        "an amendment that refunded nothing moved the key generation (M16)"
+    );
+    assert!(!c.roster_locked);
+
+    // M16: re-splitting a listing thirty-odd times never exhausts MAX_AMENDMENTS,
+    // because no refund ever posts.
+    for n in 0..=mush_economy::MAX_AMENDMENTS {
+        ok(&mut tw, r.johnson, &format!("@contract/offer {id}"));
+        assert!(
+            contract(&tw, id).accepted_by(&PrincipalId::Object(r.johnson)),
+            "round {n}: the re-offer did not re-stamp the author's acceptance"
+        );
+        ok(&mut tw, r.johnson, &format!("@contract/amend {id}"));
+        assert_eq!(held(&tw, r.j_acct), 300, "round {n}: the escrow moved");
+    }
+    assert_eq!(contract(&tw, id).amendments, 0);
+    assert_eq!(journal_len(&tw), before);
+
+    // The amendment rewrites the roster and the shares; the re-offer carries the
+    // author's acceptance; the others accept; the Johnson never re-accepts.
+    ok(
+        &mut tw,
+        r.johnson,
+        &format!("@contract/party {id}=#{}", r.watcher.0),
+    );
+    let w_acct = account_of(&tw, r.watcher);
+    ok(
+        &mut tw,
+        r.johnson,
+        &format!("@contract/split {id}={} 500‰ {} 500‰", r.a_acct, w_acct),
+    );
+    ok(&mut tw, r.johnson, &format!("@contract/offer {id}"));
+    assert!(contract(&tw, id).accepted_by(&PrincipalId::Object(r.johnson)));
+    for who in [r.a, r.b, r.c, r.watcher] {
+        ok(&mut tw, who, &format!("@contract/accept {id}"));
+    }
+    assert_eq!(
+        state(&tw, id),
+        ContractState::Active,
+        "the surviving acceptance did not count toward activation"
+    );
+    assert_eq!(
+        contract(&tw, id).escrow,
+        hold,
+        "activation changed the escrow"
+    );
+    ok(&mut tw, r.johnson, &format!("@contract/attest {id}=0"));
+    assert!(matches!(state(&tw, id), ContractState::Settled { .. }));
+    assert_eq!(bal(&tw, r.a_acct), 150);
+    assert_eq!(bal(&tw, w_acct), 150);
+    assert_eq!(bal(&tw, r.j_acct), 2_700);
+    assert_eq!(held(&tw, r.j_acct), 0);
+    assert_eq!(
+        journal_len(&tw),
+        before + 1,
+        "settlement was not the only post after the amendment"
+    );
+}
+
+#[test]
+fn e6s1_s1_a_fixer_issuers_amend_voids_the_payers_acceptance_and_refunds() {
+    let mut tw = boot();
+    let r = run_rig(&mut tw, 3_000);
+    let id = fixer_issued_run(&mut tw, &r, 300);
+    ok(&mut tw, r.a, &format!("@contract/accept {id}"));
+    assert_eq!(held(&tw, r.a_acct), 300);
+    let before = journal_len(&tw);
+
+    // The issuer is not the payer: today's behaviour, pinned — the payer's
+    // acceptance is voided and her escrow comes back under the contract's own key.
+    let seen = ok(&mut tw, r.johnson, &format!("@contract/amend {id}"));
+    assert!(
+        seen.contains("1 acceptance(s) were voided and refunded"),
+        "unexpected reply: {seen}"
+    );
+    assert!(
+        seen.contains("any acceptance of yours is void"),
+        "the payer was not told: {seen}"
+    );
+    let c = contract(&tw, id);
+    assert_eq!(c.state, ContractState::Draft);
+    assert!(
+        c.acceptances.is_empty(),
+        "a non-author's acceptance survived"
+    );
+    assert!(c.escrow.is_empty(), "a released hold stayed on the record");
+    assert_eq!(
+        c.amendments, 1,
+        "a posted refund did not move the generation"
+    );
+    assert_eq!(
+        held(&tw, r.a_acct),
+        0,
+        "the payer's escrow was not released"
+    );
+    assert_eq!(bal(&tw, r.a_acct), 500);
+    assert_eq!(journal_len(&tw), before + 1, "the refund was not one post");
+    assert!(
+        snap(&tw)
+            .idempotency(&mush_economy::refund_key(id))
+            .is_some(),
+        "the refund did not post under contract/{{id}}/refund"
+    );
+}
+
+#[test]
+fn e6s1_s1_changing_your_own_escrowed_consideration_is_refused() {
+    let mut tw = boot();
+    let r = run_rig(&mut tw, 3_000);
+    let (id, hold) = payer_amended_run(&mut tw, &r);
+
+    // At `/pay`: the amount a Held hold backs is not the issuer's to change.
+    let seen = err(
+        &mut tw,
+        r.johnson,
+        &format!("@contract/pay {id}={} 400", r.j_acct),
+    );
+    assert!(seen.contains("backed by escrow"), "wrong refusal: {seen}");
+    let c = contract(&tw, id);
+    assert_eq!(c.consent.terms.consideration[0].amount.minor(), 300);
+    assert_eq!(c.escrow, hold);
+    assert_eq!(held(&tw, r.j_acct), 300);
+    // Re-stating the same amount is a no-op, not a change.
+    ok(
+        &mut tw,
+        r.johnson,
+        &format!("@contract/pay {id}={} 300", r.j_acct),
+    );
+
+    // At `/offer`: a NEW own consideration is money the surviving acceptance never
+    // covered, so the surface cannot be re-offered under it.
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@account/open #{}=nuyen", r.johnson.0),
+    );
+    let second = snap(&tw)
+        .accounts()
+        .filter(|a| a.owner == PrincipalId::Object(r.johnson))
+        .map(|a| a.id)
+        .max()
+        .expect("a second wallet");
+    assert_ne!(second, r.j_acct);
+    let faucet = faucet(&tw);
+    ok(&mut tw, GOD, &format!("@econ/mint {faucet}={second} 100"));
+    ok(
+        &mut tw,
+        r.johnson,
+        &format!("@contract/pay {id}={second} 50"),
+    );
+    let seen = err(&mut tw, r.johnson, &format!("@contract/offer {id}"));
+    assert!(
+        seen.contains("no longer backed by escrow"),
+        "wrong refusal: {seen}"
+    );
+    assert_eq!(state(&tw, id), ContractState::Draft);
+    assert_eq!(held(&tw, r.j_acct), 300, "a refused offer moved the escrow");
+    assert_eq!(held(&tw, second), 0);
+}
+
+#[test]
+fn e6s1_s1_cancel_after_an_a_prime_amend_refunds_the_authors_escrow() {
+    let mut tw = boot();
+    let r = run_rig(&mut tw, 3_000);
+    let (id, hold) = payer_amended_run(&mut tw, &r);
+    let before = journal_len(&tw);
+    ok(&mut tw, r.johnson, &format!("@contract/cancel {id}"));
+    assert_eq!(state(&tw, id), ContractState::Cancelled);
+    assert_eq!(held(&tw, r.j_acct), 0, "the cancellation kept the escrow");
+    assert_eq!(bal(&tw, r.j_acct), 3_000);
+    assert_eq!(journal_len(&tw), before + 1);
+    assert!(
+        snap(&tw).hold(hold[0]).is_some_and(|h| !h.status.is_held()),
+        "the author's hold is still held"
+    );
+    // No generation moved at the amendment, so the refund posted under the
+    // generation-0 key.
+    assert!(
+        snap(&tw)
+            .idempotency(&mush_economy::refund_key(id))
+            .is_some(),
+        "the refund did not post under generation 0"
+    );
+}
+
+#[test]
+fn e6s1_s1_the_sweep_expires_a_draft_holding_escrow_past_its_deadline() {
+    let mut tw = boot();
+    tw.set_now(1_000);
+    let r = run_rig(&mut tw, 3_000);
+    ok(&mut tw, r.johnson, "@contract/draft Windowed");
+    let id = only_contract(&tw);
+    ok(
+        &mut tw,
+        r.johnson,
+        &format!("@contract/party {id}=#{}", r.a.0),
+    );
+    ok(
+        &mut tw,
+        r.johnson,
+        &format!("@contract/pay {id}={} 300", r.j_acct),
+    );
+    ok(
+        &mut tw,
+        r.johnson,
+        &format!("@contract/split {id}={} 1000‰", r.a_acct),
+    );
+    ok(
+        &mut tw,
+        r.johnson,
+        &format!("@contract/remainder {id}={}", r.j_acct),
+    );
+    ok(
+        &mut tw,
+        r.johnson,
+        &format!("@contract/condition {id}=attest party:#{}", r.johnson.0),
+    );
+    // Ten days out — past the draft TTL, so the two rules can be told apart.
+    let window = 10 * 86_400;
+    ok(
+        &mut tw,
+        r.johnson,
+        &format!("@contract/deadline {id}={window} dispute"),
+    );
+    ok(&mut tw, r.johnson, &format!("@contract/offer {id}"));
+    ok(&mut tw, r.johnson, &format!("@contract/accept {id}"));
+    ok(&mut tw, r.johnson, &format!("@contract/amend {id}"));
+    assert_eq!(state(&tw, id), ContractState::Draft);
+    assert_eq!(held(&tw, r.j_acct), 300);
+
+    // Past the draft TTL but inside the window: NOT collected, NOT expired.
+    sweep_at(&mut tw, 1_000 + mush_economy::DRAFT_TTL_SECS + 3_600);
+    assert_eq!(
+        state(&tw, id),
+        ContractState::Draft,
+        "a draft holding escrow was collected or expired inside its window"
+    );
+    assert_eq!(held(&tw, r.j_acct), 300);
+
+    // Past the window: unwound, escrow back — a Draft is never bound, so `dispute`
+    // on expiry refunds.
+    sweep_at(&mut tw, 1_000 + window + 3_600);
+    assert_eq!(
+        state(&tw, id),
+        ContractState::Expired,
+        "the sweep did not expire a draft holding escrow past its deadline"
+    );
+    assert_eq!(held(&tw, r.j_acct), 0, "expiry kept the escrow");
+    assert_eq!(bal(&tw, r.j_acct), 3_000);
+}
+
+#[test]
+fn e6s1_s1_reboot_loads_the_a_prime_draft_with_its_escrow_and_acceptance() {
+    let mut tw = boot();
+    let r = run_rig(&mut tw, 3_000);
+    let (id, hold) = payer_amended_run(&mut tw, &r);
+    let kv = fold_kv(&mut tw);
+    reboot(&mut tw, kv);
+    assert!(!store(&tw).is_frozen(), "the reboot froze the economy");
+    let c = contract(&tw, id);
+    assert_eq!(c.state, ContractState::Draft);
+    assert_eq!(
+        c.acceptances.len(),
+        1,
+        "the author's acceptance did not survive the reboot"
+    );
+    assert_eq!(c.escrow, hold, "boot's orphan pass changed the escrow list");
+    assert_eq!(c.amendments, 0);
+    assert_eq!(
+        held(&tw, r.j_acct),
+        300,
+        "the escrow changed across the reboot"
+    );
+    assert!(
+        !store(&tw)
+            .escalations()
+            .any(|e| e.subject == EscalationSubject::Contract(id)),
+        "boot paged about a draft holding its author's escrow"
+    );
+    // And the shape still works after the restart: re-offer, the others accept, settle.
+    ok(&mut tw, r.johnson, &format!("@contract/offer {id}"));
+    for who in [r.a, r.b, r.c] {
+        ok(&mut tw, who, &format!("@contract/accept {id}"));
+    }
+    assert_eq!(state(&tw, id), ContractState::Active);
+    ok(&mut tw, r.johnson, &format!("@contract/attest {id}=0"));
+    assert!(matches!(state(&tw, id), ContractState::Settled { .. }));
+    assert_eq!(held(&tw, r.j_acct), 0);
+    assert_eq!(bal(&tw, r.a_acct), 99);
+}
+
+// ======================================================================
+// ---- E6a step 1: S2 — the rolling approval window (D-E6-21, DL-10) ----
+//
+// A per-transaction threshold is not a budget: an officer with
+// `economy.account.post` on an org treasury could post ≤-threshold debits forever
+// (08f review M3). `ApprovalRule.window { total, period_secs }` escalates the debit
+// that would take the account's trailing-period spend — negative lines plus placed
+// holds, a refund never subtracted — past the total, on the threshold's own path.
+// ======================================================================
+
+/// An org treasury of 1000 under `threshold 100` with a window of 400 per hour,
+/// and Quinn holding `economy.account.post` on its compartment.
+fn windowed_treasury(tw: &mut TestWorld) -> Org {
+    tw.set_now(1_000);
+    let o = org_rig(tw);
+    ok(
+        tw,
+        GOD,
+        &format!(
+            "@org/grant #{}=Ironhold economy.account.post scope=#{}",
+            o.member.0, o.scope.0
+        ),
+    );
+    let seen = ok(
+        tw,
+        GOD,
+        &format!(
+            "@account/approval {}=100 threshold:1 window=400/3600",
+            o.acct
+        ),
+    );
+    assert!(seen.contains("inside any trailing 3600 s"), "{seen}");
+    o
+}
+
+/// One ≤-threshold debit from the treasury at wall-clock `t`.
+fn drip(tw: &mut TestWorld, o: &Org, t: i64) -> String {
+    tw.set_now(t);
+    ok(
+        tw,
+        o.member,
+        &format!("@econ/pay {}={} 100", o.acct, o.payee_acct),
+    )
+}
+
+#[test]
+fn e6s1_s2_the_fifth_sub_threshold_debit_inside_the_window_needs_approval() {
+    let mut tw = boot();
+    let o = windowed_treasury(&mut tw);
+    for t in [1_000, 1_010, 1_020, 1_030] {
+        let seen = drip(&mut tw, &o, t);
+        assert!(seen.contains("Paid: transaction"), "at {t}: {seen}");
+    }
+    assert_eq!(bal(&tw, o.acct), 600);
+    // The fifth ≤-threshold debit would take the hour's spend to 500 > 400.
+    let seen = drip(&mut tw, &o, 1_040);
+    assert!(seen.contains("Approval required"), "{seen}");
+    assert_eq!(bal(&tw, o.acct), 600, "an unapproved debit posted");
+    assert!(
+        snap(&tw).approvals().any(|r| r.accounts.contains(&o.acct)),
+        "the window fired without minting the threshold's own request"
+    );
+    // Once the window has rolled past the first four, the same post needs nothing.
+    let seen = drip(&mut tw, &o, 1_000 + 3_600 + 31);
+    assert!(seen.contains("Paid: transaction"), "{seen}");
+    assert_eq!(bal(&tw, o.acct), 500);
+    // `@account/show` says so.
+    let seen = ok(&mut tw, GOD, &format!("@account/show {}", o.acct));
+    assert!(seen.contains("rolling window: 400 per 3600 s"), "{seen}");
+}
+
+#[test]
+fn e6s1_s2_a_placement_counts_and_a_refund_never_reopens_the_window() {
+    let mut tw = boot();
+    let o = windowed_treasury(&mut tw);
+    for t in [1_000, 1_010, 1_020] {
+        drip(&mut tw, &o, t);
+    }
+    // A placed hold is a promise to pay and counts like a debit (D-E4-11).
+    tw.set_now(1_030);
+    ok(
+        &mut tw,
+        o.member,
+        &format!("@hold/place {}=100 window probe", o.acct),
+    );
+    assert_eq!(held(&tw, o.acct), 100);
+    let seen = drip(&mut tw, &o, 1_040);
+    assert!(
+        seen.contains("Approval required"),
+        "a placement did not count toward the window: {seen}"
+    );
+    // Releasing the hold gives nothing back to the window; neither does reversing
+    // a posted debit — conservative by design.
+    let hold = snap(&tw)
+        .holds_of(o.acct)
+        .find(|h| h.status.is_held())
+        .expect("the probe hold")
+        .id;
+    ok(&mut tw, o.member, &format!("@hold/release #{hold}"));
+    assert_eq!(held(&tw, o.acct), 0);
+    let last = store(&tw)
+        .transactions()
+        .filter(|t| {
+            t.lines
+                .iter()
+                .any(|l| l.account == o.acct && l.delta.is_negative())
+        })
+        .map(|t| t.id)
+        .max()
+        .expect("a posted debit");
+    ok(&mut tw, GOD, &format!("@econ/reverse {last}"));
+    assert_eq!(
+        bal(&tw, o.acct),
+        800,
+        "the reversal did not credit the treasury"
+    );
+    let seen = drip(&mut tw, &o, 1_050);
+    assert!(
+        seen.contains("Approval required"),
+        "a release or a reversal re-opened the window: {seen}"
+    );
+    assert_eq!(bal(&tw, o.acct), 800);
+}
+
+#[test]
+fn e6s1_s2_the_window_tail_survives_a_reboot() {
+    // A personal wallet: the reboot rig reloads the economy namespace alone, and an
+    // org compartment would not come back with it.
+    let mut tw = boot();
+    tw.set_now(1_000);
+    let r = run_rig(&mut tw, 3_000);
+    ok(
+        &mut tw,
+        GOD,
+        &format!(
+            "@account/approval {}=100 threshold:1 window=400/3600",
+            r.j_acct
+        ),
+    );
+    for t in [1_000, 1_010, 1_020, 1_030] {
+        tw.set_now(t);
+        let seen = ok(
+            &mut tw,
+            r.johnson,
+            &format!("@econ/pay {}={} 100", r.j_acct, r.a_acct),
+        );
+        assert!(seen.contains("Paid: transaction"), "at {t}: {seen}");
+    }
+    let kv = fold_kv(&mut tw);
+    reboot(&mut tw, kv);
+    assert!(!store(&tw).is_frozen());
+    assert_eq!(
+        store(&tw).spent_in_window(r.j_acct, 1_040, 3_600).minor(),
+        400,
+        "replay did not rebuild the window tail"
+    );
+    tw.set_now(1_040);
+    let seen = ok(
+        &mut tw,
+        r.johnson,
+        &format!("@econ/pay {}={} 100", r.j_acct, r.a_acct),
+    );
+    assert!(
+        seen.contains("Approval required"),
+        "the window forgot the pre-reboot spend: {seen}"
+    );
+    assert_eq!(bal(&tw, r.j_acct), 2_600);
+}
+
+#[test]
+fn e6s1_s2_window_off_restores_threshold_only() {
+    let mut tw = boot();
+    let o = windowed_treasury(&mut tw);
+    for t in [1_000, 1_010, 1_020, 1_030] {
+        drip(&mut tw, &o, t);
+    }
+    let seen = drip(&mut tw, &o, 1_040);
+    assert!(seen.contains("Approval required"), "{seen}");
+    // A bare `window=off` keeps the threshold and the policy and drops the budget.
+    let seen = ok(
+        &mut tw,
+        GOD,
+        &format!("@account/approval {}=window=off", o.acct),
+    );
+    assert!(seen.contains("rolling window is off"), "{seen}");
+    let rule = snap(&tw)
+        .account(o.acct)
+        .expect("account")
+        .approval
+        .clone()
+        .expect("the rule stands");
+    assert_eq!(rule.threshold.minor(), 100);
+    assert!(rule.window.is_none());
+    let seen = drip(&mut tw, &o, 1_050);
+    assert!(seen.contains("Paid: transaction"), "{seen}");
+    // The threshold alone still escalates an over-threshold debit.
+    tw.set_now(1_060);
+    let seen = ok(
+        &mut tw,
+        o.member,
+        &format!("@econ/pay {}={} 101", o.acct, o.payee_acct),
+    );
+    assert!(seen.contains("Approval required"), "{seen}");
+    // A malformed or out-of-band window is refused and changes nothing.
+    err(
+        &mut tw,
+        GOD,
+        &format!("@account/approval {}=window=400/0", o.acct),
+    );
+    err(
+        &mut tw,
+        GOD,
+        &format!(
+            "@account/approval {}=window=400/{}",
+            o.acct,
+            mush_economy::MAX_APPROVAL_WINDOW_SECS + 1
+        ),
+    );
+    assert!(
+        snap(&tw)
+            .account(o.acct)
+            .expect("account")
+            .approval
+            .as_ref()
+            .is_some_and(|r| r.window.is_none())
+    );
+}
+
+// ======================================================================
+// ---- E6a step 1: S4 — the programmatic contract seams ----
+//
+// `offer_contract` / `accept_contract` / `amend_contract` (08f §2 item 4): a
+// ruleset drafts, offers, accepts and amends through crate APIs and never types
+// a `@contract` command. Driven through an `@e6` probe, because the seams take a
+// `Ctx` and are deliberately not verbs.
+// ======================================================================
+
+use std::sync::Mutex;
+
+use mush_core::module::{GameModule, ModError, Registrar};
+use mush_core::{ArgShape, CmdError, CommandSpec, Ctx};
+use mush_economy::{
+    AcceptOutcome, AttestorSet, ConsiderationSpec, ContractAmendment, ContractError, ContractRoles,
+    ContractSpec, EconomicVisibility, ExpenseTreatment, Expiry, OutcomeTerms, PayoutShare, Share,
+    TypedCondition,
+};
+
+#[derive(Default)]
+struct E6State {
+    spec: Option<ContractSpec>,
+    amend: Option<ContractAmendment>,
+    offered: Option<Result<ContractId, ContractError>>,
+    accepted: Option<Result<AcceptOutcome, ContractError>>,
+    amended: Option<Result<(), ContractError>>,
+}
+
+#[derive(Clone, Default)]
+struct E6(Arc<Mutex<E6State>>);
+
+impl E6 {
+    fn stage_offer(&self, spec: ContractSpec) {
+        self.0.lock().expect("probe lock").spec = Some(spec);
+    }
+    fn offered(&self) -> Result<ContractId, ContractError> {
+        self.0
+            .lock()
+            .expect("probe lock")
+            .offered
+            .clone()
+            .expect("an offer outcome was recorded")
+    }
+    fn accepted(&self) -> Result<AcceptOutcome, ContractError> {
+        self.0
+            .lock()
+            .expect("probe lock")
+            .accepted
+            .clone()
+            .expect("an accept outcome was recorded")
+    }
+    fn stage_amend(&self, amend: ContractAmendment) {
+        self.0.lock().expect("probe lock").amend = Some(amend);
+    }
+    fn amended(&self) -> Result<(), ContractError> {
+        self.0
+            .lock()
+            .expect("probe lock")
+            .amended
+            .clone()
+            .expect("an amend outcome was recorded")
+    }
+}
+
+struct E6Mod(E6);
+
+impl GameModule for E6Mod {
+    fn name(&self) -> &'static str {
+        "e6probe"
+    }
+    fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
+        let st = self.0.clone();
+        reg.command(
+            CommandSpec {
+                name: "@e6".into(),
+                shape: ArgShape::EqPair,
+                switches: ["offer", "accept", "amend", "notice"]
+                    .iter()
+                    .copied()
+                    .map(SmolStr::new)
+                    .collect(),
+                help: "E6a step 1 probe: offer a staged spec / accept <id> / amend <id> with the \
+                       staged amendment, through the programmatic seams / notice <id> renders \
+                       the exported notice class"
+                    .into(),
+                ..CommandSpec::default()
+            },
+            Arc::new(move |ctx: &mut Ctx<'_>| -> Result<(), CmdError> {
+                let id = || -> ContractId {
+                    ContractId(
+                        ctx.args
+                            .lhs()
+                            .trim()
+                            .trim_start_matches('#')
+                            .parse()
+                            .unwrap_or(u64::MAX),
+                    )
+                };
+                if ctx.switches.has("offer") {
+                    let spec =
+                        st.0.lock()
+                            .expect("probe lock")
+                            .spec
+                            .take()
+                            .expect("stage a spec first");
+                    let outcome = mush_economy::offer_contract(ctx, spec);
+                    st.0.lock().expect("probe lock").offered = Some(outcome);
+                } else if ctx.switches.has("accept") {
+                    let outcome = mush_economy::accept_contract(ctx, id());
+                    st.0.lock().expect("probe lock").accepted = Some(outcome);
+                } else if ctx.switches.has("amend") {
+                    let amend =
+                        st.0.lock()
+                            .expect("probe lock")
+                            .amend
+                            .take()
+                            .expect("stage an amendment first");
+                    let outcome = mush_economy::amend_contract(ctx, id(), amend);
+                    st.0.lock().expect("probe lock").amended = Some(outcome);
+                } else if ctx.switches.has("notice") {
+                    // S8: the exported notice class, rendered to the actor exactly as
+                    // a run board's `+run/show` would render it.
+                    let id = id();
+                    let c = ctx
+                        .w
+                        .module_state::<EconomyStore>()
+                        .and_then(|s| s.snapshot().contract(id).cloned())
+                        .ok_or_else(|| CmdError::msg("No such contract."))?;
+                    for line in mush_economy::contract_notice(ctx, &c) {
+                        let actor = ctx.actor;
+                        ctx.out.sys_to_actor(actor, "probe", line);
+                    }
+                }
+                Ok(())
+            }),
+        )?;
+        Ok(())
+    }
+}
+
+fn boot_e6() -> (TestWorld, E6) {
+    let e6 = E6::default();
+    let tw = TestWorld::with_modules(vec![
+        Box::new(
+            mush_org::OrgModule::new()
+                .with_capabilities(vocabulary())
+                .with_scope_use(vec![Arc::new(mush_economy::EconomyScopeUse)]),
+        ),
+        Box::new(mush_economy::EconomyModule::with_custody(vec![])),
+        Box::new(E6Mod(e6.clone())),
+    ]);
+    (tw, e6)
+}
+
+fn exact(to: AccountId, minor: i64) -> PayoutShare {
+    PayoutShare {
+        to,
+        share: Share::Exact(Amount::from_minor(minor)),
+    }
+}
+
+fn row(name: &str, when: Vec<usize>, payouts: Vec<PayoutShare>) -> OutcomeTerms {
+    OutcomeTerms {
+        name: SmolStr::new(name),
+        when,
+        payouts,
+        expense_treatment: ExpenseTreatment::None,
+        asset_consequences: Vec::new(),
+    }
+}
+
+/// A run-shaped spec (08f §3.1): one consideration, two attestation conditions
+/// deciding success (0) or failure (1), the payer as adjudicator, `Dispute` on
+/// expiry, and whatever parties and rows the caller names.
+fn run_spec(
+    name: &str,
+    payer: ObjId,
+    pay: (AccountId, i64),
+    parties: Vec<PrincipalId>,
+    outcomes: Vec<OutcomeTerms>,
+) -> ContractSpec {
+    ContractSpec {
+        name: SmolStr::new(name),
+        scope: None,
+        parties,
+        considerations: vec![ConsiderationSpec {
+            account: pay.0,
+            amount: Amount::from_minor(pay.1),
+        }],
+        outcomes,
+        remainder_to: pay.0,
+        conditions: vec![
+            TypedCondition::Attestation {
+                by: AttestorSet::Party(PrincipalId::Object(payer)),
+            },
+            TypedCondition::Attestation {
+                by: AttestorSet::Party(PrincipalId::Object(payer)),
+            },
+        ],
+        adjudicator: Some(AttestorSet::Party(PrincipalId::Object(payer))),
+        evidence: vec![mush_economy::EvidenceKind::Attestation],
+        deadline: None,
+        on_expiry: Expiry::Dispute,
+        visibility: EconomicVisibility::Parties,
+        roles: ContractRoles::default(),
+        deterministic: false,
+    }
+}
+
+#[test]
+fn e6s1_s4_a_run_shaped_contract_goes_end_to_end_through_the_seams_only() {
+    let (mut tw, e6) = boot_e6();
+    let r = run_rig(&mut tw, 3_000);
+    let fixer = r.watcher;
+    let fixer_acct = account_of(&tw, fixer);
+    // The board post: the payer is the issuer (D-E6-19), the fixer is a fee row and
+    // the representative, and the crew's share sits provisionally on the payer's own
+    // account until the crew is known (08f §3.1).
+    let mut spec = run_spec(
+        "Extraction",
+        r.johnson,
+        (r.j_acct, 1_000),
+        Vec::new(),
+        vec![
+            row(
+                "success",
+                vec![0],
+                vec![exact(r.j_acct, 800), exact(fixer_acct, 200)],
+            ),
+            row("failure", vec![1], vec![exact(r.j_acct, 1_000)]),
+        ],
+    );
+    spec.roles.representative = Some(PrincipalId::Object(fixer));
+    e6.stage_offer(spec);
+    ok(&mut tw, r.johnson, "@e6/offer");
+    let id = e6.offered().expect("the seam refused a well-formed run");
+    let c = contract(&tw, id);
+    assert_eq!(c.state, ContractState::Offered);
+    assert_eq!(c.issuer, PrincipalId::Object(r.johnson));
+    assert_eq!(c.roles.author, Some(PrincipalId::Object(r.johnson)));
+    assert_eq!(c.roles.payer, Some(PrincipalId::Object(r.johnson)));
+    assert_eq!(c.roles.representative, Some(PrincipalId::Object(fixer)));
+    assert_eq!(
+        snap(&tw).contracts().count(),
+        1,
+        "the offer left a draft behind"
+    );
+
+    // The payer's own accept places the escrow (answer 24: no listing before its
+    // escrow). With nobody else on the surface it is also the LAST acceptance, so
+    // the listing is a one-party contract in force — bound to nobody but its author.
+    ok(&mut tw, r.johnson, &format!("@e6/accept {id}"));
+    let Ok(AcceptOutcome::Accepted { escrow, activated }) = e6.accepted() else {
+        panic!("the payer's accept was refused: {:?}", e6.accepted())
+    };
+    assert_eq!(escrow.len(), 1);
+    assert!(
+        activated,
+        "a one-party contract did not activate at its author's accept"
+    );
+    assert_eq!(state(&tw, id), ContractState::Active);
+    assert_eq!(held(&tw, r.j_acct), 1_000);
+    let before = journal_len(&tw);
+
+    // `+run/crew accept`: an A′ amendment adds the runners and rewrites every row to
+    // their accounts, then re-offers — the payer's acceptance and escrow stand, and
+    // an author-only contract in force re-opens without unwinding anything.
+    e6.stage_amend(ContractAmendment {
+        add_parties: vec![PrincipalId::Object(r.a), PrincipalId::Object(r.b)],
+        outcomes: Some(vec![
+            row(
+                "success",
+                vec![0],
+                vec![
+                    exact(r.a_acct, 400),
+                    exact(r.b_acct, 400),
+                    exact(fixer_acct, 200),
+                ],
+            ),
+            row("failure", vec![1], vec![exact(r.j_acct, 1_000)]),
+        ]),
+        on_expiry: Some(Expiry::Dispute),
+        reoffer: true,
+    });
+    ok(&mut tw, r.johnson, &format!("@e6/amend {id}"));
+    e6.amended().expect("the crewing amendment was refused");
+    let c = contract(&tw, id);
+    assert_eq!(
+        c.state,
+        ContractState::Offered,
+        "the amendment did not re-offer"
+    );
+    assert_eq!(c.consent.parties.len(), 3);
+    assert_eq!(c.escrow, escrow, "the amendment moved the escrow");
+    assert!(
+        c.accepted_by(&PrincipalId::Object(r.johnson)),
+        "the payer's acceptance did not survive the crewing amendment"
+    );
+    assert_eq!(
+        c.amendments, 0,
+        "an amendment that refunded nothing burned a generation"
+    );
+    assert_eq!(held(&tw, r.j_acct), 1_000);
+    assert_eq!(
+        journal_len(&tw),
+        before,
+        "the crewing amendment posted something"
+    );
+
+    // The runners accept through the seam; the last one activates.
+    ok(&mut tw, r.a, &format!("@e6/accept {id}"));
+    assert!(matches!(
+        e6.accepted(),
+        Ok(AcceptOutcome::Accepted {
+            activated: false,
+            ..
+        })
+    ));
+    ok(&mut tw, r.b, &format!("@e6/accept {id}"));
+    assert!(matches!(
+        e6.accepted(),
+        Ok(AcceptOutcome::Accepted {
+            activated: true,
+            ..
+        })
+    ));
+    assert_eq!(state(&tw, id), ContractState::Active);
+
+    // The adjudicator (the payer) attests success; the row pays exactly what it
+    // names and no remainder reaches the fixer.
+    ok(&mut tw, r.johnson, &format!("@contract/attest {id}=0"));
+    assert!(matches!(state(&tw, id), ContractState::Settled { .. }));
+    assert_eq!(bal(&tw, r.a_acct), 400);
+    assert_eq!(bal(&tw, r.b_acct), 400);
+    assert_eq!(bal(&tw, fixer_acct), 200);
+    assert_eq!(bal(&tw, r.j_acct), 2_000);
+    assert_eq!(held(&tw, r.j_acct), 0);
+    assert_eq!(journal_len(&tw), before + 1);
+}
+
+#[test]
+fn e6s1_s4_a_fixer_issuers_amend_refunds_the_payer_through_the_seam() {
+    let (mut tw, e6) = boot_e6();
+    let r = run_rig(&mut tw, 0);
+    let faucet = faucet(&tw);
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@econ/mint {faucet}={} 500", r.a_acct),
+    );
+    // Staff as the fixer-issuer (they may view the payer's wallet): the payer is a
+    // party who is not the author.
+    let mut spec = run_spec(
+        "Brokered",
+        GOD,
+        (r.a_acct, 300),
+        vec![PrincipalId::Object(r.a)],
+        vec![
+            row("success", vec![0], vec![exact(r.b_acct, 300)]),
+            row("failure", vec![1], vec![exact(r.a_acct, 300)]),
+        ],
+    );
+    spec.roles.author = Some(PrincipalId::Object(GOD));
+    e6.stage_offer(spec);
+    ok(&mut tw, GOD, "@e6/offer");
+    let id = e6.offered().expect("offered");
+    ok(&mut tw, r.a, &format!("@e6/accept {id}"));
+    e6.accepted().expect("the payer accepted");
+    assert_eq!(held(&tw, r.a_acct), 300);
+    let before = journal_len(&tw);
+
+    e6.stage_amend(ContractAmendment::default());
+    ok(&mut tw, GOD, &format!("@e6/amend {id}"));
+    e6.amended().expect("amended");
+    let c = contract(&tw, id);
+    assert_eq!(c.state, ContractState::Draft);
+    assert!(
+        c.acceptances.is_empty(),
+        "a non-author's acceptance survived"
+    );
+    assert_eq!(c.amendments, 1);
+    assert_eq!(
+        held(&tw, r.a_acct),
+        0,
+        "the payer's escrow was not refunded"
+    );
+    assert_eq!(bal(&tw, r.a_acct), 500);
+    assert_eq!(journal_len(&tw), before + 1);
+}
+
+#[test]
+fn e6s1_s4_accept_by_a_non_party_is_refused_with_one_answer() {
+    let (mut tw, e6) = boot_e6();
+    let r = run_rig(&mut tw, 3_000);
+    let mut spec = run_spec(
+        "Closed",
+        r.johnson,
+        (r.j_acct, 100),
+        vec![PrincipalId::Object(r.a)],
+        vec![
+            row("success", vec![0], vec![exact(r.a_acct, 100)]),
+            row("failure", vec![1], vec![exact(r.j_acct, 100)]),
+        ],
+    );
+    // Bex may VIEW it (she is the adjudicator) and is still not a party.
+    spec.adjudicator = Some(AttestorSet::Party(PrincipalId::Object(r.b)));
+    e6.stage_offer(spec);
+    ok(&mut tw, r.johnson, "@e6/offer");
+    let id = e6.offered().expect("offered");
+    for outsider in [r.watcher, r.b] {
+        ok(&mut tw, outsider, &format!("@e6/accept {id}"));
+        assert_eq!(
+            e6.accepted(),
+            Err(ContractError::NoStanding),
+            "a non-party's accept was not refused with the one answer"
+        );
+    }
+    // A contract that does not exist answers the same.
+    ok(&mut tw, r.a, "@e6/accept 4242");
+    assert_eq!(e6.accepted(), Err(ContractError::NoStanding));
+    assert!(contract(&tw, id).acceptances.is_empty());
+    assert_eq!(held(&tw, r.j_acct), 0);
+}
+
+#[test]
+fn e6s1_s4_a_refused_offer_leaves_no_draft_behind() {
+    let (mut tw, e6) = boot_e6();
+    let r = run_rig(&mut tw, 3_000);
+    // Alder's wallet is not the Johnson's to name (A1's rule (a)): the account
+    // answers as if it did not exist, and no contract is allocated or written.
+    let spec = run_spec(
+        "Probe",
+        r.johnson,
+        (r.a_acct, 100),
+        vec![PrincipalId::Object(r.a)],
+        vec![row("success", vec![0], vec![exact(r.j_acct, 100)])],
+    );
+    e6.stage_offer(spec);
+    ok(&mut tw, r.johnson, "@e6/offer");
+    assert_eq!(e6.offered(), Err(ContractError::NoSuchAccount(r.a_acct)));
+    assert_eq!(
+        snap(&tw).contracts().count(),
+        0,
+        "a refused offer left a draft"
+    );
+    // A deterministic condition is refused unless the spec opts in (D-E6-20).
+    let mut spec = run_spec(
+        "Clocked",
+        r.johnson,
+        (r.j_acct, 100),
+        vec![PrincipalId::Object(r.a)],
+        vec![row("success", vec![0], vec![exact(r.a_acct, 100)])],
+    );
+    spec.conditions.push(TypedCondition::Before {
+        deadline: mush_economy::EconomicDeadline {
+            clock: mush_economy::EconomicClock::RealUtc,
+            at: 10_000,
+        },
+    });
+    e6.stage_offer(spec);
+    ok(&mut tw, r.johnson, "@e6/offer");
+    assert_eq!(e6.offered(), Err(ContractError::EvidenceNotPermitted(2)));
+    assert_eq!(snap(&tw).contracts().count(), 0);
+}
+
+#[test]
+fn e6s1_s4_needs_approval_on_an_org_payers_accept_leaves_no_acceptance() {
+    let (mut tw, e6) = boot_e6();
+    let o = org_rig(&mut tw);
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@account/approval {}=100 threshold:1", o.acct),
+    );
+    for cap in ["contract.accept", "economy.account.post"] {
+        ok(
+            &mut tw,
+            GOD,
+            &format!(
+                "@org/grant #{}=Ironhold {cap} scope=#{}",
+                o.member.0, o.scope.0
+            ),
+        );
+    }
+    // Staff post an org-issued run on the compartment.
+    let spec = ContractSpec {
+        name: SmolStr::new("Supply"),
+        scope: Some(o.scope),
+        parties: vec![PrincipalId::Object(o.payee)],
+        considerations: vec![ConsiderationSpec {
+            account: o.acct,
+            amount: Amount::from_minor(400),
+        }],
+        outcomes: vec![row("success", vec![0], vec![exact(o.payee_acct, 400)])],
+        remainder_to: o.acct,
+        conditions: vec![TypedCondition::Attestation {
+            by: AttestorSet::Staff,
+        }],
+        adjudicator: None,
+        evidence: Vec::new(),
+        deadline: None,
+        on_expiry: Expiry::Refund,
+        visibility: EconomicVisibility::Parties,
+        roles: ContractRoles::default(),
+        deterministic: false,
+    };
+    e6.stage_offer(spec);
+    ok(&mut tw, GOD, "@e6/offer");
+    let id = e6.offered().expect("offered");
+    assert_eq!(contract(&tw, id).issuer, PrincipalId::Organization(o.org));
+
+    ok(&mut tw, o.member, &format!("@e6/accept {id}"));
+    let Ok(AcceptOutcome::NeedsApproval(request)) = e6.accepted() else {
+        panic!("expected NeedsApproval, got {:?}", e6.accepted())
+    };
+    assert!(snap(&tw).approval(request).is_some());
+    let c = contract(&tw, id);
+    assert!(
+        c.acceptances.is_empty(),
+        "an unapproved accept recorded an acceptance"
+    );
+    assert!(c.escrow.is_empty());
+    assert_eq!(held(&tw, o.acct), 0);
+    assert_eq!(c.state, ContractState::Offered);
+}
+
+// ======================================================================
+// ---- E6a step 1: S5 — the contract renders (E2-C16) ----
+// ======================================================================
+
+/// Two of 08g §3's raw-minor sites: the `@contract/pay` reply and the
+/// `@contract/show` line for an `Obligation` deliverable. Both now render in the
+/// account's instrument, symbol and scale included.
+#[test]
+fn e6s1_s5_the_contract_pay_reply_and_the_obligation_deliverable_line_render_at_scale() {
+    let mut tw = boot();
+    let r = run_rig(&mut tw, 3_000);
+    ok(&mut tw, GOD, "@instrument/register yen=2 display=¥:prefix");
+    ok(&mut tw, GOD, "@account/system yenfaucet=yen");
+    ok(&mut tw, GOD, &format!("@account/open #{}=yen", r.johnson.0));
+    ok(&mut tw, GOD, &format!("@account/open #{}=yen", r.a.0));
+    let yen_of = |tw: &TestWorld, who: ObjId| -> AccountId {
+        snap(tw)
+            .accounts()
+            .find(|x| x.owner == PrincipalId::Object(who) && x.instrument.as_str() == "yen")
+            .expect("yen wallet")
+            .id
+    };
+    let j_yen = yen_of(&tw, r.johnson);
+    let a_yen = yen_of(&tw, r.a);
+    let faucet = snap(&tw)
+        .accounts()
+        .find(|x| x.instrument.as_str() == "yen" && matches!(x.owner, PrincipalId::System(_)))
+        .expect("yen faucet")
+        .id;
+    ok(&mut tw, GOD, &format!("@econ/mint {faucet}={j_yen} 100000"));
+
+    ok(&mut tw, r.johnson, "@contract/draft Retainer");
+    let id = only_contract(&tw);
+    ok(
+        &mut tw,
+        r.johnson,
+        &format!("@contract/party {id}=#{}", r.a.0),
+    );
+    let seen = ok(
+        &mut tw,
+        r.johnson,
+        &format!("@contract/pay {id}={j_yen} 12345"),
+    );
+    assert!(
+        seen.contains("escrows ¥123.45 at acceptance"),
+        "the pay reply printed raw minor units: {seen}"
+    );
+    ok(
+        &mut tw,
+        r.johnson,
+        &format!("@contract/deliver {id}=obligation {j_yen} {a_yen} 5000 every=100"),
+    );
+    ok(
+        &mut tw,
+        r.johnson,
+        &format!("@contract/split {id}={a_yen} 1000‰"),
+    );
+    ok(
+        &mut tw,
+        r.johnson,
+        &format!("@contract/remainder {id}={j_yen}"),
+    );
+    let seen = ok(&mut tw, r.johnson, &format!("@contract/show {id}"));
+    assert!(
+        seen.contains("escrows ¥123.45 from account"),
+        "the show page printed the consideration raw: {seen}"
+    );
+    // The creditor's wallet is masked for the Johnson; the amount is not.
+    assert!(
+        seen.contains("owes an account ¥50.00 each period"),
+        "the obligation deliverable printed raw minor units: {seen}"
+    );
+}
+
+// ======================================================================
+// ---- E6a step 1: S6 — a `System` payer is refused structurally (M4, D-E6-4) ----
+//
+// Nobody acts for a `System` principal, so a contract naming one could be
+// offered and never accepted: a zombie holding an offer open forever. The tree
+// made it unfundable; this makes it unofferable — decided on the account's owner,
+// rendered as the account's own existence-hiding text, with no draft left behind.
+// ======================================================================
+
+#[test]
+fn e6s1_s6_staff_naming_a_faucet_as_payer_is_refused_with_the_hiding_text_and_nothing_changes() {
+    let mut tw = boot();
+    let r = run_rig(&mut tw, 3_000);
+    let faucet = faucet(&tw);
+    ok(&mut tw, GOD, "@contract/draft Faucet");
+    let id = only_contract(&tw);
+    ok(&mut tw, GOD, &format!("@contract/party {id}=#{}", r.a.0));
+    let before = contract(&tw, id);
+
+    // `/pay`: the account's own hiding text — staff may VIEW the faucet, and still get
+    // "No such account.", never a faucet-shaped message (M4 ii).
+    let seen = err(&mut tw, GOD, &format!("@contract/pay {id}={faucet} 100"));
+    assert!(seen.contains("No such account."), "wrong refusal: {seen}");
+    assert!(
+        !seen.to_ascii_lowercase().contains("system")
+            && !seen.to_ascii_lowercase().contains("faucet"),
+        "the refusal was faucet-shaped: {seen}"
+    );
+    // `/party`: a system principal is never a party.
+    let seen = err(&mut tw, GOD, &format!("@contract/party {id}=sys:faucet"));
+    assert!(seen.contains("No such principal."), "wrong refusal: {seen}");
+    // M17: a refused builder changed nothing and created nothing.
+    assert_eq!(
+        contract(&tw, id),
+        before,
+        "a refused /pay or /party changed the draft"
+    );
+    assert_eq!(snap(&tw).contracts().count(), 1);
+
+    // The structural gate `/offer` shares: a `System` party, or a `System` `from`.
+    let sys = PrincipalId::System(mush_org::SystemPrincipalId::new("faucet").expect("id"));
+    let mut c = contract(&tw, id);
+    c.consent.parties.push(sys.clone());
+    assert_eq!(
+        mush_economy::check_structure(&c, &mush_economy::CanonOutcomeKinds::default()),
+        Err(ContractError::SystemParty)
+    );
+    let mut c = contract(&tw, id);
+    c.consent
+        .terms
+        .consideration
+        .push(mush_economy::Consideration {
+            from: sys.clone(),
+            account: faucet,
+            amount: Amount::from_minor(100),
+        });
+    assert_eq!(
+        mush_economy::check_structure(&c, &mush_economy::CanonOutcomeKinds::default()),
+        Err(ContractError::SystemParty)
+    );
+    // ...and boot runs that gate on every stored non-terminal record: a draft that
+    // somehow names a faucet is quarantined, never offered.
+    let mut kv = fold_kv(&mut tw);
+    let patched = serde_json::to_value(&sys).expect("a principal serializes");
+    patch(&mut kv, &format!("contract:{id}"), |v| {
+        v["consent"]["parties"]
+            .as_array_mut()
+            .expect("parties")
+            .push(patched.clone());
+    });
+    reboot(&mut tw, kv);
+    assert_eq!(state(&tw, id), ContractState::Disputed);
+    assert!(
+        store(&tw)
+            .escalations()
+            .any(|e| e.subject == EscalationSubject::Contract(id)),
+        "boot quarantined a faucet-party draft without paging"
+    );
+    let seen = err(&mut tw, GOD, &format!("@contract/offer {id}"));
+    assert!(seen.contains("is not a draft"), "{seen}");
+}
+
+#[test]
+fn e6s1_s6_offer_contract_refuses_a_faucet_payer_or_party_and_leaves_no_draft() {
+    let (mut tw, e6) = boot_e6();
+    let r = run_rig(&mut tw, 3_000);
+    let faucet = faucet(&tw);
+    // Staff post with the faucet as the payer's account.
+    let spec = run_spec(
+        "Faucet",
+        GOD,
+        (faucet, 100),
+        vec![PrincipalId::Object(r.a)],
+        vec![row("success", vec![0], vec![exact(r.a_acct, 100)])],
+    );
+    e6.stage_offer(spec);
+    ok(&mut tw, GOD, "@e6/offer");
+    assert_eq!(e6.offered(), Err(ContractError::SystemParty));
+    assert_eq!(
+        snap(&tw).contracts().count(),
+        0,
+        "a refused offer left a draft"
+    );
+    // A `System` party is refused just the same, before anything is allocated.
+    let spec = run_spec(
+        "Faucet party",
+        r.johnson,
+        (r.j_acct, 100),
+        vec![PrincipalId::System(
+            mush_org::SystemPrincipalId::new("faucet").expect("id"),
+        )],
+        vec![row("success", vec![0], vec![exact(r.j_acct, 100)])],
+    );
+    e6.stage_offer(spec);
+    ok(&mut tw, r.johnson, "@e6/offer");
+    assert_eq!(e6.offered(), Err(ContractError::SystemParty));
+    assert_eq!(snap(&tw).contracts().count(), 0);
+    assert_eq!(store(&tw).snapshot().contracts().count(), 0);
+}
+
+// ======================================================================
+// ---- E6a step 1: S8 — `contract_notice` and the exported hiding helpers ----
+// ======================================================================
+
+/// The notice for a run — the class a board entry renders (08f §3.4 `+run/show`) —
+/// names the contract, its state, its window and the kinds of condition, and never
+/// a payout amount, an account id, a party or a hold.
+#[test]
+fn e6s1_s8_the_notice_for_a_run_never_carries_an_amount_or_an_account_id() {
+    let (mut tw, e6) = boot_e6();
+    let r = run_rig(&mut tw, 3_000);
+    let fixer_acct = account_of(&tw, r.watcher);
+    let mut spec = run_spec(
+        "Extraction",
+        r.johnson,
+        (r.j_acct, 1_000),
+        vec![PrincipalId::Object(r.a), PrincipalId::Object(r.b)],
+        vec![
+            row(
+                "success",
+                vec![0],
+                vec![
+                    exact(r.a_acct, 400),
+                    exact(r.b_acct, 400),
+                    exact(fixer_acct, 200),
+                ],
+            ),
+            row("failure", vec![1], vec![exact(r.j_acct, 1_000)]),
+        ],
+    );
+    spec.deadline = Some(mush_economy::EconomicDeadline {
+        clock: mush_economy::EconomicClock::RealUtc,
+        at: 5_000_000,
+    });
+    spec.visibility = EconomicVisibility::Audience {
+        members: vec![PrincipalId::Object(r.watcher)],
+        announce_issuer: true,
+    };
+    e6.stage_offer(spec);
+    ok(&mut tw, r.johnson, "@e6/offer");
+    let id = e6.offered().expect("offered");
+    ok(&mut tw, r.johnson, &format!("@e6/accept {id}"));
+
+    let seen = ok(&mut tw, r.watcher, &format!("@e6/notice {id}"));
+    assert!(
+        seen.contains(&format!("contract #{id} \"Extraction\"")),
+        "no name: {seen}"
+    );
+    assert!(seen.contains("offered"), "no state: {seen}");
+    assert!(
+        seen.contains("window closes at 5000000"),
+        "no window: {seen}"
+    );
+    assert!(
+        seen.contains("conditions: Attestation, Attestation"),
+        "no condition kinds: {seen}"
+    );
+    assert!(
+        seen.contains("issued by Johnson"),
+        "announce=yes was ignored: {seen}"
+    );
+    for forbidden in [
+        "1000",
+        "400",
+        "200",
+        "account #",
+        &format!("account #{}", r.j_acct),
+        &format!("account #{}", r.a_acct),
+        &format!("account #{}", fixer_acct),
+        "Alder",
+        "Bex",
+        "escrow",
+        "hold",
+        "payer",
+    ] {
+        assert!(
+            !seen.contains(forbidden),
+            "the notice carries {forbidden:?}: {seen}"
+        );
+    }
+    // The same class `@contract/show` renders to an audience member.
+    let shown = ok(&mut tw, r.watcher, &format!("@contract/show {id}"));
+    assert!(shown.contains("you are seeing a notice"), "{shown}");
+    assert!(
+        !shown.contains("1000") && !shown.contains("account #"),
+        "{shown}"
+    );
+    // And the exported hiding helper answers for the actor exactly as the command
+    // path does: a non-viewer's refusal is the nonexistent-contract text.
+    let seen = ok(&mut tw, r.c, &format!("@e6/accept {id}"));
+    let _ = seen;
+    assert_eq!(e6.accepted(), Err(ContractError::NoStanding));
 }

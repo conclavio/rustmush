@@ -41,9 +41,10 @@ use crate::obligation::{
 };
 use crate::plan::{AssetOp, CustodyOp, EconomyPlan, HoldOp, NamedResource, RequestedLine};
 use crate::record::{
-    Account, AccountStatus, Approval, ApprovalRule, ApprovalStatus, CreditPolicy, CustodyRef,
-    Decision, EconomicCause, Encumbrance, HoldEffectKind, HoldPurpose, HoldStatus, IdempotencyKey,
-    InstrumentDef, InstrumentKind, InstrumentStatus, NegativePolicy, Vault, VaultStatus, Verdict,
+    Account, AccountStatus, Approval, ApprovalRule, ApprovalStatus, ApprovalWindow, CreditPolicy,
+    CustodyRef, Decision, EconomicCause, Encumbrance, HoldEffectKind, HoldPurpose, HoldStatus,
+    IdempotencyKey, InstrumentDef, InstrumentDisplay, InstrumentKind, InstrumentStatus,
+    NegativePolicy, SymbolPosition, Vault, VaultStatus, Verdict,
 };
 
 /// Register the economy commands.
@@ -304,7 +305,7 @@ pub(crate) fn info(ctx: &mut Ctx<'_>, msg: impl Into<String>) {
     let actor = ctx.actor;
     ctx.out.sys_to_actor(actor, "economy", msg.into());
 }
-pub(crate) fn parse_account(s: &str) -> Option<AccountId> {
+pub fn parse_account(s: &str) -> Option<AccountId> {
     s.trim()
         .trim_start_matches('#')
         .parse::<u64>()
@@ -331,7 +332,7 @@ pub(crate) const LIST_CAP: usize = 20;
 /// Pull `key=value` options out of a free-form tail, returning the remaining words
 /// and the recognized options (lower-cased keys). Unknown `k=v` words stay in the
 /// remainder, so a purpose containing an `=` is not silently eaten.
-pub(crate) fn parse_opts(s: &str, keys: &[&str]) -> (String, BTreeMap<String, String>) {
+pub fn parse_opts(s: &str, keys: &[&str]) -> (String, BTreeMap<String, String>) {
     let mut rest: Vec<&str> = Vec::new();
     let mut opts: BTreeMap<String, String> = BTreeMap::new();
     for tok in s.split_whitespace() {
@@ -348,7 +349,7 @@ pub(crate) fn parse_opts(s: &str, keys: &[&str]) -> (String, BTreeMap<String, St
 }
 
 /// `<principal>` = `#obj` (or a matchable name) | `org:<id|name>` | `sys:<name>`.
-pub(crate) fn parse_principal(ctx: &Ctx<'_>, s: &str) -> Option<PrincipalId> {
+pub fn parse_principal(ctx: &Ctx<'_>, s: &str) -> Option<PrincipalId> {
     let s = s.trim();
     if let Some(rest) = s.strip_prefix("org:") {
         return resolve_org(ctx, rest).map(PrincipalId::Organization);
@@ -394,7 +395,24 @@ pub(crate) fn parse_vault_id(s: &str) -> Option<VaultId> {
         .map(VaultId)
 }
 
-pub(crate) fn render_principal(ctx: &Ctx<'_>, p: &PrincipalId) -> String {
+/// The one player-facing amount render, over the live store (E6a step 1, E2-C16):
+/// scale and symbol from `instrument`'s definition ([`crate::render_amount`]).
+pub fn money(ctx: &Ctx<'_>, instrument: &InstrumentId, amount: Amount) -> String {
+    ctx.w.module_state::<EconomyStore>().map_or_else(
+        || amount.to_decimal_string(0),
+        |s| crate::render::render_amount(s.snapshot(), instrument, amount),
+    )
+}
+
+/// [`money`] in the instrument `account` holds.
+pub fn money_on(ctx: &Ctx<'_>, account: AccountId, amount: Amount) -> String {
+    ctx.w.module_state::<EconomyStore>().map_or_else(
+        || amount.to_decimal_string(0),
+        |s| crate::render::render_amount_on(s.snapshot(), account, amount),
+    )
+}
+
+pub fn render_principal(ctx: &Ctx<'_>, p: &PrincipalId) -> String {
     match p {
         PrincipalId::Object(o) => format!("{} (#{})", display_name(ctx.w, *o), o.0),
         PrincipalId::Organization(o) => {
@@ -482,7 +500,7 @@ pub fn may_view_account(w: &World, actor: ObjId, id: AccountId) -> bool {
 /// would be three chances for one of them to drift open. `hidden` is the caller's
 /// noun for the same fact — "an account" in a contract's terms, "another account"
 /// for the counterparty of an entry the viewer is reading their own side of.
-pub(crate) fn mask_account(ctx: &Ctx<'_>, id: AccountId, hidden: &str) -> String {
+pub fn mask_account(ctx: &Ctx<'_>, id: AccountId, hidden: &str) -> String {
     if may_view_account(ctx.w, ctx.actor, id) {
         format!("account #{id}")
     } else {
@@ -503,7 +521,7 @@ fn account_refusal(ctx: &Ctx<'_>, id: AccountId, detail: impl std::fmt::Display)
 
 /// The "No such …" text for a resource the actor may not view, or `None` when they
 /// may (and so may see the real refusal).
-fn hidden_text(ctx: &Ctx<'_>, resource: NamedResource) -> Option<&'static str> {
+pub(crate) fn hidden_text(ctx: &Ctx<'_>, resource: NamedResource) -> Option<&'static str> {
     match resource {
         NamedResource::Account(id) => {
             (!may_view_account(ctx.w, ctx.actor, id)).then_some("No such account.")
@@ -614,7 +632,7 @@ pub fn may_view_obligation(w: &World, actor: ObjId, id: ObligationId) -> bool {
 /// A cap or shape complaint keeps its own text (see `concerns_named_subjects`) —
 /// hiding a payer's own operational error behind "No such account." would be a
 /// disclosure rule eating the game.
-pub(crate) fn refuse(
+pub fn refuse(
     ctx: &Ctx<'_>,
     subject: NamedResource,
     also: &[NamedResource],
@@ -640,14 +658,14 @@ pub(crate) fn refuse(
 /// Whether this resource renders as "No such …" for this actor — the predicate half
 /// of [`hidden_text`], for callers that are shaping a *message* rather than a refusal
 /// (E4b2 verify fold, A6).
-pub(crate) fn is_hidden(ctx: &Ctx<'_>, resource: NamedResource) -> bool {
+pub fn is_hidden(ctx: &Ctx<'_>, resource: NamedResource) -> bool {
     hidden_text(ctx, resource).is_some()
 }
 
 /// [`refuse`] for a refusal that is not an [`crate::EconomyError`] (E4b2 verify fold,
 /// A2): the same hiding loop over an explicit list of resources, so a contract
 /// refusal and a money refusal disclose exactly the same amount.
-pub(crate) fn refuse_named(
+pub fn refuse_named(
     ctx: &Ctx<'_>,
     subject: NamedResource,
     named: impl IntoIterator<Item = NamedResource>,
@@ -795,20 +813,39 @@ fn cmd_instrument(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 }
 
 fn instrument_register(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    const USAGE: &str =
+        "Usage: @instrument/register <code>=<scale> [display=<symbol>:prefix|suffix]";
     let code = ctx.args.lhs().trim();
     let id = InstrumentId::new(code)
         .ok_or_else(|| CmdError::msg("Bad instrument code (use [a-z0-9_.-])."))?;
-    let scale: u8 = ctx
-        .args
-        .rhs()
-        .and_then(|s| s.trim().parse().ok())
-        .ok_or_else(|| CmdError::msg("Usage: @instrument/register <code>=<scale>"))?;
+    let rhs = ctx.args.rhs().ok_or_else(|| CmdError::msg(USAGE))?;
+    let (rest, opts) = parse_opts(rhs, &["display"]);
+    let scale: u8 = rest.trim().parse().map_err(|_| CmdError::msg(USAGE))?;
     if scale > crate::MAX_SCALE {
         return Err(CmdError::msg(format!(
             "Scale too large (max {}).",
             crate::MAX_SCALE
         )));
     }
+    // E6a step 1 (E2-C16): `display=<symbol>:prefix|suffix` — `¥:prefix` renders
+    // `¥1000`, `€:suffix` renders `12.50€`.
+    let display = match opts.get("display") {
+        None => None,
+        Some(spec) => {
+            let (symbol, position) = spec.rsplit_once(':').ok_or_else(|| CmdError::msg(USAGE))?;
+            let position = match position.trim().to_ascii_lowercase().as_str() {
+                "prefix" => SymbolPosition::Prefix,
+                "suffix" => SymbolPosition::Suffix,
+                _ => return Err(CmdError::msg(USAGE)),
+            };
+            Some(InstrumentDisplay::new(symbol, position).ok_or_else(|| {
+                CmdError::msg(format!(
+                    "A display symbol is 1-{} bytes with no whitespace.",
+                    crate::record::MAX_SYMBOL_BYTES
+                ))
+            })?)
+        }
+    };
     if ctx
         .w
         .module_state::<EconomyStore>()
@@ -816,6 +853,10 @@ fn instrument_register(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     {
         return Err(CmdError::msg("That instrument is already registered."));
     }
+    let rendered = display.as_ref().map(|d| match d.position {
+        SymbolPosition::Prefix => format!("{}<amount>", d.symbol),
+        SymbolPosition::Suffix => format!("<amount>{}", d.symbol),
+    });
     let def = InstrumentDef {
         id: id.clone(),
         ruleset: SmolStr::new_static("staff"),
@@ -825,10 +866,17 @@ fn instrument_register(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         transferable: true,
         negative_policy: NegativePolicy::SystemOnly,
         status: InstrumentStatus::Active,
+        display,
         revision: 1,
     };
     api::register_instrument(ctx, def).map_err(|e| CmdError::msg(e.to_string()))?;
-    info(ctx, format!("Registered instrument {id} (scale {scale})."));
+    match rendered {
+        Some(r) => info(
+            ctx,
+            format!("Registered instrument {id} (scale {scale}, renders as {r})."),
+        ),
+        None => info(ctx, format!("Registered instrument {id} (scale {scale}).")),
+    }
     Ok(())
 }
 
@@ -1012,42 +1060,47 @@ fn account_show(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         return Err(CmdError::msg("No such account."));
     }
     let staff = is_admin(ctx.w, ctx.actor);
-    let (a, scale) = {
+    let a = {
         let store = ctx
             .w
             .module_state::<EconomyStore>()
             .ok_or_else(|| CmdError::msg("No such account."))?;
-        let a = store
+        store
             .snapshot()
             .account(id)
             .ok_or_else(|| CmdError::msg("No such account."))?
-            .clone();
-        let scale = store
-            .snapshot()
-            .instrument(&a.instrument)
-            .map_or(0, |i| i.scale);
-        (a, scale)
+            .clone()
     };
     let mut lines = vec![
         format!(
             "account #{} \"{}\" ({}) [{:?}]",
             a.id, a.name, a.instrument, a.status
         ),
-        format!("  balance {}", a.posted_balance.to_decimal_string(scale)),
+        format!("  balance {}", money(ctx, &a.instrument, a.posted_balance)),
     ];
     if let Some(rule) = &a.approval {
         lines.push(format!(
             "  approval above {}: {}",
-            rule.threshold.to_decimal_string(scale),
+            money(ctx, &a.instrument, rule.threshold),
             render_policy(ctx, &rule.policy)
         ));
+        if let Some(w) = &rule.window {
+            lines.push(format!(
+                "  rolling window: {} per {} s",
+                money(ctx, &a.instrument, w.total),
+                w.period_secs
+            ));
+        }
     }
     if staff {
         lines.push(format!("  owner {}", render_principal(ctx, &a.owner)));
         if let Some(s) = a.scope {
             lines.push(format!("  scope #{s}"));
         }
-        lines.push(format!("  held {}", a.held_amount.to_decimal_string(scale)));
+        lines.push(format!(
+            "  held {}",
+            money(ctx, &a.instrument, a.held_amount)
+        ));
         lines.push(format!(
             "  last journal seq {}, revision {}",
             a.last_journal_seq, a.revision
@@ -1106,16 +1159,12 @@ fn account_list(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         .map(|id| {
             let store = ctx.w.module_state::<EconomyStore>().expect("economy store");
             let a = store.snapshot().account(id).expect("listed above");
-            let scale = store
-                .snapshot()
-                .instrument(&a.instrument)
-                .map_or(0, |i| i.scale);
             format!(
                 "#{} {} {} = {} [{:?}]{}",
                 a.id,
                 a.name,
                 a.instrument,
-                a.posted_balance.to_decimal_string(scale),
+                money(ctx, &a.instrument, a.posted_balance),
                 a.status,
                 if a.approval.is_some() {
                     " (approval rule)"
@@ -1271,7 +1320,9 @@ fn account_unfreeze(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 /// high-value escalation of D-E3-2.
 fn account_approval(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     const USAGE: &str = "Usage: @account/approval <id>=<threshold> threshold:<n>[:<role>] | \
-                         named:<n>:<obj>,<obj>… | @account/approval <id>=none";
+                         named:<n>:<obj>,<obj>… [window=<total>/<secs>|off] | \
+                         @account/approval <id>=window=<total>/<secs>|off | \
+                         @account/approval <id>=none";
     let id = parse_account(ctx.args.lhs()).ok_or_else(|| CmdError::msg(USAGE))?;
     let account = {
         let store = ctx
@@ -1295,7 +1346,33 @@ fn account_approval(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         ctx.gate_on_durable_ack();
         return Ok(());
     }
-    let mut words = rhs.split_whitespace();
+    // E6a step 1 (D-E6-21): the rolling window beside the threshold. `window=off`
+    // restores threshold-only; a bare `window=` on an existing rule changes only the
+    // window and leaves the threshold and policy as they are.
+    let (rest, opts) = parse_opts(rhs, &["window"]);
+    let window_spec: Option<Option<ApprovalWindow>> = match opts.get("window") {
+        None => None,
+        Some(spec) => Some(parse_window(spec)?),
+    };
+    let rest = rest.trim();
+    if rest.is_empty() {
+        let Some(window) = window_spec else {
+            return Err(CmdError::msg(USAGE));
+        };
+        let Some(mut rule) = account.approval.clone() else {
+            return Err(CmdError::msg(format!(
+                "Account #{id} has no approval rule; set one (a threshold and a policy) before \
+                 attaching a window to it."
+            )));
+        };
+        rule.window = window.clone();
+        api::set_account_approval(ctx, id, Some(rule));
+        let notice = window_notice(ctx, &account, window.as_ref());
+        info(ctx, notice);
+        ctx.gate_on_durable_ack();
+        return Ok(());
+    }
+    let mut words = rest.split_whitespace();
     let threshold = words
         .next()
         .and_then(parse_amount)
@@ -1314,39 +1391,79 @@ fn account_approval(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         return Ok(());
     }
     let policy = parse_policy(ctx, &account, &spec)?;
+    // A fresh rule carries no window unless one was named; an existing rule keeps
+    // its window when the words re-state only the threshold and the policy.
+    let window = match window_spec {
+        Some(w) => w,
+        None => account.approval.as_ref().and_then(|r| r.window.clone()),
+    };
     api::set_account_approval(
         ctx,
         id,
         Some(ApprovalRule {
             threshold,
             policy: policy.clone(),
+            window: window.clone(),
         }),
     );
-    let scale = ctx
-        .w
-        .module_state::<EconomyStore>()
-        .and_then(|s| {
-            s.snapshot()
-                .instrument(&account.instrument)
-                .map(|i| i.scale)
-        })
-        .unwrap_or(0);
     let rendered = render_policy(ctx, &policy);
+    let threshold_text = money(ctx, &account.instrument, threshold);
     info(
         ctx,
-        format!(
-            "Account #{id}: a net debit above {} now needs {rendered}.",
-            threshold.to_decimal_string(scale)
+        format!("Account #{id}: a net debit above {threshold_text} now needs {rendered}."),
+    );
+    match &window {
+        Some(w) => {
+            let notice = window_notice(ctx, &account, Some(w));
+            info(ctx, notice);
+        }
+        None => info(
+            ctx,
+            "That is a per-transaction escalation, not a budget.".to_string(),
         ),
-    );
-    info(
-        ctx,
-        "That is a per-transaction escalation, not a budget.".to_string(),
-    );
+    }
     // The rule is read live at every post, so the confirmation must not outrun the
     // doc that carries it (non-strict: policy, not money).
     ctx.gate_on_durable_ack();
     Ok(())
+}
+
+/// `window=<total>/<secs>` → `Some(window)`; `window=off` → `None`.
+fn parse_window(spec: &str) -> Result<Option<ApprovalWindow>, CmdError> {
+    const USAGE: &str = "window= takes <total>/<seconds> (the most an account may spend inside \
+                         one trailing period, and the period), or `off`.";
+    if spec.trim().eq_ignore_ascii_case("off") {
+        return Ok(None);
+    }
+    let (total, secs) = spec.split_once('/').ok_or_else(|| CmdError::msg(USAGE))?;
+    let total = parse_amount(total).ok_or_else(|| CmdError::msg(USAGE))?;
+    let secs = secs
+        .trim()
+        .parse::<i64>()
+        .map_err(|_| CmdError::msg(USAGE))?;
+    ApprovalWindow::new(total, secs).map(Some).ok_or_else(|| {
+        CmdError::msg(format!(
+            "A window needs a non-negative total and a period of 1-{} seconds.",
+            crate::record::MAX_APPROVAL_WINDOW_SECS
+        ))
+    })
+}
+
+/// The confirmation line for a window change.
+fn window_notice(ctx: &Ctx<'_>, account: &Account, window: Option<&ApprovalWindow>) -> String {
+    let id = account.id;
+    match window {
+        Some(w) => format!(
+            "Account #{id}: a debit that would take its spend over {} inside any trailing {} s \
+             (placements included, refunds never subtracted) needs the same approval.",
+            money(ctx, &account.instrument, w.total),
+            w.period_secs
+        ),
+        None => format!(
+            "Account #{id}: the rolling window is off; the threshold alone escalates, per \
+             transaction."
+        ),
+    }
 }
 
 /// Parse `threshold:<n>[:<role>]` / `named:<n>:<obj>,<obj>…`, refusing the two
@@ -1997,7 +2114,7 @@ fn econ_approvals(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 
 /// Parse `<amount>` in an instrument's minor units (integer minor units for E2b —
 /// staff type the raw minor value; the display formats the scale).
-pub(crate) fn parse_amount(s: &str) -> Option<Amount> {
+pub fn parse_amount(s: &str) -> Option<Amount> {
     s.trim().parse::<i64>().ok().map(Amount::from_minor)
 }
 
@@ -2455,15 +2572,10 @@ fn econ_history(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         for l in &t.lines {
             // Rules 2 and 3.
             if may_view_account(ctx.w, ctx.actor, l.account) {
-                let scale = ctx
-                    .w
-                    .module_state::<EconomyStore>()
-                    .and_then(|s| s.snapshot().instrument(&l.instrument).map(|i| i.scale))
-                    .unwrap_or(0);
                 parts.push(format!(
                     "account #{} {}",
                     l.account,
-                    l.delta.to_decimal_string(scale)
+                    money(ctx, &l.instrument, l.delta)
                 ));
             } else if !masked {
                 // D4 (E4c verify fold): every masked line on one entry COLLAPSES
@@ -2486,20 +2598,11 @@ fn econ_history(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             if may_view_hold(ctx.w, ctx.actor, e.hold.id)
                 && may_view_account(ctx.w, ctx.actor, e.hold.account)
             {
-                let scale = ctx
-                    .w
-                    .module_state::<EconomyStore>()
-                    .and_then(|s| {
-                        let snap = s.snapshot();
-                        snap.account(e.hold.account)
-                            .and_then(|a| snap.instrument(&a.instrument))
-                    })
-                    .map_or(0, |i| i.scale);
                 parts.push(format!(
                     "hold #{} {} {} on account #{}",
                     e.hold.id,
                     hold_word(e.kind),
-                    e.hold.amount.to_decimal_string(scale),
+                    money_on(ctx, e.hold.account, e.hold.amount),
                     e.hold.account
                 ));
             } else {
@@ -2893,7 +2996,7 @@ fn render_encumbrance(ctx: &Ctx<'_>, e: &Encumbrance) -> String {
         } => {
             format!(
                 "lien {} {} to {}",
-                amount.minor(),
+                money(ctx, instrument, *amount),
                 instrument,
                 render_principal(ctx, creditor)
             )
@@ -3604,7 +3707,7 @@ fn escrow_contract_hidden(ctx: &Ctx<'_>, h: &crate::record::Hold) -> bool {
     })
 }
 
-fn render_hold(ctx: &Ctx<'_>, h: &crate::record::Hold, staff: bool, scale: u8) -> Vec<String> {
+fn render_hold(ctx: &Ctx<'_>, h: &crate::record::Hold, staff: bool) -> Vec<String> {
     let status = match &h.status {
         HoldStatus::Held => "held".to_string(),
         HoldStatus::Consumed {
@@ -3613,7 +3716,7 @@ fn render_hold(ctx: &Ctx<'_>, h: &crate::record::Hold, staff: bool, scale: u8) -
         } => {
             format!(
                 "captured {} by transaction #{transaction}",
-                amount.to_decimal_string(scale)
+                money_on(ctx, h.account, *amount)
             )
         }
         HoldStatus::Released => "released".to_string(),
@@ -3635,7 +3738,7 @@ fn render_hold(ctx: &Ctx<'_>, h: &crate::record::Hold, staff: bool, scale: u8) -
         "hold #{} on {} — {} [{status}]",
         h.id,
         mask_account(ctx, h.account, "an account"),
-        h.amount.to_decimal_string(scale)
+        money_on(ctx, h.account, h.amount)
     )];
     // D3: no purpose text and no beneficiary for a contract this viewer is outside
     // of — `sys:economy.contract` is itself the answer to "is this a contract?".
@@ -3679,11 +3782,7 @@ fn hold_show(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             .hold(id)
             .ok_or_else(|| CmdError::msg("No such hold."))?
             .clone();
-        let scale = snap
-            .account(h.account)
-            .and_then(|a| snap.instrument(&a.instrument))
-            .map_or(0, |i| i.scale);
-        render_hold(ctx, &h, staff, scale)
+        render_hold(ctx, &h, staff)
     };
     for l in lines {
         info(ctx, l);
@@ -3728,10 +3827,6 @@ fn hold_list(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             let store = ctx.w.module_state::<EconomyStore>()?;
             let snap = store.snapshot();
             let h = snap.hold(id)?;
-            let scale = snap
-                .account(h.account)
-                .and_then(|a| snap.instrument(&a.instrument))
-                .map_or(0, |i| i.scale);
             let state = match &h.status {
                 HoldStatus::Held => "held",
                 HoldStatus::Consumed { .. } => "captured",
@@ -3742,7 +3837,7 @@ fn hold_list(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 "#{} {} {} [{state}]",
                 h.id,
                 mask_account(ctx, h.account, "an account"),
-                h.amount.to_decimal_string(scale)
+                money_on(ctx, h.account, h.amount)
             ))
         })
         .collect();
@@ -4073,16 +4168,6 @@ fn render_status(o: &Obligation) -> String {
 fn obligation_show(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let o = obligation_of(ctx, ctx.args.lhs())?;
     let staff = is_admin(ctx.w, ctx.actor);
-    let scale = ctx
-        .w
-        .module_state::<EconomyStore>()
-        .and_then(|s| {
-            let snap = s.snapshot();
-            snap.account(o.debit_account)
-                .and_then(|a| snap.instrument(&a.instrument))
-                .map(|i| i.scale)
-        })
-        .unwrap_or(0);
     let mut lines = vec![
         // D2 (E4c verify fold): the ids go through the same mask every other render
         // uses. `may_view_obligation` admits either party and anyone who may view
@@ -4094,7 +4179,7 @@ fn obligation_show(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             o.id,
             mask_account(ctx, o.debit_account, "an account"),
             mask_account(ctx, o.credit_account, "an account"),
-            o.amount.to_decimal_string(scale),
+            money_on(ctx, o.debit_account, o.amount),
             render_status(&o)
         ),
         format!("  {}", render_schedule(&o.schedule)),
@@ -4163,16 +4248,12 @@ fn obligation_list(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             let store = ctx.w.module_state::<EconomyStore>()?;
             let snap = store.snapshot();
             let o = snap.obligation(id)?;
-            let scale = snap
-                .account(o.debit_account)
-                .and_then(|a| snap.instrument(&a.instrument))
-                .map_or(0, |i| i.scale);
             Some(format!(
                 "#{} {} → {} {} [{}]",
                 o.id,
                 mask_account(ctx, o.debit_account, "an account"),
                 mask_account(ctx, o.credit_account, "an account"),
-                o.amount.to_decimal_string(scale),
+                money_on(ctx, o.debit_account, o.amount),
                 render_status(o)
             ))
         })
@@ -4182,7 +4263,7 @@ fn obligation_list(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 }
 
 /// Record a status change plus its history entry, keeping the bounded tail bounded.
-fn transition(
+pub(crate) fn transition(
     o: &Obligation,
     status: ObligationStatus,
     event: Option<ObligationEvent>,

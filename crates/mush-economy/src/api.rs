@@ -1183,17 +1183,55 @@ pub(crate) fn post_with_companions(
             w: ctx.w,
             providers: store.facts(),
         };
+        let now = ctx.w.now();
         let env = ValidateEnv {
             auth,
             custody: &custody,
             facts: &facts,
-            now: ctx.w.now(),
+            now,
             ic_now: ctx.w.game_now_unix(),
             next_hold_id: store.peek_next_hold(),
+            spent: spent_for_plan(store, plan, now),
         };
         (validate(plan, store.snapshot(), &env), providers)
     };
     finish(ctx, outcome, &providers, &plan.actor, companions)
+}
+
+/// What each account this plan debits or places a hold on has spent inside its
+/// own [`crate::ApprovalWindow`] (E6a step 1, D-E6-21) — computed only for accounts
+/// whose rule carries a window, from the store's RAM-only tail, and handed to the
+/// pure engine through [`ValidateEnv::spent`].
+fn spent_for_plan(
+    store: &EconomyStore,
+    plan: &EconomyPlan,
+    now: i64,
+) -> std::collections::BTreeMap<AccountId, Amount> {
+    let snap = store.snapshot();
+    let debited = plan
+        .requested_lines
+        .iter()
+        .filter(|l| l.delta.is_negative())
+        .map(|l| l.account)
+        .chain(plan.hold_ops.iter().filter_map(|op| match op {
+            HoldOp::Place { account, .. } => Some(*account),
+            HoldOp::Capture { .. } | HoldOp::Release { .. } | HoldOp::Expire { .. } => None,
+        }));
+    let mut out = std::collections::BTreeMap::new();
+    for id in debited {
+        if out.contains_key(&id) {
+            continue;
+        }
+        let Some(window) = snap
+            .account(id)
+            .and_then(|a| a.approval.as_ref())
+            .and_then(|rule| rule.window.as_ref())
+        else {
+            continue;
+        };
+        out.insert(id, store.spent_in_window(id, now, window.period_secs));
+    }
+    out
 }
 
 /// Reverse transaction `target`: fetch the real original from the journal-derived
@@ -1666,6 +1704,249 @@ pub fn set_system_obligation(
     put_obligation(ctx, next);
     ctx.gate_on_durable_ack();
     Ok(())
+}
+
+// ---- the ruleset's player-debit obligation seams (E6a step 1, 08f §2 item 3) ----
+
+/// **Create a recurring debit a ruleset owns, under the actor's own debit
+/// authority** (E6a step 1, 08f §2 item 3; D-E6-3's lifestyle upkeep is the first
+/// caller).
+///
+/// No player-debit creator existed before this: `@obligation/create` is staff-only
+/// and stamps `cause: Staff`, [`crate::offer_lease`] is contract-shaped, and
+/// [`create_system_obligation`] needs the faucet to own the debit account. This is
+/// the fourth shape, and it is deliberately the narrowest:
+///
+/// 1. **The cause is the ruleset's** — `spec.cause` must be
+///    [`crate::ObligationCause::Ruleset`]; the namespace it names is the lock
+///    [`cancel_obligation`] and [`reinstate_obligation`] check (the
+///    [`set_system_obligation`] shape: a ruleset touches only what it created).
+/// 2. **The debtor is never a `System` principal.** A faucet debit is a standing
+///    mint, and the one route to that stays [`create_system_obligation`].
+/// 3. **Both accounts are `Active` and share one instrument** — no implicit
+///    exchange, no charging a closed wallet.
+/// 4. **The actor holds debit authority on the debit account**, asked through the
+///    very [`WorldAuth::authorize`] path every post uses: the player for a debt they
+///    take on themselves, an org officer with `economy.account.post` (and the
+///    amount inside their grant) for a compartment's, staff for anyone's — the
+///    approver at chargen, for instance. Nobody creates a standing charge on a wallet
+///    they could not spend from.
+///
+/// The record carries `minted_by: None`, so the sweep's `ObligationAuth` treats it
+/// like any other non-faucet debit: a non-`System` debit on the record's own account
+/// is permitted at every settlement, and the account's own `ApprovalRule` is what a
+/// per-period amount is measured against there (S9's documented limit).
+///
+/// # Errors
+///
+/// [`EconomyError::Unauthorized`] (a non-`Ruleset` cause, a `System` debtor, or no
+/// debit authority), [`EconomyError::ZeroLine`] (a non-positive amount),
+/// [`EconomyError::ScopeOwnerMismatch`] (one account on both sides),
+/// [`EconomyError::NoSuchAccount`] / [`EconomyError::InactiveAccount`],
+/// [`EconomyError::NotBalanced`] (two instruments), [`EconomyError::EconomyFrozen`],
+/// [`EconomyError::Overflow`] (the allocator at its ceiling).
+pub fn create_obligation(
+    ctx: &mut Ctx<'_>,
+    spec: ObligationSpec,
+) -> Result<ObligationId, EconomyError> {
+    if !matches!(
+        spec.cause,
+        crate::obligation::ObligationCause::Ruleset { .. }
+    ) {
+        return Err(EconomyError::Unauthorized);
+    }
+    if spec.amount.is_zero() || spec.amount.is_negative() {
+        return Err(EconomyError::ZeroLine(0));
+    }
+    if spec.debit_account == spec.credit_account {
+        return Err(EconomyError::ScopeOwnerMismatch);
+    }
+    let actor = PrincipalId::Object(ctx.actor);
+    let (debtor, creditor) = {
+        let store = ctx
+            .w
+            .module_state::<EconomyStore>()
+            .ok_or(EconomyError::EconomyFrozen)?;
+        if store.frozen {
+            return Err(EconomyError::EconomyFrozen);
+        }
+        let snap = store.snapshot();
+        let debit = snap
+            .account(spec.debit_account)
+            .ok_or(EconomyError::NoSuchAccount(spec.debit_account))?;
+        let credit = snap
+            .account(spec.credit_account)
+            .ok_or(EconomyError::NoSuchAccount(spec.credit_account))?;
+        if matches!(debit.owner, PrincipalId::System(_)) {
+            return Err(EconomyError::Unauthorized);
+        }
+        if debit.status != crate::record::AccountStatus::Active {
+            return Err(EconomyError::InactiveAccount(spec.debit_account));
+        }
+        if credit.status != crate::record::AccountStatus::Active {
+            return Err(EconomyError::InactiveAccount(spec.credit_account));
+        }
+        if debit.instrument != credit.instrument {
+            return Err(EconomyError::NotBalanced(debit.instrument.clone()));
+        }
+        // Lock 4: the same live question a post asks. A standing charge is a promise
+        // to pay every period; the one who makes it must be able to pay once.
+        let probe = spec.amount.checked_neg().ok_or(EconomyError::Overflow)?;
+        if !(WorldAuth { w: ctx.w }).authorize(&actor, debit, probe) {
+            return Err(EconomyError::Unauthorized);
+        }
+        (debit.owner.clone(), credit.owner.clone())
+    };
+    let id = {
+        let store = ctx
+            .w
+            .module_state_mut::<EconomyStore>()
+            .ok_or(EconomyError::EconomyFrozen)?;
+        store.alloc_obligation().ok_or(EconomyError::Overflow)?
+    };
+    let o = crate::obligation::Obligation {
+        id,
+        debtor,
+        creditor,
+        debit_account: spec.debit_account,
+        credit_account: spec.credit_account,
+        amount: spec.amount,
+        schedule: spec.schedule,
+        grace: crate::obligation::GracePolicy::new(spec.grace.periods),
+        notify_on_success: spec.notify_on_success,
+        status: crate::obligation::ObligationStatus::Active,
+        cause: spec.cause,
+        minted_by: None,
+        periods_settled: 0,
+        history: Vec::new(),
+        settled_total: 0,
+        missed_total: 0,
+        forgiven_total: 0,
+        suspensions: std::collections::BTreeSet::new(),
+        revision: 1,
+    };
+    put_obligation(ctx, o);
+    let meta = ctx
+        .w
+        .module_state::<EconomyStore>()
+        .map(EconomyStore::meta_doc);
+    if let Some(meta) = meta {
+        persist_meta(ctx.out, meta);
+    }
+    ctx.gate_on_durable_ack();
+    Ok(id)
+}
+
+/// Fetch a **live** obligation `namespace` owns, for its own seams — the lock
+/// [`set_system_obligation`] applies to a faucet's standing mint, applied to a
+/// ruleset's cause: a missing record and one another namespace created answer the
+/// same [`EconomyError::Unauthorized`], and a finished one is
+/// [`EconomyError::ObligationTerminal`].
+fn ruleset_obligation(
+    ctx: &Ctx<'_>,
+    id: ObligationId,
+    namespace: &str,
+) -> Result<crate::obligation::Obligation, EconomyError> {
+    let store = ctx
+        .w
+        .module_state::<EconomyStore>()
+        .ok_or(EconomyError::EconomyFrozen)?;
+    if store.frozen {
+        return Err(EconomyError::EconomyFrozen);
+    }
+    let o = store
+        .snapshot()
+        .obligation(id)
+        .ok_or(EconomyError::Unauthorized)?;
+    let mine = matches!(&o.cause, crate::obligation::ObligationCause::Ruleset { namespace: ns }
+        if ns.as_str() == namespace);
+    if !mine {
+        return Err(EconomyError::Unauthorized);
+    }
+    if matches!(
+        o.status,
+        crate::obligation::ObligationStatus::Cancelled
+            | crate::obligation::ObligationStatus::Satisfied
+    ) {
+        return Err(EconomyError::ObligationTerminal(id));
+    }
+    Ok(o.clone())
+}
+
+/// **Cancel an obligation the ruleset created** (E6a step 1): a tier change replaces
+/// the record, a `lifestyle = false` migration ends it. Only a record whose cause is
+/// `Ruleset { namespace }` for this very `namespace`, and only a live one.
+///
+/// # Errors
+///
+/// [`EconomyError::Unauthorized`] (no such record, or another namespace's),
+/// [`EconomyError::ObligationTerminal`], [`EconomyError::EconomyFrozen`].
+pub fn cancel_obligation(
+    ctx: &mut Ctx<'_>,
+    id: ObligationId,
+    namespace: &str,
+) -> Result<(), EconomyError> {
+    let o = ruleset_obligation(ctx, id, namespace)?;
+    let next =
+        crate::commands::transition(&o, crate::obligation::ObligationStatus::Cancelled, None);
+    put_obligation(ctx, next);
+    ctx.gate_on_durable_ack();
+    Ok(())
+}
+
+/// **Reinstate a delinquent obligation the ruleset created** (E6a step 1) — the
+/// seam behind "pay the arrears, then reinstate". The same namespace lock as
+/// [`cancel_obligation`], and the same rules `@obligation/reinstate` applies: only a
+/// `Delinquent` record, never one a holder keeps out of the due pool, both accounts
+/// still `Active`; the schedule re-anchors past now, so the periods it spent
+/// delinquent are not charged.
+///
+/// Returns whether it **returned to the due pool**: `Ok(false)` means there was
+/// nothing to reinstate — the record is not delinquent, or a holder (the ladder, a
+/// staff suspension, a layered module) still keeps it out — and nothing was written.
+///
+/// # Errors
+///
+/// [`EconomyError::Unauthorized`], [`EconomyError::ObligationTerminal`],
+/// [`EconomyError::InactiveAccount`] (repoint first), [`EconomyError::EconomyFrozen`].
+pub fn reinstate_obligation(
+    ctx: &mut Ctx<'_>,
+    id: ObligationId,
+    namespace: &str,
+) -> Result<bool, EconomyError> {
+    let o = ruleset_obligation(ctx, id, namespace)?;
+    if !matches!(o.status, crate::obligation::ObligationStatus::Delinquent)
+        || !o.holders().is_empty()
+    {
+        return Ok(false);
+    }
+    let now = ctx.w.now();
+    let ic_now = ctx.w.game_now_unix();
+    let clock_now = {
+        let store = ctx
+            .w
+            .module_state::<EconomyStore>()
+            .ok_or(EconomyError::EconomyFrozen)?;
+        let snap = store.snapshot();
+        for account in [o.debit_account, o.credit_account] {
+            match snap.account(account) {
+                Some(a) if a.status == crate::record::AccountStatus::Active => {}
+                _ => return Err(EconomyError::InactiveAccount(account)),
+            }
+        }
+        crate::clock::Clocks::new(now, ic_now).now_on(o.schedule.clock, snap, o.schedule.manual_now)
+    };
+    let mut next = crate::commands::transition(
+        &o,
+        crate::obligation::ObligationStatus::Active,
+        Some(crate::obligation::ObligationEvent::Resumed { at: now }),
+    );
+    if let Some(clock_now) = clock_now {
+        next.schedule = crate::clock::reanchor(&next.schedule, clock_now);
+    }
+    put_obligation(ctx, next);
+    ctx.gate_on_durable_ack();
+    Ok(true)
 }
 
 /// The most cadence clocks one world may name (E4b1's `@econ/cadence` cap, lifted

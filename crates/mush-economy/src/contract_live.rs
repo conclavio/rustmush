@@ -35,12 +35,14 @@ use mush_core::{ArgShape, CmdError, CommandSpec, Ctx, ObjId, World};
 use mush_org::{CapabilityId, OrgScopeId, PrincipalId};
 use smol_str::SmolStr;
 
+use crate::amount::Amount;
 use crate::api::{self, PostAuth, PostOutcome};
 use crate::clock::{EconomicClock, EconomicDeadline, EconomicSchedule};
 use crate::commands::{
     asset_target, cmd_key, emit_list, info, is_admin, is_hidden, mask_account, may_view_account,
-    may_view_vault, parse_account, parse_amount, parse_deadline, parse_opts, parse_principal,
-    parse_scope, parse_vault_id, refuse, refuse_if_frozen, refuse_named, render_principal,
+    may_view_vault, money_on, parse_account, parse_amount, parse_deadline, parse_opts,
+    parse_principal, parse_scope, parse_vault_id, refuse, refuse_if_frozen, refuse_named,
+    render_principal,
 };
 use crate::contract::{
     Acceptance, Attestation, AttestorRef, AttestorSet, ConsentSurface, Consideration, ContractAuth,
@@ -60,7 +62,7 @@ use crate::facts::WorldFacts;
 use crate::ids::{AccountId, ContractId, HoldId};
 use crate::module::EconomyStore;
 use crate::obligation::{GracePolicy, Obligation, ObligationCause, ObligationStatus};
-use crate::plan::{EconomyPlan, HoldOp, NamedResource};
+use crate::plan::{EconomyError, EconomyPlan, HoldOp, NamedResource};
 use crate::record::{
     AccountStatus, EconomicCause, EconomicVisibility, ExternalRef, HoldEffectKind, HoldPurpose,
     MAX_AUDIENCE,
@@ -225,7 +227,8 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
                    Lifecycle:\n\
                    @contract/offer <id>                       ISSUER or staff: Draft → Offered; freezes the hash\n\
                    @contract/accept <id>                      a PARTY; places their escrow in the same step\n\
-                   @contract/amend <id>                       ISSUER or staff: Offered → Draft; refunds every acceptance\n\
+                   @contract/amend <id>                       ISSUER or staff: Offered → Draft; voids and refunds every\n\
+                   \x20  acceptance but the AUTHOR's own (the party you act for, else the issuer), whose escrow stands\n\
                    @contract/attest <id>=<n>                  an ATTESTOR; may settle in the same step (once per condition)\n\
                    @contract/dispute <id>                     a PARTY (or staff); freezes the escrow\n\
                    @contract/agree <id>=settle|refund         a PARTY; unanimity ends a dispute\n\
@@ -596,6 +599,11 @@ fn build_party(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         .ok_or_else(|| CmdError::msg(USAGE))?
         .to_string();
     let who = parse_principal(ctx, &rhs).ok_or_else(|| CmdError::msg("No such principal."))?;
+    // E6a step 1 (M4): a `System` principal is never a party (`check_structure`
+    // refuses it at offer too); the text is the unresolvable-principal one.
+    if matches!(who, PrincipalId::System(_)) {
+        return Err(CmdError::msg("No such principal."));
+    }
     if c.consent
         .parties
         .iter()
@@ -671,6 +679,14 @@ fn build_pay(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         if a.status != AccountStatus::Active {
             return Err(CmdError::msg(HIDDEN));
         }
+        // E6a step 1 (M4 / D-E6-4): a `System`-owned account is never a payer — a
+        // faucet is not a party, and nobody could accept for it. Decided on the
+        // account's OWNER before the surface is touched, and rendered as the
+        // account's own existence-hiding text, never a faucet-shaped message: a
+        // faucet's existence is exactly what a probe would be after.
+        if matches!(a.owner, PrincipalId::System(_)) {
+            return Err(CmdError::msg(HIDDEN));
+        }
         a.owner.clone()
     };
     let mut c = if is_issuer(ctx, &seen) {
@@ -693,6 +709,28 @@ fn build_pay(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     if c.consent.terms.consideration.len() >= MAX_SHARES {
         return Err(CmdError::msg("Too many considerations."));
     }
+    // E6a step 1 (A′): a consideration a `Held` escrow hold backs stands under a
+    // surviving acceptance, and its author consented to exactly that amount. Changing
+    // it would leave the acceptance binding money the surface no longer names; the
+    // route out is a cancellation, which releases it.
+    let backed = ctx.w.module_state::<EconomyStore>().is_some_and(|store| {
+        let (claims, _) = crate::contract::qualifying_claims(&c, store.snapshot());
+        c.consent
+            .terms
+            .consideration
+            .iter()
+            .enumerate()
+            .any(|(i, x)| {
+                x.account == account && x.amount != amount && claims.iter().any(|(_, k)| *k == i)
+            })
+    });
+    if backed {
+        return Err(CmdError::msg(format!(
+            "Contract #{}: account #{account}'s consideration is backed by escrow that stands \
+             under an acceptance and cannot be changed; @contract/cancel #{} releases it.",
+            c.id, c.id
+        )));
+    }
     c.consent
         .terms
         .consideration
@@ -708,12 +746,10 @@ fn build_pay(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         c.roles.payer = Some(owner);
     }
     let id = save_open(ctx, c)?;
+    let rendered = money_on(ctx, account, amount);
     info(
         ctx,
-        format!(
-            "Contract #{id}: account #{account} escrows {} at acceptance.",
-            amount.minor()
-        ),
+        format!("Contract #{id}: account #{account} escrows {rendered} at acceptance."),
     );
     Ok(())
 }
@@ -1456,66 +1492,123 @@ fn contract_offer(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     }
     // The satisfaction vector is parallel to the conditions, always.
     c.satisfied.resize(c.consent.conditions.len(), None);
-    let verdict = {
-        let store = ctx
-            .w
-            .module_state::<EconomyStore>()
-            .ok_or_else(|| CmdError::msg("No economy."))?;
-        let outcomes = store.canon_outcome_kinds();
-        // E4c verify fold, E1 + E2: the canon-outcome table is checked HERE and not
-        // inside `check_offerable`, because a live contract must never be stranded by
-        // a change to composition-root data. A draft, by contrast, can still be fixed.
-        crate::contract::check_structure(&c, &outcomes)
-            .and_then(|()| check_offerable(&c, store.snapshot()))
-    };
-    if let Err(e) = verdict {
-        return Err(contract_refusal(ctx, &c, &e));
+    if let Err(e) = check_offer(ctx, &c) {
+        return Err(offer_refusal(ctx, &c, &e));
     }
-    {
-        let store = ctx
-            .w
-            .module_state::<EconomyStore>()
-            .ok_or_else(|| CmdError::msg("No economy."))?;
-        // §9's per-party cap, counted over the parties this offer would bind.
-        for p in &c.consent.parties {
-            let live = store
-                .snapshot()
-                .contracts()
-                .filter(|x| x.id != c.id && x.state.is_live())
-                .filter(|x| x.consent.parties.contains(p))
-                .count();
-            if live >= MAX_LIVE_CONTRACTS_PER_PARTY {
-                return Err(CmdError::msg(format!(
-                    "A party is already on {live} live contracts (the cap is \
-                     {MAX_LIVE_CONTRACTS_PER_PARTY})."
-                )));
-            }
-        }
-    }
-    // Freeze the surface. From here on `save` never re-hashes: the hash IS what the
-    // acceptances bind to, and a mutation after Offer must show up as a mismatch.
-    c.consent_hash = consent_hash(&c.issuer, &c.consent);
-    c.state = ContractState::Offered;
-    // §5's builder block is "Draft only". The E6 extension (08e answers 5/7) that
-    // lets an `Offered` contract still carry an unfrozen party is therefore an
-    // explicit act — `@contract/roster <id>=open` — and never the default, so
-    // "the surface changed after Offer" stays the refusal it has to be.
-    c.roster_locked = true;
-    let (id, parties) = (c.id, c.consent.parties.clone());
-    save(ctx, c);
+    let id = freeze_and_offer(ctx, c);
     info(
         ctx,
         format!("Contract #{id} is offered; its consent surface is frozen."),
     );
-    for p in &parties {
-        notify(
-            ctx,
-            p,
-            &format!("Contract #{id} has been offered to you (@contract/show #{id})."),
-        );
-    }
     ctx.gate_on_durable_ack();
     Ok(())
+}
+
+/// How many live contracts a party may be on at once, as a refusal the seam can
+/// carry (the command renders it with §9's own words).
+const PARTY_CAP_REFUSAL: &str = "a party is already on the most live contracts allowed";
+
+/// Everything that must be true of a draft before it is offered — E4b2's gate plus
+/// E6a step 1's re-stamp rule — against the live store, with no side effect. The
+/// shared core of `@contract/offer` and the programmatic `offer_contract` seam.
+///
+/// E4c verify fold, E1 + E2: the canon-outcome table is checked HERE and not inside
+/// `check_offerable`, because a live contract must never be stranded by a change to
+/// composition-root data. A draft, by contrast, can still be fixed.
+///
+/// **The re-stamp rule (A′).** An acceptance that survived an amendment is bound to
+/// the surface its author wrote; it may be carried onto the amended surface only
+/// while every consideration that party owes is still claimed by a `Held` escrow
+/// hold ([`crate::contract::party_escrow_backed`]). Otherwise the offer is refused
+/// ([`ContractError::AcceptanceUnbacked`]): a new own consideration, or one whose
+/// hold was broken, is money the acceptance never covered, and `@contract/cancel`
+/// is the route that releases what still stands.
+pub(crate) fn check_offer(ctx: &Ctx<'_>, c: &EconomicContract) -> Result<(), ContractError> {
+    let store = ctx
+        .w
+        .module_state::<EconomyStore>()
+        .ok_or(ContractError::Infeasible("no economy"))?;
+    let outcomes = store.canon_outcome_kinds();
+    crate::contract::check_structure(c, &outcomes)?;
+    check_offerable(c, store.snapshot())?;
+    // §9's per-party cap, counted over the parties this offer would bind.
+    for p in &c.consent.parties {
+        let live = store
+            .snapshot()
+            .contracts()
+            .filter(|x| x.id != c.id && x.state.is_live())
+            .filter(|x| x.consent.parties.contains(p))
+            .count();
+        if live >= MAX_LIVE_CONTRACTS_PER_PARTY {
+            return Err(ContractError::TooLarge(PARTY_CAP_REFUSAL));
+        }
+    }
+    if c.acceptances
+        .iter()
+        .any(|a| !crate::contract::party_escrow_backed(c, store.snapshot(), &a.party))
+    {
+        return Err(ContractError::AcceptanceUnbacked);
+    }
+    Ok(())
+}
+
+/// Render an offer refusal for the command path (the §9 cap keeps its own words).
+fn offer_refusal(ctx: &Ctx<'_>, c: &EconomicContract, e: &ContractError) -> CmdError {
+    match e {
+        ContractError::TooLarge(PARTY_CAP_REFUSAL) => CmdError::msg(format!(
+            "A party is already on {MAX_LIVE_CONTRACTS_PER_PARTY} live contracts (the cap is \
+             {MAX_LIVE_CONTRACTS_PER_PARTY})."
+        )),
+        ContractError::AcceptanceUnbacked => CmdError::msg(format!(
+            "Contract #{}: a surviving acceptance is no longer backed by escrow for every \
+             consideration its party owes, so it cannot be re-offered as it stands. \
+             @contract/cancel #{} releases what is still reserved.",
+            c.id, c.id
+        )),
+        other => contract_refusal(ctx, c, other),
+    }
+}
+
+/// Freeze the surface and offer it: the hash, the **re-stamped** survivors, the
+/// state, the roster lock, the doc, the notices. The shared core of
+/// `@contract/offer` and the programmatic seam; [`check_offer`] has already said
+/// yes.
+///
+/// From here on `save` never re-hashes: the hash IS what the acceptances bind to,
+/// and a mutation after Offer must show up as a mismatch. A surviving acceptance is
+/// re-stamped onto the new hash — consent by authorship (A′): its party wrote the
+/// terms, and `check_offer` proved their escrow still backs every consideration they
+/// owe.
+///
+/// §5's builder block is "Draft only". The E6 extension (08e answers 5/7) that lets
+/// an `Offered` contract still carry an unfrozen party is therefore an explicit act —
+/// `@contract/roster <id>=open` — and never the default, so "the surface changed
+/// after Offer" stays the refusal it has to be.
+pub(crate) fn freeze_and_offer(ctx: &mut Ctx<'_>, mut c: EconomicContract) -> ContractId {
+    c.consent_hash = consent_hash(&c.issuer, &c.consent);
+    let hash = c.consent_hash;
+    for a in &mut c.acceptances {
+        a.consent_hash = hash;
+    }
+    c.state = ContractState::Offered;
+    c.roster_locked = true;
+    let (id, parties) = (c.id, c.consent.parties.clone());
+    let standing: Vec<PrincipalId> = c.acceptances.iter().map(|a| a.party.clone()).collect();
+    save(ctx, c);
+    for p in &parties {
+        let already = standing
+            .iter()
+            .any(|s| principal_key(s) == principal_key(p));
+        let msg = if already {
+            format!(
+                "Contract #{id} has been re-offered; your acceptance stands (@contract/show #{id})."
+            )
+        } else {
+            format!("Contract #{id} has been offered to you (@contract/show #{id}).")
+        };
+        notify(ctx, p, &msg);
+    }
+    id
 }
 
 /// Render a [`ContractError`] behind the existence-hiding rule (§4.5, E4b2 verify
@@ -1530,6 +1623,16 @@ fn contract_offer(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 /// names *and* (for a refusal that is a policy answer about them) every resource the
 /// surface names.
 fn contract_refusal(ctx: &Ctx<'_>, c: &EconomicContract, e: &ContractError) -> CmdError {
+    match e {
+        // One answer for "no such", "not yours to see", "not a party", "not the
+        // issuer" (§4.5).
+        ContractError::NoStanding => return CmdError::msg(NO_SUCH),
+        // M4 (ii): a `System` payer or party renders as the ACCOUNT's own
+        // existence-hiding text, never a faucet-shaped message — a faucet's existence
+        // is exactly what a probe would be after.
+        ContractError::SystemParty => return CmdError::msg("No such account."),
+        _ => {}
+    }
     let named = e.named_resources();
     let surface = if e.concerns_named_subjects() {
         ContractError::surface_resources(c)
@@ -1569,11 +1672,116 @@ fn contract_accept(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         )));
     }
     let party = acting_party(ctx, &c, "contract.accept").ok_or_else(|| CmdError::msg(NO_SUCH))?;
+    let id = c.id;
+    match accept_core(ctx, c.clone(), party) {
+        Ok(AcceptOutcome::Accepted { escrow, .. }) => {
+            let escrowed: Vec<String> = escrow.iter().map(|h| format!("#{h}")).collect();
+            if escrowed.is_empty() {
+                info(ctx, format!("Contract #{id}: accepted."));
+            } else {
+                info(
+                    ctx,
+                    format!(
+                        "Contract #{id}: accepted; escrow {} placed.",
+                        escrowed.join(", ")
+                    ),
+                );
+                info(
+                    ctx,
+                    "That reservation belongs to the contract now: it is released by its refund \
+                     and captured by its settlement, and by nothing else."
+                        .to_string(),
+                );
+            }
+            Ok(())
+        }
+        // D-E4-11: no acceptance is recorded, the contract stays `Offered`, and the
+        // party re-runs accept once the approval is collected.
+        Ok(AcceptOutcome::NeedsApproval(request)) => {
+            info(
+                ctx,
+                format!(
+                    "Approval required before you can escrow that: request #{request}. Nothing \
+                     was accepted — run @contract/accept #{id} again once it is approved."
+                ),
+            );
+            Ok(())
+        }
+        Err(ContractError::AlreadyAccepted) => Err(CmdError::msg(format!(
+            "Contract #{id} is already accepted on your behalf."
+        ))),
+        Err(ContractError::Refused(e)) => {
+            let first = c
+                .consent
+                .terms
+                .consideration
+                .iter()
+                .find(|x| principal_key(&x.from) == principal_key(&acting_party_or_self(ctx, &c)))
+                .map_or(AccountId(0), |x| x.account);
+            Err(refuse(
+                ctx,
+                NamedResource::Contract(id),
+                &[NamedResource::Account(first)],
+                &e,
+            ))
+        }
+        Err(e) => Err(contract_refusal(ctx, &c, &e)),
+    }
+}
+
+/// The party the actor speaks for on `c`, or the actor themself when nobody — the
+/// refusal renderer's `also` list needs *some* account to hide behind.
+fn acting_party_or_self(ctx: &Ctx<'_>, c: &EconomicContract) -> PrincipalId {
+    acting_party(ctx, c, "contract.accept").unwrap_or(PrincipalId::Object(ctx.actor))
+}
+
+/// What one acceptance did (E6a step 1's seam, and the command behind it).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AcceptOutcome {
+    /// The acceptance is recorded, its escrow placed, and the contract activated when
+    /// it was the last one.
+    Accepted {
+        /// The escrow holds this acceptance placed (none for a party owing nothing).
+        escrow: Vec<HoldId>,
+        /// Whether this was the last acceptance, so the contract came into force.
+        activated: bool,
+    },
+    /// The payer's account rule fired: **no acceptance is recorded** and nothing is
+    /// placed (D-E4-11). Re-run the accept once the request is approved.
+    NeedsApproval(crate::ids::ApprovalRequestId),
+}
+
+/// The acceptance itself — the shared core of `@contract/accept` and the
+/// programmatic `accept_contract` seam, under the accepting party's **own live
+/// authority** (D-E4-4).
+///
+/// The step does two independent things, and D-E4-4 requires them to be independent:
+/// it records an acceptance bound to the exact consent hash, and it places that
+/// party's consideration as an escrow hold through the ordinary `post` seam. The
+/// hold is a debit-authority plan (invariant 25), so the account's own rules apply —
+/// including its [`crate::ApprovalRule`], which returns `NeedsApproval` and records
+/// **no acceptance at all** (D-E4-11).
+///
+/// **The acceptance rides the escrow post's own batch** (E4b2 verify fold, B2). The
+/// record is built BEFORE the post, with the hold ids the engine is about to mint
+/// (`peek_next_hold` is the very floor `validate` allocates from, one per `Place`),
+/// and handed to `post_with_companions` — so the journal chunk, the hold projections
+/// and the contract doc that names them are one durable write. A separate later
+/// write could drop, leaving escrow reserved to a contract whose record does not
+/// list it: money nothing in the world could release.
+pub(crate) fn accept_core(
+    ctx: &mut Ctx<'_>,
+    c: EconomicContract,
+    party: PrincipalId,
+) -> Result<AcceptOutcome, ContractError> {
+    if c.state != ContractState::Offered || c.pending.is_some() {
+        return Err(ContractError::State(c.id));
+    }
+    if !c.consent_intact() {
+        return Err(ContractError::ConsentMismatch);
+    }
     if c.accepted_by(&party) {
-        return Err(CmdError::msg(format!(
-            "Contract #{} is already accepted on your behalf.",
-            c.id
-        )));
+        return Err(ContractError::AlreadyAccepted);
     }
     // Everything this party owes, escrowed in one plan.
     let considerations: Vec<Consideration> = c
@@ -1584,13 +1792,6 @@ fn contract_accept(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         .filter(|x| principal_key(&x.from) == principal_key(&party))
         .cloned()
         .collect();
-    // **The acceptance rides the escrow post's own batch** (E4b2 verify fold, B2).
-    // The record is built BEFORE the post, with the hold ids the engine is about to
-    // mint (`peek_next_hold` is the very floor `validate` allocates from, one per
-    // `Place`), and handed to `post_with_companions` — so the journal chunk, the
-    // hold projections and the contract doc that names them are one durable write.
-    // A separate later write could drop, leaving escrow reserved to a contract whose
-    // record does not list it: money nothing in the world could release.
     let now = ctx.w.now();
     let mut c = c;
     c.acceptances.push(Acceptance {
@@ -1642,7 +1843,6 @@ fn contract_accept(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 expires: None,
             })
             .collect();
-        let first = considerations.first().map_or(AccountId(0), |x| x.account);
         let mut committed = c.clone();
         committed.revision = committed.revision.saturating_add(1);
         match api::post_with_companions(ctx, &plan, PostAuth::World, vec![committed]) {
@@ -1659,29 +1859,15 @@ fn contract_accept(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 })
                 .unwrap_or_default(),
             Ok(PostOutcome::AlreadyPosted(_)) => {
-                return Err(CmdError::msg("That escrow was already placed; try again."));
-            }
-            // D-E4-11: no acceptance is recorded, the contract stays `Offered`, and
-            // the party re-runs accept once the approval is collected. Nothing posted,
-            // so the companion was never written either.
-            Ok(PostOutcome::NeedsApproval(request)) => {
-                info(
-                    ctx,
-                    format!(
-                        "Approval required before you can escrow that: request #{request}. Nothing \
-                         was accepted — run @contract/accept #{id} again once it is approved."
-                    ),
-                );
-                return Ok(());
-            }
-            Err(e) => {
-                return Err(refuse(
-                    ctx,
-                    NamedResource::Contract(id),
-                    &[NamedResource::Account(first)],
-                    &e,
+                return Err(ContractError::Infeasible(
+                    "that escrow was already placed; try again",
                 ));
             }
+            // Nothing posted, so the companion was never written either.
+            Ok(PostOutcome::NeedsApproval(request)) => {
+                return Ok(AcceptOutcome::NeedsApproval(request));
+            }
+            Err(e) => return Err(ContractError::Refused(e)),
         }
     };
     // Belt and braces: if the engine somehow minted ids other than the predicted run,
@@ -1698,29 +1884,14 @@ fn contract_accept(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         save(ctx, healed);
     }
     let full = c.fully_accepted();
-    let escrowed: Vec<String> = placed.iter().map(|h| format!("#{h}")).collect();
-    if escrowed.is_empty() {
-        info(ctx, format!("Contract #{id}: accepted."));
-    } else {
-        info(
-            ctx,
-            format!(
-                "Contract #{id}: accepted; escrow {} placed.",
-                escrowed.join(", ")
-            ),
-        );
-        info(
-            ctx,
-            "That reservation belongs to the contract now: it is released by its refund and \
-             captured by its settlement, and by nothing else."
-                .to_string(),
-        );
-    }
     if full {
         activate(ctx, id);
     }
     ctx.gate_on_durable_ack();
-    Ok(())
+    Ok(AcceptOutcome::Accepted {
+        escrow: placed,
+        activated: full,
+    })
 }
 
 // ---- activation -----------------------------------------------------------
@@ -2153,6 +2324,7 @@ pub(crate) fn promote_and_settle_with(
             now: ctx.w.now(),
             ic_now: ctx.w.game_now_unix(),
             next_hold_id: store.peek_next_hold(),
+            spent: std::collections::BTreeMap::new(),
         };
         readiness(&c, store.snapshot(), &env)
     };
@@ -2221,6 +2393,7 @@ fn settle_with(ctx: &mut Ctx<'_>, id: ContractId, companions: Vec<EconomicContra
             now: ctx.w.now(),
             ic_now: ctx.w.game_now_unix(),
             next_hold_id: store.peek_next_hold(),
+            spent: std::collections::BTreeMap::new(),
         };
         let snap = store.snapshot();
         match resolve_outcome(&c, snap, &env) {
@@ -2668,91 +2841,290 @@ fn contract_cancel(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 /// terms after somebody has accepted them (08e answer 5).
 ///
 /// An acceptance binds to the whole consent surface's hash, which is the money-safety
-/// spine: changing anything voids every acceptance. So an amendment is explicit about
-/// it — it refunds every escrow placed so far, clears the acceptances, re-opens the
-/// roster, and returns the contract to `Draft`. The affected parties then re-accept
-/// the amended terms, which is exactly the consent the answer asks for.
+/// spine: changing anything voids an acceptance. **Consent by authorship** (E6a step
+/// 1, DL-01 Option A′) is the one exception: the amendment's *author* — the party the
+/// actor speaks for, or the issuer — wrote the terms, so their own acceptance survives
+/// and their escrow stays reserved. Every other acceptance is voided and refunded
+/// exactly as E4b2 did for all of them, the roster re-opens, and the contract returns
+/// to `Draft`; the affected parties re-accept the amended terms once it is re-offered.
 fn contract_amend(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let c = contract_of(ctx, ctx.args.lhs())?;
     if !is_issuer(ctx, &c) {
         return Err(CmdError::msg(NO_SUCH));
     }
-    if c.state != ContractState::Offered {
-        return Err(CmdError::msg(format!(
-            "Only an offered contract can be amended; #{} is not.",
-            c.id
-        )));
+    let author = amend_author(ctx, &c);
+    let id = c.id;
+    match amend_core(ctx, c.clone(), &author) {
+        Ok(outcome) => {
+            info(
+                ctx,
+                format!(
+                    "Contract #{id} is back to draft; {} acceptance(s) were voided{}, {} (the \
+                     author's) stand and their escrow stays reserved.",
+                    outcome.voided,
+                    if outcome.refunded {
+                        " and refunded"
+                    } else {
+                        ""
+                    },
+                    outcome.kept
+                ),
+            );
+            Ok(())
+        }
+        Err(e) => Err(amend_refusal(ctx, &c, &e)),
+    }
+}
+
+/// Which party an amendment is **authored by** (A′): the party the actor speaks for
+/// through the ordinary [`acting_party`] routes, or the issuer.
+///
+/// Staff are the one exception to the routes: a staffer who is not a party amends
+/// *on the issuer's behalf* (their standing here is `is_issuer`'s staff clause), so
+/// the issuer's own acceptance is the one that survives — never a party the staffer
+/// happens to act for by fiat.
+fn amend_author(ctx: &Ctx<'_>, c: &EconomicContract) -> PrincipalId {
+    let me = PrincipalId::Object(ctx.actor);
+    if c.consent.parties.contains(&me) {
+        return me;
+    }
+    if is_admin(ctx.w, ctx.actor) {
+        return c.issuer.clone();
+    }
+    acting_party(ctx, c, "contract.draft").unwrap_or_else(|| c.issuer.clone())
+}
+
+/// What one amendment did (E6a step 1).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AmendOutcome {
+    /// Acceptances that survived: the author's.
+    pub kept: usize,
+    /// Acceptances that were voided: every other party's.
+    pub voided: usize,
+    /// Whether a refund actually posted — which is the one condition under which the
+    /// key generation moved (M16).
+    pub refunded: bool,
+}
+
+/// The amendment itself — the shared core of `@contract/amend` and the
+/// programmatic `amend_contract` seam (E6a step 1, A′).
+///
+/// The order is the plan-first rule applied to a **non-terminal** transition: the
+/// partial refund ([`refund_plan_except`]) posts under the contract's own key at its
+/// generation, and the amended `Draft` record **rides that post's own batch** as a
+/// companion (`post_with_companions`, B2's mechanism), so the released escrow and the
+/// record that no longer lists it are one durable write. A key that resolves
+/// `AlreadyPosted` means the refund landed and the doc write was lost: the state
+/// write is all that is left, and it is done here. A refused refund refuses the
+/// amendment with **nothing changed** — the contract stays `Offered` with its escrow
+/// intact; `@contract/cancel` remains the retrying route out.
+///
+/// The generation moves only when a refund posted (M16): an amendment that released
+/// nothing left `contract/{id}/refund/{n}` unused, so a later refund may still post
+/// under it, and a run board that re-splits a listing thirty times never exhausts
+/// [`MAX_AMENDMENTS`].
+pub(crate) fn amend_core(
+    ctx: &mut Ctx<'_>,
+    c: EconomicContract,
+    author: &PrincipalId,
+) -> Result<AmendOutcome, ContractError> {
+    let key = principal_key(author);
+    // An `Offered` contract, or — the other face of A′ — one **in force with nobody
+    // but its author bound**. A one-party contract activates at its author's own
+    // accept (the last acceptance activates, D-E4-10), which is exactly what a run
+    // board's `Listed` entry is: the payer's escrow stands and no counterparty has
+    // consented to anything. Amending it unwinds nothing, and there is nothing that
+    // activation placed to take back (no deliverables: no pledge, no lease). A live
+    // contract anybody else accepted, or one carrying deliverables, is an agreement
+    // in force and is not amendable — the routes are a dispute and unanimity, or
+    // the deadline.
+    let author_only_live = matches!(
+        c.state,
+        ContractState::Active | ContractState::ReadyToSettle
+    ) && c.consent.terms.deliverables.is_empty()
+        && c.acceptances.iter().all(|a| principal_key(&a.party) == key);
+    if c.state != ContractState::Offered && !author_only_live {
+        return Err(ContractError::State(c.id));
     }
     if c.amendments >= MAX_AMENDMENTS {
-        return Err(CmdError::msg(format!(
-            "Contract #{} has been amended {MAX_AMENDMENTS} times; draft a new one.",
-            c.id
-        )));
+        return Err(ContractError::TooLarge(
+            "the contract has been amended the most times allowed",
+        ));
     }
     // **An amendment may not run over a refund that has not landed** (E4b2 verify
-    // fold, M2+M3). The old code called `unwind`, ignored its outcome, cleared
-    // `escrow` and bumped the generation — so a refused refund left holds nobody's
-    // record listed any more, under a key generation that would never be posted
-    // again. The escrow was simply gone from the model while still reserving the
-    // payer's money. So: refuse while a transition is pending, and refuse while any
-    // qualifying escrow is still `Held`.
+    // fold, M2+M3): a transition in flight owns the escrow until it lands.
     if c.pending.is_some() {
-        return Err(CmdError::msg(format!(
+        return Err(ContractError::Infeasible(
+            "the contract's refund has not landed yet; it is being retried",
+        ));
+    }
+    // A surface that no longer matches its hash is tampered with, and an amendment
+    // that re-hashed it would launder the tamper into a fresh draft under the author's
+    // surviving acceptance. Nothing here moves it; staff resolve it.
+    if !c.consent_intact() {
+        return Err(ContractError::ConsentMismatch);
+    }
+    let (kept, voided): (Vec<Acceptance>, Vec<Acceptance>) = c
+        .acceptances
+        .iter()
+        .cloned()
+        .partition(|a| principal_key(&a.party) == key);
+    let (plan, kept_escrow) = {
+        let store = ctx
+            .w
+            .module_state::<EconomyStore>()
+            .ok_or(ContractError::Infeasible("no economy"))?;
+        if store.is_frozen() {
+            return Err(ContractError::Infeasible("the economy is frozen"));
+        }
+        let snap = store.snapshot();
+        let (claims, _) = crate::contract::qualifying_claims(&c, snap);
+        let kept_escrow: Vec<HoldId> = claims
+            .iter()
+            .filter(|(_, i)| {
+                c.consent
+                    .terms
+                    .consideration
+                    .get(*i)
+                    .is_some_and(|con| principal_key(&con.from) == key)
+            })
+            .map(|(hold, _)| hold.id)
+            .collect();
+        let plan = if voided.is_empty() {
+            None
+        } else {
+            Some(crate::contract::refund_plan_except(&c, snap, author)?)
+        };
+        (plan, kept_escrow)
+    };
+    let refunding = plan.as_ref().is_some_and(|p| !p.hold_ops.is_empty());
+    let id = c.id;
+    let mut back = c.clone();
+    back.state = ContractState::Draft;
+    back.pending = None;
+    back.acceptances = kept;
+    back.agreements.clear();
+    back.escrow = kept_escrow;
+    back.deposits.clear();
+    // An attestation belongs to the surface it attested; a re-opened surface starts
+    // with none (only an author-only live contract can carry any here).
+    back.satisfied = vec![None; back.consent.conditions.len()];
+    back.roster_locked = false;
+    back.settle_attempts = 0;
+    back.revision = back.revision.saturating_add(1);
+    // A `Draft` is re-hashed on every write; the survivors keep the hash they bound
+    // and are re-stamped when the surface is re-offered.
+    back.consent_hash = consent_hash(&back.issuer, &back.consent);
+    match plan.filter(|_| refunding) {
+        Some(plan) => {
+            // The refund posts under THIS generation; the record it carries is the
+            // next one, so a second refund of the same id can never hit this key.
+            back.amendments = back.amendments.saturating_add(1);
+            let owned = c.clone();
+            let posted = {
+                let auth = {
+                    let store = ctx
+                        .w
+                        .module_state::<EconomyStore>()
+                        .ok_or(ContractError::Infeasible("no economy"))?;
+                    ContractAuth::unwinding(&owned, store.snapshot())
+                };
+                api::post_with_companions(ctx, &plan, PostAuth::Injected(&auth), vec![back.clone()])
+            };
+            match posted {
+                Ok(PostOutcome::Posted(_)) => {
+                    // The companion bypassed `put_contract`'s transition event; the
+                    // transition is real, so say so.
+                    crate::observer::emit(
+                        ctx,
+                        &crate::record::EconomicEvent::ContractChanged {
+                            id,
+                            state: back.state.kind(),
+                            transaction: None,
+                        },
+                    );
+                }
+                // The refund landed on an earlier attempt and only the state write
+                // was lost: finish it.
+                Ok(PostOutcome::AlreadyPosted(_)) => api::put_contract(ctx, back.clone()),
+                Ok(PostOutcome::NeedsApproval(_)) => {
+                    return Err(ContractError::Refused(EconomyError::ApprovalRequired));
+                }
+                Err(e) => return Err(ContractError::Refused(e)),
+            }
+        }
+        None => api::put_contract(ctx, back.clone()),
+    }
+    for p in &back.consent.parties {
+        let stands = back
+            .acceptances
+            .iter()
+            .any(|a| principal_key(&a.party) == principal_key(p));
+        let msg = if stands {
+            format!(
+                "Contract #{id} has been amended by its author: your acceptance stands and your \
+                 escrow stays reserved; it will be re-offered."
+            )
+        } else {
+            format!(
+                "Contract #{id} has been amended: any acceptance of yours is void and your escrow \
+                 released."
+            )
+        };
+        notify(ctx, p, &msg);
+    }
+    ctx.gate_on_durable_ack();
+    Ok(AmendOutcome {
+        kept: back.acceptances.len(),
+        voided: voided.len(),
+        refunded: refunding,
+    })
+}
+
+/// Render an amendment refusal for the command path with the texts E4b2 pinned.
+fn amend_refusal(ctx: &Ctx<'_>, c: &EconomicContract, e: &ContractError) -> CmdError {
+    match e {
+        ContractError::State(_) => CmdError::msg(format!(
+            "Only an offered contract — or one in force that nobody but its author has accepted \
+             and that carries no deliverables — can be amended; #{} is not.",
+            c.id
+        )),
+        ContractError::TooLarge(_) => CmdError::msg(format!(
+            "Contract #{} has been amended {MAX_AMENDMENTS} times; draft a new one.",
+            c.id
+        )),
+        ContractError::Infeasible(_) if c.pending.is_some() => CmdError::msg(format!(
             "Contract #{}'s refund has not landed yet. It is being retried; try again shortly, or \
              @contract/resolve #{}=refund.",
             c.id, c.id
-        )));
+        )),
+        ContractError::ConsentMismatch => CmdError::msg(format!(
+            "Contract #{}'s consent surface has changed since it was offered, so it cannot be \
+             amended as it stands: nothing was changed. @contract/cancel #{} refunds it under the \
+             retrying path, and staff can @contract/resolve it.",
+            c.id, c.id
+        )),
+        ContractError::Refused(inner) => {
+            let first = c
+                .consent
+                .terms
+                .consideration
+                .first()
+                .map_or(AccountId(0), |x| x.account);
+            let hidden = refuse(
+                ctx,
+                NamedResource::Contract(c.id),
+                &[NamedResource::Account(first)],
+                inner,
+            );
+            CmdError::msg(format!(
+                "Contract #{}'s escrow could not be released ({}), so it cannot be amended: nothing \
+                 was changed. @contract/cancel #{} refunds it under the retrying path.",
+                c.id, hidden, c.id
+            ))
+        }
+        other => contract_refusal(ctx, c, other),
     }
-    let id = c.id;
-    let had = c.acceptances.len();
-    // Refund through the ordinary unwind (the plan posts, then the state moves), then
-    // re-open the surface.
-    unwind(ctx, id, ContractState::Cancelled);
-    let held_still = ctx
-        .w
-        .module_state::<EconomyStore>()
-        .and_then(|s| {
-            s.snapshot()
-                .contract(id)
-                .map(|c| qualifying_escrow(c, s.snapshot()))
-        })
-        .is_some_and(|e| !e.holds.is_empty());
-    if held_still {
-        return Err(CmdError::msg(format!(
-            "Contract #{id}'s escrow could not be released, so it cannot be amended yet: staff have \
-             been paged and the sweep is retrying. Nothing was changed."
-        )));
-    }
-    let Some(mut back) = live_contract(ctx, id) else {
-        return Ok(());
-    };
-    back.state = ContractState::Draft;
-    back.pending = None;
-    // The generation every deterministic key carries. It moves BEFORE anything else,
-    // because the refund above posted under the old one: without it a second
-    // cancellation would reuse `contract/{id}/refund`, resolve to that first refund
-    // as an idempotency HIT, and hand nothing back.
-    back.amendments = back.amendments.saturating_add(1);
-    back.acceptances.clear();
-    back.agreements.clear();
-    back.escrow.clear();
-    back.deposits.clear();
-    back.roster_locked = false;
-    back.settle_attempts = 0;
-    // `Draft`, so `save_open` re-validates nothing and cannot refuse.
-    let _ = save_open(ctx, back.clone());
-    info(
-        ctx,
-        format!("Contract #{id} is back to draft; {had} acceptance(s) were voided and refunded."),
-    );
-    notify_parties(
-        ctx,
-        &back,
-        &format!(
-            "Contract #{id} has been amended: your acceptance is void and your escrow released."
-        ),
-    );
-    Ok(())
 }
 
 // ---- terminal transitions: the plan first, then the state (M2+M3) ---------
@@ -3028,7 +3400,13 @@ pub(crate) fn expire(ctx: &mut Ctx<'_>, id: ContractId) {
     let Some(c) = live_contract(ctx, id) else {
         return;
     };
-    let bound = c.fully_accepted();
+    // Only a contract in force **between parties** is bound. An `Offered` one never
+    // came into force; a `Draft` holding escrow (E6a step 1, A′: an author's
+    // acceptance survives an amendment) has an acceptance but no agreement; and a
+    // one-party contract in force — a run board's `Listed` entry — bound nobody but
+    // its author, so its deadline gives the author's own money back (M7: an unbound
+    // run refunds regardless). All three refund, whatever `on_expiry` says.
+    let bound = c.state.is_live() && c.fully_accepted() && c.consent.parties.len() > 1;
     // A forfeit with nothing to forfeit is a refund: `forfeit_plan` refuses an empty
     // escrow, and there is still a pledge to release and a deposit to hand back.
     let has_escrow = ctx
@@ -3185,16 +3563,6 @@ fn contract_show(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         }
         return Ok(());
     }
-    let scale = ctx.w.module_state::<EconomyStore>().map_or(0, |s| {
-        let snap = s.snapshot();
-        c.consent
-            .terms
-            .consideration
-            .first()
-            .and_then(|x| snap.account(x.account))
-            .and_then(|a| snap.instrument(&a.instrument))
-            .map_or(0, |i| i.scale)
-    });
     // Every account id on this page goes through the same per-class rule: an id the
     // viewer may see, or the word "an account". E4c's disclosure filter renders
     // through `commands::mask_account` and nothing else — this closure is now that
@@ -3249,7 +3617,7 @@ fn contract_show(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         };
         lines.push(format!(
             "  {who} escrows {} from {}",
-            x.amount.to_decimal_string(scale),
+            money_on(ctx, x.account, x.amount),
             acct(ctx, x.account)
         ));
     }
@@ -3258,7 +3626,7 @@ fn contract_show(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             lines.push(format!(
                 "  pays {} {}",
                 acct(ctx, sh.to),
-                render_share(sh.share, scale)
+                render_share(ctx, sh.to, sh.share)
             ));
         }
         lines.push(format!(
@@ -3270,7 +3638,13 @@ fn contract_show(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             let pays: Vec<String> = o
                 .payouts
                 .iter()
-                .map(|sh| format!("{} {}", acct(ctx, sh.to), render_share(sh.share, scale)))
+                .map(|sh| {
+                    format!(
+                        "{} {}",
+                        acct(ctx, sh.to),
+                        render_share(ctx, sh.to, sh.share)
+                    )
+                })
                 .collect();
             lines.push(format!(
                 "  outcome \"{}\" when {:?} pays {}",
@@ -3432,9 +3806,10 @@ fn render_state(s: &ContractState) -> String {
     }
 }
 
-fn render_share(s: Share, scale: u8) -> String {
+/// A share, an exact one rendered in the instrument the payee account holds.
+fn render_share(ctx: &Ctx<'_>, to: AccountId, s: Share) -> String {
     match s {
-        Share::Exact(a) => a.to_decimal_string(scale),
+        Share::Exact(a) => money_on(ctx, to, a),
         Share::Permille(p) => format!("{p}‰"),
     }
 }
@@ -3481,7 +3856,7 @@ fn render_deliverable(ctx: &Ctx<'_>, d: &Deliverable) -> String {
                 "an obligation: {} owes {} {} each period",
                 side(template.debit_account),
                 side(template.credit_account),
-                template.amount.minor()
+                money_on(ctx, template.debit_account, template.amount)
             )
         }
     }
@@ -3900,4 +4275,460 @@ fn owns_lease(c: &EconomicContract, key: &LeaseKey) -> bool {
         .iter()
         .any(|d| matches!(d, Deliverable::Obligation { .. }));
     pledged && rented
+}
+
+// ---- the programmatic contract seams (E6a step 1, 08f §2 item 4) -------------
+
+/// One account's escrow in a [`ContractSpec`]: what it puts up at its owner's
+/// accept. The payer — the `from` of the resulting [`Consideration`] — is **derived
+/// from the account's owner**, never named by the caller (08e answer 4: the
+/// accountable escrow principal is a fact about the wallet), and the owner must be a
+/// party of the surface.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ConsiderationSpec {
+    /// The account escrowed from.
+    pub account: AccountId,
+    /// How much (> 0).
+    pub amount: Amount,
+}
+
+/// Everything [`offer_contract`] needs — the [`LeaseSpec`] shape generalized to the
+/// whole `@contract` builder surface, so a ruleset never types a command. A struct
+/// rather than fifteen positional arguments, and deliberately **not** an
+/// [`EconomicContract`]: the id, the issuer, the consent hash, the payers behind the
+/// considerations, the satisfaction vector, the roster lock and the state are the
+/// economy's to fill in.
+#[derive(Clone, Debug)]
+pub struct ContractSpec {
+    /// A short human label (≤ [`MAX_CONTRACT_NAME_BYTES`]).
+    pub name: SmolStr,
+    /// `Some(scope)`: the issuer is that compartment's organization, and the actor
+    /// needs `contract.draft` on it (or staff) — `@contract/draft … scope=`'s rule.
+    /// `None`: the actor is the issuer.
+    pub scope: Option<OrgScopeId>,
+    /// The parties besides the issuer (the issuer is always a party; naming it here
+    /// is harmless).
+    pub parties: Vec<PrincipalId>,
+    /// What is escrowed, and from where (one or more). The actor must be able to
+    /// **view** each account (`@contract/pay`'s rule (a)), its owner must be a
+    /// party, and a `System`-owned one is refused outright (M4).
+    pub considerations: Vec<ConsiderationSpec>,
+    /// The outcome table — **at least one row** (D-E6-6): each row's payouts name
+    /// exactly where every minor unit lands and sum to the escrowed total; there is
+    /// no implicit remainder. A programmatic offer never carries E4a's single split.
+    pub outcomes: Vec<OutcomeTerms>,
+    /// Inert under a table, but it must still resolve to a live account in the
+    /// contract's instrument (M18) — the payer's own, by convention.
+    pub remainder_to: AccountId,
+    /// The conditions the outcome rows index. **`Attestation` only** unless
+    /// `deterministic` is set: E6a settles by attestation alone (D-E6-20), and a bare
+    /// `Before` row would be `Ready` the moment the last party accepted.
+    pub conditions: Vec<TypedCondition>,
+    /// The named adjudicator (08e answer 6), consented at offer.
+    pub adjudicator: Option<AttestorSet>,
+    /// The permitted evidence kinds (empty admits every kind).
+    pub evidence: Vec<EvidenceKind>,
+    /// When the offer lapses, on its own clock.
+    pub deadline: Option<EconomicDeadline>,
+    /// What a lapsed deadline does once the contract is bound (an unbound one always
+    /// refunds).
+    pub on_expiry: Expiry,
+    /// The disclosure every party consents to.
+    pub visibility: EconomicVisibility,
+    /// The separate roles (attribution, never authority). `author` defaults to the
+    /// actor and `payer` to the first consideration's owner when unset.
+    pub roles: ContractRoles,
+    /// Admit `DepositInto`/`TitleHeld`/`Fact`/`Before`/`After` conditions — E6b's
+    /// settlement routes. Off by default.
+    pub deterministic: bool,
+}
+
+/// What [`amend_contract`] changes (E6a step 1). Each field is optional so a
+/// caller re-splitting a listing touches nothing else.
+#[derive(Clone, Debug, Default)]
+pub struct ContractAmendment {
+    /// Parties to add (each must be new; the cap is [`MAX_PARTIES`]).
+    pub add_parties: Vec<PrincipalId>,
+    /// Replace the outcome table when `Some` (the same rules as at offer).
+    pub outcomes: Option<Vec<OutcomeTerms>>,
+    /// Replace what a lapsed deadline does when `Some` — a board posts `Refund`
+    /// while nobody but the payer is bound and switches to `Dispute` at crewing
+    /// (D-E6-22).
+    pub on_expiry: Option<Expiry>,
+    /// Re-offer in the same call. When the re-offer is refused the amendment and the
+    /// edits **stand** as a `Draft` — the caller retries or cancels (M10: the sweep
+    /// expires a draft holding escrow past its deadline).
+    pub reoffer: bool,
+}
+
+/// Who a programmatic offer is issued by: the actor, or the compartment's
+/// organization when `scope` is named and the actor holds `contract.draft` on it.
+fn resolve_issuer(ctx: &Ctx<'_>, scope: Option<OrgScopeId>) -> Result<PrincipalId, ContractError> {
+    let Some(s) = scope else {
+        return Ok(PrincipalId::Object(ctx.actor));
+    };
+    let org = ctx
+        .w
+        .module_state::<mush_org::OrgStore>()
+        .and_then(|st| st.state().scope(s).map(|sc| sc.org))
+        .ok_or(ContractError::Infeasible("no such scope"))?;
+    if !is_admin(ctx.w, ctx.actor) && !api::holds_capability(ctx.w, ctx.actor, "contract.draft", s)
+    {
+        return Err(ContractError::Infeasible("no such scope"));
+    }
+    Ok(PrincipalId::Organization(org))
+}
+
+/// `@contract/pay`'s rules, for a programmatic offer: a positive amount, an
+/// account the actor may **view** (a hidden one answers exactly like a missing one),
+/// `Active`, and — E6a step 1's M4 fold — never `System`-owned.
+fn consideration_for(
+    ctx: &Ctx<'_>,
+    spec: &ConsiderationSpec,
+) -> Result<Consideration, ContractError> {
+    if spec.amount.is_zero() || spec.amount.is_negative() {
+        return Err(ContractError::Infeasible(
+            "a consideration must be positive",
+        ));
+    }
+    if !may_view_account(ctx.w, ctx.actor, spec.account) {
+        return Err(ContractError::NoSuchAccount(spec.account));
+    }
+    let store = ctx
+        .w
+        .module_state::<EconomyStore>()
+        .ok_or(ContractError::Infeasible("no economy"))?;
+    let account = store
+        .snapshot()
+        .account(spec.account)
+        .ok_or(ContractError::NoSuchAccount(spec.account))?;
+    if account.status != AccountStatus::Active {
+        return Err(ContractError::NoSuchAccount(spec.account));
+    }
+    if matches!(account.owner, PrincipalId::System(_)) {
+        return Err(ContractError::SystemParty);
+    }
+    Ok(Consideration {
+        from: account.owner.clone(),
+        account: spec.account,
+        amount: spec.amount,
+    })
+}
+
+/// **Draft and offer a contract in one call** on behalf of a ruleset (E6a step 1,
+/// 08f §2 item 4; D-E6-19's `+run/post` is the first caller).
+///
+/// It is the whole `@contract/draft` → builders → `@contract/offer` sequence with
+/// the same gates, and none of the intermediate states: nothing is allocated and
+/// nothing is written until the surface has passed [`check_offer`] — the structural
+/// half, the world half, the per-party cap and the re-stamp rule — so a refused
+/// offer leaves **no draft behind** (M17) and costs no id. The issuer is the actor
+/// or, through `scope`, an organization the actor holds `contract.draft` on
+/// (D-E6-19: the payer is the issuer); a `System` payer is refused before anything
+/// exists (M4).
+///
+/// # Errors
+///
+/// Every structural refusal `@contract/offer` gives, plus
+/// [`ContractError::NoSuchAccount`] for a consideration account the actor may not
+/// view (rendered as the hiding text), [`ContractError::SystemParty`],
+/// [`ContractError::EvidenceNotPermitted`] for a deterministic condition without
+/// `deterministic`, [`ContractError::Infeasible`] for a missing table, an unknown
+/// scope, or a frozen economy, and [`ContractError::TooLarge`] for the caps
+/// (including the allocator at its ceiling). Nothing is written on any error path.
+pub fn offer_contract(ctx: &mut Ctx<'_>, spec: ContractSpec) -> Result<ContractId, ContractError> {
+    if ctx
+        .w
+        .module_state::<EconomyStore>()
+        .is_none_or(EconomyStore::is_frozen)
+    {
+        return Err(ContractError::Infeasible("the economy is frozen"));
+    }
+    if spec.name.is_empty() || spec.name.len() > MAX_CONTRACT_NAME_BYTES {
+        return Err(ContractError::TooLarge("the name is empty or too long"));
+    }
+    if spec.outcomes.is_empty() {
+        return Err(ContractError::Infeasible(
+            "a programmatic offer carries an outcome table",
+        ));
+    }
+    if spec.considerations.is_empty() {
+        return Err(ContractError::Infeasible(
+            "a programmatic offer escrows at least one consideration",
+        ));
+    }
+    let issuer = resolve_issuer(ctx, spec.scope)?;
+    if spec
+        .parties
+        .iter()
+        .chain(std::iter::once(&issuer))
+        .any(|p| matches!(p, PrincipalId::System(_)))
+    {
+        return Err(ContractError::SystemParty);
+    }
+    // §9's cap, counted over NON-TERMINAL contracts (as `@contract/draft`).
+    let open = ctx.w.module_state::<EconomyStore>().map_or(0, |st| {
+        st.snapshot()
+            .contracts()
+            .filter(|c| c.issuer == issuer && !c.state.is_terminal())
+            .count()
+    });
+    if open >= MAX_OPEN_CONTRACTS_PER_ISSUER {
+        return Err(ContractError::TooLarge(
+            "that issuer already has the most open contracts allowed",
+        ));
+    }
+    if !spec.deterministic
+        && let Some(i) = spec
+            .conditions
+            .iter()
+            .position(|c| !matches!(c, TypedCondition::Attestation { .. }))
+    {
+        return Err(ContractError::EvidenceNotPermitted(i));
+    }
+    let mut parties = vec![issuer.clone()];
+    for p in &spec.parties {
+        // The issuer named as a party is harmless; anyone else twice is refused by
+        // `check_structure` below.
+        if principal_key(p) == principal_key(&issuer) {
+            continue;
+        }
+        parties.push(p.clone());
+    }
+    let mut consideration: Vec<Consideration> = Vec::with_capacity(spec.considerations.len());
+    for c in &spec.considerations {
+        let built = consideration_for(ctx, c)?;
+        consideration.retain(|x| x.account != built.account);
+        consideration.push(built);
+    }
+    let now = ctx.w.now();
+    let mut roles = spec.roles;
+    if roles.author.is_none() {
+        roles.author = Some(PrincipalId::Object(ctx.actor));
+    }
+    if roles.payer.is_none() {
+        roles.payer = consideration.first().map(|x| x.from.clone());
+    }
+    let satisfied = vec![None; spec.conditions.len()];
+    let consent = ConsentSurface {
+        parties,
+        terms: ContractTerms {
+            consideration,
+            deliverables: Vec::new(),
+            split: Vec::new(),
+            remainder_to: spec.remainder_to,
+            on_expiry: spec.on_expiry,
+            outcomes: spec.outcomes,
+        },
+        conditions: spec.conditions,
+        deadline: spec.deadline,
+        visibility: spec.visibility,
+        scope: spec.scope,
+        adjudicator: spec.adjudicator,
+        evidence: spec.evidence,
+    };
+    let mut c = EconomicContract {
+        // Validated against a PROVISIONAL id nothing else can carry, so the per-party
+        // cap never mistakes a real contract for this one.
+        id: ContractId(u64::MAX),
+        issuer: issuer.clone(),
+        name: spec.name,
+        consent_hash: [0u8; 32],
+        consent,
+        acceptances: Vec::new(),
+        satisfied,
+        escrow: Vec::new(),
+        state: ContractState::Draft,
+        settle_attempts: 0,
+        created_at: now,
+        amendments: 0,
+        disputed_at: None,
+        canon_published: None,
+        roster_locked: false,
+        deposits: Vec::new(),
+        agreements: Vec::new(),
+        pending: None,
+        roles,
+        revision: 1,
+    };
+    check_offer(ctx, &c)?;
+    let id = {
+        let store = ctx
+            .w
+            .module_state_mut::<EconomyStore>()
+            .ok_or(ContractError::Infeasible("no economy"))?;
+        store.alloc_contract().ok_or(ContractError::TooLarge(
+            "the contract-id allocator is exhausted",
+        ))?
+    };
+    c.id = id;
+    let id = freeze_and_offer(ctx, c);
+    let meta = ctx
+        .w
+        .module_state::<EconomyStore>()
+        .map(EconomyStore::meta_doc);
+    if let Some(meta) = meta {
+        api::persist_meta(ctx.out, meta);
+    }
+    ctx.gate_on_durable_ack();
+    Ok(id)
+}
+
+/// **Accept a contract** on behalf of the actor, under their own authority (E6a
+/// step 1) — `@contract/accept` without the command: the actor must be a party (or
+/// act for one, the [`acting_party`] routes), and the escrow is placed exactly as the
+/// command places it, in one `post_with_companions`. `NeedsApproval` surfaces as
+/// [`AcceptOutcome::NeedsApproval`] with **no acceptance recorded** (D-E4-11).
+///
+/// # Errors
+///
+/// [`ContractError::NoStanding`] (no such contract, unviewable, or not a party — one
+/// answer), [`ContractError::State`] (not open for acceptance),
+/// [`ContractError::ConsentMismatch`], [`ContractError::AlreadyAccepted`],
+/// [`ContractError::Refused`] (the escrow post was refused: no funds, a suspended
+/// compartment, no debit authority), [`ContractError::Infeasible`] (frozen).
+pub fn accept_contract(ctx: &mut Ctx<'_>, id: ContractId) -> Result<AcceptOutcome, ContractError> {
+    if ctx
+        .w
+        .module_state::<EconomyStore>()
+        .is_none_or(EconomyStore::is_frozen)
+    {
+        return Err(ContractError::Infeasible("the economy is frozen"));
+    }
+    if !may_view_contract(ctx.w, ctx.actor, id) {
+        return Err(ContractError::NoStanding);
+    }
+    let c = live_contract(ctx, id).ok_or(ContractError::NoStanding)?;
+    let party = acting_party(ctx, &c, "contract.accept").ok_or(ContractError::NoStanding)?;
+    accept_core(ctx, c, party)
+}
+
+/// **Amend an offered contract** on behalf of its issuer (E6a step 1): S1's rules —
+/// the author's own acceptance and escrow stand, every other acceptance is voided
+/// and refunded — then the roster and the outcome table are rewritten, and the
+/// surface is re-offered in the same call when `reoffer` says so. `+run/crew accept`
+/// is the first caller: with only the payer accepted, the crew is added and every
+/// row rewritten to their accounts without the escrow moving.
+///
+/// # Errors
+///
+/// [`ContractError::NoStanding`] (no such contract, unviewable, or not the issuer),
+/// everything [`amend_core`] refuses (nothing changed), then — with the amendment
+/// **already standing** as a `Draft` — [`ContractError::TooLarge`] for the party cap,
+/// [`ContractError::Infeasible`] for a duplicate party, and every refusal
+/// [`check_offer`] gives for the re-offer. The `Draft` and its edits survive those:
+/// retry, or cancel (M10).
+pub fn amend_contract(
+    ctx: &mut Ctx<'_>,
+    id: ContractId,
+    amend: ContractAmendment,
+) -> Result<(), ContractError> {
+    if ctx
+        .w
+        .module_state::<EconomyStore>()
+        .is_none_or(EconomyStore::is_frozen)
+    {
+        return Err(ContractError::Infeasible("the economy is frozen"));
+    }
+    if !may_view_contract(ctx.w, ctx.actor, id) {
+        return Err(ContractError::NoStanding);
+    }
+    let c = live_contract(ctx, id).ok_or(ContractError::NoStanding)?;
+    if !is_issuer(ctx, &c) {
+        return Err(ContractError::NoStanding);
+    }
+    let author = amend_author(ctx, &c);
+    amend_core(ctx, c, &author)?;
+    let mut back = live_contract(ctx, id).ok_or(ContractError::NoStanding)?;
+    for p in &amend.add_parties {
+        if matches!(p, PrincipalId::System(_)) {
+            return Err(ContractError::SystemParty);
+        }
+        if back
+            .consent
+            .parties
+            .iter()
+            .any(|q| principal_key(q) == principal_key(p))
+        {
+            return Err(ContractError::Infeasible("a party is named twice"));
+        }
+        if back.consent.parties.len() >= MAX_PARTIES {
+            return Err(ContractError::TooLarge("too many parties"));
+        }
+        back.consent.parties.push(p.clone());
+    }
+    if let Some(outcomes) = amend.outcomes {
+        back.consent.terms.outcomes = outcomes;
+    }
+    if let Some(on_expiry) = amend.on_expiry {
+        back.consent.terms.on_expiry = on_expiry;
+    }
+    // A `Draft` is re-hashed on every write; the author's acceptance is re-stamped
+    // by the re-offer.
+    back.consent_hash = consent_hash(&back.issuer, &back.consent);
+    back.satisfied.resize(back.consent.conditions.len(), None);
+    back.revision = back.revision.saturating_add(1);
+    api::put_contract(ctx, back.clone());
+    if amend.reoffer {
+        check_offer(ctx, &back)?;
+        freeze_and_offer(ctx, back);
+    }
+    ctx.gate_on_durable_ack();
+    Ok(())
+}
+
+// ---- the notice class and the hiding helpers, exported (E6a step 1, E5b-D36/D37) --
+
+/// **The notice a contract shows to somebody outside its terms** (E4b2's audience
+/// class, `ShowClass::Notice`): its name, its state (a settlement's transaction id
+/// withheld), its window, the *kinds* of condition it settles on, its visibility,
+/// and the issuer only when the surface says `announce=yes` — never a party, an
+/// amount, an account, a hold or a role.
+///
+/// Exported for the run board (08f §3.4 `+run/show`) and every later notice surface,
+/// so a ruleset renders the notice the economy renders and never makes a third
+/// copy of the rule (E5b-D36/D37).
+#[must_use]
+pub fn contract_notice(ctx: &Ctx<'_>, c: &EconomicContract) -> Vec<String> {
+    notice_lines(ctx, c)
+}
+
+/// Render a [`ContractError`] about an existing contract for a person, behind the
+/// existence-hiding rule — exactly what `@contract/*` shows (E4b2 verify fold, A2;
+/// E6a step 1's `NoStanding` and `SystemParty` included). For a ruleset that calls
+/// [`accept_contract`] or [`amend_contract`] and has to answer its actor.
+#[must_use]
+pub fn refuse_contract(ctx: &Ctx<'_>, c: &EconomicContract, e: &ContractError) -> CmdError {
+    contract_refusal(ctx, c, e)
+}
+
+/// Render a [`ContractError`] for a person when there is **no contract yet** — a
+/// refused [`offer_contract`] — against the resources the caller's spec named
+/// (`named`: every account, vault and asset it mentioned), behind the same
+/// existence-hiding rule. A `NoStanding` renders as the nonexistent-contract text, a
+/// `SystemParty` as the account's, and anything naming a resource the actor may not
+/// view as that resource's "No such …".
+#[must_use]
+pub fn refuse_contract_offer(
+    ctx: &Ctx<'_>,
+    e: &ContractError,
+    named: impl IntoIterator<Item = NamedResource>,
+) -> CmdError {
+    match e {
+        ContractError::NoStanding => return CmdError::msg(NO_SUCH),
+        ContractError::SystemParty => return CmdError::msg("No such account."),
+        _ => {}
+    }
+    let own = e.named_resources();
+    let also: Vec<NamedResource> = if e.concerns_named_subjects() {
+        named.into_iter().collect()
+    } else {
+        Vec::new()
+    };
+    for r in own.iter().chain(also.iter()) {
+        if let Some(text) = crate::commands::hidden_text(ctx, *r) {
+            return CmdError::msg(text);
+        }
+    }
+    CmdError::msg(e.to_string())
 }

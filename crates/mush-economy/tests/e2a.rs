@@ -26,6 +26,7 @@ fn instrument(id: &str, scale: u8) -> InstrumentDef {
         transferable: true,
         negative_policy: NegativePolicy::SystemOnly,
         status: InstrumentStatus::Active,
+        display: None,
         revision: 1,
     }
 }
@@ -83,6 +84,7 @@ fn env(auth: &dyn AuthEval) -> ValidateEnv<'_> {
         now: 1000,
         ic_now: 1000,
         next_hold_id: 1,
+        spent: std::collections::BTreeMap::new(),
     }
 }
 fn post(

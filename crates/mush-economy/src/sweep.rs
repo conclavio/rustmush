@@ -847,10 +847,20 @@ fn post_period(
              the ruleset's faucet authority (create_system_obligation), never a command"
                 .to_string()
         } else {
+            // The cap in the instrument's own scale and symbol (E6a step 1, E2-C16),
+            // read through the store's snapshot; an unset cap says so.
+            let rendered = mint_cap.map_or_else(
+                || "unset".to_string(),
+                |cap| {
+                    ctx.w.module_state::<EconomyStore>().map_or_else(
+                        || cap.to_decimal_string(0),
+                        |s| crate::render::render_amount_on(s.snapshot(), o.debit_account, cap),
+                    )
+                },
+            );
             format!(
-                "its per-period amount is above the configured mint cap ({}); \
-                 raise [economy] mint_obligation_cap_major or lower the obligation",
-                mint_cap.map_or_else(|| "unset".to_string(), |c| c.minor().to_string())
+                "its per-period amount is above the configured mint cap ({rendered}); \
+                 raise [economy] mint_obligation_cap_major or lower the obligation"
             )
         };
         return (
@@ -1240,6 +1250,7 @@ fn step_contracts(ctx: &mut Ctx<'_>, now: i64, ic_now: i64) {
             now,
             ic_now,
             next_hold_id: store.peek_next_hold(),
+            spent: std::collections::BTreeMap::new(),
         };
         let snap = store.snapshot();
         let lapsed = |c: &crate::contract::EconomicContract| {
@@ -1266,9 +1277,22 @@ fn step_contracts(ctx: &mut Ctx<'_>, now: i64, ic_now: i64) {
                     return Some((c.id, ContractStep::Retry));
                 }
                 let step = match c.state {
-                    crate::contract::ContractState::Draft => (now.saturating_sub(c.created_at)
-                        > crate::DRAFT_TTL_SECS)
-                        .then_some(ContractStep::Collect),
+                    // E6a step 1 (M10): a `Draft` can hold live escrow between an A′
+                    // amendment and its re-offer. Past its own deadline that escrow is
+                    // money nobody is going to fund an agreement with — unwind it
+                    // exactly as an `Offered` contract lapses. A draft holding nothing
+                    // is collected on the TTL as before; one holding escrow is never
+                    // collected (`collect_draft` skips it), only expired.
+                    crate::contract::ContractState::Draft => {
+                        let escrowed =
+                            !crate::contract::qualifying_escrow(c, snap).holds.is_empty();
+                        if escrowed {
+                            lapsed(c).then_some(ContractStep::Expire)
+                        } else {
+                            (now.saturating_sub(c.created_at) > crate::DRAFT_TTL_SECS)
+                                .then_some(ContractStep::Collect)
+                        }
+                    }
                     crate::contract::ContractState::Offered => {
                         lapsed(c).then_some(ContractStep::Expire)
                     }
@@ -1358,7 +1382,7 @@ fn step_contracts(ctx: &mut Ctx<'_>, now: i64, ic_now: i64) {
             ContractStep::Collect => collect_draft(ctx, id),
         }
     }
-    page_stale_contracts(ctx, now);
+    page_stale_contracts(ctx, now, ic_now);
 }
 
 /// Stamp every live contract's deterministic conditions that hold but carry no
@@ -1391,6 +1415,7 @@ fn stamp_observed_conditions(ctx: &mut Ctx<'_>, now: i64, ic_now: i64) {
             now,
             ic_now,
             next_hold_id: store.peek_next_hold(),
+            spent: std::collections::BTreeMap::new(),
         };
         let snap = store.snapshot();
         snap.contracts()
@@ -1482,7 +1507,7 @@ fn republish_settlements(ctx: &mut Ctx<'_>, now: i64) {
 }
 
 /// Page for a live contract that has made **no condition progress at all** for
-/// [`STALE_CONTRACT_AGE_SECS`] (E4c verify fold, E9).
+/// `[economy].stale_contract_age_secs` (E4c verify fold, E9; E6a step 1, DL-08).
 ///
 /// A deadline is optional, and a contract without one that is waiting on evidence
 /// nobody will ever produce — a canon edge that was missed, a fact provider that was
@@ -1492,20 +1517,35 @@ fn republish_settlements(ctx: &mut Ctx<'_>, now: i64) {
 /// stamp on any condition, or the contract's own creation when none has ever been
 /// made; [`page`] dedupes on the subject, so this says it once and renotifies on the
 /// ladder's own cadence.
-fn page_stale_contracts(ctx: &mut Ctx<'_>, now: i64) {
+///
+/// **Deadline-aware** (DL-08): a contract whose own deadline has not lapsed is never
+/// paged for staleness. Its window is the parties' stated patience — a 14-day run is
+/// not stuck on day 7 — and the deadline itself is what ends it (`expire`, one step
+/// up). A clock the sweep cannot resolve reads as *not lapsed*, the same fail-closed
+/// rule the expiry step uses.
+fn page_stale_contracts(ctx: &mut Ctx<'_>, now: i64, ic_now: i64) {
+    let clocks = Clocks::new(now, ic_now);
     let stale: Vec<(crate::ids::ContractId, i64)> = {
         let Some(store) = ctx.w.module_state::<EconomyStore>() else {
             return;
         };
-        store
-            .snapshot()
-            .contracts()
+        let age = store.config().stale_contract_age_secs;
+        if age <= 0 {
+            return;
+        }
+        let snap = store.snapshot();
+        snap.contracts()
             .filter(|c| {
                 matches!(
                     c.state,
                     crate::contract::ContractState::Active
                         | crate::contract::ContractState::ReadyToSettle
                 )
+            })
+            .filter(|c| {
+                !c.consent
+                    .deadline
+                    .is_some_and(|d| !clocks.passed(&d, snap, i64::MIN))
             })
             .filter_map(|c| {
                 let progress = c
@@ -1516,8 +1556,7 @@ fn page_stale_contracts(ctx: &mut Ctx<'_>, now: i64) {
                     .max()
                     .unwrap_or(c.created_at)
                     .max(c.created_at);
-                (now.saturating_sub(progress) > crate::STALE_CONTRACT_AGE_SECS)
-                    .then_some((c.id, progress))
+                (now.saturating_sub(progress) > age).then_some((c.id, progress))
             })
             .take(MAX_CONTRACTS_PER_SWEEP)
             .collect()
@@ -1647,7 +1686,9 @@ pub(crate) fn page(
             if let Some(mut record) = record {
                 record.reopen(now);
                 tracing::warn!(escalation = id.0, subject = ?subject, reopened = record.reopened, "economy: an acknowledged escalation reopened — its cause never went away");
+                let level = record.level;
                 api::put_escalation(ctx, record);
+                announce_escalation(ctx, id, subject, level);
             }
             return Some(id);
         }
@@ -1682,6 +1723,7 @@ pub(crate) fn page(
     };
     let record = Escalation::page(id, kind, subject, context, recommended, now).blaming(blamed);
     tracing::warn!(escalation = id.0, subject = ?subject, context = %record.context, "economy: level-2 escalation opened");
+    let level = record.level;
     api::put_escalation(ctx, record);
     let meta = ctx
         .w
@@ -1690,7 +1732,18 @@ pub(crate) fn page(
     if let Some(meta) = meta {
         api::persist_meta(ctx.out, meta);
     }
+    announce_escalation(ctx, id, subject, level);
     Some(id)
+}
+
+/// Tell the observers the ladder opened, reopened or re-notified a record (E6a
+/// step 1, DL-05) — the staff-channel fan-out E4b1 deviation 5 left to the server.
+/// Ids and kinds only; the record itself is read under the viewer's standing.
+fn announce_escalation(ctx: &mut Ctx<'_>, id: EscalationId, subject: EscalationSubject, level: u8) {
+    crate::observer::emit(
+        ctx,
+        &crate::record::EconomicEvent::EscalationOpened { id, subject, level },
+    );
 }
 
 /// Level 3's companion record (§4.6): the whole-economy freeze is set, so the sweep
@@ -1739,6 +1792,7 @@ fn open_freeze_record(ctx: &mut Ctx<'_>, now: i64) {
         escalation = id.0,
         "economy: the sweep is halted by the whole-economy freeze"
     );
+    let level = record.level;
     api::put_escalation(ctx, record);
     let meta = ctx
         .w
@@ -1747,14 +1801,16 @@ fn open_freeze_record(ctx: &mut Ctx<'_>, now: i64) {
     if let Some(meta) = meta {
         api::persist_meta(ctx.out, meta);
     }
+    announce_escalation(ctx, id, EscalationSubject::Economy, level);
 }
 
 /// Re-notify about unacknowledged level-2/3 records: first after
 /// [`crate::ESCALATION_RENOTIFY_SECS`] (1 h), then daily (§4.6).
 ///
-/// The reminder is a loud log line and a stamp; the staff-channel broadcast rides
-/// E4c's `EconomyObserver` glue, which is where the server (not this crate) knows how
-/// to reach staff. `@econ/alerts` is the pull side and is live now.
+/// The reminder is a loud log line, a stamp, and — since E6a step 1 (DL-05) — one
+/// [`crate::EconomicEvent::EscalationOpened`] per reminder, so the server's staff
+/// fan-out follows exactly this schedule and never invents one of its own.
+/// `@econ/alerts` is the pull side.
 fn renotify(ctx: &mut Ctx<'_>, now: i64) {
     let due: Vec<Escalation> = {
         let Some(store) = ctx.w.module_state::<EconomyStore>() else {
@@ -1777,7 +1833,9 @@ fn renotify(ctx: &mut Ctx<'_>, now: i64) {
             context = %e.context,
             "economy: an escalation is still unacknowledged (@econ/ack to clear it)"
         );
+        let (id, subject, level) = (e.id, e.subject, e.level);
         api::put_escalation(ctx, e);
+        announce_escalation(ctx, id, subject, level);
     }
 }
 

@@ -58,6 +58,7 @@ fn instrument(id: &str) -> InstrumentDef {
         transferable: true,
         negative_policy: NegativePolicy::SystemOnly,
         status: InstrumentStatus::Active,
+        display: None,
         revision: 1,
     }
 }
@@ -290,6 +291,7 @@ impl Seams {
             now: self.now,
             ic_now: self.ic_now,
             next_hold_id: s.next_hold_floor(),
+            spent: std::collections::BTreeMap::new(),
         }
     }
 }
@@ -867,6 +869,7 @@ fn a_large_placement_trips_the_accounts_approval_rule() {
                 approvals: 1,
                 from_role: None,
             },
+            window: None,
         }),
         ..account(1, 1000)
     });
@@ -1549,6 +1552,7 @@ fn scenario_17_the_settlement_split_floors_permille_shares_and_pays_the_remainde
         now: NOW,
         ic_now: IC,
         next_hold_id: s.next_hold_floor(),
+        spent: std::collections::BTreeMap::new(),
     };
     let prepared = match validate(&p, &s, &env) {
         PlanResult::Post(prepared) => *prepared,
@@ -1603,6 +1607,7 @@ fn contract_auth_authorizes_exactly_the_surface_and_refuses_an_extra_line() {
         now: NOW,
         ic_now: IC,
         next_hold_id: s.next_hold_floor(),
+        spent: std::collections::BTreeMap::new(),
     };
     assert_eq!(
         validate(&p, &s, &env),
@@ -1982,6 +1987,7 @@ fn the_refund_plan_releases_every_escrow_hold_and_moves_no_money() {
         now: NOW,
         ic_now: IC,
         next_hold_id: s.next_hold_floor(),
+        spent: std::collections::BTreeMap::new(),
     };
     let prepared = match validate(&p, &s, &env) {
         PlanResult::Post(prepared) => *prepared,
@@ -2401,6 +2407,7 @@ fn validate_with(p: &EconomyPlan, s: &EconomySnapshot, auth: &dyn AuthEval) -> P
             now: NOW,
             ic_now: IC,
             next_hold_id: s.next_hold_floor(),
+            spent: std::collections::BTreeMap::new(),
         },
     )
 }
@@ -2599,6 +2606,7 @@ fn vf_4_a_stale_allocator_floor_never_re_mints_a_live_hold() {
         // The caller's floor has fallen behind the journal (E4b1 derives it from the
         // journal for exactly this reason).
         next_hold_id: 5,
+        spent: std::collections::BTreeMap::new(),
     };
     assert_eq!(
         validate(&hold_plan("re", vec![place(1, 10)]), &s, &stale),

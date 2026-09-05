@@ -191,6 +191,13 @@ pub struct EconomyConfig {
     /// boot; see [`crate::EconomyModule`]. Validated whole by
     /// [`EconomyConfig::check_declared_cadences`], which composition runs.
     pub cadences: BTreeMap<SmolStr, DeclaredCadence>,
+    /// How long a **live** contract may go with no condition progress before the
+    /// sweep pages a human, in seconds (E6a step 1, DL-08; `[economy]
+    /// stale_contract_age_secs`). Default [`crate::STALE_CONTRACT_AGE_SECS`] (7 days).
+    /// A contract whose own deadline has not lapsed is never paged for staleness —
+    /// its window is the parties' stated patience, and a 14-day run is not stuck on
+    /// day 7. A non-positive value pages nothing.
+    pub stale_contract_age_secs: i64,
 }
 
 impl Default for EconomyConfig {
@@ -199,6 +206,7 @@ impl Default for EconomyConfig {
             mint_obligation_cap_major: DEFAULT_MINT_OBLIGATION_CAP_MAJOR,
             instruments: BTreeMap::new(),
             cadences: BTreeMap::new(),
+            stale_contract_age_secs: crate::contract::STALE_CONTRACT_AGE_SECS,
         }
     }
 }

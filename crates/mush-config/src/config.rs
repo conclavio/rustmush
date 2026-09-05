@@ -407,6 +407,11 @@ pub struct EconomyCfg {
     /// D-LBK-7). Empty off-config: a server that declares nothing registers no
     /// clock and every cadence stays a runtime one.
     pub cadences: BTreeMap<String, EconomyCadenceCfg>,
+    /// How long a live contract may sit with no condition progress before the
+    /// economy sweep pages staff, in seconds (E6a step 1, DL-08). Defaults to the
+    /// `mush-economy` crate default (7 days). A contract whose own deadline has not
+    /// lapsed is never paged for staleness.
+    pub stale_contract_age_secs: i64,
 }
 
 impl Default for EconomyCfg {
@@ -415,6 +420,9 @@ impl Default for EconomyCfg {
             mint_obligation_cap_major: 50_000,
             instruments: BTreeMap::new(),
             cadences: BTreeMap::new(),
+            // Mirrors `mush_economy::STALE_CONTRACT_AGE_SECS` (kept as a literal so
+            // `mush-config` needs no `mush-economy` dep).
+            stale_contract_age_secs: 7 * 86_400,
         }
     }
 }

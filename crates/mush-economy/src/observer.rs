@@ -145,6 +145,12 @@ fn page_dropped(ctx: &mut Ctx<'_>, ev: &EconomicEvent) {
             crate::escalation::EscalationSubject::Economy,
             "an economic event".to_string(),
         ),
+        // A dropped page is about the record that could not be announced; paging
+        // the same subject again is what the ladder's dedupe is for.
+        EconomicEvent::EscalationOpened { id, .. } => (
+            crate::escalation::EscalationSubject::Economy,
+            format!("escalation #{id}'s staff page"),
+        ),
     };
     let now = ctx.w.now();
     let _ = crate::sweep::page(

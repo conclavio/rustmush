@@ -147,11 +147,12 @@ impl EconomyObserver for CanonEvidenceBridge {
                     serde_json::json!({ "contract": contract.0, "obligation": id.0 }),
                 );
             }
-            // A raw transaction, a reservation and a title change say nothing about
-            // consent to publication, so none of them is chronicle.
+            // A raw transaction, a reservation, a title change and a staff page say
+            // nothing about consent to publication, so none of them is chronicle.
             EconomicEvent::TransactionPosted { .. }
             | EconomicEvent::HoldChanged { .. }
-            | EconomicEvent::AssetTitleChanged { .. } => {}
+            | EconomicEvent::AssetTitleChanged { .. }
+            | EconomicEvent::EscalationOpened { .. } => {}
         }
     }
 }

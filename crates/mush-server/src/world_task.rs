@@ -3557,14 +3557,22 @@ fn apply_integrity_freeze(
     );
 }
 
+/// Every connected Wizard-or-better — the one staff audience the server fans an
+/// alert out to, whether from the world loop (`broadcast_wizards`) or from inside
+/// a step (the economy's DL-05 observer, `econ_alerts`).
+pub(crate) fn connected_wizards(world: &World) -> Vec<ObjId> {
+    world
+        .connected()
+        .filter(|actor| world.get(*actor).is_some_and(|o| o.role() >= Role::Wizard))
+        .collect()
+}
+
 /// Send a Sys line to every connected Wizard-or-better, each as a
 /// [`ToGateway::Deliver`](mush_ipc::ToGateway) through the seam.
 fn broadcast_wizards(world: &World, gateway: &Gateway, text: &str) {
     let ev = Arc::new(OutputEvent::Sys(RichText::tag("system", text)));
-    for actor in world.connected() {
-        if world.get(actor).is_some_and(|o| o.role() >= Role::Wizard) {
-            gateway.deliver(SendTarget::Char(u64::from(actor.0)), Arc::clone(&ev));
-        }
+    for actor in connected_wizards(world) {
+        gateway.deliver(SendTarget::Char(u64::from(actor.0)), Arc::clone(&ev));
     }
 }
 

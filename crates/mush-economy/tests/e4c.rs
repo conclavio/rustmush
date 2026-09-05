@@ -2147,3 +2147,144 @@ fn vf_v6_the_depth_counter_survives_a_panic_and_the_bound_pages() {
         "the cap paged more than once"
     );
 }
+
+// ======================================================================
+// ---- E6a step 1: S7 — DL-08 stale-contract paging ----
+//
+// `STALE_CONTRACT_AGE_SECS` is the default of `[economy].stale_contract_age_secs`
+// now, and the page is deadline-aware: a contract whose own deadline has not
+// lapsed is never paged for staleness. Every 14-day run used to be paged at
+// day 7.
+// ======================================================================
+
+/// The E4c rig with a configured stale age.
+fn boot_stale(age_secs: i64) -> TestWorld {
+    let config = mush_economy::EconomyConfig {
+        stale_contract_age_secs: age_secs,
+        ..mush_economy::EconomyConfig::default()
+    };
+    TestWorld::with_modules(vec![
+        Box::new(
+            mush_org::OrgModule::new()
+                .with_capabilities(vocabulary())
+                .with_scope_use(vec![Arc::new(mush_economy::EconomyScopeUse)]),
+        ),
+        Box::new(
+            mush_economy::EconomyModule::with_custody(vec![])
+                .with_config(config)
+                .with_canon_outcome_kinds(vec![smol_str::SmolStr::new_static("scene.outcome")]),
+        ),
+    ])
+}
+
+/// A run accepted by both parties with a deadline `window` seconds out and
+/// `Dispute` on expiry — the board's shape (D-E6-22).
+fn windowed_run(tw: &mut TestWorld, r: &Run, window: i64) -> ContractId {
+    ok(tw, r.johnson, "@contract/draft Windowed");
+    let id = only_contract(tw);
+    ok(
+        tw,
+        r.johnson,
+        &format!("@contract/party {id}=#{}", r.runner.0),
+    );
+    ok(
+        tw,
+        r.johnson,
+        &format!("@contract/pay {id}={} 300", r.j_acct),
+    );
+    ok(
+        tw,
+        r.johnson,
+        &format!("@contract/split {id}={} 300", r.r_acct),
+    );
+    ok(
+        tw,
+        r.johnson,
+        &format!("@contract/remainder {id}={}", r.j_acct),
+    );
+    ok(
+        tw,
+        r.johnson,
+        &format!("@contract/condition {id}=attest canon:scene.outcome:scene:5"),
+    );
+    ok(
+        tw,
+        r.johnson,
+        &format!("@contract/deadline {id}={window} dispute"),
+    );
+    ok(tw, r.johnson, &format!("@contract/offer {id}"));
+    ok(tw, r.johnson, &format!("@contract/accept {id}"));
+    ok(tw, r.runner, &format!("@contract/accept {id}"));
+    id
+}
+
+#[test]
+fn e6s1_s7_a_fourteen_day_run_is_not_paged_at_day_seven() {
+    let mut tw = boot();
+    tw.set_now(1_000);
+    let r = run_rig(&mut tw, 2_000);
+    let id = windowed_run(&mut tw, &r, 14 * 86_400);
+    assert_eq!(state(&tw, id), ContractState::Active);
+    // Day 7 and change: silent, because the parties said fourteen days.
+    sweep_at(
+        &mut tw,
+        1_000 + mush_economy::STALE_CONTRACT_AGE_SECS + 1_000,
+    );
+    assert!(
+        !store(&tw)
+            .escalations()
+            .any(|e| e.subject == mush_economy::EscalationSubject::Contract(id)),
+        "a run inside its own window was paged as stale"
+    );
+    assert_eq!(state(&tw, id), ContractState::Active);
+    // Day 14 and change: the deadline itself ends it — `Dispute` for a crewed run
+    // (D-E6-22), which is the ladder's page, not staleness's.
+    sweep_at(&mut tw, 1_000 + 14 * 86_400 + 1_000);
+    assert_eq!(state(&tw, id), ContractState::Disputed);
+}
+
+#[test]
+fn e6s1_s7_a_deadline_less_live_contract_pages_at_the_configured_age() {
+    let mut tw = boot_stale(3_600);
+    tw.set_now(1_000);
+    let r = run_rig(&mut tw, 2_000);
+    let id = accepted_run(&mut tw, &r, 300, "attest canon:scene.outcome:scene:5");
+    assert_eq!(state(&tw, id), ContractState::Active);
+    // Inside the configured hour: nothing.
+    sweep_at(&mut tw, 1_000 + 1_800);
+    assert!(
+        store(&tw).escalations().next().is_none(),
+        "a contract inside the configured age was paged"
+    );
+    // Past it — long before the 7-day default — the page opens, once, with the
+    // resolving command.
+    sweep_at(&mut tw, 1_000 + 3_600 + 60);
+    let paged: Vec<_> = store(&tw)
+        .escalations()
+        .filter(|e| e.subject == mush_economy::EscalationSubject::Contract(id))
+        .collect();
+    assert_eq!(paged.len(), 1, "the configured age did not page");
+    assert!(
+        paged[0]
+            .recommended
+            .iter()
+            .any(|c| c.contains("@contract/resolve")),
+        "{:?}",
+        paged[0].recommended
+    );
+    sweep_at(&mut tw, 1_000 + 3_600 + 120);
+    assert_eq!(store(&tw).escalations().count(), 1, "the page re-minted");
+}
+
+#[test]
+fn e6s1_s7_a_non_positive_age_pages_nothing() {
+    let mut tw = boot_stale(0);
+    tw.set_now(1_000);
+    let r = run_rig(&mut tw, 2_000);
+    let _id = accepted_run(&mut tw, &r, 300, "attest canon:scene.outcome:scene:5");
+    sweep_at(&mut tw, 1_000 + 30 * 86_400);
+    assert!(
+        store(&tw).escalations().next().is_none(),
+        "an age of zero paged a live contract"
+    );
+}

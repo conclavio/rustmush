@@ -88,8 +88,11 @@ pub const DRAFT_TTL_SECS: i64 = 7 * 86_400;
 /// How long a `Disputed` contract waits for unanimous party agreement before a
 /// level-2 escalation (§9).
 pub const DISPUTE_TTL_SECS: i64 = 3 * 86_400;
-/// How long a **live** contract may go with no condition progress at all before the
-/// sweep pages a human (§9, E4c verify fold E9).
+/// The **default** for how long a live contract may go with no condition progress at
+/// all before the sweep pages a human (§9, E4c verify fold E9) — since E6a step 1
+/// (DL-08) the live value is `[economy].stale_contract_age_secs`
+/// ([`crate::EconomyConfig::stale_contract_age_secs`]), and a contract whose own
+/// deadline has not lapsed is never paged for staleness.
 ///
 /// A contract waiting forever was silent: escrow reserved, nobody told, no deadline
 /// (a deadline is optional), and the only trace a `@contract/list` nobody runs. The
@@ -852,6 +855,37 @@ pub enum ContractError {
     /// Checked arithmetic overflowed.
     #[error("arithmetic overflow")]
     Overflow,
+    /// An acceptance that survived an amendment (E6a step 1, consent by authorship —
+    /// DL-01 Option A′) is no longer backed: a consideration its party owes has no
+    /// `Held` escrow hold behind it, so the acceptance cannot be re-stamped onto the
+    /// amended surface and the offer is refused.
+    #[error(
+        "a surviving acceptance is no longer backed by escrow for every consideration its party owes"
+    )]
+    AcceptanceUnbacked,
+    /// The post a contract operation had to make — an acceptance's escrow, an
+    /// amendment's partial refund — was refused by the engine (E6a step 1). Carries
+    /// the engine's own refusal so the command path renders it behind the same
+    /// existence-hiding rule a money verb would.
+    #[error("{0}")]
+    Refused(crate::plan::EconomyError),
+    /// The actor has no standing over the contract for this operation — it does
+    /// not exist, they may not view it, they are not a party (an accept), or they
+    /// are not its issuer (an amendment). **One answer for all four** (§4.5): the
+    /// programmatic seams disclose exactly what `@contract/*` does, which is the
+    /// nonexistent-id text.
+    #[error("no such contract")]
+    NoStanding,
+    /// The party has already accepted the surface as it stands.
+    #[error("the contract is already accepted on that party's behalf")]
+    AlreadyAccepted,
+    /// A `System` principal was named as a party, or a `System`-owned account as a
+    /// consideration's source (E6a step 1, M4 / D-E6-4). Nobody acts for a `System`
+    /// principal, so such a contract could be offered and never accepted — a zombie
+    /// holding an offer open forever. The command path renders it as the account's
+    /// own existence-hiding text, never a faucet-shaped message.
+    #[error("a system principal cannot be a party")]
+    SystemParty,
 }
 
 impl ContractError {
@@ -874,6 +908,7 @@ impl ContractError {
             ContractError::State(id) | ContractError::WrongState(id) => {
                 vec![NamedResource::Contract(*id)]
             }
+            ContractError::Refused(inner) => inner.named_resources(),
             _ => Vec::new(),
         }
     }
@@ -889,12 +924,14 @@ impl ContractError {
     /// caller's own draft and keeps its text.
     #[must_use]
     pub fn concerns_named_subjects(&self) -> bool {
-        matches!(
-            self,
+        match self {
             ContractError::InstrumentMismatch
-                | ContractError::EscrowIncomplete
-                | ContractError::NotAccepted
-        )
+            | ContractError::EscrowIncomplete
+            | ContractError::NotAccepted
+            | ContractError::AcceptanceUnbacked => true,
+            ContractError::Refused(inner) => inner.concerns_named_subjects(),
+            _ => false,
+        }
     }
 
     /// Every resource a contract's consent surface names — the `also` list a refusal
@@ -1131,9 +1168,26 @@ pub fn qualifying_escrow<'a>(
     c: &EconomicContract,
     snapshot: &'a EconomySnapshot,
 ) -> QualifyingEscrow<'a> {
+    let (claims, complete) = qualifying_claims(c, snapshot);
+    QualifyingEscrow {
+        holds: claims.into_iter().map(|(hold, _)| hold).collect(),
+        complete,
+    }
+}
+
+/// [`qualifying_escrow`] with the **consideration index each hold claims** — the
+/// pairing E6a step 1's consent-by-authorship rules read (DL-01 Option A′): an
+/// amendment releases only the holds backing *other* parties' considerations, and an
+/// offer re-stamps a surviving acceptance only when every consideration its party
+/// owes is claimed. The second element is `QualifyingEscrow::complete`.
+#[must_use]
+pub fn qualifying_claims<'a>(
+    c: &EconomicContract,
+    snapshot: &'a EconomySnapshot,
+) -> (Vec<(&'a Hold, usize)>, bool) {
     let considerations = &c.consent.terms.consideration;
     let mut claimed = vec![false; considerations.len()];
-    let mut holds: Vec<&Hold> = Vec::with_capacity(c.escrow.len());
+    let mut claims: Vec<(&Hold, usize)> = Vec::with_capacity(c.escrow.len());
     for id in &c.escrow {
         let Some(hold) = snapshot.hold(*id) else {
             continue;
@@ -1149,12 +1203,28 @@ pub fn qualifying_escrow<'a>(
         });
         let Some(i) = matched else { continue };
         claimed[i] = true;
-        holds.push(hold);
+        claims.push((hold, i));
     }
-    QualifyingEscrow {
-        holds,
-        complete: claimed.iter().all(|c| *c),
-    }
+    (claims, claimed.iter().all(|c| *c))
+}
+
+/// Whether **every** consideration `party` owes on this surface is claimed by a
+/// `Held` escrow hold (E6a step 1, A′): the precondition for a surviving acceptance
+/// to be re-stamped at `Offer`. A party owing nothing is trivially backed.
+#[must_use]
+pub fn party_escrow_backed(
+    c: &EconomicContract,
+    snapshot: &EconomySnapshot,
+    party: &PrincipalId,
+) -> bool {
+    let (claims, _) = qualifying_claims(c, snapshot);
+    c.consent
+        .terms
+        .consideration
+        .iter()
+        .enumerate()
+        .filter(|(_, con)| principal_key(&con.from) == principal_key(party))
+        .all(|(i, _)| claims.iter().any(|(_, k)| *k == i))
 }
 
 // ---- the deterministic split (scenario 17) --------------------------------
@@ -1405,6 +1475,18 @@ fn check_structure_basic(c: &EconomicContract) -> Result<(), ContractError> {
     if keyed.windows(2).any(|w| w[0] == w[1]) {
         return Err(ContractError::Infeasible("a party is named twice"));
     }
+    // E6a step 1 (M4 / D-E6-4): **a `System` principal is never a party.** Nobody
+    // acts for one, staff included, so a contract naming one could be offered and
+    // never accepted — a zombie holding an offer open with nothing to expire it — and
+    // a faucet named as a payer would be an uncontrolled mint the moment anything
+    // did accept for it. Faucets mint INTO org accounts; they are never parties.
+    if consent
+        .parties
+        .iter()
+        .any(|p| matches!(p, PrincipalId::System(_)))
+    {
+        return Err(ContractError::SystemParty);
+    }
 
     let mut total: i128 = 0;
     for con in &consent.terms.consideration {
@@ -1412,6 +1494,9 @@ fn check_structure_basic(c: &EconomicContract) -> Result<(), ContractError> {
             return Err(ContractError::Infeasible(
                 "a consideration must be positive",
             ));
+        }
+        if matches!(con.from, PrincipalId::System(_)) {
+            return Err(ContractError::SystemParty);
         }
         // E4b2 verify fold, M8: **every payer is a party.** A consideration is an
         // escrow obligation, and `@contract/accept` places exactly the ones whose
@@ -2418,6 +2503,59 @@ pub fn refund_plan(
             vault: d.vault,
             to: *to,
         })
+        .collect();
+    Ok(plan)
+}
+
+/// Build the **partial** refund an amendment posts (E6a step 1, DL-01 Option A′ —
+/// consent by authorship): release every qualifying escrow hold that backs a
+/// consideration owed by a party **other than** `keep`, and nothing else.
+///
+/// The amending party's own acceptance survives the amendment, and so does the
+/// escrow behind it — an author is not asked to re-consent to terms they wrote —
+/// while every other acceptance is voided and its escrow released exactly as E4b2's
+/// whole-surface unwind does. Under the same deterministic key at the same
+/// generation (`contract/{id}/refund/{n}`), under [`ContractAuth::unwinding`], so an
+/// ambiguous ack replays to `AlreadyPosted` and the state write that follows can be
+/// finished rather than repeated.
+///
+/// Only an `Offered` contract is amendable, and an `Offered` contract has neither
+/// pledges (they are placed at activation) nor recorded deposits (the same), so the
+/// plan carries hold releases alone. An empty plan means the voided parties escrowed
+/// nothing: the caller writes the state and posts nothing, and the generation does
+/// not move (M16 — a refund key that was never used need not be spent).
+pub fn refund_plan_except(
+    c: &EconomicContract,
+    snapshot: &EconomySnapshot,
+    keep: &PrincipalId,
+) -> Result<EconomyPlan, ContractError> {
+    if c.state != ContractState::Offered {
+        return Err(ContractError::State(c.id));
+    }
+    if !c.consent_intact() {
+        return Err(ContractError::ConsentMismatch);
+    }
+    let (claims, _) = qualifying_claims(c, snapshot);
+    let considerations = &c.consent.terms.consideration;
+    let mut plan = EconomyPlan::new(
+        contract_op_key(c.id, "refund", c.amendments),
+        c.issuer.clone(),
+        EconomicCause::Internal {
+            kind: SmolStr::new_static("contract"),
+            id: c.id.0,
+        },
+        Vec::new(),
+    );
+    plan.description = format!("amendment refund of contract {}", c.id);
+    plan.visibility = c.consent.visibility.clone();
+    plan.hold_ops = claims
+        .iter()
+        .filter(|(_, i)| {
+            considerations
+                .get(*i)
+                .is_some_and(|con| principal_key(&con.from) != principal_key(keep))
+        })
+        .map(|(hold, _)| HoldOp::Release { hold: hold.id })
         .collect();
     Ok(plan)
 }

@@ -159,6 +159,195 @@ adds it (answer 12 — the narrower 09 §7 rule-1 exception).
 
 ---
 
+### 2.1 Step one as built (2026-09-04)
+
+The economy half of E6a — items 1–6 and 9–11 of the list above — on the merged main after
+`0afe161` (SP1), built as ten items S1–S10 in that order, each in a `// ---- E6a step 1: <id> ----`
+section with tests named `e6s1_<id>_…` (`crates/mush-economy/tests/{e4b1,e4b2,e4c}.rs`,
+`src/render.rs`; `crates/mush-server/tests/{e6a_inbox,e6a_alerts}.rs`). Nothing here is
+Shadowrun-shaped; the ruleset half (§3) calls the seams below and adds no economy code. All money
+still moves through the journal under an authority; every persisted addition is a `TryFrom` wire with
+a cap; every tick/observer/sweep path is panic-free.
+
+**S1 — A′, consent by authorship** (`contract_live.rs`, `contract.rs`, `sweep.rs`).
+
+- `contract_amend` runs `pub(crate) fn amend_core(ctx, c, author: &PrincipalId) ->
+  Result<AmendOutcome { kept, voided, refunded }, ContractError>` with `author = amend_author(ctx, c)`
+  — the party the actor stands for, else the issuer. As implemented: (a) admitted are `Offered`, or a
+  live (`Active`/`ReadyToSettle`) contract with **no deliverables** all of whose acceptances are the
+  author's (see deviation 2); (b) refused at `MAX_AMENDMENTS`, while `pending` is set, and when
+  `!consent_intact()` (`ConsentMismatch` — `@contract/cancel` is the route); (c) acceptances
+  partition by party: the author's are **kept**, with the holds backing the author's own
+  considerations (`qualifying_claims` filtered on `consideration.from == author`); every other
+  party's is **voided**; (d) if anything was voided, `pub fn refund_plan_except(c, snapshot, keep:
+  &PrincipalId) -> Result<EconomyPlan, ContractError>` releases only the qualifying holds whose
+  consideration is not the author's, under `contract/{id}/refund/{amendments}` with
+  `ContractAuth::unwinding`, and `amendments` bumps **only then**; refund and `Draft` doc ride one
+  batch (`post_with_companions`) — `Posted` ⇒ Draft + `ContractChanged{Draft}`, `AlreadyPosted` ⇒
+  the doc alone, `NeedsApproval` ⇒ `Refused(ApprovalRequired)`, any other refusal ⇒ **nothing
+  changed** (deviation 1; M16: no generation bump on a refusal or an author-only amend); (e) kept
+  parties hear the contract is back in draft with their acceptance standing, voided parties that
+  theirs was released; `satisfied` resets.
+- `contract_offer` = `check_offer` (structure, offerability, the per-party cap, and
+  `AcceptanceUnbacked` unless every surviving acceptance's party is `pub fn party_escrow_backed(c,
+  snapshot, party)` — each consideration with `from == party` claimed by a `Held` hold in
+  `qualifying_escrow`) then `freeze_and_offer`, which re-hashes the terms and **re-stamps every
+  surviving acceptance's `consent_hash`**.
+- `build_pay` refuses changing a consideration a `Held` hold backs; `@contract/cancel` releases it.
+- Sweep (M10): a `Draft` with qualifying escrow past its deadline **expires** (refund) instead of
+  being collected on the TTL. `expire`'s forfeit-eligible `bound` is now `is_live() &&
+  fully_accepted() && parties > 1`.
+- Tests: `e6s1_s1_*` ×6 (`e4b2.rs`); three E4b2 pins that assumed the whole-surface unwind were
+  re-pinned (`an_amendment_refunds_every_other_partys_acceptance_and_keeps_the_authors`,
+  `an_amended_contract_refunds_again_instead_of_hitting_its_first_refunds_key`,
+  `vf_m3_a_refused_unwind_stays_live_and_blocks_an_amendment`).
+
+**S2 — the rolling window** (`record.rs`, `engine.rs`, `module.rs`, `boot.rs`, `api.rs`,
+`commands.rs`).
+
+- `ApprovalRule.window: Option<ApprovalWindow>` (`#[serde(default)]`); `ApprovalWindow { total:
+  Amount, period_secs: i64 }` through a wire — `total` non-negative, `period_secs` in
+  `1..=MAX_APPROVAL_WINDOW_SECS` (90 d) — `ApprovalWindow::new(total, period_secs) -> Option`.
+- `ValidateEnv.spent: BTreeMap<AccountId, Amount>`; `evaluate_approvals` escalates when `debit >
+  threshold` **or** the rule has a window and `spent + debit` overflows or exceeds `window.total` —
+  the same `NeedsApproval` path, deltas unchanged.
+- The computation. `EconomyStore.debit_window: BTreeMap<AccountId, VecDeque<(posted_at, Amount)>>`
+  is RAM-only and fed by **one** function, `pub(crate) fn note_window_debits(window, tx)`, from
+  both `index_transaction` and boot's replay: per account, the transaction's negative lines **plus**
+  its `Placed` hold effects **minus** what the same transaction `Captured` (the placement already
+  counted — a settlement is not a second spend); `Released`/`Expired` subtract nothing (a refund
+  never re-opens the window); entries older than `posted_at − MAX_APPROVAL_WINDOW_SECS` pop from the
+  front. `pub fn spent_in_window(&self, account, now, period_secs) -> Amount` sums entries with
+  `posted_at > now − period_secs`, saturating to `i64::MAX` (over any window — fail closed).
+  `post_with_companions` fills `spent` through `spent_for_plan` for every account the plan debits or
+  places on **whose rule carries a window**; every other account reads as zero. Wall clock, never IC.
+- `@account/approval <id>=… window=<total>/<secs>|off` (`window=off` restores threshold-only);
+  `@account/show` prints `rolling window: <total> per <secs> s`.
+- Tests: `e6s1_s2_*` ×4 (`e4b2.rs`) — over-window escalates on the threshold path; a capture is
+  not a second spend; a refund never re-opens; the tail survives a reboot.
+
+**S3 — ruleset obligations** (`api.rs`). `pub fn create_obligation(ctx, spec: ObligationSpec) ->
+Result<ObligationId, EconomyError>` (`ObligationSpec { debit_account, credit_account, amount,
+schedule, grace, notify_on_success, cause }`; `cause` must be `ObligationCause::Ruleset { .. }`; the
+debtor's owner never `System`; both accounts `Active` on one instrument; the actor holds debit
+authority on the debit account through `WorldAuth::authorize`; `minted_by: None`). `pub fn
+cancel_obligation(ctx, id, namespace: &str) -> Result<(), EconomyError>` and `pub fn
+reinstate_obligation(ctx, id, namespace: &str) -> Result<bool, EconomyError>` — only the namespace
+stamped in the cause may touch the record (the `set_system_obligation` lock shape); `reinstate`
+returns `false`, writing nothing, when the record is not delinquent or a holder (the ladder, a
+suspension) still keeps it out. Tests: `e6s1_s3_*` ×4 (`e4b1.rs`).
+
+**S4 — the contract seams** (`contract_live.rs`), each reusing the command's core so there is one
+path.
+
+- `pub fn offer_contract(ctx, spec: ContractSpec) -> Result<ContractId, ContractError>` —
+  `ContractSpec { name: SmolStr, scope: Option<OrgScopeId>, parties: Vec<PrincipalId>,
+  considerations: Vec<ConsiderationSpec { account: AccountId, amount: Amount }>, outcomes:
+  Vec<OutcomeTerms>, remainder_to: AccountId, conditions: Vec<TypedCondition>, adjudicator:
+  Option<AttestorSet>, evidence: Vec<EvidenceKind>, deadline: Option<EconomicDeadline>, on_expiry:
+  Expiry, visibility: EconomicVisibility, roles: ContractRoles, deterministic: bool }`. The issuer is
+  the actor, or the organization owning `scope` when the actor acts for it (`resolve_issuer`); the
+  record is built with the `@contract` builders (`build_party`, `build_pay`, …), then `check_offer`
+  + `freeze_and_offer`. An outcome table and at least one consideration are required;
+  `conditions` are `Attestation` only unless `deterministic` (E6b's routes).
+- `pub fn accept_contract(ctx, id: ContractId) -> Result<AcceptOutcome, ContractError>`;
+  `pub enum AcceptOutcome { Accepted { escrow: Vec<HoldId>, activated: bool },
+  NeedsApproval(ApprovalRequestId) }` — `accept_core`, the command's core.
+- `pub fn amend_contract(ctx, id, amend: ContractAmendment) -> Result<(), ContractError>`;
+  `#[derive(Default)] ContractAmendment { add_parties: Vec<PrincipalId>, outcomes:
+  Option<Vec<OutcomeTerms>>, on_expiry: Option<Expiry>, reoffer: bool }` — `amend_core` under A′,
+  the edits, then `check_offer` + `freeze_and_offer` when `reoffer`.
+- Each refuses a frozen economy (`Infeasible`) and answers every standing failure with
+  `ContractError::NoStanding` (renders as "No such contract."). Tests: `e6s1_s4_*` ×5 (`e4b2.rs`).
+
+**S5 — `InstrumentDisplay` + one `render_amount`** (`record.rs`, `render.rs`, `commands.rs`).
+`InstrumentDef.display: Option<InstrumentDisplay>` (`#[serde(default)]`); `InstrumentDisplay {
+symbol: SmolStr, position: SymbolPosition::{Prefix, Suffix} }` through a wire (`1..=MAX_SYMBOL_BYTES
+= 8` bytes, no whitespace or control chars). `pub fn render_amount(snapshot: &EconomySnapshot,
+instrument: &InstrumentId, amount: Amount) -> String` and `pub fn render_amount_on(snapshot,
+account: AccountId, amount)` — scale-aware, the prefix after the sign (`-¥5`, `12.50€`), an unknown
+instrument as bare minor. `commands::money(ctx, &InstrumentId, Amount)` / `money_on(ctx, AccountId,
+Amount)` wrap it for handlers; every amount render in `commands.rs`, `contract_live.rs` (the pay
+reply, `contract_show`, shares, the obligation deliverable line) and the sweep's mint-cap detail goes
+through it. `@instrument/register <code>=<scale> [display=<symbol>:prefix|suffix]`. Tests:
+`e6s1_s5_*` — one unit test in `render.rs`, two in `e4b1.rs`, one in `e4b2.rs`.
+
+**S6 — `System` as a party is structural** (`contract.rs`): `check_structure_basic` refuses a
+`System` party or a `System`-owned consideration `from` with `ContractError::SystemParty` (renders
+"No such account."); `build_party` refuses `System` ("No such principal."), `build_pay` a
+`System`-owned account under hiding. Tests: `e6s1_s6_*` ×2 (`e4b2.rs`).
+
+**S7 — DL-08** (`config.rs`, `mush-config`, `mush-server/src/config_ext.rs`, `sweep.rs`):
+`[economy].stale_contract_age_secs` (default 7 d, the old const; `≤ 0` disables paging), and
+`page_stale_contracts` skips a contract whose own deadline has not lapsed. Tests: `e6s1_s7_*` ×3
+(`e4c.rs`).
+
+**S8 — the notice and hiding helpers**: `pub fn contract_notice(ctx, &EconomicContract) ->
+Vec<String>` (= `notice_lines` — never an amount or an account id), `pub fn refuse_contract(ctx, c,
+&ContractError) -> CmdError`, `pub fn refuse_contract_offer(ctx, &ContractError, named: impl
+IntoIterator<Item = NamedResource>) -> CmdError`; `parse_opts`, `parse_account`, `parse_amount`,
+`parse_principal`, `refuse`, `refuse_named`, `is_hidden`, `mask_account`, `render_principal`,
+`money`, `money_on` are `pub`. Test: `e6s1_s8_*` ×1 (`e4b2.rs`).
+
+**S9 — DL-04 `OrgInbox`** (`notice.rs`; `mush-server/src/econ_inbox.rs`).
+
+- `pub fn deliver_notice(ctx, who: ObjId, msg)` — connected ⇒ `sys_to_actor(who, "economy", …)`,
+  else `pub fn queue_notice`, which dedupes identical text, keeps the newest `MAX_PENDING_NOTICES =
+  32`, and persists the **leaf doc `econ:notice:{obj}` = `Vec<PendingNotice { at: i64, text:
+  String }>`**, each `text ≤ MAX_NOTICE_BYTES = 240` (wire-checked; at boot an unreadable or
+  oversized entry is dropped and the doc capped at the 32 newest — a leaf, never a boot failure).
+  `ReconnectNotice` on `HookPoint::Connected` renders `ECONOMY: n notice(s) while you were away.` +
+  the lines and deletes the doc.
+- `pub fn principal_holders(w, &PrincipalId) -> Vec<ObjId>`: an object is its own holder; `System`
+  has none; an organization's are its members and grantees who hold `economy.account.post` on its
+  root scope **by grant** (staff are not enumerated), in id order. `pub fn acts_for(w, actor, who)`
+  is the matching predicate. `OrgInbox: EconomyObserver` turns `ContractChanged`
+  (Offered/Active/Settled/Disputed/Cancelled/Expired; Draft and ReadyToSettle stay silent) and
+  `ObligationChanged` on an org principal into one line per holder. Wired in `server_modules_with`
+  beside the canon bridge and housing.
+- Tests: `e6s1_s9_*` ×3 (`mush-server/tests/e6a_inbox.rs`).
+
+**S10 — DL-05** (`record.rs`, `sweep.rs`, `observer.rs`; `mush-server/src/econ_alerts.rs`,
+`world_task.rs`): `EconomicEvent::EscalationOpened { id: EscalationId, subject: EscalationSubject,
+level: u8 }`, emitted by `announce_escalation` at every step of the ladder's own schedule — a fresh
+page, a reopen after an acknowledgement whose cause came back, and each `renotify` reminder (1 h,
+then daily). `StaffAlerts: EconomyObserver` (RAM-only `Mutex<BTreeMap<EscalationId, (reopened,
+notifications)>>`) dedupes per record step and writes `ECONOMY ALERT (opened|reopened|still open):
+<record.render()>` plus the first recommended command to every connected wizard
+(`world_task::connected_wizards`, the `broadcast_wizards` audience); `page_dropped` covers the
+event. Tests: `e6s1_s10_*` ×3 (`mush-server/tests/e6a_alerts.rs`).
+
+**Deviations from the list above, with reasons.**
+
+1. A refused partial refund (an approval rule on the escrow account, a frozen hold) **refuses the
+   amend outright and changes nothing** — no pending unwind is recorded. An amend is not a terminal
+   transition and its refund is not owed; `@contract/cancel` stays the retrying, paging route
+   (`vf_m3` was re-pinned to exactly that flow).
+2. An author-only amend is admitted on a **live** contract with no deliverables. The last acceptance
+   activates, so a one-party or author-only contract is `Active` the moment the author accepts;
+   `Offered` alone would have made `amend_contract` useless for the fixer-issued run it exists for.
+   Any other party's acceptance or any deliverable still needs the unwind; `expire`'s forfeit needs
+   more than one party for the same reason.
+3. Item 5 named five raw-minor render sites; housing's (`Property.upkeep`) was removed by E5b-D34 in
+   the look-back fold, so four were converted, and `render_amount_on` is the pub helper E6's own
+   renders use.
+4. The K fold's allowlist rule: step one adds **no primary verb** — only the switches `window=` and
+   `display=` — and the tripwire pins `CommandSpec::name` only, so `legacy-handlers.toml` is
+   unchanged (its test was run).
+5. Item 11 named `broadcast_wizards`; the fan-out is an observer (`StaffAlerts`) on the same
+   `connected_wizards` audience, so the economy still emits ids only (D-E4-13) and the server alone
+   decides who hears it.
+
+**What E6a's ruleset half now calls** (§3): `create_obligation` with `ObligationCause::Ruleset`
+on the `sr.month` cadence for lifestyle, `cancel_obligation`/`reinstate_obligation` on
+`+lifestyle/set`; `offer_contract`/`accept_contract`/`amend_contract` for the run board (a fixer's
+amend keeps the fixer's acceptance and refunds the runners'); `render_amount`/`money_on` with
+`display = ¥:prefix` for `sr.nuyen`; `contract_notice` and `deliver_notice` for board lines; the
+window on org treasuries through `@account/approval … window=`; `EscalationOpened` reaches staff
+with no Shadowrun code at all.
+
+---
+
 ## 3. E6a — run and pay
 
 ### 3.1 Records

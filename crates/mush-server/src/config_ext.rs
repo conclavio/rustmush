@@ -94,6 +94,7 @@ pub fn economy_config(cfg: &EconomyCfg) -> Result<mush_economy::EconomyConfig, S
             })
             .collect(),
         cadences,
+        stale_contract_age_secs: cfg.stale_contract_age_secs,
     };
     config
         .check_declared_cadences()

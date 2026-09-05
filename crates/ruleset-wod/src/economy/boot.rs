@@ -345,6 +345,7 @@ fn ensure_instrument(ctx: &mut Ctx<'_>) -> Option<InstrumentId> {
             // an ordinary character's account still cannot.
             negative_policy: NegativePolicy::SystemOnly,
             status: InstrumentStatus::Active,
+            display: None,
             revision: 1,
         },
     ) {

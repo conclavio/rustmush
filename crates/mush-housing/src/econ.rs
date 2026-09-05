@@ -109,12 +109,14 @@ impl EconomyObserver for HousingEconomyObserver {
             EconomicEvent::ContractChanged { id, state, .. } => {
                 on_contract(ctx, *id, *state);
             }
-            // Ids and kinds only (D-E4-13), and none of the other three says anything
-            // about a lease: a posted transaction, a reservation and a title move are
-            // all things the two records above already summarise for housing.
+            // Ids and kinds only (D-E4-13), and none of the other four says anything
+            // about a lease: a posted transaction, a reservation, a title move and a
+            // staff page are all things the two records above already summarise for
+            // housing (its own pages ride the same ladder).
             EconomicEvent::TransactionPosted { .. }
             | EconomicEvent::HoldChanged { .. }
-            | EconomicEvent::AssetTitleChanged { .. } => {}
+            | EconomicEvent::AssetTitleChanged { .. }
+            | EconomicEvent::EscalationOpened { .. } => {}
         }
     }
 }

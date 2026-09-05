@@ -1766,6 +1766,13 @@ struct VfState {
     lease: Option<Result<ContractId, ContractError>>,
     /// Look-back fold, rent-after-end: the last `end_lease` outcome (`@vf/endlease`).
     ended: Option<Result<LeaseEnd, ContractError>>,
+    /// E6a step 1 (S3): the spec `@vf/create` hands to `create_obligation`.
+    ruleset_spec: Option<ObligationSpec>,
+    /// E6a step 1 (S3): the last `create_obligation` outcome.
+    created: Option<Result<ObligationId, EconomyError>>,
+    /// E6a step 1 (S3): the last `cancel_obligation` / `reinstate_obligation`
+    /// outcome (`@vf/cancelob`, `@vf/restore`), the reinstate's `bool` folded in.
+    ruleset: Option<Result<bool, EconomyError>>,
 }
 
 #[derive(Clone, Default)]
@@ -1826,6 +1833,25 @@ impl Vf {
             .clone()
             .expect("an end_lease outcome was recorded")
     }
+    fn stage_create(&self, spec: ObligationSpec) {
+        self.0.lock().expect("probe lock").ruleset_spec = Some(spec);
+    }
+    fn created(&self) -> Result<ObligationId, EconomyError> {
+        self.0
+            .lock()
+            .expect("probe lock")
+            .created
+            .clone()
+            .expect("a create_obligation outcome was recorded")
+    }
+    fn ruleset(&self) -> Result<bool, EconomyError> {
+        self.0
+            .lock()
+            .expect("probe lock")
+            .ruleset
+            .clone()
+            .expect("a ruleset seam outcome was recorded")
+    }
 }
 
 /// `#12`, `12` → 12.
@@ -1856,6 +1882,9 @@ impl GameModule for VfMod {
                     "release",
                     "lease",
                     "endlease",
+                    "create",
+                    "cancelob",
+                    "restore",
                 ]
                 .iter()
                 .copied()
@@ -1863,11 +1892,37 @@ impl GameModule for VfMod {
                 .collect(),
                 help: "verify-fold probe: post a staged plan / mint a staged system obligation / \
                        register an instrument / hold or release an obligation under a key / \
-                       offer or end a lease through the layered-module seam"
+                       offer or end a lease through the layered-module seam / create, cancel or \
+                       reinstate a ruleset obligation through the E6a seams"
                     .into(),
                 ..CommandSpec::default()
             },
             Arc::new(move |ctx: &mut Ctx<'_>| -> Result<(), CmdError> {
+                // E6a step 1 (S3): `@vf/create` is `create_obligation` with the staged
+                // spec under the ACTOR's authority; `@vf/cancelob <id>=<namespace>` and
+                // `@vf/restore <id>=<namespace>` are the namespace-locked seams.
+                if ctx.switches.has("create") {
+                    let spec =
+                        st.0.lock()
+                            .expect("probe lock")
+                            .ruleset_spec
+                            .take()
+                            .expect("stage a spec first");
+                    let outcome = mush_economy::create_obligation(ctx, spec);
+                    st.0.lock().expect("probe lock").created = Some(outcome);
+                    return Ok(());
+                }
+                if ctx.switches.has("cancelob") || ctx.switches.has("restore") {
+                    let id = ObligationId(probe_id(ctx.args.lhs()));
+                    let namespace = ctx.args.rhs().unwrap_or_default().trim().to_string();
+                    let outcome = if ctx.switches.has("cancelob") {
+                        mush_economy::cancel_obligation(ctx, id, &namespace).map(|()| false)
+                    } else {
+                        mush_economy::reinstate_obligation(ctx, id, &namespace)
+                    };
+                    st.0.lock().expect("probe lock").ruleset = Some(outcome);
+                    return Ok(());
+                }
                 // Look-back fold, rent-after-end: `@vf/lease <name>=<lessor> <tenant>
                 // <premises> <from acct> <to acct>` is `offer_lease` (rent 100 every
                 // 100 s from now), and `@vf/endlease <contract>=<lessor> <premises>`
@@ -1942,6 +1997,7 @@ impl GameModule for VfMod {
                             transferable: true,
                             negative_policy: mush_economy::NegativePolicy::SystemOnly,
                             status: mush_economy::InstrumentStatus::Active,
+                            display: None,
                             revision: 1,
                         },
                     );
@@ -4533,4 +4589,374 @@ fn sp1_an_old_shape_document_with_a_declared_name_loads_and_is_adopted() {
         tw.engine().clock_now(&registered("other", 1)),
         Err(ClockReadError::ProviderMissing { .. })
     ));
+}
+
+// ======================================================================
+// ---- E6a step 1: S3 — player-debit obligations for rulesets ----
+//
+// `create_obligation` / `cancel_obligation` / `reinstate_obligation` (08f §2
+// item 3): a ruleset creates a recurring debit under the ACTOR's own debit
+// authority — never a `System` debtor — and touches only what its namespace
+// created. Driven through the `@vf` probe, because the seams are crate APIs and
+// deliberately not verbs.
+// ======================================================================
+
+/// A 50-per-100-seconds upkeep from `debit` to `credit`, first due at 100, under
+/// `namespace`.
+fn upkeep(debit: AccountId, credit: AccountId, namespace: &str, grace: u8) -> ObligationSpec {
+    ObligationSpec {
+        debit_account: debit,
+        credit_account: credit,
+        amount: Amount::from_minor(50),
+        schedule: EconomicSchedule::new(EconomicClock::RealUtc, 100, Some(100), 3),
+        grace: GracePolicy::new(grace),
+        notify_on_success: false,
+        cause: ObligationCause::Ruleset {
+            namespace: namespace.into(),
+        },
+    }
+}
+
+#[test]
+fn e6s1_s3_a_player_creates_a_debit_on_their_own_wallet_and_the_sweep_collects_it() {
+    let (mut tw, vf) = boot_probe();
+    let r = rig(&mut tw, 500);
+    vf.stage_create(upkeep(r.pat_acct, r.quinn_acct, "probe.upkeep", 1));
+    ok(&mut tw, r.pat, "@vf/create");
+    let id = vf.created().expect("the seam refused a player's own debit");
+    let o = obligation(&tw, id);
+    assert_eq!(o.debtor, mush_org::PrincipalId::Object(r.pat));
+    assert_eq!(o.creditor, mush_org::PrincipalId::Object(r.quinn));
+    assert_eq!(
+        o.cause,
+        ObligationCause::Ruleset {
+            namespace: "probe.upkeep".into()
+        }
+    );
+    assert_eq!(o.minted_by, None, "a player debit is not a mint");
+    assert_eq!(o.status, ObligationStatus::Active);
+
+    // The sweep collects it like any obligation: `ObligationAuth` permits a
+    // non-`System` debit on the record's own account.
+    sweep_at(&mut tw, 150);
+    assert_eq!(
+        bal(&tw, r.pat_acct),
+        450,
+        "the sweep did not collect the period"
+    );
+    assert_eq!(bal(&tw, r.quinn_acct), 50);
+    assert_eq!(obligation(&tw, id).settled_total, 1);
+
+    // Boot loads it, and the next period collects after the restart.
+    let kv = fold_kv(&mut tw);
+    reboot(&mut tw, kv);
+    assert!(!store(&tw).is_frozen());
+    let o = obligation(&tw, id);
+    assert_eq!(o.status, ObligationStatus::Active);
+    assert_eq!(o.minted_by, None);
+    sweep_at(&mut tw, 250);
+    assert_eq!(
+        bal(&tw, r.pat_acct),
+        400,
+        "the reloaded record did not collect"
+    );
+}
+
+#[test]
+fn e6s1_s3_a_debit_on_a_wallet_the_actor_may_not_debit_is_refused() {
+    let (mut tw, vf) = boot_probe();
+    let r = rig(&mut tw, 500);
+    // Quinn cannot put a standing charge on Pat's wallet.
+    vf.stage_create(upkeep(r.pat_acct, r.quinn_acct, "probe.upkeep", 1));
+    ok(&mut tw, r.quinn, "@vf/create");
+    assert_eq!(vf.created(), Err(EconomyError::Unauthorized));
+    assert_eq!(
+        snap(&tw).obligations().count(),
+        0,
+        "a refused create wrote a record"
+    );
+    // A non-`Ruleset` cause is not this seam's to create, whoever asks.
+    let mut staffish = upkeep(r.pat_acct, r.quinn_acct, "probe.upkeep", 1);
+    staffish.cause = ObligationCause::Staff {
+        reason: "probe".into(),
+    };
+    vf.stage_create(staffish);
+    ok(&mut tw, GOD, "@vf/create");
+    assert_eq!(vf.created(), Err(EconomyError::Unauthorized));
+    assert_eq!(snap(&tw).obligations().count(), 0);
+    // Staff may create one on anybody's wallet — the approver at chargen.
+    vf.stage_create(upkeep(r.pat_acct, r.quinn_acct, "probe.upkeep", 1));
+    ok(&mut tw, GOD, "@vf/create");
+    vf.created()
+        .expect("staff hold debit authority on every wallet");
+}
+
+#[test]
+fn e6s1_s3_a_system_debtor_is_refused_even_for_staff() {
+    let (mut tw, vf) = boot_probe();
+    let r = rig(&mut tw, 0);
+    vf.stage_create(upkeep(r.faucet, r.quinn_acct, "probe.upkeep", 1));
+    ok(&mut tw, GOD, "@vf/create");
+    assert_eq!(
+        vf.created(),
+        Err(EconomyError::Unauthorized),
+        "a faucet debit is a standing mint and has exactly one route (create_system_obligation)"
+    );
+    assert_eq!(snap(&tw).obligations().count(), 0);
+}
+
+#[test]
+fn e6s1_s3_cancel_and_reinstate_are_locked_to_the_creating_namespace() {
+    let (mut tw, vf) = boot_probe();
+    let r = rig(&mut tw, 0);
+    // Grace 0 and no funds: the first miss is delinquency.
+    vf.stage_create(upkeep(r.pat_acct, r.quinn_acct, "probe.upkeep", 0));
+    ok(&mut tw, r.pat, "@vf/create");
+    let id = vf.created().expect("created");
+    sweep_at(&mut tw, 150);
+    assert_eq!(obligation(&tw, id).status, ObligationStatus::Delinquent);
+
+    // Another namespace may neither reinstate nor cancel it.
+    ok(&mut tw, GOD, &format!("@vf/restore {id}=other.ns"));
+    assert_eq!(vf.ruleset(), Err(EconomyError::Unauthorized));
+    ok(&mut tw, GOD, &format!("@vf/cancelob {id}=other.ns"));
+    assert_eq!(vf.ruleset(), Err(EconomyError::Unauthorized));
+    assert_eq!(obligation(&tw, id).status, ObligationStatus::Delinquent);
+    // A record nobody's namespace created — a staff obligation — is nobody's either.
+    ok(
+        &mut tw,
+        GOD,
+        &format!(
+            "@obligation/create {}={} 10 every=100 start=100",
+            r.quinn_acct, r.pat_acct
+        ),
+    );
+    let staffed = snap(&tw)
+        .obligations()
+        .map(|o| o.id)
+        .max()
+        .expect("the staff record");
+    assert_ne!(staffed, id);
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@vf/cancelob {staffed}=probe.upkeep"),
+    );
+    assert_eq!(vf.ruleset(), Err(EconomyError::Unauthorized));
+
+    // The creating namespace reinstates it: back in the pool, re-anchored, and the
+    // delinquent periods are not charged.
+    ok(&mut tw, GOD, &format!("@vf/restore {id}=probe.upkeep"));
+    assert_eq!(vf.ruleset(), Ok(true));
+    let o = obligation(&tw, id);
+    assert_eq!(o.status, ObligationStatus::Active);
+    assert!(
+        o.schedule.next_due > 150,
+        "the schedule was not re-anchored"
+    );
+    // Nothing to reinstate the second time.
+    ok(&mut tw, GOD, &format!("@vf/restore {id}=probe.upkeep"));
+    assert_eq!(vf.ruleset(), Ok(false));
+
+    // And the creating namespace cancels it; a cancelled record is terminal to
+    // both seams.
+    ok(&mut tw, GOD, &format!("@vf/cancelob {id}=probe.upkeep"));
+    assert_eq!(vf.ruleset(), Ok(false));
+    assert_eq!(obligation(&tw, id).status, ObligationStatus::Cancelled);
+    ok(&mut tw, GOD, &format!("@vf/cancelob {id}=probe.upkeep"));
+    assert_eq!(vf.ruleset(), Err(EconomyError::ObligationTerminal(id)));
+    ok(&mut tw, GOD, &format!("@vf/restore {id}=probe.upkeep"));
+    assert_eq!(vf.ruleset(), Err(EconomyError::ObligationTerminal(id)));
+}
+
+// ======================================================================
+// ---- E6a step 1: S5 — `InstrumentDisplay` + one `render_amount` ----
+//
+// E2-C16 / 08g §12.1 item 4: an instrument may declare a symbol and where it
+// goes, and every player-facing amount goes through one scale-aware,
+// symbol-aware render. The look-back found five renders printing raw minor units
+// (08g §3); the economy's four are pinned here and in `e4b2.rs` by message, and
+// the fifth (housing's `Property.upkeep` line) was removed with E5b-D34's fold.
+// ======================================================================
+
+/// Two displayed instruments — `yen` (scale 0, `¥` prefix) and `cent` (scale 2,
+/// `¢` suffix) — with a faucet each and a funded wallet apiece.
+struct Displayed {
+    pat: ObjId,
+    quinn: ObjId,
+    yen_faucet: AccountId,
+    pat_yen: AccountId,
+    quinn_yen: AccountId,
+    quinn_cent: AccountId,
+}
+
+fn displayed(tw: &mut TestWorld) -> Displayed {
+    let pat = tw.spawn_player("Pat");
+    let quinn = tw.spawn_player("Quinn");
+    let seen = ok(tw, GOD, "@instrument/register yen=0 display=¥:prefix");
+    assert!(seen.contains("renders as ¥<amount>"), "{seen}");
+    let seen = ok(tw, GOD, "@instrument/register cent=2 display=¢:suffix");
+    assert!(seen.contains("renders as <amount>¢"), "{seen}");
+    ok(tw, GOD, "@account/system yenfaucet=yen");
+    ok(tw, GOD, "@account/system centfaucet=cent");
+    ok(tw, GOD, &format!("@account/open #{}=yen", pat.0));
+    ok(tw, GOD, &format!("@account/open #{}=yen", quinn.0));
+    ok(tw, GOD, &format!("@account/open #{}=cent", quinn.0));
+    let find = |tw: &TestWorld, owner: mush_org::PrincipalId, code: &str| -> AccountId {
+        snap(tw)
+            .accounts()
+            .find(|a| a.owner == owner && a.instrument.as_str() == code)
+            .expect("account")
+            .id
+    };
+    let yen_faucet = find(
+        tw,
+        mush_org::PrincipalId::System(mush_org::SystemPrincipalId::new("yenfaucet").expect("id")),
+        "yen",
+    );
+    let cent_faucet = find(
+        tw,
+        mush_org::PrincipalId::System(mush_org::SystemPrincipalId::new("centfaucet").expect("id")),
+        "cent",
+    );
+    let pat_yen = find(tw, mush_org::PrincipalId::Object(pat), "yen");
+    let quinn_yen = find(tw, mush_org::PrincipalId::Object(quinn), "yen");
+    let quinn_cent = find(tw, mush_org::PrincipalId::Object(quinn), "cent");
+    ok(tw, GOD, &format!("@econ/mint {yen_faucet}={pat_yen} 1500"));
+    ok(
+        tw,
+        GOD,
+        &format!("@econ/mint {cent_faucet}={quinn_cent} 1250"),
+    );
+    Displayed {
+        pat,
+        quinn,
+        yen_faucet,
+        pat_yen,
+        quinn_yen,
+        quinn_cent,
+    }
+}
+
+#[test]
+fn e6s1_s5_a_prefix_and_a_suffix_instrument_render_at_their_own_scale_everywhere() {
+    let mut tw = boot();
+    let d = displayed(&mut tw);
+    // Scale 0 with a prefix symbol; scale 2 with a suffix symbol.
+    let seen = ok(&mut tw, d.pat, &format!("@account/show {}", d.pat_yen));
+    assert!(seen.contains("balance ¥1500"), "{seen}");
+    let seen = ok(&mut tw, d.quinn, &format!("@account/show {}", d.quinn_cent));
+    assert!(seen.contains("balance 12.50¢"), "{seen}");
+    let seen = ok(&mut tw, GOD, "@account/list");
+    assert!(
+        seen.contains("= ¥1500 [") && seen.contains("= 12.50¢ ["),
+        "{seen}"
+    );
+    // A negative line renders with the sign before a prefix symbol.
+    ok(
+        &mut tw,
+        d.pat,
+        &format!("@econ/pay {}={} 500", d.pat_yen, d.quinn_yen),
+    );
+    let seen = ok(&mut tw, d.pat, &format!("@econ/history {}", d.pat_yen));
+    assert!(seen.contains("-¥500"), "{seen}");
+    // A reservation, a rule, and a standing charge all say ¥.
+    ok(
+        &mut tw,
+        d.pat,
+        &format!("@hold/place {}=100 a probe", d.pat_yen),
+    );
+    let seen = ok(&mut tw, d.pat, "@hold/list");
+    assert!(seen.contains("¥100 [held]"), "{seen}");
+    let hold = only_hold(&tw);
+    let seen = ok(&mut tw, d.pat, &format!("@hold/show #{hold}"));
+    assert!(seen.contains("— ¥100 [held]"), "{seen}");
+    let seen = ok(
+        &mut tw,
+        GOD,
+        &format!(
+            "@account/approval {}=100 threshold:1 window=400/3600",
+            d.pat_yen
+        ),
+    );
+    assert!(
+        seen.contains("above ¥100") && seen.contains("over ¥400"),
+        "{seen}"
+    );
+    ok(
+        &mut tw,
+        GOD,
+        &format!(
+            "@obligation/create {}={} 50 every=100 start=100",
+            d.pat_yen, d.quinn_yen
+        ),
+    );
+    let id = only_obligation(&tw);
+    let seen = ok(&mut tw, d.pat, &format!("@obligation/show #{id}"));
+    assert!(seen.contains("¥50 ["), "{seen}");
+    let seen = ok(&mut tw, d.pat, "@obligation/list");
+    assert!(seen.contains("¥50 ["), "{seen}");
+    // A lien renders in the instrument it names — one of 08g §3's raw-minor sites.
+    let van = thing(&mut tw, "van");
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@asset/title #{}=#{}", van.0, d.pat.0),
+    );
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@asset/lien #{}=#{} 1250 cent", van.0, d.quinn.0),
+    );
+    let seen = ok(&mut tw, GOD, &format!("@asset/show #{}", van.0));
+    assert!(seen.contains("lien 12.50¢ cent to"), "{seen}");
+    // The display survives a reboot, and a malformed one refuses to load.
+    let mut kv = fold_kv(&mut tw);
+    reboot(&mut tw, kv.clone());
+    let seen = ok(&mut tw, d.pat, &format!("@account/show {}", d.pat_yen));
+    assert!(seen.contains("balance ¥1000"), "{seen}");
+    patch(&mut kv, "instrument:yen", |v| {
+        v["display"] =
+            serde_json::json!({ "symbol": "a symbol far too long", "position": "Prefix" });
+    });
+    let stored: Result<mush_economy::InstrumentDef, _> =
+        serde_json::from_value(value_of(&kv, "instrument:yen"));
+    assert!(stored.is_err(), "an oversized symbol deserialized");
+    let _ = d.yen_faucet;
+}
+
+#[test]
+fn e6s1_s5_the_mint_cap_notice_renders_the_cap_at_scale() {
+    // One of 08g §3's raw-minor sites: the sweep's over-cap page printed the cap in
+    // minor units. It now renders in the debit account's instrument.
+    let (mut tw, vf) = boot_probe();
+    let d = displayed(&mut tw);
+    vf.stage_mint(
+        "yenfaucet",
+        ObligationSpec {
+            debit_account: d.yen_faucet,
+            credit_account: d.quinn_yen,
+            amount: Amount::from_minor(100),
+            schedule: EconomicSchedule::new(EconomicClock::RealUtc, 100, Some(100), 3),
+            grace: GracePolicy::default(),
+            notify_on_success: false,
+            cause: ObligationCause::Ruleset {
+                namespace: "probe.income".into(),
+            },
+        },
+    );
+    ok(&mut tw, GOD, "@vf/mint");
+    let id = vf.minted().expect("an under-cap income line was refused");
+    let mut kv = fold_kv(&mut tw);
+    patch(&mut kv, &format!("obligation:{}", id.0), |v| {
+        v["amount"] = serde_json::json!(60_000);
+    });
+    reboot(&mut tw, kv);
+    sweep_at(&mut tw, 200);
+    let record = alert_for(&tw, EscalationSubject::Obligation(id));
+    assert!(
+        record.context.contains("mint cap (¥50000)"),
+        "the cap did not render at scale with its symbol: {}",
+        record.context
+    );
 }
