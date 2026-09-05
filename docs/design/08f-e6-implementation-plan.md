@@ -828,6 +828,68 @@ registers its `ClockProvider` at composition and creates or adopts the clock at 
   already derives every payout account from the roster and refuses a crew containing the
   adjudicator.
 
+**Verify fold (2026-09-05).** Twenty-seven findings from three adversarial lenses — disclosure and
+bounds (D), money and consent (M), durability and replay (R). Twenty-five carry a
+`vf_<lens><n>_…` regression test, **32 in all** (27 in `ruleset-shadowrun/tests/e6a.rs`, 2 in
+`mush-party/tests/e6a_party.rs`, 2 in-crate in `board.rs`, 1 in `mush-economy/tests/e4b2.rs`); D9's
+dead clause is covered by the existing membership tests and D11's probe cannot be reproduced from
+any shipped verb — the table says why for each. The economy and the party stayed game-neutral; the two `mush-economy` additions
+below are named and are about contracts and accounts, not about runs.
+
+| item | what changed | test |
+|---|---|---|
+| **M1** | `RunSplit::table` with an empty roster emits one row per outcome paying the **whole escrow back to the payer** — no fee row and no advance row exist until a roster does, so the named adjudicator attesting a `Listed` run (which is `Active` — S1 deviation 2) settles a no-op instead of paying the fixer out of an uncrewed run (`board.rs::pre_crew_table`) | `vf_m1_an_adjudicator_settling_a_crewless_run_moves_nothing` |
+| **M2** | `board::crew_accept` re-checks `party_has_live_run` **and takes the party lock before `amend_contract`**; `mush_party::lock` (which refuses anything not `Forming`) is the gate, and a refused amendment `unlock`s the party it had just locked | `vf_m2_one_party_cannot_be_crewed_onto_two_runs`, `vf_m2_a_disbanded_party_cannot_be_crewed` |
+| **M3** | `SrProfile.missed_seen: u32` (`#[serde(default)]`) is the miss high-water mark **per record**, reset in `open_upkeep`; `unpaid_periods` widens to `u32` and only accumulates. The ladder no longer stops one tier below where it started | `vf_m3_the_ladder_keeps_walking_after_the_first_downgrade` |
+| **M4** | `run_post` refuses `adjudicator=` naming the **fixer** or the **Johnson** (answer 22 as amended: distinct wherever a conflict of interest exists) | `vf_m4_the_adjudicator_is_never_the_fixer_or_the_johnson` |
+| **M5** | `board::withdraw` refuses once a runner has accepted — `withdrawable` asks the *contract's* acceptances, not the board's mirror — and points at `+run/crew decline` or the deadline | `vf_m5_withdraw_is_refused_once_a_runner_has_accepted`, `vf_m5_a_listed_run_is_still_the_payers_to_withdraw` |
+| **M6** | `lifestyle::replace_upkeep` opens the replacement **first** and cancels the old record second; a refused cancel pages (`EscalationSubject::Obligation`) and `reconcile_lifestyle` cancels any `sr.lifestyle` record the profile does not point at | `vf_m6_a_refused_replacement_leaves_the_profile_untouched`, `vf_m6_boot_cancels_a_lifestyle_record_the_profile_does_not_point_at` |
+| **M7** | `chargen::plan` reads a character **with** an `SrProfile` and no mint as `Adopt(allotment)`; only a character with no profile at all is answer 18's `WouldMint(sheet value)` | `vf_m7_a_profiled_character_is_adopted_at_the_allotment_not_the_sheet` |
+| **M8** | the crew check fails closed: `adjudicator_shape` reduces the consent surface to `Party(p)` or `Other`, and anything but one named party refuses the crewing | `vf_m8_only_a_single_named_party_is_a_usable_adjudicator`, `vf_m8_conditions_must_agree_on_one_party_when_no_adjudicator_is_named` |
+| **R1** | `reconcile_board` releases the listing's party whenever the **mirrored** state is `Closed`, including `now == was` — the shape a dropped board/party write leaves | `vf_r1_boot_releases_the_party_of_a_listing_that_is_already_closed` |
+| **R2** | `reconcile_parties` — a boot pass over live `Locked` parties: the ruleset resolves the opaque `ContractRef` it handed over and releases every one whose contract is gone or terminal (log + one page per orphan, capped at 8). `mush-party` stays money-blind | `vf_r2_boot_releases_a_party_orphaned_by_a_skipped_listing` |
+| **R3** | `chargen::already_minted` asks the **idempotency index** (`mush_economy::idempotency_resolved`) for `sr.chargen/{obj}` and `sr.migration/{obj}`, so a corrupt profile cannot buy a second allotment | `vf_r3_a_corrupt_profile_never_mints_a_second_allotment` |
+| **R4** | `personal_account` (both copies) filters `AccountStatus::Active`, and `boot::reconcile_accounts` re-derives `SrProfile.account` when the account it names is not | `vf_r4_a_closed_account_is_re_resolved_at_boot` |
+| **R5** | `miss` and `pay_arrears` refuse to act with no `sr.month` ordinal (the counters and the key are keyed on it and nothing else), and the pay key carries the arrears amount as a second discriminator | `vf_r5_paying_arrears_with_no_cadence_is_refused`, `vf_r5_the_pay_key_discriminates_on_the_amount` |
+| **D1** | `SrEconomyStore.live: BTreeSet<RunId>` drives the caps, the per-party rule and the board page; a closed listing is `Del`'d (`store::del_run`) with a 32-id `recent_closed` ring for `+run/show`; `visible()` walks at most `BOARD_PAGE_VISIT` (256) live records from an `after=` cursor and returns a `BoardPage` with its own continuation (D-LBK-5: bounded on VISITED) | `vf_d1_a_post_withdraw_loop_leaves_no_stored_listings`, `vf_d1_the_board_page_is_bounded_on_records_visited` |
+| **D2** | `MAX_OUTCOME_NAME_BYTES` (64) enforced in `mush_economy::check_structure` — so no producer, command or seam or document, can freeze an oversized row — plus `commands::outcome_names` and `RunTemplateWire::try_from` | `vf_d2_an_oversized_outcome_row_name_is_refused_at_post_and_on_load`, `vf_d2_the_economy_refuses_an_oversized_outcome_row_from_any_producer` (e4b2) |
+| **D3** | `resolve_account` filters the compartment's candidates through `may_view_account` and refuses with the single `"No such account."` unless exactly one viewable account remains | `vf_d3_a_multi_account_compartment_hides_like_an_unknown_scope` |
+| **D4** | `resolve_faction`'s numeric branch runs `faction_listed` too | `vf_d4_a_hidden_faction_hides_by_id_as_well_as_by_name` |
+| **D5** | the fee-row rule is asked **before** the fixer's account (it is a fact about the command, not the person), and a fixer with no wallet renders as `"No such fixer."` — the unresolvable-name text — so `fixer=` is no longer a free banked/unbanked probe | `vf_d5_a_banked_and_an_unbanked_fixer_answer_alike` |
+| **D6** | `mush_party::lock` prunes the outstanding invitations (a locked party can neither accept one nor withdraw one, and `may_view` admits an invitee), and `show_lines` never renders the `ContractRef` to a non-staff viewer | `vf_d6_the_lock_prunes_outstanding_invitations_and_hides_the_party`, `vf_d6_a_members_view_names_no_contract_id` |
+| **D7** | `by_obligation` / `by_account` indexes on `SrEconomyStore`, maintained in `put_profile` and re-derived at boot; `on_obligation_changed` resolves its subject in O(log n) | `vf_d7_the_indexes_agree_after_every_profile_mutation`, `vf_d7_a_population_wide_period_boundary_bills_every_profile` |
+| **D8 / R6** | `RunNotice.kinds` (≤ 8 × 32 B), `RunNotice.window` (≤ one year) and `Mint.key` (≤ 128 B) capped in their wires (`record::check_notice`) | `vf_d8_oversized_notice_fields_and_mint_keys_refuse_to_load` |
+| **D9** | `board::may_view`'s `Faction` arm drops the dead `membership_visible(viewer, false, m)` clause (always true for `viewer == m.character`), with a comment saying why | covered by the existing membership tests |
+| **D10** | `@sr/profile` renders arrears through `money_on` | `vf_d10_the_staff_profile_renders_arrears_as_money` |
+| **D11** | `mush_economy::resolve_org_visible` — hidden ⇒ unresolvable unless staff/member/grantee — behind `parse_principal`, so **every** verb that takes an org name answers a hidden org exactly as it answers an unknown one | no end-to-end test: nothing in the shipped surface writes `Organization.hidden` (only `render_principal` reads it), so the probe cannot be reproduced. Preventive |
+| **D12** | `nuyen_lines` emits one `NO_NUYEN` line for an unviewable account *and* for a viewer who may see neither account nor sheet, so silence stops meaning "banked" | `vf_d12_an_unviewable_account_and_no_account_read_alike` |
+| **D13** | `EconomySnapshot::accounts_of(owner)` (owner index, `put_account`-maintained), used by both `personal_account`s | `vf_r4_a_closed_account_is_re_resolved_at_boot` asserts the index agrees; `vf_d7_…` covers the rest |
+
+**Two `mush-economy` additions, both game-neutral.** `idempotency_resolved(ctx, &key) -> bool`
+(`api.rs`) — the index is the authority on "did this one-shot post land", and a caller's own record
+of it is a cache. `EconomySnapshot::accounts_of(owner)` plus `resolve_org_visible` and
+`MAX_OUTCOME_NAME_BYTES` (`commands.rs`, `snapshot.rs`, `contract.rs`). None of them says the word
+"run".
+
+**Deviations from the fold's own brief.**
+
+1. **D5 keeps `fixer=` usable.** The brief's literal fix — resolve the fixer's account *through*
+   `may_view_account` — would have made `fixer=` unusable by every player, because no player may
+   view another player's personal account and there is no route that grants it. The oracle it names
+   is closed instead at its root: the **free** probe was `fixer=<who>` with no `fee=`, which answered
+   "no nuyen account" or "needs a fee row" depending on the target. The fee-row rule now runs first
+   and is target-independent, and a missing wallet answers with the unresolvable-name text.
+2. **M6 pages on `EscalationSubject::Obligation`**, not a new ruleset-shaped subject. The stuck
+   record *is* the subject, the ladder's per-subject dedupe then means one page per stuck record,
+   and the recommended command (`@obligation/cancel #n`) names it.
+3. **D7's population test is 40 profiles, not 1,000, and asserts correctness rather than a visited
+   counter.** A counter on the observer path is production code that exists only for a test; the
+   index itself is the claim, and `SrEconomyStore::indexes_agree()` is what asserts it.
+4. **A closed listing's document is deleted** (D1), so `run_state` in the acceptance suite reads
+   "gone" as `Closed` and `+run/show` answers "closed" from a bounded ring of ids rather than from a
+   record. Three shipped tests moved with it: the fixer's fee row is now asserted after crewing (M1),
+   and two `mush-party` tests assert the pruned invitation (D6).
+
 ---
 
 ## 4. E6b — outcomes, fences, custody

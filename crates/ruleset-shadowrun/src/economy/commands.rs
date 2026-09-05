@@ -62,7 +62,9 @@ pub(crate) fn register(reg: &mut Registrar<'_>, cmd: Arc<Sr5Cmd>) -> Result<(), 
                 "withdraw".into(),
             ],
             shape: ArgShape::EqPair,
-            help: "+run/list [public|faction|mine]  --  the run board, newest first.\n\
+            help: "+run/list [public|faction|mine] [after=<id>]  --  the run board, newest \
+                   first, one bounded page at a time; the page names its own cursor when there \
+                   is more.\n\
                    +run/show <id>  --  a listing's notice (never its terms).\n\
                    +run/post <name>=<pay> [outcomes=success,failure] [scope=<org scope>] \
                    [account=<id>] [johnson=<who>] [fixer=<who>] [fee=<amount>] \
@@ -219,22 +221,39 @@ fn run_cmd(cmd: &Sr5Cmd, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 }
 
 fn run_list(ctx: &mut Ctx<'_>, cfg: &SrEconomyConfig) -> Result<(), CmdError> {
-    let raw = ctx.args.lhs().trim().to_ascii_lowercase();
-    let filter = match raw.as_str() {
+    const USAGE: &str = "Usage: +run/list [public|faction|mine] [after=<id>]";
+    let lhs = ctx.args.lhs().trim().to_ascii_lowercase();
+    let (rest, opts) = parse_opts(&lhs, &["after"]);
+    let filter = match rest.trim() {
         "" | "all" => None,
-        "public" | "faction" | "mine" => Some(raw.clone()),
-        _ => {
-            return Err(CmdError::msg("Usage: +run/list [public|faction|mine]"));
-        }
+        w @ ("public" | "faction" | "mine") => Some(w.to_string()),
+        _ => return Err(CmdError::msg(USAGE)),
+    };
+    // D1: the cursor is how a bounded walk reaches the rest of the board. It names a
+    // listing id, which is not a secret — an id the actor may not view simply does not
+    // appear in the page it starts.
+    let after = match opts.get("after") {
+        Some(s) => Some(parse_run_id(s).ok_or_else(|| CmdError::msg(USAGE))?),
+        None => None,
     };
     let page = cfg.board_cap.min(crate::economy::config::BOARD_PAGE);
-    let ids = board::visible(ctx.w, ctx.actor, filter.as_deref(), page);
-    if ids.is_empty() {
-        say(ctx, "The board has nothing for you.");
+    let found = board::visible(ctx.w, ctx.actor, filter.as_deref(), page, after);
+    if found.ids.is_empty() {
+        match found.next {
+            Some(next) => say(
+                ctx,
+                format!(
+                    "Nothing for you in the last {} listing(s). More board: +run/list after={next}",
+                    found.visited
+                ),
+            ),
+            None => say(ctx, "The board has nothing for you."),
+        }
         return Ok(());
     }
-    say(ctx, format!("Run board ({} listing(s)):", ids.len()));
-    for id in ids {
+    say(ctx, format!("Run board ({} listing(s)):", found.ids.len()));
+    let next = found.next;
+    for id in found.ids {
         let Some(r) = ctx
             .w
             .module_state::<SrEconomyStore>()
@@ -252,6 +271,9 @@ fn run_list(ctx: &mut Ctx<'_>, cfg: &SrEconomyConfig) -> Result<(), CmdError> {
         );
         say(ctx, line);
     }
+    if let Some(next) = next {
+        say(ctx, format!("  … more board: +run/list after={next}"));
+    }
     Ok(())
 }
 
@@ -263,6 +285,18 @@ fn run_show(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         .and_then(|s| s.run(id).cloned())
         .filter(|r| board::may_view(ctx.w, ctx.actor, r))
     else {
+        // D1: a closed listing's document is deleted, so the grace ring is what keeps
+        // "it just closed" from reading as "it never existed" to somebody who was
+        // looking at it a minute ago. It says only that, and it says it to anybody —
+        // there is nothing left to hide, and the ring holds ids and not records.
+        if ctx
+            .w
+            .module_state::<SrEconomyStore>()
+            .is_some_and(|s| s.recently_closed(id))
+        {
+            say(ctx, format!("Run #{id}: closed."));
+            return Ok(());
+        }
         return Err(CmdError::msg(NO_SUCH_RUN));
     };
     for line in notice_lines(ctx, &r) {
@@ -423,19 +457,37 @@ fn run_post(ctx: &mut Ctx<'_>, cfg: &SrEconomyConfig) -> Result<(), CmdError> {
         Some(s) => Some(parse_principal(ctx, s).ok_or_else(|| CmdError::msg("No such fixer."))?),
         None => None,
     };
-    // A fixer is `roles.author`/`representative` with a fee row, and NEVER the issuer
-    // (M1, D-E6-19): the fee is paid to their account, the run is still the payer's.
-    let fixer_account = match &fixer {
-        Some(p) => Some(principal_account(ctx, p).ok_or_else(|| {
-            CmdError::msg("That fixer has no nuyen account to be paid a fee into.")
-        })?),
-        None => None,
-    };
+    // D5: **the fee-row rule is asked first, before the account.** It is a fact about
+    // the command and not about the person, so its answer must not depend on whether
+    // the named principal is banked — and it used to: `+run/post X=1 fixer=<who>` with
+    // no `fee=` answered "that fixer has no nuyen account" for an unbanked target and
+    // "a fixer needs a fee row" for a banked one. That was a free probe, costing no
+    // escrow and leaving no listing, for whether any named character holds an
+    // `sr.nuyen` account.
     if fixer.is_some() && fee.minor() <= 0 {
         return Err(CmdError::msg(
             "A fixer needs a fee row (fee=<amount>); an unnamed remainder never reaches them.",
         ));
     }
+    // A fixer is `roles.author`/`representative` with a fee row, and NEVER the issuer
+    // (M1, D-E6-19): the fee is paid to their account, the run is still the payer's.
+    //
+    // The account's own absence renders as the **unresolvable-fixer** text (D5), so
+    // "there is no such person" and "that person has no wallet" are one answer. The
+    // actionable message survives only for somebody the account's own gate already
+    // admits — which, by `may_view_account`, is its owner and staff.
+    let fixer_account = match &fixer {
+        Some(p) => Some(principal_account(ctx, p).ok_or_else(|| {
+            CmdError::msg(
+                if fixer_is_self(ctx, p) || crate::economy::is_staff(ctx.w, ctx.actor) {
+                    "That fixer has no nuyen account to be paid a fee into."
+                } else {
+                    "No such fixer."
+                },
+            )
+        })?),
+        None => None,
+    };
     let johnson = match opts.get("johnson") {
         Some(s) => Some(parse_principal(ctx, s).ok_or_else(|| CmdError::msg("No such Johnson."))?),
         None => None,
@@ -449,8 +501,12 @@ fn run_post(ctx: &mut Ctx<'_>, cfg: &SrEconomyConfig) -> Result<(), CmdError> {
              unset.",
         ));
     }
-    // D-E6-20: `adjudicator=` defaults to `party:<payer>`; a NAMED one is never the
-    // payer and never the poster.
+    // D-E6-20 + the E6a verify fold (M4, answer 22 as amended: distinct wherever a
+    // conflict of interest exists): `adjudicator=` defaults to `party:<payer>`; a
+    // NAMED one is never the payer, never the poster, never the **fixer** and never
+    // the **Johnson**. The fixer is paid out of every crewed row and the Johnson is
+    // the payer's own visible representative — an adjudicator who is either of them
+    // is the authority that ends the run standing on one side of it.
     let (adjudicator, adjudicator_named) = match opts.get("adjudicator") {
         Some(s) => {
             let p = parse_principal(ctx, s).ok_or_else(|| CmdError::msg("No such adjudicator."))?;
@@ -458,6 +514,18 @@ fn run_post(ctx: &mut Ctx<'_>, cfg: &SrEconomyConfig) -> Result<(), CmdError> {
                 return Err(CmdError::msg(
                     "The adjudicator settles the run and is never a party to it — not the payer, \
                      and not you.",
+                ));
+            }
+            if fixer.as_ref() == Some(&p) {
+                return Err(CmdError::msg(
+                    "The adjudicator settles the run and the fixer is paid by it; they cannot be \
+                     the same person.",
+                ));
+            }
+            if johnson.as_ref() == Some(&p) {
+                return Err(CmdError::msg(
+                    "The adjudicator settles the run and the Johnson represents the payer in it; \
+                     they cannot be the same person.",
                 ));
             }
             (AttestorSet::Party(p), true)
@@ -535,6 +603,12 @@ fn resolve_account(
             .or_else(|| crate::economy::boot::personal_account(ctx, ctx.actor, &instrument))
             .ok_or_else(|| CmdError::msg("You have no nuyen account to fund a run from."));
     };
+    // D3: the candidate scan is filtered through the account's **own** view gate
+    // before it is counted. Counting first made the "more than one nuyen account"
+    // line an oracle about the shape of a compartment the actor may not look into —
+    // three distinguishable outcomes where the hiding rule allows one. An outsider now
+    // reads "No such account." for a two-account compartment and for a scope that does
+    // not exist alike.
     let mut found: Vec<AccountId> = ctx
         .w
         .module_state::<EconomyStore>()
@@ -543,19 +617,23 @@ fn resolve_account(
                 .accounts()
                 .filter(|a| a.scope == Some(scope) && a.instrument == instrument)
                 .map(|a| a.id)
-                .collect()
+                .collect::<Vec<_>>()
         })
         .unwrap_or_default();
+    found.retain(|id| may_view_account(ctx.w, ctx.actor, *id));
     found.sort_unstable();
     match found.as_slice() {
         [one] => Ok(*one),
-        [] => Err(CmdError::msg("No such account.")),
-        _ => Err(CmdError::msg(
-            "That compartment has more than one nuyen account; name it with account=<id>.",
-        )),
+        _ => Err(CmdError::msg("No such account.")),
     }
 }
 
+/// `p`'s live personal `sr.nuyen` account.
+///
+/// Indexed by owner (D13) and **`Active` only** (R4) — the same two rules
+/// [`crate::economy::boot::personal_account`] follows, for the same reasons. The
+/// disclosure rule is the *caller's*: the fee row must be paid into a real wallet, so
+/// this resolves one, and `run_post` decides which words a `None` gets (D5).
 fn principal_account(ctx: &Ctx<'_>, p: &PrincipalId) -> Option<AccountId> {
     let instrument = ctx
         .w
@@ -564,9 +642,20 @@ fn principal_account(ctx: &Ctx<'_>, p: &PrincipalId) -> Option<AccountId> {
     ctx.w
         .module_state::<EconomyStore>()?
         .snapshot()
-        .accounts()
-        .find(|a| a.owner == *p && a.instrument == instrument && a.scope.is_none())
+        .accounts_of(p)
+        .find(|a| {
+            a.instrument == instrument
+                && a.scope.is_none()
+                && a.status == mush_economy::AccountStatus::Active
+        })
         .map(|a| a.id)
+}
+
+/// Whether the named fixer is the actor themselves — the one case where the
+/// actionable "they have no wallet" message tells the actor something about their own
+/// account rather than about somebody else's (D5).
+fn fixer_is_self(ctx: &Ctx<'_>, p: &PrincipalId) -> bool {
+    *p == PrincipalId::Object(ctx.actor)
 }
 
 fn refuse_account(ctx: &Ctx<'_>, id: AccountId) -> CmdError {
@@ -594,6 +683,20 @@ fn outcome_names(raw: Option<&str>) -> Result<Vec<SmolStr>, CmdError> {
     if names.len() > MAX_RUN_OUTCOMES.min(MAX_OUTCOMES) {
         return Err(CmdError::msg(format!(
             "A run carries at most {MAX_RUN_OUTCOMES} outcome rows."
+        )));
+    }
+    // D2: the row name is frozen into the consent surface, copied into the board doc
+    // and broadcast by `+run/show`. The count and the duplicates were capped and the
+    // **bytes** were not, so `outcomes=<4 kB>` was a permanent 4 kB string on the
+    // contract and on the board. (The economy refuses one at `check_structure` too —
+    // this is the message a poster can act on.)
+    if names
+        .iter()
+        .any(|n| n.len() > mush_economy::MAX_OUTCOME_NAME_BYTES)
+    {
+        return Err(CmdError::msg(format!(
+            "An outcome row name is at most {} bytes.",
+            mush_economy::MAX_OUTCOME_NAME_BYTES
         )));
     }
     // `resolve_outcome` refuses two satisfied rows, so two rows with the same name
@@ -630,16 +733,24 @@ fn parse_board(ctx: &Ctx<'_>, raw: Option<&str>) -> Result<BoardVisibility, CmdE
     ))
 }
 
+/// `board=faction:<id|name>` — through `mush_faction`'s **own** listing predicate on
+/// both branches (E6a verify fold, D4).
+///
+/// The numeric branch used to ask `contains_key` alone, so a hidden faction that
+/// answered "No such faction." by name answered *yes* by id: the id was a
+/// straightforward existence oracle for exactly the records the name lookup hides.
 fn resolve_faction(ctx: &Ctx<'_>, raw: &str) -> Option<FactionId> {
     let st = ctx.w.module_state::<FactionState>()?;
     let raw = raw.trim();
+    let staff = crate::economy::is_staff(ctx.w, ctx.actor);
     if let Some(n) = parse_u64(raw) {
         let id = FactionId(n);
-        if st.factions.contains_key(&id) {
+        if let Some(f) = st.factions.get(&id)
+            && st.faction_listed(ctx.actor, staff, f)
+        {
             return Some(id);
         }
     }
-    let staff = crate::economy::is_staff(ctx.w, ctx.actor);
     st.faction_by_name(raw)
         .filter(|f| st.faction_listed(ctx.actor, staff, f))
         .map(|f| f.id)
@@ -844,8 +955,13 @@ fn nuyen_cmd(cmd: &Sr5Cmd, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     Ok(())
 }
 
+/// The one line `+nuyen` gives a viewer who may see neither the account nor the
+/// sheet — **identical** for a banked character and an unbanked one (D12).
+const NO_NUYEN: &str = "Nuyen: nothing to show.";
+
 /// The balance render (§3.5, G2): the account after approval, the sheet field before,
-/// and **omitted, never placeholdered**, for a viewer the account's own gate refuses.
+/// and [`NO_NUYEN`] — the *same* line either way — for a viewer the account's own gate
+/// refuses.
 fn nuyen_lines(cmd: &Sr5Cmd, ctx: &Ctx<'_>, who: ObjId) -> Vec<String> {
     let account = ctx
         .w
@@ -864,16 +980,24 @@ fn nuyen_lines(cmd: &Sr5Cmd, ctx: &Ctx<'_>, who: ObjId) -> Vec<String> {
             mush_economy::money_on(ctx, account, balance)
         )];
     }
+    // D12: an account the viewer may not see must read exactly like no account at
+    // all. Returning nothing for the first and a sheet line for the second made
+    // `+nuyen <who>`'s **silence** the tell that the character was banked — the
+    // existence of the account leaking through the absence of a line. One fallback
+    // either way, and it never names an amount.
     if account.is_some() {
-        // The account exists and this viewer may not see it — say nothing about it.
-        return Vec::new();
+        return vec![NO_NUYEN.to_string()];
     }
     match cmd.read(ctx.w, who) {
-        Some(doc) => vec![format!(
-            "Nuyen (chargen sheet): {}",
-            doc.number("nuyen").unwrap_or(0)
-        )],
-        None => vec!["That character has no sheet.".to_string()],
+        // The sheet number is the owner's and staff's (§3.5's opening rule); to
+        // anybody else it reads exactly like the unviewable account above.
+        Some(doc) if ctx.actor == who || crate::economy::is_staff(ctx.w, ctx.actor) => {
+            vec![format!(
+                "Nuyen (chargen sheet): {}",
+                doc.number("nuyen").unwrap_or(0)
+            )]
+        }
+        Some(_) | None => vec![NO_NUYEN.to_string()],
     }
 }
 
@@ -1074,7 +1198,17 @@ fn sr_profile(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             "  unpaid periods: {} (since sr.month {})   arrears: {}",
             p.unpaid_periods,
             p.unpaid_since,
-            p.arrears.minor()
+            // D10: bare minor units here were the one arrears render in the crate that
+            // did not go through the instrument. Staff read the same `¥` everybody
+            // else does; `money_on` asks the account's own gate, which staff pass.
+            p.account.map_or_else(
+                || p.arrears.minor().to_string(),
+                |a| mush_economy::money_on(ctx, a, p.arrears)
+            )
+        ),
+        format!(
+            "  misses accounted for on the live record: {}",
+            p.missed_seen
         ),
     ];
     if let Some(m) = &p.minted {

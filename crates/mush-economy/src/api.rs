@@ -1121,6 +1121,22 @@ pub fn post(ctx: &mut Ctx<'_>, plan: &EconomyPlan) -> Result<PostOutcome, Econom
     post_with(ctx, plan, PostAuth::World)
 }
 
+/// Whether a deterministic idempotency key has **already resolved** to a transaction
+/// (E6a verify fold, R3).
+///
+/// The idempotency index is the authority on "did this one-shot post already land",
+/// and it survives every projection a caller keeps beside it: a ruleset's own record
+/// of the mint can be corrupted, dropped at boot, or never written, and the key is
+/// still spent. A caller deciding "already funded" from its own record alone is
+/// deciding from a cache; this is the fact. Read-only and total — an unknown key, a
+/// missing store and a frozen economy all answer `false`.
+#[must_use]
+pub fn idempotency_resolved(ctx: &Ctx<'_>, key: &crate::record::IdempotencyKey) -> bool {
+    ctx.w
+        .module_state::<EconomyStore>()
+        .is_some_and(|s| s.snapshot().idempotency(key).is_some())
+}
+
 /// Which [`AuthEval`] a post is validated against (§4.1).
 ///
 /// [`WorldAuth`] borrows the world, and a caller holding `&mut Ctx` cannot build one

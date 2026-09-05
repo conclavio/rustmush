@@ -57,7 +57,7 @@ use mush_org::{OrgScopeId, PrincipalId};
 use smol_str::SmolStr;
 
 use crate::economy::boot::personal_account;
-use crate::economy::config::{MAX_RUN_APPLICANTS, SrEconomyConfig};
+use crate::economy::config::{BOARD_PAGE_VISIT, MAX_RUN_APPLICANTS, SrEconomyConfig};
 use crate::economy::record::{BoardVisibility, RunId, RunNotice, RunState, RunTemplate, clip};
 use crate::economy::store::{SrEconomyStore, persist_meta, put_run};
 
@@ -194,12 +194,24 @@ impl RunSplit {
             && !self.names.is_empty()
     }
 
-    /// Build the outcome table against a roster (empty = "not crewed yet", so the
-    /// crew's share sits on the payer's own account — M6).
+    /// Build the outcome table against a roster.
+    ///
+    /// **An empty roster is a table that pays nobody but the payer** (E6a verify fold,
+    /// M1). A `Listed` run's contract is `Active` — a one-party contract activates at
+    /// its author's own accept (S1 deviation 2) — so the named adjudicator could
+    /// attest row 0 before a single runner existed and E4 would settle it. When the
+    /// rows carried a fixer fee and an advance, that settlement moved the payer's
+    /// escrow to the fixer for a run nobody had been crewed onto. So: until a roster
+    /// exists there is **no fee row and no advance row**; every row returns the whole
+    /// `pay` to the payer's own account, and a pre-crew settlement is arithmetically a
+    /// no-op that closes the run. The fee and the advance appear at
+    /// `+run/crew accept`, with the roster, which is the moment a fixer has actually
+    /// arranged anything.
     #[must_use]
     pub fn table(&self, crew: &[AccountId]) -> Vec<OutcomeTerms> {
-        let payer = [self.payer_account];
-        let crew: &[AccountId] = if crew.is_empty() { &payer } else { crew };
+        if crew.is_empty() {
+            return self.pre_crew_table();
+        }
         let after_fee = Amount::from_minor(self.pay.minor().saturating_sub(self.fee.minor()));
         self.names
             .iter()
@@ -245,6 +257,23 @@ impl RunSplit {
             .collect()
     }
 
+    /// The table a listing with no roster carries (M1): one row per outcome, the
+    /// whole escrowed total back to the payer, and nothing else named at all.
+    fn pre_crew_table(&self) -> Vec<OutcomeTerms> {
+        self.names
+            .iter()
+            .enumerate()
+            .map(|(i, name)| OutcomeTerms {
+                name: name.clone(),
+                when: vec![i],
+                payouts: merge(vec![(self.payer_account, self.pay)]),
+                // Nothing was advanced, so nothing is retained or returned.
+                expense_treatment: mush_economy::ExpenseTreatment::None,
+                asset_consequences: Vec::new(),
+            })
+            .collect()
+    }
+
     /// Whether the table it would build fits E4's caps.
     #[must_use]
     pub fn fits(&self, crew_len: usize) -> bool {
@@ -285,11 +314,14 @@ pub fn may_view(w: &World, viewer: ObjId, r: &RunTemplate) -> bool {
             .is_some_and(|s| s.profile(viewer).is_some()),
         // Faction membership through `mush_faction`'s own predicates, never the
         // contract's `Audience` (M5): a hidden membership is not a board pass.
-        BoardVisibility::Faction(f) => w.module_state::<FactionState>().is_some_and(|st| {
-            st.membership(viewer, *f).is_some_and(|m| {
-                st.is_member(viewer, *f) && st.membership_visible(viewer, false, m)
-            })
-        }),
+        //
+        // D9: `membership_visible(viewer, false, m)` was also asked here and was
+        // dead — it answers "may *this* viewer see this membership", and the viewer
+        // is the member, who always may. A clause that is always true reads like a
+        // second gate and is not one; `is_member` is the whole rule.
+        BoardVisibility::Faction(f) => w
+            .module_state::<FactionState>()
+            .is_some_and(|st| st.is_member(viewer, *f)),
         // The invited party's members and invitees.
         BoardVisibility::Invitation { party } => {
             mush_party::may_view(w, viewer, mush_party::PartyId(*party))
@@ -304,26 +336,68 @@ pub fn is_faction_member(w: &World, who: ObjId, faction: FactionId) -> bool {
         .is_some_and(|st| st.is_member(who, faction))
 }
 
-/// The listings `viewer` may see, newest first, capped at `page`.
+/// One page of the board (E6a verify fold, D1).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct BoardPage {
+    /// The listings this page shows, newest first.
+    pub ids: Vec<RunId>,
+    /// Where the next page starts (`+run/list … after=<id>`), when the walk stopped
+    /// before the end of the board.
+    pub next: Option<RunId>,
+    /// How many live listings this walk actually **touched** — what
+    /// [`BOARD_PAGE_VISIT`] bounds, and what the D-LBK-5 rule is about.
+    pub visited: usize,
+}
+
+/// The listings `viewer` may see, newest first, from `after` (exclusive).
+///
+/// **Bounded on records VISITED, not records matched** (D-LBK-5). The old shape
+/// filtered the whole board and truncated the survivors, so a selective filter — one
+/// faction's runs, or `mine` on a board of a hundred — walked every listing ever
+/// posted while claiming a page cap. It now walks at most [`BOARD_PAGE_VISIT`] live
+/// listings from the cursor, returns at most `page` matches, and hands back a
+/// continuation cursor when either bound stopped it. Descending id order keeps
+/// "newest first" and makes the cursor a plain `range(..after).rev()`.
 #[must_use]
-pub fn visible(w: &World, viewer: ObjId, filter: Option<&str>, page: usize) -> Vec<RunId> {
+pub fn visible(
+    w: &World,
+    viewer: ObjId,
+    filter: Option<&str>,
+    page: usize,
+    after: Option<RunId>,
+) -> BoardPage {
     let Some(store) = w.module_state::<SrEconomyStore>() else {
-        return Vec::new();
+        return BoardPage::default();
     };
-    let mut out: Vec<RunId> = store
-        .runs()
-        .filter(|r| !r.state.is_closed())
-        .filter(|r| match filter {
+    let mut out = BoardPage::default();
+    let mut last: Option<RunId> = None;
+    let walk: Box<dyn Iterator<Item = &RunTemplate>> = match after {
+        Some(cursor) => Box::new(
+            store
+                .live
+                .range(..cursor)
+                .rev()
+                .filter_map(|id| store.run(*id)),
+        ),
+        None => Box::new(store.live_ids_desc().filter_map(|id| store.run(id))),
+    };
+    for r in walk {
+        if out.visited >= BOARD_PAGE_VISIT || out.ids.len() >= page {
+            out.next = last;
+            return out;
+        }
+        out.visited = out.visited.saturating_add(1);
+        last = Some(r.id);
+        let matches = match filter {
             Some("public") => matches!(r.board, BoardVisibility::Public),
             Some("faction") => matches!(r.board, BoardVisibility::Faction(_)),
             Some("mine") => mush_economy::acts_for(w, viewer, &r.principal),
             _ => true,
-        })
-        .filter(|r| may_view(w, viewer, r))
-        .map(|r| r.id)
-        .collect();
-    out.reverse();
-    out.truncate(page);
+        };
+        if matches && may_view(w, viewer, r) {
+            out.ids.push(r.id);
+        }
+    }
     out
 }
 
@@ -660,18 +734,32 @@ pub fn crew_accept(ctx: &mut Ctx<'_>, id: RunId, party: Option<u64>) -> Result<S
     if members.is_empty() {
         return Err(BoardError::Party("That party has no members."));
     }
-    // M9: the adjudicator is never a party. A crew containing them would make the
-    // authority that ends the run one of the people it pays.
-    if let Some(adjudicator) = adjudicator_of(ctx, run.contract)
-        && members
-            .iter()
-            .any(|m| adjudicator_is(&adjudicator, PrincipalId::Object(*m)))
-    {
-        return Err(BoardError::Bad(
-            "That party includes the run's adjudicator; they cannot be paid by the run they \
-             settle."
-                .to_string(),
-        ));
+    // M9 + M8: the adjudicator is never a party, and the check **fails closed**. The
+    // old `adjudicator_is` matched `AttestorSet::Party` alone, so a contract staff had
+    // amended to a `Capability`, `Staff` or `Canon` attestor set answered "not one of
+    // them" for every roster — a set that can include a runner passing a check
+    // designed to exclude one. Anything but a single named party refuses the crewing
+    // and says so; the payer can re-amend it back.
+    match effective_attestors(ctx, run.contract) {
+        AdjudicatorShape::Party(p) => {
+            if members
+                .iter()
+                .any(|m| adjudicator_is(&AttestorSet::Party(p.clone()), PrincipalId::Object(*m)))
+            {
+                return Err(BoardError::Bad(
+                    "That party includes the run's adjudicator; they cannot be paid by the run \
+                     they settle."
+                        .to_string(),
+                ));
+            }
+        }
+        AdjudicatorShape::Other => {
+            return Err(BoardError::Bad(
+                "That run no longer settles on one named adjudicator, so who would be paid by \
+                 whom cannot be established. Nothing was crewed."
+                    .to_string(),
+            ));
+        }
     }
     let Some(accounts) = crew_accounts(ctx, &members) else {
         return Err(BoardError::Bad(
@@ -684,31 +772,57 @@ pub fn crew_accept(ctx: &mut Ctx<'_>, id: RunId, party: Option<u64>) -> Result<S
             "That crew is too large for one outcome row.".to_string(),
         ));
     }
-    let amendment = ContractAmendment {
-        add_parties: members.iter().map(|m| PrincipalId::Object(*m)).collect(),
-        outcomes: Some(split.table(&accounts)),
-        on_expiry: None,
-        reoffer: true,
-    };
-    match mush_economy::amend_contract(ctx, run.contract, amendment) {
-        Ok(mush_economy::AmendReoffer::Amended(_)) => {}
-        Ok(mush_economy::AmendReoffer::NotReoffered(_, e)) => {
-            // The amendment stands as a `Draft`; the payer retries or withdraws
-            // (M10 — the sweep expires an escrowed draft on its deadline).
-            return Err(BoardError::Contract(e));
-        }
-        Err(e) => return Err(BoardError::Contract(e)),
+    // **Every party check, and the lock itself, happen BEFORE the amendment**
+    // (E6a verify fold, M2 + R-M2). `party_has_live_run` was asked at `+run/apply`
+    // and never again, and `lock` came *after* `amend_contract` with its failure
+    // downgraded to a `warn!` — so one party could be crewed onto two runs and paid
+    // by both, and a party disbanded between the apply and the accept was crewed
+    // anyway. `lock` is now the gate: it refuses anything that is not `Forming`
+    // (already locked, already disbanded), and a refusal here posts nothing at all.
+    if ctx
+        .w
+        .module_state::<SrEconomyStore>()
+        .is_some_and(|s| s.party_has_live_run(party))
+    {
+        return Err(BoardError::Party("That party already has a live run."));
     }
     if let Err(e) = mush_party::lock(
         ctx,
         mush_party::PartyId(party),
         mush_party::ContractRef(run.contract.0),
     ) {
-        tracing::warn!(
+        tracing::info!(
             run = id.0, party, error = %e,
-            "sr.economy: the crew was added to the contract but the party would not lock; the \
-             board still names it"
+            "sr.economy: a crew accept was refused because the party would not lock; nothing was \
+             amended"
         );
+        return Err(BoardError::Party(
+            "That party is no longer available to crew.",
+        ));
+    }
+    let amendment = ContractAmendment {
+        add_parties: members.iter().map(|m| PrincipalId::Object(*m)).collect(),
+        outcomes: Some(split.table(&accounts)),
+        on_expiry: None,
+        reoffer: true,
+    };
+    let amended = match mush_economy::amend_contract(ctx, run.contract, amendment) {
+        Ok(mush_economy::AmendReoffer::Amended(_)) => Ok(()),
+        // The amendment stands as a `Draft`; the payer retries or withdraws
+        // (M10 — the sweep expires an escrowed draft on its deadline).
+        Ok(mush_economy::AmendReoffer::NotReoffered(_, e)) | Err(e) => Err(e),
+    };
+    if let Err(e) = amended {
+        // The lock landed and the amendment did not: give the party back rather than
+        // leaving it frozen against a contract it was never added to.
+        if let Err(unlocked) = mush_party::unlock(ctx, mush_party::PartyId(party)) {
+            tracing::error!(
+                run = id.0, party, error = %unlocked,
+                "sr.economy: a refused crew amendment could not release the party it had just \
+                 locked (staff: the party is frozen against a contract it never joined)"
+            );
+        }
+        return Err(BoardError::Contract(e));
     }
     run.party = Some(party);
     run.applied.clear();
@@ -814,6 +928,16 @@ pub fn split(
 /// `+run/withdraw <id>` — the payer takes a listing down; the escrow refunds through
 /// the contract's own cancellation.
 ///
+/// **Only while nobody else is bound** (E6a verify fold, M5). `cancel_contract`
+/// admits A′'s other face — a live contract only its own author has accepted — and
+/// that is exactly a `Listed` run, so `withdraw` had no state check at all and the
+/// payer could tear up a run runners had already accepted the moment the amendment
+/// re-offer had not yet collected every signature. "A live agreement is not one
+/// party's to tear up" is a rule about *other people's* consent, and a `Crewing` run
+/// with an acceptance on it has some. The routes after that are the ones the design
+/// names: `+run/crew decline` (which unlocks the party and re-lists), the deadline,
+/// or a dispute.
+///
 /// # Errors
 ///
 /// [`BoardError`]; render it with [`refuse_board`].
@@ -823,6 +947,12 @@ pub fn withdraw(ctx: &mut Ctx<'_>, id: RunId) -> Result<String, BoardError> {
     };
     if !is_payer(ctx, &run) {
         return Err(BoardError::NoStanding);
+    }
+    if !withdrawable(ctx, &run) {
+        return Err(BoardError::State(
+            "Runners have already bound themselves to that run; it is not yours to withdraw. Use \
+             +run/crew decline while it is still listed, or let the deadline settle it.",
+        ));
     }
     let done = mush_economy::cancel_contract(ctx, run.contract).map_err(BoardError::Contract)?;
     if !done {
@@ -853,6 +983,30 @@ pub fn live_run(ctx: &Ctx<'_>, id: RunId) -> Option<RunTemplate> {
         return None;
     }
     Some(run)
+}
+
+/// Whether a listing is still the payer's alone to take down (M5).
+///
+/// `Listed` always is: the only acceptance on the contract is the payer's own, which
+/// is what placed the escrow. `Crewing` is only while **no runner has accepted yet** —
+/// asked of the contract's own `acceptances`, never of the board's mirror, because the
+/// board hears about an acceptance one `ContractChanged` later. `Crewed` and `Closed`
+/// never are.
+#[must_use]
+pub fn withdrawable(ctx: &Ctx<'_>, run: &RunTemplate) -> bool {
+    match run.state {
+        RunState::Listed => true,
+        RunState::Crewed | RunState::Closed => false,
+        RunState::Crewing => ctx
+            .w
+            .module_state::<EconomyStore>()
+            .and_then(|s| s.snapshot().contract(run.contract).cloned())
+            .is_some_and(|c| {
+                c.acceptances.iter().all(|a| {
+                    mush_economy::principal_key(&a.party) == mush_economy::principal_key(&c.issuer)
+                })
+            }),
+    }
 }
 
 /// Whether the actor speaks for the listing's payer.
@@ -931,6 +1085,67 @@ pub fn adjudicator_is(set: &AttestorSet, who: PrincipalId) -> bool {
     matches!(set, AttestorSet::Party(p) if *p == who)
 }
 
+/// What shape the authority that will settle a run has (E6a verify fold, M8).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AdjudicatorShape {
+    /// Exactly one named principal decides — what `+run/post` builds and the only
+    /// shape the "no adjudicator on the roster" rule can be evaluated against.
+    Party(PrincipalId),
+    /// Anything else: a `Capability`/`Staff`/`Canon` set, several different sets
+    /// across the conditions, or no attestation conditions at all. The crew check
+    /// **fails closed** on this.
+    Other,
+}
+
+/// The authority that will settle `contract`, reduced to [`AdjudicatorShape`].
+///
+/// `ConsentSurface.adjudicator` replaces each condition's own attestor set when it is
+/// set, so it wins; with none set, every condition's own set must agree and every one
+/// must be a single named party.
+#[must_use]
+pub fn effective_attestors(ctx: &Ctx<'_>, contract: ContractId) -> AdjudicatorShape {
+    let Some(c) = ctx
+        .w
+        .module_state::<EconomyStore>()
+        .and_then(|s| s.snapshot().contract(contract).cloned())
+    else {
+        return AdjudicatorShape::Other;
+    };
+    adjudicator_shape(c.consent.adjudicator.as_ref(), &c.consent.conditions)
+}
+
+/// [`effective_attestors`] as a pure function of the consent surface's two attestor
+/// sources — the half worth asserting directly (M8).
+#[must_use]
+pub fn adjudicator_shape(
+    adjudicator: Option<&AttestorSet>,
+    conditions: &[TypedCondition],
+) -> AdjudicatorShape {
+    if let Some(set) = adjudicator {
+        return match set {
+            AttestorSet::Party(p) => AdjudicatorShape::Party(p.clone()),
+            AttestorSet::Capability { .. } | AttestorSet::Staff | AttestorSet::Canon { .. } => {
+                AdjudicatorShape::Other
+            }
+        };
+    }
+    let mut only: Option<PrincipalId> = None;
+    for con in conditions {
+        let TypedCondition::Attestation {
+            by: AttestorSet::Party(p),
+        } = con
+        else {
+            return AdjudicatorShape::Other;
+        };
+        match &only {
+            None => only = Some(p.clone()),
+            Some(seen) if seen == p => {}
+            Some(_) => return AdjudicatorShape::Other,
+        }
+    }
+    only.map_or(AdjudicatorShape::Other, AdjudicatorShape::Party)
+}
+
 /// Release a locked party, if there is one, and never let its refusal matter: the
 /// contract already ended, and a party that cannot be released is a board note, not
 /// a money fault.
@@ -940,5 +1155,77 @@ pub fn release_party(ctx: &mut Ctx<'_>, party: Option<u64>, how: mush_party::Dis
     };
     if let Err(e) = mush_party::release(ctx, mush_party::PartyId(party), how) {
         tracing::info!(party, error = %e, "sr.economy: a crewed party was already released");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{AdjudicatorShape, adjudicator_shape};
+    use mush_economy::{AttestorSet, TypedCondition};
+    use mush_org::{CapabilityId, PrincipalId};
+
+    fn party(n: u32) -> PrincipalId {
+        PrincipalId::Object(mush_core::ObjId(n))
+    }
+    fn attest(by: AttestorSet) -> TypedCondition {
+        TypedCondition::Attestation { by }
+    }
+
+    // ---- E6a verify fold ----
+
+    /// M8: the crew check reads **one named party or nothing**. `adjudicator_is`
+    /// matched `AttestorSet::Party` alone and answered "not on the roster" for every
+    /// other shape, so a contract amended to `Staff` or a `Capability` set — either of
+    /// which can include a runner — passed a check written to exclude one.
+    #[test]
+    fn vf_m8_only_a_single_named_party_is_a_usable_adjudicator() {
+        let one = AttestorSet::Party(party(7));
+        assert_eq!(
+            adjudicator_shape(Some(&one), &[]),
+            AdjudicatorShape::Party(party(7))
+        );
+        for other in [
+            AttestorSet::Staff,
+            AttestorSet::Capability {
+                scope: None,
+                capability: CapabilityId::new("economy.account.view").expect("well-formed"),
+            },
+            AttestorSet::Canon {
+                kind: smol_str::SmolStr::new("scene.outcome"),
+                source: Some(smol_str::SmolStr::new("front:1")),
+            },
+        ] {
+            assert_eq!(
+                adjudicator_shape(Some(&other), &[]),
+                AdjudicatorShape::Other,
+                "{other:?} was read as a named adjudicator"
+            );
+        }
+    }
+
+    /// M8, the no-adjudicator branch: with no `ConsentSurface.adjudicator` every
+    /// condition's own set governs, so they must **all** name the same single party.
+    /// An empty condition list, a mixed list and a non-attestation row all fail closed.
+    #[test]
+    fn vf_m8_conditions_must_agree_on_one_party_when_no_adjudicator_is_named() {
+        let same = vec![
+            attest(AttestorSet::Party(party(7))),
+            attest(AttestorSet::Party(party(7))),
+        ];
+        assert_eq!(
+            adjudicator_shape(None, &same),
+            AdjudicatorShape::Party(party(7))
+        );
+        let mixed = vec![
+            attest(AttestorSet::Party(party(7))),
+            attest(AttestorSet::Party(party(8))),
+        ];
+        assert_eq!(adjudicator_shape(None, &mixed), AdjudicatorShape::Other);
+        let staffed = vec![
+            attest(AttestorSet::Party(party(7))),
+            attest(AttestorSet::Staff),
+        ];
+        assert_eq!(adjudicator_shape(None, &staffed), AdjudicatorShape::Other);
+        assert_eq!(adjudicator_shape(None, &[]), AdjudicatorShape::Other);
     }
 }

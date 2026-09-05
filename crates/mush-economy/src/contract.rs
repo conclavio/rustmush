@@ -64,6 +64,14 @@ pub const MAX_OUTCOMES: usize = 8;
 pub const MAX_AGREEMENTS: usize = MAX_PARTIES;
 /// Maximum bytes of a contract's human label.
 pub const MAX_CONTRACT_NAME_BYTES: usize = 64;
+/// Maximum bytes of **one outcome row's** name (E6a verify fold, D2).
+///
+/// A row name is frozen into the consent surface, copied into every projection a
+/// ruleset builds over it, and broadcast by every notice render — so it is a stored
+/// string, and this crate does not have uncapped stored strings. Enforced in
+/// [`check_structure`], which is what `Offer` runs and what boot re-runs, so **no**
+/// producer — command, seam, or persisted document — can freeze an oversized row.
+pub const MAX_OUTCOME_NAME_BYTES: usize = 64;
 /// How many times one contract may be amended (E4b2).
 ///
 /// Each amendment refunds every acceptance and starts the collection again, and each
@@ -1524,6 +1532,14 @@ fn check_structure_basic(c: &EconomicContract) -> Result<(), ContractError> {
         return Err(ContractError::TooLarge("too many outcomes"));
     }
     for o in &consent.terms.outcomes {
+        // E6a verify fold (D2): a row name is a stored, broadcast string, and an
+        // uncapped one reaches the frozen surface, every projection over it, and
+        // every notice. Refused here, so no producer can freeze one.
+        if o.name.is_empty() || o.name.len() > MAX_OUTCOME_NAME_BYTES {
+            return Err(ContractError::TooLarge(
+                "an outcome row name is empty or too long",
+            ));
+        }
         if o.payouts.len() > MAX_SHARES {
             return Err(ContractError::TooLarge("too many shares in one outcome"));
         }

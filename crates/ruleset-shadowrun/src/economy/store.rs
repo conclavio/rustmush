@@ -17,13 +17,13 @@
 //! Both loaders apply the **identity rule** (DL-07): a document whose record
 //! disagrees with its own key is dropped loudly, never trusted.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use mush_core::{Ctx, ModuleOp, ModuleWrite, ObjId, Outbox};
-use mush_economy::{CadenceId, ContractId, InstrumentId};
+use mush_economy::{AccountId, CadenceId, ContractId, InstrumentId, ObligationId};
 use smol_str::SmolStr;
 
-use crate::economy::config::SrEconomyConfig;
+use crate::economy::config::{RECENT_CLOSED_RING, SrEconomyConfig};
 use crate::economy::record::{RunId, RunTemplate, SrProfile};
 
 /// The module namespace (the ruleset module's own name).
@@ -60,6 +60,29 @@ pub struct SrEconomyStore {
     /// **contract → listing**, re-derived from the runs on every write, so the board
     /// observer answers a `ContractChanged` without scanning the board.
     pub(crate) by_contract: BTreeMap<ContractId, RunId>,
+    /// The ids of every listing that has **not** closed — the whole working set of
+    /// the caps, the board page and the per-party rule (E6a verify fold, D1).
+    ///
+    /// The `mush-party` `live` shape: derived from the state on every write and
+    /// re-derived at boot, never authority (the state on the record is). A closed
+    /// listing leaves it *and* leaves the store — see [`del_run`] — so a
+    /// post/withdraw loop mints no permanent documents.
+    pub(crate) live: BTreeSet<RunId>,
+    /// **upkeep obligation → character** (E6a verify fold, D7). The lifestyle
+    /// observer resolves a subject per event, one event per profiled character per
+    /// period, and a `profiles().find(..)` there is quadratic in the population.
+    pub(crate) by_obligation: BTreeMap<ObligationId, ObjId>,
+    /// **profile account → character** (E6a verify fold, D7). The other half of the
+    /// same lookup: a record self-identifies by its debit account (DL-07).
+    pub(crate) by_account: BTreeMap<AccountId, ObjId>,
+    /// The last [`RECENT_CLOSED_RING`] listing ids to close, newest last
+    /// (E6a verify fold, D1).
+    ///
+    /// A closed listing's document is deleted, so `+run/show` on one would otherwise
+    /// answer "No such run." the instant it settled. This ring is the grace period,
+    /// and it costs an id rather than a record. It is **not** persisted: after a
+    /// reboot a closed run is simply gone, which is the same answer a week later.
+    pub(crate) recent_closed: VecDeque<RunId>,
     pub(crate) next_run: u64,
     /// The registered instrument, once boot has found or made it.
     pub(crate) instrument: Option<InstrumentId>,
@@ -91,10 +114,38 @@ impl SrEconomyStore {
     pub fn runs(&self) -> impl Iterator<Item = &RunTemplate> {
         self.runs.values()
     }
+    /// Every listing that has not closed, in id order — the board's whole working set
+    /// (D1).
+    pub fn live_runs(&self) -> impl Iterator<Item = &RunTemplate> {
+        self.live.iter().filter_map(|id| self.runs.get(id))
+    }
+    /// The ids of every listing that has not closed, in id order.
+    pub fn live_ids(&self) -> impl Iterator<Item = RunId> + '_ {
+        self.live.iter().copied()
+    }
+    /// The same, newest first — the board page's walk order (D1).
+    pub fn live_ids_desc(&self) -> impl Iterator<Item = RunId> + '_ {
+        self.live.iter().rev().copied()
+    }
+    /// Whether `id` closed recently enough that `+run/show` still answers "closed"
+    /// rather than hiding it (D1).
+    #[must_use]
+    pub fn recently_closed(&self, id: RunId) -> bool {
+        self.recent_closed.contains(&id)
+    }
     /// The listing that mirrors `contract`, if any.
     #[must_use]
     pub fn run_of_contract(&self, contract: ContractId) -> Option<&RunTemplate> {
         self.by_contract.get(&contract).and_then(|id| self.run(*id))
+    }
+    /// The character whose profile names `obligation` as its upkeep, or whose profile
+    /// account is `account` — the lifestyle observer's O(log n) subject lookup (D7).
+    #[must_use]
+    pub fn owner_of_record(&self, obligation: ObligationId, account: AccountId) -> Option<ObjId> {
+        self.by_obligation
+            .get(&obligation)
+            .or_else(|| self.by_account.get(&account))
+            .copied()
     }
     /// The registered instrument, once boot has resolved it.
     #[must_use]
@@ -109,22 +160,55 @@ impl SrEconomyStore {
     /// How many listings `principal` currently holds open (§9's per-principal cap).
     #[must_use]
     pub fn open_runs_of(&self, principal: &mush_org::PrincipalId) -> usize {
-        self.runs
-            .values()
-            .filter(|r| !r.state.is_closed() && r.principal == *principal)
+        self.live_runs()
+            .filter(|r| r.principal == *principal)
             .count()
     }
     /// How many listings are open at all (§9's `BOARD_CAP`).
     #[must_use]
     pub fn open_runs(&self) -> usize {
-        self.runs.values().filter(|r| !r.state.is_closed()).count()
+        self.live.len()
     }
     /// Whether `party` already holds a live run (§11 q5: at most one).
     #[must_use]
     pub fn party_has_live_run(&self, party: u64) -> bool {
-        self.runs
+        self.live_runs().any(|r| r.party == Some(party))
+    }
+    /// Whether every derived index agrees with the records (E6a verify fold, D7/D1).
+    ///
+    /// A test-and-`debug_assert` predicate, not a runtime gate: the indexes are
+    /// maintained in exactly two write paths and re-derived at boot, and this is what
+    /// says so out loud.
+    #[must_use]
+    pub fn indexes_agree(&self) -> bool {
+        let live_ok = self
+            .runs
             .values()
-            .any(|r| !r.state.is_closed() && r.party == Some(party))
+            .all(|r| self.live.contains(&r.id) != r.state.is_closed());
+        let contract_ok = self
+            .runs
+            .values()
+            .all(|r| self.by_contract.get(&r.contract) == Some(&r.id))
+            && self.by_contract.len() == self.runs.len();
+        let obl_ok = self.profiles.values().all(|p| {
+            p.upkeep
+                .is_none_or(|o| self.by_obligation.get(&o) == Some(&p.obj))
+        }) && self.by_obligation.len()
+            == self
+                .profiles
+                .values()
+                .filter(|p| p.upkeep.is_some())
+                .count();
+        let acct_ok = self.profiles.values().all(|p| {
+            p.account
+                .is_none_or(|a| self.by_account.get(&a) == Some(&p.obj))
+        }) && self.by_account.len()
+            == self
+                .profiles
+                .values()
+                .filter(|p| p.account.is_some())
+                .count();
+        live_ok && contract_ok && obl_ok && acct_ok
     }
 
     /// Mint the next listing id, or `None` at the ceiling (E4b1's B2 rule: an
@@ -141,14 +225,45 @@ impl SrEconomyStore {
         serde_json::json!({ "next_run_id": self.next_run })
     }
 
-    /// Re-derive the contract index from the listings — the one place it is built,
-    /// so it cannot drift.
+    /// Re-derive every listing index from the listings — the one place they are
+    /// built, so they cannot drift.
     pub(crate) fn reindex(&mut self) {
         self.by_contract = self
             .runs
             .values()
             .map(|r| (r.contract, r.id))
             .collect::<BTreeMap<_, _>>();
+        self.live = self
+            .runs
+            .values()
+            .filter(|r| !r.state.is_closed())
+            .map(|r| r.id)
+            .collect();
+    }
+
+    /// Re-derive the profile indexes (D7) — same rule, other family.
+    pub(crate) fn reindex_profiles(&mut self) {
+        self.by_obligation = self
+            .profiles
+            .values()
+            .filter_map(|p| p.upkeep.map(|o| (o, p.obj)))
+            .collect();
+        self.by_account = self
+            .profiles
+            .values()
+            .filter_map(|p| p.account.map(|a| (a, p.obj)))
+            .collect();
+    }
+
+    /// Note a listing as just-closed, dropping the oldest when the ring is full.
+    pub(crate) fn note_closed(&mut self, id: RunId) {
+        if self.recent_closed.contains(&id) {
+            return;
+        }
+        while self.recent_closed.len() >= RECENT_CLOSED_RING {
+            self.recent_closed.pop_front();
+        }
+        self.recent_closed.push_back(id);
     }
 }
 
@@ -160,10 +275,26 @@ pub(crate) fn push_op(out: &mut Outbox, op: ModuleWrite) {
     }));
 }
 
-/// Install a profile into RAM and queue its container doc — the single write path.
+/// Install a profile into RAM and queue its container doc — the single write path,
+/// and therefore the one place the profile indexes are maintained (D7).
 pub(crate) fn put_profile(ctx: &mut Ctx<'_>, p: SrProfile) {
     if let Some(store) = ctx.w.module_state_mut::<SrEconomyStore>() {
-        store.profiles.insert(p.obj, p.clone());
+        if let Some(prev) = store.profiles.insert(p.obj, p.clone()) {
+            // A profile's obligation and account both move (a downgrade replaces the
+            // record, R4 re-resolves a closed account), so the old keys go first.
+            if let Some(o) = prev.upkeep {
+                store.by_obligation.remove(&o);
+            }
+            if let Some(a) = prev.account {
+                store.by_account.remove(&a);
+            }
+        }
+        if let Some(o) = p.upkeep {
+            store.by_obligation.insert(o, p.obj);
+        }
+        if let Some(a) = p.account {
+            store.by_account.insert(a, p.obj);
+        }
     }
     let Ok(value) = serde_json::to_value(&p) else {
         tracing::error!(obj = p.obj.0, "sr.economy: a profile did not serialize");
@@ -178,8 +309,18 @@ pub(crate) fn put_profile(ctx: &mut Ctx<'_>, p: SrProfile) {
     );
 }
 
-/// Install a listing into RAM and queue its container doc — the single write path.
+/// Install a **live** listing into RAM and queue its container doc — the single write
+/// path.
+///
+/// A listing whose state is `Closed` is not written: it is [`del_run`]'d instead
+/// (E6a verify fold, D1). Nothing ever reads a closed listing except `+run/show`'s
+/// grace ring, and keeping the document made post→withdraw a free loop that minted
+/// permanent records and lengthened every board scan for the life of the world.
 pub(crate) fn put_run(ctx: &mut Ctx<'_>, r: RunTemplate) {
+    if r.state.is_closed() {
+        del_run(ctx, r.id);
+        return;
+    }
     if let Some(store) = ctx.w.module_state_mut::<SrEconomyStore>() {
         store.runs.insert(r.id, r.clone());
         store.reindex();
@@ -195,6 +336,21 @@ pub(crate) fn put_run(ctx: &mut Ctx<'_>, r: RunTemplate) {
             value,
         },
     );
+}
+
+/// Forget a listing: out of RAM, out of the indexes, out of the store, and onto the
+/// just-closed ring (E6a verify fold, D1).
+///
+/// The money was never here — it is the contract's, and the contract keeps its own
+/// terminal record — so a deleted listing costs a board row and nothing else. That is
+/// the same trade `store`'s header already makes for a listing that will not load.
+pub(crate) fn del_run(ctx: &mut Ctx<'_>, id: RunId) {
+    if let Some(store) = ctx.w.module_state_mut::<SrEconomyStore>() {
+        store.runs.remove(&id);
+        store.reindex();
+        store.note_closed(id);
+    }
+    push_op(ctx.out, ModuleWrite::Del { key: run_key(id) });
 }
 
 /// Queue the allocator document.
@@ -250,6 +406,7 @@ pub fn load(kv: &[(SmolStr, serde_json::Value)], cfg: SrEconomyConfig) -> SrEcon
         .unwrap_or(0);
     store.next_run = store.next_run.max(floor);
     store.reindex();
+    store.reindex_profiles();
     store
 }
 

@@ -147,8 +147,13 @@ fn only_run(tw: &TestWorld) -> RunId {
     assert_eq!(ids.len(), 1, "expected exactly one listing, got {ids:?}");
     ids[0]
 }
+/// A listing's state — **or `Closed` when the record is gone**.
+///
+/// Since the verify fold (D1) a closed listing is deleted rather than written, so
+/// "the board says closed" and "the board no longer holds it" are the same fact and
+/// every assertion that used to read the state reads this.
 fn run_state(tw: &TestWorld, id: RunId) -> RunState {
-    sr(tw).run(id).expect("listing").state
+    sr(tw).run(id).map_or(RunState::Closed, |r| r.state)
 }
 fn contract_of(tw: &TestWorld, id: RunId) -> ContractId {
     sr(tw).run(id).expect("listing").contract
@@ -551,40 +556,51 @@ fn every_condition_on_a_posted_run_is_an_attestation() {
 }
 
 /// M1 / D-E6-19: a fixer takes a **named fee row** and is never the issuer.
+///
+/// Since the verify fold (M1) the fee row exists only once a **roster** does: a
+/// `Listed` run pays its whole escrow back to the payer in every row, so the
+/// adjudicator attesting one before anybody is crewed moves nothing. The fee appears
+/// at `+run/crew accept`, which is the moment the fixer has arranged anything.
 #[test]
 fn a_fixer_takes_a_named_fee_row_and_is_never_the_issuer() {
     let mut tw = boot();
     let j = runner(&mut tw, "Johnson", 50_000);
     let fixer = runner(&mut tw, "Fixer", 0);
+    let a = runner(&mut tw, "Alder", 0);
     let fixer_acct = account_of(&tw, fixer);
     ok(
         &mut tw,
         j,
-        &format!("+run/post Brokered=10000 fixer=#{} fee=1000", fixer.0),
+        &format!(
+            "+run/post Brokered=10000 slots=1 fixer=#{} fee=1000",
+            fixer.0
+        ),
     );
     let id = only_run(&tw);
-    let c = snap(&tw)
-        .contract(contract_of(&tw, id))
-        .expect("contract")
-        .clone();
+    let cid = contract_of(&tw, id);
+    let c = snap(&tw).contract(cid).expect("contract").clone();
     assert_eq!(
         c.issuer,
         PrincipalId::Object(j),
         "the fixer became the issuer"
     );
     assert_eq!(c.roles.representative, Some(PrincipalId::Object(fixer)));
-    for row in &c.consent.terms.outcomes {
-        let fee: i64 = row
-            .payouts
-            .iter()
-            .filter(|s| s.to == fixer_acct)
-            .map(|s| match s.share {
-                mush_economy::Share::Exact(a) => a.minor(),
-                mush_economy::Share::Permille(_) => 0,
-            })
-            .sum();
-        assert_eq!(fee, 1_000, "row {} does not pay the named fee", row.name);
-    }
+    assert_eq!(
+        fee_in_rows(&c, fixer_acct),
+        vec![0, 0],
+        "a crewless listing already carried the fixer's fee (M1)"
+    );
+    // Crew it: the fee row appears, in every row, exactly once.
+    ok(&mut tw, a, "+party/create Solo");
+    let party = party_of(&tw, a);
+    ok(&mut tw, a, &format!("+run/apply {id}={party}"));
+    ok(&mut tw, j, &format!("+run/crew {id}=accept"));
+    let c = snap(&tw).contract(cid).expect("contract").clone();
+    assert_eq!(
+        fee_in_rows(&c, fixer_acct),
+        vec![1_000, 1_000],
+        "a crewed run does not pay the named fee in every row"
+    );
     // A fixer with no fee row is refused: an unnamed remainder never reaches them.
     let refused = err(
         &mut tw,
@@ -592,6 +608,25 @@ fn a_fixer_takes_a_named_fee_row_and_is_never_the_issuer() {
         &format!("+run/post Unpaid=1000 fixer=#{}", fixer.0),
     );
     assert!(refused.contains("fee row"), "{refused}");
+}
+
+/// What each outcome row pays `to`, in table order.
+fn fee_in_rows(c: &mush_economy::EconomicContract, to: AccountId) -> Vec<i64> {
+    c.consent
+        .terms
+        .outcomes
+        .iter()
+        .map(|row| {
+            row.payouts
+                .iter()
+                .filter(|s| s.to == to)
+                .map(|s| match s.share {
+                    mush_economy::Share::Exact(a) => a.minor(),
+                    mush_economy::Share::Permille(_) => 0,
+                })
+                .sum()
+        })
+        .collect()
 }
 
 /// D-E6-6 / M18: every row sums to the escrowed total exactly, so `remainder_to` is
@@ -1314,4 +1349,1054 @@ fn the_staff_verbs_report_the_layer() {
     assert!(p.contains("lifestyle street"), "{p}");
     // A player cannot read the staff surface.
     err(&mut tw, who, "@sr/economy");
+}
+
+// ---------------------------------------------------------------------------
+// ---- E6a verify fold ----
+// ---------------------------------------------------------------------------
+
+/// The one live listing's id.
+fn live_run(tw: &TestWorld) -> RunId {
+    let ids: Vec<RunId> = sr(tw).live_ids().collect();
+    assert_eq!(
+        ids.len(),
+        1,
+        "expected exactly one live listing, got {ids:?}"
+    );
+    ids[0]
+}
+
+/// Put a document back into a folded kv, whether or not it is still there — the shape
+/// "this write never landed" takes when the live path has since deleted or rewritten
+/// it.
+fn restore(kv: &mut Kv, ns: &str, key: &str, value: serde_json::Value) {
+    let entry = kv.entry(SmolStr::new(ns)).or_default();
+    entry.retain(|(k, _)| k.as_str() != key);
+    entry.push((SmolStr::new(key), value));
+}
+
+/// One document out of a folded kv.
+fn doc_of(kv: &Kv, ns: &str, key: &str) -> serde_json::Value {
+    kv.get(&SmolStr::new(ns))
+        .and_then(|e| e.iter().find(|(k, _)| k.as_str() == key))
+        .map(|(_, v)| v.clone())
+        .unwrap_or_else(|| panic!("no such persisted key: {ns}/{key}"))
+}
+
+/// Whether the board would still let the payer take this listing down (M5).
+fn withdrawable(tw: &TestWorld, id: RunId) -> bool {
+    let run = sr(tw).run(id).expect("listing").clone();
+    let c = snap(tw).contract(run.contract).expect("contract").clone();
+    !run.state.is_closed()
+        && run.state != RunState::Crewed
+        && c.acceptances.iter().all(|a| {
+            mush_economy::principal_key(&a.party) == mush_economy::principal_key(&c.issuer)
+        })
+}
+
+// ---- Lens M: money and consent --------------------------------------------
+
+/// M1 (HIGH): the named adjudicator could settle a **crewless** `Listed` run and move
+/// the fixer's fee out of the payer's escrow.
+///
+/// S1 deviation 2 makes a one-party contract `Active` at its author's own accept, so a
+/// `Listed` run is a live contract whose every row already carried the fixer's fee and
+/// the advance — and the adjudicator is not a party, so nothing stopped them attesting
+/// row 0 before a single runner existed. A pre-crew settlement is now arithmetically a
+/// no-op: every row returns the whole escrow to the payer and closes the run.
+#[test]
+fn vf_m1_an_adjudicator_settling_a_crewless_run_moves_nothing() {
+    let mut tw = boot();
+    let j = runner(&mut tw, "Johnson", 50_000);
+    let fixer = runner(&mut tw, "Fixer", 0);
+    let judge = runner(&mut tw, "Judge", 0);
+    let (j_acct, fixer_acct) = (account_of(&tw, j), account_of(&tw, fixer));
+    ok(
+        &mut tw,
+        j,
+        &format!(
+            "+run/post Brokered=10000 fixer=#{} fee=1000 advance=500 adjudicator=#{}",
+            fixer.0, judge.0
+        ),
+    );
+    let id = live_run(&tw);
+    let cid = contract_of(&tw, id);
+    assert_eq!(held(&tw, j_acct), 10_000);
+
+    ok(&mut tw, judge, &format!("@contract/attest {cid}=0"));
+    sweep_at(&mut tw, 100);
+
+    assert!(
+        state(&tw, cid).is_terminal(),
+        "the pre-crew attestation left the contract live: {:?}",
+        state(&tw, cid)
+    );
+    assert_eq!(bal(&tw, fixer_acct), 0, "the fixer was paid for no run");
+    assert_eq!(bal(&tw, j_acct), 50_000, "the payer is not whole");
+    assert_eq!(held(&tw, j_acct), 0, "the escrow is still reserved");
+    assert_eq!(run_state(&tw, id), RunState::Closed);
+}
+
+/// M4 (with M1): the roles rule was half enforced — `adjudicator=` refused the payer
+/// and the poster, and admitted the **fixer** (paid by every crewed row) and the
+/// **Johnson** (the payer's own visible representative).
+#[test]
+fn vf_m4_the_adjudicator_is_never_the_fixer_or_the_johnson() {
+    let mut tw = boot();
+    let j = runner(&mut tw, "Johnson", 50_000);
+    let other = runner(&mut tw, "Other", 0);
+    let refused = err(
+        &mut tw,
+        j,
+        &format!(
+            "+run/post Rigged=10000 fixer=#{} fee=1000 adjudicator=#{}",
+            other.0, other.0
+        ),
+    );
+    assert!(refused.contains("fixer"), "{refused}");
+    let refused = err(
+        &mut tw,
+        j,
+        &format!(
+            "+run/post Rigged=10000 johnson=#{} adjudicator=#{}",
+            other.0, other.0
+        ),
+    );
+    assert!(refused.contains("Johnson"), "{refused}");
+    assert_eq!(sr(&tw).runs().count(), 0, "a listing was created");
+    assert!(contracts(&tw).iter().all(|c| state(&tw, *c).is_terminal()));
+}
+
+/// M2 (HIGH): one party could be crewed onto **two** runs and paid by both.
+///
+/// `party_has_live_run` was asked at `+run/apply` and never again, so two applications
+/// placed before either answer let the payer accept both. The check — and the party
+/// lock, which is the real gate — now run before the amendment.
+#[test]
+fn vf_m2_one_party_cannot_be_crewed_onto_two_runs() {
+    let mut tw = boot();
+    let j = runner(&mut tw, "Johnson", 50_000);
+    let a = runner(&mut tw, "Alder", 0);
+    ok(&mut tw, j, "+run/post First=1000 slots=1");
+    ok(&mut tw, j, "+run/post Second=1000 slots=1");
+    let ids: Vec<RunId> = sr(&tw).live_ids().collect();
+    ok(&mut tw, a, "+party/create Solo");
+    let party = party_of(&tw, a);
+    // Both applications land before either is answered.
+    ok(&mut tw, a, &format!("+run/apply {}={party}", ids[0]));
+    ok(&mut tw, a, &format!("+run/apply {}={party}", ids[1]));
+    ok(&mut tw, j, &format!("+run/crew {}=accept", ids[0]));
+    let refused = err(&mut tw, j, &format!("+run/crew {}=accept", ids[1]));
+    assert!(refused.contains("live run"), "{refused}");
+    assert_eq!(
+        run_state(&tw, ids[1]),
+        RunState::Listed,
+        "the second run was crewed anyway"
+    );
+    let c = snap(&tw)
+        .contract(contract_of(&tw, ids[1]))
+        .expect("contract")
+        .clone();
+    assert!(
+        !c.consent.parties.contains(&PrincipalId::Object(a)),
+        "the runner was added to the second contract"
+    );
+}
+
+/// R-M2 (with M2): `crew_accept` crewed a party that was **not `Forming`** — a
+/// disbanded one included — because the lock came after the amendment and its failure
+/// was only a `warn!`.
+#[test]
+fn vf_m2_a_disbanded_party_cannot_be_crewed() {
+    let mut tw = boot();
+    let j = runner(&mut tw, "Johnson", 50_000);
+    let a = runner(&mut tw, "Alder", 0);
+    ok(&mut tw, j, "+run/post Extraction=1000 slots=1");
+    let id = live_run(&tw);
+    ok(&mut tw, a, "+party/create Solo");
+    let party = party_of(&tw, a);
+    ok(&mut tw, a, &format!("+run/apply {id}={party}"));
+    ok(&mut tw, a, "+party/disband");
+
+    let refused = err(&mut tw, j, &format!("+run/crew {id}=accept"));
+    assert!(refused.contains("no longer available"), "{refused}");
+    assert_eq!(run_state(&tw, id), RunState::Listed);
+    let c = snap(&tw)
+        .contract(contract_of(&tw, id))
+        .expect("contract")
+        .clone();
+    assert!(
+        !c.consent.parties.contains(&PrincipalId::Object(a)),
+        "a disbanded party's member was added to the contract"
+    );
+}
+
+/// M5 (MEDIUM): `+run/withdraw` had **no state check**, and `cancel_contract` admits
+/// an author-only live contract — so the payer could tear up a run runners had already
+/// bound themselves to.
+#[test]
+fn vf_m5_withdraw_is_refused_once_a_runner_has_accepted() {
+    let mut tw = boot();
+    let j = runner(&mut tw, "Johnson", 50_000);
+    let a = runner(&mut tw, "Alder", 0);
+    let b = runner(&mut tw, "Bex", 0);
+    let acct = account_of(&tw, j);
+    ok(&mut tw, j, "+run/post Extraction=9000 slots=2");
+    let id = live_run(&tw);
+    let cid = contract_of(&tw, id);
+    ok(&mut tw, a, "+party/create Wetwork");
+    let party = party_of(&tw, a);
+    ok(&mut tw, a, &format!("+party/invite #{}", b.0));
+    ok(&mut tw, b, &format!("+party/accept {party}"));
+    ok(&mut tw, a, &format!("+run/apply {id}={party}"));
+    ok(&mut tw, j, &format!("+run/crew {id}=accept"));
+    // Nobody has accepted yet: still the payer's to take down.
+    assert!(withdrawable(&tw, id), "a crewing run with no acceptance");
+    // One runner binds themselves. Now it is not.
+    ok(&mut tw, a, &format!("@contract/accept {cid}"));
+    assert!(!withdrawable(&tw, id));
+    let refused = err(&mut tw, j, &format!("+run/withdraw {id}"));
+    assert!(refused.contains("bound themselves"), "{refused}");
+    assert_eq!(held(&tw, acct), 9_000, "the escrow was refunded anyway");
+    assert!(!state(&tw, cid).is_terminal());
+}
+
+/// A `Listed` run is still the payer's alone, and withdrawing it refunds.
+#[test]
+fn vf_m5_a_listed_run_is_still_the_payers_to_withdraw() {
+    let mut tw = boot();
+    let j = runner(&mut tw, "Johnson", 50_000);
+    let acct = account_of(&tw, j);
+    ok(&mut tw, j, "+run/post Extraction=9000");
+    let id = live_run(&tw);
+    ok(&mut tw, j, &format!("+run/withdraw {id}"));
+    assert_eq!(held(&tw, acct), 0);
+    assert_eq!(bal(&tw, acct), 50_000);
+    assert_eq!(run_state(&tw, id), RunState::Closed);
+}
+
+// ---- E6a verify fold: extra rig ------------------------------------------
+
+/// The production composition **without** a declared `sr.month` — a server whose
+/// operator never contributed the stanza, or one whose clock went away (R5).
+fn boot_no_cadence() -> TestWorld {
+    let cfg = sr_config();
+    TestWorld::with_modules(vec![
+        Box::new(
+            mush_org::OrgModule::new()
+                .with_capabilities(vocabulary())
+                .with_scope_use(vec![Arc::new(mush_economy::EconomyScopeUse)]),
+        ),
+        Box::new(mush_faction::FactionModule::new()),
+        Box::new(
+            mush_economy::EconomyModule::with_custody(vec![])
+                .with_observers(vec![Arc::new(SrBoardObserver::new(cfg.clone()))]),
+        ),
+        Box::new(mush_party::PartyModule::new()),
+        Box::new(mush_jobs::JobsModule::new()),
+        Box::new(ruleset_shadowrun::ShadowrunRuleset::with_seed(7).economy(cfg)),
+    ])
+}
+
+/// A character built and approved through the **real** chargen surface, so the
+/// `sr.chargen/{obj}` mint key is genuinely spent (R3).
+fn chargen_approved(tw: &mut TestWorld, name: &str) -> ObjId {
+    let who = tw.spawn_player(name);
+    tw.run(who, "+chargen");
+    tw.run(
+        who,
+        "+chargen/priority metatype=C attributes=A magic=E skills=B resources=D",
+    );
+    tw.run(who, "+stat metatype=human");
+    for c in [
+        "body=6",
+        "agility=5",
+        "reaction=5",
+        "strength=4",
+        "charisma=3",
+        "intuition=3",
+        "logic=3",
+        "willpower=3",
+    ] {
+        tw.run(who, &format!("+stat {c}"));
+    }
+    tw.run(who, "+stat edge=7");
+    for s in [
+        "pistols",
+        "automatics",
+        "longarms",
+        "blades",
+        "sneaking",
+        "perception",
+    ] {
+        tw.run(who, &format!("+stat active_skills:{s}=6"));
+    }
+    tw.run(who, "+stat skill_groups:influence=5");
+    tw.run(who, "+stat nuyen=50000");
+    tw.run(who, "+chargen/submit");
+    let store = ruleset_shadowrun::ShadowrunRuleset::new().store();
+    let job = match store.get_or_default(tw.world(), who).approved {
+        mush_ruleset::ApprovalState::Pending(j) => j,
+        other => panic!("expected a pending sheet, got {other:?}"),
+    };
+    ok(tw, GOD, &format!("+job/approve {job}=Welcome."));
+    assert!(
+        store.get_or_default(tw.world(), who).approved.is_approved(),
+        "the sheet was not approved"
+    );
+    who
+}
+
+/// Record a Resources priority and a sheet `nuyen` on an already-approved sheet — the
+/// drift `@sr/migrate` has to make a decision about (M7).
+fn set_resources_priority(tw: &mut TestWorld, who: ObjId, letter: char, nuyen: i64) {
+    let store = ruleset_shadowrun::ShadowrunRuleset::new().store();
+    let mut doc = store.get_or_default(tw.world(), who);
+    doc.map_set(
+        ruleset_shadowrun::schema::CHARGEN_PRIORITIES_FIELD,
+        "resources",
+        serde_json::json!(letter.to_string()),
+    );
+    doc.set_number("nuyen", nuyen);
+    store
+        .put_by(tw.world_mut(), who, &doc, GOD)
+        .expect("the sheet writes");
+}
+
+// ---- Lens R: durability and replay ----------------------------------------
+
+/// Fold every op queued since the last fold **into** an existing kv, so a test can
+/// keep one running picture of the store across several phases.
+fn fold_into(tw: &mut TestWorld, kv: &mut Kv) {
+    for op in tw.take_module_ops() {
+        let entry = kv.entry(op.ns.clone()).or_default();
+        match op.op {
+            ModuleWrite::JsonSet { key, value } => {
+                entry.retain(|(k, _)| *k != key);
+                entry.push((key, value));
+            }
+            ModuleWrite::Del { key } => entry.retain(|(k, _)| *k != key),
+            ModuleWrite::StreamAppend { .. } => {}
+        }
+    }
+}
+
+/// A crewed, contract-accepted run: the party is `Locked`, the board says `Crewed`.
+/// Returns `(payer, runner, listing, contract, party)`.
+fn crewed_run(tw: &mut TestWorld) -> (ObjId, ObjId, RunId, ContractId, u64) {
+    let j = runner(tw, "Johnson", 50_000);
+    let a = runner(tw, "Alder", 0);
+    ok(tw, j, "+run/post Extraction=9000 slots=1");
+    let id = live_run(tw);
+    let cid = contract_of(tw, id);
+    ok(tw, a, "+party/create Solo");
+    let party = party_of(tw, a);
+    ok(tw, a, &format!("+run/apply {id}={party}"));
+    ok(tw, j, &format!("+run/crew {id}=accept"));
+    ok(tw, a, &format!("@contract/accept {cid}"));
+    assert_eq!(run_state(tw, id), RunState::Crewed);
+    (j, a, id, cid, party)
+}
+
+/// R1 (HIGH): boot closed a listing and never released its party.
+///
+/// `reconcile_board` mirrored and wrote, and only the observer and `+run/withdraw`
+/// ever called `release_party` — both live paths. A terminal post whose board and
+/// party writes did not land (or a contract that ended while `[shadowrun.economy]` was
+/// off) therefore left the crew `Locked` **forever**: every membership verb refused,
+/// idle expiry skipped it, and nothing but the ruleset can release it. The release now
+/// runs whenever the mirrored state is `Closed`, including the `now == was` case —
+/// which is precisely the shape a dropped write leaves.
+#[test]
+fn vf_r1_boot_releases_the_party_of_a_listing_that_is_already_closed() {
+    let mut tw = boot();
+    let (j, a, id, cid, party) = crewed_run(&mut tw);
+    let mut kv = fold_all(&mut tw);
+    let run_key = format!("sr:run:{}", id.0);
+    let party_key = format!("party:{party}");
+    let run_doc = doc_of(&kv, NS, &run_key);
+    let locked = doc_of(&kv, "party", &party_key);
+
+    // The run settles for real…
+    ok(&mut tw, j, &format!("@contract/attest {cid}=0"));
+    sweep_at(&mut tw, 100);
+    assert!(matches!(state(&tw, cid), ContractState::Settled { .. }));
+    fold_into(&mut tw, &mut kv);
+
+    // …and the board and party writes are dropped: the listing document still stands,
+    // already saying `closed`, and the party document still says `Locked`.
+    let mut closed = run_doc;
+    closed["state"] = serde_json::json!("closed");
+    restore(&mut kv, NS, &run_key, closed);
+    restore(&mut kv, "party", &party_key, locked);
+    reboot(&mut tw, &kv);
+
+    assert!(
+        mush_party::parties_of(tw.world(), a).is_empty(),
+        "the crew is still locked to a contract that settled"
+    );
+    assert_eq!(run_state(&tw, id), RunState::Closed);
+}
+
+/// R2 (HIGH): a **skipped** `sr:run:{id}` document orphaned its `Locked` party
+/// permanently.
+///
+/// The loader drops a listing it cannot read, so `run_of_contract` is empty and
+/// `reconcile_board` — which can only reach a party a listing still names — never sees
+/// the crew at all. The ruleset now asks the question from the party side: for every
+/// live `Locked` party it resolves the opaque `ContractRef` it handed over and
+/// releases the ones whose contract is gone or terminal. `mush-party` stays
+/// money-blind; the ruleset, which owns both ends, is the one that resolves.
+#[test]
+fn vf_r2_boot_releases_a_party_orphaned_by_a_skipped_listing() {
+    let mut tw = boot();
+    let (j, a, id, cid, party) = crewed_run(&mut tw);
+    let mut kv = fold_all(&mut tw);
+    let run_key = format!("sr:run:{}", id.0);
+    let party_key = format!("party:{party}");
+    let run_doc = doc_of(&kv, NS, &run_key);
+    let locked = doc_of(&kv, "party", &party_key);
+
+    ok(&mut tw, j, &format!("@contract/attest {cid}=0"));
+    sweep_at(&mut tw, 100);
+    fold_into(&mut tw, &mut kv);
+
+    // The listing document disagrees with its own key (DL-07) — the loader skips it —
+    // and the party write never landed.
+    let mut bad = run_doc;
+    bad["id"] = serde_json::json!(9_999);
+    restore(&mut kv, NS, &run_key, bad);
+    restore(&mut kv, "party", &party_key, locked);
+    reboot(&mut tw, &kv);
+
+    assert_eq!(sr(&tw).runs().count(), 0, "the bad listing was trusted");
+    assert!(
+        mush_party::parties_of(tw.world(), a).is_empty(),
+        "nothing released a party whose listing was skipped"
+    );
+    // The contract — where the money is — is untouched.
+    assert!(matches!(state(&tw, cid), ContractState::Settled { .. }));
+}
+
+/// R3 (HIGH): a corrupt profile let `@sr/migrate commit` mint a **second** allotment
+/// over the chargen one.
+///
+/// `plan` decided "already funded" from `SrProfile.minted` alone — a projection that
+/// is dropped at boot when its document will not load — and the two keys differ
+/// (`sr.chargen/{obj}` vs `sr.migration/{obj}`), so the second mint hit no idempotency
+/// wall at all. The index is the authority now.
+#[test]
+fn vf_r3_a_corrupt_profile_never_mints_a_second_allotment() {
+    let mut tw = boot();
+    let who = chargen_approved(&mut tw, "Nick");
+    let acct = account_of(&tw, who);
+    let minted = bal(&tw, acct);
+    assert!(minted > 0, "the chargen allotment was not minted");
+
+    // The profile document will not load (negative arrears): the *projection* of the
+    // mint is gone, and the idempotency key is still spent.
+    let mut kv = fold_all(&mut tw);
+    patch(&mut kv, NS, &format!("sr:profile:{}", who.0), |v| {
+        v["arrears"] = serde_json::json!(-1);
+    });
+    reboot(&mut tw, &kv);
+    assert!(sr(&tw).profile(who).is_none(), "a bad profile was trusted");
+
+    let out = ok(&mut tw, GOD, &format!("@sr/migrate commit #{}", who.0));
+    assert!(out.contains("skipped"), "{out}");
+    assert!(out.contains("key is spent"), "{out}");
+    assert_eq!(
+        bal(&tw, acct),
+        minted,
+        "a second allotment was minted over the chargen one"
+    );
+}
+
+/// R4 (MEDIUM): a closed account was a one-way exit.
+///
+/// `personal_account` matched owner + instrument + scope and never `status`, and
+/// `SrProfile.account` is a cache nothing re-derived — so migrate, the crew payout
+/// table and lifestyle all kept naming the closed account even after staff opened a
+/// live one beside it.
+#[test]
+fn vf_r4_a_closed_account_is_re_resolved_at_boot() {
+    let mut tw = boot();
+    let who = runner(&mut tw, "Closer", 0);
+    let old = account_of(&tw, who);
+    ok(&mut tw, GOD, &format!("@account/open #{}=sr.nuyen", who.0));
+    let new = snap(&tw)
+        .accounts()
+        .find(|a| a.owner == PrincipalId::Object(who) && a.id != old)
+        .expect("a second account")
+        .id;
+    ok(&mut tw, GOD, &format!("@account/close {old}"));
+
+    let kv = fold_all(&mut tw);
+    reboot(&mut tw, &kv);
+    assert_eq!(
+        sr(&tw).profile(who).and_then(|p| p.account),
+        Some(new),
+        "the profile still names the closed account"
+    );
+    assert!(
+        sr(&tw).indexes_agree(),
+        "the account index disagrees after a re-resolve"
+    );
+}
+
+/// R5 (LOW): `+lifestyle/pay` with the cadence gone reused an ordinal.
+///
+/// The counters and the pay key are keyed on the `sr.month` ordinal and nothing else
+/// (E5c T3); `miss` fell back to the *stale* ordinal when the clock was missing, so a
+/// second cycle on the same ordinal hit an already-spent key, reported success, zeroed
+/// the arrears and moved no money. With no clock there is no ordinal, so there is
+/// nothing to key and the verb refuses.
+#[test]
+fn vf_r5_paying_arrears_with_no_cadence_is_refused() {
+    let mut tw = boot_no_cadence();
+    let who = tw.spawn_player("Broke");
+    let kv: Kv = BTreeMap::from([(
+        SmolStr::new(NS),
+        vec![(
+            SmolStr::new(format!("sr:profile:{}", who.0)),
+            serde_json::json!({
+                "obj": who.0, "lifestyle": "middle", "account": 1,
+                "arrears": 5_000, "unpaid_periods": 1, "unpaid_since": 3, "revision": 2
+            }),
+        )],
+    )]);
+    reboot(&mut tw, &kv);
+    assert_eq!(sr(&tw).profile(who).map(|p| p.arrears.minor()), Some(5_000));
+    let refused = err(&mut tw, who, "+lifestyle/pay");
+    assert!(refused.contains("cadence"), "{refused}");
+    assert_eq!(
+        sr(&tw).profile(who).map(|p| p.arrears.minor()),
+        Some(5_000),
+        "a refused pay cleared the arrears anyway"
+    );
+}
+
+/// R5, the other half: the pay key carries the **amount** as a second discriminator,
+/// so two different debts landing on one ordinal cannot collide on a spent key.
+#[test]
+fn vf_r5_the_pay_key_discriminates_on_the_amount() {
+    let mut tw = boot();
+    let who = runner(&mut tw, "Runner", 5_000);
+    ok(&mut tw, who, "+lifestyle/set middle");
+    sweep_at(&mut tw, PERIOD * 2);
+    sweep_at(&mut tw, PERIOD * 3);
+    let p = sr(&tw).profile(who).expect("profile").clone();
+    assert_eq!(p.arrears.minor(), 5_000);
+    let f = faucet(&tw, "sr.chargen");
+    let acct = account_of(&tw, who);
+    ok(&mut tw, GOD, &format!("@econ/mint {f}={acct} 5000"));
+    ok(&mut tw, who, "+lifestyle/pay");
+    let key = mush_economy::IdempotencyKey::new(
+        SmolStr::new_static("sr.lifestyle.pay"),
+        SmolStr::new(format!("{}/{}/{}", who.0, p.unpaid_since, 5_000)),
+    );
+    assert!(
+        snap(&tw).idempotency(&key).is_some(),
+        "the arrears payment was not keyed on {{who}}/{{ordinal}}/{{amount}}"
+    );
+}
+
+// ---- Lens M: the lifestyle ladder -----------------------------------------
+
+/// M3 (MEDIUM): after a downgrade the ladder stopped and so did the rent.
+///
+/// `miss` compared the record's `missed_total` against `unpaid_periods`, which is
+/// *carried across the replacement* — and the replacement's `missed_total` restarts at
+/// 0. So from the first downgrade onward every later miss was swallowed: the tier
+/// never moved again, the arrears never grew, and the record sat `Delinquent`, out of
+/// the due pool, collecting nothing. The mark is per record now.
+#[test]
+fn vf_m3_the_ladder_keeps_walking_after_the_first_downgrade() {
+    let mut tw = boot();
+    let who = runner(&mut tw, "Runner", 5_000);
+    ok(&mut tw, who, "+lifestyle/set middle");
+    // Period 2 pays out of the 5,000 they have; everything after it misses.
+    for n in 2..=16 {
+        sweep_at(&mut tw, PERIOD * n);
+    }
+    let p = sr(&tw).profile(who).expect("profile").clone();
+    assert_eq!(
+        p.lifestyle,
+        LifestyleTier::Street,
+        "the ladder stopped before the floor at {:?}",
+        p.lifestyle
+    );
+    assert!(
+        p.arrears.minor() > 10_000,
+        "the arrears stopped growing at {}",
+        p.arrears.minor()
+    );
+    assert!(
+        p.unpaid_periods >= 4,
+        "the unpaid count stopped at {}",
+        p.unpaid_periods
+    );
+}
+
+/// M6 (LOW): a failed replacement left a character with **no upkeep at all**.
+///
+/// `set_tier` and `apply_downgrade` cancelled, wrote the profile at the new tier, and
+/// only then created — with the create's `Err` merely logged. So a refused create left
+/// the character at a tier nothing was billing, paying nothing forever, and the only
+/// way back was for them to notice and set a tier again. Opening the replacement
+/// first makes a refusal change nothing at all: the profile is written once, at the
+/// end, and only when there is a record behind it.
+#[test]
+fn vf_m6_a_refused_replacement_leaves_the_profile_untouched() {
+    // A world with no `sr.month`: `open_upkeep` cannot anchor a schedule, so every
+    // create is refused, which is the failure the ordering is about.
+    let mut tw = boot_no_cadence();
+    let who = tw.spawn_player("Stuck");
+    approve(&mut tw, who, 0);
+    ok(&mut tw, GOD, &format!("@sr/migrate commit #{}", who.0));
+    let before = sr(&tw).profile(who).expect("profile").clone();
+    assert_eq!(before.lifestyle, LifestyleTier::Street);
+
+    let refused = err(&mut tw, who, "+lifestyle/set middle");
+    assert!(refused.contains("cadence"), "{refused}");
+
+    let after = sr(&tw).profile(who).expect("profile").clone();
+    assert_eq!(
+        after.lifestyle, before.lifestyle,
+        "the tier moved with no upkeep record behind it"
+    );
+    assert_eq!(after.upkeep, None);
+    assert_eq!(
+        after.revision, before.revision,
+        "a refused replacement wrote the profile anyway"
+    );
+    assert!(sr(&tw).indexes_agree());
+}
+
+/// M6, the boot half: a record the profile does not point at is cancelled, so a
+/// refused *cancel* after a successful create is repaired at the next restart rather
+/// than billing one wallet twice forever.
+#[test]
+fn vf_m6_boot_cancels_a_lifestyle_record_the_profile_does_not_point_at() {
+    let mut tw = boot();
+    let who = runner(&mut tw, "Runner", 50_000);
+    ok(&mut tw, who, "+lifestyle/set middle");
+    let live = sr(&tw)
+        .profile(who)
+        .expect("profile")
+        .upkeep
+        .expect("upkeep");
+    // The profile points somewhere else — the shape a replacement whose cancel was
+    // refused leaves behind.
+    let mut kv = fold_all(&mut tw);
+    patch(&mut kv, NS, &format!("sr:profile:{}", who.0), |v| {
+        v["upkeep"] = serde_json::json!(999_999);
+    });
+    reboot(&mut tw, &kv);
+    assert_eq!(
+        snap(&tw).obligation(live).expect("record").status,
+        ObligationStatus::Cancelled,
+        "an unclaimed lifestyle record is still collecting"
+    );
+    assert_eq!(
+        sr(&tw).profile(who).expect("profile").upkeep,
+        None,
+        "the stale pointer survived"
+    );
+}
+
+/// M7 (LOW): `@sr/migrate` under-funded a character whose chargen mint was refused.
+///
+/// `plan` reached `WouldMint(sheet value)` before `Adopt(allotment)`, and for a
+/// post-E6a approval whose mint was refused the sheet's `nuyen` is the chargen budget's
+/// leftover — not what the priority table promised. A character **with** a profile is
+/// adopted at their allotment; one with **no** profile pre-dates the layer and answer
+/// 18's rule is theirs.
+#[test]
+fn vf_m7_a_profiled_character_is_adopted_at_the_allotment_not_the_sheet() {
+    let mut tw = boot();
+    // A profile with no mint: approved, nothing on the sheet, adopted with an empty
+    // account — exactly the shape a refused chargen mint leaves.
+    let who = tw.spawn_player("Refused");
+    approve(&mut tw, who, 0);
+    ok(&mut tw, GOD, &format!("@sr/migrate commit #{}", who.0));
+    let acct = account_of(&tw, who);
+    assert_eq!(bal(&tw, acct), 0);
+    assert!(sr(&tw).profile(who).expect("profile").minted.is_none());
+
+    // Their priorities entitle them to a Resources allotment, and the sheet says 1.
+    set_resources_priority(&mut tw, who, 'D', 1);
+    let allotment = i64::from(
+        ruleset_shadowrun::Sr5Config::default()
+            .resource_nuyen(ruleset_shadowrun::data::Priority::from_char('D').expect("D")),
+    );
+    assert!(allotment > 1);
+
+    let dry = ok(&mut tw, GOD, &format!("@sr/migrate dry #{}", who.0));
+    assert!(dry.contains("priority allotment"), "{dry}");
+    ok(&mut tw, GOD, &format!("@sr/migrate commit #{}", who.0));
+    assert_eq!(
+        bal(&tw, acct),
+        allotment,
+        "the refused-mint character was funded from the sheet, not the allotment"
+    );
+
+    // A character with NO profile is answer 18's case: the sheet value is the money.
+    let old = tw.spawn_player("Legacy");
+    approve(&mut tw, old, 7_000);
+    let dry = ok(&mut tw, GOD, &format!("@sr/migrate dry #{}", old.0));
+    assert!(dry.contains("would mint 7000"), "{dry}");
+}
+
+// ---- Lens D: disclosure and bounds ----------------------------------------
+
+/// D1 (HIGH): closed listings were never pruned, so post→withdraw was a free loop
+/// that minted permanent documents and lengthened every board scan for the life of
+/// the world.
+///
+/// A closed listing is now deleted — the money was always the contract's, which keeps
+/// its own terminal record — and a bounded ring of ids keeps `+run/show` answering
+/// "closed" for one that has just gone.
+#[test]
+fn vf_d1_a_post_withdraw_loop_leaves_no_stored_listings() {
+    let mut tw = boot();
+    let j = runner(&mut tw, "Johnson", 50_000);
+    let mut last = RunId(0);
+    for n in 0..40 {
+        ok(&mut tw, j, &format!("+run/post Churn{n}=100"));
+        last = live_run(&tw);
+        ok(&mut tw, j, &format!("+run/withdraw {last}"));
+    }
+    assert_eq!(
+        sr(&tw).runs().count(),
+        0,
+        "closed listings are still in RAM"
+    );
+    assert_eq!(sr(&tw).open_runs(), 0);
+    let kv = fold_all(&mut tw);
+    let stored = kv
+        .get(&SmolStr::new(NS))
+        .map(|e| e.iter().filter(|(k, _)| k.starts_with("sr:run:")).count())
+        .unwrap_or(0);
+    assert_eq!(
+        stored, 0,
+        "{stored} listing document(s) survived 40 withdrawals"
+    );
+    // The most recent closure is still answerable — as "closed", and nothing else.
+    let shown = ok(&mut tw, j, &format!("+run/show {last}"));
+    assert!(shown.contains("closed"), "{shown}");
+    // …and one from long before the ring is simply gone.
+    err(&mut tw, j, "+run/show 0");
+}
+
+/// D1: `visible()` capped by records **matched** and walked every listing ever posted
+/// to find them (D-LBK-5). It walks a bounded number of live records from a cursor
+/// now, and hands back the cursor when it stopped early.
+#[test]
+fn vf_d1_the_board_page_is_bounded_on_records_visited() {
+    let mut tw = boot();
+    let mine = runner(&mut tw, "Mine", 50_000);
+    ok(&mut tw, mine, "+run/post Mine=100");
+    for n in 0..25 {
+        let p = runner(&mut tw, &format!("Poster{n}"), 50_000);
+        ok(&mut tw, p, &format!("+run/post Job{n}=100"));
+    }
+    assert_eq!(sr(&tw).open_runs(), 26);
+
+    let page = ruleset_shadowrun::economy::config::BOARD_PAGE;
+    let first = ruleset_shadowrun::economy::board::visible(tw.world(), mine, None, page, None);
+    assert_eq!(first.ids.len(), page, "the page cap did not bind");
+    assert!(
+        first.visited <= ruleset_shadowrun::economy::config::BOARD_PAGE_VISIT,
+        "the walk visited {} records",
+        first.visited
+    );
+    let next = first.next.expect("a continuation cursor");
+    let second =
+        ruleset_shadowrun::economy::board::visible(tw.world(), mine, None, page, Some(next));
+    assert_eq!(second.ids.len(), 6, "the second page lost listings");
+    assert!(second.next.is_none(), "the walk never ends");
+    // A **selective** filter is bounded on what it touches, not on what it matches.
+    let selective =
+        ruleset_shadowrun::economy::board::visible(tw.world(), mine, Some("mine"), page, None);
+    assert_eq!(selective.ids.len(), 1);
+    assert!(
+        selective.visited <= ruleset_shadowrun::economy::config::BOARD_PAGE_VISIT,
+        "a selective filter scanned {} records",
+        selective.visited
+    );
+}
+
+/// D2 (HIGH): outcome-row names were byte-uncapped on the write path **and** the
+/// wire, so a 4 kB row name was frozen into the consent surface, copied into the board
+/// document and broadcast by `+run/show`.
+#[test]
+fn vf_d2_an_oversized_outcome_row_name_is_refused_at_post_and_on_load() {
+    let mut tw = boot();
+    let j = runner(&mut tw, "Johnson", 50_000);
+    let long = "x".repeat(4_000);
+    let refused = err(
+        &mut tw,
+        j,
+        &format!("+run/post Wordy=1000 outcomes=success,{long}"),
+    );
+    assert!(refused.contains("bytes"), "{refused}");
+    assert_eq!(sr(&tw).runs().count(), 0, "a listing was created");
+    assert!(contracts(&tw).iter().all(|c| state(&tw, *c).is_terminal()));
+
+    // …and a document carrying one does not load.
+    ok(&mut tw, j, "+run/post Fine=1000");
+    let id = live_run(&tw);
+    let mut kv = fold_all(&mut tw);
+    patch(&mut kv, NS, &format!("sr:run:{}", id.0), |v| {
+        v["outcomes"] = serde_json::json!(["success", "x".repeat(4_000)]);
+    });
+    reboot(&mut tw, &kv);
+    assert_eq!(
+        sr(&tw).runs().count(),
+        0,
+        "an oversized row name was loaded"
+    );
+}
+
+/// D3 (MEDIUM): `resolve_account`'s "more than one nuyen account" line was an oracle
+/// about the shape of a compartment the actor may not view — three distinguishable
+/// outcomes where the hiding rule allows one.
+#[test]
+fn vf_d3_a_multi_account_compartment_hides_like_an_unknown_scope() {
+    let mut tw = boot();
+    let outsider = runner(&mut tw, "Outsider", 50_000);
+    ok(&mut tw, GOD, "@org/create Ares");
+    let org = tw
+        .world()
+        .module_state::<mush_org::OrgStore>()
+        .and_then(|s| s.state().orgs().next().map(|o| o.id))
+        .expect("the org exists");
+    let scope = tw
+        .world()
+        .module_state::<mush_org::OrgStore>()
+        .and_then(|s| s.state().scopes_in(org).next().map(|sc| sc.id))
+        .expect("the root scope exists");
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@account/open org:#{}/{}=sr.nuyen", org.0, scope.0),
+    );
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@account/open org:#{}/{}=sr.nuyen", org.0, scope.0),
+    );
+    assert_eq!(
+        snap(&tw)
+            .accounts()
+            .filter(|a| a.scope == Some(scope))
+            .count(),
+        2,
+        "the compartment does not hold two accounts"
+    );
+    let two = err(
+        &mut tw,
+        outsider,
+        &format!("+run/post Probe=100 scope={}", scope.0),
+    );
+    let none = err(&mut tw, outsider, "+run/post Probe=100 scope=9999");
+    assert_eq!(
+        two, none,
+        "a two-account compartment reads unlike an unknown scope"
+    );
+    assert!(two.contains("No such account."), "{two}");
+}
+
+/// D4 (MEDIUM): `board=faction:<numeric id>` skipped `faction_listed`, so a hidden
+/// faction that answered "No such faction." by name answered *yes* by id.
+#[test]
+fn vf_d4_a_hidden_faction_hides_by_id_as_well_as_by_name() {
+    let mut tw = boot();
+    let outsider = runner(&mut tw, "Outsider", 50_000);
+    ok(&mut tw, GOD, "@faction/create Blackstar");
+    ok(&mut tw, GOD, "@faction/set Blackstar=hidden:yes");
+    let f = tw
+        .world()
+        .module_state::<mush_faction::FactionState>()
+        .and_then(|s| s.factions.keys().next().copied())
+        .expect("the faction exists");
+    let by_id = err(
+        &mut tw,
+        outsider,
+        &format!("+run/post Probe=100 board=faction:{}", f.0),
+    );
+    let unknown = err(&mut tw, outsider, "+run/post Probe=100 board=faction:9999");
+    assert_eq!(by_id, unknown, "a hidden faction is visible by id");
+    assert!(by_id.contains("No such faction."), "{by_id}");
+    let by_name = err(
+        &mut tw,
+        outsider,
+        "+run/post Probe=100 board=faction:Blackstar",
+    );
+    assert_eq!(by_name, unknown);
+}
+
+/// D5 (MEDIUM): `fixer=` was a **free** probe for whether a named character holds an
+/// `sr.nuyen` account — no escrow, no listing, two distinguishable refusals. The
+/// fee-row rule is a fact about the command and is asked first; a missing wallet now
+/// answers exactly as an unresolvable name does.
+#[test]
+fn vf_d5_a_banked_and_an_unbanked_fixer_answer_alike() {
+    let mut tw = boot();
+    let j = runner(&mut tw, "Johnson", 50_000);
+    let banked = runner(&mut tw, "Banked", 0);
+    let unbanked = tw.spawn_player("Unbanked");
+    // Without `fee=`, the answer must not depend on the target at all.
+    let a = err(&mut tw, j, &format!("+run/post P=1000 fixer=#{}", banked.0));
+    let b = err(
+        &mut tw,
+        j,
+        &format!("+run/post P=1000 fixer=#{}", unbanked.0),
+    );
+    assert_eq!(
+        a, b,
+        "the fee-row refusal leaks whether the fixer is banked"
+    );
+    assert!(a.contains("fee row"), "{a}");
+    // With `fee=`, an unbanked fixer reads exactly like a name that resolves to
+    // nobody.
+    let c = err(
+        &mut tw,
+        j,
+        &format!("+run/post P=1000 fee=100 fixer=#{}", unbanked.0),
+    );
+    let d = err(&mut tw, j, "+run/post P=1000 fee=100 fixer=#99999");
+    assert_eq!(c, d, "an unbanked fixer reads unlike an unknown one");
+    assert!(c.contains("No such fixer."), "{c}");
+    assert_eq!(sr(&tw).runs().count(), 0);
+}
+
+/// D7 / D13 (MEDIUM/LOW): the lifestyle observer resolved its subject with a
+/// `profiles().find(..)` per event — one event per profiled character per period, so
+/// quadratic work at every boundary — and `personal_account` walked the whole account
+/// registry once per crew member. Both are indexed now, and the indexes are derived in
+/// one write path each.
+#[test]
+fn vf_d7_the_indexes_agree_after_every_profile_mutation() {
+    let mut tw = boot();
+    let who = runner(&mut tw, "Runner", 50_000);
+    assert!(sr(&tw).indexes_agree(), "after adoption");
+    ok(&mut tw, who, "+lifestyle/set low");
+    assert!(sr(&tw).indexes_agree(), "after a tier change");
+    sweep_at(&mut tw, PERIOD * 2);
+    assert!(sr(&tw).indexes_agree(), "after a paid period");
+    for n in 3..=6 {
+        sweep_at(&mut tw, PERIOD * n);
+        assert!(sr(&tw).indexes_agree(), "after period {n}");
+    }
+    ok(&mut tw, who, "+run/post Job=100");
+    assert!(sr(&tw).indexes_agree(), "after a listing");
+    let id = live_run(&tw);
+    ok(&mut tw, who, &format!("+run/withdraw {id}"));
+    assert!(sr(&tw).indexes_agree(), "after a withdrawal");
+}
+
+/// D7: a whole population's period boundary resolves each event through the index,
+/// and every one of them lands on the right subject.
+#[test]
+fn vf_d7_a_population_wide_period_boundary_bills_every_profile() {
+    let mut tw = boot();
+    let mut who = Vec::new();
+    for n in 0..40 {
+        let r = runner(&mut tw, &format!("Pop{n}"), 3_000);
+        ok(&mut tw, r, "+lifestyle/set low");
+        who.push(r);
+    }
+    assert!(sr(&tw).indexes_agree());
+    // One paid period, then one missed one: every profile must have its own arrears.
+    sweep_at(&mut tw, PERIOD * 2);
+    sweep_at(&mut tw, PERIOD * 3);
+    for r in &who {
+        let p = sr(&tw).profile(*r).expect("profile").clone();
+        assert_eq!(p.unpaid_periods, 1, "#{} missed nothing", r.0);
+        assert_eq!(p.arrears.minor(), 2_000, "#{} was billed wrong", r.0);
+    }
+    assert!(sr(&tw).indexes_agree());
+}
+
+/// D8 / R6 (LOW): `RunNotice.kinds` (count and bytes), the notice window and
+/// `Mint.key` were uncapped in their wires — every one of them a stored string or
+/// number that a render reads back.
+#[test]
+fn vf_d8_oversized_notice_fields_and_mint_keys_refuse_to_load() {
+    let mut tw = boot();
+    let j = runner(&mut tw, "Johnson", 50_000);
+    ok(&mut tw, j, "+run/post Fine=1000");
+    let id = live_run(&tw);
+    let kv = fold_all(&mut tw);
+    let run_key = format!("sr:run:{}", id.0);
+    let profile_key = format!("sr:profile:{}", j.0);
+
+    for bad in [
+        serde_json::json!(["a", "b", "c", "d", "e", "f", "g", "h", "i"]),
+        serde_json::json!([("k".repeat(64))]),
+    ] {
+        let mut kv = kv.clone();
+        patch(&mut kv, NS, &run_key, |v| {
+            v["notice"]["kinds"] = bad.clone();
+        });
+        reboot(&mut tw, &kv);
+        assert_eq!(sr(&tw).runs().count(), 0, "an unbounded kinds list loaded");
+    }
+    let mut kv2 = kv.clone();
+    patch(&mut kv2, NS, &run_key, |v| {
+        v["notice"]["window"] = serde_json::json!(i64::MAX);
+    });
+    reboot(&mut tw, &kv2);
+    assert_eq!(sr(&tw).runs().count(), 0, "an unbounded window loaded");
+
+    let mut kv3 = kv;
+    patch(&mut kv3, NS, &profile_key, |v| {
+        v["minted"]["key"] = serde_json::json!("z".repeat(200));
+    });
+    reboot(&mut tw, &kv3);
+    assert!(sr(&tw).profile(j).is_none(), "an unbounded mint key loaded");
+}
+
+/// D10 (LOW): `@sr/profile` rendered arrears as bare minor units — the one arrears
+/// render in the crate that did not go through the instrument.
+#[test]
+fn vf_d10_the_staff_profile_renders_arrears_as_money() {
+    let mut tw = boot();
+    let who = runner(&mut tw, "Runner", 5_000);
+    ok(&mut tw, who, "+lifestyle/set middle");
+    sweep_at(&mut tw, PERIOD * 2);
+    sweep_at(&mut tw, PERIOD * 3);
+    assert_eq!(
+        sr(&tw).profile(who).expect("profile").arrears.minor(),
+        5_000
+    );
+    let out = ok(&mut tw, GOD, &format!("@sr/profile #{}", who.0));
+    assert!(
+        out.contains("\u{a5}5000"),
+        "the arrears are not rendered in the instrument: {out}"
+    );
+}
+
+/// D12 (LOW): `+nuyen <who>` said **nothing** when the account existed but the viewer
+/// could not see it, and a sheet line when there was no account — so the silence was
+/// the tell that a character was banked. One fallback either way.
+#[test]
+fn vf_d12_an_unviewable_account_and_no_account_read_alike() {
+    let mut tw = boot();
+    let banked = runner(&mut tw, "Banked", 1_234);
+    let unbanked = tw.spawn_player("Unbanked");
+    // A viewer who may examine anybody and is not staff: exactly the standing the
+    // oracle needed.
+    let nosy = tw.spawn_player("Nosy");
+    if let Some(o) = tw.world_mut().get_mut(nosy) {
+        o.powers = mush_core::Powers::EXAMINE_ALL;
+    }
+    let a = ok(&mut tw, nosy, &format!("+nuyen #{}", banked.0));
+    let b = ok(&mut tw, nosy, &format!("+nuyen #{}", unbanked.0));
+    assert_eq!(a, b, "the banked character is distinguishable");
+    assert!(!a.contains("1234"), "the balance leaked: {a}");
+    // The owner still reads their own.
+    assert!(ok(&mut tw, banked, "+nuyen").contains("1234"));
 }

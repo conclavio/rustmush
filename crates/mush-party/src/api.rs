@@ -54,6 +54,13 @@ pub const NO_SUCH_PARTY: &str = "No such party.";
 /// The party's `expires_at` is left where it is and **never consulted** while locked
 /// — the contract's own deadline governs a locked party (the expiry tick skips it).
 ///
+/// **Outstanding invitations are dropped here** (E6a verify fold, D6). A `Locked`
+/// party refuses `/accept` *and* `/uninvite`, so an invitation that survives the lock
+/// is one nobody can act on and nobody can withdraw — and [`may_view`] admits an
+/// invitee, so a stranger the leader once invited would keep watching the crew roster
+/// for the life of the run. The count is logged, never announced: a withdrawn
+/// invitation to a job that has started is not news.
+///
 /// # Errors
 ///
 /// - [`PartyError::NoStanding`] — no such party (render [`NO_SUCH_PARTY`]).
@@ -71,6 +78,16 @@ pub fn lock(ctx: &mut Ctx<'_>, id: PartyId, by: ContractRef) -> Result<(), Party
     }
     if p.members.is_empty() {
         return Err(PartyError::Empty);
+    }
+    let pruned = p.invited.len();
+    p.invited.clear();
+    if pruned > 0 {
+        tracing::info!(
+            party = %id,
+            pruned,
+            "party: outstanding invitations were dropped at the lock; a locked roster cannot \
+             accept them and cannot withdraw them"
+        );
     }
     p.status = PartyStatus::Locked { by };
     p.bump();

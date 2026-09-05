@@ -75,8 +75,10 @@ pub fn run(ctx: &mut Ctx<'_>, cfg: &SrEconomyConfig) {
         }
     }
     resolve_cadence(ctx, cfg);
+    reconcile_accounts(ctx);
     reconcile_lifestyle(ctx, cfg);
     reconcile_board(ctx);
+    reconcile_parties(ctx);
     persist_meta(ctx);
 }
 
@@ -245,7 +247,17 @@ pub fn system_account(
         .map(|a| a.id)
 }
 
-/// `who`'s personal account in `instrument`, if any.
+/// `who`'s **live** personal account in `instrument`, if any.
+///
+/// Two rules, both from the E6a verify fold:
+///
+/// - **`Active` only** (R4). Matching on owner + instrument + scope alone meant a
+///   *closed* account kept being picked — by migration, by the crew payout table, by
+///   lifestyle — even after staff had opened a live one beside it, so closing an
+///   account was a one-way exit from the layer with no way back.
+/// - **Indexed** (D13). `accounts_of` is the owner index, so `crew_accounts` asking
+///   this once per roster member is eight index lookups rather than eight full walks
+///   of the account registry.
 #[must_use]
 pub fn personal_account(
     ctx: &Ctx<'_>,
@@ -256,8 +268,10 @@ pub fn personal_account(
     ctx.w
         .module_state::<EconomyStore>()?
         .snapshot()
-        .accounts()
-        .find(|a| a.owner == owner && a.instrument == *instrument && a.scope.is_none())
+        .accounts_of(&owner)
+        .find(|a| {
+            a.instrument == *instrument && a.scope.is_none() && a.status == AccountStatus::Active
+        })
         .map(|a| a.id)
 }
 
@@ -297,6 +311,68 @@ pub fn open_personal_account(
         },
     );
     Some(id)
+}
+
+/// **R4**: a profile pointing at an account that is no longer `Active` is re-pointed
+/// at the character's live one, or at nothing.
+///
+/// A closed account used to be a one-way exit: `SrProfile.account` kept naming it, and
+/// every read that trusted the cache — `+nuyen`, `+lifestyle`, `crew_accounts`,
+/// `resolve_account` — kept using it, so staff opening a replacement changed nothing.
+/// The account is the economy's record and the profile's field is a *cache*, exactly
+/// as `upkeep` is (DL-07), so boot re-derives it from what is live.
+fn reconcile_accounts(ctx: &mut Ctx<'_>) {
+    let Some(instrument) = ctx
+        .w
+        .module_state::<SrEconomyStore>()
+        .and_then(|s| s.instrument.clone())
+    else {
+        return;
+    };
+    let named: Vec<(ObjId, mush_economy::AccountId)> = ctx
+        .w
+        .module_state::<SrEconomyStore>()
+        .map(|s| {
+            s.profiles()
+                .filter_map(|p| p.account.map(|a| (p.obj, a)))
+                .collect()
+        })
+        .unwrap_or_default();
+    let stale: Vec<ObjId> = ctx
+        .w
+        .module_state::<EconomyStore>()
+        .map(|s| {
+            let snap = s.snapshot();
+            named
+                .iter()
+                .filter(|(_, a)| {
+                    snap.account(*a)
+                        .is_none_or(|a| a.status != AccountStatus::Active)
+                })
+                .map(|(who, _)| *who)
+                .collect()
+        })
+        .unwrap_or_default();
+    for who in stale {
+        let Some(mut p) = ctx
+            .w
+            .module_state::<SrEconomyStore>()
+            .and_then(|s| s.profile(who).cloned())
+        else {
+            continue;
+        };
+        let next = personal_account(ctx, who, &instrument);
+        tracing::warn!(
+            who = who.0,
+            was = p.account.map_or(0, |a| a.0),
+            now = next.map_or(0, |a| a.0),
+            "sr.economy: a profile named an account that is no longer active; the cache was \
+             re-derived from the live accounts"
+        );
+        p.account = next;
+        p.revision = p.revision.saturating_add(1);
+        put_profile(ctx, p);
+    }
 }
 
 /// DL-07: adopt a self-identifying lifestyle record, cancel an orphan.
@@ -341,9 +417,27 @@ fn reconcile_lifestyle(ctx: &mut Ctx<'_>, cfg: &SrEconomyConfig) {
                 .collect()
         })
         .unwrap_or_default();
+    // M6's boot half: a profile that already points at a *different* live record has
+    // been through a replacement whose cancel was refused, and the record it does not
+    // point to is the stale one. Adopting it would move the pointer back to the tier
+    // the character just left, so it is cancelled instead — the same treatment an
+    // orphan gets, for the same reason (nothing claims it).
+    let claimed: BTreeMap<ObjId, ObligationId> = ctx
+        .w
+        .module_state::<SrEconomyStore>()
+        .map(|s| {
+            s.profiles()
+                .filter_map(|p| p.upkeep.map(|o| (p.obj, o)))
+                .collect()
+        })
+        .unwrap_or_default();
     let mut adopted: BTreeSet<ObligationId> = BTreeSet::new();
     for (id, debit) in live {
-        let who = owners.get(&debit).copied().filter(|o| profiled.contains(o));
+        let who = owners
+            .get(&debit)
+            .copied()
+            .filter(|o| profiled.contains(o))
+            .filter(|o| claimed.get(o).is_none_or(|claim| *claim == id));
         match who {
             Some(who) => {
                 adopted.insert(id);
@@ -371,7 +465,8 @@ fn reconcile_lifestyle(ctx: &mut Ctx<'_>, cfg: &SrEconomyConfig) {
                     Ok(()) => tracing::warn!(
                         obligation = id.0,
                         debit = debit.0,
-                        "sr.economy: cancelled a lifestyle record no profile claims"
+                        "sr.economy: cancelled a lifestyle record no profile points at (an orphan, \
+                         or a replacement whose cancel was refused — M6)"
                     ),
                     Err(error) => tracing::error!(
                         obligation = id.0, debit = debit.0, %error,
@@ -414,31 +509,57 @@ fn reconcile_lifestyle(ctx: &mut Ctx<'_>, cfg: &SrEconomyConfig) {
 }
 
 /// Mirror every listing onto its contract's live state; close the ones whose
-/// contract is gone or terminal.
+/// contract is gone or terminal, **and release the party of every one that is
+/// closed** (E6a verify fold, R1).
+///
+/// Only the observer and `+run/withdraw` used to release a party, and both are live
+/// paths. A terminal post whose board and party writes did not land, or a contract
+/// that reached a terminal state while `[shadowrun.economy]` was off, therefore left
+/// its crew `Locked` — refusing every membership verb, immune to idle expiry (a locked
+/// party's clock is its contract's), and unreachable by staff, because nothing but the
+/// ruleset can call `release`. Forever. The release runs whenever the *mirrored* state
+/// is `Closed`, including the `now == was` case, because "the listing already said
+/// closed" is precisely the shape a dropped write leaves behind. `release` is
+/// idempotent in effect — a party that is not `Locked` answers `State` and is logged
+/// at info.
 fn reconcile_board(ctx: &mut Ctx<'_>) {
     let listings: Vec<(
         crate::economy::record::RunId,
         mush_economy::ContractId,
         RunState,
-        bool,
+        Option<u64>,
     )> = ctx
         .w
         .module_state::<SrEconomyStore>()
         .map(|s| {
             s.runs()
-                .map(|r| (r.id, r.contract, r.state, r.party.is_some()))
+                .map(|r| (r.id, r.contract, r.state, r.party))
                 .collect()
         })
         .unwrap_or_default();
-    for (id, contract, was, crewed) in listings {
+    for (id, contract, was, party) in listings {
         let state = ctx
             .w
             .module_state::<EconomyStore>()
             .and_then(|s| s.snapshot().contract(contract).map(|c| c.state));
-        let now = match state {
+        let settled = matches!(state, Some(ContractState::Settled { .. }));
+        let now = match &state {
             None => RunState::Closed,
-            Some(state) => mirror(&state, was, crewed),
+            Some(state) => mirror(state, was, party.is_some()),
         };
+        if now.is_closed() {
+            // The party first: `put_run` on a closed listing deletes the record, so
+            // the back-reference is read before it goes.
+            crate::economy::board::release_party(
+                ctx,
+                party,
+                if settled {
+                    mush_party::DisbandCause::Settled
+                } else {
+                    mush_party::DisbandCause::Released
+                },
+            );
+        }
         if now == was {
             continue;
         }
@@ -459,6 +580,86 @@ fn reconcile_board(ctx: &mut Ctx<'_>) {
         r.state = now;
         r.revision = r.revision.saturating_add(1);
         put_run(ctx, r);
+    }
+}
+
+/// **R2**: release every live party locked against a contract that is gone or
+/// terminal.
+///
+/// [`reconcile_board`] can only reach a party a *listing* still names, and a listing
+/// is exactly the thing this ruleset drops when it will not load: a skipped
+/// `sr:run:{id}` document leaves `run_of_contract` empty, so nothing at all knows the
+/// crew is frozen against contract N. The party stays `Locked` permanently — the one
+/// unrecoverable state in the cut.
+///
+/// So the ruleset asks the question from the *party* side instead. `mush-party` stays
+/// money-blind: it hands back the opaque [`mush_party::ContractRef`] it was given and
+/// the ruleset — which owns both ends (D-E6-5) — is the one that resolves it. A ref
+/// whose contract does not exist, or has reached a terminal state, releases; anything
+/// else is left exactly as it is. One page per orphan, capped, because a crew released
+/// out from under a job is a thing a person should hear about.
+fn reconcile_parties(ctx: &mut Ctx<'_>) {
+    /// The most orphaned parties one boot pages about. The releases are not capped —
+    /// every one of them happens — only the pages, so a mass loss is one readable
+    /// alert list rather than four thousand.
+    const MAX_ORPHAN_PAGES: usize = 8;
+
+    let locked: Vec<(mush_party::PartyId, mush_party::ContractRef)> = ctx
+        .w
+        .module_state::<mush_party::PartyStore>()
+        .map(|s| {
+            s.live_parties()
+                .filter_map(|p| p.locked_by().map(|by| (p.id, by)))
+                .collect()
+        })
+        .unwrap_or_default();
+    let mut paged = 0usize;
+    for (party, by) in locked {
+        let contract = mush_economy::ContractId(by.0);
+        let live = ctx
+            .w
+            .module_state::<EconomyStore>()
+            .and_then(|s| s.snapshot().contract(contract).map(|c| c.state));
+        let (over, settled) = match &live {
+            None => (true, false),
+            Some(state) => (
+                state.is_terminal(),
+                matches!(state, ContractState::Settled { .. }),
+            ),
+        };
+        if !over {
+            continue;
+        }
+        let how = if settled {
+            mush_party::DisbandCause::Settled
+        } else {
+            mush_party::DisbandCause::Released
+        };
+        tracing::warn!(
+            party = %party,
+            contract = contract.0,
+            "sr.economy: a live party was locked against a contract that is gone or terminal; \
+             releasing it (the listing that named it is not there — its document was skipped, or \
+             the layer was off when the contract ended)"
+        );
+        if let Err(error) = mush_party::release(ctx, party, how) {
+            tracing::error!(party = %party, %error, "sr.economy: an orphaned party would not release");
+            continue;
+        }
+        if paged < MAX_ORPHAN_PAGES {
+            paged = paged.saturating_add(1);
+            mush_economy::open_escalation(
+                ctx,
+                mush_economy::EscalationKind::BootReconciliation,
+                mush_economy::EscalationSubject::Contract(contract),
+                format!(
+                    "sr.economy: party {party} was frozen against contract #{} — which is gone or \
+                     terminal — with no board listing naming it. The party has been released.",
+                    contract.0
+                ),
+                vec![format!("@contract/show {}", contract.0)],
+            );
+        }
     }
 }
 

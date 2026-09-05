@@ -30,6 +30,12 @@ use crate::record::{
 pub struct EconomySnapshot {
     instruments: BTreeMap<InstrumentId, InstrumentDef>,
     accounts: BTreeMap<AccountId, Account>,
+    /// Derived: the accounts each principal owns. Keyed by a `Hash`-only
+    /// `PrincipalId` exactly as `assets_by_owner` is; the VALUES are ordered sets, so
+    /// every iteration a caller sees is deterministic. `Account.owner` is immutable
+    /// after [`EconomySnapshot::put_account`] (`account_mut` touches balances, holds,
+    /// status and approval only), so this cannot drift.
+    accounts_by_owner: HashMap<PrincipalId, BTreeSet<AccountId>>,
     idempotency: BTreeMap<IdempotencyKey, IdempotencyRecord>,
     reversed: BTreeSet<TransactionId>,
     // ---- E3a ----
@@ -92,6 +98,16 @@ impl EconomySnapshot {
     /// Every account (staff inspection / conservation checks).
     pub fn accounts(&self) -> impl Iterator<Item = &Account> {
         self.accounts.values()
+    }
+    /// The accounts a principal owns, in id order (E6a verify fold, D13).
+    ///
+    /// The indexed answer to "which wallet is theirs", so a caller that asks it once
+    /// per roster member does not walk the whole registry once per member.
+    pub fn accounts_of(&self, owner: &PrincipalId) -> impl Iterator<Item = &Account> {
+        self.accounts_by_owner
+            .get(owner)
+            .into_iter()
+            .flat_map(|set| set.iter().filter_map(|id| self.accounts.get(id)))
     }
     /// Every instrument.
     pub fn instruments(&self) -> impl Iterator<Item = &InstrumentDef> {
@@ -239,8 +255,22 @@ impl EconomySnapshot {
     pub fn put_instrument(&mut self, def: InstrumentDef) {
         self.instruments.insert(def.id.clone(), def);
     }
-    /// Insert/replace an account.
+    /// Insert/replace an account, keeping the owner index coherent.
     pub fn put_account(&mut self, account: Account) {
+        if let Some(prev) = self.accounts.get(&account.id)
+            && prev.owner != account.owner
+            && let Some(set) = self.accounts_by_owner.get_mut(&prev.owner)
+        {
+            set.remove(&account.id);
+            if set.is_empty() {
+                let owner = prev.owner.clone();
+                self.accounts_by_owner.remove(&owner);
+            }
+        }
+        self.accounts_by_owner
+            .entry(account.owner.clone())
+            .or_default()
+            .insert(account.id);
         self.accounts.insert(account.id, account);
     }
     /// Record an idempotency result.

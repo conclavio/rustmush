@@ -332,6 +332,28 @@ pub(crate) fn plan(
             None if profile.as_ref().is_some_and(|p| p.minted.is_some()) => {
                 MigrationVerdict::Skip("already funded at chargen approval")
             }
+            // **R3: the idempotency index is the authority on "already funded", not
+            // the profile.** `SrProfile.minted` is a projection: it is skipped at boot
+            // when the document will not load, and it is never written when the
+            // approval's own `put_profile` did not land. Deciding from it alone let
+            // `@sr/migrate commit` mint a *second* allotment on top of the chargen one
+            // — the two keys are `sr.chargen/{obj}` and `sr.migration/{obj}`, so the
+            // second mint hit no idempotency wall at all. The keys are the fact.
+            None if already_minted(ctx, who) => {
+                MigrationVerdict::Skip("already funded (the mint key is spent)")
+            }
+            // **M7: which number a character is owed depends on which era they are
+            // from, and the profile is what says so.** A character with an
+            // `SrProfile` and no mint went through an E6a approval whose mint was
+            // *refused* (08d deviation 11 — a refused mint never fails the approval),
+            // and what they were owed is their **priority allotment**; their sheet
+            // `nuyen` is the chargen budget's leftover, which is a much smaller number
+            // and not what the priority table promised them. A character with no
+            // profile at all pre-dates the layer, and answer 18's rule is theirs: the
+            // sheet value is the money they had.
+            None if profile.is_some() => {
+                MigrationVerdict::Adopt(allotment_major(config, &doc).unwrap_or(0))
+            }
             None if sheet_value > 0 => {
                 MigrationVerdict::WouldMint(u64::try_from(sheet_value).unwrap_or(0))
             }
@@ -348,6 +370,25 @@ pub(crate) fn plan(
         });
     }
     out
+}
+
+/// Whether **either** of this character's one-shot mint keys has already resolved
+/// (E6a verify fold, R3).
+///
+/// The idempotency index is the authority, and it is the *only* record that survives a
+/// dropped or corrupted `sr:profile:{obj}` document: a spent key means the money
+/// landed, whatever the profile says. The two namespaces are asked separately because
+/// they are separate keys — the chargen allotment and the migration mint are different
+/// grants from different faucets, and a character can legitimately have one and not
+/// the other.
+#[must_use]
+fn already_minted(ctx: &Ctx<'_>, who: ObjId) -> bool {
+    [CHARGEN_KEY_NS, MIGRATION_KEY_NS].iter().any(|ns| {
+        mush_economy::idempotency_resolved(
+            ctx,
+            &IdempotencyKey::new(SmolStr::new(*ns), SmolStr::new(who.0.to_string())),
+        )
+    })
 }
 
 /// Run `commit` for one planned line. Returns the report line.

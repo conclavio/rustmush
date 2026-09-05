@@ -6557,3 +6557,57 @@ fn e6a_cancel_contract_answers_a_non_issuer_with_no_standing() {
     assert_eq!(state(&tw, id), ContractState::Offered);
     assert_eq!(held(&tw, r.j_acct), 1_000);
 }
+
+// ---- E6a verify fold ----
+
+/// D2: an outcome row's **name** is a stored, broadcast string, and the economy caps
+/// it for every producer.
+///
+/// `check_structure` counted the rows and never measured them, so a seam caller — or a
+/// hand-written document at boot — could freeze a 4 kB row name into the consent
+/// surface, where it is copied into every projection over the contract and rendered by
+/// every notice. `@contract/outcome` capped its own input; the programmatic seam did
+/// not, which is exactly the shape a ruleset uses.
+#[test]
+fn vf_d2_the_economy_refuses_an_oversized_outcome_row_from_any_producer() {
+    let (mut tw, e6) = boot_e6();
+    let r = run_rig(&mut tw, 3_000);
+    let long = "x".repeat(mush_economy::MAX_OUTCOME_NAME_BYTES + 1);
+    let spec = run_spec(
+        "Wordy",
+        r.johnson,
+        (r.j_acct, 1_000),
+        Vec::new(),
+        vec![
+            row(&long, vec![0], vec![exact(r.j_acct, 1_000)]),
+            row("failure", vec![1], vec![exact(r.j_acct, 1_000)]),
+        ],
+    );
+    e6.stage_offer(spec);
+    ok(&mut tw, r.johnson, "@e6/offer");
+    assert!(
+        matches!(e6.offered(), Err(ContractError::TooLarge(_))),
+        "an oversized row name was accepted through the seam: {:?}",
+        e6.offered()
+    );
+    assert!(
+        snap(&tw).contracts().next().is_none(),
+        "a contract was written"
+    );
+
+    // The bound is a bound and not a ban: exactly the cap is fine.
+    let at_cap = "y".repeat(mush_economy::MAX_OUTCOME_NAME_BYTES);
+    let spec = run_spec(
+        "Wordy",
+        r.johnson,
+        (r.j_acct, 1_000),
+        Vec::new(),
+        vec![
+            row(&at_cap, vec![0], vec![exact(r.j_acct, 1_000)]),
+            row("failure", vec![1], vec![exact(r.j_acct, 1_000)]),
+        ],
+    );
+    e6.stage_offer(spec);
+    ok(&mut tw, r.johnson, "@e6/offer");
+    assert!(e6.offered().is_ok(), "the cap itself was refused");
+}

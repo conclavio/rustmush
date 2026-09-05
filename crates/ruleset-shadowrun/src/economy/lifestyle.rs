@@ -184,16 +184,7 @@ pub fn set_tier(
     if profile.in_arrears() || live.as_ref().is_some_and(record_in_arrears) {
         return Err(LifestyleError::InArrears);
     }
-    // Cancel first: one live upkeep record per character, always.
-    if let Some(o) = &live {
-        mush_economy::cancel_obligation(ctx, o.id, LIFESTYLE_NAMESPACE)
-            .map_err(LifestyleError::Economy)?;
-    }
-    profile.lifestyle = tier;
-    profile.upkeep = None;
-    profile.revision = profile.revision.saturating_add(1);
-    put_profile(ctx, profile.clone());
-    match open_upkeep(ctx, cfg, &mut profile, tier) {
+    match replace_upkeep(ctx, cfg, &mut profile, tier, live.as_ref()) {
         Ok(Some(id)) => Ok(Some(format!(
             "Lifestyle set to {}; the next period bills obligation #{}.",
             tier.label(),
@@ -207,11 +198,67 @@ pub fn set_tier(
     }
 }
 
+/// Move a profile to `tier`: **open the replacement first, then end the old record**
+/// (E6a verify fold, M6).
+///
+/// The old order — cancel, then create, with the create's `Err` merely logged — had
+/// one failure mode and it was the expensive one: a refused create left the character
+/// with **no upkeep at all**, paying nothing forever, and the only way back was for
+/// them to notice and run `+lifestyle/set` themselves. Reversed, a refused create
+/// changes nothing (the old record is still billing, which is the safe direction), and
+/// the residual risk moves to a refused *cancel* — a character billed twice for one
+/// period, which is loud, recoverable, and paged here plus repaired at the next boot
+/// by [`crate::economy::boot`]'s reconciliation.
+fn replace_upkeep(
+    ctx: &mut Ctx<'_>,
+    cfg: &SrEconomyConfig,
+    profile: &mut SrProfile,
+    tier: LifestyleTier,
+    old: Option<&Obligation>,
+) -> Result<Option<mush_economy::ObligationId>, LifestyleError> {
+    let who = profile.obj;
+    // 1. The replacement. A failure here leaves the world exactly as it was.
+    let opened = open_upkeep(ctx, cfg, profile, tier)?;
+    // 2. The old record. The profile already points at the new one, so a refusal
+    //    leaves a record nothing claims — which boot cancels, and staff can end now.
+    if let Some(o) = old
+        && Some(o.id) != opened
+        && let Err(error) = mush_economy::cancel_obligation(ctx, o.id, LIFESTYLE_NAMESPACE)
+    {
+        tracing::error!(
+            obligation = o.id.0, who = who.0, %error,
+            "sr.economy: the replaced lifestyle record would not cancel; the character is billed \
+             by two records until staff or the next boot ends it"
+        );
+        mush_economy::open_escalation(
+            ctx,
+            mush_economy::EscalationKind::SettlementRefused,
+            mush_economy::EscalationSubject::Obligation(o.id),
+            format!(
+                "sr.lifestyle: character #{} moved to {} and the old upkeep record would not \
+                 cancel ({error}). Two records are billing one wallet until this one ends.",
+                who.0,
+                tier.label()
+            ),
+            vec![format!("@obligation/cancel #{}", o.id.0)],
+        );
+    }
+    // 3. The tier is the profile's, whatever happened to the old record.
+    profile.lifestyle = tier;
+    profile.upkeep = opened;
+    profile.revision = profile.revision.saturating_add(1);
+    put_profile(ctx, profile.clone());
+    Ok(opened)
+}
+
 /// Create the upkeep record for `tier`, or none when the tier is free.
 ///
 /// The schedule is on the `sr.month` cadence, **one period at a time**, starting at
 /// the *next* period — a tier change never re-bills the period the character has
 /// already lived in (D-E6-3's "applies next period").
+///
+/// Resets [`SrProfile::missed_seen`] (E6a verify fold, M3): the mark is about **one
+/// record**, and this is a different record whose `missed_total` starts at 0.
 fn open_upkeep(
     ctx: &mut Ctx<'_>,
     cfg: &SrEconomyConfig,
@@ -219,6 +266,8 @@ fn open_upkeep(
     tier: LifestyleTier,
 ) -> Result<Option<mush_economy::ObligationId>, LifestyleError> {
     let Some(amount) = tier_amount(ctx, cfg, tier) else {
+        profile.missed_seen = 0;
+        profile.upkeep = None;
         return Ok(None);
     };
     let Some(account) = profile.account else {
@@ -270,6 +319,7 @@ fn open_upkeep(
     };
     let id = mush_economy::create_obligation(ctx, spec).map_err(LifestyleError::Economy)?;
     profile.upkeep = Some(id);
+    profile.missed_seen = 0;
     profile.revision = profile.revision.saturating_add(1);
     put_profile(ctx, profile.clone());
     Ok(Some(id))
@@ -311,6 +361,21 @@ pub fn pay_arrears(
     if owed.minor() <= 0 {
         return Ok("You owe no lifestyle arrears.".to_string());
     }
+    // R5: the idempotency key is keyed on the `sr.month` ordinal (E5c T3), so with no
+    // cadence there is no key — and paying under a stale one is worse than refusing:
+    // a second cycle on the same ordinal hits an already-spent key, reports success,
+    // zeroes the arrears and moves no money at all.
+    if cadence_now(ctx).is_none() {
+        tracing::warn!(
+            who = who.0,
+            "sr.economy: +lifestyle/pay was refused because the sr.month cadence is missing; the \
+             arrears key is keyed on its ordinal and nothing else"
+        );
+        return Err(LifestyleError::Unavailable(
+            "The sr.month cadence clock does not exist, so arrears cannot be paid right now. \
+             Staff: @sr/clock.",
+        ));
+    }
     let Some(instrument) = ctx
         .w
         .module_state::<SrEconomyStore>()
@@ -332,10 +397,19 @@ pub fn pay_arrears(
     };
     let mut plan = EconomyPlan::new(
         // Keyed on the ordinal the arrears are keyed on, so a double-submitted
-        // `+lifestyle/pay` pays once (E5c T3: never wall time).
+        // `+lifestyle/pay` pays once (E5c T3: never wall time) — **plus the amount
+        // owed** as a second discriminator (E6a verify fold, R5). The ordinal alone
+        // was not unique: two different debts can land on one ordinal (a clock that
+        // stalled, a catch-up that re-anchored), and the second submission would then
+        // hit a spent key, clear the arrears and move nothing.
         IdempotencyKey::new(
             SmolStr::new_static("sr.lifestyle.pay"),
-            SmolStr::new(format!("{}/{}", who.0, profile.unpaid_since)),
+            SmolStr::new(format!(
+                "{}/{}/{}",
+                who.0,
+                profile.unpaid_since,
+                owed.minor()
+            )),
         ),
         PrincipalId::Object(who),
         EconomicCause::Ruleset {
@@ -409,11 +483,15 @@ pub fn on_obligation_changed(
     if !is_lifestyle_record(&o, sink) {
         return;
     }
-    let Some(who) = ctx.w.module_state::<SrEconomyStore>().and_then(|s| {
-        s.profiles()
-            .find(|p| p.upkeep == Some(id) || p.account == Some(o.debit_account))
-            .map(|p| p.obj)
-    }) else {
+    // D7: an indexed lookup, not a scan. This runs once per profiled character per
+    // period, and a `profiles().find(..)` inside it made the sweep quadratic in the
+    // population — a thousand profiles is a million comparisons per period boundary,
+    // on an observer path where nothing may take its time.
+    let Some(who) = ctx
+        .w
+        .module_state::<SrEconomyStore>()
+        .and_then(|s| s.owner_of_record(id, o.debit_account))
+    else {
         return;
     };
     let Some(profile) = ctx
@@ -447,6 +525,15 @@ fn clear(ctx: &mut Ctx<'_>, mut profile: SrProfile) {
 
 /// One missed period. `downgrade` is set on the second — the record is `Delinquent`,
 /// which is exactly when E4 stops autopaying it.
+///
+/// The high-water mark this compares against is [`SrProfile::missed_seen`], which is
+/// **per record** (E6a verify fold, M3). It used to be `unpaid_periods`, which is
+/// *carried across a downgrade* — and the replacement record's `missed_total` restarts
+/// at 0, so from the first downgrade onward `missed_total <= seen` was true forever:
+/// every later miss was swallowed, the ladder stopped one tier down, the arrears
+/// stopped growing, and the record sat `Delinquent` — out of the due pool — collecting
+/// nothing. A character could miss rent indefinitely at `low` and never reach
+/// `street`.
 fn miss(
     ctx: &mut Ctx<'_>,
     cfg: &SrEconomyConfig,
@@ -454,15 +541,29 @@ fn miss(
     o: &Obligation,
     downgrade: bool,
 ) {
-    let seen = u32::from(profile.unpaid_periods);
-    if o.missed_total <= seen {
-        // Nothing new was missed — a re-emitted event, a suspension coming back, or a
-        // forgiven backlog. A forgiven period is never a miss.
+    if o.missed_total <= profile.missed_seen {
+        // Nothing new was missed on *this* record — a re-emitted event, a suspension
+        // coming back, or a forgiven backlog. A forgiven period is never a miss.
         return;
     }
     let who = profile.obj;
-    let ordinal = cadence_now(ctx).unwrap_or(profile.unpaid_since);
-    profile.unpaid_periods = u8::try_from(o.missed_total).unwrap_or(u8::MAX);
+    // R5: the counters are keyed on the `sr.month` ordinal and nothing else (E5c T3).
+    // With the cadence gone there is no ordinal to key them on, so nothing is keyed:
+    // reusing the stale one made the `+lifestyle/pay` key `{who}/{ordinal}` collide
+    // with a cycle that had already been paid, and a spent key zeroes the arrears
+    // while moving no money at all.
+    let Some(ordinal) = cadence_now(ctx) else {
+        tracing::warn!(
+            who = who.0,
+            obligation = o.id.0,
+            "sr.economy: a lifestyle miss arrived with no sr.month cadence; the counters are not \
+             advanced (they are keyed on the ordinal, never on wall time)"
+        );
+        return;
+    };
+    let new_periods = o.missed_total.saturating_sub(profile.missed_seen);
+    profile.missed_seen = o.missed_total;
+    profile.unpaid_periods = profile.unpaid_periods.saturating_add(new_periods);
     profile.unpaid_since = ordinal;
     profile.arrears = profile
         .arrears
@@ -470,7 +571,7 @@ fn miss(
         .unwrap_or(profile.arrears);
     profile.revision = profile.revision.saturating_add(1);
     put_profile(ctx, profile.clone());
-    if profile.unpaid_periods <= MAX_ARREARS_NOTICES {
+    if profile.unpaid_periods <= u32::from(MAX_ARREARS_NOTICES) {
         let text = if downgrade {
             format!(
                 "LIFESTYLE: you missed a second period. Your lifestyle drops to {}. \
@@ -491,7 +592,12 @@ fn miss(
 }
 
 /// **At most one tier per unpaid period** (answer 3, M11): the record is replaced at
-/// the tier below, with `unpaid_periods` and `arrears` carried across.
+/// the tier below, with `unpaid_periods` and `arrears` carried across and
+/// `missed_seen` reset for the new record (M3).
+///
+/// The replacement is opened **before** the delinquent record is cancelled (M6), so a
+/// refusal leaves the character at the tier they were already paying for rather than
+/// with no upkeep at all.
 fn apply_downgrade(
     ctx: &mut Ctx<'_>,
     cfg: &SrEconomyConfig,
@@ -503,19 +609,7 @@ fn apply_downgrade(
         // Already at the floor; there is nothing below `street` and it costs nothing.
         return;
     }
-    if let Err(error) = mush_economy::cancel_obligation(ctx, o.id, LIFESTYLE_NAMESPACE) {
-        tracing::error!(
-            obligation = o.id.0, who = profile.obj.0, %error,
-            "sr.economy: could not cancel a delinquent lifestyle record for its downgrade; the \
-             tier is unchanged"
-        );
-        return;
-    }
-    profile.lifestyle = next;
-    profile.upkeep = None;
-    profile.revision = profile.revision.saturating_add(1);
-    put_profile(ctx, profile.clone());
-    match open_upkeep(ctx, cfg, &mut profile, next) {
+    match replace_upkeep(ctx, cfg, &mut profile, next, Some(o)) {
         Ok(_) => tracing::info!(
             who = profile.obj.0,
             tier = next.label(),
@@ -523,8 +617,8 @@ fn apply_downgrade(
         ),
         Err(error) => tracing::warn!(
             who = profile.obj.0, tier = next.label(), %error,
-            "sr.economy: the downgraded lifestyle record could not be opened; the character is \
-             at the new tier with no upkeep (+lifestyle/set re-creates it)"
+            "sr.economy: the downgraded lifestyle record could not be opened; the delinquent one \
+             stands and the tier is unchanged (+lifestyle/pay clears it)"
         ),
     }
 }

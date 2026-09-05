@@ -20,7 +20,8 @@ use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 
 use crate::economy::config::{
-    LifestyleTier, MAX_RUN_APPLICANTS, MAX_RUN_NAME_BYTES, MAX_RUN_OUTCOMES, MAX_RUN_SLOTS,
+    LifestyleTier, MAX_MINT_KEY_BYTES, MAX_NOTICE_KIND_BYTES, MAX_NOTICE_KINDS, MAX_RUN_APPLICANTS,
+    MAX_RUN_NAME_BYTES, MAX_RUN_OUTCOMES, MAX_RUN_SLOTS, MAX_RUN_WINDOW_SECS,
 };
 
 /// A board listing's id.
@@ -89,7 +90,22 @@ pub struct SrProfile {
     pub upkeep: Option<ObligationId>,
     /// Consecutive unpaid periods, keyed on the `sr.month` ordinal of the last miss
     /// (never wall time), carried across a downgrade replacement (M11).
-    pub unpaid_periods: u8,
+    ///
+    /// `u32` since the E6a verify fold (M3): a `u8` saturated at 255 and then stopped
+    /// counting, and it was also being read as the miss high-water mark — see
+    /// [`SrProfile::missed_seen`], which is now that mark and nothing else.
+    pub unpaid_periods: u32,
+    /// The highest `Obligation.missed_total` this profile has already accounted for
+    /// (E6a verify fold, M3).
+    ///
+    /// **Per record, not per character.** A downgrade *replaces* the obligation, and
+    /// the replacement's `missed_total` restarts at 0 — so comparing it against the
+    /// carried `unpaid_periods` swallowed every later miss and parked the character at
+    /// `Delinquent`, out of the due pool, with the ladder and the rent both stopped.
+    /// Reset to 0 whenever a record is created or replaced (`open_upkeep`), and
+    /// compared against `missed_total` alone.
+    #[serde(default)]
+    pub missed_seen: u32,
     /// The `sr.month` ordinal the counters are keyed on (E5c T3).
     pub unpaid_since: i64,
     /// What `+lifestyle/pay` posts, in minor units.
@@ -113,7 +129,9 @@ struct SrProfileWire {
     #[serde(default)]
     upkeep: Option<ObligationId>,
     #[serde(default)]
-    unpaid_periods: u8,
+    unpaid_periods: u32,
+    #[serde(default)]
+    missed_seen: u32,
     #[serde(default)]
     unpaid_since: i64,
     #[serde(default = "amount_zero")]
@@ -154,8 +172,10 @@ impl TryFrom<SrProfileWire> for SrProfile {
         if w.arrears.is_negative() {
             return Err(RecordError("a profile's arrears are negative"));
         }
+        // D8: `Mint.key` is a persisted, rendered string, so it is capped on the way
+        // in exactly like every other stored string in this crate.
         if let Some(m) = &w.minted
-            && (m.amount.is_negative() || m.key.is_empty())
+            && (m.amount.is_negative() || m.key.is_empty() || m.key.len() > MAX_MINT_KEY_BYTES)
         {
             return Err(RecordError("a profile's mint record is malformed"));
         }
@@ -165,6 +185,7 @@ impl TryFrom<SrProfileWire> for SrProfile {
             lifestyle: w.lifestyle,
             upkeep: w.upkeep,
             unpaid_periods: w.unpaid_periods,
+            missed_seen: w.missed_seen,
             unpaid_since: w.unpaid_since,
             arrears: w.arrears,
             minted: w.minted,
@@ -184,6 +205,7 @@ impl SrProfile {
             lifestyle: LifestyleTier::default(),
             upkeep: None,
             unpaid_periods: 0,
+            missed_seen: 0,
             unpaid_since: 0,
             arrears: Amount::ZERO,
             minted: None,
@@ -272,6 +294,12 @@ impl RunState {
 
 /// The board's **own** notice — what `+run/show` renders, and never the terms (M5,
 /// G7). Copied at post; the contract's own notice is the economy's to render.
+///
+/// Every field is bounded on the way in by [`RunTemplate`]'s own `TryFrom`
+/// ([`check_notice`]): the name by [`MAX_RUN_NAME_BYTES`], the kinds by
+/// [`MAX_NOTICE_KINDS`] × [`MAX_NOTICE_KIND_BYTES`], and the window by
+/// [`MAX_RUN_WINDOW_SECS`] (E6a verify fold, D8/R6). Everything here is rendered to
+/// whoever can see the listing, so nothing here is an uncapped stored string.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RunNotice {
     /// The listing's name.
@@ -385,11 +413,22 @@ impl TryFrom<RunTemplateWire> for RunTemplate {
         if matches!(w.principal, PrincipalId::System(_)) {
             return Err(RecordError("a listing names a System payer (D-E6-4)"));
         }
-        if w.notice.name.is_empty() || w.notice.name.len() > MAX_RUN_NAME_BYTES {
-            return Err(RecordError("a listing's name is empty or too long"));
-        }
+        check_notice(&w.notice)?;
         if w.outcomes.is_empty() || w.outcomes.len() > MAX_RUN_OUTCOMES {
             return Err(RecordError("a listing has no usable outcome table"));
+        }
+        // D2: an outcome row name is frozen into the consent surface, copied here,
+        // and broadcast by `+run/show`. `commands::outcome_names` capped the count and
+        // the duplicates and not the bytes, so a 4 kB row name reached the board and
+        // the contract alike; the economy refuses one at `check_structure` now, and
+        // this is the load-path half of the same rule.
+        if w.outcomes
+            .iter()
+            .any(|n| n.trim().is_empty() || n.len() > mush_economy::MAX_OUTCOME_NAME_BYTES)
+        {
+            return Err(RecordError(
+                "a listing's outcome row name is empty or too long",
+            ));
         }
         if w.slots == 0 || w.slots > MAX_RUN_SLOTS {
             return Err(RecordError("a listing seats an impossible crew"));
@@ -434,6 +473,30 @@ impl TryFrom<RunTemplateWire> for RunTemplate {
             revision: w.revision.max(1),
         })
     }
+}
+
+/// Every bound a persisted [`RunNotice`] must satisfy (E6a verify fold, D8/R6).
+///
+/// # Errors
+///
+/// The first bound it breaks, in words.
+fn check_notice(n: &RunNotice) -> Result<(), RecordError> {
+    if n.name.is_empty() || n.name.len() > MAX_RUN_NAME_BYTES {
+        return Err(RecordError("a listing's name is empty or too long"));
+    }
+    if n.kinds.len() > MAX_NOTICE_KINDS {
+        return Err(RecordError("a listing's notice names too many kinds"));
+    }
+    if n.kinds
+        .iter()
+        .any(|k| k.trim().is_empty() || k.len() > MAX_NOTICE_KIND_BYTES)
+    {
+        return Err(RecordError("a listing's notice kind is empty or too long"));
+    }
+    if n.window < 0 || n.window > MAX_RUN_WINDOW_SECS {
+        return Err(RecordError("a listing's window is out of range"));
+    }
+    Ok(())
 }
 
 /// Clip a display string to a bounded length on a char boundary.

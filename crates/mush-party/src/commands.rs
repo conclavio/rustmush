@@ -375,7 +375,7 @@ fn list(ctx: &mut Ctx<'_>, lhs: &str) -> Result<(), CmdError> {
         else {
             return Err(CmdError::msg(NO_SUCH_PARTY));
         };
-        lines.extend(show_lines(ctx.w, &p));
+        lines.extend(show_lines(ctx.w, who, &p));
     } else {
         let (mine, invites) = {
             let Some(store) = ctx.w.module_state::<PartyStore>() else {
@@ -401,7 +401,7 @@ fn list(ctx: &mut Ctx<'_>, lhs: &str) -> Result<(), CmdError> {
         if !mine.is_empty() {
             lines.push("Parties you are in:".to_string());
             for p in &mine {
-                lines.extend(show_lines(ctx.w, p));
+                lines.extend(show_lines(ctx.w, who, p));
             }
         }
         if !invites.is_empty() {
@@ -426,10 +426,24 @@ fn list(ctx: &mut Ctx<'_>, lhs: &str) -> Result<(), CmdError> {
 }
 
 /// One party, rendered. Roster and role labels only — a party holds nothing else.
-fn show_lines(w: &World, p: &Party) -> Vec<String> {
+///
+/// The [`ContractRef`](crate::ContractRef) a `Locked` party carries is **the
+/// ruleset's handle, not a player-facing fact** (E6a verify fold, D6): printing it
+/// handed every member — and, before the lock prunes them, every invitee — an
+/// economy-side contract id that the party itself cannot interpret and that the
+/// contract's own view gate never admitted them to. Members read "locked to a job";
+/// staff, who may already read the contract through the economy's own surface, keep
+/// the id for support.
+fn show_lines(w: &World, viewer: ObjId, p: &Party) -> Vec<String> {
     let status = match p.status {
         PartyStatus::Forming => "forming".to_string(),
-        PartyStatus::Locked { by } => format!("locked to job {by}"),
+        PartyStatus::Locked { by } => {
+            if crate::module::is_staff(w, viewer) {
+                format!("locked to a job (staff: job {by})")
+            } else {
+                "locked to a job".to_string()
+            }
+        }
         PartyStatus::Disbanded { how } => format!("disbanded ({})", how.label()),
     };
     let mut lines = vec![format!(

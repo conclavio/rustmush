@@ -171,15 +171,16 @@ pub use contract::{
     ContractTerms, DISPUTE_TTL_SECS, DRAFT_TTL_SECS, Deliverable, DepositRecord, EconomicContract,
     EvidenceKind, ExpenseTreatment, Expiry, MAX_AGREEMENTS, MAX_AMENDMENTS, MAX_CONDITIONS,
     MAX_CONTRACT_NAME_BYTES, MAX_DELIVERABLES, MAX_DEPOSITS, MAX_LIVE_CONTRACTS_PER_PARTY,
-    MAX_OPEN_CONTRACTS_PER_ISSUER, MAX_OUTCOMES, MAX_PARTIES, MAX_SETTLE_ATTEMPTS, MAX_SHARES,
-    ObligationTemplate, OutcomeTerms, PERMILLE, PartyAgreement, PayoutShare, PendingKind,
-    PendingTerminal, QualifyingEscrow, Readiness, Resolution, STALE_CONTRACT_AGE_SECS, Share,
-    TypedCondition, activate_key, activation_asset_ops, apply_outcome, apply_split,
-    canon_set_accepts, canonical_visibility, check_offerable, check_structure, condition_holds,
-    conditions_met, consent_hash, contract_encumbrance, contract_op_key, forfeit_key, forfeit_plan,
-    outcome_conditions, party_escrow_backed, principal_key, qualifying_claims, qualifying_escrow,
-    readiness, refund_key, refund_plan, refund_plan_except, release_asset_ops, resolve_outcome,
-    reverify, settle_key, settlement_plan, stamp_observed,
+    MAX_OPEN_CONTRACTS_PER_ISSUER, MAX_OUTCOME_NAME_BYTES, MAX_OUTCOMES, MAX_PARTIES,
+    MAX_SETTLE_ATTEMPTS, MAX_SHARES, ObligationTemplate, OutcomeTerms, PERMILLE, PartyAgreement,
+    PayoutShare, PendingKind, PendingTerminal, QualifyingEscrow, Readiness, Resolution,
+    STALE_CONTRACT_AGE_SECS, Share, TypedCondition, activate_key, activation_asset_ops,
+    apply_outcome, apply_split, canon_set_accepts, canonical_visibility, check_offerable,
+    check_structure, condition_holds, conditions_met, consent_hash, contract_encumbrance,
+    contract_op_key, forfeit_key, forfeit_plan, outcome_conditions, party_escrow_backed,
+    principal_key, qualifying_claims, qualifying_escrow, readiness, refund_key, refund_plan,
+    refund_plan_except, release_asset_ops, resolve_outcome, reverify, settle_key, settlement_plan,
+    stamp_observed,
 };
 pub use obligation::{
     DEFAULT_GRACE_PERIODS, ForgiveCause, GracePolicy, MAX_GRACE_PERIODS, MAX_OBLIGATION_HISTORY,
@@ -225,7 +226,7 @@ pub use api::{
     CadenceError, MAX_CADENCE_NAME_BYTES, MAX_CADENCES, META_KEY, ObligationSpec, PostOutcome,
     account_key, acknowledge_escalation, approval_key, asset_key, cadence_key, cancel_obligation,
     contract_key, create_cadence, create_obligation, create_system_obligation, create_vault,
-    hold_key, instrument_key, issue_title, mark_canon_published,
+    hold_key, idempotency_resolved, instrument_key, issue_title, mark_canon_published,
     obligation_key as obligation_doc_key, open_account, open_escalation, post, post_capability,
     register_instrument, reinstate_obligation, resume_obligation, reverse, set_account_approval,
     set_account_status, set_asset_frozen, set_economy_frozen, set_system_obligation,
@@ -236,7 +237,7 @@ pub use commands::{may_view_account, may_view_hold, may_view_obligation};
 // layered on the economy needs, exported so it never keeps a third copy.
 pub use commands::{
     is_hidden, mask_account, money, money_on, parse_account, parse_amount, parse_opts,
-    parse_principal, refuse, refuse_named, render_principal,
+    parse_principal, refuse, refuse_named, render_principal, resolve_org_visible,
 };
 pub use custody::{ContainerProvider, CustodyError, CustodyProvider, CustodyTable};
 pub use module::{

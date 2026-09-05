@@ -89,13 +89,16 @@ fn on_contract(ctx: &mut Ctx<'_>, id: mush_economy::ContractId, state: ContractS
         return;
     }
     let party = run.party;
-    let id = run.id;
+    let run_id = run.id;
+    let contract = run.contract;
     let mut run = run;
     run.state = next;
     if next.is_closed() {
         run.applied.clear();
     }
     run.revision = run.revision.saturating_add(1);
+    // A closed listing is **deleted** rather than written (E6a verify fold, D1);
+    // `put_run` routes it. The back-references are read above, before it goes.
     put_run(ctx, run);
     if !next.is_closed() {
         return;
@@ -107,28 +110,25 @@ fn on_contract(ctx: &mut Ctx<'_>, id: mush_economy::ContractId, state: ContractS
         _ => mush_party::DisbandCause::Released,
     };
     crate::economy::board::release_party(ctx, party, how);
-    announce_closure(ctx, id);
+    announce_closure(ctx, run_id, contract);
 }
 
 /// Say, in the log, that a listing closed. The people who need telling are told by
 /// the economy itself: parties get the contract's own notices and an organization's
 /// officers get DL-04's `OrgInbox` line, with no Shadowrun code at all.
-fn announce_closure(ctx: &Ctx<'_>, id: RunId) {
-    let contract = ctx
-        .w
-        .module_state::<SrEconomyStore>()
-        .and_then(|s| s.run(id).map(|r| r.contract));
-    let live = contract.and_then(|c| {
-        ctx.w.module_state::<EconomyStore>().and_then(|s| {
-            s.snapshot()
-                .contract(c)
-                .map(|c| format!("{:?}", c.state.kind()))
-        })
+///
+/// The contract id is **passed in**: the listing document is gone by the time this
+/// runs (D1), so it cannot be looked up from the board any more.
+fn announce_closure(ctx: &Ctx<'_>, id: RunId, contract: mush_economy::ContractId) {
+    let live = ctx.w.module_state::<EconomyStore>().and_then(|s| {
+        s.snapshot()
+            .contract(contract)
+            .map(|c| format!("{:?}", c.state.kind()))
     });
     tracing::info!(
         run = id.0,
-        contract = contract.map_or(0, |c| c.0),
+        contract = contract.0,
         state = live.unwrap_or_else(|| "gone".to_string()),
-        "sr.economy: a run listing closed with its contract"
+        "sr.economy: a run listing closed with its contract, and its board entry was removed"
     );
 }

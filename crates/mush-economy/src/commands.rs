@@ -356,10 +356,15 @@ pub fn parse_opts(s: &str, keys: &[&str]) -> (String, BTreeMap<String, String>) 
 }
 
 /// `<principal>` = `#obj` (or a matchable name) | `org:<id|name>` | `sys:<name>`.
+///
+/// The `org:` arm goes through [`resolve_org_visible`], so a **hidden** organization
+/// is unresolvable to an outsider by name *and* by id — every verb that takes a
+/// principal therefore answers a hidden org exactly as it answers an unknown one
+/// (E6a verify fold, D11).
 pub fn parse_principal(ctx: &Ctx<'_>, s: &str) -> Option<PrincipalId> {
     let s = s.trim();
     if let Some(rest) = s.strip_prefix("org:") {
-        return resolve_org(ctx, rest).map(PrincipalId::Organization);
+        return resolve_org_visible(ctx, rest).map(PrincipalId::Organization);
     }
     if let Some(rest) = s.strip_prefix("sys:") {
         return SystemPrincipalId::new(rest).map(PrincipalId::System);
@@ -369,7 +374,32 @@ pub fn parse_principal(ctx: &Ctx<'_>, s: &str) -> Option<PrincipalId> {
         .map(PrincipalId::Object)
 }
 
-fn resolve_org(ctx: &Ctx<'_>, s: &str) -> Option<mush_org::OrgId> {
+/// Resolve `<id|name|alias>` to an organization the actor may be told **exists**
+/// (E6a verify fold, D11).
+///
+/// `Organization.hidden` means "must not leak its existence to non-members" (org
+/// §12.2), and a resolver that answered by id or by name regardless was an existence
+/// oracle for every verb that takes an org: three distinguishable outcomes
+/// ("no such organization" / "you may not spend it" / it worked) where there must be
+/// one. A viewer who is staff, a member or a grantee resolves it; everybody else gets
+/// `None`, which every caller renders exactly as an unknown org.
+///
+/// A **non-hidden** org resolves for anyone, as it always did — the rule is about
+/// covert compartments, not about privacy in general.
+#[must_use]
+pub fn resolve_org_visible(ctx: &Ctx<'_>, s: &str) -> Option<mush_org::OrgId> {
+    let id = resolve_org_any(ctx, s)?;
+    let store = ctx.w.module_state::<mush_org::OrgStore>()?;
+    let hidden = store.state().org(id).is_some_and(|o| o.hidden);
+    if hidden && !may_see_org(ctx, id) {
+        return None;
+    }
+    Some(id)
+}
+
+/// The raw lookup, blind to the hidden rule. Private: every player-facing caller
+/// wants [`resolve_org_visible`].
+fn resolve_org_any(ctx: &Ctx<'_>, s: &str) -> Option<mush_org::OrgId> {
     let s = s.trim();
     let store = ctx.w.module_state::<mush_org::OrgStore>()?;
     if let Ok(n) = s.trim_start_matches('#').parse::<u64>() {
@@ -1035,7 +1065,7 @@ fn account_open(ctx: &mut Ctx<'_>, system: bool) -> Result<(), CmdError> {
             Some((o, s)) => (o, Some(s)),
             None => (spec, None),
         };
-        let org = resolve_org(ctx, org_s).ok_or_else(|| CmdError::msg("No such org."))?;
+        let org = resolve_org_visible(ctx, org_s).ok_or_else(|| CmdError::msg("No such org."))?;
         let (scope, label) = {
             let store = ctx
                 .w

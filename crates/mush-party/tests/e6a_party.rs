@@ -567,6 +567,12 @@ fn a_locked_party_never_expires() {
 // ---------------------------------------------------------------------------
 
 /// §3.6: `Locked` refuses **every** membership change. Asserted verb by verb.
+///
+/// Since the E6a verify fold (D6) the lock also **prunes** the outstanding
+/// invitations, so `/accept` and `/decline` from a former invitee no longer reach the
+/// locked refusal at all — they reach `NO_SUCH_PARTY`, which is the stronger answer
+/// and the one `vf_d6_…` asserts. Everything a *member* can try still refuses as
+/// locked.
 #[test]
 fn locked_refuses_every_membership_change() {
     let mut tw = boot();
@@ -579,8 +585,6 @@ fn locked_refuses_every_membership_change() {
     for (actor, line) in [
         (c.ann, "+party/invite Dee"),
         (c.ann, "+party/uninvite Cid"),
-        (c.cid, "+party/accept 0"),
-        (c.cid, "+party/decline 0"),
         (c.bob, "+party/leave"),
         (c.ann, "+party/kick Bob"),
         (c.ann, "+party/role Bob=face"),
@@ -592,10 +596,20 @@ fn locked_refuses_every_membership_change() {
             "`{line}` must refuse as locked, got: {t}"
         );
     }
+    for line in ["+party/accept 0", "+party/decline 0"] {
+        let t = err(&mut tw, c.cid, line);
+        assert!(
+            t.contains(mush_party::NO_SUCH_PARTY),
+            "`{line}` from a pruned invitee must hide the party, got: {t}"
+        );
+    }
 
     let after = party(&tw, c.id);
     assert_eq!(after.members, before.members, "the roster did not move");
-    assert_eq!(after.invited, before.invited);
+    assert!(
+        after.invited.is_empty(),
+        "the lock did not prune the outstanding invitations (D6)"
+    );
     assert_eq!(after.roles, before.roles);
     assert!(!after.is_member(dee));
 }
@@ -991,10 +1005,18 @@ fn a_destroyed_member_leaves_an_unlocked_roster_only() {
     assert_eq!(unlocked.members, vec![c.ann]);
     assert!(unlocked.is_forming());
 
+    // The lock pruned Bob's invitation to the second party (D6), so what is asserted
+    // here is what remains true: the destroyed member is not on the *roster*, and the
+    // observer left the locked party's status and members exactly as they were.
     let locked = party(&tw, PartyId(1));
     assert!(
-        locked.is_invited(c.bob),
-        "a locked party's roster state is never edited behind the contract"
+        !locked.is_invited(c.bob),
+        "the lock did not prune the outstanding invitation (D6)"
+    );
+    assert_eq!(
+        locked.members,
+        vec![c.ann],
+        "a locked party's roster is never edited behind the contract"
     );
     assert_eq!(
         locked.status,
@@ -1002,4 +1024,59 @@ fn a_destroyed_member_leaves_an_unlocked_roster_only() {
             by: ContractRef(77)
         }
     );
+}
+
+// ---- E6a verify fold ----
+
+/// D6: a stale invitee could watch the crew for the life of the run.
+///
+/// `may_view` admits an invitee, `Locked` refuses `/uninvite`, and the lock left the
+/// invitation standing — so somebody the leader had invited and never removed kept
+/// reading the roster of a party that had gone on a job, and nobody could take it away
+/// from them. The lock prunes the invitations, because a locked party can neither
+/// accept one nor withdraw one.
+#[test]
+fn vf_d6_the_lock_prunes_outstanding_invitations_and_hides_the_party() {
+    let mut tw = boot();
+    let mut st = Persisted::default();
+    let c = crew(&mut tw, 1_000);
+    // Cid holds an outstanding invitation and can see the party.
+    assert!(party(&tw, c.id).is_invited(c.cid));
+    ok(&mut tw, c.cid, &format!("+party {}", c.id));
+
+    lock_at(&mut tw, &mut st, c.id, 77);
+
+    let p = party(&tw, c.id);
+    assert!(p.invited.is_empty(), "the lock left an invitation standing");
+    assert!(!p.is_invited(c.cid));
+    assert_eq!(p.members, vec![c.ann, c.bob], "the roster moved");
+    // And the un-accepted invitee is now told exactly what a stranger is told.
+    hidden(&mut tw, c.cid, &format!("+party {}", c.id));
+    // A member still reads it.
+    ok(&mut tw, c.bob, &format!("+party {}", c.id));
+}
+
+/// D6: the `ContractRef` a locked party carries is the ruleset's handle, and a member
+/// render never names it. It is an economy-side contract id the party cannot itself
+/// interpret and whose own view gate never admitted the crew.
+#[test]
+fn vf_d6_a_members_view_names_no_contract_id() {
+    let mut tw = boot();
+    let mut st = Persisted::default();
+    let c = crew(&mut tw, 1_000);
+    lock_at(&mut tw, &mut st, c.id, 4_242);
+
+    let mine = ok(&mut tw, c.bob, &format!("+party {}", c.id));
+    assert!(
+        mine.contains("locked to a job"),
+        "a member is not told the party is on a job: {mine}"
+    );
+    assert!(
+        !mine.contains("4242"),
+        "the contract id leaked to a member: {mine}"
+    );
+    // Staff, who may already read the contract through the economy's own surface,
+    // keep the handle for support.
+    let theirs = ok(&mut tw, GOD, &format!("+party {}", c.id));
+    assert!(theirs.contains("4242"), "staff lost the handle: {theirs}");
 }

@@ -82,6 +82,40 @@ pub const MAX_RUN_NAME_BYTES: usize = 48;
 pub const MAX_RUN_SLOTS: u8 = 8;
 /// The most parties that may be waiting on one listing's answer at a time.
 pub const MAX_RUN_APPLICANTS: usize = 8;
+/// The most **condition kinds** one board notice names (E6a verify fold, D8/R6).
+///
+/// E6a's notice is the constant `["attest"]`; E6b adds `before`/`after`/`fact`. Eight
+/// is E4's own `MAX_CONDITIONS`-shaped ceiling and far past any table that will exist.
+pub const MAX_NOTICE_KINDS: usize = 8;
+/// The most UTF-8 bytes in one notice kind token (E6a verify fold, D8/R6).
+pub const MAX_NOTICE_KIND_BYTES: usize = 32;
+/// The longest window a persisted notice may claim, in seconds (E6a verify fold, R6).
+///
+/// One year — the same ceiling [`SrEconomyConfig::board_ttl`] clamps to — so a
+/// hand-written document cannot render a listing that closes in the year 300 million.
+pub const MAX_RUN_WINDOW_SECS: i64 = 365 * 86_400;
+/// The most UTF-8 bytes in a persisted mint's idempotency key (E6a verify fold, D8).
+///
+/// The keys this ruleset writes are `sr.chargen/{obj}` and `sr.migration/{obj}` — well
+/// under 32 bytes — and 128 leaves room for a namespace change without touching
+/// the wire.
+pub const MAX_MINT_KEY_BYTES: usize = 128;
+/// The most listing documents one board command may **visit** (E6a verify fold, D1).
+///
+/// D-LBK-5's rule: a bounded read bounds the records it *touches*, never the ones it
+/// *matches*, or a selective filter over a long tail is an unbounded scan wearing a
+/// page cap. `+run/list` walks at most this many live listings from its cursor and
+/// returns at most [`BOARD_PAGE`] of them, with a continuation cursor when it stopped
+/// early.
+pub const BOARD_PAGE_VISIT: usize = 256;
+/// How many just-closed listing ids the board remembers for `+run/show`
+/// (E6a verify fold, D1).
+///
+/// A closed listing's document is deleted — a post/withdraw loop must not mint
+/// permanent documents — but somebody who was looking at run #7 when it closed
+/// deserves "closed" rather than "No such run.". A 32-deep ring of ids is that grace
+/// period, and it costs nothing: an id, not a record.
+pub const RECENT_CLOSED_RING: usize = 32;
 
 /// The lifestyle tiers, low to high (`crates/ruleset-shadowrun/src/data.rs` —
 /// `LIFESTYLES`), as the economy layer orders them.
