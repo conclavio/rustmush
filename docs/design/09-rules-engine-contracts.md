@@ -2805,6 +2805,15 @@ K7.2 adds a sibling authenticated decision-response ingress that ends in the exi
 It does not change `ScheduleActionDraft`, the canonical `scheduler` principal class, or
 `ActionCoordinator::prepare_and_stage_resolved`'s signature.
 
+Implementation status: the exact completion fence, token/prompt/lease/deadline authentication,
+canonical response ingress on the predeclared action-idempotency key, current legal-offer
+regeneration, selected-target filtering, private prompt-time revision/bridge witness restoration,
+and ordinary resolved-action coordinator entry are implemented. A composed test proves a lost wake
+through provider response to a committed selected-action post-image, and adversarial tests reject a
+forged token and wrong lease attempt before offer resolution. The remaining K7.2 slice is the
+owner-local `Resolving` binding transition and finalized-action reconciliation; until it lands,
+production ruleset migration remains disabled and the durable lease remains the recovery owner.
+
 **K7.3 — cancellation, deadlines, and fallback.** Cancellation is an exact revision transition and
 invalidates the token before acknowledging success. A durable one-shot schedule owns the deadline.
 At expiry, malformed-output exhaustion, or provider-unavailable policy, choose a deterministic

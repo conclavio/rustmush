@@ -98,7 +98,7 @@ use tokio::task::JoinHandle;
 
 use crate::action_coordinator::{
     ActionCoordinator, ActionPermit, ActionPreflight, StagedAuthoritativeAction,
-    StagedDecisionLease,
+    StagedDecisionLease, StagedDecisionResponse,
 };
 use crate::decision_dispatch::{
     DecisionDispatchReservation, DecisionDispatcher, DecisionProviderRegistry,
@@ -2050,11 +2050,17 @@ struct ActionCompletion {
         Option<oneshot::Sender<Result<StagedAuthoritativeAction, AuthoritativeCommitFailure>>>,
     ownership_valid: bool,
     post_commit_decision: Option<DecisionPostCommit>,
+    post_commit_decision_response: Option<DecisionResponsePostCommit>,
 }
 
 struct DecisionPostCommit {
     reservation: DecisionDispatchReservation,
     worker: mush_core::DecisionWorkerLease,
+}
+
+struct DecisionResponsePostCommit {
+    fence: mush_core::DecisionCompletionFence,
+    binding: mush_core::DecisionActionBinding,
 }
 
 /// One authoritative batch whose presentation and external work remain held
@@ -2724,6 +2730,7 @@ async fn run(
                                         finished: Some(finished),
                                         ownership_valid: false,
                                         post_commit_decision: None,
+                                        post_commit_decision_response: None,
                                     });
                                 }
                                 Err(detail) => {
@@ -2917,6 +2924,7 @@ async fn run(
                             finished: None,
                             ownership_valid: false,
                             post_commit_decision: None,
+                            post_commit_decision_response: None,
                         });
                     }
                     Err(detail) => {
@@ -2989,6 +2997,7 @@ async fn run(
                                 reservation,
                                 worker,
                             }),
+                            post_commit_decision_response: None,
                         });
                     }
                     Err(detail) => {
@@ -3004,17 +3013,133 @@ async fn run(
                 StepOutcome::Continue
             }
             Wake::DecisionResult(completion) => {
-                // K7.2 consumes this exact fence through authenticated response
-                // ingress. Until that slice is enabled, dropping the volatile
-                // result cannot lose the obligation: the durable lease expires
-                // and bounded recovery reoffers it.
-                tracing::warn!(
-                    owner = %completion.controller().owner,
-                    decision = ?completion.decision(),
-                    revision = completion.revision(),
-                    attempt = completion.attempt(),
-                    "decision completion reached the K7.1 boundary before K7.2 response ingress"
-                );
+                let Some(store) = deps.store.authoritative_store() else {
+                    apply_integrity_freeze(
+                        &engine.world,
+                        &gateway,
+                        &mut health,
+                        &persistence_integrity,
+                        "decision response ingress has no authoritative store capability",
+                    );
+                    continue;
+                };
+                let fence = completion.fence();
+                match completion.into_result() {
+                    Err(error) => {
+                        // K7.3 turns typed provider failures into an attempt or
+                        // fallback transition. Until then the exact durable
+                        // lease retains custody and bounded expiry redispatches.
+                        tracing::warn!(
+                            owner = %fence.controller().owner,
+                            decision = ?fence.decision(),
+                            revision = fence.revision(),
+                            attempt = fence.attempt(),
+                            kind = ?error.kind(),
+                            error = %error.detail(),
+                            "decision provider failed; durable lease retained for policy handling"
+                        );
+                    }
+                    Ok(response) => {
+                        let ingress = match ActionCoordinator::decision_response_ingress(
+                            &engine, &fence, &response,
+                        ) {
+                            Ok(ingress) => ingress,
+                            Err(error) => {
+                                tracing::warn!(
+                                    owner = %fence.controller().owner,
+                                    decision = ?fence.decision(),
+                                    revision = fence.revision(),
+                                    attempt = fence.attempt(),
+                                    error = %error,
+                                    "refused stale or malformed decision response"
+                                );
+                                continue;
+                            }
+                        };
+                        let preflight = match ActionCoordinator::preflight(store, ingress).await {
+                            Ok(preflight) => preflight,
+                            Err(error) => {
+                                tracing::warn!(
+                                    owner = %fence.controller().owner,
+                                    decision = ?fence.decision(),
+                                    error = %error,
+                                    "decision response idempotency preflight is unavailable"
+                                );
+                                continue;
+                            }
+                        };
+                        match preflight {
+                            ActionPreflight::Vacant(permit) => {
+                                match ActionCoordinator::prepare_and_stage_decision_response(
+                                    permit,
+                                    &mut engine,
+                                    fence,
+                                    &response,
+                                ) {
+                                    Ok(StagedDecisionResponse {
+                                        staged,
+                                        fence,
+                                        binding,
+                                    }) => {
+                                        action_completion = Some(ActionCompletion {
+                                            staged,
+                                            owned: None,
+                                            finished: None,
+                                            ownership_valid: false,
+                                            post_commit_decision: None,
+                                            post_commit_decision_response: Some(
+                                                DecisionResponsePostCommit { fence, binding },
+                                            ),
+                                        });
+                                    }
+                                    Err(error) => {
+                                        tracing::warn!(
+                                            error = %error,
+                                            "decision response failed current offer revalidation"
+                                        );
+                                    }
+                                }
+                            }
+                            ActionPreflight::Pending { token, bundle_hash } => {
+                                tracing::info!(
+                                    %token,
+                                    %bundle_hash,
+                                    decision = ?fence.decision(),
+                                    "decision response joined an existing selected-action intent"
+                                );
+                            }
+                            ActionPreflight::Finalized(receipt) => {
+                                tracing::info!(
+                                    token = %receipt.token(),
+                                    decision = ?fence.decision(),
+                                    "decision response joined an already finalized selected action"
+                                );
+                            }
+                            ActionPreflight::Retired {
+                                minimum_accepted_epoch,
+                            } => {
+                                tracing::warn!(
+                                    decision = ?fence.decision(),
+                                    minimum_accepted_epoch,
+                                    "decision response action idempotency epoch is retired"
+                                );
+                            }
+                            ActionPreflight::Quarantined(receipt) => {
+                                tracing::error!(
+                                    token = %receipt.token(),
+                                    decision = ?fence.decision(),
+                                    "decision response selected action is quarantined"
+                                );
+                            }
+                            ActionPreflight::Conflict => {
+                                tracing::info!(
+                                    decision = ?fence.decision(),
+                                    "decision response lost the selected-action idempotency race"
+                                );
+                            }
+                        }
+                    }
+                }
                 StepOutcome::Continue
             }
             Wake::Shutdown => {
@@ -5826,6 +5951,26 @@ fn complete_pending_commit(
             &format!("committed decision lease could not release worker custody: {error}"),
         );
     }
+    if let Some(response) = action
+        .as_mut()
+        .and_then(|completion| completion.post_commit_decision_response.take())
+        && outcome == DeliveryOutcome::Committed
+        && !health.mode.integrity_frozen()
+    {
+        // The selected action now has durable ordinary-action custody. K7.2's
+        // lifecycle follow-up records this binding as Resolving/Terminal; a
+        // crash before that follow-up is recoverable from the exact scoped
+        // action idempotency status and cannot execute a second action.
+        tracing::info!(
+            owner = %response.fence.controller().owner,
+            decision = ?response.fence.decision(),
+            revision = response.fence.revision(),
+            attempt = response.fence.attempt(),
+            request = %response.binding.request,
+            request_hash = %response.binding.request_hash,
+            "decision response selected action committed through ordinary coordinator"
+        );
+    }
     if let Some(completion) = action.as_mut()
         && let Some(finished) = completion.finished.take()
     {
@@ -6219,7 +6364,7 @@ mod tests {
 
     use mush_core::{
         ActionError, ActionErrorCode, ActionInvocation, ActionInvocationDraft, ActionOfferId,
-        ActionProvider, ActionStateBootRecord, ArgShape, AsyncCompletion,
+        ActionPresentation, ActionProvider, ActionStateBootRecord, ArgShape, AsyncCompletion,
         AuthoritativeActionOutput, AuthoritativeBundle, AuthoritativeBundleDraft, CanonicalHash,
         CanonicalId, ClockRef, ClockStamp, CmdError, CommandSpec,
         CommitToken as DurableCommitToken, ContextOutcome, Ctx, DecisionAdmissionIndex,
@@ -6231,14 +6376,15 @@ mod tests {
         FallbackPolicyRef, GOD, GameModule, GuardSet, HookPoint, IdempotencyKey,
         IdempotencyKeyText, IdempotencyScope, IngressEnvelope, IngressPayload,
         IngressSurfaceVersion, InputContext, LIMBO, ModuleBootData, ModuleCtx, ModuleOp,
-        ModuleWrite, OwnerId, PendingDecision, PendingDecisionStateCodec, PendingDecisionStatus,
-        PendingOfferWitness, PerceivedRef, PreparedCausalRef, PreparedTxn, PrincipalId,
-        ProjectedDecisionContext, ProjectedLegalAction, ProjectionScopeId, QueryHandler, Registrar,
-        RequestUid, RevisionKey, RevisionKind, RevisionSet, RevisionStamp, RevisionValidator,
-        RulesValue, ScopedIdempotencyKey, StateFamilyDescriptor, StateFamilyHandle, StateFamilyId,
-        SubjectKey, TickHandler, WorldEventKind, WorldObserver,
-        decision_prompt_state_family_descriptor, durable_schedule_state_family_descriptor,
-        pending_decision_state_family_descriptor,
+        ModuleWrite, OfferKeyRing, OfferSecret, OwnerId, PendingDecision,
+        PendingDecisionStateCodec, PendingDecisionStatus, PendingOfferWitness, PerceivedRef,
+        PreparedCausalRef, PreparedTxn, PrincipalId, ProjectedDecisionContext,
+        ProjectedLegalAction, ProjectedParameterSchema, ProjectedTargetSchema, ProjectionScopeId,
+        ProviderOfferDraft, QueryHandler, Registrar, RequestUid, RevisionKey, RevisionKind,
+        RevisionSet, RevisionStamp, RevisionValidator, RulesValue, ScopedIdempotencyKey,
+        StateFamilyDescriptor, StateFamilyHandle, StateFamilyId, SubjectKey, TickHandler,
+        WorldEventKind, WorldObserver, decision_prompt_state_family_descriptor,
+        durable_schedule_state_family_descriptor, pending_decision_state_family_descriptor,
     };
     use mush_proto::{InputMode, PromptSpec};
     use mush_store::{AuthoritativeOutboxAttemptResult, AuthoritativeStore};
@@ -6343,9 +6489,18 @@ mod tests {
 
     type PendingDecisionHandle = StateFamilyHandle<DecisionId, PendingDecision>;
 
+    #[derive(Clone, Debug, serde::Deserialize, Eq, PartialEq)]
+    #[serde(deny_unknown_fields)]
+    struct DecisionSelectionState {
+        count: u64,
+    }
+
+    type DecisionSelectionHandle = StateFamilyHandle<CanonicalId, DecisionSelectionState>;
+
     #[derive(Clone)]
     struct DecisionHarnessFamilies {
         pending: PendingDecisionHandle,
+        selections: DecisionSelectionHandle,
     }
 
     #[derive(Clone)]
@@ -6369,6 +6524,7 @@ mod tests {
 
     struct DecisionLeaseProvider {
         action: DefinitionRef,
+        selections: DecisionSelectionHandle,
     }
 
     fn harness_action_error(detail: impl Into<String>) -> ActionError {
@@ -6413,9 +6569,26 @@ mod tests {
 
         fn prepare_authoritative(
             &self,
-            _invocation: &ActionInvocation,
-            _txn: &mut mush_core::ActionTxn<'_>,
+            invocation: &ActionInvocation,
+            txn: &mut mush_core::ActionTxn<'_>,
         ) -> Result<AuthoritativeActionOutput, ActionError> {
+            if invocation.parameters().get("decision").is_none() {
+                let key = CanonicalId::new("selected").expect("static selection key");
+                match txn
+                    .get(&self.selections, &key)
+                    .map_err(|error| harness_action_error(error.to_string()))?
+                    .cloned()
+                {
+                    Some(mut selection) => {
+                        selection.count = selection.count.saturating_add(1);
+                        txn.replace(&self.selections, &key, selection)
+                            .map_err(|error| harness_action_error(error.to_string()))?;
+                    }
+                    None => txn
+                        .insert(&self.selections, &key, DecisionSelectionState { count: 1 })
+                        .map_err(|error| harness_action_error(error.to_string()))?,
+                }
+            }
             let outcome = RulesValue::new(
                 self.action.clone(),
                 serde_json::json!({
@@ -6424,6 +6597,41 @@ mod tests {
             )
             .map_err(|error| harness_action_error(error.to_string()))?;
             Ok(AuthoritativeActionOutput::new(outcome))
+        }
+
+        fn project_offer(
+            &self,
+            action: &DefinitionRef,
+            _query: &mush_core::LegalActionQuery,
+            engine: &Engine,
+        ) -> Result<Option<ProviderOfferDraft>, ActionError> {
+            let definitions = engine
+                .registry
+                .definitions()
+                .ok_or_else(|| harness_action_error("definition registry unavailable"))?;
+            let mut guards = engine
+                .registry
+                .server_guard_set_builder(RevisionSet::default())
+                .map_err(|error| harness_action_error(error.to_string()))?;
+            guards
+                .add_definition(action.clone(), definitions)
+                .map_err(|error| harness_action_error(error.to_string()))?;
+            Ok(Some(ProviderOfferDraft {
+                fixed_parameters: serde_json::json!({}),
+                parameters: ProjectedParameterSchema::empty(),
+                targets: ProjectedTargetSchema::None,
+                required_channels: Vec::new(),
+                expires: None,
+                presentation: ActionPresentation::new(
+                    "choose",
+                    "Choose",
+                    "Select the decision action.",
+                )
+                .map_err(|error| harness_action_error(error.to_string()))?,
+                guards: guards
+                    .finish()
+                    .map_err(|error| harness_action_error(error.to_string()))?,
+            }))
         }
     }
 
@@ -6503,6 +6711,30 @@ mod tests {
                 DurableScheduleStateCodec,
                 DurableScheduleStateCodec,
             )?;
+            let selections = reg.state_family(
+                StateFamilyDescriptor::new(
+                    StateFamilyId::new("decision_selections")
+                        .map_err(|error| mush_core::ModError::msg(error.to_string()))?,
+                    CanonicalId::new("canonical_id.v1")
+                        .map_err(|error| mush_core::ModError::msg(error.to_string()))?,
+                    CanonicalId::new("decision_selection.v1")
+                        .map_err(|error| mush_core::ModError::msg(error.to_string()))?,
+                    1,
+                    CanonicalId::new("decision_selection_decode.v1")
+                        .map_err(|error| mush_core::ModError::msg(error.to_string()))?,
+                    CanonicalId::new("decision_selection_validate.v1")
+                        .map_err(|error| mush_core::ModError::msg(error.to_string()))?,
+                    CanonicalId::new("decision_selection_serialize.v1")
+                        .map_err(|error| mush_core::ModError::msg(error.to_string()))?,
+                )
+                .map_err(|error| mush_core::ModError::msg(error.to_string()))?,
+                |key: &CanonicalId| Ok(key.to_string()),
+                |value: &serde_json::Value| {
+                    serde_json::from_value(value.clone()).map_err(|error| error.to_string())
+                },
+                |_value: &DecisionSelectionState| Ok(()),
+                |value: &DecisionSelectionState| Ok(serde_json::json!({ "count": value.count })),
+            )?;
             let capture =
                 DecisionCaptureFamilies::new(pending.clone(), prompts.clone(), deadlines.clone())
                     .map_err(|error| mush_core::ModError::msg(error.to_string()))?;
@@ -6518,6 +6750,7 @@ mod tests {
                 lease_action.clone(),
                 DecisionLeaseProvider {
                     action: lease_action.clone(),
+                    selections: selections.clone(),
                 },
             )?;
             reg.decision_source(
@@ -6532,7 +6765,10 @@ mod tests {
                 .lock()
                 .expect("decision registration mutex poisoned") =
                 Some(DecisionHarnessRegistration {
-                    families: DecisionHarnessFamilies { pending },
+                    families: DecisionHarnessFamilies {
+                        pending,
+                        selections,
+                    },
                     capture_action,
                     lease_action,
                 });
@@ -6629,6 +6865,13 @@ mod tests {
         )
         .expect("test decision key ring");
         world.engine_mut().set_decision_keys(keys.clone());
+        world.engine_mut().set_offer_keys(
+            OfferKeyRing::new(
+                OfferSecret::new(1, [0x6b; 32]).expect("test offer secret"),
+                [],
+            )
+            .expect("test offer key ring"),
+        );
         let _ = world.drain_write_batch();
         let registered = registration
             .lock()
@@ -6638,24 +6881,25 @@ mod tests {
         (world.into_engine(), registered, capture_plan, keys)
     }
 
-    fn projected_decision_action(offer: ActionOfferId) -> ProjectedLegalAction {
-        serde_json::from_value(serde_json::json!({
-            "offer": offer,
-            "subject": { "kind": "self_actor" },
-            "parameters": [],
-            "targets": { "kind": "none" },
-            "required_channels": [],
-            "expires": null,
-            "presentation": {
-                "verb": "wait",
-                "label": "Wait",
-                "help": "Hold position."
-            }
-        }))
-        .expect("projected decision action")
+    fn projected_decision_action(engine: &Engine) -> ProjectedLegalAction {
+        let query = engine
+            .legal_action_query(
+                PrincipalId::Object { id: GOD },
+                GOD,
+                PerceivedRef::SelfActor,
+            )
+            .expect("decision action query");
+        engine
+            .project_legal_actions(&query)
+            .expect("decision action projection")
+            .projected()
+            .into_iter()
+            .find(|action| action.presentation().verb == "choose")
+            .expect("decision harness choice action")
     }
 
     fn arm_decision_capture(
+        engine: &Engine,
         keys: &DecisionKeyRing,
         registration: &DecisionHarnessRegistration,
         capture_plan: &Mutex<Option<DecisionCapturePlan>>,
@@ -6685,7 +6929,8 @@ mod tests {
         );
         let id = DecisionId::derive(&controller, &cause, &action_idempotency)
             .expect("decision identity");
-        let offer = ActionOfferId(CanonicalHash::from_bytes([salt.wrapping_add(1); 32]));
+        let projected = projected_decision_action(engine);
+        let offer = projected.offer();
         let placeholder = DecisionToken {
             id,
             revision: 1,
@@ -6695,7 +6940,7 @@ mod tests {
         };
         let mut prompt = DecisionPrompt {
             token: placeholder,
-            actions: vec![projected_decision_action(offer)],
+            actions: vec![projected],
             context: ProjectedDecisionContext::new(
                 CanonicalId::new("test_context.v1").expect("static context id"),
                 serde_json::json!({ "turn": salt }),
@@ -6883,8 +7128,14 @@ mod tests {
     #[tokio::test]
     async fn decision_dispatch_rediscovery_leases_after_capture_ack_and_lost_wake() {
         let (mut engine, registration, capture_plan, keys) = decision_harness(30);
-        let pending =
-            arm_decision_capture(&keys, &registration, &capture_plan, 0x31, unix_now_s() + 60);
+        let pending = arm_decision_capture(
+            &engine,
+            &keys,
+            &registration,
+            &capture_plan,
+            0x31,
+            unix_now_s() + 60,
+        );
         let deps = ServerDeps::in_memory();
         let store = Arc::clone(&deps.store);
         let authoritative = store
@@ -6949,14 +7200,40 @@ mod tests {
         assert_eq!(persisted["value"]["status"]["attempt"], 1);
         assert_eq!(calls.load(AtomicOrdering::SeqCst), 1);
 
+        let selection_key = format!(
+            "action-state/v1/{}/selected",
+            registration.families.selections.descriptor().id()
+        );
+        let selected = tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                if let Some(value) = store
+                    .module_json_get(DECISION_HARNESS_OWNER, &selection_key)
+                    .await
+                    .expect("selected action read")
+                {
+                    break value;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("authenticated decision response did not commit its selected action");
+        assert_eq!(selected["value"]["count"], 1);
+
         stop_test_server(handles).await;
     }
 
     #[tokio::test]
     async fn expired_decision_lease_is_rediscovered_after_process_restart() {
         let (mut engine, registration, capture_plan, keys) = decision_harness(1);
-        let pending =
-            arm_decision_capture(&keys, &registration, &capture_plan, 0x33, unix_now_s() + 30);
+        let pending = arm_decision_capture(
+            &engine,
+            &keys,
+            &registration,
+            &capture_plan,
+            0x33,
+            unix_now_s() + 30,
+        );
         let store: Arc<dyn ObjectStore> = Arc::new(InMemoryStore::new());
         commit_armed_capture(
             &mut engine,
@@ -7054,15 +7331,27 @@ mod tests {
     #[tokio::test]
     async fn worker_saturation_leaves_second_decision_ready_until_capacity_returns() {
         let (mut engine, registration, capture_plan, keys) = decision_harness(30);
-        let first_pending =
-            arm_decision_capture(&keys, &registration, &capture_plan, 0x34, unix_now_s() + 60);
+        let first_pending = arm_decision_capture(
+            &engine,
+            &keys,
+            &registration,
+            &capture_plan,
+            0x34,
+            unix_now_s() + 60,
+        );
         let store: Arc<dyn ObjectStore> = Arc::new(InMemoryStore::new());
         let authoritative = store
             .authoritative_store()
             .expect("in-memory store is authoritative");
         commit_armed_capture(&mut engine, authoritative, &registration, 0x44).await;
-        let second_pending =
-            arm_decision_capture(&keys, &registration, &capture_plan, 0x35, unix_now_s() + 60);
+        let second_pending = arm_decision_capture(
+            &engine,
+            &keys,
+            &registration,
+            &capture_plan,
+            0x35,
+            unix_now_s() + 60,
+        );
         commit_armed_capture(&mut engine, authoritative, &registration, 0x45).await;
 
         let calls = Arc::new(AtomicUsize::new(0));
@@ -7156,8 +7445,14 @@ mod tests {
     #[tokio::test]
     async fn refused_decision_lease_aborts_post_image_without_spawning_provider() {
         let (mut engine, registration, capture_plan, keys) = decision_harness(30);
-        let pending =
-            arm_decision_capture(&keys, &registration, &capture_plan, 0x32, unix_now_s() + 60);
+        let pending = arm_decision_capture(
+            &engine,
+            &keys,
+            &registration,
+            &capture_plan,
+            0x32,
+            unix_now_s() + 60,
+        );
         let store = InMemoryStore::new();
         commit_armed_capture(&mut engine, &store, &registration, 0x42).await;
 
@@ -7213,6 +7508,7 @@ mod tests {
                     reservation,
                     worker,
                 }),
+                post_commit_decision_response: None,
             }),
             prepared_installation: Some(installation),
             barriers: Vec::new(),
@@ -7247,6 +7543,129 @@ mod tests {
             PendingDecisionStatus::Ready { attempt: 1 }
         ));
         assert!(!engine.action_state().has_prepared());
+    }
+
+    #[tokio::test]
+    async fn decision_response_requires_exact_live_fence_before_offer_resolution() {
+        let (mut engine, registration, capture_plan, keys) = decision_harness(30);
+        let pending = arm_decision_capture(
+            &engine,
+            &keys,
+            &registration,
+            &capture_plan,
+            0x36,
+            unix_now_s() + 60,
+        );
+        let store = InMemoryStore::new();
+        commit_armed_capture(&mut engine, &store, &registration, 0x46).await;
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mut providers = DecisionProviderRegistry::new();
+        providers
+            .register(Arc::new(RecordingDecisionProvider {
+                owner: OwnerId::new(DECISION_HARNESS_OWNER).expect("static harness owner"),
+                calls,
+                called: Arc::new(tokio::sync::Notify::new()),
+            }))
+            .expect("decision provider registration");
+        let (completion_tx, _completion_rx) = mpsc::channel(MAX_DECISION_COMPLETIONS);
+        let dispatcher = Arc::new(
+            DecisionDispatcher::new(Arc::new(providers), 1, completion_tx)
+                .expect("decision dispatcher"),
+        );
+        let mut driver = DurableDecisionDriver::new(1, dispatcher);
+        let DurableDecisionDrive::Staged(staged_dispatch) = driver
+            .drive_one(&mut engine, &store, None)
+            .await
+            .expect("decision lease drive")
+        else {
+            panic!("ready decision did not stage a lease")
+        };
+        let StagedDecisionDispatch {
+            staged,
+            reservation,
+        } = *staged_dispatch;
+        let StagedDecisionLease { staged, worker } = staged;
+        let prepared = engine
+            .take_staged_action()
+            .expect("lease admission")
+            .expect("staged lease action");
+        let (persistence, installation) = prepared.into_parts();
+        let StagedActionPersistence::Authoritative(bundle) = persistence else {
+            panic!("decision lease used legacy persistence")
+        };
+        assert_eq!(bundle.token(), staged.token);
+        assert_eq!(bundle.bundle_hash(), staged.bundle_hash);
+        store
+            .reserve_authoritative_intent((*bundle).clone())
+            .await
+            .expect("lease intent reservation");
+        store
+            .reconcile_authoritative(bundle.token(), bundle.bundle_hash())
+            .await
+            .expect("lease reconciliation");
+        engine.install_prepared_action(installation);
+        drop(reservation);
+
+        let fence = mush_core::DecisionCompletionFence::new(
+            worker.controller().clone(),
+            worker.decision(),
+            worker.revision(),
+            worker.attempt(),
+            worker.lease_until().clone(),
+        )
+        .expect("worker completion fence");
+        let response = DecisionResponse {
+            token: worker.prompt().token,
+            offer: worker.prompt().actions[0].offer(),
+            targets: Vec::new(),
+            parameters: serde_json::json!({}),
+        };
+        let mut forged = response.clone();
+        forged.token.tag = CanonicalHash::from_bytes([0xf0; 32]);
+        assert!(matches!(
+            engine.decision_response_ingress(&fence, &forged),
+            Err(mush_core::DecisionResponseIngressError::StaleCompletion)
+        ));
+        let wrong_attempt = mush_core::DecisionCompletionFence::new(
+            worker.controller().clone(),
+            worker.decision(),
+            worker.revision(),
+            worker.attempt() + 1,
+            worker.lease_until().clone(),
+        )
+        .expect("wrong-attempt fence is structurally valid");
+        assert!(matches!(
+            engine.decision_response_ingress(&wrong_attempt, &response),
+            Err(mush_core::DecisionResponseIngressError::StaleCompletion)
+        ));
+
+        let ingress = ActionCoordinator::decision_response_ingress(&engine, &fence, &response)
+            .expect("valid response ingress");
+        assert_eq!(ingress.idempotency(), &pending.action_idempotency);
+        let ActionPreflight::Vacant(permit) = ActionCoordinator::preflight(&store, ingress)
+            .await
+            .expect("response preflight")
+        else {
+            panic!("selected action idempotency was not vacant")
+        };
+        let selected = ActionCoordinator::prepare_and_stage_decision_response(
+            permit,
+            &mut engine,
+            fence,
+            &response,
+        )
+        .expect("decision response offer resolution");
+        assert_ne!(
+            selected.binding.request_hash,
+            CanonicalHash::from_bytes([0; 32])
+        );
+        let staged = engine
+            .take_staged_action()
+            .expect("selected action admission")
+            .expect("selected staged action");
+        let (_persistence, installation) = staged.into_parts();
+        engine.abort_prepared_action(installation);
     }
 
     #[tokio::test]

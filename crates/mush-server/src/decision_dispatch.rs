@@ -120,6 +120,18 @@ pub struct DecisionWorkerCompletion {
 
 impl DecisionWorkerCompletion {
     #[must_use]
+    pub fn fence(&self) -> mush_core::DecisionCompletionFence {
+        mush_core::DecisionCompletionFence::new(
+            self.controller.clone(),
+            self.decision,
+            self.revision,
+            self.attempt,
+            self.lease_until.clone(),
+        )
+        .expect("dispatcher completions are built only from validated worker leases")
+    }
+
+    #[must_use]
     pub const fn controller(&self) -> &DecisionControllerId {
         &self.controller
     }

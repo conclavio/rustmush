@@ -776,6 +776,45 @@ impl Engine {
             .ingress_for_candidate(candidate, idempotency_epoch)
     }
 
+    /// Authenticate one provider completion against its exact live lease and
+    /// construct the canonical ordinary-action ingress it will contend on.
+    pub fn decision_response_ingress(
+        &self,
+        fence: &crate::decision::DecisionCompletionFence,
+        response: &crate::decision::DecisionResponse,
+    ) -> Result<crate::action::IngressEnvelope, crate::decision_source::DecisionResponseIngressError>
+    {
+        let keys = self
+            .decision_keys
+            .as_ref()
+            .ok_or(crate::decision_source::DecisionResponseIngressError::RegistryUnavailable)?;
+        self.registry
+            .decision_sources()
+            .ok_or(crate::decision_source::DecisionResponseIngressError::RegistryUnavailable)?
+            .response_ingress(self, keys, fence, response)
+    }
+
+    /// Regenerate and resolve the exact prompt-time offer selected by an
+    /// authenticated completion, restoring its private revision witnesses.
+    pub fn resolve_decision_response(
+        &self,
+        fence: &crate::decision::DecisionCompletionFence,
+        response: &crate::decision::DecisionResponse,
+        ingress: &crate::action::IngressEnvelope,
+    ) -> Result<
+        crate::decision_source::DecisionResponseResolution,
+        crate::decision_source::DecisionResponseResolveError,
+    > {
+        let keys = self
+            .decision_keys
+            .as_ref()
+            .ok_or(crate::decision_source::DecisionResponseIngressError::RegistryUnavailable)?;
+        self.registry
+            .decision_sources()
+            .ok_or(crate::decision_source::DecisionResponseIngressError::RegistryUnavailable)?
+            .resolve_response(self, keys, fence, response, ingress)
+    }
+
     /// Re-read and plan one exact decision lease after store preflight.
     pub fn plan_decision_dispatch(
         &self,

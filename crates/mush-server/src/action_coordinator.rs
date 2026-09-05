@@ -96,6 +96,15 @@ pub struct StagedDecisionLease {
     pub worker: mush_core::DecisionWorkerLease,
 }
 
+/// Ordinary selected action staged from one exact authenticated provider
+/// completion, plus the binding used by the decision lifecycle reconciler.
+#[derive(Debug)]
+pub struct StagedDecisionResponse {
+    pub staged: StagedAuthoritativeAction,
+    pub fence: mush_core::DecisionCompletionFence,
+    pub binding: mush_core::DecisionActionBinding,
+}
+
 /// Stateless coordinator; all mutable truth remains in the engine and store.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ActionCoordinator;
@@ -312,6 +321,18 @@ impl ActionCoordinator {
         engine
             .decision_lease_ingress(candidate, idempotency_epoch)
             .map_err(|source| ActionCoordinatorError::DecisionLeaseIngress(Box::new(source)))
+    }
+
+    /// Authenticate and canonicalize one exact delayed-decision response
+    /// before its ordinary action idempotency lookup.
+    pub fn decision_response_ingress(
+        engine: &Engine,
+        fence: &mush_core::DecisionCompletionFence,
+        response: &mush_core::DecisionResponse,
+    ) -> Result<IngressEnvelope, ActionCoordinatorError> {
+        engine
+            .decision_response_ingress(fence, response)
+            .map_err(|source| ActionCoordinatorError::DecisionResponseIngress(Box::new(source)))
     }
 
     /// Authorized semantic `action/status` lookup. Finalized outcomes are
@@ -544,6 +565,27 @@ impl ActionCoordinator {
             .map_err(ActionCoordinatorError::Stage)?;
         Ok(StagedDecisionLease { staged, worker })
     }
+
+    /// Regenerate the selected prompt offer, restore private prompt-time
+    /// witnesses, and enter the same resolved authoritative action path used
+    /// by human clients.
+    pub fn prepare_and_stage_decision_response(
+        permit: Box<ActionPermit>,
+        engine: &mut Engine,
+        fence: mush_core::DecisionCompletionFence,
+        response: &mush_core::DecisionResponse,
+    ) -> Result<StagedDecisionResponse, ActionCoordinatorError> {
+        let resolution = engine
+            .resolve_decision_response(&fence, response, permit.ingress())
+            .map_err(|source| ActionCoordinatorError::DecisionResponseResolve(Box::new(source)))?;
+        let binding = resolution.binding().clone();
+        let staged = Self::prepare_and_stage_resolved(permit, engine, resolution.into_resolved())?;
+        Ok(StagedDecisionResponse {
+            staged,
+            fence,
+            binding,
+        })
+    }
 }
 
 /// Failure at the authenticated durable-result projection boundary.
@@ -678,6 +720,10 @@ pub enum ActionCoordinatorError {
     DecisionLeaseIngress(#[source] Box<mush_core::DecisionLeaseIngressError>),
     #[error("decision lease planning failed: {0}")]
     DecisionLeasePlan(#[source] Box<mush_core::DecisionSourcePlanError>),
+    #[error("decision response ingress is invalid: {0}")]
+    DecisionResponseIngress(#[source] Box<mush_core::DecisionResponseIngressError>),
+    #[error("decision response resolution failed: {0}")]
+    DecisionResponseResolve(#[source] Box<mush_core::DecisionResponseResolveError>),
     #[error("semantic invocation identity does not match its preflight ingress")]
     IngressInvocationMismatch,
     #[error("action provider preparation failed: {0}")]

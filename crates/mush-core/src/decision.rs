@@ -746,6 +746,67 @@ pub struct DecisionWorkerLease {
     prompt: DecisionPrompt,
 }
 
+/// Exact operational fence carried back by one async provider completion.
+/// It contains no response content and grants authority only while the same
+/// pending record is still on this precise lease.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DecisionCompletionFence {
+    controller: DecisionControllerId,
+    decision: DecisionId,
+    revision: u64,
+    attempt: u8,
+    lease_until: ClockStamp,
+}
+
+impl DecisionCompletionFence {
+    pub fn new(
+        controller: DecisionControllerId,
+        decision: DecisionId,
+        revision: u64,
+        attempt: u8,
+        lease_until: ClockStamp,
+    ) -> Result<Self, DecisionError> {
+        if revision == 0 {
+            return Err(DecisionError::ZeroRevision);
+        }
+        if !(1..=MAX_DECISION_ATTEMPTS).contains(&attempt) {
+            return Err(DecisionError::Attempt { attempt });
+        }
+        Ok(Self {
+            controller,
+            decision,
+            revision,
+            attempt,
+            lease_until,
+        })
+    }
+
+    #[must_use]
+    pub const fn controller(&self) -> &DecisionControllerId {
+        &self.controller
+    }
+
+    #[must_use]
+    pub const fn decision(&self) -> DecisionId {
+        self.decision
+    }
+
+    #[must_use]
+    pub const fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    #[must_use]
+    pub const fn attempt(&self) -> u8 {
+        self.attempt
+    }
+
+    #[must_use]
+    pub const fn lease_until(&self) -> &ClockStamp {
+        &self.lease_until
+    }
+}
+
 impl DecisionWorkerLease {
     #[must_use]
     pub const fn controller(&self) -> &DecisionControllerId {

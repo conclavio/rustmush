@@ -20,15 +20,17 @@ use crate::action::{
 };
 use crate::action_state::{ActionStateError, ActionTxn, StateFamilyRegistry};
 use crate::decision::{
-    DecisionCaptureFamilies, DecisionControllerId, DecisionError, DecisionId, DecisionKeyRing,
-    DecisionLeaseTransition, DecisionWake, DecisionWorkerLease, MAX_DECISION_ATTEMPTS,
-    MAX_DECISION_RECOVERY_PAGE, PendingDecisionStatus,
+    DecisionActionBinding, DecisionCaptureFamilies, DecisionCompletionFence, DecisionControllerId,
+    DecisionError, DecisionId, DecisionKeyRing, DecisionLeaseTransition, DecisionResponse,
+    DecisionWake, DecisionWorkerLease, MAX_DECISION_ATTEMPTS, MAX_DECISION_RECOVERY_PAGE,
+    PendingDecision, PendingDecisionStatus, PendingOfferWitness,
 };
 use crate::durable_schedule::ScheduleId;
 use crate::mechanics::{
     CanonicalEncodingError, CanonicalId, CanonicalIdError, DefinitionDigest, DefinitionRef,
     MechanicalOwnerReadiness, MechanicalOwnerReadinessError, OwnerId,
 };
+use crate::offer::{OfferExecutionContext, OfferSubmission};
 
 /// Maximum composed owners that may publish delayed-decision families.
 pub const MAX_DECISION_SOURCES: usize = 256;
@@ -238,6 +240,27 @@ pub struct DecisionDispatchPlan {
     transition: DecisionLeaseTransition,
 }
 
+/// Authenticated provider selection after current offer regeneration and
+/// prompt-time witness restoration. This is the only delayed-decision value
+/// accepted by the ordinary resolved authoritative coordinator.
+#[derive(Debug)]
+pub struct DecisionResponseResolution {
+    resolved: crate::offer::ResolvedAuthoritativeOffer,
+    binding: DecisionActionBinding,
+}
+
+impl DecisionResponseResolution {
+    #[must_use]
+    pub const fn binding(&self) -> &DecisionActionBinding {
+        &self.binding
+    }
+
+    #[must_use]
+    pub fn into_resolved(self) -> crate::offer::ResolvedAuthoritativeOffer {
+        self.resolved
+    }
+}
+
 impl DecisionDispatchPlan {
     pub fn into_parts(
         self,
@@ -292,6 +315,196 @@ impl DecisionSourceRegistry {
             .entry_for_candidate(candidate)
             .map_err(DecisionLeaseIngressError::Candidate)?;
         decision_lease_ingress(&entry.lease_action, candidate, idempotency_epoch)
+    }
+
+    pub(crate) fn response_ingress(
+        &self,
+        engine: &crate::engine::Engine,
+        keys: &DecisionKeyRing,
+        fence: &DecisionCompletionFence,
+        response: &DecisionResponse,
+    ) -> Result<IngressEnvelope, DecisionResponseIngressError> {
+        let (pending, _prompt, _offered) =
+            self.validate_response_fence(engine, keys, fence, response)?;
+        let request = match pending.action_idempotency.key() {
+            IdempotencyKey::Request(request) => *request,
+            IdempotencyKey::Caller(_) | IdempotencyKey::Deterministic(_) => {
+                let digest = CanonicalHash::for_canonical_value(
+                    "decision_response_request.v1",
+                    1,
+                    &json!({
+                        "controller": fence.controller(),
+                        "decision": fence.decision(),
+                        "revision": fence.revision(),
+                    }),
+                    32 * 1024,
+                )?;
+                let mut bytes = [0_u8; 16];
+                bytes.copy_from_slice(&digest.as_bytes()[..16]);
+                crate::action::RequestUid::from_bytes(bytes)
+            }
+        };
+        Ok(IngressEnvelope::new(
+            request,
+            pending.principal.clone(),
+            IngressSurfaceVersion::new(
+                CanonicalId::new("kernel.decision_response")
+                    .expect("static decision response surface"),
+                1,
+            )?,
+            IngressPayload::structured(json!({
+                "decision": fence.decision(),
+                "revision": fence.revision(),
+                "attempt": fence.attempt(),
+                "lease_until": fence.lease_until(),
+                "response": response,
+            }))?,
+            pending.action_idempotency.clone(),
+        )?)
+    }
+
+    pub(crate) fn resolve_response(
+        &self,
+        engine: &crate::engine::Engine,
+        keys: &DecisionKeyRing,
+        fence: &DecisionCompletionFence,
+        response: &DecisionResponse,
+        ingress: &IngressEnvelope,
+    ) -> Result<DecisionResponseResolution, DecisionResponseResolveError> {
+        let expected = self.response_ingress(engine, keys, fence, response)?;
+        if &expected != ingress {
+            return Err(DecisionResponseResolveError::IngressMismatch);
+        }
+        let (pending, prompt, offered) =
+            self.validate_response_fence(engine, keys, fence, response)?;
+        let projected = prompt
+            .prompt
+            .actions
+            .iter()
+            .find(|action| action.offer() == response.offer)
+            .ok_or(DecisionResponseResolveError::OfferNotPrompted)?;
+        let query = engine
+            .legal_action_query(
+                pending.principal.clone(),
+                pending.actor,
+                projected.subject().clone(),
+            )
+            .map_err(DecisionResponseResolveError::Subject)?;
+        if query.truth_subject() != &pending.truth_subject
+            || query.viewer_scope() != pending.viewer_scope
+        {
+            return Err(DecisionResponseResolveError::ProjectionChanged);
+        }
+        let offers = engine
+            .project_legal_actions(&query)
+            .map_err(DecisionResponseResolveError::Projection)?;
+        let resolved = engine
+            .resolve_legal_action(
+                &offers,
+                OfferExecutionContext {
+                    request: ingress.request(),
+                    principal: pending.principal.clone(),
+                    actor: pending.actor,
+                    idempotency: pending.action_idempotency.clone(),
+                    viewer_scope: pending.viewer_scope,
+                    now: None,
+                },
+                OfferSubmission {
+                    offer: response.offer,
+                    subject: projected.subject().clone(),
+                    targets: response.targets.clone(),
+                    parameters: response.parameters.clone(),
+                },
+            )
+            .map_err(DecisionResponseResolveError::Offer)?;
+        let (action, resolved, guards) = resolved.into_authoritative_parts();
+        let mut prompt_stamps = offered.common_revisions.clone();
+        for target in &response.targets {
+            let target = offered
+                .target_revisions
+                .iter()
+                .find(|witness| &witness.perceived == target)
+                .ok_or(DecisionResponseResolveError::TargetNotPrompted)?;
+            prompt_stamps.extend(target.revisions.iter().cloned());
+        }
+        let definitions = engine
+            .registry
+            .definitions()
+            .ok_or(DecisionResponseResolveError::RegistryUnavailable)?;
+        let guards = guards
+            .with_definition_guards(offered.bridge_definitions.clone(), definitions)?
+            .with_revision_stamps(prompt_stamps)?;
+        let binding = DecisionActionBinding {
+            request: resolved.invocation().request(),
+            request_hash: resolved.invocation().request_hash(),
+        };
+        Ok(DecisionResponseResolution {
+            resolved: crate::offer::ResolvedAuthoritativeOffer::new(action, resolved, guards),
+            binding,
+        })
+    }
+
+    fn validate_response_fence<'a>(
+        &'a self,
+        engine: &'a crate::engine::Engine,
+        keys: &DecisionKeyRing,
+        fence: &DecisionCompletionFence,
+        response: &DecisionResponse,
+    ) -> Result<
+        (
+            &'a PendingDecision,
+            &'a crate::decision::DecisionPromptRecord,
+            &'a PendingOfferWitness,
+        ),
+        DecisionResponseIngressError,
+    > {
+        response.validate()?;
+        let entry = self.entries.get(&fence.controller().owner).ok_or_else(|| {
+            DecisionResponseIngressError::SourceUnavailable {
+                owner: fence.controller().owner.clone(),
+            }
+        })?;
+        self.owner_readiness.require_ready(&entry.owner)?;
+        let pending = engine
+            .action_state()
+            .get(entry.families.pending(), &fence.decision())?
+            .ok_or(DecisionResponseIngressError::MissingDecision)?;
+        let prompt = engine
+            .action_state()
+            .get(entry.families.prompts(), &fence.decision())?
+            .ok_or(DecisionResponseIngressError::MissingPrompt)?;
+        pending.validate_prompt_pair(prompt, keys)?;
+        if &pending.controller != fence.controller()
+            || pending.id != fence.decision()
+            || pending.revision != fence.revision()
+            || response.token != prompt.prompt.token
+        {
+            return Err(DecisionResponseIngressError::StaleCompletion);
+        }
+        let PendingDecisionStatus::Leased {
+            attempt,
+            lease_until,
+        } = &pending.status
+        else {
+            return Err(DecisionResponseIngressError::StaleCompletion);
+        };
+        if *attempt != fence.attempt() || lease_until != fence.lease_until() {
+            return Err(DecisionResponseIngressError::StaleCompletion);
+        }
+        let now = engine.clock_now(&pending.deadline.clock)?;
+        if now.checked_cmp(lease_until).is_err()
+            || now.checked_cmp(&pending.deadline).is_err()
+            || now.at >= lease_until.at
+            || now.at >= pending.deadline.at
+        {
+            return Err(DecisionResponseIngressError::StaleCompletion);
+        }
+        let offered = pending
+            .offered
+            .iter()
+            .find(|offered| offered.offer == response.offer)
+            .ok_or(DecisionResponseIngressError::OfferNotPrompted)?;
+        Ok((pending, prompt, offered))
     }
 
     pub(crate) fn scan(
@@ -728,6 +941,60 @@ pub enum DecisionLeaseIngressError {
     CanonicalId(#[from] CanonicalIdError),
     #[error("decision lease idempotency text is invalid: {0}")]
     IdempotencyText(#[from] IdempotencyKeyTextError),
+}
+
+#[derive(Debug, Error)]
+pub enum DecisionResponseIngressError {
+    #[error("decision response source registry or deployment key ring is unavailable")]
+    RegistryUnavailable,
+    #[error("decision response source for owner {owner} is unavailable")]
+    SourceUnavailable { owner: OwnerId },
+    #[error("decision response references a missing pending record")]
+    MissingDecision,
+    #[error("decision response references a missing prompt record")]
+    MissingPrompt,
+    #[error("decision response does not match the exact live lease")]
+    StaleCompletion,
+    #[error("decision response selected an action absent from its prompt")]
+    OfferNotPrompted,
+    #[error(transparent)]
+    Decision(#[from] DecisionError),
+    #[error(transparent)]
+    State(#[from] ActionStateError),
+    #[error(transparent)]
+    Clock(#[from] crate::clock_provider::ClockReadError),
+    #[error(transparent)]
+    Hash(#[from] CanonicalHashError),
+    #[error(transparent)]
+    Metadata(#[from] ActionMetadataError),
+    #[error(transparent)]
+    CanonicalId(#[from] CanonicalIdError),
+    #[error(transparent)]
+    OwnerNotReady(#[from] MechanicalOwnerReadinessError),
+}
+
+#[derive(Debug, Error)]
+pub enum DecisionResponseResolveError {
+    #[error(transparent)]
+    Ingress(#[from] DecisionResponseIngressError),
+    #[error("decision response ingress differs from its canonical fenced payload")]
+    IngressMismatch,
+    #[error("decision response selected an action absent from its prompt")]
+    OfferNotPrompted,
+    #[error("decision response selected a target absent from its prompt")]
+    TargetNotPrompted,
+    #[error("decision response subject projection changed since capture")]
+    ProjectionChanged,
+    #[error("decision response registry is unavailable")]
+    RegistryUnavailable,
+    #[error("decision response subject is no longer legal: {0}")]
+    Subject(#[source] crate::offer::LegalActionSubjectError),
+    #[error("decision response action projection failed: {0}")]
+    Projection(#[source] crate::offer::LegalActionProjectionError),
+    #[error("decision response action resolution failed: {0}")]
+    Offer(#[source] crate::offer::LegalActionResolutionError),
+    #[error(transparent)]
+    Guard(#[from] crate::action::GuardSetBuildError),
 }
 
 #[derive(Clone, Debug, Eq, Error, PartialEq)]
