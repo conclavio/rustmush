@@ -177,6 +177,180 @@ impl InMemoryStore {
     }
 }
 
+/// One deterministic interruption point in the reusable authoritative-store
+/// fault harness. `Clean` performs the ordinary call; every other mode fires
+/// once and then heals so an exact retry can prove recovery.
+///
+/// This is public only for cross-crate contract fixtures. Production code
+/// should use [`InMemoryStore`] or [`crate::RedisStore`] directly.
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AuthoritativeFaultMode {
+    Clean,
+    BeforeIntent,
+    AfterIntent,
+    AfterNMaterializationOps(usize),
+    AckLostAfterFinalize,
+    AckLostAfterCheckpoint,
+    TokenConflict,
+}
+
+/// Reusable K8 fault driver over the exact in-memory authoritative protocol.
+///
+/// A faulted call returns `Ok(None)`: this models an interruption or lost
+/// acknowledgement whose durable side may or may not have happened. The
+/// caller must inspect exact status and retry the same token/hash instead of
+/// treating `None` as refusal. Deterministic store errors remain `Err`.
+#[doc(hidden)]
+#[derive(Debug)]
+pub struct AuthoritativeFaultStore {
+    inner: InMemoryStore,
+    mode: AuthoritativeFaultMode,
+}
+
+impl AuthoritativeFaultStore {
+    #[must_use]
+    pub fn new(mode: AuthoritativeFaultMode) -> Self {
+        Self {
+            inner: InMemoryStore::new(),
+            mode,
+        }
+    }
+
+    #[must_use]
+    pub const fn store(&self) -> &InMemoryStore {
+        &self.inner
+    }
+
+    #[must_use]
+    pub const fn mode(&self) -> AuthoritativeFaultMode {
+        self.mode
+    }
+
+    pub fn arm(&mut self, mode: AuthoritativeFaultMode) {
+        self.mode = mode;
+    }
+
+    pub fn heal(&mut self) {
+        self.mode = AuthoritativeFaultMode::Clean;
+    }
+
+    pub async fn reserve(
+        &mut self,
+        bundle: AuthoritativeBundle,
+    ) -> Result<Option<IntentReceipt>, StoreError> {
+        match self.mode {
+            AuthoritativeFaultMode::BeforeIntent => {
+                self.heal();
+                Ok(None)
+            }
+            AuthoritativeFaultMode::AfterIntent => {
+                let _ = self.inner.reserve_authoritative_intent(bundle).await?;
+                self.heal();
+                Ok(None)
+            }
+            _ => self
+                .inner
+                .reserve_authoritative_intent(bundle)
+                .await
+                .map(Some),
+        }
+    }
+
+    pub async fn reconcile(
+        &mut self,
+        token: CommitToken,
+        expected_bundle_hash: CanonicalHash,
+    ) -> Result<Option<AuthoritativeReceipt>, StoreError> {
+        match self.mode {
+            AuthoritativeFaultMode::AfterNMaterializationOps(count) => {
+                self.materialize_prefix(token, expected_bundle_hash, count)?;
+                self.heal();
+                Ok(None)
+            }
+            AuthoritativeFaultMode::AckLostAfterFinalize => {
+                let _ = self
+                    .inner
+                    .reconcile_authoritative(token, expected_bundle_hash)
+                    .await?;
+                self.heal();
+                Ok(None)
+            }
+            AuthoritativeFaultMode::TokenConflict => {
+                self.heal();
+                self.inner
+                    .reconcile_authoritative(token, CanonicalHash::from_bytes([0xee; 32]))
+                    .await
+                    .map(Some)
+            }
+            _ => self
+                .inner
+                .reconcile_authoritative(token, expected_bundle_hash)
+                .await
+                .map(Some),
+        }
+    }
+
+    pub async fn checkpoint(
+        &mut self,
+        token: CommitToken,
+        expected_bundle_hash: CanonicalHash,
+    ) -> Result<Option<AuthoritativeCheckpointReceipt>, StoreError> {
+        match self.mode {
+            AuthoritativeFaultMode::AckLostAfterCheckpoint => {
+                let _ = self
+                    .inner
+                    .checkpoint_authoritative(token, expected_bundle_hash)
+                    .await?;
+                self.heal();
+                Ok(None)
+            }
+            _ => self
+                .inner
+                .checkpoint_authoritative(token, expected_bundle_hash)
+                .await
+                .map(Some),
+        }
+    }
+
+    fn materialize_prefix(
+        &self,
+        token: CommitToken,
+        expected_bundle_hash: CanonicalHash,
+        count: usize,
+    ) -> Result<(), StoreError> {
+        let mut inner = self.inner.lock()?;
+        let intent_doc = inner
+            .authoritative_intents
+            .get(&token)
+            .ok_or(StoreError::AuthoritativeIntentMissing)?;
+        let bundle = decode_intent(intent_doc)?;
+        if bundle.bundle_hash() != expected_bundle_hash {
+            return Err(StoreError::AuthoritativeTokenConflict);
+        }
+        if validate_retained_intent(&inner, token, &bundle)?.is_some() {
+            return Err(StoreError::AuthoritativeCorrupt(
+                "fault harness cannot partially apply a finalized intent".to_owned(),
+            ));
+        }
+        let planned = plan_replay(&bundle)?;
+        if count > planned.len() {
+            return Err(StoreError::Invalid(format!(
+                "fault cut after {count} operations exceeds {} replay writes",
+                planned.len()
+            )));
+        }
+        validate_replay_recovery(&inner, &bundle)?;
+        apply_replay(&mut inner, &planned[..count]);
+        if !replay_matches(&inner, &planned[..count]) {
+            return Err(StoreError::AuthoritativeCorrupt(
+                "fault harness prefix readback mismatch".to_owned(),
+            ));
+        }
+        Ok(())
+    }
+}
+
 /// Unix seconds from the system clock (the store crate may read wall time;
 /// `mush-core` never does).
 fn now_unix() -> i64 {
@@ -2151,150 +2325,6 @@ mod tests {
             .expect("seed minimal world");
     }
 
-    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-    enum AuthoritativeFaultMode {
-        Clean,
-        BeforeIntent,
-        AfterIntent,
-        AfterNMaterializationOps(usize),
-        AckLostAfterFinalize,
-        AckLostAfterCheckpoint,
-        TokenConflict,
-    }
-
-    struct FaultStore {
-        inner: InMemoryStore,
-        mode: AuthoritativeFaultMode,
-    }
-
-    impl FaultStore {
-        fn new(mode: AuthoritativeFaultMode) -> Self {
-            Self {
-                inner: InMemoryStore::new(),
-                mode,
-            }
-        }
-
-        fn heal(&mut self) {
-            self.mode = AuthoritativeFaultMode::Clean;
-        }
-
-        async fn reserve(
-            &mut self,
-            bundle: AuthoritativeBundle,
-        ) -> Result<Option<IntentReceipt>, StoreError> {
-            match self.mode {
-                AuthoritativeFaultMode::BeforeIntent => {
-                    self.heal();
-                    Ok(None)
-                }
-                AuthoritativeFaultMode::AfterIntent => {
-                    let _ = self.inner.reserve_authoritative_intent(bundle).await?;
-                    self.heal();
-                    Ok(None)
-                }
-                _ => self
-                    .inner
-                    .reserve_authoritative_intent(bundle)
-                    .await
-                    .map(Some),
-            }
-        }
-
-        async fn reconcile(
-            &mut self,
-            token: CommitToken,
-            expected_bundle_hash: CanonicalHash,
-        ) -> Result<Option<AuthoritativeReceipt>, StoreError> {
-            match self.mode {
-                AuthoritativeFaultMode::AfterNMaterializationOps(count) => {
-                    self.materialize_prefix(token, expected_bundle_hash, count)?;
-                    self.heal();
-                    Ok(None)
-                }
-                AuthoritativeFaultMode::AckLostAfterFinalize => {
-                    let _ = self
-                        .inner
-                        .reconcile_authoritative(token, expected_bundle_hash)
-                        .await?;
-                    self.heal();
-                    Ok(None)
-                }
-                AuthoritativeFaultMode::TokenConflict => {
-                    self.heal();
-                    self.inner
-                        .reconcile_authoritative(token, CanonicalHash::from_bytes([0xee; 32]))
-                        .await
-                        .map(Some)
-                }
-                _ => self
-                    .inner
-                    .reconcile_authoritative(token, expected_bundle_hash)
-                    .await
-                    .map(Some),
-            }
-        }
-
-        async fn checkpoint(
-            &mut self,
-            token: CommitToken,
-            expected_bundle_hash: CanonicalHash,
-        ) -> Result<Option<AuthoritativeCheckpointReceipt>, StoreError> {
-            match self.mode {
-                AuthoritativeFaultMode::AckLostAfterCheckpoint => {
-                    let _ = self
-                        .inner
-                        .checkpoint_authoritative(token, expected_bundle_hash)
-                        .await?;
-                    self.heal();
-                    Ok(None)
-                }
-                _ => self
-                    .inner
-                    .checkpoint_authoritative(token, expected_bundle_hash)
-                    .await
-                    .map(Some),
-            }
-        }
-
-        fn materialize_prefix(
-            &self,
-            token: CommitToken,
-            expected_bundle_hash: CanonicalHash,
-            count: usize,
-        ) -> Result<(), StoreError> {
-            let mut inner = self.inner.lock()?;
-            let intent_doc = inner
-                .authoritative_intents
-                .get(&token)
-                .ok_or(StoreError::AuthoritativeIntentMissing)?;
-            let bundle = decode_intent(intent_doc)?;
-            if bundle.bundle_hash() != expected_bundle_hash {
-                return Err(StoreError::AuthoritativeTokenConflict);
-            }
-            if validate_retained_intent(&inner, token, &bundle)?.is_some() {
-                return Err(StoreError::AuthoritativeCorrupt(
-                    "fault harness cannot partially apply a finalized intent".to_owned(),
-                ));
-            }
-            let planned = plan_replay(&bundle)?;
-            if count > planned.len() {
-                return Err(StoreError::Invalid(format!(
-                    "fault cut after {count} operations exceeds {} replay writes",
-                    planned.len()
-                )));
-            }
-            validate_replay_recovery(&inner, &bundle)?;
-            apply_replay(&mut inner, &planned[..count]);
-            if !replay_matches(&inner, &planned[..count]) {
-                return Err(StoreError::AuthoritativeCorrupt(
-                    "fault harness prefix readback mismatch".to_owned(),
-                ));
-            }
-            Ok(())
-        }
-    }
-
     fn authoritative_bundle(token_byte: u8, ingress_byte: u8) -> AuthoritativeBundle {
         authoritative_bundle_for_object(token_byte, ingress_byte, ObjId(2), Some(3))
     }
@@ -2577,7 +2607,7 @@ mod tests {
         ];
 
         for mode in modes {
-            let mut store = FaultStore::new(mode);
+            let mut store = AuthoritativeFaultStore::new(mode);
             seed_minimal_world(&store.inner).await;
             let bundle = authoritative_bundle(51, 61);
             let token = bundle.token();
@@ -2679,7 +2709,7 @@ mod tests {
             AuthoritativeFaultMode::AckLostAfterFinalize,
             AuthoritativeFaultMode::AckLostAfterCheckpoint,
         ] {
-            let mut store = FaultStore::new(mode);
+            let mut store = AuthoritativeFaultStore::new(mode);
             seed_minimal_world(&store.inner).await;
             let bundle = authoritative_ledger_bundle(71, 81);
             let token = bundle.token();

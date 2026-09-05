@@ -2975,6 +2975,37 @@ fresh connection. `PreparedLedgerAppend` retains the exact chunk and can derive 
 without consuming its one-shot RAM installation plan, so an owner migration can bind persistence
 before applying the acknowledged append.
 
+**K8.1 — reusable in-process fault matrix.** Lift the store-local fault driver into bounded
+cross-crate test support, then run every logical Gate-5 cut against bundles produced by the real toy
+providers. The harness must preserve the production `AuthoritativeStore` protocol: it may interrupt
+before or after intent reservation, after any exact replay-write prefix, after finalization, or
+after checkpoint, but may not create a second persistence implementation or make a non-idempotent
+write replayable. Each interruption fires once; recovery inspects durable truth and retries the
+same token/hash.
+
+Implementation status: K8.1's reusable store layer and first vertical matrices are closed.
+`AuthoritativeFaultStore` and `AuthoritativeFaultMode` are doc-hidden cross-crate test support over
+the real `InMemoryStore`; `Ok(None)` means the configured interruption or acknowledgement loss
+occurred, while deterministic store failures remain errors. The lifted driver retains exact-prefix
+materialization and exposes the underlying store only for ordinary status, retry, hydration and
+checkpoint assertions. Existing store-local synthetic and mixed-Ledger matrices now use this same
+driver.
+
+`mush-contract-tests/tests/gate5_fault_matrix.rs` constructs bundles from actual registered
+provider preparation, causal expansion, resolution transcript and typed-state post-images. Both the
+Gate-1 focus-spend/guarded-effect action and Gate-2 source/target tactical fire action pass
+pre-intent, post-intent, every replay prefix including the all-writes-before-finalize boundary,
+lost finalize acknowledgement, lost checkpoint acknowledgement, token conflict, exact retry and
+compact retry. Gate-3's hidden-contact selection reaches the same tactical provider/write shape and
+its projection/staleness dimensions remain covered by Gate 3; K8.2 adds process termination around
+that path. The real K7 delayed-decision lifecycle matrix covers capture, worker lease, provider
+attempt failure, terminal cancellation and terminal compaction using the registered decision
+families and their production transition planners. Capture adds its validated pending decision,
+exact projected prompt, deadline schedule and wake outbox in one owner transaction; the test drives
+that wake to terminal delivery before checkpoint. Every lifecycle shape passes the same exact-cut,
+retry and compaction matrix. K8.2 can therefore add process termination without first inventing a
+second delayed-decision fixture.
+
 Work:
 
 1. Run every Gate-5 cut point against each toy vertical slice, not only a synthetic bundle.

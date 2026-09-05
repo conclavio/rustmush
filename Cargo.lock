@@ -1977,11 +1977,13 @@ dependencies = [
  "mush-llm",
  "mush-proto",
  "mush-server",
+ "mush-store",
  "mush-tactics",
  "mush-testkit",
  "serde",
  "serde_json",
  "toml",
+ "tokio",
 ]
 
 [[package]]
