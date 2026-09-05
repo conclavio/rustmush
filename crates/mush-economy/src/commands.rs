@@ -152,7 +152,7 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
             shape: ArgShape::EqPair,
             switches: [
                 "title", "transfer", "assign", "unassign", "maintenance", "lien", "release",
-                "writeoff", "unfreeze", "show", "list",
+                "writeoff", "unfreeze", "show", "list", "stolen",
             ]
             .iter()
             .copied()
@@ -166,6 +166,12 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
                    @asset/lien <obj>=<creditor> <amount> <instrument>   record a claim (staff)\n\
                    @asset/release <obj>=<n>                      release claim number n\n\
                    @asset/writeoff <obj>=<reason>                terminal write-off\n\
+                   @asset/stolen <obj>=<public|restricted|covert> [reason]\n\
+                   \x20                                      report it stolen (the title owner, an\n\
+                   \x20                                      insurer holding asset.insure on its\n\
+                   \x20                                      compartment, or staff). It records a\n\
+                   \x20                                      disputed claim; title never moves, and a\n\
+                   \x20                                      later purchase is evidence, not guilt.\n\
                    @asset/unfreeze <obj>                         clear the recovery latch (staff)\n\
                    @asset/show <obj>   @asset/list [owner=<principal>] [scope=<id>]\n\
                    <principal> is #obj, org:<id|name>, or sys:<name>. Title never moves an object,\n\
@@ -516,7 +522,7 @@ fn may_see_org(ctx: &Ctx<'_>, org: mush_org::OrgId) -> bool {
 
 /// §4.5 view standing over an asset: staff, its title owner, its assignee, or a
 /// holder of an `asset.*` capability on its (live) compartment.
-fn may_view_asset(w: &World, actor: ObjId, object: ObjId) -> bool {
+pub fn may_view_asset(w: &World, actor: ObjId, object: ObjId) -> bool {
     if api::is_staff(w, actor) {
         return true;
     }
@@ -588,12 +594,72 @@ pub fn may_view_account(w: &World, actor: ObjId, id: AccountId) -> bool {
 /// would be three chances for one of them to drift open. `hidden` is the caller's
 /// noun for the same fact — "an account" in a contract's terms, "another account"
 /// for the counterparty of an entry the viewer is reading their own side of.
-pub fn mask_account(ctx: &Ctx<'_>, id: AccountId, hidden: &str) -> String {
+pub fn render_account(ctx: &Ctx<'_>, id: AccountId, noun: &str) -> String {
     if may_view_account(ctx.w, ctx.actor, id) {
         format!("account #{id}")
     } else {
-        hidden.to_string()
+        noun.to_string()
     }
+}
+
+/// The former name of [`render_account`], kept as the one-line alias so no caller
+/// outside this crate has to move (E6b, B1).
+#[must_use]
+pub fn mask_account(ctx: &Ctx<'_>, id: AccountId, hidden: &str) -> String {
+    render_account(ctx, id, hidden)
+}
+
+// ---- E6b: B1 — one masking renderer ---------------------------------------
+
+/// The **one token** every masked counterparty on one journal entry collapses into
+/// (E4c verify fold, D4).
+///
+/// One `another account` per hidden line published the arity of the split — a
+/// runner could count the other runners — and with the viewer's own side and the
+/// total in hand a two-hidden-line entry was solvable by subtraction. One token
+/// says the same true thing and counts nothing.
+pub const MASKED_ACCOUNTS: &str = "other accounts";
+
+/// The history renderer's half of [`render_account`]'s predicate (B1): `Some(line)`
+/// when the viewer may see this account, `None` when the caller must collapse it
+/// into [`MASKED_ACCOUNTS`].
+///
+/// It is a *second helper on the same predicate* rather than a second predicate,
+/// which is the whole point of the fold: an inline `if may_view_account(..)` at a
+/// render site is one more place that can drift open.
+#[must_use]
+pub fn render_account_entry(
+    ctx: &Ctx<'_>,
+    id: AccountId,
+    instrument: &InstrumentId,
+    amount: Amount,
+) -> Option<String> {
+    may_view_account(ctx.w, ctx.actor, id)
+        .then(|| format!("account #{id} {}", money(ctx, instrument, amount)))
+}
+
+/// Render an organization for a **listing** — the name iff the viewer may be told
+/// it exists, else "an organization" (08f §4.3 as amended, G3/D7).
+///
+/// A thin named wrapper over [`render_principal`] and [`may_see_org`], not new
+/// logic: E6a step 1's fold D7 already built exactly that pair. The economy owns
+/// the *render*; a ruleset owns the *absence* — a hidden vendor's listings are
+/// simply not in its list for a non-member, never "No such".
+#[must_use]
+pub fn render_org_listed(ctx: &Ctx<'_>, org: mush_org::OrgId) -> String {
+    render_principal(ctx, &PrincipalId::Organization(org))
+}
+
+/// Whether the actor may be told a **hidden** organization exists — the predicate
+/// behind [`render_org_listed`], made public in E6b so a ruleset can omit a hidden
+/// vendor's listings rather than refuse them (G3, scenario 12).
+#[must_use]
+pub fn may_list_org(ctx: &Ctx<'_>, org: mush_org::OrgId) -> bool {
+    let Some(store) = ctx.w.module_state::<mush_org::OrgStore>() else {
+        return false;
+    };
+    let hidden = store.state().org(org).is_some_and(|o| o.hidden);
+    !hidden || may_see_org(ctx, org)
 }
 
 /// The account half of the existence-hiding rule (§4.5): a refusal touching an
@@ -731,7 +797,7 @@ pub fn may_view_obligation(w: &World, actor: ObjId, id: ObligationId) -> bool {
 /// hiding a payer's own operational error behind "No such account." would be a
 /// disclosure rule eating the game.
 pub fn refuse(
-    ctx: &Ctx<'_>,
+    ctx: &mut Ctx<'_>,
     subject: NamedResource,
     also: &[NamedResource],
     e: &crate::plan::EconomyError,
@@ -742,15 +808,35 @@ pub fn refuse(
     } else {
         &[]
     };
+    let mut hidden: Option<String> = None;
     for r in std::iter::once(subject)
         .chain(named)
         .chain(extra.iter().copied())
     {
         if let Some(text) = hidden_text(ctx, r) {
-            return CmdError::msg(text);
+            hidden = Some(text.to_string());
+            break;
         }
     }
-    CmdError::msg(e.to_string())
+    note_refusal(ctx, hidden.is_some());
+    CmdError::msg(hidden.unwrap_or_else(|| e.to_string()))
+}
+
+// ---- E6b: B5 — C16, bounded per-actor refusal telemetry -------------------
+
+/// Count one refusal against the actor (E6b, C16; 08g §11 fix-during).
+///
+/// The existence-hiding renderer is where a probe becomes indistinguishable from a
+/// typo, which is exactly the point of it — and exactly why staff need to be able
+/// to see the *shape* of one. This is the whole mechanism: a bounded, RAM-only
+/// per-actor count, split into hidden and ordinary refusals, surfaced by
+/// `@econ/alerts` and read by nothing that decides anything.
+pub fn note_refusal(ctx: &mut Ctx<'_>, hidden: bool) {
+    let actor = ctx.actor;
+    let now = ctx.w.now();
+    if let Some(store) = ctx.w.module_state_mut::<EconomyStore>() {
+        store.note_refusal(actor, hidden, now);
+    }
 }
 
 /// Whether this resource renders as "No such …" for this actor — the predicate half
@@ -764,17 +850,20 @@ pub fn is_hidden(ctx: &Ctx<'_>, resource: NamedResource) -> bool {
 /// A2): the same hiding loop over an explicit list of resources, so a contract
 /// refusal and a money refusal disclose exactly the same amount.
 pub fn refuse_named(
-    ctx: &Ctx<'_>,
+    ctx: &mut Ctx<'_>,
     subject: NamedResource,
     named: impl IntoIterator<Item = NamedResource>,
     detail: String,
 ) -> CmdError {
+    let mut hidden: Option<String> = None;
     for r in std::iter::once(subject).chain(named) {
         if let Some(text) = hidden_text(ctx, r) {
-            return CmdError::msg(text);
+            hidden = Some(text.to_string());
+            break;
         }
     }
-    CmdError::msg(detail)
+    note_refusal(ctx, hidden.is_some());
+    CmdError::msg(hidden.unwrap_or(detail))
 }
 
 /// §4.5 view standing over a vault: staff, its owner, or `vault.view` on its scope.
@@ -829,6 +918,56 @@ fn ops_plan(ctx: &Ctx<'_>, asset_ops: Vec<AssetOp>, custody_ops: Vec<CustodyOp>)
     p.custody_ops = custody_ops;
     p
 }
+
+// ---- E6b: B9 — the programmatic deposit seam ------------------------------
+
+/// **Deposit an object into a vault** under the actor's own authority (E6b, B9) —
+/// `@vault/deposit` without the command.
+///
+/// The sixth programmatic seam, and it exists for the same reason `cancel_contract`
+/// did: a ruleset must never dispatch a `@vault` command from inside a handler, and
+/// E6b's fence has to hand custody over on the seller's own standing. Every gate the
+/// command applies applies here — the actor's custody standing over the object, the
+/// vault's liveness, the destination rules, the whole plan validated and posted by
+/// [`crate::post`] — because it *is* the same plan.
+///
+/// # Errors
+///
+/// Every [`crate::EconomyError`] a custody post can produce. Render it with
+/// [`refuse`] against [`NamedResource::Vault`] so an unviewable vault reads exactly
+/// as a nonexistent one.
+pub fn deposit_into_vault(
+    ctx: &mut Ctx<'_>,
+    object: ObjId,
+    vault: VaultId,
+) -> Result<PostOutcome, crate::plan::EconomyError> {
+    let plan = ops_plan(ctx, Vec::new(), vec![CustodyOp::Deposit { object, vault }]);
+    api::post(ctx, &plan)
+}
+
+/// Parse a `<ruleset>:<code>` catalog reference (E6b). Both halves are bounded and
+/// non-empty; the economy stores it opaquely and never interprets either.
+#[must_use]
+pub fn parse_catalog(s: &str) -> Option<crate::record::CatalogRef> {
+    let (ruleset, code) = s.trim().split_once(':')?;
+    let (ruleset, code) = (ruleset.trim(), code.trim());
+    if ruleset.is_empty()
+        || code.is_empty()
+        || ruleset.len() > MAX_CATALOG_PART_BYTES
+        || code.len() > MAX_CATALOG_PART_BYTES
+        || ruleset.chars().any(char::is_whitespace)
+        || code.chars().any(char::is_whitespace)
+    {
+        return None;
+    }
+    Some(crate::record::CatalogRef {
+        ruleset: SmolStr::new(ruleset),
+        code: SmolStr::new(code),
+    })
+}
+
+/// The longest either half of a [`crate::CatalogRef`] may be (E6b).
+pub const MAX_CATALOG_PART_BYTES: usize = 64;
 
 /// Resolve `<obj>` for an asset verb. A name that matches nothing renders as the
 /// nonexistent-asset text (never "I don't see that here", which would leak).
@@ -2661,20 +2800,14 @@ fn econ_history(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         touching.truncate(n);
         touching
     };
-    /// The one token every masked counterparty collapses into (D4).
-    const MASKED: &str = "other accounts";
     let mut rows: Vec<String> = Vec::new();
     for t in &entries {
         let mut parts: Vec<String> = Vec::new();
         let mut masked = false;
         for l in &t.lines {
-            // Rules 2 and 3.
-            if may_view_account(ctx.w, ctx.actor, l.account) {
-                parts.push(format!(
-                    "account #{} {}",
-                    l.account,
-                    money(ctx, &l.instrument, l.delta)
-                ));
+            // Rules 2 and 3, through the one renderer (E6b, B1).
+            if let Some(line) = render_account_entry(ctx, l.account, &l.instrument, l.delta) {
+                parts.push(line);
             } else if !masked {
                 // D4 (E4c verify fold): every masked line on one entry COLLAPSES
                 // into a single token. One `another account` per hidden line
@@ -2686,7 +2819,7 @@ fn econ_history(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 // a run whose masked lines straddle the viewer's own would otherwise
                 // still publish "there are others on both sides".)
                 masked = true;
-                parts.push(MASKED.to_string());
+                parts.push(MASKED_ACCOUNTS.to_string());
             }
         }
         for e in &t.hold_effects {
@@ -2777,6 +2910,8 @@ fn cmd_asset(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         asset_lien(ctx)
     } else if ctx.switches.has("release") {
         asset_release(ctx)
+    } else if ctx.switches.has("stolen") {
+        asset_stolen(ctx)
     } else if ctx.switches.has("writeoff") {
         asset_writeoff(ctx)
     } else if ctx.switches.has("unfreeze") {
@@ -2808,19 +2943,27 @@ fn owner_and_scope(
 }
 
 fn asset_title(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    const USAGE: &str =
+        "Usage: @asset/title <obj>=<principal> [scope=<id>] [catalog=<ruleset>:<code>]";
     let object = asset_target(ctx, ctx.args.lhs())?;
-    let rhs = ctx
-        .args
-        .rhs()
-        .ok_or_else(|| CmdError::msg("Usage: @asset/title <obj>=<principal> [scope=<id>]"))?;
-    let (owner, scope) = owner_and_scope(ctx, rhs)?;
+    let rhs = ctx.args.rhs().ok_or_else(|| CmdError::msg(USAGE))?;
+    // E6b: the opaque `CatalogRef` was **set nowhere** before this — the type existed
+    // and no producer filled it — which made every catalog-keyed rule (E6b's fence
+    // baseline, E6c's whole market) unreachable. It is one option on the existing
+    // spec, not a verb: the economy still never interprets it.
+    let (rhs, opts) = parse_opts(rhs, &["catalog"]);
+    let catalog = match opts.get("catalog") {
+        Some(s) => Some(parse_catalog(s).ok_or_else(|| CmdError::msg(USAGE))?),
+        None => None,
+    };
+    let (owner, scope) = owner_and_scope(ctx, &rhs)?;
     let plan = ops_plan(
         ctx,
         vec![AssetOp::Title {
             object,
             owner,
             scope,
-            catalog: None,
+            catalog,
         }],
         Vec::new(),
     );
@@ -2999,6 +3142,111 @@ fn asset_writeoff(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     finish_asset(ctx, object, outcome, "Written off")
 }
 
+// ---- E6b: B2 — `@asset/stolen` --------------------------------------------
+
+/// `@asset/stolen <obj>=<public|restricted|covert> [reason]` (E6b, D-E6-18).
+///
+/// A **switch on the existing `@asset` spec**, so `CommandSpec::name` is unchanged
+/// and the rule-1 allowlist needs no stanza for it. Every refusal — an object with
+/// no title record, one the actor may not view, one they may not file on — goes
+/// through the existence-hiding renderer, so "no such asset" and "not yours to
+/// claim" are the same sentence.
+fn asset_stolen(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    const USAGE: &str = "Usage: @asset/stolen <obj>=<public|restricted|covert> [reason]";
+    let object = asset_target(ctx, ctx.args.lhs())?;
+    // Existence hiding first: an actor who may not view the asset learns nothing
+    // from the shape of the refusal — and it goes through the renderer, so C16's
+    // per-actor tally sees a probe walking an id space.
+    if !may_view_asset(ctx.w, ctx.actor, object) {
+        return Err(refuse_named(
+            ctx,
+            NamedResource::Asset(object),
+            [],
+            "No such asset.".to_string(),
+        ));
+    }
+    let rhs = ctx.args.rhs().ok_or_else(|| CmdError::msg(USAGE))?;
+    let mut words = rhs.split_whitespace();
+    let visibility = words
+        .next()
+        .and_then(crate::record::StolenVisibility::parse)
+        .ok_or_else(|| CmdError::msg(USAGE))?;
+    let reason: String = words.collect::<Vec<_>>().join(" ");
+    // The claimant is **derived**, never input (E6a M6's rule): the asset's own
+    // title owner. An insurer files on the owner's behalf; a covert report is still
+    // a claim about that title.
+    let claimant = {
+        let store = ctx
+            .w
+            .module_state::<EconomyStore>()
+            .ok_or_else(|| CmdError::msg("No such asset."))?;
+        store
+            .snapshot()
+            .asset(object)
+            .ok_or_else(|| CmdError::msg("No such asset."))?
+            .title_owner
+            .clone()
+    };
+    let plan = ops_plan(
+        ctx,
+        vec![AssetOp::ReportStolen {
+            object,
+            claimant,
+            visibility,
+            reason,
+        }],
+        Vec::new(),
+    );
+    let outcome = api::post(ctx, &plan);
+    finish_asset(ctx, object, outcome, "Reported stolen")
+}
+
+/// Whether `actor` may be told about `asset`'s standing theft report (answer 14).
+///
+/// `Public` is anyone who can see the asset at all; `Restricted` needs view
+/// standing over the asset; `Covert` is the reporter and staff only — invisible to
+/// the thief even while they hold the object, which is the whole point.
+#[must_use]
+pub fn may_view_stolen_report(
+    ctx: &Ctx<'_>,
+    object: ObjId,
+    report: &crate::record::StolenReport,
+) -> bool {
+    match report.visibility {
+        crate::record::StolenVisibility::Public => true,
+        crate::record::StolenVisibility::Restricted => may_view_asset(ctx.w, ctx.actor, object),
+        // E6b verify fold (D7): **and an authorized insurer.** A holder of
+        // `asset.insure` on the asset's compartment is one of exactly three who may
+        // *file* a report (D-E6-18), and the engine's duplicate refusal
+        // (`AlreadyClaimed`) told them a covert one stood whether or not this said
+        // they could see it — so the disclosure happened anyway, as an error message
+        // rather than as a rendered line. Covert means invisible to the **thief**,
+        // not to the insurer whose claim it is.
+        crate::record::StolenVisibility::Covert => {
+            api::is_staff(ctx.w, ctx.actor)
+                || api::WorldAuth { w: ctx.w }.acts_for(&PrincipalId::Object(ctx.actor), &report.by)
+                || insures(ctx, object)
+        }
+    }
+}
+
+/// Whether the actor holds `asset.insure` on this asset's own live compartment
+/// (E6b, D-E6-18) — the third of the three who may file a theft report on it.
+#[must_use]
+fn insures(ctx: &Ctx<'_>, object: ObjId) -> bool {
+    let Some(store) = ctx.w.module_state::<EconomyStore>() else {
+        return false;
+    };
+    let Some(asset) = store.snapshot().asset(object) else {
+        return false;
+    };
+    let Some(scope) = asset.scope else {
+        return false;
+    };
+    api::scope_coherent(ctx.w, Some(scope), &asset.title_owner)
+        && api::holds_capability(ctx.w, ctx.actor, "asset.insure", scope)
+}
+
 /// Staff recovery. The `frozen` latch is doc authority (D-E3-1), so clearing it is a
 /// plain doc write — never a journal effect.
 fn asset_unfreeze(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
@@ -3049,7 +3297,41 @@ fn asset_show(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             )),
             None => v.push("  unassigned".to_string()),
         }
-        v.push(format!("  encumbrances: {}", a.encumbrances.len()));
+        // E6b verify fold (D2): the **count** must not disclose what the line below
+        // hides. `ReportStolen` records a `Disputed` claim for every visibility
+        // including `Covert`, and the count sat one line above the gated report — so
+        // an assignee, or an `asset.*` grantee who is not staff and does not act for
+        // the owner, read a covert filing off the arithmetic. A claim the viewer may
+        // not be told about is not counted for them either.
+        let hidden_claims = usize::from(
+            a.stolen
+                .as_ref()
+                .is_some_and(|r| !may_view_stolen_report(ctx, object, r)),
+        );
+        v.push(format!(
+            "  encumbrances: {}",
+            a.encumbrances.len().saturating_sub(hidden_claims)
+        ));
+        // E6b (B2): the theft report renders **behind its own visibility gate**, so
+        // a covert claim is invisible to everyone but its reporter and staff — a
+        // thief holding the object reads exactly what an unclaimed asset reads.
+        if let Some(report) = a
+            .stolen
+            .as_ref()
+            .filter(|r| may_view_stolen_report(ctx, object, r))
+        {
+            v.push(format!(
+                "  REPORTED STOLEN ({}) by {} at {}{}",
+                report.visibility.label(),
+                render_principal(ctx, &report.by),
+                report.at,
+                if report.reason.is_empty() {
+                    String::new()
+                } else {
+                    format!(" — {}", report.reason)
+                }
+            ));
+        }
         if staff {
             if let Some(s) = a.scope {
                 v.push(format!("  scope #{s}"));
@@ -4818,6 +5100,35 @@ fn econ_alerts(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     rows.sort_by_key(|r| std::cmp::Reverse(r.0));
     let rows: Vec<String> = rows.into_iter().map(|(_, r)| r).collect();
     emit_list(ctx, rows, "No open economy alerts.");
+    // E6b (C16): the bounded refusal telemetry, beside the ladder rather than in
+    // it. It opens no escalation and suspends nothing — a probe is not an incident
+    // — but staff can see the shape of one instead of having to infer it.
+    let tallies: Vec<(ObjId, crate::module::RefusalTally)> = ctx
+        .w
+        .module_state::<EconomyStore>()
+        .map(|s| s.refusal_tallies())
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|(_, t)| t.hidden > 0)
+        .take(crate::module::MAX_REFUSAL_ROWS)
+        .collect();
+    if !tallies.is_empty() {
+        info(
+            ctx,
+            "Refusals (existence-hiding first, this session only):".to_string(),
+        );
+        for (who, tally) in tallies {
+            let line = format!(
+                "  {} — {} hidden, {} other (first {}, last {})",
+                display_name(ctx.w, who),
+                tally.hidden,
+                tally.other,
+                tally.first_at,
+                tally.last_at
+            );
+            info(ctx, line);
+        }
+    }
     Ok(())
 }
 

@@ -564,6 +564,15 @@ pub struct EconomicAsset {
     pub last_journal_seq: u64,
     /// Staleness stamp (bumped once per effect).
     pub revision: u64,
+    /// The **typed theft report** (E6b, D-E6-18, 08e answer 14).
+    ///
+    /// Journal authority like every field above the latch: it is carried in the
+    /// [`AssetEffect`] post-state, so replay rebuilds it. It sits *beside*
+    /// [`Encumbrance::Disputed`] rather than inside it, because insurance and
+    /// salvage consume the plain `Disputed` claim (08f §7 item 5) and adding a
+    /// visibility field to the claim would have made every consumer read it.
+    #[serde(default)]
+    pub stolen: Option<StolenReport>,
     /// **Doc-authority latch** — never carried in an effect. A frozen asset takes no
     /// asset op (the destroy/recovery backstop, E3b).
     #[serde(default)]
@@ -571,6 +580,58 @@ pub struct EconomicAsset {
     /// Why it was frozen.
     #[serde(default)]
     pub frozen_reason: Option<SmolStr>,
+}
+
+// ---- E6b: B2 — the typed theft report -------------------------------------
+
+/// Who may be told an asset was reported stolen (08e answer 14).
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StolenVisibility {
+    /// Anyone who can see the asset at all.
+    Public,
+    /// Only someone with view standing over the asset (`may_view_asset`).
+    Restricted,
+    /// Only the reporter and staff — invisible to the thief even when they hold
+    /// the object, which is the whole point of a covert claim.
+    Covert,
+}
+
+impl StolenVisibility {
+    /// Parse the staff/player-typed word.
+    #[must_use]
+    pub fn parse(s: &str) -> Option<StolenVisibility> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "public" => Some(StolenVisibility::Public),
+            "restricted" | "restrict" => Some(StolenVisibility::Restricted),
+            "covert" | "secret" => Some(StolenVisibility::Covert),
+            _ => None,
+        }
+    }
+    /// The staff-facing label.
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            StolenVisibility::Public => "public",
+            StolenVisibility::Restricted => "restricted",
+            StolenVisibility::Covert => "covert",
+        }
+    }
+}
+
+/// A recorded theft report — bounded, journal-authority, and **evidence, never
+/// guilt** (08e answers 13 and 14): a later purchase generates an
+/// [`AcquisitionRecord`] and does not clear this.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StolenReport {
+    /// Who filed it (the title owner, an `asset.insure` insurer, or staff).
+    pub by: PrincipalId,
+    /// Who may be told.
+    pub visibility: StolenVisibility,
+    /// Why (≤ [`crate::MAX_REASON_BYTES`]).
+    pub reason: String,
+    /// When (wall clock, unix seconds).
+    pub at: i64,
 }
 
 /// Who has an asset assigned, and for what — the assignment axis, distinct from
@@ -904,6 +965,9 @@ pub enum AssetEffectKind {
     MaintenanceSet,
     /// The asset was written off.
     WrittenOff,
+    /// The asset was **reported stolen** (E6b): a `Disputed` claim plus the
+    /// bounded [`StolenReport`] the visibility lives on.
+    StolenReported,
 }
 
 /// One custody movement carried by a transaction — **audit only**: the world move is

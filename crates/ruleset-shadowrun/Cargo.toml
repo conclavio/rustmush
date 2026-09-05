@@ -29,6 +29,12 @@ tracing.workspace = true
 [dev-dependencies]
 mush-testkit.workspace = true
 mush-store.workspace = true
+# E6b: the acceptance rig drives the real three-crate seal loop (scenes -> canon ->
+# economy), so the test target links both. The library itself gains **no** edge to
+# either: `ruleset-shadowrun -> {economy, org, party, faction}` is unchanged, and
+# nothing in `src/` commits canon (08f §4.6).
+mush-canon.workspace = true
+mush-scenes.workspace = true
 tokio.workspace = true
 
 [lints]

@@ -337,7 +337,7 @@ Also: DL-13 (E0 hazard status on the K6 agenda — closed per C9, residual noted
 - DL-07 `SrProfile` identity rule + `sr::boot::run` reconciliation — ruleset-shadowrun · S · E6a.
 - DL-08 stale-contract age: deadline-aware and in `[economy]` config — economy · XS · before E6c.
 - DL-09 persist the canon tail (or a `mush_canon` read seam keyed on `source`) — economy + canon · S · E6b.
-- DL-11 buyer-as-issuer for quotes; `with_party_caps` for registered vendor/maker orgs — economy · S · E6c.
+- DL-11 buyer-as-issuer for quotes; `with_party_caps` for registered vendor/maker orgs — economy · S · **E6b** (superseded: 08f §2 item 7 and §4.3 own the cut, and E6b's fence needs it first — a staff-built NPC fence has no officer and an org party accepts only through `acts_for` holders or staff. Built at E6b; E6c reuses it for vendors and makers, G8).
 - C15 `SystemPrincipalDef {category, module, instruments}` behind the existing registration; per-post faucet/sink counters — economy · S · E6a.
 - C16 bounded per-actor refusal telemetry at the error renderer, surfaced via `@econ/alerts` — economy · S · E6b.
 - C5 delete the `CausalRef` alias; C6 `PLAN_HASH_DOMAIN`; C9 reword `persist.rs:1457-1462` and 08c §12 — economy / server / docs · XS.

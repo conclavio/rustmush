@@ -23,7 +23,8 @@ use mush_core::{Ctx, ModuleOp, ModuleWrite, ObjId, Outbox};
 use mush_economy::{AccountId, CadenceId, ContractId, InstrumentId, ObligationId};
 use smol_str::SmolStr;
 
-use crate::economy::config::{RECENT_CLOSED_RING, SrEconomyConfig};
+use crate::economy::config::{MAX_QUOTES, RECENT_CLOSED_RING, SrEconomyConfig};
+use crate::economy::fence_record::{FenceId, FenceQuote, QuoteId, SrFence};
 use crate::economy::record::{RunId, RunTemplate, SrProfile};
 
 /// The module namespace (the ruleset module's own name).
@@ -48,6 +49,18 @@ pub fn profile_key(obj: ObjId) -> SmolStr {
 #[must_use]
 pub fn run_key(id: RunId) -> SmolStr {
     SmolStr::new(format!("sr:run:{}", id.0))
+}
+
+/// `sr:fence:{id}` (E6b, B9).
+#[must_use]
+pub fn fence_key(id: FenceId) -> SmolStr {
+    SmolStr::new(format!("sr:fence:{}", id.0))
+}
+
+/// `sr:quote:{id}` (E6b, B9).
+#[must_use]
+pub fn quote_key(id: QuoteId) -> SmolStr {
+    SmolStr::new(format!("sr:quote:{}", id.0))
 }
 
 /// The in-RAM E6a slot — the single runtime source of truth.
@@ -84,6 +97,19 @@ pub struct SrEconomyStore {
     /// reboot a closed run is simply gone, which is the same answer a week later.
     pub(crate) recent_closed: VecDeque<RunId>,
     pub(crate) next_run: u64,
+    // ---- E6b: B9 -- the fence's two families ----
+    /// `sr:fence:{id}` -- the registered vendor organizations.
+    pub(crate) fences: BTreeMap<FenceId, SrFence>,
+    /// **organization to fence**, re-derived on every write: one fence per org.
+    pub(crate) by_org: BTreeMap<mush_org::OrgId, FenceId>,
+    /// `sr:quote:{id}` -- the open offers. A quote whose deal ended is `Del`'d, the
+    /// same trade `del_run` makes for a closed listing.
+    pub(crate) quotes: BTreeMap<QuoteId, FenceQuote>,
+    /// **contract to quote**, re-derived on every write, so the board observer
+    /// answers a `ContractChanged` without scanning the quotes.
+    pub(crate) by_quote_contract: BTreeMap<ContractId, QuoteId>,
+    pub(crate) next_fence: u64,
+    pub(crate) next_quote: u64,
     /// The registered instrument, once boot has found or made it.
     pub(crate) instrument: Option<InstrumentId>,
     /// The resolved `sr.month` cadence, once boot has found it.
@@ -219,10 +245,74 @@ impl SrEconomyStore {
         Some(id)
     }
 
+    // ---- E6b: B9 -- the fence ----
+
+    /// One registered fence.
+    #[must_use]
+    pub fn fence(&self, id: FenceId) -> Option<&SrFence> {
+        self.fences.get(&id)
+    }
+    /// Every registered fence, in id order.
+    pub fn fences(&self) -> impl Iterator<Item = &SrFence> {
+        self.fences.values()
+    }
+    /// The fence an organization is, if it is one.
+    #[must_use]
+    pub fn fence_of_org(&self, org: mush_org::OrgId) -> Option<&SrFence> {
+        self.by_org.get(&org).and_then(|id| self.fences.get(id))
+    }
+    /// One open quote.
+    #[must_use]
+    pub fn quote(&self, id: QuoteId) -> Option<&FenceQuote> {
+        self.quotes.get(&id)
+    }
+    /// Every open quote, in id order (double-ended, so a caller can walk the newest
+    /// first under a visit bound).
+    pub fn quotes(&self) -> impl DoubleEndedIterator<Item = &FenceQuote> {
+        self.quotes.values()
+    }
+    /// The quote a contract belongs to, if any (the observer's O(log n) lookup).
+    #[must_use]
+    pub fn quote_of_contract(&self, contract: ContractId) -> Option<QuoteId> {
+        self.by_quote_contract.get(&contract).copied()
+    }
+    /// Mint the next fence id, or `None` at the ceiling.
+    pub fn alloc_fence(&mut self) -> Option<FenceId> {
+        let id = FenceId(self.next_fence);
+        self.next_fence = self.next_fence.checked_add(1)?;
+        Some(id)
+    }
+    /// The next fence id **without** minting it — the allocator floor, which
+    /// E6b's verify fold (R8) derives from every document's parsed key rather than
+    /// from what loaded.
+    #[must_use]
+    pub fn next_fence_id(&self) -> u64 {
+        self.next_fence
+    }
+    /// Mint the next quote id, or `None` at the ceiling.
+    pub fn alloc_quote(&mut self) -> Option<QuoteId> {
+        let id = QuoteId(self.next_quote);
+        self.next_quote = self.next_quote.checked_add(1)?;
+        Some(id)
+    }
+    /// Re-derive the fence indexes -- the one place they are built.
+    pub(crate) fn reindex_fences(&mut self) {
+        self.by_org = self.fences.values().map(|f| (f.org, f.id)).collect();
+        self.by_quote_contract = self
+            .quotes
+            .values()
+            .filter_map(|q| q.contract.map(|c| (c, q.id)))
+            .collect();
+    }
+
     /// The allocator document.
     #[must_use]
     pub fn meta_doc(&self) -> serde_json::Value {
-        serde_json::json!({ "next_run_id": self.next_run })
+        serde_json::json!({
+            "next_run_id": self.next_run,
+            "next_fence_id": self.next_fence,
+            "next_quote_id": self.next_quote,
+        })
     }
 
     /// Re-derive every listing index from the listings — the one place they are
@@ -353,6 +443,58 @@ pub(crate) fn del_run(ctx: &mut Ctx<'_>, id: RunId) {
     push_op(ctx.out, ModuleWrite::Del { key: run_key(id) });
 }
 
+/// Install a fence record and queue its container doc -- the single write path
+/// (E6b, B9), and therefore the one place the fence indexes are maintained.
+pub(crate) fn put_fence(ctx: &mut Ctx<'_>, f: SrFence) {
+    if let Some(store) = ctx.w.module_state_mut::<SrEconomyStore>() {
+        store.fences.insert(f.id, f.clone());
+        store.reindex_fences();
+    }
+    let Ok(value) = serde_json::to_value(&f) else {
+        tracing::error!(fence = f.id.0, "sr.economy: a fence did not serialize");
+        return;
+    };
+    push_op(
+        ctx.out,
+        ModuleWrite::JsonSet {
+            key: fence_key(f.id),
+            value,
+        },
+    );
+}
+
+/// Install a quote and queue its container doc -- the single write path (E6b, B9).
+pub(crate) fn put_quote(ctx: &mut Ctx<'_>, q: FenceQuote) {
+    if let Some(store) = ctx.w.module_state_mut::<SrEconomyStore>() {
+        store.quotes.insert(q.id, q.clone());
+        store.reindex_fences();
+    }
+    let Ok(value) = serde_json::to_value(&q) else {
+        tracing::error!(quote = q.id.0, "sr.economy: a quote did not serialize");
+        return;
+    };
+    push_op(
+        ctx.out,
+        ModuleWrite::JsonSet {
+            key: quote_key(q.id),
+            value,
+        },
+    );
+}
+
+/// Forget a quote: out of RAM, out of the indexes, out of the store (E6b, B9).
+///
+/// The same trade `del_run` makes for a closed listing -- the money was never here,
+/// it is the contract's, and the contract keeps its own terminal record -- so a
+/// quote/lapse loop mints no permanent documents.
+pub(crate) fn del_quote(ctx: &mut Ctx<'_>, id: QuoteId) {
+    if let Some(store) = ctx.w.module_state_mut::<SrEconomyStore>() {
+        store.quotes.remove(&id);
+        store.reindex_fences();
+    }
+    push_op(ctx.out, ModuleWrite::Del { key: quote_key(id) });
+}
+
 /// Queue the allocator document.
 pub(crate) fn persist_meta(ctx: &mut Ctx<'_>) {
     let Some(meta) = ctx
@@ -383,15 +525,45 @@ pub fn load(kv: &[(SmolStr, serde_json::Value)], cfg: SrEconomyConfig) -> SrEcon
         cfg,
         ..SrEconomyStore::default()
     };
+    // E6b verify fold (R8): the allocator floors are derived from every document's
+    // **parsed key**, loaded or not. Deriving them from what loaded meant a corrupt
+    // `sr:fence:3` plus a lost `sr:meta` re-minted id 3 and `JsonSet` straight over
+    // the evidence — and any surviving quote naming fence 3 then named a different
+    // organization. A key that parses is a claim on an id whether or not its body
+    // does.
+    let mut seen_run = 0u64;
+    let mut seen_fence = 0u64;
+    let mut seen_quote = 0u64;
     for (key, value) in kv {
         let key = key.as_str();
         if let Some(rest) = key.strip_prefix("sr:profile:") {
             load_profile(&mut store, key, rest, value);
         } else if let Some(rest) = key.strip_prefix("sr:run:") {
+            if let Ok(n) = rest.parse::<u64>() {
+                seen_run = seen_run.max(n.saturating_add(1));
+            }
             load_run(&mut store, key, rest, value);
+        } else if let Some(rest) = key.strip_prefix("sr:fence:") {
+            if let Ok(n) = rest.parse::<u64>() {
+                seen_fence = seen_fence.max(n.saturating_add(1));
+            }
+            load_fence(&mut store, key, rest, value);
+        } else if let Some(rest) = key.strip_prefix("sr:quote:") {
+            if let Ok(n) = rest.parse::<u64>() {
+                seen_quote = seen_quote.max(n.saturating_add(1));
+            }
+            load_quote(&mut store, key, rest, value);
         } else if key == META_KEY {
             store.next_run = value
                 .get("next_run_id")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0);
+            store.next_fence = value
+                .get("next_fence_id")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0);
+            store.next_quote = value
+                .get("next_quote_id")
                 .and_then(serde_json::Value::as_u64)
                 .unwrap_or(0);
         }
@@ -404,10 +576,105 @@ pub fn load(kv: &[(SmolStr, serde_json::Value)], cfg: SrEconomyConfig) -> SrEcon
         .map(|id| id.0.saturating_add(1))
         .max()
         .unwrap_or(0);
-    store.next_run = store.next_run.max(floor);
+    store.next_run = store.next_run.max(floor).max(seen_run);
+    // E6b (B9): the same allocator floor for the two fence families, so a lost meta
+    // document can never mint an id a live record already carries.
+    let fence_floor = store
+        .fences
+        .keys()
+        .map(|id| id.0.saturating_add(1))
+        .max()
+        .unwrap_or(0);
+    store.next_fence = store.next_fence.max(fence_floor).max(seen_fence);
+    let quote_floor = store
+        .quotes
+        .keys()
+        .map(|id| id.0.saturating_add(1))
+        .max()
+        .unwrap_or(0);
+    store.next_quote = store.next_quote.max(quote_floor).max(seen_quote);
     store.reindex();
     store.reindex_profiles();
+    store.reindex_fences();
     store
+}
+
+/// Load one `sr:fence:{id}` document -- **total**: a corrupt one is skipped loudly
+/// and the world boots, with DL-07's identity rule (`id == key`) applied.
+fn load_fence(
+    store: &mut SrEconomyStore,
+    key: &str,
+    rest: &str,
+    value: &serde_json::Value,
+) -> Option<()> {
+    let Ok(n) = rest.parse::<u64>() else {
+        tracing::warn!(%key, "sr.economy: a fence document has an unreadable key; skipped");
+        return None;
+    };
+    let id = FenceId(n);
+    // E6b verify fold (D6): the cap is enforced on **load** as well as on write, so
+    // a store carrying more than `MAX_FENCES` boots with the cap and says so, rather
+    // than quietly keeping whatever the documents held.
+    if store.fences.len() >= crate::economy::config::MAX_FENCES {
+        tracing::warn!(%key, "sr.economy: past the fence cap; skipped");
+        return None;
+    }
+    match serde_json::from_value::<SrFence>(value.clone()) {
+        Ok(f) if f.id == id => {
+            store.fences.insert(id, f);
+            Some(())
+        }
+        Ok(f) => {
+            tracing::warn!(
+                %key, record = f.id.0,
+                "sr.economy: a fence document disagrees with its own key; skipped"
+            );
+            None
+        }
+        Err(error) => {
+            tracing::warn!(%key, %error, "sr.economy: a fence document did not parse; skipped");
+            None
+        }
+    }
+}
+
+/// Load one `sr:quote:{id}` document -- the same rules, and the same loss: a quote
+/// is a price anybody can ask for again.
+fn load_quote(
+    store: &mut SrEconomyStore,
+    key: &str,
+    rest: &str,
+    value: &serde_json::Value,
+) -> Option<()> {
+    let Ok(n) = rest.parse::<u64>() else {
+        tracing::warn!(%key, "sr.economy: a quote document has an unreadable key; skipped");
+        return None;
+    };
+    let id = QuoteId(n);
+    // E6b verify fold (D6): the same on the quote family, against the whole-store
+    // ceiling rather than the per-seller one — a quote is a projection of a price
+    // anyone can ask for again, so dropping the overflow costs a row and nothing.
+    if store.quotes.len() >= MAX_QUOTES {
+        tracing::warn!(%key, "sr.economy: past the quote cap; skipped");
+        return None;
+    }
+    match serde_json::from_value::<FenceQuote>(value.clone()) {
+        Ok(q) if q.id == id => {
+            store.quotes.insert(id, q);
+            Some(())
+        }
+        Ok(q) => {
+            tracing::warn!(
+                %key, record = q.id.0,
+                "sr.economy: a quote document disagrees with its own key; skipped"
+            );
+            None
+        }
+        Err(error) => {
+            tracing::warn!(%key, %error, "sr.economy: a quote document did not parse; skipped");
+            None
+        }
+    }
 }
 
 fn load_profile(

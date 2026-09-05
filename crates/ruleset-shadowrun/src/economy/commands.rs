@@ -36,11 +36,13 @@ use mush_org::{OrgScopeId, PrincipalId};
 use smol_str::SmolStr;
 
 use crate::Sr5Cmd;
-use crate::economy::board::{self, NO_SUCH_RUN, PostRequest, RunSplit, SplitSlot};
+use crate::economy::board::{self, NO_SUCH_RUN, PostRequest, RunRoute, RunSplit, SplitSlot};
 use crate::economy::chargen::{MigrationVerdict, approval_stamp};
 use crate::economy::config::{
-    LifestyleTier, MAX_RUN_OUTCOMES, MAX_RUN_SLOTS, SR_MONTH, SrEconomyConfig,
+    FENCE_PAGE, FENCE_PAGE_VISIT, LifestyleTier, MAX_RUN_OUTCOMES, MAX_RUN_SLOTS, SR_MONTH,
+    SrEconomyConfig,
 };
+use crate::economy::fence_record::{FenceId, FenceQuote, FenceSettlement, QuoteId};
 use crate::economy::lifestyle::{self, LifestyleError};
 use crate::economy::record::{BoardVisibility, RunId, RunState, RunTemplate};
 use crate::economy::store::SrEconomyStore;
@@ -85,6 +87,38 @@ pub(crate) fn register(reg: &mut Registrar<'_>, cmd: Arc<Sr5Cmd>) -> Result<(), 
         },
     )?;
 
+    // E6b (B9): the fence. A new primary verb, entered in the rule-1 allowlist in
+    // the same commit as `legacy-post-image` with its future family `sr:fence`.
+    reg.command(
+        CommandSpec {
+            name: "+fence".into(),
+            switches: vec![
+                "list".into(),
+                "show".into(),
+                "quote".into(),
+                "accept".into(),
+                "deliver".into(),
+            ],
+            shape: ArgShape::EqPair,
+            help: "+fence/list  --  who is buying, and your own open quotes.\n\
+                   +fence/show <quote>  --  one quote and the whole of its arithmetic.\n\
+                   +fence/quote <fence>=<object> [immediate|consign]  --  a deterministic offer \
+                   for something you are carrying. Immediate pays less and settles on delivery; \
+                   a consignment pays more and matures after a stated delay. The price comes \
+                   from the catalogue baseline, the settlement rate and the fence's declared \
+                   demand, and from nothing else — a fence never pays for what it cannot see.\n\
+                   +fence/accept <quote>  --  the fence escrows its payment. You then accept the \
+                   contract (@contract/accept), and only then deliver.\n\
+                   +fence/deliver <quote>  --  hand the goods into the fence's vault. Refused \
+                   until the deal is in force: the money is committed before the goods move.\n\
+                   A fence buys CUSTODY, never title. Your title record and any dispute on it \
+                   survive the sale untouched."
+                .into(),
+            ..CommandSpec::default()
+        },
+        Arc::new(fence_cmd),
+    )?;
+
     reg.command(
         CommandSpec {
             name: "+lifestyle".into(),
@@ -123,6 +157,8 @@ pub(crate) fn register(reg: &mut Registrar<'_>, cmd: Arc<Sr5Cmd>) -> Result<(), 
                 "clock".into(),
                 "migrate".into(),
                 "profile".into(),
+                // E6b (B9): register a vendor organization as a fence.
+                "fence".into(),
             ],
             shape: ArgShape::EqPair,
             min_role: Role::Royalty,
@@ -131,7 +167,8 @@ pub(crate) fn register(reg: &mut Registrar<'_>, cmd: Arc<Sr5Cmd>) -> Result<(), 
                    this verb shows it, it never creates one).\n\
                    @sr/migrate dry|commit [<who>]  --  mint an approved character's sheet nuyen \
                    once from system:sr.migration. Idempotent; a re-run reports the first result.\n\
-                   @sr/profile <who>  --  one character's economic profile."
+                   @sr/profile <who>  --  one character's economic profile.
+                   @sr/fence <org>=<vault> [name=<text>] [demand=<permille>]  --  register a                    vendor organization as a fence. The org must be named in                    [shadowrun.economy].vendor_orgs (composition data: it is what lets a fence                    accept a deal with no officer connected) and must own the vault."
                 .into(),
             ..CommandSpec::default()
         },
@@ -366,7 +403,7 @@ fn notice_lines(ctx: &Ctx<'_>, r: &RunTemplate) -> Vec<String> {
 }
 
 /// The option keys `+run/post` understands.
-const POST_KEYS: [&str; 11] = [
+const POST_KEYS: [&str; 13] = [
     "outcomes",
     "scope",
     "account",
@@ -378,7 +415,117 @@ const POST_KEYS: [&str; 11] = [
     "slots",
     "board",
     "days",
+    // E6b (B8): the other three settlement routes.
+    "route",
+    "gate",
 ];
+
+// ---- E6b: B8 — parsing the four routes ------------------------------------
+
+/// Parse one route spec: `attest`, `canon:<kind>:<source>`, `before:<unix>`,
+/// `after:<row>:<secs>` or `fact:<provider>:<kind>:<id>`.
+///
+/// The **source is the remainder**, deliberately: a seal's source is `run:{id}`,
+/// which carries a colon of its own, and splitting it off by position would have
+/// made the one source E6b actually produces unspellable.
+fn parse_route_spec(spec: &str, rows: &[SmolStr]) -> Result<RunRoute, CmdError> {
+    const USAGE: &str = "A route is attest | canon:<kind>:<source> | before:<unix> | \
+                         after:<row>:<secs> | fact:<provider>:<kind>:<id>.";
+    let spec = spec.trim();
+    if spec.eq_ignore_ascii_case("attest") {
+        return Ok(RunRoute::Attest);
+    }
+    let (word, rest) = spec.split_once(':').ok_or_else(|| CmdError::msg(USAGE))?;
+    match word.trim().to_ascii_lowercase().as_str() {
+        "canon" => {
+            let (kind, source) = rest.split_once(':').ok_or_else(|| CmdError::msg(USAGE))?;
+            if kind.trim().is_empty() || source.trim().is_empty() {
+                return Err(CmdError::msg(USAGE));
+            }
+            Ok(RunRoute::Canon {
+                kind: SmolStr::new(kind.trim()),
+                source: SmolStr::new(source.trim()),
+            })
+        }
+        "before" => Ok(RunRoute::Before {
+            at: rest
+                .trim()
+                .parse::<i64>()
+                .map_err(|_| CmdError::msg(USAGE))?,
+        }),
+        "after" => {
+            let (row, secs) = rest.split_once(':').ok_or_else(|| CmdError::msg(USAGE))?;
+            let anchor = row_index(row.trim(), rows)?;
+            let delay = secs
+                .trim()
+                .parse::<i64>()
+                .ok()
+                .filter(|n| *n > 0)
+                .ok_or_else(|| CmdError::msg(USAGE))?;
+            Ok(RunRoute::After { anchor, delay })
+        }
+        "fact" => {
+            let (provider, rest) = rest.split_once(':').ok_or_else(|| CmdError::msg(USAGE))?;
+            let (kind, id) = rest.split_once(':').ok_or_else(|| CmdError::msg(USAGE))?;
+            if provider.trim().is_empty() || kind.trim().is_empty() || id.trim().is_empty() {
+                return Err(CmdError::msg(USAGE));
+            }
+            Ok(RunRoute::Fact {
+                provider: SmolStr::new(provider.trim()),
+                kind: SmolStr::new(kind.trim()),
+                id: SmolStr::new(id.trim()),
+            })
+        }
+        _ => Err(CmdError::msg(USAGE)),
+    }
+}
+
+/// Resolve an outcome row by name or by index.
+fn row_index(word: &str, rows: &[SmolStr]) -> Result<usize, CmdError> {
+    if let Some(i) = rows.iter().position(|n| n.eq_ignore_ascii_case(word)) {
+        return Ok(i);
+    }
+    word.parse::<usize>()
+        .ok()
+        .filter(|i| *i < rows.len())
+        .ok_or_else(|| CmdError::msg("That run has no such outcome row."))
+}
+
+/// Parse `route=<row>:<spec>|<row>:<spec>…` into one route per outcome row,
+/// defaulting every unnamed row to `attest` (E6a's behaviour exactly).
+fn parse_routes(raw: Option<&str>, rows: &[SmolStr]) -> Result<Vec<RunRoute>, CmdError> {
+    let mut routes: Vec<RunRoute> = vec![RunRoute::Attest; rows.len()];
+    let Some(raw) = raw else { return Ok(routes) };
+    for part in raw.split('|').map(str::trim).filter(|p| !p.is_empty()) {
+        let (row, spec) = part.split_once(':').ok_or_else(|| {
+            CmdError::msg("Usage: route=<row>:<attest|canon:…|before:…|after:…|fact:…>")
+        })?;
+        let i = row_index(row.trim(), rows)?;
+        let route = parse_route_spec(spec, rows)?;
+        // An `after` naming its own row would be a condition waiting on itself; the
+        // economy's cycle check refuses it at offer, and saying so here is clearer.
+        if matches!(&route, RunRoute::After { anchor, .. } if *anchor == i) {
+            return Err(CmdError::msg("An after route cannot wait on its own row."));
+        }
+        routes[i] = route;
+    }
+    Ok(routes)
+}
+
+/// Parse `gate=<spec>|<spec>…` — the conditions **every** row must also satisfy.
+fn parse_gates(raw: Option<&str>, rows: &[SmolStr]) -> Result<Vec<RunRoute>, CmdError> {
+    let Some(raw) = raw else {
+        return Ok(Vec::new());
+    };
+    let mut out: Vec<RunRoute> = Vec::new();
+    for part in raw.split('|').map(str::trim).filter(|p| !p.is_empty()) {
+        out.push(parse_route_spec(part, rows)?);
+        if out.len() + rows.len() > mush_economy::MAX_CONDITIONS {
+            return Err(CmdError::msg("That run names too many conditions."));
+        }
+    }
+    Ok(out)
+}
 
 #[allow(clippy::too_many_lines)]
 fn run_post(ctx: &mut Ctx<'_>, cfg: &SrEconomyConfig) -> Result<(), CmdError> {
@@ -532,6 +679,15 @@ fn run_post(ctx: &mut Ctx<'_>, cfg: &SrEconomyConfig) -> Result<(), CmdError> {
         }
         None => (AttestorSet::Party(principal.clone()), false),
     };
+    // E6b (B8): the four routes. Every unnamed row stays `attest`, so a command
+    // that names none behaves exactly as E6a's did. A **canon** route is refused at
+    // offer unless its kind is a producer-declared outcome kind and it names a
+    // source, so `route=success:canon:scene.outcome` (no source) never lists.
+    let routes = parse_routes(opts.get("route").map(String::as_str), &names)?;
+    let gate_routes = parse_gates(opts.get("gate").map(String::as_str), &names)?;
+    // The gates sit after the per-row conditions, so their indexes are known before
+    // the surface exists.
+    let gates: Vec<usize> = (names.len()..names.len() + gate_routes.len()).collect();
     let board = parse_board(ctx, opts.get("board").map(String::as_str))?;
     let days = match opts.get("days") {
         Some(s) => s
@@ -557,6 +713,7 @@ fn run_post(ctx: &mut Ctx<'_>, cfg: &SrEconomyConfig) -> Result<(), CmdError> {
             payer_account: account,
             fixer_account,
             names,
+            gates,
         },
         adjudicator,
         adjudicator_named,
@@ -565,6 +722,8 @@ fn run_post(ctx: &mut Ctx<'_>, cfg: &SrEconomyConfig) -> Result<(), CmdError> {
         slots,
         board,
         expires_at,
+        routes,
+        gates: gate_routes,
     };
     match board::post(ctx, cfg, req) {
         Ok(id) => {
@@ -658,7 +817,7 @@ fn fixer_is_self(ctx: &Ctx<'_>, p: &PrincipalId) -> bool {
     *p == PrincipalId::Object(ctx.actor)
 }
 
-fn refuse_account(ctx: &Ctx<'_>, id: AccountId) -> CmdError {
+fn refuse_account(ctx: &mut Ctx<'_>, id: AccountId) -> CmdError {
     mush_economy::refuse_named(
         ctx,
         NamedResource::Account(id),
@@ -1019,6 +1178,10 @@ fn sr_cmd(cmd: &Sr5Cmd, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         require_enabled(&cfg)?;
         return sr_profile(ctx);
     }
+    if sw.has("fence") {
+        require_enabled(&cfg)?;
+        return sr_fence(ctx, &cfg);
+    }
     sr_economy(ctx, &cfg)
 }
 
@@ -1235,4 +1398,309 @@ fn sr_profile(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 #[must_use]
 pub fn state_word(s: RunState) -> &'static str {
     s.word()
+}
+
+// ---- E6b: B9 — the `+fence` surface and `@sr/fence` ------------------------
+
+/// `+fence` — the whole player-facing fence surface.
+fn fence_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    let cfg = config(ctx);
+    require_enabled(&cfg)?;
+    let sw = ctx.switches.clone();
+    if sw.has("show") {
+        fence_show(ctx, &cfg)
+    } else if sw.has("quote") {
+        fence_quote(ctx, &cfg)
+    } else if sw.has("accept") {
+        fence_accept(ctx, &cfg)
+    } else if sw.has("deliver") {
+        fence_deliver(ctx)
+    } else {
+        fence_list(ctx, &cfg)
+    }
+}
+
+/// `+fence/list` — the registered fences, then this seller's own open quotes.
+///
+/// A **hidden** fence organization's listings are simply **absent** for a
+/// non-member — never "No such" (G3, scenario 12): the economy owns the render
+/// (`render_org_listed`), the ruleset owns the absence.
+fn fence_list(ctx: &mut Ctx<'_>, cfg: &SrEconomyConfig) -> Result<(), CmdError> {
+    let fences: Vec<(FenceId, mush_org::OrgId, SmolStr, i64)> = ctx
+        .w
+        .module_state::<SrEconomyStore>()
+        .map(|s| {
+            s.fences()
+                .map(|f| (f.id, f.org, f.name.clone(), f.demand))
+                .collect()
+        })
+        .unwrap_or_default();
+    let mut rows: Vec<String> = Vec::new();
+    // E6b verify fold (D3): **filter, then page.** Taking the page before the
+    // hidden-org filter made a member's and a non-member's page truncate
+    // differently, which is a difference a non-member can read; and the walk is
+    // bounded on records **visited**, not on records matched (D-LBK-5's rule).
+    for (id, org, name, demand) in fences.into_iter().take(FENCE_PAGE_VISIT) {
+        if !mush_economy::may_list_org(ctx, org) {
+            continue;
+        }
+        if rows.len() >= FENCE_PAGE {
+            break;
+        }
+        let immediate = i64::from(cfg.fence_rate_immediate)
+            .saturating_add(demand)
+            .clamp(0, 1_000);
+        let consign = i64::from(cfg.fence_rate_consign)
+            .saturating_add(demand)
+            .clamp(0, 1_000);
+        rows.push(format!(
+            "  fence #{id} — {} ({}), immediate {immediate} permille, consign {consign} permille",
+            mush_economy::render_org_listed(ctx, org),
+            if name.is_empty() {
+                "unnamed".to_string()
+            } else {
+                name.to_string()
+            },
+        ));
+    }
+    if rows.is_empty() {
+        say(ctx, "No fence is buying here.");
+    } else {
+        say(ctx, "Fences:".to_string());
+        for r in rows {
+            say(ctx, r);
+        }
+    }
+    let mine: Vec<String> = quote_lines(ctx, cfg);
+    if !mine.is_empty() {
+        say(ctx, "Your open quotes:".to_string());
+        for r in mine {
+            say(ctx, r);
+        }
+    }
+    Ok(())
+}
+
+/// One line per open quote of the actor's, newest first, bounded.
+fn quote_lines(ctx: &Ctx<'_>, cfg: &SrEconomyConfig) -> Vec<String> {
+    let actor = ctx.actor;
+    // E6b verify fold (D10): bounded on records **visited**, newest first, so a long
+    // quote tail is never an unbounded scan wearing a page cap.
+    let quotes: Vec<FenceQuote> = ctx
+        .w
+        .module_state::<SrEconomyStore>()
+        .map(|s| {
+            s.quotes()
+                .rev()
+                .take(FENCE_PAGE_VISIT)
+                .filter(|q| q.seller == actor)
+                .take(FENCE_PAGE)
+                .cloned()
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    quotes
+        .into_iter()
+        .map(|q| quote_line(ctx, cfg, &q))
+        .collect()
+}
+
+fn quote_line(ctx: &Ctx<'_>, cfg: &SrEconomyConfig, q: &FenceQuote) -> String {
+    let settlement = match q.settlement {
+        FenceSettlement::Immediate => "immediate".to_string(),
+        // Answer 15: the delay is **shown in the offer**.
+        FenceSettlement::Consign { delay } => format!("consignment in {} h", delay / 3_600),
+    };
+    let state = if q.contract.is_some() {
+        "agreed"
+    } else if crate::economy::fence::is_current(ctx, q) {
+        "open"
+    } else {
+        "lapsed"
+    };
+    format!(
+        "  quote #{} — {} for #{} ({}), {settlement}, {state}",
+        q.id,
+        mush_economy::money(ctx, &instrument_of(cfg), q.offer),
+        q.object.0,
+        q.catalog
+    )
+}
+
+fn instrument_of(cfg: &SrEconomyConfig) -> mush_economy::InstrumentId {
+    mush_economy::InstrumentId::new(cfg.instrument.as_str())
+        .unwrap_or_else(|| mush_economy::InstrumentId::new("nuyen").expect("a well-formed code"))
+}
+
+/// An existence-hiding refusal from a `+fence` verb, **counted** (E6b verify fold,
+/// D8): `FenceId` and `QuoteId` are two enumerable id spaces, and C16's tally exists
+/// so staff can see the shape of a walk over one.
+fn no_such(ctx: &mut Ctx<'_>, text: &'static str) -> CmdError {
+    mush_economy::note_refusal(ctx, true);
+    CmdError::msg(text)
+}
+
+/// `+fence/show <quote>` — the whole of the arithmetic, to its seller alone.
+fn fence_show(ctx: &mut Ctx<'_>, cfg: &SrEconomyConfig) -> Result<(), CmdError> {
+    let parsed = parse_u64(ctx.args.lhs()).map(QuoteId);
+    let Some(id) = parsed else {
+        return Err(no_such(ctx, crate::economy::fence::NO_SUCH_QUOTE));
+    };
+    let found = ctx
+        .w
+        .module_state::<SrEconomyStore>()
+        .and_then(|s| s.quote(id).cloned())
+        .filter(|q| q.seller == ctx.actor || crate::economy::is_staff(ctx.w, ctx.actor));
+    let Some(q) = found else {
+        return Err(no_such(ctx, crate::economy::fence::NO_SUCH_QUOTE));
+    };
+    let line = quote_line(ctx, cfg, &q);
+    say(ctx, line);
+    // The basis is the whole of the arithmetic: a hidden fact contributes no factor
+    // at all, so what the seller reads is what the fence computed (D-E6-11).
+    for f in &q.basis {
+        say(ctx, format!("    {} {} permille", f.label, f.permille));
+    }
+    match q.contract {
+        Some(c) => say(
+            ctx,
+            format!(
+                "  agreed as contract #{}. Accept it (@contract/accept #{}) and then \
+                 +fence/deliver {}.",
+                c.0, c.0, q.id
+            ),
+        ),
+        None => say(ctx, format!("  +fence/accept {} takes it up.", q.id)),
+    }
+    Ok(())
+}
+
+/// `+fence/quote <fence>=<obj> [immediate|consign]`.
+fn fence_quote(ctx: &mut Ctx<'_>, cfg: &SrEconomyConfig) -> Result<(), CmdError> {
+    const USAGE: &str = "Usage: +fence/quote <fence>=<object> [immediate|consign]";
+    let parsed = parse_u64(ctx.args.lhs()).map(FenceId);
+    let Some(fence) = parsed else {
+        return Err(no_such(ctx, crate::economy::fence::NO_SUCH_FENCE));
+    };
+    let rhs = ctx.args.rhs().ok_or_else(|| CmdError::msg(USAGE))?;
+    let mut words = rhs.split_whitespace();
+    let target = words
+        .next()
+        .ok_or_else(|| CmdError::msg(USAGE))?
+        .to_string();
+    let consign = match words.next().map(str::to_ascii_lowercase).as_deref() {
+        None | Some("immediate") => false,
+        Some("consign" | "consignment") => true,
+        Some(_) => return Err(CmdError::msg(USAGE)),
+    };
+    let resolved = match_object(ctx.w, ctx.actor, &target).ok();
+    let Some(object) = resolved else {
+        return Err(no_such(ctx, crate::economy::fence::NO_SUCH_ASSET));
+    };
+    match crate::economy::fence::quote(ctx, cfg, fence, object, consign) {
+        Ok(id) => {
+            let q = ctx
+                .w
+                .module_state::<SrEconomyStore>()
+                .and_then(|s| s.quote(id).cloned());
+            if let Some(q) = q {
+                let line = quote_line(ctx, cfg, &q);
+                say(ctx, line);
+            }
+            say(ctx, format!("  +fence/accept {id} takes it up."));
+            Ok(())
+        }
+        Err(e) => Err(crate::economy::fence::refuse_fence(
+            ctx,
+            &e,
+            &[NamedResource::Asset(object)],
+        )),
+    }
+}
+
+/// `+fence/accept <quote>` — draft, offer, and let the fence escrow first.
+fn fence_accept(ctx: &mut Ctx<'_>, cfg: &SrEconomyConfig) -> Result<(), CmdError> {
+    let parsed = parse_u64(ctx.args.lhs()).map(QuoteId);
+    let Some(id) = parsed else {
+        return Err(no_such(ctx, crate::economy::fence::NO_SUCH_QUOTE));
+    };
+    match crate::economy::fence::accept(ctx, cfg, id) {
+        Ok(contract) => {
+            say(
+                ctx,
+                format!(
+                    "The fence has escrowed its payment as contract #{}. Accept it \
+                     (@contract/accept #{}) and only then +fence/deliver {id} — the goods stay \
+                     with you until the money is committed.",
+                    contract.0, contract.0
+                ),
+            );
+            Ok(())
+        }
+        Err(e) => Err(crate::economy::fence::refuse_fence(ctx, &e, &[])),
+    }
+}
+
+/// `+fence/deliver <quote>`.
+fn fence_deliver(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    let parsed = parse_u64(ctx.args.lhs()).map(QuoteId);
+    let Some(id) = parsed else {
+        return Err(no_such(ctx, crate::economy::fence::NO_SUCH_QUOTE));
+    };
+    let object = ctx
+        .w
+        .module_state::<SrEconomyStore>()
+        .and_then(|s| s.quote(id).map(|q| q.object));
+    match crate::economy::fence::deliver(ctx, id) {
+        Ok(line) => {
+            say(ctx, line);
+            Ok(())
+        }
+        Err(e) => {
+            let named: Vec<NamedResource> = object.map(NamedResource::Asset).into_iter().collect();
+            Err(crate::economy::fence::refuse_fence(ctx, &e, &named))
+        }
+    }
+}
+
+/// `@sr/fence <org>=<vault> [name=<text>] [demand=<permille>]` (staff).
+fn sr_fence(ctx: &mut Ctx<'_>, cfg: &SrEconomyConfig) -> Result<(), CmdError> {
+    const USAGE: &str =
+        "Usage: @sr/fence <org>=<vault> [name=<text>] [demand=<permille, -1000..1000>]";
+    let org = mush_economy::resolve_org_visible(ctx, ctx.args.lhs())
+        .ok_or_else(|| CmdError::msg("No such organization."))?;
+    let rhs = ctx.args.rhs().ok_or_else(|| CmdError::msg(USAGE))?;
+    let (rest, opts) = parse_opts(rhs, &["name", "demand"]);
+    let vault = parse_u64(&rest)
+        .map(mush_economy::VaultId)
+        .ok_or_else(|| CmdError::msg("No such vault."))?;
+    let name = SmolStr::new(opts.get("name").map(String::as_str).unwrap_or("").trim());
+    let demand = match opts.get("demand") {
+        Some(s) => s
+            .trim()
+            .parse::<i64>()
+            .ok()
+            .filter(|n| (-1_000..=1_000).contains(n))
+            .ok_or_else(|| CmdError::msg(USAGE))?,
+        None => 0,
+    };
+    // DL-11 is **composition data**: an org the wiring never named cannot have its
+    // acceptance performed programmatically, so registering it as a fence would mint
+    // a shop nobody could ever sell to. Refuse with the exact fix (08a's
+    // staff-scarce rule: never park state on "ask someone", say the command).
+    if !cfg.is_vendor_org(org) {
+        return Err(CmdError::msg(format!(
+            "org #{} is not a wiring-named vendor. Add it to [shadowrun.economy].vendor_orgs = \
+             [{}] in mushd.toml and restart; the list is composition data on purpose — it is what \
+             lets a fence accept a deal with no officer connected.",
+            org.0, org.0
+        )));
+    }
+    match crate::economy::fence::register_fence(ctx, cfg, org, vault, name, demand) {
+        Ok(id) => {
+            say(ctx, format!("Fence #{id} registered."));
+            Ok(())
+        }
+        Err(e) => Err(crate::economy::fence::refuse_fence(ctx, &e, &[])),
+    }
 }

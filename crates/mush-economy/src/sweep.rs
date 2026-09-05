@@ -113,6 +113,20 @@ pub(crate) fn sweep(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<SceneId>) {
         ratio,
         spans_boot: store.gap_spans_boot(),
     };
+    // E6b (DL-09): once per boot, ask the durable canon read seam for the records
+    // every live `Canon` condition cites. The RAM tail is empty after a restart, so
+    // a seal committed before it would otherwise be lost to the recovery path —
+    // exactly the "settlement sealed, then the server bounced" case.
+    if ctx
+        .w
+        .module_state::<EconomyStore>()
+        .is_some_and(|s| !s.canon_boot_scan_done)
+    {
+        if let Some(store) = ctx.w.module_state_mut::<EconomyStore>() {
+            store.canon_boot_scan_done = true;
+        }
+        crate::attest::rescan_canon_sources(ctx);
+    }
     advance_cadences(ctx, now, ic_now);
     expire_holds(ctx, now, ic_now);
     settle_obligations(ctx, evidence);
@@ -465,6 +479,7 @@ fn disposition(e: &EconomyError) -> Disposition {
         | EconomyError::Encumbered(_)
         | EconomyError::NoSuchEncumbrance(_)
         | EconomyError::AssignmentToOwner(_)
+        | EconomyError::AlreadyClaimed(_)
         | EconomyError::NoSuchVault(_)
         | EconomyError::VaultNotActive(_)
         | EconomyError::NotInVault(_)

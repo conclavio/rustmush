@@ -14,8 +14,9 @@ use mush_core::{
 };
 
 use crate::data::{
-    DEFAULT_ROUND_SECONDS, KIND_TIMESTOP, PauseReason, SceneEvent, SceneEventKind, SceneMode,
-    SceneRecord, SceneStatus, ScenesState, persist_meta, persist_scene,
+    DEFAULT_ROUND_SECONDS, KIND_TIMESTOP, MAX_IC_FLOOR_LEAD_SECS, MAX_OUTCOME_NOTE_BYTES,
+    MAX_OUTCOME_SUBJECTS, PauseReason, SceneEvent, SceneEventKind, SceneMode, SceneOutcome,
+    SceneRecord, SceneStatus, SceneUid, ScenesState, persist_meta, persist_scene,
 };
 
 /// Record one lifecycle event into `s`'s log (stamped with the current wall
@@ -167,6 +168,10 @@ fn timestop_start(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             round: 1,
             turn_index: 0,
             ended_at: None,
+            sealer: None,
+            seal_run: None,
+            outcome: None,
+            ic_floor: 0,
         };
         st.scenes.insert(id, rec.clone());
         rec
@@ -447,6 +452,7 @@ fn render_event(w: &World, ev: &SceneEvent) -> String {
         SceneEventKind::Rolled => format!("{who} rolled: {}", s("summary")),
         SceneEventKind::Joined => format!("{who} arrives."),
         SceneEventKind::Left => format!("{who} leaves."),
+        SceneEventKind::Sealed => format!("{who} sealed the outcome: {}.", s("outcome")),
     }
 }
 
@@ -538,6 +544,7 @@ fn recap_line(ctx: &Ctx<'_>, ev: &SceneEvent) -> Option<String> {
         SceneEventKind::Joined => Some(format!("{who} arrives.")),
         SceneEventKind::Left => Some(format!("{who} departs.")),
         SceneEventKind::Ended => Some("The scene ends.".to_string()),
+        SceneEventKind::Sealed => Some(format!("The outcome is sealed: {}.", s("outcome"))),
         // Pause/resume/release are operational, not narrative.
         SceneEventKind::Paused | SceneEventKind::Resumed | SceneEventKind::Released => None,
     }
@@ -634,6 +641,381 @@ fn show_scene(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 }
 
 // ----------------------------------------------------------------------
+// ---- E6b: B6 — the conferred sealer, the outcome, and the IC floor ----
+// ----------------------------------------------------------------------
+
+/// Rule 2 (08i §4): **nothing may let an NPC's completion seal a settlement.**
+///
+/// The sealer of a scene outcome must be a live world *player* object. An
+/// `ObjKind::Npc` is driven by `NpcModule::on_complete` (and, in a later cut, by
+/// an LLM controller), so conferring the seal on one would hand a settlement
+/// authority to a process, not a principal. Refused at conferral **and** at
+/// seal, because the object could in principle change kind in between.
+fn is_sealable_principal(w: &World, who: ObjId) -> bool {
+    w.get(who).is_some_and(|o| o.kind == ObjKind::Player)
+}
+
+/// The scene a **staff** verb names: `@scene/... <id|here>=...`.
+fn staff_scene(ctx: &Ctx<'_>, arg: &str) -> Result<SceneRecord, CmdError> {
+    let arg = arg.trim();
+    let st = state_ref(ctx);
+    if arg.is_empty() || arg.eq_ignore_ascii_case("here") {
+        let room = actor_room(ctx)?;
+        return st
+            .latest_scene_at(room)
+            .cloned()
+            .ok_or_else(|| CmdError::msg("No such scene."));
+    }
+    let id = arg
+        .trim_start_matches('#')
+        .parse::<u64>()
+        .map_err(|_| CmdError::msg("No such scene."))?;
+    st.scenes
+        .get(&SceneUid(id))
+        .cloned()
+        .ok_or_else(|| CmdError::msg("No such scene."))
+}
+
+/// Write `rec` back into the state and mirror it. One path, so a scene mutation
+/// can never persist without the state agreeing with it.
+fn store_scene(ctx: &mut Ctx<'_>, rec: &SceneRecord) {
+    if let Some(st) = ctx.w.module_state_mut::<ScenesState>() {
+        st.scenes.insert(rec.id, rec.clone());
+    }
+    persist_scene(ctx.out, rec);
+}
+
+/// `+scene` — the read, plus E6b's `/outcome` seal.
+fn cmd_scene(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    if ctx.switches.has("outcome") {
+        scene_outcome(ctx)
+    } else {
+        show_scene(ctx)
+    }
+}
+
+fn cmd_scene_staff(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    if ctx.switches.has("facilitate") {
+        scene_facilitate(ctx)
+    } else if ctx.switches.has("icfloor") {
+        scene_icfloor(ctx)
+    } else {
+        Err(CmdError::msg(
+            "Usage: @scene/facilitate <scene>=<who>  |  @scene/icfloor <scene>=<unix>",
+        ))
+    }
+}
+
+/// `@scene/facilitate <scene>=<who>` (staff) — confer the **seal** authority.
+/// This is not the scene's `facilitator`, which any player grants themselves by
+/// starting a scene; it is the conferred authority 08f §4.1 requires.
+fn scene_facilitate(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    const USAGE: &str = "Usage: @scene/facilitate <scene>=<who|none> [run=<id>]";
+    let lhs = ctx.args.lhs().to_string();
+    let raw = ctx.args.rhs().unwrap_or_default().to_string();
+    let mut rec = staff_scene(ctx, &lhs)?;
+    // E6b verify fold (M2/R12): staff confer **which run** this scene may seal, and
+    // `+scene/outcome` may name no other. The id is opaque — `mush-scenes` has no
+    // economy edge and never asks what it means — but binding it at conferral is
+    // what stops a sealer conferred on one scene from settling somebody else's run
+    // by typing its number.
+    let (rhs, run) = match find_key(&raw, "run=") {
+        Some(at) => {
+            let rest = raw[at + "run=".len()..].trim();
+            let token = rest.split_whitespace().next().unwrap_or("");
+            let run = token
+                .trim_start_matches('#')
+                .parse::<u64>()
+                .map_err(|_| CmdError::msg(USAGE))?;
+            (raw[..at].trim().to_string(), Some(run))
+        }
+        None => (raw.trim().to_string(), None),
+    };
+    if rhs.is_empty() {
+        return Err(CmdError::msg(USAGE));
+    }
+    if rhs.eq_ignore_ascii_case("none") {
+        if rec.outcome.is_some() {
+            return Err(CmdError::msg(
+                "That scene is already sealed; its sealer is part of the record.",
+            ));
+        }
+        rec.sealer = None;
+        rec.seal_run = None;
+        store_scene(ctx, &rec);
+        to_actor(ctx, format!("Scene #{} can no longer be sealed.", rec.id));
+        return Ok(());
+    }
+    let who = mush_core::match_object(ctx.w, ctx.actor, &rhs)?;
+    if !is_sealable_principal(ctx.w, who) {
+        return Err(CmdError::msg(
+            "Only a player may be conferred a scene's seal — an NPC is driven, not accountable.",
+        ));
+    }
+    if rec.outcome.is_some() {
+        return Err(CmdError::msg(
+            "That scene is already sealed; its outcome is terminal.",
+        ));
+    }
+    rec.sealer = Some(who);
+    rec.seal_run = run;
+    store_scene(ctx, &rec);
+    let name = display_name(ctx.w, who);
+    to_actor(
+        ctx,
+        match run {
+            Some(id) => format!(
+                "{name} may now seal the outcome of scene #{} for run {id}, and for no other.",
+                rec.id
+            ),
+            None => format!(
+                "{name} may now seal the outcome of scene #{} — for the chronicle only, since no                  run was named (`run=<id>` binds it to one).",
+                rec.id
+            ),
+        },
+    );
+    Ok(())
+}
+
+/// `@scene/icfloor <scene>=<unix>` (staff) — raise the scene's IC time floor.
+/// Monotonic, and it never writes `clock_generation` (08i §9 answer 9).
+fn scene_icfloor(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    let lhs = ctx.args.lhs().to_string();
+    let rhs = ctx.args.rhs().unwrap_or_default().trim().to_string();
+    let mut rec = staff_scene(ctx, &lhs)?;
+    let now = ctx.w.game_now_unix();
+    let at = if rhs.eq_ignore_ascii_case("now") {
+        now
+    } else {
+        rhs.parse::<i64>()
+            .map_err(|_| CmdError::msg("Usage: @scene/icfloor <scene>=<unix seconds|now>"))?
+    };
+    // E6b verify fold (R4): **monotonic and unrepairable means bounded.** The raise
+    // has no inverse anywhere in the crate, so one pasted epoch-millis value would
+    // stamp every future canon record from this scene at the year 55 000 for ever.
+    // A floor is for catching a scene clock up to the world, so it may not run ahead
+    // of the world it is catching up to.
+    if at > now.saturating_add(MAX_IC_FLOOR_LEAD_SECS) {
+        return Err(CmdError::msg(format!(
+            "That floor is further ahead of the world's IC clock than a scene may be raised              (at most {MAX_IC_FLOOR_LEAD_SECS} s). The world reads {now}."
+        )));
+    }
+    // And never after the seal: the outcome's `ic_time` is already canon.
+    if rec.outcome.is_some() {
+        return Err(CmdError::msg(
+            "That scene is already sealed; its IC time is part of the chronicle.",
+        ));
+    }
+    let generation = rec.clock_generation;
+    rec.raise_ic_floor(at).map_err(CmdError::msg)?;
+    debug_assert_eq!(generation, rec.clock_generation);
+    if rec.validate_clock().is_err() {
+        return Err(CmdError::msg("The scene IC floor only moves forward."));
+    }
+    store_scene(ctx, &rec);
+    to_actor(
+        ctx,
+        format!(
+            "Scene #{}'s IC floor is now {at} (its clock reads {}).",
+            rec.id,
+            rec.scene_ic_time()
+        ),
+    );
+    Ok(())
+}
+
+/// What `+scene/outcome`'s right-hand side parsed to.
+struct OutcomeArgs {
+    subjects: Vec<String>,
+    run: Option<u64>,
+    note: String,
+}
+
+/// Parse `<subject>[, <subject>…] run=<id> [note=<text>]`.
+///
+/// `note=` is greedy to end of line (chronicle prose contains spaces); `run=`
+/// is a single token. Everything before either is the comma-separated subject
+/// list. Bounded by [`MAX_OUTCOME_SUBJECTS`] and [`MAX_OUTCOME_NOTE_BYTES`].
+fn parse_outcome_args(rhs: &str) -> Result<OutcomeArgs, CmdError> {
+    let usage = || {
+        CmdError::msg("Usage: +scene/outcome <row>=<subject>[,<subject>] run=<id> [note=<text>]")
+    };
+    let (head, note) = match find_key(rhs, "note=") {
+        Some(at) => (&rhs[..at], rhs[at + "note=".len()..].trim().to_string()),
+        None => (rhs, String::new()),
+    };
+    let (head, run) = match find_key(head, "run=") {
+        Some(at) => {
+            let rest = &head[at + "run=".len()..];
+            let token = rest.split_whitespace().next().unwrap_or("");
+            let run = token
+                .trim_start_matches('#')
+                .parse::<u64>()
+                .map_err(|_| usage())?;
+            (&head[..at], Some(run))
+        }
+        None => (head, None),
+    };
+    if note.len() > MAX_OUTCOME_NOTE_BYTES {
+        return Err(CmdError::msg(format!(
+            "A sealed outcome's note is at most {MAX_OUTCOME_NOTE_BYTES} bytes."
+        )));
+    }
+    let subjects: Vec<String> = head
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    if subjects.is_empty() {
+        return Err(usage());
+    }
+    if subjects.len() > MAX_OUTCOME_SUBJECTS {
+        return Err(CmdError::msg(format!(
+            "A sealed outcome names at most {MAX_OUTCOME_SUBJECTS} subjects."
+        )));
+    }
+    Ok(OutcomeArgs {
+        subjects,
+        run,
+        note,
+    })
+}
+
+/// The byte offset of `key` in `text` at a token boundary, case-insensitively.
+fn find_key(text: &str, key: &str) -> Option<usize> {
+    let lower = text.to_ascii_lowercase();
+    let mut from = 0usize;
+    while let Some(rel) = lower[from..].find(key) {
+        let at = from + rel;
+        let boundary = at == 0
+            || lower[..at]
+                .chars()
+                .next_back()
+                .is_some_and(char::is_whitespace);
+        if boundary {
+            return Some(at);
+        }
+        from = at + key.len();
+    }
+    None
+}
+
+/// `+scene/outcome <row>=<subject…> run=<id> [note=<text>]` — **the seal**.
+///
+/// Only from the conferred `sealer` or staff, only once, only on an
+/// `Active`/`Paused`/`Closed` scene, and only on a scene that has a sealer at
+/// all (fail-closed: `None` means this scene cannot be sealed). The commit is
+/// terminal (`mush_canon::commit` pins the deferred prefix), so it is the last
+/// mutating act on the path.
+fn scene_outcome(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    let actor = ctx.actor;
+    let staff = is_staff(ctx.w, actor);
+    let name = ctx.args.lhs().trim().to_string();
+    let rhs = ctx.args.rhs().unwrap_or_default().to_string();
+    if name.is_empty() {
+        return Err(CmdError::msg(
+            "Usage: +scene/outcome <row>=<subject>[,<subject>] run=<id> [note=<text>]",
+        ));
+    }
+    let Some(mut rec) = readable_scene(ctx) else {
+        return Err(CmdError::msg("You are not in a scene."));
+    };
+    // Fail closed, before anything else is resolved: no conferred sealer, no
+    // seal — for staff too. A scene nobody was made accountable for produces no
+    // outcome at all (08f §4.1).
+    // E6b verify fold (D9): **one refusal.** "Nobody was conferred the seal here" and
+    // "somebody was, and it is not you" were two messages, so any participant could
+    // read a staff conferral off the difference — and conferral is told only to the
+    // staffer who made it. Staff, who may see everything anyway, keep the detail.
+    const NOT_YOURS: &str = "You cannot seal this scene's outcome.";
+    let Some(sealer) = rec.sealer else {
+        return Err(CmdError::msg(if staff {
+            "No one has been conferred the seal on this scene (@scene/facilitate)."
+        } else {
+            NOT_YOURS
+        }));
+    };
+    if sealer != actor && !staff {
+        return Err(CmdError::msg(NOT_YOURS));
+    }
+    // Rule 2, again at seal: neither the conferred sealer nor the actor may be
+    // an NPC, whose completion would otherwise seal a settlement.
+    if !is_sealable_principal(ctx.w, sealer) || !is_sealable_principal(ctx.w, actor) {
+        return Err(CmdError::msg(
+            "Only a player may seal a scene outcome — an NPC is driven, not accountable.",
+        ));
+    }
+    if rec.outcome.is_some() {
+        return Err(CmdError::msg(
+            "That scene's outcome is already sealed; a seal is written once.",
+        ));
+    }
+    // Rule 2, again at seal: neither the conferred sealer nor the actor may be an
+    // NPC. (The check above this one refuses before the scene's state is disclosed.)
+    if matches!(rec.status, SceneStatus::Preparing) {
+        return Err(CmdError::msg(
+            "A scene that has not begun has no outcome to seal.",
+        ));
+    }
+    let args = parse_outcome_args(&rhs)?;
+    // E6b verify fold (M2/R12): the seal names **the run staff bound to this scene**,
+    // and no other. Giving `run=` is allowed as a confirmation and must agree.
+    if let Some(named) = args.run
+        && rec.seal_run != Some(named)
+    {
+        return Err(CmdError::msg(
+            "This scene's seal is not for that run. Staff bind a scene to the run it settles              (@scene/facilitate <scene>=<who> run=<id>).",
+        ));
+    }
+    let mut subjects: Vec<ObjId> = Vec::with_capacity(args.subjects.len());
+    for s in &args.subjects {
+        let who = mush_core::match_object(ctx.w, actor, s)?;
+        if !subjects.contains(&who) {
+            subjects.push(who);
+        }
+    }
+    let now = ctx.w.now();
+    let outcome = SceneOutcome::new(
+        smol_str::SmolStr::new(&name),
+        subjects,
+        args.note,
+        actor,
+        now,
+    )
+    .ok_or_else(|| CmdError::msg("That outcome does not fit a seal's bounds."))?;
+    // OPEN 3: the seal **raises the floor to the world IC clock first**, then
+    // stamps `scene_ic_time()`. One rule, identical value: the chronicle can
+    // never sit before events the settlement followed, and the general floor is
+    // the same floor `@scene/icfloor` and cut 6's raise use.
+    let ic_now = ctx.w.game_now_unix();
+    let _ = rec.raise_ic_floor(ic_now);
+    rec.outcome = Some(outcome.clone());
+    if let Err(error) = rec.validate_clock() {
+        return Err(CmdError::msg(format!(
+            "That seal is not recordable: {error}"
+        )));
+    }
+    store_scene(ctx, &rec);
+    log_event(
+        ctx,
+        &rec,
+        SceneEventKind::Sealed,
+        Some(actor),
+        serde_json::json!({ "outcome": name, "run": rec.seal_run }),
+    );
+    let anchor = rec.anchor;
+    announce(
+        ctx,
+        anchor,
+        format!("The outcome of scene #{} is sealed: {name}.", rec.id),
+    );
+    // Terminal, and therefore last (`mush_canon::commit` pins the deferred
+    // prefix; nothing mutating may follow it on a path that can still fail).
+    crate::emit_scene_outcome(ctx, &rec, &outcome);
+    Ok(())
+}
+
+// ----------------------------------------------------------------------
 // Registration
 // ----------------------------------------------------------------------
 
@@ -675,13 +1057,37 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
     reg.command(
         CommandSpec {
             name: "+scene".into(),
-            shape: ArgShape::None,
+            shape: ArgShape::EqPair,
+            switches: vec!["outcome".into()],
             help: "+scene  --  Show the scene you are in: its status, the round and whose turn \
-                   it is, and the participants in turn order (your position marked)."
+                   it is, and the participants in turn order (your position marked).\n\
+                   +scene/outcome <row>=<subject>[,<subject>] run=<id> [note=<text>]  --  Seal \
+                   this scene's outcome. Only the conferred sealer (or staff) may, only once, \
+                   and only on a scene a staffer conferred the seal on (@scene/facilitate); the \
+                   subjects are named here, never inherited from the participant list, and the \
+                   run is the contract the seal answers. The seal becomes canon."
                 .into(),
             ..CommandSpec::default()
         },
-        Arc::new(show_scene),
+        Arc::new(cmd_scene),
+    )?;
+    reg.command(
+        CommandSpec {
+            name: "@scene".into(),
+            shape: ArgShape::EqPair,
+            min_role: Role::Royalty,
+            switches: vec!["facilitate".into(), "icfloor".into()],
+            help: "@scene/facilitate <scene>=<who|none>  --  Confer (or withdraw) the authority \
+                   to seal that scene's outcome. This is NOT the scene's facilitator, which any \
+                   player grants themselves by starting a scene: a scene with no conferred \
+                   sealer cannot be sealed at all. Only a player may be conferred it.\n\
+                   @scene/icfloor <scene>=<unix|now>  --  Raise the scene's IC time floor. \
+                   Monotonic (a lower value is refused) and it never re-clocks the scene.\n\
+                   <scene> is a durable scene id, or `here` for the room you stand in."
+                .into(),
+            ..CommandSpec::default()
+        },
+        Arc::new(cmd_scene_staff),
     )?;
     reg.command(
         CommandSpec {

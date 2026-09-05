@@ -178,6 +178,10 @@ pub struct RunSplit {
     pub fixer_account: Option<AccountId>,
     /// The row names, in table order.
     pub names: Vec<SmolStr>,
+    /// E6b (B8): the **gating** condition indexes every row must also satisfy — a
+    /// composite. They sit after the per-row conditions in the consent surface, so
+    /// row `i` is decided by condition `i` **plus** all of these.
+    pub gates: Vec<usize>,
 }
 
 impl RunSplit {
@@ -246,9 +250,9 @@ impl RunSplit {
                 }
                 OutcomeTerms {
                     name: name.clone(),
-                    // Row `i` is decided by condition `i`: one attestation per row,
-                    // and the adjudicator attests exactly one (D-E6-20).
-                    when: vec![i],
+                    // Row `i` is decided by condition `i` — one condition per row —
+                    // **plus** every gating condition (E6b's composite route).
+                    when: self.when(i),
                     payouts: merge(shares),
                     expense_treatment: shape.treatment(),
                     asset_consequences: Vec::new(),
@@ -265,13 +269,21 @@ impl RunSplit {
             .enumerate()
             .map(|(i, name)| OutcomeTerms {
                 name: name.clone(),
-                when: vec![i],
+                when: self.when(i),
                 payouts: merge(vec![(self.payer_account, self.pay)]),
                 // Nothing was advanced, so nothing is retained or returned.
                 expense_treatment: mush_economy::ExpenseTreatment::None,
                 asset_consequences: Vec::new(),
             })
             .collect()
+    }
+
+    /// The condition indexes row `i` needs: its own, then every gate (E6b, B8).
+    #[must_use]
+    fn when(&self, i: usize) -> Vec<usize> {
+        let mut when = vec![i];
+        when.extend(self.gates.iter().copied());
+        when
     }
 
     /// Whether the table it would build fits E4's caps.
@@ -282,18 +294,169 @@ impl RunSplit {
     }
 }
 
-/// One attestation condition per outcome row, all naming the adjudicator.
+// ---- E6b: B8 — the other three settlement routes --------------------------
+
+/// How one outcome row (or one gate) is decided (E6b, §4.2's four routes).
 ///
-/// `ConsentSurface.adjudicator` **replaces** each condition's own attestor set, so
-/// naming the same set here is belt-and-braces: it is what a reader of the frozen
-/// surface sees, and it is what `check_structure` measures for satisfiability.
+/// E6a settled by attestation and nothing else (D-E6-20) because no canon kind was
+/// registered, there was no `sr.*` fact provider, and a bare `Before` row is `Ready`
+/// the moment the last runner accepts. With `scene.outcome` registered all four
+/// routes are available, and this is the ruleset's word for which one a row uses.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RunRoute {
+    /// The named adjudicator attests it (`@contract/attest`) — E6a's route.
+    Attest,
+    /// A **sealed scene outcome**: a canon record of `kind` naming `source`. The
+    /// source is mandatory (`contract.rs`'s `check_canon_sets`) and the kind must be
+    /// a producer-declared outcome kind, or the offer is refused.
+    Canon {
+        /// The canon kind.
+        kind: SmolStr,
+        /// The exact source it must name.
+        source: SmolStr,
+    },
+    /// Satisfied **until** an absolute instant passes.
+    Before {
+        /// The instant, on `RealUtc`.
+        at: i64,
+    },
+    /// Satisfied once condition `anchor` has been satisfied for `delay` seconds.
+    After {
+        /// The anchor condition's index.
+        anchor: usize,
+        /// How long after it, in seconds on `RealUtc`.
+        delay: i64,
+    },
+    /// An external provider's fact.
+    Fact {
+        /// The provider namespace (`"jobs"`, `"sim"`, `"tactics"`).
+        provider: SmolStr,
+        /// The record kind within it.
+        kind: SmolStr,
+        /// The record id.
+        id: SmolStr,
+    },
+}
+
+impl RunRoute {
+    /// The typed condition this route becomes. `adjudicator` is the set an
+    /// `Attest` route names — belt-and-braces, since `ConsentSurface.adjudicator`
+    /// replaces every condition's own set anyway (D-E6-8).
+    #[must_use]
+    pub fn condition(&self, adjudicator: &AttestorSet) -> TypedCondition {
+        match self {
+            RunRoute::Attest => TypedCondition::Attestation {
+                by: adjudicator.clone(),
+            },
+            RunRoute::Canon { kind, source } => TypedCondition::Attestation {
+                by: AttestorSet::Canon {
+                    kind: kind.clone(),
+                    source: Some(source.clone()),
+                },
+            },
+            RunRoute::Before { at } => TypedCondition::Before {
+                deadline: EconomicDeadline {
+                    clock: mush_economy::EconomicClock::RealUtc,
+                    at: *at,
+                },
+            },
+            RunRoute::After { anchor, delay } => TypedCondition::After {
+                condition: *anchor,
+                delay: *delay,
+                clock: mush_economy::EconomicClock::RealUtc,
+            },
+            RunRoute::Fact { provider, kind, id } => TypedCondition::Fact {
+                fact: mush_economy::ExternalRef {
+                    provider: provider.clone(),
+                    kind: kind.clone(),
+                    id: id.clone(),
+                    revision: None,
+                },
+            },
+        }
+    }
+
+    /// The board notice's word for this route — what `notice.kinds` carries, so a
+    /// reader of the board knows what will end the run before they apply. It stopped
+    /// being the constant `["attest"]` with E6b.
+    #[must_use]
+    pub fn label(&self) -> SmolStr {
+        match self {
+            RunRoute::Attest => SmolStr::new_static("attest"),
+            RunRoute::Canon { .. } => SmolStr::new_static("canon"),
+            RunRoute::Before { .. } => SmolStr::new_static("before"),
+            RunRoute::After { .. } => SmolStr::new_static("after"),
+            RunRoute::Fact { .. } => SmolStr::new_static("fact"),
+        }
+    }
+
+    /// Whether this route is anything but an attestation — the `deterministic`
+    /// switch `offer_contract` gates the non-`Attestation` alphabet behind.
+    #[must_use]
+    pub fn is_deterministic(&self) -> bool {
+        !matches!(self, RunRoute::Attest)
+    }
+}
+
+/// The consent surface's conditions: **one per outcome row, then every gate**.
+///
+/// The row order is load-bearing — row `i` is decided by condition `i` — and the
+/// gates follow, so their indexes are `rows..rows + gates.len()`, which is exactly
+/// what [`RunSplit::gates`] carries into every row's `when`.
+///
+/// `ConsentSurface.adjudicator` **replaces** each `Attestation` condition's own
+/// attestor set (D-E6-8), so naming it here is belt-and-braces for an `Attest`
+/// route: it is what a reader of the frozen surface sees, and what
+/// `check_structure` measures for satisfiability. A `Canon` route names its own set
+/// and is only replaced when the run also names a person adjudicator — which is the
+/// documented rule, and why `+run/post` does not default one onto a routed run.
 #[must_use]
-pub fn conditions(adjudicator: &AttestorSet, rows: usize) -> Vec<TypedCondition> {
-    (0..rows)
-        .map(|_| TypedCondition::Attestation {
-            by: adjudicator.clone(),
-        })
+pub fn conditions(
+    adjudicator: &AttestorSet,
+    routes: &[RunRoute],
+    gates: &[RunRoute],
+) -> Vec<TypedCondition> {
+    routes
+        .iter()
+        .chain(gates.iter())
+        .map(|r| r.condition(adjudicator))
         .collect()
+}
+
+/// The board notice's condition kinds: every route's label, row order then gate
+/// order, deduplicated and bounded by the notice's own cap (E6b, B8).
+#[must_use]
+pub fn notice_kinds(routes: &[RunRoute], gates: &[RunRoute]) -> Vec<SmolStr> {
+    let mut out: Vec<SmolStr> = Vec::new();
+    for r in routes.iter().chain(gates.iter()) {
+        let label = r.label();
+        if !out.contains(&label) {
+            out.push(label);
+        }
+    }
+    if out.is_empty() {
+        out.push(SmolStr::new_static("attest"));
+    }
+    out
+}
+
+/// The `EvidenceKind`s a routed surface permits — exactly the kinds it uses.
+///
+/// The permitted-evidence list is exhaustive when non-empty (08e answer 6), so this
+/// is what keeps `evidence` an honest statement of what may release the money rather
+/// than E6a's forced `[Attestation]`. Note there is **no** `EvidenceKind::Canon`:
+/// a canon row's evidence is `Attestation`, and `TypedCondition::evidence_kind` is
+/// what fills this in.
+#[must_use]
+pub fn evidence_of(conditions: &[TypedCondition]) -> Vec<EvidenceKind> {
+    let mut out: Vec<EvidenceKind> = Vec::new();
+    for c in conditions {
+        let kind = c.evidence_kind();
+        if !out.contains(&kind) {
+            out.push(kind);
+        }
+    }
+    out
 }
 
 /// Who may see a listing (M5). Existence hiding is the caller's: this answers the
@@ -418,7 +581,7 @@ pub enum PostError {
 
 /// Render a [`PostError`] under the existence-hiding discipline.
 #[must_use]
-pub fn refuse_post(ctx: &Ctx<'_>, e: &PostError, named: &[NamedResource]) -> CmdError {
+pub fn refuse_post(ctx: &mut Ctx<'_>, e: &PostError, named: &[NamedResource]) -> CmdError {
     match e {
         PostError::Disabled(why) => CmdError::msg((*why).to_string()),
         PostError::Bad(why) => CmdError::msg(why.clone()),
@@ -459,6 +622,10 @@ pub struct PostRequest {
     pub board: BoardVisibility,
     /// The deadline instant on `RealUtc`.
     pub expires_at: i64,
+    /// E6b (B8): how each outcome row is decided, in table order.
+    pub routes: Vec<RunRoute>,
+    /// E6b (B8): the gating conditions every row must also satisfy.
+    pub gates: Vec<RunRoute>,
 }
 
 /// **Draft, offer and accept in one call** (§3.2 "Board", answer 24).
@@ -505,6 +672,71 @@ pub fn post(
         ));
     }
     let rows = req.split.names.len();
+    // E6b (B8): `run:self` names **this** run — the id the offer below is about to
+    // mint. The seal's source is `run:{contract id}` and a `scene:{uid}` is
+    // unknowable at offer, so a canon-routed listing has to be able to write its own
+    // id into a condition that freezes before the id exists.
+    let next = ctx
+        .w
+        .module_state::<EconomyStore>()
+        .map_or(0, EconomyStore::peek_next_contract);
+    let mut req = req;
+    // E6b verify fold (M5): a canon source names the **row**, not just the run.
+    // `CanonRecorded` carries no `detail`, so the economy matches on `(kind, source)`
+    // alone — with one source per run, one seal filled *every* canon row's slot, and
+    // `resolve_outcome` then read `Undecidable` and disputed. Worse, with a single
+    // canon row the row name the sealer typed was decoration: `+scene/outcome
+    // failure=…` paid the success row. `run:{id}#{row}` is what makes the seal
+    // select the outcome it names.
+    let names = req.split.names.clone();
+    for (i, route) in req.routes.iter_mut().enumerate() {
+        if let RunRoute::Canon { source, .. } = route
+            && source.as_str() == "run:self"
+        {
+            let row = names.get(i).cloned().unwrap_or_default();
+            *source = SmolStr::new(format!("run:{next}#{row}"));
+        }
+    }
+    // A **gate** is not a row, so it names the run alone.
+    for route in req.gates.iter_mut() {
+        if let RunRoute::Canon { source, .. } = route
+            && source.as_str() == "run:self"
+        {
+            *source = SmolStr::new(format!("run:{next}"));
+        }
+    }
+    // E6b verify fold (M11): a `canon:` source of the shape `run:<n>` may only ever
+    // name **this** run. Written free-hand it let one listing piggyback on another's
+    // seal — the attacker escrows their own money and settles it off somebody else's
+    // outcome, which is not theft but is not a thing a board should accept either.
+    if req.routes.iter().chain(req.gates.iter()).any(|r| match r {
+        RunRoute::Canon { source, .. } => source
+            .strip_prefix("run:")
+            .and_then(|rest| rest.split('#').next())
+            .and_then(|n| n.parse::<u64>().ok())
+            .is_some_and(|n| n != next),
+        _ => false,
+    }) {
+        return Err((
+            PostError::Bad(
+                "A run's canon route names its own run (route=<row>:canon:<kind>:run:self)."
+                    .to_string(),
+            ),
+            named,
+        ));
+    }
+    let req = req;
+    // E6b (B8): the four routes, one condition per row plus the gates. The
+    // permitted-evidence list is exactly the kinds the surface uses, and
+    // `deterministic` is set from them rather than hard-`false`.
+    let conditions = conditions(&req.adjudicator, &req.routes, &req.gates);
+    let evidence = evidence_of(&conditions);
+    let deterministic = req
+        .routes
+        .iter()
+        .chain(req.gates.iter())
+        .any(RunRoute::is_deterministic);
+    let _ = rows;
     let spec = ContractSpec {
         name: req.name.clone(),
         scope: req.scope,
@@ -517,10 +749,14 @@ pub fn post(
         // Inert under a table, but it must still resolve to a live account in the
         // instrument (M18): the payer's own.
         remainder_to: req.account,
-        conditions: conditions(&req.adjudicator, rows),
-        adjudicator: Some(req.adjudicator.clone()),
-        // Forced (M2, D-E6-20): E6a settles by attestation and nothing else.
-        evidence: vec![EvidenceKind::Attestation],
+        conditions,
+        // E6b: a run with any non-`Attest` route names **no person adjudicator**
+        // unless one was asked for by name — a named adjudicator replaces every
+        // condition's own set (D-E6-8), which would make a canon row settle on that
+        // person's word instead of on the seal. `adjudicator_named` is exactly that
+        // question.
+        adjudicator: (req.adjudicator_named || !deterministic).then(|| req.adjudicator.clone()),
+        evidence,
         deadline: Some(EconomicDeadline {
             clock: mush_economy::EconomicClock::RealUtc,
             at: req.expires_at,
@@ -538,7 +774,7 @@ pub fn post(
             representative: req.johnson.clone().or_else(|| req.fixer.clone()),
             facilitator: None,
         },
-        deterministic: false,
+        deterministic,
     };
     let contract = mush_economy::offer_contract(ctx, spec)
         .map_err(|e| (PostError::Contract(e), named.clone()))?;
@@ -584,7 +820,9 @@ pub fn post(
         notice: RunNotice {
             name: SmolStr::new(clip(&req.name, crate::economy::config::MAX_RUN_NAME_BYTES)),
             window: req.expires_at.saturating_sub(now),
-            kinds: vec![SmolStr::new_static("attest")],
+            // E6b (B8): the notice says how the run actually settles, in row order
+            // then gate order, deduplicated — no longer the constant `["attest"]`.
+            kinds: notice_kinds(&req.routes, &req.gates),
             johnson: req.johnson,
         },
         board: req.board,
@@ -595,6 +833,7 @@ pub fn post(
         advance: req.split.advance,
         fixer_account: req.split.fixer_account,
         outcomes: req.split.names.clone(),
+        gates: req.split.gates.clone(),
         posted_at: now,
         deadline: EconomicDeadline {
             clock: mush_economy::EconomicClock::RealUtc,
@@ -628,9 +867,14 @@ pub enum BoardError {
 
 /// Render a [`BoardError`] under the existence-hiding discipline.
 #[must_use]
-pub fn refuse_board(ctx: &Ctx<'_>, contract: Option<ContractId>, e: &BoardError) -> CmdError {
+pub fn refuse_board(ctx: &mut Ctx<'_>, contract: Option<ContractId>, e: &BoardError) -> CmdError {
     match e {
-        BoardError::NoStanding => CmdError::msg(NO_SUCH_RUN),
+        // E6b verify fold (D8): the board's own existence-hiding refusal is counted
+        // too — `RunId` is as enumerable as any other id space.
+        BoardError::NoStanding => {
+            mush_economy::note_refusal(ctx, true);
+            CmdError::msg(NO_SUCH_RUN)
+        }
         BoardError::State(why) | BoardError::Party(why) => CmdError::msg((*why).to_string()),
         BoardError::Bad(why) => CmdError::msg(why.clone()),
         BoardError::Contract(e) => match contract.and_then(|id| {
@@ -753,6 +997,8 @@ pub fn crew_accept(ctx: &mut Ctx<'_>, id: RunId, party: Option<u64>) -> Result<S
                 ));
             }
         }
+        // E6b: an impersonal settlement route has no adjudicator a runner could be.
+        AdjudicatorShape::Impersonal => {}
         AdjudicatorShape::Other => {
             return Err(BoardError::Bad(
                 "That run no longer settles on one named adjudicator, so who would be paid by \
@@ -1026,6 +1272,7 @@ pub fn split_of(run: &RunTemplate) -> RunSplit {
         payer_account: run.account,
         fixer_account: run.fixer_account,
         names: run.outcomes.clone(),
+        gates: run.gates.clone(),
     }
 }
 
@@ -1088,6 +1335,10 @@ pub fn adjudicator_is(set: &AttestorSet, who: PrincipalId) -> bool {
 /// What shape the authority that will settle a run has (E6a verify fold, M8).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum AdjudicatorShape {
+    /// E6b: **nobody decides** — every condition is deterministic or canon, so no
+    /// person could be paid by the run they settle and the crew check has nothing
+    /// to find. Crewable.
+    Impersonal,
     /// Exactly one named principal decides — what `+run/post` builds and the only
     /// shape the "no adjudicator on the roster" rule can be evaluated against.
     Party(PrincipalId),
@@ -1124,26 +1375,46 @@ pub fn adjudicator_shape(
     if let Some(set) = adjudicator {
         return match set {
             AttestorSet::Party(p) => AdjudicatorShape::Party(p.clone()),
-            AttestorSet::Capability { .. } | AttestorSet::Staff | AttestorSet::Canon { .. } => {
-                AdjudicatorShape::Other
-            }
+            // E6b: a canon set names **no person** — the producer's own gate decides
+            // who may seal, and no runner can be it. There is therefore no conflict
+            // of interest for the crew check to find.
+            AttestorSet::Canon { .. } => AdjudicatorShape::Impersonal,
+            AttestorSet::Capability { .. } | AttestorSet::Staff => AdjudicatorShape::Other,
         };
     }
+    // E6b (B8): with no adjudicator named, every condition's own set governs. A
+    // deterministic or canon condition names nobody; a `Party` one names one person,
+    // and there must be exactly one of them across the whole surface. A `Capability`
+    // or `Staff` set is still refused — it can silently include a runner.
     let mut only: Option<PrincipalId> = None;
+    let mut impersonal = false;
     for con in conditions {
-        let TypedCondition::Attestation {
-            by: AttestorSet::Party(p),
-        } = con
-        else {
-            return AdjudicatorShape::Other;
-        };
-        match &only {
-            None => only = Some(p.clone()),
-            Some(seen) if seen == p => {}
-            Some(_) => return AdjudicatorShape::Other,
+        match con {
+            TypedCondition::Attestation {
+                by: AttestorSet::Party(p),
+            } => match &only {
+                None => only = Some(p.clone()),
+                Some(seen) if seen == p => {}
+                Some(_) => return AdjudicatorShape::Other,
+            },
+            TypedCondition::Attestation {
+                by: AttestorSet::Canon { .. },
+            }
+            | TypedCondition::Before { .. }
+            | TypedCondition::After { .. }
+            | TypedCondition::Fact { .. }
+            | TypedCondition::DepositInto { .. }
+            | TypedCondition::TitleHeld { .. } => impersonal = true,
+            TypedCondition::Attestation {
+                by: AttestorSet::Capability { .. } | AttestorSet::Staff,
+            } => return AdjudicatorShape::Other,
         }
     }
-    only.map_or(AdjudicatorShape::Other, AdjudicatorShape::Party)
+    match (only, impersonal) {
+        (Some(p), _) => AdjudicatorShape::Party(p),
+        (None, true) => AdjudicatorShape::Impersonal,
+        (None, false) => AdjudicatorShape::Other,
+    }
 }
 
 /// Release a locked party, if there is one, and never let its refusal matter: the
@@ -1190,10 +1461,6 @@ mod tests {
                 scope: None,
                 capability: CapabilityId::new("economy.account.view").expect("well-formed"),
             },
-            AttestorSet::Canon {
-                kind: smol_str::SmolStr::new("scene.outcome"),
-                source: Some(smol_str::SmolStr::new("front:1")),
-            },
         ] {
             assert_eq!(
                 adjudicator_shape(Some(&other), &[]),
@@ -1201,6 +1468,20 @@ mod tests {
                 "{other:?} was read as a named adjudicator"
             );
         }
+        // E6b (B8): a canon adjudicator names no **person** at all — who may seal
+        // is the producer's gate, and no runner can be it — so it is not "a named
+        // adjudicator" and it is not the fail-closed `Other` either. The crew check
+        // has nothing to find, and the run is crewable.
+        assert_eq!(
+            adjudicator_shape(
+                Some(&AttestorSet::Canon {
+                    kind: smol_str::SmolStr::new("scene.outcome"),
+                    source: Some(smol_str::SmolStr::new("front:1")),
+                }),
+                &[]
+            ),
+            AdjudicatorShape::Impersonal
+        );
     }
 
     /// M8, the no-adjudicator branch: with no `ConsentSurface.adjudicator` every

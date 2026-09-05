@@ -40,16 +40,28 @@ impl EconomyObserver for SrBoardObserver {
             return;
         }
         match ev {
-            EconomicEvent::ContractChanged { id, state, .. } => on_contract(ctx, *id, *state),
+            EconomicEvent::ContractChanged { id, state, .. } => {
+                on_contract(ctx, *id, *state);
+                // E6b (B9): the fence's own mirror — a quote whose deal reached a
+                // terminal state is forgotten, the same trade `del_run` makes for a
+                // closed listing. It is a projection of a price anyone can ask for
+                // again, so losing it costs a row and never an escrow.
+                on_fence_contract(ctx, *id, *state);
+            }
             EconomicEvent::ObligationChanged { id, status_kind } => {
                 crate::economy::lifestyle::on_obligation_changed(ctx, &self.cfg, *id, *status_kind);
             }
-            // Ids and kinds only (D-E4-13), and none of the other four says anything
-            // about a run: a posted transaction, a reservation, a title move and a
-            // staff page are all summarised by the two records above.
+            // E6b (B2): a title record changed. The board does not care — a run
+            // moves no title — and neither does the fence, which buys **custody**
+            // and never title (D-E6-10): a `@asset/stolen` report on an object under
+            // an open quote changes no price, because a hidden fact contributes
+            // nothing to one (D-E6-11). The arm is named so that stays deliberate.
+            EconomicEvent::AssetTitleChanged { .. } => {}
+            // Ids and kinds only (D-E4-13), and none of the other three says
+            // anything about a run: a posted transaction, a reservation and a staff
+            // page are all summarised by the two records above.
             EconomicEvent::TransactionPosted { .. }
             | EconomicEvent::HoldChanged { .. }
-            | EconomicEvent::AssetTitleChanged { .. }
             | EconomicEvent::EscalationOpened { .. } => {}
         }
     }
@@ -111,6 +123,37 @@ fn on_contract(ctx: &mut Ctx<'_>, id: mush_economy::ContractId, state: ContractS
     };
     crate::economy::board::release_party(ctx, party, how);
     announce_closure(ctx, run_id, contract);
+}
+
+/// Forget a quote whose contract reached a terminal state (E6b, B9).
+fn on_fence_contract(ctx: &mut Ctx<'_>, id: mush_economy::ContractId, state: ContractStateKind) {
+    if !matches!(
+        state,
+        ContractStateKind::Settled
+            | ContractStateKind::Cancelled
+            | ContractStateKind::Expired
+            | ContractStateKind::Disputed
+    ) {
+        return;
+    }
+    let Some(quote) = ctx
+        .w
+        .module_state::<SrEconomyStore>()
+        .and_then(|s| s.quote_of_contract(id))
+    else {
+        return;
+    };
+    // A **disputed** deal keeps its quote: the goods and the money are both still in
+    // play, and deleting the record would leave the seller with no id to name.
+    if matches!(state, ContractStateKind::Disputed) {
+        return;
+    }
+    crate::economy::fence::close_quote(ctx, quote);
+    tracing::info!(
+        quote = quote.0,
+        contract = id.0,
+        "sr.economy: a fence quote closed with its contract"
+    );
 }
 
 /// Say, in the log, that a listing closed. The people who need telling are told by

@@ -203,12 +203,31 @@ pub fn server_modules_with(
             // rather than minting title nobody asked for.
             .with_title_issuers(issuers)
             // E4c verify fold (E1): the canon kinds that count as a
-            // **producer-declared outcome**. Deliberately empty — `scene.concluded`
-            // is a lifecycle record any participant can produce, so a payee gated on
-            // one could seal their own settlement. E6b registers `scene.outcome`
-            // here once `mush-scenes` can seal one under facilitator authority;
-            // until then every `canon:` attestor set is refused at `@contract/offer`.
-            .with_canon_outcome_kinds(Vec::new()),
+            // **producer-declared outcome**. `scene.concluded` is a lifecycle record
+            // any participant can produce, so a payee gated on one could seal their
+            // own settlement — it is deliberately **never** registered.
+            //
+            // E6b registers exactly `scene.outcome`, which `mush-scenes` writes only
+            // from `+scene/outcome` under a **staff-conferred sealer** (08f §4.1,
+            // D-E6-7). Who may seal is the producer's gate: `CanonRecorded` carries
+            // no `detail`, so the economy checks kind + source + party intersection
+            // and nothing else. Every other `canon:` attestor set is still refused at
+            // `@contract/offer`.
+            .with_canon_outcome_kinds(vec![SmolStr::new_static(mush_scenes::KIND_SCENE_OUTCOME)])
+            // E6b (DL-09): the bounded canon read seam. The economy's canon
+            // evidence is edge-triggered and its RAM tail dies with the process, so
+            // a seal committed while the economy was frozen — or before a restart —
+            // was unrecoverable. This is the composition root reading canon's own
+            // open tail on the economy's behalf; the edge still runs the other way.
+            .with_canon_evidence(Arc::new(crate::econ_canon::CanonEvidenceReader))
+            // E6b (DL-11 / M15): the organizations whose contract **acceptance** may
+            // be performed programmatically. A staff-built NPC fence has no officer
+            // and an org party accepts only through `acts_for` holders or staff,
+            // which would put a staffer in every single deal. Ids only, from
+            // `[shadowrun.economy].vendor_orgs`, frozen here — and conferring no
+            // money authority whatever: the escrow still posts under the org
+            // account's own debit authority and still refuses when it is short.
+            .with_party_caps(vendor_caps(shadowrun)),
         ),
         Box::new(mush_mail::MailModule),
         Box::new(mush_jobs::JobsModule::new()),
@@ -242,6 +261,30 @@ pub fn server_modules_with(
         Box::new(mush_party::PartyModule::new()),
         Box::new(mush_script::ScriptModule::new()),
     ]
+}
+
+/// The wiring-frozen party capabilities (E6b, DL-11 / M15).
+///
+/// Empty unless the Shadowrun economic layer is **enabled** and the operator listed
+/// organization ids in `[shadowrun.economy].vendor_orgs` — the fail-closed default is
+/// that no principal is programmatically acceptable, which is exactly E6a.
+fn vendor_caps(
+    shadowrun: Option<&ruleset_shadowrun::SrEconomyConfig>,
+) -> Vec<(mush_org::PrincipalId, mush_economy::PartyCap)> {
+    shadowrun
+        .filter(|s| s.enabled)
+        .map(|s| {
+            s.vendor_orgs
+                .iter()
+                .map(|id| {
+                    (
+                        mush_org::PrincipalId::Organization(mush_org::OrgId(*id)),
+                        mush_economy::PartyCap::Accept,
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// The economy observer table this server freezes at wiring.

@@ -46,6 +46,8 @@ pub mod boot;
 pub mod chargen;
 pub mod commands;
 pub mod config;
+pub mod fence;
+pub mod fence_record;
 pub mod lifestyle;
 pub mod observer;
 pub mod record;
@@ -55,17 +57,25 @@ use mush_core::{Role, World, perm};
 
 pub use board::{BoardError, NO_SUCH_RUN, PostError, RunSplit, SplitSlot};
 pub use config::{
-    BOARD_CAP, BOARD_PAGE, BOARD_TTL_SECS, FAUCET_CHARGEN, FAUCET_MIGRATION, LIFESTYLE_CATCH_UP,
-    LifestyleTier, MAX_OPEN_RUNS_PER_PRINCIPAL, MAX_RUN_OUTCOMES, SINK_LIFESTYLE, SR_MONTH,
-    SR_MONTH_CATCH_UP, SR_MONTH_PERIOD_SECS, SR_NUYEN, SR_NUYEN_SCALE, SrEconomyConfig,
-    default_lifestyle_costs,
+    BOARD_CAP, BOARD_PAGE, BOARD_TTL_SECS, FAUCET_CHARGEN, FAUCET_MIGRATION, FENCE_DELAY_MAX_SECS,
+    FENCE_DELAY_MIN_SECS, FENCE_QUOTE_TTL_SECS, LIFESTYLE_CATCH_UP, LifestyleTier,
+    MAX_CATALOG_CODE_BYTES, MAX_FENCES, MAX_OPEN_RUNS_PER_PRINCIPAL, MAX_QUOTES, MAX_RUN_OUTCOMES,
+    SINK_LIFESTYLE, SR_MONTH, SR_MONTH_CATCH_UP, SR_MONTH_PERIOD_SECS, SR_NUYEN, SR_NUYEN_SCALE,
+    SrEconomyConfig, default_lifestyle_costs,
+};
+pub use fence::{FenceError, NO_SUCH_FENCE, NO_SUCH_QUOTE};
+pub use fence_record::{
+    FenceId, FenceQuote, FenceSettlement, PriceFactor, QuoteId, QuoteObserved, SrFence,
 };
 pub use lifestyle::LifestyleError;
 pub use observer::SrBoardObserver;
 pub use record::{
-    BoardVisibility, Migration, Mint, RunId, RunNotice, RunState, RunTemplate, SrProfile,
+    BoardVisibility, InstalledAugmentation, MAX_AUGMENTATIONS, Migration, Mint, RunId, RunNotice,
+    RunState, RunTemplate, SrProfile,
 };
-pub use store::{NS, SrEconomyStore, load as load_store, profile_key, run_key};
+pub use store::{
+    NS, SrEconomyStore, fence_key, load as load_store, profile_key, quote_key, run_key,
+};
 
 /// Staff, by the economy's own definition — one rule across the E-series, so
 /// "staff" means the same thing in `mush-economy`, `mush-housing` and here.

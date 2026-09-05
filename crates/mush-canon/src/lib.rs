@@ -126,6 +126,14 @@ impl GameModule for CanonModule {
 /// mutating act on any path that can still fail — treat it as terminal.
 pub fn commit(ctx: &mut Ctx<'_>, draft: CanonDraft) -> Option<CanonId> {
     let now = ctx.w.now();
+    // E6b verify fold (R9): **the producer's cap and the consumer's must agree.**
+    // The economy remembers a record's entities bounded at its own
+    // `MAX_CANON_ENTITIES`, so a draft naming more than that matched on the live edge
+    // and was silently missed by the recovery re-scan. Capping here — the one place
+    // every producer passes through — makes the two the same set rather than two
+    // different truncations of one.
+    let mut draft = draft;
+    draft.entities.truncate(MAX_ENTITIES_PER_EVENT);
     // Captured for the observable `CanonRecorded` event emitted below.
     let kind = draft.kind.to_string();
     let entities = draft.entities.clone();
@@ -193,6 +201,52 @@ pub fn commit(ctx: &mut Ctx<'_>, draft: CanonDraft) -> Option<CanonId> {
     // disk. Anything the command queues *after* this point is discarded as usual.
     ctx.out.pin_deferred();
     Some(id)
+}
+
+// ---- E6b: B5 — DL-09, the bounded read seam keyed on `source` -------------
+
+/// How many entities one canon event names (E6b verify fold, R9).
+///
+/// It is the economy's own `MAX_CANON_ENTITIES`, restated here because this is the
+/// side that must not exceed it: a consumer bounds what it remembers, and a producer
+/// that wrote more would be relying on a set the recovery path cannot reconstruct.
+pub const MAX_ENTITIES_PER_EVENT: usize = 64;
+
+/// How many records one [`records_for_source`] lookup ever returns (E6b, DL-09).
+///
+/// The economy's re-scan asks per live `Canon` condition, so the cost of one
+/// re-scan is bounded by (conditions × this), and a front that records canon every
+/// minute cannot make a recovery walk unbounded.
+pub const MAX_RECORDS_PER_SOURCE: usize = 8;
+
+/// The canon records naming `source`, newest first, bounded (E6b, DL-09).
+///
+/// This is the read seam `mush-canon` did not have: it offers no id→event query,
+/// and deep history has no store-read seam yet (08c §6.1 deviation 8), so this
+/// answers from the ledger's **open tail** — which is exactly what a restart
+/// rehydrates, and therefore exactly what makes a seal committed before a reboot
+/// findable again. A record older than the open tail is the documented limit, and
+/// `@contract/resolve <id>=settle` is the answer past it.
+///
+/// It is a free function over the state rather than a method on it so the caller
+/// that bridges it into another module (the server's economy wiring) needs no new
+/// type to reach across.
+#[must_use]
+pub fn records_for_source(state: &CanonState, source: &str, limit: usize) -> Vec<CanonEvent> {
+    // E6b verify fold (R2): **a retconned record is not evidence.** A retcon appends
+    // rather than rewrites and deliberately emits no `CanonRecorded`, so the economy
+    // never hears it; without this filter the recovery path would resurrect a seal a
+    // staffer had already superseded — the one route by which a re-scan could settle
+    // a contract on retracted evidence, which the live path could never do.
+    let superseded = state.superseded_in_tail();
+    let mut out: Vec<CanonEvent> = state
+        .recent()
+        .into_iter()
+        .filter(|e| e.source == source && e.supersedes.is_none() && !superseded.contains(&e.id))
+        .collect();
+    out.reverse();
+    out.truncate(limit.min(MAX_RECORDS_PER_SOURCE));
+    out
 }
 
 /// Append a retcon superseding canon event `target`, with a `reason`. History

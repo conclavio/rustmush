@@ -371,6 +371,26 @@ impl AuthEval for WorldAuth<'_> {
         // scope really belongs to the owning org (invariant 18's seam half); org's
         // own `authorize` denies `Inactive` on the same facts after E3b2, so this is
         // defence in depth, not the only lock.
+        // E6b (DL-11), tightened by its own verify fold (M4): **an organization acts
+        // for itself on its own live compartment, and on nothing else.** The only
+        // plans whose actor is an `Organization` are built inside this crate — no
+        // command can construct one, because every command's actor is
+        // `PrincipalId::Object(ctx.actor)` — and today the only producer is
+        // `accept_contract_as`, gated on the wiring-frozen `PartyCap::Accept` table.
+        //
+        // It sits **above** the scope branch on purpose: below it, an *unscoped*
+        // org-owned account fell through to `*actor == account.owner`, which was
+        // written when no `Organization` could ever be an actor and would have
+        // admitted a `Suspended` org with no liveness check at all. The account's own
+        // `ApprovalRule` is untouched and still binds — `evaluate_approvals` asks it
+        // independently of this — so a windowed or thresholded vendor treasury still
+        // escalates rather than paying.
+        if let PrincipalId::Organization(_) = actor {
+            let Some(scope) = account.scope else {
+                return false;
+            };
+            return *actor == account.owner && scope_coherent(self.w, Some(scope), &account.owner);
+        }
         if let Some(scope) = account.scope {
             let PrincipalId::Object(obj) = actor else {
                 return false;
@@ -388,8 +408,8 @@ impl AuthEval for WorldAuth<'_> {
             };
             return authorize_in_world(self.w, &req).is_allow();
         }
-        // Unscoped → own it. (An unscoped org-owned account is unreachable: no
-        // object principal can equal an `Organization`, so it fails closed.)
+        // Unscoped → own it. An unscoped **org**-owned account never reaches here:
+        // the arm above returns `false` for one, deliberately (M4).
         *actor == account.owner
     }
 
@@ -417,6 +437,32 @@ impl AuthEval for WorldAuth<'_> {
                 staff
                     || matches!(encumbrance,
                         crate::record::Encumbrance::Lien { creditor, .. } if creditor == actor)
+            }
+            // E6b (D-E6-18, §11 q10): the ONE relaxation of invariant 19. Exactly
+            // three may file a theft report — the **title owner**, an organization
+            // holding the new `asset.insure` capability on the asset's live
+            // compartment, and **staff** ("an appropriate authority"). Everyone
+            // else, including the assignee and a co-located holder, is refused:
+            // possession is not standing to claim a theft.
+            //
+            // The claimant a report names is not free either: the filer claims for
+            // themselves, or for the org whose insurance capability they hold.
+            AssetOp::ReportStolen { claimant, .. } => {
+                let Some(asset) = asset else { return false };
+                // The claimant is never free input — and (E6b verify fold, M6) it is
+                // never the *filer* either. `claimant == actor` was an escape hatch:
+                // a person holding `asset.insure` on an org's compartment could
+                // record a `Disputed` claim in **their own** name on the org's asset,
+                // which blocks a title transfer and, for a covert report, hands the
+                // visibility to them rather than to the insurer. A theft report is a
+                // claim about a **title**, so it names that title's owner and nobody
+                // else. `@asset/stolen` already derives it that way.
+                if *claimant != asset.title_owner {
+                    return false;
+                }
+                staff
+                    || asset.title_owner == *actor
+                    || self.scoped_capability(asset.scope, &asset.title_owner, "asset.insure", *a)
             }
             _ => {
                 let Some(asset) = asset else { return false };
@@ -468,6 +514,30 @@ impl AuthEval for WorldAuth<'_> {
             return false;
         };
         if is_staff(self.w, *a) || vault.owner == *actor {
+            return true;
+        }
+        // E6b: **the contract is the consent** (D-E4-8's rule, applied to custody).
+        // A `DepositInto` condition on a **live** contract says both sides agreed
+        // that exact object goes into that exact vault, so a party performing it
+        // needs no standing capability on the counterparty's compartment — which
+        // they could never have, and without which `DepositInto` was undeliverable
+        // wherever the vault was not the depositor's own.
+        //
+        // It is as narrow as the lock it reads: `custody_lock` is derived from
+        // `Active`/`ReadyToSettle` contracts' own frozen conditions, so it is `None`
+        // before the deal is in force (which is D-E6-9's refusal) and `None` again
+        // the moment it ends; the object and the vault must both be the ones the
+        // consent surface names; and the actor must be a party to it (or act for
+        // one). It authorizes a **deposit** and never a withdrawal — taking
+        // something out of somebody's vault is not something a contract's existence
+        // could ever license.
+        if let CustodyOp::Deposit { object, vault: v } = op
+            && *v == vault.id
+            && let Some(store) = self.w.module_state::<EconomyStore>()
+            && let Some(id) = store.snapshot().custody_lock(*object, *v)
+            && let Some(c) = store.snapshot().contract(id)
+            && c.consent.parties.iter().any(|p| self.acts_for(actor, p))
+        {
             return true;
         }
         let capability = match op {
@@ -1305,12 +1375,29 @@ fn run_custody_effects(
     if prepared.custody_effects.is_empty() {
         return Ok(());
     }
-    let PrincipalId::Object(actor) = prepared.actor else {
+    // E6b (DL-03): an unwind returning an **organization's** deposit has no world
+    // object as its actor — that is precisely why the deposit was stranded before.
+    // Every such effect is a `Withdraw` into the backing of a vault that principal
+    // owns (the engine's `authorize_vault_home` proved it), so the mover handed to
+    // the provider's `CarryAttempt` gate is that backing: the org's own vault takes
+    // its property back. Every other non-object actor is still refused outright.
+    let actor: Option<ObjId> = match prepared.actor {
+        PrincipalId::Object(o) => Some(o),
+        PrincipalId::Organization(_) | PrincipalId::System(_) => None,
+    };
+    if actor.is_none()
+        && !prepared
+            .custody_effects
+            .iter()
+            .all(|e| e.direction == CustodyDirection::Withdraw)
+    {
         return Err(EconomyError::Custody(
             "only an object principal can move custody".into(),
         ));
-    };
+    }
     let mut moves: Vec<(crate::record::CustodyRef, ObjId, CustodyDirection, ObjId)> = Vec::new();
+    // The destinations that are themselves vault backings — the DL-03 home returns.
+    let mut homes: std::collections::BTreeSet<ObjId> = std::collections::BTreeSet::new();
     {
         let store = ctx
             .w
@@ -1321,6 +1408,9 @@ fn run_custody_effects(
                 .snapshot()
                 .vault(e.vault)
                 .ok_or(EconomyError::NoSuchVault(e.vault))?;
+            if store.snapshot().is_vault_backing(e.to) {
+                homes.insert(e.to);
+            }
             moves.push((vault.backing.clone(), e.object, e.direction, e.to));
         }
     }
@@ -1335,9 +1425,10 @@ fn run_custody_effects(
                 .map_err(|e: CustodyError| EconomyError::Custody(e.to_string()))?;
             std::sync::Arc::clone(p)
         };
+        let mover = actor.unwrap_or(to);
         let done = match direction {
-            CustodyDirection::Deposit => provider.move_into(ctx, actor, obj, &backing),
-            CustodyDirection::Withdraw => provider.move_out(ctx, actor, obj, &backing, to),
+            CustodyDirection::Deposit => provider.move_into(ctx, mover, obj, &backing),
+            CustodyDirection::Withdraw => provider.move_out(ctx, mover, obj, &backing, to),
         };
         done.map_err(|e| EconomyError::Custody(e.to_string()))?;
     }

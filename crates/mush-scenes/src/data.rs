@@ -36,6 +36,107 @@ pub const KIND_TIMESTOP: &str = "timestop";
 /// seconds; rulesets can override per scene later).
 pub const DEFAULT_ROUND_SECONDS: u32 = 3;
 
+// ---- E6b: B6 — the conferred sealer, the outcome, and the IC floor --------
+
+/// The cap on a sealed outcome's chronicle note (08f §9).
+pub const MAX_OUTCOME_NOTE_BYTES: usize = 240;
+
+/// The cap on a sealed outcome's row name — the same 64 bytes the economy
+/// enforces on an outcome row (`mush_economy::MAX_OUTCOME_NAME_BYTES`), so a
+/// name that could never match a contract row cannot be sealed either.
+pub const MAX_OUTCOME_NAME_BYTES: usize = 64;
+
+/// How far ahead of the world's own IC clock a scene's floor may be raised
+/// (E6b verify fold, R4): one IC year.
+///
+/// The raise is monotonic and has no inverse, so a typo is permanent — and the
+/// floor's whole job is to catch a frozen scene clock **up** to the world, which
+/// gives it no reason to run ahead of it.
+pub const MAX_IC_FLOOR_LEAD_SECS: i64 = 365 * 86_400;
+
+/// The cap on how many subjects one sealed outcome names. The economy's
+/// party-intersection gate walks them, and canon stores them, so the set is
+/// bounded at the producer.
+pub const MAX_OUTCOME_SUBJECTS: usize = 32;
+
+/// A sealed scene outcome — written **once**, terminal, never edited (08f §4.1).
+///
+/// `subjects` is named **at seal time**, never copied from `participants`
+/// (frozen at scene creation with no add path), because a runner who joined
+/// mid-scene would otherwise silently fail the economy's party-intersection
+/// gate. `note` is chronicle text and carries no authority whatever.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "SceneOutcomeWire")]
+pub struct SceneOutcome {
+    /// The outcome row this seal selects ("success" / "partial" / "failure").
+    pub name: SmolStr,
+    /// Who the outcome is about, named at seal time.
+    pub subjects: Vec<ObjId>,
+    /// Chronicle text (≤ [`MAX_OUTCOME_NOTE_BYTES`]); never authority.
+    pub note: String,
+    /// Who sealed it.
+    pub sealed_by: ObjId,
+    /// When (wall clock, unix seconds).
+    pub sealed_at: i64,
+}
+
+impl SceneOutcome {
+    /// Construct a sealed outcome, re-running every invariant. `None` when the
+    /// name is empty or over-long, the note is over-long, or the subject list is
+    /// empty or over-long.
+    #[must_use]
+    pub fn new(
+        name: SmolStr,
+        subjects: Vec<ObjId>,
+        note: String,
+        sealed_by: ObjId,
+        sealed_at: i64,
+    ) -> Option<SceneOutcome> {
+        if name.trim().is_empty() || name.len() > MAX_OUTCOME_NAME_BYTES {
+            return None;
+        }
+        if note.len() > MAX_OUTCOME_NOTE_BYTES {
+            return None;
+        }
+        if subjects.is_empty() || subjects.len() > MAX_OUTCOME_SUBJECTS {
+            return None;
+        }
+        let mut seen = BTreeSet::new();
+        if !subjects.iter().all(|s| seen.insert(*s)) {
+            return None;
+        }
+        Some(SceneOutcome {
+            name,
+            subjects,
+            note,
+            sealed_by,
+            sealed_at,
+        })
+    }
+}
+
+/// The persisted wire of [`SceneOutcome`] — every stored document re-runs the
+/// constructor's invariants on load (the E5a fold rule).
+#[derive(Deserialize)]
+struct SceneOutcomeWire {
+    name: SmolStr,
+    #[serde(default)]
+    subjects: Vec<ObjId>,
+    #[serde(default)]
+    note: String,
+    sealed_by: ObjId,
+    sealed_at: i64,
+}
+
+impl TryFrom<SceneOutcomeWire> for SceneOutcome {
+    type Error = &'static str;
+
+    fn try_from(w: SceneOutcomeWire) -> Result<SceneOutcome, &'static str> {
+        SceneOutcome::new(w.name, w.subjects, w.note, w.sealed_by, w.sealed_at)
+            .ok_or("scene outcome fails its bounds")
+    }
+}
+
 const fn initial_scene_clock_generation() -> u64 {
     1
 }
@@ -163,6 +264,35 @@ pub struct SceneRecord {
     /// Wall-clock end time, once closed.
     #[serde(default)]
     pub ended_at: Option<i64>,
+    /// **The conferred sealer** (E6b, 08f §4.1, D-E6-7). `None` means this scene
+    /// **cannot be sealed** — fail-closed exactly like the empty canon-outcome
+    /// kind table it replaces. Conferred by staff with `@scene/facilitate`;
+    /// never self-granted, because any connected player becomes a scene's
+    /// `facilitator` merely by starting it.
+    #[serde(default)]
+    pub sealer: Option<ObjId>,
+    /// **The run this scene's seal may name** (E6b verify fold, M2/R12), conferred
+    /// with the sealer.
+    ///
+    /// `+scene/outcome`'s `run=` was free input, so a sealer conferred on *any*
+    /// scene could name *any* contract id, pick that contract's own parties as
+    /// subjects, and settle a run they had nothing to do with — the economy's three
+    /// gates (kind, exact source, party intersection) all pass. The id is opaque
+    /// here: `mush-scenes` has no economy edge and never interprets it. `None` means
+    /// this scene's seal names no run at all and is chronicle only.
+    #[serde(default)]
+    pub seal_run: Option<u64>,
+    /// The sealed outcome — written **once**, terminal, never edited (E6b).
+    #[serde(default)]
+    pub outcome: Option<SceneOutcome>,
+    /// **The monotonic IC time floor** (doc 10 §15/6A; E6b owns the floor, cut 6
+    /// owns the raise). A long timestop's scene clock advances only
+    /// `round_seconds × (rounds − 1)`, so without a floor a seal would chronicle
+    /// a settlement before events it followed. [`SceneRecord::scene_ic_time`]
+    /// clamps to this; a **lower** value is refused, and raising it never writes
+    /// [`SceneRecord::clock_generation`].
+    #[serde(default)]
+    pub ic_floor: i64,
 }
 
 impl SceneRecord {
@@ -181,23 +311,29 @@ impl SceneRecord {
     }
 
     /// The scene-local IC timestamp (unix seconds): the frozen start plus the
-    /// elapsed rounds. A timestop played across real days occupies only
-    /// seconds-to-minutes of IC time — the fiction is that the fight was quick.
+    /// elapsed rounds, **clamped up to [`SceneRecord::ic_floor`]** (E6b). A
+    /// timestop played across real days occupies only seconds-to-minutes of IC
+    /// time — the fiction is that the fight was quick — so without the floor a
+    /// record stamped from this clock could sit before events it followed.
     #[must_use]
     pub fn scene_ic_time(&self) -> i64 {
         let rounds_elapsed = i64::from(self.round.saturating_sub(1));
-        self.ic_started_at
+        let elapsed = self
+            .ic_started_at
             .at
-            .saturating_add(rounds_elapsed.saturating_mul(i64::from(self.round_seconds)))
+            .saturating_add(rounds_elapsed.saturating_mul(i64::from(self.round_seconds)));
+        elapsed.max(self.ic_floor)
     }
 
-    /// Checked form used by boot validation and mechanical clock adapters.
+    /// Checked form used by boot validation and mechanical clock adapters. The
+    /// floor is a `max`, so it can never overflow what the sum already proved.
     #[must_use]
     pub fn checked_scene_ic_time(&self) -> Option<i64> {
         let rounds_elapsed = i64::from(self.round.saturating_sub(1));
         rounds_elapsed
             .checked_mul(i64::from(self.round_seconds))
             .and_then(|elapsed| self.ic_started_at.at.checked_add(elapsed))
+            .map(|at| at.max(self.ic_floor))
     }
 
     /// Exact typed stamp for the current scene turn.
@@ -237,7 +373,43 @@ impl SceneRecord {
         if self.checked_scene_ic_time().is_none() {
             return Err("scene IC clock arithmetic overflowed");
         }
+        // ---- E6b: B6 — the sealer, the outcome and the floor ----
+        if self.ic_floor < 0 {
+            return Err("scene IC floor cannot be negative");
+        }
+        if let Some(outcome) = &self.outcome {
+            // Fail closed: an outcome can only exist on a scene somebody was
+            // conferred the authority to seal. A document claiming one without a
+            // sealer is a forged seal, not a recoverable record.
+            if self.sealer.is_none() {
+                return Err("a sealed outcome needs a conferred sealer");
+            }
+            if outcome.subjects.len() > MAX_OUTCOME_SUBJECTS {
+                return Err("a sealed outcome names too many subjects");
+            }
+            if outcome.note.len() > MAX_OUTCOME_NOTE_BYTES {
+                return Err("a sealed outcome's note is too long");
+            }
+            if outcome.name.trim().is_empty() || outcome.name.len() > MAX_OUTCOME_NAME_BYTES {
+                return Err("a sealed outcome's row name is empty or too long");
+            }
+        }
         Ok(())
+    }
+
+    /// Raise the IC floor to `at` (E6b, B6). **Monotonic**: a value at or below
+    /// the current floor is refused, and the raise never touches
+    /// [`SceneRecord::clock_generation`] — the generation lasts the record's
+    /// lifetime (08i §9 answer 9).
+    pub fn raise_ic_floor(&mut self, at: i64) -> Result<i64, &'static str> {
+        if at < 0 {
+            return Err("scene IC floor cannot be negative");
+        }
+        if at <= self.ic_floor {
+            return Err("the scene IC floor only moves forward");
+        }
+        self.ic_floor = at;
+        Ok(at)
     }
 
     /// Remove `obj` from the scene (participant or observer), keeping the turn
@@ -341,6 +513,8 @@ pub enum SceneEventKind {
     Joined,
     /// Someone left the scene's anchor room during play.
     Left,
+    /// The scene's outcome was **sealed** (E6b): terminal, written once.
+    Sealed,
 }
 
 /// One immutable entry in a scene's event log — a **semantic** record of what
@@ -534,6 +708,10 @@ mod tests {
             round: 1,
             turn_index: 0,
             ended_at: None,
+            sealer: None,
+            seal_run: None,
+            outcome: None,
+            ic_floor: 0,
         }
     }
 

@@ -288,6 +288,26 @@ pub fn shadowrun_economy_config(
         })?;
         lifestyle_costs.insert(t, *cost);
     }
+    // E6b (OPEN 1): the source-controlled fence baseline, keyed on a catalog code.
+    // A code must be non-empty and bounded, and a zero baseline is refused rather
+    // than silently pricing an object at nothing.
+    let mut fence_baseline: std::collections::BTreeMap<smol_str::SmolStr, u64> =
+        std::collections::BTreeMap::new();
+    for (code, price) in &e.fence_baseline {
+        let code = code.trim();
+        if code.is_empty() || code.len() > ruleset_shadowrun::MAX_CATALOG_CODE_BYTES {
+            return Err(format!(
+                "[shadowrun.economy.fence_baseline]: {code:?} is not a usable catalog code (1..={}                  bytes)",
+                ruleset_shadowrun::MAX_CATALOG_CODE_BYTES
+            ));
+        }
+        if *price == 0 {
+            return Err(format!(
+                "[shadowrun.economy.fence_baseline]: {code:?} has a zero baseline; remove the row                  instead — an item with no reference price cannot be quoted"
+            ));
+        }
+        fence_baseline.insert(smol_str::SmolStr::new(code), *price);
+    }
     Ok(ruleset_shadowrun::SrEconomyConfig {
         enabled: e.enabled,
         instrument: smol_str::SmolStr::new(instrument),
@@ -303,6 +323,8 @@ pub fn shadowrun_economy_config(
         fence_rate_immediate: e.fence_rate_immediate,
         fence_rate_consign: e.fence_rate_consign,
         fence_delay_secs: e.fence_delay_secs,
+        fence_baseline,
+        vendor_orgs: e.vendor_orgs.clone(),
         active_offer_cap: e.active_offer_cap,
         board_ttl_secs: e.board_ttl_secs,
         board_cap: e.board_cap,

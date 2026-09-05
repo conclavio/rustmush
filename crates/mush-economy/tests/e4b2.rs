@@ -6611,3 +6611,343 @@ fn vf_d2_the_economy_refuses_an_oversized_outcome_row_from_any_producer() {
     ok(&mut tw, r.johnson, "@e6/offer");
     assert!(e6.offered().is_ok(), "the cap itself was refused");
 }
+
+// ---- E6b: B3 — DL-03, an org or system depositor's deposit comes home -----
+
+/// The pure shape of DL-03, over a hand-built snapshot: an **organization**
+/// depositor with an `Active` vault of its own is routed home to that vault's
+/// backing, and `refund_plan` emits the `Withdraw` that takes it there.
+///
+/// Before E6b this depositor was filtered out of `returns` entirely — "no world
+/// object to hand the thing back to" — and its goods stayed in the counterparty's
+/// vault with the lock gone and nothing naming them.
+#[test]
+fn e6b_b3_an_org_depositors_deposit_is_routed_home_to_its_own_vault() {
+    let (mut s, c) = dl03_fixture(true);
+    let returns = mush_economy::deposit_returns(&c, &s);
+    assert_eq!(returns.len(), 1);
+    assert_eq!(returns[0].to, Some(mush_core::ObjId(77)));
+    assert_eq!(returns[0].into_vault, Some(VaultId(9)));
+
+    let plan = mush_economy::refund_plan(&c, &s).expect("the refund builds");
+    assert_eq!(
+        plan.custody_ops,
+        vec![mush_economy::CustodyOp::Withdraw {
+            object: mush_core::ObjId(50),
+            vault: VaultId(1),
+            to: mush_core::ObjId(77),
+        }],
+        "the deposit was not routed home"
+    );
+    // The authority agrees with the plan, and only for that exact route.
+    let auth = ContractAuth::unwinding(&c, &s);
+    let vault = s.vault(VaultId(1)).expect("the counterparty vault").clone();
+    use mush_economy::AuthEval;
+    assert!(auth.authorize_vault(
+        &PrincipalId::Organization(OrgId(3)),
+        &vault,
+        &mush_economy::CustodyOp::Withdraw {
+            object: mush_core::ObjId(50),
+            vault: VaultId(1),
+            to: mush_core::ObjId(77),
+        }
+    ));
+    assert!(auth.authorize_vault_home(mush_core::ObjId(50), mush_core::ObjId(77)));
+    // …and never for anywhere else, nor for any other object.
+    assert!(!auth.authorize_vault_home(mush_core::ObjId(50), mush_core::ObjId(78)));
+    assert!(!auth.authorize_vault_home(mush_core::ObjId(51), mush_core::ObjId(77)));
+    // A **settlement** authority never opens it at all: the exception is
+    // authority-shaped, and only an unwind is that authority.
+    let settling = ContractAuth::new(&c, &s);
+    assert!(!settling.authorize_vault_home(mush_core::ObjId(50), mush_core::ObjId(77)));
+    // And `WorldAuth`'s default answer — the one every command reaches — is `false`,
+    // so no `@vault/withdraw` can ever name a vault backing as a destination.
+    s.put_vault(vault);
+}
+
+/// A depositor organization with **no vault** is `to: None` — the stranded shape the
+/// unwind pages on rather than silently dropping (08a's staff-scarce rule).
+#[test]
+fn e6b_b3_a_depositor_org_with_no_vault_is_stranded_not_silently_dropped() {
+    let (s, c) = dl03_fixture(false);
+    let returns = mush_economy::deposit_returns(&c, &s);
+    assert_eq!(returns.len(), 1);
+    assert_eq!(returns[0].to, None, "a vault appeared from nowhere");
+    assert!(mush_economy::owner_home(&s, &PrincipalId::Organization(OrgId(3))).is_none());
+    // The refund still builds and still releases the escrow: one stranded deposit
+    // never blocks giving everybody else their money back.
+    let plan = mush_economy::refund_plan(&c, &s).expect("the refund still builds");
+    assert!(plan.custody_ops.is_empty());
+}
+
+/// A cancelled contract with one recorded deposit from `org:3` into vault 1, and
+/// (optionally) a vault of its own to come home to.
+fn dl03_fixture(org_has_vault: bool) -> (EconomySnapshot, mush_economy::EconomicContract) {
+    use mush_economy::{
+        ConsentSurface, ContractRoles, ContractTerms, CustodyRef, DepositRecord, EconomicContract,
+        EconomicVisibility, Expiry, InstrumentDef, InstrumentKind, InstrumentStatus,
+        NegativePolicy, Vault, VaultStatus,
+    };
+    let mut s = EconomySnapshot::default();
+    let instrument = mush_economy::InstrumentId::new("gold").expect("well-formed");
+    s.put_instrument(InstrumentDef {
+        id: instrument.clone(),
+        ruleset: SmolStr::new_static("test"),
+        code: SmolStr::new_static("gold"),
+        kind: InstrumentKind::Currency,
+        scale: 0,
+        transferable: true,
+        negative_policy: NegativePolicy::SystemOnly,
+        status: InstrumentStatus::Active,
+        display: None,
+        revision: 1,
+    });
+    // The counterparty's vault, holding the org's deposit.
+    s.put_vault(Vault {
+        id: VaultId(1),
+        owner: PrincipalId::Object(mush_core::ObjId(5)),
+        scope: None,
+        name: SmolStr::new_static("fence box"),
+        backing: CustodyRef::Container(mush_core::ObjId(60)),
+        status: VaultStatus::Active,
+        revision: 1,
+    });
+    if org_has_vault {
+        s.put_vault(Vault {
+            id: VaultId(9),
+            owner: PrincipalId::Organization(OrgId(3)),
+            scope: None,
+            name: SmolStr::new_static("vendor store"),
+            backing: CustodyRef::Container(mush_core::ObjId(77)),
+            status: VaultStatus::Active,
+            revision: 1,
+        });
+    }
+    let c = EconomicContract {
+        id: ContractId(1),
+        name: SmolStr::new_static("consignment"),
+        issuer: PrincipalId::Object(mush_core::ObjId(5)),
+        consent: ConsentSurface {
+            parties: vec![
+                PrincipalId::Object(mush_core::ObjId(5)),
+                PrincipalId::Organization(OrgId(3)),
+            ],
+            terms: ContractTerms {
+                consideration: Vec::new(),
+                deliverables: Vec::new(),
+                split: Vec::new(),
+                remainder_to: AccountId(0),
+                on_expiry: Expiry::Refund,
+                outcomes: Vec::new(),
+            },
+            conditions: Vec::new(),
+            deadline: None,
+            visibility: EconomicVisibility::Parties,
+            scope: None,
+            adjudicator: None,
+            evidence: Vec::new(),
+        },
+        acceptances: Vec::new(),
+        satisfied: Vec::new(),
+        escrow: Vec::new(),
+        deposits: vec![DepositRecord {
+            object: mush_core::ObjId(50),
+            vault: VaultId(1),
+            deposited_by: PrincipalId::Organization(OrgId(3)),
+            at: 10,
+        }],
+        state: ContractState::Cancelled,
+        roles: ContractRoles::default(),
+        consent_hash: [0u8; 32],
+        amendments: 0,
+        roster_locked: false,
+        pending: None,
+        canon_published: None,
+        created_at: 1,
+        settle_attempts: 0,
+        disputed_at: None,
+        agreements: Vec::new(),
+        revision: 1,
+    };
+    let mut c = c;
+    c.consent_hash = mush_economy::consent_hash(&c.issuer, &c.consent);
+    (s, c)
+}
+
+// ---- E6b verify fold — money and consent ---------------------------------
+
+/// **M1.** A `DepositInto` condition may only name a vault whose **owner is a
+/// party**. E6b let that condition stand in for the vault owner's consent
+/// (`WorldAuth::authorize_vault`), and it was not consent at all: anyone holding
+/// `vault.view` on a compartment could name that vault in a one-party contract,
+/// deposit into it, and leave the object **custody-locked** where its owner could
+/// not take it out — a permanent wedge, repeatable until the vault was full.
+#[test]
+fn vf_m1_a_deposit_condition_names_a_vault_its_owner_is_a_party_to() {
+    let mut tw = boot();
+    let r = run_rig(&mut tw, 1_000);
+    // A vault the intruder does not own and is not in a contract with.
+    let backing = tw
+        .world_mut()
+        .create(ObjKind::Thing, "strongbox", GOD, None)
+        .expect("a container");
+    ok(
+        &mut tw,
+        GOD,
+        &format!(
+            "@vault/create Box=container:#{} owner=#{}",
+            backing.0, r.b.0
+        ),
+    );
+    let vault = snap(&tw).vaults().map(|v| v.id).max().expect("a vault");
+    let goods = tw
+        .world_mut()
+        .create(ObjKind::Thing, "crowbar", GOD, Some(r.a))
+        .expect("an object");
+
+    // Staff draft it, so `may_view_vault` is not what refuses — the party rule is.
+    ok(&mut tw, GOD, "@contract/draft Wedge");
+    let id = snap(&tw)
+        .contracts()
+        .map(|c| c.id)
+        .max()
+        .expect("a contract");
+    ok(&mut tw, GOD, &format!("@contract/pay {id}={} 1", r.a_acct));
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@contract/split {id}={} 1", r.a_acct),
+    );
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@contract/remainder {id}={}", r.a_acct),
+    );
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@contract/condition {id}=deposit #{} {vault}", goods.0),
+    );
+    // `r.b` owns the vault and is no party to this, so the offer is refused before
+    // an acceptance could ever create the lock.
+    err(&mut tw, GOD, &format!("@contract/offer {id}"));
+    assert!(
+        snapshot_lock_free(&tw, goods, vault),
+        "the wedge was created anyway"
+    );
+}
+
+fn snapshot_lock_free(tw: &TestWorld, object: ObjId, vault: VaultId) -> bool {
+    snap(tw).custody_lock(object, vault).is_none()
+}
+
+/// **M3.** A theft report is evidence, never a way out of a deal you already agreed
+/// to: with `Encumber` staff-only before E6b, no party could put a claim on an asset,
+/// and relaxing it for the title owner handed them a settlement veto — accept the
+/// escrow, file a *covert* report, and the `TransferTitle` refuses with `Encumbered`
+/// while the buyer cannot even see why.
+#[test]
+fn vf_m3_a_live_deals_asset_cannot_be_reported_stolen_out_from_under_it() {
+    let mut tw = boot();
+    let r = run_rig(&mut tw, 5_000);
+    let obj = tw
+        .world_mut()
+        .create(ObjKind::Thing, "predator", GOD, Some(r.a))
+        .expect("an object");
+    ok(&mut tw, GOD, &format!("@asset/title #{}=#{}", obj.0, r.a.0));
+    let faucet = snap(&tw)
+        .accounts()
+        .find(|x| matches!(x.owner, PrincipalId::System(_)))
+        .expect("faucet")
+        .id;
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@econ/mint {faucet}={} 1000", r.a_acct),
+    );
+    ok(&mut tw, r.a, "@contract/draft Sale");
+    let id = snap(&tw)
+        .contracts()
+        .map(|c| c.id)
+        .max()
+        .expect("a contract");
+    ok(&mut tw, r.a, &format!("@contract/party {id}=#{}", r.b.0));
+    ok(
+        &mut tw,
+        r.a,
+        &format!("@contract/pay {id}={} 100", r.a_acct),
+    );
+    ok(
+        &mut tw,
+        r.a,
+        &format!("@contract/split {id}={} 100", r.b_acct),
+    );
+    ok(
+        &mut tw,
+        r.a,
+        &format!("@contract/remainder {id}={}", r.a_acct),
+    );
+    ok(
+        &mut tw,
+        r.a,
+        &format!(
+            "@contract/deliver {id}=title #{} #{}->#{}",
+            obj.0, r.a.0, r.b.0
+        ),
+    );
+    ok(&mut tw, r.a, &format!("@contract/offer {id}"));
+    ok(&mut tw, r.a, &format!("@contract/accept {id}"));
+    ok(&mut tw, r.b, &format!("@contract/accept {id}"));
+
+    // The seller cannot now encumber the very thing they sold.
+    err(
+        &mut tw,
+        r.a,
+        &format!("@asset/stolen #{}=covert changed my mind", obj.0),
+    );
+    assert!(
+        snap(&tw).asset(obj).expect("the asset").stolen.is_none(),
+        "a party vetoed their own settlement with a theft report"
+    );
+}
+
+/// **R1.** The report goes with its claim. `record.rs` said clearing a theft report
+/// was `@asset/release` of its `Disputed` claim, and it was not: nothing anywhere
+/// wrote `stolen = None`, so a recovered asset carried the report for ever and
+/// refused a **genuine second theft** with `AlreadyClaimed`.
+#[test]
+fn vf_r1_releasing_the_claim_clears_the_report_so_a_second_theft_can_be_filed() {
+    let mut tw = boot();
+    let r = run_rig(&mut tw, 1_000);
+    let obj = tw
+        .world_mut()
+        .create(ObjKind::Thing, "predator", GOD, Some(r.a))
+        .expect("an object");
+    ok(&mut tw, GOD, &format!("@asset/title #{}=#{}", obj.0, r.a.0));
+    ok(
+        &mut tw,
+        r.a,
+        &format!("@asset/stolen #{}=public lifted", obj.0),
+    );
+    assert!(snap(&tw).asset(obj).expect("the asset").stolen.is_some());
+    // A second filing is refused while the first stands.
+    err(
+        &mut tw,
+        r.a,
+        &format!("@asset/stolen #{}=public again", obj.0),
+    );
+
+    ok(&mut tw, GOD, &format!("@asset/release #{}=1", obj.0));
+    let asset = snap(&tw).asset(obj).expect("the asset");
+    assert!(asset.encumbrances.is_empty());
+    assert!(
+        asset.stolen.is_none(),
+        "the claim was released and the report outlived it"
+    );
+    // …and the same object can be reported stolen again, which is the point.
+    ok(
+        &mut tw,
+        r.a,
+        &format!("@asset/stolen #{}=public taken again", obj.0),
+    );
+}

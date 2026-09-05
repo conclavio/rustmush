@@ -13,7 +13,9 @@
 //! back-reference, and `mush_party` holds the other half).
 
 use mush_core::ObjId;
-use mush_economy::{AccountId, Amount, ContractId, EconomicDeadline, ObligationId, TransactionId};
+use mush_economy::{
+    AccountId, AcquisitionRecord, Amount, ContractId, EconomicDeadline, ObligationId, TransactionId,
+};
 use mush_faction::FactionId;
 use mush_org::PrincipalId;
 use serde::{Deserialize, Serialize};
@@ -114,8 +116,96 @@ pub struct SrProfile {
     pub minted: Option<Mint>,
     /// The migration mint (M13, answer 18).
     pub migrated: Option<Migration>,
+    /// **The augmentation record** (E6b, answer 12, D-E6-16).
+    ///
+    /// A service contract's settlement writes *this* and **never the sheet**: the
+    /// free-text `augmentations` map on `sheet:shadowrun` and
+    /// `derive::essence_from_augmentations` (which runs only from chargen finalize)
+    /// are untouched by anything E6b does. The atomic installation that revalidates
+    /// Essence, prerequisites, custody and clinic capability — and only then writes
+    /// the sheet — is the later clinics slice.
+    #[serde(default)]
+    pub augmentations: Vec<InstalledAugmentation>,
     /// Bumped by every write.
     pub revision: u64,
+}
+
+/// The most installed augmentations one profile records (E6b, D-E6-16).
+pub const MAX_AUGMENTATIONS: usize = 32;
+/// The longest catalogue code or clinic name an installation record carries.
+pub const MAX_AUGMENTATION_BYTES: usize = 64;
+
+/// One installed augmentation, as **payment** recorded it (E6b, answer 12).
+///
+/// It carries provenance — the transaction that paid for it, the clinic that fitted
+/// it — and it is deliberately not a sheet edit: the record says *what was bought*,
+/// the sheet says *what the character is*, and the action that reconciles them is the
+/// clinics slice's, not a settlement's (D-E6-16). No karma is involved anywhere:
+/// `+karma/spend`'s job flow is untouched and no karma-nuyen path exists.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "InstalledAugmentationWire")]
+pub struct InstalledAugmentation {
+    /// The world object, when the ware exists as one.
+    pub object: Option<ObjId>,
+    /// The catalogue code it was bought as.
+    pub catalog: SmolStr,
+    /// Its grade (standard, alphaware, ...), as a bounded label.
+    pub grade: SmolStr,
+    /// Essence cost x100, the same scale `schema.rs` stores.
+    pub essence_cost: u32,
+    /// The clinic that fitted it.
+    pub clinic: SmolStr,
+    /// The transaction that paid for it.
+    pub acquisition: Option<AcquisitionRecord>,
+    /// When (wall clock).
+    pub installed_at: i64,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct InstalledAugmentationWire {
+    #[serde(default)]
+    object: Option<ObjId>,
+    #[serde(default)]
+    catalog: SmolStr,
+    #[serde(default)]
+    grade: SmolStr,
+    #[serde(default)]
+    essence_cost: u32,
+    #[serde(default)]
+    clinic: SmolStr,
+    #[serde(default)]
+    acquisition: Option<AcquisitionRecord>,
+    #[serde(default)]
+    installed_at: i64,
+}
+
+impl TryFrom<InstalledAugmentationWire> for InstalledAugmentation {
+    type Error = RecordError;
+
+    fn try_from(w: InstalledAugmentationWire) -> Result<InstalledAugmentation, RecordError> {
+        if w.catalog.trim().is_empty() || w.catalog.len() > MAX_AUGMENTATION_BYTES {
+            return Err(RecordError(
+                "an augmentation record names no catalogue code",
+            ));
+        }
+        if w.grade.len() > MAX_AUGMENTATION_BYTES || w.clinic.len() > MAX_AUGMENTATION_BYTES {
+            return Err(RecordError("an augmentation record's labels are too long"));
+        }
+        // The same 0..=600 range `schema.rs` stores Essence x100 in, so a record can
+        // never claim a cost the sheet could not represent.
+        if w.essence_cost > 600 {
+            return Err(RecordError("an augmentation's essence cost is impossible"));
+        }
+        Ok(InstalledAugmentation {
+            object: w.object,
+            catalog: w.catalog,
+            grade: w.grade,
+            essence_cost: w.essence_cost,
+            clinic: w.clinic,
+            acquisition: w.acquisition,
+            installed_at: w.installed_at,
+        })
+    }
 }
 
 /// The persisted shape of [`SrProfile`].
@@ -140,6 +230,8 @@ struct SrProfileWire {
     minted: Option<Mint>,
     #[serde(default)]
     migrated: Option<Migration>,
+    #[serde(default)]
+    augmentations: Vec<InstalledAugmentation>,
     #[serde(default)]
     revision: u64,
 }
@@ -190,6 +282,11 @@ impl TryFrom<SrProfileWire> for SrProfile {
             arrears: w.arrears,
             minted: w.minted,
             migrated: w.migrated,
+            augmentations: {
+                let mut a = w.augmentations;
+                a.truncate(MAX_AUGMENTATIONS);
+                a
+            },
             revision: w.revision.max(1),
         })
     }
@@ -210,8 +307,24 @@ impl SrProfile {
             arrears: Amount::ZERO,
             minted: None,
             migrated: None,
+            augmentations: Vec::new(),
             revision: 1,
         }
+    }
+
+    /// Record one installed augmentation (E6b, D-E6-16).
+    ///
+    /// **This never writes the sheet.** Payment records what was bought; the ruleset's
+    /// own installation action — the later clinics slice — is what revalidates
+    /// Essence, prerequisites, custody and clinic capability and only then edits
+    /// `sheet:shadowrun`. Returns `false` at [`MAX_AUGMENTATIONS`], writing nothing.
+    pub fn install(&mut self, aug: InstalledAugmentation) -> bool {
+        if self.augmentations.len() >= MAX_AUGMENTATIONS {
+            return false;
+        }
+        self.augmentations.push(aug);
+        self.revision = self.revision.saturating_add(1);
+        true
     }
 
     /// Whether this character owes anything (the `+lifestyle/set` gate — D-E6-23).
@@ -346,6 +459,11 @@ pub struct RunTemplate {
     pub fixer_account: Option<AccountId>,
     /// The outcome row names, in table order.
     pub outcomes: Vec<SmolStr>,
+    /// E6b (B8): the **gating** condition indexes every row also names — a
+    /// composite. They sit after the per-row conditions in the consent surface, so
+    /// `crew_accept`'s rewritten table keeps naming them.
+    #[serde(default)]
+    pub gates: Vec<usize>,
     /// When it was posted (wall clock).
     pub posted_at: i64,
     /// The contract's own deadline (`RealUtc`) — nothing else expires an `Offered`
@@ -391,6 +509,8 @@ struct RunTemplateWire {
     fixer_account: Option<AccountId>,
     #[serde(default)]
     outcomes: Vec<SmolStr>,
+    #[serde(default)]
+    gates: Vec<usize>,
     #[serde(default)]
     posted_at: i64,
     deadline: EconomicDeadline,
@@ -439,6 +559,17 @@ impl TryFrom<RunTemplateWire> for RunTemplate {
         if w.applied.len() > MAX_RUN_APPLICANTS {
             return Err(RecordError("a listing carries too many applications"));
         }
+        // E6b (B8): a gate index names a condition that exists — the row
+        // conditions come first, the gates after them — and there are at most as
+        // many gates as E4 admits conditions at all.
+        if w.gates.len() > mush_economy::MAX_CONDITIONS
+            || w.gates.iter().any(|g| *g < w.outcomes.len())
+            || w.gates
+                .iter()
+                .any(|g| *g >= w.outcomes.len().saturating_add(w.gates.len()))
+        {
+            return Err(RecordError("a listing's gating conditions are impossible"));
+        }
         let matched = match (&w.board, w.faction) {
             (BoardVisibility::Faction(f), Some(g)) => *f == g,
             (BoardVisibility::Faction(_), None) => false,
@@ -464,6 +595,7 @@ impl TryFrom<RunTemplateWire> for RunTemplate {
             advance: w.advance,
             fixer_account: w.fixer_account,
             outcomes: w.outcomes,
+            gates: w.gates,
             posted_at: w.posted_at,
             deadline: w.deadline,
             expires_at: w.expires_at,

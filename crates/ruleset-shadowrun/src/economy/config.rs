@@ -100,6 +100,40 @@ pub const MAX_RUN_WINDOW_SECS: i64 = 365 * 86_400;
 /// under 32 bytes — and 128 leaves room for a namespace change without touching
 /// the wire.
 pub const MAX_MINT_KEY_BYTES: usize = 128;
+// ---- E6b: B9 — the fence -------------------------------------------------
+
+/// The longest catalog code the fence baseline table keys on (E6b, OPEN 1).
+pub const MAX_CATALOG_CODE_BYTES: usize = 64;
+/// The shortest consignment delay the offer may carry (answer 15: 24–72 h).
+pub const FENCE_DELAY_MIN_SECS: i64 = 24 * 3_600;
+/// The longest one (answer 15).
+pub const FENCE_DELAY_MAX_SECS: i64 = 72 * 3_600;
+/// How long a fence quote stands before it is refused deterministically
+/// (scenario 29). It is on `RealUtc`, and the offer says so.
+pub const FENCE_QUOTE_TTL_SECS: i64 = 3_600;
+/// The most price factors one quote's basis carries (a bounded record).
+pub const MAX_PRICE_FACTORS: usize = 8;
+/// The most UTF-8 bytes in one price factor's label.
+pub const MAX_PRICE_FACTOR_BYTES: usize = 32;
+/// The most fences one server registers, and the most quotes one seller may hold
+/// open at once — both bounded, both refused rather than grown.
+pub const MAX_FENCES: usize = 64;
+/// The most open quotes one seller may hold.
+pub const MAX_OPEN_QUOTES_PER_SELLER: usize = 8;
+/// The most open quotes the whole store holds (E6b verify fold, D6): the per-seller
+/// cap bounds one character, and this bounds the roster.
+pub const MAX_QUOTES: usize = 1_024;
+/// The most listings or quotes one `+fence/list` page renders.
+pub const FENCE_PAGE: usize = 20;
+/// The most fence or quote records one `+fence/*` read may **visit** (E6b verify
+/// fold, D3/D10; D-LBK-5's rule): a bounded read bounds the records it *touches*,
+/// never the ones it *matches*, or a selective filter over a long tail is an
+/// unbounded scan wearing a page cap.
+pub const FENCE_PAGE_VISIT: usize = 256;
+/// The most vaults `owner_home`'s search may visit when routing a deposit home
+/// (E6b verify fold, D11).
+pub const MAX_HOME_VAULT_VISIT: usize = 256;
+
 /// The most listing documents one board command may **visit** (E6a verify fold, D1).
 ///
 /// D-LBK-5's rule: a bounded read bounds the records it *touches*, never the ones it
@@ -242,8 +276,15 @@ pub struct SrEconomyConfig {
     pub fence_rate_immediate: u32,
     /// Permille a consignment fence pays — parsed, inert until E6b.
     pub fence_rate_consign: u32,
-    /// The consignment delay in seconds — parsed, inert until E6b.
+    /// The consignment delay in seconds — clamped to [`FENCE_DELAY_MIN_SECS`] ..=
+    /// [`FENCE_DELAY_MAX_SECS`] by [`SrEconomyConfig::fence_delay`] (answer 15).
     pub fence_delay_secs: i64,
+    /// The **fence price baseline**, in major units, keyed on `CatalogRef.code`
+    /// (E6b, OPEN 1). A code this table does not name cannot be quoted.
+    pub fence_baseline: BTreeMap<SmolStr, u64>,
+    /// The organization ids whose contract acceptance may be performed
+    /// programmatically (E6b, DL-11 / M15) — composition data, ids only.
+    pub vendor_orgs: Vec<u64>,
     /// The per-principal open-listing cap (§9's `MAX_OPEN_RUNS_PER_PRINCIPAL`).
     pub active_offer_cap: usize,
     /// How long a listing lives, in seconds — the contract's own deadline (M8).
@@ -271,6 +312,8 @@ impl Default for SrEconomyConfig {
             fence_rate_immediate: 300,
             fence_rate_consign: 600,
             fence_delay_secs: 48 * 3_600,
+            fence_baseline: BTreeMap::new(),
+            vendor_orgs: Vec::new(),
             active_offer_cap: MAX_OPEN_RUNS_PER_PRINCIPAL,
             board_ttl_secs: BOARD_TTL_SECS,
             board_cap: BOARD_CAP,
@@ -283,6 +326,32 @@ impl SrEconomyConfig {
     /// This tier's per-period cost in **major** units. `None` for a tier the table
     /// does not name and for a zero cost alike — both mean "no obligation", which is
     /// exactly what a zero-cost tier is (§3.2 "Life": a zero-cost tier creates none).
+    /// The consignment delay actually offered: the configured value clamped to
+    /// answer 15's 24–72 hours, so a mis-set `mushd.toml` can never offer a fence
+    /// deal that matures in a minute or in a decade.
+    #[must_use]
+    pub fn fence_delay(&self) -> i64 {
+        self.fence_delay_secs
+            .clamp(FENCE_DELAY_MIN_SECS, FENCE_DELAY_MAX_SECS)
+    }
+
+    /// Whether the wiring named this organization as a programmatic vendor (DL-11).
+    #[must_use]
+    pub fn is_vendor_org(&self, org: mush_org::OrgId) -> bool {
+        self.vendor_orgs.contains(&org.0)
+    }
+
+    /// The source-controlled baseline for a catalog code, in **minor** units
+    /// (E6b, OPEN 1). `None` means the object cannot be quoted at all.
+    #[must_use]
+    pub fn baseline_minor(&self, code: &str) -> Option<i64> {
+        self.fence_baseline
+            .get(code)
+            .copied()
+            .filter(|n| *n > 0)
+            .and_then(|n| i64::try_from(n).ok())
+    }
+
     #[must_use]
     pub fn cost_major(&self, tier: LifestyleTier) -> Option<u64> {
         self.lifestyle_costs.get(&tier).copied().filter(|n| *n > 0)

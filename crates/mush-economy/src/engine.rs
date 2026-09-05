@@ -121,6 +121,12 @@ pub const CAPABILITIES: &[&str] = &[
     "contract.accept",
     "contract.attest",
     "contract.dispute",
+    // E6b (§2 item 7, D-E6-18, §11 q10): an organization holding this on an asset's
+    // compartment is "an authorized insurer" and may file `AssetOp::ReportStolen`.
+    // It is deliberately NOT `asset.title.transfer` — an insurer files claims; it
+    // does not move title — and wiring freezes the vocabulary, so a typo'd grant is
+    // visible here.
+    "asset.insure",
 ];
 
 // ---- the authorization seam -----------------------------------------------
@@ -240,6 +246,24 @@ pub trait AuthEval {
     /// refund leaves a live, retryable contract instead of a terminal one holding
     /// somebody's money.
     fn authorize_custody_unlock(&self, _object: ObjId, _vault: VaultId) -> bool {
+        false
+    }
+    /// `true` if this authority may send `object` **home into the backing of a
+    /// vault** rather than to a world location (E6b, DL-03).
+    ///
+    /// Invariant 15's destination rule and A2's laundering guard both say entering
+    /// a vault is a `Deposit`, never a withdrawal's side effect. The one exception
+    /// is an unwind returning a deposit to a depositor who is not a world object at
+    /// all — an organization or a system principal — because there is no world
+    /// object to hand it to and the alternative is stranding somebody's property in
+    /// the counterparty's vault forever.
+    ///
+    /// It is **authority-shaped, never cause- or key-shaped** (08c §5.1): the
+    /// default is `false`, [`crate::WorldAuth`] keeps it, so no `@vault/withdraw`
+    /// can reach it; the only `true` comes from `ContractAuth::unwinding`, for a
+    /// deposit that contract recorded, to the backing of an `Active` vault that
+    /// deposit's own depositor owns.
+    fn authorize_vault_home(&self, _object: ObjId, _to: ObjId) -> bool {
         false
     }
 }
@@ -813,6 +837,12 @@ fn caps(plan: &EconomyPlan) -> Result<(), EconomyError> {
                     return Err(EconomyError::TooLarge("dispute reason too long"));
                 }
             }
+            // E6b (B2): the report's reason lands in an effect twice over — in the
+            // `Disputed` claim and in the `StolenReport` — so invariant 21 caps it
+            // exactly like every other free-text field.
+            AssetOp::ReportStolen { reason, .. } if reason.len() > MAX_REASON_BYTES => {
+                return Err(EconomyError::TooLarge("theft report reason too long"));
+            }
             _ => {}
         }
     }
@@ -930,6 +960,7 @@ fn resolve_asset_ops(
                         catalog: catalog.clone(),
                         encumbrances: Vec::new(),
                         acquisition: None,
+                        stolen: None,
                         lifecycle: AssetLifecycle::Active,
                         last_journal_seq: 0,
                         // A re-issue keeps counting from the record it replaces, so an
@@ -1061,6 +1092,20 @@ fn apply_asset_op(
                 .position(|e| e == encumbrance)
                 .ok_or(EconomyError::NoSuchEncumbrance(*object))?;
             post.encumbrances.remove(at);
+            // E6b verify fold (R1): **the report goes with its claim.** `record.rs`
+            // said clearing a theft report was `@asset/release` of its `Disputed`
+            // claim, and it was not: nothing anywhere wrote `stolen = None`, so a
+            // recovered asset carried the report for ever, kept rendering it to its
+            // reporter, and refused a *genuine* second theft with `AlreadyClaimed`.
+            // The claim and the report are one act, so they end as one act.
+            if let Encumbrance::Disputed { claimant, reason } = encumbrance
+                && post
+                    .stolen
+                    .as_ref()
+                    .is_some_and(|r| &r.by == claimant && &r.reason == reason)
+            {
+                post.stolen = None;
+            }
             Ok(AssetEffectKind::Released)
         }
         AssetOp::SetMaintenance { account, .. } => {
@@ -1095,6 +1140,60 @@ fn apply_asset_op(
             }
             post.lifecycle = AssetLifecycle::WrittenOff;
             Ok(AssetEffectKind::WrittenOff)
+        }
+        // ---- E6b: B2 — the typed theft report ----
+        AssetOp::ReportStolen {
+            object,
+            claimant,
+            visibility,
+            reason,
+        } => {
+            // Written once: a standing report is not re-filed, because a second
+            // filing would re-stamp `at` (and could widen the visibility of a
+            // covert claim). Clearing one is `@asset/release` of its `Disputed`
+            // claim, which is staff's — and which now clears the report with it
+            // (E6b verify fold, R1).
+            if post.stolen.is_some() {
+                return Err(EconomyError::AlreadyClaimed(*object));
+            }
+            // E6b verify fold (M3): **not while a live contract is about to move
+            // it.** Before E6b `Encumber` was staff-only (invariant 19), so no party
+            // could put a claim on an asset; relaxing it for the title owner handed
+            // them a settlement veto — accept the escrow, file a covert report, and
+            // the `TransferTitle` refuses with `Encumbered` while the buyer cannot
+            // even see why. A theft report is evidence, never a way out of a deal
+            // you already agreed to.
+            if snapshot.contracts().any(|c| {
+                c.state.is_live()
+                    && c.consent.terms.deliverables.iter().any(|d| match d {
+                        crate::contract::Deliverable::TitleTransfer { object: o, .. }
+                        | crate::contract::Deliverable::Collateral { object: o, .. } => o == object,
+                        crate::contract::Deliverable::DepositInto { .. }
+                        | crate::contract::Deliverable::Obligation { .. } => false,
+                    })
+            }) {
+                return Err(EconomyError::Encumbered(*object));
+            }
+            if post.encumbrances.len() >= MAX_ENCUMBRANCES_PER_ASSET {
+                return Err(EconomyError::TooLarge("too many encumbrances on one asset"));
+            }
+            let claim = Encumbrance::Disputed {
+                claimant: claimant.clone(),
+                reason: reason.clone(),
+            };
+            // The plain claim is what insurance and salvage consume (08f §7 item
+            // 5); an identical one already standing is the caller's own duplicate.
+            if post.encumbrances.contains(&claim) {
+                return Err(EconomyError::AlreadyClaimed(*object));
+            }
+            post.encumbrances.push(claim);
+            post.stolen = Some(crate::record::StolenReport {
+                by: claimant.clone(),
+                visibility: *visibility,
+                reason: reason.clone(),
+                at: env.now,
+            });
+            Ok(AssetEffectKind::StolenReported)
         }
     }
 }
@@ -1453,11 +1552,33 @@ fn resolve_custody_ops(
                 // seam checks live/`GOING`/reachability; the snapshot check below is
                 // the one the pure engine owns — entering a vault is a Deposit, with
                 // its own standing check, never a withdrawal's side effect.
-                if snapshot.is_vault_backing(*to) {
-                    return Err(EconomyError::BadDestination(*to));
-                }
-                if !env.custody.destination_ok(actor, *to) {
-                    return Err(EconomyError::BadDestination(*to));
+                //
+                // E6b (DL-03): the one exception, and it is **authority-shaped**.
+                // An organization or system depositor has no world object to hand
+                // the thing back to, so an unwind returning *their* recorded deposit
+                // may name the backing of a vault they own. Only
+                // `ContractAuth::unwinding` ever answers `true`; `WorldAuth` never
+                // does, so no command can reach this path.
+                if env.auth.authorize_vault_home(*object, *to) {
+                    let home = snapshot
+                        .vault_by_backing(&crate::record::CustodyRef::Container(*to))
+                        .or_else(|| {
+                            snapshot
+                                .vault_by_backing(&crate::record::CustodyRef::SpatialInterior(*to))
+                        })
+                        .ok_or(EconomyError::BadDestination(*to))?;
+                    if home.status != crate::record::VaultStatus::Active
+                        || !env.custody.backing_valid(home)
+                    {
+                        return Err(EconomyError::BadDestination(*to));
+                    }
+                } else {
+                    if snapshot.is_vault_backing(*to) {
+                        return Err(EconomyError::BadDestination(*to));
+                    }
+                    if !env.custody.destination_ok(actor, *to) {
+                        return Err(EconomyError::BadDestination(*to));
+                    }
                 }
                 CustodyEffect {
                     object: *object,

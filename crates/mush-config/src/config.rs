@@ -557,6 +557,26 @@ pub struct ShadowrunEconomyCfg {
     pub fence_rate_consign: u32,
     /// The consignment delay in seconds — inert until E6b.
     pub fence_delay_secs: i64,
+    /// `[shadowrun.economy.fence_baseline]` — the **source-controlled reference
+    /// price** a fence quotes against, in major units, keyed on the asset's
+    /// `CatalogRef.code` (E6b, 08f §4.3 OPEN 1).
+    ///
+    /// There is no catalog until E6c, and `CatalogRef` is set nowhere today, so this
+    /// table is the whole baseline. An object whose asset record carries no catalog
+    /// reference, or one this table does not name, **cannot be quoted** — refused,
+    /// never guessed, and never priced off its `AcquisitionRecord`, which is
+    /// provenance the fence may not see (D-E6-11).
+    pub fence_baseline: BTreeMap<String, u64>,
+    /// `[shadowrun.economy].vendor_orgs` — the organization **ids** whose contract
+    /// acceptance may be performed programmatically (E6b, DL-11 / M15).
+    ///
+    /// A staff-built NPC fence has no officer and an org party accepts only through
+    /// `acts_for` holders or staff, which would put a staffer in every deal. This is
+    /// the exception, and it is deliberately **composition data**: ids only, set in
+    /// `mushd.toml`, frozen at wiring, and nothing a command or a grant can add to.
+    /// It confers no money authority at all — the escrow still posts under the org
+    /// account's own debit authority.
+    pub vendor_orgs: Vec<u64>,
     /// The per-principal open-listing cap (§9's `MAX_OPEN_RUNS_PER_PRINCIPAL`).
     pub active_offer_cap: usize,
     /// How long a listing lives, in seconds — the contract's own deadline (M8).
@@ -582,6 +602,8 @@ impl Default for ShadowrunEconomyCfg {
             chargen_shopping: false,
             catalog_paths: Vec::new(),
             lifestyle_costs: BTreeMap::new(),
+            fence_baseline: BTreeMap::new(),
+            vendor_orgs: Vec::new(),
             quote_ttl_live: 3_600,
             quote_ttl_remote: 24 * 3_600,
             fence_rate_immediate: 300,

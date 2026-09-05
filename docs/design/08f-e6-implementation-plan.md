@@ -94,7 +94,7 @@ past quote or policy revision is refused deterministically).
 | Cut | Crate(s) | One line | Verify axis |
 |-----|----------|----------|-------------|
 | **E6a** | `mush-party` (new), `ruleset-shadowrun`, `mush-economy` (A′, the rolling window, the obligation and contract seams, `InstrumentDisplay`, `contract_notice`, the M4 fold, DL-05, DL-08), `mush-server` (DL-04, wiring) | `sr.nuyen` + the idempotent migration; lifestyle obligations on an `sr.month` cadence; the ephemeral party subsystem; the bounded run board; run templates over E4b2's roles / outcome table / roster lock; `[shadowrun.economy]`; chargen as one live cash authority | uncontrolled faucets, board spam, an org-treasury drip, a fixer skimming, split arithmetic, party lifecycle |
-| **E6b** | `mush-scenes`, `mush-economy` (`report_stolen`, the DL-03 deposit seam, DL-11's vendor accept), `ruleset-shadowrun` | the facilitator-sealed **`scene.outcome`** producer and its registration; the four settlement routes through one condition alphabet; deterministic fence pricing with title ≠ possession; typed `report_stolen`; delayed consignment with escrow-before-custody; the augmentation record | forged seals, prose settlement, fence laundering, consignment custody races |
+| **E6b** | `mush-scenes`, `mush-canon` (DL-09's read seam), `mush-economy` (`report_stolen`, the DL-03 deposit seam, DL-11's vendor accept, DL-09, C16), `ruleset-shadowrun` | the facilitator-sealed **`scene.outcome`** producer and its registration; the four settlement routes through one condition alphabet; deterministic fence pricing with title ≠ possession; typed `report_stolen`; delayed consignment with escrow-before-custody; the augmentation record | forged seals, prose settlement, fence laundering, consignment custody races |
 | **E6c** | `mush-market` (new), `ruleset-shadowrun` | catalog + content packs and the representation policy; listings, order books, quotes with declared expiry clocks; the **safe public projection**; vendors from stock / market source / procurement with engine-resolved availability tests; NPC market makers with explicit budgets | market existence oracles, stale quotes, market-maker insolvency |
 
 **Dependencies** (no cycle; neither `mush-economy` nor `mush-org` gains an edge): `mush-party →
@@ -894,6 +894,11 @@ of it is a cache. `EconomySnapshot::accounts_of(owner)` plus `resolve_org_visibl
 
 ## 4. E6b — outcomes, fences, custody
 
+> **`file:line` cites in this section are historical.** They were exact when 0.3 was written and
+> predate the whole-tree reformat (`91208ab`) and E6a's own folds; the **symbol named beside each
+> one** is the citation, and §4.6 carries the as-built anchors. They are deliberately not
+> re-numbered — a line number that is re-derived every cut stops being evidence of anything.
+
 ### 4.1 `scene.outcome` — the producer E4c's fold owes the economy
 
 `mush-scenes` today produces exactly one canon record: `scene.concluded`
@@ -928,10 +933,12 @@ pub struct SceneOutcome {
   offered, and the economy compares `source` as an opaque string (`canon_set_accepts`,
   `contract.rs:1746-1753`; the `scene:{uid}` at `attest.rs:32-34` is a doc comment — M14),
   `entities: subjects ∪ {sealed_by}`, `scope: Restricted`,
-  `detail: { scene, outcome, sealed_by, round }`. `ic_time` is the seal's own `ctx.game_now_unix()`,
-  **not** `scene_ic_time()` (`data.rs:175-178`), because a long timestop's scene clock advances only
-  `round_seconds × (rounds − 1)` and nothing floors it — a stale stamp would chronicle a settlement
-  before events it followed (doc 10 §15/6A puts the general scene time floor in E7).
+  `detail: { scene, outcome, sealed_by, round }`. **`ic_time` is `scene_ic_time()`, after the seal
+  has raised `ic_floor` to `ctx.game_now_unix()`** (OPEN 3, as built): one rule instead of two, the
+  same value either way, and the general floor doc 10 §15/6A asks for rather than a workaround
+  beside it. A long timestop's scene clock advances only `round_seconds × (rounds − 1)`, so without
+  the floor a stale stamp would chronicle a settlement before events it followed; E6b owns the
+  floor, cut 6 owns the raise, and the monotonicity test is E6b's.
 - **`entities` is named, not inherited.** `scene.concluded` copies `participants` (`lib.rs:319`),
   frozen at scene creation with no add path (`commands.rs:119-141`; a later arrival is only logged
   `Joined`, `lib.rs:552-561`). The economy requires the record's entities to name or act for a
@@ -993,7 +1000,9 @@ the world only as a `+scene/outcome` a conferred human seals (answer 23).
   `AcquisitionRecord` is evidence, not guilt (answer 14).
 - **Deterministic pricing, strict visibility (answer 13).** `FenceQuote { id, fence, seller, object,
   catalog, offer: Amount, basis: Vec<PriceFactor>, settlement: Immediate | Consign { delay },
-  expires: EconomicDeadline, observed: RevisionSet }`. `PriceFactor` is computed **only** from what
+  expires: EconomicDeadline, observed: QuoteObserved }` — `RevisionSet` is a `mush-core` type and
+  not an economy one, so `observed` is the pair of per-record `revision: u64` stamps the economy
+  actually has: the asset's own and the fence policy's own (as built, §4.6). `PriceFactor` is computed **only** from what
   the fence may observe (the asset record under `may_view_*` rules, the seller's presentation, the
   catalog baseline) plus a declared legality/demand table. A provenance fact the fence may not see
   contributes **nothing — not a discount** — so a low quote is never an oracle for hidden state.
@@ -1005,11 +1014,12 @@ in every deal: the fence accepts **programmatically** through DL-11's vendor acc
 unwind today — `refund_plan` returns deposits to `Object` depositors only and `authorize_vault`
 withdraws only to `Object` (E4b2-D28) — so the DL-03 seam (contract-scoped `Deposit` authority for
 the counterparty vault plus a `Withdraw` destination of an org-owned vault's backing;
-`destination_ok` admits it) lands before consignment ships. `Organization.hidden` is honoured
-nowhere the economy renders (E1-D18/D19/D29, doc 08 §17.2 #12, no test): an org party, vendor or
-fence renders through one `render_org_listed(ctx, org)` — its name iff `!hidden || staff ||
-member/officer`, else "an organization" — and a hidden fence's quotes are absent for non-members,
-never "No such"; the first scenario-12 test lands with `+fence/list`. The fence's money is sound as
+`destination_ok` admits it) lands before consignment ships. `Organization.hidden` **is** honoured where the economy
+renders since E6a step 1's fold D7 (`render_principal` over `may_see_org`); what was missing was the
+*listing-absence* rule and the scenario-12 test, and both land here. An org party, vendor or fence
+renders through one `render_org_listed(ctx, org)` — a thin named wrapper over that pair, not new
+logic — and a hidden fence's **listings** are absent for non-members through `may_list_org`, never
+"No such". The fence's money is sound as
 written: its escrow refuses on `InsufficientAvailable`, so "stops quoting" is automatic (M19).
 
 ### 4.4 Augmentations (answer 12, minimal)
@@ -1025,7 +1035,7 @@ never writes the sheet**; and the refusal that keeps Karma costs on `+karma/spen
 `lib.rs:272-281`; no karma↔nuyen path exists, `karma.rs:360-442`). The atomic installation action —
 and moving the Essence recomputation onto every write — is the later clinics slice.
 
-### 4.5 E6b tests (~27)
+### 4.5 E6b tests (~27 planned; **67 built**, §4.6)
 
 **`scene.outcome`:** a scene with no conferred sealer cannot be sealed and its contract never settles; a non-sealer non-staff player is refused; a second seal is refused; `kind`/`source`/`entities` are exactly what the observer matches and a seal naming another run attests nothing (M14); a runner who joined mid-scene is named in `subjects` and matches, one omitted does not; `scene.concluded` from the same scene attests nothing; a `canon:scene.outcome` set with no source is refused at offer (`contract.rs:1553-1557`); the seal's `ic_time` is the world IC clock, not the frozen scene clock; a sealed outcome selects the matching row and pays it; two rows satisfied at once reads `Undecidable` and disputes rather than freezing.
 **Routes:** each of the four settles; a composite needs every gating condition plus one row; the adjudicator replaces a runner's own attestor set; an unregistered canon kind is refused at offer.
@@ -1035,6 +1045,343 @@ and moving the Essence recomputation onto every write — is the later clinics s
 **Scene clock (08i §7 Q9, frozen with K):** `SceneClockProvider` (`crates/mush-core/src/clock_provider.rs`) is read-only and exposes no generation bump, so one explicit monotonicity test drives a `TurnBased` scene through `+timestop` start → `/next` advance → `/pause` (and the boot-time `PauseReason::ServerRestart`) → `/resume` → `/next` advance, and asserts `DurableSceneClock::now` (`crates/mush-scenes/src/lib.rs`) is non-decreasing across the whole sequence within `SceneRecord.clock_generation` 1 (`crates/mush-scenes/src/data.rs`); an `ic_floor` raise (E6b's floor over `SceneRecord.ic_started_at`) never changes `clock_generation`, which lasts the record's lifetime; and any implicit generation mutation is rejected — a read at generation 2 is `ClockProviderFailure::StaleGeneration`, and no E6b verb or boot path writes `clock_generation`.
 
 **Hazards on this axis.** *Prose settlement:* a canon record with no matching typed condition is inert, and the seal is conferred. *Fence laundering:* the deliverable is custody and `TitleTransfer` is never in a fence template. *Consignment custody races:* the deliver-refusal before `Active`, the `DepositInto` lock while live, and E4b2's unwind returning each recorded deposit from the journal's `last_custody` (08c §5.1).
+
+### 4.6 As built (2026-09-05)
+
+E6b on top of E6a and its verify fold (`ff3f581`). Nothing Shadowrun-shaped entered `mush-economy`,
+`mush-scenes`, `mush-canon` or `mush-core`; `mush-scenes → {core, canon, proto}` is unchanged and has
+**no** economy edge. All money still moves through E4 under an authority; every persisted addition is
+a `TryFrom` wire with documented caps; every tick, observer, boot and sweep path is an exhaustive
+match with no `?`, `unwrap`, `expect` or panicking index. Both digest pins (E2 `9c917eee…`, E3-shaped
+`b780e3a0…`) are green.
+
+**B1 — one masking renderer, and hidden organizations render.** `pub fn render_account(ctx,
+AccountId, noun) -> String` (`mush-economy/src/commands.rs:591`) is the one renderer over
+`may_view_account`; `mask_account` is a one-line alias so no caller outside the crate had to move.
+The history collapse is a second helper on the **same** predicate — `render_account_entry(ctx, id,
+instrument, amount) -> Option<String>` (`:626`) plus the `MASKED_ACCOUNTS` token (`:617`) — and
+`@econ/history`'s inline copy is gone. `render_org_listed(ctx, org)` (`:665`) is a thin named wrapper
+over E6a's `render_principal`/`may_see_org` pair, and `may_list_org(ctx, org)` (`:678`) is that pair's
+predicate, made public so a ruleset can **omit** a hidden vendor's listings rather than refuse them.
+`may_view_asset` is `pub` (`:521`). The economy owns the render; the ruleset owns the absence.
+
+**B2 — `AssetOp::ReportStolen` + `@asset/stolen`.** The variant (`plan.rs:147`) takes **ordinal 8**
+(`plan.rs:195`); no existing ordinal moved, which is what keeps every stored idempotency record for a
+title or custody post resolving. The effect is a plain `Encumbrance::Disputed` **plus** a bounded
+`StolenReport { by, visibility, reason, at }` on `EconomicAsset.stolen` (`record.rs:568`,
+`#[serde(default)]`, journal authority inside `AssetEffect.post`) — so insurance and salvage keep
+consuming exactly the claim they consume today (08f §7 item 5). `StolenVisibility::{Public,
+Restricted, Covert}` (`record.rs:583`) is read by `may_view_stolen_report`
+(`commands.rs:3128`): `Restricted` needs `may_view_asset`, `Covert` is the reporter (through
+`acts_for`) or staff. Authority relaxes E3 invariant 19 for exactly three (`api.rs:430`): the title
+owner, a holder of the new **`asset.insure`** capability on the asset's compartment (added to
+`CAPABILITIES`, `engine.rs:127`), and staff. The **claimant is derived**, never input — the asset's
+own title owner (`commands.rs:3072`) — and the report is written **once**
+(`EconomyError::AlreadyClaimed`, `engine.rs:1123`). The verb is a switch on the existing `@asset`
+spec, so `CommandSpec::name` is unchanged and `legacy-handlers.toml` needs no stanza for it.
+
+**B3 — DL-03: an org or system depositor's deposit comes home.** One router,
+`deposit_returns(c, snapshot) -> Vec<DepositReturn { deposit, to, into_vault }>`
+(`contract.rs:2515`) over `owner_home(snapshot, owner)` (`contract.rs:2568`, the lowest-id `Active`
+vault that principal owns whose backing is a single world object). `refund_plan` builds its
+`CustodyOp::Withdraw`s from it (`contract.rs:2600`) and `ContractAuth::unwinding` resolves the same
+routes into `ContractAuth.homes` (`contract.rs:2790`), so the plan and the authority cannot disagree
+about where somebody's property may go. Three gates were opened, and every one of them is
+**authority-shaped, never cause- or key-shaped**:
+
+- a new `AuthEval::authorize_vault_home(object, to)` (`engine.rs:250`), `false` by default and for
+  `WorldAuth`, `true` only from `ContractAuth::unwinding` for a deposit that contract recorded
+  (`contract.rs:2996`);
+- the engine's withdrawal branch consults it before refusing a vault backing as a destination
+  (`engine.rs:1500`), and when it answers `true` it still proves the destination vault is `Active`
+  and its backing usable;
+- `ContractAuth::authorize_vault` admits that same `(object, to)` pair (`contract.rs:2965`).
+
+`returnable` (`contract_live.rs:3560`) asks the same router, and a deposit with **nowhere to go** is
+**paged** — `page_stranded_deposit` (`contract_live.rs:3524`) names the principal and the
+`@vault/create` that fixes it, on the contract's own escalation subject so the ladder dedupes to one
+page per stuck unwind. `MAX_DEPOSITS` stays **1** (DL-15). Two consequences worth naming: the plan's
+actor is then a non-object principal, so `run_custody_effects` (`api.rs:1336`) hands the provider the
+destination backing as the `CarryAttempt` mover — the org's own vault takes its property back — and
+it still refuses every other non-object actor outright.
+
+**B4 — DL-11's vendor accept.** `EconomyModule::with_party_caps(Vec<(PrincipalId, PartyCap)>)`
+(`module.rs:995`) is the **seventh** wiring-frozen table, bounded at `MAX_PARTY_CAPS` 64, keyed by
+`principal_token` (`contract.rs:1030`) because `PrincipalId` is `Hash`-but-not-`Ord`. `PartyCap` has
+exactly one variant, `Accept` (`contract.rs:1013`). It is reachable **only** from
+`accept_contract_as(ctx, id, party)` (`contract_live.rs:4849`) — never from `@contract/accept` — and
+it grants no money authority: `accept_core_as` (`contract_live.rs:1799`) runs the command's own core
+and places the escrow with **the accepting principal as the plan's actor**, so the hold posts under
+that account's own debit authority and refuses on `InsufficientAvailable`. That is the whole of
+"a fence that runs out stops quoting" (M19, D-E6-15). The composition root builds the table from
+`[shadowrun.economy].vendor_orgs` (`modules.rs:266`), ids only.
+
+**B5 — canon evidence survives the tail and the reboot; refusal telemetry.** DL-09 ships as a
+**bounded read seam**: `mush_canon::records_for_source(state, source, limit)`
+(`mush-canon/src/lib.rs:200`, capped at `MAX_RECORDS_PER_SOURCE` 8) answers from the ledger's open
+tail — which is exactly what a restart rehydrates — and `mush-server`'s `CanonEvidenceReader`
+(`econ_canon.rs:246`) bridges it into the economy's own `CanonEvidence` trait (`attest.rs:196`), so
+`mush-economy` still has no `mush-canon` edge. `rescan_canon_sources` (`attest.rs:230`) asks it for
+every `source` a live contract's own `Canon` condition or adjudicator names, bounded twice
+(`MAX_CANON_SOURCE_LOOKUPS` 32 × `MAX_CANON_RECORDS_PER_SOURCE` 8); it runs from `@econ/unfreeze`, a
+contract's activation, and **once per boot** from the first sweep fire
+(`sweep.rs:117`). The canon tail now carries each record's **`entities`**
+(`module.rs:236`, capped at `MAX_CANON_ENTITIES` 64), so `rescan_canon_tail` passes `Some(entities)`
+and the recovery path runs the same party-intersection gate the live path runs — it is no longer
+"source exactness alone carries". C16 ships as `EconomyStore::note_refusal`/`refusal_tallies`
+(`module.rs:478`), a RAM-only per-actor `{hidden, other, first_at, last_at}` counted at the two
+refusal renderers (`commands.rs:799`, `:852`) and at `refuse_contract_offer`, bounded at
+`MAX_REFUSAL_ACTORS` 256 by evicting the least recently refused, and surfaced by `@econ/alerts`
+(`commands.rs:5054`). It is telemetry: nothing reads it to decide anything, and it is deliberately
+not persisted.
+
+**B6 — the conferred sealer, the outcome, and the IC floor.** `SceneRecord` gains three
+`#[serde(default)]` fields (`mush-scenes/src/data.rs:283`): `sealer: Option<ObjId>` (**`None` means
+this scene cannot be sealed** — fail-closed for staff too), `outcome: Option<SceneOutcome>` (written
+once, terminal, never edited) and `ic_floor: i64`. `SceneOutcome { name, subjects, note, sealed_by,
+sealed_at }` has its own `TryFrom` wire (`data.rs:61`) with `MAX_OUTCOME_NAME_BYTES` 64,
+`MAX_OUTCOME_NOTE_BYTES` 240 and `MAX_OUTCOME_SUBJECTS` 32; `SceneRecord` itself stays raw
+`Deserialize` (OPEN 5 — a v3 migration for a cosmetic win), and its new invariants live in
+`validate_clock` (`data.rs:325`): a sealed outcome needs a conferred sealer, the floor is
+non-negative, and the outcome's own caps are re-checked. `scene_ic_time()` and
+`checked_scene_ic_time()` clamp to `ic_floor` (`data.rs:290`, `:305`); `raise_ic_floor`
+(`data.rs:352`) is **monotonic** and never touches `clock_generation`. Because all three fields are
+`#[serde(default)]`, an old document
+loads with `sealer: None`, `seal_run: None`, `outcome: None`, `ic_floor: 0`, which is exactly the
+pre-E6b behaviour — so **forward** no migration is needed, which is the half OPEN 5 asked about. The
+fold added a **v3 identity** migration anyway, for the other direction (R3): the version stamp is
+what makes the runner refuse a rollback that would erase a terminal seal.
+`SceneRecord` gains a fourth `#[serde(default)]` field in the fold, `seal_run: Option<u64>` — the
+run staff bound this scene to, opaque here because `mush-scenes` has no economy edge. New verbs:
+`@scene/facilitate <scene>=<who|none> [run=<id>]` and `@scene/icfloor <scene>=<unix|now>` (staff,
+`Role::Royalty`), and `+scene` — `ArgShape::None` with no switches before — becomes `ArgShape::EqPair`
+with one switch, `+scene/outcome <row>=<subject>[,<subject>] run=<id> [note=<text>]`. Rule 2
+(08i §4) is enforced at **both** ends by `is_sealable_principal` (`commands.rs:648`): only an
+`ObjKind::Player` may be conferred the seal, and the same question is asked again at seal time, of the
+sealer *and* the actor — nothing lets an NPC's completion seal a settlement.
+
+**B7 — the seal is canon, and only the producer gates it.** `emit_scene_outcome`
+(`mush-scenes/src/lib.rs:461`) is a **second** `CanonDraft` beside `emit_scene_concluded`, never a
+change to it: `kind: "scene.outcome"` (`KIND_SCENE_OUTCOME`), `source: run:{contract}#{row}` — the contract **staff bound to this scene** at conferral, and the
+row the seal answers (both the fold's, M2/M5) — `entities: subjects ∪ {sealed_by}` **named at seal
+time**, `scope: Restricted`, `detail: { scene,
+outcome, sealed_by, round }`, and `ic_time: rec.scene_ic_time()` after the floor was raised (OPEN 3).
+`mush_canon::commit` is terminal and pins the deferred prefix, so it is the **last** mutating act on
+the path. `mush-server` registers exactly `vec![SmolStr::new_static(mush_scenes::KIND_SCENE_OUTCOME)]`
+(`modules.rs:210`); `scene.concluded` is **never** registered. What the economy checks is unchanged
+and is stated out loud: **kind + source + party intersection, and nothing else** — there is no
+`sealed_by` check, because `WorldEvent::CanonRecorded` carries no `detail`, so who may seal is the
+**producer's** gate. Three stale doc sites now say so (`attest.rs:31-39`, `contract.rs:330`,
+`module.rs:1042`).
+
+**B8 — `+run/post` admits the other three routes.** `RunRoute::{Attest, Canon, Before, After, Fact}`
+(`board.rs:349`) with `condition(adjudicator)`, `label()` and `is_deterministic()`; `conditions()`
+(`board.rs:452`) lays **one condition per outcome row, then every gate**, so row `i` is decided by
+condition `i` plus `RunSplit::gates` — which is exactly "a composite needs every gating condition plus
+one row". `evidence_of` (`board.rs:487`) makes the permitted-evidence list the kinds the surface
+actually uses instead of E6a's forced `[Attestation]` (there is **no** `EvidenceKind::Canon`: a canon
+row's evidence is `Attestation`, filled by `TypedCondition::evidence_kind`), and `deterministic`
+follows the routes. `notice.kinds` (`board.rs:470`) is derived from them and is no longer the constant
+`["attest"]`. Grammar: `route=<row>:<spec>|<row>:<spec>` and `gate=<spec>|<spec>`, with
+`<spec>` one of `attest`, `canon:<kind>:<source>` (the source is the **remainder**, because a seal's
+source carries a colon of its own), `before:<unix>`, `after:<row>:<secs>`, `fact:<provider>:<kind>:<id>`
+(`commands.rs:394-513`). `run:self` resolves to the id the offer is about to mint
+(`board.rs:590` over `EconomyStore::peek_next_contract`) — a canon-routed run has to be able to name
+itself, because the seal's source is `run:{contract}` and the condition freezes at offer.
+`AdjudicatorShape` gains **`Impersonal`** (`board.rs:1101`): a canon set and every deterministic
+condition name no *person*, so there is no conflict of interest for the crew check to find and a
+routed run is crewable; a `Capability` or `Staff` set is still the fail-closed `Other`. The named
+adjudicator still replaces every condition's attestor set, and `+run/post` therefore does **not**
+default one onto a routed run (`board.rs:519`).
+
+**B9 — the fence.** `crates/ruleset-shadowrun/src/economy/fence.rs` plus a third and fourth document
+family on `store.rs`'s exact pattern: `sr:fence:{id}` and `sr:quote:{id}`
+(`fence_record.rs`), the `put_fence`/`put_quote`/`del_quote` single write paths
+(`store.rs:415-480`), a **total** `load` that skips a corrupt document loudly and boots anyway
+(`store.rs:640-700`), the allocator floors in `sr:meta`, and DL-07's identity rule. Commands:
+`+fence/list  +fence/show <quote>  +fence/quote <fence>=<obj> [immediate|consign]
++fence/accept <quote>  +fence/deliver <quote>`, plus the staff `@sr/fence <org>=<vault> [name=]
+[demand=]` — a switch on the existing `@sr` spec.
+
+*The price basis, as decided (OPEN 1, D-E6-11).* Three declared inputs and nothing else: the
+source-controlled `[shadowrun.economy.fence_baseline]` reference price keyed on the asset's own
+`CatalogRef.code`, the settlement rate in permille (`fence_rate_immediate` 300 /
+`fence_rate_consign` 600), and the fence's own declared `demand` adjustment. An object whose asset
+record carries **no `catalog`** cannot be quoted — refused, never guessed — and the price is never
+derived from the `AcquisitionRecord`, which is provenance the fence may not see. `price`
+(`fence.rs:121`) reads the catalogue code and nothing else about the asset: not the encumbrances, not
+the `StolenReport`, not the acquisition, not the title owner. **A hidden fact contributes no factor
+at all**, so two worlds differing only in hidden state produce byte-identical quotes and the basis a
+seller reads is the whole of the arithmetic.
+
+*The flow.* `+fence/quote` stores a `FenceQuote` with an expiry on `RealUtc` and `observed { asset,
+fence }`; a lapsed window or a moved revision refuses **deterministically** rather than re-pricing
+(`is_current`, `fence.rs:398`). `+fence/accept` offers with the seller as issuer and lets the
+**fence accept first** through B4 — that accept is what places the escrow — leaving the contract
+`Offered`. The seller binds with `@contract/accept`, and only then may `+fence/deliver` hand custody
+over: it refuses anything that is not `Active`/`ReadyToSettle` (D-E6-9), which covers `Disputed` too,
+since the `DepositInto` lock does not cover it either. The deliverable is the deposit;
+**`TitleTransfer` is never in a fence template** (D-E6-10), so title and any `Disputed` encumbrance
+survive settlement. A consignment adds `After { condition: <deposit>, delay, clock: RealUtc }` with
+the delay clamped to 24–72 h (`SrEconomyConfig::fence_delay`) and **shown in the offer**.
+`+fence/list` renders an org through `render_org_listed` and **omits** a hidden fence's listings for
+a non-member through `may_list_org`. Notices are the contract's own — custody, settlement,
+cancellation, dispute — and the ruleset adds none (answer 15). **No tick was registered**:
+`store.rs`'s `TICK_TAG`/`TICK_PERIOD_SECS`/`MAX_RUNS_PER_FIRE` are still unused, because a
+consignment matures on its contract's own `After`, swept by the economy, and nothing else about a
+quote needs a clock the sweep does not already turn.
+
+**B10 — the augmentation record.** `SrProfile.augmentations: Vec<InstalledAugmentation>`
+(`record.rs:118`, `#[serde(default)]`, capped at `MAX_AUGMENTATIONS` 32 on load), each
+`{ object, catalog, grade, essence_cost, clinic, acquisition, installed_at }` behind a `TryFrom` wire
+that bounds every label and refuses an Essence cost outside `schema.rs`'s own 0..=600.
+`SrProfile::install` (`record.rs:330`) records one. **Payment writes the record and never the
+sheet**: `schema.rs`'s free-text `augmentations` map and `derive::essence_from_augmentations` are
+untouched, `+karma/spend`'s job flow is untouched, and no karma↔nuyen path is added. The atomic
+installation that revalidates Essence, prerequisites, custody and clinic capability is the later
+clinics slice (D-E6-16).
+
+**Two more economy additions, both game-neutral.** `deposit_into_vault(ctx, object, vault)`
+(`commands.rs:930`) — the sixth programmatic seam, `@vault/deposit` without the command, so the
+fence hands custody over on the seller's own standing rather than dispatching a verb from a handler.
+And `parse_catalog` + `@asset/title … catalog=<ruleset>:<code>` (`commands.rs:2900`): `CatalogRef`
+was **set nowhere** before this — the type existed and no producer filled it — which made every
+catalogue-keyed rule unreachable. It is one option on the existing spec; the economy still never
+interprets it.
+
+**The seal, end to end, and which authority each step uses.**
+
+| step | verb | authority |
+|---|---|---|
+| confer | `@scene/facilitate <scene>=<who>` | **staff** (`Role::Royalty`), and only onto an `ObjKind::Player` (08i rule 2) |
+| seal | `+scene/outcome <row>=<subjects> run=<id>` | the **conferred sealer** (or staff), once, on a scene that has one at all |
+| record | `mush_canon::commit` | the producer's — `mush-scenes` decides who may seal, and pins its deferred batch |
+| match | `canon_set_accepts` + `names_a_party` | the **consent surface's**: kind + source + party intersection, and nothing else |
+| settle | the economy's observer, else the sweep | `ContractAuth` |
+
+**What the economy does and does not check.** It checks that the record's `kind` is a
+producer-declared outcome kind, that its `source` is exactly the one the frozen condition names, and
+that its `entities` name (or act for) one of the contract's parties. It does **not** check
+`sealed_by`, and cannot: `WorldEvent::CanonRecorded` carries `{canon_id, kind, entities, source}` and
+no `detail`. Who may seal is therefore entirely `mush-scenes`'s gate, which is why that gate is
+staff-conferred and fails closed.
+
+**Deviations, with reasons.**
+
+1. **`+scene`'s `ArgShape` changed from `None` to `EqPair`.** It had no switches and no arguments;
+   `+scene/outcome` needs both. `CommandSpec::name` is unchanged, so the rule-1 tripwire (which pins
+   names) is unaffected and no stanza was needed for `+scene`.
+2. **`@asset/title` gained `catalog=`, and `parse_catalog` with it.** OPEN 1 keys the fence baseline
+   on `CatalogRef.code`, and `CatalogRef` was set by no producer at all — the fence would have been
+   unreachable code. One option on an existing spec, no new verb, and the economy still treats the
+   reference as opaque.
+3. **`+fence/accept` does not accept for the seller.** 08f §4.3 says the fence accepts *first*; the
+   seller then binds with `@contract/accept`, which is what makes D-E6-9's refusal reachable rather
+   than theoretical — the contract really is `Offered`, with the fence's escrow standing, while the
+   goods are still in the seller's hands.
+4. **`WorldAuth::authorize` admits an organization acting on its own scoped compartment**
+   (`api.rs:374`). An org's account is always scoped (`@account/open org:X` opens it on the root
+   compartment), so DL-11's "the escrow posts under the org account's own debit authority" was
+   otherwise unreachable. No command can construct a plan with an `Organization` actor — every
+   command's actor is `PrincipalId::Object(ctx.actor)` — so the only producer is
+   `accept_contract_as`, itself gated on the wiring-frozen table.
+5. **`WorldAuth::authorize_vault` admits a `Deposit` a live contract's own `DepositInto` names**
+   (`api.rs:503`). `DepositInto` was undeliverable wherever the vault was not the depositor's own: a
+   seller cannot hold `vault.deposit` on a fence's compartment and never could. The contract is the
+   consent (D-E4-8's rule applied to custody), the window is exactly the custody lock's — so it is
+   closed before the deal is in force and closed again the moment it ends — and it admits a deposit
+   only, never a withdrawal.
+6. **`@sr/fence` refuses an organization the wiring did not name.** DL-11 is composition data on
+   purpose, so a fence registered outside `[shadowrun.economy].vendor_orgs` could never accept
+   anything. The refusal names the exact `mushd.toml` line to add (08a's staff-scarce rule: say the
+   command, never "ask someone").
+7. **`run:self`.** A canon-routed run must name its own contract id in a condition that freezes
+   before the id exists. `EconomyStore::peek_next_contract` is a read seam and the world is
+   single-threaded, so the substitution is exact; the worst a mismatch could do is leave a condition
+   nothing matches, never make the wrong one match.
+8. **`ruleset-shadowrun` gained no crate edge.** §2 said it "gains canon with E6b"; the producer is
+   `mush-scenes` and the fence commits none, so `ruleset-shadowrun → {economy, org, party, faction,
+   ruleset, dice, core, jobs, proto}` is unchanged. `mush-canon` and `mush-scenes` are
+   **dev-dependencies only**, for the acceptance rig that drives the real three-crate loop.
+9. **A returned deposit's last journaled custody movement stays a withdrawal.** DL-03 lands the goods
+   inside the depositor's own vault backing, and the journal records exactly that: a `Withdraw` from
+   the counterparty's vault to that object. `last_custody` is therefore not a `Deposit` into the home
+   vault, so a *later* contract naming that vault would not see the object as deposited until its
+   owner deposits it deliberately. Nothing is stranded — `holds()` asks the provider, so
+   `@vault/withdraw` finds it — and the alternative (a projection rule that reads the destination's
+   vault at fold time) would have made boot's replay depend on documents that load after it.
+
+**Tests (67).** `mush-scenes/tests/e6b_seal.rs` 22, `mush-server/tests/e6b_seal.rs` 7 (the real
+three-crate loop — `mush-economy` still has no `mush-canon` edge), `ruleset-shadowrun/tests/e6b.rs`
+27 plus 3 in-crate wire units, `mush-economy/tests/e4b2.rs` +5, `mush-canon` +3 in-crate. The gate
+(`mush-scenes`, `mush-canon`, `mush-economy`, `mush-server`, `ruleset-shadowrun`,
+`mush-contract-tests`, `mush-config`) runs **996 passing, 0 failing, 2 ignored**; the workspace runs
+**3 203 passing across 197 suites, 0 failing, 49 ignored**; clippy `-D warnings` and
+`cargo fmt --all --check` are clean.
+
+**Verify fold (2026-09-05).** A probe-confirming adversarial verify over three lenses — D disclosure
+and bounds, M money and consent, R durability and replay — confirmed twenty-seven findings. All
+twenty-seven are folded in; nineteen carry a regression test named `vf_<lens><n>_…`, and the table
+says why for the rest. Four of them were **money-safety defects**, not polish: M1, M2, M3 and M4.
+
+| item | what it was, and what changed | test |
+|---|---|---|
+| **M1** | A `DepositInto` condition stood in for the vault owner's consent (`WorldAuth::authorize_vault`) and was not consent at all: anyone holding `vault.view` on a compartment could name that vault in a **one-party** contract, deposit into it, and leave the object **custody-locked** where its owner could not take it out — a permanent wedge, repeatable until the vault was full. `check_offerable` now requires the vault's owner to be a party, exactly as `Deliverable::Collateral` already required of a pledger | `vf_m1_a_deposit_condition_names_a_vault_its_owner_is_a_party_to` (e4b2) |
+| **M2 / R12** | `+scene/outcome`'s `run=` was **free input**: a sealer conferred on any scene could name any contract id, pick that contract's own parties as subjects, and settle a run they had nothing to do with — kind, source and party intersection all pass on that. Staff now confer **which run** a scene may seal (`@scene/facilitate <scene>=<who> [run=<id>]` → `SceneRecord.seal_run`), and the seal may name no other. A scene bound to none seals under a `scene:{uid}` source, which no contract can cite | `vf_m2_a_seal_names_only_the_run_it_was_bound_to`, `vf_m2_an_unbound_scene_seals_for_the_chronicle_and_settles_nothing` |
+| **M3** | `Encumber` was staff-only before E6b, so no *party* could claim an asset; relaxing it for the title owner handed them a settlement veto — accept the escrow, file a **covert** report, and the `TransferTitle` refuses with `Encumbered` while the buyer cannot see why. `ReportStolen` is now refused on an object a **live** contract's `TitleTransfer`/`Collateral` names | `vf_m3_a_live_deals_asset_cannot_be_reported_stolen_out_from_under_it` (e4b2) |
+| **M4** | DL-11's `authorize` arm sat *inside* the scoped branch, so an **unscoped** org-owned account fell through to `*actor == account.owner` — a check written when no `Organization` could ever be an actor, with no liveness test at all. The arm moved above it and returns `false` for the unscoped case; the account's own `ApprovalRule` was never bypassed and still binds | covered by `e6b_b4_the_fence_accepts_with_no_officer_and_a_broke_one_cannot` (the reachable half); the unscoped case is unreachable from any command by construction |
+| **M5** | A canon source named the **run** and not the row, so `(kind, source)` — all the economy has, since `CanonRecorded` carries no `detail` — made one seal fill *every* canon row's slot (`Undecidable`, dispute), and on a single-row table the row name the sealer typed decided nothing at all. The source is `run:{id}#{row}` on both sides | `vf_m5_a_canon_route_names_its_row_so_the_seal_selects_it` (e6b), `vf_m5_the_seals_source_names_the_row_it_answers` (e6b_seal) |
+| **M6** | `claimant == actor` was an escape hatch: a person holding `asset.insure` on an org's compartment could record a `Disputed` claim in **their own** name on the org's asset. A theft report is a claim about a *title*, so it names that title's owner and nobody else | covered by `e6b_b2_the_owner_an_insurer_and_staff_may_file_and_a_bystander_may_not`; `@asset/stolen` derives the claimant, so the hatch was reachable only through the `pub` plan seam |
+| **M7 / R6** | `stranded_deposits` asked a *second* predicate and the two disagreed: a deposit whose object had left the vault, or whose home vault's backing was destroyed, was dropped by `returnable` and reported by nothing. It is now the complement of `returnable`, and the page names the object | covered by `e6b_b3_a_depositor_org_with_no_vault_is_stranded_not_silently_dropped`; the divergent shapes need a destroyed backing mid-unwind, which no shipped verb sequences |
+| **M11** | A `canon:` route's source was free-hand, so one listing could piggyback on another's seal. `+run/post` now refuses a `run:<n>` source that is not this run's | `vf_m11_a_canon_route_naming_another_run_is_refused_at_post` |
+| **M12** | `run_custody_effects` chose the mover as "the plan actor, else the destination", but `refund_plan` names the *first* return's depositor — so a contract with one object and one org depositor handed that person's identity to the `CarryAttempt` gate for the org's goods. The backing is the mover **per effect**, for a home return only | preventive; `authorize_vault_home` already constrained the destination, so no laundering was reachable |
+| **D1** | `AssetOp::ReportStolen` bumps `EconomicAsset.revision` like every asset op, and a quote was bound to that revision — so filing a **covert** report flipped the holder's outstanding quote from `open` to `lapsed` where they could read it. The price was identical in both worlds and the *rendered state* was not. `QuoteObserved.declared` is now a hash of the declared catalogue code | `vf_d1_a_covert_report_does_not_lapse_the_holders_quote` |
+| **D2** | `encumbrances: {n}` sat one line above the gated report, so an assignee read a covert filing off the arithmetic. A claim the viewer may not be told about is not counted for them | `vf_d2_the_encumbrance_count_does_not_disclose_a_covert_claim` |
+| **D3** | `+fence/list` paged **before** it filtered, so a member's and a non-member's page truncated differently. Filter, then page — and the walk is bounded on records *visited* (`FENCE_PAGE_VISIT`) | `vf_d3_the_fence_page_filters_before_it_pages` |
+| **D4** | The vendor exemption from `consideration_for`'s view gate widened the predicate for *every* consideration on *every* offer, so the next caller of that `pub` seam would have inherited an existence oracle. It is now narrowed to a vendor that is a party to **this** contract | preventive; both shipped callers pre-gate, so nothing player-typed reached it |
+| **D5** | `rescan_canon_sources` bounded the sources it *matched* and not the contracts it *visited*, so on a world where few contracts carry a sourced `Canon` set — the normal case — it walked every contract on every activation. `MAX_CANON_CONTRACTS_VISITED` (D-LBK-5's rule) | preventive; the bound is a `take`, and a counter on the path would be production code existing only for a test (E6a fold deviation 3) |
+| **D6** | `MAX_FENCES` and the quote ceiling were enforced on write only, so a store carrying more booted with more. Both loaders now stop at the cap and log the skip, against a new whole-store `MAX_QUOTES` | `vf_d6_the_quote_cap_is_enforced_on_load` |
+| **D7** | The engine's `AlreadyClaimed` told an `asset.insure` holder that a **covert** report stood whether or not `may_view_stolen_report` said they could see it — so the disclosure happened anyway, as an error message. Covert means invisible to the **thief**, not to the insurer whose claim it is, so the insurer is now inside it | covered by `e6b_b2_a_covert_report_is_invisible_to_the_thief` |
+| **D8** | C16's tally exists so staff can see the shape of an id-space walk, and `FenceId`/`QuoteId` are two brand-new enumerable ones — a refusal built straight into a `CmdError` never reached it. `refuse_fence`, `refuse_board` and the `+fence` id parses all count now | `vf_d8_a_fence_id_walk_is_counted_by_the_refusal_telemetry` |
+| **D9** | `+scene/outcome` gave two different refusals for "nobody was conferred the seal" and "somebody was, and it is not you", and conferral is told only to the staffer who made it — so any participant could read a conferral off the difference. One message; staff keep the detail | `vf_d9_the_seal_refusal_does_not_disclose_whether_one_was_conferred` |
+| **D10** | Both quote reads collected the whole match set before paging. Bounded on records visited, newest first | covered by `vf_d3`'s shape; the same `FENCE_PAGE_VISIT` bound |
+| **D11** | `owner_home` scanned every vault, three times per unwind. `MAX_HOME_VAULT_VISIT` | preventive |
+| **R1** | `record.rs` said clearing a theft report was `@asset/release` of its `Disputed` claim, and it was not: nothing anywhere wrote `stolen = None`, so a recovered asset carried the report for ever and refused a **genuine second theft**. The claim and the report now end as one act | `vf_r1_releasing_the_claim_clears_the_report_so_a_second_theft_can_be_filed` |
+| **R2** | A retcon appends rather than rewrites and emits no `CanonRecorded`, so the economy never hears it — and DL-09's recovery would have resurrected a seal a staffer had already superseded, settling a contract on retracted evidence the live path could never have used. `records_for_source` drops superseded ids | `vf_r2_a_retconned_record_is_not_returned_as_evidence` |
+| **R3** | The three new `SceneRecord` fields are `#[serde(default)]`, so **forward** no migration is needed — that half of OPEN 5 is confirmed. The other direction was open: a rollback to the pre-E6b binary booted happily on a v2 namespace and its first write-through would erase a *terminal* sealed outcome the economy had already cited. A v3 identity migration is the stamp that makes the runner refuse | `vf_r3_the_namespace_is_stamped_so_a_rollback_refuses` |
+| **R4** | `@scene/icfloor` is monotonic and has **no inverse anywhere**, so one pasted epoch-millis value would stamp every future record from that scene at the year 55 000 for ever. Bounded to `MAX_IC_FLOOR_LEAD_SECS` ahead of the world's own IC clock, and refused once the outcome is canon | `vf_r4_the_ic_floor_cannot_be_raised_past_the_world_or_after_the_seal` |
+| **R5** | The source re-scan remembered every record it found, and one re-scan can return 32 × 8 — so it replaced the 64-deep tail with exactly the records that were already recoverable, evicting the ones that were not. It remembers none of them | preventive; the eviction is invisible until a contract offered later cites an evicted source |
+| **R8** | The allocator floors came from what **loaded**, so a corrupt `sr:fence:{n}` plus a lost `sr:meta` re-minted id `n` and wrote straight over the evidence. They come from every document's parsed **key** now, loaded or not — `sr:run:` included | `vf_r8_a_corrupt_document_still_claims_its_id` |
+| **R9** | `mush_canon::commit` applied no cap to `CanonDraft.entities` while the economy's tail truncates at 64, so a wide record matched on the live edge and was silently missed by the recovery. `commit` caps at `MAX_ENTITIES_PER_EVENT`, the same number | `vf_r9_the_commit_cap_covers_every_producers_widest_record` |
+| **R10** | `stolen` is journal authority but was absent from `journal_fields_eq`, which is *also* the "re-persist this doc" predicate — so a document whose report alone disagreed with the journal was neither frozen nor healed. (The freeze concern was **refuted**: `put_asset` adopts the journal value, so replay equals live and no boot could freeze on it) | preventive; the comparator is private and the fail direction was already safe |
+| **R11** | The re-scan settles, a settlement emits, and an observer could in principle activate a contract and re-enter it. No shipped observer does — but "no caller exists" is not a bound. A `canon_rescanning` latch is | preventive |
+
+**Refuted while verifying** (recorded because a refuted claim is worth as much as a found one): the
+fence's pricing really does read only declared inputs — `price` and `quotable_code` touch the
+catalogue code and nothing else, and D1's leak was through the *revision stamp*, never the price;
+`+scene/outcome`'s `mush_canon::commit` really is the last mutating act on every path that can still
+fail, with every fallible step before the first mutation; `authorize_vault_home` is not forgeable and
+`@vault/withdraw` cannot reach it (`WorldAuth` keeps the `false` default and the command posts under
+`PostAuth::World`); `accept_contract_as` is bounded three ways over and no command can construct an
+`Organization`-actor plan; the plan-hash pins are untouched, because `AssetOp` serializes by variant
+**name** and ordinals 0–7 did not move; the once-per-boot re-scan really is once, and the
+party-intersection gate really does run on both recovery paths; the fence's `by_org` /
+`by_quote_contract` projections are re-derived in exactly four places and cannot go stale; and the
+two new document families' loads are genuinely total — a bad key, a bad shape and an id/key mismatch
+are all a `tracing::warn!` and a skip.
+
+**Handoffs to E6c.** `with_party_caps` and `accept_contract_as` are the vendor accept E6c's market
+reuses for vendors and makers (G8), and `render_org_listed`/`may_list_org` are the pair a hidden
+vendor's listings are omitted through (G3). `CatalogRef` now has a producer
+(`@asset/title … catalog=`) and a consumer (the fence baseline), so E6c's catalogue replaces the
+source-controlled `fence_baseline` table rather than inventing the first one. `quote_ttl_live` /
+`quote_ttl_remote` / `catalog_paths` / `chargen_carryover_cap` are still parsed and inert. The
+`AcquisitionRecord` a fence settlement stamps is the provenance seed doc 08 §9.4's lineage grows
+from. And the residual E7 owes: a DL-03 home return's last journaled custody movement is the
+withdrawal it really was, so a *later* contract naming the destination vault does not see the object
+as deposited there until its owner deposits it deliberately — `holds()` asks the provider, so nothing
+is stranded, and the alternative (a projection rule reading the destination's vault at fold time)
+would make boot's replay depend on documents that load after it.
 
 ---
 

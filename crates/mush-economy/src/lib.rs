@@ -144,10 +144,23 @@ pub use record::{
     EconomicVisibility, Encumbrance, ExternalRef, Hold, HoldEffect, HoldEffectKind, HoldPurpose,
     HoldStatus, IdempotencyKey, IdempotencyRecord, InstrumentDef, InstrumentDisplay,
     InstrumentKind, InstrumentStatus, JournalLine, MAX_APPROVAL_WINDOW_SECS, MAX_AUDIENCE,
-    MAX_SYMBOL_BYTES, NegativePolicy, ObligationStatusKind, SymbolPosition, Vault, VaultStatus,
-    Verdict, object_principal,
+    MAX_SYMBOL_BYTES, NegativePolicy, ObligationStatusKind, StolenReport, StolenVisibility,
+    SymbolPosition, Vault, VaultStatus, Verdict, object_principal,
 };
 pub use render::{render_amount, render_amount_on};
+// E6b: the new economy seams and types the ruleset half calls.
+pub use attest::{
+    CanonEvidence, CanonEvidenceSeam, CanonRecord, MAX_CANON_RECORDS_PER_SOURCE,
+    MAX_CANON_SOURCE_LOOKUPS,
+};
+pub use contract::{
+    DepositReturn, MAX_HOME_VAULT_VISIT, PartyCap, deposit_returns, owner_home, principal_token,
+};
+pub use contract_live::accept_contract_as;
+pub use module::{
+    MAX_CANON_ENTITIES, MAX_PARTY_CAPS, MAX_REFUSAL_ACTORS, MAX_REFUSAL_ROWS, PartyCapTable,
+    RefusalTally,
+};
 pub use snapshot::EconomySnapshot;
 
 // E6a step 1 (DL-04) — the notice queue and the "who is told" predicates a server
@@ -232,12 +245,16 @@ pub use api::{
     set_account_status, set_asset_frozen, set_economy_frozen, set_system_obligation,
     set_vault_status, suspend_obligation, vault_key,
 };
-pub use commands::{may_view_account, may_view_hold, may_view_obligation};
+pub use commands::{may_view_account, may_view_asset, may_view_hold, may_view_obligation};
 // E6a step 1 (E5b-D36/D37): the parsing and existence-hiding helpers a ruleset
 // layered on the economy needs, exported so it never keeps a third copy.
+// E6b (B1): one masking renderer — `render_account` plus the history collapse
+// helper on the same predicate, and the named org-listing wrapper.
 pub use commands::{
-    is_hidden, mask_account, money, money_on, parse_account, parse_amount, parse_opts,
-    parse_principal, refuse, refuse_named, render_principal, resolve_org_visible,
+    MASKED_ACCOUNTS, MAX_CATALOG_PART_BYTES, deposit_into_vault, is_hidden, mask_account,
+    may_list_org, may_view_stolen_report, money, money_on, note_refusal, parse_account,
+    parse_amount, parse_catalog, parse_opts, parse_principal, refuse, refuse_named, render_account,
+    render_account_entry, render_org_listed, render_principal, resolve_org_visible,
 };
 pub use custody::{ContainerProvider, CustodyError, CustodyProvider, CustodyTable};
 pub use module::{

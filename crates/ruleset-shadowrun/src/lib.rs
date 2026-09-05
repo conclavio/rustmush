@@ -72,8 +72,11 @@ pub use crate::agent::{SR_ROLL_ABILITY, agent_profile, sr_roll_tool_spec};
 pub use crate::chargen::Sr5Chargen;
 pub use crate::data::Sr5Config;
 pub use crate::economy::{
-    LifestyleTier, SR_MONTH, SR_MONTH_CATCH_UP, SR_MONTH_PERIOD_SECS, SrBoardObserver,
-    SrEconomyConfig, SrEconomyStore, default_lifestyle_costs,
+    FENCE_DELAY_MAX_SECS, FENCE_DELAY_MIN_SECS, FENCE_QUOTE_TTL_SECS, FenceId, FenceQuote,
+    FenceSettlement, InstalledAugmentation, LifestyleTier, MAX_AUGMENTATIONS,
+    MAX_CATALOG_CODE_BYTES, MAX_FENCES, MAX_QUOTES, QuoteId, SR_MONTH, SR_MONTH_CATCH_UP,
+    SR_MONTH_PERIOD_SECS, SrBoardObserver, SrEconomyConfig, SrEconomyStore, SrFence,
+    default_lifestyle_costs,
 };
 pub use crate::state::Sr5State;
 

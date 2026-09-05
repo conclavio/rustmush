@@ -80,6 +80,7 @@ fn asset(object: u32, owner: PrincipalId) -> EconomicAsset {
         catalog: None,
         encumbrances: Vec::new(),
         acquisition: None,
+        stolen: None,
         lifecycle: AssetLifecycle::Active,
         last_journal_seq: 0,
         revision: 1,
@@ -1622,6 +1623,8 @@ fn the_capability_vocabulary_is_exported_and_complete() {
         "contract.accept",
         "contract.attest",
         "contract.dispute",
+        // E6b (D-E6-18): an authorized insurer's standing to file a theft report.
+        "asset.insure",
     ] {
         assert!(
             CAPABILITIES.contains(&cap),
@@ -1632,7 +1635,7 @@ fn the_capability_vocabulary_is_exported_and_complete() {
             "{cap} is not a valid capability id"
         );
     }
-    assert_eq!(CAPABILITIES.len(), 12);
+    assert_eq!(CAPABILITIES.len(), 13);
 }
 
 #[test]

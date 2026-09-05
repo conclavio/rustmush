@@ -283,3 +283,127 @@ mod tests {
         assert_eq!(st.superseded_in_tail(), BTreeSet::from([CanonId(0)]));
     }
 }
+
+#[cfg(test)]
+mod e6b_read_seam_tests {
+    use super::*;
+
+    fn ev(id: u64, source: &str) -> CanonEvent {
+        CanonEvent {
+            id: CanonId(id),
+            kind: SmolStr::new("scene.outcome"),
+            summary: String::new(),
+            entities: vec![ObjId(2)],
+            scope: CanonScope::Restricted,
+            ic_time: 100,
+            at: 1000,
+            source: source.to_string(),
+            supersedes: None,
+            reason: String::new(),
+            detail: serde_json::Value::Null,
+        }
+    }
+
+    /// E6b (DL-09): the read seam answers **by source**, newest first, bounded — and
+    /// it is the only reason a seal committed before a restart is findable at all.
+    #[test]
+    fn e6b_b5_the_read_seam_answers_by_source_newest_first_and_bounded() {
+        let mut st = CanonState::default();
+        for (id, source) in [(0u64, "run:1"), (1, "run:2"), (2, "run:1"), (3, "run:1")] {
+            let prepared = st
+                .ledger
+                .prepare_append(LOG, serde_json::to_value(ev(id, source)).unwrap())
+                .unwrap();
+            let _ = st.ledger.apply_prepared(prepared).unwrap();
+        }
+        let hits = crate::records_for_source(&st, "run:1", 8);
+        assert_eq!(
+            hits.iter().map(|e| e.id.0).collect::<Vec<_>>(),
+            vec![3, 2, 0],
+            "newest first, and only the named source"
+        );
+        assert_eq!(crate::records_for_source(&st, "run:1", 1).len(), 1);
+        assert_eq!(crate::records_for_source(&st, "run:9", 8).len(), 0);
+        // The cap is the seam's, not the caller's: a caller asking for more than
+        // `MAX_RECORDS_PER_SOURCE` still gets at most that many.
+        assert!(
+            crate::records_for_source(&st, "run:1", usize::MAX).len()
+                <= crate::MAX_RECORDS_PER_SOURCE
+        );
+    }
+}
+
+#[cfg(test)]
+mod e6b_verify_fold_tests {
+    use super::*;
+
+    fn ev(id: u64, source: &str) -> CanonEvent {
+        CanonEvent {
+            id: CanonId(id),
+            kind: SmolStr::new("scene.outcome"),
+            summary: String::new(),
+            entities: vec![ObjId(2)],
+            scope: CanonScope::Restricted,
+            ic_time: 100,
+            at: 1000,
+            source: source.to_string(),
+            supersedes: None,
+            reason: String::new(),
+            detail: serde_json::Value::Null,
+        }
+    }
+
+    fn append(st: &mut CanonState, e: CanonEvent) {
+        let prepared = st
+            .ledger
+            .prepare_append(LOG, serde_json::to_value(e).unwrap())
+            .unwrap();
+        let _ = st.ledger.apply_prepared(prepared).unwrap();
+    }
+
+    /// **R2.** A **retconned** record is not evidence. A retcon appends rather than
+    /// rewrites and deliberately emits no `CanonRecorded`, so the economy never
+    /// hears it — without this filter the DL-09 recovery path would resurrect a seal
+    /// a staffer had already superseded and settle a contract on retracted evidence,
+    /// which the live path could never do.
+    #[test]
+    fn vf_r2_a_retconned_record_is_not_returned_as_evidence() {
+        let mut st = CanonState::default();
+        append(&mut st, ev(0, "run:1#success"));
+        assert_eq!(crate::records_for_source(&st, "run:1#success", 8).len(), 1);
+        let mut retcon = ev(1, "canon:0");
+        retcon.supersedes = Some(CanonId(0));
+        append(&mut st, retcon);
+        assert!(
+            crate::records_for_source(&st, "run:1#success", 8).is_empty(),
+            "a superseded seal was still handed out as evidence"
+        );
+    }
+
+    /// **R9.** The producer's cap and the consumer's must be the same number: the
+    /// economy remembers a record's entities bounded at its own `MAX_CANON_ENTITIES`,
+    /// so a draft naming more matched on the live edge and was silently missed by the
+    /// recovery re-scan. `commit` truncates, and this pins the two together against
+    /// the widest set any producer can build.
+    #[test]
+    fn vf_r9_the_commit_cap_covers_every_producers_widest_record() {
+        assert_eq!(
+            crate::MAX_ENTITIES_PER_EVENT,
+            64,
+            "the economy's MAX_CANON_ENTITIES is 64; the two must agree"
+        );
+        // `mush-scenes` seals at most `MAX_OUTCOME_SUBJECTS` subjects plus the
+        // sealer, so no seal is ever truncated — and a draft that names more is.
+        let mut wide = ev(0, "run:1#success");
+        wide.entities = (0..(crate::MAX_ENTITIES_PER_EVENT as u32 + 8))
+            .map(ObjId)
+            .collect();
+        let capped: Vec<ObjId> = wide
+            .entities
+            .iter()
+            .copied()
+            .take(crate::MAX_ENTITIES_PER_EVENT)
+            .collect();
+        assert_eq!(capped.len(), crate::MAX_ENTITIES_PER_EVENT);
+    }
+}

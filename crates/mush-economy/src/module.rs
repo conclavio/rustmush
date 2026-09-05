@@ -233,11 +233,60 @@ pub struct EconomyStore {
     /// It is deliberately not the canon ledger (which this crate must not depend on)
     /// and it does not survive a restart; a record older than the tail is the
     /// documented limit, and `@contract/resolve <id>=settle` is the answer past it.
-    pub(crate) canon_tail: std::collections::VecDeque<(u64, SmolStr, SmolStr)>,
+    pub(crate) canon_tail: std::collections::VecDeque<crate::attest::CanonRecord>,
+    /// The wiring-frozen party capabilities (E6b, DL-11). Empty is the E6a
+    /// behaviour exactly: no principal is programmatically acceptable.
+    pub(crate) party_caps: Arc<PartyCapTable>,
+    /// The wiring-frozen canon read seam (E6b, DL-09). `None` is the pre-E6b
+    /// behaviour: the RAM tail alone, and nothing across a restart.
+    pub(crate) canon_evidence: crate::attest::CanonEvidenceSeam,
+    /// Whether the first sweep after boot has already run DL-09's source re-scan
+    /// (RAM-only, once per boot).
+    pub(crate) canon_boot_scan_done: bool,
+    /// Whether a canon source re-scan is already in flight (E6b verify fold, R11) —
+    /// the structural bound on re-entering it through a settlement's own observers.
+    pub(crate) canon_rescanning: bool,
+    /// E6b (C16): bounded per-actor refusal counters, RAM-only, surfaced by
+    /// `@econ/alerts`. Telemetry, never authority.
+    pub(crate) refusals: BTreeMap<ObjId, RefusalTally>,
 }
 
 /// How many canon records the economy remembers seeing (E4c verify fold, E4a).
 pub const CANON_TAIL: usize = 64;
+
+// ---- E6b: B5 — C16, bounded per-actor refusal telemetry -------------------
+
+/// One actor's refusal tally (E6b, C16; 08g §11).
+///
+/// RAM-only telemetry, **never authority**: nothing reads it to decide anything,
+/// and it is deliberately not persisted — a prober's count across a restart is not
+/// worth a durable write, and a count that survived one would be a durable record
+/// of who looked at what.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub struct RefusalTally {
+    /// Refusals that rendered as **existence hiding** ("No such …"). This is the
+    /// number that matters: it is the shape of a probe walking an id space.
+    pub hidden: u32,
+    /// Every other refusal — a real error the actor could act on.
+    pub other: u32,
+    /// When the first refusal in this tally happened (wall clock).
+    pub first_at: i64,
+    /// When the most recent one did.
+    pub last_at: i64,
+}
+
+/// How many actors the refusal tally tracks at once (E6b, C16). At the cap the
+/// **least recently refused** actor is dropped, so a burst from many actors cannot
+/// grow the map and the ones still probing stay visible.
+pub const MAX_REFUSAL_ACTORS: usize = 256;
+
+/// How many rows `@econ/alerts` prints (E6b, C16).
+pub const MAX_REFUSAL_ROWS: usize = 16;
+
+/// How many entity ids one remembered canon record carries (E6b, DL-09). The
+/// party-intersection gate can never match more than `MAX_PARTIES` of them, so this
+/// is generous by an order of magnitude and still bounded.
+pub const MAX_CANON_ENTITIES: usize = 64;
 
 /// One object's last journaled custody movement (E4b2): which vault, which way, and
 /// **which principal's post did it**. The depositor is the transaction's `actor`,
@@ -320,6 +369,11 @@ impl EconomyStore {
             canon_outcome_kinds: Arc::default(),
             event_depth: 0,
             canon_tail: std::collections::VecDeque::new(),
+            party_caps: Arc::default(),
+            canon_evidence: None,
+            canon_boot_scan_done: false,
+            canon_rescanning: false,
+            refusals: BTreeMap::new(),
         }
     }
 
@@ -409,21 +463,108 @@ impl EconomyStore {
     pub(crate) fn canon_outcome_kinds(&self) -> Arc<crate::contract::CanonOutcomeKinds> {
         self.canon_outcome_kinds.clone()
     }
+    /// Whether the wiring named `principal` as programmatically acceptable (E6b,
+    /// DL-11). Composition data: nothing a command or a document can change.
+    #[must_use]
+    pub(crate) fn has_party_cap(
+        &self,
+        principal: &mush_org::PrincipalId,
+        cap: crate::contract::PartyCap,
+    ) -> bool {
+        self.party_caps
+            .get(&crate::contract::principal_token(principal))
+            .is_some_and(|caps| caps.contains(&cap))
+    }
+    /// Count one refusal against `actor` (E6b, C16). Bounded by
+    /// [`MAX_REFUSAL_ACTORS`]: at the cap the least recently refused actor is
+    /// evicted, so the map is O(1) in the world's size and the actors still
+    /// probing are the ones that stay.
+    pub(crate) fn note_refusal(&mut self, actor: ObjId, hidden: bool, now: i64) {
+        if !self.refusals.contains_key(&actor)
+            && self.refusals.len() >= MAX_REFUSAL_ACTORS
+            && let Some(stale) = self
+                .refusals
+                .iter()
+                .min_by_key(|(id, t)| (t.last_at, id.0))
+                .map(|(id, _)| *id)
+        {
+            self.refusals.remove(&stale);
+        }
+        let tally = self.refusals.entry(actor).or_insert(RefusalTally {
+            hidden: 0,
+            other: 0,
+            first_at: now,
+            last_at: now,
+        });
+        if hidden {
+            tally.hidden = tally.hidden.saturating_add(1);
+        } else {
+            tally.other = tally.other.saturating_add(1);
+        }
+        tally.last_at = now;
+    }
+
+    /// The refusal tallies, busiest first (E6b, C16) — what `@econ/alerts` prints.
+    #[must_use]
+    pub fn refusal_tallies(&self) -> Vec<(ObjId, RefusalTally)> {
+        let mut rows: Vec<(ObjId, RefusalTally)> =
+            self.refusals.iter().map(|(id, t)| (*id, *t)).collect();
+        rows.sort_by_key(|(id, t)| {
+            (
+                std::cmp::Reverse(t.hidden),
+                std::cmp::Reverse(t.other),
+                id.0,
+            )
+        });
+        rows
+    }
+
     /// Remember one canon record the world announced (E4c verify fold, E4a).
-    pub(crate) fn note_canon(&mut self, id: u64, kind: &str, source: &str) {
-        if self.canon_tail.iter().any(|(seen, _, _)| *seen == id) {
+    pub(crate) fn note_canon(&mut self, id: u64, kind: &str, source: &str, entities: &[ObjId]) {
+        if self.canon_tail.iter().any(|seen| seen.canon_id == id) {
             return;
         }
         while self.canon_tail.len() >= CANON_TAIL {
             self.canon_tail.pop_front();
         }
-        self.canon_tail
-            .push_back((id, SmolStr::new(kind), SmolStr::new(source)));
+        // E6b (DL-09): the tail carries the record's **entities** too, so the
+        // recovery path runs the same party-intersection gate the live path runs.
+        // Bounded like everything else the economy remembers: a record naming an
+        // implausible crowd contributes its first `MAX_CANON_ENTITIES` names, which
+        // is far more than `MAX_PARTIES` can ever intersect.
+        let mut entities: Vec<ObjId> = entities.to_vec();
+        entities.truncate(MAX_CANON_ENTITIES);
+        self.canon_tail.push_back(crate::attest::CanonRecord {
+            canon_id: id,
+            kind: SmolStr::new(kind),
+            source: SmolStr::new(source),
+            entities,
+        });
     }
     /// The canon records this world has seen, oldest first (E4c verify fold, E4a).
     #[must_use]
-    pub(crate) fn canon_tail(&self) -> Vec<(u64, SmolStr, SmolStr)> {
+    pub(crate) fn canon_tail(&self) -> Vec<crate::attest::CanonRecord> {
         self.canon_tail.iter().cloned().collect()
+    }
+    /// The wiring-frozen canon evidence seam (E6b, DL-09), or `None` when the
+    /// composition wired none — which is the pre-E6b behaviour exactly.
+    #[must_use]
+    pub(crate) fn canon_evidence(
+        &self,
+    ) -> Option<std::sync::Arc<dyn crate::attest::CanonEvidence>> {
+        self.canon_evidence.clone()
+    }
+    /// The **next contract id** without allocating it (E6b, B8).
+    ///
+    /// A canon-routed run has to name itself: the seal's source is
+    /// `run:{contract id}`, and a `scene:{uid}` is unknowable when the run is
+    /// offered. The condition is frozen at offer, so the poster must be able to
+    /// write the id the offer is about to mint. The world is single-threaded, so
+    /// this is exact; a mismatch would only ever mean the condition never matches,
+    /// never that the wrong one does.
+    #[must_use]
+    pub fn peek_next_contract(&self) -> u64 {
+        self.next_contract
     }
     /// The next transaction id WITHOUT allocating it (a unique idempotency-key seed
     /// for interactive commands).
@@ -833,6 +974,12 @@ pub struct EconomyModule {
     observers: crate::observer::ObserverTable,
     title_issuers: Arc<std::collections::BTreeSet<mush_org::SystemPrincipalId>>,
     canon_outcome_kinds: Arc<crate::contract::CanonOutcomeKinds>,
+    /// E6b (DL-09): the bounded canon read seam, so a seal committed while the
+    /// economy was frozen — or before a restart — is still found.
+    canon_evidence: crate::attest::CanonEvidenceSeam,
+    /// E6b (DL-11): the seventh wiring-frozen table — which organization
+    /// principals may have a contract acceptance performed programmatically.
+    party_caps: Arc<PartyCapTable>,
 }
 
 impl EconomyModule {
@@ -898,8 +1045,9 @@ impl EconomyModule {
 
     /// Wire the canon kinds that count as a **producer-declared outcome** (E4c
     /// verify fold, E1). Omitting this refuses every `canon:` attestor set at
-    /// `Offer`, which is the fail-closed default until E6b ships `scene.outcome`
-    /// under facilitator authority.
+    /// `Offer`, which is the fail-closed default; E6b registers exactly
+    /// `scene.outcome`, which `mush-scenes` writes only under a **staff-conferred
+    /// sealer** — never a self-granted facilitator (M14, D-E6-7).
     #[must_use]
     pub fn with_canon_outcome_kinds(mut self, kinds: Vec<SmolStr>) -> EconomyModule {
         self.canon_outcome_kinds = Arc::new(kinds.into_iter().collect());
@@ -928,7 +1076,68 @@ impl EconomyModule {
         self.title_issuers = Arc::new(issuers.into_iter().collect());
         self
     }
+
+    /// Wire the **canon read seam** (E6b, DL-09). Omitting it leaves the RAM tail
+    /// as the only recovery, which loses every record older than
+    /// [`CANON_TAIL`] and every record at all across a restart.
+    #[must_use]
+    pub fn with_canon_evidence(
+        mut self,
+        evidence: Arc<dyn crate::attest::CanonEvidence>,
+    ) -> EconomyModule {
+        self.canon_evidence = Some(evidence);
+        self
+    }
+
+    // ---- E6b: B4 — DL-11's vendor accept -------------------------------
+
+    /// Wire the **party capabilities** (E6b, DL-11 / 08f §2 item 7, M15): which
+    /// organization principals may have a contract **acceptance** performed
+    /// programmatically, because nobody is ever connected to do it by hand.
+    ///
+    /// A staff-built NPC fence org has no `acts_for` holder at all — no member, no
+    /// grantee — and `acting_party` takes the `acts_for` route for an organization
+    /// and nothing else, which is what would otherwise put a staffer in every
+    /// single deal. This table is the exception, and it is exactly as narrow as it
+    /// sounds:
+    ///
+    /// - it is **composition-frozen** — ids only, set at wiring, and nothing a
+    ///   command, a document or a grant can add to;
+    /// - it grants **no money authority whatever**. The accept still runs
+    ///   `accept_core`, still places escrow under the org account's own debit
+    ///   authority, and still refuses on `InsufficientAvailable` — which is exactly
+    ///   why "a fence that runs out stops quoting" needs no code at all (M19,
+    ///   D-E6-15);
+    /// - it is reachable only from [`crate::accept_contract_as`], never from
+    ///   `@contract/accept`, so no player acquires the power to bind an org.
+    ///
+    /// Omitting it is the fail-closed default: no principal is programmatically
+    /// acceptable, which is exactly E6a's behaviour.
+    #[must_use]
+    pub fn with_party_caps(
+        mut self,
+        caps: Vec<(mush_org::PrincipalId, crate::contract::PartyCap)>,
+    ) -> EconomyModule {
+        let mut table: PartyCapTable = std::collections::BTreeMap::new();
+        for (principal, cap) in caps.into_iter().take(MAX_PARTY_CAPS) {
+            table
+                .entry(crate::contract::principal_token(&principal))
+                .or_default()
+                .insert(cap);
+        }
+        self.party_caps = Arc::new(table);
+        self
+    }
 }
+
+/// The wiring-frozen party-capability table (E6b, DL-11), keyed by
+/// [`crate::contract::principal_key`] because `PrincipalId` is `Hash`-but-not-`Ord`.
+pub type PartyCapTable =
+    std::collections::BTreeMap<SmolStr, std::collections::BTreeSet<crate::contract::PartyCap>>;
+
+/// How many principals the wiring may name (E6b, DL-11). A composition-frozen
+/// table is small by construction; the cap says so out loud.
+pub const MAX_PARTY_CAPS: usize = 64;
 
 impl GameModule for EconomyModule {
     fn name(&self) -> &'static str {
@@ -1002,6 +1211,8 @@ impl GameModule for EconomyModule {
         store.observers = self.observers.clone();
         store.title_issuers = self.title_issuers.clone();
         store.canon_outcome_kinds = self.canon_outcome_kinds.clone();
+        store.party_caps = self.party_caps.clone();
+        store.canon_evidence = self.canon_evidence.clone();
         *ctx.w
             .module_state_mut::<EconomyStore>()
             .expect("economy store slot") = store;

@@ -327,9 +327,11 @@ pub enum AttestorSet {
 /// contract whose settlement cites one is a contract its payee can settle alone. So
 /// a canon attestor set names a kind from this table or it is refused at `Offer`,
 /// and the table is composition-root data ([`crate::EconomyModule::with_canon_outcome_kinds`])
-/// — never something a command, a document or a grant can add to. The server
-/// registers nothing until E6b ships `scene.outcome`, sealed under facilitator
-/// authority.
+/// — never something a command, a document or a grant can add to. Since E6b the
+/// server registers exactly one kind, `scene.outcome`, which `mush-scenes` writes
+/// only from `+scene/outcome` under a **staff-conferred sealer** — never a
+/// self-granted facilitator, which is what any player becomes by starting a scene
+/// (M14, D-E6-7). `scene.concluded` is deliberately never registered.
 pub type CanonOutcomeKinds = std::collections::BTreeSet<SmolStr>;
 
 /// Who actually attested.
@@ -1004,6 +1006,35 @@ pub fn principal_key(p: &PrincipalId) -> (u8, u64, &str) {
         PrincipalId::Object(o) => (0, u64::from(o.0), ""),
         PrincipalId::Organization(g) => (1, g.0, ""),
         PrincipalId::System(s) => (2, 0, s.as_str()),
+    }
+}
+
+// ---- E6b: B4 — DL-11's vendor accept --------------------------------------
+
+/// What a wiring-frozen party capability permits (E6b, DL-11 / M15).
+///
+/// Deliberately **one** variant. The problem it solves is narrow — a staff-built
+/// NPC vendor org has no `acts_for` holder, so its side of a deal cannot be
+/// accepted at all without a staffer — and every wider power (spending, drafting,
+/// attesting, disputing) already has a capability in the E3 vocabulary that an org
+/// grants to real people.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum PartyCap {
+    /// This principal's **acceptance** of a contract it is already a party to may
+    /// be performed programmatically. It confers no money authority: the escrow
+    /// still posts under the principal's own debit authority and still refuses
+    /// when the account is short.
+    Accept,
+}
+
+/// The owned canonical token of a principal — the key of the wiring-frozen
+/// party-capability table, because `PrincipalId` is `Hash`-but-not-`Ord` (E6b).
+#[must_use]
+pub fn principal_token(p: &PrincipalId) -> SmolStr {
+    match p {
+        PrincipalId::Object(o) => SmolStr::new(format!("obj:{}", o.0)),
+        PrincipalId::Organization(g) => SmolStr::new(format!("org:{}", g.0)),
+        PrincipalId::System(s) => SmolStr::new(format!("sys:{s}")),
     }
 }
 
@@ -1821,9 +1852,27 @@ pub fn check_offerable(
     }
     for con in &consent.conditions {
         if let TypedCondition::DepositInto { vault, .. } = con {
-            snapshot
+            let v = snapshot
                 .vault(*vault)
                 .ok_or(ContractError::NoSuchVault(*vault))?;
+            // E6b verify fold (M1): **the vault's owner has to be a party.** E6b let
+            // a `DepositInto` on a live contract stand in for the vault owner's
+            // consent to the deposit (`WorldAuth::authorize_vault`), and that is only
+            // true if they agreed to the surface — otherwise anyone holding
+            // `vault.view` on a compartment could name somebody else's vault in a
+            // one-party contract, deposit into it, and leave the object
+            // **custody-locked** where its owner could not take it out. It is the
+            // same rule `Deliverable::Collateral` already applies to a pledger a few
+            // lines above, and it is what makes "both sides agreed" true.
+            if !consent
+                .parties
+                .iter()
+                .any(|p| principal_key(p) == principal_key(&v.owner))
+            {
+                return Err(ContractError::Infeasible(
+                    "a deposit condition names a vault whose owner is not a party",
+                ));
+            }
         }
     }
     Ok(())
@@ -2438,6 +2487,85 @@ pub fn settlement_plan(
     Ok(plan)
 }
 
+// ---- E6b: B3 — DL-03, an org or system depositor's deposit comes home -----
+
+/// How many vaults [`owner_home`]'s search visits (E6b verify fold, D11).
+pub const MAX_HOME_VAULT_VISIT: usize = 256;
+
+/// Where one recorded deposit goes at unwind (E6b, DL-03).
+///
+/// `to` is `None` when the deposit is **stranded**: a depositor who is not a world
+/// object and owns no `Active` vault with a world backing to return it into. The
+/// caller pages on that rather than silently dropping it (08a's staff-scarce rule:
+/// never park state on "wait for staff" without saying exactly what is stuck).
+pub struct DepositReturn<'a> {
+    /// The deposit itself.
+    pub deposit: &'a DepositRecord,
+    /// Where it goes: a world object for an `Object` depositor, the backing of a
+    /// vault they own for an organization or system principal.
+    pub to: Option<ObjId>,
+    /// The vault `to` backs, when the destination is one.
+    pub into_vault: Option<VaultId>,
+}
+
+/// Route every recorded deposit home (E6b, DL-03). **One function**, shared by
+/// [`refund_plan`] (which builds the ops) and [`ContractAuth::unwinding`] (which
+/// authorizes exactly them), so the plan and the authority can never disagree about
+/// where somebody's property is allowed to go.
+#[must_use]
+pub fn deposit_returns<'a>(
+    c: &'a EconomicContract,
+    snapshot: &EconomySnapshot,
+) -> Vec<DepositReturn<'a>> {
+    c.deposits
+        .iter()
+        .take(MAX_DEPOSITS)
+        .map(|d| match &d.deposited_by {
+            PrincipalId::Object(o) => DepositReturn {
+                deposit: d,
+                to: Some(*o),
+                into_vault: None,
+            },
+            owner @ (PrincipalId::Organization(_) | PrincipalId::System(_)) => {
+                match owner_home(snapshot, owner) {
+                    Some((vault, backing)) => DepositReturn {
+                        deposit: d,
+                        to: Some(backing),
+                        into_vault: Some(vault),
+                    },
+                    None => DepositReturn {
+                        deposit: d,
+                        to: None,
+                        into_vault: None,
+                    },
+                }
+            }
+        })
+        .collect()
+}
+
+/// The lowest-id `Active` vault `owner` owns whose backing is a single world
+/// object — deterministic, so the plan and the authority pick the same one.
+///
+/// Public because [`crate::contract_live`]'s returnability check must ask exactly
+/// this question rather than a second, drifting one.
+pub fn owner_home(snapshot: &EconomySnapshot, owner: &PrincipalId) -> Option<(VaultId, ObjId)> {
+    // E6b verify fold (D11): bounded on vaults **visited**. It is asked once per
+    // deposit, from the plan, from the authority and from the returnability check,
+    // so an unbounded scan here is three unbounded scans per unwind.
+    snapshot
+        .vaults()
+        .take(MAX_HOME_VAULT_VISIT)
+        .filter(|v| &v.owner == owner && v.status == crate::record::VaultStatus::Active)
+        .find_map(|v| match &v.backing {
+            crate::record::CustodyRef::Container(o)
+            | crate::record::CustodyRef::SpatialInterior(o) => Some((v.id, *o)),
+            // A provider-registered backing has no single world object, so there is
+            // nothing a `Withdraw` could name as a destination.
+            crate::record::CustodyRef::Registered { .. } => None,
+        })
+}
+
 /// Build the refund plan: release every **qualifying** escrow hold and nothing else —
 /// E4b2's collateral refinement (D-E4b2-24): a `Collateral` pledge is released by the
 /// same `release_asset_ops` a settlement uses, so a refund never leaves a pledge
@@ -2480,16 +2608,13 @@ pub fn refund_plan(
     if !matches!(c.state, ContractState::Cancelled | ContractState::Expired) && !in_flight {
         return Err(ContractError::WrongState(c.id));
     }
-    let returns: Vec<(&DepositRecord, ObjId)> = c
-        .deposits
-        .iter()
-        .filter_map(|d| match &d.deposited_by {
-            PrincipalId::Object(o) => Some((d, *o)),
-            // An org or system depositor has no world object to hand the thing back
-            // to. The lock has lifted with the state change, so `@vault/withdraw`
-            // under the vault's ordinary policy is the route; nothing is stranded.
-            PrincipalId::Organization(_) | PrincipalId::System(_) => None,
-        })
+    // E6b (DL-03): an org or system depositor's deposit **comes home** — to the
+    // backing of a vault that principal owns. Before, it was filtered out here
+    // ("no world object to hand the thing back to") and left in the counterparty's
+    // vault, which is exactly the stranded consignment 08f §4.3 names.
+    let returns: Vec<(&DepositRecord, ObjId)> = deposit_returns(c, snapshot)
+        .into_iter()
+        .filter_map(|r| r.to.map(|to| (r.deposit, to)))
         .take(MAX_DEPOSITS)
         .collect();
     let actor = returns
@@ -2648,6 +2773,11 @@ pub struct ContractAuth<'a> {
     /// evidence of anything on its own.
     qualifying: Vec<HoldId>,
     purpose: ContractPurpose,
+    /// E6b (DL-03): `(object, backing)` pairs an **unwind** may return a deposit
+    /// into, for a depositor with no world object of their own. Empty for every
+    /// other purpose, and empty for an object depositor (whose return goes through
+    /// the ordinary destination rule).
+    homes: Vec<(ObjId, ObjId)>,
 }
 
 impl<'a> ContractAuth<'a> {
@@ -2687,6 +2817,7 @@ impl<'a> ContractAuth<'a> {
                 payouts: net_payouts(&payouts.unwrap_or_default()),
                 titles,
             },
+            homes: Vec::new(),
         }
     }
 
@@ -2703,6 +2834,7 @@ impl<'a> ContractAuth<'a> {
             contract,
             qualifying: qualifying_ids(contract, snapshot),
             purpose: ContractPurpose::Forfeit { to, total },
+            homes: Vec::new(),
         }
     }
 
@@ -2723,6 +2855,17 @@ impl<'a> ContractAuth<'a> {
             contract,
             qualifying: qualifying_ids(contract, snapshot),
             purpose: ContractPurpose::Unwind,
+            // E6b (DL-03): the vault-backing destinations this unwind — and nothing
+            // else in the world — may send a deposit home to. Resolved here, from
+            // the same `deposit_returns` the plan is built from, and thrown away
+            // with the authority.
+            homes: deposit_returns(contract, snapshot)
+                .iter()
+                .filter_map(|r| match (r.to, r.into_vault) {
+                    (Some(to), Some(_)) => Some((r.deposit.object, to)),
+                    _ => None,
+                })
+                .collect(),
         }
     }
 
@@ -2960,11 +3103,26 @@ impl crate::engine::AuthEval for ContractAuth<'_> {
                     && self.contract.deposits.iter().any(|d| {
                         d.object == *object
                             && d.vault == vault.id
-                            && d.deposited_by == PrincipalId::Object(*to)
+                            // The depositor is a world object and the object goes
+                            // straight back to them...
+                            && (d.deposited_by == PrincipalId::Object(*to)
+                                // ...or (E6b, DL-03) the depositor has no world
+                                // object at all and `to` is the vault backing this
+                                // very authority resolved for them at construction.
+                                || self.homes.contains(&(*object, *to)))
                     })
             }
             CustodyOp::Deposit { .. } => false,
         }
+    }
+
+    /// E6b (DL-03): the vault-backing destinations this unwind may use. Bounded by
+    /// [`MAX_DEPOSITS`], resolved once at construction from the live snapshot, and
+    /// never anything but a vault the deposit's own depositor owns.
+    fn authorize_vault_home(&self, object: ObjId, to: ObjId) -> bool {
+        matches!(self.purpose, ContractPurpose::Unwind)
+            && self.bound()
+            && self.homes.contains(&(object, to))
     }
 
     /// **The custody lock's one key** (E4b2 verify fold, M2+M3).

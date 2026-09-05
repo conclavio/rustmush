@@ -854,7 +854,7 @@ fn build_deliver(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                     .chain(std::iter::once(&c.issuer))
                     .any(|p| principal_key(p) == principal_key(&acct.owner))
             };
-            let hidden = |ctx: &Ctx<'_>, detail: &str| -> CmdError {
+            let hidden = |ctx: &mut Ctx<'_>, detail: &str| -> CmdError {
                 refuse_named(
                     ctx,
                     NamedResource::Account(debit),
@@ -1553,7 +1553,7 @@ pub(crate) fn check_offer(ctx: &Ctx<'_>, c: &EconomicContract) -> Result<(), Con
 }
 
 /// Render an offer refusal for the command path (the §9 cap keeps its own words).
-fn offer_refusal(ctx: &Ctx<'_>, c: &EconomicContract, e: &ContractError) -> CmdError {
+fn offer_refusal(ctx: &mut Ctx<'_>, c: &EconomicContract, e: &ContractError) -> CmdError {
     match e {
         ContractError::TooLarge(PARTY_CAP_REFUSAL) => CmdError::msg(format!(
             "A party is already on {MAX_LIVE_CONTRACTS_PER_PARTY} live contracts (the cap is \
@@ -1634,7 +1634,7 @@ pub(crate) fn freeze_and_offer(ctx: &mut Ctx<'_>, mut c: EconomicContract) -> Co
 /// [`crate::commands::refuse`] the money verbs use, against the resource the error
 /// names *and* (for a refusal that is a policy answer about them) every resource the
 /// surface names.
-fn contract_refusal(ctx: &Ctx<'_>, c: &EconomicContract, e: &ContractError) -> CmdError {
+fn contract_refusal(ctx: &mut Ctx<'_>, c: &EconomicContract, e: &ContractError) -> CmdError {
     match e {
         // One answer for "no such", "not yours to see", "not a party", "not the
         // issuer" (§4.5).
@@ -1786,6 +1786,21 @@ pub(crate) fn accept_core(
     c: EconomicContract,
     party: PrincipalId,
 ) -> Result<AcceptOutcome, ContractError> {
+    let actor = PrincipalId::Object(ctx.actor);
+    accept_core_as(ctx, c, party, actor)
+}
+
+/// [`accept_core`] with the **escrow plan's actor** named explicitly (E6b, B4).
+///
+/// For every command path the actor is the person typing, exactly as before. DL-11's
+/// programmatic accept passes the accepting principal itself, so the hold posts under
+/// that principal's own debit authority rather than under a bystander's.
+pub(crate) fn accept_core_as(
+    ctx: &mut Ctx<'_>,
+    c: EconomicContract,
+    party: PrincipalId,
+    actor: PrincipalId,
+) -> Result<AcceptOutcome, ContractError> {
     if c.state != ContractState::Offered || c.pending.is_some() {
         return Err(ContractError::State(c.id));
     }
@@ -1834,7 +1849,7 @@ pub(crate) fn accept_core(
     } else {
         let mut plan = EconomyPlan::new(
             cmd_key(ctx),
-            PrincipalId::Object(ctx.actor),
+            actor,
             EconomicCause::Command { serial: 0 },
             Vec::new(),
         );
@@ -3207,7 +3222,7 @@ pub(crate) fn amend_core(
 }
 
 /// Render an amendment refusal for the command path with the texts E4b2 pinned.
-fn amend_refusal(ctx: &Ctx<'_>, c: &EconomicContract, e: &ContractError) -> CmdError {
+fn amend_refusal(ctx: &mut Ctx<'_>, c: &EconomicContract, e: &ContractError) -> CmdError {
     match e {
         ContractError::State(_) => CmdError::msg(format!(
             "Only an offered contract — or one in force that nobody but its author has accepted \
@@ -3340,6 +3355,12 @@ pub(crate) fn finish_terminal(ctx: &mut Ctx<'_>, id: ContractId) -> bool {
     // left in the vault with the lock gone and no record of whose it was.
     let mut working = c.clone();
     working.deposits = record_deposits(ctx, &c);
+    // E6b (DL-03): a deposit with nowhere to go is **paged**, never silently
+    // stranded in the counterparty's vault. The page names the principal and the
+    // command that fixes it, and the unwind still proceeds for everything else.
+    for owner in stranded_deposits(ctx, &working) {
+        page_stranded_deposit(ctx, id, &owner);
+    }
     working.deposits.retain(|d| returnable(ctx, d));
 
     let built = {
@@ -3494,13 +3515,11 @@ fn note_terminal_failure(ctx: &mut Ctx<'_>, id: ContractId, detail: &str) {
 /// still in the vault, and the depositor is a live object the withdrawal may name as
 /// a destination.
 fn returnable(ctx: &Ctx<'_>, d: &DepositRecord) -> bool {
-    let PrincipalId::Object(to) = &d.deposited_by else {
-        return false;
-    };
     let Some(store) = ctx.w.module_state::<EconomyStore>() else {
         return false;
     };
-    let Some(vault) = store.snapshot().vault(d.vault) else {
+    let snapshot = store.snapshot();
+    let Some(vault) = snapshot.vault(d.vault) else {
         return false;
     };
     if vault.status != crate::record::VaultStatus::Active {
@@ -3511,7 +3530,64 @@ fn returnable(ctx: &Ctx<'_>, d: &DepositRecord) -> bool {
         providers: store.providers(),
     };
     use crate::engine::CustodyEval;
-    custody.holds(vault, d.object) && custody.destination_ok(&d.deposited_by, *to)
+    if !custody.holds(vault, d.object) {
+        return false;
+    }
+    match &d.deposited_by {
+        PrincipalId::Object(to) => custody.destination_ok(&d.deposited_by, *to),
+        // E6b (DL-03): an organization or system depositor goes home to the backing
+        // of a vault they own. `deposit_returns` is the one router — this asks it
+        // the same question the plan and the authority ask.
+        owner @ (PrincipalId::Organization(_) | PrincipalId::System(_)) => {
+            crate::contract::owner_home(snapshot, owner)
+                .and_then(|(id, _)| snapshot.vault(id))
+                .is_some_and(|v| custody.backing_valid(v))
+        }
+    }
+}
+
+/// Page the ladder about a deposit with nowhere to go (E6b, DL-03).
+///
+/// The subject is the **contract**, so the ladder's per-subject dedupe means one
+/// page per stuck unwind rather than one per retry, and the recommended command is
+/// the one that fixes it: give the depositor a vault. Nothing is silently dropped.
+fn page_stranded_deposit(ctx: &mut Ctx<'_>, id: ContractId, owner: &PrincipalId) {
+    let now = ctx.w.now();
+    let who = match owner {
+        PrincipalId::Object(o) => format!("#{}", o.0),
+        PrincipalId::Organization(o) => format!("org:{o}"),
+        PrincipalId::System(s) => format!("sys:{s}"),
+    };
+    crate::sweep::page(
+        ctx,
+        EscalationKind::SettlementRefused,
+        EscalationSubject::Contract(id),
+        None,
+        format!(
+            "contract #{id} is unwinding but {who} deposited goods and owns no active vault to \
+             return them into; they are still in the counterparty's vault"
+        ),
+        vec![
+            format!("@contract/show #{id}"),
+            format!("@vault/create <name>=container:<obj> owner={who}"),
+        ],
+        now,
+    );
+}
+
+/// Which recorded deposits of `c` have **nowhere to go** (E6b, DL-03): a depositor
+/// with no world object and no `Active` vault of their own. Never silently dropped —
+/// [`finish_terminal`] pages with the command to fix it, because a stranded deposit
+/// is exactly the shape 08a's staff-scarce rule forbids parking on silence.
+fn stranded_deposits(ctx: &Ctx<'_>, c: &EconomicContract) -> Vec<PrincipalId> {
+    let Some(store) = ctx.w.module_state::<EconomyStore>() else {
+        return Vec::new();
+    };
+    crate::contract::deposit_returns(c, store.snapshot())
+        .iter()
+        .filter(|r| r.to.is_none())
+        .map(|r| r.deposit.deposited_by.clone())
+        .collect()
 }
 
 // ---- expiry (the sweep's arm, and the shared logic) ------------------------
@@ -4539,14 +4615,12 @@ fn resolve_issuer(ctx: &Ctx<'_>, scope: Option<OrgScopeId>) -> Result<PrincipalI
 fn consideration_for(
     ctx: &Ctx<'_>,
     spec: &ConsiderationSpec,
+    parties: &[PrincipalId],
 ) -> Result<Consideration, ContractError> {
     if spec.amount.is_zero() || spec.amount.is_negative() {
         return Err(ContractError::Infeasible(
             "a consideration must be positive",
         ));
-    }
-    if !may_view_account(ctx.w, ctx.actor, spec.account) {
-        return Err(ContractError::NoSuchAccount(spec.account));
     }
     let store = ctx
         .w
@@ -4556,6 +4630,28 @@ fn consideration_for(
         .snapshot()
         .account(spec.account)
         .ok_or(ContractError::NoSuchAccount(spec.account))?;
+    // §11 q7: the caller may not name an account they cannot view — the rule that
+    // stops a poster using `account=` as an existence probe.
+    //
+    // E6b (DL-11) is its one exception, and it is composition-shaped: a
+    // **wiring-named vendor's** own account. A fence publishes a price and the deal
+    // names that price back to it; the account is derived from the vendor's own
+    // record and never typed, no player can add a principal to the table, and the id
+    // is still masked in every render (`render_account`). Without it a vendor could
+    // quote a number nobody was allowed to name back to it.
+    //
+    // E6b verify fold (D4): and only for a vendor that is a **party to this very
+    // contract**. The first form widened the predicate for every consideration on
+    // every offer, which made a vendor's account nameable by anyone building any
+    // surface — the next caller of this `pub` seam would have inherited an existence
+    // oracle it never asked for.
+    let vendor = store.has_party_cap(&account.owner, crate::contract::PartyCap::Accept)
+        && parties
+            .iter()
+            .any(|p| principal_key(p) == principal_key(&account.owner));
+    if !vendor && !may_view_account(ctx.w, ctx.actor, spec.account) {
+        return Err(ContractError::NoSuchAccount(spec.account));
+    }
     if account.status != AccountStatus::Active {
         return Err(ContractError::NoSuchAccount(spec.account));
     }
@@ -4651,7 +4747,7 @@ pub fn offer_contract(ctx: &mut Ctx<'_>, spec: ContractSpec) -> Result<ContractI
     }
     let mut consideration: Vec<Consideration> = Vec::with_capacity(spec.considerations.len());
     for c in &spec.considerations {
-        let built = consideration_for(ctx, c)?;
+        let built = consideration_for(ctx, c, &parties)?;
         consideration.retain(|x| x.account != built.account);
         consideration.push(built);
     }
@@ -4755,6 +4851,58 @@ pub fn accept_contract(ctx: &mut Ctx<'_>, id: ContractId) -> Result<AcceptOutcom
     let c = live_contract(ctx, id).ok_or(ContractError::NoStanding)?;
     let party = acting_party(ctx, &c, "contract.accept").ok_or(ContractError::NoStanding)?;
     accept_core(ctx, c, party)
+}
+
+// ---- E6b: B4 — DL-11's vendor accept --------------------------------------
+
+/// **Accept a contract on a wiring-named principal's behalf** (E6b, DL-11 / M15).
+///
+/// The narrow answer to "a staff-built NPC fence has no officer": `acting_party`
+/// takes the `acts_for` route for an organization and nothing else, and a vendor org
+/// with no member and no grantee has nobody who can accept, which would put a
+/// staffer in every deal.
+///
+/// Everything about it is bounded:
+///
+/// - `party` must carry [`PartyCap::Accept`] in the **wiring-frozen** table
+///   (`EconomyModule::with_party_caps`) — never a grant, never a document;
+/// - `party` must already be a party to `c`; this creates no party and no term;
+/// - the acceptance runs the same [`accept_core`] the command runs, so the roster
+///   still locks, the consent hash is still checked, and the escrow is still placed;
+/// - the escrow plan's actor is `party` itself, so the hold posts under **that
+///   principal's own debit authority** and refuses on `InsufficientAvailable`. A
+///   fence that runs out of money stops being able to accept, which is exactly how
+///   "a fence that runs out stops quoting" is enforced (M19, D-E6-15).
+///
+/// # Errors
+///
+/// [`ContractError::NoStanding`] when the economy is frozen to the caller, the
+/// contract is unviewable, `party` is not a party, or the wiring never named it;
+/// otherwise everything [`accept_core`] refuses.
+pub fn accept_contract_as(
+    ctx: &mut Ctx<'_>,
+    id: ContractId,
+    party: &PrincipalId,
+) -> Result<AcceptOutcome, ContractError> {
+    if ctx
+        .w
+        .module_state::<EconomyStore>()
+        .is_none_or(EconomyStore::is_frozen)
+    {
+        return Err(ContractError::Infeasible("the economy is frozen"));
+    }
+    if ctx
+        .w
+        .module_state::<EconomyStore>()
+        .is_none_or(|s| !s.has_party_cap(party, crate::contract::PartyCap::Accept))
+    {
+        return Err(ContractError::NoStanding);
+    }
+    let c = live_contract(ctx, id).ok_or(ContractError::NoStanding)?;
+    if !c.consent.parties.contains(party) {
+        return Err(ContractError::NoStanding);
+    }
+    accept_core_as(ctx, c, party.clone(), party.clone())
 }
 
 /// **Amend an offered contract** on behalf of its issuer (E6a step 1): S1's rules —
@@ -4986,7 +5134,7 @@ pub fn contract_notice(ctx: &Ctx<'_>, c: &EconomicContract) -> Vec<String> {
 /// E6a step 1's `NoStanding` and `SystemParty` included). For a ruleset that calls
 /// [`accept_contract`] or [`amend_contract`] and has to answer its actor.
 #[must_use]
-pub fn refuse_contract(ctx: &Ctx<'_>, c: &EconomicContract, e: &ContractError) -> CmdError {
+pub fn refuse_contract(ctx: &mut Ctx<'_>, c: &EconomicContract, e: &ContractError) -> CmdError {
     contract_refusal(ctx, c, e)
 }
 
@@ -4998,7 +5146,7 @@ pub fn refuse_contract(ctx: &Ctx<'_>, c: &EconomicContract, e: &ContractError) -
 /// view as that resource's "No such …".
 #[must_use]
 pub fn refuse_contract_offer(
-    ctx: &Ctx<'_>,
+    ctx: &mut Ctx<'_>,
     e: &ContractError,
     named: impl IntoIterator<Item = NamedResource>,
 ) -> CmdError {
@@ -5013,10 +5161,13 @@ pub fn refuse_contract_offer(
     } else {
         Vec::new()
     };
+    let mut hidden: Option<String> = None;
     for r in own.iter().chain(also.iter()) {
         if let Some(text) = crate::commands::hidden_text(ctx, *r) {
-            return CmdError::msg(text);
+            hidden = Some(text.to_string());
+            break;
         }
     }
-    CmdError::msg(e.to_string())
+    crate::commands::note_refusal(ctx, hidden.is_some());
+    CmdError::msg(hidden.unwrap_or_else(|| e.to_string()))
 }

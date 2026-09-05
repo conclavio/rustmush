@@ -54,9 +54,17 @@ use mush_proto::{NarrativeKind, OutputEvent, RichText};
 use smol_str::SmolStr;
 
 pub use data::{
-    KIND_TIMESTOP, NS, PauseReason, SceneAdvanceError, SceneEvent, SceneEventKind, SceneMode,
-    SceneRecord, SceneStatus, SceneUid, ScenesState, scene_key,
+    KIND_TIMESTOP, MAX_IC_FLOOR_LEAD_SECS, MAX_OUTCOME_NAME_BYTES, MAX_OUTCOME_NOTE_BYTES,
+    MAX_OUTCOME_SUBJECTS, NS, PauseReason, SceneAdvanceError, SceneEvent, SceneEventKind,
+    SceneMode, SceneOutcome, SceneRecord, SceneStatus, SceneUid, ScenesState, scene_key,
 };
+
+/// The canon kind a **sealed scene outcome** is recorded under (E6b, 08f §4.1).
+///
+/// The composition root registers exactly this string with the economy's
+/// `with_canon_outcome_kinds`, and nothing else: `scene.concluded` is lifecycle
+/// any participant can produce and is deliberately never an outcome kind.
+pub const KIND_SCENE_OUTCOME: &str = "scene.outcome";
 
 use data::{META_KEY, persist_scene};
 
@@ -103,6 +111,22 @@ impl GameModule for ScenesModule {
                     version: 2,
                     description: "version scene clock anchors and turn cursors".into(),
                     apply: Arc::new(migrate_scene_clock_v2),
+                },
+                // E6b verify fold (R3). The three E6b fields are all
+                // `#[serde(default)]`, so **forward** they need no migration at all
+                // — an old document loads with `sealer: None`, `seal_run: None`,
+                // `outcome: None`, `ic_floor: 0`, which is exactly the pre-E6b
+                // behaviour. The stamp is for the other direction: without it, a
+                // rollback to the pre-E6b binary boots happily on a v2 namespace,
+                // drops the three fields it does not know, and the first
+                // `persist_scene` permanently erases a **terminal** sealed outcome
+                // the economy has already cited as evidence. The migration runner
+                // refuses a namespace stamped ahead of the binary, so the version
+                // alone buys that refusal; the `apply` has nothing to do.
+                Migration {
+                    version: 3,
+                    description: "the conferred sealer, the sealed outcome and the IC floor".into(),
+                    apply: Arc::new(|_key, value| Ok(value)),
                 },
             ],
         )?;
@@ -425,6 +449,70 @@ pub(crate) fn emit_scene_concluded(ctx: &mut Ctx<'_>, rec: &SceneRecord) {
             "scene": rec.id.0,
             "rounds": rec.round,
             "anchor": rec.anchor.0,
+        }),
+    };
+    let _ = mush_canon::commit(ctx, draft);
+}
+
+// ---- E6b: B7 — the seal is canon, and only the producer gates it ----------
+
+/// Record a **sealed scene outcome** as canon — a *second* `CanonDraft` beside
+/// [`emit_scene_concluded`], never a change to it (08f §4.1, D-E6-7).
+///
+/// - `kind` is [`KIND_SCENE_OUTCOME`], the one kind a composition root registers
+///   as a producer-declared outcome. `scene.concluded` is never registered.
+/// - `source` is `run:{contract}` — a `scene:{uid}` is unknowable when the run
+///   is offered, and the economy compares `source` as an **opaque string**.
+/// - `entities` is `subjects ∪ {sealed_by}`, **named at seal time**, never
+///   copied from `participants` (frozen at scene creation, so a runner who
+///   joined mid-scene would silently fail the economy's party-intersection
+///   gate).
+/// - `ic_time` is `scene_ic_time()` **after** the seal raised `ic_floor` to the
+///   world IC clock, so it is the world IC clock by construction rather than by
+///   a second rule.
+///
+/// Who may seal is the **producer's** gate and nobody else's: `CanonRecorded`
+/// carries `{canon_id, kind, entities, source}` and no `detail`, so the economy
+/// checks kind, source and party intersection and *nothing else*.
+pub(crate) fn emit_scene_outcome(
+    ctx: &mut Ctx<'_>,
+    rec: &SceneRecord,
+    outcome: &data::SceneOutcome,
+) {
+    // E6b verify fold (M2/R12): the run is the one **staff bound to this scene**,
+    // never free input at seal time. A scene bound to none seals for the chronicle
+    // alone, under a `scene:{uid}` source no contract can ever name — a `scene:{uid}`
+    // is unknowable when a run is offered, which is why `run:` exists at all.
+    //
+    // E6b verify fold (M5): and it names the **row**. `CanonRecorded` carries no
+    // `detail`, so the economy matches on `(kind, source)` alone: with one source per
+    // run, one seal filled every canon row's slot and the contract read
+    // `Undecidable`; with a single row the row name the sealer typed decided nothing.
+    let source = match rec.seal_run {
+        Some(contract) => format!("run:{contract}#{}", outcome.name),
+        None => format!("scene:{}", rec.id),
+    };
+    let mut entities = outcome.subjects.clone();
+    if !entities.contains(&outcome.sealed_by) {
+        entities.push(outcome.sealed_by);
+    }
+    let room_name = display_name(ctx.w, rec.anchor);
+    let summary = format!(
+        "A sealed outcome in {room_name}: {} (scene #{}, {source}).",
+        outcome.name, rec.id
+    );
+    let draft = mush_canon::CanonDraft {
+        kind: SmolStr::new_static(KIND_SCENE_OUTCOME),
+        summary,
+        entities,
+        scope: mush_canon::CanonScope::Restricted,
+        ic_time: rec.scene_ic_time(),
+        source,
+        detail: serde_json::json!({
+            "scene": rec.id.0,
+            "outcome": outcome.name.as_str(),
+            "sealed_by": outcome.sealed_by.0,
+            "round": rec.round,
         }),
     };
     let _ = mush_canon::commit(ctx, draft);

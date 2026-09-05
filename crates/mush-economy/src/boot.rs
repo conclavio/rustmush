@@ -1519,6 +1519,12 @@ fn journal_fields_eq(a: &EconomicAsset, b: &EconomicAsset) -> bool {
         && a.catalog == b.catalog
         && a.encumbrances == b.encumbrances
         && a.acquisition == b.acquisition
+        // E6b verify fold (R10): `stolen` is journal authority like every field
+        // above the latch, and this predicate is also the "re-persist this doc"
+        // test — so leaving it out meant a document whose report alone disagreed
+        // with the journal was neither frozen nor healed, and stayed wrong on disk
+        // until the next write touched that asset.
+        && a.stolen == b.stolen
         && a.lifecycle == b.lifecycle
         && a.last_journal_seq == b.last_journal_seq
         && a.revision == b.revision

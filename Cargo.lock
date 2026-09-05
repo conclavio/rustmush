@@ -3306,6 +3306,7 @@ dependencies = [
 name = "ruleset-shadowrun"
 version = "0.1.0"
 dependencies = [
+ "mush-canon",
  "mush-core",
  "mush-dice",
  "mush-economy",
@@ -3315,6 +3316,7 @@ dependencies = [
  "mush-party",
  "mush-proto",
  "mush-ruleset",
+ "mush-scenes",
  "mush-store",
  "mush-testkit",
  "rand 0.9.5",

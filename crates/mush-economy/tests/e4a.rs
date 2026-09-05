@@ -106,6 +106,7 @@ fn asset(object: u32, owner: PrincipalId) -> EconomicAsset {
         catalog: None,
         encumbrances: Vec::new(),
         acquisition: None,
+        stolen: None,
         lifecycle: AssetLifecycle::Active,
         last_journal_seq: 0,
         revision: 1,

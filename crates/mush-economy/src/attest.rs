@@ -30,8 +30,11 @@
 //!
 //! All four of 08e answer 6's routes go through the one `TypedCondition` alphabet
 //! and therefore through this seam or beside it: a **sealed scene outcome** is a
-//! typed canon record with `source: scene:{uid}` — E6b's `scene.outcome`, sealed
-//! under facilitator authority and registered as an outcome kind — matched by an
+//! typed canon record with `source: run:{contract id}` — E6b's `scene.outcome`,
+//! sealed by a **staff-conferred sealer** (never a self-granted facilitator: any
+//! player becomes one by starting a scene) and registered as an outcome kind. A
+//! `scene:{uid}` was never usable: the scene does not exist when the run is
+//! offered, and the condition freezes then. It is matched by an
 //! `Attestation { by: Canon { .. } }`
 //! condition; an **authorized attestation** is `@contract/attest` under a
 //! `Party`/`Capability`/`Staff` set; a **deterministic condition** is
@@ -93,7 +96,7 @@ pub(crate) fn on_canon_recorded(ctx: &mut Ctx<'_>, ev: &WorldEvent) {
     // that was frozen — missed it with no way back. The tail is what
     // `@econ/unfreeze` and a contract's activation re-scan.
     if let Some(store) = ctx.w.module_state_mut::<EconomyStore>() {
-        store.note_canon(*canon_id, kind, source);
+        store.note_canon(*canon_id, kind, source, entities);
     }
     // A frozen economy records nothing: every post refuses anyway, and writing an
     // attestation whose settlement can never be attempted would leave a contract
@@ -109,22 +112,172 @@ pub(crate) fn on_canon_recorded(ctx: &mut Ctx<'_>, ev: &WorldEvent) {
 }
 
 /// Re-scan the canon records this world has seen against every live `Canon`
-/// condition (E4c verify fold, E4a).
+/// condition (E4c verify fold, E4a; E6b DL-09).
 ///
-/// Called from `@econ/unfreeze` and from a contract's activation — the two moments a
-/// missed edge becomes recoverable. It records nothing twice: a slot that is already
-/// filled is skipped, exactly as the live path skips it.
+/// Called from `@econ/unfreeze`, from a contract's activation, and once from the
+/// first sweep after boot — the three moments a missed edge becomes recoverable. It
+/// records nothing twice: a slot that is already filled is skipped, exactly as the
+/// live path skips it.
+///
+/// **E6b (DL-09):** the tail now carries each record's `entities`, so the recovery
+/// path runs the same party-intersection gate the live path runs and is no weaker
+/// than it. The tail is still RAM-only and 64 deep, so [`rescan_canon_sources`]
+/// follows it with the durable read seam.
 pub(crate) fn rescan_canon_tail(ctx: &mut Ctx<'_>) {
     let tail = match ctx.w.module_state::<EconomyStore>() {
         Some(store) if !store.is_frozen() => store.canon_tail(),
         _ => return,
     };
-    for (canon_id, kind, source) in tail {
-        // The tail carries no entity list — it is a record of what the world
-        // announced, not a copy of canon — so the party-intersection check does not
-        // run here. `source` is still exact, which is the load-bearing half: a
-        // re-scan can only reach a condition that named this specific front.
-        record_and_settle(ctx, canon_id, &kind, &source, None);
+    for seen in tail {
+        record_and_settle(
+            ctx,
+            seen.canon_id,
+            &seen.kind,
+            &seen.source,
+            Some(&seen.entities),
+        );
+    }
+    rescan_canon_sources(ctx);
+}
+
+/// One canon record as **evidence**, read back from the producer (E6b, DL-09).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CanonRecord {
+    /// The record's durable id.
+    pub canon_id: u64,
+    /// Its kind.
+    pub kind: SmolStr,
+    /// Its source, compared as an opaque string.
+    pub source: SmolStr,
+    /// Who it names — the party-intersection gate's input.
+    pub entities: Vec<ObjId>,
+}
+
+/// The **bounded canon read seam** (E6b, DL-09), wired at composition.
+///
+/// The economy's canon evidence is edge-triggered: `on_canon_recorded` runs once,
+/// when the record lands, and a contract that was not yet `Active`, an economy that
+/// was frozen, or a restart in between all miss the edge. The RAM tail
+/// ([`crate::CANON_TAIL`]) recovers 64 records within one boot and nothing at all
+/// across a restart, which is exactly the gap a settlement sealed before a reboot
+/// falls into.
+///
+/// This seam closes it without a crate edge: `mush-economy` must not depend on
+/// `mush-canon` (08c §6.1 deviation 1), so the composition root implements this over
+/// `mush_canon::records_for_source` and hands it in with
+/// `EconomyModule::with_canon_evidence`. Omitting it is the pre-E6b behaviour
+/// exactly.
+pub trait CanonEvidence: Send + Sync + std::fmt::Debug {
+    /// The records naming `source`, newest first, at most `limit`.
+    fn records_for_source(
+        &self,
+        w: &mush_core::World,
+        source: &str,
+        limit: usize,
+    ) -> Vec<CanonRecord>;
+}
+
+/// The wiring-frozen canon evidence seam (an `Arc`, cheap to clone).
+pub type CanonEvidenceSeam = Option<std::sync::Arc<dyn CanonEvidence>>;
+
+/// How many distinct `(kind, source)` pairs one re-scan looks up (E6b, DL-09).
+pub const MAX_CANON_SOURCE_LOOKUPS: usize = 32;
+
+/// How many records one source lookup asks for (E6b, DL-09).
+pub const MAX_CANON_RECORDS_PER_SOURCE: usize = 8;
+
+/// How many contracts one re-scan **visits** (E6b verify fold, D5).
+///
+/// D-LBK-5's rule: a bounded read bounds the records it *touches*, never the ones it
+/// *matches*. `MAX_CANON_SOURCE_LOOKUPS` bounds the matches, and on a world where
+/// few contracts carry a sourced `Canon` set — the normal case — that bound is never
+/// reached, so the walk was O(contracts) on every activation.
+pub const MAX_CANON_CONTRACTS_VISITED: usize = 256;
+
+/// Ask the durable seam for the canon records every live `Canon` condition cites,
+/// and record what they answer (E6b, DL-09).
+///
+/// Bounded twice over: at most [`MAX_CANON_SOURCE_LOOKUPS`] distinct sources, at
+/// most [`MAX_CANON_RECORDS_PER_SOURCE`] records each. The sources come from the
+/// contracts themselves — a condition's own `AttestorSet::Canon`, or the surface's
+/// adjudicator when it has one, which is what actually binds (D-E6-8) — so the walk
+/// is over evidence somebody consented to, never over the whole chronicle.
+pub(crate) fn rescan_canon_sources(ctx: &mut Ctx<'_>) {
+    let (seam, wanted) = {
+        let Some(store) = ctx.w.module_state::<EconomyStore>() else {
+            return;
+        };
+        if store.is_frozen() {
+            return;
+        }
+        let Some(seam) = store.canon_evidence() else {
+            return;
+        };
+        let mut wanted: std::collections::BTreeSet<SmolStr> = std::collections::BTreeSet::new();
+        'contracts: for c in store
+            .snapshot()
+            .contracts()
+            .take(MAX_CANON_CONTRACTS_VISITED)
+        {
+            if !matches!(
+                c.state,
+                ContractState::Active | ContractState::ReadyToSettle | ContractState::Disputed
+            ) {
+                continue;
+            }
+            for set in c
+                .consent
+                .conditions
+                .iter()
+                .filter_map(|cond| match cond {
+                    TypedCondition::Attestation { by } => Some(by),
+                    _ => None,
+                })
+                .chain(c.consent.adjudicator.iter())
+            {
+                if let AttestorSet::Canon {
+                    source: Some(source),
+                    ..
+                } = set
+                {
+                    wanted.insert(source.clone());
+                    if wanted.len() >= MAX_CANON_SOURCE_LOOKUPS {
+                        break 'contracts;
+                    }
+                }
+            }
+        }
+        (seam, wanted)
+    };
+    // E6b verify fold (R11): the walk settles, a settlement emits, and an observer
+    // could in principle activate a contract, which re-enters here. No shipped
+    // observer does, but "no caller exists" is not a bound — this latch is.
+    if let Some(store) = ctx.w.module_state_mut::<EconomyStore>() {
+        if store.canon_rescanning {
+            return;
+        }
+        store.canon_rescanning = true;
+    }
+    for source in wanted {
+        let records = seam.records_for_source(ctx.w, &source, MAX_CANON_RECORDS_PER_SOURCE);
+        for record in records {
+            // E6b verify fold (R5): **do not remember what the seam can find again.**
+            // `note_canon` evicts the front of a 64-deep tail, and one re-scan can
+            // return up to 32 × 8 records — so remembering them replaced the tail
+            // with exactly the records that are already recoverable, evicting the
+            // ones that are not: records whose `source` no live condition cites
+            // *yet*, which a contract offered five minutes later would have found.
+            record_and_settle(
+                ctx,
+                record.canon_id,
+                &record.kind,
+                &record.source,
+                Some(&record.entities),
+            );
+        }
+    }
+    if let Some(store) = ctx.w.module_state_mut::<EconomyStore>() {
+        store.canon_rescanning = false;
     }
 }
 

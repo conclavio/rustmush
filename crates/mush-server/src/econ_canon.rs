@@ -251,3 +251,46 @@ fn commit_once(
         },
     )
 }
+
+// ---- E6b: B5 — DL-09, the bounded canon read seam -------------------------
+
+/// The composition root's implementation of the economy's canon read seam (E6b,
+/// DL-09; 08g §11 fix-during).
+///
+/// The economy's canon evidence is **edge-triggered**: its observer runs once, when
+/// the record lands, and a contract that was not yet `Active`, an economy that was
+/// frozen, or a restart in between all miss the edge. Its own RAM tail recovers 64
+/// records inside one boot and none at all across a restart — so a scene outcome
+/// sealed and committed just before the server bounced would never have been found.
+///
+/// This bridge closes that without a crate edge (`mush-economy` must not depend on
+/// `mush-canon`, 08c §6.1 deviation 1): it reads canon's own **open tail**, which is
+/// exactly what a restart rehydrates, keyed on the `source` the contract's condition
+/// named. It is bounded by `mush_canon::MAX_RECORDS_PER_SOURCE` and by the economy's
+/// own per-re-scan cap, and it reads nothing else: no scope filter is needed because
+/// the economy compares kind, source and party intersection and never renders the
+/// record.
+#[derive(Debug, Default)]
+pub struct CanonEvidenceReader;
+
+impl mush_economy::CanonEvidence for CanonEvidenceReader {
+    fn records_for_source(
+        &self,
+        w: &mush_core::World,
+        source: &str,
+        limit: usize,
+    ) -> Vec<mush_economy::CanonRecord> {
+        let Some(state) = w.module_state::<CanonState>() else {
+            return Vec::new();
+        };
+        mush_canon::records_for_source(state, source, limit)
+            .into_iter()
+            .map(|e| mush_economy::CanonRecord {
+                canon_id: e.id.0,
+                kind: e.kind,
+                source: SmolStr::new(e.source),
+                entities: e.entities,
+            })
+            .collect()
+    }
+}

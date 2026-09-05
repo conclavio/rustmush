@@ -144,6 +144,27 @@ pub enum AssetOp {
         /// Why (≤ [`crate::MAX_REASON_BYTES`]).
         reason: String,
     },
+    /// **Report the asset stolen** (E6b, D-E6-18, 08e answer 14).
+    ///
+    /// The one relaxation of invariant 19 (`Encumber` is staff-only): the title
+    /// owner, an organization holding `asset.insure` on the asset's compartment,
+    /// or staff may file. The effect is a plain [`Encumbrance::Disputed`] — so
+    /// insurance and salvage keep consuming exactly what they consume today —
+    /// **plus** a bounded [`crate::record::StolenReport`] stamped on the asset,
+    /// which is where the public/restricted/covert visibility lives.
+    ///
+    /// Title never moves: a fence buys custody, and a later purchase generates
+    /// evidence, not guilt (D-E6-10).
+    ReportStolen {
+        /// The asset.
+        object: ObjId,
+        /// Who is claiming it was stolen.
+        claimant: PrincipalId,
+        /// Who may be told.
+        visibility: crate::record::StolenVisibility,
+        /// Why (≤ [`crate::MAX_REASON_BYTES`]).
+        reason: String,
+    },
 }
 
 impl AssetOp {
@@ -158,12 +179,18 @@ impl AssetOp {
             | AssetOp::Encumber { object, .. }
             | AssetOp::Release { object, .. }
             | AssetOp::SetMaintenance { object, .. }
-            | AssetOp::WriteOff { object, .. } => *object,
+            | AssetOp::WriteOff { object, .. }
+            | AssetOp::ReportStolen { object, .. } => *object,
         }
     }
     /// The canonical op ordinal — the second key of the plan-hash total order, and
     /// the order ops are applied in within one object (releases first, then the
     /// title change, then the relationship ops, write-off last).
+    ///
+    /// **Never renumber an existing ordinal.** It is the second key of the plan
+    /// hash's total order, so every stored idempotency record for a title or
+    /// custody post resolves through it; E6b's `ReportStolen` therefore takes the
+    /// next free value, 8, and the two hard-coded digest pins prove nothing moved.
     #[must_use]
     pub fn ordinal(&self) -> u8 {
         match self {
@@ -175,6 +202,7 @@ impl AssetOp {
             AssetOp::Unassign { .. } => 5,
             AssetOp::SetMaintenance { .. } => 6,
             AssetOp::WriteOff { .. } => 7,
+            AssetOp::ReportStolen { .. } => 8,
         }
     }
     /// Whether this op changes who holds title (`Title` / `TransferTitle` /
@@ -592,6 +620,12 @@ pub enum EconomyError {
     /// with someone OTHER than the owner).
     #[error("asset {0} cannot be assigned to its own title owner")]
     AssignmentToOwner(ObjId),
+    /// `ReportStolen` on an asset that already carries a standing theft report, or
+    /// whose identical `Disputed` claim already stands (E6b, B2). A report is
+    /// written **once**: re-filing would re-stamp its clock and could widen a
+    /// covert claim, and clearing one is staff's `@asset/release`.
+    #[error("asset {0} already carries that claim")]
+    AlreadyClaimed(ObjId),
     /// A referenced vault does not exist.
     #[error("no such vault: {0}")]
     NoSuchVault(VaultId),

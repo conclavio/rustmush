@@ -140,6 +140,12 @@ category = "baseline"
 note = "baseline pinned at b0e3b52 (module, every composition)"
 
 [[handler]]
+name = "+fence"
+category = "legacy-post-image"
+family = "sr:fence"
+note = "E6b: the Shadowrun fence -- vendor registration, quotes and consignment. Bounded whole-document records (sr:fence:{id}, sr:quote:{id}) with strict TryFrom decoding, deterministic contract keys and no authority of their own: every money act rides the economy's offer_contract/accept_contract seams under an E4 authority, and the quote is a projection refused deterministically when stale."
+
+[[handler]]
 name = "+frenzy"
 category = "baseline"
 note = "baseline pinned at b0e3b52 (module, wod composition only)"
@@ -631,6 +637,12 @@ note = "baseline pinned at b0e3b52 (module, every composition)"
 name = "@route"
 category = "baseline"
 note = "baseline pinned at b0e3b52 (module, every composition)"
+
+[[handler]]
+name = "@scene"
+category = "legacy-post-image"
+family = "scenes:scene"
+note = "E6b: staff conferral of a scene's seal (@scene/facilitate) and the monotonic IC floor raise (@scene/icfloor). Rides the same scene:{uid} whole-document write-through path +timestop already uses -- one bounded record per key, strict validate_clock decoding, no prepared mechanics -- and migrates with the scene record itself."
 
 [[handler]]
 name = "@script"
