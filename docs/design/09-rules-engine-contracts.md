@@ -44,13 +44,14 @@ receiving its exact action identity. K5 semantic views now add a bounded `Output
 schema version, restart generation, sequence, exact delta base, optional projected commit token,
 and shared Rust/TypeScript cursor classification; the first `legal.actions` view and TUI/web clients
 discard unsafe controls and coalesce a keyframe resync on gaps. Provider-owned result projection,
-bounded public receipt/status DTOs, line/TUI/web rendering, bounded web commit deduplication, and
-authorized status recovery now cover the first production tactics action without exporting
-request/plan/bundle/outcome hashes. Required-channel offers are now centrally bound to one exact
+bounded public receipt/status DTOs, line/TUI/web rendering, bounded web commit deduplication,
+ACK-gated per-session presentation retention, and authorized status recovery now cover the first
+production tactics action without exporting request/plan/bundle/outcome hashes. Required-channel
+offers are now centrally bound to one exact
 private actor/subject/publisher/station grant: channels cannot be unioned across seats, equal-priority
 authority is ambiguous, and station, priority, epoch, and channel are revalidated at commit without
 entering the public DTO. Durable per-channel leases, real NPC/LLM runtime scheduling,
-structured acknowledgement, and the remaining Gate 5 matrix remain cross-cut work; all five
+and the remaining Gate 5 matrix remain cross-cut work; all five
 complete end-to-end proving gates remain open.
 
 **Scope:** the shared contracts that must be stable before RustMUSH substantially expands character,
@@ -2424,7 +2425,10 @@ Work:
    checkpoint witnesses through a composition-frozen pure callback, and returns indistinguishable
    `Unknown` for inaccessible/absent references. The receipt becomes a deterministic
    `resolution.outcome` keyframe with the projected commit token; the web client retains a hard
-   1,024-token dedupe horizon. Explicit structured-client receipt acknowledgement remains K8.
+   1,024-token dedupe horizon. K8.3 adds an exact projected-token ACK after the browser validates,
+   deduplicates, and accepts the result; the gateway retains a separate bounded per-session receipt
+   cache until that ACK and re-emits unacknowledged receipts with fresh envelope sequences after a
+   reconnect.
 4. Register line renderers over projected DTOs; structured transports use the same DTOs.
    **Implemented for `resolution.outcome`:** ANSI and SSH TUI render the provider summary plus the
    recovery reference, while HTTPS consumes the same view payload.
@@ -3025,7 +3029,25 @@ through the bounded poison attempts and dies after the unified spool fsyncs its 
 but before final-name publication. Reopen promotes the validated temp, retains the writable-boot
 gate, and—after the type-clobber is repaired—reconciles the pending bundle, archives the evidence,
 and permits ordinary checkpoint. K8.2's named server/persistence process cuts are therefore closed;
-structured-client acknowledgement, gateway/client loss, and line/keyframe recovery remain K8.3.
+K8.3 closes gateway/client loss and structured/line recovery.
+
+K8.3 is closed. `ClientCommand::Ack` accepts only the bounded
+32-lowercase-hex projected commit token and retires no authoritative state: it removes only that
+session's volatile presentation copy. The session layer retains at most 128 unacknowledged receipts
+independently of its transport resume ring, deduplicates repeated status/replay presentation by
+token, logs bounded-cache rollover with `action/status` as the durable fallback, and re-emits every
+surviving receipt with a fresh monotonic envelope sequence on structured reconnect. If the
+originating socket vanishes before finalization, the gateway retains against the still-live
+character session; a closed/reaped session falls back to the durable status record. The browser
+ACKs only after strict receipt validation and local dedup/application, and ACKs duplicate replay
+again so loss of the first ACK converges. Unit, real-WebSocket, and full bridge tests cover malformed
+tokens, exact forwarding, bounded rollover, duplicate/unknown ACKs, client loss after advancing the
+transport cursor, semantic replay outside the ordinary resume ring, and final retirement. K8.2's
+split-process SSH journey already proves post-restart line `action/status` recovery through the same
+deterministic `resolution.outcome` keyframe; legal-action cursor gap/keyframe recovery remains
+covered on both Rust TUI and TypeScript structured clients. A gateway process death still follows
+the declared Gate-5 policy: before `Owned`, volatile ingress may be lost; after `Owned`, the durable
+transaction reference plus `action/status`/current keyframes is authoritative recovery.
 
 Work:
 

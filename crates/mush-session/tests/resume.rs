@@ -8,7 +8,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::Instant;
 
-use mush_proto::{ClientCaps, ClientKind, ColorDepth, Envelope, OutputEvent, RichText};
+use mush_proto::{
+    ClientCaps, ClientKind, ColorDepth, Envelope, OutputEvent, ProjectedCommitToken, RichText,
+};
 use mush_session::{
     AttachOutcome, CharKey, ConnId, ConnectionHandle, DetachReason, ReplayError, SendToConn,
     SessionConfig, SessionManager,
@@ -394,4 +396,73 @@ fn sessions_have_independent_seq_streams() {
     let seqs_b: Vec<u64> = std::iter::from_fn(|| rx_b.try_recv().ok().map(|e| e.seq)).collect();
     assert_eq!(seqs_a, [1, 2]);
     assert_eq!(seqs_b, [1], "each session counts from 1 independently");
+}
+
+#[test]
+fn semantic_receipts_are_bounded_acknowledged_and_redelivered() {
+    let mgr = manager_with_ticking_clock(SessionConfig {
+        receipt_retention: 2,
+        ..SessionConfig::default()
+    });
+    let (first, mut first_rx) = web_conn(1, 8);
+    let (sess, _) = mgr.attach(first, CharKey(42), "nick".into());
+    let token = |digit: char| {
+        ProjectedCommitToken::new(std::iter::repeat_n(digit, 32).collect::<String>()).unwrap()
+    };
+
+    for digit in ['1', '2', '3'] {
+        assert_eq!(
+            mgr.send_acknowledgeable_to_conn(
+                ConnId(1),
+                token(digit),
+                Arc::new(sys(&format!("receipt {digit}"))),
+            ),
+            SendToConn::Delivered
+        );
+    }
+    assert_eq!(mgr.unacknowledged_receipt_count(sess), Some(2));
+    let delivered: Vec<_> = std::iter::from_fn(|| first_rx.try_recv().ok()).collect();
+    assert_eq!(delivered.len(), 3);
+    assert_eq!(delivered.last().map(|env| env.seq), Some(3));
+
+    // Re-sending an existing receipt does not consume a second slot, and an
+    // exact ACK retires only its named token.
+    assert_eq!(
+        mgr.send_acknowledgeable_to_conn(ConnId(1), token('3'), Arc::new(sys("receipt 3")),),
+        SendToConn::Delivered
+    );
+    assert_eq!(mgr.unacknowledged_receipt_count(sess), Some(2));
+    assert!(mgr.acknowledge_receipt(ConnId(1), &token('2')));
+    assert!(!mgr.acknowledge_receipt(ConnId(1), &token('2')));
+    assert_eq!(mgr.unacknowledged_receipt_count(sess), Some(1));
+
+    mgr.detach(ConnId(1), DetachReason::Lost);
+    assert!(mgr.retain_acknowledgeable_for_char(
+        CharKey(42),
+        token('4'),
+        Arc::new(sys("receipt 4")),
+    ));
+    assert_eq!(mgr.unacknowledged_receipt_count(sess), Some(2));
+    let (second, mut second_rx) = web_conn(2, 8);
+    let (same_sess, outcome) = mgr.attach(second, CharKey(42), "nick".into());
+    assert_eq!(same_sess, sess);
+    assert!(matches!(
+        outcome,
+        AttachOutcome::Rejoined {
+            from_linkdead: true,
+            ..
+        }
+    ));
+    let replay = mgr.redeliver_unacknowledged(ConnId(2));
+    assert_eq!(replay.delivered, 2);
+    assert!(replay.dropped.is_empty());
+    let first = second_rx.try_recv().expect("first receipt redelivered");
+    let second = second_rx.try_recv().expect("second receipt redelivered");
+    assert_eq!(first.seq, 5);
+    assert_eq!(first.event, sys("receipt 3"));
+    assert_eq!(second.seq, 6);
+    assert_eq!(second.event, sys("receipt 4"));
+    assert!(mgr.acknowledge_receipt(ConnId(2), &token('3')));
+    assert!(mgr.acknowledge_receipt(ConnId(2), &token('4')));
+    assert_eq!(mgr.unacknowledged_receipt_count(sess), Some(0));
 }

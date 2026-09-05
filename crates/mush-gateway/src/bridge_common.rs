@@ -36,11 +36,11 @@ use mush_ipc::{
 use mush_net_ssh::MAX_LINE_CHARS;
 use mush_proto::{
     ActionStatusId, MAX_VIEW_WIRE_INTEGER, ObjRef, OutputEvent, ProjectedActionReceipt,
-    ProjectedActionStatus, RichText, ViewEnvelope,
+    ProjectedActionStatus, ProjectedCommitToken, RichText, ViewEnvelope,
 };
 use mush_session::{
-    ConnId, ConnectionHandle, DetachOutcome, DetachReason, FloodVerdict, SessId, SessionManager,
-    sanitize_line,
+    ConnId, ConnectionHandle, DetachOutcome, DetachReason, FloodVerdict, SendToConn, SessId,
+    SessionManager, sanitize_line,
 };
 use smol_str::SmolStr;
 
@@ -323,9 +323,25 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
         }
     }
 
-    fn action_receipt(&self, conn: ConnId, receipt: &ProjectedActionReceipt) {
+    fn action_receipt(&self, conn: ConnId, actor: ObjId, receipt: &ProjectedActionReceipt) {
         match receipt.view() {
-            Ok(view) => send_event_to_conn(&self.sessions, conn, OutputEvent::View(view)),
+            Ok(view) => {
+                let commit = ProjectedCommitToken::new(receipt.commit())
+                    .expect("validated projected receipt has a valid commit token");
+                let event = Arc::new(OutputEvent::View(view));
+                if self.sessions.send_acknowledgeable_to_conn(
+                    conn,
+                    commit.clone(),
+                    Arc::clone(&event),
+                ) == SendToConn::Unknown
+                {
+                    let _ = self.sessions.retain_acknowledgeable_for_char(
+                        char_key(actor),
+                        commit,
+                        event,
+                    );
+                }
+            }
             Err(error) => {
                 tracing::error!(conn = conn.0, error = %error, "projected action receipt frame failed");
                 send_event_to_conn(
@@ -340,7 +356,7 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
         }
     }
 
-    fn action_error(&self, conn: ConnId, outcome: ActionSend) {
+    fn action_error(&self, conn: ConnId, actor: ObjId, outcome: ActionSend) {
         let message = match outcome {
             ActionSend::Accepted => return,
             ActionSend::Owned(status) => {
@@ -355,7 +371,7 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
                 return;
             }
             ActionSend::Finished(receipt) => {
-                self.action_receipt(conn, &receipt);
+                self.action_receipt(conn, actor, &receipt);
                 return;
             }
             ActionSend::Busy => "The game is busy; try that action again.",
@@ -401,7 +417,7 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
                 .await
             {
                 Some(ServiceResp::ActionStatus(ProjectedActionStatus::Committed(receipt))) => {
-                    self.action_receipt(conn, &receipt);
+                    self.action_receipt(conn, actor, &receipt);
                 }
                 Some(ServiceResp::ActionStatus(ProjectedActionStatus::Pending { reference })) => {
                     send_event_to_conn(
@@ -445,9 +461,9 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
                         )),
                     );
                 }
-                Some(ServiceResp::Busy) => self.action_error(conn, ActionSend::Busy),
+                Some(ServiceResp::Busy) => self.action_error(conn, actor, ActionSend::Busy),
                 Some(ServiceResp::Unavailable) | None => {
-                    self.action_error(conn, ActionSend::Gone);
+                    self.action_error(conn, actor, ActionSend::Gone);
                 }
                 Some(other) => {
                     tracing::error!(
@@ -455,7 +471,7 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
                         ?other,
                         "action status returned wrong response type"
                     );
-                    self.action_error(conn, ActionSend::Gone);
+                    self.action_error(conn, actor, ActionSend::Gone);
                 }
             }
             return true;
@@ -475,7 +491,7 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
                         OutputEvent::Sys(RichText::tag("system", text)),
                     );
                 }
-                Err(error) => self.action_error(conn, error),
+                Err(error) => self.action_error(conn, actor, error),
             }
             return true;
         }
@@ -494,7 +510,7 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
         let offers = match self.self_legal_actions(conn, actor).await {
             Ok(offers) => offers,
             Err(error) => {
-                self.action_error(conn, error);
+                self.action_error(conn, actor, error);
                 return true;
             }
         };
@@ -502,12 +518,12 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
             .into_iter()
             .filter(|offer| offer.presentation().verb.eq_ignore_ascii_case(verb));
         let Some(offer) = matching.next() else {
-            self.action_error(conn, ActionSend::Rejected);
+            self.action_error(conn, actor, ActionSend::Rejected);
             return true;
         };
         if matching.next().is_some() {
             tracing::error!(%actor, verb, "projected legal-action verb is ambiguous");
-            self.action_error(conn, ActionSend::Rejected);
+            self.action_error(conn, actor, ActionSend::Rejected);
             return true;
         }
         if !offer.parameters().parameters().is_empty()
@@ -534,7 +550,7 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
                 parameters: serde_json::json!({}),
             })
             .await;
-        self.action_error(conn, outcome);
+        self.action_error(conn, actor, outcome);
         true
     }
 

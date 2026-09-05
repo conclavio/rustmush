@@ -54,6 +54,13 @@
 //! sends ([`SessionManager::send_to_conn`]) consume seqs but are never
 //! recorded — a prompt for one connection must not replay to another.
 //!
+//! Authoritative `resolution.outcome` presentation has a second, bounded
+//! retention rule. A structured connection acknowledges the exact projected
+//! commit token after applying it; until then the session re-emits that receipt
+//! on reconnect even if transport sequence resume had already advanced past
+//! it. ANSI clients have no ACK and recover through the stable transaction
+//! reference plus `action/status` and current state keyframes.
+//!
 //! ## Linkdead contract (no internal timers)
 //!
 //! When the last connection of a session detaches for an *unclean* reason

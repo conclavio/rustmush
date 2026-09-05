@@ -16,7 +16,9 @@ use std::time::Duration;
 
 use mush_core::{Engine, GOD, Inbound, ObjId};
 use mush_net_web::{LoginErr, NewWebConn, ResumeErr, WebHooks};
-use mush_proto::{Envelope, OutputEvent, Query};
+use mush_proto::{
+    ActionStatusId, Envelope, OutputEvent, ProjectedActionReceipt, ProjectedCommitToken, Query,
+};
 use mush_session::{ConnId, SessionConfig, SessionManager};
 use mush_store::{InMemoryStore, ObjectStore, TokenRecord};
 use mush_testkit::text_of;
@@ -121,6 +123,13 @@ async fn expect_env(rx: &mut EnvRx, needle: &str) -> Arc<Envelope> {
     tokio::time::timeout(Duration::from_secs(60), fut)
         .await
         .unwrap_or_else(|_| panic!("timed out waiting for {needle:?}"))
+}
+
+async fn recv_env(rx: &mut EnvRx) -> Arc<Envelope> {
+    tokio::time::timeout(Duration::from_secs(60), rx.recv())
+        .await
+        .expect("timed out waiting for envelope")
+        .expect("envelope channel closed")
 }
 
 fn web_conn(id: u64, last_octet: u8) -> (NewWebConn, EnvRx) {
@@ -438,6 +447,59 @@ async fn resume_replays_the_gap_in_order() {
     // The revived session is live: new output arrives on the new conn.
     rig.bridge.line(1_101, "say back again".to_string()).await;
     expect_env(&mut rx2, "back again").await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn unacknowledged_action_receipt_survives_transport_resume_then_exact_ack_retires_it() {
+    let rig = rig().await;
+    let (token, key) = register(&rig, "nick", "hunter42", "Nick").await;
+    let (conn, mut rx) = web_conn(1_150, 1);
+    rig.bridge
+        .connect_character(conn, &token, key)
+        .await
+        .expect("connect");
+    expect_env(&mut rx, "Limbo(#0)").await;
+
+    let commit = ProjectedCommitToken::new("0123456789abcdef0123456789abcdef").unwrap();
+    let status =
+        ActionStatusId::new("k5:nick:brace:0000000000000001:01010101010101010101010101010101")
+            .unwrap();
+    let receipt = ProjectedActionReceipt::new(status, commit.as_str(), None).unwrap();
+    let sent = rig.sessions.send_acknowledgeable_to_conn(
+        ConnId(1_150),
+        commit.clone(),
+        Arc::new(OutputEvent::View(receipt.view().unwrap())),
+    );
+    assert_eq!(sent, mush_session::SendToConn::Delivered);
+    let first = recv_env(&mut rx).await;
+    assert!(matches!(first.event, OutputEvent::View(_)));
+    let sess = rig.sessions.session_of_conn(ConnId(1_150)).unwrap();
+    assert_eq!(rig.sessions.unacknowledged_receipt_count(sess), Some(1));
+
+    // The browser advanced its transport sequence but vanished before its
+    // semantic ACK reached the gateway. Ordinary resume has no sequence gap;
+    // the separate receipt cache still queues a fresh copy on the new socket.
+    rig.bridge.disconnected(1_150).await;
+    drop(rx);
+    let (conn, mut resumed_rx) = web_conn(1_151, 1);
+    let resumed = rig
+        .bridge
+        .resume(conn, &token, key, first.seq)
+        .await
+        .expect("resume");
+    assert!(resumed.replayed.is_empty());
+    let replay = recv_env(&mut resumed_rx).await;
+    let OutputEvent::View(view) = &replay.event else {
+        panic!("expected retained receipt, got {:?}", replay.event);
+    };
+    assert_eq!(view.commit(), Some(commit.as_str()));
+    assert!(replay.seq > first.seq);
+
+    rig.bridge.acknowledge(1_151, commit.clone()).await;
+    assert_eq!(rig.sessions.unacknowledged_receipt_count(sess), Some(0));
+    // Duplicate/unknown ACKs remain non-observable no-ops.
+    rig.bridge.acknowledge(1_151, commit).await;
+    assert_eq!(rig.sessions.unacknowledged_receipt_count(sess), Some(0));
 }
 
 #[tokio::test(flavor = "multi_thread")]

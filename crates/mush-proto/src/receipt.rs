@@ -20,6 +20,59 @@ pub const MAX_PROJECTED_ACTION_SUMMARY_BYTES: usize = 4 * 1024;
 /// Maximum JSON bytes in a projected result payload.
 pub const MAX_PROJECTED_ACTION_RESULT_BYTES: usize = 64 * 1024;
 
+/// A public, stable authoritative commit token carried by projected receipts.
+///
+/// This type is intentionally narrower than the internal transaction identity:
+/// clients may retain, compare, and acknowledge it, but cannot reconstruct a
+/// request, plan, bundle, or outcome hash from it.
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct ProjectedCommitToken(SmolStr);
+
+impl ProjectedCommitToken {
+    pub fn new(value: impl Into<SmolStr>) -> Result<Self, ProjectedCommitTokenError> {
+        let value = value.into();
+        if !is_lower_hex(&value, 32) {
+            return Err(ProjectedCommitTokenError);
+        }
+        Ok(Self(value))
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for ProjectedCommitToken {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+impl Serialize for ProjectedCommitToken {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for ProjectedCommitToken {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        Self::new(value).map_err(serde::de::Error::custom)
+    }
+}
+
+/// Invalid projected commit token.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+#[error("projected commit token is not 32 lowercase hexadecimal digits")]
+pub struct ProjectedCommitTokenError;
+
 /// A public, self-contained reference for authorized `action/status` lookup.
 ///
 /// Its fields identify only the authenticated caller's idempotency scope and

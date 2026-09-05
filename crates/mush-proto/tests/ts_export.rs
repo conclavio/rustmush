@@ -131,7 +131,12 @@ fn generated_shapes_match_wire_format() {
         );
     }
     let client_command = ClientCommand::export_to_string(&cfg).expect("ClientCommand decl");
-    for needle in [r#""t": "line", "d": string"#, r#""t": "pong""#] {
+    for needle in [
+        r#""t": "line", "d": string"#,
+        r#""t": "ack""#,
+        "commit: string",
+        r#""t": "pong""#,
+    ] {
         assert!(
             client_command.contains(needle),
             "ClientCommand missing {needle}:\n{client_command}"

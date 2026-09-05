@@ -397,6 +397,9 @@ async fn pump(
                     match serde_json::from_str::<ClientCommand>(text.as_str()) {
                         Ok(ClientCommand::Line(line)) => hooks.line(conn_id, line).await,
                         Ok(ClientCommand::Req { id, q }) => hooks.request(conn_id, id, q).await,
+                        Ok(ClientCommand::Ack { commit }) => {
+                            hooks.acknowledge(conn_id, commit).await;
+                        }
                         Ok(ClientCommand::Pong { nonce }) => {
                             if nonce != last_nonce {
                                 tracing::debug!(conn = conn_id, nonce, last_nonce, "stale pong nonce");

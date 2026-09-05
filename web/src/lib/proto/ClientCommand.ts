@@ -20,7 +20,11 @@ q: Query, } } | { "t": "resume", "d": {
 /**
  * The last envelope sequence number the client received.
  */
-last_seq: number, } } | { "t": "pong", "d": { 
+last_seq: number, } } | { "t": "ack", "d": {
+/**
+ * Exact token carried by the `resolution.outcome` view.
+ */
+commit: string, } } | { "t": "pong", "d": {
 /**
  * The nonce from the server's ping.
  */

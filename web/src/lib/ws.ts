@@ -232,6 +232,11 @@ export class WsClient {
     return this.send({ t: "line", d: line });
   }
 
+  /** Acknowledge one validated authoritative result after applying it. */
+  ackCommit(commit: string): boolean {
+    return this.send({ t: "ack", d: { commit } });
+  }
+
   /**
    * Sends a panel-hydration request with an auto-assigned correlation id.
    * Returns the id (match it against `reply` envelopes), or `null` when the
