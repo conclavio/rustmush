@@ -436,3 +436,109 @@ fn chargen_required_off_is_unchanged() {
         "Nick actually moved through the exit"
     );
 }
+
+// ----------------------------------------------------------------------
+// ---- convergence fold ----
+// ----------------------------------------------------------------------
+
+/// A `LookRendered` hook that records, per room render, whether the render's
+/// `HookReadContext` carried a live typed-state snapshot.
+///
+/// 08j S2: `on_approved` used to re-render by dispatching `"look"` through the
+/// compat `mush_core::dispatch`, which is the `None` wrapper over
+/// `dispatch_with_action_state` — so every hook in that render, and every
+/// `can_perceive` / `is_concealed` under it, ran with `typed_state.store() ==
+/// None`. Fail-closed held, but it was the one production engine dispatch that
+/// did not use the live store (09 §C2). It now goes through `Ctx::show_room`.
+struct TypedStateProbe {
+    seen: std::sync::Arc<std::sync::Mutex<Vec<bool>>>,
+}
+
+impl mush_core::EventHook for TypedStateProbe {
+    fn look_rendered(
+        &self,
+        ctx: &mush_core::HookReadContext<'_>,
+        _looker: ObjId,
+        _room: ObjId,
+    ) -> Vec<mush_proto::RichText> {
+        if let Ok(mut seen) = self.seen.lock() {
+            seen.push(ctx.typed_state_available());
+        }
+        Vec::new()
+    }
+}
+
+struct TypedStateProbeModule {
+    seen: std::sync::Arc<std::sync::Mutex<Vec<bool>>>,
+}
+
+impl mush_core::GameModule for TypedStateProbeModule {
+    fn name(&self) -> &'static str {
+        "typed_state_probe"
+    }
+
+    fn register(&mut self, reg: &mut mush_core::Registrar<'_>) -> Result<(), mush_core::ModError> {
+        reg.hook(
+            mush_core::HookPoint::LookRendered,
+            std::sync::Arc::new(TypedStateProbe {
+                seen: std::sync::Arc::clone(&self.seen),
+            }),
+        );
+        Ok(())
+    }
+}
+
+/// S2 — the post-approval room render sees a **live** typed store.
+#[test]
+fn cv_2_the_post_approval_room_render_sees_a_live_typed_store() {
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let cfg = OnboardingConfig {
+        chargen_required: true,
+        start_room: ObjId(2),
+        start_room_unapproved: LIMBO,
+    };
+    let mut tw = TestWorld::with_modules(vec![
+        Box::new(JobsModule::new()),
+        Box::new(WodRuleset::with_seed(S).onboarding(cfg)),
+        Box::new(TypedStateProbeModule {
+            seen: std::sync::Arc::clone(&seen),
+        }),
+    ]);
+    let sanctum = tw
+        .world_mut()
+        .create(ObjKind::Room, "Sanctum", GOD, None)
+        .unwrap();
+    assert_eq!(sanctum, ObjId(2), "start-room id assumption");
+
+    let nick = tw.spawn_player("Nick");
+    tw.run(nick, "mortal");
+    wizard_core_allocation(&mut tw, nick);
+    tw.run(nick, "next"); // Virtues
+    tw.run(nick, "next"); // Freebies
+    tw.run(nick, "next"); // Review
+    tw.run(nick, "submit");
+    let doc = read_sheet(&tw, nick);
+    let job = match doc.approved {
+        ApprovalState::Pending(j) => j,
+        other => panic!("expected pending, got {other:?}"),
+    };
+
+    // Only the approval render is under test.
+    seen.lock().expect("probe mutex").clear();
+    tw.run(GOD, &format!("+job/approve {job}=Welcome."));
+    assert_eq!(
+        tw.world().get(nick).and_then(|o| o.location),
+        Some(sanctum),
+        "approval moved Nick to the live start room"
+    );
+
+    let renders = seen.lock().expect("probe mutex").clone();
+    assert!(
+        !renders.is_empty(),
+        "approval rendered the new room at least once"
+    );
+    assert!(
+        renders.iter().all(|available| *available),
+        "every post-approval room render must carry the live typed store, got {renders:?}"
+    );
+}

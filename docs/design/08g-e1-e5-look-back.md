@@ -298,13 +298,55 @@ Smaller shape deviations doc 08 never records (C1): `ContractState` folds `Accep
 | adapt to the landed timeline now? | — | `game_now_unix()` = `world_ic_now().at` with the generation dropped; `World` keeps `game_clock` in step across epochs (`world.rs:351-399`), `validate_epoch_transition` refuses discontinuity, a rate change reads as `TimeJump`; only wod stamps a typed `ClockStamp` | no correctness pressure; retype at convergence (C4); add one test: a mid-gap rate change classifies `TimeJump` and charges nothing |
 | `CausalRef` → `ExternalRef`; `EconomicEvent` → `SemanticEvent` | rename + one-release alias; migrate when commit tokens exist | rename done; alias past its life with zero users (`record.rs:316-320`, `lib.rs:139-141`); kernel owns `PreparedCausalRef` | delete the alias (C5); `SemanticEvent` rides the family migration |
 | §2.6 hash domain | `hash_domain: "economy.plan/v3"` stated in the schema doc | no such string anywhere; digests byte-compatible (`hash.rs:166-174`) | add `PLAN_HASH_DOMAIN` const, never in hashed bytes (C6) |
-| C2/K2 migration gates | mixed write sets; `Ctx` family read path; seal in the bundle | gate 1 partial (`ReplayWrite::{ObjectSet, ObjectDelete, ObjectAllocatorSet, ModuleJsonSet, ModuleDelete}` in one bundle, `authoritative.rs:257-279`; no typed ledger-append op); gate 2 open (`StateFamilyHandle` only at registration; reads via `Engine::action_state()`); gate 3 open, precondition enforced (`world_task.rs:3021-3027`) | record per-gate status (C7); migration stays an owner decision; property/tenancy first (08h Q5) |
+| C2/K2 migration gates | mixed write sets; `Ctx` family read path; seal in the bundle | *at `ba75fc3`:* gate 1 partial, gate 2 open, gate 3 open. **On the merged main (`7419bd9`) all three are CLOSED**: gate 1 by `ReplayWrite::LedgerChunkSet` with `ReplayTarget::Module` routing and both backends normalizing it (K8.0, `3d0788d`); gate 2 by `Ctx::{action_state, scan_action_state}` plus K7's `HookReadContext` for the four hooks (`0e3f2e8`), which closes 08i gap G-B — **drop "gate 2 open"**; gate 3 by canonically derived `ledger_seals` inside the bundle (`AuthoritativeLedgerWrite::seal`, wire v4), with the legacy-predecessor bar in `flush_prepared_action` surviving on purpose | C7 discharged: the per-gate status is recorded in 08c §12 and 08h Q5. Migration stays an **owner decision**; property/tenancy first (08h Q5) and it needs **all three** gates, not two (08j S3) |
 | dropped-batch hazard | pre-existing, open | closed for durability: complete batches spool to the quarantine on every drop path, unresolved records refuse writable boot, idempotent legacy batches replay (e2a17da, 64479b7; `quarantine.rs:238-289`; tests at `quarantine.rs:2999`, `:3031`); only `StreamAppend` is non-replayable and no E crate produces one. Residual = RAM/output ahead of durable truth before the halt (08h §3) | update 08c §12's paragraph and `persist.rs:1457-1462`'s "will NOT self-heal" message (C9) |
 | store checkpoint readback | — | every post-image re-read before the intent is released, both backends (`memory.rs:926-988`; `checkpoint_authoritative.lua:85-113`; `redis.rs:410-412`) | verified (C10) |
 | single unresolved intent | — | second reservation refused until the first finalizes, both backends (`memory.rs:699-714`; `reserve_authoritative.lua:95-104`) — the K3 lane is serialized to one action | verified (C11); a stated throughput ceiling for any economy migration |
-| `ChannelGrant` union | 08h asks for the enumeration | `mush-sim/src/links.rs:18-74` emits one grant per occupied station; core never unions (`behavior.rs:513-519`, `world.rs:698`); the only production publisher | verified (C12): projections = {links.rs}; consumers = {behavior.rs resolve, world.rs lookup, `@spatial/authority`} |
+| `ChannelGrant` union | 08h asks for the enumeration | `mush-sim/src/links.rs:18-74` emits one grant per occupied station; core never unions (`behavior.rs:513-519`, `world.rs:698`); the only production publisher | verified (C12) at `ba75fc3`: projections = {links.rs}; consumers = {behavior.rs resolve, world.rs lookup, `@spatial/authority`}. **Re-enumerated on the merged main — see the C12 census below (08j S8); the union finding still holds, the consumer list did not** |
 
 Also: DL-13 (E0 hazard status on the K6 agenda — closed per C9, residual noted); DL-14 (`Registered{provider}` waits for a consumer; forbid economy schedules on `ClockRef::DomainTick` until the registration verb lands, 10b). 08h §3's order stands: K6 lands → both audits filed (this document; the K6 memo) → bilateral review → merge → full gates → the one rustfmt commit.
+
+### C12 re-enumerated — `ChannelGrant` on the merged main (`7419bd9`)
+
+08h §3 asks for a **completeness check, not a redesign**, before E7 cut 5. Draft 0.1's census was
+taken at `ba75fc3`, before K5/K6/K7 landed; five consumers are new since. Re-run by symbol, the
+finding is unchanged — **no union is ever assembled anywhere** — but the list is now:
+
+**The type and its store** — `crates/mush-core/src/world.rs`: `ChannelGrant` (`CommandSubjectLink`
+is an alias of it), `World::{publish_command_subject, command_subjects_of, channel_grant,
+channel_grant_is_current}`. `channel_grant` finds **one exact** `(actor, subject, owner, station)`
+grant; `channel_grant_is_current` fails closed on absence, revocation, an epoch bump or a narrowed
+channel set.
+
+**Projections (writers)** — exactly one in production: `crates/mush-sim/src/links.rs`
+`desired_links` → `refresh_actor_links` (called from `crates/mush-sim/src/{boot.rs, commands.rs,
+lib.rs}`), one grant per occupied station from that station's own `StationSpec`. The other two
+publishers are fixtures: `crates/mush-contract-tests/src/tactical_gate.rs` and
+`crates/mush-server/src/world_task.rs`'s test module.
+
+**Consumers** — nine, in three groups.
+*Reach and resolution* (pre-K5, unchanged): `crates/mush-core/src/behavior.rs` `Candidate.grants` /
+`push_candidate` / `operated_priority` — grants are collected per station and the **priority is a
+`max` over stations, never a merged channel set**; `crates/mush-sim/src/commands.rs`
+`@spatial/authority`, the read-only inspector.
+*New since K5* (the five 08j names, plus one): (1)
+`crates/mush-core/src/action.rs` `select_offer_channel_grant` — picks **one whole** station grant
+for a projected offer's `required_channels`; (2) `ActionDraft::with_channel_grant`, which turns that
+one grant into an `AuthorityGuard::ChannelGrant { provider, subject, station, channel, epoch,
+priority }`; (3) the guard's revalidation arm in `Engine::take_staged_action`
+(`action.rs`, via `World::channel_grant`), whose failure is
+`GuardRevalidationError::ChannelGrantUnavailable`; (4)
+`LegalActionProjectionError::ChannelGrant` (`crates/mush-core/src/offer.rs`), the projection-time
+guard-build failure; (5) `crates/mush-core/src/engine.rs`'s subject-epoch check in
+`legal_action_query`, which refuses when an actor holds grants on one subject at **disagreeing
+epochs** rather than picking one; (6) `crates/mush-core/src/control.rs`, which states the
+lease/grant boundary in terms — a `ChannelGrant` says who is *eligible* to operate a subject, a
+`ControlLeaseState` says who currently *has* it, and neither is derived from the other.
+
+**Verdict:** C12 stands as re-verified. The one consequence for E7: cut 5 writes no union and no
+comparison of its own (G4 is closed by `channel_grant_is_current`); it makes sure every focus change
+bumps the witnesses those nine consumers read. Cut 10's "no channel under a live lease" refusal is
+**cut 10's own policy** and belongs to the lease family, not to this grant family (10b §3.10, 08j S1).
 
 ## 11. The fold list
 
@@ -340,10 +382,10 @@ Also: DL-13 (E0 hazard status on the K6 agenda — closed per C9, residual noted
 - DL-11 buyer-as-issuer for quotes; `with_party_caps` for registered vendor/maker orgs — economy · S · **E6b** (superseded: 08f §2 item 7 and §4.3 own the cut, and E6b's fence needs it first — a staff-built NPC fence has no officer and an org party accepts only through `acts_for` holders or staff. Built at E6b; E6c reuses it for vendors and makers, G8).
 - C15 `SystemPrincipalDef {category, module, instruments}` behind the existing registration; per-post faucet/sink counters — economy · S · E6a.
 - C16 bounded per-actor refusal telemetry at the error renderer, surfaced via `@econ/alerts` — economy · S · E6b.
-- C5 delete the `CausalRef` alias; C6 `PLAN_HASH_DOMAIN`; C9 reword `persist.rs:1457-1462` and 08c §12 — economy / server / docs · XS.
+- C5 delete the `CausalRef` alias; C6 `PLAN_HASH_DOMAIN`; C9 reword `persist.rs:1457-1462` and 08c §12 — economy / server / docs · XS. *(C6 re-confirmed open by the convergence review, 08j S8: `plan_hash` still feeds a bare `Sha256` with no domain prefix, while `CanonicalHash::for_canonical_value` and `DECISION_PROMPT_HASH_DOMAIN` are the in-tree pattern to match. Ships with the E4b2 touch; never inside the hashed bytes.)*
 - D-LBK-4b (tenant/guest → tenancies, faction → open-prompt count) — housing + ruleset-wod · M; D-LBK-5 visit-bounded cursor pages — housing · S.
 - §3 #7 E4b1-C62; #10 E4b2-C193; #11 E2-C159; #12 E4b2-C55; #16 E5b-C98 (+ E4b1-D44); the §3 residual scale-aware renders (five sites) — economy / housing · XS–S.
-- §3 #14 the six pinning tests; E4a-C164's settle-path collateral test; E4b2-D33 page on allocator exhaustion; E4c-D42 two escalation kinds; E2-D24 dispatch serial; E2-D30 one Redis-gated economy reboot test — owning crate · XS each.
+- §3 #14 the six pinning tests; E4a-C164's settle-path collateral test; E4b2-D33 page on allocator exhaustion; E4c-D42 two escalation kinds; E2-D24 dispatch serial; E2-D30 one Redis-gated economy reboot test — owning crate · XS each. *(E2-D30 re-confirmed open by the convergence review, 08j §4 rule 4: one Redis-gated reboot test in the same cut as each money-adjacent boot path. Any new one must be named `*_redis_gated` and named by a CI job — `crates/mush-contract-tests/tests/ci_gated_test_inventory.rs` now enforces that.)*
 - E5b-D36/D37 lift the duplicated helpers (`notice` list, `parse_opts`, existence-hiding renderer) to `pub` in `mush-economy` before Shadowrun makes a third copy — economy · S · E6a.
 - T3 help topics; T6 (`try_boot`, `Settled::Posted` payload; the ignored timeline test into `ci.yml:41` — that one is K's); T5 kinfolk comment — docs / economy / K · XS–S.
 - E5a-D2 document the cadence-length assumption in `@tenancy/create` help; E4b1-D21 verify or add the real-cadence B6/S2 tests — housing / ruleset-wod · XS.

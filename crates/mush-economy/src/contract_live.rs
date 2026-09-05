@@ -31,7 +31,7 @@
 use std::sync::Arc;
 
 use mush_core::module::{ModError, Registrar};
-use mush_core::{ArgShape, CmdError, CommandSpec, Ctx, ObjId, World};
+use mush_core::{ArgShape, CmdError, CommandSpec, Ctx, ObjId, ObjKind, World};
 use mush_org::{CapabilityId, OrgScopeId, PrincipalId};
 use smol_str::SmolStr;
 
@@ -1298,6 +1298,41 @@ fn build_visibility(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     Ok(())
 }
 
+/// The refusal an NPC adjudicator gets, so the surface says why.
+const ADJUDICATOR_IS_NOT_A_PRINCIPAL: &str = "The adjudicator's word settles this contract, so it is never a process: name a player, a \
+     capability, staff, or a canon source.";
+
+/// **Rule 2 (08i §4), the adjudicator half** — the mirror of `mush-scenes`'
+/// `is_sealable_principal`.
+///
+/// A named adjudicator *replaces* every condition's own attestor set
+/// (08e answer 6), so naming one is the single largest authority transfer the
+/// `@contract/*` surface can make. An `ObjKind::Npc` is driven by
+/// `NpcModule::on_complete` — and, in a later cut, by an LLM controller — so
+/// conferring that authority on one would hand a settlement to a process rather
+/// than a principal.
+///
+/// E6b closed the sealer half; this was the open half (08j S5):
+/// `parse_principal`'s object arm is a bare `match_object(..).map(Object)` with
+/// no kind test, and `attestor_satisfiable` answers `true` for every
+/// `AttestorSet::Party(_)`, so nothing anywhere refused it. Only the object arm
+/// is constrained — `Staff`, `Capability` and `Canon` name no object, and an
+/// organization is a principal with members, not a process.
+///
+/// Game-neutral: `ObjKind` is `mush-core`'s, and the rule is about who may hold
+/// settlement authority, not about any ruleset's content.
+fn is_adjudicable_principal(w: &World, set: &AttestorSet) -> bool {
+    match set {
+        AttestorSet::Party(PrincipalId::Object(id)) => {
+            w.get(*id).is_some_and(|o| o.kind == ObjKind::Player)
+        }
+        AttestorSet::Party(_)
+        | AttestorSet::Staff
+        | AttestorSet::Capability { .. }
+        | AttestorSet::Canon { .. } => true,
+    }
+}
+
 fn build_adjudicator(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     const USAGE: &str = "Usage: @contract/adjudicator <id>=<who>|none";
     let mut c = editable(ctx, ctx.args.lhs())?;
@@ -1310,7 +1345,11 @@ fn build_adjudicator(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     c.consent.adjudicator = if rhs.eq_ignore_ascii_case("none") {
         None
     } else {
-        Some(parse_attestor(ctx, &rhs).ok_or_else(|| CmdError::msg(USAGE))?)
+        let set = parse_attestor(ctx, &rhs).ok_or_else(|| CmdError::msg(USAGE))?;
+        if !is_adjudicable_principal(ctx.w, &set) {
+            return Err(CmdError::msg(ADJUDICATOR_IS_NOT_A_PRINCIPAL));
+        }
+        Some(set)
     };
     let named = c.consent.adjudicator.is_some();
     let id = save_open(ctx, c)?;

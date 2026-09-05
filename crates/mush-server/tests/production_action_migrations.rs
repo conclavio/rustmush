@@ -1,9 +1,10 @@
 use mush_core::{
-    AuthoritativeBundle, CanonicalId, Effects, GOD, IdempotencyKey, IdempotencyScope, Inbound,
-    IngressEnvelope, IngressPayload, IngressSurfaceVersion, LegalActionQuery,
-    OfferExecutionContext, OfferKeyRing, OfferSecret, OfferSubmission, Outbox, OwnerId,
-    PerceivedRef, PrincipalId, RequestUid, ResolutionKeyRing, ResolutionSecret,
-    ScopedIdempotencyKey, StagedActionPersistence,
+    ActionStateBootRecord, AuthoritativeBundle, CanonicalId, Effects, GOD, IdempotencyKey,
+    IdempotencyScope, Inbound, IngressEnvelope, IngressPayload, IngressSurfaceVersion,
+    LegalActionQuery, OfferExecutionContext, OfferKeyRing, OfferSecret, OfferSubmission, Outbox,
+    OwnerId, PerceivedRef, PrincipalId, ReplayWrite, RequestUid, ResolutionKeyRing,
+    ResolutionSecret, ScopedIdempotencyKey, StagedActionPersistence,
+    is_action_state_persistence_key,
 };
 use mush_jobs::JobsModule;
 use mush_proto::ProjectedActionStatus;
@@ -388,5 +389,265 @@ async fn shadowrun_condition_damage_and_heal_preserve_old_semantics() {
             "Stun      [XXXXX.....] 5/10",
             "Wound modifier -1"
         ])
+    );
+}
+
+// ----------------------------------------------------------------------
+// ---- convergence fold ----
+// ----------------------------------------------------------------------
+
+/// The typed post-images an authoritative bundle carries, in the shape the
+/// server's boot partition hands `Engine::hydrate_action_state` — the same
+/// `is_action_state_persistence_key` split `mush_server::modules`'
+/// `load_one_namespace` performs against a live store.
+fn typed_boot_records(bundle: &AuthoritativeBundle) -> Vec<ActionStateBootRecord> {
+    bundle
+        .writes()
+        .iter()
+        .filter_map(|write| match write {
+            ReplayWrite::ModuleJsonSet {
+                namespace,
+                key,
+                value,
+            } if is_action_state_persistence_key(key.as_str()) => Some(ActionStateBootRecord::new(
+                namespace.as_str(),
+                key.as_str(),
+                value.clone(),
+            )),
+            _ => None,
+        })
+        .collect()
+}
+
+/// 08j S7 — **the K8.4 non-clobber round trip for `WodRollState`.**
+///
+/// 09b §3 permits unrelated legacy fields beside a typed family "only when the
+/// ownership split is explicit **and** round-trip tests prove neither writer
+/// clobbers the other". The split is explicit (`sheet_set` fences exactly
+/// `willpower_temp`; `WodCmd::read_ctx` re-overlays on every read) and the
+/// implementation is non-clobbering both ways, but no test issued a legacy
+/// write to an *unrelated* field after the typed record existed and then
+/// re-asserted the typed value, and none carried the typed record across a
+/// reboot.
+#[tokio::test]
+async fn cv_7_wod_a_legacy_sheet_write_beside_the_typed_roll_state_survives_a_reboot() {
+    let store = InMemoryStore::new();
+    let mut world = TestWorld::with_modules(vec![
+        Box::new(JobsModule::new()),
+        Box::new(WodRuleset::with_seed(7)),
+    ]);
+    let actor = world.spawn_player("Nick");
+    world.run(GOD, "@sheet/set Nick/strength=3");
+    world.run(GOD, "@sheet/set Nick/brawl=2");
+    world.run(GOD, "@sheet/set Nick/willpower=2");
+    world.run(GOD, "@sheet/set Nick/willpower_temp=9");
+    world.run(GOD, "@sheet/set Nick/concept=Jaded Detective");
+    let _ = world.world_mut().take_dirty();
+    let _ = world.take_module_ops();
+    install_action_keys(&mut world);
+
+    let query = world
+        .engine()
+        .legal_action_query(
+            PrincipalId::Object { id: actor },
+            actor,
+            PerceivedRef::SelfActor,
+        )
+        .unwrap();
+    let bundle = execute_offer(
+        &mut world,
+        &store,
+        query,
+        "wod",
+        "willpower-roll",
+        json!({ "pool": "strength+brawl", "difficulty": 6 }),
+        0x51,
+    )
+    .await;
+    assert_eq!(bundle.outcome().data()["willpower_remaining"], 1);
+    assert_eq!(
+        query_panel(&mut world, actor, "wod.sheet")["data"]["willpower_temp"],
+        1
+    );
+
+    // (a) A legacy write to an **unrelated** field lands and clobbers nothing.
+    world.run(GOD, "@sheet/set Nick/concept=Night Courier");
+    let panel = query_panel(&mut world, actor, "wod.sheet");
+    assert_eq!(panel["data"]["concept"], "Night Courier");
+    assert_eq!(
+        panel["data"]["willpower_temp"], 1,
+        "an unrelated legacy write must not disturb the typed record"
+    );
+
+    // (b) A legacy write **at** the migrated field is refused, and the refusal
+    //     leaves the typed record exactly where it was.
+    let clobber = world.run(GOD, "@sheet/set Nick/willpower_temp=7");
+    assert!(
+        world
+            .seen_by(&clobber, GOD)
+            .iter()
+            .any(|line| line.contains("Temporary Willpower is authoritative"))
+    );
+    assert_eq!(
+        query_panel(&mut world, actor, "wod.sheet")["data"]["willpower_temp"],
+        1,
+        "a refused legacy write must not half-apply"
+    );
+
+    // (c) The record survives a reboot: the bundle's typed post-image hydrates
+    //     into a fresh composition and still owns the field, over a legacy
+    //     sheet that came back from the store with its own stale value.
+    let records = typed_boot_records(&bundle);
+    assert!(
+        !records.is_empty(),
+        "the migrated record must be in the authoritative bundle"
+    );
+    let mut rebooted = TestWorld::with_modules(vec![
+        Box::new(JobsModule::new()),
+        Box::new(WodRuleset::with_seed(7)),
+    ]);
+    let reborn = rebooted.spawn_player("Nick");
+    assert_eq!(reborn, actor, "the reboot restores the same object id");
+    rebooted.run(GOD, "@sheet/set Nick/willpower=2");
+    rebooted.run(GOD, "@sheet/set Nick/willpower_temp=9");
+    rebooted.run(GOD, "@sheet/set Nick/concept=Night Courier");
+    rebooted
+        .engine_mut()
+        .hydrate_action_state(records)
+        .expect("the typed record hydrates into a fresh composition");
+
+    let panel = query_panel(&mut rebooted, reborn, "wod.sheet");
+    assert_eq!(
+        panel["data"]["willpower_temp"], 1,
+        "the typed record still owns temporary Willpower after the reboot"
+    );
+    assert_eq!(
+        panel["data"]["concept"], "Night Courier",
+        "the legacy half of the sheet survived beside it"
+    );
+    let refused = rebooted.run(GOD, "@sheet/set Nick/willpower_temp=7");
+    assert!(
+        rebooted
+            .seen_by(&refused, GOD)
+            .iter()
+            .any(|line| line.contains("Temporary Willpower is authoritative")),
+        "the fence is live again after the reboot"
+    );
+}
+
+/// 08j S7 — **the K8.4 non-clobber round trip for `ConditionState`.**
+///
+/// The Shadowrun half of the same duty. `sheet_set` fences exactly
+/// `physical_overflow` (a string asserted by no test before this one) and
+/// `ConditionState::apply_to_sheet` re-overlays the monitors on every read.
+#[tokio::test]
+async fn cv_7_shadowrun_a_legacy_sheet_write_beside_the_typed_condition_state_survives_a_reboot() {
+    let store = InMemoryStore::new();
+    let mut world = TestWorld::with_modules(vec![
+        Box::new(JobsModule::new()),
+        Box::new(ShadowrunRuleset::with_seed(9)),
+    ]);
+    let target = world.spawn_player("Nick");
+    world.run(GOD, "@sheet/set Nick/body=6");
+    world.run(GOD, "@sheet/set Nick/willpower=4");
+    world.run(GOD, "@sheet/set Nick/concept=Street Samurai");
+    let _ = world.world_mut().take_dirty();
+    let _ = world.take_module_ops();
+    install_action_keys(&mut world);
+
+    let perceived = PerceivedRef::KnownObject {
+        id: target,
+        revision: 1,
+    };
+    let query = world
+        .engine()
+        .legal_action_query(PrincipalId::Object { id: GOD }, GOD, perceived)
+        .unwrap();
+    let bundle = execute_offer(
+        &mut world,
+        &store,
+        query,
+        "shadowrun",
+        "condition-damage",
+        json!({ "amount": 12, "kind": "stun" }),
+        0x61,
+    )
+    .await;
+    assert_eq!(bundle.outcome().data()["report"]["stun_filled"], 10);
+
+    let filled = |panel: &Value, track: &str| -> usize {
+        panel["data"][track]
+            .as_array()
+            .expect("a condition track")
+            .iter()
+            .filter(|mark| !mark.is_null())
+            .count()
+    };
+
+    // (a) A legacy write to an **unrelated** field lands and clobbers nothing.
+    world.run(GOD, "@sheet/set Nick/concept=Rigger");
+    let panel = query_panel(&mut world, target, "shadowrun.sheet");
+    assert_eq!(panel["data"]["concept"], "Rigger");
+    assert_eq!(
+        filled(&panel, "condition_stun"),
+        10,
+        "an unrelated legacy write must not disturb the typed monitors"
+    );
+
+    // (b) A legacy write **at** the migrated field is refused.
+    let clobber = world.run(GOD, "@sheet/set Nick/physical_overflow=5");
+    assert!(
+        world
+            .seen_by(&clobber, GOD)
+            .iter()
+            .any(|line| line.contains("Condition Monitor is authoritative")),
+        "the `physical_overflow` fence refuses the clobber"
+    );
+    assert_eq!(
+        filled(
+            &query_panel(&mut world, target, "shadowrun.sheet"),
+            "condition_stun"
+        ),
+        10,
+        "a refused legacy write must not half-apply"
+    );
+
+    // (c) The record survives a reboot.
+    let records = typed_boot_records(&bundle);
+    assert!(
+        !records.is_empty(),
+        "the migrated record must be in the authoritative bundle"
+    );
+    let mut rebooted = TestWorld::with_modules(vec![
+        Box::new(JobsModule::new()),
+        Box::new(ShadowrunRuleset::with_seed(9)),
+    ]);
+    let reborn = rebooted.spawn_player("Nick");
+    assert_eq!(reborn, target, "the reboot restores the same object id");
+    rebooted.run(GOD, "@sheet/set Nick/body=6");
+    rebooted.run(GOD, "@sheet/set Nick/willpower=4");
+    rebooted.run(GOD, "@sheet/set Nick/concept=Rigger");
+    rebooted
+        .engine_mut()
+        .hydrate_action_state(records)
+        .expect("the typed record hydrates into a fresh composition");
+
+    let panel = query_panel(&mut rebooted, reborn, "shadowrun.sheet");
+    assert_eq!(
+        filled(&panel, "condition_stun"),
+        10,
+        "the typed record still owns the monitors after the reboot"
+    );
+    assert_eq!(
+        panel["data"]["concept"], "Rigger",
+        "the legacy half of the sheet survived beside it"
+    );
+    let refused = rebooted.run(GOD, "@sheet/set Nick/physical_overflow=5");
+    assert!(
+        rebooted
+            .seen_by(&refused, GOD)
+            .iter()
+            .any(|line| line.contains("Condition Monitor is authoritative")),
+        "the fence is live again after the reboot"
     );
 }

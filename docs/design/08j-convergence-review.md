@@ -390,3 +390,52 @@ test names against `ci.yml`'s six; the 168/158/9 allowlist census; `hash_domain`
 and `set_home` against `StagePreparedActionError::{DirtyWorld, LegacyModuleOps}`; 40
 `classify_commands` call sites; the 24 commits in `4c80014^1..4c80014^2` and the three `codex/` refs).
 No file in the tree was modified, no test was run beyond reads, and `cargo fmt` was not run.
+
+## 11. Fold outcome (2026-09-05, on `7419bd9`)
+
+The eight **fix-before-E7-cut-1** items of §7, plus the "fix during E7" inventory test, executed as
+one fold. Regression tests live in `// ---- convergence fold ----` sections and are named `cv_<n>_…`
+after the §7 item they close. Nothing was committed; `docs/interface/` was not touched.
+
+| # | Gap | What changed (path + symbol) | Test |
+|---|---|---|---|
+| 1 | S1 | `10b` §3.10: only condition (2) retired; (1) **and** (3) restated as **cut-10 policy**, with `checked_apply_handoff`'s `BeforeBoundary` as the single kernel leg; the two "refused by the kernel" test lines corrected in §3.10's test list | docs only |
+| 2 | S2 | `crates/ruleset-wod/src/onboarding.rs` `on_approved` — `ctx.show_room(target, dest)` replaces the `mush_core::dispatch(…, "look", …)` re-dispatch; the empty-input-stack guard is kept for a narrower reason | `ruleset-wod/tests/onboarding.rs::cv_2_the_post_approval_room_render_sees_a_live_typed_store` (a `LookRendered` probe recording `HookReadContext::typed_state_available`; it reads `false` on the old code) |
+| 3 | S3 | `08h` §2 Q5 (gate list rewritten; per-record rescope; the `put_profile` anchor fixed) and `08c` §12 (C2/K2 row + the K3-review paragraph): the ending path needs **all three** gates, and all three are closed — (1)/(3) by K8.0 `3d0788d`, (2) by K7 `0e3f2e8` — so the migration is **startable**, still an owner decision | docs only |
+| 4 | S4 | `.github/workflows/ci.yml` `redis-faults`: new step "Reboot-from-Redis-alone round trips" — `-p mushd --test persistence`, plus the `m10c_persistence_twin_redis_gated` and `sr5_sheet_survives_redis_reboot_gated` single-test lines. New self-enforcing gate `crates/mush-contract-tests/tests/ci_gated_test_inventory.rs` | `every_backend_gated_proof_is_named_by_a_ci_job`, `the_gated_suffix_census_is_stable_and_every_live_backend_proof_names_its_backend` (removing the new CI step fails the first with the nine names) |
+| 5 | S5 | `crates/mush-economy/src/contract_live.rs` `is_adjudicable_principal` + `ADJUDICATOR_IS_NOT_A_PRINCIPAL`, checked in `build_adjudicator` — mirrors `mush-scenes`' `is_sealable_principal`; only the `AttestorSet::Party(PrincipalId::Object)` arm narrows | `mush-economy/tests/e4b2.rs::cv_5_an_npc_principal_is_refused_as_adjudicator`, `::cv_5_the_adjudicator_kind_test_only_narrows_the_object_arm` |
+| 6 | S6 | `crates/mush-core/src/decision_source.rs` — new `DecisionSourceScanError::OwnedDecision { owner, source }` (in `owner()`), and `DecisionSourceRegistry::owned_decision_fault` attributes exactly `PromptLinkage`, `DuplicateDecisionId` and `InvalidTransition` to the scan loop's owner at the three bare `?` sites | `mush-server` `world_task::tests::cv_6_a_malformed_decision_freezes_its_owner_not_every_other_owner` (a second composed owner, `CvBystanderModule`, stays ready and the scan continues) |
+| 7 | S7 | `crates/mush-server/tests/production_action_migrations.rs` `typed_boot_records` + two round trips over `WodRollState` and `ConditionState` | `cv_7_wod_a_legacy_sheet_write_beside_the_typed_roll_state_survives_a_reboot`, `cv_7_shadowrun_a_legacy_sheet_write_beside_the_typed_condition_state_survives_a_reboot` |
+| 8 | §4 `ChannelGrant` row (not S8 — S8 is `plan_hash`, still open) | `08g` §10: new sub-section **"C12 re-enumerated — `ChannelGrant` on the merged main"** — one production projection, **nine** consumers in three groups, the five new since K5 named; the C12 row itself annotated | docs only |
+| 9 | §8 | Every remaining §8 amendment applied: `08c` §12 (gates + the `mush-contract-tests` premise), `08g` §10 (C7 row, C6/E2-D30 re-confirmed open), `08h` Q5/Q6, `08i` §2 headnote and rows 13/18/20/25/26/27/29/30/31, §4 rule 2, §5 (E6c order-neutral, SP1 closed, KD-11 renamed to its code, SP3 wording), §7 Q14 + §9 answers G-A/G-B/2/13, `10b` §2.5 (C2 on `EconomicClock`'s shape, the `mush-market`/`mush-party` note, the canon-outcome row), §5 (E7k precondition; "what moves" re-scoped), headnote + §11.3 (branch practice), `08f` headnote (the cite rule is document-wide) and §2 item 8 | docs only |
+
+**Three notes on how the conservative reading was taken** (§9's questions are *not* answered here).
+
+1. **Q1, owner attribution (item 6).** The conservative reading is "attribute, never drop, and never
+widen": `owned_decision_fault` promotes **only** the three flavours 09 §K7.4 names. `DecisionId::derive`
+hashes the controller — and so the owner — into the identity, so a duplicate inside one scan is
+necessarily same-owner; a prompt pair and a terminal transition never span owners either. Aggregate
+faults `observe_existing` can also raise (byte/count ceilings, canonical-encoding errors) are
+properties of the *page*, not of one owner, and stay unattributed, so they still fail the world
+closed rather than freezing a blameless owner. If K answers that all three were meant to be
+whole-world, this is a two-line revert.
+2. **Q4, job ownership (item 4).** Read conservatively as "none of the nine were meant to be
+retired": all nine are now owned, the seven in `persistence.rs` by one whole-target step as §3 S4
+prescribes. If K wanted some retired, deleting them also satisfies the new inventory test.
+3. **Q5, branch discipline (item 9).** The deviation is *recorded* in `08i` §7 Q14 and `10b` §11.3
+and the headnote; answer 14 is **not** amended to ratify single-branch practice, because that is the
+owner's call. Until it is made, the recorded answer stands and the note reads as a deviation.
+
+**One scoping decision inside item 4, stated because it narrows §7's wording.** The inventory keys on
+*skippability*, not on the `_gated` suffix: a test is backend-gated when its own body reads
+`REDIS_URL` or it carries `#[ignore]`. Four workspace tests end in `_gated` in the English sense
+(`admin_commands_are_gated`, `chown_is_power_gated`, `harm_is_staff_gated`,
+`resolved_revision_coordinates_are_bounded_unique_and_bridge_gated`); they run and fail under
+`cargo test --workspace` and naming them in `ci.yml` would be noise. The suffix is still pinned as a
+census — ten live-backend proofs, each of whose name must say `redis` — so the two halves cannot
+drift apart. The scan also sees no macro-generated test, which is why `mush-store`'s `redis_gated!`
+suite is covered by its `--test redis_suite` target line instead.
+
+**Not done here, by design:** S8 (`PLAN_HASH_DOMAIN`), S13 (the mid-gap IC *rate* test), S11's
+remaining E7-cut work, S14 (`consent_digest`), S16's allowlist numeral and the E2-D30 per-cut Redis
+tests are §7 "fix during E7" items with their own cuts; S9–S10 are "accept".

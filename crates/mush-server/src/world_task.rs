@@ -7844,6 +7844,21 @@ mod tests {
         Arc<Mutex<Option<DecisionCapturePlan>>>,
         DecisionKeyRing,
     ) {
+        decision_harness_with(lease_duration, Vec::new())
+    }
+
+    /// The decision harness composed beside `extra` modules, so a test can put
+    /// a second **mechanics owner** in the composition without giving it a
+    /// decision source of its own.
+    fn decision_harness_with(
+        lease_duration: i64,
+        extra: Vec<Box<dyn GameModule>>,
+    ) -> (
+        Engine,
+        DecisionHarnessRegistration,
+        Arc<Mutex<Option<DecisionCapturePlan>>>,
+        DecisionKeyRing,
+    ) {
         let registration = Arc::new(Mutex::new(None));
         let capture_plan = Arc::new(Mutex::new(None));
         let capability_generation = Arc::new(AtomicU64::new(1));
@@ -7853,7 +7868,9 @@ mod tests {
             lease_duration,
             capability_generation,
         };
-        let mut world = mush_testkit::TestWorld::with_modules(vec![Box::new(module)]);
+        let mut modules: Vec<Box<dyn GameModule>> = vec![Box::new(module)];
+        modules.extend(extra);
+        let mut world = mush_testkit::TestWorld::with_modules(modules);
         let keys = DecisionKeyRing::new(
             DecisionSecret::new(1, [0x5a; 32]).expect("test decision secret"),
             [],
@@ -9952,6 +9969,123 @@ mod tests {
                 .count,
             1
         );
+    }
+
+    // ------------------------------------------------------------------
+    // ---- convergence fold ----
+    // ------------------------------------------------------------------
+
+    /// A composed module that owns no mechanics at all. It exists only so a
+    /// decision-source scan has a **second** mechanics owner to leave alone.
+    struct CvBystanderModule;
+
+    impl GameModule for CvBystanderModule {
+        fn name(&self) -> &'static str {
+            "cv_bystander"
+        }
+
+        fn register(&mut self, _reg: &mut Registrar<'_>) -> Result<(), mush_core::ModError> {
+            Ok(())
+        }
+    }
+
+    /// 08j S6 — a malformed decision freezes its **owner**, not the world.
+    ///
+    /// 09 §K7.4 says a mismatched pending/prompt pair, a duplicate identity or
+    /// an impossible transition freezes the decision owner. Inside
+    /// `DecisionSourceRegistry::scan` those three were raised by a bare `?`
+    /// into the unattributed `DecisionSourceScanError::Decision`, so
+    /// `DurableDecisionDriver::drive_one` left `failure_owner` unset and
+    /// `world_task` took the `else` branch into a whole-world
+    /// `WorldMode::IntegrityFrozen`. The scan now names the loop's owner, the
+    /// driver freezes exactly that owner, and every other owner keeps running.
+    #[tokio::test]
+    async fn cv_6_a_malformed_decision_freezes_its_owner_not_every_other_owner() {
+        let (mut engine, registration, capture_plan, keys) =
+            decision_harness_with(30, vec![Box::new(CvBystanderModule)]);
+        let pending = arm_decision_capture(
+            &engine,
+            &keys,
+            &registration,
+            &capture_plan,
+            0x7a,
+            unix_now_s() + 60,
+        );
+        let store = InMemoryStore::new();
+        commit_armed_capture(&mut engine, &store, &registration, 0x7b).await;
+
+        // Break the pending <-> prompt linkage exactly the way a hand-patched
+        // or half-migrated record would: same durable identity, a revision the
+        // prompt record does not carry. `validate_prompt_pair` answers
+        // `DecisionError::PromptLinkage`.
+        let mut tampered = engine
+            .action_state()
+            .get(&registration.families.pending, &pending.id)
+            .unwrap()
+            .unwrap()
+            .clone();
+        tampered.revision = tampered.revision.saturating_add(1);
+        let mut txn = engine
+            .action_transaction(&registration.families.pending)
+            .expect("tamper transaction");
+        txn.replace(&registration.families.pending, &pending.id, tampered)
+            .expect("tampered post-image");
+        let (_, installation) = txn.prepare().unwrap().into_parts();
+        engine.install_prepared_action(installation);
+
+        let owner = OwnerId::new(DECISION_HARNESS_OWNER).expect("static harness owner");
+        let bystander = OwnerId::new("cv_bystander").expect("static bystander owner");
+        let error = engine
+            .discover_decision_dispatches(None, 8)
+            .expect_err("a broken prompt pair must fail the scan closed");
+        assert!(
+            matches!(
+                error,
+                mush_core::DecisionSourceScanError::OwnedDecision { .. }
+            ),
+            "the fault must be attributed, not dropped: {error}"
+        );
+        assert_eq!(
+            error.owner(),
+            Some(&owner),
+            "the scan loop names the decision owner"
+        );
+
+        // This is what `DurableDecisionDriver::drive_one` does once
+        // `failure_owner` is set; the `else` branch is the whole-world freeze.
+        engine
+            .registry
+            .freeze_mechanics_owner(
+                &owner,
+                mush_core::IncidentId(0x5106),
+                mush_core::RecoveryReason::IntegrityViolation {
+                    code: CanonicalId::new("decision_recovery").expect("static recovery code"),
+                },
+            )
+            .expect("freeze the decision owner");
+        assert!(
+            engine
+                .registry
+                .mechanics_owner_freeze(&owner)
+                .expect("decision owner readiness")
+                .is_some(),
+            "the decision owner is quarantined"
+        );
+        assert!(
+            engine
+                .registry
+                .mechanics_owner_freeze(&bystander)
+                .expect("bystander readiness")
+                .is_none(),
+            "a malformed decision from one owner freezes nothing of another"
+        );
+
+        // And the registry keeps scanning: the quarantined owner's records are
+        // skipped, the world is not stopped.
+        let page = engine
+            .discover_decision_dispatches(None, 8)
+            .expect("the scan continues past a quarantined owner");
+        assert!(page.candidates().is_empty());
     }
 
     #[tokio::test]

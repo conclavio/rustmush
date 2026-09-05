@@ -7466,3 +7466,94 @@ fn vf2_m6_a_deposit_whose_object_left_the_vault_is_paged_not_dropped() {
         paged.context
     );
 }
+
+// ----------------------------------------------------------------------
+// ---- convergence fold ----
+// ----------------------------------------------------------------------
+
+/// 08j S5 — **08i rule 2's adjudicator half.** A named adjudicator *replaces*
+/// every condition's own attestor set (08e answer 6), so it is the single
+/// largest authority transfer the `@contract/*` surface makes. E6b closed the
+/// sealer half in `mush-scenes` (`is_sealable_principal`, refused at conferral
+/// and at seal); nothing anywhere refused an **NPC** adjudicator — the object
+/// arm of `parse_principal` carries no kind test and `attestor_satisfiable`
+/// answers `true` for every `AttestorSet::Party(_)`. `build_adjudicator` now
+/// mirrors the sealer's kind test.
+#[test]
+fn cv_5_an_npc_principal_is_refused_as_adjudicator() {
+    let mut tw = boot();
+    let r = run_rig(&mut tw, 0);
+    ok(&mut tw, r.johnson, "@contract/draft Extraction");
+    let id = only_contract(&tw);
+    ok(
+        &mut tw,
+        r.johnson,
+        &format!("@contract/party {id}=#{}", r.a.0),
+    );
+    let npc = tw
+        .world_mut()
+        .create(ObjKind::Npc, "Fixer", GOD, Some(LIMBO))
+        .expect("an NPC");
+
+    let msg = err(
+        &mut tw,
+        r.johnson,
+        &format!("@contract/adjudicator {id}=party:#{}", npc.0),
+    );
+    assert!(
+        msg.contains("never a process"),
+        "the refusal must say why, got: {msg}"
+    );
+    assert!(
+        contract(&tw, id).consent.adjudicator.is_none(),
+        "a refused adjudicator must not be written"
+    );
+
+    // Positive control: the same shape naming a **player** is still accepted,
+    // so the kind test is the only thing that changed.
+    ok(
+        &mut tw,
+        r.johnson,
+        &format!("@contract/adjudicator {id}=party:#{}", r.watcher.0),
+    );
+    assert_eq!(
+        contract(&tw, id).consent.adjudicator,
+        Some(mush_economy::AttestorSet::Party(PrincipalId::Object(
+            r.watcher
+        ))),
+        "a player adjudicator is unaffected"
+    );
+}
+
+/// The refusal is per-kind, not per-arm: `staff`, a capability set and a canon
+/// source name no object and are untouched, and an NPC named through any of
+/// them is not reachable at all.
+#[test]
+fn cv_5_the_adjudicator_kind_test_only_narrows_the_object_arm() {
+    let mut tw = boot();
+    let r = run_rig(&mut tw, 0);
+    ok(&mut tw, r.johnson, "@contract/draft Extraction");
+    let id = only_contract(&tw);
+    ok(
+        &mut tw,
+        r.johnson,
+        &format!("@contract/party {id}=#{}", r.a.0),
+    );
+    for set in ["staff", "cap:contract.attest", "canon:scene.outcome:run/1"] {
+        ok(
+            &mut tw,
+            r.johnson,
+            &format!("@contract/adjudicator {id}={set}"),
+        );
+        assert!(
+            contract(&tw, id).consent.adjudicator.is_some(),
+            "`{set}` is still a well-formed adjudicator"
+        );
+    }
+    ok(
+        &mut tw,
+        r.johnson,
+        &format!("@contract/adjudicator {id}=none"),
+    );
+    assert!(contract(&tw, id).consent.adjudicator.is_none());
+}

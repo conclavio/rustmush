@@ -15,6 +15,14 @@ throughout, overriding doc 08 §11.2 where the two differ — plus doc 10 §12�
 Grounded in the tree at `34a53c0` (main, K3 merged) and re-checked at `ce43714` for 0.3; every
 `file:line` was checked. Departures are numbered decisions (D-E6-n, §8).
 
+> **`file:line` is historical everywhere in this document — the symbol beside a cite is the
+> citation** (08i §8's rule; 08j S17). §4 and §5.1–§5.4 say so in their own headnotes and are kept;
+> the rule is not narrower than the document. §2.1 and §5.6 carry no line cites at all; §4.6's were
+> approximate from birth (they name as-built anchors, not exact spans); and §3's ~20 stale cites are
+> governed by the headnote's standing instruction to **prefer §2.1 and §3.7 over §3's pre-build
+> text**, not by a §3 disclaimer of their own. No line number in this document is evidence of
+> anything after the whole-tree reformat (`91208ab`); resolve every cite by its symbol.
+
 > **Numbering.** The briefing's shorthand drifts one place from 08e §3 between answers 11 and 23.
 > **08e §3's numbering is authoritative** and is what this document cites: 11 vendors/quotes,
 > 12 clinics, 13 fence pricing, 14 `report_stolen`, 15 delayed settlement, 16 config, 17 chargen,
@@ -143,7 +151,7 @@ stale — G1 — and `@econ/cadence` shipped in E5b, §11 q2):
 5. **`InstrumentDef.display: Option<InstrumentDisplay>`** + one `render_amount` — E6a, XS (E2-C16, 08g §12.1 item 4). `display` goes after `status`, `#[serde(default)]`, `{ symbol: SmolStr, position: Prefix | Suffix }`; consumers are the `to_decimal_string(scale)` sites and the five raw-minor renders of 08g §3; fold item 7 (E2-C18, `register_instrument` refuses an existing id — today an upsert) lands first.
 6. `pub contract_notice` and the hiding helpers (E5b-D36/37) — E6a, XS. `notice_lines` and `show_class` are private; `may_view_contract` is `pub`; export `contract_notice(ctx, &EconomicContract) -> Vec<String>`.
 7. (E6b) `AssetOp::ReportStolen` + `@asset/stolen` (08e §4 item 6, D-E6-18); (E6b) the DL-03 deposit seam; DL-11's vendor accept (`with_party_caps`) — first for E6b's NPC fence (M15), reused by E6c's vendors and makers (G8).
-8. Wiring: `mush-party` in `server_modules_with`; the SR board observer in `with_observers` when `shadowrun` is enabled; `ruleset_modules(.., sr)`; `[shadowrun.economy]` in `mush-config`. Later cuts register `with_canon_outcome_kinds(vec!["scene.outcome"])` (E6b; `modules.rs:206`, empty today) and `with_title_issuers([… "sr.market"])` (E6c; `modules.rs:199`, empty today). Registration, not code.
+8. Wiring: `mush-party` in `server_modules_with`; the SR board observer in `with_observers` when `shadowrun` is enabled; `ruleset_modules(.., sr)`; `[shadowrun.economy]` in `mush-config`. Later cuts extend the same composition chain: `with_canon_outcome_kinds(["scene.outcome"])` (E6b) and `with_title_issuers([… "sr.market"])` (E6c). *Corrected 2026-09-05 (08j S15): Draft 0.3's "empty today" was right for the canon-outcome table and **wrong for `with_title_issuers`**, which already carried `housing_title_issuer()` from E5b/E5c — E6c **adds to** a non-empty table, it does not fill an empty one. And E6b's own composition work was not only these two: it also added `with_canon_evidence` and `with_party_caps(vendor_caps(shadowrun))` in the same `crates/mush-server/src/modules.rs` chain. Read this item as "registration rather than new mechanics", not as "only wiring changes" or "both tables start empty" — `server_modules_with` is the real integration surface and E6/E7 extend it rather than fork it.*
 9. **M4 fold:** `check_structure_basic` refuses a `System` party or `from` — E6a, XS; it makes D-E6-4's refusal structural.
 10. **DL-08:** stale-contract paging is deadline-aware (skip while an unlapsed deadline exists) and the 7 d `STALE_CONTRACT_AGE_SECS` const becomes `[economy].stale_contract_age_secs` — E6a, XS; today every 14-day run would be paged at day 7.
 11. **DL-05:** `EconomicEvent::EscalationOpened`, fanned out by the server's `broadcast_wizards` on the ladder's schedule (§3.3) — E6a, S.

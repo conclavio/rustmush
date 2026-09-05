@@ -234,12 +234,21 @@ pub(crate) fn on_approved(cfg: &OnboardingConfig, ctx: &mut Ctx<'_>, target: Obj
         target,
         "Your character has been approved — welcome to the game! You now have full access.",
     );
-    // Show them their new surroundings (they're approved now, so the gate
-    // waves `look` through). Guard on an empty input stack: dispatching a
-    // command line into an open input context would feed "look" to it as body
-    // text (the class of bug the connect-time auto-look skip avoids). A Pending
-    // gated character cannot open a context today, so this is defensive.
+    // Show them their new surroundings. **Render the room directly** rather
+    // than re-dispatching `"look"` (08j S2): `mush_core::dispatch` is the
+    // compat wrapper that runs with no typed-state snapshot, so the whole
+    // perception chain — `can_perceive`, `is_concealed`, every
+    // `HookReadContext` — would have run against an explicitly unavailable
+    // typed reader, the one exception to 09 §C2's "production engine dispatch
+    // always uses the live store". `Ctx::show_room` is the one room-render
+    // path and carries this command's live snapshot.
+    //
+    // The empty-input-stack guard is kept, for a narrower reason than before:
+    // a direct render cannot be swallowed as body text by an open input
+    // context, but painting a room over an open prompt is still wrong. A
+    // Pending gated character cannot open a context today, so this is
+    // defensive either way.
     if moved && ctx.w.input_depth(target) == 0 {
-        mush_core::dispatch(ctx.reg, ctx.w, target, "look", ctx.out);
+        ctx.show_room(target, dest);
     }
 }

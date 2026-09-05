@@ -1827,6 +1827,30 @@ impl DecisionSourceRegistry {
         Ok(pending)
     }
 
+    /// Attribute the three decision faults 09 §K7.4 names to the scan loop's
+    /// owner, and nothing else (08j S6).
+    ///
+    /// `PromptLinkage`, `DuplicateDecisionId` and `InvalidTransition` are
+    /// properties of **one owner's own records**: `DecisionId::derive` hashes
+    /// the controller (and so the owner) into the identity, so a duplicate
+    /// inside one scan is necessarily same-owner, and a prompt pair or a
+    /// terminal transition never spans owners either. Everything else a
+    /// `DecisionError` can carry here — aggregate byte/count ceilings,
+    /// canonical-encoding faults — is a property of the *page*, not of one
+    /// owner, and stays unattributed so it still fails the world closed rather
+    /// than freezing an arbitrary blameless owner.
+    fn owned_decision_fault(owner: &OwnerId, error: DecisionError) -> DecisionSourceScanError {
+        match error {
+            DecisionError::PromptLinkage
+            | DecisionError::DuplicateDecisionId
+            | DecisionError::InvalidTransition => DecisionSourceScanError::OwnedDecision {
+                owner: owner.clone(),
+                source: error,
+            },
+            other => DecisionSourceScanError::Decision(other),
+        }
+    }
+
     pub(crate) fn scan(
         &self,
         engine: &crate::engine::Engine,
@@ -1905,8 +1929,12 @@ impl DecisionSourceRegistry {
                         owner: owner.clone(),
                         decision: pending.id,
                     })?;
-                pending.validate_prompt_pair(prompt, keys)?;
-                admission_index.observe_existing(pending, prompt, keys)?;
+                pending
+                    .validate_prompt_pair(prompt, keys)
+                    .map_err(|error| Self::owned_decision_fault(owner, error))?;
+                admission_index
+                    .observe_existing(pending, prompt, keys)
+                    .map_err(|error| Self::owned_decision_fault(owner, error))?;
                 validate_deadline_link(engine, entry, pending)?;
                 let now = engine
                     .clock_now(&pending.deadline.clock)
@@ -1986,7 +2014,8 @@ impl DecisionSourceRegistry {
                     compactions.push(DecisionCompactionCandidate {
                         registry_fingerprint: self.fingerprint,
                         owner: owner.clone(),
-                        receipt: DecisionTerminalReceipt::from_terminal(pending)?,
+                        receipt: DecisionTerminalReceipt::from_terminal(pending)
+                            .map_err(|error| Self::owned_decision_fault(owner, error))?,
                     });
                 }
             }
@@ -3302,6 +3331,28 @@ pub enum DecisionSourceScanError {
         decision: DecisionId,
         source: Box<crate::clock_provider::ClockReadError>,
     },
+    /// An owner-attributable decision fault raised inside the scan loop.
+    ///
+    /// 09 §K7.4 says a missing/mismatched pending-prompt pair, a duplicate
+    /// identity or an impossible transition freezes the **decision owner**.
+    /// Those three arrive as a bare [`DecisionError`] from
+    /// `PendingDecision::validate_prompt_pair`,
+    /// `DecisionAdmissionIndex::observe_existing` and
+    /// `DecisionTerminalReceipt::from_terminal`, and the unattributed
+    /// [`DecisionSourceScanError::Decision`] wrapper drove
+    /// `DurableDecisionDriver::drive_one` into a whole-world
+    /// `WorldMode::IntegrityFrozen` (08j S6). This variant carries the scan
+    /// loop's own `OwnerId`, so the driver pages and quarantines that owner
+    /// and every other owner keeps running.
+    ///
+    /// The record is never dropped: the scan still fails closed, loudly, and
+    /// the owner stays frozen until an operator clears the incident.
+    #[error("decision record for {owner} is invalid: {source}")]
+    OwnedDecision {
+        owner: OwnerId,
+        #[source]
+        source: DecisionError,
+    },
     #[error(transparent)]
     Decision(#[from] DecisionError),
     #[error(transparent)]
@@ -3320,7 +3371,8 @@ impl DecisionSourceScanError {
             | Self::MissingDeadline { owner, .. }
             | Self::DeadlineLinkage { owner, .. }
             | Self::DuplicateRepresentation { owner, .. }
-            | Self::Clock { owner, .. } => Some(owner),
+            | Self::Clock { owner, .. }
+            | Self::OwnedDecision { owner, .. } => Some(owner),
             Self::OwnerNotReady(MechanicalOwnerReadinessError::UnknownOwner { owner })
             | Self::OwnerNotReady(MechanicalOwnerReadinessError::Frozen { owner, .. }) => {
                 Some(owner)
