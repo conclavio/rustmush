@@ -1042,6 +1042,42 @@ impl Engine {
             .plan_terminal(self, fence, binding, outcome, ingress)
     }
 
+    /// Construct stable owner-local ingress for replacing one exact terminal
+    /// decision with its compact attribution receipt.
+    pub fn decision_compaction_ingress(
+        &self,
+        candidate: &crate::decision_source::DecisionCompactionCandidate,
+        idempotency_epoch: u64,
+    ) -> Result<crate::action::IngressEnvelope, crate::decision_source::DecisionCompactionError>
+    {
+        let keys = self
+            .decision_keys
+            .as_ref()
+            .ok_or(crate::decision_source::DecisionCompactionError::RegistryUnavailable)?;
+        self.registry
+            .decision_sources()
+            .ok_or(crate::decision_source::DecisionCompactionError::RegistryUnavailable)?
+            .compaction_ingress(self, keys, candidate, idempotency_epoch)
+    }
+
+    pub fn plan_decision_compaction(
+        &self,
+        candidate: &crate::decision_source::DecisionCompactionCandidate,
+        ingress: &crate::action::IngressEnvelope,
+    ) -> Result<
+        crate::decision_source::DecisionCompactionPlan,
+        crate::decision_source::DecisionCompactionError,
+    > {
+        let keys = self
+            .decision_keys
+            .as_ref()
+            .ok_or(crate::decision_source::DecisionCompactionError::RegistryUnavailable)?;
+        self.registry
+            .decision_sources()
+            .ok_or(crate::decision_source::DecisionCompactionError::RegistryUnavailable)?
+            .plan_compaction(self, keys, candidate, ingress)
+    }
+
     /// Re-read and plan one exact decision lease after store preflight.
     pub fn plan_decision_dispatch(
         &self,
@@ -1819,6 +1855,45 @@ impl Engine {
                     .seed_terminal(fence, transition, txn)
                     .map_err(|source| {
                         crate::action::ActionProviderPrepareError::DecisionTerminal(Box::new(
+                            source,
+                        ))
+                    })
+            },
+        )
+    }
+
+    /// Prepare the registered owner action while the kernel atomically
+    /// inserts a compact receipt and removes the terminal decision bundle.
+    pub fn prepare_registered_decision_compaction_action(
+        &mut self,
+        candidate: &crate::decision_source::DecisionCompactionCandidate,
+        action: &crate::mechanics::DefinitionRef,
+        invocation: &crate::action::ActionInvocation,
+        transition: crate::decision::DecisionCompactionTransition,
+        commit_token: crate::action::CommitToken,
+    ) -> Result<
+        (PreparedTxn, crate::action::PreparedAuthoritativeAction),
+        crate::action::ActionProviderPrepareError,
+    > {
+        let providers = self
+            .registry
+            .action_providers()
+            .ok_or(crate::action::ActionProviderPrepareError::RegistryUnavailable)?;
+        let decisions = self
+            .registry
+            .decision_sources()
+            .ok_or(crate::action::ActionProviderPrepareError::RegistryUnavailable)?;
+        providers.prepare_authoritative_invocation_seeded(
+            action,
+            invocation,
+            commit_token,
+            &mut self.action_state,
+            self.resolution_keys.as_ref(),
+            |txn| {
+                decisions
+                    .seed_compaction(candidate, transition, txn)
+                    .map_err(|source| {
+                        crate::action::ActionProviderPrepareError::DecisionCompaction(Box::new(
                             source,
                         ))
                     })

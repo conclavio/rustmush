@@ -2849,6 +2849,26 @@ or impossible transition freezes the decision owner with a bounded recovery inci
 records compact only after the action receipt or terminal no-action outcome and attempt audit are
 durably attributable; the old wake's generic outbox/checkpoint lifetime is irrelevant.
 
+Implementation status: K7.4 is closed. The production spawn path exhaustively audits every source
+in bounded 128-record pages before it creates writable world ingress, while the runtime repeats the
+same scan before its first dispatch and every 250 ms thereafter to repair lost wakes. The audit
+merges compact accounting indexes across pages, so global, controller, actor and canonical-byte
+ceilings cannot be evaded at a page boundary. Prompt HMAC/linkage, deadline linkage, composition
+identity, and duplicate terminal/compact representations fail closed. A runtime integrity failure
+freezes the exact mechanics owner and later scans skip that owner while other composed owners remain
+available; failures that cannot be attributed to an owner still freeze the world.
+
+Terminal cleanup is an ordinary exact-token owner action. It inserts a bounded v2
+`DecisionTerminalReceipt` and deletes the pending, prompt and deadline records in one transaction.
+Executed/fallback decisions are eligible only after the store returns the selected action's exact
+finalized receipt and both request coordinates match; vacant, retired, quarantined or conflicting
+attribution refuses cleanup. No-action outcomes compact from their already-committed terminal
+lifecycle state. The compact receipt retains the typed ordered attempt audit, malformed count,
+selected-action binding, and exact fallback reason; each attempt also remains independently
+attributable to its ordinary lifecycle-action receipt. Composed tests cover malformed and
+unavailable exhaustion, deadline fallback, cancellation without an action, exact selected-action
+refusal, and the four-write atomic replacement.
+
 Use this minimum state machine; implementations may split audit fields but may not weaken its
 custody transitions:
 
@@ -2857,6 +2877,7 @@ Ready(attempt)
   -> Leased(attempt, lease_until)
   -> Resolving(attempt, action_binding)
   -> Terminal(executed | fallback | cancelled | exhausted | stale)
+  -> CompactReceipt(outcome, action_binding?, attempt_audit, fallback_reason?)
 
 Leased --lease expires--> Ready(next_attempt)
 Ready/Leased --deadline or exact cancellation--> Terminal or deterministic fallback submission

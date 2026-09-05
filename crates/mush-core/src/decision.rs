@@ -44,6 +44,7 @@ pub const MAX_DECISION_TARGET_WITNESSES: usize = MAX_PROJECTED_ACTION_CHOICES;
 pub const MAX_DECISION_PROMPT_BYTES: usize = 192 * 1024;
 pub const MAX_DECISION_PENDING_BYTES: usize = 256 * 1024;
 pub const MAX_DECISION_RESPONSE_BYTES: usize = 64 * 1024;
+pub const MAX_DECISION_TERMINAL_RECEIPT_BYTES: usize = 16 * 1024;
 pub const MAX_DECISION_WAKE_BYTES: usize = 1024;
 pub const MAX_DECISION_CONTEXT_BYTES: usize = 64 * 1024;
 pub const MAX_DECISION_TOTAL_BYTES: usize = 64 * 1024 * 1024;
@@ -377,38 +378,72 @@ impl DecisionAdmissionIndex {
     ) -> Result<Self, DecisionError> {
         let mut index = Self::default();
         for (pending, prompt) in pairs {
-            pending.validate_prompt_pair(prompt, keys)?;
-            if pending.status.is_terminal() {
-                continue;
-            }
-            let bytes = decision_pair_bytes(pending, prompt)?;
-            if index
-                .entries
-                .insert(
-                    pending.id,
-                    DecisionAdmissionEntry {
-                        controller: pending.controller.clone(),
-                        actor: pending.actor,
-                        replaceable_key: pending.cause.replaceable_key.clone(),
-                        bytes,
-                    },
-                )
-                .is_some()
-            {
-                return Err(DecisionError::DuplicateDecisionId);
-            }
-            *index
-                .controller_counts
-                .entry(pending.controller.clone())
-                .or_default() += 1;
-            *index.actor_counts.entry(pending.actor).or_default() += 1;
-            index.total_bytes = index
-                .total_bytes
-                .checked_add(bytes)
-                .ok_or(DecisionError::Overflow)?;
-            index.validate_hard_totals()?;
+            index.observe_existing(pending, prompt, keys)?;
         }
         Ok(index)
+    }
+
+    /// Add one already-durable pair to bounded recovery/admission accounting.
+    /// Terminal records are validated but do not consume non-terminal limits.
+    pub fn observe_existing(
+        &mut self,
+        pending: &PendingDecision,
+        prompt: &DecisionPromptRecord,
+        keys: &DecisionKeyRing,
+    ) -> Result<(), DecisionError> {
+        pending.validate_prompt_pair(prompt, keys)?;
+        if pending.status.is_terminal() {
+            return Ok(());
+        }
+        let bytes = decision_pair_bytes(pending, prompt)?;
+        if self
+            .entries
+            .insert(
+                pending.id,
+                DecisionAdmissionEntry {
+                    controller: pending.controller.clone(),
+                    actor: pending.actor,
+                    replaceable_key: pending.cause.replaceable_key.clone(),
+                    bytes,
+                },
+            )
+            .is_some()
+        {
+            return Err(DecisionError::DuplicateDecisionId);
+        }
+        *self
+            .controller_counts
+            .entry(pending.controller.clone())
+            .or_default() += 1;
+        *self.actor_counts.entry(pending.actor).or_default() += 1;
+        self.total_bytes = self
+            .total_bytes
+            .checked_add(bytes)
+            .ok_or(DecisionError::Overflow)?;
+        self.validate_hard_totals()
+    }
+
+    /// Merge one bounded recovery page without retaining prompt or witness
+    /// bodies. Duplicate identities or aggregate overflow fail closed.
+    pub fn merge_existing(&mut self, page: Self) -> Result<(), DecisionError> {
+        let mut merged = self.clone();
+        for (id, entry) in page.entries {
+            if merged.entries.insert(id, entry.clone()).is_some() {
+                return Err(DecisionError::DuplicateDecisionId);
+            }
+            *merged
+                .controller_counts
+                .entry(entry.controller)
+                .or_default() += 1;
+            *merged.actor_counts.entry(entry.actor).or_default() += 1;
+            merged.total_bytes = merged
+                .total_bytes
+                .checked_add(entry.bytes)
+                .ok_or(DecisionError::Overflow)?;
+            merged.validate_hard_totals()?;
+        }
+        *self = merged;
+        Ok(())
     }
 
     /// Decide admission before opening an authoritative transaction.
@@ -538,6 +573,7 @@ pub struct DecisionCaptureFamilies {
     pending: StateFamilyHandle<DecisionId, PendingDecision>,
     prompts: StateFamilyHandle<DecisionId, DecisionPromptRecord>,
     deadlines: StateFamilyHandle<ScheduleId, DurableSchedule>,
+    terminal_receipts: StateFamilyHandle<DecisionId, DecisionTerminalReceipt>,
 }
 
 impl fmt::Debug for DecisionCaptureFamilies {
@@ -548,6 +584,10 @@ impl fmt::Debug for DecisionCaptureFamilies {
             .field("pending", self.pending.descriptor().id())
             .field("prompts", self.prompts.descriptor().id())
             .field("deadlines", self.deadlines.descriptor().id())
+            .field(
+                "terminal_receipts",
+                self.terminal_receipts.descriptor().id(),
+            )
             .finish()
     }
 }
@@ -557,14 +597,19 @@ impl DecisionCaptureFamilies {
         pending: StateFamilyHandle<DecisionId, PendingDecision>,
         prompts: StateFamilyHandle<DecisionId, DecisionPromptRecord>,
         deadlines: StateFamilyHandle<ScheduleId, DurableSchedule>,
+        terminal_receipts: StateFamilyHandle<DecisionId, DecisionTerminalReceipt>,
     ) -> Result<Self, DecisionError> {
-        if pending.owner() != prompts.owner() || pending.owner() != deadlines.owner() {
+        if pending.owner() != prompts.owner()
+            || pending.owner() != deadlines.owner()
+            || pending.owner() != terminal_receipts.owner()
+        {
             return Err(DecisionError::CaptureOwnerMismatch);
         }
         Ok(Self {
             pending,
             prompts,
             deadlines,
+            terminal_receipts,
         })
     }
 
@@ -586,6 +631,13 @@ impl DecisionCaptureFamilies {
     #[must_use]
     pub(crate) const fn deadlines(&self) -> &StateFamilyHandle<ScheduleId, DurableSchedule> {
         &self.deadlines
+    }
+
+    #[must_use]
+    pub(crate) const fn terminal_receipts(
+        &self,
+    ) -> &StateFamilyHandle<DecisionId, DecisionTerminalReceipt> {
+        &self.terminal_receipts
     }
 }
 
@@ -867,6 +919,17 @@ pub enum DecisionAttemptFailureKind {
     Permanent,
 }
 
+/// One committed provider-attempt classification retained with decision
+/// custody. Diagnostic text remains outside semantic state; the typed reason
+/// and exact attempt number are sufficient to locate the independently
+/// durable lifecycle action receipt.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct DecisionAttemptAudit {
+    pub attempt: u8,
+    pub failure: DecisionAttemptFailureKind,
+}
+
 /// Deterministic reason an asynchronous choice ceded to its declared fallback.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -986,6 +1049,43 @@ pub struct DecisionTerminalTransition {
     post_image: PendingDecision,
 }
 
+/// Exact terminal-to-compact transition. The durable attribution receipt is
+/// inserted in the same owner transaction that removes all three bulky
+/// decision records, so recovery can observe either representation but never
+/// a gap between them.
+#[must_use = "the compact receipt and terminal-record removals must enter one authoritative transaction"]
+#[derive(Clone, Debug)]
+pub struct DecisionCompactionTransition {
+    receipt: DecisionTerminalReceipt,
+    deadline: ScheduleId,
+}
+
+impl DecisionCompactionTransition {
+    #[must_use]
+    pub const fn receipt(&self) -> &DecisionTerminalReceipt {
+        &self.receipt
+    }
+
+    pub fn stage(
+        self,
+        txn: &mut ActionTxn<'_>,
+        families: &DecisionCaptureFamilies,
+    ) -> Result<(), DecisionError> {
+        if txn.owner() != families.owner() || txn.owner() != &self.receipt.controller.owner {
+            return Err(DecisionError::CaptureOwnerMismatch);
+        }
+        let decision = self.receipt.id;
+        txn.insert(&families.terminal_receipts, &decision, self.receipt)
+            .map_err(|error| DecisionError::State(error.to_string()))?;
+        txn.remove(&families.pending, &decision)
+            .map_err(|error| DecisionError::State(error.to_string()))?;
+        txn.remove(&families.prompts, &decision)
+            .map_err(|error| DecisionError::State(error.to_string()))?;
+        txn.remove(&families.deadlines, &self.deadline)
+            .map_err(|error| DecisionError::State(error.to_string()))
+    }
+}
+
 impl DecisionTerminalTransition {
     #[must_use]
     pub const fn post_image(&self) -> &PendingDecision {
@@ -1079,6 +1179,7 @@ pub enum PendingDecisionStatus {
         lease_until: ClockStamp,
         action_binding: DecisionActionBinding,
         outcome: DecisionTerminalOutcome,
+        fallback_reason: Option<DecisionFallbackReason>,
     },
     FallbackReady {
         attempt: u8,
@@ -1088,6 +1189,7 @@ pub enum PendingDecisionStatus {
     Terminal {
         outcome: DecisionTerminalOutcome,
         action_binding: Option<DecisionActionBinding>,
+        fallback_reason: Option<DecisionFallbackReason>,
     },
 }
 
@@ -1114,7 +1216,23 @@ impl PendingDecisionStatus {
                 lease_until,
                 ..
             } => (*attempt, Some(lease_until)),
-            Self::Terminal { .. } => return Ok(()),
+            Self::Terminal {
+                outcome,
+                action_binding,
+                fallback_reason,
+            } => {
+                let requires_action = matches!(
+                    outcome,
+                    DecisionTerminalOutcome::Executed | DecisionTerminalOutcome::Fallback
+                );
+                if requires_action != action_binding.is_some()
+                    || (matches!(outcome, DecisionTerminalOutcome::Fallback)
+                        != fallback_reason.is_some())
+                {
+                    return Err(DecisionError::InvalidTransition);
+                }
+                return Ok(());
+            }
         };
         if !(1..=MAX_DECISION_ATTEMPTS).contains(&attempt) {
             return Err(DecisionError::Attempt { attempt });
@@ -1146,7 +1264,91 @@ pub struct PendingDecision {
     pub fallback: FallbackPolicyRef,
     pub action_idempotency: ScopedIdempotencyKey,
     pub malformed_attempts: u8,
+    pub attempt_audit: Vec<DecisionAttemptAudit>,
     pub status: PendingDecisionStatus,
+}
+
+/// Compact durable attribution retained after a terminal decision's private
+/// prompt, witnesses, and deadline have been removed atomically.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct DecisionTerminalReceipt {
+    pub id: DecisionId,
+    pub revision: u64,
+    pub controller: DecisionControllerId,
+    pub actor: ObjId,
+    pub cause: DecisionCause,
+    pub prompt_digest: CanonicalHash,
+    pub action_idempotency: ScopedIdempotencyKey,
+    pub outcome: DecisionTerminalOutcome,
+    pub action_binding: Option<DecisionActionBinding>,
+    pub malformed_attempts: u8,
+    pub attempt_audit: Vec<DecisionAttemptAudit>,
+    pub fallback_reason: Option<DecisionFallbackReason>,
+}
+
+impl DecisionTerminalReceipt {
+    pub const SCHEMA_VERSION: u16 = 2;
+
+    pub fn from_terminal(pending: &PendingDecision) -> Result<Self, DecisionError> {
+        pending.validate()?;
+        let PendingDecisionStatus::Terminal {
+            outcome,
+            action_binding,
+            fallback_reason,
+        } = &pending.status
+        else {
+            return Err(DecisionError::InvalidTransition);
+        };
+        let receipt = Self {
+            id: pending.id,
+            revision: pending.revision,
+            controller: pending.controller.clone(),
+            actor: pending.actor,
+            cause: pending.cause.clone(),
+            prompt_digest: pending.prompt_digest,
+            action_idempotency: pending.action_idempotency.clone(),
+            outcome: *outcome,
+            action_binding: action_binding.clone(),
+            malformed_attempts: pending.malformed_attempts,
+            attempt_audit: pending.attempt_audit.clone(),
+            fallback_reason: *fallback_reason,
+        };
+        receipt.validate()?;
+        Ok(receipt)
+    }
+
+    pub fn validate(&self) -> Result<(), DecisionError> {
+        if self.revision == 0 {
+            return Err(DecisionError::ZeroRevision);
+        }
+        if self.controller.owner != self.action_idempotency.scope().owner {
+            return Err(DecisionError::CaptureOwnerMismatch);
+        }
+        let requires_action = matches!(
+            self.outcome,
+            DecisionTerminalOutcome::Executed | DecisionTerminalOutcome::Fallback
+        );
+        if requires_action != self.action_binding.is_some() {
+            return Err(DecisionError::InvalidTransition);
+        }
+        if self.malformed_attempts > MAX_DECISION_ATTEMPTS {
+            return Err(DecisionError::MalformedAttempts {
+                actual: self.malformed_attempts,
+            });
+        }
+        validate_attempt_audit(&self.attempt_audit, self.malformed_attempts)?;
+        if matches!(self.outcome, DecisionTerminalOutcome::Fallback)
+            != self.fallback_reason.is_some()
+        {
+            return Err(DecisionError::InvalidTransition);
+        }
+        let value = serde_json::to_value(self)
+            .map_err(|error| DecisionError::Serialization(error.to_string()))?;
+        canonical_json_bytes_with_limit(&value, MAX_DECISION_TERMINAL_RECEIPT_BYTES)
+            .map_err(|_| DecisionError::TerminalReceiptBytes)?;
+        Ok(())
+    }
 }
 
 #[derive(Deserialize)]
@@ -1167,6 +1369,7 @@ struct PendingDecisionWire {
     fallback: FallbackPolicyRef,
     action_idempotency: ScopedIdempotencyKey,
     malformed_attempts: u8,
+    attempt_audit: Vec<DecisionAttemptAudit>,
     status: PendingDecisionStatus,
 }
 
@@ -1193,6 +1396,7 @@ impl<'de> Deserialize<'de> for PendingDecision {
             fallback: wire.fallback,
             action_idempotency: wire.action_idempotency,
             malformed_attempts: wire.malformed_attempts,
+            attempt_audit: wire.attempt_audit,
             status: wire.status,
         };
         value.validate().map_err(D::Error::custom)?;
@@ -1201,7 +1405,7 @@ impl<'de> Deserialize<'de> for PendingDecision {
 }
 
 impl PendingDecision {
-    pub const SCHEMA_VERSION: u16 = 1;
+    pub const SCHEMA_VERSION: u16 = 2;
 
     pub fn validate(&self) -> Result<(), DecisionError> {
         if self.revision == 0 {
@@ -1220,6 +1424,7 @@ impl PendingDecision {
                 actual: self.malformed_attempts,
             });
         }
+        validate_attempt_audit(&self.attempt_audit, self.malformed_attempts)?;
         self.status.validate(&self.deadline)?;
         validate_offer_witnesses(&self.offered)?;
         let value = serde_json::to_value(self)
@@ -1305,16 +1510,20 @@ impl PendingDecision {
         if self.revision != expected_revision {
             return Err(DecisionError::StaleRevision);
         }
-        let (attempt, lease_until) = match &self.status {
+        let (attempt, lease_until, fallback_reason) = match &self.status {
             PendingDecisionStatus::Leased {
                 attempt,
                 lease_until,
-            } if outcome == DecisionTerminalOutcome::Executed => (*attempt, lease_until.clone()),
+            } if outcome == DecisionTerminalOutcome::Executed => {
+                (*attempt, lease_until.clone(), None)
+            }
             PendingDecisionStatus::FallbackReady {
                 attempt,
                 lease_until,
-                ..
-            } if outcome == DecisionTerminalOutcome::Fallback => (*attempt, lease_until.clone()),
+                reason,
+            } if outcome == DecisionTerminalOutcome::Fallback => {
+                (*attempt, lease_until.clone(), Some(*reason))
+            }
             _ => return Err(DecisionError::InvalidTransition),
         };
         if attempt != expected_attempt {
@@ -1328,6 +1537,7 @@ impl PendingDecision {
             lease_until,
             action_binding: binding,
             outcome,
+            fallback_reason,
         };
         Ok(())
     }
@@ -1372,6 +1582,10 @@ impl PendingDecision {
                 .checked_add(1)
                 .ok_or(DecisionError::Overflow)?;
         }
+        post_image.attempt_audit.push(DecisionAttemptAudit {
+            attempt: *attempt,
+            failure: kind,
+        });
         let fallback_reason = if kind == DecisionAttemptFailureKind::Permanent {
             Some(DecisionFallbackReason::PermanentFailure)
         } else if *attempt >= max_attempts {
@@ -1522,6 +1736,7 @@ impl PendingDecision {
             lease_until,
             action_binding,
             outcome: resolving_outcome,
+            ..
         } = &self.status
         else {
             return Err(DecisionError::InvalidTransition);
@@ -1541,6 +1756,18 @@ impl PendingDecision {
         let mut post_image = self.clone();
         post_image.finish(self.revision, outcome, Some(binding.clone()))?;
         Ok(DecisionTerminalTransition { post_image })
+    }
+
+    /// Plan compaction only from a fully validated terminal record. External
+    /// callers must additionally prove selected-action attribution before
+    /// this transition is admitted to authoritative preparation.
+    pub fn plan_compaction(&self) -> Result<DecisionCompactionTransition, DecisionError> {
+        let receipt = DecisionTerminalReceipt::from_terminal(self)?;
+        let local_id = CanonicalId::parse_canonical(self.id.0.to_hex())
+            .map_err(|error| DecisionError::Canonical(error.to_string()))?;
+        let deadline = ScheduleId::derive(&self.controller.owner, &local_id)
+            .map_err(|error| DecisionError::Canonical(error.to_string()))?;
+        Ok(DecisionCompactionTransition { receipt, deadline })
     }
 
     pub fn retry_expired_lease(
@@ -1581,9 +1808,22 @@ impl PendingDecision {
         if self.status.is_terminal() {
             return Err(DecisionError::InvalidTransition);
         }
+        let fallback_reason = match (&self.status, outcome) {
+            (
+                PendingDecisionStatus::Resolving {
+                    fallback_reason, ..
+                },
+                DecisionTerminalOutcome::Fallback,
+            ) => *fallback_reason,
+            _ => None,
+        };
+        if matches!(outcome, DecisionTerminalOutcome::Fallback) != fallback_reason.is_some() {
+            return Err(DecisionError::InvalidTransition);
+        }
         self.status = PendingDecisionStatus::Terminal {
             outcome,
             action_binding,
+            fallback_reason,
         };
         Ok(())
     }
@@ -1712,6 +1952,28 @@ fn validate_revision_order(revisions: &[RevisionStamp]) -> Result<(), DecisionEr
     }
     if revisions.windows(2).any(|pair| pair[0].key >= pair[1].key) {
         return Err(DecisionError::RevisionOrder);
+    }
+    Ok(())
+}
+
+fn validate_attempt_audit(
+    attempts: &[DecisionAttemptAudit],
+    malformed_attempts: u8,
+) -> Result<(), DecisionError> {
+    if attempts.len() > usize::from(MAX_DECISION_ATTEMPTS)
+        || attempts
+            .iter()
+            .any(|attempt| !(1..=MAX_DECISION_ATTEMPTS).contains(&attempt.attempt))
+        || attempts
+            .windows(2)
+            .any(|pair| pair[0].attempt >= pair[1].attempt)
+        || attempts
+            .iter()
+            .filter(|attempt| attempt.failure == DecisionAttemptFailureKind::Malformed)
+            .count()
+            != usize::from(malformed_attempts)
+    {
+        return Err(DecisionError::AttemptAudit);
     }
     Ok(())
 }
@@ -1951,6 +2213,33 @@ impl StateValueSerializer<DecisionPromptRecord> for DecisionPromptStateCodec {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+pub struct DecisionTerminalReceiptStateCodec;
+
+impl StateKeyCodec<DecisionId> for DecisionTerminalReceiptStateCodec {
+    fn encode_key(&self, key: &DecisionId) -> Result<String, String> {
+        Ok(key.0.to_hex())
+    }
+}
+
+impl StateValueDecoder<DecisionTerminalReceipt> for DecisionTerminalReceiptStateCodec {
+    fn decode_value(&self, value: &Value) -> Result<DecisionTerminalReceipt, String> {
+        serde_json::from_value(value.clone()).map_err(|error| error.to_string())
+    }
+}
+
+impl StateValueValidator<DecisionTerminalReceipt> for DecisionTerminalReceiptStateCodec {
+    fn validate_value(&self, value: &DecisionTerminalReceipt) -> Result<(), String> {
+        value.validate().map_err(|error| error.to_string())
+    }
+}
+
+impl StateValueSerializer<DecisionTerminalReceipt> for DecisionTerminalReceiptStateCodec {
+    fn serialize_value(&self, value: &DecisionTerminalReceipt) -> Result<Value, String> {
+        serde_json::to_value(value).map_err(|error| error.to_string())
+    }
+}
+
 pub fn pending_decision_state_family_descriptor(
     family: StateFamilyId,
 ) -> Result<StateFamilyDescriptor, StateFamilyDescriptorError> {
@@ -1979,6 +2268,21 @@ pub fn decision_prompt_state_family_descriptor(
         CanonicalId::new("decision_prompt_serialize.v1").expect("static canonical id"),
     )?
     .with_limits(64, MAX_DECISION_PROMPT_BYTES)
+}
+
+pub fn decision_terminal_receipt_state_family_descriptor(
+    family: StateFamilyId,
+) -> Result<StateFamilyDescriptor, StateFamilyDescriptorError> {
+    StateFamilyDescriptor::new(
+        family,
+        CanonicalId::new("decision_id.v1").expect("static canonical id"),
+        CanonicalId::new("decision_terminal_receipt.v1").expect("static canonical id"),
+        DecisionTerminalReceipt::SCHEMA_VERSION,
+        CanonicalId::new("decision_terminal_receipt_decode.v1").expect("static canonical id"),
+        CanonicalId::new("decision_terminal_receipt_validate.v1").expect("static canonical id"),
+        CanonicalId::new("decision_terminal_receipt_serialize.v1").expect("static canonical id"),
+    )?
+    .with_limits(64, MAX_DECISION_TERMINAL_RECEIPT_BYTES)
 }
 
 #[derive(Clone, Debug, Eq, Error, PartialEq)]
@@ -2045,6 +2349,8 @@ pub enum DecisionError {
     BridgeOrder,
     #[error("malformed attempt count {actual} exceeds {MAX_DECISION_ATTEMPTS}")]
     MalformedAttempts { actual: u8 },
+    #[error("decision provider-attempt audit is inconsistent")]
+    AttemptAudit,
     #[error("attempt {attempt} is outside 1..={MAX_DECISION_ATTEMPTS}")]
     Attempt { attempt: u8 },
     #[error("lease deadline uses a different clock or exceeds the decision deadline")]
@@ -2057,6 +2363,10 @@ pub enum DecisionError {
     PromptBytes,
     #[error("decision response exceeds {MAX_DECISION_RESPONSE_BYTES} canonical bytes")]
     ResponseBytes,
+    #[error(
+        "decision terminal receipt exceeds {MAX_DECISION_TERMINAL_RECEIPT_BYTES} canonical bytes"
+    )]
+    TerminalReceiptBytes,
     #[error("decision wake exceeds {MAX_DECISION_WAKE_BYTES} canonical bytes")]
     WakeBytes,
     #[error("wake id, revision, or digest linkage is invalid")]
@@ -2233,6 +2543,7 @@ mod tests {
             fallback: fallback(),
             action_idempotency: idempotency,
             malformed_attempts: 0,
+            attempt_audit: Vec::new(),
             status: PendingDecisionStatus::Ready { attempt: 1 },
         };
         pending.validate().unwrap();
@@ -2314,6 +2625,19 @@ mod tests {
                 DurableScheduleStateCodec,
             )
             .unwrap();
+        let terminal_receipts = builder
+            .register(
+                owner.clone(),
+                decision_terminal_receipt_state_family_descriptor(
+                    StateFamilyId::new("decision_terminal_receipts").unwrap(),
+                )
+                .unwrap(),
+                DecisionTerminalReceiptStateCodec,
+                DecisionTerminalReceiptStateCodec,
+                DecisionTerminalReceiptStateCodec,
+                DecisionTerminalReceiptStateCodec,
+            )
+            .unwrap();
         let owners = BTreeSet::from([owner]);
         let readiness = MechanicalOwnerReadiness::for_owners(&owners);
         let registry = builder
@@ -2321,7 +2645,7 @@ mod tests {
             .unwrap();
         (
             ActionStateStore::new(registry),
-            DecisionCaptureFamilies::new(pending, prompts, deadlines).unwrap(),
+            DecisionCaptureFamilies::new(pending, prompts, deadlines, terminal_receipts).unwrap(),
         )
     }
 
@@ -2525,6 +2849,7 @@ mod tests {
             PendingDecisionStatus::Terminal {
                 outcome: DecisionTerminalOutcome::Cancelled,
                 action_binding: None,
+                ..
             }
         ));
         assert_eq!(
@@ -2703,6 +3028,62 @@ mod tests {
         assert_eq!(
             store.get(&families.prompts, &prompt.id).unwrap(),
             Some(&prompt)
+        );
+    }
+
+    #[test]
+    fn terminal_compaction_atomically_replaces_all_large_records_with_receipt() {
+        let (keys, pending, prompt) = pair();
+        let admission = DecisionAdmissionIndex::default()
+            .admit(&pending, &prompt, &keys)
+            .unwrap();
+        let plan = DecisionCapturePlan::new(
+            &pending.controller.owner,
+            pending.clone(),
+            prompt.clone(),
+            admission,
+            &keys,
+            CanonicalId::new("decision_wake").unwrap(),
+            0,
+        )
+        .unwrap();
+        let deadline_id = plan.deadline().id();
+        let (mut store, families) = capture_store();
+        let mut capture = store.transaction(&families.pending).unwrap();
+        plan.stage(&mut capture, &families).unwrap();
+        let (_, installation) = capture.prepare().unwrap().into_parts();
+        store.install(installation);
+
+        let cancellation = pending
+            .plan_cancellation(&pending.controller, pending.id, pending.revision)
+            .unwrap();
+        let mut terminalize = store.transaction(&families.pending).unwrap();
+        cancellation.stage(&mut terminalize, &families).unwrap();
+        let (_, installation) = terminalize.prepare().unwrap().into_parts();
+        store.install(installation);
+        let terminal = store
+            .get(&families.pending, &pending.id)
+            .unwrap()
+            .unwrap()
+            .clone();
+        let expected = DecisionTerminalReceipt::from_terminal(&terminal).unwrap();
+
+        let mut compact = store.transaction(&families.pending).unwrap();
+        terminal
+            .plan_compaction()
+            .unwrap()
+            .stage(&mut compact, &families)
+            .unwrap();
+        let (writes, installation) = compact.prepare().unwrap().into_parts();
+        assert_eq!(writes.len(), 4);
+        store.install(installation);
+
+        assert_eq!(store.get(&families.pending, &pending.id).unwrap(), None);
+        assert_eq!(store.get(&families.prompts, &pending.id).unwrap(), None);
+        assert_eq!(store.get(&families.deadlines, &deadline_id).unwrap(), None);
+        assert_eq!(
+            store.get(&families.terminal_receipts, &pending.id).unwrap(),
+            Some(&expected)
         );
     }
 }

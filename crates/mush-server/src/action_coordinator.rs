@@ -414,6 +414,16 @@ impl ActionCoordinator {
             .map_err(|source| ActionCoordinatorError::DecisionTerminalIngress(Box::new(source)))
     }
 
+    pub fn decision_compaction_ingress(
+        engine: &Engine,
+        candidate: &mush_core::DecisionCompactionCandidate,
+        idempotency_epoch: u64,
+    ) -> Result<IngressEnvelope, ActionCoordinatorError> {
+        engine
+            .decision_compaction_ingress(candidate, idempotency_epoch)
+            .map_err(|source| ActionCoordinatorError::DecisionCompaction(Box::new(source)))
+    }
+
     /// Authorized semantic `action/status` lookup. Finalized outcomes are
     /// returned only to an event-time eligible witness.
     pub async fn semantic_status(
@@ -795,6 +805,52 @@ impl ActionCoordinator {
         Ok(staged)
     }
 
+    /// Atomically replace one exact terminal decision bundle with its compact
+    /// attribution receipt through the controller owner's registered action.
+    pub fn prepare_and_stage_decision_compaction(
+        permit: Box<ActionPermit>,
+        engine: &mut Engine,
+        candidate: &mush_core::DecisionCompactionCandidate,
+    ) -> Result<StagedAuthoritativeAction, ActionCoordinatorError> {
+        let plan = engine
+            .plan_decision_compaction(candidate, permit.ingress())
+            .map_err(|source| ActionCoordinatorError::DecisionCompaction(Box::new(source)))?;
+        let (action, invocation, guards, transition) = plan.into_parts();
+        validate_invocation_identity(permit.ingress(), &invocation)?;
+        let token = deterministic_commit_token(permit.ingress())?;
+        let (prepared, output) = engine
+            .prepare_registered_decision_compaction_action(
+                candidate,
+                &action,
+                &invocation,
+                transition,
+                token,
+            )
+            .map_err(ActionCoordinatorError::Provider)?;
+        let bundle = match assemble_bundle(
+            permit.ingress(),
+            &action,
+            &invocation,
+            token,
+            &prepared,
+            output,
+        ) {
+            Ok(bundle) => bundle,
+            Err(error) => {
+                engine.abort_prepared_transaction(prepared);
+                return Err(error);
+            }
+        };
+        let staged = StagedAuthoritativeAction {
+            token: bundle.token(),
+            bundle_hash: bundle.bundle_hash(),
+        };
+        engine
+            .stage_authoritative_action(prepared, guards, bundle)
+            .map_err(ActionCoordinatorError::Stage)?;
+        Ok(staged)
+    }
+
     pub fn prepare_and_stage_decision_attempt(
         permit: Box<ActionPermit>,
         engine: &mut Engine,
@@ -1086,6 +1142,8 @@ pub enum ActionCoordinatorError {
     DecisionTerminalIngress(#[source] Box<mush_core::DecisionTerminalIngressError>),
     #[error("decision terminal planning failed: {0}")]
     DecisionTerminalPlan(#[source] Box<mush_core::DecisionTerminalPlanError>),
+    #[error("decision compaction failed: {0}")]
+    DecisionCompaction(#[source] Box<mush_core::DecisionCompactionError>),
     #[error("decision attempt ingress is invalid: {0}")]
     DecisionAttemptIngress(#[source] Box<mush_core::DecisionAttemptIngressError>),
     #[error("decision attempt planning failed: {0}")]

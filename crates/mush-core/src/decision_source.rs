@@ -21,14 +21,14 @@ use crate::action::{
 use crate::action_state::{ActionStateError, ActionTxn, StateFamilyRegistry};
 use crate::clock::ClockStamp;
 use crate::decision::{
-    DecisionActionBinding, DecisionAttemptFailureKind, DecisionAttemptTransition,
-    DecisionCancellationTransition, DecisionCaptureFamilies, DecisionCompletionFence,
-    DecisionControllerId, DecisionError, DecisionFallbackReason, DecisionFallbackTransition,
-    DecisionId, DecisionKeyRing, DecisionLeaseTransition, DecisionPrompt,
-    DecisionResolvingTransition, DecisionResponse, DecisionTerminalOutcome,
-    DecisionTerminalTransition, DecisionWake, DecisionWorkerLease, FallbackPolicyRef,
-    MAX_DECISION_ATTEMPTS, MAX_DECISION_RECOVERY_PAGE, PendingDecision, PendingDecisionStatus,
-    PendingOfferWitness,
+    DecisionActionBinding, DecisionAdmissionIndex, DecisionAttemptFailureKind,
+    DecisionAttemptTransition, DecisionCancellationTransition, DecisionCaptureFamilies,
+    DecisionCompactionTransition, DecisionCompletionFence, DecisionControllerId, DecisionError,
+    DecisionFallbackReason, DecisionFallbackTransition, DecisionId, DecisionKeyRing,
+    DecisionLeaseTransition, DecisionPrompt, DecisionResolvingTransition, DecisionResponse,
+    DecisionTerminalOutcome, DecisionTerminalReceipt, DecisionTerminalTransition, DecisionWake,
+    DecisionWorkerLease, FallbackPolicyRef, MAX_DECISION_ATTEMPTS, MAX_DECISION_RECOVERY_PAGE,
+    PendingDecision, PendingDecisionStatus, PendingOfferWitness,
 };
 use crate::durable_schedule::ScheduleId;
 use crate::mechanics::{
@@ -165,6 +165,7 @@ impl DecisionSourceRegistryBuilder {
                 .validate_handle(entry.families.pending())
                 .and_then(|()| state_families.validate_handle(entry.families.prompts()))
                 .and_then(|()| state_families.validate_handle(entry.families.deadlines()))
+                .and_then(|()| state_families.validate_handle(entry.families.terminal_receipts()))
                 .map_err(|source| DecisionSourceRegistryError::Family {
                     owner: entry.owner.clone(),
                     source: Box::new(source),
@@ -182,6 +183,7 @@ impl DecisionSourceRegistryBuilder {
                             "pending": entry.families.pending().descriptor().canonical_value(),
                             "prompts": entry.families.prompts().descriptor().canonical_value(),
                             "deadlines": entry.families.deadlines().descriptor().canonical_value(),
+                            "terminal_receipts": entry.families.terminal_receipts().descriptor().canonical_value(),
                             "wake_adapter": entry.wake_adapter,
                             "lease_duration": entry.lease_duration,
                             "fallback_adapter": entry.fallback_adapter.identity(),
@@ -246,6 +248,38 @@ pub struct DecisionFallbackTriggerCandidate {
     attempt: u8,
     lease_until: ClockStamp,
     reason: DecisionFallbackReason,
+}
+
+/// One exact terminal record eligible for replacement by its bounded durable
+/// attribution receipt after any selected action is independently proven
+/// finalized by the authoritative store.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DecisionCompactionCandidate {
+    registry_fingerprint: DefinitionDigest,
+    owner: OwnerId,
+    receipt: DecisionTerminalReceipt,
+}
+
+impl DecisionCompactionCandidate {
+    #[must_use]
+    pub const fn owner(&self) -> &OwnerId {
+        &self.owner
+    }
+
+    #[must_use]
+    pub const fn receipt(&self) -> &DecisionTerminalReceipt {
+        &self.receipt
+    }
+
+    #[must_use]
+    pub const fn action_idempotency(&self) -> &ScopedIdempotencyKey {
+        &self.receipt.action_idempotency
+    }
+
+    #[must_use]
+    pub const fn action_binding(&self) -> Option<&DecisionActionBinding> {
+        self.receipt.action_binding.as_ref()
+    }
 }
 
 impl DecisionFallbackTriggerCandidate {
@@ -323,6 +357,8 @@ pub struct DecisionSourcePage {
     reconciliations: Vec<DecisionReconciliationCandidate>,
     fallback_triggers: Vec<DecisionFallbackTriggerCandidate>,
     fallbacks: Vec<DecisionFallbackCandidate>,
+    compactions: Vec<DecisionCompactionCandidate>,
+    admission_index: DecisionAdmissionIndex,
     records_scanned: usize,
     next_cursor: Option<DecisionSourceCursor>,
 }
@@ -346,6 +382,16 @@ impl DecisionSourcePage {
     #[must_use]
     pub fn fallbacks(&self) -> &[DecisionFallbackCandidate] {
         &self.fallbacks
+    }
+
+    #[must_use]
+    pub fn compactions(&self) -> &[DecisionCompactionCandidate] {
+        &self.compactions
+    }
+
+    #[must_use]
+    pub const fn admission_index(&self) -> &DecisionAdmissionIndex {
+        &self.admission_index
     }
 
     #[must_use]
@@ -417,6 +463,16 @@ pub struct DecisionTerminalPlan {
     invocation: ActionInvocation,
     guards: GuardSet,
     transition: DecisionTerminalTransition,
+}
+
+/// Exact coordinator material for atomically replacing one terminal decision
+/// bundle with its compact durable attribution receipt.
+#[derive(Debug)]
+pub struct DecisionCompactionPlan {
+    action: DefinitionRef,
+    invocation: ActionInvocation,
+    guards: GuardSet,
+    transition: DecisionCompactionTransition,
 }
 
 /// Authenticated provider selection after current offer regeneration and
@@ -513,6 +569,19 @@ impl DecisionTerminalPlan {
         ActionInvocation,
         GuardSet,
         DecisionTerminalTransition,
+    ) {
+        (self.action, self.invocation, self.guards, self.transition)
+    }
+}
+
+impl DecisionCompactionPlan {
+    pub fn into_parts(
+        self,
+    ) -> (
+        DefinitionRef,
+        ActionInvocation,
+        GuardSet,
+        DecisionCompactionTransition,
     ) {
         (self.action, self.invocation, self.guards, self.transition)
     }
@@ -1257,6 +1326,137 @@ impl DecisionSourceRegistry {
         Ok(())
     }
 
+    pub(crate) fn compaction_ingress(
+        &self,
+        engine: &crate::engine::Engine,
+        keys: &DecisionKeyRing,
+        candidate: &DecisionCompactionCandidate,
+        idempotency_epoch: u64,
+    ) -> Result<IngressEnvelope, DecisionCompactionError> {
+        let (entry, _) = self.validate_compaction_candidate(engine, keys, candidate)?;
+        decision_compaction_ingress(&entry.lease_action, candidate.receipt(), idempotency_epoch)
+    }
+
+    pub(crate) fn plan_compaction(
+        &self,
+        engine: &crate::engine::Engine,
+        keys: &DecisionKeyRing,
+        candidate: &DecisionCompactionCandidate,
+        ingress: &IngressEnvelope,
+    ) -> Result<DecisionCompactionPlan, DecisionCompactionError> {
+        let (entry, pending) = self.validate_compaction_candidate(engine, keys, candidate)?;
+        let expected = decision_compaction_ingress(
+            &entry.lease_action,
+            candidate.receipt(),
+            ingress.idempotency().epoch(),
+        )?;
+        if &expected != ingress {
+            return Err(DecisionCompactionError::IngressMismatch);
+        }
+        let transition = pending.plan_compaction()?;
+        if transition.receipt() != candidate.receipt() {
+            return Err(DecisionCompactionError::StaleCandidate);
+        }
+        let offered_action = ActionOfferId(CanonicalHash::for_canonical_value(
+            "decision_compaction_offer.v1",
+            1,
+            &json!({
+                "action": entry.lease_action,
+                "receipt": candidate.receipt(),
+            }),
+            32 * 1024,
+        )?);
+        let invocation = ActionInvocation::new(ActionInvocationDraft {
+            request: ingress.request(),
+            principal: ingress.principal().clone(),
+            actor: pending.actor,
+            offered_action,
+            subject: PerceivedRef::SelfActor,
+            targets: Vec::new(),
+            parameters: json!({
+                "decision": pending.id,
+                "revision": pending.revision,
+                "phase": "compact",
+                "outcome": candidate.receipt().outcome,
+            }),
+            idempotency: ingress.idempotency().clone(),
+        })?;
+        let definitions = engine
+            .registry
+            .definitions()
+            .ok_or(DecisionCompactionError::RegistryUnavailable)?;
+        let mut guards = engine
+            .registry
+            .server_guard_set_builder(RevisionSet::default())?;
+        guards.add_definition(entry.lease_action.clone(), definitions)?;
+        self.owner_readiness.require_ready(&entry.owner)?;
+        Ok(DecisionCompactionPlan {
+            action: entry.lease_action.clone(),
+            invocation,
+            guards: guards.finish()?,
+            transition,
+        })
+    }
+
+    pub(crate) fn seed_compaction(
+        &self,
+        candidate: &DecisionCompactionCandidate,
+        transition: DecisionCompactionTransition,
+        txn: &mut ActionTxn<'_>,
+    ) -> Result<(), DecisionCompactionError> {
+        if candidate.registry_fingerprint != self.fingerprint {
+            return Err(DecisionCompactionError::StaleCandidate);
+        }
+        let entry = self.entries.get(candidate.owner()).ok_or_else(|| {
+            DecisionCompactionError::SourceUnavailable {
+                owner: candidate.owner().clone(),
+            }
+        })?;
+        transition.stage(txn, &entry.families)?;
+        Ok(())
+    }
+
+    fn validate_compaction_candidate<'a>(
+        &'a self,
+        engine: &'a crate::engine::Engine,
+        keys: &DecisionKeyRing,
+        candidate: &DecisionCompactionCandidate,
+    ) -> Result<(&'a DecisionSourceEntry, &'a PendingDecision), DecisionCompactionError> {
+        if candidate.registry_fingerprint != self.fingerprint
+            || candidate.receipt.controller.owner != candidate.owner
+        {
+            return Err(DecisionCompactionError::StaleCandidate);
+        }
+        let entry = self.entries.get(candidate.owner()).ok_or_else(|| {
+            DecisionCompactionError::SourceUnavailable {
+                owner: candidate.owner().clone(),
+            }
+        })?;
+        self.owner_readiness.require_ready(&entry.owner)?;
+        let pending = engine
+            .action_state()
+            .get(entry.families.pending(), &candidate.receipt.id)?
+            .ok_or(DecisionCompactionError::MissingDecision)?;
+        if engine
+            .action_state()
+            .get(entry.families.terminal_receipts(), &candidate.receipt.id)?
+            .is_some()
+        {
+            return Err(DecisionCompactionError::DuplicateRepresentation);
+        }
+        let prompt = engine
+            .action_state()
+            .get(entry.families.prompts(), &candidate.receipt.id)?
+            .ok_or(DecisionCompactionError::MissingPrompt)?;
+        pending.validate_prompt_pair(prompt, keys)?;
+        validate_deadline_link(engine, entry, pending)
+            .map_err(|source| DecisionCompactionError::Deadline(Box::new(source)))?;
+        if DecisionTerminalReceipt::from_terminal(pending)? != candidate.receipt {
+            return Err(DecisionCompactionError::StaleCandidate);
+        }
+        Ok((entry, pending))
+    }
+
     pub(crate) fn resolve_response(
         &self,
         engine: &crate::engine::Engine,
@@ -1646,13 +1846,17 @@ impl DecisionSourceRegistry {
         let mut reconciliations = Vec::new();
         let mut fallback_triggers = Vec::new();
         let mut fallbacks = Vec::new();
+        let mut compactions = Vec::new();
+        let mut admission_index = DecisionAdmissionIndex::default();
         let mut records_scanned = 0;
         let mut last_scanned = None;
         for (owner, entry) in &self.entries {
             if cursor.is_some_and(|cursor| owner < &cursor.owner) {
                 continue;
             }
-            self.owner_readiness.require_ready(owner)?;
+            if self.owner_readiness.freeze_for(owner)?.is_some() {
+                continue;
+            }
             let after = cursor
                 .filter(|cursor| &cursor.owner == owner)
                 .map(|cursor| cursor.after_encoded_key.as_str());
@@ -1679,6 +1883,16 @@ impl DecisionSourceRegistry {
                         encoded_key: SmolStr::new(scanned.encoded_key()),
                     });
                 }
+                if engine
+                    .action_state()
+                    .get(entry.families.terminal_receipts(), &pending.id)?
+                    .is_some()
+                {
+                    return Err(DecisionSourceScanError::DuplicateRepresentation {
+                        owner: owner.clone(),
+                        decision: pending.id,
+                    });
+                }
                 let prompt = engine
                     .action_state()
                     .get(entry.families.prompts(), &pending.id)?
@@ -1687,6 +1901,7 @@ impl DecisionSourceRegistry {
                         decision: pending.id,
                     })?;
                 pending.validate_prompt_pair(prompt, keys)?;
+                admission_index.observe_existing(pending, prompt, keys)?;
                 validate_deadline_link(engine, entry, pending)?;
                 let now = engine
                     .clock_now(&pending.deadline.clock)
@@ -1728,6 +1943,7 @@ impl DecisionSourceRegistry {
                     lease_until,
                     action_binding,
                     outcome,
+                    ..
                 } = &pending.status
                 {
                     reconciliations.push(DecisionReconciliationCandidate {
@@ -1761,6 +1977,13 @@ impl DecisionSourceRegistry {
                         )?,
                     });
                 }
+                if pending.status.is_terminal() {
+                    compactions.push(DecisionCompactionCandidate {
+                        registry_fingerprint: self.fingerprint,
+                        owner: owner.clone(),
+                        receipt: DecisionTerminalReceipt::from_terminal(pending)?,
+                    });
+                }
             }
             self.owner_readiness.require_ready(owner)?;
             if records_scanned == limit {
@@ -1769,6 +1992,8 @@ impl DecisionSourceRegistry {
                     reconciliations,
                     fallback_triggers,
                     fallbacks,
+                    compactions,
+                    admission_index,
                     records_scanned,
                     next_cursor: last_scanned,
                 });
@@ -1779,6 +2004,8 @@ impl DecisionSourceRegistry {
             reconciliations,
             fallback_triggers,
             fallbacks,
+            compactions,
+            admission_index,
             records_scanned,
             next_cursor: None,
         })
@@ -1794,7 +2021,9 @@ impl DecisionSourceRegistry {
         let Some(entry) = self.entries.get(owner) else {
             return Ok(None);
         };
-        self.owner_readiness.require_ready(owner)?;
+        if self.owner_readiness.freeze_for(owner)?.is_some() {
+            return Ok(None);
+        }
         let Some(pending) = engine
             .action_state()
             .get(entry.families.pending(), &wake.id)?
@@ -2518,6 +2747,59 @@ pub fn decision_terminal_ingress(
     )?)
 }
 
+/// Canonical owner-local ingress for atomically replacing a terminal decision
+/// with its compact attribution receipt. The full receipt is identity-bound;
+/// compaction can therefore never be replayed against a changed terminal.
+pub fn decision_compaction_ingress(
+    action: &DefinitionRef,
+    receipt: &DecisionTerminalReceipt,
+    idempotency_epoch: u64,
+) -> Result<IngressEnvelope, DecisionCompactionError> {
+    receipt.validate()?;
+    if action.key().owner != receipt.controller.owner {
+        return Err(DecisionCompactionError::OwnerMismatch);
+    }
+    let request_hash = CanonicalHash::for_canonical_value(
+        "decision_compaction_request.v1",
+        1,
+        &json!({
+            "action": action,
+            "receipt": receipt,
+        }),
+        32 * 1024,
+    )?;
+    let mut request_bytes = [0_u8; 16];
+    request_bytes.copy_from_slice(&request_hash.as_bytes()[..16]);
+    let request = crate::action::RequestUid::from_bytes(request_bytes);
+    let principal = PrincipalId::Scoped {
+        owner: receipt.controller.owner.clone(),
+        class: CanonicalId::new("decision_lifecycle").expect("static principal class"),
+        id: IdempotencyKeyText::parse_canonical(receipt.id.canonical_hash().to_hex())?,
+    };
+    let idempotency = ScopedIdempotencyKey::new(
+        IdempotencyScope {
+            principal: principal.clone(),
+            owner: receipt.controller.owner.clone(),
+            namespace: CanonicalId::new(action.key().id.as_str())?,
+        },
+        idempotency_epoch,
+        IdempotencyKey::Deterministic(request_hash),
+    );
+    Ok(IngressEnvelope::new(
+        request,
+        principal,
+        IngressSurfaceVersion::new(
+            CanonicalId::new("kernel.decision_compaction").expect("static surface id"),
+            1,
+        )?,
+        IngressPayload::structured(json!({
+            "action": action,
+            "receipt": receipt,
+        }))?,
+        idempotency,
+    )?)
+}
+
 #[derive(Debug, Error)]
 pub enum DecisionSourceRegistryError {
     #[error("decision-source registry exceeds its hard limit of {max}")]
@@ -2839,6 +3121,44 @@ pub enum DecisionTerminalPlanError {
 }
 
 #[derive(Debug, Error)]
+pub enum DecisionCompactionError {
+    #[error("decision compaction source registry or deployment key ring is unavailable")]
+    RegistryUnavailable,
+    #[error("decision compaction source for owner {owner} is unavailable")]
+    SourceUnavailable { owner: OwnerId },
+    #[error("decision compaction action and terminal receipt have different owners")]
+    OwnerMismatch,
+    #[error("decision compaction references a missing terminal pending record")]
+    MissingDecision,
+    #[error("decision compaction references a missing prompt record")]
+    MissingPrompt,
+    #[error("decision compaction found both terminal and compact representations")]
+    DuplicateRepresentation,
+    #[error("decision compaction candidate changed before preparation")]
+    StaleCandidate,
+    #[error("decision compaction ingress differs from its canonical terminal receipt")]
+    IngressMismatch,
+    #[error("decision compaction deadline linkage is invalid: {0}")]
+    Deadline(#[source] Box<DecisionSourceScanError>),
+    #[error(transparent)]
+    Decision(#[from] DecisionError),
+    #[error(transparent)]
+    State(#[from] ActionStateError),
+    #[error(transparent)]
+    Guard(#[from] crate::action::GuardSetBuildError),
+    #[error(transparent)]
+    Metadata(#[from] ActionMetadataError),
+    #[error(transparent)]
+    Hash(#[from] CanonicalHashError),
+    #[error(transparent)]
+    CanonicalId(#[from] CanonicalIdError),
+    #[error(transparent)]
+    IdempotencyText(#[from] IdempotencyKeyTextError),
+    #[error(transparent)]
+    OwnerNotReady(#[from] MechanicalOwnerReadinessError),
+}
+
+#[derive(Debug, Error)]
 pub enum DecisionResponseIngressError {
     #[error("decision response source registry or deployment key ring is unavailable")]
     RegistryUnavailable,
@@ -2966,6 +3286,11 @@ pub enum DecisionSourceScanError {
         owner: OwnerId,
         decision: DecisionId,
     },
+    #[error("decision {decision:?} for {owner} exists as both pending and compact receipt")]
+    DuplicateRepresentation {
+        owner: OwnerId,
+        decision: DecisionId,
+    },
     #[error("decision {decision:?} for {owner} cannot read its clock: {source}")]
     Clock {
         owner: OwnerId,
@@ -2978,4 +3303,28 @@ pub enum DecisionSourceScanError {
     State(#[from] ActionStateError),
     #[error(transparent)]
     OwnerNotReady(#[from] MechanicalOwnerReadinessError),
+}
+
+impl DecisionSourceScanError {
+    #[must_use]
+    pub fn owner(&self) -> Option<&OwnerId> {
+        match self {
+            Self::StaleCursor { owner }
+            | Self::RecordIdentity { owner, .. }
+            | Self::MissingPrompt { owner, .. }
+            | Self::MissingDeadline { owner, .. }
+            | Self::DeadlineLinkage { owner, .. }
+            | Self::DuplicateRepresentation { owner, .. }
+            | Self::Clock { owner, .. } => Some(owner),
+            Self::OwnerNotReady(MechanicalOwnerReadinessError::UnknownOwner { owner })
+            | Self::OwnerNotReady(MechanicalOwnerReadinessError::Frozen { owner, .. }) => {
+                Some(owner)
+            }
+            Self::InvalidLimit { .. }
+            | Self::Decision(_)
+            | Self::State(_)
+            | Self::OwnerNotReady(MechanicalOwnerReadinessError::RegistryUnavailable) => None,
+            Self::RegistryUnavailable => None,
+        }
+    }
 }
