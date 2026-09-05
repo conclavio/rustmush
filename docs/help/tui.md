@@ -81,6 +81,10 @@ From either mode:
                without an explicit prefix is sent as that kind of speech. A
                line starting with `"`, `:`, `;` or `\`, or with a channel
                alias, is always sent as typed.
+  Ctrl-R       Open the box with `+roll ` ready (Tab completes sheet traits).
+  Ctrl-N       On the channel screen, highlight the next channel of the
+               focused list (wrapping); Ctrl-O swaps between the IC and OOC
+               lists. Elsewhere both do nothing.
   Ctrl-]       Detach to line mode.
 
 A single key in nav mode never sends anything that changes the world: it
@@ -108,10 +112,16 @@ slash: `/clear` empties the scrollback, `/help` opens the key help,
   3 mail     Your inbox: number, unread marker, sender, subject. Enter on a
              row opens the box with `@mail <n>` ready; `s` starts a send,
              `d` a delete of the highlighted message.
-  4 chan     Your channels on the left (alias, name, unread count) and the
-             highlighted channel's recent lines on the right; `b` asks for
-             more backlog. Enter on a channel opens the box with its alias.
-  5 rolls    The dice you have rolled, oldest first.
+  4 chan     Your channels on the left, in-character ones (green frame) above
+             the out-of-character ones (yellow frame): alias, name, unread
+             count. The highlighted channel's recent lines fill the right;
+             `b` asks for more backlog. Enter on a channel opens the box with
+             its alias. Ctrl-N walks the focused list, Ctrl-O swaps lists.
+  5 rolls    Your vitals as widgets on the left — tracks as boxes in threes
+             with the level named, pools as gauges, readouts with a condition
+             mark — and the dice you have rolled on the right. Ctrl-R opens
+             the box with `+roll ` ready; Tab then completes a trait from your
+             sheet (`+roll str` → `+roll strength`, `+br` → `+brawl`).
   6 intel    Your own informant intel, newest first.
   7 actions  The actions currently offered to you; Enter prefills `+act`.
 

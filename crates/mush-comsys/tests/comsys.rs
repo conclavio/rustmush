@@ -1479,6 +1479,7 @@ fn state_query_reports_channels_colors_and_unread() {
     assert_eq!(public["gagged"], false);
     assert_eq!(public["loud"], true);
     assert_eq!(public["logged"], true);
+    assert_eq!(public["ic"], false, "OOC unless staff say otherwise");
 
     // See-locked away: the channel vanishes from the member's state.
     run(&mut engine, GOD, "@channel/perm Public=see=flag^WIZARD");
@@ -1591,4 +1592,45 @@ fn backlog_query_honors_the_see_lock() {
         .map(|m| m["text"].as_str().unwrap())
         .collect();
     assert_eq!(texts, ["before the lock"]);
+}
+
+/// The IC flag (interface plan I7): `@channel/set <c>=ic` marks a channel
+/// in-character, `clist` shows it as `I`, `comsys.state` reports it, and
+/// `!ic` clears it. Channel admins only.
+#[test]
+fn ic_flag_sets_lists_and_reports() {
+    let (mut engine, nick, _) = setup();
+    let out = run(&mut engine, nick, "@channel/set Public=ic");
+    assert!(
+        sys_texts(&out)
+            .iter()
+            .any(|t| t.contains("Permission denied")),
+        "a member is not a channel admin: {out:?}"
+    );
+    run(&mut engine, GOD, "@channel/set Public=ic");
+    assert!(state(&engine).channel_by_name("Public").unwrap().flags.ic);
+
+    let out = run(&mut engine, nick, "clist");
+    let listing = sys_texts(&out).join("\n");
+    assert!(listing.contains('I'), "clist shows the I flag: {listing}");
+
+    let data = panel_data(
+        web_query(&mut engine, nick, "comsys.state", serde_json::json!({})),
+        "comsys",
+    );
+    let public = data["channels"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["name"] == "Public")
+        .expect("Public listed");
+    assert_eq!(public["ic"], true);
+
+    run(&mut engine, GOD, "@channel/set Public=!ic");
+    assert!(!state(&engine).channel_by_name("Public").unwrap().flags.ic);
+    let out = run(&mut engine, GOD, "@channel/set Public=bogus");
+    assert!(
+        sys_texts(&out).iter().any(|t| t.contains("|ic")),
+        "usage names the flag: {out:?}"
+    );
 }

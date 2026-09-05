@@ -852,16 +852,21 @@ pub fn render_scene_rows(data: &Value, ctx: &RenderCtx<'_>) -> PaneRows {
 /// name, unread badge) prefilling `<alias> `; the row key is the channel
 /// name the backlog pane and query use.
 #[must_use]
-pub fn render_channels_rows(data: &Value, ctx: &RenderCtx<'_>) -> PaneRows {
+pub fn render_channels_rows(data: &Value, ctx: &RenderCtx<'_>, ic: bool) -> PaneRows {
     let channel_style = ctx.tag("channel");
-    let Some(channels) = data.get("channels").and_then(Value::as_array) else {
-        return PaneRows::one("(no channels)");
+    let empty = if ic {
+        "(no IC channels)"
+    } else {
+        "(no OOC channels)"
     };
-    if channels.is_empty() {
-        return PaneRows::one("(no channels)");
-    }
+    let Some(channels) = data.get("channels").and_then(Value::as_array) else {
+        return PaneRows::one(empty);
+    };
     let mut rows = Vec::new();
     for c in channels {
+        if c.get("ic").and_then(Value::as_bool).unwrap_or(false) != ic {
+            continue;
+        }
         let name = clean(c.get("name").and_then(Value::as_str).unwrap_or("?"));
         let alias = clean(c.get("alias").and_then(Value::as_str).unwrap_or(""));
         let unread = c.get("unread").and_then(Value::as_u64).unwrap_or(0);
@@ -887,6 +892,9 @@ pub fn render_channels_rows(data: &Value, ctx: &RenderCtx<'_>) -> PaneRows {
             prefill,
             name,
         ));
+    }
+    if rows.is_empty() {
+        return PaneRows::one(empty);
     }
     PaneRows { rows }
 }
@@ -951,6 +959,134 @@ pub fn render_sheet_rows(payload: &Value, ctx: &RenderCtx<'_>) -> PaneRows {
                 SheetRow::Blank => PaneRow::plain(Line::from("")),
             })
             .collect(),
+    }
+}
+
+/// The vitals pane (interface plan I6): every `.vitals` frame as widget
+/// rows — a subject header, then each vital as `<mark> <label> <widget>`:
+/// a track as boxes grouped in threes with the deepest level and the
+/// frame's `detail` (a wound penalty, a "next box" warning), a pool as a
+/// `▰▱` gauge with digits, a readout as text. The mark is the condition
+/// map: `✓` fine, `◐` impaired, `✗` critical or down (`+ ~ ! X` in ASCII).
+/// The frame is the whole contract: nothing here names a ruleset, and every
+/// number is clamped.
+#[must_use]
+pub fn render_vitals_rows(frames: &[(mush_proto::SmolStr, VitalsFrame)], utf8: bool) -> PaneRows {
+    if frames.is_empty() {
+        return PaneRows::one("(no vitals feed)");
+    }
+    let mut rows = Vec::new();
+    for (i, (_, frame)) in frames.iter().enumerate() {
+        if i > 0 {
+            rows.push(PaneRow::plain(Line::from("")));
+        }
+        rows.push(PaneRow::plain(Line::from(Span::styled(
+            format!("{}  rev {}", clean(&frame.subject.name), frame.revision),
+            Style::default().add_modifier(Modifier::BOLD),
+        ))));
+        let mut vitals: Vec<&mush_proto::Vital> = frame.vitals.iter().collect();
+        vitals.sort_by_key(|v| match v.role {
+            VitalRole::Dominant => 0,
+            VitalRole::Track => 1,
+            VitalRole::Pool => 2,
+            VitalRole::Readout => 3,
+        });
+        for v in vitals {
+            let (mark, style) = match v.state {
+                VitalState::Ok => (if utf8 { '\u{2713}' } else { '+' }, Style::default()),
+                VitalState::Warn => (
+                    if utf8 { '\u{25d0}' } else { '~' },
+                    Style::default().fg(Color::Indexed(3)),
+                ),
+                VitalState::Crit => (
+                    if utf8 { '\u{2717}' } else { '!' },
+                    Style::default().fg(Color::Indexed(1)),
+                ),
+                VitalState::Down => (
+                    if utf8 { '\u{2717}' } else { 'X' },
+                    Style::default()
+                        .fg(Color::Indexed(1))
+                        .add_modifier(Modifier::BOLD),
+                ),
+            };
+            let widget = vital_widget(v, utf8);
+            let detail = v
+                .detail
+                .as_deref()
+                .map(|d| format!("  {}", clean(d)))
+                .unwrap_or_default();
+            rows.push(PaneRow::plain(Line::from(vec![
+                Span::styled(format!("{mark} "), style),
+                dim_span_owned(&format!("{:<12}", truncate_chars(&clean(&v.label), 12))),
+                Span::styled(widget, style),
+                dim_span_owned(&detail),
+            ])));
+        }
+    }
+    PaneRows { rows }
+}
+
+/// One vital's widget text: gauge, grouped boxes with the level, or text.
+fn vital_widget(v: &mush_proto::Vital, utf8: bool) -> String {
+    match &v.value {
+        VitalValue::Bounded { current, min, max } => {
+            let (lo, hi) = if min <= max {
+                (*min, *max)
+            } else {
+                (*max, *min)
+            };
+            let span = hi - lo;
+            let cells = 8i64;
+            let filled = if span <= 0 {
+                0
+            } else {
+                usize::try_from((((*current).clamp(lo, hi) - lo) * cells + span / 2) / span)
+                    .unwrap_or(0)
+            };
+            let (on, off) = if utf8 {
+                ('\u{25b0}', '\u{25b1}')
+            } else {
+                ('#', '-')
+            };
+            let bar: String = (0..cells)
+                .map(|i| {
+                    if usize::try_from(i).unwrap_or(usize::MAX) < filled {
+                        on
+                    } else {
+                        off
+                    }
+                })
+                .collect();
+            format!("{bar} {current}/{hi}")
+        }
+        VitalValue::Track { boxes, level } => {
+            let empty = if utf8 { '\u{25a1}' } else { '_' };
+            let mut s = String::new();
+            for (i, b) in boxes.iter().enumerate() {
+                if i % 3 == 0 {
+                    if i > 0 {
+                        s.push(']');
+                    }
+                    s.push('[');
+                }
+                s.push(match b.as_deref() {
+                    None => empty,
+                    Some("bashing") => '/',
+                    Some("lethal") => 'X',
+                    Some("aggravated") => '*',
+                    Some(other) => other.chars().next().map_or('?', |c| c.to_ascii_uppercase()),
+                });
+            }
+            if !boxes.is_empty() {
+                s.push(']');
+            }
+            if let Some(l) = level {
+                s.push_str("  ");
+                s.push_str(&clean(l));
+            }
+            s
+        }
+        VitalValue::Text { text } => clean(text),
     }
 }
 
@@ -1372,11 +1508,18 @@ mod tests {
         let chans = serde_json::json!({ "channels": [
             { "name": "Public", "alias": "pub", "unread": 3, "gagged": false },
             { "name": "Staff", "alias": "", "unread": 0, "gagged": true },
+            { "name": "Radio", "alias": "rad", "unread": 0, "gagged": false, "ic": true },
         ]});
-        let rows = render_channels_rows(&chans, &ctx);
+        let rows = render_channels_rows(&chans, &ctx, false);
+        assert_eq!(rows.rows.len(), 2, "the OOC pane never lists an IC channel");
         assert_eq!(rows.rows[0].prefill.as_deref(), Some("pub "));
         assert_eq!(rows.rows[0].row_key.as_deref(), Some("Public"));
         assert_eq!(rows.rows[1].prefill.as_deref(), Some("Staff "));
+        let ic_rows = render_channels_rows(&chans, &ctx, true);
+        assert_eq!(ic_rows.rows.len(), 1, "the IC pane lists only IC channels");
+        assert_eq!(ic_rows.rows[0].row_key.as_deref(), Some("Radio"));
+        let none = render_channels_rows(&serde_json::json!({ "channels": [] }), &ctx, true);
+        assert_eq!(line_text(&none.rows[0].line), "(no IC channels)");
         let actions = serde_json::json!([{ "offer": "secret-token", "presentation": { "verb": "brace", "label": "Brace", "help": "Hold." } }]);
         let rows = render_actions_rows(&actions, &ctx);
         assert_eq!(rows.rows[0].prefill.as_deref(), Some("+act brace"));
@@ -1386,6 +1529,57 @@ mod tests {
             "TUI actions pane",
             &all,
             &["secret-token", "scene_turn", "private-definition-digest"],
+        );
+    }
+
+    /// I6: the vitals pane's widgets — a gauge with digits, boxes grouped
+    /// in threes with the level and the detail, a readout, the condition
+    /// mark per state — in ASCII and UTF-8; swapped bounds and empty boxes
+    /// never panic.
+    #[test]
+    fn vitals_rows_render_each_widget_and_clamp() {
+        let frame = VitalsFrame::from_panel_data(&serde_json::json!({
+            "subject": { "id": "#5", "name": "Nick" },
+            "revision": 4,
+            "vitals": [
+                { "id": "t.pool", "label": "Pool", "role": "pool",
+                  "value": { "kind": "bounded", "current": 6, "min": 0, "max": 10 }, "state": "warn" },
+                { "id": "t.track", "label": "Track", "role": "dominant",
+                  "value": { "kind": "track", "boxes": ["bashing", "lethal", null, null, null, null, null], "level": "Hurt" },
+                  "state": "crit", "detail": "-1 dice" },
+                { "id": "t.read", "label": "Readout", "role": "readout",
+                  "value": { "kind": "text", "text": "P5 M4 S3" }, "state": "ok" },
+                { "id": "t.swap", "label": "Swapped", "role": "pool",
+                  "value": { "kind": "bounded", "current": 50, "min": 10, "max": 0 }, "state": "down" },
+                { "id": "t.empty", "label": "Empty", "role": "track",
+                  "value": { "kind": "track", "boxes": [], "level": null }, "state": "ok" }
+            ]
+        }))
+        .unwrap();
+        let frames = vec![(mush_proto::SmolStr::new_static("t.vitals"), frame)];
+        let rows = render_vitals_rows(&frames, false);
+        let t: Vec<String> = rows.rows.iter().map(|r| line_text(&r.line)).collect();
+        assert_eq!(t[0], "Nick  rev 4");
+        assert_eq!(t[1], "! Track       [/X_][___][_]  Hurt  -1 dice");
+        assert_eq!(t[2], "+ Empty       ");
+        assert_eq!(t[3], "~ Pool        #####--- 6/10");
+        assert_eq!(t[4], "X Swapped     ######## 50/10");
+        assert_eq!(t[5], "+ Readout     P5 M4 S3");
+        let rows = render_vitals_rows(&frames, true);
+        let t: Vec<String> = rows.rows.iter().map(|r| line_text(&r.line)).collect();
+        assert!(
+            t[1].starts_with("\u{2717} Track       [/X\u{25a1}]"),
+            "{}",
+            t[1]
+        );
+        assert!(
+            t[3].contains("\u{25b0}\u{25b0}\u{25b0}\u{25b0}\u{25b0}\u{25b1}\u{25b1}\u{25b1} 6/10"),
+            "{}",
+            t[3]
+        );
+        assert_eq!(
+            line_text(&render_vitals_rows(&[], true).rows[0].line),
+            "(no vitals feed)"
         );
     }
 

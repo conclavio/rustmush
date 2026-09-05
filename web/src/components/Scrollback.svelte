@@ -1,5 +1,7 @@
 <script lang="ts">
-  // The main scrollback: renders the store's visible window, autoscrolls
+  // The main scrollback: renders the store's visible window as speaker
+  // groups (interface plan I5: consecutive speech and action by one actor
+  // under a single name header, everything else standing alone), autoscrolls
   // while pinned to the bottom, shows the "N new lines" pill while the
   // reader has scrolled up, and offers "show older" at the top.
   import { tick } from "svelte";
@@ -8,6 +10,7 @@
   import type { ScrollbackStore } from "$lib/stores/scrollback.svelte";
 
   import RichLine from "./RichLine.svelte";
+  import RollCard from "./RollCard.svelte";
 
   let { sb, onCmd }: { sb: ScrollbackStore; onCmd: (cmd: string) => void } = $props();
 
@@ -51,15 +54,42 @@
         Show older ({sb.hiddenCount} more)
       </button>
     {/if}
-    {#each sb.visible as block (block.id)}
-      <div class="block {block.cls}">
-        <span class="ts">{fmtClock(block.ts)}</span>
-        <div class="lines">
-          {#each block.lines as line, i (i)}
-            <RichLine {line} {onCmd} />
+    {#each sb.visibleGroups as group (group.id)}
+      {#if group.speaker}
+        <div class="group">
+          <div class="ghead">
+            <span class="ts">{fmtClock(group.blocks[0]?.ts ?? 0)}</span>
+            <span class="speaker tag-player">{group.speaker.name}</span>
+          </div>
+          {#each group.blocks as block (block.id)}
+            <div class="block grouped {block.cls}">
+              <span class="ts">{fmtClock(block.ts)}</span>
+              <div class="lines">
+                {#each block.body ?? block.lines as line, i (i)}
+                  <RichLine {line} {onCmd} />
+                {/each}
+              </div>
+            </div>
           {/each}
         </div>
-      </div>
+      {:else}
+        {#each group.blocks as block (block.id)}
+          <div class="block {block.cls}">
+            <span class="ts">{fmtClock(block.ts)}</span>
+            {#if block.roll}
+              <div class="lines">
+                <RollCard entry={block.roll} />
+              </div>
+            {:else}
+              <div class="lines">
+                {#each block.lines as line, i (i)}
+                  <RichLine {line} {onCmd} />
+                {/each}
+              </div>
+            {/if}
+          </div>
+        {/each}
+      {/if}
     {/each}
   </div>
   {#if !sb.pinned && sb.unseen > 0}
@@ -110,6 +140,35 @@
     padding: 0.07rem 0;
   }
 
+  .group {
+    margin: 0.35rem 0;
+  }
+
+  .ghead {
+    display: flex;
+    gap: 0.6rem;
+    align-items: baseline;
+  }
+
+  .ghead .ts {
+    visibility: hidden;
+  }
+
+  .speaker {
+    font-family: var(--font-ui);
+    font-weight: 600;
+    font-size: 0.85rem;
+  }
+
+  .grouped .ts {
+    opacity: 0;
+    transition: opacity 120ms;
+  }
+
+  .grouped:hover .ts {
+    opacity: 1;
+  }
+
   .ts {
     flex: none;
     width: 2.9rem;
@@ -138,5 +197,17 @@
     font: inherit;
     font-size: 0.8rem;
     box-shadow: 0 2px 8px rgb(0 0 0 / 35%);
+  }
+
+  /* A phone (I5): the timestamp column goes, prose fills the width. */
+  @media (max-width: 800px) {
+    .block .ts,
+    .ghead .ts {
+      display: none;
+    }
+
+    .viewport {
+      padding: 0.4rem 0.5rem;
+    }
   }
 </style>

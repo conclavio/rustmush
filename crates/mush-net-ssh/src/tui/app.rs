@@ -39,8 +39,8 @@ use super::keys::{Key, KeyParser};
 use super::panels::{ChanMsg, PanelOutcome, PanelStore, rich_plain};
 use super::render::{
     Entry, GUTTER_W, PaneRows, RenderCtx, dim_span_owned, legend_line, render_backlog_rows,
-    render_channels_rows, render_event, render_rolls_rows, render_sheet_rows, render_who_rail,
-    status_line, tab_strip, vitals_line, wrap_spans,
+    render_channels_rows, render_event, render_rolls_rows, render_sheet_rows, render_vitals_rows,
+    render_who_rail, status_line, tab_strip, vitals_line, wrap_spans,
 };
 use super::screen::{
     BorderRole, GLOBAL_KEYS, JUMP_KEYS, KeyAction, LocalAction, PaneContent, PaneId, PaneSlot,
@@ -454,6 +454,17 @@ impl TuiApp {
                 }
             }
         }
+        if screen
+            .panes
+            .iter()
+            .any(|p| matches!(p.content, PaneContent::Vitals))
+        {
+            for feed in &self.manifest.panels {
+                if feed.ends_with(".vitals") {
+                    q.push((feed.clone(), Value::Object(serde_json::Map::new())));
+                }
+            }
+        }
         q
     }
 
@@ -668,6 +679,20 @@ impl TuiApp {
             }
             Key::Ctrl('p') => {
                 self.sticky = self.sticky.next();
+                return;
+            }
+            Key::Ctrl('n') => {
+                self.next_channel();
+                return;
+            }
+            Key::Ctrl('r') => {
+                // I6: the roll builder is the line — `+roll ` ready, Tab
+                // completing the sheet's traits inside it.
+                self.enter_input(Some("+roll ".to_string()));
+                return;
+            }
+            Key::Ctrl('o') => {
+                self.toggle_channel_pane();
                 return;
             }
             Key::F(n) if (1..=9).contains(&n) => {
@@ -1043,20 +1068,73 @@ impl TuiApp {
         self.selected_row().and_then(|r| r.row_key)
     }
 
-    /// The channel highlighted on the active screen's channels pane.
+    /// The indexes of the active screen's channel panes, the focused one
+    /// first.
+    fn channel_pane_indexes(&self) -> Vec<usize> {
+        let panes = &self.screen().panes;
+        let mut idx: Vec<usize> = (0..panes.len())
+            .filter(|&i| matches!(panes[i].content, PaneContent::Channels { .. }))
+            .collect();
+        if let Some(pos) = idx.iter().position(|&i| i == self.focus) {
+            idx.rotate_left(pos);
+        }
+        idx
+    }
+
+    /// The channel highlighted on the active screen: the focused channel
+    /// pane's highlight, else the first channel any channel pane lists
+    /// (the IC pane is often empty; the OOC pane then answers).
     fn selected_channel(&self) -> Option<String> {
-        let spec = self
-            .screen()
-            .panes
-            .iter()
-            .find(|p| matches!(p.content, PaneContent::Channels))
-            .copied()?;
+        for i in self.channel_pane_indexes() {
+            let spec = self.screen().panes[i];
+            let rows = self.pane_rows(&spec);
+            let ui = self.pane_ui(spec.id);
+            let key = rows
+                .rows
+                .get(ui.selected)
+                .and_then(|r| r.row_key.clone())
+                .or_else(|| rows.rows.iter().find_map(|r| r.row_key.clone()));
+            if key.is_some() {
+                return key;
+            }
+        }
+        None
+    }
+
+    /// `^N` (interface plan I7): highlight the next channel of the focused
+    /// channel pane, wrapping; focus moves to a channel pane first when it
+    /// is elsewhere. Nothing on a screen without channel panes.
+    fn next_channel(&mut self) {
+        let Some(&i) = self.channel_pane_indexes().first() else {
+            return;
+        };
+        self.focus = i;
+        let spec = self.screen().panes[i];
         let rows = self.pane_rows(&spec);
-        let ui = self.pane_ui(spec.id);
-        rows.rows
-            .get(ui.selected)
-            .and_then(|r| r.row_key.clone())
-            .or_else(|| rows.rows.iter().find_map(|r| r.row_key.clone()))
+        let selectable: Vec<usize> = rows
+            .rows
+            .iter()
+            .enumerate()
+            .filter(|(_, r)| r.selectable)
+            .map(|(i, _)| i)
+            .collect();
+        if selectable.is_empty() {
+            return;
+        }
+        let cur = self.pane_ui(spec.id).selected;
+        let pos = selectable.iter().position(|&s| s == cur);
+        let next = pos.map_or(0, |p| (p + 1) % selectable.len());
+        self.pane_ui_mut(spec.id).selected = selectable[next];
+    }
+
+    /// `^O` (interface plan I7): focus the other channel pane (IC to OOC
+    /// and back). Nothing on a screen without two.
+    fn toggle_channel_pane(&mut self) {
+        let idx = self.channel_pane_indexes();
+        if idx.len() < 2 {
+            return;
+        }
+        self.focus = if idx[0] == self.focus { idx[1] } else { idx[0] };
     }
 
     // ---- palette and completion ------------------------------------------
@@ -1171,7 +1249,30 @@ impl TuiApp {
     /// first command it prefixes.
     fn complete(&mut self) {
         let text = self.line.text();
-        if text.contains(' ') || text.is_empty() {
+        if text.is_empty() {
+            return;
+        }
+        if let Some(rest) = text.strip_prefix("+roll ") {
+            // I6: a trait inside a roll line — the token after the last
+            // space or `+`, against the sheet's categorised dotted fields.
+            let start = rest.rfind([' ', '+']).map_or(0, |i| i + 1);
+            let token = rest[start..].to_lowercase();
+            if token.is_empty() {
+                return;
+            }
+            let mut traits: Vec<String> = self
+                .sheet_traits()
+                .into_iter()
+                .filter(|t| t.starts_with(&token))
+                .collect();
+            traits.sort();
+            if let Some(t) = traits.first() {
+                let head = &rest[..start];
+                self.line.set(&format!("+roll {head}{t}"));
+            }
+            return;
+        }
+        if text.contains(' ') {
             return;
         }
         let lower = text.to_lowercase();
@@ -1185,6 +1286,40 @@ impl TuiApp {
         if let Some(m) = matches.first() {
             self.line.set(&format!("{m} "));
         }
+    }
+
+    /// The sheet's rollable traits (I6): every dotted field with a
+    /// `category`, lowercased, from the first `.sheet` keyframe held. The
+    /// schema is the only source; nothing here names a trait.
+    fn sheet_traits(&self) -> Vec<String> {
+        let Some(sheet) = self.panels.sheet() else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        let sections = sheet
+            .get("schema")
+            .and_then(|s| s.get("sections"))
+            .and_then(Value::as_array);
+        for section in sections.into_iter().flatten() {
+            let Some(fields) = section.get("fields").and_then(Value::as_array) else {
+                continue;
+            };
+            for f in fields {
+                let dots = f
+                    .get("ty")
+                    .and_then(|t| t.get("kind"))
+                    .and_then(Value::as_str)
+                    == Some("dots");
+                let categorised = f.get("category").and_then(Value::as_str).is_some();
+                if dots
+                    && categorised
+                    && let Some(id) = f.get("id").and_then(Value::as_str)
+                {
+                    out.push(id.to_lowercase());
+                }
+            }
+        }
+        out
     }
 
     // ---- rows and layout --------------------------------------------------
@@ -1216,8 +1351,8 @@ impl TuiApp {
                 Some(data) => render_sheet_rows(data, &ctx),
                 None => loading(),
             },
-            PaneContent::Channels => match self.panels.get("comsys") {
-                Some(data) => render_channels_rows(data, &ctx),
+            PaneContent::Channels { ic } => match self.panels.get("comsys") {
+                Some(data) => render_channels_rows(data, &ctx, ic),
                 None => loading(),
             },
             PaneContent::Backlog => {
@@ -1232,6 +1367,7 @@ impl TuiApp {
                 let rolls: Vec<Value> = self.panels.rolls().iter().cloned().collect();
                 render_rolls_rows(&rolls)
             }
+            PaneContent::Vitals => render_vitals_rows(&self.panels.vitals(), self.caps.utf8),
         }
     }
 
@@ -2439,5 +2575,111 @@ mod tests {
         assert_eq!(r.queries.len(), 1);
         assert_eq!(r.queries[0].0, "comsys.backlog");
         assert_eq!(r.queries[0].1["channel"], "Public");
+    }
+
+    /// I7: the channel screen lists IC and OOC channels apart; `^N` walks
+    /// the focused pane's channels and wraps, `^O` swaps panes, and the
+    /// highlight is what `b` asks backlog for. With no IC channel the OOC
+    /// pane answers even while the (empty) IC pane has focus.
+    #[test]
+    fn channel_screen_splits_ic_and_ooc_with_ctrl_n_and_ctrl_o() {
+        let mut app = app();
+        app.feed_input(b"4");
+        app.apply_event(&OutputEvent::Panel {
+            feed: SmolStr::new_static("comsys"),
+            kind: PanelFrameKind::Keyframe,
+            data: serde_json::json!({ "channels": [
+                { "name": "Public", "alias": "pub", "unread": 0 },
+                { "name": "Staff", "alias": "st", "unread": 0 },
+            ] }),
+        });
+        assert_eq!(app.focused_pane(), Some(PaneId("ic")));
+        let r = app.feed_input(b"b");
+        assert_eq!(r.queries[0].1["channel"], "Public", "the OOC pane answers");
+        // ^N from the empty IC pane: nothing to walk, focus stays.
+        app.feed_input(&[0x0e]);
+        assert_eq!(app.focused_pane(), Some(PaneId("ic")));
+        // ^O to the OOC pane; ^N walks and wraps.
+        app.feed_input(&[0x0f]);
+        assert_eq!(app.focused_pane(), Some(PaneId("ooc")));
+        app.feed_input(&[0x0e]);
+        assert_eq!(app.feed_input(b"b").queries[0].1["channel"], "Staff");
+        app.feed_input(&[0x0e]);
+        assert_eq!(
+            app.feed_input(b"b").queries[0].1["channel"],
+            "Public",
+            "wraps"
+        );
+        // An IC channel lands in the IC pane and ^O reaches it.
+        app.apply_event(&OutputEvent::Panel {
+            feed: SmolStr::new_static("comsys"),
+            kind: PanelFrameKind::Keyframe,
+            data: serde_json::json!({ "channels": [
+                { "name": "Public", "alias": "pub", "unread": 0 },
+                { "name": "Radio", "alias": "rad", "unread": 2, "ic": true },
+            ] }),
+        });
+        app.feed_input(&[0x0f]);
+        assert_eq!(app.focused_pane(), Some(PaneId("ic")));
+        assert_eq!(app.feed_input(b"b").queries[0].1["channel"], "Radio");
+        // Ctrl+N and Ctrl+O are inert on a screen without channel panes.
+        app.feed_input(b"1");
+        let before = app.focused_pane();
+        app.feed_input(&[0x0e, 0x0f]);
+        assert_eq!(app.focused_pane(), before);
+    }
+
+    /// I6: `^R` opens the box with `+roll ` ready and Tab completes the
+    /// sheet's categorised dotted traits inside the line (after a space or
+    /// a `+`); an uncategorised or non-dotted field is never offered. The
+    /// line goes out exactly as built.
+    #[test]
+    fn ctrl_r_prefills_a_roll_and_tab_completes_sheet_traits() {
+        let mut app = app();
+        app.apply_event(&OutputEvent::Panel {
+            feed: SmolStr::new_static("wod.sheet"),
+            kind: PanelFrameKind::Keyframe,
+            data: serde_json::json!({
+                "target": "#1",
+                "schema": { "ruleset": "wod", "version": 1, "sections": [
+                    { "id": "a", "label": "A", "layout": "list", "fields": [
+                        { "id": "strength", "label": "Strength", "ty": { "kind": "dots", "min": 1, "max": 5 }, "category": "physical", "default": 1 },
+                        { "id": "stamina", "label": "Stamina", "ty": { "kind": "dots", "min": 1, "max": 5 }, "category": "physical", "default": 1 },
+                        { "id": "brawl", "label": "Brawl", "ty": { "kind": "dots", "min": 0, "max": 5 }, "category": "talents", "default": 0 },
+                        { "id": "willpower", "label": "Willpower", "ty": { "kind": "number", "min": 1, "max": 10 }, "default": 1 },
+                        { "id": "luck", "label": "Luck", "ty": { "kind": "dots", "min": 0, "max": 5 }, "default": 0 }
+                    ] }
+                ] },
+                "approved": { "state": "approved", "approved": true },
+                "data": { "strength": 3, "stamina": 2, "brawl": 2, "willpower": 5, "luck": 1 }
+            }),
+        });
+        app.feed_input(&[0x12]);
+        assert_eq!(app.mode(), Mode::Input);
+        assert_eq!(app.input_text(), "+roll ");
+        app.feed_input(b"st\t");
+        assert_eq!(app.input_text(), "+roll stamina", "the first match, sorted");
+        app.feed_input(&[0x15]);
+        app.feed_input(b"+roll str\t");
+        assert_eq!(app.input_text(), "+roll strength");
+        app.feed_input(b"+br\t");
+        assert_eq!(app.input_text(), "+roll strength+brawl");
+        app.feed_input(b"+lu\t");
+        assert_eq!(
+            app.input_text(),
+            "+roll strength+brawl+lu",
+            "uncategorised: not a trait"
+        );
+        app.feed_input(&[0x15]);
+        app.feed_input(b"+roll wil\t");
+        assert_eq!(
+            app.input_text(),
+            "+roll wil",
+            "a number field is not a trait"
+        );
+        app.feed_input(&[0x15]);
+        app.feed_input(b"+roll strength+brawl vs 7");
+        let r = app.feed_input(b"\r");
+        assert_eq!(r.submit, vec!["+roll strength+brawl vs 7".to_string()]);
     }
 }

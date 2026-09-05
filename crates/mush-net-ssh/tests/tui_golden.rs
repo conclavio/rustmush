@@ -235,6 +235,7 @@ fn every_screen_has_a_golden_at_the_budget_size() {
         data: serde_json::json!({ "channels": [
             { "name": "Public", "alias": "pub", "unread": 1, "gagged": false },
             { "name": "Staff", "alias": "st", "unread": 0, "gagged": false },
+            { "name": "Radio", "alias": "rad", "unread": 0, "gagged": false, "ic": true },
         ]}),
     });
     app.apply_event(&OutputEvent::Panel {
@@ -267,6 +268,25 @@ fn every_screen_has_a_golden_at_the_budget_size() {
             ] },
             "approved": { "state": "approved", "approved": true },
             "data": { "strength": 3, "dexterity": 2, "willpower": 6, "health": ["bashing", "lethal", null, null, null, null, null] }
+        }),
+    });
+    app.apply_event(&OutputEvent::Panel {
+        feed: SmolStr::new_static("wod.vitals"),
+        kind: PanelFrameKind::Keyframe,
+        data: serde_json::json!({
+            "subject": { "id": "#5", "name": "Mireille" },
+            "revision": 3,
+            "vitals": [
+                { "id": "wod.health", "label": "Health", "role": "dominant",
+                  "value": { "kind": "track", "boxes": ["bashing", "lethal", null, null, null, null, null], "level": "Hurt" },
+                  "state": "warn", "detail": "-1 dice" },
+                { "id": "wod.willpower", "label": "Willpower", "role": "pool",
+                  "value": { "kind": "bounded", "current": 6, "min": 1, "max": 10 }, "state": "ok" },
+                { "id": "wod.blood", "label": "Blood", "role": "pool",
+                  "value": { "kind": "bounded", "current": 3, "min": 0, "max": 13 }, "state": "crit" },
+                { "id": "wod.wound", "label": "Wound", "role": "readout",
+                  "value": { "kind": "text", "text": "-1" }, "state": "warn", "detail": "to every pool" }
+            ]
         }),
     });
     for (digit, name) in [

@@ -11,6 +11,13 @@
 // "N new lines" pill.
 
 import type { RLine } from "../render";
+import type { RollEntry } from "./rolls.svelte";
+
+/** The actor a grouped block belongs to. */
+export interface SbSpeaker {
+  id: string;
+  name: string;
+}
 
 /** One scrollback block: one event's rendered lines. */
 export interface SbBlock {
@@ -22,6 +29,63 @@ export interface SbBlock {
   cls: string;
   /** Rendered lines (a Room block has several). */
   lines: RLine[];
+  /** The speaker, for a block that groups under a name header (I5). */
+  speaker: SbSpeaker | null;
+  /** The lines without the speaker, shown inside a group. */
+  body: RLine[] | null;
+  /** Whether the block may join a speaker group. */
+  groupable: boolean;
+  /** The roller's dice card (a `.roll` frame for the viewer's own roll). */
+  roll: RollEntry | null;
+}
+
+/** What `push` may say about a block beyond its lines. */
+export interface SbMeta {
+  speaker?: SbSpeaker | null;
+  body?: RLine[] | null;
+  groupable?: boolean;
+}
+
+/** Consecutive blocks by one speaker within this window merge under one
+ * name header (interface plan I5, plan §7). */
+export const GROUP_WINDOW_S = 300;
+
+/** A run of blocks under one header (or a single ungrouped block). */
+export interface SbGroup {
+  id: number;
+  speaker: SbSpeaker | null;
+  blocks: SbBlock[];
+}
+
+/**
+ * Speaker grouping (interface plan I5): a block joins the group before it
+ * when both are groupable, by the same actor, and it follows the previous
+ * block within `windowMs`; any other block — a room, a system line, an
+ * emit, an OOC line, a roll — stands alone and breaks the run, so a line
+ * is never attributed across an intervening event.
+ */
+export function groupBlocks(blocks: readonly SbBlock[], windowMs = GROUP_WINDOW_S * 1000): SbGroup[] {
+  const groups: SbGroup[] = [];
+  for (const b of blocks) {
+    const last = groups[groups.length - 1];
+    const prev = last?.blocks[last.blocks.length - 1];
+    if (
+      last &&
+      prev &&
+      b.groupable &&
+      prev.groupable &&
+      last.speaker !== null &&
+      b.speaker !== null &&
+      last.speaker.id === b.speaker.id &&
+      b.ts - prev.ts <= windowMs &&
+      b.ts >= prev.ts
+    ) {
+      last.blocks.push(b);
+      continue;
+    }
+    groups.push({ id: b.id, speaker: b.groupable ? b.speaker : null, blocks: [b] });
+  }
+  return groups;
 }
 
 export const SCROLLBACK_CAP = 5000;
@@ -55,8 +119,40 @@ export class ScrollbackStore {
     return Math.max(0, this.entries.length - this.windowSize);
   }
 
-  push(cls: string, lines: RLine[], ts = Date.now()): void {
-    this.entries.push({ id: this.#nextId++, ts, cls, lines });
+  push(cls: string, lines: RLine[], ts = Date.now(), meta: SbMeta = {}): void {
+    this.#append({
+      id: this.#nextId++,
+      ts,
+      cls,
+      lines,
+      speaker: meta.speaker ?? null,
+      body: meta.body ?? null,
+      groupable: meta.groupable === true && (meta.speaker ?? null) !== null,
+      roll: null,
+    });
+  }
+
+  /** The viewer's own roll as a dice card (interface plan I5). */
+  pushRoll(entry: RollEntry, ts = Date.now()): void {
+    this.#append({
+      id: this.#nextId++,
+      ts,
+      cls: "ev-roll-card",
+      lines: [],
+      speaker: null,
+      body: null,
+      groupable: false,
+      roll: entry,
+    });
+  }
+
+  /** The visible window as speaker groups. */
+  get visibleGroups(): SbGroup[] {
+    return groupBlocks(this.visible);
+  }
+
+  #append(block: SbBlock): void {
+    this.entries.push(block);
     if (this.entries.length > this.#cap) {
       this.entries.splice(0, this.entries.length - this.#cap);
     }

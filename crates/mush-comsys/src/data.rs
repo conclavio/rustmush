@@ -120,6 +120,12 @@ pub struct ChannelFlags {
     /// `hist:{id}` stream when [`HistoryPolicy::persist`] is also set).
     #[serde(default)]
     pub logged: bool,
+    /// In-character traffic (a radio, a hive mind, a newsfeed): the clients
+    /// list it apart from the OOC channels and set it as prose (interface
+    /// plan I7). Off by default: a channel is OOC chatter unless staff say
+    /// otherwise.
+    #[serde(default)]
+    pub ic: bool,
 }
 
 /// How much history a LOGGED channel keeps and whether it survives reboot.

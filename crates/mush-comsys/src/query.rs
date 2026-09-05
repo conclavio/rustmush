@@ -83,6 +83,7 @@ impl QueryHandler for StateQuery {
                 "unread": c.seq.saturating_sub(m.last_read),
                 "loud": c.flags.loud,
                 "logged": c.flags.logged,
+                "ic": c.flags.ic,
             }));
         }
         Ok(OutputEvent::Panel {

@@ -43,6 +43,8 @@
 
 <div class="chanview">
   <div class="head">
+    <span class="half" class:ic={meta?.ic}>{meta?.ic ? "IC" : "OOC"}</span>
+    <span class="dot">·</span>
     <strong style={meta?.colorHex ? `color:${meta.colorHex}` : ""}>{meta?.name ?? channel}</strong>
     {#if meta?.title}<span class="muted">title: {meta.title}</span>{/if}
     {#if meta?.gagged}<span class="warn">gagged — you won't hear new messages</span>{/if}
@@ -87,6 +89,21 @@
 </div>
 
 <style>
+  .half {
+    font-size: 0.7rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    color: var(--c-npc);
+  }
+
+  .half.ic {
+    color: var(--success);
+  }
+
+  .dot {
+    color: var(--fg-faint);
+  }
+
   .chanview {
     flex: 1;
     min-height: 0;

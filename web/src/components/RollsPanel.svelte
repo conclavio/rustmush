@@ -7,10 +7,21 @@
   import { classifyResult, dieClass, youOrId } from "$lib/roll";
   import { fmtClock } from "$lib/render";
 
+  import RollBuilder from "./RollBuilder.svelte";
+  import VitalsBoard from "./VitalsBoard.svelte";
+
   let { app }: { app: GameApp } = $props();
 </script>
 
+<!-- Interface plan I6: the rolls screen is the dice-and-damage screen — the
+     roll builder on top, the vitals board (tracks, pools, readouts, recent
+     rolls) beside the roll list. No digit was free for a separate combat
+     screen (the plan's I8 wants 8 and 9 on the TUI; the web has only 6). -->
 <div class="rolls">
+  <RollBuilder {app} />
+  <div class="cols">
+    <VitalsBoard {app} />
+    <div class="list">
   {#if app.rolls.entries.length === 0}
     <p class="muted empty">
       No rolls yet — try <code>+roll &lt;pool&gt;</code> in the terminal.
@@ -38,6 +49,8 @@
       </div>
     {/each}
   {/if}
+    </div>
+  </div>
 </div>
 
 <style>
@@ -48,6 +61,25 @@
     display: flex;
     flex-direction: column;
     gap: 0.5rem;
+  }
+
+  .cols {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 0.75rem;
+    align-items: start;
+  }
+
+  .list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+  }
+
+  @media (max-width: 800px) {
+    .cols {
+      grid-template-columns: minmax(0, 1fr);
+    }
   }
 
   .empty {

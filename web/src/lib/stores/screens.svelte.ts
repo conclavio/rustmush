@@ -112,6 +112,7 @@ export const BUILTIN_SCREENS: readonly ScreenDef[] = [
     keys: [
       { key: "r", label: "roll", action: { kind: "prefill", line: "+roll " } },
       { key: "h", label: "history", action: { kind: "run", cmd: "+roll/last" } },
+      { key: "v", label: "refresh vitals", action: { kind: "local", action: "refresh" } },
     ],
     exitsAreKeys: false,
     gate: (g) => hasSuffix(g, ".roll"),

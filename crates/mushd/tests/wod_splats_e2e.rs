@@ -371,10 +371,12 @@ async fn m6b_wod_splats_full_journey() {
     fenris.send_line("+shift crinos").await;
     fenris.expect_after(mark, "crinos").await;
     fenris.expect_after(mark, "Delirium").await;
-    // Strength 4 + Crinos +4 = 8 dice reaching the base +roll.
+    // Strength 4 + Crinos +4 = 8 dice reaching the base +roll: the I3 roll
+    // line `roll  Fenris  strength  <8 faces> = <result>  diff 6`.
     let mark = fenris.mark();
     fenris.send_line("+roll strength").await;
-    fenris.expect_after(mark, "(8 dice, diff 6)").await;
+    fenris.expect_after(mark, "roll  Fenris  strength  ").await;
+    fenris.expect_after(mark, "  diff 6").await;
     // Ahroun Rage 5 (permanent); spend 2 from the temporary pool → 3/5.
     let mark = fenris.mark();
     fenris.send_line("+rage/spend 2").await;
@@ -398,7 +400,15 @@ async fn m6b_wod_splats_full_journey() {
         vlad.seen.contains('\u{1b}'),
         "WoD SSH output must carry ANSI escapes"
     );
-    assert!(strip_ansi(&fenris.seen).contains("Fenris rolls strength (8 dice, diff 6)"));
+    let seen = strip_ansi(&fenris.seen);
+    let faces = seen
+        .split_once("roll  Fenris  strength  ")
+        .and_then(|(_, rest)| rest.split_once(" = "))
+        .map_or(0, |(faces, _)| faces.split_whitespace().count());
+    assert_eq!(
+        faces, 8,
+        "the Crinos-boosted pool rolled eight dice: {seen}"
+    );
 
     let _ = std::fs::remove_dir_all(&dir);
 }

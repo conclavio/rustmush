@@ -156,7 +156,7 @@ async fn worldgen_full_journey_over_ssh() {
 
     let mark = god.mark();
     god.send_line("gallery").await;
-    god.expect_after(mark, "Gallery(#").await;
+    god.expect_after(mark, "Gallery #").await;
 
     god.send_line("@dig Study=study,back").await;
     god.expect("Study created with room number #").await;
@@ -179,7 +179,7 @@ async fn worldgen_full_journey_over_ssh() {
     // --- Move to the Study and @gen it. ---------------------------------
     let mark = god.mark();
     god.send_line("study").await;
-    god.expect_after(mark, "Study(#").await;
+    god.expect_after(mark, "Study #").await;
 
     let mark = god.mark();
     god.send_line("@gen here=A small study just off the gallery.")

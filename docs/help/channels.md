@@ -32,6 +32,11 @@ Administration (staff, or the COMSYS_ADMIN power):
   @channel/list              Every channel on the game.
   @channel/create <name>     Make a channel.
   @channel/destroy <name>    Remove one.
+  @channel/set <name>=ic     Mark a channel in-character (a radio, a hive
+                             mind, a newsfeed): the screen clients list it
+                             apart from OOC chatter and set its lines as
+                             prose. =!ic clears it. Every channel is OOC
+                             until staff say otherwise.
   (Further @channel switches manage locks, colors, flags, and history —
   see "help @channel".)
 

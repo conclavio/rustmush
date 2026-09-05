@@ -74,12 +74,12 @@ async fn rain_rolls_in_demo() {
     god.expect("Alice has connected.").await;
     let mark = alice.mark();
     alice.send_line("plaza").await;
-    alice.expect_after(mark, "Plaza(#").await;
+    alice.expect_after(mark, "Plaza #").await;
 
     let (_bob_handle, mut bob) = login_create(addr, "Bob", "hunter42").await;
     let mark = bob.mark();
     bob.send_line("cellar").await;
-    bob.expect_after(mark, "Cellar(#").await;
+    bob.expect_after(mark, "Cellar #").await;
 
     // --- Rain rolls in. -------------------------------------------------
     // Pin to rain, then to storm: the `rain->storm` transition pool has a
@@ -98,7 +98,7 @@ async fn rain_rolls_in_demo() {
     // Alice's look shows the current-conditions line (the LookRendered hook).
     let mark = alice.mark();
     alice.send_line("look").await;
-    alice.expect_after(mark, "Plaza(#").await;
+    alice.expect_after(mark, "Plaza #").await;
     alice.expect_after(mark, "Overhead: a storm").await;
 
     // Bob's INDOORS room stays silent: his look shows the room but no
@@ -106,7 +106,7 @@ async fn rain_rolls_in_demo() {
     // output has arrived before we assert its absence.
     let mark = bob.mark();
     bob.send_line("look").await;
-    bob.expect_after(mark, "Cellar(#").await;
+    bob.expect_after(mark, "Cellar #").await;
     bob.send_line("think WEATHER-SENTINEL").await;
     bob.expect_after(mark, "WEATHER-SENTINEL").await;
     let slice = strip_ansi(&bob.seen[mark..]);

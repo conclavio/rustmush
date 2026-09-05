@@ -117,12 +117,20 @@ pub enum PaneContent {
     },
     /// The first `.sheet` keyframe in the store, walked generically.
     Sheet,
-    /// The comsys channel list.
-    Channels,
+    /// The comsys channel list: the in-character channels (`ic`) or the
+    /// out-of-character ones (interface plan I7).
+    Channels {
+        /// Which half of the list this pane shows.
+        ic: bool,
+    },
     /// Live and recalled messages of the highlighted channel.
     Backlog,
     /// The `.roll` feeds' ring.
     Rolls,
+    /// Every `.vitals` frame as widgets (interface plan I6): tracks as boxes
+    /// in threes with the level, pools as gauges, readouts with a condition
+    /// mark.
+    Vitals,
 }
 
 /// One pane of a screen.
@@ -373,24 +381,34 @@ pub fn builtin_screens() -> Vec<Screen> {
             name: "chan",
             panes: vec![
                 PaneSpec {
+                    id: PaneId("ic"),
+                    title: "IC",
+                    role: BorderRole::Ic,
+                    slot: PaneSlot::Left,
+                    content: PaneContent::Channels { ic: true },
+                    min_w: 26,
+                    min_h: 3,
+                    selectable: true,
+                },
+                PaneSpec {
+                    id: PaneId("ooc"),
+                    title: "OOC",
+                    role: BorderRole::Ooc,
+                    slot: PaneSlot::Left,
+                    content: PaneContent::Channels { ic: false },
+                    min_w: 26,
+                    min_h: 3,
+                    selectable: true,
+                },
+                PaneSpec {
                     id: PaneId("backlog"),
                     title: "channel",
-                    role: BorderRole::Ooc,
+                    role: BorderRole::Neutral,
                     slot: PaneSlot::Main,
                     content: PaneContent::Backlog,
                     min_w: 20,
                     min_h: 3,
                     selectable: false,
-                },
-                PaneSpec {
-                    id: PaneId("channels"),
-                    title: "channels",
-                    role: BorderRole::Ooc,
-                    slot: PaneSlot::Left,
-                    content: PaneContent::Channels,
-                    min_w: 26,
-                    min_h: 3,
-                    selectable: true,
                 },
             ],
             keys: vec![
@@ -405,23 +423,35 @@ pub fn builtin_screens() -> Vec<Screen> {
                     action: KeyAction::Local(LocalAction::Backlog),
                 },
             ],
-            degrade: vec![PaneId("channels")],
+            degrade: vec![PaneId("ic"), PaneId("ooc")],
             exits_are_keys: false,
             on_enter: vec![("comsys.state", Value::Object(serde_json::Map::new()))],
         },
         Screen {
             id: ScreenId(5),
             name: "rolls",
-            panes: vec![PaneSpec {
-                id: PaneId("rolls"),
-                title: "rolls",
-                role: BorderRole::Unit,
-                slot: PaneSlot::Main,
-                content: PaneContent::Rolls,
-                min_w: 20,
-                min_h: 3,
-                selectable: false,
-            }],
+            panes: vec![
+                PaneSpec {
+                    id: PaneId("rolls"),
+                    title: "rolls",
+                    role: BorderRole::Unit,
+                    slot: PaneSlot::Main,
+                    content: PaneContent::Rolls,
+                    min_w: 20,
+                    min_h: 3,
+                    selectable: false,
+                },
+                PaneSpec {
+                    id: PaneId("vitals"),
+                    title: "vitals",
+                    role: BorderRole::Unit,
+                    slot: PaneSlot::Left,
+                    content: PaneContent::Vitals,
+                    min_w: 44,
+                    min_h: 3,
+                    selectable: false,
+                },
+            ],
             keys: vec![
                 KeyBinding {
                     key: 'r',
@@ -434,7 +464,7 @@ pub fn builtin_screens() -> Vec<Screen> {
                     action: KeyAction::Run("+roll/last"),
                 },
             ],
-            degrade: vec![],
+            degrade: vec![PaneId("vitals")],
             exits_are_keys: false,
             on_enter: vec![],
         },

@@ -242,6 +242,64 @@ export function narrativeLine(
   }
 }
 
+/** Whether `text` is a one-line roll narration: its first span is tagged
+ * `roll` (interface plan I3). */
+export function isRollNarration(text: RichText): boolean {
+  return text[0]?.tag === "roll";
+}
+
+/** The kinds that group under one speaker header (interface plan I5):
+ * speech and action; emits, spoofs and OOC never group. */
+export function groupsBySpeaker(kind: NarrativeKind): boolean {
+  return (
+    kind === "say" ||
+    kind === "pose" ||
+    kind === "semi_pose" ||
+    kind === "whisper" ||
+    kind === "page"
+  );
+}
+
+/**
+ * A narrative line without its speaker (interface plan I5): what a grouped
+ * block shows under the name header. `say` keeps its quotes, `pose` and
+ * `semi_pose` are the action, `page` and `whisper` keep their verb.
+ */
+export function narrativeBody(kind: NarrativeKind, text: RichText): RLine {
+  const rich = renderRich(text);
+  switch (kind) {
+    case "say":
+      return [mk('"'), ...rich, mk('"')];
+    case "pose":
+    case "semi_pose":
+    case "emit":
+    case "spoof":
+      return rich;
+    case "page":
+      return [mk("pages: "), ...rich];
+    case "whisper":
+      return [mk('whispers, "'), ...rich, mk('"')];
+    case "ooc":
+      return [mk('<OOC> "'), ...rich, mk('"')];
+  }
+}
+
+/**
+ * The scrollback block classes for a narrative (interface plan I5): prose
+ * (speech, action, emits) takes the serif `ev-prose`; an OOC line and a
+ * roll line are demoted (small mono, reduced contrast) like system and
+ * channel lines.
+ */
+export function narrativeClasses(kind: NarrativeKind, roll: boolean): string {
+  if (roll) {
+    return "ev-narrative ev-roll ev-demoted";
+  }
+  if (kind === "ooc") {
+    return "ev-narrative kind-ooc ev-demoted";
+  }
+  return `ev-narrative kind-${kind} ev-prose`;
+}
+
 /** The fields of a live `Channel` event / a backlog message this needs. */
 export interface ChannelLineInput {
   channel: string;

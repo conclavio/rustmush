@@ -148,6 +148,12 @@ export function dieClass(d: RollDie): string {
   return "die-plain";
 }
 
+/** Whether a `.roll` frame is the viewer's own (the dice card is theirs;
+ * everyone else reads the room's one-line narration — interface plan I5). */
+export function isOwnRoll(who: string, selfId: string | null): boolean {
+  return selfId !== null && who === selfId;
+}
+
 /** `who` (a dbref) -> "You" when it's the viewer's own character, else the
  * raw dbref — the client has no name-resolution for arbitrary dbrefs beyond
  * its own session, and the roll panel is pushed only to the roller anyway. */

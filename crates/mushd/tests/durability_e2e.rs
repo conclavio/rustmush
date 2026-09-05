@@ -107,7 +107,7 @@ async fn kill9_mid_play_world_survives_redis_gated() {
     nick.send_line("say remember the orb").await;
     god.expect("Nick says, \"remember the orb\"").await;
     nick.send_line("east").await;
-    nick.expect(&format!("Vault(#{vault_id}")).await;
+    nick.expect(&format!("Vault #{vault_id}")).await;
     god.expect("Nick goes east.").await;
 
     god.send_line("@create orb").await;
@@ -173,7 +173,7 @@ async fn kill9_mid_play_world_survives_redis_gated() {
     nick2.expect("Connected as Nick").await;
     // Nick is exactly where the crash left him: in the dug room (documented
     // M2 behavior — no send-home on disconnect/restart), with the same id.
-    nick2.expect(&format!("Vault(#{vault_id}")).await;
+    nick2.expect(&format!("Vault #{vault_id}")).await;
 
     // The exits survived both ways: walk back into Limbo.
     let mark = nick2.mark();

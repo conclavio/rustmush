@@ -110,11 +110,15 @@ fn valid_hex(hex: &str) -> bool {
 }
 
 /// Render a channel's flag letters for listings (`L`oud, `T` = no titles,
-/// `H` = logged history, `P` = persisted history), `-` when none.
+/// `H` = logged history, `P` = persisted history, `I` = in-character),
+/// `-` when none.
 fn flag_letters(c: &Channel) -> String {
     let mut s = String::new();
     if c.flags.loud {
         s.push('L');
+    }
+    if c.flags.ic {
+        s.push('I');
     }
     if c.flags.no_titles {
         s.push('T');
@@ -597,7 +601,7 @@ fn channel_set(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     if !chan_admin(ctx.w, actor, &c) {
         return Err(CmdError::msg("Permission denied."));
     }
-    let usage = "Usage: @channel/set <channel>=[!]loud|no_titles|logged|persist  or  =cap=<n>";
+    let usage = "Usage: @channel/set <channel>=[!]loud|no_titles|logged|persist|ic  or  =cap=<n>";
     let rhs = ctx
         .args
         .rhs()
@@ -637,6 +641,7 @@ fn channel_set(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 "loud" => ch.flags.loud = on,
                 "no_titles" => ch.flags.no_titles = on,
                 "logged" => ch.flags.logged = on,
+                "ic" => ch.flags.ic = on,
                 "persist" => ch.history.persist = on,
                 _ => return Err(CmdError::msg(usage)),
             }
@@ -906,8 +911,8 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
             name: "clist".into(),
             shape: ArgShape::None,
             help: "clist  --  List the channels you are allowed to see (their see \
-                   lock), with member counts, flags (L=loud, T=no titles, \
-                   H=history, P=persisted), and descriptions."
+                   lock), with member counts, flags (L=loud, I=in-character, \
+                   T=no titles, H=history, P=persisted), and descriptions."
                 .into(),
             ..CommandSpec::default()
         },
@@ -937,8 +942,9 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
                    @channel/perm <channel>=<join|speak|see|admin>=<lock> -- set a \
                    lock gate, classic lock syntax (flag^WIZARD, *Nick, #1, ...).\n\
                    @channel/color <channel>=<ansi name>,<#rrggbb> -- set colors.\n\
-                   @channel/set <channel>=[!]loud|no_titles|logged|persist or \
-                   =cap=<n> -- flags and history policy.\n\
+                   @channel/set <channel>=[!]loud|no_titles|logged|persist|ic \
+                   or =cap=<n> -- flags and history policy; `ic` marks the \
+                   channel in-character (listed apart, set as prose).\n\
                    @channel/who <channel> -- list members.\n\
                    @channel/recall <alias>[=<n>] -- replay logged history.\n\
                    @channel/gag <alias>, @channel/ungag <alias> -- stop/resume \

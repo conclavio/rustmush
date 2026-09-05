@@ -67,7 +67,10 @@ src/
 │   ├── Scrollback.svelte     # windowed list, scroll-lock, "N new lines" pill
 │   ├── RichLine.svelte       # span renderer (tag class, style, CommandLink)
 │   ├── InputBar.svelte       # the channel tab's input: Enter submits, ↑/↓ history (200), masked mode
-│   ├── ChannelTabs.svelte    # tab bar: color chips + unread badges (the channels screen)
+│   ├── ChannelTabs.svelte    # the channel list, IC and OOC apart: color chips + unread badges (I7)
+│   ├── RollBuilder.svelte    # trait pickers from the schema's categories -> one `+roll` line (I6)
+│   ├── VitalsBoard.svelte    # every `.vitals` frame as widgets + recent rolls (I6)
+│   ├── widgets/              # Gauge, TrackBoxes, KeyValue, Table — ruleset-blind (I6, probed)
 │   ├── ChannelView.svelte    # one channel's backlog/live view + alias input
 │   ├── WhoRail.svelte        # who table, idle ticking, refresh
 │   ├── MailPanel.svelte      # the mail screen: folders + entries; open = `@mail <n>`
@@ -136,6 +139,37 @@ The **vitals strip** (`$lib/stores/vitals.svelte.ts`) renders every
 `<ruleset>.vitals` frame the hello manifest names — subscribed on hello and
 on every full rehydrate — dominant first, ignoring a lower revision; it
 replaces the textual prompt when a frame exists.
+
+## Scene typography and comms (interface cuts I5, I7)
+
+The scene screen groups consecutive speech and action by one actor under a
+single name header (`groupBlocks` in `$lib/stores/scrollback.svelte.ts`: a
+pure function over the visible window, five-minute window measured from the
+previous line, broken by any other block, never for emits, spoofs or OOC),
+sets prose in a system serif stack (`--font-prose`, class `ev-prose`) and
+demotes OOC, channel, system and roll lines to small mono (`ev-demoted`).
+The roller's own `.roll` frame lands inline as a dice card
+(`RollCard.svelte`); everyone else reads the server's one-line `roll`
+narration. On a phone the composer is a sticky bottom sheet.
+
+Channels carry an `ic` flag (`@channel/set <c>=ic`, reported by
+`comsys.state`): the channels screen lists IC and OOC channels apart
+(`ChannelTabs.svelte`, `channelsWhere`), the channel view's head names the
+half, and an IC channel's line on the scene screen reads as prose.
+
+## Ruleset screens on existing data (interface cut I6)
+
+The rolls screen is the dice-and-damage screen: `RollBuilder.svelte` builds
+one `+roll[/spec] <a>[+<b>] vs <d>` line from the sheet schema's
+`category`-tagged dotted fields (`$lib/rollbuilder.ts` — no trait name
+lives in the client), and `VitalsBoard.svelte` renders every `.vitals`
+frame through the shared widgets in `src/components/widgets/` (`Gauge`
+`▰▱`, `TrackBoxes` in rows of three with the level and the frame's
+`detail`, `KeyValue` with condition glyphs, `Table`) plus the recent rolls.
+`vitalsboard.test.ts` greps those files for ruleset words; `widgets.ts`
+clamps every input. `v` re-subscribes the vitals feeds. No screen digit
+was free for a separate combat screen (the plan's I8 wants 8 and 9 on the
+TUI and the web has only 6 left), so the board lives on 5.
 
 ## WsClient (`src/lib/ws.ts`)
 

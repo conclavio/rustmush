@@ -57,6 +57,10 @@
     system-ui, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   --font-mono:
     ui-monospace, "Cascadia Mono", Consolas, "SF Mono", Menlo, monospace;
+  /* Narrative prose on the scene screen (interface plan I5, D-I-14): a
+   * system serif stack, no CDN; vendoring a face is the owner's call. */
+  --font-prose:
+    Georgia, "Iowan Old Style", "Palatino Linotype", "Book Antiqua", Charter, serif;
 }
 
 /* Light palette (shared by the explicit choice and the system fallback). */
@@ -358,4 +362,31 @@ body {
 
 .ev-room {
   margin-top: 0.25rem;
+}
+
+/* ---- scene typography (interface plan I5) ---------------------------- */
+
+/* Speech, action and emits read as prose. */
+.ev-prose {
+  font-family: var(--font-prose);
+  font-size: 1rem;
+  line-height: 1.5;
+}
+
+/* OOC, channel, system and roll lines step back: small mono, less
+ * contrast — still there, never hidden. */
+.ev-demoted {
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  color: var(--fg-muted);
+}
+
+.ev-roll {
+  color: var(--c-npc);
+}
+
+/* An in-character channel line (I7) keeps the prose face but a lighter
+ * weight than room speech, so a radio still reads apart from the room. */
+.ev-channel-ic {
+  color: var(--fg-muted);
 }

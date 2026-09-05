@@ -397,7 +397,7 @@ async fn god_terminal(rig: &Rig) -> (russh::client::Handle<support::AcceptAll>, 
     god.send_line(&format!("connect boss {GM_PASSWORD}")).await;
     god.expect("Connected as God (account boss, 1 connection).")
         .await;
-    god.expect("Limbo(#0)").await;
+    god.expect("Limbo #0").await;
     (handle, god)
 }
 

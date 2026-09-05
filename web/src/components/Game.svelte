@@ -440,11 +440,20 @@
     overflow: hidden;
   }
 
+  /* The channel screen (I7): the IC/OOC list beside the channel view; a
+   * phone stacks them. */
   .chan {
     flex: 1;
     min-height: 0;
-    display: flex;
-    flex-direction: column;
+    display: grid;
+    grid-template-columns: 12rem minmax(0, 1fr);
+  }
+
+  @media (max-width: 800px) {
+    .chan {
+      grid-template-columns: minmax(0, 1fr);
+      grid-template-rows: auto minmax(0, 1fr);
+    }
   }
 
   .legend {

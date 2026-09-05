@@ -860,6 +860,40 @@ narrative prose; the card renders for the roller only.
 **Verify lens.** **T (typography)** — can grouping ever attribute a line to
 the wrong speaker, or hide a system line a player needed?
 
+**As built (2026-09-05, branch `interface-i5-i7`).** As specified, with
+these particulars:
+
+- Grouping is a pure function over the visible window
+  (`groupBlocks` in `web/src/lib/stores/scrollback.svelte.ts`) rather than a
+  merge at push time: every block stays its own entry with its own
+  timestamp and class, and `Scrollback.svelte` renders `visibleGroups`. A
+  block carries `speaker`, `body` (the line without its speaker,
+  `narrativeBody` in `render.ts`) and `groupable`; it joins the group before
+  it only when both are groupable, by the same actor id, and it follows the
+  *previous line* (not the group's first) within `GROUP_WINDOW_S` = 300 s.
+  Anything else — a room, a system line, an echo, a channel line, an emit,
+  a spoof, an OOC line, a roll — stands alone and breaks the run, so a line
+  is never attributed across an intervening event and nothing is hidden.
+  `groupsBySpeaker` names the kinds that group: say, pose, semi_pose,
+  whisper, page.
+- Classes: `narrativeClasses` gives prose (`ev-prose`, the serif stack as
+  `--font-prose`) to speech, action, emits and spoofs; `ev-demoted` (small
+  mono, `--fg-muted`) to OOC, the I3 roll narration (`isRollNarration`:
+  first span tagged `roll`), system and channel lines. The scrollback's
+  own font stays mono; only the block classes change.
+- The dice card: `RollCard.svelte`, pushed by `GameApp` as an `ev-roll-card`
+  block when the `.roll` frame's `who` is the session character
+  (`isOwnRoll`); everyone else reads the I3 line. The rolls screen is
+  unchanged.
+- Mobile: the composer is a sticky bottom sheet below 800 px with the
+  preview hidden; the timestamp gutter goes; the room band's exit chips and
+  the rail drawers were already there from I4.
+- Tests: `web/src/lib/scene.test.ts` (12) — bodies per kind, the grouping
+  kinds, classes, the roll span, the roller-only rule, and the grouping
+  rules (same speaker, a different speaker, an intervening event, an emit
+  from the same actor, the window measured from the previous line, the
+  store's groups and the roll card).
+
 ### 3.6 Cut I6 — Ruleset screens on existing data
 
 **What it is.** The vertical slices the owner opened WoD and Shadowrun for:
@@ -892,6 +926,50 @@ the WoD parser; widgets clamp and never panic on `min > max` or empty boxes.
 can an older vitals frame ever overwrite a newer one, or a sheet keyframe
 and a vitals frame disagree on screen?
 
+**As built (2026-09-05, branch `interface-i5-i7`).** The widgets, the
+board and the roll builder as specified; the screen identity differs, for
+a reason the plan did not have in front of it:
+
+- **No digit.** The TUI's 6 is intel (I2) and §3.8 wants 8 and 9 for
+  damage and unit; the web has only 6 left and §3.8 wants two screens
+  there too. So the combat content lives on **screen 5 (rolls)** in both
+  clients, which becomes the dice-and-damage screen: the TUI's screen 5 is
+  a vitals pane (left, `PaneContent::Vitals`, cyan frame) beside the rolls
+  pane; the web's rolls screen is the roll builder above, the vitals board
+  beside the roll list. The manifest gate is the `.vitals` feed, not the
+  ruleset: a WoD character gets the same board (health, blood, willpower)
+  as a Shadowrun one (monitors, edge, wound, limits, initiative) — the
+  frame is the contract and the client names nothing.
+- **Widgets.** Web: `src/components/widgets/{Gauge,TrackBoxes,KeyValue,
+  Table}.svelte` over the pure `src/lib/widgets.ts` (`gaugeFill` clamps
+  and rights swapped bounds, `groupBoxes` in rows of three — the two-track
+  monitor — `conditionGlyph` maps opaque ids through a data map with `·`
+  for the unknown, `tableCells`). TUI: `render_vitals_rows` in
+  `tui/render.rs` with the same rules (`▰▱` gauges with digits, boxes
+  grouped by three with the level and detail, `✓ ◐ ✗` condition column;
+  ASCII fallbacks). The Shadowrun "next box → −3" warning is the frame's
+  `detail`, shown beside the track.
+- **Roll builder.** Web: `RollBuilder.svelte` over `src/lib/rollbuilder.ts`
+  — pickers from every dotted, categorised, player-visible field grouped in
+  schema order, difficulty 3–9, the `/spec` switch, `Roll` sends and
+  `Edit` puts the line in the composer. The `/wp` toggle is **not**
+  offered: the WoD `+roll/wp` path answers "Willpower-backed rolls use the
+  authoritative action surface; open +actions" (K8.4), so a toggle would
+  build a refused line. TUI: `^R` opens the box with `+roll ` ready and
+  Tab completes the sheet's categorised traits inside the line (after a
+  space or `+`) — the TUI's roll builder is the line itself, which fits a
+  line-oriented client better than a pane overlay would.
+- **Tests.** Web: `widgets.test.ts` (clamping, grouping, the map, cells),
+  `rollbuilder.test.ts` (groups, band, lines), `vitalsboard.test.ts` (the
+  probe: no `stun|edge|blood|willpower|shadowrun|wod|…` in the widget,
+  board or builder sources); the vitals store's lower-revision rule and
+  the sheet's staff-only gate were pinned in I4/I1. Rust:
+  `render_vitals_rows` tests (each widget kind, ASCII and UTF-8, empty
+  boxes and `min > max` never panic), the `^R`/Tab completion test in
+  `tui/app.rs`, the rolls golden regenerated with a vitals frame, and
+  `crates/ruleset-wod/tests/i6_roll_builder.rs` (the builder's lines round-
+  trip through `+roll` at the band edges; `/spec` accepted).
+
 ### 3.7 Cut I7 — Comms IC/OOC
 
 **What it is.** Mockup T2's structural separation, on comsys, honestly.
@@ -913,6 +991,45 @@ the flag survives restart and appears in `comsys.state`.
 
 **Verify lens.** **L (leak)** — can an IC message reach an OOC surface, or a
 transmit go to the wrong net after a pane switch?
+
+**As built (2026-09-05, branch `interface-i5-i7`).** As specified, with
+these particulars:
+
+- `ChannelFlags.ic` (serde default `false`: every channel is OOC until staff
+  say otherwise) set through `@channel/set <c>=ic` / `=!ic`; channel
+  admins only; `clist` shows it as `I`; `comsys.state` reports `"ic"`.
+  Persistence is the existing channel document, so the flag survives a
+  reboot through the same path as `loud` and `logged`; a stored document
+  without the field reads as OOC.
+- TUI screen 4: an `IC` pane (`BorderRole::Ic`, green in the palette the
+  TUI already had — the plan's cyan/magenta named colours the roles do not
+  use) above an `OOC` pane (`BorderRole::Ooc`, yellow), both in the left
+  column and both selectable, the backlog in the main column (neutral
+  frame). `PaneContent::Channels { ic }` filters the keyframe, so an IC
+  channel can never be listed in the OOC pane or vice versa
+  (`render_channels_rows` test). The highlighted channel is the focused
+  channel pane's row, else the first row any channel pane has — the IC
+  pane is often empty, and the OOC pane then answers `b` and Enter.
+  `^N` walks the focused pane's channels and wraps; `^O` swaps panes; both
+  work in either mode and do nothing on a screen without channel panes.
+  There is no separate transmit bar: Enter on a channel row prefills its
+  alias verb as before, and the backlog frame's title is the channel, which
+  the plan's transmit bar would have duplicated. The degrade order drops
+  the IC pane first, then the OOC pane.
+- Web: the `channels` screen is two columns — `ChannelTabs.svelte` is now a
+  vertical list with `IC` and `OOC` sections (`channelsWhere(ic)`), the
+  view beside it; the view's head reads `IC · Radio` / `OOC · Public`. A
+  phone stacks them. An IC channel's line on the scene screen takes the
+  prose classes (`ev-channel-ic ev-prose`) instead of the demoted ones.
+- A channel flipped IC↔OOC re-homes on the next `comsys.state` keyframe:
+  the backlog is keyed by channel name in both clients, so nothing is
+  copied or lost.
+- Line mode is unchanged.
+- Tests (+4 files touched): comsys `ic_flag_sets_lists_and_reports`
+  (permission, set, `clist`, state, clear, usage) and the state query's
+  default; TUI `channel_screen_splits_ic_and_ooc_with_ctrl_n_and_ctrl_o`
+  and the renderer's split; the chan golden frame regenerated with an IC
+  channel; web `channels.test.ts` (parse, split, stub default).
 
 ### 3.8 Cut I8 — The tactical unit screen
 

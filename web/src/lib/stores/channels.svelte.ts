@@ -32,6 +32,9 @@ export interface ChannelMeta {
   loud: boolean;
   /** Whether the channel keeps history (gates backlog requests). */
   logged: boolean;
+  /** In-character traffic (interface plan I7): listed apart from the OOC
+   * channels and set as prose on the scene screen. */
+  ic: boolean;
 }
 
 /** One channel message — live `channel` envelopes and backlog entries share
@@ -121,6 +124,16 @@ export class ChannelsStore {
     return this.list.reduce((n, c) => n + Math.max(0, c.seq - c.readSeq), 0);
   }
 
+  /** The in-character (`ic`) or out-of-character half of the list (I7). */
+  channelsWhere(ic: boolean): ChannelMeta[] {
+    return this.list.filter((c) => c.ic === ic);
+  }
+
+  /** Whether `name` is an IC channel; `false` for an unknown one. */
+  isIc(name: string): boolean {
+    return this.byName(name)?.ic === true;
+  }
+
   /**
    * Apply a `comsys.state` keyframe (`{ channels: [...] }`). Existing
    * client-side read cursors survive (a re-hydrate must not mark everything
@@ -163,6 +176,7 @@ export class ChannelsStore {
         readSeq: existing ? existing.readSeq : Math.min(serverRead, seq),
         loud: o.loud === true,
         logged: o.logged === true,
+        ic: o.ic === true,
       });
     }
     next.sort((a, b) => a.name.localeCompare(b.name));
@@ -201,6 +215,7 @@ export class ChannelsStore {
         readSeq: msg.seq - 1,
         loud: false,
         logged: false,
+        ic: false,
       };
       this.list.push(meta);
       this.list.sort((a, b) => a.name.localeCompare(b.name));

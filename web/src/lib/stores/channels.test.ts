@@ -213,3 +213,24 @@ describe("ChannelsStore", () => {
     expect(st.applyBacklog("garbage")).toBe(0);
   });
 });
+
+describe("IC and OOC channels (I7)", () => {
+  it("parses the ic flag, defaulting to OOC, and splits the list", () => {
+    const st = new ChannelsStore();
+    st.applyState(
+      stateData([
+        { name: "Public" },
+        { name: "Radio", alias: "rad", ic: true },
+        { name: "Staff", alias: "st", ic: false },
+      ]),
+    );
+    expect(st.channelsWhere(true).map((c) => c.name)).toEqual(["Radio"]);
+    expect(st.channelsWhere(false).map((c) => c.name)).toEqual(["Public", "Staff"]);
+    expect(st.isIc("radio")).toBe(true);
+    expect(st.isIc("Public")).toBe(false);
+    expect(st.isIc("Nowhere")).toBe(false);
+    // A mid-session stub is OOC until the next keyframe says otherwise.
+    st.live(liveMsg("Plot", 1));
+    expect(st.isIc("Plot")).toBe(false);
+  });
+});

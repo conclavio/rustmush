@@ -418,12 +418,17 @@ async fn wod_roll_uses_the_npcs_real_sheet_pool() {
     let events = rig.complete(npc, corr, &done);
 
     // The ruleset rolled the NPC's REAL pool on-loop and rendered it to the
-    // room: the classic line shows the resolved trait labels and the true die
-    // count (7), proving it can't fabricate a bigger pool than its sheet.
+    // room: the I3 roll line (`roll  Bartender  Strength+Brawl  <7 dice> = N
+    // successes  diff 6`) shows the resolved trait labels and exactly seven
+    // die faces, proving it can't fabricate a bigger pool than its sheet.
     let roll_line = events.iter().find_map(|(_, ev)| match ev {
         OutputEvent::Narrative { text, .. } => {
             let t = text.to_plain_text();
-            (t.contains("Strength+Brawl") && t.contains("7 dice")).then_some(t)
+            let dice = t
+                .split_once("Strength+Brawl  ")
+                .and_then(|(_, rest)| rest.split_once(" = "))
+                .map_or(0, |(faces, _)| faces.split_whitespace().count());
+            (t.starts_with("roll  ") && dice == 7).then_some(t)
         }
         _ => None,
     });

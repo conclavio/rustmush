@@ -14,11 +14,16 @@ import type { ClientCaps, OutputEvent, Query, RoomView, ViewEnvelope } from "./p
 import {
   channelLine,
   fmtDuration,
+  groupsBySpeaker,
+  isRollNarration,
+  narrativeBody,
+  narrativeClasses,
   narrativeLine,
   plainText,
   renderRich,
   roomLines,
 } from "./render";
+import { isOwnRoll } from "./roll";
 import { exitKeys, type NavIntent } from "./keys";
 import { paletteEntries, type PaletteEntry } from "./palette";
 import { storageDel, storageGet, storageGetJson, storageSet, storageSetJson } from "./storage";
@@ -340,14 +345,24 @@ export class GameApp {
       this.presence.applyComposing(env.d.actor.name, env.d.active, Date.now());
     });
     c.on("narrative", (env) => {
+      // Speech and action group under a speaker header (I5); emits, OOC
+      // and the one-line roll narration stand alone.
+      const actor = env.d.actor ?? null;
+      const roll = env.d.kind === "emit" && isRollNarration(env.d.text);
+      const groupable = actor !== null && groupsBySpeaker(env.d.kind);
       this.scrollback.push(
-        `ev-narrative kind-${env.d.kind}`,
-        [narrativeLine(env.d.kind, env.d.actor ?? null, env.d.text)],
+        narrativeClasses(env.d.kind, roll),
+        [narrativeLine(env.d.kind, actor, env.d.text)],
         env.ts,
+        {
+          speaker: actor ? { id: actor.id, name: actor.name } : null,
+          body: groupable ? [narrativeBody(env.d.kind, env.d.text)] : null,
+          groupable,
+        },
       );
     });
     c.on("sys", (env) => {
-      this.scrollback.push("ev-sys", [renderRich(env.d)], env.ts);
+      this.scrollback.push("ev-sys ev-demoted", [renderRich(env.d)], env.ts);
     });
     c.on("channel", (env) => this.#onChannel(env));
     c.on("who", (env) => {
@@ -414,8 +429,9 @@ export class GameApp {
       // Every channel message also lands in the main scrollback,
       // classic-style; tabs are the channel-only view.
       const meta = this.channels.byName(env.d.channel);
+      // An IC channel (I7) reads as prose; OOC chatter is demoted.
       this.scrollback.push(
-        "ev-channel",
+        meta?.ic ? "ev-channel ev-channel-ic ev-prose" : "ev-channel ev-demoted",
         [
           channelLine(
             {
@@ -521,7 +537,12 @@ export class GameApp {
         this.sheet.applyDelta(d.data);
       }
     } else if (d.feed === this.session.rollFeed) {
-      this.rolls.push(d.data);
+      // The roller's own roll also lands inline as a dice card (I5); the
+      // room's one-line narration is what everyone else reads.
+      const entry = this.rolls.push(d.data);
+      if (entry && isOwnRoll(entry.who, this.session.character?.id ?? null)) {
+        this.scrollback.pushRoll(entry);
+      }
     } else if (d.feed === "worldgen.draft") {
       this.worldgen.applyKeyframe(d.data);
     } else if (d.feed === "llm.dashboard") {
@@ -697,9 +718,22 @@ export class GameApp {
           case "llm":
             this.refreshLlm();
             return;
+          case "rolls":
+            this.refreshVitals();
+            return;
           default:
             this.refreshWho();
         }
+    }
+  }
+
+  /** Re-subscribe every `.vitals` feed (the rolls screen's board, I6). A
+   * lower revision in the answer is ignored by the store. */
+  refreshVitals(): void {
+    for (const feed of this.session.panels) {
+      if (feed.endsWith(".vitals")) {
+        this.#req({ kind: "vitals", feed }, { t: "panel_subscribe", d: { feed } });
+      }
     }
   }
 

@@ -336,4 +336,18 @@
   input:focus {
     border-color: var(--accent);
   }
+
+  /* A phone: the composer is a bottom sheet with the mode chips on top,
+   * and focus is the only mode (interface plan I5). */
+  @media (max-width: 800px) {
+    .composer {
+      position: sticky;
+      bottom: 0;
+      box-shadow: 0 -4px 16px rgb(0 0 0 / 35%);
+    }
+
+    .preview {
+      display: none;
+    }
+  }
 </style>

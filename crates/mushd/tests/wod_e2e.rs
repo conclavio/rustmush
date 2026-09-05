@@ -275,7 +275,8 @@ async fn m6_wod_full_journey() {
 
     let mark = nick.mark();
     nick.send_line("+roll strength+brawl").await;
-    nick.expect_after(mark, "(5 dice, diff 6)").await;
+    nick.expect_after(mark, "roll  Nick  strength+brawl  ")
+        .await;
     nick.expect_after(mark, "wound -2").await;
 
     // ================= XP: award, spend, approve, applied ================
