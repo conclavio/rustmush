@@ -9,7 +9,7 @@
 //!
 //! | record | key | what a corrupt one costs |
 //! |---|---|---|
-//! | [`PackRecord`] | `tacsim:pack:{id}@{version}` | the ledger row for a published version. The **key still counts**: a version whose row will not parse stays *published*, so it can never be silently re-published under different bytes |
+//! | [`PackRecord`] | `tacsim:pack:{id}@{version}` | the ledger row for a published version, **and its `digest` is what the boot gate compares** (independent verify P1): a loaded pack whose content disagrees with its row refuses the boot naming the file and both digests, so a published version is never re-signed in place. A corrupt row costs exactly that: the **key still counts**, so the version stays *published* and is never treated as new, but the digest it was first published under is gone with the body, so boot repairs the row from the loaded pack and **pages level 2** — for that one version the gate is disarmed until an operator re-checks it with `@tacsim/pack verify` |
 //! | [`SeedApplication`] | `tacsim:seed:{pack}@{version}` | the once-per-`(pack, version)` latch. The **key still counts**: a corrupt latch still bars a re-seed, which is the only fail-**closed** direction available |
 //! | [`PinRecord`] | `tacsim:pin:{subject}` | one subject's version pin. A lost pin does **not** float the subject onto a newer version — resolution refuses instead (§3.1 invariant (i)) |
 

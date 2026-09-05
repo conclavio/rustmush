@@ -3,16 +3,28 @@
 //!
 //! | doc | class | corrupt → |
 //! |---|---|---|
-//! | `tacsim:pack:{id}@{version}` | ledger | **skipped loudly**, and the world boots. The **key still counts**: a version whose row will not parse stays *published*, so it can never be silently re-published under different bytes, and a subject seeded under it still fails closed rather than floating onto a newer version |
+//! | `tacsim:pack:{id}@{version}` | ledger | **skipped loudly**, and the world boots. The **key still counts**: a version whose row will not parse stays *published*, so it is never quietly treated as new. What is lost with the body is the **digest that version was first published under**, and there is no way to recover it — so boot repairs the row from the loaded pack and **pages level 2 naming the pack** (08c §4.6), because for that one version the in-place-re-publication gate below is disarmed until an operator re-checks it. A subject seeded under it still fails closed rather than floating onto a newer version |
 //! | `tacsim:seed:{pack}@{version}` | latch | **skipped loudly**, and the world boots — but the **key still bars a re-seed**. This is the one place where losing the body must not lose the fact: "we cannot read the latch" has to mean *do not seed again*, never *seed again* (§3.1 invariant (ii)). The cost is that the seeded objects' pack-local names are gone, so the corridor's routes cannot be re-materialized until `@tacsim/seed` is re-run against a fresh store; the objects themselves are untouched |
 //! | `tacsim:pin:{subject}` | pin | **skipped loudly**. A lost pin does **not** float its subject onto a newer version: resolution refuses, naming the pack, because §3.1 invariant (i)'s whole point is that a published contract's assumptions never shift underneath it |
 //! | `tacsim:meta` | allocators | tolerated field by field, floors re-derived from every **parsed key**, loaded or not (E6b's R8 finding). Losing it costs nothing |
 //!
-//! Nothing here fails the boot, and the direction of each loss is deliberate. A
-//! malformed pack **file** is the opposite answer — it refuses the boot and names the
-//! file — because a file is the operator's declared intent and a stored document is
-//! this world's accumulated history: refusing to start over a typo an operator can
-//! fix is right, and refusing to start over one row of history is not (10b §4 rule 2).
+//! Nothing **in this loader** fails the boot, and the direction of each loss is
+//! deliberate. A malformed pack **file** is the opposite answer — it refuses the boot
+//! and names the file — because a file is the operator's declared intent and a stored
+//! document is this world's accumulated history: refusing to start over a typo an
+//! operator can fix is right, and refusing to start over one row of history is not
+//! (10b §4 rule 2).
+//!
+//! # Where a stored row DOES refuse the boot
+//!
+//! One place, and it is a statement about a **file**, not about the row: a ledger row
+//! that parses and whose digest disagrees with the loaded pack for that exact
+//! `(id, version)` means the operator re-signed a published version in place.
+//! `crate::boot_reconcile` refuses the boot naming the file and both digests (the owner
+//! decision of 2026-09-05) — never page-and-drop, never adopt — because a seeded world
+//! depends on the exact bytes and a published version is never mutated: a change
+//! publishes a **new version that coexists**. The row is history; the disagreement is
+//! the typo.
 //!
 //! Both loaders apply the **identity rule** (DL-07): a document whose record disagrees
 //! with its own key is dropped loudly, never trusted.
@@ -36,11 +48,21 @@ pub const META_KEY: &str = "tacsim:meta";
 /// The namespace's schema version.
 pub const SCHEMA_VERSION: u16 = 1;
 
-/// The most rows one `@tacsim/pack list` page renders.
+/// The most rows one `@tacsim` listing page renders — `pack list`, `pack show`,
+/// `pack verify` and `pin list`, all four (independent verify B1/B3).
 ///
 /// Bounded on records **visited**, not matched (D-LBK-5), so a viewer who may not see
 /// most of them still pays one page of work.
 pub const PACK_PAGE: usize = 32;
+
+/// The most pins one world may carry (independent verify B4).
+///
+/// `tacsim:pin:{subject}` was the one document family in the crate with no cap, no
+/// `Del` path and no verb to see it: the family grew monotonically, was reloaded in
+/// full at every boot and was invisible from the game. 10b §7 gives a cap to every
+/// other list in the programme; a pin is a per-subject migration decision, so this sits
+/// with the programme's other per-subject caps.
+pub const MAX_PINS: usize = 128;
 
 /// `tacsim:pack:{id}@{version}`.
 #[must_use]
@@ -126,7 +148,19 @@ pub struct TacsimStore {
     pub(crate) pins: BTreeMap<CanonicalId, PinRecord>,
     /// The materialized routes, re-derived from the loaded packs and the seed
     /// latches' placement maps. A projection, never a document.
-    pub(crate) routes: BTreeMap<CanonicalId, RouteDef>,
+    ///
+    /// Keyed by `(pack, version, route id)` and **not** by the route's pack-local id
+    /// alone (independent verify S4): a route id is pack-local by definition, so a
+    /// single-id key let a second seeded pack whose id merely sorts later silently
+    /// replace the corridor's `ceres_phobos` — deterministic, so not a replay
+    /// divergence, but a fail-open shadowing of the very definition T1 rests on, with
+    /// no way to ask for a specific pack's route.
+    pub(crate) routes: BTreeMap<(CanonicalId, u32, CanonicalId), RouteDef>,
+    /// Per latch, the pack-local symbols whose placed object this world no longer has
+    /// (independent verify S3). Re-derived at boot against the live world, never a
+    /// document; a route through one of them is skipped rather than materialized over
+    /// a tombstone.
+    pub(crate) missing: BTreeMap<(CanonicalId, u32), BTreeSet<CanonicalId>>,
     /// The highest published version per pack, floored on every parsed key.
     pub(crate) watermark: BTreeMap<CanonicalId, u32>,
 }
@@ -175,6 +209,25 @@ impl TacsimStore {
         self.published.values()
     }
 
+    /// **The digest this world published one version under**, if it can still read the
+    /// row.
+    ///
+    /// The one read of `PackRecord::digest` that makes the ledger's digest field mean
+    /// something (independent verify P1): `boot_reconcile` compares it against the
+    /// loaded pack and refuses the boot on a disagreement, and `@tacsim/pack verify`
+    /// reports the same fact rather than re-proving an equality `load_pack` already
+    /// established.
+    #[must_use]
+    pub fn published_digest(
+        &self,
+        id: &CanonicalId,
+        version: u32,
+    ) -> Option<mush_core::DefinitionDigest> {
+        self.published
+            .get(&(id.clone(), version))
+            .map(PackRecord::digest)
+    }
+
     /// The seed latch for one `(pack, version)`.
     #[must_use]
     pub fn seed(&self, pack: &CanonicalId, version: u32) -> Option<&SeedApplication> {
@@ -208,22 +261,74 @@ impl TacsimStore {
         self.pins.values()
     }
 
-    /// One materialized route.
+    /// **One materialized route, for the pack version that governs its id.**
+    ///
+    /// A route id is pack-local, so answering by id alone needs a rule for which pack's
+    /// route that is: [`TacsimStore::resolve`]'s, the same rule every other subject
+    /// goes through. Ask for a specific pack's route with [`TacsimStore::route_in`].
     #[must_use]
     pub fn route(&self, id: &CanonicalId) -> Option<&RouteDef> {
-        self.routes.get(id)
+        let (pack, version) = self.resolve(id).ok()?;
+        self.routes.get(&(pack, version, id.clone()))
     }
 
-    /// Every materialized route, in id order.
-    pub fn routes(&self) -> impl Iterator<Item = &RouteDef> {
-        self.routes.values()
+    /// One materialized route, named by the pack and version that declares it.
+    #[must_use]
+    pub fn route_in(
+        &self,
+        pack: &CanonicalId,
+        version: u32,
+        id: &CanonicalId,
+    ) -> Option<&RouteDef> {
+        self.routes.get(&(pack.clone(), version, id.clone()))
     }
 
-    /// Every object this world's seed latches created, pack-local id to object.
+    /// Every materialized route, in `(pack, version, id)` order.
+    pub fn routes(&self) -> impl Iterator<Item = (&CanonicalId, u32, &RouteDef)> {
+        self.routes
+            .iter()
+            .map(|((pack, version, _), def)| (pack, *version, def))
+    }
+
+    /// Every seed latch, keyed `(pack, version)`.
+    pub(crate) fn latches(&self) -> impl Iterator<Item = (&(CanonicalId, u32), &SeedApplication)> {
+        self.seeded.iter()
+    }
+
+    /// Every object this world's seed latches created **and still has**, pack-local id
+    /// to object.
+    ///
+    /// A placement whose object is gone is omitted rather than handed out (S3); it is
+    /// reported by [`TacsimStore::missing_placements`], which boot has already paged.
     pub fn seeded_objects(&self) -> impl Iterator<Item = (&CanonicalId, ObjId)> {
-        self.seeded
-            .values()
-            .flat_map(|s| s.placed().iter().map(|(id, obj)| (id, *obj)))
+        self.seeded.iter().flat_map(|(key, seed)| {
+            let gone = self.missing.get(key);
+            seed.placed()
+                .iter()
+                .filter(move |(id, _)| !gone.is_some_and(|set| set.contains(*id)))
+                .map(|(id, obj)| (id, *obj))
+        })
+    }
+
+    /// Per latch, how many of its placed objects this world no longer has (S3).
+    ///
+    /// Empty on a healthy world. Every entry was paged at boot, level 2, naming the
+    /// pack and the command that shows it.
+    pub fn missing_placements(&self) -> impl Iterator<Item = (&CanonicalId, u32, usize)> {
+        self.missing
+            .iter()
+            .map(|((pack, version), gone)| (pack, *version, gone.len()))
+    }
+
+    /// Record the placements boot found the world no longer has, and re-project.
+    pub(crate) fn record_missing_placements(
+        &mut self,
+        missing: Vec<((CanonicalId, u32), CanonicalId)>,
+    ) {
+        for (key, symbol) in missing {
+            self.missing.entry(key).or_default().insert(symbol);
+        }
+        self.reindex_routes();
     }
 
     /// **Resolve a subject to the exact pack version that governs it** (§3.1
@@ -250,31 +355,50 @@ impl TacsimStore {
                 how: "pinned",
             });
         }
-        // Which loaded packs declare this subject at all? A subject nothing declares
-        // is unknown; the answer must not depend on which version happened to load.
+        // Which packs could govern THIS subject at all? A subject nothing declares is
+        // unknown; the answer must not depend on which version happened to load.
+        //
+        // Two sources, and both are about the subject (independent verify P2). A
+        // loaded pack that declares it is the ordinary one. The second is a pack this
+        // world was *seeded* at whose latch actually placed this symbol: that pack
+        // governs what it made even when no loaded version declares it any more.
+        //
+        // What is deliberately NOT a source is `published_keys`. It carries a row for
+        // every version any `tacsim:pack:` key ever claimed, so using it here made the
+        // retired-seed arm true for any applied-but-unloaded pack **whatever was
+        // asked** — dropping one already-applied campaign-seed file from `seed_paths`,
+        // an ordinary operator action once the seed has run, made `resolve` refuse for
+        // every subject in every still-loaded rules pack and misattribute each to the
+        // unrelated seed pack. Invariant (i)'s rule is per-subject; that was a total
+        // denial of the store's headline query. It may widen the *evidence* that a
+        // candidate was retired; it may never make an unrelated pack a candidate.
         let mut candidates: BTreeSet<CanonicalId> = BTreeSet::new();
         for ((id, _), loaded) in &self.loaded {
             if loaded.pack.entry(subject).is_some() {
                 candidates.insert(id.clone());
             }
         }
-        // A pack this world was seeded at governs its own subjects at that version
-        // even if no loaded version declares them any more — otherwise retiring a
-        // version would silently re-point every seeded subject.
-        for (pack, version) in &self.applied {
-            let key = (pack.clone(), *version);
-            if self.loaded.contains_key(&key) {
+        for ((pack, version), seed) in &self.seeded {
+            if seed.placed().contains_key(subject) && self.applied.get(pack) == Some(version) {
+                candidates.insert(pack.clone());
+            }
+        }
+        // A candidate this world was seeded at, whose version is gone, **refuses** —
+        // fail closed, naming the pack that actually declares the subject asked for,
+        // rather than silently re-pointing it at a newer version.
+        for pack in &candidates {
+            let Some(version) = self.applied.get(pack) else {
+                continue;
+            };
+            if self.loaded.contains_key(&(pack.clone(), *version)) {
                 continue;
             }
-            let ever_declared = candidates.contains(pack) || self.published_keys.contains(&key);
-            if ever_declared {
-                return Err(ResolveError::Retired {
-                    subject: subject.to_string(),
-                    pack: pack.to_string(),
-                    version: *version,
-                    how: "seeded",
-                });
-            }
+            return Err(ResolveError::Retired {
+                subject: subject.to_string(),
+                pack: pack.to_string(),
+                version: *version,
+                how: "seeded",
+            });
         }
         for pack in &candidates {
             if let Some(version) = self.applied.get(pack) {
@@ -345,17 +469,22 @@ impl TacsimStore {
     /// answering with none.
     fn reindex_routes(&mut self) {
         self.routes.clear();
-        let mut built: Vec<(CanonicalId, RouteDef)> = Vec::new();
+        let mut built: Vec<((CanonicalId, u32, CanonicalId), RouteDef)> = Vec::new();
         for ((pack, version), loaded) in &self.loaded {
-            let Some(seed) = self.seeded.get(&(pack.clone(), *version)) else {
+            let key = (pack.clone(), *version);
+            let Some(seed) = self.seeded.get(&key) else {
                 continue;
             };
+            let gone = self.missing.get(&key);
             for (id, entry) in loaded.pack.entries() {
                 let PackEntry::Route(route) = entry else {
                     continue;
                 };
-                match materialize_route(id, route, seed.placed()) {
-                    Ok(def) => built.push((id.clone(), def)),
+                match materialize_route(id, route, seed.placed(), gone) {
+                    // Keyed by the pack that declares it: a pack-local id is not a
+                    // global one, and a later-sorting pack must not shadow an earlier
+                    // one's route (S4).
+                    Ok(def) => built.push(((pack.clone(), *version, id.clone()), def)),
                     Err(detail) => tracing::warn!(
                         route = %id,
                         pack = %pack,
@@ -366,19 +495,29 @@ impl TacsimStore {
                 }
             }
         }
-        for (id, def) in built {
-            self.routes.insert(id, def);
+        for (key, def) in built {
+            self.routes.insert(key, def);
         }
     }
 }
 
 /// Resolve one pack-authored route against a seed's placement map.
+///
+/// `gone` is the set of pack-local symbols this world no longer has an object for
+/// (S3): a route through one of them is refused here rather than handed out over a
+/// tombstone.
 fn materialize_route(
     id: &CanonicalId,
     route: &RouteEntry,
     placed: &BTreeMap<CanonicalId, ObjId>,
+    gone: Option<&BTreeSet<CanonicalId>>,
 ) -> Result<RouteDef, String> {
     let place = |symbol: &CanonicalId| -> Result<ObjId, String> {
+        if gone.is_some_and(|set| set.contains(symbol)) {
+            return Err(format!(
+                "the object the seed placed for {symbol} is not in this world any more"
+            ));
+        }
         placed
             .get(symbol)
             .copied()
@@ -407,9 +546,24 @@ fn materialize_route(
 /// Cut 1 authors no propulsion table — that is cut 11's full rules pack — so this is
 /// the one nominal profile the fixture's `@tacsim/pack show` and the route tests use.
 /// It is a **function of the class name only**, so it stays pure.
+///
+/// # Propellant is INSIDE `payload` (cut 6 reads this as the ruling)
+///
+/// Independent verify P7: the nominal capacity was 1 000 while the shipped corridor
+/// declares `propellant: 1200`, so evaluating the fixture's one route **with its own
+/// declared propellant load** was `RouteDefError::Overloaded` — the two numbers in the
+/// same fixture contradicted each other, and nothing noticed because every test
+/// evaluated at `payload = 0`. The two numbers are made consistent in the one place a
+/// number is authored that does not move a published digest: the capacity, here. A
+/// journey's propellant plan counts against the drive's payload capacity, so
+/// `route_duration(route, nominal_drive(class), route.propellant())` is the empty-hold
+/// case and any cargo is added to it. [`MAX_ROUTE_PROPELLANT`] bounds what a pack may
+/// declare; this figure bounds what the one nominal drive will lift.
+///
+/// [`MAX_ROUTE_PROPELLANT`]: crate::pack::MAX_ROUTE_PROPELLANT
 #[must_use]
 pub fn nominal_drive(class: &CanonicalId) -> Option<DriveProfile> {
-    DriveProfile::new(class.clone(), 1_000, 1_000).ok()
+    DriveProfile::new(class.clone(), 1_000, 4_000).ok()
 }
 
 /// Queue one module write.
@@ -446,11 +600,59 @@ pub(crate) fn put_seed(ctx: &mut Ctx<'_>, record: SeedApplication) {
         store.seeded.insert(index, record.clone());
         store.reindex();
     }
-    let Ok(value) = serde_json::to_value(&record) else {
-        tracing::error!(%key, "tacsim: a seed latch did not serialize");
-        return;
+    // **The one `else` arm here that must not drop the write** (independent verify S5).
+    // In `put_pack`/`put_pin` dropping is harmless; here the objects `seed::apply`
+    // created are already dirty and are persisted by the very next `flush_dirty`, so
+    // dropping the latch would leave a reboot with the rooms and no latch —
+    // `is_applied` false, and a second `commit` duplicating the mine. That is the one
+    // fail-open direction the design forbids, and it was silent by construction. It is
+    // structurally unreachable (`SeedApplicationWire` is `CanonicalId`/`u32`/`String`/
+    // `ClockStamp`/`ObjId`, and `CanonicalId::serialize` is `serialize_str`, so it is a
+    // valid `serde_json` map key and `to_value` cannot fail — pinned by
+    // `tests::s5_a_full_seed_latch_always_serializes`), so this is the shape being made
+    // right rather than a live defect: page level 2, and latch a minimal document so
+    // **the key still exists**, since the key is what bars a re-seed.
+    let value = match serde_json::to_value(&record) {
+        Ok(value) => value,
+        Err(error) => {
+            tracing::error!(
+                %key, %error,
+                objects = record.objects(),
+                "tacsim: a seed latch did not serialize; {} object(s) were created and a re-seed \
+                 would duplicate them. A minimal latch is written so the key still bars one. \
+                 Recommended: `@tacsim/pack show {}@{}`, then reconcile by hand. Only this pack \
+                 is stopped.",
+                record.objects(),
+                record.pack(),
+                record.version()
+            );
+            let mut fallback = serde_json::json!({
+                "pack": record.pack().to_string(),
+                "version": record.version(),
+                "digest": record.digest().to_hex(),
+                "objects": 0,
+                "placed": serde_json::Map::new(),
+            });
+            if let Ok(applied_at) = serde_json::to_value(record.applied_at()) {
+                fallback["applied_at"] = applied_at;
+            }
+            fallback
+        }
     };
     push_op(ctx.out, ModuleWrite::JsonSet { key, value });
+}
+
+/// Remove a pin from RAM and queue its document's deletion — the crate's one `Del`.
+///
+/// Safe because no index floor is derived from a `tacsim:pin:` key: `reindex` floors
+/// the watermark on `published_keys` and `seeded_keys` only, so removing a pin removes
+/// exactly the pin (independent verify B4).
+pub(crate) fn del_pin(ctx: &mut Ctx<'_>, subject: &CanonicalId) {
+    let key = pin_key(subject);
+    if let Some(store) = ctx.w.module_state_mut::<TacsimStore>() {
+        store.pins.remove(subject);
+    }
+    push_op(ctx.out, ModuleWrite::Del { key });
 }
 
 /// Install a pin into RAM and queue its document — the single write path.
@@ -611,5 +813,46 @@ fn load_meta(store: &mut TacsimStore, value: &serde_json::Value) {
         };
         let entry = store.watermark.entry(id).or_insert(version);
         *entry = (*entry).max(version);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ---- E7 cut 1 independent verify fold ----
+
+    /// **S5 — the one write path that must not drop its document.**
+    ///
+    /// [`put_seed`]'s serialize-failure arm is structurally unreachable, and this pins
+    /// that it stays so rather than leaving it assumed: a full latch — `MAX_SEED_OBJECTS`
+    /// placements, a real `ClockStamp`, a real digest — round-trips through
+    /// `serde_json::to_value` and back. `CanonicalId::serialize` is `serialize_str`, so
+    /// every `placed` key is a valid JSON map key and there is no field in
+    /// `SeedApplicationWire` that can refuse. The loud fallback in `put_seed` is the
+    /// belt to this braces.
+    #[test]
+    fn s5_a_full_seed_latch_always_serializes() {
+        let mut placed: BTreeMap<CanonicalId, ObjId> = BTreeMap::new();
+        for i in 0..crate::pack::MAX_SEED_OBJECTS {
+            let id = CanonicalId::new(format!("place_{i}")).expect("a canonical id");
+            placed.insert(id, ObjId(u32::try_from(i).unwrap_or(0) + 2));
+        }
+        let record = SeedApplication::new(
+            CanonicalId::new("t.big").expect("a canonical id"),
+            1,
+            mush_core::DefinitionDigest::from_bytes([7_u8; 32]),
+            mush_core::ClockStamp {
+                clock: mush_core::ClockRef::WorldIc { generation: 1 },
+                at: 1_234,
+            },
+            placed,
+        )
+        .expect("a full latch builds");
+        let value = serde_json::to_value(&record).expect("a full latch always serializes");
+        let back: SeedApplication =
+            serde_json::from_value(value).expect("and re-enters through its wire");
+        assert_eq!(back, record);
+        assert_eq!(back.objects() as usize, crate::pack::MAX_SEED_OBJECTS);
     }
 }

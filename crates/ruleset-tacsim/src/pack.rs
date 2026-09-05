@@ -63,8 +63,17 @@ pub const PACK_DIGEST_DOMAIN: &str = "tacsim.pack.v1";
 /// The most entries one pack may declare (10b §7).
 pub const MAX_PACK_ENTRIES: usize = 512;
 
-/// The most objects one campaign-seed pack may instantiate (10b §7).
-pub const MAX_SEED_OBJECTS: usize = 2_048;
+/// The most objects one campaign-seed pack may instantiate.
+///
+/// **Deliberately below [`MAX_PACK_ENTRIES`]** (independent verify P5). Every seeded
+/// object is a [`PackEntry::Location`], so the seeded count is bounded above by the
+/// entry count: at 10b §7's original 2 048 against 512 the entry cap always fired
+/// first, [`PackError::TooManySeedObjects`] and `SeedError::TooManyObjects` were both
+/// dead, and the latch's own re-check was four times looser than anything a pack
+/// could produce. 256 against 512 says what the programme meant — *a seed pack
+/// instantiates a subset of its entries* — and makes the cap the plan and the latch
+/// both name the one that actually fires.
+pub const MAX_SEED_OBJECTS: usize = 256;
 
 /// The most bytes one pack's canonical encoding may occupy.
 ///
@@ -86,6 +95,32 @@ pub const MAX_LABEL_BYTES: usize = 120;
 
 /// The most input or output lines one recipe may declare.
 pub const MAX_RECIPE_LINES: usize = 16;
+
+/// The most units one recipe line may declare (independent verify P3).
+///
+/// A **magnitude** bound, beside the count bounds. Cut 1 authors the numbers and cuts
+/// 2, 4 and 6 compute quantity, cost and duration from them, so the bound belongs on
+/// the wire rather than at the first arithmetic: `MAX_RECIPE_LINES * MAX_RECIPE_UNITS`
+/// is 1.6e10, four orders of magnitude inside `i64`, so no later cost or balance term
+/// built from one recipe can overflow. Zero is refused on both sides — a line that
+/// consumes nothing or produces nothing is an authoring mistake, not a free lunch.
+pub const MAX_RECIPE_UNITS: u64 = 1_000_000_000;
+
+/// The most propellant one route may declare (independent verify P3).
+///
+/// **Zero is legal and deliberately so**: a ballistic transfer or a towed leg needs no
+/// propellant of its own, and refusing `0` would make that unauthorable. The cap bounds
+/// the top so a `u64::MAX` plan cannot overflow a later cost term.
+pub const MAX_ROUTE_PROPELLANT: u64 = 1_000_000_000;
+
+/// The longest one route leg may take, in unladen seconds (independent verify P3).
+///
+/// A corridor leg is days, not decades; `u32::MAX` is 136 years. One year, times
+/// `mush_sim::MAX_LEGS`, is 1e9 seconds of route, which `mush_sim::route_duration`
+/// evaluates without leaving `i64` at any laden ratio a [`DriveProfile`] can express.
+///
+/// [`DriveProfile`]: mush_sim::DriveProfile
+pub const MAX_LEG_SECS: u32 = 31_536_000;
 
 /// Which of Q6A's two kinds a pack is.
 ///
@@ -120,6 +155,19 @@ pub struct PackRequirement {
     /// The exact version depended on — never a range (Q18A: versions coexist, and a
     /// consumer stays pinned until an explicit migration).
     pub version: u32,
+    /// The **content** the dependency must have (independent verify P8).
+    ///
+    /// A pack is *"immutable and referenced by digest"*, and until this field existed
+    /// the `requires` edge was the one reference in the system that was not: it named a
+    /// version, so an in-place re-signed edit of a dependency propagated invisibly
+    /// through a dependent pack whose own digest never moved. Declaring it makes
+    /// [`check_requires`] compare content, and the boot refusal names both digests.
+    ///
+    /// `Option` now, required at the next pack encoding version (which rides
+    /// [`PACK_DIGEST_DOMAIN`]). It enters the hashed value **only when it is `Some`**,
+    /// so adding the field moved no already-published digest.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub digest: Option<DefinitionDigest>,
 }
 
 /// A pack's identity and provenance.
@@ -240,7 +288,21 @@ impl PackManifest {
             "requires": self
                 .requires
                 .iter()
-                .map(|r| serde_json::json!({ "id": r.id.as_str(), "version": r.version }))
+                .map(|r| {
+                    // The declared dependency digest is inside the hash when it is
+                    // declared and absent from it when it is not, so adding the field
+                    // (P8) moved no already-published digest while a pack that *does*
+                    // bind a dependency's content cannot have that binding edited
+                    // without its own digest moving.
+                    match &r.digest {
+                        Some(digest) => serde_json::json!({
+                            "id": r.id.as_str(),
+                            "version": r.version,
+                            "digest": digest.to_hex(),
+                        }),
+                        None => serde_json::json!({ "id": r.id.as_str(), "version": r.version }),
+                    }
+                })
                 .collect::<Vec<_>>(),
         })
     }
@@ -369,6 +431,27 @@ impl PackEntry {
                 if def.inputs.is_empty() || def.outputs.is_empty() {
                     return Err(PackError::EmptyRecipe);
                 }
+                // Magnitudes, beside the counts (P3): these are the authored numbers
+                // cuts 2/4/6 compute quantity and cost from, so a zero-input recipe or
+                // a `u64::MAX` output is refused ON LOAD rather than at first
+                // arithmetic.
+                for (side, lines) in [("input", &def.inputs), ("output", &def.outputs)] {
+                    for line in lines {
+                        if line.units == 0 {
+                            return Err(PackError::ZeroRecipeUnits {
+                                commodity: line.commodity.to_string(),
+                                side,
+                            });
+                        }
+                        if line.units > MAX_RECIPE_UNITS {
+                            return Err(PackError::RecipeUnitsTooLarge {
+                                commodity: line.commodity.to_string(),
+                                actual: line.units,
+                                max: MAX_RECIPE_UNITS,
+                            });
+                        }
+                    }
+                }
             }
             PackEntry::Route(entry) => {
                 if entry.legs.is_empty() {
@@ -382,6 +465,21 @@ impl PackEntry {
                 }
                 if entry.legs.iter().any(|leg| leg.base_s == 0) {
                     return Err(PackError::ZeroLeg);
+                }
+                // Magnitudes (P3). A leg is bounded above so a route cannot author a
+                // 136-year transit, and the propellant plan is bounded so a later cost
+                // term cannot overflow; `propellant == 0` is legal on purpose.
+                if let Some(leg) = entry.legs.iter().find(|leg| leg.base_s > MAX_LEG_SECS) {
+                    return Err(PackError::LegTooLong {
+                        actual: leg.base_s,
+                        max: MAX_LEG_SECS,
+                    });
+                }
+                if entry.propellant > MAX_ROUTE_PROPELLANT {
+                    return Err(PackError::PropellantTooLarge {
+                        actual: entry.propellant,
+                        max: MAX_ROUTE_PROPELLANT,
+                    });
                 }
                 if entry.from == entry.to {
                     return Err(PackError::DegenerateRoute);
@@ -484,7 +582,64 @@ pub struct RulesPackWire {
     /// Identity and provenance.
     pub manifest: PackManifestWire,
     /// The entries, keyed by their pack-local id.
+    ///
+    /// Decoded through [`deserialize_unique_entries`], so a **repeated** id is an
+    /// error rather than last-write-wins (independent verify P6).
+    #[serde(deserialize_with = "deserialize_unique_entries")]
     pub entries: BTreeMap<CanonicalId, PackEntry>,
+}
+
+/// Decode the entry table, refusing a **duplicate id** and refusing past
+/// [`MAX_PACK_ENTRIES`] as it goes (independent verify P6).
+///
+/// `serde_json` resolves a repeated map key by last-write-wins with no error, unlike
+/// the `deny_unknown_fields` struct fields around it. Because the digest is taken over
+/// the **parsed** map, a self-consistent file whose authored bytes said one thing and
+/// whose loaded semantics said another passed every gate: what runs is what is hashed,
+/// so nothing was mis-bound, but a reviewer, a diff or a CI check reading the file
+/// could not tell which of two same-named entries the world actually got — in a
+/// subsystem whose whole premise is that the file is the authored source of truth.
+/// The bound is applied while decoding rather than after, so an absurd file is refused
+/// without being materialized first.
+fn deserialize_unique_entries<'de, D>(
+    deserializer: D,
+) -> Result<BTreeMap<CanonicalId, PackEntry>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    struct Visitor;
+
+    impl<'de> serde::de::Visitor<'de> for Visitor {
+        type Value = BTreeMap<CanonicalId, PackEntry>;
+
+        fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("a table of pack entries keyed by their pack-local id")
+        }
+
+        fn visit_map<A>(self, mut map: A) -> Result<BTreeMap<CanonicalId, PackEntry>, A::Error>
+        where
+            A: serde::de::MapAccess<'de>,
+        {
+            let mut entries: BTreeMap<CanonicalId, PackEntry> = BTreeMap::new();
+            while let Some((id, entry)) = map.next_entry::<CanonicalId, PackEntry>()? {
+                if entries.contains_key(&id) {
+                    return Err(serde::de::Error::custom(PackError::DuplicateEntry {
+                        id: id.to_string(),
+                    }));
+                }
+                if entries.len() >= MAX_PACK_ENTRIES {
+                    return Err(serde::de::Error::custom(PackError::TooManyEntries {
+                        actual: entries.len() + 1,
+                        max: MAX_PACK_ENTRIES,
+                    }));
+                }
+                entries.insert(id, entry);
+            }
+            Ok(entries)
+        }
+    }
+
+    deserializer.deserialize_map(Visitor)
 }
 
 impl RulesPack {
@@ -498,9 +653,17 @@ impl RulesPack {
     ///
     /// [`PackError::TooManyEntries`] past [`MAX_PACK_ENTRIES`],
     /// [`PackError::TooManySeedObjects`] past [`MAX_SEED_OBJECTS`],
-    /// [`PackError::WrongKindEntry`] for a location in a rules pack or a route in a
-    /// seed pack, [`PackError::UnknownRouteEndpoint`] for a route naming a place the
-    /// pack does not declare, and whatever [`PackEntry::check`] refuses.
+    /// [`PackError::WrongKindEntry`] for **a location or a route in a rules pack, and
+    /// a commodity or recipe in a seed pack**, [`PackError::UnknownRouteEndpoint`] for
+    /// a route naming a place the pack does not declare, and whatever
+    /// [`PackEntry::check`] refuses.
+    ///
+    /// The rule reads that way round because a route's endpoints must be places its
+    /// **own** pack declares (deviation (d)) and a rules pack may declare no place: a
+    /// route in a rules pack is therefore unauthorable, and it is named here as the
+    /// kind rule it is rather than surfacing as the endpoint symptom. The shipped
+    /// corridor fixture is the other half — a route inside a `campaign_seed` manifest
+    /// is exactly what a seed pack is for.
     pub fn new(
         manifest: PackManifest,
         entries: BTreeMap<CanonicalId, PackEntry>,
@@ -526,11 +689,13 @@ impl RulesPack {
             // side of it is refused rather than quietly ignored.
             let misplaced = matches!(
                 (manifest.kind, entry),
-                (PackKind::RulesDefinition, PackEntry::Location(_))
-                    | (
-                        PackKind::CampaignSeed,
-                        PackEntry::Commodity(_) | PackEntry::Recipe(_)
-                    )
+                (
+                    PackKind::RulesDefinition,
+                    PackEntry::Location(_) | PackEntry::Route(_)
+                ) | (
+                    PackKind::CampaignSeed,
+                    PackEntry::Commodity(_) | PackEntry::Recipe(_)
+                )
             );
             if misplaced {
                 return Err(PackError::WrongKindEntry {
@@ -703,15 +868,31 @@ pub fn load_pack(bytes: &str) -> Result<RulesPack, PackError> {
 ///
 /// # Errors
 ///
-/// [`PackError::MissingRequire`] and [`PackError::RequireVersionMismatch`]; the
-/// caller names the file (the host does, at boot).
+/// [`PackError::MissingRequire`], [`PackError::RequireVersionMismatch`] and
+/// [`PackError::RequireDigestMismatch`]; the caller names the file (the host does, at
+/// boot).
 pub fn check_requires(
     pack: &RulesPack,
     loaded: &BTreeMap<(CanonicalId, u32), RulesPack>,
 ) -> Result<(), PackError> {
     for requirement in pack.manifest.requires() {
         let key = (requirement.id.clone(), requirement.version);
-        if loaded.contains_key(&key) {
+        if let Some(dependency) = loaded.get(&key) {
+            // A dependency edge names a **content**, not a version (P8): a version
+            // that was re-signed in place under other bytes is refused here, naming
+            // both digests, rather than propagating invisibly through a dependent
+            // pack whose own digest never moved.
+            if let Some(declared) = requirement.digest {
+                let actual = dependency.manifest.digest();
+                if declared != actual {
+                    return Err(PackError::RequireDigestMismatch {
+                        id: requirement.id.to_string(),
+                        version: requirement.version,
+                        declared: declared.to_hex(),
+                        actual: actual.to_hex(),
+                    });
+                }
+            }
             continue;
         }
         // A version of the right pack that is not the one asked for is a *mismatch*,
@@ -810,6 +991,21 @@ pub enum PackError {
         /// The versions actually loaded.
         present: String,
     },
+    /// A dependency present at the right version but with **other content**.
+    #[error(
+        "requires {id}@{version} at digest {declared}, but this server loads that version at \
+         {actual}; a pack is referenced by content, not by name"
+    )]
+    RequireDigestMismatch {
+        /// The dependency.
+        id: String,
+        /// The version wanted.
+        version: u32,
+        /// The digest the dependent pack declared.
+        declared: String,
+        /// The digest the loaded dependency actually has.
+        actual: String,
+    },
     /// Past [`MAX_PACK_ENTRIES`].
     #[error("a pack declares {actual} entries; the maximum is {max}")]
     TooManyEntries {
@@ -841,6 +1037,46 @@ pub enum PackError {
     /// A recipe with no inputs or no outputs.
     #[error("a recipe needs at least one input and one output")]
     EmptyRecipe,
+    /// A recipe line that moves no matter at all.
+    #[error("a recipe's {side} line for {commodity} declares zero units")]
+    ZeroRecipeUnits {
+        /// The commodity family the line named.
+        commodity: String,
+        /// `input` or `output`.
+        side: &'static str,
+    },
+    /// A recipe line past [`MAX_RECIPE_UNITS`].
+    #[error("a recipe line for {commodity} declares {actual} units; the maximum is {max}")]
+    RecipeUnitsTooLarge {
+        /// The commodity family the line named.
+        commodity: String,
+        /// How many it declared.
+        actual: u64,
+        /// [`MAX_RECIPE_UNITS`].
+        max: u64,
+    },
+    /// A leg past [`MAX_LEG_SECS`].
+    #[error("a route leg declares {actual} seconds; the maximum is {max}")]
+    LegTooLong {
+        /// How long it declared.
+        actual: u32,
+        /// [`MAX_LEG_SECS`].
+        max: u32,
+    },
+    /// A propellant plan past [`MAX_ROUTE_PROPELLANT`].
+    #[error("a route declares {actual} propellant; the maximum is {max}")]
+    PropellantTooLarge {
+        /// How much it declared.
+        actual: u64,
+        /// [`MAX_ROUTE_PROPELLANT`].
+        max: u64,
+    },
+    /// One entry id declared twice in one pack file.
+    #[error("pack entry {id} is declared more than once")]
+    DuplicateEntry {
+        /// The repeated id.
+        id: String,
+    },
     /// A route with no legs.
     #[error("a route needs at least one leg")]
     EmptyRoute,

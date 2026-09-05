@@ -396,12 +396,29 @@ pub fn tacsim_config(cfg: &TacsimCfg) -> Result<ruleset_tacsim::TacsimConfig, St
     Ok(typed)
 }
 
+/// The most pack files this host will read for one `[tacsim]` path list.
+///
+/// A host mirror of `ruleset_tacsim::MAX_CONFIGURED_PACKS`, so the **listing** pass can
+/// consult it (independent verify B5). `verify_sources` keeps its own check of the
+/// combined `packs + seeds` count as the defence-in-depth repeat.
+pub const MAX_TACSIM_CONFIGURED_PACKS: usize = ruleset_tacsim::MAX_CONFIGURED_PACKS;
+
 /// Read every configured pack path into `(name, bytes)` pairs, deterministically.
+///
+/// **Two passes, and the order is the point** (independent verify B5). The cap whose
+/// doc-comment says *"Boot reads every one of them, so the list is bounded"* used to be
+/// applied by `verify_sources` **after** every configured file had already been read
+/// into memory: 200 pack files cost 200 × up-to-512 KiB of resident bytes before the
+/// boot refused, and the refusal printed the count that got materialized — inverting
+/// this tree's own "bounded on records visited, not matched" discipline at the one
+/// place it is a boot precondition. So the candidate list is accumulated first and the
+/// cap is applied to it, and only then is anything read. Sorted-directory order
+/// (OPEN 1) is unchanged: the listing pass is where the sort happens.
 fn read_pack_sources(
     paths: &[String],
     label: &str,
 ) -> Result<Vec<ruleset_tacsim::PackSource>, String> {
-    let mut out: Vec<ruleset_tacsim::PackSource> = Vec::new();
+    let mut candidates: Vec<std::path::PathBuf> = Vec::new();
     for entry in paths {
         let path = std::path::Path::new(entry.trim());
         if path.is_dir() {
@@ -419,12 +436,29 @@ fn read_pack_sources(
                 }
             }
             files.sort();
-            for file in files {
-                out.push(read_one_pack(&file)?);
+            if files.len() > MAX_TACSIM_CONFIGURED_PACKS {
+                return Err(format!(
+                    "{label}: {} holds {} pack files; this server loads at most \
+                     {MAX_TACSIM_CONFIGURED_PACKS}",
+                    entry,
+                    files.len()
+                ));
             }
+            candidates.extend(files);
         } else {
-            out.push(read_one_pack(path)?);
+            candidates.push(path.to_path_buf());
         }
+        if candidates.len() > MAX_TACSIM_CONFIGURED_PACKS {
+            return Err(format!(
+                "{label}: {} pack files are configured; this server loads at most \
+                 {MAX_TACSIM_CONFIGURED_PACKS}",
+                candidates.len()
+            ));
+        }
+    }
+    let mut out: Vec<ruleset_tacsim::PackSource> = Vec::with_capacity(candidates.len());
+    for file in candidates {
+        out.push(read_one_pack(&file)?);
     }
     Ok(out)
 }
@@ -618,6 +652,82 @@ mod tests {
             "{refused}"
         );
         assert!(refused.contains("already declares"), "{refused}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ---- E7 cut 1 independent verify fold ----
+
+    /// **B5 (covers S6) — the configured-pack cap is applied BEFORE any file is read.**
+    ///
+    /// `read_pack_sources` walked each configured directory with no bound on the file
+    /// count and called `read_one_pack` for every `*.json` it found, each producing a
+    /// `PackSource` holding the whole file, up to `MAX_TACSIM_PACK_BYTES`. Only
+    /// afterwards did `verify_sources` count them and refuse past
+    /// `MAX_CONFIGURED_PACKS` — so the cap whose doc-comment says *"Boot reads every one
+    /// of them, so the list is bounded"* was applied after the reading it exists to
+    /// bound, and the refusal printed the count that had already been materialized.
+    ///
+    /// The second half is what proves the ordering rather than merely the message: the
+    /// same directory, filled with entries that **cannot be read at all**, still refuses
+    /// with the cap. If anything were read first, the refusal would name the read
+    /// failure instead.
+    #[test]
+    fn vf_b5_the_configured_pack_cap_is_applied_before_any_file_is_read() {
+        let dir = std::env::temp_dir().join(format!(
+            "e7c1-cap-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or_default()
+        ));
+        let readable = dir.join("readable");
+        let unreadable = dir.join("unreadable");
+        std::fs::create_dir_all(&readable).expect("a scratch directory");
+        std::fs::create_dir_all(&unreadable).expect("a scratch directory");
+        for i in 0..=MAX_TACSIM_CONFIGURED_PACKS {
+            std::fs::write(
+                readable.join(format!("p{i:03}.json")),
+                ruleset_tacsim::fixture::CORE_JSON,
+            )
+            .expect("writes");
+            // A *directory* named `*.json`: it is listed as a candidate and cannot be
+            // read, so reading it would produce "could not be read" rather than the cap.
+            std::fs::create_dir_all(unreadable.join(format!("p{i:03}.json")))
+                .expect("a scratch entry");
+        }
+        for (path, label) in [(&readable, "readable"), (&unreadable, "unreadable")] {
+            let cfg = TacsimCfg {
+                enabled: true,
+                pack_paths: vec![path.display().to_string()],
+                ..TacsimCfg::default()
+            };
+            let refused = tacsim_config(&cfg).expect_err(label);
+            assert!(
+                refused.contains(&path.display().to_string()),
+                "{label}: the directory must be named: {refused}"
+            );
+            assert!(
+                refused.contains(&(MAX_TACSIM_CONFIGURED_PACKS + 1).to_string())
+                    && refused.contains(&MAX_TACSIM_CONFIGURED_PACKS.to_string()),
+                "{label}: the count and the cap must both be named: {refused}"
+            );
+            assert!(
+                !refused.contains("could not be read"),
+                "{label}: nothing may have been read yet: {refused}"
+            );
+        }
+        // And a directory inside the cap is still read, in sorted order, as before.
+        let small = dir.join("small");
+        std::fs::create_dir_all(&small).expect("a scratch directory");
+        std::fs::write(small.join("core.json"), ruleset_tacsim::fixture::CORE_JSON)
+            .expect("writes");
+        let cfg = TacsimCfg {
+            enabled: true,
+            pack_paths: vec![small.display().to_string()],
+            ..TacsimCfg::default()
+        };
+        assert_eq!(tacsim_config(&cfg).expect("one pack loads").packs.len(), 1);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

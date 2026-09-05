@@ -636,8 +636,18 @@ impl Default for ShadowrunEconomyCfg {
 /// is bit-identical to one built before E7 existed. The verbs still register and answer
 /// "not enabled on this server" — E5c deviation 1, and `[shadowrun.economy]`'s
 /// precedent.
+/// **`deny_unknown_fields`, on `EconomyCadenceCfg`'s precedent** (independent verify
+/// B6). Every other block on this tree tolerates a typo, and that is survivable where
+/// a typo costs a default. `[tacsim]` is the only section whose keys carry a **boot
+/// precondition**: `enable = true` or `pack_path = [...]` parsed clean and yielded
+/// `enabled = false` with no paths, so the server booted with the layer off and 10b
+/// §3.1 invariant (iv) — *an unreadable, oversized, unparseable or digest-mismatched
+/// pack is a hard boot error naming the file* — was silently not in force, because
+/// `tacsim_config`'s `if cfg.enabled` branch read nothing. `mushd.toml.example` promises
+/// a hard boot error naming the file one paragraph away, for pack files; a typo in the
+/// key that decides whether any file is read at all must not be quieter than that.
 #[derive(Clone, Debug, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct TacsimCfg {
     /// Whether the layer does anything.
     pub enabled: bool,
@@ -685,8 +695,10 @@ impl Default for TacsimCfg {
 /// — and only when the reserved namespace is empty — with persisted truth winning
 /// thereafter. This block is campaign rate *policy*, and it reaches that function
 /// never; a pinned `mush-server` test asserts exactly that (08i §3's configuration row).
+/// `deny_unknown_fields` for [`TacsimCfg`]'s reason: a mistyped catch-up policy word
+/// here is a policy cut 4/8/11 will silently not have (independent verify B6).
 #[derive(Clone, Debug, Default, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct TacsimTimeCfg {
     /// IC seconds per real second the campaign layer intends. Doc 10 S1A's "≈ one OOC
     /// hour per IC day" is a value here, never a constant in code. **Inert:** opening
@@ -1437,6 +1449,43 @@ mod tests {
         // The example's [llm] block is captured raw here; its typed parse into
         // `mush_llm::LlmConfig` is covered by the server crate that owns it.
         assert!(cfg.llm.is_table());
+    }
+
+    // ---- E7 cut 1 independent verify fold ----
+
+    /// **B6 — a typo in `[tacsim]` refuses to start rather than silently disarming the
+    /// pack gate.**
+    ///
+    /// `TacsimCfg`/`TacsimTimeCfg` carried `#[serde(default)]` with no
+    /// `deny_unknown_fields`, so `enable = true` or `pack_path = [...]` parsed clean and
+    /// yielded `enabled = false` with no paths: the server booted with the layer off,
+    /// and 10b §3.1 invariant (iv) — *an unreadable, oversized, unparseable or
+    /// digest-mismatched pack is a hard boot error naming the file* — was silently not
+    /// in force, because `tacsim_config`'s `if cfg.enabled` branch read nothing. This is
+    /// deliberately stricter than the rest of the tree (only `EconomyCadenceCfg` had the
+    /// attribute, and `WodCfg`/`ShadowrunCfg` still do not): `[tacsim]` is the only
+    /// section whose keys carry a boot precondition. The other half of the pair is
+    /// `example_config_parses` above, which keeps `mushd.toml.example` loadable.
+    #[test]
+    fn vf_b6_an_unknown_tacsim_key_refuses_to_start() {
+        for (text, key) in [
+            ("[tacsim]\nenable = true\n", "enable"),
+            ("[tacsim]\npack_path = []\n", "pack_path"),
+            (
+                "[tacsim.time]\ncatch_up_journey = \"x\"\n",
+                "catch_up_journey",
+            ),
+        ] {
+            let refused = toml::from_str::<Config>(text).expect_err(text);
+            let refused = refused.to_string();
+            assert!(refused.contains(key), "{text}: {refused}");
+            assert!(refused.contains("unknown field"), "{text}: {refused}");
+        }
+        // And the spelled-correctly block still parses to exactly what it says.
+        let cfg: Config =
+            toml::from_str("[tacsim]\nenabled = true\npack_paths = [\"a.json\"]\n").unwrap();
+        assert!(cfg.tacsim.enabled);
+        assert_eq!(cfg.tacsim.pack_paths, vec!["a.json".to_string()]);
     }
 
     #[test]

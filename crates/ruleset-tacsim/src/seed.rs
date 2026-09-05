@@ -27,9 +27,10 @@
 //!
 //! [`plan`] does every check — enabled, the pack is loaded, it is a *seed* pack, no
 //! other version of it has been applied, and the object count is inside
-//! `MAX_SEED_OBJECTS` — and returns a plan. [`apply`] pre-flights the object owner
-//! once and then performs only infallible creates, so there is no `?` after the first
-//! irreversible mutation.
+//! `MAX_SEED_OBJECTS` — and returns a plan. [`apply`] **re-runs every one of them**
+//! (independent verify P9: the guard belongs with the irreversible half, not with its
+//! caller), pre-flights the object owner, and only then performs infallible creates, so
+//! there is no `?` after the first irreversible mutation.
 
 use std::collections::BTreeMap;
 
@@ -194,27 +195,70 @@ pub fn plan(store: &TacsimStore, pack: &CanonicalId) -> Result<SeedPlan, SeedErr
 /// fail-closed direction, since the alternative duplicates a mine — and the refusal
 /// pages with the exact command.
 ///
+/// # The idempotency guard travels with the irreversible half
+///
+/// Independent verify P9: `apply` is `pub` and takes a plain `Clone`/`PartialEq`
+/// `SeedPlan` with public fields, and its only pre-flights were the owner and the
+/// digest — `is_applied`, `applied_version` and the pack-kind test all lived in
+/// [`plan`], i.e. in the *caller*. A second `apply` over one live plan would therefore
+/// have run the create loop again and `put_seed` would have overwritten the latch with
+/// the new `placed` map, dropping the first set's object ids while leaving those
+/// objects in the world — the duplicated mine invariant (ii) exists to prevent. The
+/// checks are re-run here, so the latch's guarantee is a property of the **function**
+/// rather than of one call site; they stay entirely inside the fallible pre-flight, so
+/// nothing fallible moved past the first `World::create`.
+///
 /// # Errors
 ///
-/// [`SeedError::NoOwner`] before anything is written, and [`SeedError::Latch`] if the
-/// record's own constructor refuses.
+/// [`SeedError::AlreadyApplied`], [`SeedError::VersionAlreadyApplied`],
+/// [`SeedError::NotASeedPack`], [`SeedError::NoSuchPack`] and [`SeedError::NoOwner`]
+/// before anything is written, and [`SeedError::Latch`] if the record's own
+/// constructor refuses.
 pub fn apply(
     ctx: &mut Ctx<'_>,
     plan: &SeedPlan,
     owner: ObjId,
 ) -> Result<SeedApplication, SeedError> {
     // ---- everything fallible, before the first mutation ----
+    let Some(store) = ctx.w.module_state::<TacsimStore>() else {
+        return Err(SeedError::NotEnabled);
+    };
+    if !store.enabled() {
+        return Err(SeedError::NotEnabled);
+    }
+    if store.is_applied(&plan.pack, plan.version) {
+        return Err(SeedError::AlreadyApplied {
+            pack: plan.pack.to_string(),
+            version: plan.version,
+        });
+    }
+    if let Some(applied) = store.applied_version(&plan.pack) {
+        return Err(SeedError::VersionAlreadyApplied {
+            pack: plan.pack.to_string(),
+            applied,
+            wanted: plan.version,
+        });
+    }
+    let Some(loaded) = store.pack(&plan.pack, plan.version) else {
+        return Err(SeedError::NoSuchPack);
+    };
+    if loaded.pack.manifest().kind() != PackKind::CampaignSeed {
+        return Err(SeedError::NotASeedPack {
+            pack: plan.pack.to_string(),
+        });
+    }
+    if plan.objects.len() > MAX_SEED_OBJECTS {
+        return Err(SeedError::TooManyObjects {
+            pack: plan.pack.to_string(),
+            version: plan.version,
+            actual: plan.objects.len(),
+            max: MAX_SEED_OBJECTS,
+        });
+    }
+    let digest = loaded.pack.manifest().digest();
     if ctx.w.get(owner).is_none() {
         return Err(SeedError::NoOwner);
     }
-    let Some(digest) = ctx
-        .w
-        .module_state::<TacsimStore>()
-        .and_then(|s| s.pack(&plan.pack, plan.version))
-        .map(|loaded| loaded.pack.manifest().digest())
-    else {
-        return Err(SeedError::NoSuchPack);
-    };
     let applied_at = ctx.world_ic_now();
 
     // ---- the irreversible half ----
@@ -263,4 +307,80 @@ pub fn apply(
         );
     }
     Ok(record)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ---- E7 cut 1 independent verify fold ----
+
+    /// **P9 — the latch is a property of `apply`, not of `commands::seed_cmd`.**
+    ///
+    /// `apply` is `pub` API and a `SeedPlan` is a plain `Clone` value with public
+    /// fields, so nothing stopped a caller applying one plan twice: the second call
+    /// would have created a second object set and `put_seed` would have overwritten the
+    /// latch with the new `placed` map, orphaning the first set's objects in the world
+    /// — invariant (ii)'s duplicated mine, reached without any interleaving at all.
+    /// This is the shape the integration tests cannot express, because a bare `Ctx`
+    /// only exists inside a handler; here it is built by hand exactly as
+    /// `Engine::modules_loaded` builds one.
+    #[test]
+    fn vf_p9_apply_re_checks_the_latch_and_a_second_call_creates_nothing() {
+        let mut tw = mush_testkit::TestWorld::with_modules(vec![Box::new(
+            crate::TacsimRuleset::with_config(crate::fixture::config()),
+        )]);
+        let corridor = CanonicalId::new("tacsim.corridor").expect("a canonical id");
+        let engine = tw.engine_mut();
+        let plan = {
+            let store = engine
+                .world
+                .module_state::<TacsimStore>()
+                .expect("the tacsim slot");
+            plan(store, &corridor).expect("the corridor plans")
+        };
+        let mut out = mush_core::Outbox::new();
+        let mut ctx = Ctx {
+            w: &mut engine.world,
+            actor: mush_core::GOD,
+            switches: mush_core::SwitchSet::default(),
+            args: mush_core::ParsedArgs::default(),
+            out: &mut out,
+            reg: &engine.registry,
+            module: Some(smol_str::SmolStr::new(crate::store::NS)),
+            typed_state: mush_core::ModuleActionState::unavailable(),
+        };
+
+        let first = apply(&mut ctx, &plan, mush_core::GOD).expect("the first application");
+        assert_eq!(first.objects(), 3);
+        let after_first: Vec<(CanonicalId, ObjId)> = ctx
+            .w
+            .module_state::<TacsimStore>()
+            .expect("the tacsim slot")
+            .seeded_objects()
+            .map(|(id, obj)| (id.clone(), obj))
+            .collect();
+
+        // The SAME live plan, applied again.
+        let refused = apply(&mut ctx, &plan, mush_core::GOD).expect_err("the second must refuse");
+        assert!(
+            matches!(refused, SeedError::AlreadyApplied { ref pack, version }
+                     if pack == "tacsim.corridor" && version == 1),
+            "{refused:?}"
+        );
+        let store = ctx
+            .w
+            .module_state::<TacsimStore>()
+            .expect("the tacsim slot");
+        assert_eq!(store.seeded_objects().count(), 3, "three objects, not six");
+        assert_eq!(
+            store
+                .seeded_objects()
+                .map(|(id, obj)| (id.clone(), obj))
+                .collect::<Vec<_>>(),
+            after_first,
+            "and the latch names exactly what it named before"
+        );
+        assert_eq!(store.seed(&corridor, 1), Some(&first));
+    }
 }

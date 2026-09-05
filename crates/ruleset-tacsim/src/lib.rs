@@ -77,13 +77,14 @@ pub use config::{
     MAX_CONFIGURED_PACKS, PackSource, TacsimConfig, TacsimTimeConfig,
 };
 pub use pack::{
-    CommodityDef, LocationDef, MAX_PACK_BYTES, MAX_PACK_ENTRIES, MAX_REQUIRES, MAX_SEED_OBJECTS,
+    CommodityDef, LocationDef, MAX_LABEL_BYTES, MAX_LEG_SECS, MAX_PACK_BYTES, MAX_PACK_ENTRIES,
+    MAX_RECIPE_LINES, MAX_RECIPE_UNITS, MAX_REQUIRES, MAX_ROUTE_PROPELLANT, MAX_SEED_OBJECTS,
     PACK_DIGEST_DOMAIN, PackEntry, PackError, PackKind, PackLeg, PackManifest, PackRequirement,
     RecipeDef, RecipeLine, RouteEntry, RulesPack, check_requires, load_pack, pack_digest,
 };
 pub use record::{PackRecord, PinRecord, SeedApplication};
 pub use seed::{PlannedObject, SeedError, SeedPlan};
-pub use store::{NS, ResolveError, TacsimStore};
+pub use store::{MAX_PINS, NS, PACK_PAGE, ResolveError, TacsimStore};
 
 /// **Parse and verify every pack the host read** — the one function both the host's
 /// boot check and the module's own wiring call.
@@ -136,7 +137,85 @@ pub fn verify_sources(cfg: &TacsimConfig) -> Result<Vec<LoadedPack>, String> {
         pack::check_requires(&entry.pack, &packs)
             .map_err(|error| format!("[tacsim] {}: {error}", entry.source))?;
     }
+    // And the `requires` graph is acyclic (independent verify P8). `PackManifest::new`
+    // refuses only self-dependency and duplication, so `t.a@1 requires t.b@1` and
+    // `t.b@1 requires t.a@1` both loaded and both verified. The cycle is inert in cut 1
+    // — nothing orders packs — but a later cut's load ordering needs acyclicity
+    // guaranteed at boot rather than assumed, and the refusal names the cycle.
+    if let Some(cycle) = requires_cycle(&packs) {
+        return Err(format!("[tacsim]: a requires cycle: {cycle}"));
+    }
     Ok(loaded.into_values().collect())
+}
+
+/// The first `requires` cycle, rendered as `a@1 -> b@1 -> a@1`, or `None`.
+///
+/// A depth-first walk over at most `MAX_CONFIGURED_PACKS` nodes with an explicit stack
+/// — no recursion, no `?`, no panicking index — so a hostile graph costs one pass.
+fn requires_cycle(
+    packs: &std::collections::BTreeMap<(mush_core::CanonicalId, u32), pack::RulesPack>,
+) -> Option<String> {
+    use std::collections::BTreeSet;
+
+    type Key = (mush_core::CanonicalId, u32);
+
+    let render = |path: &[Key], back: &Key| -> String {
+        let start = path.iter().position(|key| key == back).unwrap_or(0);
+        let mut hops: Vec<String> = path
+            .iter()
+            .skip(start)
+            .map(|(id, version)| format!("{id}@{version}"))
+            .collect();
+        hops.push(format!("{}@{}", back.0, back.1));
+        hops.join(" -> ")
+    };
+
+    let mut settled: BTreeSet<Key> = BTreeSet::new();
+    for root in packs.keys() {
+        if settled.contains(root) {
+            continue;
+        }
+        // `path` is the current walk; `frame` is how many of the root's requirements
+        // each level has already spent.
+        let mut path: Vec<Key> = vec![root.clone()];
+        let mut frame: Vec<usize> = vec![0];
+        let mut on_path: BTreeSet<Key> = BTreeSet::new();
+        on_path.insert(root.clone());
+        while let Some(depth) = path.len().checked_sub(1) {
+            let Some(current) = path.get(depth) else {
+                break;
+            };
+            let next = frame.get(depth).copied().unwrap_or(0);
+            let requirement = packs
+                .get(current)
+                .and_then(|p| p.manifest().requires().get(next))
+                .map(|r| (r.id.clone(), r.version));
+            match requirement {
+                Some(key) => {
+                    if let Some(slot) = frame.get_mut(depth) {
+                        *slot = next.saturating_add(1);
+                    }
+                    if on_path.contains(&key) {
+                        return Some(render(&path, &key));
+                    }
+                    if settled.contains(&key) || !packs.contains_key(&key) {
+                        continue;
+                    }
+                    on_path.insert(key.clone());
+                    path.push(key);
+                    frame.push(0);
+                }
+                None => {
+                    if let Some(done) = path.pop() {
+                        on_path.remove(&done);
+                        settled.insert(done);
+                    }
+                    frame.pop();
+                }
+            }
+        }
+    }
+    None
 }
 
 /// The TacSim layer (`"tacsim"`).
@@ -229,34 +308,129 @@ impl GameModule for TacsimRuleset {
             return Err(ModError::msg("tacsim: no module state"));
         };
         *slot = loaded;
-        boot_reconcile(ctx);
-        Ok(())
+        boot_check_placements(ctx);
+        boot_reconcile(ctx)
     }
 }
 
-/// Publish a ledger row for every loaded pack version this world has not recorded.
+/// Reconcile every seed latch's placement map against the world (independent verify
+/// S3).
+///
+/// `reindex_routes` resolves a route's symbolic endpoints purely against the latch's
+/// `placed` map and has no `World` at all, so its only failure mode was a symbol
+/// **missing from the map**; an object the map named that no longer exists passed
+/// straight through and a `RouteDef` was handed out over a tombstone (`World::destroy`
+/// plus `next_id` monotonicity make it a tombstone, never a reused id, so the damage
+/// was a dangling reference rather than a mis-bound one — and cut 6 plans journeys
+/// from exactly this projection).
+///
+/// Two passes, because the store lives inside the world: read the dead placements with
+/// the world borrowed immutably, then record them with it borrowed mutably. Bounded by
+/// the latches' own [`MAX_SEED_OBJECTS`] cap, with no `?`, `unwrap`, `expect` or
+/// panicking index.
+fn boot_check_placements(ctx: &mut ModuleCtx<'_>) {
+    let mut missing: Vec<((mush_core::CanonicalId, u32), mush_core::CanonicalId)> = Vec::new();
+    if let Some(slot) = ctx.w.module_state::<TacsimStore>() {
+        for (key, seed) in slot.latches() {
+            for (symbol, object) in seed.placed() {
+                if ctx.w.get(*object).is_none() {
+                    missing.push((key.clone(), symbol.clone()));
+                }
+            }
+        }
+    }
+    if missing.is_empty() {
+        return;
+    }
+    // 08c §4.6's ladder, level 2: the exact command, the failed invariant and **the
+    // subject only** — this pack's projection is stopped, nothing else is.
+    let mut paged: std::collections::BTreeMap<(mush_core::CanonicalId, u32), usize> =
+        std::collections::BTreeMap::new();
+    for (key, _) in &missing {
+        *paged.entry(key.clone()).or_insert(0) += 1;
+    }
+    for ((pack, version), gone) in &paged {
+        tracing::error!(
+            %pack,
+            version,
+            gone,
+            "tacsim: a seed latch names {gone} object(s) this world no longer has; every route \
+             and placement through them is skipped rather than resolved over a tombstone. \
+             Recommended: `@tacsim/pack show {pack}@{version}`, then re-create them by hand or \
+             publish a corrected version. Only this pack is stopped."
+        );
+    }
+    if let Some(slot) = ctx.w.module_state_mut::<TacsimStore>() {
+        slot.record_missing_placements(missing);
+    }
+}
+
+/// Publish a ledger row for every loaded pack version this world has not recorded —
+/// and **refuse the boot** for one it has recorded under other bytes.
 ///
 /// The row is what makes *retirement* detectable later: a version whose row is stored
 /// but whose file is gone has been withdrawn, and §3.1 invariant (i) then refuses to
-/// float an unpinned consumer of it onto a newer version. Exhaustive, with no `?`,
-/// `unwrap`, `expect` or panicking index — it runs at boot, where a panic takes the
-/// world down.
-fn boot_reconcile(ctx: &mut ModuleCtx<'_>) {
+/// float an unpinned consumer of it onto a newer version.
+///
+/// # The digest gate (independent verify P1; owner decision, 2026-09-05)
+///
+/// Until this pass compared digests, the row's own `digest` was **written and never
+/// read**: the skip was a bare key test, so an operator who edited a pack in place
+/// under the same `(id, version)` and re-signed it had it adopted at the next boot with
+/// no refusal, no warning and no ledger correction — the exact mistake invariant (i)
+/// exists to catch, and with a seeded world it moved a published corridor's transit
+/// times underneath a hauling contract while the latch barred the only re-seed that
+/// could reconcile it. So: **on agreement, continue as before; on disagreement, refuse
+/// the boot naming the file and both digests**, which is invariant (iv)'s direction and
+/// 10b §4 rule 2's rule — a re-published version is a *typo in a file the operator can
+/// fix*, not one row of accumulated history, and `mushd.toml.example` already promises
+/// exactly this answer for pack files. Never page-and-drop, never adopt; a **new**
+/// `(id, version)` with a new digest is the normal path.
+///
+/// The "already published" test reads `published_keys`, not `published`, so a ledger
+/// row that will not parse cannot re-publish its version under new bytes; the repair
+/// from the loaded pack is **loud** (level 2, naming the pack) rather than silent.
+///
+/// # Errors
+///
+/// [`ModError`] naming the file, the pack and both digests. No `?`, `unwrap`, `expect`
+/// or panicking index — it runs at boot, where a panic takes the world down, and the
+/// refusal is the deliberate fail-closed answer rather than an escaped error.
+fn boot_reconcile(ctx: &mut ModuleCtx<'_>) -> Result<(), ModError> {
     if !ctx
         .w
         .module_state::<TacsimStore>()
         .is_some_and(TacsimStore::enabled)
     {
-        return;
+        return Ok(());
     }
     let first_seen = ctx.world_ic_now();
     let mut rows: Vec<PackRecord> = Vec::new();
+    let mut repaired: Vec<(mush_core::CanonicalId, u32)> = Vec::new();
     if let Some(slot) = ctx.w.module_state::<TacsimStore>() {
         for loaded in slot.packs() {
             let manifest = loaded.pack.manifest();
             let key = (manifest.id().clone(), manifest.version());
-            if slot.published.contains_key(&key) {
-                continue;
+            // The ledger row, when this world can read one, is compared by DIGEST.
+            if let Some(row) = slot.published.get(&key) {
+                if row.digest() == manifest.digest() {
+                    continue;
+                }
+                return Err(ModError::msg(format!(
+                    "[tacsim] {}: {}@{} was published to this world at digest {}, but this file's \
+                     content is {}. A published version is never re-signed in place — publish a \
+                     new version instead; versions coexist.",
+                    loaded.source,
+                    key.0,
+                    key.1,
+                    row.digest().to_hex(),
+                    manifest.digest().to_hex()
+                )));
+            }
+            // The KEY is the claim, so a row that would not parse still counts as
+            // published: it is repaired from the loaded pack, out loud.
+            if slot.published_keys.contains(&key) {
+                repaired.push(key.clone());
             }
             let entries = match u32::try_from(loaded.pack.entries().len()) {
                 Ok(entries) => entries,
@@ -280,6 +454,19 @@ fn boot_reconcile(ctx: &mut ModuleCtx<'_>) {
             }
         }
     }
+    for (pack, version) in &repaired {
+        // 08c §4.6's ladder, level 2: the exact command, what was lost, and the subject
+        // only. The row's stored digest is gone with the body, so the repair adopts the
+        // loaded pack's — which is why it is said out loud rather than done in silence.
+        tracing::error!(
+            %pack,
+            version,
+            "tacsim: the ledger row for {pack}@{version} would not parse and has been repaired \
+             from the loaded pack, so the digest this version was FIRST published under is no \
+             longer known to this world. Recommended: `@tacsim/pack verify {pack}@{version}` and \
+             compare it against the file you meant to ship. Only this pack is affected."
+        );
+    }
     let published = !rows.is_empty();
     for row in rows {
         store::put_pack(ctx, row);
@@ -287,4 +474,5 @@ fn boot_reconcile(ctx: &mut ModuleCtx<'_>) {
     if published {
         store::persist_meta(ctx);
     }
+    Ok(())
 }
