@@ -115,6 +115,16 @@ pub enum EscalationSubject {
     /// asking a human which side is right. Keyed by the cadence id, so one clock
     /// pages once however many boots see the mismatch.
     DeclaredCadence(CadenceId),
+    /// **An announcement the observer chain dropped** (E6a step 1 verify fold, R8).
+    ///
+    /// It used to share [`EscalationSubject::Economy`] with the level-3 freeze
+    /// record, and `open_freeze_record` opens nothing while *any* `Economy` record
+    /// stands, acknowledged or not — so a dropped page (which nothing about the
+    /// journal is wrong with) could suppress the one record that says the whole
+    /// economy is frozen. A dropped announcement is its own kind of problem and gets
+    /// its own subject; the ladder's per-subject dedupe still means a runaway chain
+    /// opens one record and not a thousand.
+    DroppedPage,
     /// The whole economy — the level-3 case, and the only one that is not local.
     Economy,
 }
@@ -131,6 +141,7 @@ impl EscalationSubject {
             EscalationSubject::HousingTenancy(id) => format!("housing tenancy #{id}"),
             EscalationSubject::HousingRoom(id) => format!("housing room #{id}"),
             EscalationSubject::DeclaredCadence(id) => format!("declared cadence #{id}"),
+            EscalationSubject::DroppedPage => "a dropped economy announcement".to_string(),
             EscalationSubject::Economy => "the economy".to_string(),
         }
     }

@@ -80,14 +80,21 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
                    @account/open org:<org>[/<scope>]=<instrument>\n\
                    \x20                                     open an ORG wallet on a scope (staff)\n\
                    @account/system <name>=<instrument>    register a system source/sink (staff)\n\
-                   @account/approval <id>=<threshold> <policy>   high-value escalation (staff)\n\
+                   @account/approval <id>=<threshold> <policy> [window=<total>/<secs>]\n\
+                   \x20                                     high-value escalation (staff)\n\
                    \x20  policy = threshold:<n>[:<role>] | named:<n>:<obj>,<obj>… | none\n\
+                   \x20  window=<total>/<secs> adds a rolling budget; window=off removes it\n\
                    @account/close <id>                    close an empty, active account\n\
                    @account/unfreeze <id>                 clear a recovery freeze (staff)\n\
                    @account/show <id>                     inspect one account\n\
                    @account/list                          list the accounts you may see\n\
                    A threshold is a PER-TRANSACTION escalation, not a budget: two payments\n\
-                   under it both post without any approval (holds are E4)."
+                   under it both post without any approval. A window= IS the budget: the\n\
+                   account's spend over one trailing period (placements counted, refunds\n\
+                   never subtracted) needs the same approval once it would cross the total.\n\
+                   A standing obligation's own period post is exempt from the window — it\n\
+                   was consented to when the obligation was made — but not from the\n\
+                   threshold."
                 .into(),
             ..CommandSpec::default()
         },
@@ -404,26 +411,77 @@ pub fn money(ctx: &Ctx<'_>, instrument: &InstrumentId, amount: Amount) -> String
     )
 }
 
-/// [`money`] in the instrument `account` holds.
+/// [`money`] in the instrument `account` holds — **behind the account's own view
+/// gate** (E6a step 1 verify fold, D2).
+///
+/// Every caller renders an amount against an account id the actor may or may not be
+/// allowed to know exists, so the gate is asked here, once, rather than at a dozen
+/// call sites that would each be a chance to forget: an account the actor may not
+/// view renders exactly as a nonexistent one does.
 pub fn money_on(ctx: &Ctx<'_>, account: AccountId, amount: Amount) -> String {
+    money_on_or(ctx, account, amount, None)
+}
+
+/// [`money_on`] with the **record's own instrument** as the fallback (M8): what an
+/// unviewable or unresolvable account renders in, rather than raw minor at scale 0.
+pub fn money_on_or(
+    ctx: &Ctx<'_>,
+    account: AccountId,
+    amount: Amount,
+    fallback: Option<&InstrumentId>,
+) -> String {
+    let visible = may_view_account(ctx.w, ctx.actor, account);
     ctx.w.module_state::<EconomyStore>().map_or_else(
         || amount.to_decimal_string(0),
-        |s| crate::render::render_amount_on(s.snapshot(), account, amount),
+        |s| crate::render::render_amount_on(s.snapshot(), account, amount, visible, fallback),
     )
 }
 
+/// Render a principal for the actor — **behind the hidden-org rule** (E6a step 1
+/// verify fold, D7; 08f G3 brought forward).
+///
+/// `Organization.hidden` means "must not leak its existence to non-members" (org
+/// §12.2), and this named one unconditionally. It always mattered a little and now
+/// matters more: `contract_notice`'s `announce=yes` line renders the issuer to an
+/// **audience**, which is by definition people outside the terms, so a covert
+/// backer's name reached everyone who could see the run existed. A viewer who is
+/// staff, a member, or a grantee of the org sees its name; everybody else sees
+/// "an organization" — the same shape every other existence-hiding render in the
+/// crate uses, and the id goes with the name (an id is a handle).
 pub fn render_principal(ctx: &Ctx<'_>, p: &PrincipalId) -> String {
     match p {
         PrincipalId::Object(o) => format!("{} (#{})", display_name(ctx.w, *o), o.0),
         PrincipalId::Organization(o) => {
-            let name = ctx
-                .w
-                .module_state::<mush_org::OrgStore>()
-                .and_then(|s| s.state().org(*o).map(|x| x.name.to_string()));
-            name.map_or_else(|| format!("org:{o}"), |n| format!("org:{n} (#{o})"))
+            let Some(store) = ctx.w.module_state::<mush_org::OrgStore>() else {
+                return format!("org:{o}");
+            };
+            let state = store.state();
+            let Some(org) = state.org(*o) else {
+                return format!("org:{o}");
+            };
+            if org.hidden && !may_see_org(ctx, *o) {
+                return "an organization".to_string();
+            }
+            format!("org:{} (#{o})", org.name)
         }
         PrincipalId::System(s) => format!("sys:{s}"),
     }
+}
+
+/// Whether the actor may be told a **hidden** organization exists (D7): staff, a
+/// member, or a grantee — the same two rosters
+/// [`crate::principal_holders`] walks, without the capability filter, because
+/// "may know it exists" is a wider question than "may spend its money".
+fn may_see_org(ctx: &Ctx<'_>, org: mush_org::OrgId) -> bool {
+    if api::is_staff(ctx.w, ctx.actor) {
+        return true;
+    }
+    let Some(store) = ctx.w.module_state::<mush_org::OrgStore>() else {
+        return false;
+    };
+    let state = store.state();
+    state.members_in(org).any(|m| m.member == ctx.actor)
+        || state.grants_in(org).any(|g| g.grantee == ctx.actor)
 }
 
 /// §4.5 view standing over an asset: staff, its title owner, its assignee, or a
@@ -586,9 +644,18 @@ pub fn may_view_hold(w: &World, actor: ObjId, id: HoldId) -> bool {
     may_view_account(w, actor, account)
 }
 
-/// §4.5 view standing over an **obligation**: staff, either party, or anyone who may
-/// view either of its two accounts (a landlord watching the credit side, a tenant
-/// watching the debit side).
+/// §4.5 view standing over an **obligation**: staff, anyone who **acts for** either
+/// party, or anyone who may view either of its two accounts (a landlord watching the
+/// credit side, a tenant watching the debit side).
+///
+/// The party test is [`api::WorldAuth::acts_for`] and not an identity match (E6a
+/// step 1 verify fold, D1) — the same A2 shape [`may_view_hold`] and the contract
+/// seams already use. An identity match was wrong in exactly the case E6a is for: an
+/// **organization** debtor was "a party" no person matched, so an officer holding
+/// `economy.account.post` on the org's root — who may spend its money, and whom
+/// `principal_holders` tells about every transition — could be told
+/// "Obligation #12 is delinquent." by the org inbox and then answered "No such
+/// obligation." by `@obligation/show`. The inbox and the gate now ask one question.
 #[must_use]
 pub fn may_view_obligation(w: &World, actor: ObjId, id: ObligationId) -> bool {
     if api::is_staff(w, actor) {
@@ -609,8 +676,9 @@ pub fn may_view_obligation(w: &World, actor: ObjId, id: ObligationId) -> bool {
         )
     };
     let me = PrincipalId::Object(actor);
-    debtor == me
-        || creditor == me
+    let auth = api::WorldAuth { w };
+    auth.acts_for(&me, &debtor)
+        || auth.acts_for(&me, &creditor)
         || may_view_account(w, actor, debit)
         || may_view_account(w, actor, credit)
 }
@@ -4165,9 +4233,25 @@ fn render_status(o: &Obligation) -> String {
     }
 }
 
+/// **The instrument an obligation is denominated in** (E6a step 1 verify fold, M8):
+/// either side's, since a post is per-instrument zero-sum and the two must agree.
+///
+/// It is the fallback a debt amount renders in when the viewer's standing comes from
+/// the *other* side of the record — `may_view_obligation` admits a creditor who may
+/// not view the debit account at all, and D2's gate would otherwise leave them
+/// reading their own rent as a bare minor value.
+fn obligation_instrument(ctx: &Ctx<'_>, o: &crate::obligation::Obligation) -> Option<InstrumentId> {
+    let store = ctx.w.module_state::<EconomyStore>()?;
+    let snap = store.snapshot();
+    snap.account(o.debit_account)
+        .or_else(|| snap.account(o.credit_account))
+        .map(|a| a.instrument.clone())
+}
+
 fn obligation_show(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let o = obligation_of(ctx, ctx.args.lhs())?;
     let staff = is_admin(ctx.w, ctx.actor);
+    let instrument = obligation_instrument(ctx, &o);
     let mut lines = vec![
         // D2 (E4c verify fold): the ids go through the same mask every other render
         // uses. `may_view_obligation` admits either party and anyone who may view
@@ -4179,7 +4263,7 @@ fn obligation_show(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             o.id,
             mask_account(ctx, o.debit_account, "an account"),
             mask_account(ctx, o.credit_account, "an account"),
-            money_on(ctx, o.debit_account, o.amount),
+            money_on_or(ctx, o.debit_account, o.amount, instrument.as_ref()),
             render_status(&o)
         ),
         format!("  {}", render_schedule(&o.schedule)),
@@ -4253,7 +4337,12 @@ fn obligation_list(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 o.id,
                 mask_account(ctx, o.debit_account, "an account"),
                 mask_account(ctx, o.credit_account, "an account"),
-                money_on(ctx, o.debit_account, o.amount),
+                money_on_or(
+                    ctx,
+                    o.debit_account,
+                    o.amount,
+                    obligation_instrument(ctx, o).as_ref()
+                ),
                 render_status(o)
             ))
         })
@@ -4835,6 +4924,15 @@ fn econ_ack(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                     "Cadence #{cid} is unchanged: acknowledging does not rewrite a live clock \
                      or the configuration that declares it (@econ/cadence show #{cid})."
                 ),
+            ),
+            // R8: a dropped announcement is a chronicle problem, never a money one —
+            // acknowledging it is the whole remedy, and the record says which line
+            // was lost.
+            EscalationSubject::DroppedPage => info(
+                ctx,
+                "That announcement was never delivered; the money it was about moved \
+                 regardless. Nothing else is stopped."
+                    .to_string(),
             ),
             EscalationSubject::Obligation(_) | EscalationSubject::Hold(_) => {}
         },

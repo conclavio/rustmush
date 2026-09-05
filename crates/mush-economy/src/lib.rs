@@ -153,8 +153,9 @@ pub use snapshot::EconomySnapshot;
 // E6a step 1 (DL-04) — the notice queue and the "who is told" predicates a server
 // observer delivers an organization's notices through.
 pub use notice::{
-    MAX_NOTICE_BYTES, MAX_PENDING_NOTICES, PendingNotice, acts_for, deliver_notice, notice_key,
-    principal_holders, queue_notice,
+    MAX_NOTICE_BYTES, MAX_NOTICE_DELIVERIES_PER_SWEEP, MAX_NOTICE_HOLDERS, MAX_PENDING_NOTICES,
+    PendingNotice, acts_for, deliver_notice, deliver_notice_for, notice_key, principal_holders,
+    queue_notice,
 };
 
 // E4a — clocks, holds, obligations, contracts.
@@ -206,8 +207,8 @@ pub use sweep::SWEEP_TAG;
 // E4b2 — contracts live. E5b adds the lease seam a layered module offers under;
 // E6a step 1 adds the programmatic offer/accept/amend seams a ruleset runs a board on.
 pub use contract_live::{
-    AcceptOutcome, AmendOutcome, ConsiderationSpec, ContractAmendment, ContractSpec, LeaseEnd,
-    LeaseKey, LeaseSpec, accept_contract, amend_contract, contract_notice, end_lease,
+    AcceptOutcome, AmendOutcome, AmendReoffer, ConsiderationSpec, ContractAmendment, ContractSpec,
+    LeaseEnd, LeaseKey, LeaseSpec, accept_contract, amend_contract, contract_notice, end_lease,
     may_view_contract, offer_contract, offer_lease, refuse_contract, refuse_contract_offer,
 };
 
@@ -239,5 +240,5 @@ pub use commands::{
 pub use custody::{ContainerProvider, CustodyError, CustodyProvider, CustodyTable};
 pub use module::{
     CHECKPOINT_REVIEW_ENTRIES, CHECKPOINT_REVIEW_SECS, EconomyModule, EconomyScopeUse,
-    EconomyStore, JOURNAL_LOG, NS,
+    EconomyStore, JOURNAL_LOG, MAX_WINDOW_ENTRIES, NS, WindowTail,
 };

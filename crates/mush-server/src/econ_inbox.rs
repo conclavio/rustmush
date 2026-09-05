@@ -22,12 +22,36 @@
 //! told nothing here; the staff channel (DL-05) is where its questions land. Object
 //! parties are told by the economy itself and are not repeated here.
 
-use mush_core::Ctx;
+use mush_core::{Ctx, ObjId, World};
 use mush_economy::{
     ContractStateKind, EconomicEvent, EconomyObserver, EconomyStore, ObligationStatusKind,
     principal_key,
 };
 use mush_org::PrincipalId;
+
+/// Whether one holder may be told about one record — the **view gate itself**, asked
+/// per holder (E6a step 1 verify fold, D1).
+///
+/// `principal_holders` answers "who acts for this organization" (`economy.account.post`
+/// on its root); the disclosure gates answer "who may look at this record". Those are
+/// the same people today, and the D1 probe found the moment they were not: an
+/// obligation's gate compared the debtor to the actor by identity, so an org's own
+/// officer was told a line about a record `@obligation/show` then denied existed.
+/// Rather than only fix the gate, the inbox now asks it: whatever either predicate
+/// grows into, a line can never outrun what the reader may go and read.
+enum Subject {
+    Contract(mush_economy::ContractId),
+    Obligation(mush_economy::ObligationId),
+}
+
+impl Subject {
+    fn viewable_by(&self, w: &World, holder: ObjId) -> bool {
+        match self {
+            Subject::Contract(id) => mush_economy::may_view_contract(w, holder, *id),
+            Subject::Obligation(id) => mush_economy::may_view_obligation(w, holder, *id),
+        }
+    }
+}
 
 /// The DL-04 observer. Wire one into
 /// [`EconomyModule::with_observers`](mush_economy::EconomyModule::with_observers).
@@ -45,15 +69,15 @@ impl EconomyObserver for OrgInbox {
                 if orgs.is_empty() {
                     return;
                 }
-                tell(ctx, &orgs, &line);
+                tell(ctx, &orgs, &Subject::Contract(*id), &line);
             }
             EconomicEvent::ObligationChanged { id, status_kind } => {
                 let orgs = obligation_orgs(ctx, *id);
                 if orgs.is_empty() {
                     return;
                 }
-                let line = obligation_line(*id, *status_kind);
-                tell(ctx, &orgs, &line);
+                let line = obligation_line(ctx, *id, *status_kind);
+                tell(ctx, &orgs, &Subject::Obligation(*id), &line);
             }
             // A raw transaction, a reservation, a title change and a staff page say
             // nothing an org's officers are owed here (the page is the staff
@@ -106,15 +130,24 @@ fn dedupe_orgs<'a>(principals: impl Iterator<Item = &'a PrincipalId>) -> Vec<Pri
 }
 
 /// One line to every holder of every org, once each — an officer of two orgs on
-/// one contract hears it once.
-fn tell(ctx: &mut Ctx<'_>, orgs: &[PrincipalId], line: &str) {
-    let mut told: std::collections::BTreeSet<mush_core::ObjId> = std::collections::BTreeSet::new();
-    for org in orgs {
-        for holder in mush_economy::principal_holders(ctx.w, org) {
-            if told.insert(holder) {
-                mush_economy::deliver_notice(ctx, holder, line);
-            }
-        }
+/// one contract hears it once — and **only to a holder who may view the record**
+/// (D1). `principal_holders` is itself bounded ([`mush_economy::MAX_NOTICE_HOLDERS`]).
+fn tell(ctx: &mut Ctx<'_>, orgs: &[PrincipalId], subject: &Subject, line: &str) {
+    let mut told: std::collections::BTreeSet<ObjId> = std::collections::BTreeSet::new();
+    let audience: Vec<(ObjId, PrincipalId)> = orgs
+        .iter()
+        .flat_map(|org| {
+            mush_economy::principal_holders(ctx.w, org)
+                .into_iter()
+                .map(move |h| (h, org.clone()))
+        })
+        .filter(|(holder, _)| told.insert(*holder))
+        .filter(|(holder, _)| subject.viewable_by(ctx.w, *holder))
+        .collect();
+    for (holder, org) in audience {
+        // D6: the queue records whose business the line was, so a queued copy is
+        // re-gated against live standing at the reader's next connect.
+        mush_economy::deliver_notice_for(ctx, holder, &org, line);
     }
 }
 
@@ -140,9 +173,38 @@ fn contract_line(id: mush_economy::ContractId, state: ContractStateKind) -> Opti
     })
 }
 
+/// Whether obligation `id` reads as **brand new** rather than resumed (E6a step 1
+/// verify fold, D9).
+///
+/// `ObligationChanged` carries a status kind and no previous status, so `Active`
+/// covers both "created" and "a suspension lifted". Every creation path builds the
+/// record with an empty history and zero counters, and every route back into `Active`
+/// leaves a `Resumed`/`Held`/`Escalated` event behind it — so an untouched tail is
+/// the created case. It costs a wrong word at worst, never a disclosure: the line is
+/// kinds-only either way.
+fn is_new_obligation(ctx: &Ctx<'_>, id: mush_economy::ObligationId) -> bool {
+    ctx.w
+        .module_state::<EconomyStore>()
+        .and_then(|s| s.snapshot().obligation(id))
+        .is_some_and(|o| {
+            o.history.is_empty()
+                && o.periods_settled == 0
+                && o.settled_total == 0
+                && o.missed_total == 0
+                && o.forgiven_total == 0
+        })
+}
+
 /// The kinds-only line for an obligation transition.
-fn obligation_line(id: mush_economy::ObligationId, status: ObligationStatusKind) -> String {
+fn obligation_line(
+    ctx: &Ctx<'_>,
+    id: mush_economy::ObligationId,
+    status: ObligationStatusKind,
+) -> String {
     match status {
+        ObligationStatusKind::Active if is_new_obligation(ctx, id) => {
+            format!("Obligation #{id} has been created (@obligation/show #{id}).")
+        }
         ObligationStatusKind::Active => format!("Obligation #{id} is back on schedule."),
         ObligationStatusKind::Grace => {
             format!("Obligation #{id} missed a period and is in grace.")

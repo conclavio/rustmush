@@ -308,7 +308,18 @@ pub(crate) fn load_boot(
                 continue;
             };
             match serde_json::from_value::<Vec<serde_json::Value>>(value.clone()) {
-                Ok(entries) => {
+                Ok(mut entries) => {
+                    // D10: **trim first, parse second.** A hand-written (or corrupted)
+                    // document with ten thousand entries was fully parsed into
+                    // `PendingNotice` — byte cap and all — and then thrown away down to
+                    // thirty-two. The cap is a bound on boot work as much as on what a
+                    // player reads, and it only is one if it is applied to the raw
+                    // array. The newest entries are the ones kept, as before.
+                    if entries.len() > crate::notice::MAX_PENDING_NOTICES {
+                        let drop = entries.len() - crate::notice::MAX_PENDING_NOTICES;
+                        tracing::warn!(%key, dropped = drop, "economy: an over-cap notice queue keeps only its newest entries");
+                        entries.drain(..drop);
+                    }
                     let mut list: Vec<crate::notice::PendingNotice> = Vec::new();
                     for entry in entries {
                         match serde_json::from_value::<crate::notice::PendingNotice>(entry) {
@@ -317,11 +328,6 @@ pub(crate) fn load_boot(
                                 tracing::warn!(%key, error = %e, "economy: dropping one unreadable pending notice");
                             }
                         }
-                    }
-                    if list.len() > crate::notice::MAX_PENDING_NOTICES {
-                        let drop = list.len() - crate::notice::MAX_PENDING_NOTICES;
-                        tracing::warn!(%key, dropped = drop, "economy: an over-cap notice queue keeps only its newest entries");
-                        list.drain(..drop);
                     }
                     if !list.is_empty() {
                         stored_notices.insert(ObjId(parsed), list);
@@ -365,8 +371,7 @@ pub(crate) fn load_boot(
     let mut last_custody: BTreeMap<ObjId, CustodyMark> = BTreeMap::new();
     // E6a step 1 (D-E6-21): the rolling-window tails, folded by the same function
     // `index_transaction` uses, so replay and live indexing cannot disagree.
-    let mut debit_window: BTreeMap<AccountId, std::collections::VecDeque<(i64, Amount)>> =
-        BTreeMap::new();
+    let mut debit_window: BTreeMap<AccountId, crate::module::WindowTail> = BTreeMap::new();
     let mut max_custody_vault: Option<u64> = None;
     let mut consumed_approval: BTreeMap<ApprovalRequestId, TransactionId> = BTreeMap::new();
     let mut max_consumed_approval: Option<u64> = None;
@@ -512,7 +517,10 @@ pub(crate) fn load_boot(
         if let Some(target) = tx.reverses {
             snapshot.mark_reversed(target);
         }
-        crate::module::note_window_debits(&mut debit_window, tx);
+        // The account rules are not in the snapshot yet (the stored docs land below),
+        // so replay folds every debit and the membership filter runs once at the end
+        // — D4's "only windowed accounts are tracked", reached the other way round.
+        let _ = crate::module::note_window_debits(&mut debit_window, tx);
         max_txid = max_txid.max(tx.id.0);
         transactions.insert(tx.id, tx.clone());
     }
@@ -922,9 +930,17 @@ pub(crate) fn load_boot(
         // itself be unresolvable, with nothing saying why. Re-run the structural half
         // here (the world half needs a snapshot boot is still assembling) and
         // quarantine what it refuses; the escrow is untouched either way.
+        // E6a step 1 verify fold (M6): remember *whether it was a `System` party*.
+        // The quarantine page recommends `@contract/resolve #N=settle` alongside
+        // `=refund`, and `settlement_plan` re-runs `check_structure_basic` — which is
+        // the very check that refused this contract — so a staffer following the first
+        // recommendation on a legacy faucet party gets a refusal and no explanation.
+        // Only `=refund` can move it, so only `=refund` is offered.
+        let mut system_party = false;
         if !c.state.is_terminal()
             && let Err(e) = crate::contract::check_structure(&c, outcomes)
         {
+            system_party = matches!(e, crate::contract::ContractError::SystemParty);
             quarantine = Some(format!(
                 "contract #{} could not settle as stored ({e}); its surface is quarantined",
                 c.id
@@ -1032,16 +1048,30 @@ pub(crate) fn load_boot(
             if opened_escalations.len() < MAX_BOOT_ESCALATIONS
                 && let Some(id) = mint_escalation(&mut next_escalation)
             {
+                // M6: a settlement re-runs the structural check this contract just
+                // failed, so recommending it would be recommending a refusal.
+                let recommended = if system_party {
+                    vec![
+                        format!("@contract/show #{}", c.id),
+                        format!(
+                            "@contract/resolve #{}=refund   (a `System` party can never settle: \
+                             nobody acts for one)",
+                            c.id
+                        ),
+                    ]
+                } else {
+                    vec![
+                        format!("@contract/show #{}", c.id),
+                        format!("@contract/resolve #{}=refund", c.id),
+                        format!("@contract/resolve #{}=settle", c.id),
+                    ]
+                };
                 opened_escalations.push(Escalation::page(
                     id,
                     EscalationKind::BootReconciliation,
                     EscalationSubject::Contract(c.id),
                     reason,
-                    vec![
-                        format!("@contract/show #{}", c.id),
-                        format!("@contract/resolve #{}=refund", c.id),
-                        format!("@contract/resolve #{}=settle", c.id),
-                    ],
+                    recommended,
                     now,
                 ));
             }
@@ -1434,6 +1464,11 @@ pub(crate) fn load_boot(
         api::delete_key(ctx.out, escalation_key(*id));
     }
 
+    // E6a step 1 verify fold (D4): the rolling-window index tracks **only** accounts
+    // whose rule carries a window. Replay could not ask (the rules arrive with the
+    // stored docs, after the journal fold), so the membership filter runs here, once,
+    // against the assembled snapshot.
+    debit_window.retain(|account, _| crate::module::account_windowed(&snapshot, *account));
     let store = EconomyStore::from_parts(BootParts {
         snapshot,
         journal,

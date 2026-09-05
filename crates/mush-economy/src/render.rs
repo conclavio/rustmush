@@ -38,13 +38,37 @@ pub fn render_amount(
 }
 
 /// [`render_amount`] in the instrument **`account` holds** — the common case, where
-/// a render has an account id in hand and not an instrument. An unknown account
-/// renders the bare minor value.
+/// a render has an account id in hand and not an instrument.
+///
+/// `visible` is the caller's own [`crate::may_view_account`] verdict, and it is a
+/// parameter rather than something this function works out because the snapshot has
+/// no viewer (E6a step 1 verify fold, D2). Without it the render was an **existence
+/// oracle**: a known-but-unviewable account came back in its scale and symbol
+/// (`¥1000`, `12.50€`) while a nonexistent one came back as bare minor (`1000`), so
+/// anybody who could get an amount rendered against an id could tell the two apart —
+/// which is exactly the question `may_view_account` exists to refuse. An unviewable
+/// account and an unknown one now render **identically**.
+///
+/// `fallback` is the instrument the *record being read* is denominated in — a
+/// contract's consideration, an obligation's amount — and is what an unviewable or
+/// unknown account falls back to (M8): the viewer is already reading that record, so
+/// its scale and symbol disclose nothing, and `500` in a payout table that is
+/// obviously nuyen is worse than useless. Bare minor is the last resort, for an
+/// amount whose instrument nothing knows.
 #[must_use]
-pub fn render_amount_on(snapshot: &EconomySnapshot, account: AccountId, amount: Amount) -> String {
-    match snapshot.account(account) {
+pub fn render_amount_on(
+    snapshot: &EconomySnapshot,
+    account: AccountId,
+    amount: Amount,
+    visible: bool,
+    fallback: Option<&InstrumentId>,
+) -> String {
+    match visible.then(|| snapshot.account(account)).flatten() {
         Some(a) => render_amount(snapshot, &a.instrument, amount),
-        None => amount.to_decimal_string(0),
+        None => match fallback {
+            Some(instrument) => render_amount(snapshot, instrument, amount),
+            None => amount.to_decimal_string(0),
+        },
     }
 }
 

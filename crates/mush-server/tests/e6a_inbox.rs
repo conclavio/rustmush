@@ -132,12 +132,15 @@ fn seen(tw: &TestWorld, events: &[(Audience, OutputEvent)], viewer: ObjId) -> St
 fn state(tw: &TestWorld, id: ContractId) -> ContractState {
     store(tw).snapshot().contract(id).expect("contract").state
 }
-fn drain(tw: &mut TestWorld) -> Vec<(SmolStr, serde_json::Value)> {
-    let mut kv: Vec<(SmolStr, serde_json::Value)> = Vec::new();
+/// Every module's documents, per namespace — **every** module's, because
+/// `modules_loaded` re-boots them all and one that is handed nothing comes back
+/// empty. The E6a step 1 verify fold (D6) made that matter here: a queued notice
+/// records whose business it was and re-asks `acts_for` at delivery, so an officer
+/// whose org state was silently dropped by the reboot would (correctly) read nothing.
+fn drain_all(tw: &mut TestWorld) -> HashMap<SmolStr, Vec<(SmolStr, serde_json::Value)>> {
+    let mut all: HashMap<SmolStr, Vec<(SmolStr, serde_json::Value)>> = HashMap::new();
     for op in tw.take_module_ops() {
-        if op.ns != NS {
-            continue;
-        }
+        let kv = all.entry(op.ns.clone()).or_default();
         match op.op {
             ModuleWrite::JsonSet { key, value } => {
                 kv.retain(|(k, _)| *k != key);
@@ -147,16 +150,22 @@ fn drain(tw: &mut TestWorld) -> Vec<(SmolStr, serde_json::Value)> {
             ModuleWrite::StreamAppend { .. } => {}
         }
     }
-    kv
+    all
 }
-fn reboot(tw: &mut TestWorld, kv: Vec<(SmolStr, serde_json::Value)>) {
-    tw.modules_loaded(HashMap::from([(
-        SmolStr::new(NS),
-        ModuleBootData {
-            kv,
-            streams: HashMap::new(),
-        },
-    )]));
+fn reboot_all(tw: &mut TestWorld, all: HashMap<SmolStr, Vec<(SmolStr, serde_json::Value)>>) {
+    tw.modules_loaded(
+        all.into_iter()
+            .map(|(ns, kv)| {
+                (
+                    ns,
+                    ModuleBootData {
+                        kv,
+                        streams: HashMap::new(),
+                    },
+                )
+            })
+            .collect(),
+    );
 }
 
 /// Ironhold, its root-compartment treasury of 1000 gold, an **officer** holding
@@ -360,14 +369,15 @@ fn e6s1_s9_an_offline_officer_reads_the_lines_at_connect_and_they_survive_a_rebo
     // Nothing was lost: it is queued, durably.
     let queued = store(&tw).pending_notices(r.officer);
     assert_eq!(queued.len(), 1, "the offer was not queued: {queued:?}");
-    let kv = drain(&mut tw);
+    let all = drain_all(&mut tw);
     assert!(
-        kv.iter()
-            .any(|(k, _)| *k == mush_economy::notice_key(r.officer)),
+        all.get(&SmolStr::new(NS)).is_some_and(|kv| kv
+            .iter()
+            .any(|(k, _)| *k == mush_economy::notice_key(r.officer))),
         "the queue was not persisted"
     );
     // A restart keeps it.
-    reboot(&mut tw, kv);
+    reboot_all(&mut tw, all);
     assert_eq!(store(&tw).pending_notices(r.officer).len(), 1);
     // The officer's own accept happens after the restart, from a connected session —
     // and the first thing they read is what they missed.
@@ -428,9 +438,9 @@ fn e6s1_s9_the_queue_caps_hold() {
     );
     // Loading re-checks both caps: an oversized entry is dropped, an over-cap list
     // keeps its newest entries.
-    let mut kv = drain(&mut tw);
+    let mut all = drain_all(&mut tw);
     let key = mush_economy::notice_key(r.officer);
-    for (k, v) in &mut kv {
+    for (k, v) in all.entry(SmolStr::new(NS)).or_default() {
         if *k == key {
             let mut list = v.as_array().cloned().unwrap_or_default();
             list.insert(
@@ -446,7 +456,7 @@ fn e6s1_s9_the_queue_caps_hold() {
             *v = serde_json::Value::Array(list);
         }
     }
-    reboot(&mut tw, kv);
+    reboot_all(&mut tw, all);
     let loaded = store(&tw).pending_notices(r.officer);
     assert_eq!(loaded.len(), mush_economy::MAX_PENDING_NOTICES);
     assert!(!loaded.iter().any(|n| n.text.starts_with("XXXX")));
@@ -460,4 +470,329 @@ fn e6s1_s9_the_queue_caps_hold() {
         "{lines}"
     );
     assert!(store(&tw).pending_notices(r.officer).is_empty());
+}
+
+// ======================================================================
+// ---- E6a step 1 verify fold ----
+//
+// Lens D, the disclosure-and-bounds half of the org inbox: being told and being
+// able to read must be one question, the fan-out must be bounded, a queued line
+// must be re-gated when it is finally read, and a hidden organization stays
+// hidden. Plus R6: a session held across a restart still reads its queue.
+// ======================================================================
+
+/// The one organization these rigs make.
+fn the_org(tw: &TestWorld) -> mush_org::OrgId {
+    tw.world()
+        .module_state::<OrgStore>()
+        .expect("org store")
+        .state()
+        .orgs()
+        .next()
+        .expect("the org")
+        .id
+}
+
+#[test]
+fn vf_d1_the_obligation_inbox_never_outruns_the_obligation_view_gate() {
+    let mut tw = boot();
+    let r = rig(&mut tw, true);
+    ok(
+        &mut tw,
+        GOD,
+        &format!(
+            "@obligation/create {}={} 10 every=100 start=100",
+            r.treasury, r.payee_acct
+        ),
+    );
+    let id = store(&tw)
+        .snapshot()
+        .obligations()
+        .map(|o| o.id)
+        .max()
+        .expect("the obligation");
+
+    // The officer holds `economy.account.post` on the org root and nothing else:
+    // exactly who `principal_holders` fans an obligation line out to. The gate
+    // compared the debtor to the actor by IDENTITY, so an organization was "a party"
+    // no person matched — the officer was told "Obligation #N is delinquent." and was
+    // then answered "No such obligation." by the very command the line points at.
+    assert!(
+        mush_economy::may_view_obligation(tw.world(), r.officer, id),
+        "the holder the inbox writes to cannot read the record it names"
+    );
+    let seen = ok(&mut tw, r.officer, &format!("@obligation/show {id}"));
+    assert!(seen.contains(&format!("obligation #{id}")), "{seen}");
+    // A member holding no spending right is told nothing and sees nothing: the two
+    // answers agree in this direction too.
+    assert!(!mush_economy::may_view_obligation(tw.world(), r.member, id));
+    let refused = tw.run(r.member, &format!("@obligation/show {id}"));
+    assert!(
+        texts(&refused).contains("No such obligation."),
+        "{}",
+        texts(&refused)
+    );
+
+    // The `ObligationChanged` branch gets its first tests: a line to a holder, and
+    // silence to a member of the same organization who may not read the record.
+    let ev = run(&mut tw, GOD, &format!("@obligation/cancel {id}"));
+    assert_eq!(
+        inbox_lines(&tw, &ev, r.officer),
+        vec![format!("Obligation #{id} is cancelled.")]
+    );
+    assert!(
+        inbox_lines(&tw, &ev, r.member).is_empty(),
+        "a non-holder was told about the org's debt"
+    );
+}
+
+#[test]
+fn vf_d9_a_created_obligation_is_not_reported_as_back_on_schedule() {
+    let mut tw = boot();
+    let r = rig(&mut tw, true);
+    // `@obligation/create` emits `ObligationChanged { Active }`, and the inbox had
+    // exactly one line for `Active`: "is back on schedule" — about a record that had
+    // never been anywhere.
+    let ev = run(
+        &mut tw,
+        GOD,
+        &format!(
+            "@obligation/create {}={} 10 every=100 start=100",
+            r.treasury, r.payee_acct
+        ),
+    );
+    let id = store(&tw)
+        .snapshot()
+        .obligations()
+        .map(|o| o.id)
+        .max()
+        .expect("the obligation");
+    assert_eq!(
+        inbox_lines(&tw, &ev, r.officer),
+        vec![format!(
+            "Obligation #{id} has been created (@obligation/show #{id})."
+        )]
+    );
+
+    // A record that really has been somewhere still says so: suspended, then resumed.
+    let ev = run(&mut tw, GOD, &format!("@obligation/suspend {id}=probe"));
+    assert_eq!(
+        inbox_lines(&tw, &ev, r.officer),
+        vec![format!("Obligation #{id} is suspended pending a decision.")]
+    );
+    let ev = run(&mut tw, GOD, &format!("@obligation/resume {id}"));
+    assert_eq!(
+        inbox_lines(&tw, &ev, r.officer),
+        vec![format!("Obligation #{id} is back on schedule.")]
+    );
+}
+
+#[test]
+fn vf_d3_one_event_fans_out_to_at_most_the_holder_cap() {
+    let mut tw = boot();
+    let r = rig(&mut tw, true);
+    // Forty more officers, all holding the spending right, none of them connected:
+    // one `ContractChanged` used to be one durable `econ:notice:{obj}` write each,
+    // inside the emitting post's own batch.
+    let mut crowd: Vec<ObjId> = Vec::new();
+    for i in 0..40 {
+        let who = tw
+            .world_mut()
+            .create(ObjKind::Player, &format!("Clerk{i}"), GOD, Some(LIMBO))
+            .expect("create");
+        ok(
+            &mut tw,
+            GOD,
+            &format!("@org/grant #{}=Ironhold economy.account.post", who.0),
+        );
+        crowd.push(who);
+    }
+    let org = the_org(&tw);
+    let holders = mush_economy::principal_holders(tw.world(), &PrincipalId::Organization(org));
+    assert_eq!(
+        holders.len(),
+        mush_economy::MAX_NOTICE_HOLDERS,
+        "the fan-out is unbounded: {} holders",
+        holders.len()
+    );
+
+    let (_id, _ev) = org_offer(&mut tw, &r, "Crowded");
+    let queued = crowd
+        .iter()
+        .filter(|w| !store(&tw).pending_notices(**w).is_empty())
+        .count();
+    assert!(
+        queued <= mush_economy::MAX_NOTICE_HOLDERS,
+        "one event queued {queued} documents"
+    );
+}
+
+#[test]
+fn vf_d6_a_queued_line_is_re_gated_against_live_standing_at_delivery() {
+    let mut tw = boot();
+    let r = rig(&mut tw, false);
+    assert!(!tw.world().is_connected(r.officer));
+    let (_id, _) = org_offer(&mut tw, &r, "Supply");
+    assert_eq!(
+        store(&tw).pending_notices(r.officer).len(),
+        1,
+        "the absent officer's line was not queued"
+    );
+
+    // Standing was checked when the line was EMITTED. A queue is a delay, and an
+    // officer whose grant went away while they were gone used to connect three weeks
+    // later and read every contract transition the organization had had since.
+    let mut all = drain_all(&mut tw);
+    let org_ns = SmolStr::new(mush_org::NS);
+    let officer = r.officer;
+    all.entry(org_ns).or_default().retain(|(k, v)| {
+        !(k.starts_with("grant:")
+            && v["grantee"] == serde_json::json!(officer.0)
+            && v["capability"] == serde_json::json!("economy.account.post"))
+    });
+    reboot_all(&mut tw, all);
+    assert!(
+        !mush_economy::acts_for(
+            tw.world(),
+            officer,
+            &PrincipalId::Organization(the_org(&tw)),
+        ),
+        "the grant survived the rewrite; the test proves nothing"
+    );
+    assert_eq!(
+        store(&tw).pending_notices(officer).len(),
+        1,
+        "the queue itself did not survive"
+    );
+
+    let ev = tw.connect(officer);
+    let lines = seen(&tw, &ev, officer);
+    assert!(
+        !lines.contains("ECONOMY:"),
+        "a revoked officer read the organization's backlog: {lines}"
+    );
+    assert!(
+        store(&tw).pending_notices(officer).is_empty(),
+        "the dropped queue was not cleared"
+    );
+}
+
+#[test]
+fn vf_d7_a_hidden_organization_is_never_named_to_an_outsider() {
+    let mut tw = boot();
+    let r = rig(&mut tw, true);
+    let stranger = tw.spawn_player("Stranger");
+    let org = the_org(&tw);
+    // A covert backer. `render_principal` named it unconditionally, and
+    // `contract_notice`'s `announce=yes` line renders the issuer to an AUDIENCE —
+    // people outside the terms by definition (08f G3).
+    let mut all = drain_all(&mut tw);
+    let org_ns = SmolStr::new(mush_org::NS);
+    for (k, v) in all.entry(org_ns).or_default() {
+        if k.starts_with("org:") {
+            v["hidden"] = serde_json::json!(true);
+        }
+    }
+    reboot_all(&mut tw, all);
+    assert!(
+        tw.world()
+            .module_state::<OrgStore>()
+            .expect("org store")
+            .state()
+            .org(org)
+            .is_some_and(|o| o.hidden),
+        "the org did not come back hidden"
+    );
+
+    // A public contract that announces its issuer — the shape the fold is about.
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@contract/draft Covert scope=#{}", r.root.0),
+    );
+    let id = store(&tw)
+        .snapshot()
+        .contracts()
+        .map(|c| c.id)
+        .max()
+        .expect("the draft");
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@contract/party {id}=#{}", r.payee.0),
+    );
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@contract/pay {id}={} 100", r.treasury),
+    );
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@contract/split {id}={} 1000‰", r.payee_acct),
+    );
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@contract/remainder {id}={}", r.treasury),
+    );
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@contract/condition {id}=attest staff"),
+    );
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@contract/visibility {id}=public announce=yes"),
+    );
+    ok(&mut tw, GOD, &format!("@contract/offer {id}"));
+
+    // A member reads the name: hiding is about non-members (org §12.2), and an
+    // officer is who the inbox writes to in the first place.
+    let inside = ok(&mut tw, r.officer, &format!("@contract/show {id}"));
+    assert!(
+        inside.contains("Ironhold"),
+        "a member lost their own organization: {inside}"
+    );
+    // Everybody else sees a shape, never a name — the payee included. A hidden
+    // organization that contracts with you has chosen to be covert, and the surface
+    // it issued is what the counterparty consented to, not its name.
+    for outsider in [stranger, r.payee] {
+        let outside = ok(&mut tw, outsider, &format!("@contract/show {id}"));
+        assert!(
+            !outside.contains("Ironhold"),
+            "a hidden organization was named to a non-member: {outside}"
+        );
+        assert!(
+            outside.contains("an organization"),
+            "the hidden issuer did not render as a shape: {outside}"
+        );
+    }
+}
+
+#[test]
+fn vf_r6_a_reattached_session_reads_its_queue_on_the_next_sweep() {
+    let mut tw = boot();
+    let r = rig(&mut tw, false);
+    tw.set_now(1_000);
+    ok(&mut tw, GOD, &format!("@inboxprobe #{}=1", r.officer.0));
+    assert_eq!(store(&tw).pending_notices(r.officer).len(), 1);
+
+    // `Engine::reattach` fires no `Connected` hook, so a session held across a
+    // restart never triggered `render_pending`: the queue sat in its document until
+    // the player quit and logged in again. The economy's own sweep is the catch-up.
+    tw.world_mut().set_connected(r.officer, true);
+    tw.set_now(1_100);
+    let ev = tw.fire_due(1_100 * 1_000);
+    let lines = seen(&tw, &ev, r.officer);
+    assert!(
+        lines.contains("ECONOMY: 1 notice while you were away."),
+        "the sweep did not deliver a standing queue: {lines}"
+    );
+    assert!(store(&tw).pending_notices(r.officer).is_empty());
+    // ...and it says it once.
+    tw.set_now(1_200);
+    let ev = tw.fire_due(1_200 * 1_000);
+    assert!(!seen(&tw, &ev, r.officer).contains("ECONOMY:"));
 }

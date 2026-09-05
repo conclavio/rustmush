@@ -40,7 +40,7 @@ use crate::api::{self, PostAuth, PostOutcome};
 use crate::clock::{EconomicClock, EconomicDeadline, EconomicSchedule};
 use crate::commands::{
     asset_target, cmd_key, emit_list, info, is_admin, is_hidden, mask_account, may_view_account,
-    may_view_vault, money_on, parse_account, parse_amount, parse_deadline, parse_opts,
+    may_view_vault, money_on, money_on_or, parse_account, parse_amount, parse_deadline, parse_opts,
     parse_principal, parse_scope, parse_vault_id, refuse, refuse_if_frozen, refuse_named,
     render_principal,
 };
@@ -59,7 +59,7 @@ use crate::custody::WorldCustody;
 use crate::engine::ValidateEnv;
 use crate::escalation::{EscalationKind, EscalationSubject};
 use crate::facts::WorldFacts;
-use crate::ids::{AccountId, ContractId, HoldId};
+use crate::ids::{AccountId, ContractId, HoldId, InstrumentId};
 use crate::module::EconomyStore;
 use crate::obligation::{GracePolicy, Obligation, ObligationCause, ObligationStatus};
 use crate::plan::{EconomyError, EconomyPlan, HoldOp, NamedResource};
@@ -1594,6 +1594,15 @@ pub(crate) fn freeze_and_offer(ctx: &mut Ctx<'_>, mut c: EconomicContract) -> Co
     c.roster_locked = true;
     let (id, parties) = (c.id, c.consent.parties.clone());
     let standing: Vec<PrincipalId> = c.acceptances.iter().map(|a| a.party.clone()).collect();
+    // E6a step 1 verify fold (M5): a re-offer can be **already unanimous**.
+    //
+    // The last acceptance activates (D-E4-10), and A′ deliberately keeps the author's:
+    // a one-party live contract — a run board's own listing — amended and re-offered
+    // comes back `Offered` with `fully_accepted()` already true, and nothing else in
+    // the world promotes it. It sat `Offered` forever, its escrow reserved, waiting
+    // for an acceptance that had already happened. Activation belongs wherever a
+    // surface becomes fully accepted, and this is one of those places.
+    let unanimous = c.fully_accepted();
     save(ctx, c);
     for p in &parties {
         let already = standing
@@ -1607,6 +1616,9 @@ pub(crate) fn freeze_and_offer(ctx: &mut Ctx<'_>, mut c: EconomicContract) -> Co
             format!("Contract #{id} has been offered to you (@contract/show #{id}).")
         };
         notify(ctx, p, &msg);
+    }
+    if unanimous {
+        activate(ctx, id);
     }
     id
 }
@@ -2891,7 +2903,52 @@ fn amend_author(ctx: &Ctx<'_>, c: &EconomicContract) -> PrincipalId {
     if is_admin(ctx.w, ctx.actor) {
         return c.issuer.clone();
     }
+    // E6a step 1 verify fold (M7): **the issuer first.** `acting_party`'s third route
+    // returns the first *sorted* org party the actor acts for, which on an unscoped
+    // contract is a coin toss — an officer of both the issuer O and a counterparty Q
+    // amending as Q would have voided O's own acceptance and refunded O's escrow while
+    // keeping Q's. Only the issuer may reach this seam at all (`is_issuer`), so when
+    // the actor acts for the issuer, the issuer is who they are amending as.
+    if (api::WorldAuth { w: ctx.w }).acts_for(&me, &c.issuer) {
+        return c.issuer.clone();
+    }
     acting_party(ctx, c, "contract.draft").unwrap_or_else(|| c.issuer.clone())
+}
+
+/// What [`amend_contract`] did (E6a step 1 verify fold, R1).
+///
+/// The re-offer is the one step that runs after the A′ refund has posted, and it must
+/// therefore never be an `Err`: a `Result::Err` from a ruleset handler discards the
+/// deferred writes of a transaction that has already happened. A refused re-offer is
+/// a **state**, not a failure — the amendment stands as an amendable `Draft`, the
+/// author's escrow is still reserved, and the caller retries or cancels.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AmendReoffer {
+    /// The amendment stands. The surface is `Offered` again when `reoffer` was set,
+    /// and an amendable `Draft` when it was not.
+    Amended(AmendOutcome),
+    /// The amendment stands as a `Draft` and the re-offer was refused — nothing was
+    /// lost. `@contract/offer` retries it; `@contract/cancel` releases what is left.
+    NotReoffered(AmendOutcome, ContractError),
+}
+
+impl AmendReoffer {
+    /// What the amendment itself did, either way.
+    #[must_use]
+    pub fn outcome(&self) -> AmendOutcome {
+        match self {
+            AmendReoffer::Amended(o) | AmendReoffer::NotReoffered(o, _) => *o,
+        }
+    }
+
+    /// Why the re-offer did not happen, if it did not.
+    #[must_use]
+    pub fn refusal(&self) -> Option<&ContractError> {
+        match self {
+            AmendReoffer::Amended(_) => None,
+            AmendReoffer::NotReoffered(_, e) => Some(e),
+        }
+    }
 }
 
 /// What one amendment did (E6a step 1).
@@ -2904,6 +2961,79 @@ pub struct AmendOutcome {
     /// Whether a refund actually posted — which is the one condition under which the
     /// key generation moved (M16).
     pub refunded: bool,
+}
+
+/// **The `Draft` an amendment produces, and the acceptances it voids** — pure, from
+/// the snapshot alone (E6a step 1 verify fold, R1).
+///
+/// It is a separate function precisely so the programmatic seam can build the whole
+/// outcome, run every structural and world check against it, and only *then* post the
+/// refund: a check that runs after a post is a check that can throw a landed
+/// transaction away.
+///
+/// `refund` is the plan the caller will post (`None` when nothing is voided). The
+/// surviving escrow is **every hold the plan does not release** — not just the ones
+/// the author's considerations claim (M4). A `Held` hold with this contract's own
+/// `Escrow` purpose that matches no consideration is neither released nor kept by
+/// the claim rule, and dropping it from `escrow` orphaned real money: nothing would
+/// ever release it again but boot's orphan pass. Terminal holds and holds belonging
+/// to some other purpose are still dropped — the list is untrusted, and
+/// `qualifying_*` filters it anyway.
+fn amended_draft(
+    c: &EconomicContract,
+    snapshot: &crate::snapshot::EconomySnapshot,
+    author: &PrincipalId,
+    refund: Option<&EconomyPlan>,
+) -> (EconomicContract, Vec<Acceptance>) {
+    let key = principal_key(author);
+    let (kept, voided): (Vec<Acceptance>, Vec<Acceptance>) = c
+        .acceptances
+        .iter()
+        .cloned()
+        .partition(|a| principal_key(&a.party) == key);
+    let released: std::collections::BTreeSet<HoldId> = refund
+        .map(|p| {
+            p.hold_ops
+                .iter()
+                .filter_map(|op| match op {
+                    HoldOp::Release { hold } => Some(*hold),
+                    _ => None,
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let mut seen: std::collections::BTreeSet<HoldId> = std::collections::BTreeSet::new();
+    let kept_escrow: Vec<HoldId> = c
+        .escrow
+        .iter()
+        .copied()
+        // The list is untrusted, so a duplicate id is possible; two `Release` ops on
+        // one hold would refuse the whole later unwind ("≤ 1 per hold").
+        .filter(|id| seen.insert(*id))
+        .filter(|id| !released.contains(id))
+        .filter(|id| {
+            snapshot.hold(*id).is_some_and(|h| {
+                h.status.is_held() && h.purpose == (HoldPurpose::Escrow { contract: c.id })
+            })
+        })
+        .collect();
+    let mut back = c.clone();
+    back.state = ContractState::Draft;
+    back.pending = None;
+    back.acceptances = kept;
+    back.agreements.clear();
+    back.escrow = kept_escrow;
+    back.deposits.clear();
+    // An attestation belongs to the surface it attested; a re-opened surface starts
+    // with none (only an author-only live contract can carry any here).
+    back.satisfied = vec![None; back.consent.conditions.len()];
+    back.roster_locked = false;
+    back.settle_attempts = 0;
+    back.revision = back.revision.saturating_add(1);
+    // A `Draft` is re-hashed on every write; the survivors keep the hash they bound
+    // and are re-stamped when the surface is re-offered.
+    back.consent_hash = consent_hash(&back.issuer, &back.consent);
+    (back, voided)
 }
 
 /// The amendment itself — the shared core of `@contract/amend` and the
@@ -2964,12 +3094,7 @@ pub(crate) fn amend_core(
     if !c.consent_intact() {
         return Err(ContractError::ConsentMismatch);
     }
-    let (kept, voided): (Vec<Acceptance>, Vec<Acceptance>) = c
-        .acceptances
-        .iter()
-        .cloned()
-        .partition(|a| principal_key(&a.party) == key);
-    let (plan, kept_escrow) = {
+    let (plan, mut back, voided, refund_landed) = {
         let store = ctx
             .w
             .module_state::<EconomyStore>()
@@ -2978,48 +3103,48 @@ pub(crate) fn amend_core(
             return Err(ContractError::Infeasible("the economy is frozen"));
         }
         let snap = store.snapshot();
-        let (claims, _) = crate::contract::qualifying_claims(&c, snap);
-        let kept_escrow: Vec<HoldId> = claims
-            .iter()
-            .filter(|(_, i)| {
-                c.consent
-                    .terms
-                    .consideration
-                    .get(*i)
-                    .is_some_and(|con| principal_key(&con.from) == key)
-            })
-            .map(|(hold, _)| hold.id)
-            .collect();
-        let plan = if voided.is_empty() {
-            None
-        } else {
+        let plan = if c.acceptances.iter().any(|a| principal_key(&a.party) != key) {
             Some(crate::contract::refund_plan_except(&c, snap, author)?)
+        } else {
+            None
         };
-        (plan, kept_escrow)
+        let (back, voided) = amended_draft(&c, snap, author, plan.as_ref());
+        // E6a step 1 verify fold (R2): **the already-posted shape.** A hold this
+        // record still lists as its own escrow, for a consideration a voided party
+        // owed, that the journal says is already terminal — the refund landed and the
+        // companion doc write was lost.
+        let refund_landed = !voided.is_empty()
+            && c.escrow.iter().any(|h| {
+                snap.hold(*h).is_some_and(|hold| {
+                    hold.purpose == (HoldPurpose::Escrow { contract: c.id })
+                        && !hold.status.is_held()
+                        && c.consent.terms.consideration.iter().any(|con| {
+                            con.account == hold.account
+                                && con.amount == hold.amount
+                                && principal_key(&con.from) != key
+                        })
+                })
+            });
+        (plan, back, voided, refund_landed)
     };
     let refunding = plan.as_ref().is_some_and(|p| !p.hold_ops.is_empty());
     let id = c.id;
-    let mut back = c.clone();
-    back.state = ContractState::Draft;
-    back.pending = None;
-    back.acceptances = kept;
-    back.agreements.clear();
-    back.escrow = kept_escrow;
-    back.deposits.clear();
-    // An attestation belongs to the surface it attested; a re-opened surface starts
-    // with none (only an author-only live contract can carry any here).
-    back.satisfied = vec![None; back.consent.conditions.len()];
-    back.roster_locked = false;
-    back.settle_attempts = 0;
-    back.revision = back.revision.saturating_add(1);
-    // A `Draft` is re-hashed on every write; the survivors keep the hash they bound
-    // and are re-stamped when the surface is re-offered.
-    back.consent_hash = consent_hash(&back.issuer, &back.consent);
+    // R2: the generation moves when a refund posts **or when one already has**.
+    //
+    // The old rule bumped only inside the refunding arm, and that burned a key. Lose
+    // the companion write after a refund lands, and the retry sees the voided parties'
+    // holds already `Released`: `qualifying_claims` yields nothing, the plan comes
+    // back empty, nothing bumps, and the record is left pointing at
+    // `contract/{id}/refund/{n}` — a key that is already spent. Every later unwind then
+    // hit `IdempotencyConflict`, `pending` stuck, and the escrow was frozen forever.
+    // Detecting the landed shape closes it while leaving M16 exactly as it was: an
+    // amendment that releases nothing and never released anything (a run board
+    // re-splitting its own listing) still spends no generation.
+    if refunding || refund_landed {
+        back.amendments = c.amendments.saturating_add(1);
+    }
     match plan.filter(|_| refunding) {
         Some(plan) => {
-            // The refund posts under THIS generation; the record it carries is the
-            // next one, so a second refund of the same id can never hit this key.
-            back.amendments = back.amendments.saturating_add(1);
             let owned = c.clone();
             let posted = {
                 let auth = {
@@ -3600,6 +3725,9 @@ fn contract_show(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             accepted.join(", ")
         }
     ));
+    // M8: the contract's own instrument, for every row whose account this viewer may
+    // not see or that no longer resolves.
+    let instrument = contract_instrument(ctx, &c);
     for x in &c.consent.terms.consideration {
         // A1: the payer's NAME comes from the party list, never from the account's
         // owner — otherwise `/pay` plus `/show` was an owner oracle over any wallet
@@ -3617,7 +3745,7 @@ fn contract_show(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         };
         lines.push(format!(
             "  {who} escrows {} from {}",
-            money_on(ctx, x.account, x.amount),
+            money_on_or(ctx, x.account, x.amount, instrument.as_ref()),
             acct(ctx, x.account)
         ));
     }
@@ -3626,7 +3754,7 @@ fn contract_show(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             lines.push(format!(
                 "  pays {} {}",
                 acct(ctx, sh.to),
-                render_share(ctx, sh.to, sh.share)
+                render_share(ctx, sh.to, sh.share, instrument.as_ref())
             ));
         }
         lines.push(format!(
@@ -3642,7 +3770,7 @@ fn contract_show(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                     format!(
                         "{} {}",
                         acct(ctx, sh.to),
-                        render_share(ctx, sh.to, sh.share)
+                        render_share(ctx, sh.to, sh.share, instrument.as_ref())
                     )
                 })
                 .collect();
@@ -3806,10 +3934,36 @@ fn render_state(s: &ContractState) -> String {
     }
 }
 
-/// A share, an exact one rendered in the instrument the payee account holds.
-fn render_share(ctx: &Ctx<'_>, to: AccountId, s: Share) -> String {
+/// **The instrument a contract is denominated in** (E6a step 1 verify fold, M8): the
+/// one its escrow is held in, taken from the first consideration whose account still
+/// resolves. `check_offerable` proves every consideration and every exact share share
+/// one instrument, so "the first" is "the contract's".
+///
+/// It is what a payout row renders in when the payee account is unviewable or gone.
+/// The viewer is already reading this contract's terms, so its scale and symbol are
+/// not a disclosure — and `500` where the world says `¥500` is a number nobody can
+/// act on.
+fn contract_instrument(ctx: &Ctx<'_>, c: &EconomicContract) -> Option<InstrumentId> {
+    let store = ctx.w.module_state::<EconomyStore>()?;
+    let snap = store.snapshot();
+    c.consent
+        .terms
+        .consideration
+        .iter()
+        .find_map(|x| snap.account(x.account).map(|a| a.instrument.clone()))
+}
+
+/// A share, an exact one rendered in the instrument the payee account holds — or, for
+/// an account this viewer may not see (D2) or that no longer exists, the contract's
+/// own instrument (M8).
+fn render_share(
+    ctx: &Ctx<'_>,
+    to: AccountId,
+    s: Share,
+    instrument: Option<&InstrumentId>,
+) -> String {
     match s {
-        Share::Exact(a) => money_on(ctx, to, a),
+        Share::Exact(a) => money_on_or(ctx, to, a, instrument),
         Share::Permille(p) => format!("{p}‰"),
     }
 }
@@ -4612,17 +4766,22 @@ pub fn accept_contract(ctx: &mut Ctx<'_>, id: ContractId) -> Result<AcceptOutcom
 ///
 /// # Errors
 ///
+/// Everything is refused **before anything posts** (E6a step 1 verify fold, R1):
 /// [`ContractError::NoStanding`] (no such contract, unviewable, or not the issuer),
-/// everything [`amend_core`] refuses (nothing changed), then — with the amendment
-/// **already standing** as a `Draft` — [`ContractError::TooLarge`] for the party cap,
-/// [`ContractError::Infeasible`] for a duplicate party, and every refusal
-/// [`check_offer`] gives for the re-offer. The `Draft` and its edits survive those:
-/// retry, or cancel (M10).
+/// everything [`amend_core`] refuses, [`ContractError::SystemParty`],
+/// [`ContractError::TooLarge`] for the party cap, [`ContractError::Infeasible`] for a
+/// duplicate party, and — when `reoffer` is set — every refusal [`check_offer`]
+/// gives. An `Err` therefore means **nothing changed at all**.
+///
+/// A re-offer that is refused *after* the amendment lands is not an error: it comes
+/// back as [`AmendReoffer::NotReoffered`], with the amendment standing as an
+/// amendable `Draft` (retry, or cancel — M10, and the sweep expires an escrowed draft
+/// on its deadline or the draft TTL).
 pub fn amend_contract(
     ctx: &mut Ctx<'_>,
     id: ContractId,
     amend: ContractAmendment,
-) -> Result<(), ContractError> {
+) -> Result<AmendReoffer, ContractError> {
     if ctx
         .w
         .module_state::<EconomyStore>()
@@ -4638,43 +4797,104 @@ pub fn amend_contract(
         return Err(ContractError::NoStanding);
     }
     let author = amend_author(ctx, &c);
-    amend_core(ctx, c, &author)?;
-    let mut back = live_contract(ctx, id).ok_or(ContractError::NoStanding)?;
+    // ---- R1: every fallible step, BEFORE the refund posts ----
+    //
+    // `amend_core` posts the A′ refund through `post_with_companions`, and four
+    // fallible steps used to follow it: the `System` party test, the duplicate-party
+    // test, the party cap, and `check_offer`'s whole battery. Every economy write is
+    // `Deferred::Persist`, and dispatch truncates a failed handler's deferred queue —
+    // so any one of those refusals threw away the journal chunk, the hold and account
+    // projections and the contract doc, while RAM had already released the escrow and
+    // moved the contract to `Draft`. After a reboot the escrow was back and the
+    // contract was `Offered` again: RAM and disk disagreeing about money.
+    //
+    // The fix is order, not rescue. Build exactly the surface the amendment would
+    // produce — the same pure `amended_draft` the core uses, plus this amendment's own
+    // edits — and run every check against it here. Past this point nothing between the
+    // post and the return can refuse.
+    let probe = {
+        let store = ctx
+            .w
+            .module_state::<EconomyStore>()
+            .ok_or(ContractError::Infeasible("no economy"))?;
+        let snap = store.snapshot();
+        let refund = if c
+            .acceptances
+            .iter()
+            .any(|a| principal_key(&a.party) != principal_key(&author))
+        {
+            Some(crate::contract::refund_plan_except(&c, snap, &author)?)
+        } else {
+            None
+        };
+        let (draft, _) = amended_draft(&c, snap, &author, refund.as_ref());
+        draft
+    };
+    let probe = apply_amendment(probe, &amend)?;
+    if amend.reoffer {
+        check_offer(ctx, &probe)?;
+    }
+    // ---- the amendment itself ----
+    let outcome = amend_core(ctx, c, &author)?;
+    let back = live_contract(ctx, id).ok_or(ContractError::NoStanding)?;
+    // The edits were validated against an identical projection above, so this cannot
+    // refuse; if a future edit makes it possible, the amendment still stands and the
+    // caller is told which step did not run — never an `Err` over a landed post.
+    let mut back = match apply_amendment(back, &amend) {
+        Ok(back) => back,
+        Err(e) => return Ok(AmendReoffer::NotReoffered(outcome, e)),
+    };
+    back.revision = back.revision.saturating_add(1);
+    api::put_contract(ctx, back.clone());
+    if amend.reoffer {
+        // Re-checked live: the projection was built before the refund posted, and
+        // releasing escrow is exactly the kind of change `check_offer` reads.
+        if let Err(e) = check_offer(ctx, &back) {
+            ctx.gate_on_durable_ack();
+            return Ok(AmendReoffer::NotReoffered(outcome, e));
+        }
+        freeze_and_offer(ctx, back);
+    }
+    ctx.gate_on_durable_ack();
+    Ok(AmendReoffer::Amended(outcome))
+}
+
+/// Apply one [`ContractAmendment`]'s edits to a surface — pure and fallible, so the
+/// seam can run it against a projection before anything posts (R1).
+fn apply_amendment(
+    mut c: EconomicContract,
+    amend: &ContractAmendment,
+) -> Result<EconomicContract, ContractError> {
     for p in &amend.add_parties {
+        // M4/D-E6-4: nobody acts for a `System` principal, so one named as a party is
+        // an offer that can never be accepted and a faucet that could never be
+        // controlled.
         if matches!(p, PrincipalId::System(_)) {
             return Err(ContractError::SystemParty);
         }
-        if back
-            .consent
+        if c.consent
             .parties
             .iter()
             .any(|q| principal_key(q) == principal_key(p))
         {
             return Err(ContractError::Infeasible("a party is named twice"));
         }
-        if back.consent.parties.len() >= MAX_PARTIES {
+        if c.consent.parties.len() >= MAX_PARTIES {
             return Err(ContractError::TooLarge("too many parties"));
         }
-        back.consent.parties.push(p.clone());
+        c.consent.parties.push(p.clone());
     }
-    if let Some(outcomes) = amend.outcomes {
-        back.consent.terms.outcomes = outcomes;
+    if let Some(outcomes) = &amend.outcomes {
+        c.consent.terms.outcomes = outcomes.clone();
     }
     if let Some(on_expiry) = amend.on_expiry {
-        back.consent.terms.on_expiry = on_expiry;
+        c.consent.terms.on_expiry = on_expiry;
     }
     // A `Draft` is re-hashed on every write; the author's acceptance is re-stamped
     // by the re-offer.
-    back.consent_hash = consent_hash(&back.issuer, &back.consent);
-    back.satisfied.resize(back.consent.conditions.len(), None);
-    back.revision = back.revision.saturating_add(1);
-    api::put_contract(ctx, back.clone());
-    if amend.reoffer {
-        check_offer(ctx, &back)?;
-        freeze_and_offer(ctx, back);
-    }
-    ctx.gate_on_durable_ack();
-    Ok(())
+    c.consent_hash = consent_hash(&c.issuer, &c.consent);
+    c.satisfied.resize(c.consent.conditions.len(), None);
+    Ok(c)
 }
 
 // ---- the notice class and the hiding helpers, exported (E6a step 1, E5b-D36/D37) --

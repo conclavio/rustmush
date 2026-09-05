@@ -120,6 +120,10 @@ pub(crate) fn sweep(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<SceneId>) {
     step_contracts(ctx, now, ic_now);
     collect_garbage(ctx, now);
     renotify(ctx, now);
+    // E6a step 1 verify fold (R6): `Engine::reattach` fires no `Connected`, so a
+    // session held across a restart never triggers the reconnect hook. Deliver every
+    // standing queue whose owner is connected right now, bounded per fire.
+    crate::notice::deliver_connected(ctx);
     stamp_sweep(ctx, now, ic_now);
 }
 
@@ -365,6 +369,19 @@ struct ObligationAuth {
 }
 
 impl AuthEval for ObligationAuth {
+    /// E6a step 1 verify fold (M1): a period post is **not discretionary spend**.
+    ///
+    /// The debit was consented to when the obligation was created, and the sweep can
+    /// collect no approval — so an account whose rolling [`crate::ApprovalWindow`] is
+    /// already full would have had its rent refused, the record suspended and a
+    /// level-2 page opened, with the creditor unpaid and nothing anybody could do but
+    /// widen the window. The **threshold** still fires (an obligation above the
+    /// per-transaction limit escalates exactly as before), and the post still counts
+    /// toward the window for every later discretionary spend on the same account.
+    fn window_exempt(&self) -> bool {
+        true
+    }
+
     fn authorize(&self, _actor: &PrincipalId, account: &Account, delta: Amount) -> bool {
         if delta.is_negative() {
             if account.id != self.debit || !self.debit_live {
@@ -852,9 +869,25 @@ fn post_period(
             let rendered = mint_cap.map_or_else(
                 || "unset".to_string(),
                 |cap| {
+                    // The alert is the staff channel's, and the record's own debit
+                    // account is the instrument it is denominated in; M8's fallback
+                    // is what keeps a raw minor value out of the page when the
+                    // account itself has gone.
                     ctx.w.module_state::<EconomyStore>().map_or_else(
                         || cap.to_decimal_string(0),
-                        |s| crate::render::render_amount_on(s.snapshot(), o.debit_account, cap),
+                        |s| {
+                            let instrument = s
+                                .snapshot()
+                                .account(o.credit_account)
+                                .map(|a| a.instrument.clone());
+                            crate::render::render_amount_on(
+                                s.snapshot(),
+                                o.debit_account,
+                                cap,
+                                true,
+                                instrument.as_ref(),
+                            )
+                        },
                     )
                 },
             );
@@ -1287,7 +1320,16 @@ fn step_contracts(ctx: &mut Ctx<'_>, now: i64, ic_now: i64) {
                         let escrowed =
                             !crate::contract::qualifying_escrow(c, snap).holds.is_empty();
                         if escrowed {
-                            lapsed(c).then_some(ContractStep::Expire)
+                            // E6a step 1 verify fold (M2): a post-A′ draft holding
+                            // escrow with **no deadline** had no route out at all —
+                            // `lapsed` needs a deadline, `collect_draft` skips an
+                            // escrowed draft, and `page_stale_contracts` looked only
+                            // at live states. The payer's money sat reserved forever
+                            // with nothing scheduled to touch it. The draft TTL is the
+                            // backstop: the unwind refunds the payer, who may re-offer.
+                            let untouched_past_ttl = c.consent.deadline.is_none()
+                                && now.saturating_sub(c.created_at) > crate::DRAFT_TTL_SECS;
+                            (lapsed(c) || untouched_past_ttl).then_some(ContractStep::Expire)
                         } else {
                             (now.saturating_sub(c.created_at) > crate::DRAFT_TTL_SECS)
                                 .then_some(ContractStep::Collect)
@@ -1525,7 +1567,7 @@ fn republish_settlements(ctx: &mut Ctx<'_>, now: i64) {
 /// rule the expiry step uses.
 fn page_stale_contracts(ctx: &mut Ctx<'_>, now: i64, ic_now: i64) {
     let clocks = Clocks::new(now, ic_now);
-    let stale: Vec<(crate::ids::ContractId, i64)> = {
+    let stale: Vec<(crate::ids::ContractId, i64, bool)> = {
         let Some(store) = ctx.w.module_state::<EconomyStore>() else {
             return;
         };
@@ -1535,12 +1577,23 @@ fn page_stale_contracts(ctx: &mut Ctx<'_>, now: i64, ic_now: i64) {
         }
         let snap = store.snapshot();
         snap.contracts()
+            // E6a step 1 verify fold (M2): `Draft` belongs here too. An A′ amendment
+            // leaves a draft that may still hold the author's escrow, and one that is
+            // never re-offered is money reserved with nobody looking at it — it pages
+            // at the stale age, well before the draft TTL unwinds it.
             .filter(|c| {
                 matches!(
                     c.state,
-                    crate::contract::ContractState::Active
+                    crate::contract::ContractState::Draft
+                        | crate::contract::ContractState::Active
                         | crate::contract::ContractState::ReadyToSettle
                 )
+            })
+            // A draft with no escrow is not somebody's money sitting still; it is
+            // collected on the TTL and says nothing to staff.
+            .filter(|c| {
+                c.state != crate::contract::ContractState::Draft
+                    || !crate::contract::qualifying_escrow(c, snap).holds.is_empty()
             })
             .filter(|c| {
                 !c.consent
@@ -1556,32 +1609,58 @@ fn page_stale_contracts(ctx: &mut Ctx<'_>, now: i64, ic_now: i64) {
                     .max()
                     .unwrap_or(c.created_at)
                     .max(c.created_at);
-                (now.saturating_sub(progress) > age).then_some((c.id, progress))
+                (now.saturating_sub(progress) > age).then_some((
+                    c.id,
+                    progress,
+                    c.state == crate::contract::ContractState::Draft,
+                ))
             })
             .take(MAX_CONTRACTS_PER_SWEEP)
             .collect()
     };
-    for (id, progress) in stale {
+    for (id, progress, draft) in stale {
         let days = now.saturating_sub(progress) / 86_400;
+        // M2: a stale escrowed draft is a different sentence and a different set of
+        // commands — `@contract/dispute` refuses a draft, and the way out of one is
+        // to offer it or cancel it.
+        let (context, recommended) = if draft {
+            (
+                format!(
+                    "contract #{id} has sat as a draft for {days} day(s) still holding escrow — an \
+                     amendment that was never re-offered; the payer's money is reserved the whole \
+                     time and nothing is going to change on its own"
+                ),
+                vec![
+                    format!("@contract/show #{id}"),
+                    format!("@contract/offer #{id}"),
+                    format!("@contract/cancel #{id}   (releases the escrow)"),
+                ],
+            )
+        } else {
+            (
+                format!(
+                    "contract #{id} has been in force for {days} day(s) with no condition progress \
+                     at all; its escrow is reserved the whole time and nothing is going to change \
+                     on its own"
+                ),
+                vec![
+                    format!("@contract/show #{id}"),
+                    // `@contract/resolve` acts on a *disputed* contract, so the ladder
+                    // says how to get there rather than recommending a command that
+                    // would refuse.
+                    format!("@contract/dispute #{id}"),
+                    format!("@contract/resolve #{id}=settle <reason>"),
+                    format!("@contract/resolve #{id}=refund <reason>"),
+                ],
+            )
+        };
         page(
             ctx,
             EscalationKind::SettlementRefused,
             EscalationSubject::Contract(id),
             None,
-            format!(
-                "contract #{id} has been in force for {days} day(s) with no condition progress at \
-                 all; its escrow is reserved the whole time and nothing is going to change on its \
-                 own"
-            ),
-            vec![
-                format!("@contract/show #{id}"),
-                // `@contract/resolve` acts on a *disputed* contract, so the ladder
-                // says how to get there rather than recommending a command that
-                // would refuse.
-                format!("@contract/dispute #{id}"),
-                format!("@contract/resolve #{id}=settle <reason>"),
-                format!("@contract/resolve #{id}=refund <reason>"),
-            ],
+            context,
+            recommended,
             now,
         );
     }
@@ -1591,9 +1670,16 @@ fn page_stale_contracts(ctx: &mut Ctx<'_>, now: i64, ic_now: i64) {
 /// store: the read pass is one fire old, and a draft that was offered in between must
 /// not be collected out from under its parties.
 fn collect_draft(ctx: &mut Ctx<'_>, id: crate::ids::ContractId) {
+    // E6a step 1 verify fold (R7): **one predicate.** The read pass selects on
+    // `qualifying_escrow(..).holds.is_empty()` and this refused on `c.escrow`, which
+    // is an untrusted list — a draft naming a stranger's hold, or one of its own that
+    // has since been released, was selected for collection every fire and refused
+    // here every fire, burning a per-sweep slot forever and never being collected.
     let collectable = ctx.w.module_state::<EconomyStore>().is_some_and(|s| {
-        s.snapshot().contract(id).is_some_and(|c| {
-            c.state == crate::contract::ContractState::Draft && c.escrow.is_empty()
+        let snap = s.snapshot();
+        snap.contract(id).is_some_and(|c| {
+            c.state == crate::contract::ContractState::Draft
+                && crate::contract::qualifying_escrow(c, snap).holds.is_empty()
         })
     });
     if !collectable {
@@ -1734,6 +1820,44 @@ pub(crate) fn page(
     }
     announce_escalation(ctx, id, subject, level);
     Some(id)
+}
+
+/// The most open records one boot or one staff connect re-announces (E6a step 1
+/// verify fold, R4 + R5).
+pub(crate) const MAX_ANNOUNCE_BACKLOG: usize = 32;
+
+/// **Re-announce the ladder's open records**, newest `limit` first (R4 + R5).
+///
+/// Two holes it closes, both the same hole seen from opposite ends. Boot opens
+/// level-2 records — a quarantined contract, an obligation whose account is gone —
+/// and announced *none* of them: only [`page`] announced, and boot does not call it.
+/// And a page opened while no staffer is connected reaches nobody, because the
+/// audience is whoever happens to be online.
+///
+/// So: boot announces its reconciliation set once the store is live, and a
+/// Wizard-or-better's connect announces the open backlog. The events carry ids and
+/// kinds only, exactly as [`announce_escalation`] always has, and the server's
+/// observer dedupes on each record's own step — so a staffer hears every record
+/// nobody has been told about, and hears nothing twice.
+pub(crate) fn announce_open_escalations(ctx: &mut Ctx<'_>, limit: usize) {
+    let open: Vec<(EscalationId, EscalationSubject, u8)> = {
+        let Some(store) = ctx.w.module_state::<EconomyStore>() else {
+            return;
+        };
+        let mut rows: Vec<(EscalationId, EscalationSubject, u8)> = store
+            .escalations()
+            .filter(|e| e.is_open())
+            .map(|e| (e.id, e.subject, e.level))
+            .collect();
+        // Newest first for the cap, then oldest first for the reading order.
+        rows.sort_by_key(|row| std::cmp::Reverse(row.0));
+        rows.truncate(limit);
+        rows.reverse();
+        rows
+    };
+    for (id, subject, level) in open {
+        announce_escalation(ctx, id, subject, level);
+    }
 }
 
 /// Tell the observers the ladder opened, reopened or re-notified a record (E6a
@@ -1889,6 +2013,13 @@ fn collect_garbage(ctx: &mut Ctx<'_>, now: i64) {
             .collect();
         (approvals, holds, escalations)
     };
+    // E6a step 1 verify fold (D4 + R3): the rolling-window index is pruned on **read**
+    // as well as on write — an account debited once and never again used to hold its
+    // entry forever, and an account whose rule lost its window kept a tail nothing
+    // would ever look at. Cheap and unconditional: it walks only the windowed tails.
+    if let Some(store) = ctx.w.module_state_mut::<EconomyStore>() {
+        store.prune_debit_windows(now);
+    }
     if approvals.is_empty() && holds.is_empty() && escalations.is_empty() {
         return;
     }

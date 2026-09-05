@@ -137,7 +137,14 @@ pub struct EconomyStore {
     /// capture spends a reservation the window already counted when it was placed,
     /// and counting it twice would make an escrowed run cost double. A refund never
     /// subtracts anything (conservative by design).
-    pub(crate) debit_window: BTreeMap<AccountId, std::collections::VecDeque<(i64, Amount)>>,
+    ///
+    /// **Only accounts whose rule actually carries a window are tracked** (E6a step 1
+    /// verify fold, D4): the index existed for every account any post ever debited,
+    /// which on a busy world is every account in it, held forever because the front
+    /// was trimmed only when the *same* account was debited again. A rule that gains a
+    /// window starts tracking from that moment, rebuilt once from the journal tail
+    /// ([`EconomyStore::rebuild_debit_window`]); a rule that loses one stops.
+    pub(crate) debit_window: BTreeMap<AccountId, WindowTail>,
     /// The notices queued for objects that were not connected when the economy had
     /// something to tell them (E6a step 1, DL-04): `econ:notice:{obj}` leaf docs,
     /// ≤ [`crate::MAX_PENDING_NOTICES`] per object, delivered and deleted at their
@@ -265,7 +272,7 @@ pub(crate) struct BootParts {
     pub(crate) next_escalation: u64,
     pub(crate) next_contract: u64,
     pub(crate) last_custody: BTreeMap<ObjId, CustodyMark>,
-    pub(crate) debit_window: BTreeMap<AccountId, std::collections::VecDeque<(i64, Amount)>>,
+    pub(crate) debit_window: BTreeMap<AccountId, WindowTail>,
     pub(crate) notices: BTreeMap<ObjId, Vec<crate::notice::PendingNotice>>,
     pub(crate) sweep_contract_cursor: u64,
     pub(crate) last_sweep_real: i64,
@@ -561,7 +568,14 @@ impl EconomyStore {
     /// ones), so it is maintained here and at boot from the journal alone.
     pub(crate) fn index_transaction(&mut self, tx: EconomicTransaction) {
         // E6a step 1 (D-E6-21): the rolling-window tail, the same fold boot replays.
-        note_window_debits(&mut self.debit_window, &tx);
+        // D4: only an account whose live rule carries a window is tracked at all —
+        // every other one is dropped again immediately, so the index is O(windowed
+        // accounts) and not O(accounts anything ever debited).
+        for account in note_window_debits(&mut self.debit_window, &tx) {
+            if !account_windowed(&self.snapshot, account) {
+                self.debit_window.remove(&account);
+            }
+        }
         // E4b2: the last-custody mark, with the depositor the journal names.
         for effect in &tx.custody_effects {
             self.last_custody.insert(
@@ -608,33 +622,171 @@ impl EconomyStore {
     /// is over any window — fail closed.
     #[must_use]
     pub fn spent_in_window(&self, account: AccountId, now: i64, period_secs: i64) -> Amount {
+        let Some(tail) = self.debit_window.get(&account) else {
+            return Amount::ZERO;
+        };
+        // D4: a tail the per-account cap latched is no longer a sum. Unknown spend is
+        // over every window — fail closed, so the next post asks a human.
+        if tail.saturated {
+            return Amount::from_minor(i64::MAX);
+        }
         let since = now.saturating_sub(period_secs);
-        let sum: i128 = self
-            .debit_window
-            .get(&account)
-            .into_iter()
-            .flat_map(|tail| tail.iter())
+        let sum: i128 = tail
+            .entries
+            .iter()
             .filter(|(at, _)| *at > since)
             .map(|(_, amount)| amount.widen())
             .sum();
         Amount::from_widened(sum).unwrap_or(Amount::from_minor(i64::MAX))
     }
+
+    /// One account's rolling-window tail (the tests and `@econ/audit`).
+    #[must_use]
+    pub fn debit_window_of(&self, account: AccountId) -> Option<&WindowTail> {
+        self.debit_window.get(&account)
+    }
+
+    /// **Drop what no window can still cover, and forget the untracked** (D4) — the
+    /// read-side half of the bound, run from the sweep's GC so a world that stops
+    /// posting still stops holding tails. Pruning at index time alone left an account
+    /// that was debited once and never again holding that entry forever.
+    pub(crate) fn prune_debit_windows(&mut self, now: i64) {
+        let snapshot = &self.snapshot;
+        self.debit_window
+            .retain(|account, _| account_windowed(snapshot, *account));
+        let cutoff = now.saturating_sub(crate::record::MAX_APPROVAL_WINDOW_SECS);
+        for tail in self.debit_window.values_mut() {
+            // R3's rule again: never prune below the tail's own high-water mark, so a
+            // clock that ran ahead and came back cannot forget a live spend.
+            let high_water = tail.entries.back().map_or(now, |(at, _)| (*at).max(now));
+            tail.prune(
+                cutoff.min(high_water.saturating_sub(crate::record::MAX_APPROVAL_WINDOW_SECS)),
+            );
+        }
+        self.debit_window.retain(|_, tail| !tail.entries.is_empty());
+    }
+
+    /// **Re-derive one account's tail from the journal** (D4): what
+    /// `@account/approval <id>=… window=…` calls the moment a rule gains a window.
+    ///
+    /// The window is journal-derived, so a rule that starts carrying one must start
+    /// carrying the spend the journal already records — otherwise a treasury could be
+    /// emptied and then given a window, and the window would read the account as
+    /// having spent nothing. The tail is folded from the transactions inside
+    /// [`crate::MAX_APPROVAL_WINDOW_SECS`] of `now`, by the same
+    /// [`note_window_debits`] live posting uses.
+    pub(crate) fn rebuild_debit_window(&mut self, account: AccountId, now: i64) {
+        self.debit_window.remove(&account);
+        if !account_windowed(&self.snapshot, account) {
+            return;
+        }
+        let floor = now.saturating_sub(crate::record::MAX_APPROVAL_WINDOW_SECS);
+        let mut tails: BTreeMap<AccountId, WindowTail> = BTreeMap::new();
+        for tx in self.transactions.values() {
+            if tx.posted_at < floor {
+                continue;
+            }
+            let touches = tx.lines.iter().any(|l| l.account == account)
+                || tx.hold_effects.iter().any(|e| e.hold.account == account);
+            if !touches {
+                continue;
+            }
+            note_window_debits(&mut tails, tx);
+        }
+        if let Some(tail) = tails.remove(&account) {
+            self.debit_window.insert(account, tail);
+        }
+    }
+}
+
+/// The most entries one account's rolling-window tail keeps (E6a step 1 verify fold,
+/// D4). Four thousand posts inside one account's window is far past any legitimate
+/// wallet and well short of anything that costs memory; past it the tail stops being
+/// a sum and starts being a **latch** — see [`WindowTail::saturated`].
+pub const MAX_WINDOW_ENTRIES: usize = 4_096;
+
+/// One account's rolling-window tail: `(posted_at, debit)` oldest first, plus the
+/// fail-closed latch the per-account cap sets.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct WindowTail {
+    /// The entries, oldest first, each `(posted_at, debit)`.
+    pub(crate) entries: std::collections::VecDeque<(i64, Amount)>,
+    /// Set when [`MAX_WINDOW_ENTRIES`] forced an entry out that the window may still
+    /// have covered. The sum is then no longer knowable, and an unknown spend is
+    /// **over** every window: [`EconomyStore::spent_in_window`] answers `i64::MAX`,
+    /// so the next post needs an approval a human gives. Cleared the moment the tail
+    /// drains back under the cap on its own (every retained entry is then real).
+    pub(crate) saturated: bool,
+}
+
+impl WindowTail {
+    /// Drop entries at or before `cutoff` from the front, clearing the latch once the
+    /// tail is honest again.
+    fn prune(&mut self, cutoff: i64) {
+        while self.entries.front().is_some_and(|(at, _)| *at < cutoff) {
+            self.entries.pop_front();
+        }
+        if self.saturated && self.entries.len() < MAX_WINDOW_ENTRIES {
+            self.saturated = false;
+        }
+    }
+
+    /// How many entries it holds (for the tests and `@econ/audit`).
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// Whether it holds nothing.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    /// Whether the cap latched this tail closed.
+    #[must_use]
+    pub fn is_saturated(&self) -> bool {
+        self.saturated
+    }
+}
+
+/// Whether `account`'s live rule carries a rolling window at all (D4) — the one
+/// predicate that decides who is tracked.
+#[must_use]
+pub(crate) fn account_windowed(snapshot: &EconomySnapshot, account: AccountId) -> bool {
+    snapshot
+        .account(account)
+        .and_then(|a| a.approval.as_ref())
+        .is_some_and(|rule| rule.window.is_some())
 }
 
 /// Fold one transaction into the rolling-window tails (E6a step 1, D-E6-21) — the
 /// ONE place the per-account debit an [`crate::ApprovalWindow`] counts is defined,
 /// shared by [`EconomyStore::index_transaction`] and boot's replay so the two can
-/// never disagree.
+/// never disagree. Returns the accounts it touched, so the caller can drop the ones
+/// whose rule carries no window (D4).
 ///
 /// Per account: the negative lines plus the placed holds, **less what the same
 /// transaction captured** (the placement already counted; a settlement that captures
 /// escrow is not a second spend). Releases and expiries subtract nothing — a refund
-/// never re-opens the window. Entries older than [`crate::MAX_APPROVAL_WINDOW_SECS`]
-/// before this post are dropped from the front, which bounds every tail.
+/// never re-opens the window.
+///
+/// Two bounds, both from the E6a step 1 verify fold:
+///
+/// - **R3: nothing is dropped at index time.** The front used to be trimmed against
+///   *this post's* `posted_at − 90 d`, so a single post carrying a wall clock far in
+///   the future erased the account's whole history permanently — and replay repeated
+///   it, so a reboot did not heal it either. Age is a question about **now**, and a
+///   post's own clock is not now: the tail is bounded by *length* here and pruned by
+///   age on the read side ([`EconomyStore::prune_debit_windows`], against the world's
+///   clock and never below the tail's own high-water mark).
+/// - **D4, the length cap.** Past [`MAX_WINDOW_ENTRIES`] the oldest entry is dropped
+///   and the tail latches [`WindowTail::saturated`]: the sum is unknown, and unknown
+///   reads as over every window.
 pub(crate) fn note_window_debits(
-    window: &mut BTreeMap<AccountId, std::collections::VecDeque<(i64, Amount)>>,
+    window: &mut BTreeMap<AccountId, WindowTail>,
     tx: &EconomicTransaction,
-) {
+) -> Vec<AccountId> {
     let mut debits: BTreeMap<AccountId, i128> = BTreeMap::new();
     for line in &tx.lines {
         if line.delta.is_negative() {
@@ -654,20 +806,21 @@ pub(crate) fn note_window_debits(
             crate::record::HoldEffectKind::Released | crate::record::HoldEffectKind::Expired => {}
         }
     }
-    let cutoff = tx
-        .posted_at
-        .saturating_sub(crate::record::MAX_APPROVAL_WINDOW_SECS);
+    let mut touched: Vec<AccountId> = Vec::with_capacity(debits.len());
     for (account, debit) in debits {
+        touched.push(account);
         if debit <= 0 {
             continue;
         }
         let amount = Amount::from_widened(debit).unwrap_or(Amount::from_minor(i64::MAX));
         let tail = window.entry(account).or_default();
-        while tail.front().is_some_and(|(at, _)| *at < cutoff) {
-            tail.pop_front();
+        while tail.entries.len() >= MAX_WINDOW_ENTRIES {
+            tail.entries.pop_front();
+            tail.saturated = true;
         }
-        tail.push_back((tx.posted_at, amount));
+        tail.entries.push_back((tx.posted_at, amount));
     }
+    touched
 }
 
 /// The economy [`GameModule`]. Hand one to `Engine::with_modules` (after the org
@@ -856,6 +1009,13 @@ impl GameModule for EconomyModule {
         // live and before any layered module (housing, the WoD layer) looks its
         // campaign clock up by name.
         crate::declared::reconcile(ctx, &self.config);
+        // E6a step 1 verify fold (R5): boot opens its own level-2 records — a
+        // quarantined contract, an obligation whose account went away — and announced
+        // none of them, because only the ladder's `page` announces and boot does not
+        // call it. Announce the open set now that the observers are wired; no staffer
+        // is connected at boot, so the server's fan-out records nothing and R4's
+        // connect-time re-announcement is what actually delivers them.
+        crate::sweep::announce_open_escalations(ctx, crate::escalation::MAX_BOOT_ESCALATIONS);
         Ok(())
     }
 }
@@ -1107,5 +1267,85 @@ impl mush_org::ScopeUseProvider for EconomyScopeUse {
             return Some(format!("vault #{} is still bound to it", v.id));
         }
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ids::{InstrumentId, TransactionId};
+    use crate::record::{EconomicCause, EconomicVisibility, JournalLine};
+
+    /// One posted transaction debiting `account` by `amount` at `at`.
+    fn debit(id: u64, account: AccountId, amount: i64, at: i64) -> EconomicTransaction {
+        EconomicTransaction {
+            id: TransactionId(id),
+            journal_seq: id,
+            idempotency: crate::IdempotencyKey::new("test", format!("k{id}")),
+            plan_hash: [0u8; 32],
+            actor: mush_org::PrincipalId::Object(ObjId(1)),
+            description: String::new(),
+            cause: EconomicCause::Command { serial: id },
+            visibility: EconomicVisibility::default(),
+            posted_at: at,
+            lines: vec![JournalLine {
+                account,
+                instrument: InstrumentId::new("test").expect("instrument"),
+                delta: Amount::from_minor(-amount),
+                memo: smol_str::SmolStr::new_static("t"),
+            }],
+            asset_effects: Vec::new(),
+            custody_effects: Vec::new(),
+            hold_effects: Vec::new(),
+            reverses: None,
+            consumed_approval: None,
+        }
+    }
+
+    /// E6a step 1 verify fold, D4 — the per-account length cap **fails closed**.
+    ///
+    /// Four thousand posts inside one account's window is far past any legitimate
+    /// wallet, and the tail has to stay bounded whatever a world does. Past the cap
+    /// the sum is no longer knowable, and an unknown spend must read as *over* every
+    /// window rather than under it: the alternative is a silent budget hole that opens
+    /// exactly on the busiest account in the game.
+    #[test]
+    fn vf_d4_the_window_length_cap_saturates_fail_closed() {
+        let account = AccountId(7);
+        let mut window: BTreeMap<AccountId, WindowTail> = BTreeMap::new();
+        for i in 0..u64::try_from(MAX_WINDOW_ENTRIES).unwrap_or(u64::MAX) {
+            let tx = debit(i, account, 1, 1_000 + i64::try_from(i).unwrap_or(0));
+            let touched = note_window_debits(&mut window, &tx);
+            assert_eq!(touched, vec![account]);
+        }
+        let tail = window.get(&account).expect("the tail");
+        assert_eq!(tail.len(), MAX_WINDOW_ENTRIES);
+        assert!(!tail.is_saturated(), "the cap latched early");
+
+        // One past the cap: the oldest entry goes and the tail latches.
+        let tx = debit(9_999, account, 1, 1_000_000);
+        note_window_debits(&mut window, &tx);
+        let tail = window.get(&account).expect("the tail");
+        assert_eq!(tail.len(), MAX_WINDOW_ENTRIES, "the tail grew past its cap");
+        assert!(tail.is_saturated(), "the cap did not latch");
+
+        // A saturated tail reads as over every window — the post needs a human.
+        let mut store = EconomyStore {
+            debit_window: window,
+            ..EconomyStore::default()
+        };
+        assert_eq!(
+            store.spent_in_window(account, 1_000_000, 3_600).minor(),
+            i64::MAX,
+            "a tail the cap truncated read as a knowable sum"
+        );
+        // ...and it un-latches once age has drained it back under the cap on its own,
+        // because every entry left is then real.
+        store.snapshot = crate::snapshot::EconomySnapshot::new();
+        store.prune_debit_windows(1_000_000);
+        assert!(
+            store.debit_window_of(account).is_none(),
+            "an account with no window at all stayed indexed"
+        );
     }
 }

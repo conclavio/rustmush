@@ -1021,6 +1021,7 @@ pub fn set_account_approval(
     id: AccountId,
     rule: Option<crate::record::ApprovalRule>,
 ) -> bool {
+    let now = ctx.w.now();
     let doc = {
         let Some(store) = ctx.w.module_state_mut::<EconomyStore>() else {
             return false;
@@ -1029,7 +1030,14 @@ pub fn set_account_approval(
             return false;
         };
         a.approval = rule;
-        a.clone()
+        let doc = a.clone();
+        // E6a step 1 verify fold (D4): the rolling-window index tracks exactly the
+        // accounts whose rule carries a window. A rule that gains one starts tracking
+        // **now**, re-derived once from the journal tail — otherwise a treasury could
+        // be emptied and then given a window that read it as having spent nothing —
+        // and a rule that loses one stops being tracked at all.
+        store.rebuild_debit_window(id, now);
+        doc
     };
     persist_account(ctx.out, &doc);
     true
@@ -1842,6 +1850,18 @@ pub fn create_obligation(
 /// ruleset's cause: a missing record and one another namespace created answer the
 /// same [`EconomyError::Unauthorized`], and a finished one is
 /// [`EconomyError::ObligationTerminal`].
+///
+/// **The namespace is not the whole gate** (E6a step 1 verify fold, M3). It says
+/// *which records this seam may touch*; it says nothing about *who is asking*, and
+/// `Ctx::actor` is whoever typed the command that reached the ruleset. A `+lifestyle`
+/// verb wired to [`cancel_obligation`] would have let any player cancel any
+/// lifestyle obligation in the game, their own or a stranger's — and
+/// [`reinstate_obligation`] re-anchors the schedule, so a stranger could also have
+/// *forgiven* somebody's arrears. So the actor is asked the same live question
+/// [`create_obligation`] asks: **may you take money out of the debit account?**
+/// ([`WorldAuth::authorize`] with the period's own negative amount). That admits the
+/// debtor, an officer of a debtor organization holding `economy.account.post`, and
+/// staff — and nobody else.
 fn ruleset_obligation(
     ctx: &Ctx<'_>,
     id: ObligationId,
@@ -1863,6 +1883,16 @@ fn ruleset_obligation(
     if !mine {
         return Err(EconomyError::Unauthorized);
     }
+    // M3: the live actor check, before the terminal test — "no such record" and "not
+    // yours to touch" answer alike, as everywhere else in the crate.
+    let account = store
+        .snapshot()
+        .account(o.debit_account)
+        .ok_or(EconomyError::Unauthorized)?;
+    let debit = o.amount.checked_neg().ok_or(EconomyError::Unauthorized)?;
+    if !(WorldAuth { w: ctx.w }).authorize(&PrincipalId::Object(ctx.actor), account, debit) {
+        return Err(EconomyError::Unauthorized);
+    }
     if matches!(
         o.status,
         crate::obligation::ObligationStatus::Cancelled
@@ -1875,12 +1905,15 @@ fn ruleset_obligation(
 
 /// **Cancel an obligation the ruleset created** (E6a step 1): a tier change replaces
 /// the record, a `lifestyle = false` migration ends it. Only a record whose cause is
-/// `Ruleset { namespace }` for this very `namespace`, and only a live one.
+/// `Ruleset { namespace }` for this very `namespace`, only a live one, and only for
+/// an **actor who may debit its debit account** (M3: the debtor, an authorized
+/// officer, or staff — the namespace says which records, never who).
 ///
 /// # Errors
 ///
-/// [`EconomyError::Unauthorized`] (no such record, or another namespace's),
-/// [`EconomyError::ObligationTerminal`], [`EconomyError::EconomyFrozen`].
+/// [`EconomyError::Unauthorized`] (no such record, another namespace's, or an actor
+/// with no standing over the debit account), [`EconomyError::ObligationTerminal`],
+/// [`EconomyError::EconomyFrozen`].
 pub fn cancel_obligation(
     ctx: &mut Ctx<'_>,
     id: ObligationId,
@@ -1895,11 +1928,18 @@ pub fn cancel_obligation(
 }
 
 /// **Reinstate a delinquent obligation the ruleset created** (E6a step 1) — the
-/// seam behind "pay the arrears, then reinstate". The same namespace lock as
-/// [`cancel_obligation`], and the same rules `@obligation/reinstate` applies: only a
-/// `Delinquent` record, never one a holder keeps out of the due pool, both accounts
-/// still `Active`; the schedule re-anchors past now, so the periods it spent
-/// delinquent are not charged.
+/// seam behind "pay the arrears, then reinstate". The same namespace lock and the
+/// same **actor** lock as [`cancel_obligation`] (M3), and the same rules
+/// `@obligation/reinstate` applies: only a `Delinquent` record, never one a holder
+/// keeps out of the due pool, both accounts still `Active`.
+///
+/// **Reinstating re-anchors the schedule** (D-E6-23), which is the whole reason the
+/// actor lock matters: the periods the record spent delinquent are not charged, so
+/// reinstating *is* forgiving the arrears. The economy does not collect them and will
+/// not — enforcing "pay the arrears first" is the ruleset's, which knows what the
+/// arrears were for; this seam is what it calls once it is satisfied. A terminal
+/// record is refused outright, so a cancelled obligation can never be reinstated into
+/// a fresh schedule.
 ///
 /// Returns whether it **returned to the due pool**: `Ok(false)` means there was
 /// nothing to reinstate — the record is not delinquent, or a holder (the ladder, a
@@ -1907,8 +1947,9 @@ pub fn cancel_obligation(
 ///
 /// # Errors
 ///
-/// [`EconomyError::Unauthorized`], [`EconomyError::ObligationTerminal`],
-/// [`EconomyError::InactiveAccount`] (repoint first), [`EconomyError::EconomyFrozen`].
+/// [`EconomyError::Unauthorized`] (including an actor with no standing over the debit
+/// account), [`EconomyError::ObligationTerminal`], [`EconomyError::InactiveAccount`]
+/// (repoint first), [`EconomyError::EconomyFrozen`].
 pub fn reinstate_obligation(
     ctx: &mut Ctx<'_>,
     id: ObligationId,
@@ -2730,5 +2771,18 @@ fn install_commit(ctx: &mut Ctx<'_>, commit: PreparedEconomyCommit) -> Transacti
         persist_contract(ctx.out, c);
     }
     persist_meta(ctx.out, meta);
+    // E6a step 1 verify fold (R1): **a landed post is a terminal commit.**
+    //
+    // Dispatch does not roll RAM back when a handler returns `Err` — only the
+    // deferred queue — so a ruleset handler that calls one of the economy's seams and
+    // then fails for a reason of its own used to discard this batch while RAM kept
+    // every effect of it: the journal chunk, the account and hold projections and the
+    // contract doc all gone, with the escrow released in memory and back again after
+    // the next reboot. The individual seams now do their fallible work before they
+    // post (that is the real fix), but the guarantee should not depend on every future
+    // caller getting the order right. Pinning is the same move `mush_canon::commit`
+    // makes for exactly the same reason: past this line, "posted" means the same thing
+    // in RAM and on disk whatever the caller does next.
+    ctx.out.pin_deferred();
     txid
 }

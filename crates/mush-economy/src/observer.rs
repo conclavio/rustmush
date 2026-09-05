@@ -139,16 +139,20 @@ fn page_dropped(ctx: &mut Ctx<'_>, ev: &EconomicEvent) {
             crate::escalation::EscalationSubject::Obligation(*id),
             format!("obligation #{id}'s transition to {status_kind:?}"),
         ),
+        // R8: a dropped announcement has its own subject. It shared `Economy` with the
+        // level-3 freeze record, and `open_freeze_record` opens nothing while any
+        // `Economy` record stands — so a dropped chronicle line could suppress the
+        // record that says the whole economy is frozen.
         EconomicEvent::TransactionPosted { .. }
         | EconomicEvent::HoldChanged { .. }
         | EconomicEvent::AssetTitleChanged { .. } => (
-            crate::escalation::EscalationSubject::Economy,
+            crate::escalation::EscalationSubject::DroppedPage,
             "an economic event".to_string(),
         ),
         // A dropped page is about the record that could not be announced; paging
         // the same subject again is what the ladder's dedupe is for.
         EconomicEvent::EscalationOpened { id, .. } => (
-            crate::escalation::EscalationSubject::Economy,
+            crate::escalation::EscalationSubject::DroppedPage,
             format!("escalation #{id}'s staff page"),
         ),
     };

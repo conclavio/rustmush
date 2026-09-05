@@ -130,6 +130,7 @@ pub(crate) fn register(reg: &mut Registrar<'_>, config: &EconomyConfig) -> Resul
 /// the store is installed and before any layered module boots — housing and the
 /// WoD layer look their campaign clock up by name, and find the declared one).
 pub(crate) fn reconcile(ctx: &mut Ctx<'_>, config: &EconomyConfig) {
+    undeclare_removed(ctx, config);
     for (name, decl) in &config.cadences {
         let existing = ctx
             .w
@@ -139,6 +140,45 @@ pub(crate) fn reconcile(ctx: &mut Ctx<'_>, config: &EconomyConfig) {
             Some(c) => adopt(ctx, name, decl, c),
             None => create(ctx, name, decl),
         }
+    }
+}
+
+/// **Un-declare a clock whose stanza is gone** (E6a step 1 verify fold, R10).
+///
+/// `schema` is what says "a `ClockProvider` answers for this cadence": the registry
+/// freezes at composition, so removing a `[economy.cadences]` stanza removes the
+/// provider — but the persisted record kept `CADENCE_SCHEMA_DECLARED` and went on
+/// showing as declared with nothing behind it, which is exactly the reading a
+/// consumer would trust and then get `Unavailable` from. The clock itself is
+/// untouched (configuration never rewrites a running clock, in either direction);
+/// only the label goes back to legacy, and the change is logged.
+fn undeclare_removed(ctx: &mut Ctx<'_>, config: &EconomyConfig) {
+    let stale: Vec<CadenceClock> = {
+        let Some(store) = ctx.w.module_state::<EconomyStore>() else {
+            return;
+        };
+        store
+            .snapshot()
+            .cadences()
+            .filter(|c| c.schema == CADENCE_SCHEMA_DECLARED)
+            .filter(|c| {
+                !config
+                    .cadences
+                    .keys()
+                    .any(|name| c.name.eq_ignore_ascii_case(name))
+            })
+            .cloned()
+            .collect()
+    };
+    for mut c in stale {
+        tracing::warn!(
+            cadence = %c.name, id = c.id.0,
+            "economy: a cadence stamped declared is no longer named in [economy.cadences]; no \
+             clock provider answers for it, so it is stamped legacy again (the clock itself is \
+             unchanged)"
+        );
+        c.schema = crate::clock::CADENCE_SCHEMA_LEGACY;
+        api::put_cadence(ctx, c);
     }
 }
 

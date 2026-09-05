@@ -203,6 +203,26 @@ pub trait AuthEval {
     fn authorize_hold(&self, _actor: &PrincipalId, _hold: &Hold, _op: &HoldOp) -> bool {
         false
     }
+    /// `true` if this authority's posts are **exempt from the rolling
+    /// [`crate::ApprovalWindow`]** (E6a step 1 verify fold, M1).
+    ///
+    /// The window is a *discretionary-spend* control: it asks "has this account
+    /// spent more than its officers agreed it could, without anybody deciding?".
+    /// A standing obligation's period post is not discretionary — the debit was
+    /// consented to when the obligation was created, and the sweep cannot collect
+    /// an approval — so a windowed treasury with a full window would have had its
+    /// rent *suspended* and a level-2 page opened, with the creditor unpaid. Only
+    /// the sweep's own `ObligationAuth` answers `true`; the **threshold** clause is
+    /// untouched (an obligation over the per-transaction threshold still escalates,
+    /// exactly as it did), and the post still counts toward the account's window for
+    /// every later discretionary spend.
+    ///
+    /// It hangs off the authority rather than off the plan's `cause` deliberately: a
+    /// cause is a caller-settable string, and a bypass any caller could stamp on a
+    /// plan is not a bypass, it is a hole.
+    fn window_exempt(&self) -> bool {
+        false
+    }
     /// `true` if `actor` currently qualifies as an attestor for `set` — re-run LIVE
     /// at settlement, exactly like [`AuthEval::authorize_approver`] (E3's A5 rule):
     /// a `Capability`/`Staff` attestor who has since lost the capability stops
@@ -1493,13 +1513,18 @@ fn evaluate_approvals(
         // rather than wrapping into a credit.
         let debit = net.checked_neg();
         let exceeds = debit.is_none_or(|debit| debit > rule.threshold);
-        let over_window = rule.window.as_ref().is_some_and(|window| {
-            let spent = env.spent.get(&account_id).copied().unwrap_or(Amount::ZERO);
-            // An unrepresentable sum is over any window: fail closed.
-            debit
-                .and_then(|d| spent.checked_add(d))
-                .is_none_or(|sum| sum > window.total)
-        });
+        // E6a step 1 verify fold (M1): the window is a discretionary-spend control,
+        // and an authority that says its posts are not discretionary — the sweep's
+        // obligation settlement — skips the window clause entirely. The threshold
+        // clause above still applies to it.
+        let over_window = !env.auth.window_exempt()
+            && rule.window.as_ref().is_some_and(|window| {
+                let spent = env.spent.get(&account_id).copied().unwrap_or(Amount::ZERO);
+                // An unrepresentable sum is over any window: fail closed.
+                debit
+                    .and_then(|d| spent.checked_add(d))
+                    .is_none_or(|sum| sum > window.total)
+            });
         if exceeds || over_window {
             firing.push((account_id, rule));
         }

@@ -136,7 +136,7 @@ observer with its kind + **mandatory source** + party-intersection gates (`attes
 stale — G1 — and `@econ/cadence` shipped in E5b, §11 q2):
 
 1. **DL-01 A′** in `contract_amend`/`contract_offer`/`build_pay` (+ a `Draft`-with-escrow expiry in the sweep, M10) — E6a, S. The smallest change: `contract_amend` takes the author as the acting party (or the issuer); if every acceptance is the author's it skips the unwind, otherwise a partial `refund_plan_except` releases only the holds backing other parties' considerations (key `contract/{id}/refund/{gen}`, `ContractAuth::unwinding`) and `acceptances.retain(party == author)` keeps their hold ids in `escrow`; `contract_offer` re-stamps the surviving acceptances' `consent_hash` **iff** every consideration with `from == author` is claimed by a `Held` hold in `qualifying_escrow`, else refuses; `build_pay` refuses changing a consideration a `Held` hold backs; `amendments` bumps only when a refund posted. Tests: payer-amend keeps acceptance + hold; fixer-issuer amend voids the payer's; a changed own consideration is refused at offer; cancel after A′ refunds; reboot loads (boot's `Draft => {}` arm adopts nothing it should not).
-2. **DL-10** `ApprovalRule.window { total, period_secs }`, journal-derived per-account rolling sum, evaluated with the threshold — E6a, S (D-E6-21; `@account/approval … window=<total>/<secs>`, doc authority on the account, E2/E3 docs unchanged). `EconomySnapshot` carries no journal, so `post_with`/`prepare_commit` hands `evaluate_approvals` a `spent: BTreeMap<AccountId, Amount>` for the plan's debit accounts through `ValidateEnv`; the sum is the account's negative lines plus `Placed` hold effects over `posted_at > now − period` (wall clock), a refund never re-opening it; a RAM-only per-account `VecDeque<(posted_at, Amount)>` maintained in `index_transaction` and rebuilt at boot from replay keeps it O(entries in window). Over the window ⇒ `NeedsApproval` on the threshold's own path. The sweep never places, so no obligation is affected.
+2. **DL-10** `ApprovalRule.window { total, period_secs }`, journal-derived per-account rolling sum, evaluated with the threshold — E6a, S (D-E6-21; `@account/approval … window=<total>/<secs>`, doc authority on the account, E2/E3 docs unchanged). `EconomySnapshot` carries no journal, so `post_with`/`prepare_commit` hands `evaluate_approvals` a `spent: BTreeMap<AccountId, Amount>` for the plan's debit accounts through `ValidateEnv`; the sum is the account's negative lines plus `Placed` hold effects over `posted_at > now − period` (wall clock), a refund never re-opening it; a RAM-only per-account `VecDeque<(posted_at, Amount)>` maintained in `index_transaction` and rebuilt at boot from replay keeps it O(entries in window). Over the window ⇒ `NeedsApproval` on the threshold's own path. **Verify fold (M1):** an obligation period post is exempt from the *window* clause (never the threshold) through `AuthEval::window_exempt`, and still counts toward the account's window afterwards — the sweep debits, so the original "the sweep never places, so no obligation is affected" was false.
 3. **`create_obligation` / `cancel_obligation` / `reinstate_obligation`** for `ObligationCause::Ruleset` — debtor never `System`, actor debit authority checked — E6a, S. No player-debit creator exists at HEAD (`@obligation/create` is staff-only and stamps `cause: Staff`; `offer_lease` is contract-shaped; `create_system_obligation` needs the faucet to own the debit account). The seam: debtor account owner never `System`, both accounts `Active` on one instrument, the actor holds debit authority on the debit account (`WorldAuth::authorize` — the player for `+lifestyle/set`, the approver at chargen), `minted_by: None`; cancel/reinstate gated on the same namespace (the `set_system_obligation` lock shape). `ObligationAuth` already permits a non-`System` debit on the record's own account.
 4. **`offer_contract` / `accept_contract` / `amend_contract`** seams (the `offer_lease` shape) so a ruleset never types `@contract` — E6a, S–M. Every `@contract` builder is private and `put_contract` is `pub(crate)`; a nested `cmd::dispatch` is reachable from a handler but has no precedent in an E crate and re-runs per-invocation gates.
 5. **`InstrumentDef.display: Option<InstrumentDisplay>`** + one `render_amount` — E6a, XS (E2-C16, 08g §12.1 item 4). `display` goes after `status`, `#[serde(default)]`, `{ symbol: SmolStr, position: Prefix | Suffix }`; consumers are the `to_decimal_string(scale)` sites and the five raw-minor renders of 08g §3; fold item 7 (E2-C18, `register_instrument` refuses an existing id — today an upsert) lands first.
@@ -316,6 +316,92 @@ notifications)>>`) dedupes per record step and writes `ECONOMY ALERT (opened|reo
 <record.render()>` plus the first recommended command to every connected wizard
 (`world_task::connected_wizards`, the `broadcast_wizards` audience); `page_dropped` covers the
 event. Tests: `e6s1_s10_*` ×3 (`mush-server/tests/e6a_alerts.rs`).
+
+**Verify fold (2026-09-04).** An adversarial verify of step one over three lenses — D disclosure
+and bounds, R durability and replay, M money and consent — confirmed twenty-eight findings; all
+twenty-eight are folded in, each with a regression test in a `// ---- E6a step 1 verify fold ----`
+section named `vf_<lens><n>_…`.
+
+- **D1** `may_view_obligation` tests the parties with `WorldAuth::acts_for`, not identity, so an
+  org's own officer can read the record the inbox writes to them about; and `OrgInbox` filters every
+  holder through the record's own view gate, so a line can never outrun it again (`commands.rs`,
+  `econ_inbox.rs`; `vf_d1_…`, `e6a_inbox.rs`).
+- **D2** `render_amount_on` takes the caller's `may_view_account` verdict; an unviewable account and
+  an unknown one render identically. `money_on` asks the gate once, for every call site
+  (`render.rs`, `commands.rs`; `vf_d2_…`, `e4b2.rs`).
+- **D3** `principal_holders` is bounded by `MAX_NOTICE_HOLDERS` (32, id order, logged), so one event
+  is at most 32 durable notice writes (`notice.rs`; `vf_d3_…`, `e6a_inbox.rs`).
+- **D4** the rolling-window index tracks **only** accounts whose rule carries a window; a rule that
+  gains one is rebuilt from the journal tail and one that loses it is dropped; the per-account
+  `MAX_WINDOW_ENTRIES` (4 096) latches `WindowTail::saturated`, which reads as over every window
+  (fail closed); pruned on read from the sweep's GC as well as on write (`module.rs`, `api.rs`,
+  `boot.rs`, `sweep.rs`; `vf_d4_…` ×2, `e4b2.rs` + `module.rs`).
+- **D5** `StaffAlerts.paged` is swept against the live ladder on every economic event and capped at
+  `MAX_PAGED_RECORDS` (4 096) (`econ_alerts.rs`; `vf_d5_…`, `e6a_alerts.rs`).
+- **D6** `PendingNotice` carries `about: Option<PrincipalId>` and `render_pending` re-asks `acts_for`
+  at delivery, so a queued line is re-gated against live standing (`notice.rs`, `econ_inbox.rs`;
+  `vf_d6_…`, `e6a_inbox.rs`).
+- **D7** `render_principal` renders a **hidden** organization as “an organization” to anyone who is
+  not staff, a member or a grantee (G3 brought forward) (`commands.rs`; `vf_d7_…`, `e6a_inbox.rs`).
+- **D8** `@account`'s help documents `window=` and says what a budget is, beside the threshold that
+  is not one (`commands.rs`; `vf_d8_…`, `e4b2.rs`).
+- **D9** the inbox distinguishes a **created** obligation from a resumed one (`econ_inbox.rs`;
+  `vf_d9_…`, `e6a_inbox.rs`).
+- **D10** boot trims a notice document's raw array to `MAX_PENDING_NOTICES` **before** parsing its
+  entries (`boot.rs`; `vf_d10_…`, `e4b2.rs`).
+- **R1** every fallible step of `amend_contract` runs **before** `amend_core` posts — the amendment
+  is projected by a new pure `amended_draft` + `apply_amendment` and checked whole — and the
+  re-offer is non-fatal: `AmendReoffer::{Amended, NotReoffered}` replaces the `()` return. Belt:
+  `install_commit` calls `Outbox::pin_deferred`, so a ruleset handler's later `Err` can never discard
+  a landed post's batch. `offer_contract`, `accept_contract`, `create_obligation` and
+  `cancel`/`reinstate_obligation` were audited for the same shape and are clean (`contract_live.rs`,
+  `api.rs`; `vf_r1_…` ×2, `e4b2.rs`).
+- **R2** the amendment generation moves when a refund posts **or when one already has** (a listed
+  escrow hold for a voided party's consideration that the journal says is terminal), so a lost
+  companion write cannot leave the record on a spent key (`contract_live.rs`; `vf_r2_…`, `e4b2.rs`).
+- **R3** nothing is pruned at index time: age is a question about *now*, and a post's own clock is
+  not now. The tail is bounded by length on write and by age on read, against the world's clock and
+  never below the tail's own high-water mark (`module.rs`; `vf_r3_…`, `e4b2.rs`).
+- **R4** `StaffAlerts` records a step only when the audience was non-empty, and a Wizard-or-better's
+  connect re-announces the ladder's open backlog (`MAX_ANNOUNCE_BACKLOG` 32) (`econ_alerts.rs`,
+  `sweep.rs`, `notice.rs`; `vf_r4_…`, `e6a_alerts.rs`).
+- **R5** `on_world_loaded` announces boot's own opened set (`MAX_BOOT_ESCALATIONS`), which R4's
+  connect-time delivery then carries to the first staffer (`module.rs`; `vf_r5_…`, `e6a_alerts.rs`).
+- **R6** the sweep delivers every standing notice queue whose owner is connected
+  (`MAX_NOTICE_DELIVERIES_PER_SWEEP` 32), so a session held across a restart — `Engine::reattach`
+  fires no `Connected` — still reads it (`notice.rs`, `sweep.rs`; `vf_r6_…`, `e6a_inbox.rs`).
+- **R7** `collect_draft` and the sweep's selection share one predicate, `qualifying_escrow`
+  (`sweep.rs`; `vf_r7_…`, `e4b2.rs`).
+- **R8** a dropped announcement gets its own `EscalationSubject::DroppedPage`, so it can no longer
+  suppress the level-3 freeze record (`escalation.rs`, `observer.rs`, `commands.rs`; `vf_r8_…`,
+  `e4b1.rs`).
+- **R9** `notice.rs` carries no `expect`/`unwrap`/`panic!` on the queue path (`notice.rs`;
+  `vf_r9_…`, a source scan in `e4b2.rs`).
+- **R10** `declared::reconcile` re-stamps schema 1 on a cadence whose name is no longer declared —
+  the clock itself untouched, the change logged (`declared.rs`; `vf_r10_…`, `e4b1.rs`).
+- **M1** the obligation-period exemption from the rolling window; see D-E6-21 as amended
+  (`engine.rs`, `sweep.rs`; `vf_m1_…`, `e4b2.rs`).
+- **M2** an escrowed `Draft` with no deadline expires on `DRAFT_TTL_SECS`, and `page_stale_contracts`
+  now admits an escrowed draft with its own wording and its own commands (`sweep.rs`; `vf_m2_…`,
+  `e4b2.rs`).
+- **M3** `ruleset_obligation` asks `WorldAuth::authorize(actor, debit_account, −amount)` — the
+  namespace says *which records*, never *who is asking*. `reinstate_obligation` re-anchors the
+  schedule and so forgives arrears (D-E6-23: the ruleset enforces “pay the arrears first”), and the
+  seam refuses a terminal record; both are documented in `api.rs` (`api.rs`; `vf_m3_…`, `e4b1.rs`).
+- **M4** the amended draft keeps **every** escrow-purpose `Held` hold the refund did not release
+  (deduplicated), so a hold claiming no consideration is no longer orphaned. The live seams cannot
+  produce that shape — `build_pay` guards it and a patched hold doc freezes the economy at boot as
+  drift — so the regression reaches it through an edited-and-rehashed stored surface
+  (`contract_live.rs`; `vf_m4_…`, `e4b2.rs`).
+- **M5** `freeze_and_offer` activates a re-offer that is already `fully_accepted()`
+  (`contract_live.rs`; `vf_m5_…`, `e4b2.rs`).
+- **M6** boot's quarantine page for a `SystemParty` structure failure recommends `=refund` only
+  (`boot.rs`; `vf_m6_…`, `e4b2.rs`).
+- **M7** `amend_author` prefers the **issuer** when the actor acts for it, before the generic
+  `acting_party` fallback (`contract_live.rs`; `vf_m7_…`, `e4b2.rs`).
+- **M8** an unviewable or unresolvable account renders in the *record's* instrument — the contract's
+  or the obligation's — and bare minor only when the instrument itself is unknown (`render.rs`,
+  `commands.rs`, `contract_live.rs`, `sweep.rs`; `vf_m8_…`, `e4b2.rs`).
 
 **Deviations from the list above, with reasons.**
 
@@ -883,7 +969,7 @@ since the whole-tree reformat `91208ab`) — 08a's "`cargo fmt` stays off" is su
 - **D-E6-18 `report_stolen` is a `mush-economy` action** (answer 14, 08e §4 item 6) — generic, Shadowrun-motivated, relaxing E3 invariant 19 for the title owner, an authorized insurer, or an authority; `Encumber` otherwise stays staff-only.
 - **D-E6-19 The run's issuer is its payer** (M1). `@contract/amend` is issuer-only and A′ keeps only the amending party's acceptance, so a fixer-issuer would refund the payer's escrow at every `+run/crew accept` and leave a `Listed` entry standing on nothing. Personal: poster = payer, from their own account. Org: `scope=` makes the org the issuer; the posting officer holds `contract.draft`, `contract.accept` and `economy.account.post` on the scope. A fixer is `roles.author`/`representative` with a fee row, never the issuer. The roles rule in §3.3 (owner, 0.3) governs which roles may coincide.
 - **D-E6-20 E6a settles by attestation only** (M2): outcome conditions are `Attestation`, `evidence=attest` is forced, `adjudicator=` defaults to `party:<payer>` (the shipped rig's shape, `e4b2.rs:209`), and `+run/post` refuses `before`/`after`/`fact` rows — `Fact` resolves `None` with no `sr.*` provider, no canon kind is registered until E6b, and a bare `Before` row is `Ready` the moment the last runner accepts and the sweep would pay it. The other routes arrive with E6b (§4.2).
-- **D-E6-21 `ApprovalRule` gains a journal-derived rolling `window { total, period_secs }`** (DL-10, 08g §12.1 item 2): the account's debits plus placed holds over the trailing period, a refund never re-opening it; over the window ⇒ `NeedsApproval` on the threshold's own path. It closes the ≤-threshold drip against an org treasury (M3). No default — an account without a `window` keeps today's behaviour; organization run offers stay on.
+- **D-E6-21 `ApprovalRule` gains a journal-derived rolling `window { total, period_secs }`** (DL-10, 08g §12.1 item 2): the account's debits plus placed holds over the trailing period, a refund never re-opening it; over the window ⇒ `NeedsApproval` on the threshold's own path. It closes the ≤-threshold drip against an org treasury (M3). No default — an account without a `window` keeps today's behaviour; organization run offers stay on. **Amended by the E6a step 1 verify fold (M1):** the window is a *discretionary-spend* control, and a **standing obligation's period post is exempt from it** — the debit was consented to when the obligation was created and the sweep can collect no approval, so a windowed treasury with a full window used to have its rent refused, the record suspended and a level-2 page opened with the creditor unpaid. The exemption hangs off the **authority** (`AuthEval::window_exempt`, `true` only for the sweep's `ObligationAuth`), never off the plan's caller-settable `cause`; the **threshold** clause is untouched, and the obligation's own debit still counts toward the account's window for every later discretionary spend.
 - **D-E6-22 A crewed run's deadline disputes, never refunds** (M7): posted with `on_expiry = Dispute`, so a Johnson who simply never attests cannot recover the escrow by silence — bound parties are paged and agree; an unbound (`Listed`/`Crewing`) run refunds regardless. The board's `expires_at` is the contract's `consent.deadline` on `RealUtc` (M8): nothing else expires an `Offered` contract holding escrow, and `page_stale_contracts` ignores `Offered`.
 - **D-E6-23 The lifestyle schedule's `maximum_catch_up` is 1, and a downgrade is a replacement** (M11, G12): one fire is one attempt, so a downtime backlog can never be the second miss; the `sr.month` clock's own `catch_up` (3) forgives on the clock first; the second miss replaces the record at the new tier through `create_obligation` with `unpaid_periods` carried, and `+lifestyle/set` is refused in arrears.
 

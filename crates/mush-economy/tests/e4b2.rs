@@ -4856,9 +4856,9 @@ use std::sync::Mutex;
 use mush_core::module::{GameModule, ModError, Registrar};
 use mush_core::{ArgShape, CmdError, CommandSpec, Ctx};
 use mush_economy::{
-    AcceptOutcome, AttestorSet, ConsiderationSpec, ContractAmendment, ContractError, ContractRoles,
-    ContractSpec, EconomicVisibility, ExpenseTreatment, Expiry, OutcomeTerms, PayoutShare, Share,
-    TypedCondition,
+    AcceptOutcome, AmendReoffer, AttestorSet, ConsiderationSpec, ContractAmendment, ContractError,
+    ContractRoles, ContractSpec, EconomicVisibility, ExpenseTreatment, Expiry, OutcomeTerms,
+    PayoutShare, Share, TypedCondition,
 };
 
 #[derive(Default)]
@@ -4867,7 +4867,7 @@ struct E6State {
     amend: Option<ContractAmendment>,
     offered: Option<Result<ContractId, ContractError>>,
     accepted: Option<Result<AcceptOutcome, ContractError>>,
-    amended: Option<Result<(), ContractError>>,
+    amended: Option<Result<AmendReoffer, ContractError>>,
 }
 
 #[derive(Clone, Default)]
@@ -4896,7 +4896,7 @@ impl E6 {
     fn stage_amend(&self, amend: ContractAmendment) {
         self.0.lock().expect("probe lock").amend = Some(amend);
     }
-    fn amended(&self) -> Result<(), ContractError> {
+    fn amended(&self) -> Result<AmendReoffer, ContractError> {
         self.0
             .lock()
             .expect("probe lock")
@@ -4960,7 +4960,15 @@ impl GameModule for E6Mod {
                             .take()
                             .expect("stage an amendment first");
                     let outcome = mush_economy::amend_contract(ctx, id(), amend);
+                    let fail = ctx.args.rhs().is_some_and(|r| r.trim() == "fail");
                     st.0.lock().expect("probe lock").amended = Some(outcome);
+                    // E6a step 1 verify fold (R1): a ruleset handler that fails for a
+                    // reason of its own AFTER a seam post. Dispatch truncates a failed
+                    // handler's deferred queue, so this is the exact shape that used to
+                    // throw a landed transaction's writes away.
+                    if fail {
+                        return Err(CmdError::msg("the ruleset changed its mind"));
+                    }
                 } else if ctx.switches.has("notice") {
                     // S8: the exported notice class, rendered to the actor exactly as
                     // a run board's `+run/show` would render it.
@@ -5654,4 +5662,756 @@ fn e6s1_s8_the_notice_for_a_run_never_carries_an_amount_or_an_account_id() {
     let seen = ok(&mut tw, r.c, &format!("@e6/accept {id}"));
     let _ = seen;
     assert_eq!(e6.accepted(), Err(ContractError::NoStanding));
+}
+
+// ======================================================================
+// ---- E6a step 1 verify fold ----
+//
+// The adversarial verify's confirmed findings, folded back in. Three lenses —
+// D (disclosure and bounds), R (durability and replay), M (money and consent) —
+// and one rule under all of them: a seam that has already moved money may not
+// afterwards decide it would rather not have.
+// ======================================================================
+
+/// A world whose stale-contract age is an hour, so a page and the draft TTL (both
+/// seven days by default) do not land on the same sweep fire.
+fn boot_short_stale() -> TestWorld {
+    let config = mush_economy::EconomyConfig {
+        stale_contract_age_secs: 3_600,
+        ..mush_economy::EconomyConfig::default()
+    };
+    TestWorld::with_modules(vec![
+        Box::new(
+            mush_org::OrgModule::new()
+                .with_capabilities(vocabulary())
+                .with_scope_use(vec![Arc::new(mush_economy::EconomyScopeUse)]),
+        ),
+        Box::new(mush_economy::EconomyModule::with_custody(vec![]).with_config(config)),
+    ])
+}
+
+/// An offered run with **two payers** — Johnson 300 and Alder 200 — so an amendment
+/// by Johnson has somebody else's escrow to release and therefore posts.
+fn two_payer_run(tw: &mut TestWorld, r: &Run) -> ContractId {
+    let faucet = snap(tw)
+        .accounts()
+        .find(|x| matches!(x.owner, PrincipalId::System(_)))
+        .expect("faucet")
+        .id;
+    ok(tw, GOD, &format!("@econ/mint {faucet}={} 1000", r.a_acct));
+    ok(tw, r.johnson, "@contract/draft Extraction");
+    let id = only_contract(tw);
+    ok(tw, r.johnson, &format!("@contract/party {id}=#{}", r.a.0));
+    // A third party who never accepts, so the contract stays `Offered` and remains
+    // amendable once both payers have funded it.
+    ok(tw, r.johnson, &format!("@contract/party {id}=#{}", r.b.0));
+    ok(
+        tw,
+        r.johnson,
+        &format!("@contract/pay {id}={} 300", r.j_acct),
+    );
+    // Staff adds Alder's side: a payer may not name a wallet they cannot view.
+    ok(tw, GOD, &format!("@contract/pay {id}={} 200", r.a_acct));
+    // 450, so the surface stays feasible when M4 edits a consideration down to 250.
+    ok(
+        tw,
+        r.johnson,
+        &format!("@contract/split {id}={} 450", r.b_acct),
+    );
+    ok(
+        tw,
+        r.johnson,
+        &format!("@contract/remainder {id}={}", r.j_acct),
+    );
+    ok(
+        tw,
+        r.johnson,
+        &format!("@contract/condition {id}=attest party:#{}", r.johnson.0),
+    );
+    ok(tw, r.johnson, &format!("@contract/offer {id}"));
+    ok(tw, r.johnson, &format!("@contract/accept {id}"));
+    ok(tw, r.a, &format!("@contract/accept {id}"));
+    id
+}
+
+/// An org treasury of 1000 under `threshold 200` with a window of 500 per hour, and
+/// Quinn holding `economy.account.post` on its compartment. The threshold is
+/// deliberately wide: every debit below is about the **window** alone.
+fn budgeted_treasury(tw: &mut TestWorld) -> Org {
+    tw.set_now(1_000);
+    let o = org_rig(tw);
+    ok(
+        tw,
+        GOD,
+        &format!(
+            "@org/grant #{}=Ironhold economy.account.post scope=#{}",
+            o.member.0, o.scope.0
+        ),
+    );
+    ok(
+        tw,
+        GOD,
+        &format!(
+            "@account/approval {}=200 threshold:1 window=500/3600",
+            o.acct
+        ),
+    );
+    o
+}
+
+#[test]
+fn vf_m1_an_obligation_period_is_exempt_from_the_window_and_still_counts_against_it() {
+    let mut tw = boot();
+    let o = budgeted_treasury(&mut tw);
+    // A standing debt on the treasury: 150 a period, first due at 1200.
+    ok(
+        &mut tw,
+        GOD,
+        &format!(
+            "@obligation/create {}={} 150 every=3600 start=200",
+            o.acct, o.payee_acct
+        ),
+    );
+    let oid = store(&tw)
+        .snapshot()
+        .obligations()
+        .map(|x| x.id)
+        .next()
+        .expect("the obligation");
+    // Four discretionary debits fill the hour to 400 of 500.
+    for t in [1_000, 1_010, 1_020, 1_030] {
+        tw.set_now(t);
+        let seen = ok(
+            &mut tw,
+            o.member,
+            &format!("@econ/pay {}={} 100", o.acct, o.payee_acct),
+        );
+        assert!(seen.contains("Paid: transaction"), "at {t}: {seen}");
+    }
+    assert_eq!(bal(&tw, o.acct), 600);
+    // One fire before anything is due, so the next one is not the first sweep after
+    // boot (whose gap classifies as downtime and forgives rather than charges).
+    sweep_at(&mut tw, 1_040);
+
+    // The period falls due with the window already at 400: 400 + 150 is over it.
+    // D-E6-21 as shipped refused the post, suspended the record and paged a human,
+    // and the creditor went unpaid — for a debit the debtor consented to when the
+    // obligation was created and that the sweep can collect no approval for.
+    let ev = sweep_at(&mut tw, 1_250);
+    assert_eq!(
+        bal(&tw, o.acct),
+        450,
+        "the obligation's own period did not settle ({:?}): {}",
+        snap(&tw)
+            .obligation(oid)
+            .map(|x| (x.status.clone(), x.periods_settled)),
+        texts(&ev)
+    );
+    let debt = snap(&tw).obligation(oid).expect("obligation").clone();
+    assert_eq!(
+        debt.status,
+        ObligationStatus::Active,
+        "a windowed treasury suspended its own standing debt"
+    );
+    assert_eq!(debt.settled_total, 1);
+    assert!(
+        !store(&tw)
+            .escalations()
+            .any(|e| e.subject == EscalationSubject::Obligation(oid)),
+        "the window paged a human about a consented debit"
+    );
+
+    // ...and the period still COUNTS: the hour has now seen 550, so the next
+    // discretionary spend is over the budget. (Without it counting the hour would
+    // read 400 and this would post.)
+    tw.set_now(1_300);
+    let seen = ok(
+        &mut tw,
+        o.member,
+        &format!("@econ/pay {}={} 100", o.acct, o.payee_acct),
+    );
+    assert!(
+        seen.contains("Approval required"),
+        "the obligation's debit did not count toward the window: {seen}"
+    );
+    assert_eq!(bal(&tw, o.acct), 450, "an unapproved debit posted");
+}
+
+#[test]
+fn vf_r3_a_forward_clock_jump_does_not_erase_the_rolling_window() {
+    let mut tw = boot();
+    let o = budgeted_treasury(&mut tw);
+    tw.set_now(1_000);
+    ok(
+        &mut tw,
+        o.member,
+        &format!("@econ/pay {}={} 100", o.acct, o.payee_acct),
+    );
+    // One post whose wall clock is a decade ahead. Pruning against *that* post's own
+    // `posted_at - 90 d` dropped every earlier entry for good, and replay repeated
+    // it, so a reboot did not heal it either.
+    let jump = 1_000 + 10 * mush_economy::MAX_APPROVAL_WINDOW_SECS;
+    tw.set_now(jump);
+    ok(
+        &mut tw,
+        o.member,
+        &format!("@econ/pay {}={} 100", o.acct, o.payee_acct),
+    );
+    let tail = store(&tw)
+        .debit_window_of(o.acct)
+        .expect("a windowed account keeps a tail");
+    assert_eq!(tail.len(), 2, "the jumped post erased the earlier spend");
+    // Read back at the earlier clock: the first spend still counts.
+    assert_eq!(
+        store(&tw).spent_in_window(o.acct, 1_100, 3_600).minor(),
+        200
+    );
+
+    // Identical after a reboot - the same fold runs over the same journal.
+    let kv = fold_kv(&mut tw);
+    reboot(&mut tw, kv);
+    let tail = store(&tw)
+        .debit_window_of(o.acct)
+        .expect("the tail did not survive the reboot");
+    assert_eq!(tail.len(), 2, "replay repeated the erasure");
+    assert_eq!(
+        store(&tw).spent_in_window(o.acct, 1_100, 3_600).minor(),
+        200
+    );
+}
+
+#[test]
+fn vf_d4_only_a_windowed_account_is_tracked_and_a_new_window_is_rebuilt_from_the_journal() {
+    let mut tw = boot();
+    tw.set_now(1_000);
+    let o = org_rig(&mut tw);
+    ok(
+        &mut tw,
+        GOD,
+        &format!(
+            "@org/grant #{}=Ironhold economy.account.post scope=#{}",
+            o.member.0, o.scope.0
+        ),
+    );
+    // No rule at all: the index tracks nothing, however much the account spends.
+    for _ in 0..3 {
+        ok(
+            &mut tw,
+            o.member,
+            &format!("@econ/pay {}={} 100", o.acct, o.payee_acct),
+        );
+    }
+    assert!(
+        store(&tw).debit_window_of(o.acct).is_none(),
+        "a rule-less account kept a rolling-window deque"
+    );
+    assert!(
+        store(&tw).debit_window_of(o.payee_acct).is_none(),
+        "a credited account kept a deque"
+    );
+
+    // A rule that GAINS a window starts from what the journal already records -
+    // otherwise a treasury could be emptied and then given a budget that read it as
+    // having spent nothing.
+    ok(
+        &mut tw,
+        GOD,
+        &format!(
+            "@account/approval {}=200 threshold:1 window=400/3600",
+            o.acct
+        ),
+    );
+    assert_eq!(
+        store(&tw).spent_in_window(o.acct, 1_000, 3_600).minor(),
+        300,
+        "the new window did not adopt the journal's spend"
+    );
+    let seen = ok(
+        &mut tw,
+        o.member,
+        &format!("@econ/pay {}={} 200", o.acct, o.payee_acct),
+    );
+    assert!(
+        seen.contains("Approval required"),
+        "a fresh window started the account at zero: {seen}"
+    );
+
+    // A rule that LOSES its window stops being tracked at all.
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@account/approval {}=window=off", o.acct),
+    );
+    assert!(
+        store(&tw).debit_window_of(o.acct).is_none(),
+        "an account whose window was removed kept its deque"
+    );
+}
+
+#[test]
+fn vf_r1_every_amend_refusal_lands_before_the_refund_posts() {
+    let (mut tw, e6) = boot_e6();
+    let r = run_rig(&mut tw, 3_000);
+    let id = offered_run(&mut tw, &r, 300);
+    ok(&mut tw, r.johnson, &format!("@contract/accept {id}"));
+    ok(&mut tw, r.a, &format!("@contract/accept {id}"));
+    let before = journal_len(&tw);
+    let held_before = held(&tw, r.j_acct);
+
+    // A `System` party: refused by `check_structure_basic`, which used to run four
+    // steps AFTER the A' refund had already posted.
+    e6.stage_amend(ContractAmendment {
+        add_parties: vec![PrincipalId::System(
+            mush_org::SystemPrincipalId::new("faucet").expect("id"),
+        )],
+        reoffer: true,
+        ..ContractAmendment::default()
+    });
+    ok(&mut tw, r.johnson, &format!("@e6/amend {id}"));
+    assert_eq!(e6.amended().err(), Some(ContractError::SystemParty));
+    assert_eq!(
+        state(&tw, id),
+        ContractState::Offered,
+        "the refusal amended"
+    );
+    assert_eq!(journal_len(&tw), before, "a refused amendment posted");
+    assert_eq!(
+        held(&tw, r.j_acct),
+        held_before,
+        "escrow moved on a refusal"
+    );
+    assert_eq!(contract(&tw, id).acceptances.len(), 2);
+
+    // A duplicate party: same rule.
+    e6.stage_amend(ContractAmendment {
+        add_parties: vec![PrincipalId::Object(r.a)],
+        reoffer: true,
+        ..ContractAmendment::default()
+    });
+    ok(&mut tw, r.johnson, &format!("@e6/amend {id}"));
+    assert!(matches!(
+        e6.amended(),
+        Err(ContractError::Infeasible("a party is named twice"))
+    ));
+    assert_eq!(state(&tw, id), ContractState::Offered);
+    assert_eq!(journal_len(&tw), before, "a refused amendment posted");
+    assert_eq!(held(&tw, r.j_acct), held_before);
+}
+
+#[test]
+fn vf_r1_a_handler_error_after_a_seam_post_keeps_the_batch() {
+    let (mut tw, e6) = boot_e6();
+    let r = run_rig(&mut tw, 3_000);
+    let id = two_payer_run(&mut tw, &r);
+    let mut kv = fold_kv(&mut tw);
+
+    // The ruleset amends through the seam and then fails for a reason of its own.
+    // Dispatch truncates a failed handler's deferred queue, so this used to discard
+    // the journal chunk, the hold and account projections and the contract doc while
+    // RAM kept every effect of them.
+    e6.stage_amend(ContractAmendment::default());
+    let ev = tw.run(r.johnson, &format!("@e6/amend {id}=fail"));
+    assert!(
+        has_error(&ev),
+        "the probe was supposed to fail: {}",
+        texts(&ev)
+    );
+    assert!(e6.amended().is_ok(), "the amendment itself was refused");
+    let ram = contract(&tw, id);
+    assert_eq!(ram.state, ContractState::Draft, "RAM did not amend");
+
+    merge(&mut kv, drain(&mut tw));
+    reboot(&mut tw, kv);
+    let disk = contract(&tw, id);
+    assert_eq!(
+        disk.state,
+        ContractState::Draft,
+        "the failed handler threw away a landed post's writes"
+    );
+    assert_eq!(disk.acceptances.len(), ram.acceptances.len());
+    assert_eq!(disk.escrow, ram.escrow);
+    assert_eq!(
+        held(&tw, r.j_acct),
+        300,
+        "the author's escrow did not survive the reboot"
+    );
+    assert_eq!(
+        held(&tw, r.a_acct),
+        0,
+        "the refund the handler's error discarded came back"
+    );
+}
+
+#[test]
+fn vf_r2_a_lost_amend_doc_write_still_reaches_a_terminal_state() {
+    let mut tw = boot();
+    let r = run_rig(&mut tw, 3_000);
+    let id = two_payer_run(&mut tw, &r);
+    assert_eq!(held(&tw, r.a_acct), 200);
+
+    let mut kv = fold_kv(&mut tw);
+    let pre = doc_of(&kv, &format!("contract:{id}"));
+    ok(&mut tw, r.johnson, &format!("@contract/amend {id}"));
+    assert_eq!(held(&tw, r.a_acct), 0, "the amendment did not refund Alder");
+    assert_eq!(contract(&tw, id).amendments, 1);
+
+    // Lose the companion doc write: the refund landed, the record did not.
+    merge(&mut kv, drain(&mut tw));
+    patch(&mut kv, &format!("contract:{id}"), |v| *v = pre.clone());
+    reboot(&mut tw, kv);
+    assert_eq!(state(&tw, id), ContractState::Offered);
+
+    // Re-amend. The voided party's hold is already terminal, so no refund posts -
+    // and the generation must move anyway, or `contract/{id}/refund/0` stays a spent
+    // key and every later unwind is an `IdempotencyConflict` with the escrow frozen.
+    ok(&mut tw, r.johnson, &format!("@contract/amend {id}"));
+    assert_eq!(
+        contract(&tw, id).amendments,
+        1,
+        "the retry left the generation on a spent key"
+    );
+    ok(&mut tw, r.johnson, &format!("@contract/offer {id}"));
+    ok(&mut tw, GOD, &format!("@contract/cancel {id}"));
+    assert_eq!(state(&tw, id), ContractState::Cancelled);
+    assert_eq!(held(&tw, r.j_acct), 0, "the escrow stayed frozen");
+    assert_eq!(bal(&tw, r.j_acct), 3_000);
+    assert!(
+        !store(&tw)
+            .escalations()
+            .any(|e| e.context.to_lowercase().contains("idempotency")),
+        "an idempotency incident was paged"
+    );
+}
+
+#[test]
+fn vf_m2_an_escrowed_deadline_less_draft_is_paged_and_then_unwound() {
+    let mut tw = boot_short_stale();
+    tw.set_now(1_000);
+    let r = run_rig(&mut tw, 3_000);
+    let id = offered_run(&mut tw, &r, 300);
+    ok(&mut tw, r.johnson, &format!("@contract/accept {id}"));
+    ok(&mut tw, r.johnson, &format!("@contract/amend {id}"));
+    assert_eq!(state(&tw, id), ContractState::Draft);
+    assert_eq!(held(&tw, r.j_acct), 300, "the author's escrow left");
+    assert!(contract(&tw, id).consent.deadline.is_none());
+
+    // The stale age pages first: an amendment nobody re-offered is money reserved
+    // with nobody looking at it.
+    sweep_at(&mut tw, 1_000 + 3_600 + 600);
+    let paged = store(&tw)
+        .escalations()
+        .find(|e| e.subject == EscalationSubject::Contract(id))
+        .cloned()
+        .expect("an escrowed draft was never paged");
+    assert!(
+        paged.context.contains("draft"),
+        "the page does not say what it is about: {}",
+        paged.context
+    );
+    assert!(
+        paged
+            .recommended
+            .iter()
+            .any(|c| c.contains("@contract/offer")),
+        "the page recommends nothing that works: {:?}",
+        paged.recommended
+    );
+    assert_eq!(state(&tw, id), ContractState::Draft, "the page unwound it");
+
+    // ...and the draft TTL is the backstop: with no deadline, nothing else would
+    // ever have touched it.
+    sweep_at(&mut tw, 1_000 + mush_economy::DRAFT_TTL_SECS + 600);
+    assert_eq!(state(&tw, id), ContractState::Expired);
+    assert_eq!(held(&tw, r.j_acct), 0, "the escrow was never released");
+    assert_eq!(bal(&tw, r.j_acct), 3_000);
+}
+
+#[test]
+fn vf_m4_an_escrow_hold_that_claims_no_consideration_survives_an_amendment() {
+    let mut tw = boot();
+    let r = run_rig(&mut tw, 3_000);
+    let id = two_payer_run(&mut tw, &r);
+    let johnsons = contract(&tw, id).escrow[0];
+    let alders = contract(&tw, id).escrow[1];
+
+    // A `Held` hold, purpose `Escrow { this contract }`, that **claims no
+    // consideration**: `build_pay`'s guards make it unreachable live, so it is
+    // reached the way a migration or a hand edit reaches it — the stored surface is
+    // edited (the payer's consideration is 250, the hold it placed is 300) and
+    // re-hashed, so the record is internally consistent and only the claim is gone.
+    // The old rule built `escrow` from the author's *claims*, so this hold was
+    // neither released nor kept: money nothing would ever have let go of again.
+    let mut kv = fold_kv(&mut tw);
+    let key = format!("contract:{id}");
+    let doc = doc_of(&kv, &key);
+    let mut edited: mush_economy::EconomicContract =
+        serde_json::from_value(doc).expect("the contract doc parses");
+    edited.consent.terms.consideration[0].amount = Amount::from_minor(250);
+    edited.consent_hash = mush_economy::consent_hash(&edited.issuer, &edited.consent);
+    for a in &mut edited.acceptances {
+        a.consent_hash = edited.consent_hash;
+    }
+    let rewritten = serde_json::to_value(&edited).expect("the contract serializes");
+    patch(&mut kv, &key, |v| *v = rewritten.clone());
+    reboot(&mut tw, kv.clone());
+    let c = contract(&tw, id);
+    assert!(c.consent_intact(), "the rewritten surface does not hash");
+    assert_eq!(
+        mush_economy::qualifying_escrow(&c, snap(&tw))
+            .holds
+            .iter()
+            .map(|h| h.id)
+            .collect::<Vec<_>>(),
+        vec![alders],
+        "the payer's hold should now claim nothing"
+    );
+
+    ok(&mut tw, r.johnson, &format!("@contract/amend {id}"));
+    let c = contract(&tw, id);
+    assert!(
+        c.escrow.contains(&johnsons),
+        "the amendment orphaned an escrow hold it did not release: {:?}",
+        c.escrow
+    );
+    assert!(
+        !c.escrow.contains(&alders),
+        "the refunded hold stayed on the record: {:?}",
+        c.escrow
+    );
+    assert!(
+        snap(&tw).hold(johnsons).is_some_and(|h| h.status.is_held()),
+        "the orphan was released"
+    );
+    assert_eq!(held(&tw, r.j_acct), 300, "the author's escrow moved");
+    // A reboot finds it exactly where the record says it is — and boot's orphan pass
+    // has nothing to adopt, because the record never let go of it.
+    merge(&mut kv, drain(&mut tw));
+    reboot(&mut tw, kv);
+    assert!(contract(&tw, id).escrow.contains(&johnsons));
+    assert!(snap(&tw).hold(johnsons).is_some_and(|h| h.status.is_held()));
+}
+
+#[test]
+fn vf_m5_an_author_only_reoffer_activates_instead_of_stranding() {
+    let mut tw = boot();
+    let r = run_rig(&mut tw, 3_000);
+    // A one-party contract: the author is the only party, so their own accept
+    // activates it (D-E4-10) - a run board's `Listed` entry.
+    ok(&mut tw, r.johnson, "@contract/draft Listing");
+    let id = only_contract(&tw);
+    ok(
+        &mut tw,
+        r.johnson,
+        &format!("@contract/pay {id}={} 300", r.j_acct),
+    );
+    ok(
+        &mut tw,
+        r.johnson,
+        &format!("@contract/split {id}={} 300", r.j_acct),
+    );
+    ok(
+        &mut tw,
+        r.johnson,
+        &format!("@contract/remainder {id}={}", r.j_acct),
+    );
+    ok(
+        &mut tw,
+        r.johnson,
+        &format!("@contract/condition {id}=attest party:#{}", r.johnson.0),
+    );
+    ok(&mut tw, r.johnson, &format!("@contract/offer {id}"));
+    ok(&mut tw, r.johnson, &format!("@contract/accept {id}"));
+    assert_eq!(state(&tw, id), ContractState::Active);
+
+    // A': amend the live, author-only contract and re-offer it. The author's
+    // acceptance survives, so the re-offer is already unanimous - and nothing else
+    // in the world promotes an `Offered` contract that is `fully_accepted()`.
+    ok(&mut tw, r.johnson, &format!("@contract/amend {id}"));
+    assert_eq!(state(&tw, id), ContractState::Draft);
+    ok(&mut tw, r.johnson, &format!("@contract/offer {id}"));
+    assert_eq!(
+        state(&tw, id),
+        ContractState::Active,
+        "an already-unanimous re-offer stranded in Offered"
+    );
+    assert_eq!(held(&tw, r.j_acct), 300, "the escrow moved");
+}
+
+#[test]
+fn vf_d2_an_unviewable_account_renders_exactly_like_an_unknown_one() {
+    let mut tw = boot();
+    let r = run_rig(&mut tw, 3_000);
+    let s = snap(&tw);
+    let amount = Amount::from_minor(1_250);
+    // A known account the caller may not view, and an account that does not exist:
+    // the render used to give the first its scale and symbol and the second a bare
+    // minor value, which is an existence oracle over any id.
+    assert_eq!(
+        mush_economy::render_amount_on(s, r.j_acct, amount, false, None),
+        mush_economy::render_amount_on(s, AccountId(4_242), amount, true, None),
+        "an unviewable account renders differently from an unknown one"
+    );
+    // The gate is the only difference: the same account, viewable, renders in its
+    // own instrument.
+    let instrument = s.account(r.j_acct).expect("account").instrument.clone();
+    assert_eq!(
+        mush_economy::render_amount_on(s, r.j_acct, amount, true, None),
+        mush_economy::render_amount(s, &instrument, amount)
+    );
+}
+
+#[test]
+fn vf_m8_an_unviewable_payout_still_renders_in_the_contracts_instrument() {
+    let mut tw = boot();
+    let r = run_rig(&mut tw, 3_000);
+    let id = offered_run(&mut tw, &r, 300);
+    // Alder is a party (so may read the contract) and has no standing at all over
+    // Johnson's wallet.
+    assert!(!mush_economy::may_view_account(tw.world(), r.a, r.j_acct));
+    let seen = ok(&mut tw, r.a, &format!("@contract/show {id}"));
+    assert!(
+        seen.contains("escrows 300 from an account"),
+        "the masked consideration lost its instrument: {seen}"
+    );
+    // And a payout row whose account no longer resolves at all reads the same way,
+    // rather than as a raw minor value at scale 0.
+    let mut kv = fold_kv(&mut tw);
+    patch(&mut kv, &format!("contract:{id}"), |v| {
+        v["consent"]["terms"]["split"] =
+            serde_json::json!([{ "to": 4242, "share": { "Exact": 300 } }]);
+    });
+    reboot(&mut tw, kv);
+    let seen = ok(&mut tw, r.a, &format!("@contract/show {id}"));
+    assert!(
+        seen.contains("pays an account 300"),
+        "an unresolvable payee lost the contract's instrument: {seen}"
+    );
+}
+
+#[test]
+fn vf_r7_a_draft_whose_escrow_is_gone_is_collected_on_one_predicate() {
+    let mut tw = boot();
+    tw.set_now(1_000);
+    let r = run_rig(&mut tw, 3_000);
+    ok(&mut tw, r.johnson, "@contract/draft Abandoned");
+    let id = only_contract(&tw);
+    // The record lists an escrow id that is not real escrow for it — `c.escrow` is an
+    // ordinary mutable field, which is exactly why `qualifying_escrow` exists. The
+    // sweep selected this draft for collection on `qualifying_escrow` (empty) and
+    // `collect_draft` refused it on `c.escrow` (non-empty), so it burned a per-fire
+    // slot every fire, forever, and was never collected.
+    let mut kv = fold_kv(&mut tw);
+    patch(&mut kv, &format!("contract:{id}"), |v| {
+        v["escrow"] = serde_json::json!([9_999]);
+    });
+    reboot(&mut tw, kv);
+    assert!(!contract(&tw, id).escrow.is_empty());
+    assert!(
+        mush_economy::qualifying_escrow(&contract(&tw, id), snap(&tw))
+            .holds
+            .is_empty(),
+        "the listed id was real escrow after all"
+    );
+
+    sweep_at(&mut tw, 1_000 + mush_economy::DRAFT_TTL_SECS + 600);
+    assert!(
+        snap(&tw).contract(id).is_none(),
+        "the abandoned draft was never collected"
+    );
+}
+
+#[test]
+fn vf_m6_a_faucet_party_quarantine_recommends_only_a_refund() {
+    let mut tw = boot();
+    let r = run_rig(&mut tw, 3_000);
+    let id = offered_run(&mut tw, &r, 300);
+    let sys = PrincipalId::System(mush_org::SystemPrincipalId::new("faucet").expect("id"));
+    let mut kv = fold_kv(&mut tw);
+    let patched = serde_json::to_value(&sys).expect("a principal serializes");
+    patch(&mut kv, &format!("contract:{id}"), |v| {
+        v["consent"]["parties"]
+            .as_array_mut()
+            .expect("parties")
+            .push(patched.clone());
+    });
+    reboot(&mut tw, kv);
+    let paged = store(&tw)
+        .escalations()
+        .find(|e| e.subject == EscalationSubject::Contract(id))
+        .cloned()
+        .expect("boot quarantined without paging");
+    // `settlement_plan` re-runs the very check that quarantined this contract, so
+    // recommending `=settle` was recommending a refusal.
+    assert!(
+        !paged.recommended.iter().any(|c| c.contains("=settle")),
+        "the page recommends a command that cannot work: {:?}",
+        paged.recommended
+    );
+    assert!(
+        paged.recommended.iter().any(|c| c.contains("=refund")),
+        "the page recommends nothing that does: {:?}",
+        paged.recommended
+    );
+}
+
+#[test]
+fn vf_d10_an_over_cap_notice_document_is_trimmed_before_it_is_parsed() {
+    let mut tw = boot();
+    let r = run_rig(&mut tw, 3_000);
+    let mut kv = fold_kv(&mut tw);
+    // Ten thousand entries used to be parsed one by one - byte cap and all - and
+    // then thrown away down to thirty-two.
+    let bloat: Vec<serde_json::Value> = (0..10_000)
+        .map(|i| serde_json::json!({ "at": 1, "text": format!("line {i}") }))
+        .collect();
+    kv.push((
+        mush_economy::notice_key(r.johnson),
+        serde_json::Value::Array(bloat),
+    ));
+    let started = std::time::Instant::now();
+    reboot(&mut tw, kv);
+    let loaded = store(&tw).pending_notices(r.johnson);
+    assert_eq!(loaded.len(), mush_economy::MAX_PENDING_NOTICES);
+    assert_eq!(
+        loaded.last().map(|n| n.text.to_string()),
+        Some("line 9999".to_string()),
+        "the newest entries were not the ones kept"
+    );
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(5),
+        "the trimmed load was not fast"
+    );
+}
+
+#[test]
+fn vf_r9_the_notice_queue_path_carries_no_panicking_call() {
+    // R9: `notice.rs` runs on observer and tick paths - an `expect` there aborts the
+    // world task mid-sweep. A source scan, like `provider_rng_policy.rs`, because the
+    // failure it guards against is one no ordinary run reaches.
+    let src = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/notice.rs"))
+        .expect("the notice module is readable");
+    for (n, line) in src.lines().enumerate() {
+        let code = line.split("//").next().unwrap_or(line);
+        for bad in [".expect(", ".unwrap()", "panic!("] {
+            assert!(
+                !code.contains(bad),
+                "notice.rs:{} carries {bad} on an observer/tick path: {line}",
+                n + 1
+            );
+        }
+    }
+}
+
+#[test]
+fn vf_d8_the_account_help_names_the_rolling_window() {
+    let mut tw = boot();
+    let seen = ok(&mut tw, GOD, "help @account");
+    assert!(
+        seen.contains("window="),
+        "the help never mentions the budget it now enforces: {seen}"
+    );
+    assert!(
+        seen.to_lowercase().contains("budget"),
+        "the help still says a threshold is the only control: {seen}"
+    );
 }

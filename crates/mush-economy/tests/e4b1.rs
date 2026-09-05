@@ -4960,3 +4960,185 @@ fn e6s1_s5_the_mint_cap_notice_renders_the_cap_at_scale() {
         record.context
     );
 }
+
+// ======================================================================
+// ---- E6a step 1 verify fold ----
+//
+// The adversarial verify's confirmed findings that land on the ladder, the
+// obligation seams and the declared clocks.
+// ======================================================================
+
+#[test]
+fn vf_m3_the_ruleset_obligation_seams_ask_who_is_asking() {
+    let (mut tw, vf) = boot_probe();
+    // An empty wallet, so the record misses its periods and goes delinquent — which
+    // is the only state `reinstate_obligation` acts on.
+    let r = rig(&mut tw, 0);
+    let stranger = tw.spawn_player("Stranger");
+    vf.stage_create(upkeep(r.pat_acct, r.quinn_acct, "probe.upkeep", 0));
+    ok(&mut tw, r.pat, "@vf/create");
+    let id = vf.created().expect("the debtor's own upkeep was refused");
+
+    // The namespace says WHICH records this seam may touch. It said nothing about
+    // WHO is asking, and `Ctx::actor` is whoever typed the command that reached the
+    // ruleset — so a `+lifestyle` verb wired to this seam let any player cancel any
+    // lifestyle obligation in the game, their own or a stranger's.
+    ok(
+        &mut tw,
+        stranger,
+        &format!("@vf/cancelob {id}=probe.upkeep"),
+    );
+    assert_eq!(
+        vf.ruleset(),
+        Err(EconomyError::Unauthorized),
+        "a stranger cancelled somebody else's standing debt"
+    );
+    assert_eq!(obligation(&tw, id).status, ObligationStatus::Active);
+
+    // Make it delinquent, so reinstating is a real act with a real consequence:
+    // reinstating **re-anchors the schedule**, so the periods it spent delinquent
+    // are never charged (D-E6-23). Forgiving somebody else's arrears is exactly the
+    // thing a namespace-only gate let a stranger do.
+    sweep_at(&mut tw, 50);
+    sweep_at(&mut tw, 150);
+    sweep_at(&mut tw, 250);
+    assert_eq!(
+        obligation(&tw, id).status,
+        ObligationStatus::Delinquent,
+        "the rig did not reach the state reinstate is about"
+    );
+    ok(&mut tw, stranger, &format!("@vf/restore {id}=probe.upkeep"));
+    assert_eq!(
+        vf.ruleset(),
+        Err(EconomyError::Unauthorized),
+        "a stranger forgave somebody else's arrears"
+    );
+    assert_eq!(obligation(&tw, id).status, ObligationStatus::Delinquent);
+
+    // The debtor may: it is their wallet the debit comes out of.
+    ok(&mut tw, r.pat, &format!("@vf/restore {id}=probe.upkeep"));
+    assert_eq!(vf.ruleset(), Ok(true), "the debtor could not reinstate");
+    assert_eq!(obligation(&tw, id).status, ObligationStatus::Active);
+
+    // ...and so may staff, who hold debit authority on every wallet.
+    ok(&mut tw, GOD, &format!("@vf/cancelob {id}=probe.upkeep"));
+    assert_eq!(vf.ruleset(), Ok(false), "staff could not cancel");
+    assert_eq!(obligation(&tw, id).status, ObligationStatus::Cancelled);
+}
+
+#[test]
+fn vf_r8_a_dropped_announcement_does_not_suppress_the_freeze_record() {
+    let mut tw = boot();
+    let r = rig(&mut tw, 1_000);
+    let _ = owe(&mut tw, &r, 100, "");
+    let mut kv = fold_kv(&mut tw);
+
+    // A page the observer chain dropped used to mint an `Economy`-subject record —
+    // the same subject the whole-economy freeze uses — and `open_freeze_record`
+    // returns early while ANY `Economy` record stands, acknowledged or not. So a lost
+    // chronicle line, which is not about the journal at all, could silently suppress
+    // the one record that says the economy has stopped.
+    assert_ne!(
+        EscalationSubject::DroppedPage,
+        EscalationSubject::Economy,
+        "a dropped page still shares the freeze record's subject"
+    );
+    let dropped = mush_economy::Escalation::page(
+        mush_economy::EscalationId(900),
+        EscalationKind::SettlementRefused,
+        EscalationSubject::DroppedPage,
+        "the observer chain hit its depth cap",
+        vec!["@econ/alerts".to_string()],
+        10,
+    );
+    kv.push((
+        mush_economy::escalation_key(dropped.id),
+        serde_json::to_value(&dropped).expect("an escalation serializes"),
+    ));
+    patch(&mut kv, "meta", |v| {
+        v["frozen"] = serde_json::json!(true);
+    });
+    reboot(&mut tw, kv);
+    assert!(store(&tw).is_frozen());
+    assert_eq!(
+        store(&tw)
+            .escalations()
+            .filter(|e| e.subject == EscalationSubject::DroppedPage)
+            .count(),
+        1,
+        "the dropped-page record did not load"
+    );
+
+    sweep_at(&mut tw, 100);
+    let economy: Vec<_> = store(&tw)
+        .escalations()
+        .filter(|e| e.subject == EscalationSubject::Economy)
+        .cloned()
+        .collect();
+    assert_eq!(
+        economy.len(),
+        1,
+        "a dropped announcement suppressed the whole-economy freeze record"
+    );
+    assert_eq!(economy[0].kind, EscalationKind::EconomyFrozen);
+    assert!(
+        economy[0]
+            .recommended
+            .iter()
+            .any(|c| c.contains("@econ/unfreeze")),
+        "the freeze record lost its recovery command: {:?}",
+        economy[0].recommended
+    );
+}
+
+#[test]
+fn vf_r10_a_cadence_no_longer_declared_goes_back_to_the_legacy_schema() {
+    // A world that declares `campaign` in `[economy.cadences]`...
+    let declared = mush_economy::EconomyConfig {
+        cadences: [(
+            SmolStr::new_static("campaign"),
+            mush_economy::DeclaredCadence {
+                clock: mush_economy::DeclaredCadenceClock::RealUtc,
+                period_secs: 3_600,
+                catch_up: mush_economy::DEFAULT_CATCH_UP,
+            },
+        )]
+        .into_iter()
+        .collect(),
+        ..mush_economy::EconomyConfig::default()
+    };
+    let mut tw = TestWorld::with_modules(vec![
+        Box::new(mush_org::OrgModule::new()),
+        Box::new(mush_economy::EconomyModule::with_custody(vec![]).with_config(declared)),
+    ]);
+    let cadence = snap(&tw)
+        .cadences()
+        .find(|c| c.name == "campaign")
+        .cloned()
+        .expect("the declared cadence was not created");
+    assert_eq!(cadence.schema, mush_economy::CADENCE_SCHEMA_DECLARED);
+    let kv = fold_kv(&mut tw);
+
+    // ...and the stanza is removed. K's clock registry freezes at composition, so
+    // nothing answers for `cadence.campaign` any more — but the record kept saying
+    // "declared", which is the reading a consumer would trust and then get
+    // `Unavailable` from.
+    let mut plain = boot();
+    reboot(&mut plain, kv);
+    let after = snap(&plain)
+        .cadences()
+        .find(|c| c.name == "campaign")
+        .cloned()
+        .expect("the clock itself was removed");
+    assert_eq!(
+        after.schema,
+        mush_economy::CADENCE_SCHEMA_LEGACY,
+        "an undeclared cadence still shows as declared with no provider behind it"
+    );
+    // The clock itself is untouched: configuration never rewrites a running clock,
+    // in either direction.
+    assert_eq!(after.period, cadence.period);
+    assert_eq!(after.source, cadence.source);
+    assert_eq!(after.position, cadence.position);
+    assert_eq!(after.generation, cadence.generation);
+}
