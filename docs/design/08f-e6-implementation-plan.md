@@ -1,6 +1,6 @@
 # E6 implementation plan — the Shadowrun run-and-pay economy
 
-**Status:** Draft 0.3 — 2026-09-04. Re-grounded at `ce43714` after the E1–E5 look-back (08g §11
+**Status:** Draft 0.3a — 2026-09-04. Re-grounded at `ce43714` after the E1–E5 look-back (08g §11
 item 8, DL-02); DL-01 Option A′, DL-10's rolling budget and E2-C16's `InstrumentDisplay` are E6a
 economy items. Companion to
 [08-economy-organizations-ownership.md](08-economy-organizations-ownership.md) (§9.4, §11.2, §14.2,
@@ -146,6 +146,16 @@ stale — G1 — and `@econ/cadence` shipped in E5b, §11 q2):
 9. **M4 fold:** `check_structure_basic` refuses a `System` party or `from` — E6a, XS; it makes D-E6-4's refusal structural.
 10. **DL-08:** stale-contract paging is deadline-aware (skip while an unlapsed deadline exists) and the 7 d `STALE_CONTRACT_AGE_SECS` const becomes `[economy].stale_contract_age_secs` — E6a, XS; today every 14-day run would be paged at day 7.
 11. **DL-05:** `EconomicEvent::EscalationOpened`, fanned out by the server's `broadcast_wizards` on the ladder's schedule (§3.3) — E6a, S.
+
+**K fold (08i §7 Q16 and Q12, rulings 2026-09-04; 08i §9).** Items 3 and 4's owner-exported
+`pub fn` seams — `create_obligation` and `offer_contract` / `accept_contract` / `amend_contract` —
+are sanctioned delegation under 09 §C10 while the obligation and contract records stay conventional:
+the seam alone validates and constructs `mush-economy`'s post-images, callers move to the
+provider/bridge path once the family migrates, and a composed owner may hold an `OwnerId` with zero
+typed families (answer 16). Every mutating `Registrar::command` verb E6 adds is entered in the pinned
+rule-1 allowlist in `mush-contract-tests`, categorized per entry (expected `legacy-post-image` with
+its future family; the economy carve-out is never automatic), in the same commit as the cut that
+adds it (answer 12 — the narrower 09 §7 rule-1 exception).
 
 ---
 
@@ -525,13 +535,14 @@ never writes the sheet**; and the refusal that keeps Karma costs on `+karma/spen
 `lib.rs:272-281`; no karma↔nuyen path exists, `karma.rs:360-442`). The atomic installation action —
 and moving the Essence recomputation onto every write — is the later clinics slice.
 
-### 4.5 E6b tests (~26)
+### 4.5 E6b tests (~27)
 
 **`scene.outcome`:** a scene with no conferred sealer cannot be sealed and its contract never settles; a non-sealer non-staff player is refused; a second seal is refused; `kind`/`source`/`entities` are exactly what the observer matches and a seal naming another run attests nothing (M14); a runner who joined mid-scene is named in `subjects` and matches, one omitted does not; `scene.concluded` from the same scene attests nothing; a `canon:scene.outcome` set with no source is refused at offer (`contract.rs:1553-1557`); the seal's `ic_time` is the world IC clock, not the frozen scene clock; a sealed outcome selects the matching row and pays it; two rows satisfied at once reads `Undecidable` and disputes rather than freezing.
 **Routes:** each of the four settles; a composite needs every gating condition plus one row; the adjudicator replaces a runner's own attestor set; an unregistered canon kind is refused at offer.
 **Fence:** `+fence/deliver` refused while `Offered`; the consignment matures only after the delay; the immediate sale settles at once; the seller's title and `Disputed` encumbrance survive settlement; two worlds differing only in hidden state produce identical quotes; an expired quote is refused (scenario 29's shape); a hidden fence org renders as "an organization" to a non-member and its quotes are absent (G3, scenario 12); the fence accepts with no officer connected (M15); an org fence's consignment deposit comes back at unwind (DL-03).
 **`@asset/stolen`:** the owner, an insurer and an authority may file, a bystander may not; covert visibility is invisible to the thief; a later purchase generates evidence and does not clear the claim.
 **Augmentation:** settlement writes the record and not the sheet (assert `sheet:shadowrun` unchanged across every test in the file).
+**Scene clock (08i §7 Q9, frozen with K):** `SceneClockProvider` (`crates/mush-core/src/clock_provider.rs`) is read-only and exposes no generation bump, so one explicit monotonicity test drives a `TurnBased` scene through `+timestop` start → `/next` advance → `/pause` (and the boot-time `PauseReason::ServerRestart`) → `/resume` → `/next` advance, and asserts `DurableSceneClock::now` (`crates/mush-scenes/src/lib.rs`) is non-decreasing across the whole sequence within `SceneRecord.clock_generation` 1 (`crates/mush-scenes/src/data.rs`); an `ic_floor` raise (E6b's floor over `SceneRecord.ic_started_at`) never changes `clock_generation`, which lasts the record's lifetime; and any implicit generation mutation is rejected — a read at generation 2 is `ClockProviderFailure::StaleGeneration`, and no E6b verb or boot path writes `clock_generation`.
 
 **Hazards on this axis.** *Prose settlement:* a canon record with no matching typed condition is inert, and the seal is conferred. *Fence laundering:* the deliverable is custody and `TitleTransfer` is never in a fence template. *Consignment custody races:* the deliver-refusal before `Active`, the `DepositInto` lock while live, and E4b2's unwind returning each recorded deposit from the journal's `last_custody` (08c §5.1).
 
@@ -649,7 +660,8 @@ tree; (2) build, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo
 before the next cut builds on it; (4) fold every confirmed finding with a regression test named
 `vf_<lens><n>_…`; (5) commit with the verify outcome in the message; **push only on the owner's
 word**. Both digest pins (E2 `9c917eee…`, E3-shaped `b780e3a0…`) stay green in every cut, and
-**`cargo fmt` stays off** (08a).
+every cut is **fmt-clean** (`rustfmt.toml`; CI's `Format` job, `cargo fmt --all --check`, blocking
+since the whole-tree reformat `91208ab`) — 08a's "`cargo fmt` stays off" is superseded.
 
 ## 7. What E6 feeds back
 
@@ -794,3 +806,12 @@ source (M14); D-E6-3's downgrade path (replacement; catch-up 1 — M11); faction
 `Audience` (M5); a deterministic E6a settlement route (M2); the issuer ≠ payer assumption (M1). Owner
 additions: the roles rule, DL-04/DL-05/DL-08 and the M4 fold as E6a items, D-E6-19..23. Eight drifted
 `file:line` cites corrected. The E6a brief (`e6a-brief.md`) carries the same corrections.
+
+**Draft 0.3 → 0.3a — K answers folded (2026-09-04).** The K side's answers to 08i §7, with the
+owner's rulings (08i §9), fold into three places: §2 confirms items 3–4's owner-exported seams as
+09 §C10 delegation and commits every E6 mutating verb to the pinned rule-1 allowlist as
+`legacy-post-image` in the cut that adds it (answers 16, 12); §4.5 gains E6b's scene-clock
+monotonicity test — generation 1 for the record's life, an `ic_floor` raise never bumps it,
+`SceneClockProvider` read-only (answer 9; E6b owns the `ic_floor`); §6's "`cargo fmt` stays off"
+becomes fmt-clean per cut (`rustfmt.toml`, CI Format blocking since `91208ab`). Nothing else in 0.3
+moves.
