@@ -10,7 +10,7 @@ use std::time::Duration;
 use common::{CHAR_KEY, MockWebHooks, TOKEN, spawn_server, sys_env, test_config};
 use futures::{SinkExt, StreamExt};
 use mush_net_web::{ResumeErr, ResumeOk, WEB_CONN_ID_BASE, WebConfig};
-use mush_proto::{ClientCommand, Envelope, OutputEvent, Query};
+use mush_proto::{ClientCommand, Envelope, OutputEvent, ProjectedCommitToken, Query};
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::error::ProtocolError;
 use tokio_tungstenite::tungstenite::http::HeaderValue;
@@ -138,7 +138,7 @@ async fn token_via_query_is_no_longer_accepted() {
 }
 
 #[tokio::test]
-async fn line_and_req_reach_the_hooks() {
+async fn line_req_and_receipt_ack_reach_the_hooks() {
     let hooks = Arc::new(MockWebHooks::new());
     let addr = spawn_server(hooks.clone(), test_config()).await;
     let (mut ws, _) = connect_ws(addr, "char=7").await.unwrap();
@@ -153,10 +153,18 @@ async fn line_and_req_reach_the_hooks() {
         },
     )
     .await;
+    let commit = ProjectedCommitToken::new("0123456789abcdef0123456789abcdef").unwrap();
+    send_cmd(
+        &mut ws,
+        &ClientCommand::Ack {
+            commit: commit.clone(),
+        },
+    )
+    .await;
 
     hooks
-        .wait_for("line + request forwarded", |st| {
-            st.lines.len() == 1 && st.requests.len() == 1
+        .wait_for("line + request + acknowledgement forwarded", |st| {
+            st.lines.len() == 1 && st.requests.len() == 1 && st.acknowledgements.len() == 1
         })
         .await;
     let st = hooks.state();
@@ -164,6 +172,7 @@ async fn line_and_req_reach_the_hooks() {
     let (_, id, ref q) = st.requests[0];
     assert_eq!(id, 11);
     assert_eq!(*q, Query::Who);
+    assert_eq!(st.acknowledgements[0].1, commit);
 }
 
 #[tokio::test]

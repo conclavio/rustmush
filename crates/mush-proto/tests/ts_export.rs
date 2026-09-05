@@ -63,6 +63,28 @@ fn remove_ts_files(dir: &Path) {
     }
 }
 
+/// Normalize generator-only whitespace so the committed bindings are
+/// byte-stable on every host. `ts-rs` currently leaves a space before some
+/// inline union newlines; keeping that artifact would make the CI drift check
+/// sensitive to generator whitespace and violate the repository whitespace
+/// policy.
+fn normalize_ts_files(dir: &Path) {
+    for entry in fs::read_dir(dir).expect("read proto dir") {
+        let path = entry.expect("dir entry").path();
+        if path.is_dir() {
+            normalize_ts_files(&path);
+        } else if path.extension().is_some_and(|e| e == "ts") {
+            let source = fs::read_to_string(&path).expect("read generated binding");
+            let mut normalized = String::with_capacity(source.len());
+            for line in source.lines() {
+                normalized.push_str(line.trim_end());
+                normalized.push('\n');
+            }
+            fs::write(&path, normalized).expect("normalize generated binding");
+        }
+    }
+}
+
 /// Exports every wire type and rebuilds the barrel `index.ts`.
 ///
 /// A single test (not one per type) so file removal, export, verification and
@@ -78,6 +100,7 @@ fn export_typescript_bindings() {
     // payload type; ClientCommand covers Query and ClientCaps + enums.
     Envelope::export_all(&cfg).expect("export Envelope graph");
     ClientCommand::export_all(&cfg).expect("export ClientCommand graph");
+    normalize_ts_files(dir);
 
     // Barrel: web code imports from "$lib/proto" only.
     let mut modules = Vec::new();
@@ -131,7 +154,12 @@ fn generated_shapes_match_wire_format() {
         );
     }
     let client_command = ClientCommand::export_to_string(&cfg).expect("ClientCommand decl");
-    for needle in [r#""t": "line", "d": string"#, r#""t": "pong""#] {
+    for needle in [
+        r#""t": "line", "d": string"#,
+        r#""t": "ack""#,
+        "commit: string",
+        r#""t": "pong""#,
+    ] {
         assert!(
             client_command.contains(needle),
             "ClientCommand missing {needle}:\n{client_command}"

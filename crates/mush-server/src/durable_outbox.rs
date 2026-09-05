@@ -9,12 +9,15 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use futures::future::BoxFuture;
-use mush_core::{CanonicalId, OwnerId};
+use mush_core::{
+    CanonicalId, DecisionWake, MAX_DECISION_MAILBOX_IDS, MAX_DECISION_WAKE_BYTES, OwnerId,
+    canonical_json_bytes_with_limit,
+};
 use mush_store::{
     AuthoritativeOutboxAttemptResult, AuthoritativeOutboxRecord, AuthoritativeOutboxState,
     AuthoritativeStore, MAX_AUTHORITATIVE_OUTBOX_ERROR_BYTES, ObjectStore, StoreError,
 };
-use tokio::sync::watch;
+use tokio::sync::{mpsc, watch};
 
 const DURABLE_OUTBOX_POLL_INTERVAL: Duration = Duration::from_secs(1);
 
@@ -35,6 +38,115 @@ pub trait DurableOutboxAdapter: Send + Sync {
         &'a self,
         item: &'a AuthoritativeOutboxRecord,
     ) -> BoxFuture<'a, Result<(), DurableDeliveryError>>;
+}
+
+/// Volatile notification offered by the durable outbox to the world-owned
+/// decision dispatcher. The pending/prompt typed records remain authoritative
+/// custody after this hint is acknowledged.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DecisionWakeDispatch {
+    owner: OwnerId,
+    wake: DecisionWake,
+}
+
+impl DecisionWakeDispatch {
+    #[must_use]
+    pub const fn owner(&self) -> &OwnerId {
+        &self.owner
+    }
+
+    #[must_use]
+    pub const fn wake(&self) -> DecisionWake {
+        self.wake
+    }
+}
+
+/// Create the hard-bounded volatile decision mailbox.
+pub fn decision_wake_mailbox(
+    capacity: usize,
+) -> Result<
+    (
+        mpsc::Sender<DecisionWakeDispatch>,
+        mpsc::Receiver<DecisionWakeDispatch>,
+    ),
+    &'static str,
+> {
+    if capacity == 0 || capacity > MAX_DECISION_MAILBOX_IDS {
+        return Err("decision wake mailbox capacity is outside the kernel hard bounds");
+    }
+    Ok(mpsc::channel(capacity))
+}
+
+/// Outbox adapter that performs no provider I/O. It validates the bounded wake
+/// and offers it to the volatile dispatcher without waiting for capacity.
+pub struct DecisionWakeOutboxAdapter {
+    owner: OwnerId,
+    adapter: CanonicalId,
+    sender: mpsc::Sender<DecisionWakeDispatch>,
+}
+
+impl DecisionWakeOutboxAdapter {
+    #[must_use]
+    pub const fn new(
+        owner: OwnerId,
+        adapter: CanonicalId,
+        sender: mpsc::Sender<DecisionWakeDispatch>,
+    ) -> Self {
+        Self {
+            owner,
+            adapter,
+            sender,
+        }
+    }
+
+    fn validate_and_offer(&self, payload: &serde_json::Value) -> Result<(), DurableDeliveryError> {
+        canonical_json_bytes_with_limit(payload, MAX_DECISION_WAKE_BYTES).map_err(|_| {
+            DurableDeliveryError::Permanent("decision wake exceeds its hard byte limit".to_owned())
+        })?;
+        let wake: DecisionWake = serde_json::from_value(payload.clone()).map_err(|_| {
+            DurableDeliveryError::Permanent("decision wake has invalid wire data".to_owned())
+        })?;
+        wake.validate().map_err(|_| {
+            DurableDeliveryError::Permanent("decision wake violates its contract".to_owned())
+        })?;
+        self.sender
+            .try_send(DecisionWakeDispatch {
+                owner: self.owner.clone(),
+                wake,
+            })
+            .map_err(|error| match error {
+                mpsc::error::TrySendError::Full(_) => DurableDeliveryError::Retryable(
+                    "decision dispatcher mailbox is full".to_owned(),
+                ),
+                mpsc::error::TrySendError::Closed(_) => {
+                    DurableDeliveryError::Retryable("decision dispatcher is unavailable".to_owned())
+                }
+            })
+    }
+}
+
+impl DurableOutboxAdapter for DecisionWakeOutboxAdapter {
+    fn owner(&self) -> &OwnerId {
+        &self.owner
+    }
+
+    fn adapter(&self) -> &CanonicalId {
+        &self.adapter
+    }
+
+    fn deliver<'a>(
+        &'a self,
+        item: &'a AuthoritativeOutboxRecord,
+    ) -> BoxFuture<'a, Result<(), DurableDeliveryError>> {
+        Box::pin(async move {
+            if item.intent().owner() != &self.owner || item.intent().adapter() != &self.adapter {
+                return Err(DurableDeliveryError::Permanent(
+                    "decision wake was routed to the wrong adapter".to_owned(),
+                ));
+            }
+            self.validate_and_offer(item.intent().payload())
+        })
+    }
 }
 
 /// Frozen adapter lookup. Duplicate identities are refused during boot.
@@ -412,4 +524,56 @@ fn bounded_error(input: &str) -> String {
         end -= 1;
     }
     input[..end].to_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mush_core::{CanonicalHash, DecisionId};
+    use serde_json::json;
+
+    fn wake(seed: u8) -> serde_json::Value {
+        serde_json::to_value(DecisionWake {
+            id: DecisionId(CanonicalHash::from_bytes([seed; 32])),
+            revision: 1,
+            prompt_digest: CanonicalHash::from_bytes([seed.wrapping_add(1); 32]),
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn decision_wake_adapter_is_bounded_retryable_and_strict() {
+        assert!(decision_wake_mailbox(0).is_err());
+        assert!(decision_wake_mailbox(MAX_DECISION_MAILBOX_IDS + 1).is_err());
+        let (sender, mut receiver) = decision_wake_mailbox(1).unwrap();
+        let owner = OwnerId::new("npc").unwrap();
+        let adapter = DecisionWakeOutboxAdapter::new(
+            owner.clone(),
+            CanonicalId::new("decision_wake").unwrap(),
+            sender,
+        );
+        adapter.validate_and_offer(&wake(1)).unwrap();
+        assert!(matches!(
+            adapter.validate_and_offer(&wake(2)),
+            Err(DurableDeliveryError::Retryable(_))
+        ));
+        let dispatch = receiver.try_recv().unwrap();
+        assert_eq!(dispatch.owner(), &owner);
+        assert_eq!(dispatch.wake().revision, 1);
+
+        let mut unknown = wake(3);
+        unknown
+            .as_object_mut()
+            .unwrap()
+            .insert("guards".to_owned(), json!([]));
+        assert!(matches!(
+            adapter.validate_and_offer(&unknown),
+            Err(DurableDeliveryError::Permanent(_))
+        ));
+        drop(receiver);
+        assert!(matches!(
+            adapter.validate_and_offer(&wake(4)),
+            Err(DurableDeliveryError::Retryable(_))
+        ));
+    }
 }

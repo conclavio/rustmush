@@ -18,7 +18,6 @@ use crate::graph::{effective_domain, presence, project, verify_indexes, verify_p
 use crate::links::{refresh_actor_links, refresh_unit_actors};
 use crate::route::{self, Journey, JourneyStatus, Leg, RouteState};
 use crate::transition::{Transition, run};
-use mush_core::can_perceive;
 use mush_core::{
     ArgShape, ChannelId, CmdError, CommandSpec, Ctx, Flags, ModError, ObjId, ObjKind, Powers,
     Registrar, Role, match_object, perm,
@@ -1761,7 +1760,7 @@ pub(crate) fn intercept_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     if here.is_none() || here != there {
         return Err(CmdError::msg("That is not here."));
     }
-    if !can_perceive(ctx.reg, ctx.w, ctx.actor, traveler) {
+    if !ctx.can_perceive(ctx.actor, traveler) {
         return Err(CmdError::msg("You don't see it."));
     }
     let now = ctx.w.now();

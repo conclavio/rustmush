@@ -40,6 +40,7 @@ impl GameModule for InboxProbe {
         "e6ainboxprobe"
     }
     fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
+        reg.classify_commands(mush_core::CommandCompatibility::EconomyCarveOut);
         reg.command(
             CommandSpec {
                 name: "@inboxprobe".into(),

@@ -8,27 +8,27 @@ import type { ColorDepth } from "./ColorDepth";
  * messages; the web client sends it explicitly via
  * [`ClientCommand::Caps`](crate::ClientCommand::Caps).
  */
-export type ClientCaps = { 
+export type ClientCaps = {
 /**
  * Transport kind.
  */
-kind: ClientKind, 
+kind: ClientKind,
 /**
  * Color support.
  */
-color: ColorDepth, 
+color: ColorDepth,
 /**
  * Terminal/viewport width in columns.
  */
-width: number, 
+width: number,
 /**
  * Terminal/viewport height in rows.
  */
-height: number, 
+height: number,
 /**
  * Whether the client accepts UTF-8 output (else ASCII fallback art).
  */
-utf8: boolean, 
+utf8: boolean,
 /**
  * `true` when the client consumes structured JSON events (web);
  * `false` when it gets ANSI-rendered text (SSH).

@@ -729,6 +729,7 @@ impl GameModule for TacticsModule {
     }
 
     fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
+        reg.classify_commands(mush_core::CommandCompatibility::LegacyPostImage);
         reg.state(UnitStore::default());
 
         let stance = reg.state_family(

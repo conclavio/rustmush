@@ -7,23 +7,23 @@ import type { Color } from "./Color";
  * Most spans carry no explicit style (the semantic [`Span::tag`] does the
  * theming) — a plain `Style` is skipped entirely on the wire.
  */
-export type Style = { 
+export type Style = {
 /**
  * Foreground color, if explicitly set.
  */
-fg?: Color | null, 
+fg?: Color | null,
 /**
  * Background color, if explicitly set.
  */
-bg?: Color | null, 
+bg?: Color | null,
 /**
  * Bold / bright.
  */
-bold?: boolean, 
+bold?: boolean,
 /**
  * Italic (web + capable terminals).
  */
-italic?: boolean, 
+italic?: boolean,
 /**
  * Underline.
  */

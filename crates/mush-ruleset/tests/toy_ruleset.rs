@@ -108,6 +108,7 @@ impl GameModule for ToyRuleset {
     }
 
     fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
+        reg.classify_commands(mush_core::CommandCompatibility::LegacyPostImage);
         register_sheet_commands(reg, Arc::clone(&self.schema), None)
     }
 }

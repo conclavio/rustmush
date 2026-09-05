@@ -223,6 +223,17 @@ describe("WsClient", () => {
     expect(ws.sentJson()).toContainEqual({ t: "pong", d: { nonce: 42 } });
   });
 
+  it("acknowledges an applied authoritative commit token", () => {
+    const client = makeClient();
+    client.connect("t", "1");
+    const ws = lastSocket();
+    ws.open();
+
+    const commit = "0123456789abcdef0123456789abcdef";
+    expect(client.ackCommit(commit)).toBe(true);
+    expect(ws.sentJson()).toContainEqual({ t: "ack", d: { commit } });
+  });
+
   it("declares caps after the server hello, and sends nothing else", () => {
     const caps: ClientCaps = {
       kind: "web",

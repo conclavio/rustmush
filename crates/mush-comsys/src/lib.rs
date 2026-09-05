@@ -101,8 +101,9 @@ impl GameModule for ComsysModule {
     }
 
     fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
+        reg.classify_commands(mush_core::CommandCompatibility::LegacyPostImage);
         reg.state(ComsysState::default());
-        reg.alias_stage(Arc::new(ComsysAliases));
+        reg.alias_stage(Arc::new(ComsysAliases))?;
         reg.hook(HookPoint::Connected, Arc::new(LoudNotice));
         reg.subscribe(WorldEventKind::ObjCreated, Arc::new(on_obj_created));
         reg.subscribe(WorldEventKind::ObjDestroyed, Arc::new(on_obj_destroyed));

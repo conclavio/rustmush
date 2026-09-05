@@ -44,13 +44,14 @@ receiving its exact action identity. K5 semantic views now add a bounded `Output
 schema version, restart generation, sequence, exact delta base, optional projected commit token,
 and shared Rust/TypeScript cursor classification; the first `legal.actions` view and TUI/web clients
 discard unsafe controls and coalesce a keyframe resync on gaps. Provider-owned result projection,
-bounded public receipt/status DTOs, line/TUI/web rendering, bounded web commit deduplication, and
-authorized status recovery now cover the first production tactics action without exporting
-request/plan/bundle/outcome hashes. Required-channel offers are now centrally bound to one exact
+bounded public receipt/status DTOs, line/TUI/web rendering, bounded web commit deduplication,
+ACK-gated per-session presentation retention, and authorized status recovery now cover the first
+production tactics action without exporting request/plan/bundle/outcome hashes. Required-channel
+offers are now centrally bound to one exact
 private actor/subject/publisher/station grant: channels cannot be unioned across seats, equal-priority
 authority is ambiguous, and station, priority, epoch, and channel are revalidated at commit without
 entering the public DTO. Durable per-channel leases, real NPC/LLM runtime scheduling,
-structured acknowledgement, and the remaining Gate 5 matrix remain cross-cut work; all five
+and the remaining Gate 5 matrix remain cross-cut work; all five
 complete end-to-end proving gates remain open.
 
 **Scope:** the shared contracts that must be stable before RustMUSH substantially expands character,
@@ -656,6 +657,21 @@ ordered by canonical `StateKey`, each key may be mutated only once in the initia
 and `prepare` produces one non-cloneable materialization plus private typed install images without
 running a provider or serializer after that point.
 
+Every ordinary module callback that can gate or project gameplay receives an owner-scoped,
+read-only view of the same store. Commands, ticks, boot callbacks, observers, async completions,
+and contextual connection/scene hooks use `ModuleActionState` through `Ctx`. Movement, carry,
+render, and perception hooks use a narrower `HookReadContext`: immutable `World`, the registering
+module's `ModuleActionState`, and no output, mutation, clock, or scheduling surface. Compatibility
+helpers without an engine store construct an explicitly unavailable reader; production engine
+dispatch must always use the live store. Hook code treats unavailable typed truth as fail-closed,
+never as permission.
+
+This hook context is implemented across movement/carry vetoes, room rendering, perception-based
+behavior discovery and legal-action projection, NPC observation, gateway fan-out, and the offline
+REPL. The off-loop script compatibility path is deliberately stamped with the registering owner
+but exposes an unavailable typed reader; a hook which depends on typed truth therefore vetoes
+rather than silently consulting a stale or partial snapshot.
+
 At boot, the server partitions every `action-state/*` document found in a composed module's
 namespace away from legacy `ModuleBootData` and module migrations. It resolves the exact registered
 family, cross-checks namespace/path/envelope/schema identity, decodes to the typed value, validates
@@ -858,6 +874,14 @@ messages or response arrival times.
 Existing UTC scheduler jobs, world IC time, Timestop turns, domain ticks, journeys, production, and
 obligations become `ClockProvider` adapters. They do not collapse into one universal initiative
 model.
+
+Exact declared clocks, including configured economy cadences, register by `(owner, kind, id)` at
+composition. Dynamic simulation domains use a distinct owner-scoped `DomainClockProvider`
+registration whose synchronous `now` receives `(context, domain_id, generation)`. There is at most
+one such provider per owner; the kernel obtains the id from `ClockRef::DomainTick` and constructs
+the returned stamp. Runtime domain promotion mutates only owner state and never the frozen
+registry. Missing owner provider, unknown domain, stale generation, or unreadable owner state
+fails the clock read closed.
 
 The in-memory timer heap is only a wake hint. A durable recurring cursor carries its exact clock,
 next deadline, cadence, generation, ordinal, revision, restart policy, catch-up order, and cap.
@@ -1965,8 +1989,15 @@ types. Each phase leaves one executable path that the next phase extends:
 
 Until K8 closes, new work follows four anti-debt rules: no new mutating legacy handlers, no direct
 LLM mechanical mutation, no trigger side effect in a later commit, and no backend-specific
-authoritative behavior without a shared conformance assertion. Existing legacy outcome/effect
-construction remains compatibility debt and may not gain new unbounded item or payload shapes.
+authoritative behavior without a shared conformance assertion. The first rule has one narrow,
+temporary exception: a bounded whole-document workflow or catalog record may remain on the legacy
+post-image lane when it has strict decode/validation, a deterministic key, a named future typed
+family and migration slot, and no participation in authority, action legality, reservations,
+contacts, leases, windows, production state, or prepared mechanics. Economy uses this exception
+only where the missing mixed-Ledger/seal bundle gates prevent migration. A checked-in allowlist
+classifies every command as read-only, legacy-post-image, authoritative, or economy-carve-out;
+K8.5 replaces that tripwire with registrar metadata. Existing legacy outcome/effect construction
+remains compatibility debt and may not gain new unbounded item or payload shapes.
 
 ### K0. Integrity prerequisites and contract harness
 
@@ -2190,13 +2221,13 @@ Gate-5 work:
    construction gap: an outcome too large for any finite quarantine budget must be refused before
    live installation as legacy handlers are migrated, never "fixed" by an unbounded spool.
 
-Economy obligations/contracts remain on their legacy durable path until mixed authoritative write
-sets can include the Ledger append and the Ledger seal participates in the same bundle instead of
-blocking it. The module-read prerequisite is now closed: engine-dispatched commands, hooks,
-observers, ticks, boot callbacks, async completions, and nested scene/event callbacks receive an
-owner-scoped read-only `ModuleActionState`; exact opaque handles enforce family ownership, bounded
-canonical scans are available to drivers, and no mutation surface crosses the context. The two
-remaining persistence changes are a later provider milestone, not part of K3.1's kernel repair.
+Economy obligations/contracts remain on their legacy durable path pending their explicit owner
+migration review, but the three kernel prerequisites are now closed. K8.0 added a replayable
+Ledger chunk post-image and its exact seal to the authoritative bundle; K4/K6 provide synchronous
+owner-scoped typed reads to module and immutable hook contexts. Exact opaque handles enforce family
+ownership, bounded canonical scans are available to drivers, and no mutation surface crosses a
+read context. These later closures do not retroactively make economy records kernel-owned: the
+journal remains sole authority until the E owner accepts and proves each migration.
 
 Work:
 
@@ -2297,11 +2328,11 @@ two kernel primitives forward before finishing the rest of K4/K5:
    projection inspectors now scan nested field names and exact private values across the legal
    action DTO, semantic view, line/TUI renderings, and mock-LLM snapshot.
 
-The K3.1 checkpoint-readback and pending-allocator findings are already closed in both memory and
-Redis and therefore are not prerequisites. Mixed authoritative write sets, synchronous typed-family
-module reads, and folding a Ledger seal into an authoritative bundle remain the migration gate
-before E7 reservations or production settlement move from the economy journal onto kernel
-authority; they do not block E7 records and policy from using the two primitives above.
+The K3.1 checkpoint-readback and pending-allocator findings are closed in both memory and Redis.
+K4/K6 closed synchronous typed-family reads and K8.0 closed mixed Ledger replay plus in-bundle seal
+custody. The three prerequisites therefore open the E7 migration review; they do not authorize an
+automatic move of reservations or production settlement from the economy journal onto kernel
+authority.
 
 ### K4. Typed clocks, resolution RNG, resources, and effects
 
@@ -2394,7 +2425,10 @@ Work:
    checkpoint witnesses through a composition-frozen pure callback, and returns indistinguishable
    `Unknown` for inaccessible/absent references. The receipt becomes a deterministic
    `resolution.outcome` keyframe with the projected commit token; the web client retains a hard
-   1,024-token dedupe horizon. Explicit structured-client receipt acknowledgement remains K8.
+   1,024-token dedupe horizon. K8.3 adds an exact projected-token ACK after the browser validates,
+   deduplicates, and accepts the result; the gateway retains a separate bounded per-session receipt
+   cache until that ACK and re-emits unacknowledged receipts with fresh envelope sequences after a
+   reconnect.
 4. Register line renderers over projected DTOs; structured transports use the same DTOs.
    **Implemented for `resolution.outcome`:** ANSI and SSH TUI render the provider summary plus the
    recovery reference, while HTTPS consumes the same view payload.
@@ -2563,6 +2597,11 @@ dedicated semantic-free whole-tree `cargo fmt --all` commit and have both develo
 onto it once. Then require `cargo fmt --all -- --check` alongside the combined workspace and
 Redis-gated suites. Do not begin K7 on an unreviewed or format-divergent E5/K6 boundary.
 
+The merged-main review is recorded in `08i-e-k-dependencies.md`; the K6 production-versus-fixture
+status and resulting ownership handoffs are recorded in `09a-k6-look-back.md`. The reformat and
+required CI format check have landed. The two API gaps named by that review—dynamic domain clocks
+and immutable typed-state hook reads—are implemented and contract-tested; K7.0 may proceed.
+
 ### K7. Asynchronous decision re-entry
 
 **Contracts:** C2-C6, C8, C9, C11; **passes Gate 4**.
@@ -2609,6 +2648,14 @@ request reaches durable intent first wins; a different later semantic request co
 identical retry joins. The decision record is then finalized from the terminal action receipt. A
 crash between those steps is repaired by comparing the exact action status during pending-decision
 recovery. This keeps correctness independent of cleanup timing.
+
+An immediate deterministic controller that performs no asynchronous provider call may select a
+currently projected legal action and enter the ordinary coordinator directly without creating a
+`PendingDecision`, lease, wake, or dispatch record. Its deterministic cause still owns a scoped
+action-idempotency key. Once an asynchronous decision has been captured, every competing fallback
+uses that pending record's exact key and lifecycle; it may not escape the LLM/fallback race by
+taking the immediate path. `DecisionControllerId.owner` admits any composed owner, including
+`mush-sim` and `mush-campaign`; it does not confer mechanical ownership.
 
 Add these bounded wire/storage types (names may move, semantics may not):
 
@@ -2725,6 +2772,21 @@ transition. A crash after lease commit but before spawn is retried only after bo
 The worker returns a response tagged with the exact decision revision, attempt, and lease; stale
 worker results cannot release or advance a newer lease.
 
+Implementation status: the strict private/prompt codecs, HMAC token ring, prompt digest/linkage,
+provider witness/rank defaults, bridge-gated witness canonicalization, all per-record hard bounds,
+pre-staging global/controller/actor/byte admission, explicit-cause coalescing, atomic capture plan,
+one-shot deadline cursor, bounded no-I/O wake adapter, exact lease transition, and permit-before-
+commit async worker boundary are implemented and tested on the K7 convergence branch. A
+composition-frozen, one-source-per-owner registry now binds the pending/prompt/deadline families,
+exact lease action, wake adapter, and owner-selected bounded lease interval. Production startup
+validates every source/provider/adapter route, exact wakes and a periodic canonical scan rediscover
+work, and the world task retains the worker reservation through the lease action's exact receipt,
+installing the post-image before spawn. The composed production-path fixture now proves commit,
+abort-without-spawn, wake loss followed by typed-family rediscovery, expired-lease recovery across a
+fresh engine hydration, and worker saturation that leaves later work durably `Ready` until capacity
+returns. K7.1 is closed. K7.2 now owns the adjacent authenticated completion and lifecycle path;
+production ruleset migration remains disabled through the K7.3 failure/deadline/fallback slice.
+
 **K7.2 — untrusted response ingress.** The async worker owns only the projected prompt and returns
 the bounded parsed `DecisionResponse`; raw model prose or reasoning never enters authoritative
 decision state. On re-entry, authenticate the token, load the exact pending/prompt revision pair,
@@ -2741,12 +2803,44 @@ status/binding, or the exact decision revision is already terminal or stale. The
 different request. Provider exceptions and malformed results instead commit an attempt transition
 or deterministic fallback trigger; no volatile return path owns correctness.
 
+K7.2 adds a sibling authenticated decision-response ingress that ends in the existing coordinator.
+It does not change `ScheduleActionDraft`, the canonical `scheduler` principal class, or
+`ActionCoordinator::prepare_and_stage_resolved`'s signature.
+
+Implementation status: K7.2 is closed. The exact completion fence, token/prompt/lease/deadline
+authentication, canonical response ingress on the predeclared action-idempotency key, current
+legal-offer regeneration, selected-target filtering, private prompt-time revision/bridge witness
+restoration, and ordinary resolved-action coordinator entry are implemented. Operational lease
+attempt and expiry data fence authority but do not enter the semantic response ingress, so a retry
+that selects the same response joins the same ordinary action. Only that selected action's exact
+commit acknowledgement releases one bounded owner-local follow-up; separate deterministic
+lifecycle actions then commit `Leased -> Resolving(binding) -> Terminal(executed)`. A bounded typed
+family scan also discovers a stranded `Resolving` record, reads the selected action through its
+stored scoped idempotency key, verifies the finalized receipt's request and request hash against the
+binding, and resumes terminalization without resubmitting the action. The composed tests prove the
+complete ack chain, loss of the volatile post-`Resolving` follow-up, and a second-attempt semantic
+join; adversarial tests reject a forged token and wrong lease attempt before offer resolution.
+
 **K7.3 — cancellation, deadlines, and fallback.** Cancellation is an exact revision transition and
 invalidates the token before acknowledging success. A durable one-shot schedule owns the deadline.
 At expiry, malformed-output exhaustion, or provider-unavailable policy, choose a deterministic
 fallback using no LLM/provider call and submit it with the same action idempotency key. LLM and
 fallback races therefore have one durable winner. Late, duplicate, and out-of-order responses join
 the identical winner or receive a projected terminal/stale result; they never run a second action.
+
+Implementation status: K7.3 is closed. Provider failures are committed as typed, retry-stable
+owner-local lifecycle actions with a three-attempt deployment default and an eight-attempt kernel
+maximum; permanent failure transfers custody immediately. Deadline discovery and missing-provider
+admission both use the same exact `Ready/Leased -> FallbackReady` action, whose identity binds only
+persisted state rather than moving observation time. The deterministic selector is
+composition-branded, synchronous, projected-prompt-only, and must name an exact composed fallback
+definition; its selection then enters the identical ordinary action ingress and idempotency key as
+an async response. Exact cancellation accepts only the named controller/decision/revision before
+`Resolving`, installs `Terminal(cancelled)` without an action binding, and exposes no success until
+that post-image commits. Composed tests prove deadline-before-provider, bounded malformed and
+unavailable-provider exhaustion, missing-provider transfer, fallback execution, and cancellation
+token invalidation at acknowledgement. Campaign/transport authority to request cancellation stays
+outside this kernel primitive and remains part of the production K7 migration.
 
 **K7.4 — recovery and bounds.** On boot, discover pending records by bounded canonical family scan,
 validate the prompt/schedule/idempotency linkage, reconcile any action already pending or
@@ -2757,6 +2851,26 @@ or impossible transition freezes the decision owner with a bounded recovery inci
 records compact only after the action receipt or terminal no-action outcome and attempt audit are
 durably attributable; the old wake's generic outbox/checkpoint lifetime is irrelevant.
 
+Implementation status: K7.4 is closed. The production spawn path exhaustively audits every source
+in bounded 128-record pages before it creates writable world ingress, while the runtime repeats the
+same scan before its first dispatch and every 250 ms thereafter to repair lost wakes. The audit
+merges compact accounting indexes across pages, so global, controller, actor and canonical-byte
+ceilings cannot be evaded at a page boundary. Prompt HMAC/linkage, deadline linkage, composition
+identity, and duplicate terminal/compact representations fail closed. A runtime integrity failure
+freezes the exact mechanics owner and later scans skip that owner while other composed owners remain
+available; failures that cannot be attributed to an owner still freeze the world.
+
+Terminal cleanup is an ordinary exact-token owner action. It inserts a bounded v2
+`DecisionTerminalReceipt` and deletes the pending, prompt and deadline records in one transaction.
+Executed/fallback decisions are eligible only after the store returns the selected action's exact
+finalized receipt and both request coordinates match; vacant, retired, quarantined or conflicting
+attribution refuses cleanup. No-action outcomes compact from their already-committed terminal
+lifecycle state. The compact receipt retains the typed ordered attempt audit, malformed count,
+selected-action binding, and exact fallback reason; each attempt also remains independently
+attributable to its ordinary lifecycle-action receipt. Composed tests cover malformed and
+unavailable exhaustion, deadline fallback, cancellation without an action, exact selected-action
+refusal, and the four-write atomic replacement.
+
 Use this minimum state machine; implementations may split audit fields but may not weaken its
 custody transitions:
 
@@ -2765,6 +2879,7 @@ Ready(attempt)
   -> Leased(attempt, lease_until)
   -> Resolving(attempt, action_binding)
   -> Terminal(executed | fallback | cancelled | exhausted | stale)
+  -> CompactReceipt(outcome, action_binding?, attempt_audit, fallback_reason?)
 
 Leased --lease expires--> Ready(next_attempt)
 Ready/Leased --deadline or exact cancellation--> Terminal or deterministic fallback submission
@@ -2812,9 +2927,173 @@ Exit criteria:
 - provider latency changes neither initiative ordering nor authority;
 - provider outage cannot prevent deterministic fallback control.
 
+Implementation status: K7.5 is closed. The kernel now projects, witnesses, ranks, and truncates a
+delayed-decision offer set in one immutable-world pass; the lower-level witness materializer is not
+public, so an action identity cannot be paired accidentally with another projected offer. Prompt-
+time selected-target revisions deliberately supersede overlapping current revisions when the final
+guard set is reconstructed, while duplicate prompt coordinates still fail as corrupt. The server
+revalidates that complete guard set before invoking provider preparation, drawing resolution RNG,
+or constructing semantic events, and retains the ordinary transfer-time check for a synchronous
+race after preparation.
+
+The composed Gate-4 fixture covers capability revocation plus station grant, control lease, source
+component, source resource, selected placement, contact, window generation, exact definition
+owner, and cross-owner bridge failure. Every stale variant rejects with no staged/prepared action
+and byte-identical tactical unit state; moving only an unselected target remains admissible and
+produces the same authoritative RNG/event bundle as ordinary resolved ingress. Deterministic,
+decision-tree, and latency-varying mock-LLM adapters given the same persisted prompt select byte-
+identical authoritative bundles. Exact provider/fallback contenders produce one selection, and a
+late provider joins the finalized fallback result. The K7.1-K7.4 restart, lost-wake, cancellation,
+deadline, duplicate/out-of-order response, bounded retry, and provider-outage fixtures complete the
+remaining matrix dimensions without exposing private witnesses to the worker response.
+
 ### K8. Full restart matrix and production migrations
 
 **Contracts:** all; **passes Gate 5 using Gates 1-4 actions**.
+
+**K8.0 — mixed Ledger bundle closure.** Before expanding the fault harness, make a Ledger append an
+idempotently replayable authoritative write and carry its exact seal inside the same bundle. Define
+canonical identities and collision behavior without exposing a generic non-idempotent stream
+append. Run the unchanged lifecycle/materialization/readback assertions against memory and Redis,
+then add failure and restart probes at reserve, partial materialization, seal publication,
+finalization, acknowledgement loss, and checkpoint. K8.0 closes migration gates 1 and 3; the E
+side does not provide a fallback implementation in domain code.
+
+Implementation status: K8.0 is closed. `ReplayWrite::LedgerChunkSet` carries a validated exact
+`LedgerChunk` post-image under a key derived from `(owner, log_id, chunk_index)`; it deliberately
+does not expose stream-append semantics. Its physical target collides with an ordinary module write
+to the same key. Sealed chunks carry `authoritative_ledger_seal.v1`, bound to owner, derived key,
+and exact chunk bytes. Authoritative bundle wire v4 stores the canonically derived seal set inside
+the hash-bound bundle, rejects either inner-seal or aggregate-seal tampering, and remains strictly
+read-compatible with v1-v3 bundles while prohibiting the new write on legacy schemas. An unsealed
+tail is still an exact replayable post-image but correctly contributes no immutable seal.
+
+Memory and Redis normalize this write to the same exact JSON post-image used by their existing
+atomic replay/readback/checkpoint protocol. The shared backend contract proves a mixed object,
+allocator, typed-document and sealed-Ledger lifecycle through compact retry. The in-memory fault
+matrix covers pre-reserve, post-intent, every materialization prefix including the Ledger target,
+lost finalization acknowledgement, lost checkpoint acknowledgement, and repair. A live disposable
+Redis probe additionally proves deterministic `WRONGTYPE` at the Ledger target leaves the complete
+intent pending after earlier writes materialize, then resumes the exact replay after repair and a
+fresh connection. `PreparedLedgerAppend` retains the exact chunk and can derive this replay write
+without consuming its one-shot RAM installation plan, so an owner migration can bind persistence
+before applying the acknowledged append.
+
+**K8.1 — reusable in-process fault matrix.** Lift the store-local fault driver into bounded
+cross-crate test support, then run every logical Gate-5 cut against bundles produced by the real toy
+providers. The harness must preserve the production `AuthoritativeStore` protocol: it may interrupt
+before or after intent reservation, after any exact replay-write prefix, after finalization, or
+after checkpoint, but may not create a second persistence implementation or make a non-idempotent
+write replayable. Each interruption fires once; recovery inspects durable truth and retries the
+same token/hash.
+
+Implementation status: K8.1's reusable store layer and first vertical matrices are closed.
+`AuthoritativeFaultStore` and `AuthoritativeFaultMode` are doc-hidden cross-crate test support over
+the real `InMemoryStore`; `Ok(None)` means the configured interruption or acknowledgement loss
+occurred, while deterministic store failures remain errors. The lifted driver retains exact-prefix
+materialization and exposes the underlying store only for ordinary status, retry, hydration and
+checkpoint assertions. Existing store-local synthetic and mixed-Ledger matrices now use this same
+driver.
+
+`mush-contract-tests/tests/gate5_fault_matrix.rs` constructs bundles from actual registered
+provider preparation, causal expansion, resolution transcript and typed-state post-images. Both the
+Gate-1 focus-spend/guarded-effect action and Gate-2 source/target tactical fire action pass
+pre-intent, post-intent, every replay prefix including the all-writes-before-finalize boundary,
+lost finalize acknowledgement, lost checkpoint acknowledgement, token conflict, exact retry and
+compact retry. Gate-3's hidden-contact selection reaches the same tactical provider/write shape and
+its projection/staleness dimensions remain covered by Gate 3; K8.2 adds process termination around
+that path. The real K7 delayed-decision lifecycle matrix covers capture, worker lease, provider
+attempt failure, terminal cancellation and terminal compaction using the registered decision
+families and their production transition planners. Capture adds its validated pending decision,
+exact projected prompt, deadline schedule and wake outbox in one owner transaction; the test drives
+that wake to terminal delivery before checkpoint. Every lifecycle shape passes the same exact-cut,
+retry and compaction matrix. K8.2 can therefore add process termination without first inventing a
+second delayed-decision fixture.
+
+K8.2's first split-process slice is also closed. Debug-only, externally armed, one-shot process
+cuts now stop the real server writer at four authoritative boundaries while the production gateway
+supervisor, SSH listener, and client connection remain alive. The Redis-gated journey proves the
+gateway replays exactly one still-unowned request after a cut between intent retention and
+ownership publication; after ownership publication it replays no input and the client instead
+recovers the terminal result through authenticated `action/status`. Cuts after durable
+finalization/before checkpoint and after checkpoint/before the final client acknowledgement cover
+the remaining server-side acknowledgement gaps. Every replacement server crosses the ordinary
+boot recovery barrier, the action remains queryable, and the exact tactical post-image is present
+at revision one rather than being executed twice.
+
+K8.2's persistence-local remainder is closed too. A child process constructs a real target-zero
+`Ledger` append, proves it rolled RAM to a fresh tail, commits its sealed replay write through the
+production authoritative writer, and dies after finalization; boot checkpoints the retained bundle
+and finds exactly one intact sealed chunk. A second child drives a real Redis `WRONGTYPE` failure
+through the bounded poison attempts and dies after the unified spool fsyncs its exact temp envelope
+but before final-name publication. Reopen promotes the validated temp, retains the writable-boot
+gate, and—after the type-clobber is repaired—reconciles the pending bundle, archives the evidence,
+and permits ordinary checkpoint. K8.2's named server/persistence process cuts are therefore closed;
+K8.3 closes gateway/client loss and structured/line recovery.
+
+K8.3 is closed. `ClientCommand::Ack` accepts only the bounded
+32-lowercase-hex projected commit token and retires no authoritative state: it removes only that
+session's volatile presentation copy. The session layer retains at most 128 unacknowledged receipts
+independently of its transport resume ring, deduplicates repeated status/replay presentation by
+token, logs bounded-cache rollover with `action/status` as the durable fallback, and re-emits every
+surviving receipt with a fresh monotonic envelope sequence on structured reconnect. If the
+originating socket vanishes before finalization, the gateway retains against the still-live
+character session; a closed/reaped session falls back to the durable status record. The browser
+ACKs only after strict receipt validation and local dedup/application, and ACKs duplicate replay
+again so loss of the first ACK converges. Unit, real-WebSocket, and full bridge tests cover malformed
+tokens, exact forwarding, bounded rollover, duplicate/unknown ACKs, client loss after advancing the
+transport cursor, semantic replay outside the ordinary resume ring, and final retirement. K8.2's
+split-process SSH journey already proves post-restart line `action/status` recovery through the same
+deterministic `resolution.outcome` keyframe; legal-action cursor gap/keyframe recovery remains
+covered on both Rust TUI and TypeScript structured clients. A gateway process death still follows
+the declared Gate-5 policy: before `Owned`, volatile ingress may be lost; after `Owned`, the durable
+transaction reference plus `action/status`/current keyframes is authoritative recovery.
+
+K8.4 is closed for its two selected production domains. `ruleset-wod` registers exact version-1
+definitions for `willpower_roll`, `willpower_set`, their durable outcomes, and the typed
+`roll_state` family. A Willpower-backed roll now spends the typed resource and records its dice only
+through `PrepareCtx`; the direct player/NPC mutation paths refuse. The staff-only set action keeps
+the resource replenishable after its first typed commit, while direct `@sheet/set` is fenced once
+that character has acquired typed authority. `ruleset-shadowrun` registers `condition_damage`,
+`condition_heal`, their outcome, and a condition-only typed family rather than claiming the whole
+legacy sheet. The provider overlays physical/stun fill and overflow onto the current sheet, so
+unrelated sheet ownership remains unchanged. The old `+damage`/`+heal` handlers now return exact
+`+act` guidance without mutating. Compound legacy Drain/Fading remains legal only before a
+character's first typed Condition Monitor commit; a per-record authority fence refuses it before
+rolling afterward, preventing simultaneous legacy and typed writers until those compound actions
+receive their own migration.
+
+The line gateway accepts bounded JSON-object parameters and an optional staff object subject
+(`+act <verb> on #N with {...}`), with case-insensitive grammar. Core admits a visible revision-1
+`KnownObject` as a neutral Royalty subject without fabricating a station grant; provider role checks
+still decide legality and required-channel offers still require one exact grant. Revision 1 here is
+the fixed administrative projection generation, not an object revision. Query handlers gained a
+backward-compatible owner-scoped typed read callback, and both setting sheet keyframes override it,
+so line and structured presentation read the acknowledged post-image rather than stale legacy JSON.
+Production goldens drive the real offer resolver, coordinator, authoritative store, receipt,
+installation, line view, and structured keyframe. They pin Willpower clamping/spend/depletion/
+restoration plus deterministic RNG, and Shadowrun Stun overflow/healing plus the migration fence.
+
+K8.5 is closed. The version-1 module/script compatibility contract is published in doc 09b.
+`CommandCompatibility` gives every registered command one of four auditable lane declarations:
+read-only, bounded legacy post-image, authoritative coordinator adapter, or the narrow economy
+carve-out. A registrar created for real module composition starts unclassified and refuses command
+registration until the module declares a class; the captured metadata is exposed by the frozen
+registry. Alias stages and script command fallbacks carry the same owner-stamped declaration, and
+the script module is explicitly legacy compatibility rather than an implicit mechanical ingress.
+Bare host/core registry assembly remains conservatively classified as legacy for source
+compatibility. The declaration is an audit contract for trusted compiled code, not a claim that Rust
+handlers are sandboxed; changing to a more authoritative lane requires the review and migration
+evidence specified by doc 09b. No stable third-party ABI is promised by this cut.
+
+K8.6 is closed in repository CI. Five separately named jobs expose the kernel contract suite, the
+live-Redis and real-process crash matrix, definition/wire goldens, the direct-randomness source
+policy, and the truth-serialization policy. The ordinary cross-platform workspace job remains the
+broad regression net but no longer supplies Redis implicitly; every live-backend proof is owned by
+the Linux Redis-fault job and therefore cannot pass merely by taking a missing-`REDIS_URL` skip.
+Private resolved invocation/offer wrappers have a compile-time negative serde assertion, while the
+truth job also drives the line, structured IPC, TUI, LLM, receipt, and tactical-keyframe redaction
+goldens. Production command compatibility composition is part of the named contract job.
 
 Work:
 

@@ -4,7 +4,7 @@
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 
-use crate::caps::ClientCaps;
+use crate::{ProjectedCommitToken, caps::ClientCaps};
 
 /// A pull request for panel hydration, carried inside
 /// [`ClientCommand::Req`].
@@ -71,6 +71,14 @@ pub enum ClientCommand {
     Resume {
         /// The last envelope sequence number the client received.
         last_seq: u64,
+    },
+    /// Structured-client acknowledgement of one projected authoritative
+    /// result. This retires only bounded presentation retention; it does not
+    /// alter authoritative state or the durable status/tombstone record.
+    Ack {
+        /// Exact token carried by the `resolution.outcome` view.
+        #[cfg_attr(feature = "ts", ts(type = "string"))]
+        commit: ProjectedCommitToken,
     },
     /// Keepalive response to a server
     /// [`Ping`](crate::OutputEvent::Ping).

@@ -101,6 +101,7 @@ fn parse_cast_args(raw: &str) -> Result<CastArgs, CmdError> {
 /// `+cast <spell> [force <f>] [threshold <n>]`.
 fn cast_cmd(cmd: &Sr5Cmd, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let who = ctx.actor;
+    cmd.require_legacy_condition_authority(ctx, who)?;
     let args = parse_cast_args(ctx.args.raw())?;
     let doc = cmd
         .read(ctx.w, who)
@@ -198,6 +199,7 @@ fn cast_cmd(cmd: &Sr5Cmd, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 /// `+thread <form> [level <l>]` — a technomancer threads a complex form.
 fn thread_cmd(cmd: &Sr5Cmd, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let who = ctx.actor;
+    cmd.require_legacy_condition_authority(ctx, who)?;
     let args = parse_cast_args(ctx.args.raw())?;
     let doc = cmd
         .read(ctx.w, who)

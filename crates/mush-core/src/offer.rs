@@ -123,7 +123,8 @@ impl OfferRouteTable {
 ///
 /// This hash is never sent to a client. It makes scope binding explicit while
 /// keeping an [`InternalOffer`] independent of connection IDs.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(transparent)]
 pub struct ProjectionScopeId(CanonicalHash);
 
 impl ProjectionScopeId {
@@ -904,6 +905,10 @@ impl ProjectedLegalActionSink {
             .values()
             .map(|offer| offer.projected.clone())
             .collect()
+    }
+
+    pub(crate) fn internal(&self) -> impl ExactSizeIterator<Item = &InternalOffer> {
+        self.offers.values()
     }
 
     /// Resolve one opaque submission without distinguishing unknown, expired,

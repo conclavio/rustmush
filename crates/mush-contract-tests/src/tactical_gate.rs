@@ -15,20 +15,19 @@ use mush_core::{
     ActionWindowDraft, ActionWindowError, ActionWindowGuardValidator, ActionWindowId,
     ActionWindowPhase, ActionWindowRecord, ActionWindowStateCodec, AuthoritativeActionOutput,
     AuthorityGuardKind, BridgeDescriptor, CanonicalHash, CanonicalId, ChannelGrant, ChannelId,
-    ClockProviderFailure, ClockProviderKind, ClockRef, ClockStamp, CommitToken,
-    ContactGuardValidator, ContactId, ContactState, ContactStateCodec, ContactStateDraft,
-    ControlHandoffDraft, ControlLeaseGuardValidator, ControlLeaseKey, ControlLeaseState,
-    ControlLeaseStateCodec, DefinitionDescriptor, DefinitionId, DefinitionKind, DefinitionRef,
-    DefinitionRegistryBuilder, DefinitionValidationContext, DefinitionValidator, Engine,
-    GameModule, IdempotencyKey, IdempotencyScope, LegalActionQuery, ModError, ObjId, OfferKeyRing,
-    OfferSecret, OwnerId, PerceivedRef, PrepareCtx, PrincipalId, ProjectedParameterSchema,
-    ProjectedTargetSchema, ProviderOfferDraft, Registrar, RequestUid, ResolutionKeyRing,
-    ResolutionSecret, ResolvedActionInvocation, RevisionKey, RevisionKind, RevisionSet,
-    RevisionValidator, RevisionValidatorContext, RulesValue, ScopedIdempotencyKey,
-    StateFamilyDescriptor, StateFamilyHandle, StateFamilyId, SubjectKey, WindowIntent, WindowMode,
-    WindowOrderKey, WindowRestartPolicy, WindowTimeoutPolicy, World,
-    action_window_state_family_descriptor, contact_state_family_descriptor,
-    control_lease_state_family_descriptor,
+    ClockProviderFailure, ClockRef, ClockStamp, CommitToken, ContactGuardValidator, ContactId,
+    ContactState, ContactStateCodec, ContactStateDraft, ControlHandoffDraft,
+    ControlLeaseGuardValidator, ControlLeaseKey, ControlLeaseState, ControlLeaseStateCodec,
+    DefinitionDescriptor, DefinitionId, DefinitionKind, DefinitionRef, DefinitionRegistryBuilder,
+    DefinitionValidationContext, DefinitionValidator, Engine, GameModule, IdempotencyKey,
+    IdempotencyScope, LegalActionQuery, ModError, ObjId, OfferKeyRing, OfferSecret, OwnerId,
+    PerceivedRef, PrepareCtx, PrincipalId, ProjectedParameterSchema, ProjectedTargetSchema,
+    ProviderOfferDraft, Registrar, RequestUid, ResolutionKeyRing, ResolutionSecret,
+    ResolvedActionInvocation, RevisionKey, RevisionKind, RevisionSet, RevisionValidator,
+    RevisionValidatorContext, RulesValue, ScopedIdempotencyKey, StateFamilyDescriptor,
+    StateFamilyHandle, StateFamilyId, SubjectKey, WindowIntent, WindowMode, WindowOrderKey,
+    WindowRestartPolicy, WindowTimeoutPolicy, World, action_window_state_family_descriptor,
+    contact_state_family_descriptor, control_lease_state_family_descriptor,
 };
 use mush_tactics::{
     CellAddr, CellId, CellSpec, ComponentId, ComponentSpec, ConditionId, InstallPoint, SectionId,
@@ -1310,6 +1309,73 @@ impl ActionProvider for FireProvider {
         }))
     }
 
+    fn delayed_decision_witness_keys(
+        &self,
+        _action: &DefinitionRef,
+        query: &LegalActionQuery,
+        offer: &mush_core::ProjectedLegalAction,
+        engine: &Engine,
+    ) -> Result<mush_core::DecisionWitnessKeys, ActionError> {
+        let SubjectKey::Object { id: source } = query.truth_subject() else {
+            return Err(Self::stale("the delayed fire source is unavailable"));
+        };
+        let placement_kind =
+            RevisionKind::new(CanonicalId::new("placement").expect("static revision kind"));
+        let common = vec![RevisionKey {
+            owner: self.placements.owner().clone(),
+            kind: placement_kind.clone(),
+            subject: SubjectKey::Object { id: *source },
+            facet: None,
+        }];
+        let choices = match offer.targets() {
+            ProjectedTargetSchema::Choices { choices, .. } => choices,
+            ProjectedTargetSchema::None => {
+                return Err(Self::integrity("the delayed fire offer has no targets"));
+            }
+        };
+        let mut targets = Vec::with_capacity(choices.len());
+        for perceived in choices {
+            let target = match perceived {
+                PerceivedRef::KnownObject { id, .. } => *id,
+                PerceivedRef::Contact {
+                    provider,
+                    id,
+                    generation,
+                } if provider == self.contacts.owner() => {
+                    let contact = engine
+                        .action_state()
+                        .get(&self.contacts, id)
+                        .map_err(|error| Self::state_error(&error))?
+                        .filter(|contact| {
+                            contact.generation() == *generation
+                                && contact.is_visible_to(query.principal())
+                        })
+                        .ok_or_else(|| Self::stale("the delayed fire contact is unavailable"))?;
+                    let SubjectKey::Object { id } = contact.truth_subject() else {
+                        return Err(Self::stale("the delayed fire target is unavailable"));
+                    };
+                    *id
+                }
+                PerceivedRef::Contact { .. } => {
+                    return Err(Self::stale("the delayed fire contact route changed"));
+                }
+                PerceivedRef::SelfActor => {
+                    return Err(Self::stale("the delayed fire target cannot be the actor"));
+                }
+            };
+            targets.push(mush_core::DecisionTargetWitnessKeys {
+                perceived: perceived.clone(),
+                revisions: vec![RevisionKey {
+                    owner: self.placements.owner().clone(),
+                    kind: placement_kind.clone(),
+                    subject: SubjectKey::Object { id: target },
+                    facet: None,
+                }],
+            });
+        }
+        Ok(mush_core::DecisionWitnessKeys { common, targets })
+    }
+
     fn prepare_invocation(
         &self,
         _invocation: &ActionInvocation,
@@ -2091,10 +2157,11 @@ impl GameModule for TacticalGateModule {
             AuthorityGuardKind::Window,
             ActionWindowGuardValidator::new(windows.clone()),
         )?;
-        registrar.clock_provider(
-            ClockProviderKind::DomainTick,
-            CanonicalId::new("arena").map_err(|error| ModError::msg(error.to_string()))?,
-            |_context: &mush_core::ClockProviderContext<'_>, generation| {
+        registrar.domain_clock_provider(
+            |_context: &mush_core::ClockProviderContext<'_>, domain: &CanonicalId, generation| {
+                if domain.as_str() != "arena" {
+                    return Err(ClockProviderFailure::Unavailable);
+                }
                 if generation == 1 {
                     Ok(7)
                 } else {
@@ -2166,18 +2233,27 @@ impl GameModule for TacticalGateModule {
 /// Compose the isolated Gate-2 module and install deterministic resolution keys.
 #[must_use]
 pub fn tactical_gate_world() -> (Engine, TacticalGateState, TacticalGateDefinitions, UnitSpec) {
+    tactical_gate_world_with_modules(Vec::new())
+}
+
+/// Compose the tactical gate together with additional independent modules.
+/// This is used by later vertical gates to exercise the same provider through
+/// scheduling, delayed decisions, and restart coordination.
+#[must_use]
+pub fn tactical_gate_world_with_modules(
+    mut additional: Vec<Box<dyn GameModule>>,
+) -> (Engine, TacticalGateState, TacticalGateDefinitions, UnitSpec) {
     let captured = Arc::new(Mutex::new(None));
     let placements = Arc::new(Mutex::new(None));
     let placement_module = TacticalPlacementModule {
         captured: Arc::clone(&placements),
     };
     let module = TacticalGateModule::with_capture(Arc::clone(&captured), placements);
-    let mut engine = Engine::with_modules(
-        World::new_minimal(),
-        mush_core::Registry::new(),
-        vec![Box::new(placement_module), Box::new(module)],
-    )
-    .expect("Gate-2 module composes");
+    let mut modules: Vec<Box<dyn GameModule>> = vec![Box::new(placement_module), Box::new(module)];
+    modules.append(&mut additional);
+    let mut engine =
+        Engine::with_modules(World::new_minimal(), mush_core::Registry::new(), modules)
+            .expect("Gate-2 module composes");
     engine.set_resolution_keys(
         ResolutionKeyRing::new(
             ResolutionSecret::new(1, [0x62; 32]).expect("Gate-2 resolution key"),
@@ -2266,6 +2342,79 @@ pub fn move_tactical_gate_placement(
     let (_, installation) = prepared.into_parts();
     engine.install_prepared_action(installation);
     placement
+}
+
+/// Fixture-only source mutation used by Gate 4 to invalidate retained
+/// component and resource assumptions before delayed completion.
+pub fn disable_tactical_gate_weapon(
+    engine: &mut Engine,
+    state: &TacticalGateState,
+    object: ObjId,
+) -> TacticalUnit {
+    let current = engine
+        .action_state()
+        .get(&state.units, &object)
+        .expect("Gate-4 unit read")
+        .expect("Gate-4 unit exists");
+    let plan = UnitMutationPlan::new(
+        vec![UnitMutationOp::SetComponentCondition {
+            component: ComponentId::new(WEAPON_COMPONENT_ID).expect("static component id"),
+            condition: ConditionId::new("disabled").expect("static condition id"),
+        }],
+        Some(current.revision()),
+        None,
+    )
+    .expect("Gate-4 component mutation plan");
+    let (changed, _) = apply(current, &plan, 7).expect("Gate-4 component mutation applies");
+    let prepared = {
+        let mut txn = engine
+            .action_transaction(&state.units)
+            .expect("Gate-4 component transaction");
+        txn.replace(&state.units, &object, changed.clone())
+            .expect("Gate-4 component post-image");
+        txn.prepare().expect("Gate-4 component mutation prepares")
+    };
+    let (_, installation) = prepared.into_parts();
+    engine.install_prepared_action(installation);
+    changed
+}
+
+/// Fixture-only resource mutation used by Gate 4 to make a retained fire
+/// offer unaffordable before delayed completion.
+pub fn exhaust_tactical_gate_ammo(
+    engine: &mut Engine,
+    state: &TacticalGateState,
+    object: ObjId,
+) -> TacticalUnit {
+    let current = engine
+        .action_state()
+        .get(&state.units, &object)
+        .expect("Gate-4 unit read")
+        .expect("Gate-4 unit exists");
+    let plan = UnitMutationPlan::new(
+        vec![UnitMutationOp::SetCell {
+            addr: CellAddr::Component {
+                component: ComponentId::new(WEAPON_COMPONENT_ID).expect("static component id"),
+                cell: CellId::new(AMMO_CELL_ID).expect("static ammo id"),
+            },
+            value: 0,
+        }],
+        Some(current.revision()),
+        None,
+    )
+    .expect("Gate-4 resource mutation plan");
+    let (changed, _) = apply(current, &plan, 7).expect("Gate-4 resource mutation applies");
+    let prepared = {
+        let mut txn = engine
+            .action_transaction(&state.units)
+            .expect("Gate-4 resource transaction");
+        txn.replace(&state.units, &object, changed.clone())
+            .expect("Gate-4 resource post-image");
+        txn.prepare().expect("Gate-4 resource mutation prepares")
+    };
+    let (_, installation) = prepared.into_parts();
+    engine.install_prepared_action(installation);
+    changed
 }
 
 /// Fixture-only private contact bootstrap.
@@ -4074,6 +4223,72 @@ mod tests {
         assert_eq!(check.stale_revisions()[0].expected, 1);
         assert_eq!(check.stale_revisions()[0].actual, Some(2));
         assert!(!engine.action_state().has_prepared());
+    }
+
+    #[test]
+    fn delayed_fire_capture_retains_source_and_per_choice_placement_generations() {
+        let (mut engine, state, definitions, spec) = tactical_gate_world();
+        let source = spawn_unit_player(&mut engine, &state, &spec, "Delayed Shooter");
+        let first_target = ObjId(943);
+        let second_target = ObjId(944);
+        for (target, x) in [(first_target, 1), (second_target, 2)] {
+            install_tactical_gate_unit(&mut engine, &state, unit(&spec, target.0));
+            install_tactical_gate_placement(&mut engine, &state, target, x, 0);
+        }
+        grant_weapons(&mut engine, &state, source, source);
+        let principal = PrincipalId::Object { id: source };
+        for (id, target) in [
+            (ContactId::from_bytes([0x94; 16]), first_target),
+            (ContactId::from_bytes([0x95; 16]), second_target),
+        ] {
+            install_tactical_gate_contact(&mut engine, &state, id, target, principal.clone());
+        }
+        install_tactical_gate_fire_window(&mut engine, &state);
+        let query = LegalActionQuery::new(
+            principal,
+            source,
+            SubjectKey::Object { id: source },
+            PerceivedRef::SelfActor,
+            1,
+            Some(tactical_gate_tick(7)),
+        )
+        .unwrap();
+        let projection = engine
+            .project_decision_offers(&query)
+            .expect("kernel projects delayed fire");
+        assert_eq!(projection.len(), 1);
+        let (mut actions, mut offered) = projection.into_parts();
+        let projected = actions.pop().expect("fire is projected");
+        let witness = offered.pop().expect("fire witnesses are projected");
+
+        assert_eq!(witness.offer, projected.offer());
+        assert_eq!(witness.common_revisions.len(), 1);
+        assert_eq!(
+            witness.common_revisions[0].key.subject,
+            SubjectKey::Object { id: source }
+        );
+        assert_eq!(witness.common_revisions[0].generation, 1);
+        assert_eq!(witness.target_revisions.len(), 2);
+        let guarded_targets: BTreeSet<_> = witness
+            .target_revisions
+            .iter()
+            .map(|target| {
+                assert_eq!(target.revisions.len(), 1);
+                assert_eq!(target.revisions[0].generation, 1);
+                target.revisions[0].key.subject.clone()
+            })
+            .collect();
+        assert_eq!(
+            guarded_targets,
+            BTreeSet::from([
+                SubjectKey::Object { id: first_target },
+                SubjectKey::Object { id: second_target },
+            ])
+        );
+        assert_eq!(
+            witness.bridge_definitions,
+            vec![definitions.placement_bridge]
+        );
     }
 
     #[test]

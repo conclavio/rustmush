@@ -25,7 +25,6 @@
 
 use std::sync::Arc;
 
-use mush_core::module::check_carry_attempt;
 use mush_core::{Ctx, Flags, MAX_CONTAINMENT_DEPTH, ObjId, ObjKind, World, perm};
 use mush_org::PrincipalId;
 
@@ -243,7 +242,7 @@ fn container_move(
     }
     // The only thing that makes a registered `CarryAttempt` gate (sim placement,
     // a ruleset's no-take rule) see a vault move at all.
-    check_carry_attempt(ctx.reg, ctx.w, actor, obj, dest)
+    ctx.check_carry_attempt(actor, obj, dest)
         .map_err(|rt| CustodyError::Refused(rt.to_plain_text()))?;
     ctx.w
         .move_to(obj, dest)

@@ -39,7 +39,7 @@ use mush_proto::OutputEvent;
 
 use crate::behavior::{
     BehaviorId, BehaviorRegError, BehaviorResolution, BehaviorSpec, DestroyGate, DestroyPolicy,
-    DetachGate, resolve_behavior_command,
+    DetachGate, resolve_behavior_command_with_action_state,
 };
 use crate::commands::movement;
 use crate::flags::{Powers, Role};
@@ -89,6 +89,30 @@ pub enum SceneClass {
     /// scene, only the participant whose turn it is may run. Outside a scene it
     /// behaves normally.
     Turn,
+}
+
+/// Maximum persistence authority a registered command is allowed to use.
+///
+/// This is compatibility metadata, not an authorization check.  It makes the
+/// remaining pre-K8 mutation lanes visible in the frozen registry so modules,
+/// tooling, and CI do not have to infer them from handler source.  A module
+/// composed through [`Engine::compose_modules`](crate::Engine::compose_modules)
+/// must choose a class before registering any commands.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub enum CommandCompatibility {
+    /// Inspection or presentation only; no durable mutation is part of the
+    /// command's contract.
+    ReadOnly,
+    /// A bounded, validated whole-document post-image on the compatibility
+    /// writer lane.  This is migration debt and cannot claim a K-owned typed
+    /// family, lease, contact, window, reservation, or resolution.
+    LegacyPostImage,
+    /// An ingress adapter for the authoritative action coordinator.  The
+    /// handler itself does not implement or persist the mechanic.
+    Authoritative,
+    /// The narrow economy exception: validated domain records may remain on
+    /// the legacy post-image lane until their owner migration lands.
+    EconomyCarveOut,
 }
 
 /// `CommandSpec` implements [`Default`]; registration sites are expected to
@@ -435,6 +459,20 @@ struct Entry {
     handler: Arc<dyn CommandHandler>,
     /// The registering module (`None` for core commands).
     module: Option<SmolStr>,
+    /// Declared maximum persistence authority for this command.
+    compatibility: CommandCompatibility,
+}
+
+struct AliasStageEntry {
+    stage: Arc<dyn AliasStage>,
+    module: Option<SmolStr>,
+    compatibility: CommandCompatibility,
+}
+
+struct CommandFallbackEntry {
+    fallback: Arc<dyn CommandFallback>,
+    module: Option<SmolStr>,
+    compatibility: CommandCompatibility,
 }
 
 /// One prose help topic (loaded at boot from `docs/help/*.md` by the
@@ -459,13 +497,13 @@ pub struct Registry {
     entries: Vec<Entry>,
     /// Lowercased name and alias → entry index.
     index: HashMap<String, usize>,
-    alias_stages: Vec<Arc<dyn AliasStage>>,
+    alias_stages: Vec<AliasStageEntry>,
     /// Pre-dispatch command gates (the onboarding gate); consulted before the
     /// alias stage and `home`/exits/commands, in registration order.
     command_gates: Vec<Arc<dyn CommandGate>>,
     /// Post-command-table fallback matchers (object `$`-commands); consulted
     /// on [`LookupErr::NotFound`] before `Huh?`, in registration order.
-    command_fallbacks: Vec<Arc<dyn CommandFallback>>,
+    command_fallbacks: Vec<CommandFallbackEntry>,
     /// Module registrations (hooks, ticks, observers, namespaces, …).
     pub(crate) mods: ModuleTables,
     /// Prose help topics by lowercased name (sorted for listings).
@@ -501,6 +539,8 @@ pub struct Registry {
         crate::resource_provider::ResourceEffectProviderRegistryBuilder,
     /// K4 declarative durable schedule sources, mutable only while modules register.
     pub(crate) schedule_source_builder: crate::schedule_source::ScheduleSourceRegistryBuilder,
+    /// K7 declarative delayed-decision sources, mutable only while modules register.
+    pub(crate) decision_source_builder: crate::decision_source::DecisionSourceRegistryBuilder,
     /// Process-lifetime, one-way readiness for the bounded composed owner roster.
     pub(crate) mechanics_owner_readiness: Option<crate::mechanics::MechanicalOwnerReadiness>,
     /// Frozen before any persisted rules-bearing record is loaded.
@@ -524,6 +564,8 @@ pub struct Registry {
         Option<crate::resource_provider::ResourceEffectProviderRegistry>,
     /// Frozen owner-stamped durable schedule-source registry.
     pub(crate) schedule_sources: Option<crate::schedule_source::ScheduleSourceRegistry>,
+    /// Frozen owner-stamped delayed-decision source registry.
+    pub(crate) decision_sources: Option<crate::decision_source::DecisionSourceRegistry>,
 }
 
 impl Registry {
@@ -540,7 +582,10 @@ impl Registry {
         spec: CommandSpec,
         handler: Arc<dyn CommandHandler>,
     ) -> Result<(), RegistryError> {
-        self.register_tagged(spec, handler, None)
+        // Bare registry construction is host/core compatibility code.  It is
+        // deliberately classified conservatively; composed modules must use
+        // `Registrar` and make an explicit declaration.
+        self.register_tagged(spec, handler, None, CommandCompatibility::LegacyPostImage)
     }
 
     /// Register a command tagged with the registering module's identity
@@ -550,6 +595,7 @@ impl Registry {
         spec: CommandSpec,
         handler: Arc<dyn CommandHandler>,
         module: Option<SmolStr>,
+        compatibility: CommandCompatibility,
     ) -> Result<(), RegistryError> {
         let mut keys = vec![spec.name.to_lowercase()];
         keys.extend(spec.aliases.iter().map(|a| a.to_lowercase()));
@@ -563,6 +609,7 @@ impl Registry {
             spec,
             handler,
             module,
+            compatibility,
         });
         for k in keys {
             self.index.insert(k, idx);
@@ -572,7 +619,20 @@ impl Registry {
 
     /// Append an alias-stage hook (runs in registration order).
     pub fn add_alias_stage(&mut self, stage: Arc<dyn AliasStage>) {
-        self.alias_stages.push(stage);
+        self.add_tagged_alias_stage(stage, None, CommandCompatibility::LegacyPostImage);
+    }
+
+    pub(crate) fn add_tagged_alias_stage(
+        &mut self,
+        stage: Arc<dyn AliasStage>,
+        module: Option<SmolStr>,
+        compatibility: CommandCompatibility,
+    ) {
+        self.alias_stages.push(AliasStageEntry {
+            stage,
+            module,
+            compatibility,
+        });
     }
 
     /// Append a pre-dispatch [`CommandGate`] (the onboarding gate). Runs in
@@ -775,7 +835,20 @@ impl Registry {
     /// `$`-commands). Runs in registration order, after built-ins/exits and
     /// before `Huh?`.
     pub fn add_command_fallback(&mut self, fallback: Arc<dyn CommandFallback>) {
-        self.command_fallbacks.push(fallback);
+        self.add_tagged_command_fallback(fallback, None, CommandCompatibility::LegacyPostImage);
+    }
+
+    pub(crate) fn add_tagged_command_fallback(
+        &mut self,
+        fallback: Arc<dyn CommandFallback>,
+        module: Option<SmolStr>,
+        compatibility: CommandCompatibility,
+    ) {
+        self.command_fallbacks.push(CommandFallbackEntry {
+            fallback,
+            module,
+            compatibility,
+        });
     }
 
     /// Number of registered command fallbacks (tests/inspection).
@@ -784,9 +857,55 @@ impl Registry {
         self.command_fallbacks.len()
     }
 
+    /// Declared compatibility classes for alias-stage ingress, in
+    /// registration order. `None` is reserved for host/core registration.
+    pub fn alias_stage_compatibilities(
+        &self,
+    ) -> impl Iterator<Item = (Option<&str>, CommandCompatibility)> {
+        self.alias_stages
+            .iter()
+            .map(|entry| (entry.module.as_deref(), entry.compatibility))
+    }
+
+    /// Declared compatibility classes for fallback-command ingress, in
+    /// registration order. `None` is reserved for host/core registration.
+    pub fn command_fallback_compatibilities(
+        &self,
+    ) -> impl Iterator<Item = (Option<&str>, CommandCompatibility)> {
+        self.command_fallbacks
+            .iter()
+            .map(|entry| (entry.module.as_deref(), entry.compatibility))
+    }
+
     /// Iterate all registered command specs (registration order).
     pub fn specs(&self) -> impl Iterator<Item = &CommandSpec> {
         self.entries.iter().map(|e| &e.spec)
+    }
+
+    /// Iterate command specifications with their declared compatibility
+    /// class, in registration order.
+    pub fn specs_with_compatibility(
+        &self,
+    ) -> impl Iterator<Item = (&CommandSpec, CommandCompatibility)> {
+        self.entries.iter().map(|e| (&e.spec, e.compatibility))
+    }
+
+    /// Iterate command specifications with their registering module and
+    /// declared compatibility class. `None` identifies host/core entries.
+    pub fn command_registrations(
+        &self,
+    ) -> impl Iterator<Item = (&CommandSpec, Option<&str>, CommandCompatibility)> {
+        self.entries
+            .iter()
+            .map(|entry| (&entry.spec, entry.module.as_deref(), entry.compatibility))
+    }
+
+    /// Return the compatibility class registered for an exact name or alias.
+    #[must_use]
+    pub fn compatibility_of(&self, name: &str) -> Option<CommandCompatibility> {
+        self.index
+            .get(&name.to_lowercase())
+            .map(|&i| self.entries[i].compatibility)
     }
 
     /// Find the spec registered under exactly this name or alias
@@ -1041,8 +1160,8 @@ pub(crate) fn dispatch_with_action_state(
     //    player never named. A *typed* "say hello" still offers the alias
     //    stage first, per treaty ruling 5.
     if !prefix_expanded {
-        for stage in &reg.alias_stages {
-            match stage.try_alias(w, actor, &cur, out) {
+        for entry in &reg.alias_stages {
+            match entry.stage.try_alias(w, actor, &cur, out) {
                 AliasOutcome::NotMine => {}
                 AliasOutcome::Handled => return,
                 AliasOutcome::Rewrite(s) => {
@@ -1055,13 +1174,13 @@ pub(crate) fn dispatch_with_action_state(
 
     // 4. HOME keyword.
     if cur.trim().eq_ignore_ascii_case("home") {
-        movement::go_home(reg, w, actor, out);
+        movement::go_home_with_action_state(reg, w, actor, out, action_state);
         return;
     }
 
     // 5. Exit match (room → zone → global) against the whole line.
     if let Some(exit) = movement::find_exit(w, actor, cur.trim()) {
-        movement::traverse_exit(reg, w, actor, exit, out);
+        movement::traverse_exit_with_action_state(reg, w, actor, exit, out, action_state);
         return;
     }
 
@@ -1077,7 +1196,7 @@ pub(crate) fn dispatch_with_action_state(
             // missed, so a behavior verb can never shadow a core verb, a staff
             // command, or an exit. The first tier with a match wins; an
             // ambiguous tier refuses and never falls through.
-            match resolve_behavior_command(reg, w, actor, verb) {
+            match resolve_behavior_command_with_action_state(reg, w, actor, verb, action_state) {
                 BehaviorResolution::One { target, index } => {
                     let Some(bspec) = reg.behavior_spec(&target.behavior) else {
                         huh(reg, actor, verb, out);
@@ -1130,8 +1249,8 @@ pub(crate) fn dispatch_with_action_state(
             // fallback that claims the whole line ends dispatch before
             // `Huh?`. They run against the full post-alias line.
             let line = cur.trim().to_string();
-            for fb in &reg.command_fallbacks {
-                if fb.try_command(w, actor, &line, out) {
+            for entry in &reg.command_fallbacks {
+                if entry.fallback.try_command(w, actor, &line, out) {
                     return;
                 }
             }

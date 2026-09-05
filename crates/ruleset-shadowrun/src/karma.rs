@@ -119,7 +119,7 @@ fn show(cmd: &Sr5Cmd, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         t
     };
     let doc = cmd
-        .read(ctx.w, target)
+        .read_ctx(ctx, target)?
         .ok_or_else(|| CmdError::msg("That character has no sheet."))?;
     let cur = doc.number("karma").unwrap_or(0);
     let total = doc.number("karma_total").unwrap_or(0);
@@ -153,7 +153,7 @@ fn spend(cmd: &Sr5Cmd, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         .ok_or_else(|| CmdError::msg("Usage: +karma/spend <field>[:<key>]=<new-rating>"))?;
 
     let doc = cmd
-        .read(ctx.w, actor)
+        .read_ctx(ctx, actor)?
         .ok_or_else(|| CmdError::msg("You have no sheet."))?;
     let target = resolve_target(&doc, &lhs)?;
     let from = target.current(&doc);
@@ -231,7 +231,7 @@ fn award(cmd: &Sr5Cmd, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         .ok_or_else(|| CmdError::msg("Usage: +karma/award <target>=<n> (n > 0)"))?;
     let target = match_object(ctx.w, ctx.actor, target_spec)?;
     let mut doc = cmd
-        .read(ctx.w, target)
+        .read_ctx(ctx, target)?
         .ok_or_else(|| CmdError::msg("That character has no sheet."))?;
     let cur = doc.number("karma").unwrap_or(0) as i32;
     let total = doc.number("karma_total").unwrap_or(0) as i32;

@@ -23,7 +23,7 @@ use std::net::IpAddr;
 use std::sync::Arc;
 
 use futures::future::BoxFuture;
-use mush_proto::{Envelope, Query};
+use mush_proto::{Envelope, ProjectedCommitToken, Query};
 use serde::Serialize;
 use tokio::sync::mpsc;
 
@@ -210,6 +210,10 @@ pub trait WebHooks: Send + Sync {
     /// [`Reply`](mush_proto::OutputEvent::Reply) arrives via the event
     /// stream (`conn`'s `tx`), not as a return value.
     fn request(&self, conn: u64, id: u64, q: Query) -> BoxFuture<'_, ()>;
+
+    /// A structured client accepted and deduplicated one authoritative
+    /// result. The game side may retire its bounded presentation copy.
+    fn acknowledge(&self, conn: u64, commit: ProjectedCommitToken) -> BoxFuture<'_, ()>;
 
     /// The transport for `conn` is gone (only fired for connections that
     /// passed [`connect_character`](Self::connect_character) or

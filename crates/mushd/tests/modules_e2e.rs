@@ -44,6 +44,7 @@ impl GameModule for E2eProducer {
     }
 
     fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
+        reg.classify_commands(mush_core::CommandCompatibility::LegacyPostImage);
         reg.command(
             CommandSpec {
                 name: "+tgrant".into(),

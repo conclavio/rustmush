@@ -6,27 +6,27 @@ import type { RichText } from "./RichText";
 /**
  * A full structured room render: `look`, movement, resume snapshots.
  */
-export type RoomView = { 
+export type RoomView = {
 /**
  * Room display name.
  */
-name: string, 
+name: string,
 /**
  * Room object id, e.g. `"#42"`.
  */
-id: string, 
+id: string,
 /**
  * Room description.
  */
-desc: RichText, 
+desc: RichText,
 /**
  * Visible contents (players, NPCs, things).
  */
-contents: Array<ObjRef>, 
+contents: Array<ObjRef>,
 /**
  * Visible exits.
  */
-exits: Array<ExitRef>, 
+exits: Array<ExitRef>,
 /**
  * The zone this room belongs to, when visible.
  */

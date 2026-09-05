@@ -12,7 +12,7 @@ use mush_proto::{ExitRef, ObjRef, OutputEvent, RichText, RoomView, Span};
 use crate::cmd::Registry;
 use crate::engine::Deferred;
 use crate::flags::{Flags, Powers};
-use crate::module::can_perceive;
+use crate::module::perceives_via_action_state;
 use crate::obj::{ObjId, ObjKind};
 use crate::perm;
 use crate::world::World;
@@ -442,6 +442,16 @@ pub fn name_span(w: &World, id: ObjId) -> Span {
 ///   without a concealment ruleset.
 #[must_use]
 pub fn room_view(reg: &Registry, w: &World, looker: ObjId, room: ObjId) -> Option<RoomView> {
+    room_view_with_action_state(reg, w, looker, room, None)
+}
+
+pub(crate) fn room_view_with_action_state(
+    reg: &Registry,
+    w: &World,
+    looker: ObjId,
+    room: ObjId,
+    action_state: Option<&crate::action_state::ActionStateStore>,
+) -> Option<RoomView> {
     let r = w.get(room)?;
     let see_hidden = perm::has_power(w, looker, Powers::SEE_HIDDEN);
     let inside = w.get(looker).and_then(|o| o.location) == Some(room);
@@ -480,7 +490,13 @@ pub fn room_view(reg: &Registry, w: &World, looker: ObjId, room: ObjId) -> Optio
             // M11 per-observer projection: hide an occupant this looker
             // cannot perceive (Obfuscate vs Auspex, …). Free pass with no
             // Perceive hook registered.
-            if !can_perceive(reg, w, looker, c) {
+            if !perceives_via_action_state(
+                reg.hooks(crate::module::HookPoint::Perceive),
+                w,
+                looker,
+                c,
+                action_state,
+            ) {
                 continue;
             }
             // Primary segment only: "lever;switch" renders as "lever",

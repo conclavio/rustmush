@@ -143,6 +143,7 @@ impl GameModule for WorldgenModule {
     }
 
     fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
+        reg.classify_commands(mush_core::CommandCompatibility::LegacyPostImage);
         validate_batch_max_rooms(self.config.batch_max_rooms)?;
         let panel = reg.panel_feed(DRAFT_FEED)?;
         reg.state(WorldgenState::with_batch_max(

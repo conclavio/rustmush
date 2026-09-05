@@ -179,6 +179,7 @@ pub struct PreparedLedgerAppend {
     expected_tail: Option<LogTail>,
     next_tail: LogTail,
     seq: u64,
+    chunk: LedgerChunk,
     write: ModuleWrite,
 }
 
@@ -187,6 +188,26 @@ impl PreparedLedgerAppend {
     #[must_use]
     pub fn seq(&self) -> u64 {
         self.seq
+    }
+
+    /// Build the exact replayable Ledger write for an authoritative bundle
+    /// without consuming this plan. The caller retains the same plan until
+    /// the bundle's exact receipt is acknowledged, then installs it through
+    /// [`Ledger::apply_prepared`].
+    pub fn authoritative_replay_write(
+        &self,
+        namespace: crate::mechanics::OwnerId,
+    ) -> Result<
+        crate::authoritative::ReplayWrite,
+        crate::authoritative::AuthoritativeLedgerWriteError,
+    > {
+        Ok(crate::authoritative::ReplayWrite::LedgerChunkSet {
+            write: crate::authoritative::AuthoritativeLedgerWrite::new(
+                namespace,
+                self.log_id.as_str(),
+                self.chunk.clone(),
+            )?,
+        })
     }
 }
 
@@ -421,7 +442,8 @@ impl Ledger {
                 return Err(LedgerAppendError::ChunkEncoding);
             }
         }
-        let value = serde_json::to_value(document).map_err(|_| LedgerAppendError::ChunkEncoding)?;
+        let value =
+            serde_json::to_value(&document).map_err(|_| LedgerAppendError::ChunkEncoding)?;
         let write = ModuleWrite::JsonSet {
             key: chunk_key(log_id, chunk),
             value,
@@ -439,6 +461,7 @@ impl Ledger {
             expected_tail,
             next_tail,
             seq,
+            chunk: document,
             write,
         })
     }

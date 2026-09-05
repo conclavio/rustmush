@@ -21,11 +21,6 @@ jobs:
         with:
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
-      - name: Start Redis 8 (Linux only)
-        if: runner.os == 'Linux'
-        run: |
-          docker run -d --name redis -p 6379:6379 redis:8 redis-server --appendonly yes --appendfsync always --no-appendfsync-on-rewrite no
-          echo "REDIS_URL=redis://127.0.0.1:6379" >> "$GITHUB_ENV"
       - name: Format
         run: cargo fmt --all --check
       - name: Clippy
@@ -34,21 +29,97 @@ jobs:
         run: cargo build --workspace --all-targets
       - name: Test
         run: cargo test --workspace --no-fail-fast
-      - name: Live Redis authoritative contract (Linux only)
-        if: runner.os == 'Linux'
-        run: |
-          cargo test -p mush-store --test redis_suite -- --ignored
-          cargo test -p mush-server --lib live_redis_wrong_type_bundle_quarantines_repairs_and_recovers -- --ignored
-      - name: Live Redis world-timeline round trip (Linux only; 08g T6)
-        if: runner.os == 'Linux'
-        # `#[ignore]`d because it needs REDIS_URL; without one it fails (it does not
-        # skip), so it runs only here, behind the Redis service above.
-        run: cargo test -p mush-server --lib redis_round_trip_preserves_exact_generations -- --ignored
       - name: TS bindings drift check (Linux only)
         if: runner.os == 'Linux'
         run: |
           cargo test -p mush-proto --features ts --test ts_export
           git diff --exit-code web/src/lib/proto
+
+  kernel-contracts:
+    name: K8 kernel contracts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Five-gate and lifecycle contracts
+        run: |
+          cargo test -p mush-contract-tests --lib
+          cargo test -p mush-contract-tests --test gate5_fault_matrix
+          cargo test -p mush-contract-tests --test schedule_source
+      - name: Production migrations and compatibility declarations
+        run: |
+          cargo test -p mush-server --test production_action_migrations
+          cargo test -p mush-server --lib k8_5_production_compositions_publish_command_compatibility
+
+  redis-faults:
+    name: K8 Redis and process-fault matrix
+    runs-on: ubuntu-latest
+    env:
+      REDIS_URL: redis://127.0.0.1:6379
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Start disposable Redis 8
+        run: docker run -d --rm --name redis -p 127.0.0.1:6379:6379 redis:8 redis-server --appendonly yes --appendfsync always --no-appendfsync-on-rewrite no
+      - name: Redis store and boot fault contracts
+        run: |
+          cargo test -p mush-store --test redis_suite -- --ignored --test-threads=1
+          cargo test -p mush-server --lib persist::tests::live_redis_wrong_type_bundle_quarantines_repairs_and_recovers -- --ignored --exact
+          cargo test -p mush-server --lib redis_round_trip_preserves_exact_generations -- --ignored
+          cargo test -p mush-server --test authoritative_boot -- --test-threads=1
+      - name: Split-process kill and restart recovery
+        run: |
+          cargo test -p mush-gateway --test authoritative_process_kill -- --test-threads=1
+          cargo test -p mushd --test durability_e2e kill9_mid_play_world_survives_redis_gated -- --exact --test-threads=1
+
+  definition-wire-fixtures:
+    name: K8 definition and wire fixtures
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Canonical definition and action wire goldens
+        run: |
+          cargo test -p mush-core mechanics::tests::canonical_encoding_and_digest_have_a_golden_wire_contract -- --exact
+          cargo test -p mush-core mechanics::tests::definition_identity_and_registry_fingerprint_have_golden_contracts -- --exact
+          cargo test -p mush-core action::tests::request_uid_wire_form_is_fixed_and_strict -- --exact
+          cargo test -p mush-core authoritative::tests::key_and_bundle_wire_are_strict -- --exact
+          cargo test -p mush-core clock::tests::clock_stamp_wire_shape_is_strict_and_cross_clock_math_fails -- --exact
+          cargo test -p mush-contract-tests tests::definitions_are_stable_and_installed_exactly -- --exact
+      - name: Generated protocol bindings are current
+        run: |
+          cargo test -p mush-proto --features ts --test ts_export
+          git diff --exit-code web/src/lib/proto
+
+  direct-rand-policy:
+    name: K8 direct-rand policy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test -p mush-contract-tests --test provider_rng_policy
+
+  truth-serialization-policy:
+    name: K8 truth-serialization policy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Private truth has no serde contract
+        run: cargo test -p mush-contract-tests --test truth_serialization_policy
+      - name: Public action surfaces stay redacted
+        run: |
+          cargo test -p mush-core offer::tests::projected_offer_hides_internal_binding_and_builds_server_parameters -- --exact
+          cargo test -p mush-contract-tests tests::brace_offer_projects_no_hidden_clock_and_routes_to_the_same_provider -- --exact
+          cargo test -p mush-contract-tests tactical_gate::tests::tactical_keyframe_line_receipt_and_llm_surfaces_share_one_redacted_dto -- --exact
+          cargo test -p mush-server --test ipc_authoritative_action authenticated_action_transfers_ownership_only_after_exact_intent -- --exact
+          cargo test -p mush-gateway --lib bridge_common::projection_tests::line_action_list_renders_only_projected_presentation -- --exact
+          cargo test -p mush-net-ssh --lib tui::render::tests::legal_action_panel_renders_only_public_presentation -- --exact
 
   web:
     runs-on: ubuntu-latest

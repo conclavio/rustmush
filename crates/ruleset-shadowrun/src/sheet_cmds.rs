@@ -14,8 +14,8 @@
 use std::sync::Arc;
 
 use mush_core::{
-    ArgShape, CmdError, CommandSpec, Ctx, ModError, ObjId, QueryHandler, Registrar, Role, World,
-    match_object, perm,
+    ArgShape, CmdError, CommandSpec, Ctx, HookReadContext, ModError, ObjId, QueryHandler,
+    Registrar, Role, World, match_object, perm,
 };
 use mush_proto::{OutputEvent, PanelFrameKind, RichText};
 use mush_ruleset::SheetDoc;
@@ -42,6 +42,7 @@ pub(crate) fn register(reg: &mut Registrar<'_>, cmd: Arc<Sr5Cmd>) -> Result<(), 
         Arc::new(SheetQuery {
             schema: Arc::clone(&cmd.schema),
             feed: feed.clone(),
+            condition_state: cmd.condition_state.clone(),
         }),
     )?;
 
@@ -103,7 +104,7 @@ fn resolve_view_target(ctx: &Ctx<'_>, raw: &str) -> Result<ObjId, CmdError> {
 /// `+sheet` / `@sheet` — render with the framework renderer.
 fn sheet_view(cmd: &Sr5Cmd, ctx: &mut Ctx<'_>, staff: bool) -> Result<(), CmdError> {
     let target = resolve_view_target(ctx, ctx.args.raw())?;
-    let Some(doc) = cmd.read(ctx.w, target) else {
+    let Some(doc) = cmd.read_ctx(ctx, target)? else {
         return Err(CmdError::msg("That character has no sheet."));
     };
     let show_staff = staff || perm::has_role(ctx.w, ctx.actor, Role::Royalty);
@@ -135,8 +136,15 @@ fn sheet_set(cmd: &Sr5Cmd, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         Some((f, k)) => (f.trim(), Some(k.trim())),
         None => (field_spec, None),
     };
+    if field.eq_ignore_ascii_case(crate::schema::PHYSICAL_OVERFLOW)
+        && cmd.condition_is_authoritative(ctx, target)?
+    {
+        return Err(CmdError::msg(
+            "That Condition Monitor is authoritative; use condition-heal or condition-damage rather than editing overflow directly.",
+        ));
+    }
 
-    let mut doc = cmd.read_or_default(ctx.w, target);
+    let mut doc = cmd.read_or_default_ctx(ctx, target)?;
     // E6a (D-E6-1, 08f §3.5): after approval the **account** is authoritative and the
     // sheet's `nuyen` is the chargen budget and the migration source and nothing
     // else. Editing it afterwards would either be money nobody minted, or a silent
@@ -230,14 +238,16 @@ fn coerce(ty: &FieldType, raw: &str) -> Result<serde_json::Value, String> {
 struct SheetQuery {
     schema: Arc<SheetSchema>,
     feed: SmolStr,
+    condition_state: mush_core::StateFamilyHandle<ObjId, crate::authoritative::ConditionState>,
 }
 
-impl QueryHandler for SheetQuery {
-    fn query(
+impl SheetQuery {
+    fn query_inner(
         &self,
         w: &World,
         actor: ObjId,
         params: &serde_json::Value,
+        condition: Option<&crate::authoritative::ConditionState>,
     ) -> Result<OutputEvent, RichText> {
         let target = match params.get("target") {
             None | Some(serde_json::Value::Null) => actor,
@@ -254,9 +264,12 @@ impl QueryHandler for SheetQuery {
             }
         };
         let store = mush_ruleset::SheetStore::new(Arc::clone(&self.schema));
-        let doc = store
+        let mut doc = store
             .get(w, target)
             .ok_or_else(|| RichText::tag("error", "That character has no sheet."))?;
+        if let Some(condition) = condition {
+            condition.apply_to_sheet(&mut doc);
+        }
         let show_staff = perm::has_role(w, actor, Role::Royalty);
         let data = if show_staff {
             doc.data.clone()
@@ -273,6 +286,47 @@ impl QueryHandler for SheetQuery {
                 "data": data,
             }),
         })
+    }
+}
+
+impl QueryHandler for SheetQuery {
+    fn query(
+        &self,
+        w: &World,
+        actor: ObjId,
+        params: &serde_json::Value,
+    ) -> Result<OutputEvent, RichText> {
+        self.query_inner(w, actor, params, None)
+    }
+
+    fn query_with_context(
+        &self,
+        context: &HookReadContext<'_>,
+        actor: ObjId,
+        params: &serde_json::Value,
+    ) -> Result<OutputEvent, RichText> {
+        let target = query_target(context.world(), actor, params)?;
+        let condition = context
+            .action_state(&self.condition_state, &target)
+            .map_err(|_| RichText::tag("error", "Condition state is unavailable."))?;
+        self.query_inner(context.world(), actor, params, condition)
+    }
+}
+
+fn query_target(w: &World, actor: ObjId, params: &serde_json::Value) -> Result<ObjId, RichText> {
+    match params.get("target") {
+        None | Some(serde_json::Value::Null) => Ok(actor),
+        Some(v) => {
+            let spec = v
+                .as_str()
+                .ok_or_else(|| RichText::tag("error", "bad target"))?;
+            let target =
+                match_object(w, actor, spec).map_err(|e| RichText::tag("error", e.to_string()))?;
+            if target != actor && !perm::can_examine(w, actor, target) {
+                return Err(RichText::tag("error", "You can't examine that sheet."));
+            }
+            Ok(target)
+        }
     }
 }
 

@@ -35,8 +35,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use mush_core::module::{
-    EventHook, GameModule, HookPoint, ModError, ModuleBootData, ModuleCtx, Registrar, TickCadence,
-    WeatherQuery, WorldEvent, WorldEventKind, WxSnapshot,
+    EventHook, GameModule, HookPoint, HookReadContext, ModError, ModuleBootData, ModuleCtx,
+    Registrar, TickCadence, WeatherQuery, WorldEvent, WorldEventKind, WxSnapshot,
 };
 use mush_core::{
     ArgShape, Audience, CmdError, CommandSpec, Ctx, ModuleOp, ModuleWrite, ObjId, PanelFeedHandle,
@@ -134,6 +134,7 @@ impl GameModule for TacticsStub {
     }
 
     fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
+        reg.classify_commands(mush_core::CommandCompatibility::LegacyPostImage);
         reg.state(TacticsState::default());
         reg.marker_flag(HEXLOCK_MARKER)?;
         reg.hook(HookPoint::MoveAttempt, Arc::new(HexLock));
@@ -280,12 +281,12 @@ struct HexLock;
 impl EventHook for HexLock {
     fn move_attempt(
         &self,
-        w: &mut World,
+        ctx: &HookReadContext<'_>,
         _actor: ObjId,
         _exit: Option<ObjId>,
         dest: ObjId,
     ) -> Result<(), RichText> {
-        if w.has_marker(dest, HEXLOCK_MARKER) {
+        if ctx.world().has_marker(dest, HEXLOCK_MARKER) {
             return Err(RichText::tag("error", HEXLOCK_MSG));
         }
         Ok(())

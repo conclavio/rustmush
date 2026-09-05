@@ -35,6 +35,7 @@ use std::time::Duration;
 
 use mush_config::accounts::import_accounts_json;
 use mush_config::config::{Config, StoreBackend, StoreReceiptPolicy};
+use mush_config::decision_keys::DurableDecisionKeyStore;
 use mush_config::ipguard::IpGuard;
 use mush_config::metrics::Metrics;
 use mush_config::offer_keys::DurableOfferKeyStore;
@@ -59,6 +60,7 @@ pub mod accounts;
 pub mod action_coordinator;
 pub mod config_ext;
 // E4c: the economy -> canon evidence bridge (08c §6.1 item 3).
+pub mod decision_dispatch;
 pub mod durable_outbox;
 pub mod econ_alerts;
 pub mod econ_canon;
@@ -67,6 +69,7 @@ pub mod gateway_sink;
 pub mod help;
 pub mod modules;
 pub mod persist;
+mod process_fault;
 pub mod quarantine;
 pub mod retained;
 pub mod staff;
@@ -212,6 +215,14 @@ async fn build_engine(
         key_dir = %config.resolution_key_dir().display(),
         "durable authoritative resolution keys loaded"
     );
+    let decision_keys = DurableDecisionKeyStore::new(config.decision_key_dir())
+        .load_or_create()
+        .map_err(|error| format!("decision key provisioning failed: {error}"))?;
+    tracing::info!(
+        current_version = decision_keys.current_version(),
+        key_dir = %config.decision_key_dir().display(),
+        "durable delayed-decision keys loaded"
+    );
     let authoritative = store.authoritative_store().ok_or_else(|| {
         "configured store does not implement K3 exact-token durability; refusing writable boot"
             .to_owned()
@@ -315,6 +326,7 @@ async fn build_engine(
     let mut engine = Engine::from_composition(world, composition);
     engine.set_offer_keys(offer_keys);
     engine.set_resolution_keys(resolution_keys);
+    engine.set_decision_keys(decision_keys);
     modules::boot_modules(&mut engine, &**store).await?;
     Ok((engine, staff))
 }

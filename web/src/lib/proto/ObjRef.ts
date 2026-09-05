@@ -6,11 +6,11 @@
  * The id is the classic dbref string form (`"#123"`); clients treat it as
  * opaque (it keys click-to-run commands, unread cursors, etc.).
  */
-export type ObjRef = { 
+export type ObjRef = {
 /**
  * Opaque object id, e.g. `"#123"`.
  */
-id: string, 
+id: string,
 /**
  * Display name at the time of the event.
  */

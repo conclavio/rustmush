@@ -148,9 +148,14 @@ fn wod_roll(
 ) -> Result<AbilityOutcome, AbilityError> {
     let args: WodRollInput = serde_json::from_value(input)
         .map_err(|e| AbilityError::Invalid(format!("wod_roll needs a pool_expr ({e})")))?;
+    if args.willpower {
+        return Err(AbilityError::Invalid(
+            "Willpower-backed NPC rolls must select the authoritative legal action".to_owned(),
+        ));
+    }
 
     // The NPC's own sheet (schema-agnostic read), then its active schema.
-    let mut doc = SheetStore::new(dispatch.schemas.default_schema())
+    let doc = SheetStore::new(dispatch.schemas.default_schema())
         .get(w, npc)
         .ok_or_else(|| AbilityError::Invalid("this character has no sheet to roll".to_string()))?;
     let schema = dispatch.schemas.schema_for_doc(&doc);
@@ -175,24 +180,7 @@ fn wod_roll(
 
     // Willpower spend deducts one *temporary* point from the NPC's own sheet
     // (clamped to permanent, mirroring `+roll/wp`). Honored only if available.
-    let willpower = if args.willpower {
-        let permanent = doc.number("willpower").unwrap_or(1).max(0);
-        let temp = doc
-            .number("willpower_temp")
-            .unwrap_or(0)
-            .clamp(0, permanent);
-        if temp >= 1 {
-            doc.set_number("willpower_temp", temp - 1);
-            SheetStore::new(schema.clone())
-                .put_by(w, npc, &doc, npc)
-                .map_err(|es| AbilityError::Invalid(fmt_errs(&es)))?;
-            true
-        } else {
-            false
-        }
-    } else {
-        false
-    };
+    let willpower = false;
 
     let pool = (resolved.total + modifier + wound + form).max(1);
     let difficulty = args.difficulty.unwrap_or(6).clamp(3, 9);
@@ -409,13 +397,6 @@ fn build_outcome(
             "outcome": outcome,
         }),
     }
-}
-
-fn fmt_errs(errs: &[mush_ruleset::SheetError]) -> String {
-    errs.iter()
-        .map(std::string::ToString::to_string)
-        .collect::<Vec<_>>()
-        .join("; ")
 }
 
 // ======================================================================

@@ -133,7 +133,7 @@ fn resolve_for(
     who: ObjId,
     expr: &str,
 ) -> Result<ResolvedPool, String> {
-    match cmd.read(ctx.w, who) {
+    match cmd.read_ctx(ctx, who).map_err(|error| error.to_string())? {
         Some(doc) => resolve_pool(&cmd.schema_for_doc(&doc), &doc, expr),
         None => {
             let n: i32 = expr
@@ -158,6 +158,11 @@ pub(crate) fn roll_cmd(cmd: &WodCmd, ctx: &mut Ctx<'_>) -> Result<(), CmdError> 
         return roll_last(ctx);
     }
     let args = parse_roll_args(ctx.args.raw())?;
+    if ctx.switches.has("wp") {
+        return Err(CmdError::msg(
+            "Willpower-backed rolls use the authoritative action surface; open +actions and select Willpower Roll.",
+        ));
+    }
     if let Some((target_spec, their_expr)) = args.contested.clone() {
         return contested_roll(cmd, ctx, &args, &target_spec, &their_expr);
     }
@@ -178,7 +183,7 @@ fn prepare(
     nowound: bool,
 ) -> Result<Prepared, CmdError> {
     let resolved = resolve_for(cmd, ctx, who, &args.pool_expr).map_err(CmdError::msg)?;
-    let doc = cmd.read(ctx.w, who);
+    let doc = cmd.read_ctx(ctx, who)?;
 
     // Wound penalty (<= 0) and incapacitation.
     let (wound, incap) = match (&doc, nowound) {
@@ -380,7 +385,7 @@ fn pending_roll(
     // Re-resolve the ST pool against the live sheet (the sheet fence). Fall back
     // to the lenient resolver only if the sheet-only resolver cannot (e.g. a
     // sheetless actor), never widening past the sheet for a real character.
-    let doc = cmd.read(ctx.w, who);
+    let doc = cmd.read_ctx(ctx, who)?;
     let resolved = match &doc {
         Some(d) => crate::dice::resolve_sheet_pool(&cmd.schema_for_doc(d), d, &pending.pool)
             .or_else(|_| resolve_for(cmd, ctx, who, &pending.pool)),
@@ -486,7 +491,7 @@ pub(crate) fn roll_expr(
     vulgar: bool,
 ) -> Result<Owod20Outcome, CmdError> {
     let resolved = resolve_for(cmd, ctx, who, expr).map_err(CmdError::msg)?;
-    let doc = cmd.read(ctx.w, who);
+    let doc = cmd.read_ctx(ctx, who)?;
     let (wound, incap) = match (&doc, apply_wound) {
         (Some(d), true) => {
             let track =

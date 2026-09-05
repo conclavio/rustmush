@@ -4,7 +4,7 @@
  * Interactive affordance for the web client: activating the span submits
  * `cmd` exactly as if the player typed it. SSH renderers ignore links.
  */
-export type CommandLink = { 
+export type CommandLink = {
 /**
  * The command line to submit, e.g. `"look north"`.
  */

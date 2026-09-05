@@ -9,13 +9,13 @@ use crate::attr::{AttrFlags, AttrValue};
 use crate::cmd::{CmdError, CommandSpec, Ctx, Registry, RegistryError};
 use crate::flags::{Flags, Role};
 use crate::matchit::{MatchErr, match_object};
-use crate::module::can_perceive;
+use crate::module::{HookPoint, perceives_via_action_state};
 use crate::obj::{ObjId, ObjKind};
 use crate::output::{Outbox, name_span};
 use crate::perm;
 use crate::world::World;
 
-use super::{attr_text, show_room};
+use super::{attr_text, show_room_with_action_state};
 
 fn look_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let q = ctx.args.raw().to_string();
@@ -25,7 +25,7 @@ fn look_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         if ctx.w.get(loc).is_none() {
             return Err(CmdError::msg("You are nowhere."));
         }
-        show_room(ctx.reg, ctx.w, ctx.actor, loc, ctx.out);
+        ctx.show_room(ctx.actor, loc);
         return Ok(());
     }
     match match_object(ctx.w, ctx.actor, &q) {
@@ -34,8 +34,15 @@ fn look_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         // <name>` and `look #dbref` cannot probe a concealed subject. The
         // looker always perceives themselves. Free pass with no Perceive hook,
         // so this is identical to today for a game without concealment.
-        Ok(target) if target == ctx.actor || can_perceive(ctx.reg, ctx.w, ctx.actor, target) => {
-            look_at(ctx.reg, ctx.w, ctx.actor, target, ctx.out);
+        Ok(target) if target == ctx.actor || ctx.can_perceive(ctx.actor, target) => {
+            look_at(
+                ctx.reg,
+                ctx.w,
+                ctx.actor,
+                target,
+                ctx.out,
+                ctx.typed_state.store(),
+            );
             Ok(())
         }
         // A matched-but-imperceptible target falls through exactly like a name
@@ -65,10 +72,17 @@ fn look_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 /// contents. An actor's carry is private — `look <player>` never lists
 /// another character's inventory unless the looker controls them
 /// (`inventory` is how you see your own).
-fn look_at(reg: &Registry, w: &World, looker: ObjId, target: ObjId, out: &mut Outbox) {
+fn look_at(
+    reg: &Registry,
+    w: &World,
+    looker: ObjId,
+    target: ObjId,
+    out: &mut Outbox,
+    action_state: Option<&crate::action_state::ActionStateStore>,
+) {
     let Some(o) = w.get(target) else { return };
     if o.kind == ObjKind::Room {
-        show_room(reg, w, looker, target, out);
+        show_room_with_action_state(reg, w, looker, target, out, action_state);
         return;
     }
     let desc =
@@ -93,7 +107,13 @@ fn look_at(reg: &Registry, w: &World, looker: ObjId, target: ObjId, out: &mut Ou
                 .is_some_and(|co| !co.flags.intersects(Flags::GOING | Flags::DARK))
                 // M11 per-observer projection: never list an occupant the
                 // looker cannot perceive (free pass with no Perceive hook).
-                && can_perceive(reg, w, looker, c)
+                && perceives_via_action_state(
+                    reg.hooks(HookPoint::Perceive),
+                    w,
+                    looker,
+                    c,
+                    action_state,
+                )
             {
                 text = text.text(" ").span(name_span(w, c));
             }
@@ -110,7 +130,7 @@ fn examine_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     // `examine <name>`/`examine #dbref` cannot confirm a cloaked subject's
     // presence (even for a controller with no piercing sense). Self is always
     // perceivable; free pass with no Perceive hook registered.
-    if target != ctx.actor && !can_perceive(ctx.reg, ctx.w, ctx.actor, target) {
+    if target != ctx.actor && !ctx.can_perceive(ctx.actor, target) {
         return Err(MatchErr::NoMatch.into());
     }
     let w = &*ctx.w;
@@ -199,7 +219,7 @@ fn examine_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         .contents
         .iter()
         .copied()
-        .filter(|&c| can_perceive(ctx.reg, w, ctx.actor, c))
+        .filter(|&c| ctx.can_perceive(ctx.actor, c))
         .collect();
     if !visible.is_empty() {
         let mut text = RichText::plain("Contents:");

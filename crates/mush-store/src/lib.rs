@@ -32,6 +32,8 @@ pub mod suite;
 pub mod types;
 
 pub use memory::InMemoryStore;
+#[doc(hidden)]
+pub use memory::{AuthoritativeFaultMode, AuthoritativeFaultStore};
 pub use migrate::{
     CURRENT_SCHEMA_VERSION, Migration, MigrationFn, core_migrations, run_migrations,
 };

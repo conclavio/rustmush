@@ -36,11 +36,11 @@ use mush_ipc::{
 use mush_net_ssh::MAX_LINE_CHARS;
 use mush_proto::{
     ActionStatusId, MAX_VIEW_WIRE_INTEGER, ObjRef, OutputEvent, ProjectedActionReceipt,
-    ProjectedActionStatus, RichText, ViewEnvelope,
+    ProjectedActionStatus, ProjectedCommitToken, RichText, ViewEnvelope,
 };
 use mush_session::{
-    ConnId, ConnectionHandle, DetachOutcome, DetachReason, FloodVerdict, SessId, SessionManager,
-    sanitize_line,
+    ConnId, ConnectionHandle, DetachOutcome, DetachReason, FloodVerdict, SendToConn, SessId,
+    SessionManager, sanitize_line,
 };
 use smol_str::SmolStr;
 
@@ -71,6 +71,68 @@ fn render_legal_action_list(offers: &[ProjectedLegalAction]) -> String {
         }
     }
     text
+}
+
+#[derive(Debug, PartialEq)]
+struct LineActionSelection {
+    verb: String,
+    subject: PerceivedRef,
+    parameters: serde_json::Value,
+}
+
+fn strip_ascii_keyword<'a>(input: &'a str, keyword: &str) -> Option<&'a str> {
+    let (head, tail) = input.split_once(char::is_whitespace)?;
+    head.eq_ignore_ascii_case(keyword).then(|| tail.trim())
+}
+
+fn parse_line_subject(argument: &str) -> Result<PerceivedRef, &'static str> {
+    let id = argument
+        .trim()
+        .strip_prefix('#')
+        .and_then(|value| value.parse::<u32>().ok())
+        .filter(|value| *value != 0)
+        .ok_or("Action subjects use #<object>.")?;
+    Ok(PerceivedRef::KnownObject {
+        id: ObjId(id),
+        revision: 1,
+    })
+}
+
+fn parse_line_action(argument: &str) -> Result<LineActionSelection, &'static str> {
+    let argument = argument.trim();
+    let (verb, mut rest) = argument
+        .split_once(char::is_whitespace)
+        .map_or((argument, ""), |(verb, rest)| (verb, rest.trim()));
+    if verb.is_empty() {
+        return Err("Usage: +act <verb> [on #<object>] [with <json object>]");
+    }
+    let subject = if let Some(after_on) = strip_ascii_keyword(rest, "on") {
+        let (object, after_object) = after_on
+            .split_once(char::is_whitespace)
+            .map_or((after_on, ""), |(object, tail)| (object, tail.trim()));
+        let subject =
+            parse_line_subject(object).map_err(|_| "Action subjects use on #<object>.")?;
+        rest = after_object;
+        subject
+    } else {
+        PerceivedRef::SelfActor
+    };
+    if let Some(after_with) = strip_ascii_keyword(rest, "with") {
+        rest = after_with.trim();
+    }
+    let parameters = if rest.is_empty() {
+        serde_json::json!({})
+    } else {
+        serde_json::from_str(rest).map_err(|_| "Action parameters must be one JSON object.")?
+    };
+    if !parameters.is_object() {
+        return Err("Action parameters must be one JSON object.");
+    }
+    Ok(LineActionSelection {
+        verb: verb.to_owned(),
+        subject,
+        parameters,
+    })
 }
 
 /// One character offered on a character-select surface (welcome screen,
@@ -294,17 +356,18 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
             .map(char_key_obj)
     }
 
-    async fn self_legal_actions(
+    async fn legal_actions_for(
         &self,
         conn: ConnId,
         actor: ObjId,
+        subject: PerceivedRef,
     ) -> Result<Vec<ProjectedLegalAction>, ActionSend> {
         match self
             .link
             .request(ServiceReq::LegalActions {
                 conn: conn.0,
                 actor,
-                subject: PerceivedRef::SelfActor,
+                subject,
             })
             .await
         {
@@ -323,9 +386,25 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
         }
     }
 
-    fn action_receipt(&self, conn: ConnId, receipt: &ProjectedActionReceipt) {
+    fn action_receipt(&self, conn: ConnId, actor: ObjId, receipt: &ProjectedActionReceipt) {
         match receipt.view() {
-            Ok(view) => send_event_to_conn(&self.sessions, conn, OutputEvent::View(view)),
+            Ok(view) => {
+                let commit = ProjectedCommitToken::new(receipt.commit())
+                    .expect("validated projected receipt has a valid commit token");
+                let event = Arc::new(OutputEvent::View(view));
+                if self.sessions.send_acknowledgeable_to_conn(
+                    conn,
+                    commit.clone(),
+                    Arc::clone(&event),
+                ) == SendToConn::Unknown
+                {
+                    let _ = self.sessions.retain_acknowledgeable_for_char(
+                        char_key(actor),
+                        commit,
+                        event,
+                    );
+                }
+            }
             Err(error) => {
                 tracing::error!(conn = conn.0, error = %error, "projected action receipt frame failed");
                 send_event_to_conn(
@@ -340,7 +419,7 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
         }
     }
 
-    fn action_error(&self, conn: ConnId, outcome: ActionSend) {
+    fn action_error(&self, conn: ConnId, actor: ObjId, outcome: ActionSend) {
         let message = match outcome {
             ActionSend::Accepted => return,
             ActionSend::Owned(status) => {
@@ -355,7 +434,7 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
                 return;
             }
             ActionSend::Finished(receipt) => {
-                self.action_receipt(conn, &receipt);
+                self.action_receipt(conn, actor, &receipt);
                 return;
             }
             ActionSend::Busy => "The game is busy; try that action again.",
@@ -401,7 +480,7 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
                 .await
             {
                 Some(ServiceResp::ActionStatus(ProjectedActionStatus::Committed(receipt))) => {
-                    self.action_receipt(conn, &receipt);
+                    self.action_receipt(conn, actor, &receipt);
                 }
                 Some(ServiceResp::ActionStatus(ProjectedActionStatus::Pending { reference })) => {
                     send_event_to_conn(
@@ -445,9 +524,9 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
                         )),
                     );
                 }
-                Some(ServiceResp::Busy) => self.action_error(conn, ActionSend::Busy),
+                Some(ServiceResp::Busy) => self.action_error(conn, actor, ActionSend::Busy),
                 Some(ServiceResp::Unavailable) | None => {
-                    self.action_error(conn, ActionSend::Gone);
+                    self.action_error(conn, actor, ActionSend::Gone);
                 }
                 Some(other) => {
                     tracing::error!(
@@ -455,13 +534,31 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
                         ?other,
                         "action status returned wrong response type"
                     );
-                    self.action_error(conn, ActionSend::Gone);
+                    self.action_error(conn, actor, ActionSend::Gone);
                 }
             }
             return true;
         }
-        if command.eq_ignore_ascii_case("+actions") && argument.trim().is_empty() {
-            match self.self_legal_actions(conn, actor).await {
+        if command.eq_ignore_ascii_case("+actions") {
+            let subject = if argument.trim().is_empty() {
+                PerceivedRef::SelfActor
+            } else {
+                match parse_line_subject(argument) {
+                    Ok(subject) => subject,
+                    Err(message) => {
+                        send_event_to_conn(
+                            &self.sessions,
+                            conn,
+                            OutputEvent::Sys(RichText::tag(
+                                "system",
+                                format!("{message} Usage: +actions [#<object>]"),
+                            )),
+                        );
+                        return true;
+                    }
+                }
+            };
+            match self.legal_actions_for(conn, actor, subject).await {
                 Ok(offers) if offers.is_empty() => send_event_to_conn(
                     &self.sessions,
                     conn,
@@ -475,50 +572,56 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
                         OutputEvent::Sys(RichText::tag("system", text)),
                     );
                 }
-                Err(error) => self.action_error(conn, error),
+                Err(error) => self.action_error(conn, actor, error),
             }
             return true;
         }
         if !command.eq_ignore_ascii_case("+act") {
             return false;
         }
-        let verb = argument.trim();
-        if verb.is_empty() {
-            send_event_to_conn(
-                &self.sessions,
-                conn,
-                OutputEvent::Sys(RichText::tag("system", "Usage: +act <offered verb>")),
-            );
-            return true;
-        }
-        let offers = match self.self_legal_actions(conn, actor).await {
-            Ok(offers) => offers,
-            Err(error) => {
-                self.action_error(conn, error);
+        let selection = match parse_line_action(argument) {
+            Ok(selection) => selection,
+            Err(message) => {
+                send_event_to_conn(
+                    &self.sessions,
+                    conn,
+                    OutputEvent::Sys(RichText::tag("system", message)),
+                );
                 return true;
             }
         };
-        let mut matching = offers
-            .into_iter()
-            .filter(|offer| offer.presentation().verb.eq_ignore_ascii_case(verb));
+        let offers = match self
+            .legal_actions_for(conn, actor, selection.subject.clone())
+            .await
+        {
+            Ok(offers) => offers,
+            Err(error) => {
+                self.action_error(conn, actor, error);
+                return true;
+            }
+        };
+        let mut matching = offers.into_iter().filter(|offer| {
+            offer
+                .presentation()
+                .verb
+                .eq_ignore_ascii_case(&selection.verb)
+        });
         let Some(offer) = matching.next() else {
-            self.action_error(conn, ActionSend::Rejected);
+            self.action_error(conn, actor, ActionSend::Rejected);
             return true;
         };
         if matching.next().is_some() {
-            tracing::error!(%actor, verb, "projected legal-action verb is ambiguous");
-            self.action_error(conn, ActionSend::Rejected);
+            tracing::error!(%actor, verb = selection.verb, "projected legal-action verb is ambiguous");
+            self.action_error(conn, actor, ActionSend::Rejected);
             return true;
         }
-        if !offer.parameters().parameters().is_empty()
-            || !matches!(offer.targets(), ProjectedTargetSchema::None)
-        {
+        if !matches!(offer.targets(), ProjectedTargetSchema::None) {
             send_event_to_conn(
                 &self.sessions,
                 conn,
                 OutputEvent::Sys(RichText::tag(
                     "system",
-                    "That action needs structured parameters or targets.",
+                    "That action needs a structured target selector.",
                 )),
             );
             return true;
@@ -531,15 +634,18 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
                 offered_action: offer.offer(),
                 subject: offer.subject().clone(),
                 targets: Vec::new(),
-                parameters: serde_json::json!({}),
+                parameters: selection.parameters,
             })
             .await;
-        self.action_error(conn, outcome);
+        self.action_error(conn, actor, outcome);
         true
     }
 
     pub(crate) async fn legal_actions_panel(&self, conn: ConnId, id: u64, actor: ObjId) {
-        let event = match self.self_legal_actions(conn, actor).await {
+        let event = match self
+            .legal_actions_for(conn, actor, PerceivedRef::SelfActor)
+            .await
+        {
             Ok(offers) => match serde_json::to_value(offers).and_then(|data| {
                 let sequence = self
                     .next_view_sequence(conn, "legal.actions")
@@ -1069,12 +1175,37 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
 
 #[cfg(test)]
 mod projection_tests {
-    use super::render_legal_action_list;
+    use super::{parse_line_action, render_legal_action_list};
     use mush_contract_tests::{
         assert_projection_text_clean, install_toy_focus, toy_brace_offers, toy_definitions,
         toy_world_with_state,
     };
-    use mush_core::{GOD, OfferKeyRing, OfferSecret};
+    use mush_core::{GOD, ObjId, OfferKeyRing, OfferSecret, PerceivedRef};
+
+    #[test]
+    fn line_action_parser_accepts_self_and_staff_subject_parameters() {
+        let own =
+            parse_line_action(r#"willpower-roll with {"pool":"strength+brawl","difficulty":6}"#)
+                .unwrap();
+        assert_eq!(own.verb, "willpower-roll");
+        assert_eq!(own.subject, PerceivedRef::SelfActor);
+        assert_eq!(own.parameters["pool"], "strength+brawl");
+
+        let staff =
+            parse_line_action(r#"condition-damage ON #42 WITH {"amount":3,"kind":"physical"}"#)
+                .unwrap();
+        assert_eq!(
+            staff.subject,
+            PerceivedRef::KnownObject {
+                id: ObjId(42),
+                revision: 1,
+            }
+        );
+        assert_eq!(staff.parameters["amount"], 3);
+
+        assert!(parse_line_action("brace with []").is_err());
+        assert!(parse_line_action("condition-damage on Nick with {}").is_err());
+    }
 
     #[test]
     fn line_action_list_renders_only_projected_presentation() {

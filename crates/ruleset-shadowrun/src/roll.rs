@@ -150,7 +150,7 @@ fn resolve_for(
     who: ObjId,
     expr: &str,
 ) -> Result<ResolvedPool, String> {
-    match cmd.read(ctx.w, who) {
+    match cmd.read_ctx(ctx, who).map_err(|error| error.to_string())? {
         Some(doc) => resolve_pool(&cmd.schema, &doc, expr),
         None => {
             let n: i32 = expr
@@ -194,7 +194,7 @@ fn prepare(
     edge_dice_only: bool,
     nowound: bool,
 ) -> Result<Prepared, CmdError> {
-    let doc = cmd.read(ctx.w, who);
+    let doc = cmd.read_ctx(ctx, who)?;
 
     // Wound modifier (<= 0) from the Condition Monitors.
     let wound = match (&doc, nowound) {
@@ -401,7 +401,7 @@ pub(crate) fn roll_labeled(
     apply_wound: bool,
 ) -> Result<Sr5Outcome, CmdError> {
     let resolved = resolve_for(cmd, ctx, who, expr).map_err(CmdError::msg)?;
-    let doc = cmd.read(ctx.w, who);
+    let doc = cmd.read_ctx(ctx, who)?;
     let wound = match (&doc, apply_wound) {
         (Some(d), true) => crate::derive::wound_modifier(d) as i32,
         _ => 0,

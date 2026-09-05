@@ -44,6 +44,7 @@ impl GameModule for RollTestModule {
         "rolltest"
     }
     fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
+        reg.classify_commands(mush_core::CommandCompatibility::ReadOnly);
         reg.command(
             CommandSpec {
                 name: "+testroll".into(),

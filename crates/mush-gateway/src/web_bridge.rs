@@ -467,6 +467,7 @@ impl<A: AuthBackend + 'static> WebHooks for WebBridge<A> {
                     return Err(format!("{e}."));
                 }
             };
+            let _ = self.core.sessions.redeliver_unacknowledged(ConnId(conn_id));
             Ok(SessionStart {
                 resume_from: entered.resume_from,
             })
@@ -557,6 +558,7 @@ impl<A: AuthBackend + 'static> WebHooks for WebBridge<A> {
                 live_from,
                 "web session resumed"
             );
+            let _ = self.core.sessions.redeliver_unacknowledged(conn_id);
             Ok(ResumeOk {
                 replayed,
                 live_from,
@@ -699,6 +701,19 @@ impl<A: AuthBackend + 'static> WebHooks for WebBridge<A> {
                     self.direct_error_reply(conn_id, id, "The game is shutting down.");
                 }
             }
+        })
+    }
+
+    fn acknowledge(
+        &self,
+        conn: u64,
+        commit: mush_proto::ProjectedCommitToken,
+    ) -> BoxFuture<'_, ()> {
+        Box::pin(async move {
+            let _ = self
+                .core
+                .sessions
+                .acknowledge_receipt(ConnId(conn), &commit);
         })
     }
 

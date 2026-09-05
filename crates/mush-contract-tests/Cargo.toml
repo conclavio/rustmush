@@ -10,10 +10,12 @@ publish = false
 [dependencies]
 mush-core.workspace = true
 mush-proto.workspace = true
+mush-store.workspace = true
 mush-testkit.workspace = true
 mush-tactics.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+tokio.workspace = true
 
 [lints]
 workspace = true
@@ -24,4 +26,5 @@ workspace = true
 mush-config.workspace = true
 mush-llm.workspace = true
 mush-server.workspace = true
+static_assertions.workspace = true
 toml.workspace = true

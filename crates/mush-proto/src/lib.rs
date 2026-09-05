@@ -45,7 +45,7 @@ pub use receipt::{
     ActionStatusId, ActionStatusIdError, MAX_ACTION_STATUS_ID_BYTES,
     MAX_PROJECTED_ACTION_RESULT_BYTES, MAX_PROJECTED_ACTION_SUMMARY_BYTES, ProjectedActionReceipt,
     ProjectedActionReceiptError, ProjectedActionResult, ProjectedActionResultError,
-    ProjectedActionStatus,
+    ProjectedActionStatus, ProjectedCommitToken, ProjectedCommitTokenError,
 };
 pub use text::{Color, CommandLink, RichText, Span, Style};
 

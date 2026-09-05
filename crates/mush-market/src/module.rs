@@ -189,6 +189,9 @@ impl GameModule for MarketModule {
     }
 
     fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
+        // K8.5 module compatibility: every command this module registers is a bounded
+        // whole-document post-image on the compatibility lane (08i §4, rule 1).
+        reg.classify_commands(mush_core::CommandCompatibility::LegacyPostImage);
         reg.state(MarketStore {
             tables: MarketTables {
                 catalogs: self.catalogs.clone(),

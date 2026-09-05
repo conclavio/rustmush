@@ -530,6 +530,8 @@ pub struct Engine {
     /// short-lived [`PrepareCtx`](crate::resolution::PrepareCtx) capabilities
     /// cross into providers; the ring and root bytes never do.
     resolution_keys: Option<crate::resolution::ResolutionKeyRing>,
+    /// Process-local HMAC key ring for durable delayed-decision prompts.
+    decision_keys: Option<crate::decision::DecisionKeyRing>,
     /// At most one prepared action awaiting transfer to the driver.
     staged_action: Option<StagedAction>,
     /// Module persistence ops drained from handlers, awaiting
@@ -573,6 +575,7 @@ impl Engine {
             action_state,
             offer_keys: None,
             resolution_keys: None,
+            decision_keys: None,
             staged_action: None,
             module_ops: Vec::new(),
             scene_ticks: HashMap::new(),
@@ -597,6 +600,11 @@ impl Engine {
     /// on rerunning the provider with this mutable current version.
     pub fn set_resolution_keys(&mut self, keys: crate::resolution::ResolutionKeyRing) {
         self.resolution_keys = Some(keys);
+    }
+
+    /// Install or atomically replace the delayed-decision token key ring.
+    pub fn set_decision_keys(&mut self, keys: crate::decision::DecisionKeyRing) {
+        self.decision_keys = Some(keys);
     }
 
     /// Root-secret versions still referenced by open or durably closed
@@ -649,8 +657,12 @@ impl Engine {
                 .clock_providers()
                 .ok_or(crate::clock_provider::ClockReadError::RegistryUnavailable)?
                 .read_scene(&self.world, &self.action_state, clock),
-            crate::clock::ClockRef::DomainTick { .. }
-            | crate::clock::ClockRef::Registered { .. } => self
+            crate::clock::ClockRef::DomainTick { .. } => self
+                .registry
+                .clock_providers()
+                .ok_or(crate::clock_provider::ClockReadError::RegistryUnavailable)?
+                .read_domain(&self.world, &self.action_state, clock),
+            crate::clock::ClockRef::Registered { .. } => self
                 .registry
                 .clock_providers()
                 .ok_or(crate::clock_provider::ClockReadError::RegistryUnavailable)?
@@ -710,6 +722,381 @@ impl Engine {
             .scan(self, cause, cursor, limit)
     }
 
+    /// Discover one bounded canonical page of ready or expired-lease delayed
+    /// decisions. Prompt linkage is authenticated before a candidate leaves
+    /// the engine.
+    pub fn discover_decision_dispatches(
+        &self,
+        cursor: Option<&crate::decision_source::DecisionSourceCursor>,
+        limit: usize,
+    ) -> Result<
+        crate::decision_source::DecisionSourcePage,
+        crate::decision_source::DecisionSourceScanError,
+    > {
+        let keys = self
+            .decision_keys
+            .as_ref()
+            .ok_or(crate::decision_source::DecisionSourceScanError::RegistryUnavailable)?;
+        self.registry
+            .decision_sources()
+            .ok_or(crate::decision_source::DecisionSourceScanError::RegistryUnavailable)?
+            .scan(self, keys, cursor, limit)
+    }
+
+    /// Resolve one durable outbox wake directly against its authoritative
+    /// pending/prompt/deadline records. A stale terminal wake is a no-op.
+    pub fn decision_dispatch_for_wake(
+        &self,
+        owner: &crate::mechanics::OwnerId,
+        wake: &crate::decision::DecisionWake,
+    ) -> Result<
+        Option<crate::decision_source::DecisionDispatchCandidate>,
+        crate::decision_source::DecisionSourceScanError,
+    > {
+        let keys = self
+            .decision_keys
+            .as_ref()
+            .ok_or(crate::decision_source::DecisionSourceScanError::RegistryUnavailable)?;
+        self.registry
+            .decision_sources()
+            .ok_or(crate::decision_source::DecisionSourceScanError::RegistryUnavailable)?
+            .candidate_for_wake(self, keys, owner, wake)
+    }
+
+    /// Construct stable internal ingress for one discovered lease attempt.
+    pub fn decision_lease_ingress(
+        &self,
+        candidate: &crate::decision_source::DecisionDispatchCandidate,
+        idempotency_epoch: u64,
+    ) -> Result<crate::action::IngressEnvelope, crate::decision_source::DecisionLeaseIngressError>
+    {
+        self.registry
+            .decision_sources()
+            .ok_or(crate::decision_source::DecisionSourceCandidateError::RegistryMismatch)?
+            .ingress_for_candidate(candidate, idempotency_epoch)
+    }
+
+    /// Authenticate one provider completion against its exact live lease and
+    /// construct the canonical ordinary-action ingress it will contend on.
+    pub fn decision_response_ingress(
+        &self,
+        fence: &crate::decision::DecisionCompletionFence,
+        response: &crate::decision::DecisionResponse,
+    ) -> Result<crate::action::IngressEnvelope, crate::decision_source::DecisionResponseIngressError>
+    {
+        let keys = self
+            .decision_keys
+            .as_ref()
+            .ok_or(crate::decision_source::DecisionResponseIngressError::RegistryUnavailable)?;
+        self.registry
+            .decision_sources()
+            .ok_or(crate::decision_source::DecisionResponseIngressError::RegistryUnavailable)?
+            .response_ingress(self, keys, fence, response)
+    }
+
+    /// Run the source's composition-branded deterministic fallback selector
+    /// against only the exact persisted projected prompt.
+    pub fn select_decision_fallback(
+        &self,
+        candidate: &crate::decision_source::DecisionFallbackCandidate,
+    ) -> Result<
+        crate::decision::DecisionResponse,
+        crate::decision_source::DecisionFallbackSelectionError,
+    > {
+        let keys = self
+            .decision_keys
+            .as_ref()
+            .ok_or(crate::decision_source::DecisionFallbackSelectionError::StaleCandidate)?;
+        self.registry
+            .decision_sources()
+            .ok_or(crate::decision_source::DecisionFallbackSelectionError::StaleCandidate)?
+            .select_fallback(self, keys, candidate)
+    }
+
+    /// Construct the ordinary semantic action ingress selected by one exact
+    /// durable fallback candidate.
+    pub fn decision_fallback_ingress(
+        &self,
+        candidate: &crate::decision_source::DecisionFallbackCandidate,
+        response: &crate::decision::DecisionResponse,
+    ) -> Result<crate::action::IngressEnvelope, crate::decision_source::DecisionResponseIngressError>
+    {
+        let keys = self
+            .decision_keys
+            .as_ref()
+            .ok_or(crate::decision_source::DecisionResponseIngressError::RegistryUnavailable)?;
+        self.registry
+            .decision_sources()
+            .ok_or(crate::decision_source::DecisionResponseIngressError::RegistryUnavailable)?
+            .fallback_ingress(self, keys, candidate, response)
+    }
+
+    /// Regenerate and resolve the exact prompt-time offer selected by an
+    /// authenticated completion, restoring its private revision witnesses.
+    pub fn resolve_decision_response(
+        &self,
+        fence: &crate::decision::DecisionCompletionFence,
+        response: &crate::decision::DecisionResponse,
+        ingress: &crate::action::IngressEnvelope,
+    ) -> Result<
+        crate::decision_source::DecisionResponseResolution,
+        crate::decision_source::DecisionResponseResolveError,
+    > {
+        let keys = self
+            .decision_keys
+            .as_ref()
+            .ok_or(crate::decision_source::DecisionResponseIngressError::RegistryUnavailable)?;
+        self.registry
+            .decision_sources()
+            .ok_or(crate::decision_source::DecisionResponseIngressError::RegistryUnavailable)?
+            .resolve_response(self, keys, fence, response, ingress)
+    }
+
+    pub fn resolve_decision_fallback(
+        &self,
+        candidate: &crate::decision_source::DecisionFallbackCandidate,
+        response: &crate::decision::DecisionResponse,
+        ingress: &crate::action::IngressEnvelope,
+    ) -> Result<
+        crate::decision_source::DecisionResponseResolution,
+        crate::decision_source::DecisionResponseResolveError,
+    > {
+        let keys = self
+            .decision_keys
+            .as_ref()
+            .ok_or(crate::decision_source::DecisionResponseIngressError::RegistryUnavailable)?;
+        self.registry
+            .decision_sources()
+            .ok_or(crate::decision_source::DecisionResponseIngressError::RegistryUnavailable)?
+            .resolve_fallback(self, keys, candidate, response, ingress)
+    }
+
+    /// Construct stable owner-local ingress for binding an already durable
+    /// selected ordinary action to its exact pending decision.
+    pub fn decision_resolving_ingress(
+        &self,
+        fence: &crate::decision::DecisionCompletionFence,
+        binding: &crate::decision::DecisionActionBinding,
+        outcome: crate::decision::DecisionTerminalOutcome,
+        idempotency_epoch: u64,
+    ) -> Result<crate::action::IngressEnvelope, crate::decision_source::DecisionResolvingIngressError>
+    {
+        self.registry
+            .decision_sources()
+            .ok_or(crate::decision_source::DecisionResolvingIngressError::RegistryUnavailable)?
+            .resolving_ingress(self, fence, binding, outcome, idempotency_epoch)
+    }
+
+    /// Construct stable owner-local ingress for committing one typed provider
+    /// attempt result without including diagnostic text in its identity.
+    pub fn decision_attempt_ingress(
+        &self,
+        fence: &crate::decision::DecisionCompletionFence,
+        kind: crate::decision::DecisionAttemptFailureKind,
+        max_attempts: u8,
+        idempotency_epoch: u64,
+    ) -> Result<crate::action::IngressEnvelope, crate::decision_source::DecisionAttemptIngressError>
+    {
+        self.registry
+            .decision_sources()
+            .ok_or(crate::decision_source::DecisionAttemptIngressError::RegistryUnavailable)?
+            .attempt_failure_ingress(self, fence, kind, max_attempts, idempotency_epoch)
+    }
+
+    pub fn plan_decision_attempt_failure(
+        &self,
+        fence: &crate::decision::DecisionCompletionFence,
+        kind: crate::decision::DecisionAttemptFailureKind,
+        max_attempts: u8,
+        ingress: &crate::action::IngressEnvelope,
+    ) -> Result<
+        crate::decision_source::DecisionAttemptPlan,
+        crate::decision_source::DecisionAttemptPlanError,
+    > {
+        self.registry
+            .decision_sources()
+            .ok_or(crate::decision_source::DecisionAttemptPlanError::RegistryUnavailable)?
+            .plan_attempt_failure(self, fence, kind, max_attempts, ingress)
+    }
+
+    pub fn decision_fallback_trigger_for_dispatch(
+        &self,
+        candidate: &crate::decision_source::DecisionDispatchCandidate,
+    ) -> Result<
+        crate::decision_source::DecisionFallbackTriggerCandidate,
+        crate::decision_source::DecisionFallbackTriggerError,
+    > {
+        self.registry
+            .decision_sources()
+            .ok_or(crate::decision_source::DecisionFallbackTriggerError::RegistryUnavailable)?
+            .fallback_trigger_for_dispatch(self, candidate)
+    }
+
+    pub fn decision_fallback_trigger_ingress(
+        &self,
+        candidate: &crate::decision_source::DecisionFallbackTriggerCandidate,
+        idempotency_epoch: u64,
+    ) -> Result<crate::action::IngressEnvelope, crate::decision_source::DecisionFallbackTriggerError>
+    {
+        self.registry
+            .decision_sources()
+            .ok_or(crate::decision_source::DecisionFallbackTriggerError::RegistryUnavailable)?
+            .fallback_trigger_ingress(self, candidate, idempotency_epoch)
+    }
+
+    pub fn plan_decision_fallback_trigger(
+        &self,
+        candidate: &crate::decision_source::DecisionFallbackTriggerCandidate,
+        ingress: &crate::action::IngressEnvelope,
+    ) -> Result<
+        crate::decision_source::DecisionFallbackTriggerPlan,
+        crate::decision_source::DecisionFallbackTriggerPlanError,
+    > {
+        self.registry
+            .decision_sources()
+            .ok_or(crate::decision_source::DecisionFallbackTriggerPlanError::RegistryUnavailable)?
+            .plan_fallback_trigger(self, candidate, ingress)
+    }
+
+    pub fn decision_cancellation_ingress(
+        &self,
+        controller: &crate::decision::DecisionControllerId,
+        decision: crate::decision::DecisionId,
+        revision: u64,
+        idempotency_epoch: u64,
+    ) -> Result<
+        crate::action::IngressEnvelope,
+        crate::decision_source::DecisionCancellationIngressError,
+    > {
+        self.registry
+            .decision_sources()
+            .ok_or(crate::decision_source::DecisionCancellationIngressError::RegistryUnavailable)?
+            .cancellation_ingress(self, controller, decision, revision, idempotency_epoch)
+    }
+
+    pub fn plan_decision_cancellation(
+        &self,
+        controller: &crate::decision::DecisionControllerId,
+        decision: crate::decision::DecisionId,
+        revision: u64,
+        ingress: &crate::action::IngressEnvelope,
+    ) -> Result<
+        crate::decision_source::DecisionCancellationPlan,
+        crate::decision_source::DecisionCancellationPlanError,
+    > {
+        self.registry
+            .decision_sources()
+            .ok_or(crate::decision_source::DecisionCancellationPlanError::RegistryUnavailable)?
+            .plan_cancellation(self, controller, decision, revision, ingress)
+    }
+
+    /// Re-read and plan an exact owner-local Leased-to-Resolving transition
+    /// after its lifecycle ingress has passed store preflight.
+    pub fn plan_decision_resolving(
+        &self,
+        fence: &crate::decision::DecisionCompletionFence,
+        binding: &crate::decision::DecisionActionBinding,
+        outcome: crate::decision::DecisionTerminalOutcome,
+        ingress: &crate::action::IngressEnvelope,
+    ) -> Result<
+        crate::decision_source::DecisionResolvingPlan,
+        crate::decision_source::DecisionResolvingPlanError,
+    > {
+        self.registry
+            .decision_sources()
+            .ok_or(crate::decision_source::DecisionResolvingPlanError::RegistryUnavailable)?
+            .plan_resolving(self, fence, binding, outcome, ingress)
+    }
+
+    /// Construct stable owner-local ingress for terminalizing one exact
+    /// resolving decision binding.
+    pub fn decision_terminal_ingress(
+        &self,
+        fence: &crate::decision::DecisionCompletionFence,
+        binding: &crate::decision::DecisionActionBinding,
+        outcome: crate::decision::DecisionTerminalOutcome,
+        idempotency_epoch: u64,
+    ) -> Result<crate::action::IngressEnvelope, crate::decision_source::DecisionTerminalIngressError>
+    {
+        self.registry
+            .decision_sources()
+            .ok_or(crate::decision_source::DecisionTerminalIngressError::RegistryUnavailable)?
+            .terminal_ingress(self, fence, binding, outcome, idempotency_epoch)
+    }
+
+    /// Re-read and plan one exact owner-local Resolving-to-Terminal
+    /// transition after its lifecycle ingress passes store preflight.
+    pub fn plan_decision_terminal(
+        &self,
+        fence: &crate::decision::DecisionCompletionFence,
+        binding: &crate::decision::DecisionActionBinding,
+        outcome: crate::decision::DecisionTerminalOutcome,
+        ingress: &crate::action::IngressEnvelope,
+    ) -> Result<
+        crate::decision_source::DecisionTerminalPlan,
+        crate::decision_source::DecisionTerminalPlanError,
+    > {
+        self.registry
+            .decision_sources()
+            .ok_or(crate::decision_source::DecisionTerminalPlanError::RegistryUnavailable)?
+            .plan_terminal(self, fence, binding, outcome, ingress)
+    }
+
+    /// Construct stable owner-local ingress for replacing one exact terminal
+    /// decision with its compact attribution receipt.
+    pub fn decision_compaction_ingress(
+        &self,
+        candidate: &crate::decision_source::DecisionCompactionCandidate,
+        idempotency_epoch: u64,
+    ) -> Result<crate::action::IngressEnvelope, crate::decision_source::DecisionCompactionError>
+    {
+        let keys = self
+            .decision_keys
+            .as_ref()
+            .ok_or(crate::decision_source::DecisionCompactionError::RegistryUnavailable)?;
+        self.registry
+            .decision_sources()
+            .ok_or(crate::decision_source::DecisionCompactionError::RegistryUnavailable)?
+            .compaction_ingress(self, keys, candidate, idempotency_epoch)
+    }
+
+    pub fn plan_decision_compaction(
+        &self,
+        candidate: &crate::decision_source::DecisionCompactionCandidate,
+        ingress: &crate::action::IngressEnvelope,
+    ) -> Result<
+        crate::decision_source::DecisionCompactionPlan,
+        crate::decision_source::DecisionCompactionError,
+    > {
+        let keys = self
+            .decision_keys
+            .as_ref()
+            .ok_or(crate::decision_source::DecisionCompactionError::RegistryUnavailable)?;
+        self.registry
+            .decision_sources()
+            .ok_or(crate::decision_source::DecisionCompactionError::RegistryUnavailable)?
+            .plan_compaction(self, keys, candidate, ingress)
+    }
+
+    /// Re-read and plan one exact decision lease after store preflight.
+    pub fn plan_decision_dispatch(
+        &self,
+        candidate: &crate::decision_source::DecisionDispatchCandidate,
+        ingress: &crate::action::IngressEnvelope,
+    ) -> Result<
+        crate::decision_source::DecisionDispatchPlan,
+        crate::decision_source::DecisionSourcePlanError,
+    > {
+        let keys = self
+            .decision_keys
+            .as_ref()
+            .ok_or(crate::decision_source::DecisionSourcePlanError::RegistryUnavailable)?;
+        self.registry
+            .decision_sources()
+            .ok_or(crate::decision_source::DecisionSourcePlanError::RegistryUnavailable)?
+            .plan_candidate(self, keys, candidate, ingress)
+    }
+
     /// Ask the source's trusted read-only adapter to build domain addressing,
     /// parameters, and guards after exact store preflight.
     pub fn plan_scheduled_action(
@@ -744,6 +1131,129 @@ impl Engine {
         providers.project_legal_actions(self, query, keys)
     }
 
+    /// Capture the private prompt-time witnesses for one exact projected
+    /// delayed-decision offer. Providers name coordinates, while the kernel
+    /// supplies current generations and proves every cross-owner bridge.
+    fn capture_decision_offer_witness(
+        &self,
+        action: &crate::mechanics::DefinitionRef,
+        query: &crate::offer::LegalActionQuery,
+        offer: &crate::offer::ProjectedLegalAction,
+    ) -> Result<
+        (crate::decision::PendingOfferWitness, i32),
+        crate::decision::DecisionWitnessCaptureError,
+    > {
+        let providers = self
+            .registry
+            .action_providers()
+            .ok_or(crate::decision::DecisionWitnessCaptureError::ProviderRegistryUnavailable)?;
+        let definitions = self
+            .registry
+            .definitions()
+            .ok_or(crate::decision::DecisionWitnessCaptureError::MechanicsRegistryUnavailable)?;
+        let bridges = self
+            .registry
+            .bridges()
+            .ok_or(crate::decision::DecisionWitnessCaptureError::MechanicsRegistryUnavailable)?;
+        let revisions = self
+            .registry
+            .revision_validators()
+            .ok_or(crate::decision::DecisionWitnessCaptureError::RevisionRegistryUnavailable)?;
+        let (keys, bridge_definitions, rank) = providers.delayed_decision_witness_keys(
+            action,
+            query,
+            offer,
+            self,
+            definitions,
+            bridges,
+        )?;
+        let context = crate::action::RevisionValidatorContext::new(&self.world, &self.action_state);
+        let stamp = |key: crate::action::RevisionKey| -> Result<
+            crate::action::RevisionStamp,
+            crate::decision::DecisionWitnessCaptureError,
+        > {
+            let generation = revisions
+                .current_generation(&context, &key)?
+                .ok_or_else(|| {
+                    crate::decision::DecisionWitnessCaptureError::MissingRevision(Box::new(
+                        key.clone(),
+                    ))
+                })?;
+            Ok(crate::action::RevisionStamp { key, generation })
+        };
+        let common_revisions = keys
+            .common
+            .into_iter()
+            .map(&stamp)
+            .collect::<Result<Vec<_>, _>>()?;
+        let target_revisions = keys
+            .targets
+            .into_iter()
+            .map(|target| {
+                let revisions = target
+                    .revisions
+                    .into_iter()
+                    .map(&stamp)
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(crate::decision::PendingTargetWitness {
+                    perceived: target.perceived,
+                    revisions,
+                })
+            })
+            .collect::<Result<Vec<_>, crate::decision::DecisionWitnessCaptureError>>()?;
+        Ok((
+            crate::decision::PendingOfferWitness {
+                offer: offer.offer(),
+                common_revisions,
+                target_revisions,
+                bridge_definitions,
+            },
+            rank,
+        ))
+    }
+
+    /// Project, witness, rank, and bound one delayed-decision action set in a
+    /// single immutable-world pass. Ranking sees projected data only; exact
+    /// definition and offer identities provide deterministic tie-breaks.
+    pub fn project_decision_offers(
+        &self,
+        query: &crate::offer::LegalActionQuery,
+    ) -> Result<
+        crate::decision::DecisionOfferProjection,
+        crate::decision::DecisionWitnessCaptureError,
+    > {
+        let projected = self.project_legal_actions(query)?;
+        let mut ranked = Vec::with_capacity(projected.len());
+        for internal in projected.internal() {
+            let (witness, rank) = self.capture_decision_offer_witness(
+                internal.action(),
+                query,
+                internal.projected(),
+            )?;
+            ranked.push((
+                rank,
+                internal.action().clone(),
+                internal.projected().clone(),
+                witness,
+            ));
+        }
+        ranked.sort_by(|left, right| {
+            right
+                .0
+                .cmp(&left.0)
+                .then_with(|| left.1.cmp(&right.1))
+                .then_with(|| left.2.offer().cmp(&right.2.offer()))
+        });
+        ranked.truncate(crate::decision::MAX_DECISION_OFFERS);
+        let (actions, offered): (Vec<_>, Vec<_>) = ranked
+            .into_iter()
+            .map(|(_, _, action, witness)| (action, witness))
+            .unzip();
+        Ok(crate::decision::DecisionOfferProjection::new(
+            actions, offered,
+        ))
+    }
+
     /// Resolve an untrusted perceived reference into the private truth query
     /// consumed by action providers.
     ///
@@ -759,6 +1269,7 @@ impl Engine {
         subject: crate::action::PerceivedRef,
     ) -> Result<crate::offer::LegalActionQuery, crate::offer::LegalActionSubjectError> {
         const BOOTSTRAP_SELF_PROJECTION_GENERATION: u64 = 1;
+        const BOOTSTRAP_STAFF_PROJECTION_GENERATION: u64 = 1;
 
         let (truth_subject, projection_generation, witness) = match &subject {
             crate::action::PerceivedRef::SelfActor => (
@@ -768,23 +1279,44 @@ impl Engine {
             ),
             crate::action::PerceivedRef::KnownObject { id, revision } => {
                 if self.world.get(*id).is_none()
-                    || !module::can_perceive(&self.registry, &self.world, actor, *id)
+                    || !module::can_perceive_with_action_state(
+                        &self.registry,
+                        &self.world,
+                        actor,
+                        *id,
+                        &self.action_state,
+                    )
                 {
                     return Err(crate::offer::LegalActionSubjectError::Invalid);
                 }
-                let mut epochs = self
-                    .world
-                    .command_subjects_of(actor)
-                    .iter()
-                    .filter(|grant| grant.subject == *id)
-                    .map(|grant| grant.epoch);
-                let Some(epoch) = epochs.next() else {
-                    return Err(crate::offer::LegalActionSubjectError::Invalid);
-                };
-                if epoch != *revision || epochs.any(|candidate| candidate != epoch) {
-                    return Err(crate::offer::LegalActionSubjectError::Invalid);
+                // Administrative providers may expose a visible object as a
+                // neutral staff subject without fabricating a control-seat
+                // grant. The provider still owns the role/legality check. Any
+                // action requiring control channels continues through the
+                // exact station-grant selection below and will not project.
+                if crate::perm::has_role(&self.world, actor, crate::Role::Royalty)
+                    && *revision == BOOTSTRAP_STAFF_PROJECTION_GENERATION
+                {
+                    (
+                        crate::action::SubjectKey::Object { id: *id },
+                        BOOTSTRAP_STAFF_PROJECTION_GENERATION,
+                        None,
+                    )
+                } else {
+                    let mut epochs = self
+                        .world
+                        .command_subjects_of(actor)
+                        .iter()
+                        .filter(|grant| grant.subject == *id)
+                        .map(|grant| grant.epoch);
+                    let Some(epoch) = epochs.next() else {
+                        return Err(crate::offer::LegalActionSubjectError::Invalid);
+                    };
+                    if epoch != *revision || epochs.any(|candidate| candidate != epoch) {
+                        return Err(crate::offer::LegalActionSubjectError::Invalid);
+                    }
+                    (crate::action::SubjectKey::Object { id: *id }, epoch, None)
                 }
-                (crate::action::SubjectKey::Object { id: *id }, epoch, None)
             }
             crate::action::PerceivedRef::Contact {
                 provider,
@@ -879,7 +1411,13 @@ impl Engine {
                     // well; unlike an operated subject, a target needs no
                     // station grant merely to be targetable.
                     if self.world.get(*id).is_none()
-                        || !module::can_perceive(&self.registry, &self.world, actor, *id)
+                        || !module::can_perceive_with_action_state(
+                            &self.registry,
+                            &self.world,
+                            actor,
+                            *id,
+                            &self.action_state,
+                        )
                     {
                         return Err(crate::offer::LegalActionResolutionError::Resolve(
                             crate::offer::OfferResolveError::Unavailable,
@@ -1335,6 +1873,308 @@ impl Engine {
         )
     }
 
+    /// Prepare the registered owner action while the kernel seeds one exact
+    /// delayed-decision lease into the same transaction. The returned worker
+    /// lease remains caller custody and must not be spawned before the action's
+    /// exact authoritative receipt is acknowledged and installed.
+    pub fn prepare_registered_decision_lease_action(
+        &mut self,
+        candidate: &crate::decision_source::DecisionDispatchCandidate,
+        action: &crate::mechanics::DefinitionRef,
+        invocation: &crate::action::ActionInvocation,
+        transition: crate::decision::DecisionLeaseTransition,
+        commit_token: crate::action::CommitToken,
+    ) -> Result<
+        (
+            PreparedTxn,
+            crate::action::PreparedAuthoritativeAction,
+            crate::decision::DecisionWorkerLease,
+        ),
+        crate::action::ActionProviderPrepareError,
+    > {
+        let providers = self
+            .registry
+            .action_providers()
+            .ok_or(crate::action::ActionProviderPrepareError::RegistryUnavailable)?;
+        let decisions = self
+            .registry
+            .decision_sources()
+            .ok_or(crate::action::ActionProviderPrepareError::RegistryUnavailable)?;
+        let mut worker = None;
+        let (prepared, output) = providers.prepare_authoritative_invocation_seeded(
+            action,
+            invocation,
+            commit_token,
+            &mut self.action_state,
+            self.resolution_keys.as_ref(),
+            |txn| {
+                worker = Some(decisions.seed_lease(candidate, transition, txn).map_err(
+                    |source| {
+                        crate::action::ActionProviderPrepareError::DecisionLease(Box::new(source))
+                    },
+                )?);
+                Ok(())
+            },
+        )?;
+        Ok((
+            prepared,
+            output,
+            worker.expect("successful decision lease seed returns worker custody"),
+        ))
+    }
+
+    /// Prepare the registered controller-owner action while the kernel seeds
+    /// the exact Leased-to-Resolving post-image into the same transaction.
+    pub fn prepare_registered_decision_resolving_action(
+        &mut self,
+        fence: &crate::decision::DecisionCompletionFence,
+        action: &crate::mechanics::DefinitionRef,
+        invocation: &crate::action::ActionInvocation,
+        transition: crate::decision::DecisionResolvingTransition,
+        commit_token: crate::action::CommitToken,
+    ) -> Result<
+        (PreparedTxn, crate::action::PreparedAuthoritativeAction),
+        crate::action::ActionProviderPrepareError,
+    > {
+        let providers = self
+            .registry
+            .action_providers()
+            .ok_or(crate::action::ActionProviderPrepareError::RegistryUnavailable)?;
+        let decisions = self
+            .registry
+            .decision_sources()
+            .ok_or(crate::action::ActionProviderPrepareError::RegistryUnavailable)?;
+        providers.prepare_authoritative_invocation_seeded(
+            action,
+            invocation,
+            commit_token,
+            &mut self.action_state,
+            self.resolution_keys.as_ref(),
+            |txn| {
+                decisions
+                    .seed_resolving(fence, transition, txn)
+                    .map_err(|source| {
+                        crate::action::ActionProviderPrepareError::DecisionLifecycle(Box::new(
+                            source,
+                        ))
+                    })
+            },
+        )
+    }
+
+    /// Prepare the registered controller-owner action while the kernel seeds
+    /// an exact Resolving-to-Terminal post-image in the same transaction.
+    pub fn prepare_registered_decision_terminal_action(
+        &mut self,
+        fence: &crate::decision::DecisionCompletionFence,
+        action: &crate::mechanics::DefinitionRef,
+        invocation: &crate::action::ActionInvocation,
+        transition: crate::decision::DecisionTerminalTransition,
+        commit_token: crate::action::CommitToken,
+    ) -> Result<
+        (PreparedTxn, crate::action::PreparedAuthoritativeAction),
+        crate::action::ActionProviderPrepareError,
+    > {
+        let providers = self
+            .registry
+            .action_providers()
+            .ok_or(crate::action::ActionProviderPrepareError::RegistryUnavailable)?;
+        let decisions = self
+            .registry
+            .decision_sources()
+            .ok_or(crate::action::ActionProviderPrepareError::RegistryUnavailable)?;
+        providers.prepare_authoritative_invocation_seeded(
+            action,
+            invocation,
+            commit_token,
+            &mut self.action_state,
+            self.resolution_keys.as_ref(),
+            |txn| {
+                decisions
+                    .seed_terminal(fence, transition, txn)
+                    .map_err(|source| {
+                        crate::action::ActionProviderPrepareError::DecisionTerminal(Box::new(
+                            source,
+                        ))
+                    })
+            },
+        )
+    }
+
+    /// Prepare the registered owner action while the kernel atomically
+    /// inserts a compact receipt and removes the terminal decision bundle.
+    pub fn prepare_registered_decision_compaction_action(
+        &mut self,
+        candidate: &crate::decision_source::DecisionCompactionCandidate,
+        action: &crate::mechanics::DefinitionRef,
+        invocation: &crate::action::ActionInvocation,
+        transition: crate::decision::DecisionCompactionTransition,
+        commit_token: crate::action::CommitToken,
+    ) -> Result<
+        (PreparedTxn, crate::action::PreparedAuthoritativeAction),
+        crate::action::ActionProviderPrepareError,
+    > {
+        let providers = self
+            .registry
+            .action_providers()
+            .ok_or(crate::action::ActionProviderPrepareError::RegistryUnavailable)?;
+        let decisions = self
+            .registry
+            .decision_sources()
+            .ok_or(crate::action::ActionProviderPrepareError::RegistryUnavailable)?;
+        providers.prepare_authoritative_invocation_seeded(
+            action,
+            invocation,
+            commit_token,
+            &mut self.action_state,
+            self.resolution_keys.as_ref(),
+            |txn| {
+                decisions
+                    .seed_compaction(candidate, transition, txn)
+                    .map_err(|source| {
+                        crate::action::ActionProviderPrepareError::DecisionCompaction(Box::new(
+                            source,
+                        ))
+                    })
+            },
+        )
+    }
+
+    /// Prepare the registered controller-owner action while the kernel seeds
+    /// an exact provider-attempt result into the same transaction.
+    pub fn prepare_registered_decision_attempt_action(
+        &mut self,
+        fence: &crate::decision::DecisionCompletionFence,
+        action: &crate::mechanics::DefinitionRef,
+        invocation: &crate::action::ActionInvocation,
+        transition: crate::decision::DecisionAttemptTransition,
+        commit_token: crate::action::CommitToken,
+    ) -> Result<
+        (
+            PreparedTxn,
+            crate::action::PreparedAuthoritativeAction,
+            Option<crate::decision::DecisionCompletionFence>,
+        ),
+        crate::action::ActionProviderPrepareError,
+    > {
+        let providers = self
+            .registry
+            .action_providers()
+            .ok_or(crate::action::ActionProviderPrepareError::RegistryUnavailable)?;
+        let decisions = self
+            .registry
+            .decision_sources()
+            .ok_or(crate::action::ActionProviderPrepareError::RegistryUnavailable)?;
+        let mut fallback_fence = None;
+        let (prepared, output) = providers.prepare_authoritative_invocation_seeded(
+            action,
+            invocation,
+            commit_token,
+            &mut self.action_state,
+            self.resolution_keys.as_ref(),
+            |txn| {
+                fallback_fence = decisions
+                    .seed_attempt_failure(fence, transition, txn)
+                    .map_err(|source| {
+                        crate::action::ActionProviderPrepareError::DecisionAttempt(Box::new(source))
+                    })?;
+                Ok(())
+            },
+        )?;
+        Ok((prepared, output, fallback_fence))
+    }
+
+    /// Prepare the owner action while atomically transferring exact decision
+    /// custody to deterministic fallback.
+    pub fn prepare_registered_decision_fallback_trigger_action(
+        &mut self,
+        candidate: &crate::decision_source::DecisionFallbackTriggerCandidate,
+        action: &crate::mechanics::DefinitionRef,
+        invocation: &crate::action::ActionInvocation,
+        transition: crate::decision::DecisionFallbackTransition,
+        commit_token: crate::action::CommitToken,
+    ) -> Result<
+        (
+            PreparedTxn,
+            crate::action::PreparedAuthoritativeAction,
+            crate::decision::DecisionCompletionFence,
+        ),
+        crate::action::ActionProviderPrepareError,
+    > {
+        let providers = self
+            .registry
+            .action_providers()
+            .ok_or(crate::action::ActionProviderPrepareError::RegistryUnavailable)?;
+        let decisions = self
+            .registry
+            .decision_sources()
+            .ok_or(crate::action::ActionProviderPrepareError::RegistryUnavailable)?;
+        let mut fallback_fence = None;
+        let (prepared, output) = providers.prepare_authoritative_invocation_seeded(
+            action,
+            invocation,
+            commit_token,
+            &mut self.action_state,
+            self.resolution_keys.as_ref(),
+            |txn| {
+                fallback_fence = Some(
+                    decisions
+                        .seed_fallback_trigger(candidate, transition, txn)
+                        .map_err(|source| {
+                            crate::action::ActionProviderPrepareError::DecisionFallbackTrigger(
+                                Box::new(source),
+                            )
+                        })?,
+                );
+                Ok(())
+            },
+        )?;
+        Ok((
+            prepared,
+            output,
+            fallback_fence.expect("seed callback records fallback fence"),
+        ))
+    }
+
+    /// Prepare the owner action while atomically installing the exact
+    /// Terminal(cancelled) post-image.
+    pub fn prepare_registered_decision_cancellation_action(
+        &mut self,
+        controller: &crate::decision::DecisionControllerId,
+        action: &crate::mechanics::DefinitionRef,
+        invocation: &crate::action::ActionInvocation,
+        transition: crate::decision::DecisionCancellationTransition,
+        commit_token: crate::action::CommitToken,
+    ) -> Result<
+        (PreparedTxn, crate::action::PreparedAuthoritativeAction),
+        crate::action::ActionProviderPrepareError,
+    > {
+        let providers = self
+            .registry
+            .action_providers()
+            .ok_or(crate::action::ActionProviderPrepareError::RegistryUnavailable)?;
+        let decisions = self
+            .registry
+            .decision_sources()
+            .ok_or(crate::action::ActionProviderPrepareError::RegistryUnavailable)?;
+        providers.prepare_authoritative_invocation_seeded(
+            action,
+            invocation,
+            commit_token,
+            &mut self.action_state,
+            self.resolution_keys.as_ref(),
+            |txn| {
+                decisions
+                    .seed_cancellation(controller, transition, txn)
+                    .map_err(|source| {
+                        crate::action::ActionProviderPrepareError::DecisionCancellation(Box::new(
+                            source,
+                        ))
+                    })
+            },
+        )
+    }
+
     /// Release a prepared transaction that could not be assembled into a
     /// complete authoritative bundle. This is distinct from aborting a
     /// [`PreparedInstallation`]: coordinators need this form when canonical
@@ -1443,33 +2283,7 @@ impl Engine {
         let Some(staged) = self.staged_action.as_ref() else {
             return Ok(None);
         };
-        let revalidation = (|| {
-            let revisions = self.registry.revision_validators().ok_or(
-                StagedActionAdmissionError::RegistryUnavailable {
-                    component: "revision-validator",
-                },
-            )?;
-            let authority = self.registry.authority_guard_validators().ok_or(
-                StagedActionAdmissionError::RegistryUnavailable {
-                    component: "authority-validator",
-                },
-            )?;
-            let definitions = self.registry.definitions().ok_or(
-                StagedActionAdmissionError::RegistryUnavailable {
-                    component: "definition",
-                },
-            )?;
-            staged
-                .guards
-                .revalidate_with_action_state(
-                    &self.world,
-                    &self.action_state,
-                    revisions,
-                    authority,
-                    definitions,
-                )
-                .map_err(StagedActionAdmissionError::Revalidation)
-        })();
+        let revalidation = self.revalidate_guards(&staged.guards);
         match revalidation {
             Ok(result) if result.is_current() => Ok(self.staged_action.take()),
             Ok(result) => {
@@ -1481,6 +2295,40 @@ impl Engine {
                 Err(error)
             }
         }
+    }
+
+    /// Pure pre-preparation guard check used when a retained asynchronous
+    /// action may already be stale on arrival. The driver still repeats this
+    /// check at staged-action transfer to close the final synchronous race.
+    pub fn revalidate_guards(
+        &self,
+        guards: &GuardSet,
+    ) -> Result<GuardRevalidation, StagedActionAdmissionError> {
+        let revisions = self.registry.revision_validators().ok_or(
+            StagedActionAdmissionError::RegistryUnavailable {
+                component: "revision-validator",
+            },
+        )?;
+        let authority = self.registry.authority_guard_validators().ok_or(
+            StagedActionAdmissionError::RegistryUnavailable {
+                component: "authority-validator",
+            },
+        )?;
+        let definitions =
+            self.registry
+                .definitions()
+                .ok_or(StagedActionAdmissionError::RegistryUnavailable {
+                    component: "definition",
+                })?;
+        guards
+            .revalidate_with_action_state(
+                &self.world,
+                &self.action_state,
+                revisions,
+                authority,
+                definitions,
+            )
+            .map_err(StagedActionAdmissionError::Revalidation)
     }
 
     fn abort_staged_action(&mut self) {
@@ -1914,7 +2762,14 @@ impl Engine {
             && self.world.input_depth(actor) == 0
             && let Some(room) = self.world.get(actor).and_then(|record| record.location)
         {
-            crate::commands::show_room(&self.registry, &self.world, actor, room, out);
+            crate::commands::show_room_with_action_state(
+                &self.registry,
+                &self.world,
+                actor,
+                room,
+                out,
+                Some(&self.action_state),
+            );
         }
     }
 
@@ -2015,10 +2870,17 @@ impl Engine {
             return;
         }
         let event = match self.registry.query_handler(name) {
-            Some((_module, handler)) => match handler.query(&self.world, actor, args) {
-                Ok(event) => event,
-                Err(err) => OutputEvent::Sys(err),
-            },
+            Some((module, handler)) => {
+                let context = crate::module::HookReadContext::for_module(
+                    &self.world,
+                    Some(&self.action_state),
+                    module,
+                );
+                match handler.query_with_context(&context, actor, args) {
+                    Ok(event) => event,
+                    Err(err) => OutputEvent::Sys(err),
+                }
+            }
             None => OutputEvent::Sys(RichText::tag("error", format!("Unknown query {name:?}."))),
         };
         out.best_effort_to_conn(
@@ -2323,6 +3185,51 @@ mod tests {
     }
 
     #[test]
+    fn staff_known_object_subject_needs_no_fabricated_station_grant() {
+        use crate::action::{PerceivedRef, PrincipalId, SubjectKey};
+        use crate::offer::LegalActionSubjectError;
+
+        let (engine, nick) = setup();
+        let perceived = PerceivedRef::KnownObject {
+            id: nick,
+            revision: 1,
+        };
+        let query = engine
+            .legal_action_query(PrincipalId::Object { id: GOD }, GOD, perceived.clone())
+            .unwrap();
+        assert_eq!(query.truth_subject(), &SubjectKey::Object { id: nick });
+        assert_eq!(query.projected_subject(), &perceived);
+        assert!(query.authority_guards().is_empty());
+
+        assert_eq!(
+            engine
+                .legal_action_query(
+                    PrincipalId::Object { id: nick },
+                    nick,
+                    PerceivedRef::KnownObject {
+                        id: GOD,
+                        revision: 1,
+                    },
+                )
+                .unwrap_err(),
+            LegalActionSubjectError::Invalid
+        );
+        assert_eq!(
+            engine
+                .legal_action_query(
+                    PrincipalId::Object { id: GOD },
+                    GOD,
+                    PerceivedRef::KnownObject {
+                        id: nick,
+                        revision: 2,
+                    },
+                )
+                .unwrap_err(),
+            LegalActionSubjectError::Invalid
+        );
+    }
+
+    #[test]
     fn module_composition_defers_state_install_until_world_is_supplied() {
         #[derive(Clone, Debug, PartialEq, Eq)]
         struct DeferredState(u32);
@@ -2486,12 +3393,47 @@ mod tests {
             captured: Arc<Mutex<Option<StateFamilyHandle<u32, u32>>>>,
         }
 
+        struct TypedQuery {
+            handle: StateFamilyHandle<u32, u32>,
+        }
+
+        impl crate::module::QueryHandler for TypedQuery {
+            fn query(
+                &self,
+                _world: &World,
+                _actor: ObjId,
+                _params: &serde_json::Value,
+            ) -> Result<OutputEvent, mush_proto::RichText> {
+                Err(mush_proto::RichText::tag(
+                    "error",
+                    "typed query context missing",
+                ))
+            }
+
+            fn query_with_context(
+                &self,
+                context: &crate::module::HookReadContext<'_>,
+                _actor: ObjId,
+                _params: &serde_json::Value,
+            ) -> Result<OutputEvent, mush_proto::RichText> {
+                let value = context
+                    .action_state(&self.handle, &7)
+                    .map_err(|error| mush_proto::RichText::tag("error", error.to_string()))?
+                    .copied()
+                    .ok_or_else(|| mush_proto::RichText::tag("error", "typed record missing"))?;
+                Ok(OutputEvent::Sys(mush_proto::RichText::plain(format!(
+                    "query-typed={value}"
+                ))))
+            }
+        }
+
         impl GameModule for TypedReaderModule {
             fn name(&self) -> &'static str {
                 "typed_reader"
             }
 
             fn register(&mut self, reg: &mut module::Registrar<'_>) -> Result<(), ModError> {
+                reg.classify_commands(crate::CommandCompatibility::ReadOnly);
                 let handle = reg.state_family(
                     StateFamilyDescriptor::new(
                         StateFamilyId::new("records").unwrap(),
@@ -2532,6 +3474,12 @@ mod tests {
                         Ok(())
                     }),
                 )?;
+                reg.query_handler(
+                    "typed.query",
+                    Arc::new(TypedQuery {
+                        handle: handle.clone(),
+                    }),
+                )?;
                 *self.captured.lock().unwrap() = Some(handle);
                 Ok(())
             }
@@ -2565,6 +3513,24 @@ mod tests {
         );
         assert!(texts(&out).iter().any(|line| line == "typed=41; records=1"));
 
+        let mut query_out = Outbox::new();
+        engine.step(
+            Inbound::Query {
+                conn: 1,
+                actor: GOD,
+                id: 77,
+                name: "typed.query".into(),
+                args: serde_json::json!({}),
+            },
+            &mut query_out,
+            &mut effects,
+        );
+        assert!(query_out.events().iter().any(|(_, event)| matches!(
+            event,
+            OutputEvent::Reply { id: 77, event }
+                if matches!(event.as_ref(), OutputEvent::Sys(text) if text.to_plain_text() == "query-typed=41")
+        )));
+
         let foreign =
             ModuleActionState::for_module(Some(engine.action_state()), Some("different_owner"));
         assert!(matches!(
@@ -2593,6 +3559,128 @@ mod tests {
                 ActionStateError::OwnerNotReady(_)
             ))
         ));
+    }
+
+    #[test]
+    fn engine_move_hooks_receive_owner_scoped_live_typed_state() {
+        use std::sync::Mutex;
+
+        use crate::action_state::{
+            ModuleActionStateReadError, StateFamilyDescriptor, StateFamilyHandle, StateFamilyId,
+        };
+        use crate::mechanics::CanonicalId;
+        use crate::module::{EventHook, HookPoint, HookReadContext};
+
+        struct TypedHook {
+            handle: StateFamilyHandle<u32, u32>,
+        }
+
+        impl EventHook for TypedHook {
+            fn move_attempt(
+                &self,
+                ctx: &HookReadContext<'_>,
+                _actor: ObjId,
+                _exit: Option<ObjId>,
+                _dest: ObjId,
+            ) -> Result<(), mush_proto::RichText> {
+                match ctx.action_state(&self.handle, &7) {
+                    Ok(Some(41)) => Err(mush_proto::RichText::plain("typed veto")),
+                    Err(ModuleActionStateReadError::Unavailable) => {
+                        Err(mush_proto::RichText::plain("typed unavailable"))
+                    }
+                    other => Err(mush_proto::RichText::plain(format!(
+                        "unexpected typed hook state: {other:?}"
+                    ))),
+                }
+            }
+        }
+
+        struct TypedHookModule {
+            captured: Arc<Mutex<Option<StateFamilyHandle<u32, u32>>>>,
+        }
+
+        impl GameModule for TypedHookModule {
+            fn name(&self) -> &'static str {
+                "typed_hook"
+            }
+
+            fn register(&mut self, reg: &mut module::Registrar<'_>) -> Result<(), ModError> {
+                let handle = reg.state_family(
+                    StateFamilyDescriptor::new(
+                        StateFamilyId::new("records").unwrap(),
+                        CanonicalId::new("u32.decimal.v1").unwrap(),
+                        CanonicalId::new("u32.value.v1").unwrap(),
+                        1,
+                        CanonicalId::new("u32.decode.v1").unwrap(),
+                        CanonicalId::new("u32.validate.v1").unwrap(),
+                        CanonicalId::new("u32.serialize.v1").unwrap(),
+                    )
+                    .unwrap(),
+                    |key: &u32| Ok(key.to_string()),
+                    |value: &serde_json::Value| {
+                        serde_json::from_value(value.clone()).map_err(|error| error.to_string())
+                    },
+                    |_value: &u32| Ok(()),
+                    |value: &u32| serde_json::to_value(value).map_err(|error| error.to_string()),
+                )?;
+                reg.hook(
+                    HookPoint::MoveAttempt,
+                    Arc::new(TypedHook {
+                        handle: handle.clone(),
+                    }),
+                );
+                *self.captured.lock().unwrap() = Some(handle);
+                Ok(())
+            }
+        }
+
+        let captured = Arc::new(Mutex::new(None));
+        let mut world = World::new_minimal();
+        let destination = world.create(ObjKind::Room, "North", GOD, None).unwrap();
+        let exit = world
+            .create(ObjKind::Exit, "north", GOD, Some(LIMBO))
+            .unwrap();
+        world.link_exit(exit, Some(destination)).unwrap();
+        let mut engine = Engine::with_modules(
+            world,
+            Registry::new(),
+            vec![Box::new(TypedHookModule {
+                captured: Arc::clone(&captured),
+            })],
+        )
+        .unwrap();
+        let handle = captured.lock().unwrap().clone().unwrap();
+        let mut transaction = engine.action_transaction(&handle).unwrap();
+        transaction.insert(&handle, &7, 41).unwrap();
+        let (_, installation) = transaction.prepare().unwrap().into_parts();
+        engine.install_prepared_action(installation);
+
+        let mut out = Outbox::new();
+        let mut effects = Effects::new();
+        engine.step(
+            Inbound::Cmd {
+                conn: 1,
+                actor: GOD,
+                line: "north".into(),
+            },
+            &mut out,
+            &mut effects,
+        );
+        assert_eq!(
+            engine.world.get(GOD).and_then(|obj| obj.location),
+            Some(LIMBO)
+        );
+        assert!(texts(&out).iter().any(|line| line == "typed veto"));
+
+        let compatibility = crate::module::check_move_attempt(
+            &engine.registry,
+            &engine.world,
+            GOD,
+            Some(exit),
+            destination,
+        )
+        .unwrap_err();
+        assert_eq!(compatibility.to_plain_text(), "typed unavailable");
     }
 
     fn room_saw(out: &Outbox, room: ObjId, needle: &str) -> bool {

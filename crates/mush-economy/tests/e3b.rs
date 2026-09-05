@@ -13,8 +13,8 @@ use std::sync::{Arc, Mutex};
 
 use mush_core::module::{HookPoint, ModError, Registrar};
 use mush_core::{
-    Audience, Effects, EventHook, GOD, GameModule, LIMBO, ModuleBootData, ModuleWrite, ObjId,
-    ObjKind, Outbox, World, WorldEvent,
+    Audience, Effects, EventHook, GOD, GameModule, HookReadContext, LIMBO, ModuleBootData,
+    ModuleWrite, ObjId, ObjKind, Outbox, World, WorldEvent,
 };
 use mush_economy::{
     AccountId, AssetLifecycle, CustodyError, CustodyProvider, CustodyRef, EconomySnapshot,
@@ -217,7 +217,7 @@ struct NoCarry;
 impl EventHook for NoCarry {
     fn carry_attempt(
         &self,
-        _w: &mut World,
+        _ctx: &HookReadContext<'_>,
         _mover: ObjId,
         _obj: ObjId,
         _dest: ObjId,

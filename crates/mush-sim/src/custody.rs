@@ -279,8 +279,9 @@ impl CustodyProvider for InteriorCustodyProvider {
             if h.module == NS {
                 continue; // our own placement veto — see the doc comment.
             }
+            let hook_ctx = ctx.hook_read_context(&h.module);
             h.hook
-                .carry_attempt(ctx.w, actor, obj, to)
+                .carry_attempt(&hook_ctx, actor, obj, to)
                 .map_err(|rt| CustodyError::Refused(rt.to_plain_text()))?;
         }
         // ---- 2. leave the simulation, keeping the projection where it is ----

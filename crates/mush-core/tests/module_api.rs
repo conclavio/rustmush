@@ -12,9 +12,9 @@ use std::time::Duration;
 
 use mush_core::engine::{Effects, Engine, Inbound};
 use mush_core::module::{
-    ContextOutcome, EventHook, GameModule, HookPoint, InputContext, JobQueueSpec, Migration,
-    ModError, ModuleBootData, ModuleCtx, ModuleOp, ModuleWrite, PanelFeedHandle, QueryHandler,
-    RecoveryReporter, Registrar, SceneId, TickCadence, WorldEvent, WorldEventKind,
+    ContextOutcome, EventHook, GameModule, HookPoint, HookReadContext, InputContext, JobQueueSpec,
+    Migration, ModError, ModuleBootData, ModuleCtx, ModuleOp, ModuleWrite, PanelFeedHandle,
+    QueryHandler, RecoveryReporter, Registrar, SceneId, TickCadence, WorldEvent, WorldEventKind,
 };
 use mush_core::{
     ActionError, ActionInvocation, ActionProvider, AliasOutcome, AliasStage, ArgShape,
@@ -67,18 +67,23 @@ struct ToyHook;
 impl EventHook for ToyHook {
     fn move_attempt(
         &self,
-        w: &mut World,
+        ctx: &HookReadContext<'_>,
         _actor: ObjId,
         _exit: Option<ObjId>,
         dest: ObjId,
     ) -> Result<(), RichText> {
-        if w.get(dest).is_some_and(|o| o.name == "Vault") {
+        if ctx.world().get(dest).is_some_and(|o| o.name == "Vault") {
             return Err(RichText::plain("The wards flare."));
         }
         Ok(())
     }
 
-    fn look_rendered(&self, _w: &World, _looker: ObjId, _room: ObjId) -> Vec<RichText> {
+    fn look_rendered(
+        &self,
+        _ctx: &HookReadContext<'_>,
+        _looker: ObjId,
+        _room: ObjId,
+    ) -> Vec<RichText> {
         vec![RichText::plain("A toy glows here.")]
     }
 
@@ -175,6 +180,7 @@ impl GameModule for ToyModule {
 
     #[allow(clippy::too_many_lines)]
     fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
+        reg.classify_commands(mush_core::CommandCompatibility::LegacyPostImage);
         // Typed state slot.
         reg.state(ToyState::default());
 
@@ -203,7 +209,7 @@ impl GameModule for ToyModule {
         reg.query_handler("toy.list", Arc::new(ToyQuery))?;
 
         // Alias stage.
-        reg.alias_stage(Arc::new(ToyAliases));
+        reg.alias_stage(Arc::new(ToyAliases))?;
 
         // Hooks: veto + look + conn + scene lifecycle.
         for point in [
@@ -477,6 +483,64 @@ fn setup() -> (Engine, ObjId) {
     register_engine_commands(&mut registry).unwrap();
     let engine = Engine::with_modules(world, registry, vec![Box::new(ToyModule)]).unwrap();
     (engine, nick)
+}
+
+#[test]
+fn composed_module_commands_require_an_explicit_compatibility_class() {
+    struct Unclassified;
+
+    impl GameModule for Unclassified {
+        fn name(&self) -> &'static str {
+            "unclassified"
+        }
+
+        fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
+            reg.command(
+                CommandSpec {
+                    name: "+unsafe-default".into(),
+                    ..CommandSpec::default()
+                },
+                Arc::new(|_ctx: &mut Ctx<'_>| Ok(())),
+            )
+        }
+    }
+
+    let error = match Engine::compose_modules(Registry::new(), vec![Box::new(Unclassified)]) {
+        Ok(_) => panic!("an unclassified composed command must fail"),
+        Err(error) => error,
+    };
+    assert!(
+        error.to_string().contains(
+            "module unclassified: classify commands before registering \"+unsafe-default\""
+        )
+    );
+}
+
+#[test]
+fn frozen_registry_exposes_command_compatibility_by_name_and_alias() {
+    let (engine, _) = setup();
+    assert_eq!(
+        engine.registry.compatibility_of("+persist"),
+        Some(mush_core::CommandCompatibility::LegacyPostImage)
+    );
+    assert_eq!(
+        engine
+            .registry
+            .specs_with_compatibility()
+            .find(|(spec, _)| spec.name == "+persist")
+            .map(|(_, compatibility)| compatibility),
+        Some(mush_core::CommandCompatibility::LegacyPostImage)
+    );
+    assert_eq!(
+        engine
+            .registry
+            .alias_stage_compatibilities()
+            .collect::<Vec<_>>(),
+        vec![(
+            Some("toy"),
+            mush_core::CommandCompatibility::LegacyPostImage
+        )]
+    );
 }
 
 /// Run one command line through the engine, returning its outbox.

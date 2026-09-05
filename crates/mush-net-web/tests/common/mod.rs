@@ -18,7 +18,7 @@ use mush_net_web::{
     CharSummary, LoginErr, LoginOk, NewWebConn, RegisterErr, ResumeErr, ResumeOk, SessionStart,
     TokenIdentity, WebConfig, WebHooks,
 };
-use mush_proto::{Envelope, OutputEvent, Query, RichText};
+use mush_proto::{Envelope, OutputEvent, ProjectedCommitToken, Query, RichText};
 use tokio::sync::mpsc;
 
 /// The fixture account / token the default mock knows about.
@@ -40,6 +40,7 @@ pub struct MockState {
     // -- recordings --
     pub lines: Vec<(u64, String)>,
     pub requests: Vec<(u64, u64, Query)>,
+    pub acknowledgements: Vec<(u64, ProjectedCommitToken)>,
     pub disconnects: Vec<u64>,
     pub auth_failed: Vec<IpAddr>,
     pub logouts: Vec<String>,
@@ -208,6 +209,12 @@ impl WebHooks for MockWebHooks {
     fn request(&self, conn: u64, id: u64, q: Query) -> BoxFuture<'_, ()> {
         Box::pin(async move {
             self.state().requests.push((conn, id, q));
+        })
+    }
+
+    fn acknowledge(&self, conn: u64, commit: ProjectedCommitToken) -> BoxFuture<'_, ()> {
+        Box::pin(async move {
+            self.state().acknowledgements.push((conn, commit));
         })
     }
 

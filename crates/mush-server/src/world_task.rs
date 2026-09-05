@@ -77,8 +77,8 @@ use mush_core::{
     OfferRouteTable, OfferSubmission, Outbox, PerceivedRef, PreparedInstallation, PrincipalId,
     ProjectedLegalAction, ReceiptProjectionTable, Registry, Role, ScheduledKind, StagedAction,
     StagedActionPersistence, StepOutcome, TickCadence, World, WorldCommand, WorldEvent,
-    can_perceive, event_subject, is_ignoring, narrative_actor, register_core_commands,
-    register_engine_commands,
+    can_perceive, can_perceive_with_action_state, event_subject, is_ignoring, narrative_actor,
+    register_core_commands, register_engine_commands,
 };
 use mush_ipc::{
     ActionSend, GatewayAction, GatewayInput, GatewayRequest, MAX_IN_FLIGHT_LIFECYCLE_OBLIGATIONS,
@@ -87,8 +87,8 @@ use mush_ipc::{
 use mush_llm::LlmService;
 use mush_proto::{ActionStatusId, OutputEvent, ProjectedActionStatus, RichText};
 use mush_store::{
-    AccountRec, AuthoritativeReceipt, AuthoritativeStore, BundleStatus, InMemoryStore,
-    IntentReceipt, ObjectStore, SshKeyRec, WriteBatch,
+    AccountRec, AuthoritativeReceipt, AuthoritativeStore, BoundIdempotencyStatus, BundleStatus,
+    InMemoryStore, IntentReceipt, ObjectStore, SshKeyRec, WriteBatch,
 };
 use sha2::{Digest, Sha256};
 use smol_str::SmolStr;
@@ -98,9 +98,15 @@ use tokio::task::JoinHandle;
 
 use crate::action_coordinator::{
     ActionCoordinator, ActionPermit, ActionPreflight, StagedAuthoritativeAction,
+    StagedDecisionAttempt, StagedDecisionLease, StagedDecisionResponse,
+};
+use crate::decision_dispatch::{
+    DecisionDispatchReservation, DecisionDispatcher, DecisionProviderRegistry,
+    DecisionWorkerCompletion, MAX_DECISION_COMPLETIONS,
 };
 use crate::durable_outbox::{
-    DurableOutboxPolicy, DurableOutboxRegistry, run_authoritative_outbox_worker,
+    DecisionWakeDispatch, DecisionWakeOutboxAdapter, DurableOutboxPolicy, DurableOutboxRegistry,
+    decision_wake_mailbox, run_authoritative_outbox_worker,
 };
 use crate::gateway_sink::GatewaySink;
 use crate::persist::{
@@ -1497,6 +1503,82 @@ pub fn spawn_persist_with_gateway(
     )
 }
 
+struct DecisionRuntime {
+    dispatcher: Arc<DecisionDispatcher>,
+    wakes: mpsc::Receiver<DecisionWakeDispatch>,
+    completions: mpsc::Receiver<DecisionWorkerCompletion>,
+}
+
+/// Spawn with explicit owner-routed delayed-decision providers. This validates
+/// every composed source before any worker or outbox task starts and installs
+/// its no-I/O wake adapter into the durable delivery registry.
+pub fn spawn_persist_with_gateway_and_decisions(
+    engine: Engine,
+    deps: ServerDeps,
+    mut durable_outbox: DurableOutboxRegistry,
+    providers: DecisionProviderRegistry,
+    worker_limit: usize,
+    make_gateway: impl FnOnce(mpsc::WeakSender<WorldMsg>) -> Gateway,
+) -> Result<PersistHandles, String> {
+    let sources = engine
+        .registry
+        .decision_sources()
+        .ok_or_else(|| "decision-source registry is unavailable".to_owned())?;
+    audit_durable_decision_sources(&engine)?;
+    let (wake_tx, wakes) =
+        decision_wake_mailbox(mush_core::MAX_DECISION_MAILBOX_IDS).map_err(str::to_owned)?;
+    for (owner, adapter) in sources.wake_adapters() {
+        if !providers.contains_owner(&owner) {
+            return Err(format!(
+                "decision source {owner} has no registered async provider"
+            ));
+        }
+        durable_outbox
+            .register(Arc::new(DecisionWakeOutboxAdapter::new(
+                owner,
+                adapter,
+                wake_tx.clone(),
+            )))
+            .map_err(|error| error.to_string())?;
+    }
+    let (completion_tx, completions) = mpsc::channel(MAX_DECISION_COMPLETIONS);
+    let dispatcher = DecisionDispatcher::new(Arc::new(providers), worker_limit, completion_tx)
+        .map_err(|error| error.to_string())?;
+    Ok(spawn_persist_with_gateway_mode(
+        engine,
+        deps,
+        Arc::new(durable_outbox),
+        Some(DecisionRuntime {
+            dispatcher: Arc::new(dispatcher),
+            wakes,
+            completions,
+        }),
+        None,
+        make_gateway,
+    ))
+}
+
+/// Exhaustively validate all durable decision bundles and aggregate
+/// admission ceilings before the world task—and therefore writable ingress—
+/// exists. Pages stay bounded while the compact accounting index enforces the
+/// global/controller/actor/storage ceilings across page boundaries.
+fn audit_durable_decision_sources(engine: &Engine) -> Result<(), String> {
+    let mut cursor = None;
+    let mut admission = mush_core::DecisionAdmissionIndex::default();
+    loop {
+        let page = engine
+            .discover_decision_dispatches(cursor.as_ref(), mush_core::MAX_DECISION_RECOVERY_PAGE)
+            .map_err(|error| error.to_string())?;
+        admission
+            .merge_existing(page.admission_index().clone())
+            .map_err(|error| error.to_string())?;
+        cursor = page.next_cursor().cloned();
+        if cursor.is_none() {
+            return Ok(());
+        }
+    }
+}
+
 /// Spawn with an explicit frozen durable-delivery registry. Work for a missing
 /// adapter remains pending and is surfaced as an operational error.
 pub fn spawn_persist_with_gateway_and_outbox(
@@ -1505,16 +1587,23 @@ pub fn spawn_persist_with_gateway_and_outbox(
     durable_outbox: Arc<DurableOutboxRegistry>,
     make_gateway: impl FnOnce(mpsc::WeakSender<WorldMsg>) -> Gateway,
 ) -> PersistHandles {
-    spawn_persist_with_gateway_mode(engine, deps, durable_outbox, None, make_gateway)
+    assert!(
+        engine
+            .registry
+            .decision_sources()
+            .is_none_or(mush_core::DecisionSourceRegistry::is_empty),
+        "composed decision sources require spawn_persist_with_gateway_and_decisions"
+    );
+    spawn_persist_with_gateway_mode(engine, deps, durable_outbox, None, None, make_gateway)
 }
 
-/// Shared spawn implementation. Production always supplies `None`; unit tests
-/// can start the real loop in a hard mode to exercise the execution gate rather
-/// than merely asserting its classification table.
+/// Shared spawn implementation. Unit tests can start the real loop in a hard
+/// mode; delayed-decision production wiring supplies the optional runtime.
 fn spawn_persist_with_gateway_mode(
     engine: Engine,
     deps: ServerDeps,
     durable_outbox: Arc<DurableOutboxRegistry>,
+    decision_runtime: Option<DecisionRuntime>,
     initial_mode: Option<WorldMode>,
     make_gateway: impl FnOnce(mpsc::WeakSender<WorldMsg>) -> Gateway,
 ) -> PersistHandles {
@@ -1532,7 +1621,7 @@ fn spawn_persist_with_gateway_mode(
         .map_or_else(ReceiptProjectionTable::empty, |providers| {
             providers.receipt_projection_table()
         });
-    let action_epoch = rand::random();
+    let action_epoch = crate::action_coordinator::fresh_action_epoch();
     let direct_actions = Arc::new(DirectActionIngress {
         store: Arc::clone(&deps.store),
         routes,
@@ -1619,6 +1708,7 @@ fn spawn_persist_with_gateway_mode(
         shutdown_rx,
         action_epoch,
         persistence_integrity.clone(),
+        decision_runtime,
         initial_mode,
         outbox_lifetime,
     ));
@@ -1639,9 +1729,665 @@ enum Wake {
     CommitReceipt(PendingReceiptEvent),
     Timer,
     DurableSchedules,
+    DecisionNotification(DecisionWakeDispatch),
+    DecisionResult(Box<DecisionWorkerCompletion>),
+    DurableDecisions,
     Shutdown,
     ShutdownDeadline,
     Closed,
+}
+
+struct DurableDecisionDriver {
+    cursor: Option<mush_core::DecisionSourceCursor>,
+    recovery_audit: mush_core::DecisionAdmissionIndex,
+    recovery_complete: bool,
+    retry: Option<mush_core::DecisionDispatchCandidate>,
+    reconciliation: Option<mush_core::DecisionReconciliationCandidate>,
+    fallback_trigger: Option<mush_core::DecisionFallbackTriggerCandidate>,
+    fallback: Option<mush_core::DecisionFallbackCandidate>,
+    compaction: Option<mush_core::DecisionCompactionCandidate>,
+    failure_owner: Option<mush_core::OwnerId>,
+    idempotency_epoch: u64,
+    dispatcher: Arc<DecisionDispatcher>,
+}
+
+impl DurableDecisionDriver {
+    fn new(idempotency_epoch: u64, dispatcher: Arc<DecisionDispatcher>) -> Self {
+        Self {
+            cursor: None,
+            recovery_audit: mush_core::DecisionAdmissionIndex::default(),
+            recovery_complete: false,
+            retry: None,
+            reconciliation: None,
+            fallback_trigger: None,
+            fallback: None,
+            compaction: None,
+            failure_owner: None,
+            idempotency_epoch,
+            dispatcher,
+        }
+    }
+
+    async fn drive_one(
+        &mut self,
+        engine: &mut Engine,
+        store: &dyn AuthoritativeStore,
+        wake: Option<&DecisionWakeDispatch>,
+    ) -> Result<DurableDecisionDrive, String> {
+        self.failure_owner = None;
+        if engine.has_legacy_persistence_work() {
+            return Ok(DurableDecisionDrive::DeferredByLegacyPredecessor);
+        }
+        if !self.recovery_complete {
+            let page = match engine.discover_decision_dispatches(
+                self.cursor.as_ref(),
+                mush_core::MAX_DECISION_RECOVERY_PAGE,
+            ) {
+                Ok(page) => page,
+                Err(error) => {
+                    self.failure_owner = error.owner().cloned();
+                    return Err(error.to_string());
+                }
+            };
+            self.recovery_audit
+                .merge_existing(page.admission_index().clone())
+                .map_err(|error| error.to_string())?;
+            self.cursor = page.next_cursor().cloned();
+            if self.cursor.is_some() {
+                return Ok(DurableDecisionDrive::RecoveryAuditProgress);
+            }
+            self.recovery_complete = true;
+            self.cursor = None;
+        }
+        if self.retry.is_none()
+            && self.reconciliation.is_none()
+            && self.fallback_trigger.is_none()
+            && self.fallback.is_none()
+            && self.compaction.is_none()
+        {
+            if let Some(wake) = wake {
+                self.retry = match engine.decision_dispatch_for_wake(wake.owner(), &wake.wake()) {
+                    Ok(candidate) => candidate,
+                    Err(error) => {
+                        self.failure_owner = Some(wake.owner().clone());
+                        return Err(error.to_string());
+                    }
+                };
+            } else {
+                let page = match engine.discover_decision_dispatches(self.cursor.as_ref(), 1) {
+                    Ok(page) => page,
+                    Err(error) => {
+                        self.failure_owner = error.owner().cloned();
+                        return Err(error.to_string());
+                    }
+                };
+                self.cursor = page.next_cursor().cloned();
+                self.retry = page.candidates().first().cloned();
+                self.reconciliation = page.reconciliations().first().cloned();
+                self.fallback_trigger = page.fallback_triggers().first().cloned();
+                self.fallback = page.fallbacks().first().cloned();
+                self.compaction = page.compactions().first().cloned();
+            }
+        }
+        if let Some(candidate) = self.compaction.clone() {
+            self.failure_owner = Some(candidate.owner().clone());
+            if let Some(binding) = candidate.action_binding() {
+                let status = store
+                    .bound_authoritative_idempotency_status(candidate.action_idempotency())
+                    .await
+                    .map_err(|error| error.to_string())?;
+                match status {
+                    BoundIdempotencyStatus::FinalizedExact(receipt) => {
+                        if receipt.idempotency() != candidate.action_idempotency()
+                            || receipt.request() != binding.request
+                            || receipt.request_hash() != binding.request_hash
+                        {
+                            return Err(
+                                "terminal decision attribution disagrees with finalized action receipt"
+                                    .to_owned(),
+                            );
+                        }
+                    }
+                    BoundIdempotencyStatus::PendingExact { .. } => {
+                        return Ok(DurableDecisionDrive::Transient(
+                            "terminal decision compaction waits for its selected action receipt"
+                                .to_owned(),
+                        ));
+                    }
+                    BoundIdempotencyStatus::Vacant => {
+                        return Err(
+                            "terminal decision compaction has no authoritative selected action"
+                                .to_owned(),
+                        );
+                    }
+                    BoundIdempotencyStatus::Retired { .. } => {
+                        return Err(
+                            "terminal decision selected-action attribution was retired".to_owned()
+                        );
+                    }
+                    BoundIdempotencyStatus::QuarantinedExact(_) => {
+                        return Err("terminal decision selected action is quarantined".to_owned());
+                    }
+                }
+            }
+            match stage_decision_compaction(engine, store, &candidate, self.idempotency_epoch)
+                .await?
+            {
+                Some(staged) => {
+                    self.compaction = None;
+                    return Ok(DurableDecisionDrive::StagedLifecycle(staged));
+                }
+                None => {
+                    return Ok(DurableDecisionDrive::Transient(
+                        "decision compaction action already has durable custody".to_owned(),
+                    ));
+                }
+            }
+        }
+        if let Some(candidate) = self.reconciliation.clone() {
+            self.failure_owner = Some(candidate.fence().controller().owner.clone());
+            let status = store
+                .bound_authoritative_idempotency_status(candidate.action_idempotency())
+                .await
+                .map_err(|error| error.to_string())?;
+            match status {
+                BoundIdempotencyStatus::FinalizedExact(receipt) => {
+                    if receipt.idempotency() != candidate.action_idempotency()
+                        || receipt.request() != candidate.binding().request
+                        || receipt.request_hash() != candidate.binding().request_hash
+                    {
+                        return Err(
+                            "resolving decision binding disagrees with finalized action receipt"
+                                .to_owned(),
+                        );
+                    }
+                    match stage_decision_terminal(
+                        engine,
+                        store,
+                        candidate.fence(),
+                        candidate.binding(),
+                        candidate.outcome(),
+                        self.idempotency_epoch,
+                    )
+                    .await?
+                    {
+                        Some(staged) => {
+                            self.reconciliation = None;
+                            return Ok(DurableDecisionDrive::StagedLifecycle(staged));
+                        }
+                        None => {
+                            return Ok(DurableDecisionDrive::Transient(
+                                "resolving decision terminal action already has durable custody"
+                                    .to_owned(),
+                            ));
+                        }
+                    }
+                }
+                BoundIdempotencyStatus::PendingExact { .. } => {
+                    return Ok(DurableDecisionDrive::Transient(
+                        "resolving decision waits for its selected action receipt".to_owned(),
+                    ));
+                }
+                BoundIdempotencyStatus::Vacant => {
+                    return Err("resolving decision binding has no authoritative action".to_owned());
+                }
+                BoundIdempotencyStatus::Retired { .. } => {
+                    return Err("resolving decision action binding was retired".to_owned());
+                }
+                BoundIdempotencyStatus::QuarantinedExact(_) => {
+                    return Err("resolving decision action is quarantined".to_owned());
+                }
+            }
+        }
+        if let Some(candidate) = self.fallback_trigger.clone() {
+            self.failure_owner = Some(candidate.owner().clone());
+            match stage_decision_fallback_trigger(engine, store, &candidate, self.idempotency_epoch)
+                .await?
+            {
+                Some(staged) => {
+                    self.fallback_trigger = None;
+                    return Ok(DurableDecisionDrive::StagedLifecycle(staged));
+                }
+                None => {
+                    return Ok(DurableDecisionDrive::Transient(
+                        "fallback-custody action already has durable custody".to_owned(),
+                    ));
+                }
+            }
+        }
+        if let Some(candidate) = self.fallback.clone() {
+            self.failure_owner = Some(candidate.owner().clone());
+            let (response, ingress) =
+                ActionCoordinator::decision_fallback_ingress(engine, &candidate)
+                    .map_err(|error| error.to_string())?;
+            match ActionCoordinator::preflight(store, ingress)
+                .await
+                .map_err(|error| error.to_string())?
+            {
+                ActionPreflight::Vacant(permit) => {
+                    let selected = ActionCoordinator::prepare_and_stage_decision_fallback(
+                        permit, engine, &candidate, &response,
+                    )
+                    .map_err(|error| error.to_string())?;
+                    self.fallback = None;
+                    return Ok(DurableDecisionDrive::StagedFallback(selected));
+                }
+                ActionPreflight::Finalized(receipt) => {
+                    let binding = mush_core::DecisionActionBinding {
+                        request: receipt.request(),
+                        request_hash: receipt.request_hash(),
+                    };
+                    match stage_decision_resolving(
+                        engine,
+                        store,
+                        candidate.fence(),
+                        &binding,
+                        mush_core::DecisionTerminalOutcome::Fallback,
+                        self.idempotency_epoch,
+                    )
+                    .await?
+                    {
+                        Some(staged) => {
+                            self.fallback = None;
+                            return Ok(DurableDecisionDrive::StagedLifecycleWithTerminal {
+                                staged,
+                                fence: candidate.fence().clone(),
+                                binding,
+                                outcome: mush_core::DecisionTerminalOutcome::Fallback,
+                            });
+                        }
+                        None => {
+                            return Ok(DurableDecisionDrive::Transient(
+                                "fallback resolving action already has durable custody".to_owned(),
+                            ));
+                        }
+                    }
+                }
+                ActionPreflight::Pending { .. } => {
+                    return Ok(DurableDecisionDrive::Transient(
+                        "fallback selected action waits for its exact receipt".to_owned(),
+                    ));
+                }
+                ActionPreflight::Retired { .. } => {
+                    return Err("fallback action idempotency binding was retired".to_owned());
+                }
+                ActionPreflight::Quarantined(_) => {
+                    return Err("fallback selected action is quarantined".to_owned());
+                }
+                ActionPreflight::Conflict => {
+                    return Err("fallback lost to a conflicting semantic action".to_owned());
+                }
+            }
+        }
+        let Some(candidate) = self.retry.as_ref() else {
+            return Ok(DurableDecisionDrive::Idle);
+        };
+        self.failure_owner = Some(candidate.owner().clone());
+        let reservation = match self.dispatcher.try_reserve(candidate.controller()) {
+            Ok(reservation) => reservation,
+            Err(crate::decision_dispatch::DecisionDispatchReserveError::Busy) => {
+                return Ok(DurableDecisionDrive::Transient(
+                    "bounded decision workers are busy".to_owned(),
+                ));
+            }
+            Err(crate::decision_dispatch::DecisionDispatchReserveError::Unavailable { .. }) => {
+                let trigger = engine
+                    .decision_fallback_trigger_for_dispatch(candidate)
+                    .map_err(|error| error.to_string())?;
+                self.retry = None;
+                return match stage_decision_fallback_trigger(
+                    engine,
+                    store,
+                    &trigger,
+                    self.idempotency_epoch,
+                )
+                .await?
+                {
+                    Some(staged) => Ok(DurableDecisionDrive::StagedLifecycle(staged)),
+                    None => Ok(DurableDecisionDrive::Transient(
+                        "provider-unavailable fallback transfer already has durable custody"
+                            .to_owned(),
+                    )),
+                };
+            }
+        };
+
+        for _ in 0..3 {
+            let ingress = ActionCoordinator::decision_lease_ingress(
+                engine,
+                candidate,
+                self.idempotency_epoch,
+            )
+            .map_err(|error| error.to_string())?;
+            let preflight = ActionCoordinator::preflight(store, ingress)
+                .await
+                .map_err(|error| error.to_string())?;
+            match preflight {
+                ActionPreflight::Retired {
+                    minimum_accepted_epoch,
+                } => {
+                    self.idempotency_epoch = self.idempotency_epoch.max(minimum_accepted_epoch);
+                }
+                ActionPreflight::Vacant(permit) => {
+                    let staged = match ActionCoordinator::prepare_and_stage_decision_lease(
+                        permit, engine, candidate,
+                    ) {
+                        Ok(staged) => staged,
+                        Err(error) if decision_lease_stale(&error) => {
+                            self.retry = None;
+                            return Ok(DurableDecisionDrive::DiscardedStale(error.to_string()));
+                        }
+                        Err(error) => return Err(error.to_string()),
+                    };
+                    self.retry = None;
+                    return Ok(DurableDecisionDrive::Staged(Box::new(
+                        StagedDecisionDispatch {
+                            staged,
+                            reservation,
+                        },
+                    )));
+                }
+                ActionPreflight::Pending { .. } => {
+                    return Err(
+                        "decision lease rediscovered an unresolved intent after writable boot"
+                            .to_owned(),
+                    );
+                }
+                ActionPreflight::Finalized(_) => {
+                    return Err(
+                        "decision remained dispatchable after its lease action finalized"
+                            .to_owned(),
+                    );
+                }
+                ActionPreflight::Quarantined(_) => {
+                    return Err("decision lease action is quarantined".to_owned());
+                }
+                ActionPreflight::Conflict => {
+                    return Err("decision lease idempotency identity conflicts".to_owned());
+                }
+            }
+        }
+        Ok(DurableDecisionDrive::Transient(
+            "decision lease retirement watermark changed repeatedly".to_owned(),
+        ))
+    }
+
+    fn take_failure_owner(&mut self) -> Option<mush_core::OwnerId> {
+        self.failure_owner.take()
+    }
+}
+
+struct StagedDecisionDispatch {
+    staged: StagedDecisionLease,
+    reservation: DecisionDispatchReservation,
+}
+
+enum DurableDecisionDrive {
+    Idle,
+    DeferredByLegacyPredecessor,
+    RecoveryAuditProgress,
+    DiscardedStale(String),
+    Transient(String),
+    Staged(Box<StagedDecisionDispatch>),
+    StagedLifecycle(StagedAuthoritativeAction),
+    StagedFallback(StagedDecisionResponse),
+    StagedLifecycleWithTerminal {
+        staged: StagedAuthoritativeAction,
+        fence: mush_core::DecisionCompletionFence,
+        binding: mush_core::DecisionActionBinding,
+        outcome: mush_core::DecisionTerminalOutcome,
+    },
+}
+
+fn decision_lease_stale(error: &crate::action_coordinator::ActionCoordinatorError) -> bool {
+    matches!(
+        error,
+        crate::action_coordinator::ActionCoordinatorError::DecisionLeasePlan(source)
+            if matches!(
+                source.as_ref(),
+                mush_core::DecisionSourcePlanError::StaleCandidate
+                    | mush_core::DecisionSourcePlanError::MissingDecision
+                    | mush_core::DecisionSourcePlanError::MissingPrompt
+                    | mush_core::DecisionSourcePlanError::Decision(
+                        mush_core::DecisionError::StaleRevision
+                            | mush_core::DecisionError::StaleAttempt
+                            | mush_core::DecisionError::StaleLease
+                            | mush_core::DecisionError::InvalidTransition
+                            | mush_core::DecisionError::DeadlineReached
+                    )
+            )
+    )
+}
+
+/// Stage the bounded owner-local lifecycle follow-up after the selected
+/// ordinary action's exact receipt has installed. Returning `None` means the
+/// identical lifecycle key already has durable custody or a final receipt.
+async fn stage_decision_resolving(
+    engine: &mut Engine,
+    store: &dyn AuthoritativeStore,
+    fence: &mush_core::DecisionCompletionFence,
+    binding: &mush_core::DecisionActionBinding,
+    outcome: mush_core::DecisionTerminalOutcome,
+    mut idempotency_epoch: u64,
+) -> Result<Option<StagedAuthoritativeAction>, String> {
+    for _ in 0..3 {
+        let ingress = ActionCoordinator::decision_resolving_ingress(
+            engine,
+            fence,
+            binding,
+            outcome,
+            idempotency_epoch,
+        )
+        .map_err(|error| error.to_string())?;
+        match ActionCoordinator::preflight(store, ingress)
+            .await
+            .map_err(|error| error.to_string())?
+        {
+            ActionPreflight::Retired {
+                minimum_accepted_epoch,
+            } => idempotency_epoch = idempotency_epoch.max(minimum_accepted_epoch),
+            ActionPreflight::Vacant(permit) => {
+                return ActionCoordinator::prepare_and_stage_decision_resolving(
+                    permit, engine, fence, binding, outcome,
+                )
+                .map(Some)
+                .map_err(|error| error.to_string());
+            }
+            ActionPreflight::Pending { .. } | ActionPreflight::Finalized(_) => return Ok(None),
+            ActionPreflight::Quarantined(receipt) => {
+                return Err(format!(
+                    "decision resolving action {} is quarantined",
+                    receipt.token()
+                ));
+            }
+            ActionPreflight::Conflict => {
+                return Err("decision resolving idempotency identity conflicts".to_owned());
+            }
+        }
+    }
+    Err("decision resolving retirement watermark changed repeatedly".to_owned())
+}
+
+/// Stage an exact owner-local terminal transition after the resolving binding
+/// is durable. Recovery may safely join the same deterministic lifecycle key.
+async fn stage_decision_terminal(
+    engine: &mut Engine,
+    store: &dyn AuthoritativeStore,
+    fence: &mush_core::DecisionCompletionFence,
+    binding: &mush_core::DecisionActionBinding,
+    outcome: mush_core::DecisionTerminalOutcome,
+    mut idempotency_epoch: u64,
+) -> Result<Option<StagedAuthoritativeAction>, String> {
+    for _ in 0..3 {
+        let ingress = ActionCoordinator::decision_terminal_ingress(
+            engine,
+            fence,
+            binding,
+            outcome,
+            idempotency_epoch,
+        )
+        .map_err(|error| error.to_string())?;
+        match ActionCoordinator::preflight(store, ingress)
+            .await
+            .map_err(|error| error.to_string())?
+        {
+            ActionPreflight::Retired {
+                minimum_accepted_epoch,
+            } => idempotency_epoch = idempotency_epoch.max(minimum_accepted_epoch),
+            ActionPreflight::Vacant(permit) => {
+                return ActionCoordinator::prepare_and_stage_decision_terminal(
+                    permit, engine, fence, binding, outcome,
+                )
+                .map(Some)
+                .map_err(|error| error.to_string());
+            }
+            ActionPreflight::Pending { .. } | ActionPreflight::Finalized(_) => return Ok(None),
+            ActionPreflight::Quarantined(receipt) => {
+                return Err(format!(
+                    "decision terminal action {} is quarantined",
+                    receipt.token()
+                ));
+            }
+            ActionPreflight::Conflict => {
+                return Err("decision terminal idempotency identity conflicts".to_owned());
+            }
+        }
+    }
+    Err("decision terminal retirement watermark changed repeatedly".to_owned())
+}
+
+/// Stage the exact terminal-to-receipt replacement. The kernel re-reads the
+/// terminal, prompt, deadline, and composition identity during preparation;
+/// selected-action durability was established by the caller immediately
+/// before entering this helper.
+async fn stage_decision_compaction(
+    engine: &mut Engine,
+    store: &dyn AuthoritativeStore,
+    candidate: &mush_core::DecisionCompactionCandidate,
+    mut idempotency_epoch: u64,
+) -> Result<Option<StagedAuthoritativeAction>, String> {
+    for _ in 0..3 {
+        let ingress =
+            ActionCoordinator::decision_compaction_ingress(engine, candidate, idempotency_epoch)
+                .map_err(|error| error.to_string())?;
+        match ActionCoordinator::preflight(store, ingress)
+            .await
+            .map_err(|error| error.to_string())?
+        {
+            ActionPreflight::Retired {
+                minimum_accepted_epoch,
+            } => idempotency_epoch = idempotency_epoch.max(minimum_accepted_epoch),
+            ActionPreflight::Vacant(permit) => {
+                return ActionCoordinator::prepare_and_stage_decision_compaction(
+                    permit, engine, candidate,
+                )
+                .map(Some)
+                .map_err(|error| error.to_string());
+            }
+            ActionPreflight::Pending { .. } | ActionPreflight::Finalized(_) => return Ok(None),
+            ActionPreflight::Quarantined(receipt) => {
+                return Err(format!(
+                    "decision compaction action {} is quarantined",
+                    receipt.token()
+                ));
+            }
+            ActionPreflight::Conflict => {
+                return Err("decision compaction idempotency identity conflicts".to_owned());
+            }
+        }
+    }
+    Err("decision compaction retirement watermark changed repeatedly".to_owned())
+}
+
+async fn stage_decision_attempt(
+    engine: &mut Engine,
+    store: &dyn AuthoritativeStore,
+    fence: &mush_core::DecisionCompletionFence,
+    kind: mush_core::DecisionAttemptFailureKind,
+    mut idempotency_epoch: u64,
+) -> Result<Option<StagedDecisionAttempt>, String> {
+    for _ in 0..3 {
+        let ingress = ActionCoordinator::decision_attempt_ingress(
+            engine,
+            fence,
+            kind,
+            mush_core::DEFAULT_DECISION_ATTEMPTS,
+            idempotency_epoch,
+        )
+        .map_err(|error| error.to_string())?;
+        match ActionCoordinator::preflight(store, ingress)
+            .await
+            .map_err(|error| error.to_string())?
+        {
+            ActionPreflight::Retired {
+                minimum_accepted_epoch,
+            } => idempotency_epoch = idempotency_epoch.max(minimum_accepted_epoch),
+            ActionPreflight::Vacant(permit) => {
+                return ActionCoordinator::prepare_and_stage_decision_attempt(
+                    permit,
+                    engine,
+                    fence,
+                    kind,
+                    mush_core::DEFAULT_DECISION_ATTEMPTS,
+                )
+                .map(Some)
+                .map_err(|error| error.to_string());
+            }
+            ActionPreflight::Pending { .. } | ActionPreflight::Finalized(_) => return Ok(None),
+            ActionPreflight::Quarantined(receipt) => {
+                return Err(format!(
+                    "decision attempt action {} is quarantined",
+                    receipt.token()
+                ));
+            }
+            ActionPreflight::Conflict => {
+                return Err("decision attempt idempotency identity conflicts".to_owned());
+            }
+        }
+    }
+    Err("decision attempt retirement watermark changed repeatedly".to_owned())
+}
+
+async fn stage_decision_fallback_trigger(
+    engine: &mut Engine,
+    store: &dyn AuthoritativeStore,
+    candidate: &mush_core::DecisionFallbackTriggerCandidate,
+    mut idempotency_epoch: u64,
+) -> Result<Option<StagedAuthoritativeAction>, String> {
+    for _ in 0..3 {
+        let ingress = ActionCoordinator::decision_fallback_trigger_ingress(
+            engine,
+            candidate,
+            idempotency_epoch,
+        )
+        .map_err(|error| error.to_string())?;
+        match ActionCoordinator::preflight(store, ingress)
+            .await
+            .map_err(|error| error.to_string())?
+        {
+            ActionPreflight::Retired {
+                minimum_accepted_epoch,
+            } => idempotency_epoch = idempotency_epoch.max(minimum_accepted_epoch),
+            ActionPreflight::Vacant(permit) => {
+                return ActionCoordinator::prepare_and_stage_decision_fallback_trigger(
+                    permit, engine, candidate,
+                )
+                .map(|staged| Some(staged.staged))
+                .map_err(|error| error.to_string());
+            }
+            ActionPreflight::Pending { .. } | ActionPreflight::Finalized(_) => return Ok(None),
+            ActionPreflight::Quarantined(receipt) => {
+                return Err(format!(
+                    "decision fallback trigger action {} is quarantined",
+                    receipt.token()
+                ));
+            }
+            ActionPreflight::Conflict => {
+                return Err("decision fallback trigger idempotency identity conflicts".to_owned());
+            }
+        }
+    }
+    Err("decision fallback trigger retirement watermark changed repeatedly".to_owned())
 }
 
 struct DurableScheduleDriver {
@@ -1832,6 +2578,26 @@ struct ActionCompletion {
     finished:
         Option<oneshot::Sender<Result<StagedAuthoritativeAction, AuthoritativeCommitFailure>>>,
     ownership_valid: bool,
+    post_commit_decision: Option<DecisionPostCommit>,
+    post_commit_decision_response: Option<DecisionResponsePostCommit>,
+    post_commit_decision_terminal: Option<DecisionTerminalPostCommit>,
+}
+
+struct DecisionPostCommit {
+    reservation: DecisionDispatchReservation,
+    worker: mush_core::DecisionWorkerLease,
+}
+
+struct DecisionResponsePostCommit {
+    fence: mush_core::DecisionCompletionFence,
+    binding: mush_core::DecisionActionBinding,
+    outcome: mush_core::DecisionTerminalOutcome,
+}
+
+struct DecisionTerminalPostCommit {
+    fence: mush_core::DecisionCompletionFence,
+    binding: mush_core::DecisionActionBinding,
+    outcome: mush_core::DecisionTerminalOutcome,
 }
 
 /// One authoritative batch whose presentation and external work remain held
@@ -1974,6 +2740,8 @@ struct CompletedPending {
     outcome: DeliveryOutcome,
     barriers: Vec<oneshot::Sender<Result<(), WorldReadError>>>,
     coalesced_reattach: Option<Box<[ReAttachRec]>>,
+    decision_response: Option<DecisionResponsePostCommit>,
+    decision_terminal: Option<DecisionTerminalPostCommit>,
 }
 
 impl PendingCommit {
@@ -2054,6 +2822,7 @@ async fn run(
     mut shutdown: watch::Receiver<bool>,
     action_epoch: u64,
     persistence_integrity: PersistenceIntegrityLatch,
+    decision_runtime: Option<DecisionRuntime>,
     initial_mode: Option<WorldMode>,
     _outbox_lifetime: watch::Sender<bool>,
 ) {
@@ -2068,6 +2837,22 @@ async fn run(
     let mut durable_schedule_tick = tokio::time::interval(DURABLE_SCHEDULE_POLL_INTERVAL);
     durable_schedule_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut durable_schedule_transient_alarmed = false;
+    let (mut durable_decisions, mut decision_wakes, mut decision_completions) =
+        if let Some(runtime) = decision_runtime {
+            (
+                Some(DurableDecisionDriver::new(
+                    action_epoch,
+                    Arc::clone(&runtime.dispatcher),
+                )),
+                Some(runtime.wakes),
+                Some(runtime.completions),
+            )
+        } else {
+            (None, None, None)
+        };
+    let mut durable_decision_tick = tokio::time::interval(Duration::from_millis(250));
+    durable_decision_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut durable_decision_transient_alarmed = false;
     // The server -> gateway delivery seam (M16a/M16b): every resolved
     // `(SendTarget, OutputEvent)` pair is handed to this transport. In the
     // all-in-one binary it maps onto the shared `SessionManager`; in the forked
@@ -2180,6 +2965,9 @@ async fn run(
             // re-emit wake drain before admitting an exact-token action.
             && retained.is_empty()
             && admission_for(admission_mode, IngressClass::Timer) == Admission::Allow;
+        let durable_decision_armed = durable_decisions.is_some()
+            && retained.is_empty()
+            && admission_for(admission_mode, IngressClass::Timer) == Admission::Allow;
         let ready_deferred = if pending_commit.is_none() {
             deferred_world_msg.take()
         } else {
@@ -2209,6 +2997,25 @@ async fn run(
             } => Wake::CommitReceipt(receipt),
             () = sleep_until_unix_ms(next_due), if sched_armed => Wake::Timer,
             _ = durable_schedule_tick.tick(), if durable_schedule_armed => Wake::DurableSchedules,
+            wake = async {
+                match decision_wakes.as_mut() {
+                    Some(wakes) => wakes.recv().await,
+                    None => std::future::pending().await,
+                }
+            }, if durable_decision_armed => match wake {
+                Some(wake) => Wake::DecisionNotification(wake),
+                None => Wake::DurableDecisions,
+            },
+            completion = async {
+                match decision_completions.as_mut() {
+                    Some(completions) => completions.recv().await,
+                    None => std::future::pending().await,
+                }
+            }, if durable_decisions.is_some() => match completion {
+                Some(completion) => Wake::DecisionResult(Box::new(completion)),
+                None => Wake::DurableDecisions,
+            },
+            _ = durable_decision_tick.tick(), if durable_decision_armed => Wake::DurableDecisions,
             () = tokio::time::sleep(REEMIT_INTERVAL), if reemit_pending => Wake::Timer,
             changed = shutdown.changed(), if !shutdown_requested => {
                 if changed.is_ok() && *shutdown.borrow_and_update() {
@@ -2461,6 +3268,9 @@ async fn run(
                                         owned: Some(owned),
                                         finished: Some(finished),
                                         ownership_valid: false,
+                                        post_commit_decision: None,
+                                        post_commit_decision_response: None,
+                                        post_commit_decision_terminal: None,
                                     });
                                 }
                                 Err(detail) => {
@@ -2581,7 +3391,7 @@ async fn run(
                     .take()
                     .expect("commit receipt cannot resolve without a pending commit");
                 let exit_after_ack = pending.exit_after_ack;
-                let completed = complete_pending_commit(
+                let mut completed = complete_pending_commit(
                     pending,
                     ack,
                     &mut engine,
@@ -2591,7 +3401,87 @@ async fn run(
                     &tx,
                     llm.as_ref(),
                 );
+                let decision_response = completed.decision_response.take();
+                let decision_terminal = completed.decision_terminal.take();
                 finish_pending_operational(&mut engine, &gateway, completed);
+                if let Some(response) = decision_response {
+                    let resolving = if let Some(store) = deps.store.authoritative_store() {
+                        stage_decision_resolving(
+                            &mut engine,
+                            store,
+                            &response.fence,
+                            &response.binding,
+                            response.outcome,
+                            action_epoch,
+                        )
+                        .await
+                    } else {
+                        Err("authoritative store capability disappeared".to_owned())
+                    };
+                    match resolving {
+                        Ok(Some(staged)) => {
+                            action_completion = Some(ActionCompletion {
+                                staged,
+                                owned: None,
+                                finished: None,
+                                ownership_valid: false,
+                                post_commit_decision: None,
+                                post_commit_decision_response: None,
+                                post_commit_decision_terminal: Some(DecisionTerminalPostCommit {
+                                    fence: response.fence,
+                                    binding: response.binding,
+                                    outcome: response.outcome,
+                                }),
+                            });
+                        }
+                        Ok(None) => {}
+                        Err(error) => {
+                            tracing::error!(
+                                owner = %response.fence.controller().owner,
+                                decision = ?response.fence.decision(),
+                                error = %error,
+                                "failed to bind committed selected action to pending decision"
+                            );
+                        }
+                    }
+                }
+                if let Some(terminal) = decision_terminal {
+                    let staged = if let Some(store) = deps.store.authoritative_store() {
+                        stage_decision_terminal(
+                            &mut engine,
+                            store,
+                            &terminal.fence,
+                            &terminal.binding,
+                            terminal.outcome,
+                            action_epoch,
+                        )
+                        .await
+                    } else {
+                        Err("authoritative store capability disappeared".to_owned())
+                    };
+                    match staged {
+                        Ok(Some(staged)) => {
+                            action_completion = Some(ActionCompletion {
+                                staged,
+                                owned: None,
+                                finished: None,
+                                ownership_valid: false,
+                                post_commit_decision: None,
+                                post_commit_decision_response: None,
+                                post_commit_decision_terminal: None,
+                            });
+                        }
+                        Ok(None) => {}
+                        Err(error) => {
+                            tracing::error!(
+                                owner = %terminal.fence.controller().owner,
+                                decision = ?terminal.fence.decision(),
+                                error = %error,
+                                "failed to terminalize resolved decision"
+                            );
+                        }
+                    }
+                }
                 if std::mem::take(&mut recovery_waits_for_commit) {
                     apply_store_status(&engine.world, &gateway, &mut health, true, "");
                 }
@@ -2653,6 +3543,9 @@ async fn run(
                             owned: None,
                             finished: None,
                             ownership_valid: false,
+                            post_commit_decision: None,
+                            post_commit_decision_response: None,
+                            post_commit_decision_terminal: None,
                         });
                     }
                     Err(detail) => {
@@ -2663,6 +3556,379 @@ async fn run(
                             &persistence_integrity,
                             &format!("durable schedule drive failed: {detail}"),
                         );
+                    }
+                }
+                StepOutcome::Continue
+            }
+            wake @ (Wake::DecisionNotification(_) | Wake::DurableDecisions) => {
+                let Some(store) = deps.store.authoritative_store() else {
+                    apply_integrity_freeze(
+                        &engine.world,
+                        &gateway,
+                        &mut health,
+                        &persistence_integrity,
+                        "delayed-decision driver has no authoritative store capability",
+                    );
+                    continue;
+                };
+                let wake = match &wake {
+                    Wake::DecisionNotification(wake) => Some(wake),
+                    Wake::DurableDecisions => None,
+                    _ => unreachable!(),
+                };
+                let Some(driver) = durable_decisions.as_mut() else {
+                    continue;
+                };
+                match driver.drive_one(&mut engine, store, wake).await {
+                    Ok(
+                        DurableDecisionDrive::Idle
+                        | DurableDecisionDrive::DeferredByLegacyPredecessor
+                        | DurableDecisionDrive::RecoveryAuditProgress,
+                    ) => {
+                        durable_decision_transient_alarmed = false;
+                    }
+                    Ok(DurableDecisionDrive::DiscardedStale(detail)) => {
+                        durable_decision_transient_alarmed = false;
+                        tracing::debug!(
+                            error = %detail,
+                            "discarded stale delayed-decision candidate"
+                        );
+                    }
+                    Ok(DurableDecisionDrive::Transient(detail)) => {
+                        if !durable_decision_transient_alarmed {
+                            tracing::warn!(
+                                error = %detail,
+                                "delayed-decision dispatch is temporarily unavailable"
+                            );
+                            durable_decision_transient_alarmed = true;
+                        }
+                    }
+                    Ok(DurableDecisionDrive::Staged(staged_dispatch)) => {
+                        let StagedDecisionDispatch {
+                            staged,
+                            reservation,
+                        } = *staged_dispatch;
+                        durable_decision_transient_alarmed = false;
+                        let StagedDecisionLease { staged, worker } = staged;
+                        action_completion = Some(ActionCompletion {
+                            staged,
+                            owned: None,
+                            finished: None,
+                            ownership_valid: false,
+                            post_commit_decision: Some(DecisionPostCommit {
+                                reservation,
+                                worker,
+                            }),
+                            post_commit_decision_response: None,
+                            post_commit_decision_terminal: None,
+                        });
+                    }
+                    Ok(DurableDecisionDrive::StagedLifecycle(staged)) => {
+                        durable_decision_transient_alarmed = false;
+                        action_completion = Some(ActionCompletion {
+                            staged,
+                            owned: None,
+                            finished: None,
+                            ownership_valid: false,
+                            post_commit_decision: None,
+                            post_commit_decision_response: None,
+                            post_commit_decision_terminal: None,
+                        });
+                    }
+                    Ok(DurableDecisionDrive::StagedFallback(selected)) => {
+                        action_completion = Some(ActionCompletion {
+                            staged: selected.staged,
+                            owned: None,
+                            finished: None,
+                            ownership_valid: false,
+                            post_commit_decision: None,
+                            post_commit_decision_response: Some(DecisionResponsePostCommit {
+                                fence: selected.fence,
+                                binding: selected.binding,
+                                outcome: mush_core::DecisionTerminalOutcome::Fallback,
+                            }),
+                            post_commit_decision_terminal: None,
+                        });
+                    }
+                    Ok(DurableDecisionDrive::StagedLifecycleWithTerminal {
+                        staged,
+                        fence,
+                        binding,
+                        outcome,
+                    }) => {
+                        action_completion = Some(ActionCompletion {
+                            staged,
+                            owned: None,
+                            finished: None,
+                            ownership_valid: false,
+                            post_commit_decision: None,
+                            post_commit_decision_response: None,
+                            post_commit_decision_terminal: Some(DecisionTerminalPostCommit {
+                                fence,
+                                binding,
+                                outcome,
+                            }),
+                        });
+                    }
+                    Err(detail) => {
+                        if let Some(owner) = driver.take_failure_owner() {
+                            let incident = incident_id("decision-recovery", &detail);
+                            let reason = mush_core::RecoveryReason::IntegrityViolation {
+                                code: mush_core::CanonicalId::new("decision_recovery")
+                                    .expect("static decision recovery code"),
+                            };
+                            match engine
+                                .registry
+                                .freeze_mechanics_owner(&owner, incident, reason)
+                            {
+                                Ok(_) => tracing::error!(
+                                    owner = %owner,
+                                    incident = ?incident,
+                                    error = %detail,
+                                    "delayed-decision owner frozen after recovery integrity failure"
+                                ),
+                                Err(error) => apply_integrity_freeze(
+                                    &engine.world,
+                                    &gateway,
+                                    &mut health,
+                                    &persistence_integrity,
+                                    &format!(
+                                        "delayed-decision owner freeze failed after {detail}: {error}"
+                                    ),
+                                ),
+                            }
+                        } else {
+                            apply_integrity_freeze(
+                                &engine.world,
+                                &gateway,
+                                &mut health,
+                                &persistence_integrity,
+                                &format!("delayed-decision drive failed: {detail}"),
+                            );
+                        }
+                    }
+                }
+                StepOutcome::Continue
+            }
+            Wake::DecisionResult(completion) => {
+                let Some(store) = deps.store.authoritative_store() else {
+                    apply_integrity_freeze(
+                        &engine.world,
+                        &gateway,
+                        &mut health,
+                        &persistence_integrity,
+                        "decision response ingress has no authoritative store capability",
+                    );
+                    continue;
+                };
+                let fence = completion.fence();
+                match completion.into_result() {
+                    Err(error) => {
+                        let kind = match error.kind() {
+                            crate::decision_dispatch::DecisionProviderFailureKind::Unavailable => {
+                                mush_core::DecisionAttemptFailureKind::Unavailable
+                            }
+                            crate::decision_dispatch::DecisionProviderFailureKind::Malformed => {
+                                mush_core::DecisionAttemptFailureKind::Malformed
+                            }
+                            crate::decision_dispatch::DecisionProviderFailureKind::Permanent => {
+                                mush_core::DecisionAttemptFailureKind::Permanent
+                            }
+                        };
+                        match stage_decision_attempt(&mut engine, store, &fence, kind, action_epoch)
+                            .await
+                        {
+                            Ok(Some(attempt)) => {
+                                tracing::warn!(
+                                    owner = %fence.controller().owner,
+                                    decision = ?fence.decision(),
+                                    revision = fence.revision(),
+                                    attempt = fence.attempt(),
+                                    kind = ?error.kind(),
+                                    error = %error.detail(),
+                                    fallback = attempt.fallback_fence.is_some(),
+                                    "decision provider failure entered durable lifecycle"
+                                );
+                                action_completion = Some(ActionCompletion {
+                                    staged: attempt.staged,
+                                    owned: None,
+                                    finished: None,
+                                    ownership_valid: false,
+                                    post_commit_decision: None,
+                                    post_commit_decision_response: None,
+                                    post_commit_decision_terminal: None,
+                                });
+                            }
+                            Ok(None) => {
+                                tracing::info!(
+                                    decision = ?fence.decision(),
+                                    attempt = fence.attempt(),
+                                    "decision provider failure joined existing attempt lifecycle"
+                                );
+                            }
+                            Err(detail) => {
+                                tracing::error!(
+                                    decision = ?fence.decision(),
+                                    attempt = fence.attempt(),
+                                    error = %detail,
+                                    "decision provider failure could not enter durable lifecycle"
+                                );
+                            }
+                        }
+                    }
+                    Ok(response) => {
+                        let ingress = match ActionCoordinator::decision_response_ingress(
+                            &engine, &fence, &response,
+                        ) {
+                            Ok(ingress) => ingress,
+                            Err(error) => {
+                                tracing::warn!(
+                                    owner = %fence.controller().owner,
+                                    decision = ?fence.decision(),
+                                    revision = fence.revision(),
+                                    attempt = fence.attempt(),
+                                    error = %error,
+                                    "refused stale or malformed decision response"
+                                );
+                                continue;
+                            }
+                        };
+                        let preflight = match ActionCoordinator::preflight(store, ingress).await {
+                            Ok(preflight) => preflight,
+                            Err(error) => {
+                                tracing::warn!(
+                                    owner = %fence.controller().owner,
+                                    decision = ?fence.decision(),
+                                    error = %error,
+                                    "decision response idempotency preflight is unavailable"
+                                );
+                                continue;
+                            }
+                        };
+                        match preflight {
+                            ActionPreflight::Vacant(permit) => {
+                                match ActionCoordinator::prepare_and_stage_decision_response(
+                                    permit,
+                                    &mut engine,
+                                    fence,
+                                    &response,
+                                ) {
+                                    Ok(StagedDecisionResponse {
+                                        staged,
+                                        fence,
+                                        binding,
+                                    }) => {
+                                        action_completion = Some(ActionCompletion {
+                                            staged,
+                                            owned: None,
+                                            finished: None,
+                                            ownership_valid: false,
+                                            post_commit_decision: None,
+                                            post_commit_decision_response: Some(
+                                                DecisionResponsePostCommit {
+                                                    fence,
+                                                    binding,
+                                                    outcome:
+                                                        mush_core::DecisionTerminalOutcome::Executed,
+                                                },
+                                            ),
+                                            post_commit_decision_terminal: None,
+                                        });
+                                    }
+                                    Err(error) => {
+                                        tracing::warn!(
+                                            error = %error,
+                                            "decision response failed current offer revalidation"
+                                        );
+                                    }
+                                }
+                            }
+                            ActionPreflight::Pending { token, bundle_hash } => {
+                                tracing::info!(
+                                    %token,
+                                    %bundle_hash,
+                                    decision = ?fence.decision(),
+                                    "decision response joined an existing selected-action intent"
+                                );
+                            }
+                            ActionPreflight::Finalized(receipt) => {
+                                let binding = mush_core::DecisionActionBinding {
+                                    request: receipt.request(),
+                                    request_hash: receipt.request_hash(),
+                                };
+                                match stage_decision_resolving(
+                                    &mut engine,
+                                    store,
+                                    &fence,
+                                    &binding,
+                                    mush_core::DecisionTerminalOutcome::Executed,
+                                    action_epoch,
+                                )
+                                .await
+                                {
+                                    Ok(Some(staged)) => {
+                                        tracing::info!(
+                                            token = %receipt.token(),
+                                            decision = ?fence.decision(),
+                                            "reconciled an already finalized selected action"
+                                        );
+                                        action_completion = Some(ActionCompletion {
+                                            staged,
+                                            owned: None,
+                                            finished: None,
+                                            ownership_valid: false,
+                                            post_commit_decision: None,
+                                            post_commit_decision_response: None,
+                                            post_commit_decision_terminal: Some(
+                                                DecisionTerminalPostCommit {
+                                                    fence,
+                                                    binding,
+                                                    outcome:
+                                                        mush_core::DecisionTerminalOutcome::Executed,
+                                                },
+                                            ),
+                                        });
+                                    }
+                                    Ok(None) => {
+                                        tracing::info!(
+                                            token = %receipt.token(),
+                                            decision = ?fence.decision(),
+                                            "joined an existing selected-action lifecycle intent"
+                                        );
+                                    }
+                                    Err(error) => {
+                                        tracing::error!(
+                                            token = %receipt.token(),
+                                            decision = ?fence.decision(),
+                                            error = %error,
+                                            "failed to reconcile finalized selected action"
+                                        );
+                                    }
+                                }
+                            }
+                            ActionPreflight::Retired {
+                                minimum_accepted_epoch,
+                            } => {
+                                tracing::warn!(
+                                    decision = ?fence.decision(),
+                                    minimum_accepted_epoch,
+                                    "decision response action idempotency epoch is retired"
+                                );
+                            }
+                            ActionPreflight::Quarantined(receipt) => {
+                                tracing::error!(
+                                    token = %receipt.token(),
+                                    decision = ?fence.decision(),
+                                    "decision response selected action is quarantined"
+                                );
+                            }
+                            ActionPreflight::Conflict => {
+                                tracing::info!(
+                                    decision = ?fence.decision(),
+                                    "decision response lost the selected-action idempotency race"
+                                );
+                            }
+                        }
                     }
                 }
                 StepOutcome::Continue
@@ -2751,8 +4017,12 @@ async fn run(
         if let Some((gate_actor, _strict)) = engine.take_durable_gate() {
             failure_actor = Some(gate_actor);
         }
-        let mut classified_sends =
-            resolve_classified_sends(&engine.registry, &engine.world, &mut out);
+        let mut classified_sends = resolve_classified_sends(
+            &engine.registry,
+            &engine.world,
+            &mut out,
+            Some(engine.action_state()),
+        );
         let mut classified_effects = fx.drain_classified();
         if let Some(pending) = pending_commit.as_mut() {
             debug_assert!(create_completion.is_none());
@@ -2975,7 +4245,12 @@ async fn run(
                 llm.as_ref(),
                 &metrics,
             );
-            let mut sends = resolve_classified_sends(&engine.registry, &engine.world, &mut out);
+            let mut sends = resolve_classified_sends(
+                &engine.registry,
+                &engine.world,
+                &mut out,
+                Some(engine.action_state()),
+            );
             let mut effects = fx.drain_classified();
             match flush_dirty(
                 &mut engine,
@@ -3154,7 +4429,12 @@ async fn run(
             // drain → BGSAVE) runs when this task's join resolves.
             let outcome = engine.step(Inbound::Control(ControlMsg::Shutdown), &mut out, &mut fx);
             debug_assert_eq!(outcome, StepOutcome::Shutdown);
-            let mut sends = resolve_classified_sends(&engine.registry, &engine.world, &mut out);
+            let mut sends = resolve_classified_sends(
+                &engine.registry,
+                &engine.world,
+                &mut out,
+                Some(engine.action_state()),
+            );
             let mut effects = fx.drain_classified();
             match flush_dirty(
                 &mut engine,
@@ -5127,7 +6407,7 @@ fn resolve_sends(
     world: &World,
     out: &mut Outbox,
 ) -> Vec<(SendTarget, Arc<OutputEvent>)> {
-    resolve_classified_sends(reg, world, out)
+    resolve_classified_sends(reg, world, out, None)
         .into_iter()
         .map(|(_class, target, event)| (target, event))
         .collect()
@@ -5140,6 +6420,7 @@ fn resolve_classified_sends(
     reg: &Registry,
     world: &World,
     out: &mut Outbox,
+    action_state: Option<&mush_core::ActionStateStore>,
 ) -> Vec<ClassifiedSend> {
     let mut sends = Vec::new();
     for (class, audience, event) in out.take_classified() {
@@ -5182,10 +6463,16 @@ fn resolve_classified_sends(
                     {
                         continue;
                     }
-                    if let Some(subject) = subject
-                        && !can_perceive(reg, world, occupant, subject)
-                    {
-                        continue;
+                    if let Some(subject) = subject {
+                        let visible = action_state.map_or_else(
+                            || can_perceive(reg, world, occupant, subject),
+                            |store| {
+                                can_perceive_with_action_state(reg, world, occupant, subject, store)
+                            },
+                        );
+                        if !visible {
+                            continue;
+                        }
                     }
                     sends.push((
                         class,
@@ -5440,6 +6727,40 @@ fn complete_pending_commit(
             engine.abort_prepared_action(installation);
         }
     }
+    if let Some(post_commit) = action
+        .as_mut()
+        .and_then(|completion| completion.post_commit_decision.take())
+        && outcome == DeliveryOutcome::Committed
+        && !health.mode.integrity_frozen()
+        && let Err(error) = post_commit.reservation.spawn(post_commit.worker)
+    {
+        apply_integrity_freeze(
+            &engine.world,
+            gateway,
+            health,
+            persistence_integrity,
+            &format!("committed decision lease could not release worker custody: {error}"),
+        );
+    }
+    let decision_response = action
+        .as_mut()
+        .and_then(|completion| completion.post_commit_decision_response.take())
+        .filter(|_| outcome == DeliveryOutcome::Committed && !health.mode.integrity_frozen());
+    if let Some(response) = decision_response.as_ref() {
+        tracing::info!(
+            owner = %response.fence.controller().owner,
+            decision = ?response.fence.decision(),
+            revision = response.fence.revision(),
+            attempt = response.fence.attempt(),
+            request = %response.binding.request,
+            request_hash = %response.binding.request_hash,
+            "decision response selected action committed; lifecycle binding retained"
+        );
+    }
+    let decision_terminal = action
+        .as_mut()
+        .and_then(|completion| completion.post_commit_decision_terminal.take())
+        .filter(|_| outcome == DeliveryOutcome::Committed && !health.mode.integrity_frozen());
     if let Some(completion) = action.as_mut()
         && let Some(finished) = completion.finished.take()
     {
@@ -5497,6 +6818,8 @@ fn complete_pending_commit(
         outcome,
         barriers,
         coalesced_reattach,
+        decision_response,
+        decision_terminal,
     }
 }
 
@@ -5510,7 +6833,12 @@ fn finish_pending_operational(engine: &mut Engine, gateway: &Gateway, completed:
         let count = recs.len();
         let mut reattach_out = Outbox::new();
         apply_reattach_snapshot(engine, &recs, &mut reattach_out);
-        let sends = resolve_classified_sends(&engine.registry, &engine.world, &mut reattach_out);
+        let sends = resolve_classified_sends(
+            &engine.registry,
+            &engine.world,
+            &mut reattach_out,
+            Some(engine.action_state()),
+        );
         release_classified_sends(gateway, sends, completed.outcome);
         tracing::info!(
             count,
@@ -5824,21 +7152,49 @@ mod tests {
     use super::*;
     use std::collections::BTreeSet;
     use std::sync::Mutex;
-    use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+    use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering as AtomicOrdering};
 
     use mush_core::{
-        ActionError, ArgShape, AsyncCompletion, AuthoritativeBundle, AuthoritativeBundleDraft,
-        CanonicalHash, CanonicalId, CmdError, CommandSpec, CommitToken as DurableCommitToken,
-        ContextOutcome, Ctx, Deferred, DefinitionDescriptor, DefinitionId, DefinitionKind,
-        DefinitionRegistryBuilder, EventHook, GOD, GameModule, GuardSet, HookPoint, IdempotencyKey,
-        IdempotencyScope, InputContext, LIMBO, ModuleBootData, ModuleCtx, ModuleOp, ModuleWrite,
-        OwnerId, PreparedCausalRef, PreparedTxn, PrincipalId, QueryHandler, Registrar, RequestUid,
-        RevisionKey, RevisionKind, RevisionSet, RevisionStamp, RevisionValidator, RulesValue,
-        ScopedIdempotencyKey, StateFamilyDescriptor, StateFamilyHandle, StateFamilyId, SubjectKey,
-        TickHandler, WorldEventKind, WorldObserver,
+        ActionError, ActionErrorCode, ActionInvocation, ActionInvocationDraft, ActionOfferId,
+        ActionPresentation, ActionProvider, ActionStateBootRecord, ArgShape, AsyncCompletion,
+        AuthoritativeActionOutput, AuthoritativeBundle, AuthoritativeBundleDraft, AuthorityGuard,
+        AuthorityGuardContext, AuthorityGuardKind, AuthorityGuardValidator, CanonicalHash,
+        CanonicalId, ClockRef, ClockStamp, CmdError, CommandSpec,
+        CommitToken as DurableCommitToken, ContextOutcome, Ctx, DecisionAdmissionIndex,
+        DecisionCaptureFamilies, DecisionCapturePlan, DecisionCause, DecisionControllerId,
+        DecisionId, DecisionKeyRing, DecisionPrompt, DecisionPromptRecord,
+        DecisionPromptStateCodec, DecisionResponse, DecisionSecret, DecisionTerminalReceipt,
+        DecisionTerminalReceiptStateCodec, DecisionToken, DecisionWorkerLease, Deferred,
+        DefinitionDescriptor, DefinitionId, DefinitionKind, DefinitionRef,
+        DefinitionRegistryBuilder, DurableScheduleStateCodec, EventHook, FallbackPolicyRef, GOD,
+        GameModule, GuardSet, HookPoint, IdempotencyKey, IdempotencyKeyText, IdempotencyScope,
+        IngressEnvelope, IngressPayload, IngressSurfaceVersion, InputContext, LIMBO,
+        ModuleBootData, ModuleCtx, ModuleOp, ModuleWrite, OfferKeyRing, OfferSecret, OwnerId,
+        PendingDecision, PendingDecisionStateCodec, PendingDecisionStatus, PendingOfferWitness,
+        PerceivedRef, PreparedCausalRef, PreparedTxn, PrincipalId, ProjectedDecisionContext,
+        ProjectedLegalAction, ProjectedParameterSchema, ProjectedTargetSchema, ProjectionScopeId,
+        ProviderOfferDraft, QueryHandler, Registrar, RequestUid, RevisionKey, RevisionKind,
+        RevisionSet, RevisionStamp, RevisionValidator, RulesValue, ScopedIdempotencyKey,
+        StateFamilyDescriptor, StateFamilyHandle, StateFamilyId, SubjectKey, TickHandler,
+        WorldEventKind, WorldObserver, decision_prompt_state_family_descriptor,
+        decision_terminal_receipt_state_family_descriptor,
+        durable_schedule_state_family_descriptor, pending_decision_state_family_descriptor,
     };
     use mush_proto::{InputMode, PromptSpec};
-    use mush_store::AuthoritativeStore;
+    use mush_store::{AuthoritativeOutboxAttemptResult, AuthoritativeStore};
+    use mush_tactics::{TacticalUnit, UnitSpec};
+
+    use mush_contract_tests::tactical_gate::{
+        TacticalGateState, disable_tactical_gate_weapon, exhaust_tactical_gate_ammo,
+        install_tactical_gate_contact, install_tactical_gate_fire_window,
+        install_tactical_gate_placement, install_tactical_gate_unit,
+        install_tactical_gate_weapons_lease, move_tactical_gate_placement,
+        publish_tactical_gate_weapons_station, tactical_gate_world_with_modules,
+    };
+
+    use crate::decision_dispatch::{
+        DecisionProviderAdapter, DecisionProviderFailure, DecisionProviderFailureKind,
+    };
 
     struct BlackholeGateway;
 
@@ -5930,6 +7286,3073 @@ mod tests {
 
         fn session_counts(&self) -> (i64, i64) {
             (0, 0)
+        }
+    }
+
+    const DECISION_HARNESS_OWNER: &str = "decision_harness";
+    const DECISION_WAKE_ADAPTER: &str = "decision_wake";
+
+    type PendingDecisionHandle = StateFamilyHandle<DecisionId, PendingDecision>;
+    type DecisionTerminalReceiptHandle = StateFamilyHandle<DecisionId, DecisionTerminalReceipt>;
+
+    #[derive(Clone, Debug, serde::Deserialize, Eq, PartialEq)]
+    #[serde(deny_unknown_fields)]
+    struct DecisionSelectionState {
+        count: u64,
+    }
+
+    type DecisionSelectionHandle = StateFamilyHandle<CanonicalId, DecisionSelectionState>;
+
+    #[derive(Clone)]
+    struct DecisionHarnessFamilies {
+        pending: PendingDecisionHandle,
+        prompts: StateFamilyHandle<DecisionId, DecisionPromptRecord>,
+        terminal_receipts: DecisionTerminalReceiptHandle,
+        selections: DecisionSelectionHandle,
+    }
+
+    #[derive(Clone)]
+    struct DecisionHarnessRegistration {
+        families: DecisionHarnessFamilies,
+        capture_action: DefinitionRef,
+        lease_action: DefinitionRef,
+        capability_generation: Arc<AtomicU64>,
+    }
+
+    struct DecisionHarnessModule {
+        registration: Arc<Mutex<Option<DecisionHarnessRegistration>>>,
+        capture_plan: Arc<Mutex<Option<DecisionCapturePlan>>>,
+        lease_duration: i64,
+        capability_generation: Arc<AtomicU64>,
+    }
+
+    struct DecisionCaptureProvider {
+        action: DefinitionRef,
+        families: DecisionCaptureFamilies,
+        plan: Arc<Mutex<Option<DecisionCapturePlan>>>,
+    }
+
+    struct DecisionLeaseProvider {
+        action: DefinitionRef,
+        selections: DecisionSelectionHandle,
+        capability_generation: Arc<AtomicU64>,
+    }
+
+    struct DecisionCapabilityValidator {
+        generation: Arc<AtomicU64>,
+    }
+
+    impl AuthorityGuardValidator for DecisionCapabilityValidator {
+        fn is_current(
+            &self,
+            _context: &AuthorityGuardContext<'_>,
+            guard: &AuthorityGuard,
+        ) -> Result<bool, ActionError> {
+            Ok(matches!(
+                guard,
+                AuthorityGuard::Capability {
+                    provider,
+                    capability,
+                    generation,
+                    ..
+                } if provider.as_str() == DECISION_HARNESS_OWNER
+                    && capability.as_str() == "choose"
+                    && *generation == self.generation.load(AtomicOrdering::SeqCst)
+            ))
+        }
+    }
+
+    struct DecisionHarnessFallback {
+        identity: CanonicalId,
+    }
+
+    impl mush_core::DecisionFallbackAdapter for DecisionHarnessFallback {
+        fn identity(&self) -> &CanonicalId {
+            &self.identity
+        }
+
+        fn select(
+            &self,
+            _policy: &FallbackPolicyRef,
+            prompt: &DecisionPrompt,
+        ) -> Result<mush_core::DecisionFallbackSelection, String> {
+            let action = prompt
+                .actions
+                .first()
+                .ok_or_else(|| "fallback prompt has no projected actions".to_owned())?;
+            Ok(mush_core::DecisionFallbackSelection {
+                offer: action.offer(),
+                targets: Vec::new(),
+                parameters: serde_json::json!({}),
+            })
+        }
+    }
+
+    fn harness_action_error(detail: impl Into<String>) -> ActionError {
+        ActionError::new(ActionErrorCode::ProviderRejected, false, detail.into())
+            .expect("bounded decision harness error")
+    }
+
+    impl ActionProvider for DecisionCaptureProvider {
+        fn validate_invocation(&self, _invocation: &ActionInvocation) -> Result<(), ActionError> {
+            Ok(())
+        }
+
+        fn prepare_authoritative(
+            &self,
+            _invocation: &ActionInvocation,
+            txn: &mut mush_core::ActionTxn<'_>,
+        ) -> Result<AuthoritativeActionOutput, ActionError> {
+            let plan = self
+                .plan
+                .lock()
+                .expect("decision capture-plan mutex poisoned")
+                .clone()
+                .ok_or_else(|| harness_action_error("decision capture plan is not armed"))?;
+            let wake = plan
+                .stage(txn, &self.families)
+                .map_err(|error| harness_action_error(error.to_string()))?;
+            let outcome = RulesValue::new(
+                self.action.clone(),
+                serde_json::json!({
+                    "captured": true
+                }),
+            )
+            .map_err(|error| harness_action_error(error.to_string()))?;
+            Ok(AuthoritativeActionOutput::new(outcome).with_durable_outbox(vec![wake]))
+        }
+    }
+
+    impl ActionProvider for DecisionLeaseProvider {
+        fn validate_invocation(&self, _invocation: &ActionInvocation) -> Result<(), ActionError> {
+            Ok(())
+        }
+
+        fn prepare_authoritative(
+            &self,
+            invocation: &ActionInvocation,
+            txn: &mut mush_core::ActionTxn<'_>,
+        ) -> Result<AuthoritativeActionOutput, ActionError> {
+            if invocation.parameters().get("decision").is_none() {
+                let key = CanonicalId::new("selected").expect("static selection key");
+                match txn
+                    .get(&self.selections, &key)
+                    .map_err(|error| harness_action_error(error.to_string()))?
+                    .cloned()
+                {
+                    Some(mut selection) => {
+                        selection.count = selection.count.saturating_add(1);
+                        txn.replace(&self.selections, &key, selection)
+                            .map_err(|error| harness_action_error(error.to_string()))?;
+                    }
+                    None => txn
+                        .insert(&self.selections, &key, DecisionSelectionState { count: 1 })
+                        .map_err(|error| harness_action_error(error.to_string()))?,
+                }
+            }
+            let outcome = RulesValue::new(
+                self.action.clone(),
+                serde_json::json!({
+                    "leased": true
+                }),
+            )
+            .map_err(|error| harness_action_error(error.to_string()))?;
+            Ok(AuthoritativeActionOutput::new(outcome))
+        }
+
+        fn project_offer(
+            &self,
+            action: &DefinitionRef,
+            query: &mush_core::LegalActionQuery,
+            engine: &Engine,
+        ) -> Result<Option<ProviderOfferDraft>, ActionError> {
+            let definitions = engine
+                .registry
+                .definitions()
+                .ok_or_else(|| harness_action_error("definition registry unavailable"))?;
+            let mut guards = engine
+                .registry
+                .server_guard_set_builder(RevisionSet::default())
+                .map_err(|error| harness_action_error(error.to_string()))?;
+            guards
+                .add_definition(action.clone(), definitions)
+                .map_err(|error| harness_action_error(error.to_string()))?;
+            guards
+                .add(AuthorityGuard::Capability {
+                    provider: OwnerId::new(DECISION_HARNESS_OWNER).expect("static harness owner"),
+                    actor: query.actor(),
+                    capability: CanonicalId::new("choose").expect("static capability"),
+                    generation: self.capability_generation.load(AtomicOrdering::SeqCst),
+                })
+                .map_err(|error| harness_action_error(error.to_string()))?;
+            Ok(Some(ProviderOfferDraft {
+                fixed_parameters: serde_json::json!({}),
+                parameters: ProjectedParameterSchema::empty(),
+                targets: ProjectedTargetSchema::None,
+                required_channels: Vec::new(),
+                expires: None,
+                presentation: ActionPresentation::new(
+                    "choose",
+                    "Choose",
+                    "Select the decision action.",
+                )
+                .map_err(|error| harness_action_error(error.to_string()))?,
+                guards: guards
+                    .finish()
+                    .map_err(|error| harness_action_error(error.to_string()))?,
+            }))
+        }
+    }
+
+    impl GameModule for DecisionHarnessModule {
+        fn name(&self) -> &'static str {
+            DECISION_HARNESS_OWNER
+        }
+
+        fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), mush_core::ModError> {
+            let action_kind = DefinitionKind::new("action")
+                .map_err(|error| mush_core::ModError::msg(error.to_string()))?;
+            reg.definition_validator(
+                action_kind.clone(),
+                |context: &mush_core::DefinitionValidationContext<'_>| {
+                    context
+                        .definition()
+                        .payload()
+                        .is_object()
+                        .then_some(())
+                        .ok_or_else(|| {
+                            "decision harness action payload must be an object".to_owned()
+                        })
+                },
+            )?;
+            let capture_action = reg.definition(
+                DefinitionDescriptor::new(
+                    action_kind.clone(),
+                    DefinitionId::new("capture_decision")
+                        .map_err(|error| mush_core::ModError::msg(error.to_string()))?,
+                    1,
+                    serde_json::json!({}),
+                )
+                .map_err(|error| mush_core::ModError::msg(error.to_string()))?
+                .as_current(),
+            )?;
+            let lease_action = reg.definition(
+                DefinitionDescriptor::new(
+                    action_kind,
+                    DefinitionId::new("lease_decision")
+                        .map_err(|error| mush_core::ModError::msg(error.to_string()))?,
+                    1,
+                    serde_json::json!({}),
+                )
+                .map_err(|error| mush_core::ModError::msg(error.to_string()))?
+                .as_current(),
+            )?;
+            let pending = reg.state_family(
+                pending_decision_state_family_descriptor(
+                    StateFamilyId::new("pending_decisions")
+                        .map_err(|error| mush_core::ModError::msg(error.to_string()))?,
+                )
+                .map_err(|error| mush_core::ModError::msg(error.to_string()))?,
+                PendingDecisionStateCodec,
+                PendingDecisionStateCodec,
+                PendingDecisionStateCodec,
+                PendingDecisionStateCodec,
+            )?;
+            let prompts = reg.state_family(
+                decision_prompt_state_family_descriptor(
+                    StateFamilyId::new("decision_prompts")
+                        .map_err(|error| mush_core::ModError::msg(error.to_string()))?,
+                )
+                .map_err(|error| mush_core::ModError::msg(error.to_string()))?,
+                DecisionPromptStateCodec,
+                DecisionPromptStateCodec,
+                DecisionPromptStateCodec,
+                DecisionPromptStateCodec,
+            )?;
+            let deadlines = reg.state_family(
+                durable_schedule_state_family_descriptor(
+                    StateFamilyId::new("decision_deadlines")
+                        .map_err(|error| mush_core::ModError::msg(error.to_string()))?,
+                )
+                .map_err(|error| mush_core::ModError::msg(error.to_string()))?,
+                DurableScheduleStateCodec,
+                DurableScheduleStateCodec,
+                DurableScheduleStateCodec,
+                DurableScheduleStateCodec,
+            )?;
+            let terminal_receipts = reg.state_family(
+                decision_terminal_receipt_state_family_descriptor(
+                    StateFamilyId::new("decision_terminal_receipts")
+                        .map_err(|error| mush_core::ModError::msg(error.to_string()))?,
+                )
+                .map_err(|error| mush_core::ModError::msg(error.to_string()))?,
+                DecisionTerminalReceiptStateCodec,
+                DecisionTerminalReceiptStateCodec,
+                DecisionTerminalReceiptStateCodec,
+                DecisionTerminalReceiptStateCodec,
+            )?;
+            let selections = reg.state_family(
+                StateFamilyDescriptor::new(
+                    StateFamilyId::new("decision_selections")
+                        .map_err(|error| mush_core::ModError::msg(error.to_string()))?,
+                    CanonicalId::new("canonical_id.v1")
+                        .map_err(|error| mush_core::ModError::msg(error.to_string()))?,
+                    CanonicalId::new("decision_selection.v1")
+                        .map_err(|error| mush_core::ModError::msg(error.to_string()))?,
+                    1,
+                    CanonicalId::new("decision_selection_decode.v1")
+                        .map_err(|error| mush_core::ModError::msg(error.to_string()))?,
+                    CanonicalId::new("decision_selection_validate.v1")
+                        .map_err(|error| mush_core::ModError::msg(error.to_string()))?,
+                    CanonicalId::new("decision_selection_serialize.v1")
+                        .map_err(|error| mush_core::ModError::msg(error.to_string()))?,
+                )
+                .map_err(|error| mush_core::ModError::msg(error.to_string()))?,
+                |key: &CanonicalId| Ok(key.to_string()),
+                |value: &serde_json::Value| {
+                    serde_json::from_value(value.clone()).map_err(|error| error.to_string())
+                },
+                |_value: &DecisionSelectionState| Ok(()),
+                |value: &DecisionSelectionState| Ok(serde_json::json!({ "count": value.count })),
+            )?;
+            let capture = DecisionCaptureFamilies::new(
+                pending.clone(),
+                prompts.clone(),
+                deadlines.clone(),
+                terminal_receipts.clone(),
+            )
+            .map_err(|error| mush_core::ModError::msg(error.to_string()))?;
+            reg.authority_guard_validator(
+                AuthorityGuardKind::Capability,
+                DecisionCapabilityValidator {
+                    generation: Arc::clone(&self.capability_generation),
+                },
+            )?;
+            reg.action_provider(
+                capture_action.clone(),
+                DecisionCaptureProvider {
+                    action: capture_action.clone(),
+                    families: capture.clone(),
+                    plan: Arc::clone(&self.capture_plan),
+                },
+            )?;
+            reg.action_provider(
+                lease_action.clone(),
+                DecisionLeaseProvider {
+                    action: lease_action.clone(),
+                    selections: selections.clone(),
+                    capability_generation: Arc::clone(&self.capability_generation),
+                },
+            )?;
+            reg.decision_source(
+                lease_action.clone(),
+                capture.clone(),
+                CanonicalId::new(DECISION_WAKE_ADAPTER)
+                    .map_err(|error| mush_core::ModError::msg(error.to_string()))?,
+                self.lease_duration,
+                DecisionHarnessFallback {
+                    identity: CanonicalId::new("decision_harness_fallback.v1")
+                        .map_err(|error| mush_core::ModError::msg(error.to_string()))?,
+                },
+            )?;
+            *self
+                .registration
+                .lock()
+                .expect("decision registration mutex poisoned") =
+                Some(DecisionHarnessRegistration {
+                    families: DecisionHarnessFamilies {
+                        pending,
+                        prompts,
+                        terminal_receipts,
+                        selections,
+                    },
+                    capture_action,
+                    lease_action,
+                    capability_generation: Arc::clone(&self.capability_generation),
+                });
+            Ok(())
+        }
+    }
+
+    struct RecordingDecisionProvider {
+        owner: OwnerId,
+        calls: Arc<AtomicUsize>,
+        called: Arc<tokio::sync::Notify>,
+    }
+
+    impl DecisionProviderAdapter for RecordingDecisionProvider {
+        fn owner(&self) -> &OwnerId {
+            &self.owner
+        }
+
+        fn decide(
+            &self,
+            lease: DecisionWorkerLease,
+        ) -> futures::future::BoxFuture<'static, Result<DecisionResponse, DecisionProviderFailure>>
+        {
+            self.calls.fetch_add(1, AtomicOrdering::SeqCst);
+            self.called.notify_waiters();
+            Box::pin(async move {
+                Ok(DecisionResponse {
+                    token: lease.prompt().token,
+                    offer: lease.prompt().actions[0].offer(),
+                    targets: Vec::new(),
+                    parameters: serde_json::json!({}),
+                })
+            })
+        }
+    }
+
+    struct BlockingDecisionProvider {
+        owner: OwnerId,
+        calls: Arc<AtomicUsize>,
+        called: Arc<tokio::sync::Notify>,
+        release: Arc<tokio::sync::Semaphore>,
+    }
+
+    struct FailingDecisionProvider {
+        owner: OwnerId,
+        calls: Arc<AtomicUsize>,
+        called: Arc<tokio::sync::Notify>,
+        kind: DecisionProviderFailureKind,
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    enum ProjectedPolicyKind {
+        Deterministic,
+        DecisionTree,
+        MockLlm,
+    }
+
+    struct ProjectedPolicyProvider {
+        owner: OwnerId,
+        kind: ProjectedPolicyKind,
+    }
+
+    impl DecisionProviderAdapter for ProjectedPolicyProvider {
+        fn owner(&self) -> &OwnerId {
+            &self.owner
+        }
+
+        fn decide(
+            &self,
+            lease: DecisionWorkerLease,
+        ) -> futures::future::BoxFuture<'static, Result<DecisionResponse, DecisionProviderFailure>>
+        {
+            let kind = self.kind;
+            Box::pin(async move {
+                let action = match kind {
+                    ProjectedPolicyKind::Deterministic => lease.prompt().actions.first().cloned(),
+                    ProjectedPolicyKind::DecisionTree => {
+                        tokio::task::yield_now().await;
+                        lease
+                            .prompt()
+                            .actions
+                            .iter()
+                            .find(|action| action.presentation().verb == "choose")
+                            .cloned()
+                    }
+                    ProjectedPolicyKind::MockLlm => {
+                        tokio::time::sleep(Duration::from_millis(25)).await;
+                        let wire =
+                            serde_json::to_vec(&lease.prompt().actions).map_err(|error| {
+                                DecisionProviderFailure::new(
+                                    DecisionProviderFailureKind::Malformed,
+                                    error.to_string(),
+                                )
+                            })?;
+                        serde_json::from_slice::<Vec<ProjectedLegalAction>>(&wire)
+                            .map_err(|error| {
+                                DecisionProviderFailure::new(
+                                    DecisionProviderFailureKind::Malformed,
+                                    error.to_string(),
+                                )
+                            })?
+                            .into_iter()
+                            .find(|action| action.presentation().verb == "choose")
+                    }
+                }
+                .ok_or_else(|| {
+                    DecisionProviderFailure::new(
+                        DecisionProviderFailureKind::Permanent,
+                        "projected policy found no admissible action",
+                    )
+                })?;
+                Ok(DecisionResponse {
+                    token: lease.prompt().token,
+                    offer: action.offer(),
+                    targets: Vec::new(),
+                    parameters: serde_json::json!({}),
+                })
+            })
+        }
+    }
+
+    impl DecisionProviderAdapter for FailingDecisionProvider {
+        fn owner(&self) -> &OwnerId {
+            &self.owner
+        }
+
+        fn decide(
+            &self,
+            _lease: DecisionWorkerLease,
+        ) -> futures::future::BoxFuture<'static, Result<DecisionResponse, DecisionProviderFailure>>
+        {
+            self.calls.fetch_add(1, AtomicOrdering::SeqCst);
+            self.called.notify_waiters();
+            let kind = self.kind;
+            Box::pin(async move { Err(DecisionProviderFailure::new(kind, "injected failure")) })
+        }
+    }
+
+    impl DecisionProviderAdapter for BlockingDecisionProvider {
+        fn owner(&self) -> &OwnerId {
+            &self.owner
+        }
+
+        fn decide(
+            &self,
+            lease: DecisionWorkerLease,
+        ) -> futures::future::BoxFuture<'static, Result<DecisionResponse, DecisionProviderFailure>>
+        {
+            self.calls.fetch_add(1, AtomicOrdering::SeqCst);
+            self.called.notify_waiters();
+            let release = Arc::clone(&self.release);
+            Box::pin(async move {
+                let permit = release.acquire_owned().await.map_err(|_| {
+                    DecisionProviderFailure::new(
+                        crate::decision_dispatch::DecisionProviderFailureKind::Unavailable,
+                        "test release semaphore closed",
+                    )
+                })?;
+                permit.forget();
+                Ok(DecisionResponse {
+                    token: lease.prompt().token,
+                    offer: lease.prompt().actions[0].offer(),
+                    targets: Vec::new(),
+                    parameters: serde_json::json!({}),
+                })
+            })
+        }
+    }
+
+    fn decision_harness(
+        lease_duration: i64,
+    ) -> (
+        Engine,
+        DecisionHarnessRegistration,
+        Arc<Mutex<Option<DecisionCapturePlan>>>,
+        DecisionKeyRing,
+    ) {
+        let registration = Arc::new(Mutex::new(None));
+        let capture_plan = Arc::new(Mutex::new(None));
+        let capability_generation = Arc::new(AtomicU64::new(1));
+        let module = DecisionHarnessModule {
+            registration: Arc::clone(&registration),
+            capture_plan: Arc::clone(&capture_plan),
+            lease_duration,
+            capability_generation,
+        };
+        let mut world = mush_testkit::TestWorld::with_modules(vec![Box::new(module)]);
+        let keys = DecisionKeyRing::new(
+            DecisionSecret::new(1, [0x5a; 32]).expect("test decision secret"),
+            [],
+        )
+        .expect("test decision key ring");
+        world.engine_mut().set_decision_keys(keys.clone());
+        world.engine_mut().set_offer_keys(
+            OfferKeyRing::new(
+                OfferSecret::new(1, [0x6b; 32]).expect("test offer secret"),
+                [],
+            )
+            .expect("test offer key ring"),
+        );
+        let _ = world.drain_write_batch();
+        let registered = registration
+            .lock()
+            .expect("decision registration mutex poisoned")
+            .clone()
+            .expect("decision harness registration");
+        (world.into_engine(), registered, capture_plan, keys)
+    }
+
+    struct TacticalDecisionHarness {
+        engine: Engine,
+        registration: DecisionHarnessRegistration,
+        tactical_state: TacticalGateState,
+        unit_spec: UnitSpec,
+        capture_plan: Arc<Mutex<Option<DecisionCapturePlan>>>,
+        keys: DecisionKeyRing,
+    }
+
+    fn tactical_decision_harness(lease_duration: i64) -> TacticalDecisionHarness {
+        let registration = Arc::new(Mutex::new(None));
+        let capture_plan = Arc::new(Mutex::new(None));
+        let capability_generation = Arc::new(AtomicU64::new(1));
+        let module = DecisionHarnessModule {
+            registration: Arc::clone(&registration),
+            capture_plan: Arc::clone(&capture_plan),
+            lease_duration,
+            capability_generation,
+        };
+        let (mut engine, tactical_state, _tactical_definitions, unit_spec) =
+            tactical_gate_world_with_modules(vec![Box::new(module)]);
+        let keys = DecisionKeyRing::new(
+            DecisionSecret::new(1, [0x5a; 32]).expect("test decision secret"),
+            [],
+        )
+        .expect("test decision key ring");
+        engine.set_decision_keys(keys.clone());
+        let registered = registration
+            .lock()
+            .expect("decision registration mutex poisoned")
+            .clone()
+            .expect("decision harness registration");
+        TacticalDecisionHarness {
+            engine,
+            registration: registered,
+            tactical_state,
+            unit_spec,
+            capture_plan,
+            keys,
+        }
+    }
+
+    fn projected_decision_action(engine: &Engine) -> ProjectedLegalAction {
+        let query = engine
+            .legal_action_query(
+                PrincipalId::Object { id: GOD },
+                GOD,
+                PerceivedRef::SelfActor,
+            )
+            .expect("decision action query");
+        engine
+            .project_legal_actions(&query)
+            .expect("decision action projection")
+            .projected()
+            .into_iter()
+            .find(|action| action.presentation().verb == "choose")
+            .expect("decision harness choice action")
+    }
+
+    fn arm_decision_capture(
+        engine: &Engine,
+        keys: &DecisionKeyRing,
+        registration: &DecisionHarnessRegistration,
+        capture_plan: &Mutex<Option<DecisionCapturePlan>>,
+        salt: u8,
+        deadline: i64,
+    ) -> PendingDecision {
+        let owner = OwnerId::new(DECISION_HARNESS_OWNER).expect("static harness owner");
+        let principal = PrincipalId::Object { id: GOD };
+        let controller = DecisionControllerId {
+            owner: owner.clone(),
+            key: CanonicalId::new("controller_1").expect("static controller id"),
+        };
+        let cause = DecisionCause {
+            kind: CanonicalId::new("test_turn").expect("static cause kind"),
+            instance: IdempotencyKeyText::parse_canonical(format!("turn-{salt}"))
+                .expect("test cause instance"),
+            replaceable_key: None,
+        };
+        let action_idempotency = ScopedIdempotencyKey::new(
+            IdempotencyScope {
+                principal: principal.clone(),
+                owner: owner.clone(),
+                namespace: CanonicalId::new("chosen_action").expect("static namespace"),
+            },
+            1,
+            IdempotencyKey::Deterministic(CanonicalHash::from_bytes([salt; 32])),
+        );
+        let id = DecisionId::derive(&controller, &cause, &action_idempotency)
+            .expect("decision identity");
+        let projected = projected_decision_action(engine);
+        let offer = projected.offer();
+        let placeholder = DecisionToken {
+            id,
+            revision: 1,
+            prompt_digest: CanonicalHash::from_bytes([1; 32]),
+            key_version: 1,
+            tag: CanonicalHash::from_bytes([1; 32]),
+        };
+        let mut prompt = DecisionPrompt {
+            token: placeholder,
+            actions: vec![projected],
+            context: ProjectedDecisionContext::new(
+                CanonicalId::new("test_context.v1").expect("static context id"),
+                serde_json::json!({ "turn": salt }),
+            )
+            .expect("decision context"),
+        };
+        let prompt_digest = prompt.digest().expect("decision prompt digest");
+        prompt.token = keys.sign(id, 1, prompt_digest);
+        let prompt = DecisionPromptRecord::new(prompt).expect("decision prompt record");
+        let pending = PendingDecision {
+            id,
+            revision: 1,
+            controller,
+            principal: principal.clone(),
+            actor: GOD,
+            truth_subject: SubjectKey::Object { id: GOD },
+            viewer_scope: ProjectionScopeId::derive(&principal, 1)
+                .expect("decision projection scope"),
+            cause,
+            offered: vec![PendingOfferWitness {
+                offer,
+                common_revisions: Vec::new(),
+                target_revisions: Vec::new(),
+                bridge_definitions: Vec::new(),
+            }],
+            prompt_digest,
+            token_key_version: 1,
+            deadline: ClockStamp {
+                clock: ClockRef::Utc,
+                at: deadline,
+            },
+            fallback: FallbackPolicyRef(registration.lease_action.clone()),
+            action_idempotency,
+            malformed_attempts: 0,
+            attempt_audit: Vec::new(),
+            status: PendingDecisionStatus::Ready { attempt: 1 },
+        };
+        let admission = DecisionAdmissionIndex::default()
+            .admit(&pending, &prompt, keys)
+            .expect("decision admission");
+        let plan = DecisionCapturePlan::new(
+            &owner,
+            pending.clone(),
+            prompt,
+            admission,
+            keys,
+            CanonicalId::new(DECISION_WAKE_ADAPTER).expect("static wake adapter"),
+            0,
+        )
+        .expect("decision capture plan");
+        *capture_plan
+            .lock()
+            .expect("decision capture-plan mutex poisoned") = Some(plan);
+        pending
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn arm_tactical_decision_capture(
+        keys: &DecisionKeyRing,
+        registration: &DecisionHarnessRegistration,
+        capture_plan: &Mutex<Option<DecisionCapturePlan>>,
+        actor: mush_core::ObjId,
+        projected: ProjectedLegalAction,
+        witness: PendingOfferWitness,
+        salt: u8,
+        deadline: i64,
+    ) -> PendingDecision {
+        let owner = OwnerId::new(DECISION_HARNESS_OWNER).expect("static harness owner");
+        let principal = PrincipalId::Object { id: actor };
+        let controller = DecisionControllerId {
+            owner: owner.clone(),
+            key: CanonicalId::new("tactical_controller").expect("static controller id"),
+        };
+        let cause = DecisionCause {
+            kind: CanonicalId::new("tactical_turn").expect("static cause kind"),
+            instance: IdempotencyKeyText::parse_canonical(format!("tactical-turn-{salt}"))
+                .expect("test cause instance"),
+            replaceable_key: None,
+        };
+        let action_idempotency = ScopedIdempotencyKey::new(
+            IdempotencyScope {
+                principal: principal.clone(),
+                owner: OwnerId::new(mush_contract_tests::tactical_gate::TACTICAL_GATE_OWNER)
+                    .expect("static tactics owner"),
+                namespace: CanonicalId::new(mush_contract_tests::tactical_gate::FIRE_ACTION_ID)
+                    .expect("static fire namespace"),
+            },
+            1,
+            IdempotencyKey::Deterministic(CanonicalHash::from_bytes([salt; 32])),
+        );
+        let id = DecisionId::derive(&controller, &cause, &action_idempotency)
+            .expect("decision identity");
+        let placeholder = DecisionToken {
+            id,
+            revision: 1,
+            prompt_digest: CanonicalHash::from_bytes([1; 32]),
+            key_version: 1,
+            tag: CanonicalHash::from_bytes([1; 32]),
+        };
+        let mut prompt = DecisionPrompt {
+            token: placeholder,
+            actions: vec![projected],
+            context: ProjectedDecisionContext::new(
+                CanonicalId::new("tactical_context.v1").expect("static context id"),
+                serde_json::json!({ "turn": salt }),
+            )
+            .expect("decision context"),
+        };
+        let prompt_digest = prompt.digest().expect("decision prompt digest");
+        prompt.token = keys.sign(id, 1, prompt_digest);
+        let prompt = DecisionPromptRecord::new(prompt).expect("decision prompt record");
+        let pending = PendingDecision {
+            id,
+            revision: 1,
+            controller,
+            principal: principal.clone(),
+            actor,
+            truth_subject: SubjectKey::Object { id: actor },
+            viewer_scope: ProjectionScopeId::derive(&principal, 1)
+                .expect("decision projection scope"),
+            cause,
+            offered: vec![witness],
+            prompt_digest,
+            token_key_version: 1,
+            deadline: ClockStamp {
+                clock: ClockRef::Utc,
+                at: deadline,
+            },
+            fallback: FallbackPolicyRef(registration.lease_action.clone()),
+            action_idempotency,
+            malformed_attempts: 0,
+            attempt_audit: Vec::new(),
+            status: PendingDecisionStatus::Ready { attempt: 1 },
+        };
+        let admission = DecisionAdmissionIndex::default()
+            .admit(&pending, &prompt, keys)
+            .expect("decision admission");
+        let plan = DecisionCapturePlan::new(
+            &owner,
+            pending.clone(),
+            prompt,
+            admission,
+            keys,
+            CanonicalId::new(DECISION_WAKE_ADAPTER).expect("static wake adapter"),
+            0,
+        )
+        .expect("decision capture plan");
+        *capture_plan
+            .lock()
+            .expect("decision capture-plan mutex poisoned") = Some(plan);
+        pending
+    }
+
+    fn lease_captured_decision(
+        engine: &mut Engine,
+        registration: &DecisionHarnessRegistration,
+        pending: &PendingDecision,
+        keys: &DecisionKeyRing,
+    ) -> (
+        mush_core::DecisionCompletionFence,
+        DecisionResponse,
+        DecisionWorkerLease,
+    ) {
+        let prompt = engine
+            .action_state()
+            .get(&registration.families.prompts, &pending.id)
+            .expect("decision prompt read")
+            .expect("decision prompt")
+            .clone();
+        let current = engine
+            .action_state()
+            .get(&registration.families.pending, &pending.id)
+            .expect("pending decision read")
+            .expect("pending decision")
+            .clone();
+        let now = ClockStamp {
+            clock: ClockRef::Utc,
+            at: pending.deadline.at - 30,
+        };
+        let wake = mush_core::DecisionWake {
+            id: pending.id,
+            revision: pending.revision,
+            prompt_digest: pending.prompt_digest,
+        };
+        let transition = current
+            .plan_worker_lease(&prompt, &wake, keys, &now, 20)
+            .expect("decision lease plan");
+        let (leased, worker) = transition.into_parts();
+        let mut transaction = engine
+            .action_transaction(&registration.families.pending)
+            .expect("decision lease transaction");
+        transaction
+            .replace(&registration.families.pending, &pending.id, leased.clone())
+            .expect("decision lease post-image");
+        let (_, installation) = transaction
+            .prepare()
+            .expect("decision lease prepare")
+            .into_parts();
+        engine.install_prepared_action(installation);
+        let fence = mush_core::DecisionCompletionFence::new(
+            worker.controller().clone(),
+            worker.decision(),
+            worker.revision(),
+            worker.attempt(),
+            worker.lease_until().clone(),
+        )
+        .expect("decision completion fence");
+        let response = DecisionResponse {
+            token: prompt.prompt.token,
+            offer: prompt.prompt.actions[0].offer(),
+            targets: match prompt.prompt.actions[0].targets() {
+                ProjectedTargetSchema::Choices { choices, .. } => vec![choices[0].clone()],
+                ProjectedTargetSchema::None => Vec::new(),
+            },
+            parameters: serde_json::json!({}),
+        };
+        (fence, response, worker)
+    }
+
+    async fn commit_armed_capture(
+        engine: &mut Engine,
+        store: &dyn AuthoritativeStore,
+        registration: &DecisionHarnessRegistration,
+        salt: u8,
+    ) {
+        let request = RequestUid::from_bytes([salt; 16]);
+        let principal = PrincipalId::Object { id: GOD };
+        let idempotency = ScopedIdempotencyKey::new(
+            IdempotencyScope {
+                principal: principal.clone(),
+                owner: OwnerId::new(DECISION_HARNESS_OWNER).expect("static harness owner"),
+                namespace: CanonicalId::new("capture_decision").expect("static namespace"),
+            },
+            1,
+            IdempotencyKey::Request(request),
+        );
+        let ingress = IngressEnvelope::new(
+            request,
+            principal.clone(),
+            IngressSurfaceVersion::new(
+                CanonicalId::new("test.decision_capture").expect("static ingress surface"),
+                1,
+            )
+            .expect("capture ingress version"),
+            IngressPayload::structured(serde_json::json!({ "salt": salt }))
+                .expect("capture ingress payload"),
+            idempotency.clone(),
+        )
+        .expect("capture ingress");
+        let invocation = ActionInvocation::new(ActionInvocationDraft {
+            request,
+            principal,
+            actor: GOD,
+            offered_action: ActionOfferId(CanonicalHash::from_bytes([salt; 32])),
+            subject: PerceivedRef::SelfActor,
+            targets: Vec::new(),
+            parameters: serde_json::json!({}),
+            idempotency,
+        })
+        .expect("capture invocation");
+        let ActionPreflight::Vacant(permit) = ActionCoordinator::preflight(store, ingress)
+            .await
+            .expect("capture preflight")
+        else {
+            panic!("capture idempotency was not vacant")
+        };
+        let guards = engine
+            .registry
+            .server_guard_set_builder(RevisionSet::default())
+            .expect("capture guard builder")
+            .finish()
+            .expect("capture guards");
+        ActionCoordinator::prepare_and_stage(
+            permit,
+            engine,
+            &registration.capture_action,
+            &invocation,
+            guards,
+        )
+        .expect("capture action staging");
+        let staged = engine
+            .take_staged_action()
+            .expect("capture admission")
+            .expect("capture staged action");
+        let (persistence, installation) = staged.into_parts();
+        let StagedActionPersistence::Authoritative(bundle) = persistence else {
+            panic!("decision capture used legacy persistence")
+        };
+        store
+            .reserve_authoritative_intent((*bundle).clone())
+            .await
+            .expect("capture intent reservation");
+        store
+            .reconcile_authoritative(bundle.token(), bundle.bundle_hash())
+            .await
+            .expect("capture reconciliation");
+        engine.install_prepared_action(installation);
+    }
+
+    async fn wait_for_persisted_decision_terminal(
+        store: &dyn ObjectStore,
+        registration: &DecisionHarnessRegistration,
+        decision: DecisionId,
+    ) -> DecisionTerminalReceipt {
+        let pending_key = format!(
+            "action-state/v1/{}/{}",
+            registration.families.pending.descriptor().id(),
+            decision.canonical_hash().to_hex()
+        );
+        let receipt_key = format!(
+            "action-state/v1/{}/{}",
+            registration.families.terminal_receipts.descriptor().id(),
+            decision.canonical_hash().to_hex()
+        );
+        tokio::time::timeout(Duration::from_secs(4), async {
+            loop {
+                if let Some(value) = store
+                    .module_json_get(DECISION_HARNESS_OWNER, &receipt_key)
+                    .await
+                    .expect("decision compact receipt read")
+                {
+                    break serde_json::from_value(value["value"].clone())
+                        .expect("valid compact decision receipt");
+                }
+                if let Some(value) = store
+                    .module_json_get(DECISION_HARNESS_OWNER, &pending_key)
+                    .await
+                    .expect("decision state read")
+                    && value["value"]["status"]["state"] == "terminal"
+                {
+                    let pending: PendingDecision = serde_json::from_value(value["value"].clone())
+                        .expect("valid terminal pending decision");
+                    break DecisionTerminalReceipt::from_terminal(&pending)
+                        .expect("valid terminal attribution");
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("decision did not terminalize through deterministic fallback")
+    }
+
+    async fn discard_decision_wake(store: &dyn AuthoritativeStore) {
+        let pending = store
+            .pending_authoritative_outbox()
+            .await
+            .expect("pending decision wake");
+        assert_eq!(pending.len(), 1, "capture must emit one durable wake");
+        let wake = &pending[0];
+        let started = store
+            .begin_authoritative_outbox_attempt(
+                wake.item_id(),
+                wake.intent().payload_hash(),
+                wake.attempts(),
+            )
+            .await
+            .expect("begin discarded wake");
+        store
+            .complete_authoritative_outbox_attempt(
+                started.item_id(),
+                started.intent().payload_hash(),
+                started.attempts(),
+                AuthoritativeOutboxAttemptResult::Delivered,
+            )
+            .await
+            .expect("discard decision wake");
+    }
+
+    fn decision_test_deps(store: Arc<dyn ObjectStore>) -> ServerDeps {
+        ServerDeps {
+            store,
+            guard: Arc::new(IpGuard::new()),
+            staff: Arc::new(StaffQueue::new()),
+            llm: None,
+            metrics: Arc::new(Metrics::new()),
+            quarantine_spool: crate::quarantine::QuarantineSpool::in_memory(),
+        }
+    }
+
+    async fn stop_test_server(handles: PersistHandles) {
+        assert!(
+            handles
+                .handle
+                .inbound(Inbound::Control(ControlMsg::Shutdown))
+                .await
+        );
+        handles.world_join.await.expect("world task shutdown");
+        handles.writer_join.await.expect("writer task shutdown");
+        handles.outbox_join.await.expect("outbox task shutdown");
+    }
+
+    #[tokio::test]
+    async fn decision_dispatch_rediscovery_leases_after_capture_ack_and_lost_wake() {
+        let (mut engine, registration, capture_plan, keys) = decision_harness(30);
+        let pending = arm_decision_capture(
+            &engine,
+            &keys,
+            &registration,
+            &capture_plan,
+            0x31,
+            unix_now_s() + 60,
+        );
+        let deps = ServerDeps::in_memory();
+        let store = Arc::clone(&deps.store);
+        let authoritative = store
+            .authoritative_store()
+            .expect("in-memory store is authoritative");
+        commit_armed_capture(&mut engine, authoritative, &registration, 0x41).await;
+
+        // Simulate the volatile wake disappearing after its durable outbox
+        // delivery was acknowledged. The typed pair must remain sufficient
+        // for the periodic canonical scan to recover the obligation.
+        discard_decision_wake(authoritative).await;
+        assert!(
+            authoritative
+                .pending_authoritative_outbox()
+                .await
+                .expect("post-discard outbox scan")
+                .is_empty()
+        );
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let called = Arc::new(tokio::sync::Notify::new());
+        let mut providers = DecisionProviderRegistry::new();
+        providers
+            .register(Arc::new(RecordingDecisionProvider {
+                owner: OwnerId::new(DECISION_HARNESS_OWNER).expect("static harness owner"),
+                calls: Arc::clone(&calls),
+                called: Arc::clone(&called),
+            }))
+            .expect("decision provider registration");
+        let handles = spawn_persist_with_gateway_and_decisions(
+            engine,
+            deps,
+            DurableOutboxRegistry::new(),
+            providers,
+            1,
+            |_| Arc::new(BlackholeGateway),
+        )
+        .expect("decision runtime startup");
+
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                if calls.load(AtomicOrdering::SeqCst) == 1 {
+                    break;
+                }
+                called.notified().await;
+            }
+        })
+        .await
+        .expect("periodic decision rediscovery did not dispatch");
+
+        let persistence_key = format!(
+            "action-state/v1/{}/{}",
+            registration.families.pending.descriptor().id(),
+            pending.id.canonical_hash().to_hex()
+        );
+        assert_eq!(calls.load(AtomicOrdering::SeqCst), 1);
+
+        let selection_key = format!(
+            "action-state/v1/{}/selected",
+            registration.families.selections.descriptor().id()
+        );
+        let selected = tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                if let Some(value) = store
+                    .module_json_get(DECISION_HARNESS_OWNER, &selection_key)
+                    .await
+                    .expect("selected action read")
+                {
+                    break value;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("authenticated decision response did not commit its selected action");
+        assert_eq!(selected["value"]["count"], 1);
+
+        let terminal = tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                let value = store
+                    .module_json_get(DECISION_HARNESS_OWNER, &persistence_key)
+                    .await
+                    .expect("terminal decision read")
+                    .expect("terminal decision record");
+                if value["value"]["status"]["state"] == "terminal" {
+                    break value;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("selected action did not advance through resolving to terminal");
+        assert_eq!(terminal["value"]["status"]["outcome"], "executed");
+        assert!(terminal["value"]["status"]["action_binding"]["request"].is_string());
+        assert!(terminal["value"]["status"]["action_binding"]["request_hash"].is_string());
+
+        stop_test_server(handles).await;
+    }
+
+    #[tokio::test]
+    async fn expired_decision_lease_is_rediscovered_after_process_restart() {
+        let (mut engine, registration, capture_plan, keys) = decision_harness(1);
+        let pending = arm_decision_capture(
+            &engine,
+            &keys,
+            &registration,
+            &capture_plan,
+            0x33,
+            unix_now_s() + 30,
+        );
+        let store: Arc<dyn ObjectStore> = Arc::new(InMemoryStore::new());
+        commit_armed_capture(
+            &mut engine,
+            store
+                .authoritative_store()
+                .expect("in-memory store is authoritative"),
+            &registration,
+            0x43,
+        )
+        .await;
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let first_called = Arc::new(tokio::sync::Notify::new());
+        let first_release = Arc::new(tokio::sync::Semaphore::new(0));
+        let mut first_providers = DecisionProviderRegistry::new();
+        first_providers
+            .register(Arc::new(BlockingDecisionProvider {
+                owner: OwnerId::new(DECISION_HARNESS_OWNER).expect("static harness owner"),
+                calls: Arc::clone(&calls),
+                called: Arc::clone(&first_called),
+                release: Arc::clone(&first_release),
+            }))
+            .expect("first decision provider registration");
+        let first = spawn_persist_with_gateway_and_decisions(
+            engine,
+            decision_test_deps(Arc::clone(&store)),
+            DurableOutboxRegistry::new(),
+            first_providers,
+            1,
+            |_| Arc::new(BlackholeGateway),
+        )
+        .expect("first decision runtime startup");
+        tokio::time::timeout(Duration::from_secs(3), async {
+            while calls.load(AtomicOrdering::SeqCst) < 1 {
+                first_called.notified().await;
+            }
+        })
+        .await
+        .expect("first decision lease did not dispatch");
+        stop_test_server(first).await;
+        first_release.add_permits(1);
+
+        tokio::time::sleep(Duration::from_millis(1_100)).await;
+        let (mut restarted, restarted_registration, _plan, _keys) = decision_harness(1);
+        let boot_records = store
+            .module_json_list(DECISION_HARNESS_OWNER)
+            .await
+            .expect("decision state boot scan")
+            .into_iter()
+            .filter(|(key, _)| mush_core::is_action_state_persistence_key(key))
+            .map(|(key, value)| ActionStateBootRecord::new(DECISION_HARNESS_OWNER, key, value))
+            .collect::<Vec<_>>();
+        restarted
+            .hydrate_action_state(boot_records)
+            .expect("decision state hydration after restart");
+
+        let second_called = Arc::new(tokio::sync::Notify::new());
+        let second_release = Arc::new(tokio::sync::Semaphore::new(0));
+        let mut second_providers = DecisionProviderRegistry::new();
+        second_providers
+            .register(Arc::new(BlockingDecisionProvider {
+                owner: OwnerId::new(DECISION_HARNESS_OWNER).expect("static harness owner"),
+                calls: Arc::clone(&calls),
+                called: Arc::clone(&second_called),
+                release: Arc::clone(&second_release),
+            }))
+            .expect("second decision provider registration");
+        let second = spawn_persist_with_gateway_and_decisions(
+            restarted,
+            decision_test_deps(Arc::clone(&store)),
+            DurableOutboxRegistry::new(),
+            second_providers,
+            1,
+            |_| Arc::new(BlackholeGateway),
+        )
+        .expect("restarted decision runtime startup");
+        tokio::time::timeout(Duration::from_secs(3), async {
+            while calls.load(AtomicOrdering::SeqCst) < 2 {
+                second_called.notified().await;
+            }
+        })
+        .await
+        .expect("expired lease was not rediscovered after restart");
+
+        let persistence_key = format!(
+            "action-state/v1/{}/{}",
+            restarted_registration.families.pending.descriptor().id(),
+            pending.id.canonical_hash().to_hex()
+        );
+        let persisted = store
+            .module_json_get(DECISION_HARNESS_OWNER, &persistence_key)
+            .await
+            .expect("retried lease read")
+            .expect("retried lease post-image");
+        assert_eq!(persisted["value"]["status"]["state"], "leased");
+        assert_eq!(persisted["value"]["status"]["attempt"], 2);
+        stop_test_server(second).await;
+        second_release.add_permits(1);
+    }
+
+    #[tokio::test]
+    async fn worker_saturation_leaves_second_decision_ready_until_capacity_returns() {
+        let (mut engine, registration, capture_plan, keys) = decision_harness(30);
+        let first_pending = arm_decision_capture(
+            &engine,
+            &keys,
+            &registration,
+            &capture_plan,
+            0x34,
+            unix_now_s() + 60,
+        );
+        let store: Arc<dyn ObjectStore> = Arc::new(InMemoryStore::new());
+        let authoritative = store
+            .authoritative_store()
+            .expect("in-memory store is authoritative");
+        commit_armed_capture(&mut engine, authoritative, &registration, 0x44).await;
+        let second_pending = arm_decision_capture(
+            &engine,
+            &keys,
+            &registration,
+            &capture_plan,
+            0x35,
+            unix_now_s() + 60,
+        );
+        commit_armed_capture(&mut engine, authoritative, &registration, 0x45).await;
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let called = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Semaphore::new(0));
+        let mut providers = DecisionProviderRegistry::new();
+        providers
+            .register(Arc::new(BlockingDecisionProvider {
+                owner: OwnerId::new(DECISION_HARNESS_OWNER).expect("static harness owner"),
+                calls: Arc::clone(&calls),
+                called: Arc::clone(&called),
+                release: Arc::clone(&release),
+            }))
+            .expect("blocking provider registration");
+        let handles = spawn_persist_with_gateway_and_decisions(
+            engine,
+            decision_test_deps(Arc::clone(&store)),
+            DurableOutboxRegistry::new(),
+            providers,
+            1,
+            |_| Arc::new(BlackholeGateway),
+        )
+        .expect("bounded decision runtime startup");
+        tokio::time::timeout(Duration::from_secs(3), async {
+            while calls.load(AtomicOrdering::SeqCst) < 1 {
+                called.notified().await;
+            }
+        })
+        .await
+        .expect("first provider did not start");
+
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        assert_eq!(
+            calls.load(AtomicOrdering::SeqCst),
+            1,
+            "worker saturation must not commit another lease without capacity"
+        );
+        let first_key = format!(
+            "action-state/v1/{}/{}",
+            registration.families.pending.descriptor().id(),
+            first_pending.id.canonical_hash().to_hex()
+        );
+        let second_key = format!(
+            "action-state/v1/{}/{}",
+            registration.families.pending.descriptor().id(),
+            second_pending.id.canonical_hash().to_hex()
+        );
+        let states = [first_key.as_str(), second_key.as_str()]
+            .into_iter()
+            .map(|key| async {
+                store
+                    .module_json_get(DECISION_HARNESS_OWNER, key)
+                    .await
+                    .expect("saturated decision read")
+                    .expect("saturated decision state")["value"]["status"]["state"]
+                    .as_str()
+                    .expect("decision state name")
+                    .to_owned()
+            });
+        let [first_state, second_state] = futures::future::join_all(states)
+            .await
+            .try_into()
+            .expect("two decision states");
+        assert_eq!(
+            [first_state.as_str(), second_state.as_str()]
+                .into_iter()
+                .filter(|state| *state == "leased")
+                .count(),
+            1
+        );
+        assert_eq!(
+            [first_state.as_str(), second_state.as_str()]
+                .into_iter()
+                .filter(|state| *state == "ready")
+                .count(),
+            1
+        );
+
+        release.add_permits(1);
+        tokio::time::timeout(Duration::from_secs(3), async {
+            while calls.load(AtomicOrdering::SeqCst) < 2 {
+                called.notified().await;
+            }
+        })
+        .await
+        .expect("second provider did not start after capacity returned");
+        release.add_permits(1);
+        stop_test_server(handles).await;
+    }
+
+    #[tokio::test]
+    async fn refused_decision_lease_aborts_post_image_without_spawning_provider() {
+        let (mut engine, registration, capture_plan, keys) = decision_harness(30);
+        let pending = arm_decision_capture(
+            &engine,
+            &keys,
+            &registration,
+            &capture_plan,
+            0x32,
+            unix_now_s() + 60,
+        );
+        let store = InMemoryStore::new();
+        commit_armed_capture(&mut engine, &store, &registration, 0x42).await;
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mut providers = DecisionProviderRegistry::new();
+        providers
+            .register(Arc::new(RecordingDecisionProvider {
+                owner: OwnerId::new(DECISION_HARNESS_OWNER).expect("static harness owner"),
+                calls: Arc::clone(&calls),
+                called: Arc::new(tokio::sync::Notify::new()),
+            }))
+            .expect("decision provider registration");
+        let (completion_tx, _completion_rx) = mpsc::channel(MAX_DECISION_COMPLETIONS);
+        let dispatcher = Arc::new(
+            DecisionDispatcher::new(Arc::new(providers), 1, completion_tx)
+                .expect("decision dispatcher"),
+        );
+        let mut driver = DurableDecisionDriver::new(1, dispatcher);
+        let DurableDecisionDrive::Staged(staged_dispatch) = driver
+            .drive_one(&mut engine, &store, None)
+            .await
+            .expect("decision lease drive")
+        else {
+            panic!("ready decision did not stage a lease")
+        };
+        let StagedDecisionDispatch {
+            staged,
+            reservation,
+        } = *staged_dispatch;
+        let StagedDecisionLease { staged, worker } = staged;
+        let prepared = engine
+            .take_staged_action()
+            .expect("lease admission")
+            .expect("staged lease action");
+        let (_persistence, installation) = prepared.into_parts();
+        let (_receipt_tx, receipt_rx) = oneshot::channel();
+        let pending_commit = PendingCommit {
+            token: CommitToken::Legacy(1),
+            receipt: PendingReceipt::Legacy {
+                expected_serial: 1,
+                receiver: receipt_rx,
+            },
+            sends: Vec::new(),
+            effects: Vec::new(),
+            failure_actor: None,
+            create: None,
+            action: Some(ActionCompletion {
+                staged,
+                owned: None,
+                finished: None,
+                ownership_valid: false,
+                post_commit_decision: Some(DecisionPostCommit {
+                    reservation,
+                    worker,
+                }),
+                post_commit_decision_response: None,
+                post_commit_decision_terminal: None,
+            }),
+            prepared_installation: Some(installation),
+            barriers: Vec::new(),
+            coalesced_reattach: None,
+            exit_after_ack: false,
+        };
+        let gateway: Gateway = Arc::new(BlackholeGateway);
+        let mut health = StoreHealth::new();
+        let integrity = PersistenceIntegrityLatch::new();
+        let (world_tx, _world_rx) = mpsc::channel(1);
+        let _ = complete_pending_commit(
+            pending_commit,
+            Err(AuthoritativeCommitFailure::Refused(
+                "injected lease refusal".to_owned(),
+            )),
+            &mut engine,
+            &gateway,
+            &mut health,
+            &integrity,
+            &world_tx.downgrade(),
+            None,
+        );
+
+        assert_eq!(calls.load(AtomicOrdering::SeqCst), 0);
+        assert!(matches!(
+            engine
+                .action_state()
+                .get(&registration.families.pending, &pending.id)
+                .expect("pending decision read")
+                .expect("pending decision remains")
+                .status,
+            PendingDecisionStatus::Ready { attempt: 1 }
+        ));
+        assert!(!engine.action_state().has_prepared());
+    }
+
+    #[tokio::test]
+    async fn malformed_provider_attempts_commit_then_execute_deterministic_fallback() {
+        let (mut engine, registration, capture_plan, keys) = decision_harness(30);
+        let pending = arm_decision_capture(
+            &engine,
+            &keys,
+            &registration,
+            &capture_plan,
+            0x37,
+            unix_now_s() + 60,
+        );
+        let store: Arc<dyn ObjectStore> = Arc::new(InMemoryStore::new());
+        commit_armed_capture(
+            &mut engine,
+            store
+                .authoritative_store()
+                .expect("in-memory store is authoritative"),
+            &registration,
+            0x47,
+        )
+        .await;
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let called = Arc::new(tokio::sync::Notify::new());
+        let mut providers = DecisionProviderRegistry::new();
+        providers
+            .register(Arc::new(FailingDecisionProvider {
+                owner: OwnerId::new(DECISION_HARNESS_OWNER).expect("static harness owner"),
+                calls: Arc::clone(&calls),
+                called: Arc::clone(&called),
+                kind: DecisionProviderFailureKind::Malformed,
+            }))
+            .expect("failing provider registration");
+        let handles = spawn_persist_with_gateway_and_decisions(
+            engine,
+            decision_test_deps(Arc::clone(&store)),
+            DurableOutboxRegistry::new(),
+            providers,
+            1,
+            |_| Arc::new(BlackholeGateway),
+        )
+        .expect("decision runtime startup");
+        tokio::time::timeout(Duration::from_secs(4), async {
+            while calls.load(AtomicOrdering::SeqCst)
+                < usize::from(mush_core::DEFAULT_DECISION_ATTEMPTS)
+            {
+                called.notified().await;
+            }
+        })
+        .await
+        .expect("bounded malformed attempts did not run");
+
+        let fallback =
+            wait_for_persisted_decision_terminal(store.as_ref(), &registration, pending.id).await;
+        assert_eq!(
+            fallback.malformed_attempts,
+            mush_core::DEFAULT_DECISION_ATTEMPTS
+        );
+        assert_eq!(
+            fallback.outcome,
+            mush_core::DecisionTerminalOutcome::Fallback
+        );
+        assert_eq!(
+            fallback.fallback_reason,
+            Some(mush_core::DecisionFallbackReason::MalformedExhausted)
+        );
+        assert_eq!(
+            fallback
+                .attempt_audit
+                .iter()
+                .map(|attempt| (attempt.attempt, attempt.failure))
+                .collect::<Vec<_>>(),
+            vec![
+                (1, mush_core::DecisionAttemptFailureKind::Malformed),
+                (2, mush_core::DecisionAttemptFailureKind::Malformed),
+                (3, mush_core::DecisionAttemptFailureKind::Malformed),
+            ]
+        );
+        let selection_key = format!(
+            "action-state/v1/{}/selected",
+            registration.families.selections.descriptor().id()
+        );
+        let selected = store
+            .module_json_get(DECISION_HARNESS_OWNER, &selection_key)
+            .await
+            .expect("fallback selection read")
+            .expect("fallback selected action state");
+        assert_eq!(selected["value"]["count"], 1);
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        assert_eq!(
+            calls.load(AtomicOrdering::SeqCst),
+            usize::from(mush_core::DEFAULT_DECISION_ATTEMPTS),
+            "fallback terminalization must stop provider redispatch"
+        );
+        stop_test_server(handles).await;
+    }
+
+    #[tokio::test]
+    async fn provider_outage_exhausts_bounded_attempts_then_executes_fallback() {
+        let (mut engine, registration, capture_plan, keys) = decision_harness(30);
+        let pending = arm_decision_capture(
+            &engine,
+            &keys,
+            &registration,
+            &capture_plan,
+            0x3b,
+            unix_now_s() + 60,
+        );
+        let store: Arc<dyn ObjectStore> = Arc::new(InMemoryStore::new());
+        commit_armed_capture(
+            &mut engine,
+            store
+                .authoritative_store()
+                .expect("in-memory store is authoritative"),
+            &registration,
+            0x4b,
+        )
+        .await;
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let called = Arc::new(tokio::sync::Notify::new());
+        let mut providers = DecisionProviderRegistry::new();
+        providers
+            .register(Arc::new(FailingDecisionProvider {
+                owner: OwnerId::new(DECISION_HARNESS_OWNER).expect("static harness owner"),
+                calls: Arc::clone(&calls),
+                called: Arc::clone(&called),
+                kind: DecisionProviderFailureKind::Unavailable,
+            }))
+            .expect("failing provider registration");
+        let handles = spawn_persist_with_gateway_and_decisions(
+            engine,
+            decision_test_deps(Arc::clone(&store)),
+            DurableOutboxRegistry::new(),
+            providers,
+            1,
+            |_| Arc::new(BlackholeGateway),
+        )
+        .expect("decision runtime startup");
+        tokio::time::timeout(Duration::from_secs(4), async {
+            while calls.load(AtomicOrdering::SeqCst)
+                < usize::from(mush_core::DEFAULT_DECISION_ATTEMPTS)
+            {
+                called.notified().await;
+            }
+        })
+        .await
+        .expect("bounded unavailable-provider attempts did not run");
+        let terminal =
+            wait_for_persisted_decision_terminal(store.as_ref(), &registration, pending.id).await;
+        assert_eq!(terminal.malformed_attempts, 0);
+        assert_eq!(
+            terminal.outcome,
+            mush_core::DecisionTerminalOutcome::Fallback
+        );
+        assert_eq!(
+            terminal.fallback_reason,
+            Some(mush_core::DecisionFallbackReason::ProviderExhausted)
+        );
+        assert_eq!(
+            terminal
+                .attempt_audit
+                .iter()
+                .map(|attempt| (attempt.attempt, attempt.failure))
+                .collect::<Vec<_>>(),
+            vec![
+                (1, mush_core::DecisionAttemptFailureKind::Unavailable),
+                (2, mush_core::DecisionAttemptFailureKind::Unavailable),
+                (3, mush_core::DecisionAttemptFailureKind::Unavailable),
+            ]
+        );
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        assert_eq!(
+            calls.load(AtomicOrdering::SeqCst),
+            usize::from(mush_core::DEFAULT_DECISION_ATTEMPTS),
+            "provider outage must stop at the bounded attempt policy"
+        );
+        stop_test_server(handles).await;
+    }
+
+    #[tokio::test]
+    async fn unavailable_provider_stages_exact_fallback_custody() {
+        let (mut engine, registration, capture_plan, keys) = decision_harness(30);
+        let pending = arm_decision_capture(
+            &engine,
+            &keys,
+            &registration,
+            &capture_plan,
+            0x38,
+            unix_now_s() + 60,
+        );
+        let store: Arc<dyn ObjectStore> = Arc::new(InMemoryStore::new());
+        commit_armed_capture(
+            &mut engine,
+            store
+                .authoritative_store()
+                .expect("in-memory store is authoritative"),
+            &registration,
+            0x48,
+        )
+        .await;
+
+        let (completion_tx, _completion_rx) = mpsc::channel(MAX_DECISION_COMPLETIONS);
+        let dispatcher = Arc::new(
+            DecisionDispatcher::new(Arc::new(DecisionProviderRegistry::new()), 1, completion_tx)
+                .expect("decision dispatcher"),
+        );
+        let mut driver = DurableDecisionDriver::new(1, dispatcher);
+        let DurableDecisionDrive::StagedLifecycle(staged) = driver
+            .drive_one(
+                &mut engine,
+                store
+                    .authoritative_store()
+                    .expect("in-memory store is authoritative"),
+                None,
+            )
+            .await
+            .expect("provider-unavailable fallback drive")
+        else {
+            panic!("provider unavailability did not stage fallback custody")
+        };
+        let prepared = engine
+            .take_staged_action()
+            .expect("fallback custody admission")
+            .expect("staged fallback custody action");
+        let (persistence, installation) = prepared.into_parts();
+        let StagedActionPersistence::Authoritative(bundle) = persistence else {
+            panic!("fallback custody used legacy persistence")
+        };
+        assert_eq!(bundle.token(), staged.token);
+        assert_eq!(bundle.bundle_hash(), staged.bundle_hash);
+        let authoritative = store
+            .authoritative_store()
+            .expect("in-memory store is authoritative");
+        authoritative
+            .reserve_authoritative_intent((*bundle).clone())
+            .await
+            .expect("fallback custody intent");
+        authoritative
+            .reconcile_authoritative(bundle.token(), bundle.bundle_hash())
+            .await
+            .expect("fallback custody reconcile");
+        engine.install_prepared_action(installation);
+        assert!(matches!(
+            engine
+                .action_state()
+                .get(&registration.families.pending, &pending.id)
+                .expect("fallback custody read")
+                .expect("pending decision")
+                .status,
+            PendingDecisionStatus::FallbackReady {
+                reason: mush_core::DecisionFallbackReason::ProviderUnavailable,
+                ..
+            }
+        ));
+    }
+
+    #[tokio::test]
+    async fn recovery_audits_all_durable_limits_before_first_dispatch() {
+        let (mut engine, registration, capture_plan, keys) = decision_harness(30);
+        let store = InMemoryStore::new();
+        for offset in 0_u8..=u8::try_from(mush_core::MAX_NONTERMINAL_DECISIONS_PER_CONTROLLER)
+            .expect("controller cap fits u8")
+        {
+            arm_decision_capture(
+                &engine,
+                &keys,
+                &registration,
+                &capture_plan,
+                0x50 + offset,
+                unix_now_s() + 60,
+            );
+            commit_armed_capture(&mut engine, &store, &registration, 0x60 + offset).await;
+        }
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mut providers = DecisionProviderRegistry::new();
+        providers
+            .register(Arc::new(RecordingDecisionProvider {
+                owner: OwnerId::new(DECISION_HARNESS_OWNER).expect("static harness owner"),
+                calls: Arc::clone(&calls),
+                called: Arc::new(tokio::sync::Notify::new()),
+            }))
+            .expect("decision provider registration");
+        let (completion_tx, _completion_rx) = mpsc::channel(MAX_DECISION_COMPLETIONS);
+        let dispatcher = Arc::new(
+            DecisionDispatcher::new(Arc::new(providers), 1, completion_tx)
+                .expect("decision dispatcher"),
+        );
+        let mut driver = DurableDecisionDriver::new(1, dispatcher);
+        let error = match driver.drive_one(&mut engine, &store, None).await {
+            Err(error) => error,
+            Ok(_) => panic!("over-cap durable decisions must freeze recovery"),
+        };
+        assert!(error.contains("limit reached"), "{error}");
+        assert_eq!(calls.load(AtomicOrdering::SeqCst), 0);
+        assert!(!engine.action_state().has_prepared());
+    }
+
+    #[tokio::test]
+    async fn expired_deadline_wins_before_available_provider_is_called() {
+        let (mut engine, registration, capture_plan, keys) = decision_harness(30);
+        let pending = arm_decision_capture(
+            &engine,
+            &keys,
+            &registration,
+            &capture_plan,
+            0x39,
+            unix_now_s() - 1,
+        );
+        let store: Arc<dyn ObjectStore> = Arc::new(InMemoryStore::new());
+        commit_armed_capture(
+            &mut engine,
+            store
+                .authoritative_store()
+                .expect("in-memory store is authoritative"),
+            &registration,
+            0x49,
+        )
+        .await;
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mut providers = DecisionProviderRegistry::new();
+        providers
+            .register(Arc::new(RecordingDecisionProvider {
+                owner: OwnerId::new(DECISION_HARNESS_OWNER).expect("static harness owner"),
+                calls: Arc::clone(&calls),
+                called: Arc::new(tokio::sync::Notify::new()),
+            }))
+            .expect("decision provider registration");
+        let handles = spawn_persist_with_gateway_and_decisions(
+            engine,
+            decision_test_deps(Arc::clone(&store)),
+            DurableOutboxRegistry::new(),
+            providers,
+            1,
+            |_| Arc::new(BlackholeGateway),
+        )
+        .expect("decision runtime startup");
+        let terminal =
+            wait_for_persisted_decision_terminal(store.as_ref(), &registration, pending.id).await;
+        assert_eq!(
+            terminal.outcome,
+            mush_core::DecisionTerminalOutcome::Fallback
+        );
+        assert_eq!(calls.load(AtomicOrdering::SeqCst), 0);
+        stop_test_server(handles).await;
+    }
+
+    #[tokio::test]
+    async fn cancellation_ack_installs_terminal_state_before_token_rejection() {
+        let (mut engine, registration, capture_plan, keys) = decision_harness(30);
+        let pending = arm_decision_capture(
+            &engine,
+            &keys,
+            &registration,
+            &capture_plan,
+            0x3a,
+            unix_now_s() + 60,
+        );
+        let store = InMemoryStore::new();
+        commit_armed_capture(&mut engine, &store, &registration, 0x4a).await;
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mut providers = DecisionProviderRegistry::new();
+        providers
+            .register(Arc::new(RecordingDecisionProvider {
+                owner: OwnerId::new(DECISION_HARNESS_OWNER).expect("static harness owner"),
+                calls,
+                called: Arc::new(tokio::sync::Notify::new()),
+            }))
+            .expect("decision provider registration");
+        let (completion_tx, _completion_rx) = mpsc::channel(MAX_DECISION_COMPLETIONS);
+        let dispatcher = Arc::new(
+            DecisionDispatcher::new(Arc::new(providers), 1, completion_tx)
+                .expect("decision dispatcher"),
+        );
+        let mut driver = DurableDecisionDriver::new(1, dispatcher);
+        let DurableDecisionDrive::Staged(staged_dispatch) = driver
+            .drive_one(&mut engine, &store, None)
+            .await
+            .expect("decision lease drive")
+        else {
+            panic!("ready decision did not stage a lease")
+        };
+        let StagedDecisionDispatch {
+            staged,
+            reservation,
+        } = *staged_dispatch;
+        let StagedDecisionLease { staged, worker } = staged;
+        let prepared = engine
+            .take_staged_action()
+            .expect("lease admission")
+            .expect("staged lease action");
+        let (persistence, installation) = prepared.into_parts();
+        let StagedActionPersistence::Authoritative(bundle) = persistence else {
+            panic!("decision lease used legacy persistence")
+        };
+        assert_eq!(bundle.token(), staged.token);
+        store
+            .reserve_authoritative_intent((*bundle).clone())
+            .await
+            .expect("lease intent");
+        store
+            .reconcile_authoritative(bundle.token(), bundle.bundle_hash())
+            .await
+            .expect("lease reconcile");
+        engine.install_prepared_action(installation);
+        drop(reservation);
+
+        let fence = mush_core::DecisionCompletionFence::new(
+            worker.controller().clone(),
+            worker.decision(),
+            worker.revision(),
+            worker.attempt(),
+            worker.lease_until().clone(),
+        )
+        .expect("worker fence");
+        let response = DecisionResponse {
+            token: worker.prompt().token,
+            offer: worker.prompt().actions[0].offer(),
+            targets: Vec::new(),
+            parameters: serde_json::json!({}),
+        };
+        engine
+            .decision_response_ingress(&fence, &response)
+            .expect("live lease accepts its exact response");
+
+        let ingress = ActionCoordinator::decision_cancellation_ingress(
+            &engine,
+            &pending.controller,
+            pending.id,
+            pending.revision,
+            1,
+        )
+        .expect("cancellation ingress");
+        let ActionPreflight::Vacant(permit) = ActionCoordinator::preflight(&store, ingress)
+            .await
+            .expect("cancellation preflight")
+        else {
+            panic!("cancellation idempotency was not vacant")
+        };
+        let staged = ActionCoordinator::prepare_and_stage_decision_cancellation(
+            permit,
+            &mut engine,
+            &pending.controller,
+            pending.id,
+            pending.revision,
+        )
+        .expect("cancellation staging");
+        engine
+            .decision_response_ingress(&fence, &response)
+            .expect("unacknowledged cancellation has not changed live authority");
+        let prepared = engine
+            .take_staged_action()
+            .expect("cancellation admission")
+            .expect("staged cancellation action");
+        let (persistence, installation) = prepared.into_parts();
+        let StagedActionPersistence::Authoritative(bundle) = persistence else {
+            panic!("decision cancellation used legacy persistence")
+        };
+        assert_eq!(bundle.token(), staged.token);
+        assert_eq!(bundle.bundle_hash(), staged.bundle_hash);
+        store
+            .reserve_authoritative_intent((*bundle).clone())
+            .await
+            .expect("cancellation intent");
+        store
+            .reconcile_authoritative(bundle.token(), bundle.bundle_hash())
+            .await
+            .expect("cancellation reconcile");
+        engine.install_prepared_action(installation);
+        assert!(engine.decision_response_ingress(&fence, &response).is_err());
+        assert!(matches!(
+            engine
+                .action_state()
+                .get(&registration.families.pending, &pending.id)
+                .expect("cancelled decision read")
+                .expect("cancelled decision")
+                .status,
+            PendingDecisionStatus::Terminal {
+                outcome: mush_core::DecisionTerminalOutcome::Cancelled,
+                action_binding: None,
+                ..
+            }
+        ));
+
+        let compacted = loop {
+            match driver
+                .drive_one(&mut engine, &store, None)
+                .await
+                .expect("cancelled decision compaction drive")
+            {
+                DurableDecisionDrive::StagedLifecycle(staged) => break staged,
+                DurableDecisionDrive::Idle | DurableDecisionDrive::RecoveryAuditProgress => {}
+                _ => panic!("cancelled decision did not stage no-action compaction"),
+            }
+        };
+        let prepared = engine
+            .take_staged_action()
+            .expect("compaction admission")
+            .expect("staged compaction action");
+        let (persistence, installation) = prepared.into_parts();
+        let StagedActionPersistence::Authoritative(bundle) = persistence else {
+            panic!("decision compaction used legacy persistence")
+        };
+        assert_eq!(bundle.token(), compacted.token);
+        assert_eq!(bundle.bundle_hash(), compacted.bundle_hash);
+        store
+            .reserve_authoritative_intent((*bundle).clone())
+            .await
+            .expect("compaction intent");
+        store
+            .reconcile_authoritative(bundle.token(), bundle.bundle_hash())
+            .await
+            .expect("compaction reconcile");
+        engine.install_prepared_action(installation);
+        assert!(
+            engine
+                .action_state()
+                .get(&registration.families.pending, &pending.id)
+                .expect("compacted pending read")
+                .is_none()
+        );
+        let receipt = engine
+            .action_state()
+            .get(&registration.families.terminal_receipts, &pending.id)
+            .expect("compact receipt read")
+            .expect("compact receipt");
+        assert_eq!(
+            receipt.outcome,
+            mush_core::DecisionTerminalOutcome::Cancelled
+        );
+        assert!(receipt.action_binding.is_none());
+    }
+
+    #[tokio::test]
+    async fn selected_action_terminal_cannot_compact_without_exact_final_receipt() {
+        let (mut engine, registration, capture_plan, keys) = decision_harness(30);
+        let pending = arm_decision_capture(
+            &engine,
+            &keys,
+            &registration,
+            &capture_plan,
+            0x3c,
+            unix_now_s() + 60,
+        );
+        let store = InMemoryStore::new();
+        commit_armed_capture(&mut engine, &store, &registration, 0x4c).await;
+
+        let binding = mush_core::DecisionActionBinding {
+            request: RequestUid::from_bytes([0x5c; 16]),
+            request_hash: CanonicalHash::from_bytes([0x6c; 32]),
+        };
+        let mut terminal = pending.clone();
+        terminal
+            .finish(
+                terminal.revision,
+                mush_core::DecisionTerminalOutcome::Executed,
+                Some(binding),
+            )
+            .expect("synthetic selected terminal");
+        let pending_handle = registration.families.pending.clone();
+        let mut transaction = engine
+            .action_transaction(&pending_handle)
+            .expect("terminal test transaction");
+        transaction
+            .replace(&pending_handle, &pending.id, terminal)
+            .expect("terminal test replacement");
+        let (_, installation) = transaction
+            .prepare()
+            .expect("terminal test prepare")
+            .into_parts();
+        engine.install_prepared_action(installation);
+
+        let (completion_tx, _completion_rx) = mpsc::channel(MAX_DECISION_COMPLETIONS);
+        let dispatcher = Arc::new(
+            DecisionDispatcher::new(Arc::new(DecisionProviderRegistry::new()), 1, completion_tx)
+                .expect("decision dispatcher"),
+        );
+        let mut driver = DurableDecisionDriver::new(1, dispatcher);
+        let error = match driver.drive_one(&mut engine, &store, None).await {
+            Err(error) => error,
+            Ok(_) => panic!("vacant selected action must prevent compaction"),
+        };
+        assert!(
+            error.contains("no authoritative selected action"),
+            "{error}"
+        );
+        assert!(!engine.action_state().has_prepared());
+        assert!(
+            engine
+                .action_state()
+                .get(&registration.families.terminal_receipts, &pending.id)
+                .expect("receipt absence read")
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn decision_response_requires_exact_live_fence_before_offer_resolution() {
+        let (mut engine, registration, capture_plan, keys) = decision_harness(30);
+        let pending = arm_decision_capture(
+            &engine,
+            &keys,
+            &registration,
+            &capture_plan,
+            0x36,
+            unix_now_s() + 60,
+        );
+        let store = InMemoryStore::new();
+        commit_armed_capture(&mut engine, &store, &registration, 0x46).await;
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mut providers = DecisionProviderRegistry::new();
+        providers
+            .register(Arc::new(RecordingDecisionProvider {
+                owner: OwnerId::new(DECISION_HARNESS_OWNER).expect("static harness owner"),
+                calls,
+                called: Arc::new(tokio::sync::Notify::new()),
+            }))
+            .expect("decision provider registration");
+        let (completion_tx, _completion_rx) = mpsc::channel(MAX_DECISION_COMPLETIONS);
+        let dispatcher = Arc::new(
+            DecisionDispatcher::new(Arc::new(providers), 1, completion_tx)
+                .expect("decision dispatcher"),
+        );
+        let mut driver = DurableDecisionDriver::new(1, dispatcher);
+        let DurableDecisionDrive::Staged(staged_dispatch) = driver
+            .drive_one(&mut engine, &store, None)
+            .await
+            .expect("decision lease drive")
+        else {
+            panic!("ready decision did not stage a lease")
+        };
+        let StagedDecisionDispatch {
+            staged,
+            reservation,
+        } = *staged_dispatch;
+        let StagedDecisionLease { staged, worker } = staged;
+        let prepared = engine
+            .take_staged_action()
+            .expect("lease admission")
+            .expect("staged lease action");
+        let (persistence, installation) = prepared.into_parts();
+        let StagedActionPersistence::Authoritative(bundle) = persistence else {
+            panic!("decision lease used legacy persistence")
+        };
+        assert_eq!(bundle.token(), staged.token);
+        assert_eq!(bundle.bundle_hash(), staged.bundle_hash);
+        store
+            .reserve_authoritative_intent((*bundle).clone())
+            .await
+            .expect("lease intent reservation");
+        store
+            .reconcile_authoritative(bundle.token(), bundle.bundle_hash())
+            .await
+            .expect("lease reconciliation");
+        engine.install_prepared_action(installation);
+        drop(reservation);
+
+        let fence = mush_core::DecisionCompletionFence::new(
+            worker.controller().clone(),
+            worker.decision(),
+            worker.revision(),
+            worker.attempt(),
+            worker.lease_until().clone(),
+        )
+        .expect("worker completion fence");
+        let response = DecisionResponse {
+            token: worker.prompt().token,
+            offer: worker.prompt().actions[0].offer(),
+            targets: Vec::new(),
+            parameters: serde_json::json!({}),
+        };
+        let mut forged = response.clone();
+        forged.token.tag = CanonicalHash::from_bytes([0xf0; 32]);
+        assert!(matches!(
+            engine.decision_response_ingress(&fence, &forged),
+            Err(mush_core::DecisionResponseIngressError::StaleCompletion)
+        ));
+        let wrong_attempt = mush_core::DecisionCompletionFence::new(
+            worker.controller().clone(),
+            worker.decision(),
+            worker.revision(),
+            worker.attempt() + 1,
+            worker.lease_until().clone(),
+        )
+        .expect("wrong-attempt fence is structurally valid");
+        assert!(matches!(
+            engine.decision_response_ingress(&wrong_attempt, &response),
+            Err(mush_core::DecisionResponseIngressError::StaleCompletion)
+        ));
+
+        let ingress = ActionCoordinator::decision_response_ingress(&engine, &fence, &response)
+            .expect("valid response ingress");
+        let first_ingress = ingress.clone();
+        assert_eq!(ingress.idempotency(), &pending.action_idempotency);
+        let ActionPreflight::Vacant(permit) = ActionCoordinator::preflight(&store, ingress)
+            .await
+            .expect("response preflight")
+        else {
+            panic!("selected action idempotency was not vacant")
+        };
+        let selected = ActionCoordinator::prepare_and_stage_decision_response(
+            permit,
+            &mut engine,
+            fence.clone(),
+            &response,
+        )
+        .expect("decision response offer resolution");
+        assert_ne!(
+            selected.binding.request_hash,
+            CanonicalHash::from_bytes([0; 32])
+        );
+        let staged = engine
+            .take_staged_action()
+            .expect("selected action admission")
+            .expect("selected staged action");
+        let (_persistence, installation) = staged.into_parts();
+        engine.abort_prepared_action(installation);
+
+        let retry_at = worker.lease_until().clone();
+        engine.set_now(retry_at.at);
+        let mut retry = engine
+            .action_state()
+            .get(&registration.families.pending, &pending.id)
+            .expect("leased decision read")
+            .expect("leased decision")
+            .clone();
+        retry
+            .retry_expired_lease(retry.revision, &retry_at)
+            .expect("expire first lease");
+        let second_lease_until = ClockStamp {
+            clock: retry_at.clock.clone(),
+            at: retry_at.at + 1,
+        };
+        retry
+            .lease(retry.revision, second_lease_until.clone())
+            .expect("second lease");
+        let mut transaction = engine
+            .action_transaction(&registration.families.pending)
+            .expect("retry transaction");
+        transaction
+            .replace(&registration.families.pending, &pending.id, retry)
+            .expect("retry post-image");
+        let prepared = transaction.prepare().expect("retry preparation");
+        let (_, installation) = prepared.into_parts();
+        engine.install_prepared_action(installation);
+        let second_fence = mush_core::DecisionCompletionFence::new(
+            worker.controller().clone(),
+            worker.decision(),
+            worker.revision(),
+            2,
+            second_lease_until,
+        )
+        .expect("second completion fence");
+        let second_ingress =
+            ActionCoordinator::decision_response_ingress(&engine, &second_fence, &response)
+                .expect("second-attempt response ingress");
+        assert!(matches!(
+            ActionCoordinator::decision_response_ingress(&engine, &fence, &response),
+            Err(crate::action_coordinator::ActionCoordinatorError::DecisionResponseIngress(_))
+        ));
+        assert_eq!(second_ingress.request(), first_ingress.request());
+        assert_eq!(
+            second_ingress.ingress_hash(),
+            first_ingress.ingress_hash(),
+            "operational retry fences must not change semantic action identity"
+        );
+
+        let duplicate_ingress = second_ingress.clone();
+        let ActionPreflight::Vacant(permit) = ActionCoordinator::preflight(&store, second_ingress)
+            .await
+            .expect("second response preflight")
+        else {
+            panic!("second-attempt selected action idempotency was not vacant")
+        };
+        let selected = ActionCoordinator::prepare_and_stage_decision_response(
+            permit,
+            &mut engine,
+            second_fence.clone(),
+            &response,
+        )
+        .expect("second-attempt response resolution");
+        let binding = selected.binding.clone();
+        let staged = engine
+            .take_staged_action()
+            .expect("selected action admission")
+            .expect("selected action stage");
+        let (persistence, installation) = staged.into_parts();
+        let StagedActionPersistence::Authoritative(bundle) = persistence else {
+            panic!("selected action used legacy persistence")
+        };
+        store
+            .reserve_authoritative_intent((*bundle).clone())
+            .await
+            .expect("selected action intent");
+        store
+            .reconcile_authoritative(bundle.token(), bundle.bundle_hash())
+            .await
+            .expect("selected action reconcile");
+        engine.install_prepared_action(installation);
+        assert!(matches!(
+            ActionCoordinator::preflight(&store, duplicate_ingress)
+                .await
+                .expect("duplicate response preflight"),
+            ActionPreflight::Finalized(_)
+        ));
+
+        assert!(
+            matches!(
+                engine
+                    .action_state()
+                    .get(&registration.families.pending, &pending.id)
+                    .expect("pending read")
+                    .expect("pending record")
+                    .status,
+                PendingDecisionStatus::Leased { attempt: 2, .. }
+            ),
+            "selected action receipt alone must not cross the owner-local lifecycle boundary"
+        );
+        let resolving = stage_decision_resolving(
+            &mut engine,
+            &store,
+            &second_fence,
+            &binding,
+            mush_core::DecisionTerminalOutcome::Executed,
+            1,
+        )
+        .await
+        .expect("resolving stage")
+        .expect("resolving lifecycle was vacant");
+        let staged = engine
+            .take_staged_action()
+            .expect("resolving action admission")
+            .expect("resolving action stage");
+        let (persistence, installation) = staged.into_parts();
+        let StagedActionPersistence::Authoritative(bundle) = persistence else {
+            panic!("resolving action used legacy persistence")
+        };
+        assert_eq!(bundle.token(), resolving.token);
+        assert_eq!(bundle.bundle_hash(), resolving.bundle_hash);
+        store
+            .reserve_authoritative_intent((*bundle).clone())
+            .await
+            .expect("resolving intent");
+        store
+            .reconcile_authoritative(bundle.token(), bundle.bundle_hash())
+            .await
+            .expect("resolving reconcile");
+        engine.install_prepared_action(installation);
+        let resolved = engine
+            .action_state()
+            .get(&registration.families.pending, &pending.id)
+            .expect("resolved pending read")
+            .expect("resolved pending record");
+        assert!(matches!(
+            &resolved.status,
+            PendingDecisionStatus::Resolving {
+                attempt: 2,
+                action_binding,
+                ..
+            } if action_binding == &binding
+        ));
+
+        // Simulate losing the volatile post-Resolving follow-up. The bounded
+        // typed-family scan must rediscover the binding, authenticate its
+        // finalized ordinary receipt, and stage the exact terminal action.
+        driver.cursor = None;
+        driver.retry = None;
+        driver.reconciliation = None;
+        let DurableDecisionDrive::StagedLifecycle(terminal) = driver
+            .drive_one(&mut engine, &store, None)
+            .await
+            .expect("resolving recovery drive")
+        else {
+            panic!("resolving recovery did not stage the terminal lifecycle")
+        };
+        let staged = engine
+            .take_staged_action()
+            .expect("terminal action admission")
+            .expect("terminal action stage");
+        let (persistence, installation) = staged.into_parts();
+        let StagedActionPersistence::Authoritative(bundle) = persistence else {
+            panic!("terminal action used legacy persistence")
+        };
+        assert_eq!(bundle.token(), terminal.token);
+        assert_eq!(bundle.bundle_hash(), terminal.bundle_hash);
+        store
+            .reserve_authoritative_intent((*bundle).clone())
+            .await
+            .expect("terminal intent");
+        store
+            .reconcile_authoritative(bundle.token(), bundle.bundle_hash())
+            .await
+            .expect("terminal reconcile");
+        engine.install_prepared_action(installation);
+        let terminal = engine
+            .action_state()
+            .get(&registration.families.pending, &pending.id)
+            .expect("terminal pending read")
+            .expect("terminal pending record");
+        assert!(matches!(
+            &terminal.status,
+            PendingDecisionStatus::Terminal {
+                outcome: mush_core::DecisionTerminalOutcome::Executed,
+                action_binding: Some(action_binding),
+                ..
+            } if action_binding == &binding
+        ));
+    }
+
+    #[tokio::test]
+    async fn delayed_response_rejects_revoked_capability_before_provider_preparation() {
+        let (mut engine, registration, capture_plan, keys) = decision_harness(30);
+        let pending = arm_decision_capture(
+            &engine,
+            &keys,
+            &registration,
+            &capture_plan,
+            0x5c,
+            unix_now_s() + 60,
+        );
+        let store = InMemoryStore::new();
+        commit_armed_capture(&mut engine, &store, &registration, 0x6c).await;
+        let (fence, response, _worker) =
+            lease_captured_decision(&mut engine, &registration, &pending, &keys);
+        registration
+            .capability_generation
+            .store(2, AtomicOrdering::SeqCst);
+        let ingress = ActionCoordinator::decision_response_ingress(&engine, &fence, &response)
+            .expect("live lease still authenticates before capability resolution");
+        let ActionPreflight::Vacant(permit) = ActionCoordinator::preflight(&store, ingress)
+            .await
+            .expect("capability stale preflight")
+        else {
+            panic!("capability stale action idempotency must remain vacant")
+        };
+        assert!(
+            ActionCoordinator::prepare_and_stage_decision_response(
+                permit,
+                &mut engine,
+                fence,
+                &response,
+            )
+            .is_err()
+        );
+        assert!(engine.take_staged_action().unwrap().is_none());
+        assert!(!engine.action_state().has_prepared());
+        assert!(
+            engine
+                .action_state()
+                .get(
+                    &registration.families.selections,
+                    &CanonicalId::new("selected").unwrap(),
+                )
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn provider_latency_cannot_change_delayed_action_identity_or_authority() {
+        let (mut engine, registration, capture_plan, keys) = decision_harness(30);
+        let pending = arm_decision_capture(
+            &engine,
+            &keys,
+            &registration,
+            &capture_plan,
+            0x5d,
+            unix_now_s() + 60,
+        );
+        let store = InMemoryStore::new();
+        commit_armed_capture(&mut engine, &store, &registration, 0x6d).await;
+        let (fence, expected_response, worker) =
+            lease_captured_decision(&mut engine, &registration, &pending, &keys);
+        let owner = OwnerId::new(DECISION_HARNESS_OWNER).expect("static harness owner");
+        let mut bundles = Vec::new();
+
+        for kind in [
+            ProjectedPolicyKind::Deterministic,
+            ProjectedPolicyKind::DecisionTree,
+            ProjectedPolicyKind::MockLlm,
+        ] {
+            let adapter = ProjectedPolicyProvider {
+                owner: owner.clone(),
+                kind,
+            };
+            let response = adapter
+                .decide(worker.clone())
+                .await
+                .unwrap_or_else(|error| panic!("{kind:?} provider failed: {error:?}"));
+            assert_eq!(response, expected_response, "{kind:?} changed selection");
+            let ingress = ActionCoordinator::decision_response_ingress(&engine, &fence, &response)
+                .unwrap_or_else(|error| panic!("{kind:?} ingress failed: {error}"));
+            let ActionPreflight::Vacant(permit) = ActionCoordinator::preflight(&store, ingress)
+                .await
+                .expect("provider-policy preflight")
+            else {
+                panic!("{kind:?} did not retain vacant action authority")
+            };
+            ActionCoordinator::prepare_and_stage_decision_response(
+                permit,
+                &mut engine,
+                fence.clone(),
+                &response,
+            )
+            .unwrap_or_else(|error| panic!("{kind:?} action preparation failed: {error}"));
+            let staged = engine
+                .take_staged_action()
+                .expect("provider-policy admission")
+                .expect("provider-policy staged action");
+            let (persistence, installation) = staged.into_parts();
+            let StagedActionPersistence::Authoritative(bundle) = persistence else {
+                panic!("{kind:?} used legacy persistence")
+            };
+            bundles.push(serde_json::to_value(&*bundle).expect("canonical bundle JSON"));
+            engine.abort_prepared_action(installation);
+        }
+
+        assert!(bundles.windows(2).all(|pair| pair[0] == pair[1]));
+        assert_eq!(
+            engine
+                .action_state()
+                .get(
+                    &registration.families.selections,
+                    &CanonicalId::new("selected").unwrap(),
+                )
+                .unwrap(),
+            None,
+            "aborted latency variants must not install provider state"
+        );
+    }
+
+    #[tokio::test]
+    async fn provider_and_fallback_race_selects_one_exact_action_result() {
+        let (mut engine, registration, capture_plan, keys) = decision_harness(30);
+        let pending = arm_decision_capture(
+            &engine,
+            &keys,
+            &registration,
+            &capture_plan,
+            0x5e,
+            unix_now_s() + 60,
+        );
+        let store = InMemoryStore::new();
+        commit_armed_capture(&mut engine, &store, &registration, 0x6e).await;
+        let (fence, provider_response, _worker) =
+            lease_captured_decision(&mut engine, &registration, &pending, &keys);
+        let provider_ingress =
+            ActionCoordinator::decision_response_ingress(&engine, &fence, &provider_response)
+                .expect("provider contender ingress");
+
+        let leased = engine
+            .action_state()
+            .get(&registration.families.pending, &pending.id)
+            .unwrap()
+            .unwrap()
+            .clone();
+        let fallback = leased
+            .plan_fallback_ready(
+                leased.revision,
+                fence.lease_until(),
+                mush_core::DecisionFallbackReason::ProviderUnavailable,
+            )
+            .expect("fallback race transition")
+            .post_image()
+            .clone();
+        let mut txn = engine
+            .action_transaction(&registration.families.pending)
+            .expect("fallback race transaction");
+        txn.replace(&registration.families.pending, &pending.id, fallback)
+            .expect("fallback race post-image");
+        let (_, installation) = txn.prepare().unwrap().into_parts();
+        engine.install_prepared_action(installation);
+
+        let page = engine
+            .discover_decision_dispatches(None, 8)
+            .expect("fallback discovery");
+        let candidate = page
+            .fallbacks()
+            .first()
+            .expect("fallback candidate")
+            .clone();
+        let fallback_response = engine
+            .select_decision_fallback(&candidate)
+            .expect("deterministic fallback selection");
+        let fallback_ingress = engine
+            .decision_fallback_ingress(&candidate, &fallback_response)
+            .expect("fallback contender ingress");
+        assert_eq!(fallback_response, provider_response);
+        assert_eq!(fallback_ingress, provider_ingress);
+
+        let ActionPreflight::Vacant(permit) =
+            ActionCoordinator::preflight(&store, fallback_ingress)
+                .await
+                .unwrap()
+        else {
+            panic!("fallback contender must initially be vacant")
+        };
+        ActionCoordinator::prepare_and_stage_decision_fallback(
+            permit,
+            &mut engine,
+            &candidate,
+            &fallback_response,
+        )
+        .expect("fallback contender preparation");
+        let staged = engine
+            .take_staged_action()
+            .expect("fallback action admission")
+            .expect("fallback action staged");
+        let (persistence, installation) = staged.into_parts();
+        let StagedActionPersistence::Authoritative(bundle) = persistence else {
+            panic!("fallback action used legacy persistence")
+        };
+        store
+            .reserve_authoritative_intent((*bundle).clone())
+            .await
+            .expect("fallback intent");
+        store
+            .reconcile_authoritative(bundle.token(), bundle.bundle_hash())
+            .await
+            .expect("fallback reconcile");
+        engine.install_prepared_action(installation);
+
+        assert!(matches!(
+            ActionCoordinator::preflight(&store, provider_ingress)
+                .await
+                .expect("late provider preflight"),
+            ActionPreflight::Finalized(_)
+        ));
+        assert_eq!(
+            engine
+                .action_state()
+                .get(
+                    &registration.families.selections,
+                    &CanonicalId::new("selected").unwrap(),
+                )
+                .unwrap()
+                .expect("one selected action")
+                .count,
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn delayed_tactical_gate4_stale_matrix_preserves_unselected_target_movement() {
+        #[derive(Clone, Copy)]
+        enum Change {
+            SelectedPlacement,
+            UnselectedPlacement,
+            StationGrant,
+            ControlLease,
+            SourceComponent,
+            SourceResource,
+            Contact,
+            Window,
+            DefinitionOwner,
+            BridgeOwner,
+        }
+
+        impl Change {
+            const fn remains_admissible(self) -> bool {
+                matches!(self, Self::UnselectedPlacement)
+            }
+        }
+
+        async fn run(change: Change, salt: u8) {
+            let TacticalDecisionHarness {
+                mut engine,
+                registration,
+                tactical_state,
+                unit_spec,
+                capture_plan,
+                keys,
+            } = tactical_decision_harness(30);
+            let source = GOD;
+            let selected_target = mush_core::ObjId(971);
+            let unselected_target = mush_core::ObjId(972);
+            for object in [source, selected_target, unselected_target] {
+                install_tactical_gate_unit(
+                    &mut engine,
+                    &tactical_state,
+                    TacticalUnit::from_spec(&unit_spec, object).expect("valid tactical unit"),
+                );
+            }
+            install_tactical_gate_placement(&mut engine, &tactical_state, source, 0, 0);
+            install_tactical_gate_placement(&mut engine, &tactical_state, selected_target, 1, 0);
+            install_tactical_gate_placement(&mut engine, &tactical_state, unselected_target, 2, 0);
+            install_tactical_gate_weapons_lease(
+                &mut engine,
+                &tactical_state,
+                source,
+                PrincipalId::Object { id: source },
+            );
+            publish_tactical_gate_weapons_station(&mut engine, source, source, 1);
+            install_tactical_gate_contact(
+                &mut engine,
+                &tactical_state,
+                mush_core::ContactId::from_bytes([0x11; 16]),
+                selected_target,
+                PrincipalId::Object { id: source },
+            );
+            install_tactical_gate_contact(
+                &mut engine,
+                &tactical_state,
+                mush_core::ContactId::from_bytes([0x22; 16]),
+                unselected_target,
+                PrincipalId::Object { id: source },
+            );
+            install_tactical_gate_fire_window(&mut engine, &tactical_state);
+
+            assert_eq!(engine.world.command_subjects_of(source).len(), 1);
+            assert_eq!(
+                engine
+                    .action_state()
+                    .scan_family(&tactical_state.contacts, None, 8)
+                    .expect("contact scan")
+                    .entries()
+                    .len(),
+                2
+            );
+            assert!(
+                engine
+                    .action_state()
+                    .get(&tactical_state.units, &source)
+                    .unwrap()
+                    .is_some()
+            );
+            assert_eq!(
+                engine
+                    .clock_now(&mush_contract_tests::tactical_gate::tactical_gate_clock())
+                    .expect("tactical clock")
+                    .at,
+                7
+            );
+
+            let principal = PrincipalId::Object { id: source };
+            let query = engine
+                .legal_action_query(principal, source, PerceivedRef::SelfActor)
+                .expect("tactical decision query");
+            let projection = engine
+                .project_decision_offers(&query)
+                .expect("tactical decision projection");
+            let fire_index = projection
+                .actions()
+                .iter()
+                .position(|offer| offer.presentation().verb == "fire")
+                .unwrap_or_else(|| panic!("fire offer missing from {projection:?}"));
+            let projected = projection.actions()[fire_index].clone();
+            let witness = projection.offered()[fire_index].clone();
+            assert_eq!(witness.offer, projected.offer());
+            let _ = engine.world.take_dirty();
+            let _ = engine.take_module_ops();
+            let pending = arm_tactical_decision_capture(
+                &keys,
+                &registration,
+                &capture_plan,
+                source,
+                projected,
+                witness,
+                salt,
+                unix_now_s() + 60,
+            );
+            let store = InMemoryStore::new();
+            commit_armed_capture(&mut engine, &store, &registration, salt.wrapping_add(0x10)).await;
+            let (fence, response, _worker) =
+                lease_captured_decision(&mut engine, &registration, &pending, &keys);
+            let (chosen_contact, chosen_target) = match response.targets.as_slice() {
+                [PerceivedRef::Contact { id, .. }]
+                    if id == &mush_core::ContactId::from_bytes([0x11; 16]) =>
+                {
+                    (*id, selected_target)
+                }
+                [PerceivedRef::Contact { id, .. }]
+                    if id == &mush_core::ContactId::from_bytes([0x22; 16]) =>
+                {
+                    (*id, unselected_target)
+                }
+                _ => panic!("unexpected tactical response target"),
+            };
+            let other_target = if chosen_target == selected_target {
+                unselected_target
+            } else {
+                selected_target
+            };
+            let source_before_change = engine
+                .action_state()
+                .canonical(&tactical_state.units, &source)
+                .expect("source canonical state")
+                .expect("source state")
+                .as_slice()
+                .to_vec();
+            let selected_before_change = engine
+                .action_state()
+                .canonical(&tactical_state.units, &chosen_target)
+                .expect("target canonical state")
+                .expect("target state")
+                .as_slice()
+                .to_vec();
+
+            match change {
+                Change::SelectedPlacement | Change::UnselectedPlacement => {
+                    move_tactical_gate_placement(
+                        &mut engine,
+                        &tactical_state,
+                        if matches!(change, Change::SelectedPlacement) {
+                            chosen_target
+                        } else {
+                            other_target
+                        },
+                        4,
+                        0,
+                    );
+                }
+                Change::StationGrant => {
+                    assert_eq!(
+                        engine.world.retract_command_subjects(
+                            mush_contract_tests::tactical_gate::TACTICAL_GATE_OWNER,
+                            Some(source),
+                        ),
+                        1
+                    );
+                    let _ = engine.world.take_dirty();
+                }
+                Change::ControlLease => {
+                    let channel = mush_core::ChannelId::new("weapons").unwrap();
+                    let key = mush_core::ControlLeaseKey::new(source, channel);
+                    let lease = engine
+                        .action_state()
+                        .get(&tactical_state.control_leases, &key)
+                        .unwrap()
+                        .unwrap()
+                        .clone();
+                    let request = RequestUid::from_bytes([salt.wrapping_add(2); 16]);
+                    let requested = lease
+                        .checked_request_handoff(
+                            lease.revision(),
+                            mush_core::ControlHandoffDraft {
+                                request,
+                                requested_by: PrincipalId::Object { id: source },
+                                next_holder: None,
+                                requested_at:
+                                    mush_contract_tests::tactical_gate::tactical_gate_tick(7),
+                                boundary: mush_contract_tests::tactical_gate::tactical_gate_tick(8),
+                                reason: CanonicalId::new("gate4_revoke").unwrap(),
+                            },
+                        )
+                        .unwrap();
+                    let revoked = requested
+                        .checked_apply_handoff(
+                            requested.revision(),
+                            request,
+                            mush_contract_tests::tactical_gate::tactical_gate_tick(8),
+                        )
+                        .unwrap();
+                    let mut txn = engine
+                        .action_transaction(&tactical_state.control_leases)
+                        .expect("lease-revoke transaction");
+                    txn.replace(&tactical_state.control_leases, &key, revoked)
+                        .expect("lease-revoke post-image");
+                    let (_, installation) = txn.prepare().unwrap().into_parts();
+                    engine.install_prepared_action(installation);
+                }
+                Change::SourceComponent => {
+                    disable_tactical_gate_weapon(&mut engine, &tactical_state, source);
+                }
+                Change::SourceResource => {
+                    exhaust_tactical_gate_ammo(&mut engine, &tactical_state, source);
+                }
+                Change::Contact => {
+                    let contact = engine
+                        .action_state()
+                        .get(&tactical_state.contacts, &chosen_contact)
+                        .unwrap()
+                        .unwrap()
+                        .clone();
+                    let lost = contact
+                        .checked_mark_lost(
+                            contact.revision(),
+                            mush_contract_tests::tactical_gate::tactical_gate_tick(7),
+                            CanonicalId::new("gate4_occluded").unwrap(),
+                        )
+                        .unwrap();
+                    let mut txn = engine
+                        .action_transaction(&tactical_state.contacts)
+                        .expect("contact-loss transaction");
+                    txn.replace(&tactical_state.contacts, &chosen_contact, lost)
+                        .expect("contact-loss post-image");
+                    let (_, installation) = txn.prepare().unwrap().into_parts();
+                    engine.install_prepared_action(installation);
+                }
+                Change::Window => {
+                    let id = mush_contract_tests::tactical_gate::tactical_gate_window_id();
+                    let window = engine
+                        .action_state()
+                        .get(&tactical_state.windows, &id)
+                        .unwrap()
+                        .unwrap()
+                        .clone();
+                    let closed = window
+                        .checked_close_due(
+                            window.revision(),
+                            RequestUid::from_bytes([salt.wrapping_add(1); 16]),
+                            &mush_contract_tests::tactical_gate::tactical_gate_tick(10),
+                        )
+                        .unwrap()
+                        .into_record();
+                    let mut txn = engine
+                        .action_transaction(&tactical_state.windows)
+                        .expect("window-close transaction");
+                    txn.replace(&tactical_state.windows, &id, closed)
+                        .expect("window-close post-image");
+                    let (_, installation) = txn.prepare().unwrap().into_parts();
+                    engine.install_prepared_action(installation);
+                }
+                Change::BridgeOwner => {
+                    engine
+                        .registry
+                        .freeze_mechanics_owner(
+                            &OwnerId::new(
+                                mush_contract_tests::tactical_gate::TACTICAL_PLACEMENT_OWNER,
+                            )
+                            .unwrap(),
+                            mush_core::IncidentId(u64::from(salt)),
+                            mush_core::RecoveryReason::IntegrityViolation {
+                                code: CanonicalId::new("gate4_bridge_freeze").unwrap(),
+                            },
+                        )
+                        .expect("bridge owner freeze");
+                }
+                Change::DefinitionOwner => {
+                    engine
+                        .registry
+                        .freeze_mechanics_owner(
+                            &OwnerId::new(mush_contract_tests::tactical_gate::TACTICAL_GATE_OWNER)
+                                .unwrap(),
+                            mush_core::IncidentId(u64::from(salt)),
+                            mush_core::RecoveryReason::IntegrityViolation {
+                                code: CanonicalId::new("gate4_definition_freeze").unwrap(),
+                            },
+                        )
+                        .expect("definition owner freeze");
+                }
+            }
+            let (source_before, selected_before) = if matches!(change, Change::DefinitionOwner) {
+                (source_before_change, selected_before_change)
+            } else {
+                (
+                    engine
+                        .action_state()
+                        .canonical(&tactical_state.units, &source)
+                        .expect("source canonical state after stale change")
+                        .expect("source state after stale change")
+                        .as_slice()
+                        .to_vec(),
+                    engine
+                        .action_state()
+                        .canonical(&tactical_state.units, &chosen_target)
+                        .expect("target canonical state after stale change")
+                        .expect("target state after stale change")
+                        .as_slice()
+                        .to_vec(),
+                )
+            };
+            let ingress = ActionCoordinator::decision_response_ingress(&engine, &fence, &response)
+                .expect("exact live decision response ingress");
+            let ActionPreflight::Vacant(permit) = ActionCoordinator::preflight(&store, ingress)
+                .await
+                .expect("tactical decision preflight")
+            else {
+                panic!("tactical decision idempotency must be vacant")
+            };
+            let result = ActionCoordinator::prepare_and_stage_decision_response(
+                permit,
+                &mut engine,
+                fence,
+                &response,
+            );
+
+            if matches!(change, Change::SelectedPlacement) {
+                assert!(matches!(
+                    &result,
+                    Err(crate::action_coordinator::ActionCoordinatorError::StaleGuards)
+                ));
+            }
+
+            if !matches!(change, Change::DefinitionOwner) {
+                assert_eq!(
+                    engine
+                        .action_state()
+                        .canonical(&tactical_state.units, &source)
+                        .unwrap()
+                        .unwrap()
+                        .as_slice(),
+                    source_before
+                );
+                assert_eq!(
+                    engine
+                        .action_state()
+                        .canonical(&tactical_state.units, &chosen_target)
+                        .unwrap()
+                        .unwrap()
+                        .as_slice(),
+                    selected_before
+                );
+            }
+            if !change.remains_admissible() {
+                assert!(
+                    result.is_err(),
+                    "stale delayed action must fail before prepare"
+                );
+                assert!(engine.take_staged_action().unwrap().is_none());
+                assert!(!engine.action_state().has_prepared());
+            } else {
+                result.expect("unselected movement must remain admissible");
+                let staged = engine
+                    .take_staged_action()
+                    .expect("selected action admission")
+                    .expect("selected action staged");
+                let (persistence, installation) = staged.into_parts();
+                let StagedActionPersistence::Authoritative(bundle) = persistence else {
+                    panic!("delayed tactical action used legacy persistence")
+                };
+                assert!(bundle.resolution().is_some(), "RNG evidence is durable");
+                assert_eq!(bundle.semantic_events().len(), 1);
+                assert!(bundle.durable_outbox().is_empty());
+                engine.abort_prepared_action(installation);
+            }
+        }
+
+        for (change, salt) in [
+            (Change::SelectedPlacement, 0x61),
+            (Change::UnselectedPlacement, 0x62),
+            (Change::StationGrant, 0x63),
+            (Change::ControlLease, 0x64),
+            (Change::SourceComponent, 0x65),
+            (Change::SourceResource, 0x66),
+            (Change::Contact, 0x67),
+            (Change::Window, 0x68),
+            (Change::DefinitionOwner, 0x69),
+            (Change::BridgeOwner, 0x6a),
+        ] {
+            run(change, salt).await;
         }
     }
 
@@ -6771,6 +11194,7 @@ mod tests {
         }
 
         fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), mush_core::ModError> {
+            reg.classify_commands(mush_core::CommandCompatibility::LegacyPostImage);
             reg.state(GateProbeState::default());
 
             let counts = Arc::clone(&self.counts);
@@ -7287,6 +11711,7 @@ mod tests {
                 quarantine_spool: crate::quarantine::QuarantineSpool::in_memory(),
             },
             Arc::new(DurableOutboxRegistry::new()),
+            None,
             Some(mode),
             move |_| -> Gateway { sink },
         );
@@ -8202,6 +12627,7 @@ mod tests {
             1,
             PersistenceIntegrityLatch::new(),
             None,
+            None,
             watch::channel(false).0,
         ));
 
@@ -8477,7 +12903,7 @@ mod tests {
     impl mush_core::module::EventHook for CloakPair {
         fn perceives(
             &self,
-            _w: &World,
+            _ctx: &mush_core::HookReadContext<'_>,
             observer: ObjId,
             subject: ObjId,
         ) -> mush_core::module::Perceive {

@@ -458,7 +458,11 @@ export class GameApp {
   #routeView(view: ViewEnvelope, pending: PendingReq | null): void {
     if (view.view === "resolution.outcome") {
       const receipt = parseResolutionOutcome(view);
-      if (receipt === null || this.#seenActionCommits.has(receipt.commit)) return;
+      if (receipt === null) return;
+      if (this.#seenActionCommits.has(receipt.commit)) {
+        this.client.ackCommit(receipt.commit);
+        return;
+      }
       this.#seenActionCommits.add(receipt.commit);
       this.#actionCommitOrder.push(receipt.commit);
       if (this.#actionCommitOrder.length > 1024) {
@@ -468,6 +472,10 @@ export class GameApp {
       const summary = receipt.result?.summary ?? "Action committed.";
       this.scrollback.pushText("ev-sys", `${summary} Transaction: ${receipt.status}`);
       this.toast(summary);
+      // ACK only after the semantic result has been validated, deduplicated,
+      // and accepted into client state. A failed send leaves the gateway copy
+      // live, so reconnect re-emits it and this same idempotent path retries.
+      this.client.ackCommit(receipt.commit);
       return;
     }
     if (view.view !== "legal.actions") {

@@ -303,6 +303,80 @@ pub enum Perceive {
     Conceal,
 }
 
+/// Immutable, owner-scoped truth available to veto and projection hooks.
+///
+/// The context exposes no mutation, output, scheduling, or clock surface.
+/// Its typed reader is stamped from the hook's registering module, so an
+/// opaque family handle cannot be used across owners.
+pub struct HookReadContext<'a> {
+    world: &'a World,
+    typed_state: crate::action_state::ModuleActionState<'a>,
+}
+
+impl<'a> HookReadContext<'a> {
+    /// Construct a compatibility context for an off-loop hook call.
+    ///
+    /// Typed state is deliberately unavailable in this context. Engine-owned
+    /// dispatch paths use the private constructor below to attach the live
+    /// authoritative snapshot.
+    #[must_use]
+    pub fn without_typed_state(world: &'a World, module: &str) -> Self {
+        Self::for_module(world, None, module)
+    }
+
+    pub(crate) fn for_module(
+        world: &'a World,
+        action_state: Option<&'a crate::action_state::ActionStateStore>,
+        module: &str,
+    ) -> Self {
+        Self {
+            world,
+            typed_state: crate::action_state::ModuleActionState::for_module(
+                action_state,
+                Some(module),
+            ),
+        }
+    }
+
+    #[must_use]
+    pub const fn world(&self) -> &'a World {
+        self.world
+    }
+
+    #[must_use]
+    pub const fn typed_state_available(&self) -> bool {
+        self.typed_state.is_available()
+    }
+
+    pub fn action_state<K, V>(
+        &self,
+        handle: &crate::action_state::StateFamilyHandle<K, V>,
+        key: &K,
+    ) -> Result<Option<&'a V>, crate::action_state::ModuleActionStateReadError>
+    where
+        K: Send + Sync + 'static,
+        V: Clone + Send + Sync + 'static,
+    {
+        self.typed_state.get(handle, key)
+    }
+
+    pub fn scan_action_state<K, V>(
+        &self,
+        handle: &crate::action_state::StateFamilyHandle<K, V>,
+        after: Option<&str>,
+        limit: usize,
+    ) -> Result<
+        crate::action_state::StateFamilyPage<'a, V>,
+        crate::action_state::ModuleActionStateReadError,
+    >
+    where
+        K: Send + Sync + 'static,
+        V: Clone + Send + Sync + 'static,
+    {
+        self.typed_state.scan_family(handle, after, limit)
+    }
+}
+
 /// A module hook. Default methods are no-ops; a module implements only the
 /// points it registers for (registering under a point whose method is left
 /// defaulted is legal and does nothing).
@@ -312,7 +386,7 @@ pub trait EventHook: Send + Sync {
     /// `Err(reason)` to block; the reason is shown to the mover.
     fn move_attempt(
         &self,
-        w: &mut World,
+        ctx: &HookReadContext<'_>,
         actor: ObjId,
         exit: Option<ObjId>,
         dest: ObjId,
@@ -325,7 +399,7 @@ pub trait EventHook: Send + Sync {
     /// `Err(reason)` to block; the reason is shown to the mover.
     fn carry_attempt(
         &self,
-        w: &mut World,
+        ctx: &HookReadContext<'_>,
         mover: ObjId,
         obj: ObjId,
         dest: ObjId,
@@ -334,7 +408,12 @@ pub trait EventHook: Send + Sync {
     }
 
     /// Extra lines appended after a room render for `looker`.
-    fn look_rendered(&self, w: &World, looker: ObjId, room: ObjId) -> Vec<RichText> {
+    fn look_rendered(
+        &self,
+        ctx: &HookReadContext<'_>,
+        looker: ObjId,
+        room: ObjId,
+    ) -> Vec<RichText> {
         Vec::new()
     }
 
@@ -345,7 +424,7 @@ pub trait EventHook: Send + Sync {
     /// writes; a ruleset rolls and caches in its mutable paths and only reads
     /// the cache here). Default [`Perceive::Abstain`] leaves the subject
     /// visible. See [`can_perceive`].
-    fn perceives(&self, w: &World, observer: ObjId, subject: ObjId) -> Perceive {
+    fn perceives(&self, ctx: &HookReadContext<'_>, observer: ObjId, subject: ObjId) -> Perceive {
         Perceive::Abstain
     }
 
@@ -355,7 +434,7 @@ pub trait EventHook: Send + Sync {
     /// projection). Read-only by the same contract as `perceives`: a cheap
     /// cache lookup, never a mutation. Default `false` — with no concealment
     /// ruleset a subject is never concealed. See [`is_concealed`].
-    fn is_concealed(&self, w: &World, subject: ObjId) -> bool {
+    fn is_concealed(&self, ctx: &HookReadContext<'_>, subject: ObjId) -> bool {
         false
     }
 
@@ -702,6 +781,20 @@ pub trait QueryHandler: Send + Sync {
         actor: ObjId,
         params: &serde_json::Value,
     ) -> Result<OutputEvent, RichText>;
+
+    /// Answer one query with the live owner-scoped authoritative snapshot.
+    ///
+    /// Existing handlers remain source-compatible through the default
+    /// delegation. A handler that projects a migrated typed family overrides
+    /// this method and reads only handles owned by its registered module.
+    fn query_with_context(
+        &self,
+        context: &HookReadContext<'_>,
+        actor: ObjId,
+        params: &serde_json::Value,
+    ) -> Result<OutputEvent, RichText> {
+        self.query(context.world(), actor, params)
+    }
 }
 
 /// Read-only, bounded recovery diagnostics contributed by a mechanics-owning
@@ -1127,6 +1220,7 @@ impl Registry {
             || self.clock_providers.is_some()
             || self.resource_effect_providers.is_some()
             || self.schedule_sources.is_some()
+            || self.decision_sources.is_some()
             || self.mechanics_owner_readiness.is_some()
         {
             return Err(ModError::msg("mechanics registries were already frozen"));
@@ -1164,6 +1258,14 @@ impl Registry {
                 owner_readiness.clone(),
             )
             .map_err(|e| ModError::msg(format!("schedule source registry: {e}")))?;
+        let decision_sources = std::mem::take(&mut self.decision_source_builder)
+            .freeze_for_composition(
+                module_owners,
+                &action_providers,
+                &state_families,
+                owner_readiness.clone(),
+            )
+            .map_err(|e| ModError::msg(format!("decision source registry: {e}")))?;
         let revision_validators = std::mem::take(&mut self.revision_validator_builder)
             .freeze_for_owners_with_readiness(module_owners, owner_readiness.clone())
             .map_err(|e| ModError::msg(format!("revision validator registry: {e}")))?;
@@ -1184,6 +1286,7 @@ impl Registry {
         self.clock_providers = Some(clock_providers);
         self.resource_effect_providers = Some(resource_effect_providers);
         self.schedule_sources = Some(schedule_sources);
+        self.decision_sources = Some(decision_sources);
         self.definition_migrations = Some(definition_migrations);
         Ok(())
     }
@@ -1297,6 +1400,12 @@ impl Registry {
         self.schedule_sources.as_ref()
     }
 
+    /// Immutable delayed-decision sources after module composition.
+    #[must_use]
+    pub fn decision_sources(&self) -> Option<&crate::decision_source::DecisionSourceRegistry> {
+        self.decision_sources.as_ref()
+    }
+
     /// Start a server-owned guard bundle bound to this exact frozen module
     /// composition. A bare or not-yet-composed registry fails closed.
     pub fn server_guard_set_builder(
@@ -1342,8 +1451,9 @@ impl Registry {
         let clock_providers = self.clock_providers.as_ref()?;
         let resource_effect_providers = self.resource_effect_providers.as_ref()?;
         let schedule_sources = self.schedule_sources.as_ref()?;
+        let decision_sources = self.decision_sources.as_ref()?;
         crate::mechanics::DefinitionDigest::for_canonical_value(
-            "mechanics_registry.v7",
+            "mechanics_registry.v8",
             &serde_json::json!({
                 "definitions": definitions.fingerprint().to_hex(),
                 "bridges": bridges.fingerprint().to_hex(),
@@ -1355,6 +1465,7 @@ impl Registry {
                 "clock_providers": clock_providers.fingerprint().to_hex(),
                 "resource_effect_providers": resource_effect_providers.fingerprint().to_hex(),
                 "schedule_sources": schedule_sources.fingerprint().to_hex(),
+                "decision_sources": decision_sources.fingerprint().to_hex(),
             }),
         )
         .ok()
@@ -1586,6 +1697,7 @@ pub struct Registrar<'a> {
     module: SmolStr,
     reg: &'a mut Registry,
     mechanics_authority: MechanicsRegistrationAuthority,
+    command_compatibility: Option<crate::cmd::CommandCompatibility>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1615,6 +1727,9 @@ impl<'a> Registrar<'a> {
             module: SmolStr::new(module),
             reg,
             mechanics_authority: MechanicsRegistrationAuthority::Legacy,
+            // The public constructor is retained for old host/test assembly.
+            // Real module composition starts unclassified below.
+            command_compatibility: Some(crate::cmd::CommandCompatibility::LegacyPostImage),
         }
     }
 
@@ -1625,6 +1740,7 @@ impl<'a> Registrar<'a> {
             module: SmolStr::new(module),
             reg,
             mechanics_authority: MechanicsRegistrationAuthority::ModuleComposition,
+            command_compatibility: None,
         }
     }
 
@@ -1818,6 +1934,11 @@ impl<'a> Registrar<'a> {
     where
         P: crate::clock_provider::ClockProvider + 'static,
     {
+        if kind == crate::clock_provider::ClockProviderKind::DomainTick {
+            return Err(ModError::msg(
+                "dynamic domain clocks must use domain_clock_provider",
+            ));
+        }
         self.require_mechanics_registration_authority()?;
         if self.reg.clock_providers.is_some() {
             return Err(ModError::msg(format!(
@@ -1837,6 +1958,39 @@ impl<'a> Registrar<'a> {
             .map_err(|e| {
                 ModError::msg(format!(
                     "module {}: clock provider registration: {e}",
+                    self.module
+                ))
+            })
+    }
+
+    /// Register this module's one provider for dynamic domain clocks.
+    ///
+    /// The registrar stamps the owner once at composition. Runtime domain ids
+    /// arrive from `ClockRef::DomainTick`; promoting a domain never mutates the
+    /// frozen provider registry.
+    pub fn domain_clock_provider<P>(&mut self, provider: P) -> Result<(), ModError>
+    where
+        P: crate::clock_provider::DomainClockProvider + 'static,
+    {
+        self.require_mechanics_registration_authority()?;
+        if self.reg.clock_providers.is_some() {
+            return Err(ModError::msg(format!(
+                "module {}: clock-provider registry is already frozen",
+                self.module
+            )));
+        }
+        let owner = crate::mechanics::OwnerId::new(self.module.as_str()).map_err(|e| {
+            ModError::msg(format!(
+                "module {} has no canonical mechanics owner id: {e}",
+                self.module
+            ))
+        })?;
+        self.reg
+            .clock_provider_builder
+            .register_domain(owner, Arc::new(provider))
+            .map_err(|e| {
+                ModError::msg(format!(
+                    "module {}: domain clock provider registration: {e}",
                     self.module
                 ))
             })
@@ -2028,6 +2182,55 @@ impl<'a> Registrar<'a> {
             })
     }
 
+    /// Declare this module's authoritative delayed-decision families and the
+    /// exact action used to durably record each provider lease.
+    ///
+    /// One source is permitted per owner. The kernel scans these families
+    /// directly and seeds the lease post-image into the registered action's
+    /// transaction; the action provider cannot start async work or choose a
+    /// different record.
+    pub fn decision_source<A>(
+        &mut self,
+        lease_action: crate::mechanics::DefinitionRef,
+        families: crate::decision::DecisionCaptureFamilies,
+        wake_adapter: crate::mechanics::CanonicalId,
+        lease_duration: i64,
+        fallback_adapter: A,
+    ) -> Result<(), ModError>
+    where
+        A: crate::decision_source::DecisionFallbackAdapter + 'static,
+    {
+        self.require_mechanics_registration_authority()?;
+        if self.reg.decision_sources.is_some() {
+            return Err(ModError::msg(format!(
+                "module {}: decision-source registry is already frozen",
+                self.module
+            )));
+        }
+        let owner = crate::mechanics::OwnerId::new(self.module.as_str()).map_err(|e| {
+            ModError::msg(format!(
+                "module {} has no canonical mechanics owner id: {e}",
+                self.module
+            ))
+        })?;
+        self.reg
+            .decision_source_builder
+            .register(
+                owner,
+                lease_action,
+                families,
+                wake_adapter,
+                lease_duration,
+                std::sync::Arc::new(fallback_adapter),
+            )
+            .map_err(|e| {
+                ModError::msg(format!(
+                    "module {}: decision source registration: {e}",
+                    self.module
+                ))
+            })
+    }
+
     /// Register the immutable-world evaluator for one revision kind owned by
     /// this module. Owner identity is stamped; no dotted-id inference occurs.
     pub fn revision_validator<V>(
@@ -2155,27 +2358,60 @@ impl<'a> Registrar<'a> {
     /// Register a command. Identical to core registration except the entry
     /// is tagged with this module's identity (`ctx.module` in its handler;
     /// used by attr-namespace enforcement).
+    ///
+    /// A composed module must first call [`Registrar::classify_commands`].
+    /// This fail-closed step makes adding a command without acknowledging its
+    /// persistence lane a composition error rather than source-scanning debt.
     pub fn command(
         &mut self,
         spec: CommandSpec,
         handler: Arc<dyn CommandHandler>,
     ) -> Result<(), ModError> {
+        let compatibility = self.command_compatibility.ok_or_else(|| {
+            ModError::msg(format!(
+                "module {}: classify commands before registering {:?}",
+                self.module, spec.name
+            ))
+        })?;
         self.reg
-            .register_tagged(spec, handler, Some(self.module.clone()))?;
+            .register_tagged(spec, handler, Some(self.module.clone()), compatibility)?;
         Ok(())
+    }
+
+    /// Set the compatibility class applied to subsequently registered
+    /// commands.  A module may call this again between registration groups;
+    /// every command stores the value captured at its own registration.
+    pub fn classify_commands(&mut self, compatibility: crate::cmd::CommandCompatibility) {
+        self.command_compatibility = Some(compatibility);
     }
 
     /// Append an alias-stage hook (the comsys seam; runs in registration
     /// order during dispatch).
-    pub fn alias_stage(&mut self, stage: Arc<dyn AliasStage>) {
-        self.reg.add_alias_stage(stage);
+    pub fn alias_stage(&mut self, stage: Arc<dyn AliasStage>) -> Result<(), ModError> {
+        let compatibility = self.command_compatibility.ok_or_else(|| {
+            ModError::msg(format!(
+                "module {}: classify commands before registering an alias stage",
+                self.module
+            ))
+        })?;
+        self.reg
+            .add_tagged_alias_stage(stage, Some(self.module.clone()), compatibility);
+        Ok(())
     }
 
     /// Append a post-command-table [`CommandFallback`] (object
     /// `$`-commands — the mush-script seam; runs after built-ins/exits,
     /// before `Huh?`, in registration order).
-    pub fn command_fallback(&mut self, fallback: Arc<dyn CommandFallback>) {
-        self.reg.add_command_fallback(fallback);
+    pub fn command_fallback(&mut self, fallback: Arc<dyn CommandFallback>) -> Result<(), ModError> {
+        let compatibility = self.command_compatibility.ok_or_else(|| {
+            ModError::msg(format!(
+                "module {}: classify commands before registering a command fallback",
+                self.module
+            ))
+        })?;
+        self.reg
+            .add_tagged_command_fallback(fallback, Some(self.module.clone()), compatibility);
+        Ok(())
     }
 
     /// Append a pre-dispatch [`CommandGate`] (the onboarding gate — runs
@@ -2531,13 +2767,25 @@ impl<'a> Registrar<'a> {
 /// for `@teleport`.
 pub fn check_move_attempt(
     reg: &Registry,
-    w: &mut World,
+    w: &World,
     actor: ObjId,
     exit: Option<ObjId>,
     dest: ObjId,
 ) -> Result<(), RichText> {
+    check_move_attempt_with_action_state(reg, w, actor, exit, dest, None)
+}
+
+pub(crate) fn check_move_attempt_with_action_state(
+    reg: &Registry,
+    w: &World,
+    actor: ObjId,
+    exit: Option<ObjId>,
+    dest: ObjId,
+    action_state: Option<&crate::action_state::ActionStateStore>,
+) -> Result<(), RichText> {
     for h in reg.hooks(HookPoint::MoveAttempt) {
-        h.hook.move_attempt(w, actor, exit, dest)?;
+        let ctx = HookReadContext::for_module(w, action_state, &h.module);
+        h.hook.move_attempt(&ctx, actor, exit, dest)?;
     }
     Ok(())
 }
@@ -2546,13 +2794,25 @@ pub fn check_move_attempt(
 /// (`get`/`drop`/`give`); the first veto wins.
 pub fn check_carry_attempt(
     reg: &Registry,
-    w: &mut World,
+    w: &World,
     mover: ObjId,
     obj: ObjId,
     dest: ObjId,
 ) -> Result<(), RichText> {
+    check_carry_attempt_with_action_state(reg, w, mover, obj, dest, None)
+}
+
+pub(crate) fn check_carry_attempt_with_action_state(
+    reg: &Registry,
+    w: &World,
+    mover: ObjId,
+    obj: ObjId,
+    dest: ObjId,
+    action_state: Option<&crate::action_state::ActionStateStore>,
+) -> Result<(), RichText> {
     for h in reg.hooks(HookPoint::CarryAttempt) {
-        h.hook.carry_attempt(w, mover, obj, dest)?;
+        let ctx = HookReadContext::for_module(w, action_state, &h.module);
+        h.hook.carry_attempt(&ctx, mover, obj, dest)?;
     }
     Ok(())
 }
@@ -2569,8 +2829,19 @@ pub fn check_carry_attempt(
 /// never drift.
 #[must_use]
 pub fn perceives_via(hooks: &[HookReg], w: &World, observer: ObjId, subject: ObjId) -> bool {
+    perceives_via_action_state(hooks, w, observer, subject, None)
+}
+
+pub(crate) fn perceives_via_action_state(
+    hooks: &[HookReg],
+    w: &World,
+    observer: ObjId,
+    subject: ObjId,
+    action_state: Option<&crate::action_state::ActionStateStore>,
+) -> bool {
     for h in hooks {
-        if h.hook.perceives(w, observer, subject) == Perceive::Conceal {
+        let ctx = HookReadContext::for_module(w, action_state, &h.module);
+        if h.hook.perceives(&ctx, observer, subject) == Perceive::Conceal {
             return false;
         }
     }
@@ -2587,6 +2858,25 @@ pub fn can_perceive(reg: &Registry, w: &World, observer: ObjId, subject: ObjId) 
     perceives_via(reg.hooks(HookPoint::Perceive), w, observer, subject)
 }
 
+/// Production form of [`can_perceive`] with the live authoritative typed-state
+/// snapshot attached to every owner-stamped hook context.
+#[must_use]
+pub fn can_perceive_with_action_state(
+    reg: &Registry,
+    w: &World,
+    observer: ObjId,
+    subject: ObjId,
+    action_state: &crate::action_state::ActionStateStore,
+) -> bool {
+    perceives_via_action_state(
+        reg.hooks(HookPoint::Perceive),
+        w,
+        observer,
+        subject,
+        Some(action_state),
+    )
+}
+
 /// Whether `subject` is under an active concealment effect according to ANY
 /// registered `Perceive`-point hook (first-true-wins). The ruleset-agnostic
 /// **notability** query — distinct from [`can_perceive`], which is the
@@ -2596,17 +2886,49 @@ pub fn can_perceive(reg: &Registry, w: &World, observer: ObjId, subject: ObjId) 
 /// to a game with no concealment ruleset.
 #[must_use]
 pub fn is_concealed(reg: &Registry, w: &World, subject: ObjId) -> bool {
-    reg.hooks(HookPoint::Perceive)
-        .iter()
-        .any(|h| h.hook.is_concealed(w, subject))
+    is_concealed_via_action_state(reg, w, subject, None)
+}
+
+/// Production form of [`is_concealed`] with live typed-state reads.
+#[must_use]
+pub fn is_concealed_with_action_state(
+    reg: &Registry,
+    w: &World,
+    subject: ObjId,
+    action_state: &crate::action_state::ActionStateStore,
+) -> bool {
+    is_concealed_via_action_state(reg, w, subject, Some(action_state))
+}
+
+pub(crate) fn is_concealed_via_action_state(
+    reg: &Registry,
+    w: &World,
+    subject: ObjId,
+    action_state: Option<&crate::action_state::ActionStateStore>,
+) -> bool {
+    reg.hooks(HookPoint::Perceive).iter().any(|h| {
+        let ctx = HookReadContext::for_module(w, action_state, &h.module);
+        h.hook.is_concealed(&ctx, subject)
+    })
 }
 
 /// Collect every `LookRendered` hook's extra lines for a room render.
 #[must_use]
 pub fn look_rendered_lines(reg: &Registry, w: &World, looker: ObjId, room: ObjId) -> Vec<RichText> {
+    look_rendered_lines_with_action_state(reg, w, looker, room, None)
+}
+
+pub(crate) fn look_rendered_lines_with_action_state(
+    reg: &Registry,
+    w: &World,
+    looker: ObjId,
+    room: ObjId,
+    action_state: Option<&crate::action_state::ActionStateStore>,
+) -> Vec<RichText> {
     let mut lines = Vec::new();
     for h in reg.hooks(HookPoint::LookRendered) {
-        lines.extend(h.hook.look_rendered(w, looker, room));
+        let ctx = HookReadContext::for_module(w, action_state, &h.module);
+        lines.extend(h.hook.look_rendered(&ctx, looker, room));
     }
     lines
 }
@@ -2801,6 +3123,82 @@ pub(crate) fn fire_scene_hook_with_action_state(
 // ----------------------------------------------------------------------
 
 impl Ctx<'_> {
+    /// Build the immutable view used when a command invokes a registered
+    /// hook directly (for example, while deliberately skipping its own
+    /// module's veto). The hook is stamped with its registering owner and
+    /// receives the same live typed-state snapshot as ordinary dispatch.
+    #[must_use]
+    pub fn hook_read_context<'a>(&'a self, module: &str) -> HookReadContext<'a> {
+        HookReadContext::for_module(self.w, self.typed_state.store(), module)
+    }
+
+    /// Consult the registered movement veto chain with this command's live
+    /// typed-state snapshot.
+    pub fn check_move_attempt(
+        &self,
+        actor: ObjId,
+        exit: Option<ObjId>,
+        dest: ObjId,
+    ) -> Result<(), RichText> {
+        check_move_attempt_with_action_state(
+            self.reg,
+            self.w,
+            actor,
+            exit,
+            dest,
+            self.typed_state.store(),
+        )
+    }
+
+    /// Consult the registered custody veto chain with this command's live
+    /// typed-state snapshot.
+    pub fn check_carry_attempt(
+        &self,
+        mover: ObjId,
+        obj: ObjId,
+        dest: ObjId,
+    ) -> Result<(), RichText> {
+        check_carry_attempt_with_action_state(
+            self.reg,
+            self.w,
+            mover,
+            obj,
+            dest,
+            self.typed_state.store(),
+        )
+    }
+
+    /// Resolve per-observer visibility with this command's live typed state.
+    #[must_use]
+    pub fn can_perceive(&self, observer: ObjId, subject: ObjId) -> bool {
+        perceives_via_action_state(
+            self.reg.hooks(HookPoint::Perceive),
+            self.w,
+            observer,
+            subject,
+            self.typed_state.store(),
+        )
+    }
+
+    /// Resolve ruleset-agnostic concealment with this command's live typed state.
+    #[must_use]
+    pub fn is_concealed(&self, subject: ObjId) -> bool {
+        is_concealed_via_action_state(self.reg, self.w, subject, self.typed_state.store())
+    }
+
+    /// Render a room through perception and look hooks using this command's
+    /// live typed-state snapshot.
+    pub fn show_room(&mut self, looker: ObjId, room: ObjId) {
+        crate::commands::show_room_with_action_state(
+            self.reg,
+            self.w,
+            looker,
+            room,
+            self.out,
+            self.typed_state.store(),
+        );
+    }
+
     /// Queue a module persistence op onto the command's deferred
     /// side-channel. The world task drains these into the current
     /// `WriteBatch` — the write commits atomically with this command's
@@ -3222,7 +3620,7 @@ mod concealment_tests {
     fn is_concealed_true_when_a_hook_claims_it() {
         struct AlwaysConcealed;
         impl EventHook for AlwaysConcealed {
-            fn is_concealed(&self, _w: &World, _subject: ObjId) -> bool {
+            fn is_concealed(&self, _ctx: &HookReadContext<'_>, _subject: ObjId) -> bool {
                 true
             }
         }

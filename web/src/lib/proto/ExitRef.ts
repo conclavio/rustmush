@@ -3,11 +3,11 @@
 /**
  * One exit as shown in a room: primary name plus aliases (`north`/`n`).
  */
-export type ExitRef = { 
+export type ExitRef = {
 /**
  * Primary exit name, e.g. `"north"`.
  */
-name: string, 
+name: string,
 /**
  * Alternative names that also match, e.g. `["n"]`.
  */

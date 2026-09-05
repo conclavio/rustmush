@@ -1,7 +1,7 @@
 use mush_core::{
     CanonicalId, ClockProvider, ClockProviderContext, ClockProviderFailure, ClockProviderKind,
-    ClockReadError, ClockRef, Engine, GameModule, ModError, OwnerId, Registrar, Registry,
-    SceneClockProvider, World,
+    ClockReadError, ClockRef, DomainClockProvider, Engine, GameModule, ModError, OwnerId,
+    Registrar, Registry, SceneClockProvider, World,
 };
 
 #[derive(Clone, Debug)]
@@ -47,6 +47,22 @@ impl SceneClockProvider for TestSceneClockProvider {
     }
 }
 
+struct TestDomainClockProvider;
+
+impl DomainClockProvider for TestDomainClockProvider {
+    fn now(
+        &self,
+        context: &ClockProviderContext<'_>,
+        domain: &CanonicalId,
+        generation: u64,
+    ) -> Result<i64, ClockProviderFailure> {
+        if domain.as_str() != "arena" {
+            return Err(ClockProviderFailure::Unavailable);
+        }
+        TestClockProvider.now(context, generation)
+    }
+}
+
 struct TestClockModule {
     duplicate: bool,
 }
@@ -62,6 +78,7 @@ impl GameModule for TestClockModule {
             generation: 7,
         });
         registrar.scene_clock_provider(TestSceneClockProvider)?;
+        registrar.domain_clock_provider(TestDomainClockProvider)?;
         let id = CanonicalId::new("initiative").expect("canonical clock id");
         registrar.clock_provider(ClockProviderKind::Registered, id.clone(), TestClockProvider)?;
         if self.duplicate {
@@ -75,6 +92,14 @@ fn registered_clock(generation: u64) -> ClockRef {
     ClockRef::Registered {
         owner: OwnerId::new("clock_test").expect("canonical owner"),
         id: CanonicalId::new("initiative").expect("canonical clock id"),
+        generation,
+    }
+}
+
+fn domain_clock(id: &str, generation: u64) -> ClockRef {
+    ClockRef::DomainTick {
+        owner: OwnerId::new("clock_test").expect("canonical owner"),
+        id: CanonicalId::new(id).expect("canonical domain id"),
         generation,
     }
 }
@@ -106,6 +131,12 @@ fn engine_reads_built_in_and_registered_clocks_without_relabelling() {
     assert_eq!(registered.clock, registered_clock(7));
     assert_eq!(registered.at, 41);
 
+    let domain = engine
+        .clock_now(&domain_clock("arena", 7))
+        .expect("dynamic domain clock read");
+    assert_eq!(domain.clock, domain_clock("arena", 7));
+    assert_eq!(domain.at, 41);
+
     let scene = engine
         .clock_now(&ClockRef::SceneTurn {
             scene: 77,
@@ -125,7 +156,7 @@ fn engine_reads_built_in_and_registered_clocks_without_relabelling() {
         .registry
         .clock_providers()
         .expect("frozen clock registry");
-    assert_eq!(providers.len(), 2);
+    assert_eq!(providers.len(), 3);
     assert!(!providers.fingerprint().to_hex().is_empty());
 }
 
@@ -153,6 +184,25 @@ fn mutable_clock_generation_mismatches_fail_closed() {
                 requested: 6,
                 current: 7,
             },
+            ..
+        })
+    ));
+
+    assert!(matches!(
+        engine.clock_now(&domain_clock("arena", 6)),
+        Err(ClockReadError::DomainProvider {
+            source: ClockProviderFailure::StaleGeneration {
+                requested: 6,
+                current: 7,
+            },
+            ..
+        })
+    ));
+
+    assert!(matches!(
+        engine.clock_now(&domain_clock("unknown", 7)),
+        Err(ClockReadError::DomainProvider {
+            source: ClockProviderFailure::Unavailable,
             ..
         })
     ));
@@ -188,6 +238,73 @@ impl GameModule for SceneOnlyModule {
         registrar
             .scene_clock_provider(|_context: &ClockProviderContext<'_>, _scene, _generation| Ok(0))
     }
+}
+
+struct DuplicateDomainModule;
+
+impl GameModule for DuplicateDomainModule {
+    fn name(&self) -> &'static str {
+        "domain_duplicate"
+    }
+
+    fn register(&mut self, registrar: &mut Registrar<'_>) -> Result<(), ModError> {
+        let provider =
+            |_context: &ClockProviderContext<'_>, _domain: &CanonicalId, _generation| Ok(0);
+        registrar.domain_clock_provider(provider)?;
+        registrar.domain_clock_provider(provider)
+    }
+}
+
+struct LegacyExactDomainModule;
+
+impl GameModule for LegacyExactDomainModule {
+    fn name(&self) -> &'static str {
+        "legacy_domain"
+    }
+
+    fn register(&mut self, registrar: &mut Registrar<'_>) -> Result<(), ModError> {
+        registrar.clock_provider(
+            ClockProviderKind::DomainTick,
+            CanonicalId::new("arena").unwrap(),
+            TestClockProvider,
+        )
+    }
+}
+
+#[test]
+fn dynamic_domain_clock_has_one_provider_per_owner() {
+    let error = Engine::with_modules(
+        World::new_minimal(),
+        Registry::new(),
+        vec![Box::new(DuplicateDomainModule)],
+    )
+    .err()
+    .expect("a second domain provider for one owner must fail composition");
+    assert!(error.to_string().contains("already registered"));
+
+    let engine = Engine::with_modules(
+        World::new_minimal(),
+        Registry::new(),
+        vec![Box::new(SceneOnlyModule("scene_one"))],
+    )
+    .expect("module without a domain provider composes");
+    assert!(matches!(
+        engine.clock_now(&ClockRef::DomainTick {
+            owner: OwnerId::new("scene_one").unwrap(),
+            id: CanonicalId::new("runtime_domain").unwrap(),
+            generation: 1,
+        }),
+        Err(ClockReadError::DomainProviderMissing { .. })
+    ));
+
+    let error = Engine::with_modules(
+        World::new_minimal(),
+        Registry::new(),
+        vec![Box::new(LegacyExactDomainModule)],
+    )
+    .err()
+    .expect("an exact-id domain provider must use the dynamic family seam");
+    assert!(error.to_string().contains("domain_clock_provider"));
 }
 
 #[test]

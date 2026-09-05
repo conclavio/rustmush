@@ -983,7 +983,8 @@ fn move_impl(obj: ObjId, dest: ObjId) -> Result<(), Box<EvalAltResult>> {
             .map(|st| st.move_hooks.clone())
             .unwrap_or_default();
         for h in &hooks {
-            if let Err(reason) = h.hook.move_attempt(&mut sess.world, obj, None, dest) {
+            let hook_ctx = mush_core::HookReadContext::without_typed_state(&sess.world, &h.module);
+            if let Err(reason) = h.hook.move_attempt(&hook_ctx, obj, None, dest) {
                 return Err(err(reason.to_plain_text()));
             }
         }

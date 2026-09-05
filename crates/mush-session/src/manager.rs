@@ -9,7 +9,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use dashmap::DashMap;
 use dashmap::mapref::entry::Entry;
-use mush_proto::{ClientCaps, Envelope, OutputEvent};
+use mush_proto::{ClientCaps, Envelope, OutputEvent, ProjectedCommitToken};
 
 use crate::conn::{ConnId, ConnectionHandle};
 use crate::flood::{FloodBucket, FloodVerdict};
@@ -56,6 +56,11 @@ pub struct SessionConfig {
     /// retained [`Envelope`] owns a full clone of its event — ~512 small
     /// events per session, an acceptable cost at MUSH populations.
     pub resume_ring: usize,
+    /// Maximum projected authoritative receipts retained until a structured
+    /// client acknowledges their commit token. This is deliberately separate
+    /// from the transport resume ring: a socket may advance its sequence and
+    /// disappear before the application accepts the semantic result.
+    pub receipt_retention: usize,
 }
 
 impl Default for SessionConfig {
@@ -65,6 +70,7 @@ impl Default for SessionConfig {
             flood_rate: 10.0,
             flood_burst: 30.0,
             resume_ring: 512,
+            receipt_retention: 128,
         }
     }
 }
@@ -224,6 +230,10 @@ struct SessEntry {
     /// Highest seq evicted from the ring (0 = nothing evicted yet) — the
     /// [`ReplayError::TooOld`] boundary.
     evicted_seq: u64,
+    /// Structured presentation awaiting exact client acknowledgement,
+    /// oldest first. Durable action status remains the long-horizon recovery
+    /// source if this bounded cache rolls over.
+    unacked_receipts: VecDeque<(ProjectedCommitToken, Arc<OutputEvent>)>,
 }
 
 struct ConnEntry {
@@ -412,6 +422,7 @@ impl SessionManager {
                 last_seq: 0,
                 ring: VecDeque::new(),
                 evicted_seq: 0,
+                unacked_receipts: VecDeque::new(),
             },
         );
         sess
@@ -645,6 +656,187 @@ impl SessionManager {
         } else {
             SendToConn::Dropped
         }
+    }
+
+    /// Deliver one authoritative result to a connection and, for a
+    /// structured sink, retain it by exact commit token until acknowledged.
+    ///
+    /// Duplicate status lookup or replay consumes no additional retention
+    /// slot. ANSI connections use the ordinary best-effort path and retain
+    /// nothing because their protocol has no ACK.
+    pub fn send_acknowledgeable_to_conn(
+        &self,
+        conn: ConnId,
+        commit: ProjectedCommitToken,
+        ev: Arc<OutputEvent>,
+    ) -> SendToConn {
+        let Some(entry) = self.conns.get(&conn) else {
+            return SendToConn::Unknown;
+        };
+        if !entry.handle.is_structured() {
+            return if entry.handle.try_send(ev) {
+                SendToConn::Delivered
+            } else {
+                SendToConn::Dropped
+            };
+        }
+        let sess = entry.sess;
+        let handle = Arc::clone(&entry.handle);
+        drop(entry);
+
+        let env = {
+            let Some(mut session) = self.sessions.get_mut(&sess) else {
+                return SendToConn::Unknown;
+            };
+            Self::retain_receipt(
+                &mut session,
+                sess,
+                self.config.receipt_retention,
+                commit,
+                Arc::clone(&ev),
+            );
+            session.last_seq += 1;
+            Arc::new(Envelope::new(
+                session.last_seq,
+                (self.clock)(),
+                (*ev).clone(),
+            ))
+        };
+        if handle.try_send_envelope(env) {
+            SendToConn::Delivered
+        } else {
+            SendToConn::Dropped
+        }
+    }
+
+    /// Retain a projected receipt for a character whose originating
+    /// connection has already disappeared. Returns `false` when the session
+    /// was closed/reaped; durable `action/status` is then the recovery path.
+    pub fn retain_acknowledgeable_for_char(
+        &self,
+        character: CharKey,
+        commit: ProjectedCommitToken,
+        ev: Arc<OutputEvent>,
+    ) -> bool {
+        let Some(sess) = self.by_char.get(&character).map(|entry| *entry) else {
+            return false;
+        };
+        let Some(mut session) = self.sessions.get_mut(&sess) else {
+            return false;
+        };
+        Self::retain_receipt(
+            &mut session,
+            sess,
+            self.config.receipt_retention,
+            commit,
+            ev,
+        );
+        true
+    }
+
+    fn retain_receipt(
+        session: &mut SessEntry,
+        sess: SessId,
+        capacity: usize,
+        commit: ProjectedCommitToken,
+        ev: Arc<OutputEvent>,
+    ) {
+        if capacity == 0
+            || session
+                .unacked_receipts
+                .iter()
+                .any(|(retained, _)| retained == &commit)
+        {
+            return;
+        }
+        while session.unacked_receipts.len() >= capacity {
+            if let Some((evicted, _)) = session.unacked_receipts.pop_front() {
+                tracing::warn!(
+                    session = sess.0,
+                    commit = %evicted,
+                    "unacknowledged receipt retention full; durable action/status is required"
+                );
+            }
+        }
+        session.unacked_receipts.push_back((commit, ev));
+    }
+
+    /// Retire one exact structured presentation receipt for `conn`'s
+    /// session. Unknown, duplicate, and cross-session ACKs are harmless
+    /// no-ops and reveal no receipt existence.
+    pub fn acknowledge_receipt(&self, conn: ConnId, commit: &ProjectedCommitToken) -> bool {
+        let Some(entry) = self.conns.get(&conn) else {
+            return false;
+        };
+        if !entry.handle.is_structured() {
+            return false;
+        }
+        let sess = entry.sess;
+        drop(entry);
+        let Some(mut session) = self.sessions.get_mut(&sess) else {
+            return false;
+        };
+        let before = session.unacked_receipts.len();
+        session
+            .unacked_receipts
+            .retain(|(retained, _)| retained != commit);
+        session.unacked_receipts.len() != before
+    }
+
+    /// Re-emit every still-unacknowledged semantic receipt to one structured
+    /// connection with fresh monotonically increasing envelope sequences.
+    /// Frames are not added to the ordinary resume ring: this ACK-gated cache
+    /// is their replay authority. A full sink stops the bounded pass and
+    /// leaves every receipt retained for the next reconnect.
+    pub fn redeliver_unacknowledged(&self, conn: ConnId) -> SendReport {
+        let Some(entry) = self.conns.get(&conn) else {
+            return SendReport::default();
+        };
+        if !entry.handle.is_structured() {
+            return SendReport::default();
+        }
+        let sess = entry.sess;
+        let handle = Arc::clone(&entry.handle);
+        drop(entry);
+        let envelopes = {
+            let Some(mut session) = self.sessions.get_mut(&sess) else {
+                return SendReport::default();
+            };
+            let events: Vec<Arc<OutputEvent>> = session
+                .unacked_receipts
+                .iter()
+                .map(|(_, event)| Arc::clone(event))
+                .collect();
+            events
+                .into_iter()
+                .map(|event| {
+                    session.last_seq += 1;
+                    Arc::new(Envelope::new(
+                        session.last_seq,
+                        (self.clock)(),
+                        (*event).clone(),
+                    ))
+                })
+                .collect::<Vec<_>>()
+        };
+        let mut report = SendReport::default();
+        for envelope in envelopes {
+            if handle.try_send_envelope(envelope) {
+                report.delivered += 1;
+            } else {
+                report.dropped.push(conn);
+                break;
+            }
+        }
+        report
+    }
+
+    /// Number of projected receipts still awaiting an ACK in `sess`.
+    #[must_use]
+    pub fn unacknowledged_receipt_count(&self, sess: SessId) -> Option<usize> {
+        self.sessions
+            .get(&sess)
+            .map(|session| session.unacked_receipts.len())
     }
 
     /// Allocate the session's next seq and stamp an envelope **without**

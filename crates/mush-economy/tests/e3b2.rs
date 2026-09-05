@@ -216,6 +216,7 @@ impl GameModule for ProbeMod {
         "probe"
     }
     fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
+        reg.classify_commands(mush_core::CommandCompatibility::EconomyCarveOut);
         let st = self.0.clone();
         reg.command(
             CommandSpec {

@@ -117,6 +117,7 @@ impl GameModule for JobsModule {
     }
 
     fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
+        reg.classify_commands(mush_core::CommandCompatibility::LegacyPostImage);
         reg.state(JobsState::default());
         reg.state(JobsApi::default());
         reg.subscribe(WorldEventKind::ObjDestroyed, Arc::new(on_obj_destroyed));

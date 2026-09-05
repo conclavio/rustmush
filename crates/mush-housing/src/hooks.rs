@@ -36,7 +36,7 @@
 //! the lease" must not be distinguishable, or the refusal itself becomes a census.
 
 use mush_core::behavior::DestroyGate;
-use mush_core::module::{EventHook, WorldEvent};
+use mush_core::module::{EventHook, HookReadContext, WorldEvent};
 use mush_core::{Ctx, ObjId, Registry, World};
 use mush_economy::{EscalationKind, EscalationSubject};
 use mush_org::{OrgScopeId, PrincipalId};
@@ -60,11 +60,12 @@ pub struct AccessHook;
 impl EventHook for AccessHook {
     fn move_attempt(
         &self,
-        w: &mut World,
+        ctx: &HookReadContext<'_>,
         actor: ObjId,
         _exit: Option<ObjId>,
         dest: ObjId,
     ) -> Result<(), RichText> {
+        let w = ctx.world();
         // `check_move_attempt` hands us the **moved object**, never the actor who
         // issued a `@teleport` (08d §1.1 scopes that limitation): a staffer
         // teleporting a stranger in is refused exactly like the stranger walking in,
@@ -101,11 +102,12 @@ impl EventHook for AccessHook {
 
     fn carry_attempt(
         &self,
-        w: &mut World,
+        ctx: &HookReadContext<'_>,
         mover: ObjId,
         obj: ObjId,
         dest: ObjId,
     ) -> Result<(), RichText> {
+        let w = ctx.world();
         // Where it is coming FROM, and where it is going TO. Reaching into somebody's
         // home and dropping something into it are the same right.
         for room in [room_of(w, obj), room_of(w, dest)].into_iter().flatten() {

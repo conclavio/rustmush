@@ -18,7 +18,7 @@ use mush_core::{
     Attr, AttrFlags, AttrValue, AuthoritativeBundle, AuthoritativeBundleDraft, AuthoritativeKey,
     CanonicalHash, CanonicalId, CommitToken, DefinitionDescriptor, DefinitionId, DefinitionKind,
     DefinitionRegistryBuilder, DurableOutboxIntent, Flags, GOD, IdempotencyKey, IdempotencyScope,
-    LIMBO, LockExpr, LockType, Obj, ObjId, ObjKind, OwnerId, Powers, PreparedCausalRef,
+    LIMBO, Ledger, LockExpr, LockType, Obj, ObjId, ObjKind, OwnerId, Powers, PreparedCausalRef,
     PrincipalId, ReplayWrite, RequestUid, ResolutionKeyRing, ResolutionSecret, RulesValue,
     ScopedIdempotencyKey, World,
 };
@@ -1110,7 +1110,7 @@ pub async fn module_empty_namespace_list(store: &dyn ObjectStore) {
 // -------------------------------------------------------------------------
 
 pub(crate) fn authoritative_bundle(token_byte: u8, request_byte: u8) -> AuthoritativeBundle {
-    authoritative_bundle_with(token_byte, request_byte, 0, vec![], false)
+    authoritative_bundle_with(token_byte, request_byte, 0, vec![], false, vec![])
 }
 
 fn authoritative_bundle_with(
@@ -1119,6 +1119,7 @@ fn authoritative_bundle_with(
     epoch: u64,
     durable_outbox: Vec<DurableOutboxIntent>,
     with_resolution: bool,
+    extra_writes: Vec<ReplayWrite>,
 ) -> AuthoritativeBundle {
     let owner = OwnerId::new("store_contract").expect("contract owner");
     let mut definitions = DefinitionRegistryBuilder::new();
@@ -1185,6 +1186,18 @@ fn authoritative_bundle_with(
         .expect("prepare resolution")
         .bind(token)
     });
+    let mut writes = vec![
+        ReplayWrite::ObjectSet {
+            object: Obj::new(ObjId(2), ObjKind::Thing, "guard", GOD, 0),
+        },
+        ReplayWrite::ObjectAllocatorSet { next_id: 3 },
+        ReplayWrite::ModuleJsonSet {
+            namespace: owner.clone(),
+            key: AuthoritativeKey::parse_canonical("action-state/v1/guarded/2").expect("state key"),
+            value: serde_json::json!({ "amount": 1 }),
+        },
+    ];
+    writes.extend(extra_writes);
     AuthoritativeBundle::new(AuthoritativeBundleDraft {
         token,
         request,
@@ -1196,18 +1209,7 @@ fn authoritative_bundle_with(
         provider: owner.clone(),
         cause: PreparedCausalRef::new(request, None, 0).expect("root cause"),
         definitions: definition_refs,
-        writes: vec![
-            ReplayWrite::ObjectSet {
-                object: Obj::new(ObjId(2), ObjKind::Thing, "guard", GOD, 0),
-            },
-            ReplayWrite::ObjectAllocatorSet { next_id: 3 },
-            ReplayWrite::ModuleJsonSet {
-                namespace: owner,
-                key: AuthoritativeKey::parse_canonical("action-state/v1/guarded/2")
-                    .expect("state key"),
-                value: serde_json::json!({ "amount": 1 }),
-            },
-        ],
+        writes,
         outcome: outcome_value,
         resolution,
         semantic_events: vec![
@@ -1359,12 +1361,79 @@ pub async fn authoritative_exact_lifecycle(store: &dyn AuthoritativeStore) {
     );
 }
 
+/// A mixed object/allocator/typed-document/Ledger bundle materializes one
+/// exact sealed chunk and retains it after the full replay intent checkpoints.
+/// This is shared by memory and Redis so K8.0 cannot become backend-specific.
+pub async fn authoritative_mixed_ledger_lifecycle(store: &dyn AuthoritativeStore) {
+    seed_authoritative_world(store).await;
+    let owner = OwnerId::new("store_contract").expect("contract owner");
+    let ledger = Ledger::with_chunk_target(0);
+    let prepared = ledger
+        .prepare_append("economy", serde_json::json!({ "amount": 7 }))
+        .expect("prepare sealed Ledger append");
+    let replay = prepared
+        .authoritative_replay_write(owner.clone())
+        .expect("build authoritative Ledger replay");
+    let ReplayWrite::LedgerChunkSet { write } = &replay else {
+        panic!("prepared Ledger append returned another replay kind")
+    };
+    let expected = serde_json::to_value(write.chunk()).expect("Ledger chunk JSON");
+    let seal = write.seal().expect("target-zero append seals");
+    let bundle = authoritative_bundle_with(20, 30, 0, vec![], false, vec![replay]);
+    assert_eq!(bundle.ledger_seals(), &[seal]);
+    let token = bundle.token();
+    let hash = bundle.bundle_hash();
+
+    store
+        .reserve_authoritative_intent(bundle.clone())
+        .await
+        .expect("reserve mixed Ledger intent");
+    assert_eq!(
+        store
+            .module_json_get(owner.as_str(), "log:economy:0")
+            .await
+            .expect("pre-materialization Ledger read"),
+        None
+    );
+    let receipt = store
+        .reconcile_authoritative(token, hash)
+        .await
+        .expect("materialize mixed Ledger intent");
+    assert!(receipt.matches_bundle(&bundle));
+    assert_eq!(
+        store
+            .module_json_get(owner.as_str(), "log:economy:0")
+            .await
+            .expect("materialized Ledger read"),
+        Some(expected.clone())
+    );
+    let checkpoint = store
+        .checkpoint_authoritative(token, hash)
+        .await
+        .expect("checkpoint mixed Ledger intent");
+    assert_eq!(checkpoint.receipt, receipt);
+    assert_eq!(
+        store
+            .module_json_get(owner.as_str(), "log:economy:0")
+            .await
+            .expect("post-checkpoint Ledger read"),
+        Some(expected)
+    );
+    assert!(
+        store
+            .reserve_authoritative_intent(bundle)
+            .await
+            .expect("join compact mixed Ledger retry")
+            .resumed
+    );
+}
+
 /// A resolution transcript is part of the exact authoritative identity and
 /// survives intent release into the compact checkpoint receipt. This shared
 /// witness exercises both the memory backend and the live Redis contract.
 pub async fn authoritative_resolution_checkpoint(store: &dyn AuthoritativeStore) {
     seed_authoritative_world(store).await;
-    let bundle = authoritative_bundle_with(18, 28, 0, vec![], true);
+    let bundle = authoritative_bundle_with(18, 28, 0, vec![], true, vec![]);
     let token = bundle.token();
     let hash = bundle.bundle_hash();
     let expected = bundle
@@ -1506,7 +1575,7 @@ pub async fn authoritative_outbox_lifecycle(store: &dyn AuthoritativeStore) {
     )
     .expect("outbox intent");
     let payload_hash = intent.payload_hash();
-    let bundle = authoritative_bundle_with(15, 25, 0, vec![intent], false);
+    let bundle = authoritative_bundle_with(15, 25, 0, vec![intent], false, vec![]);
     let token = bundle.token();
     let hash = bundle.bundle_hash();
     store
@@ -1601,7 +1670,7 @@ pub async fn authoritative_outbox_lifecycle(store: &dyn AuthoritativeStore) {
 /// identities, and remains blocked by pending or uncheckpointed epochs.
 pub async fn authoritative_epoch_lifecycle(store: &dyn AuthoritativeStore) {
     seed_authoritative_world(store).await;
-    let old = authoritative_bundle_with(16, 26, 0, vec![], false);
+    let old = authoritative_bundle_with(16, 26, 0, vec![], false, vec![]);
     let scope = old.idempotency().scope().clone();
     store
         .reserve_authoritative_intent(old.clone())
@@ -1646,7 +1715,7 @@ pub async fn authoritative_epoch_lifecycle(store: &dyn AuthoritativeStore) {
         }
     );
 
-    let current = authoritative_bundle_with(17, 27, 1, vec![], false);
+    let current = authoritative_bundle_with(17, 27, 1, vec![], false, vec![]);
     store
         .reserve_authoritative_intent(current.clone())
         .await

@@ -985,6 +985,12 @@ impl Config {
             .clone()
             .unwrap_or_else(|| self.server.data_dir.join("resolution-keys"))
     }
+
+    /// Directory containing the independent K7 delayed-decision HMAC keys.
+    #[must_use]
+    pub fn decision_key_dir(&self) -> PathBuf {
+        self.server.data_dir.join("decision-keys")
+    }
 }
 
 #[cfg(test)]
@@ -1007,6 +1013,10 @@ mod tests {
         assert_eq!(
             cfg.resolution_key_dir(),
             PathBuf::from("./data/resolution-keys")
+        );
+        assert_eq!(
+            cfg.decision_key_dir(),
+            PathBuf::from("./data/decision-keys")
         );
         assert_eq!(cfg.store_backend().unwrap(), StoreBackend::Redis);
         assert_eq!(

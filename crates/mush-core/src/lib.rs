@@ -58,6 +58,8 @@ pub mod cmd;
 pub mod commands;
 pub mod contact;
 pub mod control;
+pub mod decision;
+pub mod decision_source;
 pub mod durable_schedule;
 pub mod engine;
 pub mod flags;
@@ -131,10 +133,10 @@ pub use action_window::{
 pub use attr::{Attr, AttrFlags, AttrMap, AttrValue, UncasedName};
 pub use authoritative::{
     AuthoritativeBundle, AuthoritativeBundleDraft, AuthoritativeBundleError, AuthoritativeKey,
-    AuthoritativeKeyError, AuthoritativeSemanticEvent, DurableOutboxIntent,
-    MAX_AUTHORITATIVE_BUNDLE_BYTES, MAX_AUTHORITATIVE_DEFINITIONS, MAX_AUTHORITATIVE_REPLAY_WRITES,
-    MAX_AUTHORITATIVE_WITNESSES, MAX_DURABLE_OUTBOX_INTENTS, MAX_DURABLE_OUTBOX_PAYLOAD_BYTES,
-    ReplayWrite,
+    AuthoritativeKeyError, AuthoritativeLedgerWrite, AuthoritativeLedgerWriteError,
+    AuthoritativeSemanticEvent, DurableOutboxIntent, MAX_AUTHORITATIVE_BUNDLE_BYTES,
+    MAX_AUTHORITATIVE_DEFINITIONS, MAX_AUTHORITATIVE_REPLAY_WRITES, MAX_AUTHORITATIVE_WITNESSES,
+    MAX_DURABLE_OUTBOX_INTENTS, MAX_DURABLE_OUTBOX_PAYLOAD_BYTES, ReplayWrite,
 };
 pub use behavior::{
     BINDING_SCHEMA_VERSION, BehaviorBinding, BehaviorCommand, BehaviorCommandHandler, BehaviorId,
@@ -152,12 +154,13 @@ pub use clock::{
 pub use clock_provider::{
     ClockProvider, ClockProviderContext, ClockProviderFailure, ClockProviderKey, ClockProviderKind,
     ClockProviderRegistry, ClockProviderRegistryBuilder, ClockProviderRegistryError,
-    ClockReadError, MAX_CLOCK_PROVIDERS, MAX_CLOCK_PROVIDERS_PER_OWNER, SceneClockProvider,
+    ClockReadError, DomainClockProvider, MAX_CLOCK_PROVIDERS, MAX_CLOCK_PROVIDERS_PER_OWNER,
+    SceneClockProvider,
 };
 pub use cmd::{
-    AliasOutcome, AliasStage, ArgShape, CmdError, CommandFallback, CommandGate, CommandHandler,
-    CommandSpec, Ctx, HelpTopic, LookupErr, ParsedArgs, Registry, RegistryError, SceneClass,
-    SwitchSet, dispatch,
+    AliasOutcome, AliasStage, ArgShape, CmdError, CommandCompatibility, CommandFallback,
+    CommandGate, CommandHandler, CommandSpec, Ctx, HelpTopic, LookupErr, ParsedArgs, Registry,
+    RegistryError, SceneClass, SwitchSet, dispatch,
 };
 pub use commands::{
     event_subject, ignore_list, is_ignoring, narrative_actor, register_core_commands,
@@ -170,6 +173,46 @@ pub use control::{
     ControlHandoff, ControlHandoffDraft, ControlLeaseError, ControlLeaseGuardValidator,
     ControlLeaseKey, ControlLeaseState, ControlLeaseStateCodec, MAX_CONTROL_LEASE_BYTES,
     control_lease_state_family_descriptor,
+};
+pub use decision::{
+    DEFAULT_DECISION_ATTEMPTS, DecisionActionBinding, DecisionAdmission, DecisionAdmissionIndex,
+    DecisionAttemptAudit, DecisionAttemptFailureKind, DecisionAttemptTransition,
+    DecisionCancellationTransition, DecisionCaptureFamilies, DecisionCapturePlan, DecisionCause,
+    DecisionCompactionTransition, DecisionCompletionFence, DecisionControllerId, DecisionError,
+    DecisionFallbackReason, DecisionFallbackTransition, DecisionId, DecisionKeyRing,
+    DecisionLeaseTransition, DecisionOfferProjection, DecisionPrompt, DecisionPromptRecord,
+    DecisionPromptStateCodec, DecisionResolvingTransition, DecisionResponse, DecisionSecret,
+    DecisionSecretError, DecisionTargetWitnessKeys, DecisionTerminalOutcome,
+    DecisionTerminalReceipt, DecisionTerminalReceiptStateCodec, DecisionTerminalTransition,
+    DecisionToken, DecisionWake, DecisionWitnessCaptureError, DecisionWitnessKeys,
+    DecisionWorkerLease, FallbackPolicyRef, MAX_DECISION_ATTEMPTS, MAX_DECISION_BRIDGE_DEFINITIONS,
+    MAX_DECISION_CONTEXT_BYTES, MAX_DECISION_MAILBOX_IDS, MAX_DECISION_OFFERS,
+    MAX_DECISION_PENDING_BYTES, MAX_DECISION_PROMPT_BYTES, MAX_DECISION_PROVIDER_WORKERS,
+    MAX_DECISION_RECOVERY_PAGE, MAX_DECISION_RESPONSE_BYTES, MAX_DECISION_SECRET_VERSIONS,
+    MAX_DECISION_TARGET_WITNESSES, MAX_DECISION_TARGETS, MAX_DECISION_TERMINAL_RECEIPT_BYTES,
+    MAX_DECISION_TOTAL_BYTES, MAX_DECISION_WAKE_BYTES, MAX_NONTERMINAL_DECISIONS,
+    MAX_NONTERMINAL_DECISIONS_PER_ACTOR, MAX_NONTERMINAL_DECISIONS_PER_CONTROLLER, PendingDecision,
+    PendingDecisionStateCodec, PendingDecisionStatus, PendingOfferWitness, PendingTargetWitness,
+    ProjectedDecisionContext, decision_prompt_state_family_descriptor,
+    decision_terminal_receipt_state_family_descriptor, pending_decision_state_family_descriptor,
+};
+pub use decision_source::{
+    DecisionAttemptIngressError, DecisionAttemptPlan, DecisionAttemptPlanError,
+    DecisionCancellationIngressError, DecisionCancellationPlan, DecisionCancellationPlanError,
+    DecisionCompactionCandidate, DecisionCompactionError, DecisionCompactionPlan,
+    DecisionDispatchCandidate, DecisionDispatchPlan, DecisionFallbackAdapter,
+    DecisionFallbackCandidate, DecisionFallbackSelection, DecisionFallbackSelectionError,
+    DecisionFallbackTriggerCandidate, DecisionFallbackTriggerError, DecisionFallbackTriggerPlan,
+    DecisionFallbackTriggerPlanError, DecisionLeaseIngressError, DecisionReconciliationCandidate,
+    DecisionResolvingIngressError, DecisionResolvingPlan, DecisionResolvingPlanError,
+    DecisionResponseIngressError, DecisionResponseResolution, DecisionResponseResolveError,
+    DecisionSourceCandidateError, DecisionSourceCursor, DecisionSourcePage,
+    DecisionSourcePlanError, DecisionSourceRegistry, DecisionSourceRegistryBuilder,
+    DecisionSourceRegistryError, DecisionSourceScanError, DecisionTerminalIngressError,
+    DecisionTerminalPlan, DecisionTerminalPlanError, MAX_DECISION_LEASE_DURATION,
+    MAX_DECISION_SOURCES, decision_attempt_ingress, decision_cancellation_ingress,
+    decision_compaction_ingress, decision_fallback_trigger_ingress, decision_lease_ingress,
+    decision_resolving_ingress, decision_terminal_ingress,
 };
 pub use durable_schedule::{
     DurableSchedule, DurableScheduleDraft, DurableScheduleError, DurableScheduleStateCodec,
@@ -209,11 +252,12 @@ pub use mechanics::{
     canonical_json_bytes_with_limit,
 };
 pub use module::{
-    AsyncCompletion, ContextOutcome, EventHook, GameModule, HookPoint, InputContext, JobQueueSpec,
-    MAX_MODULE_KEY_BYTES, MAX_MODULE_NAMESPACE_BYTES, Migration, ModError, ModuleBootData,
-    ModuleCtx, ModuleOp, ModuleWrite, PanelFeedHandle, Perceive, QueryHandler, RecoveryReporter,
-    Registrar, Scene, SceneId, StackedContext, TickCadence, TickHandler, WeatherQuery, WorldEvent,
-    WorldEventKind, WorldObserver, WxSnapshot, can_perceive, is_concealed, perceives_via,
+    AsyncCompletion, ContextOutcome, EventHook, GameModule, HookPoint, HookReadContext,
+    InputContext, JobQueueSpec, MAX_MODULE_KEY_BYTES, MAX_MODULE_NAMESPACE_BYTES, Migration,
+    ModError, ModuleBootData, ModuleCtx, ModuleOp, ModuleWrite, PanelFeedHandle, Perceive,
+    QueryHandler, RecoveryReporter, Registrar, Scene, SceneId, StackedContext, TickCadence,
+    TickHandler, WeatherQuery, WorldEvent, WorldEventKind, WorldObserver, WxSnapshot, can_perceive,
+    can_perceive_with_action_state, is_concealed, is_concealed_with_action_state, perceives_via,
 };
 pub use obj::{GOD, LIMBO, Obj, ObjId, ObjKind};
 pub use offer::{

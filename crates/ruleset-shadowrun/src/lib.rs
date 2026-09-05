@@ -39,6 +39,7 @@
 //! a future concern.
 
 pub mod agent;
+mod authoritative;
 pub mod chargen;
 pub mod chargen_cmds;
 pub mod condition;
@@ -105,6 +106,8 @@ pub(crate) struct Sr5Cmd {
     pub config: Sr5Config,
     /// The `sr.roll` panel feed.
     pub roll_feed: PanelFeedHandle,
+    /// K8.4 authoritative Condition Monitor projection.
+    pub(crate) condition_state: mush_core::StateFamilyHandle<ObjId, authoritative::ConditionState>,
 }
 
 impl Sr5Cmd {
@@ -118,9 +121,69 @@ impl Sr5Cmd {
         self.store().get(w, obj)
     }
 
+    /// Read a sheet through the authoritative Condition Monitor overlay.
+    pub(crate) fn read_ctx(
+        &self,
+        ctx: &mush_core::Ctx<'_>,
+        obj: ObjId,
+    ) -> Result<Option<SheetDoc>, mush_core::CmdError> {
+        let mut sheet = self.read(ctx.w, obj);
+        let condition = match ctx.action_state(&self.condition_state, &obj) {
+            Ok(condition) => condition,
+            Err(mush_core::ModuleActionStateReadError::Unavailable) => None,
+            Err(_) => return Err(mush_core::CmdError::msg("Condition state is unavailable.")),
+        };
+        if let (Some(sheet), Some(condition)) = (&mut sheet, condition) {
+            condition.apply_to_sheet(sheet);
+        }
+        Ok(sheet)
+    }
+
     /// Read `obj`'s sheet, or a fresh default sheet if they have none.
     pub(crate) fn read_or_default(&self, w: &World, obj: ObjId) -> SheetDoc {
         self.store().get_or_default(w, obj)
+    }
+
+    pub(crate) fn read_or_default_ctx(
+        &self,
+        ctx: &mush_core::Ctx<'_>,
+        obj: ObjId,
+    ) -> Result<SheetDoc, mush_core::CmdError> {
+        Ok(self
+            .read_ctx(ctx, obj)?
+            .unwrap_or_else(|| SheetDoc::new_default(&self.schema)))
+    }
+
+    /// Refuse a remaining legacy Condition Monitor writer after this exact
+    /// character has acquired authoritative typed state. This is a temporary
+    /// per-record migration fence for compound commands such as spell Drain:
+    /// it prevents two authorities while those compound actions are migrated.
+    pub(crate) fn require_legacy_condition_authority(
+        &self,
+        ctx: &mush_core::Ctx<'_>,
+        obj: ObjId,
+    ) -> Result<(), mush_core::CmdError> {
+        if self.condition_is_authoritative(ctx, obj)? {
+            Err(mush_core::CmdError::msg(
+                "This character's Condition Monitor is authoritative; this compound legacy action is unavailable until it is migrated.",
+            ))
+        } else {
+            Ok(())
+        }
+    }
+
+    pub(crate) fn condition_is_authoritative(
+        &self,
+        ctx: &mush_core::Ctx<'_>,
+        obj: ObjId,
+    ) -> Result<bool, mush_core::CmdError> {
+        match ctx.action_state(&self.condition_state, &obj) {
+            Ok(state) => Ok(state.is_some()),
+            Err(mush_core::ModuleActionStateReadError::Unavailable) => Ok(false),
+            Err(_) => Err(mush_core::CmdError::msg(
+                "Condition state authority cannot be verified.",
+            )),
+        }
     }
 }
 
@@ -210,12 +273,16 @@ impl GameModule for ShadowrunRuleset {
     }
 
     fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
+        reg.classify_commands(mush_core::CommandCompatibility::LegacyPostImage);
         // Seedable dice RNG + transient roll-log / chargen state.
         let state = match self.seed {
             Some(s) => Sr5State::seeded(s),
             None => Sr5State::from_os(),
         };
         reg.state(state);
+
+        // K8.4: the first Shadowrun production actions on the shared kernel.
+        let condition_state = authoritative::register(reg, Arc::clone(&self.schema))?;
 
         // Approval queues.
         reg.job_queue(JobQueueSpec {
@@ -235,6 +302,7 @@ impl GameModule for ShadowrunRuleset {
             schema: Arc::clone(&self.schema),
             config: self.config.clone(),
             roll_feed,
+            condition_state,
         });
 
         // The SR5 sheet surface (+sheet / @sheet / @sheet/set + the

@@ -5,23 +5,23 @@ import type { Style } from "./Style";
 /**
  * One run of text with uniform styling/semantics inside a [`RichText`].
  */
-export type Span = { 
+export type Span = {
 /**
  * The literal text. Control characters are never permitted here (the
  * session layer strips them from inbound lines; emitters must not
  * introduce them).
  */
-text: string, 
+text: string,
 /**
  * Explicit style; skipped on the wire when plain.
  */
-style?: Style, 
+style?: Style,
 /**
  * Semantic tag, e.g. `"player"`, `"npc"`, `"exit"`, `"channel"`,
  * `"say"`, `"system"`, `"error"`. Renderers resolve tag → theme color
  * (ANSI) or tag → CSS class (web).
  */
-tag?: string | null, 
+tag?: string | null,
 /**
  * Click-to-run affordance for the web client; `None` for plain prose.
  */

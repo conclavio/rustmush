@@ -6,7 +6,7 @@ use mush_proto::{NarrativeKind, OutputEvent, RichText};
 
 use crate::cmd::{Registry, RegistryError};
 use crate::obj::ObjId;
-use crate::output::{Outbox, room_view};
+use crate::output::{Outbox, room_view_with_action_state};
 use crate::world::World;
 
 pub mod admin;
@@ -56,10 +56,19 @@ pub(crate) fn narrative_emit(text: RichText) -> OutputEvent {
 /// come through here so module lines appear everywhere a room does.
 ///
 /// [`RoomView`]: mush_proto::RoomView
-pub(crate) fn show_room(reg: &Registry, w: &World, looker: ObjId, room: ObjId, out: &mut Outbox) {
-    if let Some(rv) = room_view(reg, w, looker, room) {
+pub(crate) fn show_room_with_action_state(
+    reg: &Registry,
+    w: &World,
+    looker: ObjId,
+    room: ObjId,
+    out: &mut Outbox,
+    action_state: Option<&crate::action_state::ActionStateStore>,
+) {
+    if let Some(rv) = room_view_with_action_state(reg, w, looker, room, action_state) {
         out.to_actor(looker, OutputEvent::Room(rv));
-        for line in crate::module::look_rendered_lines(reg, w, looker, room) {
+        for line in
+            crate::module::look_rendered_lines_with_action_state(reg, w, looker, room, action_state)
+        {
             out.to_actor(looker, OutputEvent::Sys(line));
         }
     }

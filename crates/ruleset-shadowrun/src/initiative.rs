@@ -28,7 +28,7 @@ fn init_cmd(cmd: &Sr5Cmd, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         t
     };
     let doc = cmd
-        .read(ctx.w, who)
+        .read_ctx(ctx, who)?
         .ok_or_else(|| CmdError::msg("That character has no sheet."))?;
     let base = doc.number(INITIATIVE_BASE).unwrap_or_else(|| {
         crate::derive::initiative_base(

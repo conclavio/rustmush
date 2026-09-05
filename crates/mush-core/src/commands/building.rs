@@ -15,13 +15,13 @@ use crate::cmd::{ArgShape, CmdError, CommandSpec, Ctx, Registry, RegistryError};
 use crate::flags::{Flags, Powers, Role};
 use crate::lock::{LockType, parse_lock};
 use crate::matchit::match_object;
-use crate::module::{WorldEvent, check_move_attempt};
+use crate::module::WorldEvent;
 use crate::obj::{ObjId, ObjKind};
 use crate::output::{name_span, primary_name};
 use crate::perm;
 use crate::world::World;
 
-use super::{narrative_emit, show_room};
+use super::narrative_emit;
 
 /// Lock-type names valid as `/switches` on `@lock` and `@unlock`.
 ///
@@ -163,13 +163,13 @@ fn dig_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     if ctx.switches.has("teleport") {
         // Same contract as @teleport: consult the MoveAttempt veto and
         // notify Moved observers — @dig/teleport is a move like any other.
-        if let Err(reason) = check_move_attempt(ctx.reg, ctx.w, ctx.actor, None, room) {
+        if let Err(reason) = ctx.check_move_attempt(ctx.actor, None, room) {
             ctx.out.to_actor(ctx.actor, OutputEvent::Sys(reason));
             return Ok(());
         }
         let from = ctx.w.get(ctx.actor).and_then(|o| o.location);
         ctx.w.move_to(ctx.actor, room)?;
-        show_room(ctx.reg, ctx.w, ctx.actor, room, ctx.out);
+        ctx.show_room(ctx.actor, room);
         ctx.emit_world_event(&WorldEvent::Moved {
             who: ctx.actor,
             from,
@@ -541,7 +541,7 @@ fn teleport_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         return Err(perm_denied());
     }
     // Module veto (MoveAttempt hooks; `exit: None` marks a teleport).
-    if let Err(reason) = check_move_attempt(ctx.reg, ctx.w, target, None, dest) {
+    if let Err(reason) = ctx.check_move_attempt(target, None, dest) {
         ctx.out.to_actor(ctx.actor, OutputEvent::Sys(reason));
         return Ok(());
     }
@@ -565,7 +565,7 @@ fn teleport_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     ctx.out
         .to_room_from(dest, vec![target], target, narrative_emit(text));
     if ctx.w.get(target).is_some_and(|o| o.kind.is_actor()) {
-        show_room(ctx.reg, ctx.w, target, dest, ctx.out);
+        ctx.show_room(target, dest);
     }
     if target != ctx.actor {
         ctx.out.info(ctx.actor, "Teleported.");
