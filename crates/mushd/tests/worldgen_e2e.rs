@@ -134,7 +134,7 @@ async fn worldgen_full_journey_over_ssh() {
     god.expect("Welcome to the worldgen e2e MUSH!").await;
     god.send_line(&format!("connect boss {GM_PASSWORD}")).await;
     god.expect("Connected as God").await;
-    god.expect("Limbo(#0)").await;
+    god.expect("Limbo #0").await;
 
     // --- A zone master carrying the theme. ------------------------------
     god.send_line("@create Districts").await;
@@ -261,7 +261,7 @@ async fn keyless_boot_disables_gen() {
     god.expect("Keyless MUSH").await;
     god.send_line(&format!("connect boss {GM_PASSWORD}")).await;
     god.expect("Connected as God").await;
-    god.expect("Limbo(#0)").await;
+    god.expect("Limbo #0").await;
 
     // @gen still registers (the command dispatches and defers), but the
     // off-loop generator hits the kill switch and re-enters a clean message.

@@ -59,6 +59,23 @@ fn last_outcome(tw: &TestWorld, who: ObjId) -> Owod20Outcome {
         .clone()
 }
 
+/// The number of dice shown on a one-line roll narration (interface plan
+/// I3): `roll  Nick  strength+brawl  8 6 4 3 5 = 2 successes  diff 6`.
+fn faces_shown(line: &str) -> Option<usize> {
+    let (left, _) = line.split_once(" = ")?;
+    let dice = left.rsplit("  ").next()?;
+    Some(
+        dice.split_whitespace()
+            .filter(|t| t.parse::<u8>().is_ok())
+            .count(),
+    )
+}
+
+/// The one-line roll narrations among `lines`, by their `roll  ` marker.
+fn roll_lines(lines: &[String]) -> Vec<&String> {
+    lines.iter().filter(|l| l.starts_with("roll  ")).collect()
+}
+
 fn set(tw: &mut TestWorld, cmd: &str) {
     tw.run(GOD, cmd);
 }
@@ -103,12 +120,11 @@ fn roll_resolves_pool_from_sheet_and_is_deterministic() {
     let ev = tw.run(nick, "+roll strength+brawl");
     let expected = Owod20Pool::score(&faces(S, 0, 5), &Owod20Opts::new(6));
     assert_eq!(last_outcome(&tw, nick), expected);
-    // The room saw the classic line with the dice count.
-    assert!(
-        tw.seen_by(&ev, nick)
-            .iter()
-            .any(|l| l.contains("(5 dice, diff 6)"))
-    );
+    // The room saw the one-line narration with five dice and the difficulty.
+    let seen = tw.seen_by(&ev, nick);
+    let line = roll_lines(&seen).pop().expect("a roll line");
+    assert_eq!(faces_shown(line), Some(5), "{line}");
+    assert!(line.ends_with("  diff 6"), "{line}");
     // A second identical world reproduces the same faces.
     let (mut tw2, nick2) = world(S);
     nick_sheet(&mut tw2);
@@ -122,7 +138,11 @@ fn roll_raw_integer_needs_no_sheet() {
     let ev = tw.run(nick, "+roll 4");
     let expected = Owod20Pool::score(&faces(S, 0, 4), &Owod20Opts::new(6));
     assert_eq!(last_outcome(&tw, nick), expected);
-    assert!(tw.seen_by(&ev, nick).iter().any(|l| l.contains("(4 dice")));
+    let seen = tw.seen_by(&ev, nick);
+    assert_eq!(
+        roll_lines(&seen).pop().and_then(|l| faces_shown(l)),
+        Some(4)
+    );
 }
 
 #[test]
@@ -136,11 +156,16 @@ fn roll_applies_wound_penalty() {
     let expected = Owod20Pool::score(&faces(S, 0, 3), &Owod20Opts::new(6));
     assert_eq!(last_outcome(&tw, nick), expected);
     let seen = tw.seen_by(&ev, nick);
-    assert!(seen.iter().any(|l| l.contains("(3 dice, diff 6)")));
-    assert!(seen.iter().any(|l| l.contains("wound -2")));
+    let line = roll_lines(&seen).pop().expect("a roll line");
+    assert_eq!(faces_shown(line), Some(3), "{line}");
+    assert!(line.contains("  diff 6  [wound -2]"), "{line}");
     // /nowound ignores it: pool back to 5 (next 5 faces after the first 3).
     let ev2 = tw.run(nick, "+roll/nowound strength+brawl");
-    assert!(tw.seen_by(&ev2, nick).iter().any(|l| l.contains("(5 dice")));
+    let seen2 = tw.seen_by(&ev2, nick);
+    assert_eq!(
+        roll_lines(&seen2).pop().and_then(|l| faces_shown(l)),
+        Some(5)
+    );
 }
 
 #[test]
@@ -983,7 +1008,7 @@ fn unapproved_character_can_still_roll() {
     assert!(
         tw.seen_by(&ev, nick)
             .iter()
-            .any(|l| l.contains("Nick rolls"))
+            .any(|l| l.starts_with("roll  Nick  "))
     );
 }
 
@@ -2226,7 +2251,7 @@ fn wod_roll_ability_rolls_from_sheet_logs_and_emits() {
     assert!(
         events
             .iter()
-            .any(|(_, ev)| mush_testkit::text_of(ev).contains("Bartender rolls")),
+            .any(|(_, ev)| mush_testkit::text_of(ev).starts_with("roll  Bartender  ")),
         "the room must see the NPC's roll"
     );
     assert!(
@@ -2255,7 +2280,7 @@ fn wod_roll_power_pool_routes_through_the_director() {
     let has_room_line = |events: &[(mush_core::Audience, mush_proto::OutputEvent)]| {
         events.iter().any(|(aud, ev)| {
             matches!(aud, mush_core::Audience::Room { .. })
-                && mush_testkit::text_of(ev).contains("rolls")
+                && mush_testkit::text_of(ev).starts_with("roll  Vamp  ")
         })
     };
 

@@ -92,9 +92,34 @@ fn update_active_sgr(active: &mut Option<String>, tok: &str) {
 /// Returned lines carry no line terminators.
 #[must_use]
 pub fn wrap(s: &str, width: usize) -> Vec<String> {
+    wrap_indent(s, width, 0)
+}
+
+/// The fewest body columns a hanging indent must leave; below that the
+/// indent is dropped rather than squeezing every continuation line into a
+/// sliver.
+pub const MIN_HANG_BODY: usize = 8;
+
+/// [`wrap`] with a hanging indent: the first line fills `width`, and every
+/// continuation line starts with `indent` plain spaces and fills the rest
+/// (interface plan I3: a long pose stays one block under its speaker, a
+/// labelled room fact wraps under its label).
+///
+/// The indent is dropped (treated as `0`) when it would leave fewer than
+/// [`MIN_HANG_BODY`] columns, and never applies at `width == 0`. The pad is
+/// inserted *before* a reopened style, so the indent itself is never
+/// coloured, and each line stays style-self-contained as in [`wrap`].
+#[must_use]
+pub fn wrap_indent(s: &str, width: usize, indent: usize) -> Vec<String> {
     if width == 0 {
         return vec![s.to_string()];
     }
+    let indent = if indent + MIN_HANG_BODY > width {
+        0
+    } else {
+        indent
+    };
+    let pad = " ".repeat(indent);
     let mut lines: Vec<String> = Vec::new();
     let mut cur = String::new();
     let mut cur_vis = 0usize;
@@ -109,10 +134,11 @@ pub fn wrap(s: &str, width: usize) -> Vec<String> {
                 cur.push_str(RESET);
             }
             lines.push(std::mem::take(&mut cur));
+            cur.push_str(&pad);
             if let Some(sgr) = &active {
                 cur.push_str(sgr);
             }
-            cur_vis = 0;
+            cur_vis = indent;
             first_in_line = true;
         }
         if !first_in_line {
@@ -190,6 +216,38 @@ mod tests {
         for l in &lines {
             assert!(ansi_len(l) <= 9, "line too wide: {l:?}");
         }
+    }
+
+    #[test]
+    fn wrap_indent_pads_continuation_lines_only() {
+        let lines = wrap_indent("Nick says, \"the quick brown fox jumps over\"", 20, 5);
+        assert_eq!(
+            lines,
+            vec![
+                "Nick says, \"the",
+                "     quick brown fox",
+                "     jumps over\""
+            ]
+        );
+        for l in &lines {
+            assert!(ansi_len(l) <= 20, "line too wide: {l:?}");
+        }
+        // The indent goes before a reopened style, so it is never coloured.
+        let styled = "\x1b[36mNick\x1b[0m \x1b[31mred words here and more\x1b[0m";
+        let lines = wrap_indent(styled, 14, 5);
+        assert_eq!(lines[0], "\x1b[36mNick\x1b[0m \x1b[31mred words\x1b[0m");
+        assert!(lines[1].starts_with("     \x1b[31m"), "{:?}", lines[1]);
+        // No indent at width 0, and none when it would starve the body.
+        assert_eq!(wrap_indent("a b c", 0, 5), vec!["a b c"]);
+        assert_eq!(
+            wrap_indent("aaaa bbbb cccc", 9, 4),
+            wrap("aaaa bbbb cccc", 9)
+        );
+        // Indent 0 is exactly `wrap`.
+        assert_eq!(
+            wrap_indent("the quick brown fox", 10, 0),
+            wrap("the quick brown fox", 10)
+        );
     }
 
     #[test]

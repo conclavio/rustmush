@@ -130,7 +130,7 @@ async fn login_create(
     term.expect("Welcome to the more-splats e2e MUSH!").await;
     term.send_line(&format!("create {name} {pw}")).await;
     term.expect(&format!("Connected as {name}")).await;
-    term.expect("Limbo(#0)").await;
+    term.expect("Limbo #0").await;
     (handle, term)
 }
 
@@ -253,7 +253,7 @@ async fn m10a_wod_more_splats_full_journey() {
     god.expect("Welcome to the more-splats e2e MUSH!").await;
     god.send_line(&format!("connect boss {GM_PASSWORD}")).await;
     god.expect("Connected as God").await;
-    god.expect("Limbo(#0)").await;
+    god.expect("Limbo #0").await;
 
     let (_nyx_handle, mut nyx) = login_create(addr, "Nyx", "secret123").await;
     god.expect("Nyx has connected.").await;
@@ -595,7 +595,7 @@ async fn m10a_wizard_drives_a_changeling() {
     god.expect("Welcome to the more-splats e2e MUSH!").await;
     god.send_line(&format!("connect boss {GM_PASSWORD}")).await;
     god.expect("Connected as God").await;
-    god.expect("Limbo(#0)").await;
+    god.expect("Limbo #0").await;
 
     let (_puck_handle, mut puck) = login_create(addr, "Puck", "secret123").await;
     god.expect("Puck has connected.").await;

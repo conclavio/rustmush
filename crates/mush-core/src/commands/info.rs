@@ -18,20 +18,24 @@ use super::attr_text;
 
 /// The WHO listing as seen by `viewer`: connected actors with real
 /// idle/connect times from the engine-maintained session stats. Staff
-/// (Wizard+ or `SEE_HIDDEN`) also see locations and DARK players. Shared by
-/// the `WHO` command and the `"who"` query handler — one view, two
-/// transports.
+/// (Wizard+ or `SEE_HIDDEN`) see every location and DARK players; a player
+/// sees the location of whoever shares their room and nothing else
+/// (interface plan I3, D-I-12), and every entry says whether it is `here`.
+/// Shared by the `WHO` command and the `"who"` query handler — one view,
+/// two transports.
 #[must_use]
 pub fn who_entries(w: &World, viewer: ObjId) -> Vec<WhoEntry> {
     let staff =
         perm::has_role(w, viewer, Role::Wizard) || perm::has_power(w, viewer, Powers::SEE_HIDDEN);
+    let viewer_room = w.get(viewer).and_then(|o| o.location);
     let mut entries = Vec::new();
     for id in w.connected() {
         let Some(o) = w.get(id) else { continue };
         if o.flags.contains(Flags::DARK) && !staff && id != viewer {
             continue;
         }
-        let location = if staff {
+        let here = viewer_room.is_some() && o.location == viewer_room;
+        let location = if staff || here {
             o.location.and_then(|l| w.get(l)).map(|r| r.name.clone())
         } else {
             None
@@ -52,6 +56,7 @@ pub fn who_entries(w: &World, viewer: ObjId) -> Vec<WhoEntry> {
             idle_s,
             conn_s,
             location,
+            here,
             doing: attr_text(w, id, "doing"),
         });
     }

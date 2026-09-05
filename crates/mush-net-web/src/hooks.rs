@@ -215,6 +215,15 @@ pub trait WebHooks: Send + Sync {
     /// result. The game side may retire its bounded presentation copy.
     fn acknowledge(&self, conn: u64, commit: ProjectedCommitToken) -> BoxFuture<'_, ()>;
 
+    /// A composing hint from a connected connection
+    /// ([`ClientCommand::Composing`](mush_proto::ClientCommand::Composing),
+    /// interface plan I4, D-I-11): `true` when a draft began, `false` when it
+    /// was sent or abandoned. The binary rate-limits it and fans it out to
+    /// the room; it is never an idle stamp. The default drops it.
+    fn composing(&self, _conn: u64, _active: bool) -> BoxFuture<'_, ()> {
+        Box::pin(async {})
+    }
+
     /// The transport for `conn` is gone (only fired for connections that
     /// passed [`connect_character`](Self::connect_character) or
     /// [`resume`](Self::resume); the binary detaches it).

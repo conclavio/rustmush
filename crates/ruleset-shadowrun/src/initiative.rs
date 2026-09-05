@@ -9,6 +9,7 @@ use std::sync::Arc;
 
 use mush_core::{ArgShape, CmdError, CommandSpec, Ctx, ObjId, Registrar, match_object, perm};
 use mush_proto::{NarrativeKind, OutputEvent, RichText};
+use mush_ruleset::{RollSide, roll_narration};
 use rand::RngCore;
 
 use crate::Sr5Cmd;
@@ -56,7 +57,18 @@ fn init_cmd(cmd: &Sr5Cmd, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             .join(" ");
         let name = name_of(ctx, who);
         let line = format!("{name} rolls Initiative: {base} + {dice}D6 [{faces}] = {score}.");
-        emit_room(ctx, who, &line);
+        // The room reads the one-line form (interface plan I3):
+        // `roll  Razor  Initiative  3 5 = 16  8 + 2D6`.
+        let narration = roll_narration(
+            &RollSide {
+                name: &name,
+                expr: "Initiative",
+                dice: &faces,
+                result: &score.to_string(),
+            },
+            &[format!("{base} + {dice}D6")],
+        );
+        emit_room(ctx, who, &line, &narration);
     } else {
         let name = name_of(ctx, who);
         ctx.out.sys_to_actor(
@@ -68,7 +80,7 @@ fn init_cmd(cmd: &Sr5Cmd, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     Ok(())
 }
 
-fn emit_room(ctx: &mut Ctx<'_>, who: ObjId, line: &str) {
+fn emit_room(ctx: &mut Ctx<'_>, who: ObjId, line: &str, narration: &RichText) {
     if let Some(loc) = ctx.w.get(who).and_then(|o| o.location) {
         ctx.out.to_room(
             loc,
@@ -76,7 +88,7 @@ fn emit_room(ctx: &mut Ctx<'_>, who: ObjId, line: &str) {
             OutputEvent::Narrative {
                 kind: NarrativeKind::Emit,
                 actor: Some(mush_core::obj_ref(ctx.w, who)),
-                text: RichText::plain(line),
+                text: narration.clone(),
             },
         );
     } else {

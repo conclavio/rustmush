@@ -138,9 +138,11 @@ impl Owod20Outcome {
         matches!(self.result, RollResult::Botch(_))
     }
 
-    /// A classic one-line summary for the roll log / ANSI, e.g.
-    /// `"rolled 7 8 2 1 -> 1 success"` or `"rolled 3 2 1 -> botch"`.
-    pub fn summary(&self) -> String {
+    /// The dice as thrown — `"7 8 2 1"` (`"(no dice)"` for an empty pool),
+    /// followed by ` +WP` when a Willpower success was applied: the left-hand
+    /// side of [`Owod20Outcome::summary`] and of the one-line room narration
+    /// (interface plan I3).
+    pub fn dice_text(&self) -> String {
         let faces = if self.dice.is_empty() {
             "(no dice)".to_string()
         } else {
@@ -151,14 +153,25 @@ impl Owod20Outcome {
                 .join(" ")
         };
         let wp = if self.willpower_success { " +WP" } else { "" };
-        let result = match self.result {
+        format!("{faces}{wp}")
+    }
+
+    /// The classified result in words — `"1 success"`, `"2 successes"`,
+    /// `"failure"`, `"botch"`, `"botch (2)"`.
+    pub fn result_text(&self) -> String {
+        match self.result {
             RollResult::Success(1) => "1 success".to_string(),
             RollResult::Success(n) => format!("{n} successes"),
             RollResult::Failure => "failure".to_string(),
             RollResult::Botch(1) => "botch".to_string(),
             RollResult::Botch(n) => format!("botch ({n})"),
-        };
-        format!("rolled {faces}{wp} -> {result}")
+        }
+    }
+
+    /// A classic one-line summary for the roll log / ANSI, e.g.
+    /// `"rolled 7 8 2 1 -> 1 success"` or `"rolled 3 2 1 -> botch"`.
+    pub fn summary(&self) -> String {
+        format!("rolled {} -> {}", self.dice_text(), self.result_text())
     }
 }
 

@@ -208,6 +208,7 @@ impl SshHooks for MockHooks {
                     idle_s: 0,
                     conn_s: 42,
                     location: None,
+                    here: false,
                     doing: None,
                 }]),
                 "mail.list" => OutputEvent::Panel {
@@ -411,9 +412,19 @@ async fn start_server(tag: &str, hooks: Arc<MockHooks>) -> std::net::SocketAddr 
 async fn open_shell_on(
     handle: &russh::client::Handle<AcceptAll>,
 ) -> russh::Channel<russh::client::Msg> {
+    open_shell_sized(handle, 80, 24).await
+}
+
+/// A shell on a PTY of the given size (the TUI test wants the 120-column
+/// budget, where the WHO rail is shown).
+async fn open_shell_sized(
+    handle: &russh::client::Handle<AcceptAll>,
+    cols: u32,
+    rows: u32,
+) -> russh::Channel<russh::client::Msg> {
     let channel = handle.channel_open_session().await.expect("open channel");
     channel
-        .request_pty(true, "xterm-256color", 80, 24, 0, 0, &[])
+        .request_pty(true, "xterm-256color", cols, rows, 0, 0, &[])
         .await
         .expect("pty");
     channel.request_shell(true).await.expect("shell");
@@ -1050,7 +1061,7 @@ async fn tui_enter_shows_frame_then_notui_restores_line_mode() {
             .success()
     );
     let mut term = Term {
-        channel: open_shell_on(&handle).await,
+        channel: open_shell_sized(&handle, 120, 34).await,
         seen: String::new(),
     };
     term.expect("Welcome to rustmush!").await;
@@ -1069,8 +1080,10 @@ async fn tui_enter_shows_frame_then_notui_restores_line_mode() {
         "expected the alternate-screen enter sequence"
     );
 
-    // A command typed at the TUI input line reaches the world; its narrative
-    // reply is applied to the scrollback and repainted.
+    // The shell is modal (interface plan I2): Enter opens the box, then a
+    // command typed there reaches the world and its narrative reply is
+    // applied to the scrollback and repainted.
+    term.send_bytes(b"\r").await;
     term.send_line("say hello").await;
     term.expect("hello").await;
     assert!(
@@ -1083,17 +1096,18 @@ async fn tui_enter_shows_frame_then_notui_restores_line_mode() {
         "the TUI input line must forward commands to the world"
     );
 
-    // Tab cycles the switchable secondary pane. First press opens the @mail
-    // widget, which submits the `mail.list` query; its Panel keyframe reply
+    // Esc returns to nav mode; the bare digit `3` switches to the mail
+    // screen, which submits the `mail.list` query — its Panel keyframe reply
     // repaints the pane with the listed message.
-    term.send_bytes(&[0x09]).await;
-    term.expect("mail").await; // @mail pane title
+    term.send_bytes(b"\x1b").await;
+    term.send_bytes(b"3").await;
+    term.expect("@mail").await; // the mail pane title
     term.expect("Bento").await; // sender from the mail.list reply
 
-    // Second press opens the +intel widget (submits `intel.list`); its reply
+    // `6` switches to the intel screen (submits `intel.list`); its reply
     // repaints the pane with the filed record.
-    term.send_bytes(&[0x09]).await;
-    term.expect("intel").await; // +intel pane title
+    term.send_bytes(b"6").await;
+    term.expect("+intel").await; // the intel pane title
     term.expect("Mallory").await; // subject from the intel.list reply
 
     // The widget queries reached the world through the read-only query seam.
@@ -1110,6 +1124,7 @@ async fn tui_enter_shows_frame_then_notui_restores_line_mode() {
     // `@notui` leaves the alternate screen (restoring the cursor) and
     // restores line mode; a fresh `say` renders the classic way again.
     let before_notui = term.seen.len();
+    term.send_bytes(b"\r").await;
     term.send_line("@notui").await;
     term.send_line("say back").await;
     term.expect("Nick says, \"back\"").await;

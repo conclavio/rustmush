@@ -21,9 +21,18 @@ idle_s: number,
  */
 conn_s: number,
 /**
- * Location name, when the viewer is allowed to see it.
+ * Location name, when the viewer is allowed to see it: always for
+ * staff, and for a player only when the entry is in the viewer's own
+ * room (interface plan I3, D-I-12).
  */
 location?: string | null,
+/**
+ * Whether the entry is in the viewer's own room. Absent on the wire
+ * when false. The one fact a `Where` column and a "N in your room"
+ * footer need that `location` alone cannot carry for staff, who see
+ * every location.
+ */
+here?: boolean,
 /**
  * The player's `@doing` string, when set.
  */

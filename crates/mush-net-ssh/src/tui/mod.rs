@@ -1,26 +1,38 @@
-//! Server-side ratatui TUI over SSH (milestone M15) — the third renderer of
-//! the shared per-connection [`OutputEvent`](mush_proto::OutputEvent) stream
-//! (line = `mush-ansi`, web = JSON, TUI = ratatui).
+//! Server-side ratatui TUI over SSH (milestone M15, interface plan I2) —
+//! the third renderer of the shared per-connection
+//! [`OutputEvent`](mush_proto::OutputEvent) stream (line = `mush-ansi`, web
+//! = JSON, TUI = ratatui).
 //!
 //! This module lives entirely in the transport layer: it never touches the
 //! single-writer world. `@tui` flips the connection into [`Mode::Tui`], the
 //! output pump applies each event to a [`TuiApp`] and repaints one coalesced
 //! frame through a clean-room [`SshBackend`], and raw input is decoded into
-//! the app's input line / navigation. `@notui` (or the detach hotkey) flips
-//! back to line mode, which is byte-for-byte unaffected when a connection
-//! never enters the TUI (invariant T1).
+//! keys the modal shell acts on. `@notui` (or the detach hotkey) flips back
+//! to line mode, which is byte-for-byte unaffected when a connection never
+//! enters the TUI (invariant T1).
+//!
+//! The shell is **modal** (D-I-17): numbered [`screen`]s of titled panes, a
+//! nav mode where bare keys act and an input mode where the box is a normal
+//! MUSH line; every nav hotkey is reachable from the box as Alt+key. A bare
+//! key never sends a mutating command (D-I-18), and on the scene screen the
+//! room's one-letter exits are keys (D-I-19).
 //!
 //! [`Mode::Tui`]: crate::server (private)
 
-mod app;
+pub mod app;
 mod backend;
-mod render;
+pub mod keys;
+pub mod panels;
+pub mod render;
+pub mod screen;
+pub mod sheet;
 
-use app::{InputResult, TuiApp};
+pub use app::{InputResult, Mode, StickyMode, TuiApp, TuiManifest};
 use backend::{ENTER_ALT_SCREEN, LEAVE_ALT_SCREEN, SshBackend};
 
 use mush_proto::{ClientCaps, OutputEvent};
 use ratatui::Terminal;
+use ratatui::backend::TestBackend;
 
 /// A connected TUI: the ratatui [`Terminal`] (owning the [`SshBackend`] and
 /// the double-buffer diff) plus the [`TuiApp`] state. Held in the connection
@@ -32,23 +44,32 @@ pub struct TuiSession {
 }
 
 impl TuiSession {
-    /// Build a fresh TUI session for `caps` (does not paint).
+    /// Build a fresh TUI session for `caps` (does not paint), knowing what
+    /// the server announced in its `Hello` and `SessionInfo`.
     #[must_use]
-    pub fn new(caps: ClientCaps) -> TuiSession {
+    pub fn new(caps: ClientCaps, manifest: TuiManifest) -> TuiSession {
         let backend = SshBackend::new(caps.width, caps.height, caps.color);
         // `Terminal::new` only fails if the backend's `size()` errors, which
         // `SshBackend` never does — but stay total rather than unwrap-panic.
         let terminal = Terminal::new(backend).unwrap_or_else(|_| {
             Terminal::new(SshBackend::new(80, 24, caps.color)).expect("infallible backend size")
         });
-        TuiSession {
-            terminal,
-            app: TuiApp::new(caps),
-        }
+        let mut app = TuiApp::new(caps);
+        app.set_manifest(manifest);
+        TuiSession { terminal, app }
     }
 
-    /// Apply one event to the app state (no paint).
-    pub fn apply_event(&mut self, event: &OutputEvent) -> Option<&'static str> {
+    /// The queries the transport should submit right after entering the
+    /// TUI (WHO, the command table, channels, vitals, the active screen's
+    /// own feeds), through the read-only query seam.
+    #[must_use]
+    pub fn entry_queries(&self) -> Vec<(String, serde_json::Value)> {
+        self.app.entry_queries()
+    }
+
+    /// Apply one event to the app state (no paint). Returns the read-only
+    /// queries the app wants submitted as a result (a resync, a hydration).
+    pub fn apply_event(&mut self, event: &OutputEvent) -> Vec<(String, serde_json::Value)> {
         self.app.apply_event(event)
     }
 
@@ -98,6 +119,30 @@ impl TuiSession {
     }
 }
 
+/// Paint `app` into a `w`×`h` test buffer and return it as text, one line
+/// per row, trailing spaces trimmed — the golden-frame helper (plan §3.2).
+#[must_use]
+pub fn frame_text(app: &mut TuiApp, w: u16, h: u16) -> String {
+    let mut caps = app.caps();
+    caps.width = w;
+    caps.height = h;
+    app.set_caps(caps);
+    let backend = TestBackend::new(w, h);
+    let mut terminal = Terminal::new(backend).expect("test backend");
+    terminal.draw(|frame| app.draw(frame)).expect("draw");
+    let buffer = terminal.backend().buffer();
+    let mut out = String::new();
+    for y in 0..h {
+        let mut row = String::new();
+        for x in 0..w {
+            row.push_str(buffer[(x, y)].symbol());
+        }
+        out.push_str(row.trim_end());
+        out.push('\n');
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -116,13 +161,14 @@ mod tests {
 
     #[test]
     fn paint_produces_frame_bytes_with_who_and_scrollback() {
-        let mut sess = TuiSession::new(caps());
+        let mut sess = TuiSession::new(caps(), TuiManifest::default());
         sess.apply_event(&OutputEvent::Who(vec![WhoEntry {
             name: "Alice".into(),
             alias: None,
             idle_s: 0,
             conn_s: 0,
             location: None,
+            here: false,
             doing: None,
         }]));
         sess.apply_event(&OutputEvent::Narrative {
@@ -130,6 +176,10 @@ mod tests {
             actor: Some(ObjRef::new("#1", "Nick")),
             text: RichText::plain("hello world"),
         });
+        let mut wide = caps();
+        wide.width = 120;
+        wide.height = 34;
+        sess.set_caps(wide);
         let bytes = sess.paint();
         let text = String::from_utf8_lossy(&bytes);
         // The buffer diff re-emits only changed cells, so a space that
@@ -140,12 +190,12 @@ mod tests {
         assert!(text.contains("hello"), "scrollback word 'hello' missing");
         assert!(text.contains("world"), "scrollback word 'world' missing");
         assert!(text.contains("WHO"), "rail title missing");
-        assert!(text.contains("rustmush"), "main frame title missing");
+        assert!(text.contains("rustmush"), "tab strip missing");
     }
 
     #[test]
     fn resize_repaint_is_safe() {
-        let mut sess = TuiSession::new(caps());
+        let mut sess = TuiSession::new(caps(), TuiManifest::default());
         sess.apply_event(&OutputEvent::Sys(RichText::plain("x")));
         let _ = sess.paint();
         let mut small = caps();
@@ -155,5 +205,15 @@ mod tests {
         // The first paint after a resize clears + reflows; must not panic.
         let bytes = sess.paint();
         assert!(!bytes.is_empty());
+    }
+
+    #[test]
+    fn frame_text_reads_the_painted_buffer() {
+        let mut app = TuiApp::new(caps());
+        app.apply_event(&OutputEvent::Sys(RichText::plain("hi there")));
+        let text = frame_text(&mut app, 80, 24);
+        assert_eq!(text.lines().count(), 24);
+        assert!(text.contains("hi there"));
+        assert!(text.contains("rustmush"));
     }
 }

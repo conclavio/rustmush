@@ -1,0 +1,34 @@
+rustmush  1 scene   2 sheet   3 mail   4 chan   5 rolls   6 intel   7 actions                          Nick ● 3 on 14:30
+The Hall #2 · Downtown · rain · IC 21:15 · n·North  e·East  quai
+┌ rustmush ────────────────────────────────────────────────────────────────────────────────────┐┌WHO───────────────────┐
+│     14:30 The Hall #2                                                                        ││  Name          Idle  │
+│           A long hall of worn flagstones, lit by lanterns that gutter whenever the doors     ││• Nick            5s  │
+│           open. Rain drums on the high windows.                                              ││• Mireille       42s  │
+│           Here     Mireille, a brass lamp                                                    ││  Bob            15m  │
+│           Exits    North  East  quai                                                         ││3 online, 2 here      │
+│           Weather  Overhead: steady rain, a cold wind off the water.                         ││                      │
+│  Mireille "The rain again. Every night this week, and the quai will be under water by morning││                      │
+│           if it keeps on."                                                                   │└──────────────────────┘
+│      Nick shakes the water from his coat and looks for a chair.                              │┌scene─────────────────┐
+│    ⚄ roll Mireille  perception+alertness  8 6 4 3 = 2 successes  diff 6                      ││Rain on the Quai      │
+│     [pub] Zoe: anyone up for the docks scene later?                                          ││social · active       │
+│     14:30 Bob has connected.                                                                 ││round 2  turn 1       │
+│                                                                                              ││now: Mireille         │
+│                                                                                              ││                      │
+│                                                                                              ││                      │
+│                                                                                              ││                      │
+│                                                                                              │└──────────────────────┘
+│                                                                                              │┌actions───────────────┐
+│                                                                                              ││+act brace — Brace    │
+│                                                                                              ││  Adopt a braced stanc│
+│                                                                                              ││+act aim — Aim        │
+│                                                                                              ││  Take a moment to aim│
+│                                                                                              ││                      │
+│                                                                                              ││                      │
+│                                                                                              ││                      │
+└──────────────────────────────────────────────────────────────────────────────────────────────┘└──────────────────────┘
+[ Health /X□□□□□ Hurt ]  [ Willpower ▰▰▰▰▰▰▱▱ 6/8 ]  [ Blood ▰▰▱▱▱▱▱▱ 3/13 ]
+┌input ‹nav› Enter to type─────────────────────────────────────────────────────────────────────────────────────────────┐
+│                                                                                                                      │
+└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+l look · i inventory · p page · r roll · a act · Enter type · ? help

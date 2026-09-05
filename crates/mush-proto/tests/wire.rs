@@ -97,6 +97,7 @@ fn roundtrip_every_output_event_variant() {
                 idle_s: 42,
                 conn_s: 3600,
                 location: Some("The Rusty Anchor".into()),
+                here: false,
                 doing: Some("brooding".into()),
             },
             WhoEntry {
@@ -105,6 +106,7 @@ fn roundtrip_every_output_event_variant() {
                 idle_s: 0,
                 conn_s: 5,
                 location: None,
+                here: false,
                 doing: None,
             },
         ]),

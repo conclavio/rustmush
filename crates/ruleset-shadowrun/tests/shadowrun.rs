@@ -90,6 +90,23 @@ fn read_sheet(tw: &TestWorld, who: ObjId) -> SheetDoc {
     serde_json::from_value(attr.clone()).expect("sheet decodes")
 }
 
+/// The number of dice shown on a one-line roll narration (interface plan
+/// I3): `roll  Nick  Agility+Pistols  5 6 3 1 = 2 hits  [Physical limit 6]`.
+fn faces_shown(line: &str) -> Option<usize> {
+    let (left, _) = line.split_once(" = ")?;
+    let dice = left.rsplit("  ").next()?;
+    Some(
+        dice.split_whitespace()
+            .filter(|t| t.parse::<u8>().is_ok())
+            .count(),
+    )
+}
+
+/// The one-line roll narrations among `lines`, by their `roll  ` marker.
+fn roll_lines(lines: &[String]) -> Vec<&String> {
+    lines.iter().filter(|l| l.starts_with("roll  ")).collect()
+}
+
 fn set(tw: &mut TestWorld, cmd: &str) {
     tw.run(GOD, cmd);
 }
@@ -141,10 +158,11 @@ fn roll_resolves_attr_plus_skill_and_applies_the_limit() {
     let expected = Sr5Pool::score(&faces(S, 0, 10), &Sr5Opts::new(1).with_limit(phys));
     assert_eq!(last_outcome(&tw, nick), expected);
     assert_eq!(last_outcome(&tw, nick).dice.len(), 10);
-    // The room saw the classic line with the dice count and the limit.
+    // The room saw the one-line narration with ten dice and the limit.
     let seen = tw.seen_by(&ev, nick);
-    assert!(seen.iter().any(|l| l.contains("(10 dice)")));
-    assert!(seen.iter().any(|l| l.contains("Physical limit 6")));
+    let line = roll_lines(&seen).pop().expect("a roll line");
+    assert_eq!(faces_shown(line), Some(10), "{line}");
+    assert!(line.contains("  [Physical limit 6]"), "{line}");
     // Determinism: a fresh identical world reproduces it.
     let (mut tw2, nick2) = world(S);
     samurai(&mut tw2);
@@ -158,7 +176,11 @@ fn roll_raw_integer_needs_no_sheet() {
     let ev = tw.run(nick, "+roll 5");
     let expected = Sr5Pool::score(&faces(S, 0, 5), &Sr5Opts::default());
     assert_eq!(last_outcome(&tw, nick), expected);
-    assert!(tw.seen_by(&ev, nick).iter().any(|l| l.contains("(5 dice)")));
+    let seen = tw.seen_by(&ev, nick);
+    assert_eq!(
+        roll_lines(&seen).pop().and_then(|l| faces_shown(l)),
+        Some(5)
+    );
 }
 
 #[test]
@@ -184,14 +206,15 @@ fn roll_applies_the_wound_modifier() {
     let expected = Sr5Pool::score(&faces(S, 0, 9), &Sr5Opts::new(1).with_limit(phys));
     assert_eq!(last_outcome(&tw, nick), expected);
     let seen = tw.seen_by(&ev, nick);
-    assert!(seen.iter().any(|l| l.contains("(9 dice)")));
-    assert!(seen.iter().any(|l| l.contains("wound -1")));
+    let line = roll_lines(&seen).pop().expect("a roll line");
+    assert_eq!(faces_shown(line), Some(9), "{line}");
+    assert!(line.contains("[wound -1]"), "{line}");
     // /nowound ignores it: back to 10 dice.
     let ev2 = tw.run(nick, "+roll/nowound agility+pistols");
-    assert!(
-        tw.seen_by(&ev2, nick)
-            .iter()
-            .any(|l| l.contains("(10 dice)"))
+    let seen2 = tw.seen_by(&ev2, nick);
+    assert_eq!(
+        roll_lines(&seen2).pop().and_then(|l| faces_shown(l)),
+        Some(10)
     );
 }
 
@@ -297,11 +320,12 @@ fn contested_roll_resolves_both_sides() {
         nick,
         "+roll agility+pistols contested Vlad=reaction+intuition",
     );
-    assert!(
-        tw.seen_by(&ev, nick)
-            .iter()
-            .any(|l| l.contains("Opposed test") && (l.contains("wins") || l.contains("tie")))
-    );
+    assert!(tw.seen_by(&ev, nick).iter().any(|l| {
+        l.starts_with("roll  Nick  ")
+            && l.contains("  vs  Vlad  ")
+            && l.contains("  => ")
+            && (l.contains("wins") || l.contains("tie"))
+    }));
 }
 
 #[test]

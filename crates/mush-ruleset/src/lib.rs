@@ -45,6 +45,7 @@
 pub mod chargen;
 pub mod commands;
 pub mod doc;
+pub mod narration;
 pub mod render;
 pub mod schema;
 pub mod store;
@@ -61,6 +62,9 @@ pub use chargen::{
 };
 pub use commands::register_sheet_commands;
 pub use doc::{ApprovalState, JobId, SheetDoc};
+pub use narration::{
+    ROLL_GAP, ROLL_TAG, RollSide, contested_narration, is_roll_narration, roll_narration,
+};
 pub use render::render_sheet;
 pub use schema::{
     DamageLevelDef, DerivedExpr, FieldDef, FieldType, SchemaError, SectionLayout, SheetSchema,

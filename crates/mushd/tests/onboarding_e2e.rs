@@ -422,7 +422,7 @@ async fn new_player_signs_up_guided_chargen_approved_plays() {
         .await;
     // The refusal was the gate's, not a dice result.
     assert!(
-        nick.not_seen_since(blocked_mark, "Nick rolls"),
+        nick.not_seen_since(blocked_mark, "roll  Nick"),
         "a gated +roll must not produce a roll result"
     );
 
@@ -438,7 +438,7 @@ async fn new_player_signs_up_guided_chargen_approved_plays() {
     nick.expect("The Commons").await; // re-rendered in the live start room
     let play_mark = nick.mark();
     nick.send_line("+roll strength").await;
-    nick.expect_after(play_mark, "Nick rolls").await;
+    nick.expect_after(play_mark, "roll  Nick").await;
     assert!(
         nick.not_seen_since(play_mark, "must finish creating"),
         "an approved character's +roll must not be gated"
@@ -465,7 +465,7 @@ async fn chargen_not_required_leaves_classic_flow_intact() {
     mort.expect("Connected as Morty").await;
     // Lands in Limbo (the seeded start room), NOT the chargen area — the
     // onboarding spawn observer is inert when chargen_required is off.
-    mort.expect("Limbo(#0)").await;
+    mort.expect("Limbo #0").await;
 
     // No wizard was forced: an ordinary command runs immediately, and the
     // classic M6 +chargen opens a session rather than being gated.

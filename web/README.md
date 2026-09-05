@@ -58,32 +58,84 @@ src/
 ├── components/
 │   ├── Login.svelte          # /api/auth login+register card (friendly errors)
 │   ├── CharSelect.svelte     # character grid from the login payload
-│   ├── Game.svelte           # grid: WHO rail | tabs+scrollback+input | right panel
+│   ├── Game.svelte           # the shell (I4): tab strip of numbered screens, WHO rail toggle, legend chips, key help
+│   ├── SceneScreen.svelte    # screen 1: room band + scrollback + vitals strip + composer + palette
+│   ├── RoomBand.svelte       # RoomView + ambient: zone, weather, IC clock, scene pill, exits with nav keys, presence pills
+│   ├── VitalsStrip.svelte    # every `.vitals` frame as gauges (dominant first)
+│   ├── Composer.svelte       # the box: Say/Pose/Emit/OOC sticky mode, preview, history, completion, composing signal
+│   ├── CommandPalette.svelte # commands.list + aliases + exits, filtered after the slash
 │   ├── Scrollback.svelte     # windowed list, scroll-lock, "N new lines" pill
 │   ├── RichLine.svelte       # span renderer (tag class, style, CommandLink)
-│   ├── InputBar.svelte       # Enter submits, ↑/↓ history (200), masked mode
-│   ├── ChannelTabs.svelte    # tab bar: color chips + unread badges
+│   ├── InputBar.svelte       # the channel tab's input: Enter submits, ↑/↓ history (200), masked mode
+│   ├── ChannelTabs.svelte    # tab bar: color chips + unread badges (the channels screen)
 │   ├── ChannelView.svelte    # one channel's backlog/live view + alias input
 │   ├── WhoRail.svelte        # who table, idle ticking, refresh
-│   ├── RightPanel.svelte     # tabs: Mail / Room / Sheet / Rolls / Build (each feature-gated)
-│   ├── MailPanel.svelte      # folders + entries; open = `@mail <n>`
+│   ├── MailPanel.svelte      # the mail screen: folders + entries; open = `@mail <n>`
 │   ├── ComposeModal.svelte   # one-shot `@mail/quick`
-│   ├── RoomPanel.svelte      # latest RoomView; click-to-run exits
-│   ├── SheetPanel.svelte     # schema-driven character sheet (M6b — see below)
-│   ├── RollsPanel.svelte     # wod.roll readout: dice, successes/1s, botch (M6b)
-│   └── WorldgenPanel.svelte  # worldgen.draft preview: accept/retry/discard (M7 — see below)
+│   ├── SheetPanel.svelte     # the sheet screen: schema-driven character sheet (M6b — see below)
+│   ├── RollsPanel.svelte     # the rolls screen: wod.roll readout (M6b)
+│   ├── ActionsPanel.svelte   # the actions screen: legal.actions offers
+│   ├── LlmPanel.svelte       # the llm screen: staff cost dashboard
+│   └── WorldgenPanel.svelte  # the build screen: worldgen.draft preview (M7 — see below)
 └── lib/
     ├── proto/                # GENERATED wire types (cargo gen-ts) — committed
     ├── ws.ts                 # WsClient: connect/send/dispatch/resume/keepalive/backoff
-    ├── game.svelte.ts        # GameApp: WsClient → stores wiring, Req routing, /commands
+    ├── game.svelte.ts        # GameApp: WsClient → stores wiring, Req routing, /commands, the shell's actions
+    ├── keys.ts               # the modal key model (I4): bare keys vs Alt+key, exits as keys
+    ├── palette.ts            # palette ranking (exact prefix first)
+    ├── composer.ts           # sticky-mode line shaping + the "renders as" preview
+    ├── composing.ts          # the composing signal (start once, stop on send/idle)
+    ├── roomband.ts           # RoomView + ambient → the band's model
     ├── render.ts             # pure span/line renderers (mirrors mush-ansi formatting)
     ├── sheet.ts               # sheet schema/doc types + rendering helpers (hand-written; see below)
     ├── roll.ts                # Owod20Outcome types + roll-readout formatting (hand-written)
     ├── worldgen.ts             # worldgen.draft payload parsing + @gen/* Line builders (hand-written)
     ├── auth.ts               # /api/auth/* wrappers + friendly error mapping
     ├── theme.ts, storage.ts, history.ts
-    └── stores/               # rune stores: scrollback, channels, who, mail, session, sheet, rolls, worldgen
+    └── stores/               # rune stores: scrollback, channels, who, mail, session, sheet, rolls, worldgen,
+                              #   screens, commands, vitals, presence (I4)
 ```
+
+## Screens and keys (interface cut I4)
+
+The browser is a set of **numbered screens** (`$lib/stores/screens.svelte.ts`)
+sharing names and digits with the SSH TUI: 1 scene, 2 sheet, 3 mail, 4 chan,
+5 rolls, 7 actions, 8 build, 9 llm (6 is the TUI's intel screen). Each is
+gated on the hello's manifest; a ruleset screen registers by a panel-feed
+suffix (`registerFeedScreen`) and appears only when the server publishes
+that feed. One binding table per screen — `local` / `prefill` / `run` — with
+`run` held to a read-only verb list by `validateScreens` (D-I-18), so a bare
+key never sends a mutating command; the one carve-out is walking an exit on
+the scene screen (D-I-19).
+
+The shell is **modal** (D-I-17): input mode is "the composer has focus".
+While nothing has focus, `1`–`9` switch screens, `Enter` opens the composer
+(a highlighted row prefills it), `"` `:` `;` `\` open it with the trigger
+typed, `/` opens the palette, `?` the key help, the room's one-letter exits
+walk, and a letter runs the screen's own binding (the chips on the legend
+row — on a phone, where the on-screen keyboard makes focus the only mode,
+the chips are the whole story). Inside the composer, `Alt+key` performs the
+key's nav action (`Alt+1`, `Alt+n`, `Alt+?`) and `Ctrl/⌘+K` toggles the
+palette; `Enter` sends and keeps focus, `Enter` on an empty box and `Esc`
+blur it (`Esc` keeps the draft), `Shift+Enter` is a newline collapsed to a
+space on send. The whole table is `$lib/keys.ts`'s `navIntent`, pinned by
+vitest without a DOM.
+
+The composer's Say / Pose / Emit / OOC control is client-side (D-I-8): an
+explicit trigger or a channel alias verb always wins (`$lib/composer.ts`).
+Every keystroke feeds the **composing signal** (`$lib/composing.ts`): the
+client sends `composing { active: true }` on the first keystroke of a draft
+and `false` on send or after 5 s of silence; the gateway rate-limits starts
+to one per 2 s per connection and the engine fans the hint out to the room
+minus the typist, perceive-gated, never for a DARK actor, never when
+`pref:composing` is `off`, and never as an idle stamp (D-I-11). The room
+band shows the pills (`$lib/stores/presence.svelte.ts`, 8 s TTL; NPC
+"thinking" pills from `npc.thinking`, 20 s TTL).
+
+The **vitals strip** (`$lib/stores/vitals.svelte.ts`) renders every
+`<ruleset>.vitals` frame the hello manifest names — subscribed on hello and
+on every full rehydrate — dominant first, ignoring a lower revision; it
+replaces the textual prompt when a frame exists.
 
 ## WsClient (`src/lib/ws.ts`)
 
@@ -211,11 +263,11 @@ keyframe **and** a `<ruleset>.vitals` frame (`$lib/proto`'s `VitalsFrame`:
 the health track, the pools, the condition monitors, plus ruleset readouts)
 to the subject alone. The client-side compensations from before — the
 ruleset-tagged `Sys` refresh heuristic in `GameApp` and `SheetPanel`'s 12s
-poll — are now redundant for the sheet and retire with the screen shell in
-cut I4, which also renders the vitals strip; `SheetStore.applyKeyframe`
-already accepts the pushed frame today. Frames are whole keyframes; a true
-`Delta` remains a later refinement and `SheetStore.applyDelta` is ready for
-it.
+poll — were retired in cut I4 (the Refresh button and the sheet screen's `r`
+remain as manual nudges), which also renders the vitals strip;
+`SheetStore.applyKeyframe` accepts the pushed frame. Frames are whole
+keyframes; a true `Delta` remains a later refinement and
+`SheetStore.applyDelta` is ready for it.
 
 ## Worldgen draft panel — Build tab (M7)
 
@@ -284,13 +336,16 @@ fields) or omitted entirely when left blank.
 
 ## Panel hydration (GameApp)
 
-On every `hello` the app issues `Req`s: `who`, `panel_subscribe {feed:
-"comsys"}` (the ack IS the `comsys.state` keyframe), `mail_list`, and `sheet`
-— the latter three gated on the hello's features/panels (a tab hides when its
-module/panel is absent; `sheet` is gated on `sheetFeed` — see the Sheet +
-Rolls section above). Replies route by correlation id; reply errors arrive
-as `Sys` and land in scrollback (a `sheet` reply's `Sys` fallback also flips
-`SheetStore.unavailable` — see above).
+On every `hello` — and on a full rehydrate after a resume gap — the app
+issues the `Req`s `hydrationQueries` lists (`game.svelte.ts`, pinned by
+`hydration.test.ts`): `who`, `panel_subscribe {feed: "comsys"}` (the ack IS
+the `comsys.state` keyframe), `mail_list`, `sheet`, `commands` (the
+command table, once), a `panel_subscribe` for every `.vitals` feed and for
+`scenes` — each gated on the hello's features/panels (a screen hides when
+its module/panel is absent; `sheet` is gated on `sheetFeed` — see the Sheet
++ Rolls section above). Replies route by correlation id; reply errors
+arrive as `Sys` and land in scrollback (a `sheet` reply's `Sys` fallback
+also flips `SheetStore.unavailable` — see above).
 
 Design notes / deliberate simplifications:
 
@@ -309,4 +364,5 @@ Design notes / deliberate simplifications:
 - **Channel tab input** wraps lines in the member's alias verb
   (`pub <text>`), so `:`/`;` pose prefixes keep working.
 - **/commands** are client-local: `/clear`, `/theme [dark|light|system]`,
-  `/help`. Everything else goes to the game verbatim.
+  `/help`. Everything else goes to the game verbatim; the palette lists the
+  three beside the server's command table and keeps their slash.

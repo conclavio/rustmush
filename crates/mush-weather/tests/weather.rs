@@ -247,7 +247,7 @@ fn room_flags_gate_transition_broadcasts() {
 }
 
 #[test]
-fn look_appends_conditions_for_outdoor_and_sheltered() {
+fn look_carries_conditions_for_outdoor_rooms_only() {
     let mut tw = world(300, 0);
     let zone = tw
         .world_mut()

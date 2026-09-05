@@ -194,7 +194,7 @@ async fn login_create(
     term.expect("Welcome to the modules e2e MUSH!").await;
     term.send_line(&format!("create {name} {pw}")).await;
     term.expect(&format!("Connected as {name}")).await;
-    term.expect("Limbo(#0)").await;
+    term.expect("Limbo #0").await;
     (handle, term)
 }
 
@@ -212,7 +212,7 @@ async fn m3_cross_module_journey() {
     god.expect("Welcome to the modules e2e MUSH!").await;
     god.send_line(&format!("connect boss {GM_PASSWORD}")).await;
     god.expect("Connected as God").await;
-    god.expect("Limbo(#0)").await;
+    god.expect("Limbo #0").await;
 
     let (_alice_handle, mut alice) = login_create(addr, "Alice", "secret123").await;
     god.expect("Alice has connected.").await;
@@ -279,7 +279,7 @@ async fn m3_cross_module_journey() {
     // prompt — output after the pop must never redraw a stale "Mail>".
     let mark = alice.mark();
     alice.send_line("look").await;
-    alice.expect_after(mark, "Limbo(#0)").await;
+    alice.expect_after(mark, "Limbo #0").await;
     assert!(
         !strip_ansi(&alice.seen[mark..]).contains("Mail>"),
         "stale Mail> prompt redrawn after compose popped:\n{}",

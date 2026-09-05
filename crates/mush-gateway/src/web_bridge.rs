@@ -48,6 +48,7 @@
 use std::collections::HashMap;
 use std::net::IpAddr;
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use futures::future::BoxFuture;
 use mush_core::{DisconnectKind, ObjId};
@@ -88,6 +89,9 @@ pub struct WebBridge<A: AuthBackend + 'static> {
     /// `connect_character`/`resume` until `disconnected` (or the boot
     /// itself).
     conn_tokens: Mutex<HashMap<u64, String>>,
+    /// The composing-hint rate limit, per connection (interface plan I4,
+    /// D-I-11).
+    composing: Mutex<crate::composing::ComposingLimiter>,
     /// Shared metrics registry — web transport connection counters, and the
     /// registry the `/healthz` + `/metrics` endpoints read (via
     /// [`WebHooks::metrics`]). Defaults to a throwaway registry (tests); the
@@ -127,6 +131,7 @@ impl<A: AuthBackend + 'static> WebBridge<A> {
             store,
             panels,
             conn_tokens: Mutex::new(HashMap::new()),
+            composing: Mutex::new(crate::composing::ComposingLimiter::default()),
             metrics: Arc::new(mush_net_web::Metrics::new()),
         }
     }
@@ -704,8 +709,39 @@ impl<A: AuthBackend + 'static> WebHooks for WebBridge<A> {
         })
     }
 
+    fn composing(&self, conn: u64, active: bool) -> BoxFuture<'_, ()> {
+        Box::pin(async move {
+            // A hint, not input: no flood bucket and no idle stamp. The
+            // limiter keeps a burst of keystrokes to one hint per interval;
+            // an `active: false` always passes (interface plan I4, D-I-11).
+            let allowed = self
+                .composing
+                .lock()
+                .expect("composing limiter poisoned")
+                .allow(conn, active, Instant::now());
+            if !allowed {
+                return;
+            }
+            let Some(actor) = self.core.actor_of(ConnId(conn)) else {
+                return;
+            };
+            self.core
+                .link
+                .to_server(ToServer::Inbound(WireInbound::Composing {
+                    conn,
+                    actor,
+                    active,
+                }))
+                .await;
+        })
+    }
+
     fn disconnected(&self, conn: u64) -> BoxFuture<'_, ()> {
         Box::pin(async move {
+            self.composing
+                .lock()
+                .expect("composing limiter poisoned")
+                .forget(conn);
             self.conn_tokens
                 .lock()
                 .expect("conn_tokens lock")

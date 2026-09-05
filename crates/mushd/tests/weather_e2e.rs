@@ -35,7 +35,7 @@ async fn rain_rolls_in_demo() {
     god.expect(BANNER).await;
     god.send_line(&format!("connect boss {GM_PASSWORD}")).await;
     god.expect("Connected as God").await;
-    god.expect("Limbo(#0)").await;
+    god.expect("Limbo #0").await;
 
     // --- Build a zone with one OUTDOORS room and one INDOORS room. -------
     god.send_line("@create Downtown").await;

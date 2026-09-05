@@ -278,7 +278,7 @@ async fn m19_pubkey_and_plus_char_journey() {
     let mut t1 = shell_term(&h1).await;
     t1.expect("Connected as Ada (account duo, 1 connection).")
         .await;
-    t1.expect("Limbo(#0)").await;
+    t1.expect("Limbo #0").await;
 
     // --- key, no `+char`: lands on the two-character select screen. -------
     let mut h2 = russh::client::connect(Arc::clone(&config), addr, AcceptAll)
@@ -508,7 +508,7 @@ async fn m20_newchar_creates_playable_second_character_e2e() {
     let (casey_handle, mut casey) =
         password_into_char(addr, &config, "duo", GM_PASSWORD, "Casey").await;
     casey.expect("Connected as Casey").await;
-    casey.expect("Limbo(#0)").await;
+    casey.expect("Limbo #0").await;
 
     // --- a FRESH `ssh -i key duo+Casey@game` direct-enters Casey (N4,
     //     `<account>+<name>` login) — the account link is live. ------------
@@ -524,7 +524,7 @@ async fn m20_newchar_creates_playable_second_character_e2e() {
     );
     let mut tk = shell_term(&hk).await;
     tk.expect("Connected as Casey").await;
-    tk.expect("Limbo(#0)").await;
+    tk.expect("Limbo #0").await;
 
     for h in [nick_handle, casey_handle, hk] {
         let _ = h.disconnect(russh::Disconnect::ByApplication, "", "").await;
@@ -689,7 +689,7 @@ async fn m1_exit_criterion_full_journey() {
     god.send_line(&format!("connect boss {GM_PASSWORD}")).await;
     god.expect("Connected as God (account boss, 1 connection).")
         .await;
-    god.expect("Limbo(#0)").await;
+    god.expect("Limbo #0").await;
 
     // --- Alice and Bob create accounts and land in the shared room. ------
     let (alice_handle, mut alice) = play_client(addr).await;
@@ -699,14 +699,14 @@ async fn m1_exit_criterion_full_journey() {
     alice
         .expect("Connected as Alice (account Alice, 1 connection).")
         .await;
-    alice.expect("Limbo(#0)").await;
+    alice.expect("Limbo #0").await;
     god.expect("Alice has connected.").await;
 
     let (_bob_handle, mut bob) = play_client(addr).await;
     bob.send_line("create Bob hunter42").await;
     bob.expect("Connected as Bob (account Bob, 1 connection).")
         .await;
-    bob.expect("Limbo(#0)").await;
+    bob.expect("Limbo #0").await;
     alice.expect("Bob has connected.").await;
 
     // --- say fans out room-wide (speaker included, third person). --------
@@ -740,17 +740,17 @@ async fn m1_exit_criterion_full_journey() {
     god.expect("Opened exit west(").await;
 
     bob.send_line("east").await;
-    bob.expect("Vault(#").await;
+    bob.expect("Vault #").await;
     alice.expect("Bob goes east.").await;
     let bob_back = bob.mark();
     bob.send_line("west").await;
-    bob.expect_after(bob_back, "Limbo(#0)").await;
+    bob.expect_after(bob_back, "Limbo #0").await;
     alice.expect("Bob has arrived.").await;
 
     // --- WHO: all three, with real idle/conn columns. --------------------
     let who_mark = bob.mark();
     bob.send_line("WHO").await;
-    bob.expect_after(who_mark, "3 players connected.").await;
+    bob.expect_after(who_mark, "3 connected, ").await;
     let block = strip_ansi(&bob.seen[who_mark..]);
     let (_alice_idle, alice_conn) = who_row(&block, "Alice");
     let (bob_idle, _bob_conn) = who_row(&block, "Bob");
@@ -786,7 +786,7 @@ async fn m1_exit_criterion_full_journey() {
     bob2.send_line("connect Bob hunter42").await;
     bob2.expect("Connected as Bob (account Bob, 1 connection).")
         .await;
-    bob2.expect("Limbo(#0)").await;
+    bob2.expect("Limbo #0").await;
     god.expect_after(god_rejoin, "Bob has reconnected.").await;
 
     // The revived session still routes both ways.

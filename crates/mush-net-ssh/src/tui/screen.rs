@@ -1,0 +1,633 @@
+//! The screen model (interface plan I2, D-I-7, D-I-17, D-I-18, D-I-19):
+//! numbered screens of titled panes, each with a legend of single-key
+//! bindings, a drop order for small terminals, and — for the scene screen
+//! — the room's one-letter exits as keys.
+//!
+//! A binding is [`KeyAction::Local`] (a client toggle), a
+//! [`KeyAction::Prefill`] (enter input mode with a line ready; nothing is
+//! sent until Enter), or a [`KeyAction::Run`], and `Run` is confined to the
+//! read-only verbs in [`RUN_ALLOWLIST`]: [`validate_screens`] refuses
+//! anything else, so a bare key can never fire, spend or send. The one
+//! carve-out — walking an exit on the scene screen — is not a table entry
+//! at all: the app builds it from each `Room` event (D-I-19).
+//!
+//! Screens are data. The built-ins live in [`builtin_screens`]; a ruleset
+//! screen is one more [`Screen`] value passed to the app, not a rewrite.
+
+use serde_json::Value;
+
+use super::render::{PaneRows, RenderCtx};
+
+/// The most screens a TUI can register (the hotkey digits `1`–`9`).
+pub const MAX_SCREENS: usize = 9;
+/// The most panes one screen may declare.
+pub const MAX_PANES_PER_SCREEN: usize = 8;
+
+/// The letters the scene screen never binds itself, so a room's exits can
+/// always use them (D-I-19). Other screens may bind them freely.
+pub const RESERVED_EXIT_KEYS: [char; 7] = ['n', 'e', 's', 'w', 'u', 'd', 'o'];
+
+/// The keys every screen inherits and may not rebind (§7 of the plan):
+/// the digits, the mode triggers, the palette, help, and the pane-jump
+/// letters.
+pub const GLOBAL_KEYS: [char; 15] = [
+    '1', '2', '3', '4', '5', '6', '7', '8', '9', '"', ':', ';', '\\', '/', '?',
+];
+/// `g` / `G` jump a pane to its top and bottom in nav mode.
+pub const JUMP_KEYS: [char; 2] = ['g', 'G'];
+
+/// Verbs a bare key may send (D-I-18). Every entry reads state and changes
+/// nothing; the probe in [`validate_screens`] holds every `Run` to this
+/// list by its first word.
+pub const RUN_ALLOWLIST: &[&str] = &[
+    "look",
+    "l",
+    "who",
+    "inventory",
+    "i",
+    "+sheet",
+    "+contacts",
+    "+orders",
+    "+intel",
+    "+actions",
+    "+scene",
+    "+recap",
+    "+roll/last",
+    "help",
+    "@mail",
+];
+
+/// A screen's hotkey digit, `1..=9`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct ScreenId(pub u8);
+
+/// A pane's stable name within its screen.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct PaneId(pub &'static str);
+
+/// How a pane's frame is styled.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BorderRole {
+    /// The default frame.
+    Neutral,
+    /// A unit or subject pane (cyan).
+    Unit,
+    /// In-character content (green).
+    Ic,
+    /// Out-of-character content (yellow).
+    Ooc,
+    /// Something demanding attention (red).
+    Danger,
+}
+
+/// Where a pane sits: the main column, or a stacked left / right column.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PaneSlot {
+    /// The wide column that takes whatever is left.
+    Main,
+    /// A fixed-width column on the left.
+    Left,
+    /// A fixed-width column on the right.
+    Right,
+}
+
+/// A renderer for a panel keyframe: the feed's JSON to rows.
+pub type PanelRenderer = fn(&Value, &RenderCtx<'_>) -> PaneRows;
+
+/// What a pane shows.
+#[derive(Clone, Copy, Debug)]
+pub enum PaneContent {
+    /// The scrollback ring with its speaker gutter.
+    Scrollback,
+    /// The WHO rail.
+    Who,
+    /// A panel feed's latest keyframe, rendered by `render`.
+    Panel {
+        /// The feed name in the panel store.
+        feed: &'static str,
+        /// Keyframe JSON to rows.
+        render: PanelRenderer,
+    },
+    /// A semantic view's latest keyframe (`OutputEvent::View`).
+    View {
+        /// The view name.
+        view: &'static str,
+        /// Keyframe JSON to rows.
+        render: PanelRenderer,
+    },
+    /// The first `.sheet` keyframe in the store, walked generically.
+    Sheet,
+    /// The comsys channel list.
+    Channels,
+    /// Live and recalled messages of the highlighted channel.
+    Backlog,
+    /// The `.roll` feeds' ring.
+    Rolls,
+}
+
+/// One pane of a screen.
+#[derive(Clone, Copy, Debug)]
+pub struct PaneSpec {
+    /// The pane's name (unique within the screen).
+    pub id: PaneId,
+    /// Frame title.
+    pub title: &'static str,
+    /// Frame styling.
+    pub role: BorderRole,
+    /// Which column the pane lives in.
+    pub slot: PaneSlot,
+    /// What it shows.
+    pub content: PaneContent,
+    /// Below this width the pane is dropped (see [`Screen::degrade`]).
+    pub min_w: u16,
+    /// Below this height the pane is dropped.
+    pub min_h: u16,
+    /// Whether Up/Down move a highlighted row (a row pane) rather than
+    /// scrolling text.
+    pub selectable: bool,
+}
+
+/// A client-side action a key may perform.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LocalAction {
+    /// Re-query the pane's feed.
+    Refresh,
+    /// Request backlog for the highlighted channel.
+    Backlog,
+    /// Empty the scrollback ring.
+    ClearScrollback,
+}
+
+/// What a bound key does (D-I-18).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KeyAction {
+    /// A client toggle: focus, filter, refresh, overlay.
+    Local(LocalAction),
+    /// Enter input mode with this line ready; nothing is sent.
+    Prefill(&'static str),
+    /// Enter input mode with this prefix followed by the focused pane's
+    /// highlighted row key (a mail index, a contact id); nothing is sent.
+    PrefillRow(&'static str),
+    /// Send now — read-only verbs only.
+    Run(&'static str),
+}
+
+/// One legend entry.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct KeyBinding {
+    /// The bare key in nav mode (Alt+key in input mode).
+    pub key: char,
+    /// The legend word.
+    pub label: &'static str,
+    /// What it does.
+    pub action: KeyAction,
+}
+
+/// One numbered screen.
+#[derive(Clone, Debug)]
+pub struct Screen {
+    /// The hotkey digit.
+    pub id: ScreenId,
+    /// The tab-strip name.
+    pub name: &'static str,
+    /// Panes in focus order (the first is focused on entry).
+    pub panes: Vec<PaneSpec>,
+    /// The screen's own bindings, printed on the legend.
+    pub keys: Vec<KeyBinding>,
+    /// Panes to drop, in order, when the terminal is too small.
+    pub degrade: Vec<PaneId>,
+    /// Whether the room's one-letter exits are keys here (D-I-19; the
+    /// scene screen).
+    pub exits_are_keys: bool,
+    /// Queries to submit when the screen is entered (`(name, args)`).
+    pub on_enter: Vec<(&'static str, Value)>,
+}
+
+impl Screen {
+    /// The binding for `key`, if the screen has one.
+    #[must_use]
+    pub fn binding(&self, key: char) -> Option<&KeyBinding> {
+        self.keys.iter().find(|b| b.key == key)
+    }
+
+    /// The pane named `id`.
+    #[must_use]
+    pub fn pane(&self, id: PaneId) -> Option<&PaneSpec> {
+        self.panes.iter().find(|p| p.id == id)
+    }
+}
+
+/// The seven built-in screens: 1 scene, 2 sheet, 3 mail, 4 chan, 5 rolls,
+/// 6 intel, 7 actions.
+#[must_use]
+pub fn builtin_screens() -> Vec<Screen> {
+    use super::render::{
+        render_actions_rows, render_intel_rows, render_mail_rows, render_scene_rows,
+    };
+    vec![
+        Screen {
+            id: ScreenId(1),
+            name: "scene",
+            panes: vec![
+                PaneSpec {
+                    id: PaneId("scrollback"),
+                    title: "rustmush",
+                    role: BorderRole::Ic,
+                    slot: PaneSlot::Main,
+                    content: PaneContent::Scrollback,
+                    // A reading width: below it the side panes go, so 80
+                    // columns is scrollback, input and the chrome alone.
+                    min_w: 60,
+                    min_h: 3,
+                    selectable: false,
+                },
+                PaneSpec {
+                    id: PaneId("who"),
+                    title: "WHO",
+                    role: BorderRole::Ooc,
+                    slot: PaneSlot::Right,
+                    content: PaneContent::Who,
+                    min_w: 24,
+                    min_h: 4,
+                    selectable: false,
+                },
+                PaneSpec {
+                    id: PaneId("scene"),
+                    title: "scene",
+                    role: BorderRole::Neutral,
+                    slot: PaneSlot::Right,
+                    content: PaneContent::Panel {
+                        feed: "scenes",
+                        render: render_scene_rows,
+                    },
+                    min_w: 24,
+                    min_h: 4,
+                    selectable: false,
+                },
+                PaneSpec {
+                    id: PaneId("actions"),
+                    title: "actions",
+                    role: BorderRole::Neutral,
+                    slot: PaneSlot::Right,
+                    content: PaneContent::View {
+                        view: "legal.actions",
+                        render: render_actions_rows,
+                    },
+                    min_w: 24,
+                    min_h: 4,
+                    selectable: true,
+                },
+            ],
+            keys: vec![
+                KeyBinding {
+                    key: 'l',
+                    label: "look",
+                    action: KeyAction::Run("look"),
+                },
+                KeyBinding {
+                    key: 'i',
+                    label: "inventory",
+                    action: KeyAction::Run("inventory"),
+                },
+                KeyBinding {
+                    key: 'p',
+                    label: "page",
+                    action: KeyAction::Prefill("page "),
+                },
+                KeyBinding {
+                    key: 'r',
+                    label: "roll",
+                    action: KeyAction::Prefill("+roll "),
+                },
+                KeyBinding {
+                    key: 'a',
+                    label: "act",
+                    action: KeyAction::PrefillRow("+act "),
+                },
+            ],
+            degrade: vec![PaneId("actions"), PaneId("scene"), PaneId("who")],
+            exits_are_keys: true,
+            on_enter: vec![("legal.actions", Value::Object(serde_json::Map::new()))],
+        },
+        Screen {
+            id: ScreenId(2),
+            name: "sheet",
+            panes: vec![PaneSpec {
+                id: PaneId("sheet"),
+                title: "sheet",
+                role: BorderRole::Unit,
+                slot: PaneSlot::Main,
+                content: PaneContent::Sheet,
+                min_w: 20,
+                min_h: 3,
+                selectable: false,
+            }],
+            keys: vec![KeyBinding {
+                key: 'r',
+                label: "refresh",
+                action: KeyAction::Local(LocalAction::Refresh),
+            }],
+            degrade: vec![],
+            exits_are_keys: false,
+            on_enter: vec![],
+        },
+        Screen {
+            id: ScreenId(3),
+            name: "mail",
+            panes: vec![PaneSpec {
+                id: PaneId("mail"),
+                title: "@mail",
+                role: BorderRole::Ooc,
+                slot: PaneSlot::Main,
+                content: PaneContent::Panel {
+                    feed: "mail",
+                    render: render_mail_rows,
+                },
+                min_w: 20,
+                min_h: 3,
+                selectable: true,
+            }],
+            keys: vec![
+                KeyBinding {
+                    key: 'r',
+                    label: "refresh",
+                    action: KeyAction::Local(LocalAction::Refresh),
+                },
+                KeyBinding {
+                    key: 's',
+                    label: "send",
+                    action: KeyAction::Prefill("@mail/send "),
+                },
+                KeyBinding {
+                    key: 'd',
+                    label: "delete",
+                    action: KeyAction::PrefillRow("@mail/delete "),
+                },
+            ],
+            degrade: vec![],
+            exits_are_keys: false,
+            on_enter: vec![("mail.list", Value::Object(serde_json::Map::new()))],
+        },
+        Screen {
+            id: ScreenId(4),
+            name: "chan",
+            panes: vec![
+                PaneSpec {
+                    id: PaneId("backlog"),
+                    title: "channel",
+                    role: BorderRole::Ooc,
+                    slot: PaneSlot::Main,
+                    content: PaneContent::Backlog,
+                    min_w: 20,
+                    min_h: 3,
+                    selectable: false,
+                },
+                PaneSpec {
+                    id: PaneId("channels"),
+                    title: "channels",
+                    role: BorderRole::Ooc,
+                    slot: PaneSlot::Left,
+                    content: PaneContent::Channels,
+                    min_w: 26,
+                    min_h: 3,
+                    selectable: true,
+                },
+            ],
+            keys: vec![
+                KeyBinding {
+                    key: 'r',
+                    label: "refresh",
+                    action: KeyAction::Local(LocalAction::Refresh),
+                },
+                KeyBinding {
+                    key: 'b',
+                    label: "backlog",
+                    action: KeyAction::Local(LocalAction::Backlog),
+                },
+            ],
+            degrade: vec![PaneId("channels")],
+            exits_are_keys: false,
+            on_enter: vec![("comsys.state", Value::Object(serde_json::Map::new()))],
+        },
+        Screen {
+            id: ScreenId(5),
+            name: "rolls",
+            panes: vec![PaneSpec {
+                id: PaneId("rolls"),
+                title: "rolls",
+                role: BorderRole::Unit,
+                slot: PaneSlot::Main,
+                content: PaneContent::Rolls,
+                min_w: 20,
+                min_h: 3,
+                selectable: false,
+            }],
+            keys: vec![
+                KeyBinding {
+                    key: 'r',
+                    label: "roll",
+                    action: KeyAction::Prefill("+roll "),
+                },
+                KeyBinding {
+                    key: 'h',
+                    label: "history",
+                    action: KeyAction::Run("+roll/last"),
+                },
+            ],
+            degrade: vec![],
+            exits_are_keys: false,
+            on_enter: vec![],
+        },
+        Screen {
+            id: ScreenId(6),
+            name: "intel",
+            panes: vec![PaneSpec {
+                id: PaneId("intel"),
+                title: "+intel",
+                role: BorderRole::Neutral,
+                slot: PaneSlot::Main,
+                content: PaneContent::Panel {
+                    feed: "intel",
+                    render: render_intel_rows,
+                },
+                min_w: 20,
+                min_h: 3,
+                selectable: false,
+            }],
+            keys: vec![KeyBinding {
+                key: 'r',
+                label: "refresh",
+                action: KeyAction::Local(LocalAction::Refresh),
+            }],
+            degrade: vec![],
+            exits_are_keys: false,
+            on_enter: vec![("intel.list", Value::Object(serde_json::Map::new()))],
+        },
+        Screen {
+            id: ScreenId(7),
+            name: "actions",
+            panes: vec![PaneSpec {
+                id: PaneId("actions"),
+                title: "+actions",
+                role: BorderRole::Neutral,
+                slot: PaneSlot::Main,
+                content: PaneContent::View {
+                    view: "legal.actions",
+                    render: render_actions_rows,
+                },
+                min_w: 20,
+                min_h: 3,
+                selectable: true,
+            }],
+            keys: vec![
+                KeyBinding {
+                    key: 'r',
+                    label: "refresh",
+                    action: KeyAction::Local(LocalAction::Refresh),
+                },
+                KeyBinding {
+                    key: 'a',
+                    label: "act",
+                    action: KeyAction::PrefillRow("+act "),
+                },
+            ],
+            degrade: vec![],
+            exits_are_keys: false,
+            on_enter: vec![("legal.actions", Value::Object(serde_json::Map::new()))],
+        },
+    ]
+}
+
+/// The binding-table probe (D-I-18, D-I-19): every `Run` verb is on the
+/// read-only list, no screen rebinds a global or jump key, the screen
+/// that gives exits keys never binds a reserved exit letter, ids are
+/// unique and within the caps, every `degrade` entry names a pane.
+///
+/// # Errors
+///
+/// The first violation found, in words.
+pub fn validate_screens(screens: &[Screen]) -> Result<(), String> {
+    if screens.len() > MAX_SCREENS {
+        return Err(format!("{} screens exceed MAX_SCREENS", screens.len()));
+    }
+    let mut seen_ids = Vec::new();
+    for s in screens {
+        if !(1..=9).contains(&s.id.0) {
+            return Err(format!("screen {:?} is not a digit 1-9", s.name));
+        }
+        if seen_ids.contains(&s.id) {
+            return Err(format!("screen digit {} is used twice", s.id.0));
+        }
+        seen_ids.push(s.id);
+        if s.panes.len() > MAX_PANES_PER_SCREEN {
+            return Err(format!("screen {} exceeds MAX_PANES_PER_SCREEN", s.name));
+        }
+        let mut pane_ids: Vec<PaneId> = Vec::new();
+        for p in &s.panes {
+            if pane_ids.contains(&p.id) {
+                return Err(format!("screen {}: pane {} declared twice", s.name, p.id.0));
+            }
+            pane_ids.push(p.id);
+        }
+        for d in &s.degrade {
+            if !pane_ids.contains(d) {
+                return Err(format!(
+                    "screen {}: degrade names unknown pane {}",
+                    s.name, d.0
+                ));
+            }
+        }
+        let mut keys: Vec<char> = Vec::new();
+        for b in &s.keys {
+            if GLOBAL_KEYS.contains(&b.key) || JUMP_KEYS.contains(&b.key) {
+                return Err(format!(
+                    "screen {}: {:?} rebinds a global key",
+                    s.name, b.key
+                ));
+            }
+            if s.exits_are_keys && RESERVED_EXIT_KEYS.contains(&b.key) {
+                return Err(format!(
+                    "screen {}: {:?} is reserved for exits",
+                    s.name, b.key
+                ));
+            }
+            if keys.contains(&b.key) {
+                return Err(format!("screen {}: {:?} bound twice", s.name, b.key));
+            }
+            keys.push(b.key);
+            if let KeyAction::Run(cmd) = b.action {
+                let verb = cmd.split_whitespace().next().unwrap_or("");
+                if !RUN_ALLOWLIST
+                    .iter()
+                    .any(|allowed| allowed.eq_ignore_ascii_case(verb))
+                {
+                    return Err(format!(
+                        "screen {}: {:?} runs {cmd:?}, not a read-only verb",
+                        s.name, b.key
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn builtins_pass_the_probe_and_the_scene_screen_reserves_exit_letters() {
+        let screens = builtin_screens();
+        validate_screens(&screens).expect("built-ins are valid");
+        let scene = screens.iter().find(|s| s.id == ScreenId(1)).unwrap();
+        assert!(scene.exits_are_keys);
+        for b in &scene.keys {
+            assert!(!RESERVED_EXIT_KEYS.contains(&b.key), "{:?}", b.key);
+        }
+        // Another screen may use those letters.
+        let mail = screens.iter().find(|s| s.id == ScreenId(3)).unwrap();
+        assert!(mail.binding('s').is_some() && mail.binding('d').is_some());
+    }
+
+    #[test]
+    fn a_mutating_run_or_a_reserved_letter_fails_the_probe() {
+        let mut screens = builtin_screens();
+        screens[0].keys.push(KeyBinding {
+            key: 'f',
+            label: "fire",
+            action: KeyAction::Run("+fire a"),
+        });
+        let err = validate_screens(&screens).unwrap_err();
+        assert!(err.contains("not a read-only verb"), "{err}");
+
+        let mut screens = builtin_screens();
+        screens[0].keys.push(KeyBinding {
+            key: 'n',
+            label: "new",
+            action: KeyAction::Prefill("@dig "),
+        });
+        let err = validate_screens(&screens).unwrap_err();
+        assert!(err.contains("reserved for exits"), "{err}");
+
+        let mut screens = builtin_screens();
+        screens[1].keys.push(KeyBinding {
+            key: '?',
+            label: "help",
+            action: KeyAction::Local(LocalAction::Refresh),
+        });
+        assert!(
+            validate_screens(&screens)
+                .unwrap_err()
+                .contains("global key")
+        );
+
+        let mut screens = builtin_screens();
+        screens[1].id = ScreenId(1);
+        assert!(
+            validate_screens(&screens)
+                .unwrap_err()
+                .contains("used twice")
+        );
+    }
+}

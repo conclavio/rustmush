@@ -89,12 +89,12 @@ async fn kill9_mid_play_world_survives_redis_gated() {
     god.expect("connect <account> <password>").await;
     god.send_line(&format!("connect boss {GM_PASSWORD}")).await;
     god.expect("Connected as God").await;
-    god.expect("Limbo(#0)").await;
+    god.expect("Limbo #0").await;
 
     let (_nick_handle, mut nick) = play_client(addr).await;
     nick.send_line("create Nick hunter42").await;
     nick.expect("Connected as Nick").await;
-    nick.expect("Limbo(#0)").await;
+    nick.expect("Limbo #0").await;
     god.expect("Nick has connected.").await;
 
     god.send_line("@dig Vault = east;e, west;w").await;
@@ -159,7 +159,7 @@ async fn kill9_mid_play_world_survives_redis_gated() {
     let (_god2_handle, mut god2) = play_client(addr2).await;
     god2.send_line(&format!("connect boss {GM_PASSWORD}")).await;
     god2.expect("Connected as God").await;
-    god2.expect("Limbo(#0)").await;
+    god2.expect("Limbo #0").await;
     // @desc survived.
     god2.expect("A featureless white plain.").await;
 
@@ -178,7 +178,7 @@ async fn kill9_mid_play_world_survives_redis_gated() {
     // The exits survived both ways: walk back into Limbo.
     let mark = nick2.mark();
     nick2.send_line("west").await;
-    nick2.expect_after(mark, "Limbo(#0)").await;
+    nick2.expect_after(mark, "Limbo #0").await;
     god2.expect("Nick has arrived.").await;
 
     // next_id did not regress: a fresh @create must not alias any

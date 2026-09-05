@@ -234,7 +234,7 @@ async fn two_process_connect_play_boot_disconnect() {
     god.send_line(&format!("connect boss {GM_PASSWORD}")).await;
     god.expect("Connected as God (account boss, 1 connection).")
         .await;
-    god.expect("Limbo(#0)").await;
+    god.expect("Limbo #0").await;
 
     // --- Alice creates an account (CreatePlayer ServiceReq round-trips) ---
     let (_a, mut alice) = play_client(ssh_addr).await;
@@ -243,7 +243,7 @@ async fn two_process_connect_play_boot_disconnect() {
     alice
         .expect("Connected as Alice (account Alice, 1 connection).")
         .await;
-    alice.expect("Limbo(#0)").await;
+    alice.expect("Limbo #0").await;
     god.expect("Alice has connected.").await;
 
     // --- Alice says, God hears: full cross-process say round trip ---

@@ -29,19 +29,9 @@
 
   const sheet = $derived(app.sheet);
 
-  // A light visibility poll: guarantees the panel eventually catches up
-  // even on the one common mutation the Sys-tag heuristic in game.svelte.ts
-  // can't see (a public, non-/priv `+roll/wp` — see its doc comment), and
-  // costs nothing when the tab is closed since this component then isn't
-  // mounted at all (RightPanel unmounts the inactive tab).
-  const POLL_MS = 12_000;
-  $effect(() => {
-    if (sheet.unavailable || app.session.sheetFeed === null) {
-      return;
-    }
-    const id = setInterval(() => app.refreshSheet(), POLL_MS);
-    return () => clearInterval(id);
-  });
+  // No poll: since interface cut I1 every command-side sheet write
+  // republishes the keyframe to the subject (see web/README.md), so the
+  // panel is live by push; the Refresh button remains a manual nudge.
 </script>
 
 {#snippet pips(value: number, max: number)}

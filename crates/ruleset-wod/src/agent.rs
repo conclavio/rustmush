@@ -26,6 +26,7 @@ use mush_ruleset::schema::{FieldType, SheetSchema};
 use mush_ruleset::{
     AbilityError, AbilityOutcome, AgentCapabilityProfile, AgentToolSpec, SheetDoc, SheetStore,
 };
+use mush_ruleset::{RollSide, roll_narration};
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 use smol_str::SmolStr;
@@ -224,7 +225,7 @@ fn wod_roll(
     // is perceived-or-not per onlooker rather than broadcast (V4: the NPC path
     // does not bypass projection).
     let expr_label = pool_label(&resolved);
-    let line = render_line(w, npc, &expr_label, pool, wound, incap, &outcome);
+    let (line, narration) = render_line(w, npc, &expr_label, pool, wound, incap, &outcome);
     let npc_name = w
         .get(npc)
         .map_or_else(|| npc.to_string(), |o| primary_name(&o.name).to_string());
@@ -246,7 +247,7 @@ fn wod_roll(
             }))
         }
         None => {
-            emit(w, out, npc, &line, &outcome);
+            emit(w, out, npc, &line, &narration, &outcome);
             None
         }
     };
@@ -273,7 +274,8 @@ fn pool_label(resolved: &ResolvedPool) -> String {
         .join("+")
 }
 
-/// The classic one-line roll render for the room.
+/// The classic one-line roll record and, beside it, the one-line room
+/// narration (interface plan I3) — the same pair a player `+roll` produces.
 fn render_line(
     w: &World,
     npc: ObjId,
@@ -282,7 +284,7 @@ fn render_line(
     wound: i32,
     incap: bool,
     outcome: &Owod20Outcome,
-) -> String {
+) -> (String, RichText) {
     let name = w
         .get(npc)
         .map_or_else(|| npc.to_string(), |o| primary_name(&o.name).to_string());
@@ -291,18 +293,38 @@ fn render_line(
         outcome.difficulty,
         outcome.summary()
     );
+    let mut notes = vec![format!("diff {}", outcome.difficulty)];
     if wound < 0 {
         s.push_str(&format!(" [wound {wound}]"));
+        notes.push(format!("[wound {wound}]"));
     }
     if incap {
         s.push_str(" [incapacitated]");
+        notes.push("[incapacitated]".to_string());
     }
-    s
+    let narration = roll_narration(
+        &RollSide {
+            name: &name,
+            expr: expr_label,
+            dice: &outcome.dice_text(),
+            result: &outcome.result_text(),
+        },
+        &notes,
+    );
+    (s, narration)
 }
 
-/// Broadcast the roll line to the NPC's room and push a `wod.roll` keyframe —
-/// the mundane path, identical to a player `+roll`.
-fn emit(w: &World, out: &mut Outbox, npc: ObjId, line: &str, outcome: &Owod20Outcome) {
+/// Broadcast the roll narration to the NPC's room and push a `wod.roll`
+/// keyframe (carrying the classic line) — the mundane path, identical to a
+/// player `+roll`.
+fn emit(
+    w: &World,
+    out: &mut Outbox,
+    npc: ObjId,
+    line: &str,
+    narration: &RichText,
+    outcome: &Owod20Outcome,
+) {
     if let Some(loc) = w.get(npc).and_then(|o| o.location) {
         out.to_room(
             loc,
@@ -310,7 +332,7 @@ fn emit(w: &World, out: &mut Outbox, npc: ObjId, line: &str, outcome: &Owod20Out
             OutputEvent::Narrative {
                 kind: NarrativeKind::Emit,
                 actor: Some(obj_ref(w, npc)),
-                text: RichText::plain(line),
+                text: narration.clone(),
             },
         );
     }

@@ -128,7 +128,7 @@ async fn login_create(
     term.expect("Welcome to the splat e2e MUSH!").await;
     term.send_line(&format!("create {name} {pw}")).await;
     term.expect(&format!("Connected as {name}")).await;
-    term.expect("Limbo(#0)").await;
+    term.expect("Limbo #0").await;
     (handle, term)
 }
 
@@ -255,7 +255,7 @@ async fn m6b_wod_splats_full_journey() {
     god.expect("Welcome to the splat e2e MUSH!").await;
     god.send_line(&format!("connect boss {GM_PASSWORD}")).await;
     god.expect("Connected as God").await;
-    god.expect("Limbo(#0)").await;
+    god.expect("Limbo #0").await;
 
     let (_vlad_handle, mut vlad) = login_create(addr, "Vlad", "secret123").await;
     god.expect("Vlad has connected.").await;

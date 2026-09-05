@@ -474,7 +474,7 @@ pub async fn login_create(
     let (handle, mut term) = play_client(addr).await;
     term.send_line(&format!("create {name} {pw}")).await;
     term.expect(&format!("Connected as {name}")).await;
-    term.expect("Limbo(#0)").await;
+    term.expect("Limbo #0").await;
     (handle, term)
 }
 

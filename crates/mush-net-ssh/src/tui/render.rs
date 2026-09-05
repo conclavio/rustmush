@@ -1,27 +1,113 @@
-//! [`OutputEvent`] -> ratatui [`Line`]s — the TUI's clean-room sibling of
-//! `mush_ansi::render` (design M15 D3/main-frame).
+//! Rendering for the modal TUI (interface plan I2): [`OutputEvent`]s to
+//! scrollback [`Entry`]s with a speaker gutter, panel keyframes to
+//! [`PaneRows`], the chrome (tab strip, status line, vitals strip, legend),
+//! and span wrapping with a hanging indent.
 //!
 //! The same semantic event stream that the line renderer turns into
-//! CRLF-terminated ANSI is turned here into owned `Line<'static>` values for
-//! the scrollback ring. Word-wrapping is *not* done here: the main-frame
-//! `Paragraph` wraps at paint time against the live pane width, so a resize
-//! reflows without re-rendering history. Semantic span tags resolve through
-//! the shared [`AnsiTheme`] and colors downgrade to the connection's
-//! [`ColorDepth`] exactly as they do on the line side.
-//!
-//! Scrollback-bearing variants (`Room`, `Narrative`, `Sys`, `Channel`,
-//! `MailNotice`, `Weather`, `Hello`, `SessionInfo`, `Disconnect`, and a
-//! `Reply` unwrapping to one of those) yield lines; `Who` feeds the WHO rail
-//! and `Prompt` drives the input line, so both yield nothing here; `Panel`,
-//! `Ping`, and `Resumed` render nothing, matching the line renderer.
+//! CRLF-terminated ANSI is turned here into owned ratatui spans. Semantic
+//! tags resolve through the shared [`AnsiTheme`] and colors downgrade to
+//! the connection's [`ColorDepth`] exactly as they do on the line side;
+//! control characters are stripped everywhere (the same injection defense).
+//! Panel data is read defensively: a missing or malformed field degrades to
+//! a placeholder rather than panicking (invariant T6).
 
 use mush_ansi::{AnsiTheme, fmt_duration, merge_styles};
 use mush_proto::{
     ClientCaps, Color as MushColor, ColorDepth, NarrativeKind, ObjRef, OutputEvent,
-    ProjectedActionReceipt, RichText, RoomView, Span as MushSpan, Style as MushStyle, WhoEntry,
+    ProjectedActionReceipt, RichText, RoomView, Span as MushSpan, Style as MushStyle, VitalRole,
+    VitalState, VitalValue, VitalsFrame, WhoEntry,
 };
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
+use serde_json::Value;
+
+use super::panels::{ChanMsg, PanelStore, rich_plain};
+use super::sheet::{Glyphs, SheetRow, sheet_rows};
+
+/// The speaker gutter's width (plan §7).
+pub const GUTTER_W: usize = 10;
+
+/// One scrollback entry: a gutter (the speaker, a clock, a `roll` marker)
+/// and a body that wraps with a hanging indent under the gutter.
+#[derive(Clone, Debug)]
+pub struct Entry {
+    /// The gutter cell; `None` for a continuation line of the same event.
+    pub gutter: Option<Span<'static>>,
+    /// The body spans.
+    pub body: Vec<Span<'static>>,
+    /// When the entry was applied (Unix seconds).
+    pub at: i64,
+}
+
+/// One rendered pane row.
+#[derive(Clone, Debug)]
+pub struct PaneRow {
+    /// The row's spans.
+    pub line: Line<'static>,
+    /// The line `Enter` prefills when this row is highlighted.
+    pub prefill: Option<String>,
+    /// The key a [`KeyAction::PrefillRow`](super::screen::KeyAction)
+    /// appends (a mail index, a verb, a channel).
+    pub row_key: Option<String>,
+    /// Whether the highlight may rest on this row.
+    pub selectable: bool,
+}
+
+impl PaneRow {
+    fn plain(line: Line<'static>) -> PaneRow {
+        PaneRow {
+            line,
+            prefill: None,
+            row_key: None,
+            selectable: false,
+        }
+    }
+
+    fn selectable(line: Line<'static>, prefill: String, row_key: String) -> PaneRow {
+        PaneRow {
+            line,
+            prefill: Some(prefill),
+            row_key: Some(row_key),
+            selectable: true,
+        }
+    }
+}
+
+/// A pane's rendered rows.
+#[derive(Clone, Debug, Default)]
+pub struct PaneRows {
+    /// The rows, top to bottom.
+    pub rows: Vec<PaneRow>,
+}
+
+impl PaneRows {
+    fn one(text: &str) -> PaneRows {
+        PaneRows {
+            rows: vec![PaneRow::plain(Line::from(dim_span_owned(text)))],
+        }
+    }
+}
+
+/// What a pane renderer may read.
+#[derive(Clone, Copy)]
+pub struct RenderCtx<'a> {
+    /// The theme.
+    pub theme: &'a AnsiTheme,
+    /// The connection's color depth.
+    pub depth: ColorDepth,
+    /// Whether the terminal shows UTF-8.
+    pub utf8: bool,
+    /// The store, for renderers that combine feeds.
+    pub store: &'a PanelStore,
+    /// The channel the backlog pane shows.
+    pub selected_channel: Option<&'a str>,
+}
+
+impl RenderCtx<'_> {
+    fn tag(&self, tag: &str) -> Style {
+        to_ratatui_style(self.theme.style_for(Some(tag)), self.depth)
+    }
+}
 
 /// Map a downgraded `mush_proto` color to a ratatui color. Palette index
 /// `0..=15` stays an [`Color::Indexed`] (the [`super::backend::SshBackend`]
@@ -37,6 +123,7 @@ fn mush_to_ratatui_color(c: MushColor) -> Color {
 /// Convert a `mush_proto` [`Style`](MushStyle) to a ratatui [`Style`],
 /// downgrading its colors for `depth`. Colorless connections keep the
 /// attribute flags off too, matching `mush_ansi`'s `ColorDepth::None` policy.
+#[must_use]
 pub fn to_ratatui_style(style: MushStyle, depth: ColorDepth) -> Style {
     if matches!(depth, ColorDepth::None) {
         return Style::default();
@@ -60,24 +147,67 @@ pub fn to_ratatui_style(style: MushStyle, depth: ColorDepth) -> Style {
     out
 }
 
-/// Accumulates ratatui spans into logical lines, splitting embedded `\n` and
-/// stripping other control characters (the same injection defense the line
-/// renderer applies).
-struct LineAcc<'t> {
-    theme: &'t AnsiTheme,
-    depth: ColorDepth,
-    lines: Vec<Line<'static>>,
-    cur: Vec<Span<'static>>,
+/// `HH:MM` (UTC) of a Unix timestamp.
+#[must_use]
+pub fn hhmm(unix: i64) -> String {
+    let s = unix.rem_euclid(86_400);
+    format!("{:02}:{:02}", s / 3600, (s % 3600) / 60)
 }
 
-impl<'t> LineAcc<'t> {
-    fn new(theme: &'t AnsiTheme, depth: ColorDepth) -> LineAcc<'t> {
-        LineAcc {
+/// `text` with control characters removed.
+fn clean(text: &str) -> String {
+    text.chars().filter(|c| !c.is_control()).collect()
+}
+
+/// A dim span with owned text (control chars stripped).
+pub(crate) fn dim_span_owned(text: &str) -> Span<'static> {
+    Span::styled(clean(text), Style::default().add_modifier(Modifier::DIM))
+}
+
+fn truncate_chars(s: &str, max: usize) -> String {
+    s.chars().take(max).collect()
+}
+
+/// Accumulates ratatui spans into entries, splitting embedded `\n` and
+/// stripping other control characters.
+struct EntryAcc<'t> {
+    theme: &'t AnsiTheme,
+    depth: ColorDepth,
+    entries: Vec<Entry>,
+    cur: Vec<Span<'static>>,
+    /// The gutter for the entry being built; `None` for a continuation
+    /// line unless a renderer sets another.
+    gutter: Option<Span<'static>>,
+    at: i64,
+}
+
+impl<'t> EntryAcc<'t> {
+    fn new(theme: &'t AnsiTheme, depth: ColorDepth, at: i64) -> EntryAcc<'t> {
+        EntryAcc {
             theme,
             depth,
-            lines: Vec::new(),
+            entries: Vec::new(),
             cur: Vec::new(),
+            gutter: None,
+            at,
         }
+    }
+
+    fn style_for(&self, tag: &str) -> Style {
+        to_ratatui_style(self.theme.style_for(Some(tag)), self.depth)
+    }
+
+    /// Set the gutter of the entry being built.
+    fn gutter(&mut self, span: Span<'static>) {
+        self.gutter = Some(span);
+    }
+
+    /// A clock gutter (`HH:MM`, dim).
+    fn clock_gutter(&mut self) {
+        self.gutter = Some(Span::styled(
+            hhmm(self.at),
+            Style::default().add_modifier(Modifier::DIM),
+        ));
     }
 
     fn write(&mut self, text: &str, style: Style) {
@@ -87,11 +217,11 @@ impl<'t> LineAcc<'t> {
                 self.end_line();
             }
             first = false;
-            let clean: String = piece.chars().filter(|c| !c.is_control()).collect();
-            if clean.is_empty() {
+            let cleaned = clean(piece);
+            if cleaned.is_empty() {
                 continue;
             }
-            self.cur.push(Span::styled(clean, style));
+            self.cur.push(Span::styled(cleaned, style));
         }
     }
 
@@ -100,7 +230,7 @@ impl<'t> LineAcc<'t> {
     }
 
     fn tagged(&mut self, tag: &str, text: &str) {
-        let style = to_ratatui_style(self.theme.style_for(Some(tag)), self.depth);
+        let style = self.style_for(tag);
         self.write(text, style);
     }
 
@@ -117,32 +247,41 @@ impl<'t> LineAcc<'t> {
     }
 
     fn end_line(&mut self) {
-        self.lines.push(Line::from(std::mem::take(&mut self.cur)));
+        let body = std::mem::take(&mut self.cur);
+        let gutter = self.gutter.take();
+        self.entries.push(Entry {
+            gutter,
+            body,
+            at: self.at,
+        });
     }
 
-    /// Flush any trailing partial line and yield the accumulated lines.
-    fn finish(mut self) -> Vec<Line<'static>> {
+    fn finish(mut self) -> Vec<Entry> {
         if !self.cur.is_empty() {
             self.end_line();
         }
-        self.lines
+        self.entries
     }
 }
 
-/// Render one event to scrollback lines. Returns empty for variants the TUI
-/// routes elsewhere (`Who`, `Prompt`) or drops (`Panel`, `Ping`, `Resumed`).
+/// Render one event to scrollback entries. Returns empty for variants the
+/// TUI routes elsewhere (`Who`, `Prompt`, `Panel`, `Composing`, `View`) or
+/// drops (`Ping`, `Resumed`). `now` stamps the clock gutter.
+#[must_use]
 pub fn render_event(
     event: &OutputEvent,
     caps: &ClientCaps,
     theme: &AnsiTheme,
-) -> Vec<Line<'static>> {
-    let mut w = LineAcc::new(theme, caps.color);
+    now: i64,
+) -> Vec<Entry> {
+    let mut w = EntryAcc::new(theme, caps.color, now);
     match event {
         OutputEvent::Room(view) => render_room(&mut w, view),
         OutputEvent::Narrative { kind, actor, text } => {
-            render_narrative(&mut w, *kind, actor.as_ref(), text);
+            render_narrative(&mut w, *kind, actor.as_ref(), text, caps.utf8);
         }
         OutputEvent::Sys(text) => {
+            w.clock_gutter();
             w.rich(text);
             w.end_line();
         }
@@ -160,6 +299,7 @@ pub fn render_event(
             id,
             unread,
         } => {
+            w.clock_gutter();
             w.tagged(
                 "system",
                 &format!(
@@ -170,11 +310,13 @@ pub fn render_event(
             w.end_line();
         }
         OutputEvent::Weather { text, .. } => {
+            w.clock_gutter();
             w.rich(text);
             w.end_line();
         }
-        OutputEvent::Reply { event, .. } => return render_event(event, caps, theme),
+        OutputEvent::Reply { event, .. } => return render_event(event, caps, theme, now),
         OutputEvent::Hello { proto, server, .. } => {
+            w.clock_gutter();
             w.tagged("system", &format!("{server} (proto {proto})"));
             w.end_line();
         }
@@ -184,6 +326,7 @@ pub fn render_event(
             connections,
         } => {
             let s = if *connections == 1 { "" } else { "s" };
+            w.clock_gutter();
             w.tagged(
                 "system",
                 &format!(
@@ -194,6 +337,7 @@ pub fn render_event(
             w.end_line();
         }
         OutputEvent::Disconnect { reason } => {
+            w.clock_gutter();
             w.rich(reason);
             w.end_line();
         }
@@ -202,6 +346,7 @@ pub fn render_event(
                 serde_json::from_value::<ProjectedActionReceipt>(view.data().clone())
                 && receipt.view().is_ok_and(|expected| &expected == view)
             {
+                w.clock_gutter();
                 w.tagged(
                     "system",
                     receipt
@@ -213,36 +358,44 @@ pub fn render_event(
                 w.end_line();
             }
         }
-        // Routed elsewhere or intentionally silent (mirrors mush_ansi). The
-        // composing hint becomes a status-strip pill once the screen model
-        // lands (interface plan I2); the scrollback ring never shows it.
+        // Routed elsewhere or intentionally silent (mirrors mush_ansi): the
+        // WHO rail, the input frame, the panel store, the status strip.
         OutputEvent::Who(_)
         | OutputEvent::Panel { .. }
         | OutputEvent::Prompt(_)
         | OutputEvent::Ping { .. }
         | OutputEvent::Resumed { .. }
-        | OutputEvent::Composing { .. } => {}
-        OutputEvent::View(_) => {}
+        | OutputEvent::Composing { .. }
+        | OutputEvent::View(_) => {}
     }
     w.finish()
 }
 
-fn render_room(w: &mut LineAcc<'_>, view: &RoomView) {
-    w.tagged("room", &format!("{}({})", view.name, view.id));
+/// The room render (mirrors line mode's I3 form): `Name #id`, the
+/// description, then the facts in a label gutter — `Here`, `Exits`,
+/// `Weather` from `ambient.weather.line`.
+fn render_room(w: &mut EntryAcc<'_>, view: &RoomView) {
+    w.clock_gutter();
+    w.tagged("room", &view.name);
+    w.plain(" ");
+    w.tagged("dim", &view.id);
     w.end_line();
-    w.rich(&view.desc);
-    w.end_line();
-    if !view.contents.is_empty() {
-        w.plain("Contents:");
+    if !view.desc.to_plain_text().is_empty() {
+        w.rich(&view.desc);
         w.end_line();
-        for obj in &view.contents {
+    }
+    if !view.contents.is_empty() {
+        w.plain("Here     ");
+        for (i, obj) in view.contents.iter().enumerate() {
+            if i > 0 {
+                w.plain(", ");
+            }
             w.plain(&obj.name);
-            w.end_line();
         }
+        w.end_line();
     }
     if !view.exits.is_empty() {
-        w.plain("Obvious exits:");
-        w.end_line();
+        w.plain("Exits    ");
         for (i, exit) in view.exits.iter().enumerate() {
             if i > 0 {
                 w.plain("  ");
@@ -251,51 +404,90 @@ fn render_room(w: &mut LineAcc<'_>, view: &RoomView) {
         }
         w.end_line();
     }
+    if let Some(line) = view
+        .ambient
+        .get("weather")
+        .and_then(|v| v.get("line"))
+        .and_then(Value::as_str)
+    {
+        w.plain("Weather  ");
+        w.tagged("weather", line);
+        w.end_line();
+    }
+}
+
+/// Whether `text` is a one-line roll narration (its first span is tagged
+/// `roll`, interface plan I3).
+fn is_roll_narration(text: &RichText) -> bool {
+    text.spans()
+        .first()
+        .is_some_and(|s| s.tag.as_deref() == Some("roll"))
 }
 
 fn render_narrative(
-    w: &mut LineAcc<'_>,
+    w: &mut EntryAcc<'_>,
     kind: NarrativeKind,
     actor: Option<&ObjRef>,
     text: &RichText,
+    utf8: bool,
 ) {
     let name = actor.map_or("Someone", |a| a.name.as_str());
+    let speaker = |w: &EntryAcc<'_>| {
+        Span::styled(
+            truncate_chars(&clean(name), GUTTER_W),
+            w.style_for("player"),
+        )
+    };
     match kind {
         NarrativeKind::Say => {
-            w.tagged("player", name);
-            w.plain(" says, \"");
+            w.gutter(speaker(w));
+            w.plain("\"");
             w.rich(text);
             w.plain("\"");
         }
-        NarrativeKind::Pose => {
-            w.tagged("player", name);
-            w.plain(" ");
+        NarrativeKind::Pose | NarrativeKind::SemiPose => {
+            w.gutter(speaker(w));
             w.rich(text);
         }
-        NarrativeKind::SemiPose => {
-            w.tagged("player", name);
-            w.rich(text);
+        NarrativeKind::Emit | NarrativeKind::Spoof => {
+            if is_roll_narration(text) {
+                let marker = if utf8 { "\u{2684} roll" } else { "roll" };
+                let style = w.style_for("roll");
+                w.gutter(Span::styled(marker.to_string(), style));
+                // Drop the marker and its gap; the rest is the line.
+                for span in text.spans().iter().skip(2) {
+                    w.span(span);
+                }
+                if let Some(first) = w.cur.first_mut()
+                    && let Some(rest) = first.content.strip_prefix("  ")
+                {
+                    first.content = rest.to_string().into();
+                }
+            } else {
+                w.clock_gutter();
+                w.rich(text);
+            }
         }
-        NarrativeKind::Emit | NarrativeKind::Spoof => w.rich(text),
         NarrativeKind::Page => {
-            w.tagged("player", name);
-            w.plain(" pages: ");
+            w.gutter(speaker(w));
+            w.plain("pages: ");
             w.rich(text);
         }
         NarrativeKind::Whisper => {
-            w.tagged("player", name);
-            w.plain(" whispers, \"");
+            w.gutter(speaker(w));
+            w.plain("whispers, \"");
             w.rich(text);
             w.plain("\"");
         }
         NarrativeKind::Ooc => {
-            w.plain("<OOC> ");
             if actor.is_some() {
-                w.tagged("player", name);
-                w.plain(" says, \"");
+                w.gutter(speaker(w));
+                w.plain("<OOC> \"");
                 w.rich(text);
                 w.plain("\"");
             } else {
+                w.clock_gutter();
+                w.plain("<OOC> ");
                 w.rich(text);
             }
         }
@@ -304,16 +496,19 @@ fn render_narrative(
 }
 
 fn render_channel(
-    w: &mut LineAcc<'_>,
+    w: &mut EntryAcc<'_>,
     channel: &str,
     actor: &ObjRef,
     title: Option<&str>,
     kind: NarrativeKind,
     text: &RichText,
 ) {
-    w.tagged("channel", &format!("[{channel}]"));
-    w.plain(" ");
-    let name_prefix = |w: &mut LineAcc<'_>| {
+    let style = w.style_for("channel");
+    w.gutter(Span::styled(
+        truncate_chars(&format!("[{}]", clean(channel)), GUTTER_W),
+        style,
+    ));
+    let name_prefix = |w: &mut EntryAcc<'_>| {
         if let Some(t) = title {
             w.plain(t);
             w.plain(" ");
@@ -340,94 +535,148 @@ fn render_channel(
     w.end_line();
 }
 
+/// Word-wrap spans to `width` columns: breaks at spaces, hard-splits a word
+/// longer than the width (a pane has hard edges), keeps each character's
+/// style, drops the space a break consumed. `width == 0` yields one row.
+#[must_use]
+pub fn wrap_spans(spans: &[Span<'static>], width: usize) -> Vec<Vec<Span<'static>>> {
+    let chars: Vec<(char, Style)> = spans
+        .iter()
+        .flat_map(|s| s.content.chars().map(move |c| (c, s.style)))
+        .collect();
+    if width == 0 {
+        return vec![runs(&chars)];
+    }
+    let mut rows = Vec::new();
+    let mut start = 0;
+    while start < chars.len() {
+        let remaining = chars.len() - start;
+        if remaining <= width {
+            rows.push(runs(&chars[start..]));
+            break;
+        }
+        // A window that ends exactly at a word boundary is a row; else the
+        // last space within the window breaks it, else a hard split.
+        let window = &chars[start..start + width];
+        if chars[start + width].0 == ' ' {
+            rows.push(runs(window));
+            start += width + 1;
+            continue;
+        }
+        let brk = window
+            .iter()
+            .rposition(|(c, _)| *c == ' ')
+            .filter(|&i| i > 0);
+        match brk {
+            Some(i) => {
+                rows.push(runs(&chars[start..start + i]));
+                start += i + 1;
+            }
+            None => {
+                rows.push(runs(window));
+                start += width;
+            }
+        }
+    }
+    if rows.is_empty() {
+        rows.push(Vec::new());
+    }
+    rows
+}
+
+/// Merge consecutive same-style characters into spans.
+fn runs(chars: &[(char, Style)]) -> Vec<Span<'static>> {
+    let mut out: Vec<Span<'static>> = Vec::new();
+    for &(c, style) in chars {
+        match out.last_mut() {
+            Some(last) if last.style == style => last.content.to_mut().push(c),
+            _ => out.push(Span::styled(c.to_string(), style)),
+        }
+    }
+    out
+}
+
 /// Render a WHO listing into rail lines: a bold header, one row per entry
-/// (name + idle, the rail is narrow), then a bold count footer. Rows are
-/// left to the rail `Paragraph`/`List` to clip at the rail width.
+/// (a `here` marker, the name, idle), then a count footer.
+#[must_use]
 pub fn render_who_rail(
     entries: &[WhoEntry],
     theme: &AnsiTheme,
     depth: ColorDepth,
+    utf8: bool,
 ) -> Vec<Line<'static>> {
     let mut lines: Vec<Line<'static>> = Vec::with_capacity(entries.len() + 2);
     let bold = Style::default().add_modifier(Modifier::BOLD);
     lines.push(Line::from(Span::styled(
-        format!("{:<14} {:>4}", "Name", "Idle"),
+        format!("  {:<13} {:>4}", "Name", "Idle"),
         bold,
     )));
     let player_style = to_ratatui_style(theme.style_for(Some("player")), depth);
+    let here_mark = if utf8 { "\u{2022}" } else { "*" };
     for e in entries {
-        let name = truncate_chars(&e.name, 14);
+        let name = truncate_chars(&clean(&e.name), 13);
         let idle = fmt_duration(e.idle_s);
+        let mark = if e.here { here_mark } else { " " };
         lines.push(Line::from(vec![
-            Span::styled(format!("{name:<14}"), player_style),
+            Span::raw(format!("{mark} ")),
+            Span::styled(format!("{name:<13}"), player_style),
             Span::raw(" "),
             Span::raw(format!("{idle:>4}")),
         ]));
     }
     let n = entries.len();
-    let s = if n == 1 { "" } else { "s" };
+    let here = entries.iter().filter(|e| e.here).count();
     lines.push(Line::from(Span::styled(
-        format!("{n} player{s}"),
+        format!("{n} online, {here} here"),
         to_ratatui_style(theme.style_for(Some("system")), depth),
     )));
     lines
 }
 
-fn truncate_chars(s: &str, max: usize) -> String {
-    s.chars().take(max).collect()
-}
-
 // ---------------------------------------------------------------------------
-// Secondary-pane widgets (design M15 D5): the @mail and +intel panels. Both
-// render the `OutputEvent::Panel` keyframe JSON their query handlers return
-// (`mail.list` / `intel.list`) into owned ratatui lines. Parsing is defensive
-// — a missing or malformed field degrades to a placeholder rather than
-// panicking (invariant T6: pure + testable).
+// Pane renderers: panel keyframes to rows.
 // ---------------------------------------------------------------------------
 
-/// Render the `mail.list` panel keyframe (see `mush_mail::query::ListQuery`)
-/// into secondary-pane lines: a folder header with the unread count, then one
-/// row per message (`index`, an unread marker, sender, subject).
+/// The `mail.list` keyframe: a folder header, then one selectable row per
+/// message (`index`, an unread marker, sender, subject) prefilling
+/// `@mail <index>`.
 #[must_use]
-pub fn render_mail_panel(
-    data: &serde_json::Value,
-    theme: &AnsiTheme,
-    depth: ColorDepth,
-) -> Vec<Line<'static>> {
-    let system = to_ratatui_style(theme.style_for(Some("system")), depth);
-    let player = to_ratatui_style(theme.style_for(Some("player")), depth);
-    let mut lines: Vec<Line<'static>> = Vec::new();
-
+pub fn render_mail_rows(data: &Value, ctx: &RenderCtx<'_>) -> PaneRows {
+    let system = ctx.tag("system");
+    let player = ctx.tag("player");
+    let mut rows = Vec::new();
     let folder = data
         .get("folder")
-        .and_then(serde_json::Value::as_str)
+        .and_then(Value::as_str)
         .unwrap_or("inbox");
-    let entries = data.get("entries").and_then(serde_json::Value::as_array);
+    let entries = data.get("entries").and_then(Value::as_array);
     let count = entries.map_or(0, Vec::len);
-    lines.push(Line::from(Span::styled(
-        format!(
-            "{folder} — {count} message{}",
+    let unread = entries.map_or(0, |e| {
+        e.iter()
+            .filter(|m| {
+                m.get("status")
+                    .and_then(Value::as_str)
+                    .is_some_and(|s| s != "read")
+            })
+            .count()
+    });
+    rows.push(PaneRow::plain(Line::from(Span::styled(
+        clean(&format!(
+            "{folder} \u{2014} {count} message{}, {unread} unread",
             if count == 1 { "" } else { "s" }
-        ),
+        )),
         system,
-    )));
-
+    ))));
     let Some(entries) = entries else {
-        return lines;
+        return PaneRows { rows };
     };
     if entries.is_empty() {
-        lines.push(Line::from(dim_span_owned("(empty)")));
-        return lines;
+        rows.push(PaneRow::plain(Line::from(dim_span_owned("(empty)"))));
+        return PaneRows { rows };
     }
     for e in entries {
-        let index = e
-            .get("index")
-            .and_then(serde_json::Value::as_u64)
-            .unwrap_or(0);
-        let status = e
-            .get("status")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("read");
+        let index = e.get("index").and_then(Value::as_u64).unwrap_or(0);
+        let status = e.get("status").and_then(Value::as_str).unwrap_or("read");
         let marker = match status {
             "urgent" => "!",
             "unread" => "*",
@@ -436,137 +685,493 @@ pub fn render_mail_panel(
         let from = e
             .get("from")
             .and_then(|f| f.get("name"))
-            .and_then(serde_json::Value::as_str)
+            .and_then(Value::as_str)
             .unwrap_or("(unknown)");
         let subject = e
             .get("subject")
-            .and_then(serde_json::Value::as_str)
+            .and_then(Value::as_str)
             .unwrap_or("(no subject)");
-        lines.push(Line::from(vec![
-            Span::raw(format!("{index:>2}{marker} ")),
-            Span::styled(format!("{}: ", truncate_chars(from, 10)), player),
-            Span::raw(truncate_chars(subject, 20)),
-        ]));
+        rows.push(PaneRow::selectable(
+            Line::from(vec![
+                Span::raw(format!("{index:>3}{marker} ")),
+                Span::styled(format!("{:<12} ", truncate_chars(&clean(from), 12)), player),
+                Span::raw(truncate_chars(&clean(subject), 60)),
+            ]),
+            format!("@mail {index}"),
+            index.to_string(),
+        ));
     }
-    lines
+    PaneRows { rows }
 }
 
-/// Render the `intel.list` panel keyframe (see
-/// `mush_npc::query::IntelListQuery`) into secondary-pane lines: a count
-/// header then, per record (newest first), a styled subject + kind line and a
-/// dim detail line.
+/// The `intel.list` keyframe: a count header then, per record (newest
+/// first), a subject + kind row and a dim detail row.
 #[must_use]
-pub fn render_intel_panel(
-    data: &serde_json::Value,
-    theme: &AnsiTheme,
-    depth: ColorDepth,
-) -> Vec<Line<'static>> {
-    let system = to_ratatui_style(theme.style_for(Some("system")), depth);
-    let player = to_ratatui_style(theme.style_for(Some("player")), depth);
-    let channel = to_ratatui_style(theme.style_for(Some("channel")), depth);
-    let mut lines: Vec<Line<'static>> = Vec::new();
-
-    let records = data.get("records").and_then(serde_json::Value::as_array);
+pub fn render_intel_rows(data: &Value, ctx: &RenderCtx<'_>) -> PaneRows {
+    let system = ctx.tag("system");
+    let player = ctx.tag("player");
+    let channel = ctx.tag("channel");
+    let mut rows = Vec::new();
+    let records = data.get("records").and_then(Value::as_array);
     let count = records.map_or(0, Vec::len);
-    lines.push(Line::from(Span::styled(
+    rows.push(PaneRow::plain(Line::from(Span::styled(
         format!(
-            "Intel — {count} record{}",
+            "Intel \u{2014} {count} record{}",
             if count == 1 { "" } else { "s" }
         ),
         system,
-    )));
-
+    ))));
     let Some(records) = records else {
-        return lines;
+        return PaneRows { rows };
     };
     if records.is_empty() {
-        lines.push(Line::from(dim_span_owned("(nothing filed)")));
-        return lines;
+        rows.push(PaneRow::plain(Line::from(dim_span_owned(
+            "(nothing filed)",
+        ))));
+        return PaneRows { rows };
     }
     for r in records {
         let subject = r
             .get("subject")
-            .and_then(serde_json::Value::as_str)
+            .and_then(Value::as_str)
             .unwrap_or("(unknown)");
-        let kind = r
-            .get("kind")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("seen");
-        let detail = r
-            .get("detail")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("");
-        lines.push(Line::from(vec![
-            Span::styled(truncate_chars(subject, 16), player),
+        let kind = r.get("kind").and_then(Value::as_str).unwrap_or("seen");
+        let detail = r.get("detail").and_then(Value::as_str).unwrap_or("");
+        rows.push(PaneRow::plain(Line::from(vec![
+            Span::styled(truncate_chars(&clean(subject), 16), player),
             Span::raw(" "),
-            Span::styled(format!("[{kind}]"), channel),
-        ]));
+            Span::styled(format!("[{}]", clean(kind)), channel),
+        ])));
         if !detail.is_empty() {
-            lines.push(Line::from(dim_span_owned(&format!(
+            rows.push(PaneRow::plain(Line::from(dim_span_owned(&format!(
                 "  {}",
-                truncate_chars(detail, 28)
-            ))));
+                truncate_chars(detail, 60)
+            )))));
         }
     }
-    lines
+    PaneRows { rows }
 }
 
-/// Render the shared viewer-safe legal-action DTO array. Opaque offer tokens
-/// and every unrecognized field remain hidden; the TUI needs only the public
-/// verb, label, and help text used by the line adapter.
+/// The shared viewer-safe legal-action DTO array: one selectable row per
+/// offer (`+act <verb> — label`) prefilling `+act <verb>`, then a dim
+/// help row. Opaque offer tokens and every unrecognized field stay hidden.
 #[must_use]
-pub fn render_legal_actions_panel(
-    data: &serde_json::Value,
-    theme: &AnsiTheme,
-    depth: ColorDepth,
-) -> Vec<Line<'static>> {
-    let system = to_ratatui_style(theme.style_for(Some("system")), depth);
-    let player = to_ratatui_style(theme.style_for(Some("player")), depth);
+pub fn render_actions_rows(data: &Value, ctx: &RenderCtx<'_>) -> PaneRows {
+    let system = ctx.tag("system");
+    let player = ctx.tag("player");
     let Some(offers) = data.as_array() else {
-        return vec![Line::from(dim_span_owned("(unavailable)"))];
+        return PaneRows::one("(unavailable)");
     };
     if offers.is_empty() {
-        return vec![Line::from(dim_span_owned("(none available)"))];
+        return PaneRows::one("(none available)");
     }
-    let mut lines = Vec::new();
+    let mut rows = Vec::new();
     for presentation in offers.iter().filter_map(|offer| offer.get("presentation")) {
         let verb = presentation
             .get("verb")
-            .and_then(serde_json::Value::as_str)
+            .and_then(Value::as_str)
             .unwrap_or("action");
         let label = presentation
             .get("label")
-            .and_then(serde_json::Value::as_str)
+            .and_then(Value::as_str)
             .unwrap_or(verb);
         let help = presentation
             .get("help")
-            .and_then(serde_json::Value::as_str)
+            .and_then(Value::as_str)
             .unwrap_or("");
-        lines.push(Line::from(vec![
-            Span::styled(format!("+act {}", truncate_chars(verb, 18)), player),
-            Span::styled(format!(" — {}", truncate_chars(label, 18)), system),
-        ]));
+        let verb = clean(verb);
+        rows.push(PaneRow::selectable(
+            Line::from(vec![
+                Span::styled(format!("+act {}", truncate_chars(&verb, 18)), player),
+                Span::styled(
+                    format!(" \u{2014} {}", truncate_chars(&clean(label), 24)),
+                    system,
+                ),
+            ]),
+            format!("+act {verb}"),
+            verb.clone(),
+        ));
         if !help.is_empty() {
-            lines.push(Line::from(dim_span_owned(&format!(
+            rows.push(PaneRow::plain(Line::from(dim_span_owned(&format!(
                 "  {}",
-                truncate_chars(help, 30)
-            ))));
+                truncate_chars(help, 60)
+            )))));
         }
     }
-    lines
+    PaneRows { rows }
 }
 
-/// A dim span with owned text (control chars stripped), for widget placeholders
-/// and detail lines.
-fn dim_span_owned(text: &str) -> Span<'static> {
-    let clean: String = text.chars().filter(|c| !c.is_control()).collect();
-    Span::styled(clean, Style::default().add_modifier(Modifier::DIM))
+/// The `scenes` keyframe: the scene's title, kind and status, its round
+/// and turn, and who acts now.
+#[must_use]
+pub fn render_scene_rows(data: &Value, ctx: &RenderCtx<'_>) -> PaneRows {
+    if data.is_null() {
+        return PaneRows::one("(no scene)");
+    }
+    let system = ctx.tag("system");
+    let player = ctx.tag("player");
+    let s = |k: &str| {
+        data.get(k)
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string()
+    };
+    let n = |k: &str| data.get(k).and_then(Value::as_u64).unwrap_or(0);
+    let title = clean(&s("title"));
+    let mut rows = vec![PaneRow::plain(Line::from(Span::styled(
+        if title.is_empty() {
+            "(untitled)".to_string()
+        } else {
+            title
+        },
+        Style::default().add_modifier(Modifier::BOLD),
+    )))];
+    rows.push(PaneRow::plain(Line::from(Span::styled(
+        clean(&format!("{} \u{00b7} {}", s("kind"), s("status"))),
+        system,
+    ))));
+    rows.push(PaneRow::plain(Line::from(Span::raw(format!(
+        "round {}  turn {}",
+        n("round"),
+        n("turn")
+    )))));
+    if let Some(actor) = data
+        .get("current_actor")
+        .and_then(|a| a.get("name"))
+        .and_then(Value::as_str)
+    {
+        rows.push(PaneRow::plain(Line::from(vec![
+            Span::raw("now: "),
+            Span::styled(clean(actor), player),
+        ])));
+    }
+    PaneRows { rows }
+}
+
+/// The `comsys.state` keyframe: one selectable row per channel (alias,
+/// name, unread badge) prefilling `<alias> `; the row key is the channel
+/// name the backlog pane and query use.
+#[must_use]
+pub fn render_channels_rows(data: &Value, ctx: &RenderCtx<'_>) -> PaneRows {
+    let channel_style = ctx.tag("channel");
+    let Some(channels) = data.get("channels").and_then(Value::as_array) else {
+        return PaneRows::one("(no channels)");
+    };
+    if channels.is_empty() {
+        return PaneRows::one("(no channels)");
+    }
+    let mut rows = Vec::new();
+    for c in channels {
+        let name = clean(c.get("name").and_then(Value::as_str).unwrap_or("?"));
+        let alias = clean(c.get("alias").and_then(Value::as_str).unwrap_or(""));
+        let unread = c.get("unread").and_then(Value::as_u64).unwrap_or(0);
+        let gagged = c.get("gagged").and_then(Value::as_bool).unwrap_or(false);
+        let badge = if unread > 0 {
+            format!(" {unread}")
+        } else {
+            String::new()
+        };
+        let gag = if gagged { " (gag)" } else { "" };
+        let prefill = if alias.is_empty() {
+            format!("{name} ")
+        } else {
+            format!("{alias} ")
+        };
+        rows.push(PaneRow::selectable(
+            Line::from(vec![
+                Span::styled(format!("{:<6} ", truncate_chars(&alias, 6)), channel_style),
+                Span::raw(truncate_chars(&name, 14)),
+                Span::styled(badge, Style::default().add_modifier(Modifier::BOLD)),
+                dim_span_owned(gag),
+            ]),
+            prefill,
+            name,
+        ));
+    }
+    PaneRows { rows }
+}
+
+/// The backlog pane: the highlighted channel's kept messages, oldest first.
+#[must_use]
+pub fn render_backlog_rows(msgs: &[&ChanMsg], channel: Option<&str>) -> PaneRows {
+    let Some(channel) = channel else {
+        return PaneRows::one("(pick a channel)");
+    };
+    if msgs.is_empty() {
+        return PaneRows::one(&format!("(nothing kept for {channel}; b requests backlog)"));
+    }
+    PaneRows {
+        rows: msgs
+            .iter()
+            .map(|m| PaneRow::plain(Line::from(Span::raw(clean(&m.line)))))
+            .collect(),
+    }
+}
+
+/// The rolls pane: every `.roll` frame's `summary`, oldest first.
+#[must_use]
+pub fn render_rolls_rows(rolls: &[Value]) -> PaneRows {
+    if rolls.is_empty() {
+        return PaneRows::one("(no rolls yet)");
+    }
+    PaneRows {
+        rows: rolls
+            .iter()
+            .map(|r| {
+                let summary = r
+                    .get("summary")
+                    .and_then(Value::as_str)
+                    .map_or_else(|| rich_plain(r), clean);
+                PaneRow::plain(Line::from(Span::raw(summary)))
+            })
+            .collect(),
+    }
+}
+
+/// The sheet pane: the `.sheet` keyframe walked into label/value rows.
+#[must_use]
+pub fn render_sheet_rows(payload: &Value, ctx: &RenderCtx<'_>) -> PaneRows {
+    let Some(rows) = sheet_rows(payload, Glyphs::for_utf8(ctx.utf8)) else {
+        return PaneRows::one("(no sheet)");
+    };
+    let header = Style::default().add_modifier(Modifier::BOLD);
+    let label_style = ctx.tag("system");
+    PaneRows {
+        rows: rows
+            .into_iter()
+            .map(|r| match r {
+                SheetRow::Header(h) => PaneRow::plain(Line::from(Span::styled(clean(&h), header))),
+                SheetRow::Field { label, value } => PaneRow::plain(Line::from(vec![
+                    Span::styled(
+                        format!("{:<16} ", truncate_chars(&clean(&label), 16)),
+                        label_style,
+                    ),
+                    Span::raw(clean(&value)),
+                ])),
+                SheetRow::Blank => PaneRow::plain(Line::from("")),
+            })
+            .collect(),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Chrome.
+// ---------------------------------------------------------------------------
+
+/// The vitals strip: every `.vitals` frame as `[ label ▰▰▰▱ 6/10 ]` gauges,
+/// tracks as boxes with the level named, readouts as text; `Dominant`
+/// first. Empty when no frame is held.
+#[must_use]
+pub fn vitals_line(frames: &[(mush_proto::SmolStr, VitalsFrame)], utf8: bool) -> Line<'static> {
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    for (_, frame) in frames {
+        let mut vitals: Vec<&mush_proto::Vital> = frame.vitals.iter().collect();
+        vitals.sort_by_key(|v| match v.role {
+            VitalRole::Dominant => 0,
+            VitalRole::Track => 1,
+            VitalRole::Pool => 2,
+            VitalRole::Readout => 3,
+        });
+        for v in vitals {
+            if !spans.is_empty() {
+                spans.push(Span::raw("  "));
+            }
+            let style = match v.state {
+                VitalState::Ok => Style::default(),
+                VitalState::Warn => Style::default().fg(Color::Indexed(3)),
+                VitalState::Crit => Style::default().fg(Color::Indexed(1)),
+                VitalState::Down => Style::default()
+                    .fg(Color::Indexed(1))
+                    .add_modifier(Modifier::BOLD),
+            };
+            let label = clean(&v.label);
+            let text = match &v.value {
+                VitalValue::Bounded { current, min, max } => {
+                    let span = (max - min).max(1);
+                    let cells = 8usize;
+                    let filled = usize::try_from(
+                        ((current - min).clamp(0, span) * cells as i64 + span / 2) / span,
+                    )
+                    .unwrap_or(0);
+                    let (on, off) = if utf8 {
+                        ('\u{25b0}', '\u{25b1}')
+                    } else {
+                        ('#', '-')
+                    };
+                    let bar: String = (0..cells)
+                        .map(|i| if i < filled { on } else { off })
+                        .collect();
+                    format!("{label} {bar} {current}/{max}")
+                }
+                VitalValue::Track { boxes, level } => {
+                    let empty = if utf8 { '\u{25a1}' } else { '_' };
+                    let cells: String = boxes
+                        .iter()
+                        .map(|b| match b.as_deref() {
+                            None => empty,
+                            Some("bashing") => '/',
+                            Some("lethal") => 'X',
+                            Some("aggravated") => '*',
+                            Some(other) => {
+                                other.chars().next().map_or('?', |c| c.to_ascii_uppercase())
+                            }
+                        })
+                        .collect();
+                    match level {
+                        Some(l) => format!("{label} {cells} {}", clean(l)),
+                        None => format!("{label} {cells}"),
+                    }
+                }
+                VitalValue::Text { text } => format!("{label} {}", clean(text)),
+            };
+            spans.push(Span::styled(format!("[ {text} ]"), style));
+        }
+    }
+    Line::from(spans)
+}
+
+/// The status line: room name and id, zone, weather state, the IC clock,
+/// and the exits with their nav keys (`n·north`).
+#[must_use]
+pub fn status_line(
+    room: Option<&RoomView>,
+    exit_keys: &[(char, String)],
+    utf8: bool,
+    theme: &AnsiTheme,
+    depth: ColorDepth,
+) -> Line<'static> {
+    let Some(room) = room else {
+        return Line::from(dim_span_owned("(no room yet)"));
+    };
+    let sep = if utf8 { " \u{00b7} " } else { " | " };
+    let dot = if utf8 { "\u{00b7}" } else { ":" };
+    let room_style = to_ratatui_style(theme.style_for(Some("room")), depth);
+    let exit_style = to_ratatui_style(theme.style_for(Some("exit")), depth);
+    let mut spans = vec![
+        Span::styled(clean(&room.name), room_style),
+        Span::raw(" "),
+        dim_span_owned(&room.id),
+    ];
+    if let Some(zone) = &room.zone {
+        spans.push(Span::raw(sep.to_string()));
+        spans.push(Span::raw(clean(&zone.name)));
+    }
+    if let Some(state) = room
+        .ambient
+        .get("weather")
+        .and_then(|w| w.get("state"))
+        .and_then(Value::as_str)
+    {
+        spans.push(Span::raw(sep.to_string()));
+        spans.push(Span::raw(clean(state)));
+    }
+    if let Some(ic) = room.ambient.get("ic_time") {
+        let hour = ic.get("hour").and_then(Value::as_u64);
+        let minute = ic.get("minute").and_then(Value::as_u64);
+        if let (Some(h), Some(m)) = (hour, minute) {
+            spans.push(Span::raw(sep.to_string()));
+            spans.push(Span::raw(format!("IC {h:02}:{m:02}")));
+        }
+    }
+    if !room.exits.is_empty() {
+        spans.push(Span::raw(sep.to_string()));
+        for (i, exit) in room.exits.iter().enumerate() {
+            if i > 0 {
+                spans.push(Span::raw("  "));
+            }
+            let name = clean(&exit.name);
+            match exit_keys
+                .iter()
+                .find(|(_, n)| n.eq_ignore_ascii_case(&exit.name))
+            {
+                Some((k, _)) => {
+                    spans.push(Span::styled(k.to_string(), exit_style));
+                    spans.push(dim_span_owned(dot));
+                    spans.push(Span::raw(name));
+                }
+                None => spans.push(Span::styled(name, exit_style)),
+            }
+        }
+    }
+    Line::from(spans)
+}
+
+/// The tab strip: `rustmush  1 scene  2 sheet  3 mail 2 …` with the active
+/// screen reversed and unread badges, then `right` flush right in `width`.
+#[must_use]
+pub fn tab_strip(
+    screens: &[(u8, &str, usize)],
+    active: u8,
+    right: &str,
+    width: usize,
+) -> Line<'static> {
+    let mut spans: Vec<Span<'static>> = vec![Span::styled(
+        "rustmush".to_string(),
+        Style::default().add_modifier(Modifier::BOLD),
+    )];
+    let mut used = "rustmush".len();
+    for &(digit, name, badge) in screens {
+        let label = if badge > 0 {
+            format!(" {digit} {name} {badge} ")
+        } else {
+            format!(" {digit} {name} ")
+        };
+        used += label.chars().count() + 1;
+        spans.push(Span::raw(" "));
+        let style = if digit == active {
+            Style::default().add_modifier(Modifier::REVERSED)
+        } else {
+            Style::default()
+        };
+        spans.push(Span::styled(label, style));
+    }
+    let right = clean(right);
+    let rw = right.chars().count();
+    if rw > 0 && used + 1 + rw <= width {
+        spans.push(Span::raw(" ".repeat(width - used - rw)));
+        spans.push(dim_span_owned(&right));
+    }
+    Line::from(spans)
+}
+
+/// The legend: the screen's bindings in nav mode, the editing keys in
+/// input mode.
+#[must_use]
+pub fn legend_line(input_mode: bool, bindings: &[(char, &str)], utf8: bool) -> Line<'static> {
+    let sep = if utf8 { " \u{00b7} " } else { " | " };
+    let key_style = Style::default().add_modifier(Modifier::BOLD);
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    let push = |spans: &mut Vec<Span<'static>>, key: &str, label: &str| {
+        if !spans.is_empty() {
+            spans.push(dim_span_owned(sep));
+        }
+        spans.push(Span::styled(key.to_string(), key_style));
+        spans.push(Span::raw(format!(" {label}")));
+    };
+    if input_mode {
+        let (up, tab) = if utf8 {
+            ("\u{2191}", "\u{21e5}")
+        } else {
+            ("Up", "Tab")
+        };
+        push(&mut spans, up, "history");
+        push(&mut spans, tab, "complete");
+        push(&mut spans, "^P", "mode");
+        push(&mut spans, "Esc", "nav");
+    } else {
+        for (k, label) in bindings {
+            push(&mut spans, &k.to_string(), label);
+        }
+        push(&mut spans, "Enter", "type");
+        push(&mut spans, "?", "help");
+    }
+    Line::from(spans)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mush_proto::{ClientKind, ObjRef};
+    use mush_proto::{ClientKind, ExitRef, ObjRef};
 
     fn caps(depth: ColorDepth) -> ClientCaps {
         ClientCaps {
@@ -579,39 +1184,100 @@ mod tests {
         }
     }
 
-    fn text_of(line: &Line<'_>) -> String {
-        line.spans.iter().map(|s| s.content.as_ref()).collect()
+    fn body_text(e: &Entry) -> String {
+        e.body.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    fn gutter_text(e: &Entry) -> String {
+        e.gutter
+            .as_ref()
+            .map(|s| s.content.to_string())
+            .unwrap_or_default()
+    }
+
+    fn line_text(l: &Line<'_>) -> String {
+        l.spans.iter().map(|s| s.content.as_ref()).collect()
     }
 
     #[test]
-    fn say_renders_one_line_with_player_tag() {
+    fn say_puts_the_speaker_in_the_gutter() {
         let theme = AnsiTheme::classic();
         let ev = OutputEvent::Narrative {
             kind: NarrativeKind::Say,
             actor: Some(ObjRef::new("#10", "Nick")),
             text: RichText::plain("hi there"),
         };
-        let lines = render_event(&ev, &caps(ColorDepth::Ansi16), &theme);
-        assert_eq!(lines.len(), 1);
-        assert_eq!(text_of(&lines[0]), "Nick says, \"hi there\"");
-        // The actor's name span carries the themed player color (cyan).
-        assert_eq!(lines[0].spans[0].style.fg, Some(Color::Indexed(6)));
+        let entries = render_event(&ev, &caps(ColorDepth::Ansi16), &theme, 0);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(gutter_text(&entries[0]), "Nick");
+        assert_eq!(body_text(&entries[0]), "\"hi there\"");
+        assert_eq!(
+            entries[0].gutter.as_ref().unwrap().style.fg,
+            Some(Color::Indexed(6))
+        );
     }
 
     #[test]
-    fn sys_multiline_splits_into_lines() {
+    fn roll_narration_takes_the_roll_gutter_and_sys_takes_the_clock() {
         let theme = AnsiTheme::classic();
-        let ev = OutputEvent::Sys(RichText::plain("one\ntwo\nthree"));
-        let lines = render_event(&ev, &caps(ColorDepth::TrueColor), &theme);
-        assert_eq!(lines.len(), 3);
-        assert_eq!(text_of(&lines[0]), "one");
-        assert_eq!(text_of(&lines[2]), "three");
+        let text = RichText(vec![
+            MushSpan::tagged("roll", "roll"),
+            MushSpan::plain("  "),
+            MushSpan::tagged("player", "Nick"),
+            MushSpan::plain("  strength+brawl  8 6 4 = 1 success  diff 6"),
+        ]);
+        let ev = OutputEvent::Narrative {
+            kind: NarrativeKind::Emit,
+            actor: Some(ObjRef::new("#10", "Nick")),
+            text,
+        };
+        let entries = render_event(&ev, &caps(ColorDepth::Ansi16), &theme, 3661);
+        assert_eq!(gutter_text(&entries[0]), "\u{2684} roll");
+        assert_eq!(
+            body_text(&entries[0]),
+            "Nick  strength+brawl  8 6 4 = 1 success  diff 6"
+        );
+        let mut ascii = caps(ColorDepth::None);
+        ascii.utf8 = false;
+        let entries = render_event(&ev, &ascii, &theme, 3661);
+        assert_eq!(gutter_text(&entries[0]), "roll");
+        let sys = render_event(
+            &OutputEvent::Sys(RichText::plain("one\ntwo")),
+            &caps(ColorDepth::None),
+            &theme,
+            3661,
+        );
+        assert_eq!(sys.len(), 2);
+        assert_eq!(gutter_text(&sys[0]), "01:01");
+        assert!(sys[1].gutter.is_none(), "a continuation line has no gutter");
     }
 
     #[test]
-    fn channel_renders_bracketed_prefix() {
+    fn room_renders_the_facts_and_channel_the_bracket() {
         let theme = AnsiTheme::classic();
-        let ev = OutputEvent::Channel {
+        let mut view = RoomView {
+            name: "Hall".into(),
+            id: "#2".into(),
+            desc: RichText::plain("A hall."),
+            contents: vec![ObjRef::new("#7", "ball")],
+            exits: vec![ExitRef {
+                name: "north".into(),
+                aliases: vec!["n".into()],
+            }],
+            zone: None,
+            ambient: Default::default(),
+        };
+        view.ambient.insert(
+            "weather".into(),
+            serde_json::json!({ "state": "rain", "line": "Overhead: rain." }),
+        );
+        let entries = render_event(&OutputEvent::Room(view), &caps(ColorDepth::None), &theme, 0);
+        let texts: Vec<String> = entries.iter().map(body_text).collect();
+        assert_eq!(texts[0], "Hall #2");
+        assert_eq!(texts[2], "Here     ball");
+        assert_eq!(texts[3], "Exits    north");
+        assert_eq!(texts[4], "Weather  Overhead: rain.");
+        let ch = OutputEvent::Channel {
             channel: "pub".into(),
             seq: 1,
             actor: ObjRef::new("#5", "Zoe"),
@@ -620,187 +1286,38 @@ mod tests {
             text: RichText::plain("hello"),
             ts: 0,
         };
-        let lines = render_event(&ev, &caps(ColorDepth::Ansi16), &theme);
-        assert_eq!(text_of(&lines[0]), "[pub] Zoe: hello");
+        let entries = render_event(&ch, &caps(ColorDepth::Ansi16), &theme, 0);
+        assert_eq!(gutter_text(&entries[0]), "[pub]");
+        assert_eq!(body_text(&entries[0]), "Zoe: hello");
     }
 
     #[test]
-    fn reply_unwraps_payload() {
-        let theme = AnsiTheme::classic();
-        let inner = OutputEvent::Sys(RichText::plain("wrapped"));
-        let ev = OutputEvent::Reply {
-            id: 7,
-            event: Box::new(inner),
-        };
-        let lines = render_event(&ev, &caps(ColorDepth::None), &theme);
-        assert_eq!(text_of(&lines[0]), "wrapped");
-    }
-
-    #[test]
-    fn who_and_prompt_yield_no_scrollback() {
-        let theme = AnsiTheme::classic();
+    fn wrap_spans_breaks_at_spaces_keeps_styles_and_hard_splits_long_words() {
+        let red = Style::default().fg(Color::Indexed(1));
+        let spans = vec![
+            Span::styled("red words", red),
+            Span::raw(" then plain text here"),
+        ];
+        let rows = wrap_spans(&spans, 10);
+        let texts: Vec<String> = rows
+            .iter()
+            .map(|r| r.iter().map(|s| s.content.as_ref()).collect())
+            .collect();
+        assert_eq!(texts, vec!["red words", "then plain", "text here"]);
+        assert_eq!(rows[0][0].style, red);
+        let long = vec![Span::raw("supercalifragilistic")];
+        let rows = wrap_spans(&long, 8);
+        assert_eq!(rows.len(), 3);
         assert!(
-            render_event(&OutputEvent::Who(vec![]), &caps(ColorDepth::Ansi16), &theme).is_empty()
+            rows.iter()
+                .all(|r| r.iter().map(|s| s.content.chars().count()).sum::<usize>() <= 8)
         );
-        let prompt = OutputEvent::Prompt(mush_proto::PromptSpec {
-            mode: mush_proto::InputMode::Masked,
-            text: Some(RichText::plain("pw>")),
-        });
-        assert!(render_event(&prompt, &caps(ColorDepth::Ansi16), &theme).is_empty());
+        assert_eq!(wrap_spans(&[], 5).len(), 1);
+        assert_eq!(wrap_spans(&long, 0).len(), 1);
     }
 
     #[test]
-    fn action_receipt_renders_summary_and_recovery_reference() {
-        let status = mush_proto::ActionStatusId::new(
-            "k5:toy:brace:0000000000000007:01010101010101010101010101010101",
-        )
-        .unwrap();
-        let result = mush_proto::ProjectedActionResult::new(
-            "brace",
-            "Brace committed.",
-            serde_json::json!({"event": "braced", "focus": 2}),
-        )
-        .unwrap();
-        let event = OutputEvent::View(
-            mush_proto::ProjectedActionReceipt::new(
-                status,
-                "02020202020202020202020202020202",
-                Some(result),
-            )
-            .unwrap()
-            .view()
-            .unwrap(),
-        );
-        let lines = render_event(&event, &caps(ColorDepth::None), &AnsiTheme::classic());
-        assert_eq!(text_of(&lines[0]), "Brace committed.");
-        assert_eq!(
-            text_of(&lines[1]),
-            "Transaction: k5:toy:brace:0000000000000007:01010101010101010101010101010101"
-        );
-        let OutputEvent::View(view) = event else {
-            unreachable!()
-        };
-        let forged = OutputEvent::View(
-            view.with_commit("03030303030303030303030303030303")
-                .unwrap(),
-        );
-        assert!(render_event(&forged, &caps(ColorDepth::None), &AnsiTheme::classic()).is_empty());
-    }
-
-    #[test]
-    fn color_depth_none_drops_styling() {
-        let theme = AnsiTheme::classic();
-        let ev = OutputEvent::Narrative {
-            kind: NarrativeKind::Say,
-            actor: Some(ObjRef::new("#1", "Nick")),
-            text: RichText::plain("x"),
-        };
-        let lines = render_event(&ev, &caps(ColorDepth::None), &theme);
-        assert_eq!(lines[0].spans[0].style.fg, None);
-    }
-
-    #[test]
-    fn mail_panel_header_and_entry_rows() {
-        let theme = AnsiTheme::classic();
-        let data = serde_json::json!({
-            "folder": "inbox",
-            "entries": [
-                { "index": 1, "status": "unread", "from": { "name": "Zoe" }, "subject": "Hi" },
-                { "index": 2, "status": "read", "from": { "name": "Al" }, "subject": "Later" },
-            ],
-        });
-        let lines = render_mail_panel(&data, &theme, ColorDepth::Ansi16);
-        assert_eq!(lines.len(), 3); // header + 2 entries
-        assert!(text_of(&lines[0]).contains("inbox"));
-        assert!(text_of(&lines[0]).contains("2 messages"));
-        assert!(text_of(&lines[1]).contains("Zoe"));
-        assert!(text_of(&lines[1]).contains("Hi"));
-        // The unread marker distinguishes row 1 from the read row 2.
-        assert!(text_of(&lines[1]).contains('*'));
-    }
-
-    #[test]
-    fn mail_panel_empty_folder_shows_placeholder() {
-        let theme = AnsiTheme::classic();
-        let data = serde_json::json!({ "folder": "inbox", "entries": [] });
-        let lines = render_mail_panel(&data, &theme, ColorDepth::Ansi16);
-        assert_eq!(lines.len(), 2);
-        assert!(text_of(&lines[1]).contains("empty"));
-    }
-
-    #[test]
-    fn mail_panel_tolerates_missing_fields() {
-        let theme = AnsiTheme::classic();
-        // No entries key at all: just the header, no panic.
-        let lines = render_mail_panel(&serde_json::json!({}), &theme, ColorDepth::None);
-        assert_eq!(lines.len(), 1);
-    }
-
-    #[test]
-    fn intel_panel_header_and_records() {
-        let theme = AnsiTheme::classic();
-        let data = serde_json::json!({
-            "count": 2,
-            "records": [
-                { "subject": "Mallory", "kind": "spoke", "detail": "said hello" },
-                { "subject": "Trent", "kind": "arrived", "detail": "" },
-            ],
-        });
-        let lines = render_intel_panel(&data, &theme, ColorDepth::Ansi16);
-        // header + (subject line + detail line) for #1 + (subject line only) for #2
-        assert_eq!(lines.len(), 4);
-        assert!(text_of(&lines[0]).contains("2 records"));
-        assert!(text_of(&lines[1]).contains("Mallory"));
-        assert!(text_of(&lines[1]).contains("[spoke]"));
-        assert!(text_of(&lines[2]).contains("said hello"));
-        assert!(text_of(&lines[3]).contains("Trent"));
-    }
-
-    #[test]
-    fn intel_panel_empty_shows_placeholder() {
-        let theme = AnsiTheme::classic();
-        let data = serde_json::json!({ "count": 0, "records": [] });
-        let lines = render_intel_panel(&data, &theme, ColorDepth::Ansi16);
-        assert_eq!(lines.len(), 2);
-        assert!(text_of(&lines[1]).contains("nothing"));
-    }
-
-    #[test]
-    fn legal_action_panel_renders_only_public_presentation() {
-        let theme = AnsiTheme::classic();
-        let data = serde_json::json!([{
-            "offer": "secret-opaque-token",
-            "truth_subject": { "clock": "scene_turn" },
-            "private": { "definition": "private-definition-digest" },
-            "presentation": {
-                "verb": "brace",
-                "label": "Brace",
-                "help": "Adopt a braced tactical stance."
-            }
-        }]);
-        let lines = render_legal_actions_panel(&data, &theme, ColorDepth::Ansi16);
-        let rendered = lines.iter().map(text_of).collect::<Vec<_>>().join("\n");
-        assert_eq!(lines.len(), 2);
-        assert!(text_of(&lines[0]).contains("+act brace"));
-        assert!(text_of(&lines[0]).contains("Brace"));
-        assert!(text_of(&lines[1]).contains("braced tactical stance"));
-        assert!(
-            lines.iter().all(|line| !text_of(line).contains("secret")),
-            "the TUI must not display opaque execution tokens"
-        );
-        mush_contract_tests::assert_projection_text_clean(
-            "TUI legal-action panel",
-            &rendered,
-            &[
-                "secret-opaque-token",
-                "scene_turn",
-                "private-definition-digest",
-            ],
-        );
-    }
-
-    #[test]
-    fn who_rail_has_header_rows_and_footer() {
+    fn who_rail_marks_here_and_counts() {
         let theme = AnsiTheme::classic();
         let entries = vec![
             WhoEntry {
@@ -808,7 +1325,8 @@ mod tests {
                 alias: None,
                 idle_s: 5,
                 conn_s: 100,
-                location: None,
+                location: Some("Hall".into()),
+                here: true,
                 doing: None,
             },
             WhoEntry {
@@ -817,14 +1335,158 @@ mod tests {
                 idle_s: 65,
                 conn_s: 200,
                 location: None,
+                here: false,
                 doing: None,
             },
         ];
-        let lines = render_who_rail(&entries, &theme, ColorDepth::Ansi16);
-        assert_eq!(lines.len(), 4); // header + 2 rows + footer
-        assert!(text_of(&lines[0]).starts_with("Name"));
-        assert!(text_of(&lines[1]).contains("Alice"));
-        assert!(text_of(&lines[2]).contains("1m")); // 65s -> 1m
-        assert_eq!(text_of(&lines[3]), "2 players");
+        let lines = render_who_rail(&entries, &theme, ColorDepth::Ansi16, true);
+        let text: Vec<String> = lines.iter().map(line_text).collect();
+        assert!(text[1].starts_with("\u{2022} Alice"));
+        assert!(text[2].starts_with("  Bob"));
+        assert_eq!(text[3], "2 online, 1 here");
+    }
+
+    #[test]
+    fn mail_rows_prefill_and_channels_rows_key_by_name() {
+        let theme = AnsiTheme::classic();
+        let store = PanelStore::new();
+        let ctx = RenderCtx {
+            theme: &theme,
+            depth: ColorDepth::Ansi16,
+            utf8: true,
+            store: &store,
+            selected_channel: None,
+        };
+        let data = serde_json::json!({
+            "folder": "inbox",
+            "entries": [
+                { "index": 1, "status": "unread", "from": { "name": "Zoe" }, "subject": "Hi" },
+                { "index": 2, "status": "read", "from": { "name": "Al" }, "subject": "Later" },
+            ],
+        });
+        let rows = render_mail_rows(&data, &ctx);
+        assert_eq!(rows.rows.len(), 3);
+        assert!(!rows.rows[0].selectable);
+        assert_eq!(rows.rows[1].prefill.as_deref(), Some("@mail 1"));
+        assert_eq!(rows.rows[1].row_key.as_deref(), Some("1"));
+        let chans = serde_json::json!({ "channels": [
+            { "name": "Public", "alias": "pub", "unread": 3, "gagged": false },
+            { "name": "Staff", "alias": "", "unread": 0, "gagged": true },
+        ]});
+        let rows = render_channels_rows(&chans, &ctx);
+        assert_eq!(rows.rows[0].prefill.as_deref(), Some("pub "));
+        assert_eq!(rows.rows[0].row_key.as_deref(), Some("Public"));
+        assert_eq!(rows.rows[1].prefill.as_deref(), Some("Staff "));
+        let actions = serde_json::json!([{ "offer": "secret-token", "presentation": { "verb": "brace", "label": "Brace", "help": "Hold." } }]);
+        let rows = render_actions_rows(&actions, &ctx);
+        assert_eq!(rows.rows[0].prefill.as_deref(), Some("+act brace"));
+        let all: String = rows.rows.iter().map(|r| line_text(&r.line)).collect();
+        assert!(!all.contains("secret"));
+        mush_contract_tests::assert_projection_text_clean(
+            "TUI actions pane",
+            &all,
+            &["secret-token", "scene_turn", "private-definition-digest"],
+        );
+    }
+
+    #[test]
+    fn vitals_status_tabs_and_legend_lines() {
+        let frame = VitalsFrame::new(
+            ObjRef::new("#5", "Nick"),
+            1,
+            vec![
+                mush_proto::Vital {
+                    id: "wod.willpower".into(),
+                    label: "WP".into(),
+                    role: VitalRole::Pool,
+                    value: VitalValue::Bounded {
+                        current: 6,
+                        min: 0,
+                        max: 10,
+                    },
+                    state: VitalState::Ok,
+                    detail: None,
+                },
+                mush_proto::Vital {
+                    id: "wod.health".into(),
+                    label: "Health".into(),
+                    role: VitalRole::Dominant,
+                    value: VitalValue::Track {
+                        boxes: vec![Some("lethal".into()), None, None],
+                        level: Some("Bruised".into()),
+                    },
+                    state: VitalState::Warn,
+                    detail: None,
+                },
+                mush_proto::Vital {
+                    id: "wod.wound".into(),
+                    label: "wound".into(),
+                    role: VitalRole::Readout,
+                    value: VitalValue::Text { text: "-1".into() },
+                    state: VitalState::Ok,
+                    detail: None,
+                },
+            ],
+        )
+        .unwrap();
+        let line = vitals_line(&[("wod.vitals".into(), frame)], false);
+        assert_eq!(
+            line_text(&line),
+            "[ Health X__ Bruised ]  [ WP #####--- 6/10 ]  [ wound -1 ]"
+        );
+        let theme = AnsiTheme::classic();
+        let mut view = RoomView {
+            name: "Hall".into(),
+            id: "#2".into(),
+            desc: RichText::plain(""),
+            contents: vec![],
+            exits: vec![
+                ExitRef {
+                    name: "north".into(),
+                    aliases: vec!["n".into()],
+                },
+                ExitRef {
+                    name: "quai".into(),
+                    aliases: vec![],
+                },
+            ],
+            zone: Some(ObjRef::new("#9", "Downtown")),
+            ambient: Default::default(),
+        };
+        view.ambient
+            .insert("weather".into(), serde_json::json!({ "state": "rain" }));
+        view.ambient.insert(
+            "ic_time".into(),
+            serde_json::json!({ "hour": 14, "minute": 5 }),
+        );
+        let status = status_line(
+            Some(&view),
+            &[('n', "north".to_string())],
+            false,
+            &theme,
+            ColorDepth::None,
+        );
+        assert_eq!(
+            line_text(&status),
+            "Hall #2 | Downtown | rain | IC 14:05 | n:north  quai"
+        );
+        let tabs = tab_strip(&[(1, "scene", 0), (3, "mail", 2)], 1, "Nick 12:00", 60);
+        let text = line_text(&tabs);
+        assert!(
+            text.starts_with("rustmush  1 scene   3 mail 2 "),
+            "{text:?}"
+        );
+        assert!(text.ends_with("Nick 12:00"));
+        assert_eq!(text.chars().count(), 60);
+        let nav = legend_line(false, &[('l', "look")], false);
+        assert_eq!(line_text(&nav), "l look | Enter type | ? help");
+        let input = legend_line(true, &[], false);
+        assert_eq!(
+            line_text(&input),
+            "Up history | Tab complete | ^P mode | Esc nav"
+        );
+        assert_eq!(hhmm(0), "00:00");
+        assert_eq!(hhmm(86_399), "23:59");
+        assert_eq!(hhmm(-60), "23:59");
     }
 }

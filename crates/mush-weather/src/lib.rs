@@ -27,9 +27,11 @@
 //!   cell.
 //! - **Messaging**: transition broadcasts to a zone's `OUTDOORS`/`SHELTERED`
 //!   rooms; low-probability jittered ambient lines per `OUTDOORS` room,
-//!   **suppressed when no players are present**; a [`HookPoint::LookRendered`]
-//!   hook appends a current-conditions line; the persistent `weather` panel
-//!   feed emits `{zone, state, temp, icon}` keyframe/delta frames.
+//!   **suppressed when no players are present**; the `RoomView.ambient`
+//!   `weather` glance (a [`HookPoint::RoomAmbient`] hook) carries the
+//!   current-conditions `line` every renderer prints as the room's
+//!   `Weather` fact (interface plan I3); the persistent `weather` panel feed
+//!   emits `{zone, state, temp, icon}` keyframe/delta frames.
 //! - **Query seam**: the reserved [`WeatherQuery`] provider (design 04
 //!   §10.5) exposes a [`WxSnapshot`] per room for rulesets (WoD perception,
 //!   tactics to-hit). Rhai `mush::weather(zone)` is **deferred** — the name is
@@ -189,14 +191,10 @@ impl GameModule for WeatherModule {
                 panel: panel.clone(),
             }),
         )?;
-        reg.hook(
-            HookPoint::LookRendered,
-            Arc::new(WeatherLook {
-                climates: Arc::clone(&self.climates),
-            }),
-        );
-        // The structured glance beside the prose line: `RoomView.ambient`'s
-        // `weather` key for a client's room band (interface plan I1, D-I-4).
+        // The structured glance under `RoomView.ambient["weather"]`
+        // (interface plan I1, D-I-4); its `line` is the prose every renderer
+        // prints as the room's `Weather` fact, so the module no longer
+        // appends a separate `LookRendered` line (I3).
         reg.hook(
             HookPoint::RoomAmbient,
             Arc::new(WeatherLook {
@@ -486,7 +484,7 @@ enum Emit {
 }
 
 // ----------------------------------------------------------------------
-// LookRendered hook: current-conditions line on outdoor room views
+// RoomAmbient hook: current conditions on outdoor room views
 // ----------------------------------------------------------------------
 
 struct WeatherLook {
@@ -494,25 +492,10 @@ struct WeatherLook {
 }
 
 impl EventHook for WeatherLook {
-    fn look_rendered(
-        &self,
-        ctx: &HookReadContext<'_>,
-        _looker: ObjId,
-        room: ObjId,
-    ) -> Vec<RichText> {
-        let Some((cell, def, sheltered)) = resolve_room_weather(ctx.world(), &self.climates, room)
-        else {
-            return Vec::new();
-        };
-        vec![RichText::tag(
-            "weather",
-            conditions_line(&cell, def, sheltered),
-        )]
-    }
-
-    /// The same resolution as a structured glance: `{ state, icon, temp,
+    /// The current conditions as a structured glance: `{ state, icon, temp,
     /// visibility, sheltered, line }` under the `weather` ambient key, so a
-    /// room band can show an icon and a word without parsing the prose.
+    /// room band can show an icon and a word without parsing the prose, and
+    /// every renderer prints `line` as the room's `Weather` fact.
     fn room_ambient(
         &self,
         ctx: &HookReadContext<'_>,

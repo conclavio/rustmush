@@ -608,6 +608,55 @@ act as hotkeys, or lets a bare key send a mutating command? **P
 **Hands to I6, I7, I8:** a `PaneContent::Panel` renderer plugs in without
 touching `app.rs`; screens are added by a registration, not a rewrite.
 
+**As built (2026-09-05, branch `interface-i2-i4`).** As specified, with
+these deviations and details:
+
+1. **Keys are decoded first** (`tui/keys.rs`, `KeyParser`): bytes become
+   `Key`s — `Char`, `Ctrl`, `Alt`, arrows, `BackTab`, `F(n)` — and the app
+   acts on keys by mode. The burst rule is exactly §3.2's: `ESC` + a
+   printable in one burst is Alt, `ESC [` / `ESC O` open CSI / SS3 (kept
+   across bursts, as is a split UTF-8 character), a burst-final `ESC` is
+   `Esc`.
+2. **`LineBuffer`** (`src/line.rs`) is the D-I-6 core; `LineEditor` now
+   delegates buffer, cursor and history to it and its 27 unit tests and
+   property test are unchanged. A second property test
+   (`tests/tui_line_proptest.rs`) feeds the same key bytes to both drivers
+   and compares text, cursor and submissions.
+3. **Panes carry rows, rows carry their prefill** (`PaneRows` /
+   `PaneRow { prefill, row_key }`): a mail row prefills `@mail <n>`, an
+   action `+act <verb>`, a channel its alias. `KeyAction::PrefillRow(prefix)`
+   was added beside `Prefill` so `d` on the mail screen becomes
+   `@mail/delete <n>` of the highlighted row. `KeyAction::Local` covers
+   `Refresh`, `Backlog` and `ClearScrollback`.
+4. **The scene screen's right column** is the WHO rail, the `scenes` glance
+   and the legal-actions pane (the vitals live on the gauge row above the
+   input, on every screen); it degrades actions → scene → WHO, and the
+   scrollback's reading width is 60 columns, so 80×24 is scrollback, input
+   and the chrome alone, 120×34 the whole scene screen.
+5. **The manifest reaches the TUI through the transport:** the line-mode
+   pump stashes `Hello.panels` and `SessionInfo.character` in the
+   connection's `Shared`, `TuiSession::new(caps, manifest)` takes them, and
+   `entry_queries()` hydrates WHO, `commands.list`, `comsys.state`,
+   `scenes`, every manifest `.vitals` feed and the screen's own feeds. The
+   `.sheet` feed is queried on entering the sheet screen. A `Hello`
+   arriving inside the TUI re-hydrates.
+6. **Panel state** (`tui/panels.rs`): `comsys` deltas fold `backlog` into
+   a per-channel ring, `weather` deltas shallow-merge, `.roll` keyframes
+   feed a ring, views keep the gap-detecting disposition; any other delta
+   asks for one resync. `Query::ChannelBacklog` goes through the SSH seam
+   as `comsys.backlog {channel, before_seq, limit}`.
+7. **Client-local commands** keep their slash: `/clear`, `/help`, `/notui`.
+   Enter on the palette picks; when the pick changes nothing (the line is
+   already the entry, or nothing matched) it submits, so `/clear` typed in
+   full runs on one Enter.
+8. **A masked or hidden prompt opens a fresh box** and leaves any draft
+   aside — a game line has no business in a password field.
+9. **Golden frames** (`tests/golden/`): the scene screen at 80×24, 120×34,
+   160×44 and every other screen at 120×34, generated with a fixed clock
+   through ratatui's `TestBackend`; `UPDATE_GOLDEN=1` rewrites them.
+10. The clock gutter is UTC `HH:MM` (the server has no per-player zone);
+    the tab strip's right side is `<name> ● <n> on <HH:MM>`.
+
 ### 3.3 Cut I3 — Line-mode typography
 
 **What it is.** Line mode is the parity floor and the surface people script
@@ -645,6 +694,38 @@ staffer; control characters cannot break the gutter.
 **Verify lenses.** **W (width)** — any line that exceeds the width or breaks
 the CRLF-only invariant? **I (injection)** — can a name or a description
 misalign the gutter or smuggle an escape?
+
+**As built (2026-09-05, branch `interface-i2-i4`, built before I2 because
+both later cuts consume the `roll` tag).** As specified, with these
+deviations:
+
+1. **One additive wire field: `WhoEntry.here: bool`** (absent when false).
+   The footer's "M in your room" cannot be derived from `location` alone —
+   a staffer sees every location — and the renderer has no viewer. Core
+   sets it for everyone; a player's `location` is filled only when `here`
+   (D-I-12); staff keep every location. The TS binding is regenerated.
+2. **The narration is built once**, by `mush_ruleset::roll_narration` /
+   `contested_narration` (`RollSide { name, expr, dice, result }` plus
+   notes), so both rulesets, the NPC ability seam (`agent.rs`) and
+   `+init/roll` share one span layout — `roll`, gap, `player` name, body —
+   and `is_roll_narration` is the client-side test. `mush-dice` grew
+   `dice_text` / `result_text` (WoD) and `faces_text` / `limit_text` /
+   `result_text` (SR5); `summary()` composes from them, byte-identical.
+3. **The dice count left the room line** (the faces show it); the
+   difficulty stays as a bare `diff 6`, every other qualifier keeps its
+   bracket form (`[wound -2]`, `[Physical limit 5]`, `[extended 3/5: …]`).
+   Private, silent and staff-copy deliveries, the roll log, the `.roll`
+   panel's `summary`, the scene ledger and a pinned job keep the classic
+   sentence.
+4. **The weather module's `LookRendered` hook is gone**; `ambient.weather.
+   line` is the one prose it contributes. Until I4's room band, the web
+   `roomLines` prints it as a `Weather:` line, the TUI's room render does
+   the same, and the testkit's room text carries it so existing tests read
+   it.
+5. **Hanging indent** is the speaker's width plus one (plus `<OOC> ` for
+   OOC), capped at `HANG_MAX_W = 20`, dropped below `MIN_HANG_BODY = 8`
+   columns of body; emits and spoofs wrap flush. A `dim` theme tag (bright
+   black) styles the dbref and the rule; `roll` is magenta bold.
 
 ### 3.4 Cut I4 — The web screen shell
 
@@ -716,6 +797,43 @@ composing burst sends at most one `true` per interval and always a trailing
 style or a URL the sanitizers do not guard? **R (resume)** — does every
 screen survive a reconnect and a full rehydrate without stale state?
 **A (access)** — is every screen and the palette operable by keyboard alone?
+
+**As built (2026-09-05, branch `interface-i2-i4`).** As specified, with
+these deviations and details:
+
+1. **The key model is a pure function** (`web/src/lib/keys.ts`,
+   `navIntent`): input mode is "a text field has focus"; the bare table and
+   the Alt+key table are one function with a `fromBox` flag, so the two can
+   never drift. Pane focus, scrolling and jumps return `false` on the web —
+   the browser scrolls and tabs on its own; the TUI needed them, the DOM
+   does not.
+2. **Digits are shared with the TUI where the screen exists there**: 1
+   scene, 2 sheet, 3 mail, 4 chan, 5 rolls, 7 actions; 8 build and 9 llm
+   are the web's own, and 6 (the TUI's intel screen) is left free on the
+   web, which has no intel panel yet.
+3. **`RightPanel` and `RoomPanel` are gone**: the room folded into the room
+   band, the panels became screens. `InputBar` survives as the channel
+   tab's input; the scene screen has the `Composer`. A `ComposerHandle`
+   registered by the scene screen is how the shell focuses and prefills
+   the box.
+4. **Composing on the server** rides the plain one-way IPC path
+   (`WireInbound::Composing`, not the input custody envelope) because it is
+   best-effort by contract: `Inbound::Composing` is classified a world read
+   and dropped silently when a world mode refuses it; the engine emits
+   `DeliveryClass::BestEffort` to `Audience::Room { exclude: [actor],
+   subject: Some(actor) }`. The opt-out attribute is `pref:composing`
+   (`off`, `no`, `false`, `0`, `none`); the bridge's limiter
+   (`mush-gateway/src/composing.rs`) is per connection, bounded, cleared on
+   disconnect.
+5. **The palette's Enter picks; Ctrl+Enter runs** a game entry (a
+   client-local one always goes to the box); `/` on an empty box opens it,
+   `^K` toggles it from either mode.
+6. **The sheet poll and the ruleset-tagged refresh heuristic retired** (the
+   I1 republish made them redundant, §9); `refreshSheet` remains a manual
+   nudge behind the Refresh button and the sheet screen's `r`.
+7. **Hydration is one pure list** (`hydrationQueries`), used by the hello
+   pass and the full-rehydrate seam alike, so a resume re-subscribes vitals
+   and scenes by construction.
 
 ### 3.5 Cut I5 — Web scene typography (direction 1a)
 

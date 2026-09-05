@@ -62,6 +62,7 @@ use crate::web_bridge::WebBridge;
 
 pub mod accounts;
 pub mod bridge_common;
+pub mod composing;
 pub mod delivery;
 pub mod ssh_bridge;
 pub mod web_bridge;

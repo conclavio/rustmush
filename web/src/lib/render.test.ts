@@ -245,6 +245,26 @@ describe("roomLines", () => {
     const bare = roomLines({ ...view, desc: [], contents: [], exits: [] });
     expect(bare).toHaveLength(1);
   });
+
+  it("prints the weather fact from ambient and ignores odd shapes", () => {
+    const wet = roomLines({
+      ...view,
+      ambient: { weather: { state: "rain", line: "Overhead: steady rain." } },
+    });
+    expect(wet).toHaveLength(5);
+    expect(wet[4]!.map((s) => s.text).join("")).toBe("Weather: Overhead: steady rain.");
+    expect(wet[4]![1]!.cls).toContain("tag-weather");
+    for (const ambient of [
+      undefined,
+      {},
+      { weather: "rain" },
+      { weather: { line: 7 } },
+      { weather: { line: "" } },
+      { weather: null },
+    ]) {
+      expect(roomLines({ ...view, ambient: ambient as RoomView["ambient"] })).toHaveLength(4);
+    }
+  });
 });
 
 describe("formatters", () => {

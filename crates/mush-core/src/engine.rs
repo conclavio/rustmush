@@ -421,6 +421,20 @@ pub enum Inbound {
         /// The actor whose session ended.
         actor: ObjId,
     },
+    /// Someone started or stopped composing a line (interface plan I4,
+    /// D-I-11): a presence hint the engine fans out to the actor's room as
+    /// [`OutputEvent::Composing`], minus the actor, gated by perception
+    /// like a room line, never for a DARK actor, never for one who opted
+    /// out (`pref:composing` set to `off`), and never an idle stamp. The
+    /// bridge rate-limits it; an `active: false` always passes.
+    Composing {
+        /// The connection it arrived on.
+        conn: ConnId,
+        /// The actor typing.
+        actor: ObjId,
+        /// `true` when a draft began, `false` when it was sent or abandoned.
+        active: bool,
+    },
     /// Typed completion of deferred async work (treaty ruling 3).
     Apply(WorldCommand),
     /// Operator/driver control.
@@ -2482,6 +2496,14 @@ impl Engine {
                 self.handle_query(conn, actor, id, &name, &args, out);
                 StepOutcome::Continue
             }
+            Inbound::Composing {
+                conn,
+                actor,
+                active,
+            } => {
+                self.handle_composing(conn, actor, active, out);
+                StepOutcome::Continue
+            }
             Inbound::ConnUp {
                 conn,
                 actor,
@@ -2900,6 +2922,44 @@ impl Engine {
     /// [`QueryHandler`](crate::module::QueryHandler) by `name`, run it
     /// read-only as `actor`, and address the wrapped
     /// [`OutputEvent::Reply`] to the requesting connection only. Every
+    /// Fan a composing hint out to the actor's room (interface plan I4,
+    /// D-I-11). Presence must not become surveillance or an idle exploit:
+    /// the hint never touches `last_input`, a DARK actor emits nothing, an
+    /// actor whose `pref:composing` attribute reads `off` emits nothing,
+    /// the actor is excluded from the audience, and the fan-out carries
+    /// them as its perception subject so a concealed typist stays
+    /// concealed. Best-effort delivery: a lost frame costs nothing, the
+    /// clients expire their pills on a timer.
+    fn handle_composing(&self, conn: ConnId, actor: ObjId, active: bool, out: &mut Outbox) {
+        let Some(o) = self.world.get(actor) else {
+            tracing::debug!(%conn, %actor, "Composing for missing actor dropped");
+            return;
+        };
+        if o.flags.contains(crate::flags::Flags::DARK) {
+            return;
+        }
+        if crate::commands::attr_text(&self.world, actor, COMPOSING_PREF_ATTR)
+            .is_some_and(|v| composing_opted_out(&v))
+        {
+            return;
+        }
+        let Some(room) = o.location else {
+            return;
+        };
+        out.push_classified(
+            DeliveryClass::BestEffort,
+            crate::Audience::Room {
+                room,
+                exclude: vec![actor],
+                subject: Some(actor),
+            },
+            OutputEvent::Composing {
+                actor: crate::obj_ref(&self.world, actor),
+                active,
+            },
+        );
+    }
+
     /// outcome — success, handler refusal, unknown name — produces exactly
     /// one `Reply` carrying the request's `id`, so the client can always
     /// correlate. A query for a missing actor is dropped (the connection is
@@ -3149,6 +3209,20 @@ impl Engine {
 /// ([`Outbox::to_room_from`]): a concealed actor's connect/disconnect echo is
 /// gated from observers who cannot perceive them, exactly like their movement
 /// echoes. Free pass with no `Perceive` hook registered.
+/// The player attribute that opts out of composing hints (interface plan
+/// I4, §8 q1: on by default, off per player).
+pub const COMPOSING_PREF_ATTR: &str = "pref:composing";
+
+/// Whether a `pref:composing` value opts out: `off`, `no`, `false`, `0`,
+/// `none` (case-insensitive); anything else keeps the default.
+#[must_use]
+pub fn composing_opted_out(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "off" | "no" | "false" | "0" | "none"
+    )
+}
+
 fn announce_room(w: &World, actor: ObjId, suffix: &str, out: &mut Outbox) {
     if let Some(loc) = w.get(actor).and_then(|o| o.location) {
         let text = RichText::new().span(name_span(w, actor)).text(suffix);
@@ -4960,6 +5034,121 @@ mod tests {
             row.idle_s, 40,
             "a Query must not stamp last_input (idle would read 0)"
         );
+    }
+
+    /// Interface plan I4, D-I-11: a composing hint fans out to the room
+    /// minus the typist, carries them as the perception subject, is
+    /// best-effort, never stamps idle, and stays silent for a DARK actor,
+    /// an opt-out, or a missing actor.
+    #[test]
+    fn composing_fans_out_to_the_room_without_stamping_idle() {
+        let (mut engine, nick) = setup();
+        let (mut out, mut fx) = (Outbox::new(), Effects::new());
+        engine.step(
+            Inbound::ConnUp {
+                conn: 2,
+                actor: nick,
+                caps_structured: true,
+                from_linkdead: false,
+            },
+            &mut out,
+            &mut fx,
+        );
+        let before = engine.world.session_stat(nick).map(|s| s.last_input);
+        engine.world.set_now(5_000);
+        let mut out = Outbox::new();
+        engine.step(
+            Inbound::Composing {
+                conn: 2,
+                actor: nick,
+                active: true,
+            },
+            &mut out,
+            &mut fx,
+        );
+        assert_eq!(
+            engine.world.session_stat(nick).map(|s| s.last_input),
+            before,
+            "a composing hint is never an idle stamp"
+        );
+        assert_eq!(out.len(), 1, "{:?}", out.events());
+        let (aud, ev) = &out.events()[0];
+        assert!(
+            matches!(aud, Audience::Room { room, exclude, subject }
+                if *room == LIMBO && exclude == &vec![nick] && *subject == Some(nick)),
+            "{aud:?}"
+        );
+        assert!(
+            matches!(ev, OutputEvent::Composing { actor, active: true } if actor.name == "Nick"),
+            "{ev:?}"
+        );
+        assert_eq!(out.take_classified()[0].0, DeliveryClass::BestEffort);
+
+        // `active: false` fans out the same way.
+        let mut out = Outbox::new();
+        engine.step(
+            Inbound::Composing {
+                conn: 2,
+                actor: nick,
+                active: false,
+            },
+            &mut out,
+            &mut fx,
+        );
+        assert!(matches!(
+            &out.events()[0].1,
+            OutputEvent::Composing { active: false, .. }
+        ));
+
+        // An opt-out silences it.
+        engine
+            .world
+            .set_attr(nick, COMPOSING_PREF_ATTR, crate::Attr::text("off", nick))
+            .unwrap();
+        let mut out = Outbox::new();
+        engine.step(
+            Inbound::Composing {
+                conn: 2,
+                actor: nick,
+                active: true,
+            },
+            &mut out,
+            &mut fx,
+        );
+        assert!(out.is_empty(), "opted out: {:?}", out.events());
+        engine
+            .world
+            .set_attr(nick, COMPOSING_PREF_ATTR, crate::Attr::text("on", nick))
+            .unwrap();
+
+        // A DARK actor never emits it.
+        engine.world.set_flag(nick, Flags::DARK, true).unwrap();
+        let mut out = Outbox::new();
+        engine.step(
+            Inbound::Composing {
+                conn: 2,
+                actor: nick,
+                active: true,
+            },
+            &mut out,
+            &mut fx,
+        );
+        assert!(out.is_empty(), "DARK: {:?}", out.events());
+
+        // A vanished actor is dropped, not a panic.
+        let mut out = Outbox::new();
+        engine.step(
+            Inbound::Composing {
+                conn: 9,
+                actor: ObjId(999),
+                active: true,
+            },
+            &mut out,
+            &mut fx,
+        );
+        assert!(out.is_empty());
+        assert!(composing_opted_out(" OFF ") && composing_opted_out("0"));
+        assert!(!composing_opted_out("on") && !composing_opted_out(""));
     }
 
     /// A Query for a vanished actor is dropped outright — no reply, no

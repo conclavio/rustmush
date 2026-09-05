@@ -874,7 +874,8 @@ fn who_lists_connected_players() {
     g.w.set_connected(bob, true);
     g.w.set_connected(GOD, true);
     g.w.set_flag(GOD, Flags::DARK, true).unwrap();
-    // Ann sees Bob and herself, not the DARK wizard, no locations.
+    // Ann sees Bob and herself, not the DARK wizard. Bob shares her room, so
+    // his location shows and he is `here` (interface plan I3, D-I-12).
     let out = g.run(ann, "WHO");
     let who = out
         .events()
@@ -886,8 +887,27 @@ fn who_lists_connected_players() {
         .expect("who event");
     let names: Vec<_> = who.iter().map(|e| e.name.as_str()).collect();
     assert_eq!(names, vec!["Ann", "Bob"]);
-    assert!(who.iter().all(|e| e.location.is_none()));
-    // God sees all three, with locations.
+    assert!(
+        who.iter()
+            .all(|e| e.here && e.location.as_deref() == Some("Limbo"))
+    );
+    // Once Bob is elsewhere, Ann learns neither where he is nor that he moved
+    // — only that he is not here.
+    let attic = g.w.create(ObjKind::Room, "Attic", GOD, None).unwrap();
+    g.w.move_to(bob, attic).unwrap();
+    let out = g.run(ann, "WHO");
+    let who = out
+        .events()
+        .iter()
+        .find_map(|(_, e)| match e {
+            OutputEvent::Who(v) => Some(v.clone()),
+            _ => None,
+        })
+        .expect("who event");
+    let bob_row = who.iter().find(|e| e.name == "Bob").unwrap();
+    assert!(!bob_row.here && bob_row.location.is_none());
+    assert!(who.iter().find(|e| e.name == "Ann").unwrap().here);
+    // God sees all three, with every location; Ann shares Limbo with God.
     let out = g.run(GOD, "who");
     let who = out
         .events()
@@ -898,7 +918,16 @@ fn who_lists_connected_players() {
         })
         .expect("who event");
     assert_eq!(who.len(), 3);
-    assert!(who.iter().all(|e| e.location.as_deref() == Some("Limbo")));
+    assert!(who.iter().all(|e| e.location.is_some()));
+    assert_eq!(
+        who.iter()
+            .find(|e| e.name == "Bob")
+            .unwrap()
+            .location
+            .as_deref(),
+        Some("Attic")
+    );
+    assert_eq!(who.iter().filter(|e| e.here).count(), 2, "God and Ann");
     // Disconnect drops Bob from the list.
     g.w.set_connected(bob, false);
     let out = g.run(ann, "WHO");

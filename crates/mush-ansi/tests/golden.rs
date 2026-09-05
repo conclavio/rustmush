@@ -10,12 +10,16 @@ use mush_proto::{
 };
 
 fn caps(color: ColorDepth, width: u16) -> ClientCaps {
+    caps_utf8(color, width, true)
+}
+
+fn caps_utf8(color: ColorDepth, width: u16, utf8: bool) -> ClientCaps {
     ClientCaps {
         kind: ClientKind::Ssh,
         color,
         width,
         height: 24,
-        utf8: true,
+        utf8,
         structured: false,
     }
 }
@@ -24,6 +28,34 @@ fn rendered(event: &OutputEvent, color: ColorDepth, width: u16) -> Vec<u8> {
     let mut out = Vec::new();
     render(event, &caps(color, width), &AnsiTheme::default(), &mut out);
     out
+}
+
+fn rendered_ascii(event: &OutputEvent, width: u16) -> String {
+    let mut out = Vec::new();
+    render(
+        event,
+        &caps_utf8(ColorDepth::None, width, false),
+        &AnsiTheme::default(),
+        &mut out,
+    );
+    String::from_utf8(out).unwrap()
+}
+
+fn room(contents: Vec<ObjRef>, exits: Vec<ExitRef>) -> RoomView {
+    RoomView {
+        name: "Hall".into(),
+        id: "#2".into(),
+        desc: RichText::plain("A big hall."),
+        contents,
+        exits,
+        zone: None,
+        ambient: Default::default(),
+    }
+}
+
+/// The rule under a room heading: `n` box-drawing dashes.
+fn rule(n: usize) -> String {
+    "\u{2500}".repeat(n)
 }
 
 fn rendered_str(event: &OutputEvent, color: ColorDepth, width: u16) -> String {
@@ -158,14 +190,19 @@ fn room_golden_ansi16() {
         zone: None,
         ambient: Default::default(),
     });
-    let expected = "\x1b[1mHall(#2)\x1b[0m\r\n\
-                    A big hall.\r\n\
-                    Contents:\r\n\
-                    ball\r\n\
-                    Obvious exits:\r\n\
-                    \x1b[1;36mnorth\x1b[0m  \x1b[1;36msouth\x1b[0m\r\n";
+    // I3: `Name #id` (id dim), a rule, the description, a blank line, then
+    // labelled facts in a nine-column gutter.
+    let expected = format!(
+        "\x1b[1mHall\x1b[0m \x1b[90m#2\x1b[0m\r\n\
+         \x1b[90m{}\x1b[0m\r\n\
+         A big hall.\r\n\
+         \r\n\
+         Here     ball\r\n\
+         Exits    \x1b[1;36mnorth\x1b[0m  \x1b[1;36msouth\x1b[0m\r\n",
+        rule(72)
+    );
     assert_eq!(rendered_str(&ev, ColorDepth::Ansi16, 0), expected);
-    // Empty contents/exits: the label lines vanish.
+    // Empty contents/exits: the fact lines and the blank line vanish.
     let bare = OutputEvent::Room(RoomView {
         name: "Void".into(),
         id: "#9".into(),
@@ -177,7 +214,153 @@ fn room_golden_ansi16() {
     });
     assert_eq!(
         rendered_str(&bare, ColorDepth::None, 0),
-        "Void(#9)\r\nNothing.\r\n"
+        format!("Void #9\r\n{}\r\nNothing.\r\n", rule(72))
+    );
+}
+
+#[test]
+fn room_rule_fits_the_width_and_falls_back_to_ascii() {
+    let ev = OutputEvent::Room(room(vec![], vec![]));
+    // min(width, 72): narrower terminals get a shorter rule, wider ones 72.
+    let narrow = rendered_str(&ev, ColorDepth::None, 40);
+    assert_eq!(narrow.split("\r\n").nth(1).unwrap(), rule(40));
+    let wide = rendered_str(&ev, ColorDepth::None, 200);
+    assert_eq!(wide.split("\r\n").nth(1).unwrap(), rule(72));
+    for width in [1u16, 5, 40, 80] {
+        // The rule itself never exceeds the width (a name is a word, and a
+        // word longer than the width overflows by the documented rule).
+        // (At width 1 the heading itself wraps, so find the rule by content.)
+        let text = rendered_str(&ev, ColorDepth::None, width);
+        let rule_line = text
+            .split("\r\n")
+            .find(|l| !l.is_empty() && l.chars().all(|c| c == '\u{2500}'))
+            .expect("a rule line");
+        assert!(
+            ansi_len(rule_line) <= usize::from(width),
+            "rule exceeds width {width}: {rule_line:?}"
+        );
+    }
+    // No UTF-8: plain dashes, never a box-drawing character.
+    let ascii = rendered_ascii(&ev, 30);
+    assert_eq!(ascii.split("\r\n").nth(1).unwrap(), "-".repeat(30));
+    assert!(!ascii.contains('\u{2500}'));
+}
+
+#[test]
+fn room_facts_align_in_the_gutter_and_wrap_under_it() {
+    let contents: Vec<ObjRef> = (0..12)
+        .map(|i| ObjRef::new(format!("#{i}"), format!("guest{i:02}")))
+        .collect();
+    let exits = vec![
+        ExitRef {
+            name: "north".into(),
+            aliases: vec![],
+        },
+        ExitRef {
+            name: "quai".into(),
+            aliases: vec![],
+        },
+    ];
+    let mut view = room(contents, exits);
+    view.ambient.insert(
+        "weather".into(),
+        serde_json::json!({ "state": "rain", "line": "Overhead: steady rain, a cold wind off the water, visibility poor." }),
+    );
+    let ev = OutputEvent::Room(view);
+    for width in [40u16, 60, 78] {
+        let text = rendered_str(&ev, ColorDepth::None, width);
+        let lines: Vec<&str> = text.split("\r\n").collect();
+        let here = lines
+            .iter()
+            .position(|l| l.starts_with("Here     "))
+            .unwrap();
+        let exits = lines
+            .iter()
+            .position(|l| l.starts_with("Exits    "))
+            .unwrap();
+        let weather = lines
+            .iter()
+            .position(|l| l.starts_with("Weather  "))
+            .unwrap();
+        assert!(here < exits && exits < weather);
+        assert_eq!(lines[here - 1], "", "a blank line precedes the facts");
+        // Every continuation line sits under the gutter, and nothing is wider
+        // than the terminal.
+        for (i, line) in lines.iter().enumerate() {
+            if i > here && i != exits && i != weather && !line.is_empty() {
+                assert!(
+                    line.starts_with("         "),
+                    "not under the gutter: {line:?}"
+                );
+            }
+            assert!(
+                ansi_len(line) <= usize::from(width),
+                "too wide at {width}: {line:?}"
+            );
+        }
+        assert!(text.contains("guest11"), "every occupant survives wrapping");
+        assert!(text.contains("poor."), "the weather line survives wrapping");
+    }
+}
+
+#[test]
+fn narrative_hanging_indent_is_crlf_clean_and_rewraps() {
+    let ev = say("the quick brown fox jumps over the lazy dog and keeps on running far away");
+    let narrow = rendered_str(&ev, ColorDepth::None, 30);
+    let lines: Vec<&str> = narrow.trim_end_matches("\r\n").split("\r\n").collect();
+    assert!(lines.len() >= 3);
+    assert!(lines[0].starts_with("Nick says, \""));
+    for l in &lines[1..] {
+        assert!(
+            l.starts_with("     ") && !l.starts_with("      "),
+            "indent 5: {l:?}"
+        );
+        assert!(ansi_len(l) <= 30);
+    }
+    // A wider terminal re-wraps to fewer lines with the same indent.
+    let wide = rendered_str(&ev, ColorDepth::None, 60);
+    let wide_lines: Vec<&str> = wide.trim_end_matches("\r\n").split("\r\n").collect();
+    assert!(wide_lines.len() < lines.len());
+    assert!(wide_lines[1].starts_with("     "));
+    // The bytes stay CRLF-only.
+    let bytes = rendered(&ev, ColorDepth::Ansi16, 30);
+    for (i, &b) in bytes.iter().enumerate() {
+        if b == b'\n' {
+            assert_eq!(bytes[i - 1], b'\r');
+        }
+    }
+    // An emit has no speaker column and wraps flush.
+    let emit = OutputEvent::Narrative {
+        kind: NarrativeKind::Emit,
+        actor: None,
+        text: RichText::plain("a long scene-setting line that goes on past the width"),
+    };
+    let flush = rendered_str(&emit, ColorDepth::None, 30);
+    let second = flush.split("\r\n").nth(1).unwrap();
+    assert!(!second.is_empty() && !second.starts_with(' '), "{flush:?}");
+}
+
+#[test]
+fn roll_line_renders_as_is_with_the_marker_styled() {
+    // The layout `mush_ruleset::roll_narration` produces (interface plan I3).
+    let text = RichText(vec![
+        Span::tagged("roll", "roll"),
+        Span::plain("  "),
+        Span::tagged("player", "Mireille"),
+        Span::plain("  perception+alertness  8 6 4 3 = 2 successes  diff 6"),
+    ]);
+    let ev = OutputEvent::Narrative {
+        kind: NarrativeKind::Emit,
+        actor: Some(ObjRef::new("#5", "Mireille")),
+        text,
+    };
+    assert_eq!(
+        rendered_str(&ev, ColorDepth::None, 0),
+        "roll  Mireille  perception+alertness  8 6 4 3 = 2 successes  diff 6\r\n"
+    );
+    assert_eq!(
+        rendered_str(&ev, ColorDepth::Ansi16, 0),
+        "\x1b[1;35mroll\x1b[0m  \x1b[36mMireille\x1b[0m  perception+alertness  8 6 4 3 = 2 successes  diff 6\r\n"
     );
 }
 
@@ -295,7 +478,8 @@ fn who_entries() -> Vec<WhoEntry> {
             alias: None,
             idle_s: 5,
             conn_s: 3600,
-            location: None,
+            location: Some("Hall".into()),
+            here: true,
             doing: Some("Building".into()),
         },
         WhoEntry {
@@ -304,6 +488,7 @@ fn who_entries() -> Vec<WhoEntry> {
             idle_s: 120,
             conn_s: 90_000,
             location: None,
+            here: false,
             doing: None,
         },
     ]
@@ -314,23 +499,63 @@ fn who_golden_width_78() {
     let ev = OutputEvent::Who(who_entries());
     let text = rendered_str(&ev, ColorDepth::None, 78);
     let lines: Vec<&str> = text.split("\r\n").collect();
-    // Aligned columns at fixed widths 16/5/8 + two-space gutters.
+    // Aligned columns at fixed widths 16/5/8/14 + two-space gutters (I3
+    // adds `Where`, D-I-12).
     assert_eq!(
         lines[0],
-        format!("{:<16}  {:>5}  {:>8}  {}", "Name", "Idle", "Conn", "Doing")
+        format!(
+            "{:<16}  {:>5}  {:>8}  {:<14}  {}",
+            "Name", "Idle", "Conn", "Where", "Doing"
+        )
     );
     assert_eq!(
         lines[1],
-        format!("{:<16}  {:>5}  {:>8}  {}", "Nick", "5s", "1h", "Building")
+        format!(
+            "{:<16}  {:>5}  {:>8}  {:<14}  {}",
+            "Nick", "5s", "1h", "Hall", "Building"
+        )
     );
-    // Empty Doing trims the trailing padding.
+    // Empty Where and Doing trim the trailing padding.
     assert_eq!(
         lines[2],
         format!("{:<16}  {:>5}  {:>8}", "Wizardess", "2m", "1d")
     );
-    assert_eq!(lines[3], "2 players connected.");
+    assert_eq!(lines[3], "2 connected, 1 in your room.");
     assert_eq!(lines[4], "");
     assert_eq!(lines.len(), 5);
+}
+
+#[test]
+fn who_where_is_whatever_the_server_allowed_and_control_bytes_cannot_shift_a_column() {
+    // A staffer's listing carries every location; a player's only their own
+    // room's — the renderer prints what it is given (D-I-12 lives in core).
+    let mut entries = who_entries();
+    entries[1].location = Some("Tower".into());
+    let text = rendered_str(&OutputEvent::Who(entries), ColorDepth::None, 78);
+    let lines: Vec<&str> = text.split("\r\n").collect();
+    assert!(lines[2].contains("  Tower"));
+    assert_eq!(lines[3], "2 connected, 1 in your room.");
+    // Control characters in a name, a location or a doing are dropped before
+    // the columns are laid out, so every row's Idle column starts at the
+    // header's.
+    let evil = vec![WhoEntry {
+        name: "Ni\x07ck\x1b[31m".into(),
+        alias: None,
+        idle_s: 5,
+        conn_s: 5,
+        location: Some("Ha\x08ll".into()),
+        here: true,
+        doing: Some("bad\x1b[2Jthings".into()),
+    }];
+    let out = rendered(&OutputEvent::Who(evil), ColorDepth::None, 78);
+    assert!(!out.contains(&0x1b) && !out.contains(&0x07) && !out.contains(&0x08));
+    let text = String::from_utf8(out).unwrap();
+    let lines: Vec<&str> = text.split("\r\n").collect();
+    let idle_col = lines[0].find(" Idle").unwrap();
+    assert_eq!(&lines[1][idle_col..idle_col + 5], "   5s");
+    assert!(lines[1].contains("  Hall  "), "{:?}", lines[1]);
+    // The ESC is gone; the printable remainder of the sequence stays text.
+    assert!(lines[1].ends_with("bad[2Jthings"), "{:?}", lines[1]);
 }
 
 #[test]
@@ -347,6 +572,7 @@ fn who_fits_narrow_terminals() {
         idle_s: 1,
         conn_s: 1,
         location: None,
+        here: false,
         doing: None,
     }]);
     let t = rendered_str(&long, ColorDepth::None, 78);

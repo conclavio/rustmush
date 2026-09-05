@@ -540,6 +540,17 @@ fn room_text(rv: &RoomView) -> String {
         s.push_str("\nZone: ");
         s.push_str(&z.name);
     }
+    // The weather module's conditions line rides in `ambient` (interface
+    // plan I3); the line renderer prints it as the `Weather` fact.
+    if let Some(line) = rv
+        .ambient
+        .get("weather")
+        .and_then(|v| v.get("line"))
+        .and_then(|v| v.as_str())
+    {
+        s.push_str("\nWeather: ");
+        s.push_str(line);
+    }
     s
 }
 
@@ -654,6 +665,7 @@ mod tests {
             idle_s: 0,
             conn_s: 0,
             location: Some("Limbo".into()),
+            here: false,
             doing: Some("testing".into()),
         };
         assert_eq!(

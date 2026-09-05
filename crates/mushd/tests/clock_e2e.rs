@@ -75,7 +75,7 @@ async fn time_command_renders_over_ssh() {
     god.expect(BANNER).await;
     god.send_line(&format!("connect boss {GM_PASSWORD}")).await;
     god.expect("Connected as God").await;
-    god.expect("Limbo(#0)").await;
+    god.expect("Limbo #0").await;
 
     let mark = god.mark();
     god.send_line("@time").await;

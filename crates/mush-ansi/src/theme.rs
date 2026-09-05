@@ -46,6 +46,8 @@ impl AnsiTheme {
     /// | `channel` | yellow |
     /// | `system` | green |
     /// | `error` | red |
+    /// | `roll` | magenta bold (the marker on a one-line roll, interface plan I3) |
+    /// | `dim` | bright black (a dbref beside a name, a rule) |
     /// | `say` / `pose` | plain (no entry) |
     #[must_use]
     pub fn classic() -> AnsiTheme {
@@ -57,6 +59,8 @@ impl AnsiTheme {
             .with("channel", Style::default().with_fg(Color::Ansi(3)))
             .with("system", Style::default().with_fg(Color::Ansi(2)))
             .with("error", Style::default().with_fg(Color::Ansi(1)))
+            .with("roll", Style::default().with_fg(Color::Ansi(5)).with_bold())
+            .with("dim", Style::default().with_fg(Color::Ansi(8)))
     }
 
     /// Set (or override) the style for one tag.
@@ -119,6 +123,10 @@ mod tests {
         assert_eq!(t.get("channel").unwrap().fg, Some(Color::Ansi(3)));
         assert_eq!(t.get("system").unwrap().fg, Some(Color::Ansi(2)));
         assert_eq!(t.get("error").unwrap().fg, Some(Color::Ansi(1)));
+        let roll = t.get("roll").unwrap();
+        assert_eq!(roll.fg, Some(Color::Ansi(5)));
+        assert!(roll.bold);
+        assert_eq!(t.get("dim").unwrap().fg, Some(Color::Ansi(8)));
         // say/pose/thing deliberately unthemed.
         assert!(t.get("say").is_none());
         assert!(t.get("pose").is_none());

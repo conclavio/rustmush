@@ -37,3 +37,16 @@ Muting someone:
 
 Rooms can be locked against speech (@lock/speech); failing that lock
 means you cannot speak in that room at all.
+
+## Typing indicator
+
+Players using the web client see a small "is typing" pill in the room band
+while someone in the room composes a line, and NPCs show a "thinking" pill
+while they decide what to do. The hint is best-effort: it is never shown for
+a DARK character, it never counts as activity for idle time, and only people
+who could perceive you in the room receive it. To keep your own typing
+private, opt out with:
+
+  @set me/pref:composing=off
+
+Set it to anything else (or clear it) to opt back in.

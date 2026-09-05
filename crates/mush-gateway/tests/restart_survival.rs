@@ -413,13 +413,13 @@ async fn server_restart_keeps_connections_and_world() {
     god1.send_line(&format!("connect boss {GM_PASSWORD}")).await;
     god1.expect("Connected as God (account boss, 1 connection).")
         .await;
-    god1.expect("Limbo(#0)").await;
+    god1.expect("Limbo #0").await;
 
     let (_g2, mut god2) = play_client(ssh_addr).await;
     god2.send_line(&format!("connect boss {GM_PASSWORD}")).await;
     god2.expect("Connected as God (account boss, 2 connections).")
         .await;
-    god2.expect("Limbo(#0)").await;
+    god2.expect("Limbo #0").await;
 
     // A mutating command that must survive the restart: dig a room with an exit.
     let before_dig = god1.mark();
@@ -446,10 +446,10 @@ async fn server_restart_keeps_connections_and_world() {
     // impose a presentation order between the replay render and final notice.
     god1.expect_after(restart_mark1, "restarting").await;
     god1.expect_after(restart_mark1, "Reconnected").await;
-    god1.expect_after(restart_mark1, "Limbo(#0)").await;
+    god1.expect_after(restart_mark1, "Limbo #0").await;
     god2.expect_after(restart_mark2, "restarting").await;
     god2.expect_after(restart_mark2, "Reconnected").await;
-    god2.expect_after(restart_mark2, "Limbo(#0)").await;
+    god2.expect_after(restart_mark2, "Limbo #0").await;
 
     // --- World state INTACT (R1): the room @dug before the restart is still
     //     there. Walk east into the Vault, then back. ---
@@ -466,7 +466,7 @@ async fn server_restart_keeps_connections_and_world() {
     // Command output is acknowledgement-gated. Wait for west's room render
     // before issuing another action; firing `say` immediately would correctly
     // receive typed CommitPending Busy while west's receipt is outstanding.
-    god1.expect_after(before_west, "Limbo(#0)").await;
+    god1.expect_after(before_west, "Limbo #0").await;
     god1.send_line("say post-restart").await;
     god2.expect_after(after_move, "God says, \"post-restart\"")
         .await;
@@ -492,7 +492,7 @@ async fn restart_mid_scene_resumes_in_current_room() {
     god.send_line(&format!("connect boss {GM_PASSWORD}")).await;
     god.expect("Connected as God (account boss, 1 connection).")
         .await;
-    god.expect("Limbo(#0)").await;
+    god.expect("Limbo #0").await;
 
     // Build a room, then WALK INTO it — the player is now mid-scene in Vault.
     let before_dig = god.mark();
@@ -516,7 +516,7 @@ async fn restart_mid_scene_resumes_in_current_room() {
     // Play continues from Vault: walk back west to Limbo.
     let after_restart = god.mark();
     god.send_line("west").await;
-    god.expect_after(after_restart, "Limbo(#0)").await;
+    god.expect_after(after_restart, "Limbo #0").await;
 
     drop(god);
 }
@@ -538,7 +538,7 @@ async fn crash_loop_guard_gives_up_without_dropping_players() {
     god.send_line(&format!("connect boss {GM_PASSWORD}")).await;
     god.expect("Connected as God (account boss, 1 connection).")
         .await;
-    god.expect("Limbo(#0)").await;
+    god.expect("Limbo #0").await;
 
     // Trigger a restart the server can never come back from (every relaunch fails).
     let mark = god.mark();
@@ -576,7 +576,7 @@ async fn server_self_exit_auto_restarts_without_dropping_players() {
     god.send_line(&format!("connect boss {GM_PASSWORD}")).await;
     god.expect("Connected as God (account boss, 1 connection).")
         .await;
-    god.expect("Limbo(#0)").await;
+    god.expect("Limbo #0").await;
 
     // Build something that must survive the auto-restart.
     let before_dig = god.mark();
@@ -600,7 +600,7 @@ async fn server_self_exit_auto_restarts_without_dropping_players() {
     // the completed down-handle and this hung until the step timeout.
     god.expect_after(crash_mark, "restarting").await;
     god.expect_after(crash_mark, "Reconnected").await;
-    god.expect_after(crash_mark, "Limbo(#0)").await;
+    god.expect_after(crash_mark, "Limbo #0").await;
 
     // World intact + play continues after an AUTO restart.
     let after_restart = god.mark();
@@ -627,13 +627,13 @@ async fn client_disconnect_during_gap_leaves_survivor_intact() {
     god1.send_line(&format!("connect boss {GM_PASSWORD}")).await;
     god1.expect("Connected as God (account boss, 1 connection).")
         .await;
-    god1.expect("Limbo(#0)").await;
+    god1.expect("Limbo #0").await;
 
     let (s2, mut god2) = play_client(ssh_addr).await;
     god2.send_line(&format!("connect boss {GM_PASSWORD}")).await;
     god2.expect("Connected as God (account boss, 2 connections).")
         .await;
-    god2.expect("Limbo(#0)").await;
+    god2.expect("Limbo #0").await;
 
     // Something to prove the world is intact afterward.
     let before_dig = god1.mark();
@@ -652,7 +652,7 @@ async fn client_disconnect_during_gap_leaves_survivor_intact() {
     // fresh look, never dropped.
     god1.expect_after(restart_mark, "restarting").await;
     god1.expect_after(restart_mark, "Reconnected").await;
-    god1.expect_after(restart_mark, "Limbo(#0)").await;
+    god1.expect_after(restart_mark, "Limbo #0").await;
 
     // And it keeps playing — the world (the room it dug) is intact, and a command
     // still works after a peer dropped mid-restart.

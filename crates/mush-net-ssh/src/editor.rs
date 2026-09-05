@@ -5,7 +5,10 @@
 //! history, masked password entry. [`LineEditor`] is that discipline as a
 //! pure state machine — [`feed`](LineEditor::feed) takes raw channel bytes
 //! and appends the echo/redraw bytes for the client to `out`; it performs
-//! no I/O of its own, which keeps it unit-testable and fuzz-friendly.
+//! no I/O of its own, which keeps it unit-testable and fuzz-friendly. The
+//! buffer, cursor and history themselves live in the shared
+//! [`LineBuffer`] (interface plan I2, D-I-6) — the TUI edits with the same
+//! core, so the two never drift.
 //!
 //! Supported editing: Backspace/DEL, ←/→ (CSI and SS3 forms), Home/End
 //! (`^A`/`^E`, CSI `H`/`F`, CSI `1~`/`4~`/`7~`/`8~`), Delete (CSI `3~`),
@@ -23,13 +26,8 @@
 //! glyphs can misalign the cursor during mid-line edits (accepted for M1 —
 //! a full redraw on submit or `^C` always resolves it).
 
-use std::collections::VecDeque;
-
-/// Maximum line length in characters; further input rings the bell.
-pub const MAX_LINE_CHARS: usize = 8192;
-
-/// Per-connection history depth.
-pub const HISTORY_CAP: usize = 200;
+use crate::line::LineBuffer;
+pub use crate::line::{HISTORY_CAP, MAX_LINE_CHARS};
 
 const BELL: u8 = 0x07;
 const CRLF: &[u8] = b"\r\n";
@@ -73,15 +71,9 @@ enum EscState {
 /// beyond its own buffers.
 #[derive(Debug)]
 pub struct LineEditor {
-    buf: Vec<char>,
-    cursor: usize,
+    line: LineBuffer,
     prompt: String,
     mode: EchoMode,
-    history: VecDeque<String>,
-    /// `Some(i)` while navigating: index into `history` being shown.
-    hist_pos: Option<usize>,
-    /// The in-progress line stashed when history navigation began.
-    saved: Vec<char>,
     /// Partial UTF-8 sequence carried across `feed` calls.
     pending: Vec<u8>,
     /// Expected total length of the pending UTF-8 sequence.
@@ -101,13 +93,9 @@ impl LineEditor {
     /// Fresh editor: empty buffer, empty prompt, [`EchoMode::Normal`].
     pub fn new() -> Self {
         Self {
-            buf: Vec::new(),
-            cursor: 0,
+            line: LineBuffer::new(HISTORY_CAP),
             prompt: String::new(),
             mode: EchoMode::Normal,
-            history: VecDeque::new(),
-            hist_pos: None,
-            saved: Vec::new(),
             pending: Vec::new(),
             pending_len: 0,
             esc: EscState::None,
@@ -131,7 +119,7 @@ impl LineEditor {
     /// navigation (masked/no-echo lines never touch history).
     pub fn set_mode(&mut self, mode: EchoMode) {
         if mode != self.mode {
-            self.hist_pos = None;
+            self.line.cancel_history();
         }
         self.mode = mode;
     }
@@ -143,12 +131,17 @@ impl LineEditor {
 
     /// Whether the edit buffer is empty.
     pub fn is_empty(&self) -> bool {
-        self.buf.is_empty()
+        self.line.is_empty()
     }
 
     /// The current buffer content (for tests/diagnostics).
     pub fn line(&self) -> String {
-        self.buf.iter().collect()
+        self.line.text()
+    }
+
+    /// The cursor as a character index (for tests/diagnostics).
+    pub fn cursor(&self) -> usize {
+        self.line.cursor()
     }
 
     /// Drop the most recently submitted line from history. Used by the
@@ -156,15 +149,14 @@ impl LineEditor {
     /// passwords are not retained (or recallable with ↑) for the life of
     /// the connection.
     pub fn forget_last_history(&mut self) {
-        self.history.pop_back();
-        self.hist_pos = None;
+        self.line.forget_last_history();
     }
 
     /// Whether anything of this editor is visible on the client's current
     /// terminal line — used by the output pump to decide whether async
     /// output must erase and re-print the line around itself.
     pub fn has_visible_line(&self) -> bool {
-        !self.prompt.is_empty() || (self.mode != EchoMode::NoEcho && !self.buf.is_empty())
+        !self.prompt.is_empty() || (self.mode != EchoMode::NoEcho && !self.line.is_empty())
     }
 
     /// Re-print the prompt and buffer from column 0 (CR, erase line,
@@ -175,15 +167,15 @@ impl LineEditor {
         out.extend_from_slice(self.prompt.as_bytes());
         match self.mode {
             EchoMode::Normal => {
-                let mut s = String::with_capacity(self.buf.len());
-                s.extend(self.buf.iter());
+                let mut s = String::with_capacity(self.line.len());
+                s.extend(self.line.chars().iter());
                 out.extend_from_slice(s.as_bytes());
             }
-            EchoMode::Masked => out.extend(std::iter::repeat_n(b'*', self.buf.len())),
+            EchoMode::Masked => out.extend(std::iter::repeat_n(b'*', self.line.len())),
             EchoMode::NoEcho => {}
         }
         if self.mode != EchoMode::NoEcho {
-            let back = self.buf.len() - self.cursor;
+            let back = self.line.len() - self.line.cursor();
             if back > 0 {
                 out.extend_from_slice(format!("\x1b[{back}D").as_bytes());
             }
@@ -247,7 +239,7 @@ impl LineEditor {
             0x17 => self.kill_word(out),
             0x03 => self.ctrl_c(out),
             0x04 => {
-                if self.buf.is_empty() {
+                if self.line.is_empty() {
                     actions.push(EditorAction::EofQuit);
                 } else {
                     self.delete_at_cursor(out);
@@ -316,19 +308,14 @@ impl LineEditor {
     // ---- buffer edits ---------------------------------------------------
 
     fn insert_char(&mut self, c: char, out: &mut Vec<u8>) {
-        // Never let decoded control characters (incl. C1) into the buffer:
-        // they are the ANSI-injection vector.
-        if c.is_control() {
+        let at_end = self.line.at_end();
+        // A control character (incl. C1) or a full line is refused with a
+        // bell: the former is the ANSI-injection vector.
+        if !self.line.insert(c) {
             out.push(BELL);
             return;
         }
-        if self.buf.len() >= MAX_LINE_CHARS {
-            out.push(BELL);
-            return;
-        }
-        if self.cursor == self.buf.len() {
-            self.buf.push(c);
-            self.cursor += 1;
+        if at_end {
             match self.mode {
                 EchoMode::Normal => {
                     let mut b = [0u8; 4];
@@ -338,20 +325,16 @@ impl LineEditor {
                 EchoMode::NoEcho => {}
             }
         } else {
-            self.buf.insert(self.cursor, c);
-            self.cursor += 1;
             self.redraw(out);
         }
     }
 
     fn backspace(&mut self, out: &mut Vec<u8>) {
-        if self.cursor == 0 {
+        let at_end = self.line.at_end();
+        let Some(removed) = self.line.backspace() else {
             out.push(BELL);
             return;
-        }
-        let at_end = self.cursor == self.buf.len();
-        let removed = self.buf.remove(self.cursor - 1);
-        self.cursor -= 1;
+        };
         match self.mode {
             EchoMode::NoEcho => {}
             EchoMode::Masked => {
@@ -372,8 +355,7 @@ impl LineEditor {
     }
 
     fn delete_at_cursor(&mut self, out: &mut Vec<u8>) {
-        if self.cursor < self.buf.len() {
-            self.buf.remove(self.cursor);
+        if self.line.delete().is_some() {
             self.redraw(out);
         } else {
             out.push(BELL);
@@ -381,33 +363,19 @@ impl LineEditor {
     }
 
     fn kill_to_start(&mut self, out: &mut Vec<u8>) {
-        if self.cursor > 0 {
-            self.buf.drain(..self.cursor);
-            self.cursor = 0;
+        if self.line.kill_to_start() {
             self.redraw(out);
         }
     }
 
     fn kill_word(&mut self, out: &mut Vec<u8>) {
-        if self.cursor == 0 {
-            return;
+        if self.line.kill_word() {
+            self.redraw(out);
         }
-        let mut i = self.cursor;
-        while i > 0 && self.buf[i - 1].is_whitespace() {
-            i -= 1;
-        }
-        while i > 0 && !self.buf[i - 1].is_whitespace() {
-            i -= 1;
-        }
-        self.buf.drain(i..self.cursor);
-        self.cursor = i;
-        self.redraw(out);
     }
 
     fn ctrl_c(&mut self, out: &mut Vec<u8>) {
-        self.buf.clear();
-        self.cursor = 0;
-        self.hist_pos = None;
+        self.line.clear();
         out.extend_from_slice(b"^C");
         out.extend_from_slice(CRLF);
         self.redraw(out);
@@ -422,25 +390,23 @@ impl LineEditor {
     }
 
     fn home(&mut self, out: &mut Vec<u8>) {
-        self.move_echo(self.cursor, b'D', out);
-        self.cursor = 0;
+        let moved = self.line.home();
+        self.move_echo(moved, b'D', out);
     }
 
     fn end(&mut self, out: &mut Vec<u8>) {
-        self.move_echo(self.buf.len() - self.cursor, b'C', out);
-        self.cursor = self.buf.len();
+        let moved = self.line.end();
+        self.move_echo(moved, b'C', out);
     }
 
     fn left(&mut self, out: &mut Vec<u8>) {
-        if self.cursor > 0 {
-            self.cursor -= 1;
+        if self.line.left() {
             self.move_echo(1, b'D', out);
         }
     }
 
     fn right(&mut self, out: &mut Vec<u8>) {
-        if self.cursor < self.buf.len() {
-            self.cursor += 1;
+        if self.line.right() {
             self.move_echo(1, b'C', out);
         }
     }
@@ -451,64 +417,29 @@ impl LineEditor {
         if self.mode != EchoMode::Normal {
             return;
         }
-        if self.history.is_empty() {
+        if self.line.history_up() {
+            self.redraw(out);
+        } else {
             out.push(BELL);
-            return;
         }
-        match self.hist_pos {
-            None => {
-                self.saved = std::mem::take(&mut self.buf);
-                self.hist_pos = Some(self.history.len() - 1);
-            }
-            Some(0) => {
-                out.push(BELL);
-                return;
-            }
-            Some(p) => self.hist_pos = Some(p - 1),
-        }
-        if let Some(p) = self.hist_pos {
-            self.buf = self.history[p].chars().collect();
-        }
-        self.cursor = self.buf.len();
-        self.redraw(out);
     }
 
     fn history_down(&mut self, out: &mut Vec<u8>) {
         if self.mode != EchoMode::Normal {
             return;
         }
-        match self.hist_pos {
-            None => {
-                out.push(BELL);
-                return;
-            }
-            Some(p) if p + 1 < self.history.len() => {
-                self.hist_pos = Some(p + 1);
-                self.buf = self.history[p + 1].chars().collect();
-            }
-            Some(_) => {
-                self.hist_pos = None;
-                self.buf = std::mem::take(&mut self.saved);
-            }
+        if self.line.history_down() {
+            self.redraw(out);
+        } else {
+            out.push(BELL);
         }
-        self.cursor = self.buf.len();
-        self.redraw(out);
     }
 
     // ---- submit ---------------------------------------------------------
 
     fn submit(&mut self, out: &mut Vec<u8>, actions: &mut Vec<EditorAction>) {
-        let line: String = self.buf.drain(..).collect();
-        self.cursor = 0;
-        self.hist_pos = None;
-        self.saved.clear();
+        let line = self.line.submit(self.mode == EchoMode::Normal);
         out.extend_from_slice(CRLF);
-        if self.mode == EchoMode::Normal && !line.is_empty() && self.history.back() != Some(&line) {
-            self.history.push_back(line.clone());
-            if self.history.len() > HISTORY_CAP {
-                self.history.pop_front();
-            }
-        }
         actions.push(EditorAction::Submit(line));
     }
 }

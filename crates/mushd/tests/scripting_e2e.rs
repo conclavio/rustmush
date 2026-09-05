@@ -34,7 +34,7 @@ async fn scripting_room_trigger_demo() {
     god.expect(BANNER).await;
     god.send_line(&format!("connect boss {GM_PASSWORD}")).await;
     god.expect("Connected as God").await;
-    god.expect("Limbo(#0)").await;
+    god.expect("Limbo #0").await;
 
     let (_alice_handle, mut alice) = login_create(addr, "Alice", "secret123").await;
     god.expect("Alice has connected.").await;
@@ -78,7 +78,7 @@ async fn scripting_room_trigger_demo() {
     // and everyone present (Alice included) reads the announcement.
     let mark = alice.mark();
     alice.send_line("gallery").await;
-    alice.expect_after(mark, "Gallery(#").await;
+    alice.expect_after(mark, "Gallery #").await;
     alice.expect_after(mark, "Alice strolls in.").await;
 
     // ============ 3. a runaway script is halted after 3 strikes =======

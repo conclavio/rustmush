@@ -57,7 +57,7 @@ use tokio::sync::mpsc;
 
 use crate::editor::{EchoMode, EditorAction, LineEditor};
 use crate::hooks::{AuthResult, CharSummary, NewConn, SshHooks};
-use crate::tui::TuiSession;
+use crate::tui::{TuiManifest, TuiSession};
 use crate::welcome::{WelcomeCmd, parse_welcome};
 use crate::{caps, hostkey};
 
@@ -270,6 +270,7 @@ impl russh::server::Server for Ingress {
                 height: 0,
                 mode: Mode::Welcome,
                 tui: None,
+                manifest: TuiManifest::default(),
                 repaint: Arc::new(Notify::new()),
             })),
             route: Route::PreAuth,
@@ -343,6 +344,10 @@ struct Shared {
     /// pump — rendering is synchronous, the async write happens after the
     /// lock drops (invariant T2).
     tui: Option<Box<TuiSession>>,
+    /// What the server announced in its `Hello` / `SessionInfo`, kept so a
+    /// TUI opened later knows the panel manifest and the character
+    /// (interface plan I2).
+    manifest: TuiManifest,
     /// Signals the output pump to repaint the TUI without a world event
     /// (resize, input edit). Only pulsed while `Mode::Tui`, so line mode is
     /// never woken by it (invariant T1).
@@ -573,22 +578,24 @@ impl ConnHandler {
         let Some(channel) = self.channel else {
             return Ok(());
         };
-        let bytes = {
+        let (bytes, queries) = {
             let mut sh = self.lock();
             let caps = sh.caps;
-            let mut tui = Box::new(TuiSession::new(caps));
+            let mut tui = Box::new(TuiSession::new(caps, sh.manifest.clone()));
             let mut out = TuiSession::enter_bytes().to_vec();
             out.extend_from_slice(&tui.paint());
+            let queries = tui.entry_queries();
             sh.tui = Some(tui);
             sh.mode = Mode::Tui;
-            out
+            (out, queries)
         };
         session.data(channel, bytes)?;
-        // Read-only refresh; the reply's `Who` event lands on the pump, which
-        // repaints the rail. Does not stamp idle (design M15 D5).
-        self.hooks
-            .query(self.conn_id, "who".to_owned(), serde_json::json!({}))
-            .await;
+        // Read-only hydration (WHO, the command table, channels, vitals, the
+        // screen's own feeds); every reply lands on the pump, which repaints.
+        // None of it stamps idle (design M15 D5, interface plan I1 D-I-3).
+        for (name, args) in queries {
+            self.hooks.query(self.conn_id, name, args).await;
+        }
         Ok(())
     }
 
@@ -641,13 +648,11 @@ impl ConnHandler {
             }
             return Ok(());
         }
-        if let Some(query) = result.query {
-            // Opening a widget submits its read-only refresh; the reply's
-            // Panel keyframe lands on the pump and repaints the pane. Like the
-            // WHO rail, this does not stamp idle (design M15 D5).
-            self.hooks
-                .query(self.conn_id, query.to_owned(), serde_json::json!({}))
-                .await;
+        // Entering a screen or refreshing a pane submits read-only queries;
+        // each reply lands on the pump and repaints. Like the WHO rail, none
+        // of it stamps idle (design M15 D5).
+        for (name, args) in result.queries {
+            self.hooks.query(self.conn_id, name, args).await;
         }
         if result.redraw {
             self.fire_repaint();
@@ -1364,6 +1369,14 @@ impl Handler for ConnHandler {
 /// TUI branch can sit beside it without perturbing a byte of line output
 /// (invariant T1).
 fn render_line_event(sh: &mut Shared, ev: &OutputEvent, theme: &AnsiTheme, bytes: &mut Vec<u8>) {
+    // Remember what a TUI opened later needs to know (interface plan I2).
+    match ev {
+        OutputEvent::Hello { panels, .. } => sh.manifest.panels.clone_from(panels),
+        OutputEvent::SessionInfo { character, .. } => {
+            sh.manifest.character = Some(character.name.clone());
+        }
+        _ => {}
+    }
     match ev {
         OutputEvent::Prompt(spec) => {
             sh.editor.set_mode(match spec.mode {
@@ -1453,7 +1466,7 @@ fn spawn_output_pump(
             }
 
             let mut done = false;
-            let mut resync_query = None;
+            let mut queries: Vec<(String, serde_json::Value)> = Vec::new();
             let bytes = {
                 let mut sh = shared.lock().expect("conn state poisoned");
                 match wake {
@@ -1478,17 +1491,14 @@ fn spawn_output_pump(
                                 // Coalesce: apply this event and every other
                                 // ready one, then paint a single frame.
                                 if let Some(t) = sh.tui.as_mut() {
-                                    resync_query = t.apply_event(&ev);
+                                    queries.extend(t.apply_event(&ev));
                                 }
                                 while let Ok(next) = rx.try_recv() {
                                     if matches!(&*next, OutputEvent::Disconnect { .. }) {
                                         done = true;
                                     }
                                     if let Some(t) = sh.tui.as_mut() {
-                                        let next_resync = t.apply_event(&next);
-                                        if resync_query.is_none() {
-                                            resync_query = next_resync;
-                                        }
+                                        queries.extend(t.apply_event(&next));
                                     }
                                 }
                                 sh.tui.as_mut().map(|t| t.paint()).unwrap_or_default()
@@ -1504,14 +1514,12 @@ fn spawn_output_pump(
                 }
             };
 
-            // A semantic-view cursor mismatch is never patched locally. Ask
-            // the ordinary read-only query seam for a fresh keyframe after the
-            // connection lock has dropped; the TUI de-duplicates this until a
-            // valid replacement arrives.
-            if let Some(query) = resync_query {
-                hooks
-                    .query(conn_id, query.to_owned(), serde_json::json!({}))
-                    .await;
+            // A cursor mismatch or an unmergeable delta is never patched
+            // locally, and a `Hello` names feeds to hydrate: ask the ordinary
+            // read-only query seam after the connection lock has dropped; the
+            // TUI de-duplicates resyncs until a valid replacement arrives.
+            for (name, args) in queries {
+                hooks.query(conn_id, name, args).await;
             }
 
             if !bytes.is_empty() {

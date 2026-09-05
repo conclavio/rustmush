@@ -1,5 +1,6 @@
 //! Interface cut I1: the weather module's structured glance under
-//! `RoomView.ambient["weather"]`, beside (not instead of) its prose line.
+//! `RoomView.ambient["weather"]`; since I3 its `line` is the only prose the
+//! module contributes to a room render.
 
 use std::time::Duration;
 

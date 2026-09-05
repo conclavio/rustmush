@@ -221,4 +221,5 @@ fn generated_shapes_match_wire_format() {
     for needle in ["style?", "tag?", "link?"] {
         assert!(span.contains(needle), "Span missing {needle}:\n{span}");
     }
+    assert!(who.contains("here?"), "WhoEntry.here optional:\n{who}");
 }

@@ -485,7 +485,7 @@ async fn enter_when_boundary_is_ready(term: &mut Term) {
             .await
         {
             0 => {
-                term.expect_after(mark, "Limbo(#0)").await;
+                term.expect_after(mark, "Limbo #0").await;
                 return;
             }
             1 | 2 => tokio::time::sleep(Duration::from_secs(2)).await,

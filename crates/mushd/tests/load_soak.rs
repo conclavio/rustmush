@@ -517,7 +517,7 @@ async fn run_ssh_client(
         term.send_line(&format!("create {name} {pw}")).await;
         term.expect_after(mark, &format!("Connected as {name}"))
             .await;
-        term.expect_after(mark, "Limbo(#0)").await;
+        term.expect_after(mark, "Limbo #0").await;
     }
     let mut cmds = 1usize;
 
@@ -537,14 +537,14 @@ async fn run_ssh_client(
     // one another while each individual client has at most one command in
     // flight.
     for i in 0..iters {
-        send_with_busy_retry(&mut term, "look", "Limbo(#0)").await;
+        send_with_busy_retry(&mut term, "look", "Limbo #0").await;
         let stretch = format!("stretches-{name}-{i}");
         let pose = format!("pose {stretch}");
         send_with_busy_retry(&mut term, &pose, &stretch).await;
         let tick = format!("tick-{name}-{i}");
         send_with_busy_retry(&mut term, &format!("say {tick}"), &tick).await;
-        send_with_busy_retry(&mut term, "east", "Loop(#").await;
-        send_with_busy_retry(&mut term, "west", "Limbo(#0)").await;
+        send_with_busy_retry(&mut term, "east", "Loop #").await;
+        send_with_busy_retry(&mut term, "west", "Limbo #0").await;
         cmds += 5;
     }
 
@@ -567,7 +567,7 @@ async fn run_ssh_client(
         term2
             .expect_after(mark, &format!("Connected as {name}"))
             .await;
-        term2.expect_after(mark, "Limbo(#0)").await;
+        term2.expect_after(mark, "Limbo #0").await;
         (handle2, term2)
     };
     wait_for_phase(&phase_barrier, "final command").await;
@@ -605,7 +605,7 @@ async fn ssh_load_liveness_and_throughput() {
         boss.expect(BANNER).await;
         boss.send_line(&format!("connect boss {GM_PASSWORD}")).await;
         boss.expect("Connected as God").await;
-        boss.expect("Limbo(#0)").await;
+        boss.expect("Limbo #0").await;
         boss.send_line("@dig Loop = east;e, west;w").await;
         boss.expect("Opened exit east(").await;
         boss.expect("Opened exit west(").await;
@@ -655,10 +655,10 @@ async fn ssh_load_liveness_and_throughput() {
         .send_line(&format!("connect boss {GM_PASSWORD}"))
         .await;
     checker.expect("Connected as God").await;
-    checker.expect("Limbo(#0)").await;
+    checker.expect("Limbo #0").await;
     let live_started = Instant::now();
     checker.send_line("WHO").await;
-    checker.expect("players connected.").await;
+    checker.expect(" connected, ").await;
     let latency = live_started.elapsed();
     eprintln!(
         "[load] post-load WHO latency: {:.1}ms",

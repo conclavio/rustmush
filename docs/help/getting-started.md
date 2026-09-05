@@ -6,8 +6,8 @@ build new places.
 
 The basics, in the order you will want them:
 
-  look             See the room you are in: its description, who and what
-                   is here, and the obvious exits.
+  look             See the room you are in: its name and description, then
+                   who and what is Here, the Exits, and the Weather outdoors.
   say <text>       Speak to the room. Shortcut: "<text>
   pose <action>    Act. "pose grins." shows as "YourName grins."
                    Shortcut: :<action>
@@ -40,10 +40,11 @@ Skip the password (SSH keys): register your SSH public key with
 characters. See "help sshkey".
 
 A full-screen option (SSH): if you connect over SSH with a normal terminal,
-"@tui" switches to an optional full-screen dashboard — your scrollback and
-command line in the middle, a live WHO rail, and switchable @mail / +intel
-widgets. "@notui" (or Ctrl-]) returns to the classic line view, which stays
-the default. See "help tui".
+"@tui" switches to an optional full-screen dashboard of numbered screens —
+the scene with your scrollback, the room and who is about; your sheet;
+mail; channels; rolls; intel; actions — with single-key navigation and an
+input box you open with Enter. "@notui" (or Ctrl-]) returns to the classic
+line view, which stays the default. See "help tui".
 
 Where to go next: "help movement" and "help communication" cover daily
 life; "help building" starts you on making rooms of your own; "help

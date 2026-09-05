@@ -21,6 +21,7 @@ use mush_dice::RollCtx;
 use mush_dice::pool::PoolMechanic;
 use mush_dice::sr5::{Sr5Opts, Sr5Outcome, Sr5Pool, contest};
 use mush_proto::{NarrativeKind, OutputEvent, RichText};
+use mush_ruleset::{RollSide, contested_narration, roll_narration};
 
 use crate::Sr5Cmd;
 use crate::dice::{LimitKind, PoolTerm, ResolvedPool, resolve_pool};
@@ -376,8 +377,8 @@ fn single_roll(cmd: &Sr5Cmd, ctx: &mut Ctx<'_>, args: &RollArgs) -> Result<(), C
         ctx.persist(op);
     }
 
-    let line = render_roll(ctx, who, &resolved, &prep, &outcome, ext_note.as_deref());
-    emit_roll(cmd, ctx, who, priv_roll, &line, &outcome);
+    let (line, narration) = render_roll(ctx, who, &resolved, &prep, &outcome, ext_note.as_deref());
+    emit_roll(cmd, ctx, who, priv_roll, &line, &narration, &outcome);
     Ok(())
 }
 
@@ -442,10 +443,25 @@ pub(crate) fn roll_labeled(
         "{name} rolls {label} ({expr}, {dice} dice) and {}",
         outcome.summary()
     );
+    let mut notes = Vec::new();
     if wound < 0 {
         line.push_str(&format!(" [wound {wound}]"));
+        notes.push(format!("[wound {wound}]"));
     }
-    emit_roll(cmd, ctx, who, false, &line, &outcome);
+    if let Some(l) = outcome.limit_text() {
+        notes.push(format!("[{l}]"));
+    }
+    let expr_label = format!("{label} ({expr})");
+    let narration = roll_narration(
+        &RollSide {
+            name: &name,
+            expr: &expr_label,
+            dice: &outcome.faces_text(),
+            result: &outcome.result_text(),
+        },
+        &notes,
+    );
+    emit_roll(cmd, ctx, who, false, &line, &narration, &outcome);
     Ok(outcome)
 }
 
@@ -536,11 +552,31 @@ fn contested_roll(
         their_expr,
         out_b.summary(),
     );
-    emit_roll(cmd, ctx, actor, priv_roll, &line, &out_a);
+    let narration = contested_narration(
+        &RollSide {
+            name: &a_name,
+            expr: &args.pool_expr,
+            dice: &out_a.faces_text(),
+            result: &out_a.result_text(),
+        },
+        &RollSide {
+            name: &b_name,
+            expr: their_expr,
+            dice: &out_b.faces_text(),
+            result: &out_b.result_text(),
+        },
+        &verdict,
+        &[],
+    );
+    emit_roll(cmd, ctx, actor, priv_roll, &line, &narration, &out_a);
     Ok(())
 }
 
-/// Render the classic one-liner for a single roll.
+/// Render the classic one-liner for a single roll — the record the log, the
+/// `.roll` panel and the private deliveries keep — and, beside it, the
+/// one-line room narration (interface plan I3, `mush_ruleset::
+/// roll_narration`): `roll  Razor  Agility+Pistols  5 6 3 1 = 2 hits
+/// [Physical limit 5]`.
 fn render_roll(
     ctx: &Ctx<'_>,
     who: ObjId,
@@ -548,7 +584,7 @@ fn render_roll(
     prep: &Prepared,
     outcome: &Sr5Outcome,
     ext_note: Option<&str>,
-) -> String {
+) -> (String, RichText) {
     let name = name_of(ctx, who);
     let expr = if resolved.terms.is_empty() {
         "(pool)".to_string()
@@ -565,31 +601,50 @@ fn render_roll(
         "{name} rolls {expr} ({dice} dice) and {}",
         outcome.summary()
     );
+    let mut notes = Vec::new();
     if prep.spec_applied {
         s.push_str(" [specialization +2]");
+        notes.push("[specialization +2]".to_string());
     }
     if prep.wound < 0 {
         s.push_str(&format!(" [wound {}]", prep.wound));
+        notes.push(format!("[wound {}]", prep.wound));
     }
     if let Some(n) = &prep.edge_note {
         s.push_str(&format!(" [{n}]"));
+        notes.push(format!("[{n}]"));
     } else if let Some(n) = &prep.limit_note {
         s.push_str(&format!(" [{n}]"));
+        notes.push(format!("[{n}]"));
+    } else if let Some(l) = outcome.limit_text() {
+        notes.push(format!("[{l}]"));
     }
     if let Some(n) = ext_note {
         s.push_str(n);
+        notes.push(n.trim_start().to_string());
     }
-    s
+    let narration = roll_narration(
+        &RollSide {
+            name: &name,
+            expr: &expr,
+            dice: &outcome.faces_text(),
+            result: &outcome.result_text(),
+        },
+        &notes,
+    );
+    (s, narration)
 }
 
-/// Deliver a roll line to the room (public) or the roller + in-room staff
-/// (private), always pushing an `sr.roll` panel keyframe to the roller.
+/// Deliver a roll to the room (public: the one-line `narration`) or to the
+/// roller + in-room staff (private: the classic `line`), always pushing an
+/// `sr.roll` panel keyframe to the roller.
 fn emit_roll(
     cmd: &Sr5Cmd,
     ctx: &mut Ctx<'_>,
     who: ObjId,
     priv_roll: bool,
     line: &str,
+    narration: &RichText,
     outcome: &Sr5Outcome,
 ) {
     if priv_roll {
@@ -614,7 +669,7 @@ fn emit_roll(
             OutputEvent::Narrative {
                 kind: NarrativeKind::Emit,
                 actor: Some(mush_core::obj_ref(ctx.w, who)),
-                text: RichText::plain(line),
+                text: narration.clone(),
             },
         );
     } else {

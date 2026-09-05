@@ -13,9 +13,19 @@ use mush_proto::{
 
 use crate::color::sgr;
 use crate::theme::{AnsiTheme, merge_styles};
-use crate::wrap::{RESET, wrap};
+use crate::wrap::{RESET, wrap_indent};
 
 const CRLF: &[u8] = b"\r\n";
+
+/// The rule under a room heading never exceeds this many columns
+/// (interface plan I3).
+pub const ROOM_RULE_MAX_W: usize = 72;
+/// The label gutter for a room's facts: `Here     `, `Exits    `,
+/// `Weather  ` — continuation lines wrap under it.
+pub const ROOM_FACT_GUTTER_W: usize = 9;
+/// The widest hanging indent a narrative line takes (a speaker's name plus
+/// one space); a longer name indents this much and no more.
+pub const HANG_MAX_W: usize = 20;
 
 /// Render one event to ANSI bytes appended to `out`.
 ///
@@ -140,30 +150,76 @@ pub fn fmt_duration(secs: u64) -> String {
     }
 }
 
+/// The room render (interface plan I3): `Name #id` with the id dim, a rule
+/// at `min(width, 72)` (`-` when the terminal has no UTF-8), the
+/// description, a blank line, then the facts in a nine-column label gutter
+/// — `Here`, `Exits`, and `Weather` from `ambient.weather.line` when the
+/// weather module contributed one. Facts wrap under their label.
 fn render_room(w: &mut LineWriter<'_>, view: &RoomView) {
-    w.tagged("room", &format!("{}({})", view.name, view.id));
+    w.tagged("room", &view.name);
+    w.plain(" ");
+    w.tagged("dim", &view.id);
     w.end_line();
-    w.rich(&view.desc);
+    let rule_w = match usize::from(w.caps.width) {
+        0 => ROOM_RULE_MAX_W,
+        n => n.min(ROOM_RULE_MAX_W),
+    };
+    let rule: String = if w.caps.utf8 { "\u{2500}" } else { "-" }.repeat(rule_w);
+    w.tagged("dim", &rule);
+    w.end_line();
+    if !view.desc.to_plain_text().is_empty() {
+        w.rich(&view.desc);
+        w.end_line();
+    }
+    let weather = ambient_weather_line(view);
+    if view.contents.is_empty() && view.exits.is_empty() && weather.is_none() {
+        return;
+    }
     w.end_line();
     if !view.contents.is_empty() {
-        w.plain("Contents:");
-        w.end_line();
-        for obj in &view.contents {
+        w.plain(&fact_label("Here"));
+        for (i, obj) in view.contents.iter().enumerate() {
+            if i > 0 {
+                w.plain(", ");
+            }
             w.plain(&obj.name);
-            w.end_line();
         }
+        w.end_line_indent(ROOM_FACT_GUTTER_W);
     }
     if !view.exits.is_empty() {
-        w.plain("Obvious exits:");
-        w.end_line();
+        w.plain(&fact_label("Exits"));
         for (i, exit) in view.exits.iter().enumerate() {
             if i > 0 {
                 w.plain("  ");
             }
             w.tagged("exit", &exit.name);
         }
-        w.end_line();
+        w.end_line_indent(ROOM_FACT_GUTTER_W);
     }
+    if let Some(line) = weather {
+        w.plain(&fact_label("Weather"));
+        w.tagged("weather", line);
+        w.end_line_indent(ROOM_FACT_GUTTER_W);
+    }
+}
+
+/// `label` padded to the fact gutter.
+fn fact_label(label: &str) -> String {
+    format!("{label:<ROOM_FACT_GUTTER_W$}")
+}
+
+/// The weather module's prose line from `RoomView.ambient`, when present
+/// (`ambient.weather.line`); read defensively, the value is the module's.
+fn ambient_weather_line(view: &RoomView) -> Option<&str> {
+    view.ambient.get("weather")?.get("line")?.as_str()
+}
+
+/// The hanging indent for a narrative line whose speaker is `name`: the
+/// name's width plus one, plus `extra` for any fixed prefix before it,
+/// capped at [`HANG_MAX_W`]. Control characters never count — the writer
+/// strips them.
+fn hanging_indent(name: &str, extra: usize) -> usize {
+    (name.chars().filter(|c| !c.is_control()).count() + 1 + extra).min(HANG_MAX_W)
 }
 
 fn render_narrative(
@@ -173,6 +229,18 @@ fn render_narrative(
     text: &RichText,
 ) {
     let name = actor.map_or("Someone", |a| a.name.as_str());
+    // A long line stays one block under its speaker (interface plan I3):
+    // continuation lines indent to where the body began. Emits have no
+    // speaker column and wrap flush.
+    let indent = match kind {
+        NarrativeKind::Say
+        | NarrativeKind::Pose
+        | NarrativeKind::SemiPose
+        | NarrativeKind::Page
+        | NarrativeKind::Whisper => hanging_indent(name, 0),
+        NarrativeKind::Ooc if actor.is_some() => hanging_indent(name, "<OOC> ".len()),
+        NarrativeKind::Emit | NarrativeKind::Spoof | NarrativeKind::Ooc => 0,
+    };
     match kind {
         NarrativeKind::Say => {
             w.tagged("player", name);
@@ -215,7 +283,7 @@ fn render_narrative(
             }
         }
     }
-    w.end_line();
+    w.end_line_indent(indent);
 }
 
 fn render_channel(
@@ -256,38 +324,49 @@ fn render_channel(
     w.end_line();
 }
 
-/// WHO column widths (name / idle / conn); `Doing` takes the rest.
+/// WHO column widths (name / idle / conn / where); `Doing` takes the rest.
 const WHO_NAME_W: usize = 16;
 const WHO_IDLE_W: usize = 5;
 const WHO_CONN_W: usize = 8;
+/// The `Where` column (interface plan I3, D-I-12): a location the viewer
+/// may see — every one for staff, the viewer's own room for a player.
+const WHO_WHERE_W: usize = 14;
 
 fn render_who(w: &mut LineWriter<'_>, entries: &[WhoEntry]) {
     let width = if w.caps.width == 0 {
         usize::MAX
     } else {
-        w.caps.width as usize
+        usize::from(w.caps.width)
     };
     let header = format!(
-        "{:<WHO_NAME_W$}  {:>WHO_IDLE_W$}  {:>WHO_CONN_W$}  {}",
-        "Name", "Idle", "Conn", "Doing"
+        "{:<WHO_NAME_W$}  {:>WHO_IDLE_W$}  {:>WHO_CONN_W$}  {:<WHO_WHERE_W$}  {}",
+        "Name", "Idle", "Conn", "Where", "Doing"
     );
     w.styled(&fit_row(&header, width), Style::default().with_bold());
     w.end_line();
     for e in entries {
+        // Sanitize before padding so a control character can never shift a
+        // column (the writer would strip it after the widths were computed).
         let row = format!(
-            "{:<WHO_NAME_W$}  {:>WHO_IDLE_W$}  {:>WHO_CONN_W$}  {}",
-            truncate_chars(&e.name, WHO_NAME_W),
+            "{:<WHO_NAME_W$}  {:>WHO_IDLE_W$}  {:>WHO_CONN_W$}  {:<WHO_WHERE_W$}  {}",
+            truncate_chars(&printable(&e.name), WHO_NAME_W),
             fmt_duration(e.idle_s),
             fmt_duration(e.conn_s),
-            e.doing.as_deref().unwrap_or("")
+            truncate_chars(&printable(e.location.as_deref().unwrap_or("")), WHO_WHERE_W),
+            printable(e.doing.as_deref().unwrap_or(""))
         );
         w.plain(&fit_row(&row, width));
         w.end_line();
     }
     let n = entries.len();
-    let s = if n == 1 { "" } else { "s" };
-    w.tagged("system", &format!("{n} player{s} connected."));
+    let here = entries.iter().filter(|e| e.here).count();
+    w.tagged("system", &format!("{n} connected, {here} in your room."));
     w.end_line();
+}
+
+/// `s` with every control character removed.
+fn printable(s: &str) -> String {
+    s.chars().filter(|c| !c.is_control()).collect()
 }
 
 /// Truncate a plain (escape-free) row to the terminal width and drop
@@ -382,8 +461,14 @@ impl<'a> LineWriter<'a> {
     /// Wrap the accumulated logical line at the terminal width and emit it
     /// as CRLF-terminated bytes (style reset before every line end).
     fn end_line(&mut self) {
+        self.end_line_indent(0);
+    }
+
+    /// [`LineWriter::end_line`] with a hanging indent: continuation lines
+    /// start `indent` columns in (see [`crate::wrap_indent`]).
+    fn end_line_indent(&mut self, indent: usize) {
         let logical = std::mem::take(&mut self.cur);
-        for line in wrap(&logical, self.caps.width as usize) {
+        for line in wrap_indent(&logical, usize::from(self.caps.width), indent) {
             self.out.extend_from_slice(line.as_bytes());
             self.out.extend_from_slice(CRLF);
         }
@@ -413,6 +498,17 @@ mod tests {
         assert_eq!(fmt_duration(86_399), "23h");
         assert_eq!(fmt_duration(86_400), "1d");
         assert_eq!(fmt_duration(3 * 86_400 + 7), "3d");
+    }
+
+    #[test]
+    fn hanging_indent_is_name_plus_one_capped_and_control_free() {
+        assert_eq!(hanging_indent("Nick", 0), 5);
+        assert_eq!(hanging_indent("Nick", 6), 11);
+        assert_eq!(hanging_indent("Ni\x07ck", 0), 5);
+        assert_eq!(
+            hanging_indent("An-Extraordinarily-Long-Name", 0),
+            HANG_MAX_W
+        );
     }
 
     #[test]

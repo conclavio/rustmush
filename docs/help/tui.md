@@ -4,12 +4,12 @@ Most players use rustmush as a classic scrolling line client: you type a
 command, the world answers, the text rolls up the screen. That line mode is
 the **default** and is not going anywhere.
 
-`@tui` is an optional, full-screen alternative for terminal clients — a
-proof-of-concept dashboard rendered server-side over your SSH connection. It
-splits the screen into panes: your normal scrollback and command line in the
-middle, a live WHO rail down the side, and a switchable widget pane for
-`@mail` and `+intel`. Everything you type still runs the same commands and
-reaches the same world; the TUI is only a different way to *see* it.
+`@tui` is an optional full-screen alternative for terminal clients, rendered
+server-side over your SSH connection. It is built from **numbered screens**
+of titled panes: a scene screen with your scrollback, the room and who is
+about; a sheet screen; mail; channels; rolls; intel; actions. Everything you
+type still runs the same commands and reaches the same world; the TUI is
+only a different way to *see* it.
 
 ## Launching and leaving
 
@@ -17,7 +17,8 @@ reaches the same world; the TUI is only a different way to *see* it.
               flips to its alternate screen and the dashboard paints.
   @notui      Leave the TUI and return to ordinary line mode. Your terminal's
               normal screen (and scrollback) comes back untouched.
-  Ctrl-]      A hotkey that also detaches — the same as `@notui`.
+  Ctrl-]      A hotkey that also detaches — the same as `@notui`, from any
+              mode. `/notui` typed in the box does the same.
 
 Line mode is unaffected by any of this: a connection that never types `@tui`
 behaves exactly as it always has, byte for byte. If your connection drops
@@ -27,55 +28,101 @@ never left stuck on a blank full-screen buffer.
 You need a real interactive terminal (a PTY) for `@tui`; it does nothing over
 a non-interactive pipe.
 
-## The layout
+## Two modes: nav and input
 
-  Main frame   The center: your scrollback (the same room, say, pose, page,
-               channel, and system lines you see in line mode) with your
-               command input line at the bottom. Type here exactly as you
-               would in line mode; Enter submits the command to the world.
-  WHO rail     A narrow column listing who is connected, with idle times. It
-               refreshes on its own every few seconds — a read-only peek that
-               does **not** touch your idle time (it never types `WHO`).
-  Widget pane  A switchable pane for the `@mail` and `+intel` widgets (below).
+The TUI is **modal**. It starts in **nav** mode, where single keys act:
+digits switch screens, letters run the screen's own commands, `n` walks
+north. Press **Enter** to open the input box; in **input** mode the box is
+an ordinary MUSH command line — type, edit, press Enter to send — and it
+stays open, so a conversation costs one Enter per line. Enter on an empty
+box, or Esc, takes you back to nav mode. The input frame always shows which
+mode you are in (`‹nav› Enter to type` when the box is closed).
 
-## Moving around
+Every nav hotkey is still reachable while the box is open as **Alt+key**:
+Alt+3 switches to the mail screen where a bare `3` did, Alt+n walks north.
+(On a terminal whose Alt key is not "Meta", Esc then the key does the same
+in two strokes: Esc closes the box and keeps what you typed as a draft, and
+the key acts.) F1–F9 also switch screens from either mode.
 
-  Enter        Submit the command on the input line to the world.
-  Backspace    Erase the last character. Ctrl-U clears the whole line.
-  PgUp / PgDn  Scroll the main-frame scrollback up / down a page.
-  Up / Down    Scroll the scrollback one line.
-  Tab          Cycle the widget pane: off -> @mail -> +intel -> off.
-  Ctrl-]       Detach (return to line mode), same as `@notui`.
+## Keys
 
-Password and hidden prompts (login, chargen) are honored on the TUI input
-line just as in line mode — your typing is masked or not echoed as the game
-asks.
+Nav mode (the box is closed):
 
-## The widgets
+  1-9          Switch to that screen (the tab strip along the top).
+  Enter        Open the input box. If the focused pane has a highlighted row
+               — a mail message, an action, a channel — the box opens with
+               that row's command ready (`@mail 3`, `+act brace`, `pub `).
+  " : ; \      Open the box with that speech trigger already typed.
+  /            Open the box with the command palette (below).
+  Tab / Shift-Tab   Move focus between panes.
+  Up / Down    Scroll the focused pane, or move its highlight.
+  PgUp / PgDn  Scroll a page.
+  g / G        Jump to the top / bottom of the focused pane.
+  ?            The help overlay for the current screen (Esc closes).
+  n e s w u d o   On the scene screen, walk the room's one-letter exits.
+               The status line prints each exit with its key (`n·north`).
+  <letter>     The screen's own commands, printed on the legend line at the
+               bottom (`l look`, `r refresh`, `s send`, …).
 
-Press **Tab** to open the widget pane and cycle through the widgets. Opening a
-widget pulls its data fresh with a read-only query (it does not run a command,
-and does not stamp your idle time):
+Input mode (the box is open):
 
-  @mail    Your inbox: each message's number, an unread/urgent marker, the
-           sender, and the subject. To actually *read* a message, submit the
-           normal `@mail <n>` command on the input line — reading marks a
-           message read, which is a real change, so it stays a command.
-  +intel   Your own informant intel, newest first: the subject, the kind of
-           event, and a short detail. You only ever see intel filed for you —
-           there is no way to see another player's (see `help intel`).
+  Enter        Send the line and stay in the box; on an empty box, back to nav.
+  Esc          Back to nav mode, keeping the line as a draft for next time.
+  Left/Right, Home/End, Ctrl-A/E, Backspace, Delete, Ctrl-W (kill word),
+  Ctrl-U (kill to start), Up/Down (history), Tab (complete a command name).
+  /            On an empty box, opens the command palette.
+  Alt+key      The key's nav action (Alt+1 … Alt+9, Alt+? help, Alt+letter).
 
-On a narrow terminal the widget pane and WHO rail drop out automatically so
-the main frame always has room; widen the window to bring them back.
+From either mode:
 
-## Status: proof of concept
+  Ctrl-K       Open or close the command palette.
+  Ctrl-P       Cycle the sticky mode: none → say → pose → emit → ooc. With a
+               sticky mode set (shown in the input frame as `‹say›`), a line
+               without an explicit prefix is sent as that kind of speech. A
+               line starting with `"`, `:`, `;` or `\`, or with a channel
+               alias, is always sent as typed.
+  Ctrl-]       Detach to line mode.
 
-The TUI is deliberately a first cut. The plumbing is real — it is a genuine
-third renderer of the same event stream that drives line mode and the web
-client — but the layout, styling, key bindings, and widget set are expected to
-grow and change. Line mode remains the supported default; treat `@tui` as a
-preview.
+A single key in nav mode never sends anything that changes the world: it
+looks, switches, scrolls, or opens the box with a line ready for you to
+confirm with Enter. The one exception is walking an exit on the scene
+screen.
+
+## The palette
+
+`/` (or Ctrl-K) opens the command palette above the input box: every
+command you may use, your channel aliases and the room's exits, filtered as
+you type after the slash. Enter (or Tab) puts the highlighted entry in the
+box — a game command's usage line, ready to edit — and Esc closes the
+palette keeping your text. A few commands are the TUI's own and keep their
+slash: `/clear` empties the scrollback, `/help` opens the key help,
+`/notui` detaches.
+
+## The screens
+
+  1 scene    Your scrollback with a speaker gutter (who said it, or the time),
+             the WHO rail, the current scene, and the actions offered to you.
+             The status line under the tab strip shows the room, its zone,
+             the weather, the in-character clock and the exits.
+  2 sheet    Your character sheet, walked from the ruleset's schema.
+  3 mail     Your inbox: number, unread marker, sender, subject. Enter on a
+             row opens the box with `@mail <n>` ready; `s` starts a send,
+             `d` a delete of the highlighted message.
+  4 chan     Your channels on the left (alias, name, unread count) and the
+             highlighted channel's recent lines on the right; `b` asks for
+             more backlog. Enter on a channel opens the box with its alias.
+  5 rolls    The dice you have rolled, oldest first.
+  6 intel    Your own informant intel, newest first.
+  7 actions  The actions currently offered to you; Enter prefills `+act`.
+
+Above the input box, when your ruleset publishes vitals, a strip of gauges
+shows your health track, pools and readouts; without one the prompt shows
+as in line mode. The WHO rail drops out below 100 columns and the chrome
+below 12 rows, so a small window always keeps the scrollback and the box.
+
+Password and hidden prompts (login, chargen) open the box on their own and
+mask or hide your typing, just as in line mode.
 
 ## See also
 
-  help getting-started, help mail, help intel, WHO
+  help getting-started, help mail, help channels, help intel, WHO

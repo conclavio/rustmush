@@ -3,11 +3,14 @@
 // Owns: screen state (login → character select → game), credentials
 // (token in localStorage, try/catch), event routing (every envelope type),
 // Req correlation (reply ids → which store the payload hydrates), the
-// hydration pass on `hello`, the resume UX, local /commands, and toasts.
+// hydration pass on `hello`, the resume UX, local /commands, toasts, and
+// — since interface cut I4 — the modal shell's actions: the numbered
+// screens, the composer's focus and prefill, the command palette, the
+// composing signal, and the room's exit keys.
 
 import { login as apiLogin, logout as apiLogout, register as apiRegister } from "./auth";
 import type { CharSummary, LoginOk } from "./auth";
-import type { ClientCaps, OutputEvent, RichText, RoomView, ViewEnvelope } from "./proto";
+import type { ClientCaps, OutputEvent, Query, RoomView, ViewEnvelope } from "./proto";
 import {
   channelLine,
   fmtDuration,
@@ -16,15 +19,21 @@ import {
   renderRich,
   roomLines,
 } from "./render";
+import { exitKeys, type NavIntent } from "./keys";
+import { paletteEntries, type PaletteEntry } from "./palette";
 import { storageDel, storageGet, storageGetJson, storageSet, storageSetJson } from "./storage";
 import { ChannelsStore } from "./stores/channels.svelte";
+import { CommandsStore } from "./stores/commands.svelte";
 import { LegalActionsStore } from "./stores/actions.svelte";
 import { LlmDashboardStore } from "./stores/llm.svelte";
 import { MailStore } from "./stores/mail.svelte";
+import { PresenceStore } from "./stores/presence.svelte";
 import { RollsStore } from "./stores/rolls.svelte";
+import { ScreensStore, type GateInput } from "./stores/screens.svelte";
 import { ScrollbackStore } from "./stores/scrollback.svelte";
 import { SessionStore } from "./stores/session.svelte";
 import { SheetStore } from "./stores/sheet.svelte";
+import { VitalsStore } from "./stores/vitals.svelte";
 import { WhoStore } from "./stores/who.svelte";
 import { WorldgenStore } from "./stores/worldgen.svelte";
 import {
@@ -58,16 +67,64 @@ type PendingReq =
   | { kind: "backlog"; channel: string }
   | { kind: "sheet" }
   | { kind: "legal.actions" }
-  | { kind: "llm_dashboard" };
+  | { kind: "llm_dashboard" }
+  | { kind: "commands" }
+  | { kind: "vitals"; feed: string }
+  | { kind: "scenes" };
 
 const HELP_LINES = [
   "Client commands (handled locally, never sent to the game):",
   "  /clear          — empty the scrollback",
   "  /theme [dark|light|system] — switch theme (no argument: toggle)",
   "  /help           — this card",
-  "Everything else is sent to the game as typed. Try: look, say <text>,",
-  '":<pose>", WHO, +help, @mail, comlist.',
+  "Keys while nothing has focus: 1-9 screens, Enter opens the box,",
+  '  " : ; \\ open it with that trigger, / the palette, ? the key help,',
+  "  a letter runs the screen's own command (the chips at the bottom),",
+  "  n/e/s/w/u/d/o walk the room's exits on the scene screen.",
+  "Inside the box: Alt+key is the nav key, Esc leaves keeping the draft,",
+  "  Ctrl+K the palette. Everything else is sent to the game as typed.",
 ];
+
+/** What the composer offers the shell (registered by the scene screen). */
+export interface ComposerHandle {
+  /** Focus the box, optionally replacing its text. */
+  focus(prefill?: string): void;
+  blur(): void;
+  cycleMode(): void;
+  text(): string;
+  setText(next: string): void;
+}
+
+/**
+ * The hydration queries a hello (or a full rehydrate) issues, gated on the
+ * manifest: WHO, channels, mail, the sheet, legal actions, the command
+ * table, every `.vitals` feed, and the scenes feed (interface plan I4).
+ * Pure, so the seam is pinned without a socket.
+ */
+export function hydrationQueries(
+  session: Pick<SessionStore, "hasPanel" | "hasFeature" | "sheetFeed" | "panels">,
+): Array<{ pending: PendingReq; q: Query }> {
+  const out: Array<{ pending: PendingReq; q: Query }> = [{ pending: { kind: "who" }, q: { t: "who" } }];
+  if (session.hasPanel("comsys") || session.hasFeature("channels")) {
+    out.push({ pending: { kind: "comsys.state" }, q: { t: "panel_subscribe", d: { feed: "comsys" } } });
+  }
+  if (session.hasPanel("mail") || session.hasFeature("mail")) {
+    out.push({ pending: { kind: "mail.list" }, q: { t: "mail_list", d: { folder: null } } });
+  }
+  if (session.sheetFeed !== null) {
+    out.push({ pending: { kind: "sheet" }, q: { t: "sheet" } });
+  }
+  out.push({ pending: { kind: "commands" }, q: { t: "commands" } });
+  for (const feed of session.panels) {
+    if (feed.endsWith(".vitals")) {
+      out.push({ pending: { kind: "vitals", feed }, q: { t: "panel_subscribe", d: { feed } } });
+    }
+  }
+  if (session.hasPanel("scenes")) {
+    out.push({ pending: { kind: "scenes" }, q: { t: "panel_subscribe", d: { feed: "scenes" } } });
+  }
+  return out;
+}
 
 export class GameApp {
   session = new SessionStore();
@@ -80,8 +137,20 @@ export class GameApp {
   rolls = new RollsStore();
   worldgen = new WorldgenStore();
   llm = new LlmDashboardStore();
+  screens = new ScreensStore();
+  commands = new CommandsStore();
+  vitals = new VitalsStore();
+  presence = new PresenceStore();
 
   screen = $state<Screen>("login");
+  /** The latest `scenes` keyframe (the scene screen's glance rides in
+   * `ambient.scene`; this is the full record for a future scene screen). */
+  sceneFrame = $state<unknown>(null);
+  /** The palette's current rows and highlight. */
+  paletteEntries = $state<PaletteEntry[]>([]);
+  paletteSelected = $state(0);
+  /** The composer, while the scene screen is mounted. */
+  composer: ComposerHandle | null = null;
   /** Login screen notice (e.g. "session expired"). */
   loginNotice = $state<string | null>(null);
   account = $state<string | null>(null);
@@ -97,7 +166,6 @@ export class GameApp {
   #token: string | null = null;
   #pending = new Map<number, PendingReq>();
   #nextToast = 1;
-  #sheetRefreshTimer: ReturnType<typeof setTimeout> | null = null;
   #seenActionCommits = new Set<string>();
   #actionCommitOrder: string[] = [];
 
@@ -110,8 +178,12 @@ export class GameApp {
       onFullRehydrate: () => {
         // Resume gap outgrew the ring: the server fell back to a fresh
         // attach; fresh Room output follows and the hello-pass re-requested
-        // panel state. Keep old scrollback, mark the seam.
+        // panel state (vitals and scenes included — the resume seam
+        // re-subscribes them, interface plan I4). Keep old scrollback, mark
+        // the seam; the mode resets to nav (D-I-17).
         this.scrollback.pushText("ev-sys ev-local", "— Reconnected (some history skipped) —");
+        this.composer?.blur();
+        this.screens.paletteOpen = false;
         // Channel tabs have the same seam: their cached backlog may now be
         // missing the same messages, but `backlogFetched` would otherwise
         // block ever re-requesting it. Clear it (applyBacklog dedups by seq,
@@ -236,14 +308,17 @@ export class GameApp {
     this.rolls.clear();
     this.worldgen.clear();
     this.llm.clear();
+    this.screens.clear();
+    this.commands.clear();
+    this.vitals.clear();
+    this.presence.clear();
+    this.sceneFrame = null;
+    this.paletteEntries = [];
+    this.paletteSelected = 0;
     this.session.clear();
     this.roomView = null;
     this.disconnectReason = null;
     this.#pending.clear();
-    if (this.#sheetRefreshTimer !== null) {
-      clearTimeout(this.#sheetRefreshTimer);
-      this.#sheetRefreshTimer = null;
-    }
   }
 
   // -- event routing ------------------------------------------------------
@@ -256,7 +331,13 @@ export class GameApp {
     });
     c.on("room", (env) => {
       this.roomView = env.d;
+      // The room's one-letter exits become nav keys on the scene screen
+      // (D-I-19), rebuilt on every Room event.
+      this.screens.exits = exitKeys(env.d);
       this.scrollback.push("ev-room", roomLines(env.d), env.ts);
+    });
+    c.on("composing", (env) => {
+      this.presence.applyComposing(env.d.actor.name, env.d.active, Date.now());
     });
     c.on("narrative", (env) => {
       this.scrollback.push(
@@ -267,7 +348,6 @@ export class GameApp {
     });
     c.on("sys", (env) => {
       this.scrollback.push("ev-sys", [renderRich(env.d)], env.ts);
-      this.#maybeRefreshSheet(env.d);
     });
     c.on("channel", (env) => this.#onChannel(env));
     c.on("who", (env) => {
@@ -353,19 +433,14 @@ export class GameApp {
     }
   }
 
-  /** Post-hello hydration: WHO + channel tabs + mail list + sheet (each
-   * feature-gated on the hello's panel manifest). */
+  /** Post-hello hydration (and the full-rehydrate seam): WHO, channel
+   * tabs, mail, the sheet, the command table, every vitals feed and the
+   * scenes feed — each gated on the hello's panel manifest — plus legal
+   * actions through its own resync guard. */
   #hydrate(): void {
     this.#pending.clear(); // ids from a previous socket never resolve
-    this.#req({ kind: "who" }, { t: "who" });
-    if (this.session.hasPanel("comsys") || this.session.hasFeature("channels")) {
-      this.#req({ kind: "comsys.state" }, { t: "panel_subscribe", d: { feed: "comsys" } });
-    }
-    if (this.session.hasPanel("mail") || this.session.hasFeature("mail")) {
-      this.#req({ kind: "mail.list" }, { t: "mail_list", d: { folder: null } });
-    }
-    if (this.session.sheetFeed !== null) {
-      this.#req({ kind: "sheet" }, { t: "sheet" });
+    for (const { pending, q } of hydrationQueries(this.session)) {
+      this.#req(pending, q);
     }
     if (this.session.hasPanel("legal.actions")) {
       this.#requestLegalActions();
@@ -451,6 +526,14 @@ export class GameApp {
       this.worldgen.applyKeyframe(d.data);
     } else if (d.feed === "llm.dashboard") {
       this.llm.applyKeyframe(d.data);
+    } else if (d.feed === "commands.list") {
+      this.commands.apply(d.data);
+    } else if (d.feed.endsWith(".vitals")) {
+      this.vitals.apply(d.feed, d.data, Date.now());
+    } else if (d.feed === "scenes") {
+      this.sceneFrame = d.data;
+    } else if (d.feed === "npc.thinking") {
+      this.presence.applyThinking(d.data, Date.now());
     }
     // Unknown feeds (future modules): ignored — additive evolution.
   }
@@ -512,6 +595,158 @@ export class GameApp {
       this.actions.resyncPending = false;
       this.#requestLegalActions();
     }
+  }
+
+  // -- the shell (interface plan I4) -----------------------------------------
+
+  /** What the screen gates read. */
+  get gate(): GateInput {
+    return { panels: this.session.panels, features: this.session.features };
+  }
+
+  /** Act on a nav intent from the key model; `true` when it was consumed. */
+  act(intent: NavIntent): boolean {
+    switch (intent.kind) {
+      case "screen":
+        return this.screens.switchDigit(intent.digit, this.gate);
+      case "compose":
+        this.focusComposer(intent.prefill.length > 0 ? intent.prefill : undefined);
+        return true;
+      case "palette":
+        if (this.screens.paletteOpen) {
+          this.screens.paletteOpen = false;
+        } else {
+          const text = this.composer?.text() ?? "";
+          this.focusComposer(text.length === 0 ? "/" : undefined);
+          queueMicrotask(() => this.openPalette());
+        }
+        return true;
+      case "help":
+        this.screens.helpOpen = !this.screens.helpOpen;
+        return true;
+      case "exit":
+        this.submit(intent.name);
+        return true;
+      case "binding":
+        return this.runBinding(intent.key);
+      case "pane":
+      case "scroll":
+      case "jump":
+        // The browser scrolls and tabs on its own here.
+        return false;
+      default:
+        return false;
+    }
+  }
+
+  /** Focus the composer (switching to the scene screen when needed),
+   * optionally replacing its text with `prefill`. */
+  focusComposer(prefill?: string): void {
+    if (this.screens.active !== "scene") {
+      this.screens.switchTo("scene", this.gate);
+    }
+    queueMicrotask(() => this.composer?.focus(prefill));
+  }
+
+  /** Run the active screen's binding for `key` (D-I-18): a prefill opens
+   * the box with the line ready, a run sends a read-only verb, a local
+   * action refreshes or clears. */
+  runBinding(key: string): boolean {
+    const b = this.screens.binding(key, this.gate);
+    if (!b) {
+      return false;
+    }
+    switch (b.action.kind) {
+      case "prefill":
+        this.focusComposer(b.action.line);
+        return true;
+      case "run":
+        this.submit(b.action.cmd);
+        return true;
+      case "local":
+        this.localAction(b.action.action);
+        return true;
+      default:
+        return false;
+    }
+  }
+
+  /** A screen's local action. */
+  localAction(action: "refresh" | "clear" | "who"): void {
+    switch (action) {
+      case "clear":
+        this.scrollback.clear();
+        return;
+      case "who":
+        this.refreshWho();
+        return;
+      case "refresh":
+        switch (this.screens.active) {
+          case "mail":
+            this.#req({ kind: "mail.list" }, { t: "mail_list", d: { folder: this.mail.folder } });
+            return;
+          case "sheet":
+            this.refreshSheet();
+            return;
+          case "channels":
+            this.#req({ kind: "comsys.state" }, { t: "panel_subscribe", d: { feed: "comsys" } });
+            return;
+          case "actions":
+            this.refreshLegalActions();
+            return;
+          case "llm":
+            this.refreshLlm();
+            return;
+          default:
+            this.refreshWho();
+        }
+    }
+  }
+
+  /** Send a composing hint (D-I-11); dropped silently when offline. */
+  sendComposing(active: boolean): void {
+    this.client.send({ t: "composing", d: { active } });
+  }
+
+  /** Open the palette behind the composer's caret. */
+  openPalette(): void {
+    this.screens.paletteOpen = true;
+    this.paletteQuery(this.composer?.text() ?? "");
+  }
+
+  /** Refilter the palette on the box's text (the part after the slash). */
+  paletteQuery(text: string): void {
+    const q = text.startsWith("/") ? text.slice(1) : text;
+    this.paletteEntries = paletteEntries(q, {
+      commands: this.commands.entries,
+      aliases: this.channels.list.map((c) => c.alias).filter((a) => a.length > 0),
+      exits: this.roomView?.exits.map((e) => e.name) ?? [],
+    });
+    this.paletteSelected = 0;
+  }
+
+  paletteMove(delta: number): void {
+    const n = this.paletteEntries.length;
+    if (n === 0) {
+      return;
+    }
+    this.paletteSelected = Math.max(0, Math.min(n - 1, this.paletteSelected + delta));
+  }
+
+  /** Put the highlighted entry in the box (Enter), or run it (Ctrl+Enter);
+   * a client-local command keeps its slash and always goes to the box. */
+  palettePick(run = false): void {
+    const entry = this.paletteEntries[this.paletteSelected];
+    this.screens.paletteOpen = false;
+    if (!entry) {
+      return;
+    }
+    if (run && !entry.local) {
+      this.composer?.setText("");
+      this.submit(entry.insert);
+      return;
+    }
+    this.composer?.focus(entry.insert);
   }
 
   // -- input --------------------------------------------------------------
@@ -647,44 +882,15 @@ export class GameApp {
 
   // -- sheet ----------------------------------------------------------------
 
-  /** Re-request the viewer's sheet (the panel's Refresh button, the
-   * post-mutation heuristic below, and `SheetPanel`'s light visibility
-   * poll — see web/README.md for why polling exists at all). No-op before
-   * a sheet feed is known (nothing to ask for). */
+  /** Re-request the viewer's sheet (the panel's Refresh button and the
+   * sheet screen's `r`). Since interface cut I1 every command-side sheet
+   * write republishes the keyframe, so this is a manual nudge, not a
+   * liveness mechanism. No-op before a sheet feed is known. */
   refreshSheet(): void {
     if (this.session.sheetFeed === null) {
       return;
     }
     this.#req({ kind: "sheet" }, { t: "sheet" });
-  }
-
-  /**
-   * A `Sys` line tagged with the loaded sheet's own ruleset id (e.g. `"wod"`
-   * — `+harm`/`+heal`, splat pool spends, XP approval all tag their
-   * confirmations this way; see ruleset-wod's `sys_to_actor(ctx.actor,
-   * "wod", …)` call sites) plausibly means the viewer's own sheet changed,
-   * so quietly refresh it (debounced — several such lines often land
-   * together). This is a best-effort nudge, not the real fix: a public
-   * (non-`/priv`) `+roll/wp` spends Willpower but narrates to the room
-   * untagged, so it won't trigger this — `SheetPanel`'s poll and the
-   * Refresh button cover that gap until the server pushes a real delta on
-   * sheet mutation (see web/README.md).
-   */
-  #maybeRefreshSheet(text: RichText): void {
-    if (!this.sheet.loaded) {
-      return;
-    }
-    const ruleset = this.sheet.rulesetId;
-    if (ruleset === null || !text.some((span) => span.tag === ruleset)) {
-      return;
-    }
-    if (this.#sheetRefreshTimer !== null) {
-      clearTimeout(this.#sheetRefreshTimer);
-    }
-    this.#sheetRefreshTimer = setTimeout(() => {
-      this.#sheetRefreshTimer = null;
-      this.refreshSheet();
-    }, 350);
   }
 
   // -- llm dashboard ----------------------------------------------------------

@@ -130,6 +130,18 @@ pub enum WireInbound {
         /// The actor whose session ended.
         actor: ObjId,
     },
+    /// A composing hint from a live connection ([`Inbound::Composing`],
+    /// interface plan I4): a best-effort presence signal, already
+    /// rate-limited by the bridge, so it rides the plain one-way path rather
+    /// than the input custody envelope.
+    Composing {
+        /// The connection it arrived on.
+        conn: u64,
+        /// The actor typing.
+        actor: ObjId,
+        /// `true` when a draft began, `false` when it was sent or abandoned.
+        active: bool,
+    },
 }
 
 /// Player-originated input that participates in the restart custody protocol.
@@ -422,6 +434,15 @@ impl From<WireInbound> for Inbound {
                 reason,
             },
             WireInbound::SessionGone { actor } => Inbound::SessionGone { actor },
+            WireInbound::Composing {
+                conn,
+                actor,
+                active,
+            } => Inbound::Composing {
+                conn,
+                actor,
+                active,
+            },
         }
     }
 }
@@ -466,6 +487,15 @@ impl TryFrom<Inbound> for WireInbound {
                 reason,
             }),
             Inbound::SessionGone { actor } => Ok(WireInbound::SessionGone { actor }),
+            Inbound::Composing {
+                conn,
+                actor,
+                active,
+            } => Ok(WireInbound::Composing {
+                conn,
+                actor,
+                active,
+            }),
             Inbound::Apply(_) => Err(WireInboundError::Apply),
             Inbound::Control(_) => Err(WireInboundError::Control),
         }

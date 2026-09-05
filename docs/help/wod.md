@@ -67,6 +67,15 @@ Inline options (in the argument, after the pool):
 Your wound penalty (from damage on your Health track) is applied to every pool
 automatically, and a note is shown; use /nowound to skip it.
 
+A public roll reaches the room as one line — the dice as thrown, the result,
+then the difficulty and any notes:
+
+  roll  Nick  strength+brawl  8 6 4 3 5 = 2 successes  diff 6  [wound -2]
+
+A private (/priv) or silent roll shows you the classic sentence instead, and
+the classic sentence is what +roll/last, the roll panel, the scene log and a
+pinned job keep.
+
 For a freeform attempt whose difficulty is a judgement call — picking a lock,
 palming a card, slipping away unseen — propose it to the Storyteller instead:
 

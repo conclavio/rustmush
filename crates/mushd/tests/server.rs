@@ -947,7 +947,7 @@ mod ssh_full_stack {
 
         // WHO with real session facts lists both.
         ada.send_line("WHO").await;
-        ada.expect("2 players connected.").await;
+        ada.expect("2 connected, 2 in your room.").await;
         assert!(strip_ansi(&ada.seen).contains("nick"), "{:?}", ada.seen);
 
         // QUIT: farewell + transport close; the other player hears it.

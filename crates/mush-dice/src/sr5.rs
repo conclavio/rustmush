@@ -187,11 +187,11 @@ impl Sr5Outcome {
         matches!(self.result, Sr5Result::CriticalGlitch)
     }
 
-    /// A classic one-line summary for the roll log / ANSI, e.g.
-    /// `"rolled 5 6 3 1 (limit 4) -> 2 hits"` or
-    /// `"rolled 1 1 3 -> critical glitch"`.
-    pub fn summary(&self) -> String {
-        let faces = if self.dice.is_empty() {
+    /// The dice as thrown — `"5 6 3 1"`, or `"(no dice)"` for an empty
+    /// pool: the left-hand side of [`Sr5Outcome::summary`] and of the
+    /// one-line room narration (interface plan I3).
+    pub fn faces_text(&self) -> String {
+        if self.dice.is_empty() {
             "(no dice)".to_string()
         } else {
             self.dice
@@ -199,19 +199,38 @@ impl Sr5Outcome {
                 .map(|d| d.face.to_string())
                 .collect::<Vec<_>>()
                 .join(" ")
-        };
-        let limit = match self.limit_applied {
-            Some(n) => format!(" (limit {n})"),
-            None => String::new(),
-        };
-        let result = match self.result {
+        }
+    }
+
+    /// `"limit 4"` when a Limit was in effect (`limit_applied`), else `None`.
+    pub fn limit_text(&self) -> Option<String> {
+        self.limit_applied.map(|n| format!("limit {n}"))
+    }
+
+    /// The classified result in words — `"2 hits"`, `"1 hit"`,
+    /// `"glitch (1 hit)"`, `"critical glitch"`.
+    pub fn result_text(&self) -> String {
+        match self.result {
             Sr5Result::CriticalGlitch => "critical glitch".to_string(),
             Sr5Result::Glitch(h) => format!("glitch ({} {})", h, hits_word(h)),
             Sr5Result::Failure | Sr5Result::Success(_) => {
                 format!("{} {}", self.hits, hits_word(self.hits))
             }
-        };
-        format!("rolled {faces}{limit} -> {result}")
+        }
+    }
+
+    /// A classic one-line summary for the roll log / ANSI, e.g.
+    /// `"rolled 5 6 3 1 (limit 4) -> 2 hits"` or
+    /// `"rolled 1 1 3 -> critical glitch"`.
+    pub fn summary(&self) -> String {
+        let limit = self
+            .limit_text()
+            .map_or_else(String::new, |l| format!(" ({l})"));
+        format!(
+            "rolled {}{limit} -> {}",
+            self.faces_text(),
+            self.result_text()
+        )
     }
 }
 

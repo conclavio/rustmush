@@ -412,11 +412,10 @@ async fn pump(
                             tracing::debug!(conn = conn_id, ?caps, "client caps declared (ignored)");
                         }
                         Ok(ClientCommand::Composing { active }) => {
-                            // The wire shape lands with interface cut I1; the
-                            // rate-limited, perceive-gated room fan-out is cut
-                            // I4's. Until then the hint is accepted and dropped,
-                            // never an idle stamp and never a protocol error.
-                            tracing::trace!(conn = conn_id, active, "composing hint (not yet fanned out)");
+                            // A presence hint (interface plan I4, D-I-11): the
+                            // binary rate-limits and fans it out; never an
+                            // idle stamp, never a protocol error.
+                            hooks.composing(conn_id, active).await;
                         }
                         Ok(ClientCommand::Resume { .. }) => {
                             tracing::warn!(conn = conn_id, "mid-connection resume is a protocol error");

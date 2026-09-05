@@ -139,7 +139,7 @@ async fn login_create(
     term.expect("Welcome to the WoD e2e MUSH!").await;
     term.send_line(&format!("create {name} {pw}")).await;
     term.expect(&format!("Connected as {name}")).await;
-    term.expect("Limbo(#0)").await;
+    term.expect("Limbo #0").await;
     (handle, term)
 }
 
@@ -157,7 +157,7 @@ async fn m6_wod_full_journey() {
     god.expect("Welcome to the WoD e2e MUSH!").await;
     god.send_line(&format!("connect boss {GM_PASSWORD}")).await;
     god.expect("Connected as God").await;
-    god.expect("Limbo(#0)").await;
+    god.expect("Limbo #0").await;
 
     let (_nick_handle, mut nick) = login_create(addr, "Nick", "secret123").await;
     god.expect("Nick has connected.").await;
@@ -235,14 +235,15 @@ async fn m6_wod_full_journey() {
     nick.send_line("+chargen").await;
     nick.expect_after(mark, "already approved").await;
 
-    // ================= public roll: the room sees a classic result =======
-    // strength 4 + brawl 3 = 7 dice, difficulty 6.
+    // ================= public roll: the room sees the one-line form ======
+    // strength 4 + brawl 3 = 7 dice, difficulty 6:
+    // `roll  Nick  strength+brawl  <7 faces> = <result>  diff 6`.
     let bob_mark = bob.mark();
     nick.send_line("+roll strength+brawl vs 6").await;
-    nick.expect("Nick rolls strength+brawl (7 dice, diff 6) and")
-        .await;
+    nick.expect("roll  Nick  strength+brawl  ").await;
+    nick.expect("  diff 6").await;
     // The witness in the room sees the same public roll.
-    bob.expect_after(bob_mark, "Nick rolls strength+brawl (7 dice, diff 6) and")
+    bob.expect_after(bob_mark, "roll  Nick  strength+brawl  ")
         .await;
 
     // ================= willpower spend =================
@@ -315,7 +316,7 @@ async fn m6_wod_full_journey() {
         nick.seen.contains('\u{1b}'),
         "WoD SSH output must carry ANSI escapes"
     );
-    assert!(strip_ansi(&nick.seen).contains("Nick rolls strength+brawl"));
+    assert!(strip_ansi(&nick.seen).contains("roll  Nick  strength+brawl"));
 
     let _ = std::fs::remove_dir_all(&dir);
 }

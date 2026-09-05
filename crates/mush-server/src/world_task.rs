@@ -825,7 +825,9 @@ enum Admission {
 fn classify_inbound(msg: &Inbound) -> IngressClass {
     match msg {
         Inbound::Cmd { .. } => IngressClass::Command,
-        Inbound::Query { .. } => IngressClass::WorldRead,
+        // A composing hint reads the world (the actor, their room) and
+        // mutates nothing; it is admitted wherever a read is.
+        Inbound::Query { .. } | Inbound::Composing { .. } => IngressClass::WorldRead,
         Inbound::ConnUp { .. } | Inbound::ConnDown { .. } | Inbound::SessionGone { .. } => {
             IngressClass::ConnectionHooks
         }
@@ -4901,6 +4903,9 @@ fn refuse_world_msg(msg: WorldMsg, reason: RefusalReason, gateway: &Gateway) {
         | WorldMsg::Inbound(Inbound::SessionGone { actor }) => {
             tracing::warn!(%actor, ?reason, "connection hook suppressed by world mode");
         }
+        // A presence hint is best-effort by contract: dropping it costs
+        // nothing (the clients expire their pills on a timer).
+        WorldMsg::Inbound(Inbound::Composing { .. }) => {}
         WorldMsg::Inbound(Inbound::Apply(_)) => {
             tracing::warn!(?reason, "async apply suppressed by world mode");
         }

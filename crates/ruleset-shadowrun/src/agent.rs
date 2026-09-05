@@ -23,6 +23,7 @@ use mush_ruleset::schema::SheetSchema;
 use mush_ruleset::{
     AbilityError, AbilityOutcome, AgentCapabilityProfile, AgentToolSpec, SheetDoc, SheetStore,
 };
+use mush_ruleset::{RollSide, roll_narration};
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 use smol_str::SmolStr;
@@ -166,8 +167,8 @@ fn sr_roll(
     };
 
     let expr_label = pool_label(&resolved);
-    let line = render_line(w, npc, &expr_label, pool + opts.modifier, wound, &outcome);
-    emit(w, out, npc, &line, &outcome);
+    let (line, narration) = render_line(w, npc, &expr_label, pool + opts.modifier, wound, &outcome);
+    emit(w, out, npc, &line, &narration, &outcome);
 
     Ok(build_outcome(
         &args, threshold, pool, wound, modifier, limit, &resolved, &outcome,
@@ -186,6 +187,8 @@ fn pool_label(resolved: &ResolvedPool) -> String {
         .join("+")
 }
 
+/// The classic one-line roll record and, beside it, the one-line room
+/// narration (interface plan I3) — the same pair a player `+roll` produces.
 fn render_line(
     w: &World,
     npc: ObjId,
@@ -193,7 +196,7 @@ fn render_line(
     dice: i32,
     wound: i32,
     outcome: &Sr5Outcome,
-) -> String {
+) -> (String, RichText) {
     let name = w
         .get(npc)
         .map_or_else(|| npc.to_string(), |o| primary_name(&o.name).to_string());
@@ -202,13 +205,34 @@ fn render_line(
         dice.max(0),
         outcome.summary()
     );
+    let mut notes = Vec::new();
     if wound < 0 {
         s.push_str(&format!(" [wound {wound}]"));
+        notes.push(format!("[wound {wound}]"));
     }
-    s
+    if let Some(l) = outcome.limit_text() {
+        notes.push(format!("[{l}]"));
+    }
+    let narration = roll_narration(
+        &RollSide {
+            name: &name,
+            expr: expr_label,
+            dice: &outcome.faces_text(),
+            result: &outcome.result_text(),
+        },
+        &notes,
+    );
+    (s, narration)
 }
 
-fn emit(w: &World, out: &mut Outbox, npc: ObjId, line: &str, outcome: &Sr5Outcome) {
+fn emit(
+    w: &World,
+    out: &mut Outbox,
+    npc: ObjId,
+    line: &str,
+    narration: &RichText,
+    outcome: &Sr5Outcome,
+) {
     if let Some(loc) = w.get(npc).and_then(|o| o.location) {
         out.to_room(
             loc,
@@ -216,7 +240,7 @@ fn emit(w: &World, out: &mut Outbox, npc: ObjId, line: &str, outcome: &Sr5Outcom
             OutputEvent::Narrative {
                 kind: NarrativeKind::Emit,
                 actor: Some(obj_ref(w, npc)),
-                text: RichText::plain(line),
+                text: narration.clone(),
             },
         );
     }

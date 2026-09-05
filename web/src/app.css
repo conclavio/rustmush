@@ -224,6 +224,17 @@ body {
   color: var(--c-weather);
 }
 
+/* The one-line roll narration's marker (interface plan I3) and a dim
+ * dbref or rule beside a name. */
+.tag-roll {
+  color: var(--c-npc);
+  font-weight: 700;
+}
+
+.tag-dim {
+  color: var(--fg-faint);
+}
+
 /* ---- explicit ANSI span colors (Span.style.fg/bg → render.ts styleToClasses)
  * Declared after .tag-* so an explicit Style wins if a span somehow carries
  * both (same specificity; source order breaks the tie). */

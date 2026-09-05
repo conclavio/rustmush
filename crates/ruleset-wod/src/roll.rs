@@ -23,6 +23,7 @@ use mush_dice::RollCtx;
 use mush_dice::owod20::{Owod20Opts, Owod20Outcome, Owod20Pool, contest};
 use mush_dice::pool::PoolMechanic;
 use mush_proto::{NarrativeKind, OutputEvent, RichText};
+use mush_ruleset::{RollSide, contested_narration, roll_narration};
 
 use crate::WodCmd;
 use crate::dice::{ResolvedPool, resolve_pool};
@@ -358,8 +359,10 @@ fn single_roll(cmd: &WodCmd, ctx: &mut Ctx<'_>, args: &RollArgs) -> Result<(), C
         ctx.persist(op);
     }
 
-    let line = render_roll(ctx, who, args, &prep, &outcome, ext_note.as_deref());
-    let public_room = emit_roll(cmd, ctx, who, priv_roll, silent, &line, &outcome);
+    let (line, narration) = render_roll(ctx, who, args, &prep, &outcome, ext_note.as_deref());
+    let public_room = emit_roll(
+        cmd, ctx, who, priv_roll, silent, &line, &narration, &outcome,
+    );
 
     if let Some(job) = args.job {
         attach_to_job(ctx, who, job, &line)?;
@@ -536,12 +539,25 @@ pub(crate) fn roll_expr(
         "{name} rolls {label} ({expr}, {pool} dice, diff {difficulty}) and {}",
         outcome.summary()
     );
+    let mut notes = vec![format!("diff {difficulty}")];
     if wound < 0 {
         line.push_str(&format!(" [wound {wound}]"));
+        notes.push(format!("[wound {wound}]"));
     }
     if incap {
         line.push_str(" [incapacitated]");
+        notes.push("[incapacitated]".to_string());
     }
+    let expr_label = format!("{label} ({expr})");
+    let narration = roll_narration(
+        &RollSide {
+            name: &name,
+            expr: &expr_label,
+            dice: &outcome.dice_text(),
+            result: &outcome.result_text(),
+        },
+        &notes,
+    );
     match perc {
         // A power use: no raw dice line to the room. The actor still gets a
         // `wod.roll` panel keyframe (they perceive their own act — that panel is
@@ -582,7 +598,7 @@ pub(crate) fn roll_expr(
         // commands are not scene-recorded in cut 1 (a separate integration), so
         // the public room is discarded — emit_roll no longer touches the ledger.
         None => {
-            let _ = emit_roll(cmd, ctx, who, false, false, &line, &outcome);
+            let _ = emit_roll(cmd, ctx, who, false, false, &line, &narration, &outcome);
         }
     }
     Ok(outcome)
@@ -667,14 +683,25 @@ fn contested_roll(
         their_expr,
         out_b.summary(),
     );
+    let narration = contested_narration(
+        &RollSide {
+            name: &a_name,
+            expr: &args.pool_expr,
+            dice: &out_a.dice_text(),
+            result: &out_a.result_text(),
+        },
+        &RollSide {
+            name: &b_name,
+            expr: their_expr,
+            dice: &out_b.dice_text(),
+            result: &out_b.result_text(),
+        },
+        &winner,
+        &[format!("diff {}", out_a.difficulty)],
+    );
+    let silent = ctx.switches.has("silent");
     let public_room = emit_roll(
-        cmd,
-        ctx,
-        actor,
-        priv_roll,
-        ctx.switches.has("silent"),
-        &line,
-        &out_a,
+        cmd, ctx, actor, priv_roll, silent, &line, &narration, &out_a,
     );
     if let Some(job) = args.job {
         attach_to_job(ctx, actor, job, &line)?;
@@ -683,7 +710,11 @@ fn contested_roll(
     Ok(())
 }
 
-/// Render the classic one-liner for a single roll.
+/// Render the classic one-liner for a single roll — the record the log, the
+/// `.roll` panel, the scene ledger and a job comment keep — and, beside it,
+/// the one-line room narration (interface plan I3, `mush_ruleset::
+/// roll_narration`): `roll  Nick  strength+brawl  8 6 4 = 2 successes  diff
+/// 6  [wound -2]`.
 fn render_roll(
     ctx: &Ctx<'_>,
     who: ObjId,
@@ -691,7 +722,7 @@ fn render_roll(
     prep: &Prepared,
     outcome: &Owod20Outcome,
     ext_note: Option<&str>,
-) -> String {
+) -> (String, RichText) {
     let name = name_of(ctx, who);
     let expr = if args.pool_expr.trim().is_empty() {
         "(pool)".to_string()
@@ -704,24 +735,39 @@ fn render_roll(
         outcome.difficulty,
         outcome.summary()
     );
+    let mut notes = vec![format!("diff {}", outcome.difficulty)];
     if prep.wound < 0 {
         s.push_str(&format!(" [wound {}]", prep.wound));
+        notes.push(format!("[wound {}]", prep.wound));
     }
     if prep.incap {
         s.push_str(" [incapacitated]");
+        notes.push("[incapacitated]".to_string());
     }
     if let Some(n) = ext_note {
         s.push_str(n);
+        notes.push(n.trim_start().to_string());
     }
-    s
+    let narration = roll_narration(
+        &RollSide {
+            name: &name,
+            expr: &expr,
+            dice: &outcome.dice_text(),
+            result: &outcome.result_text(),
+        },
+        &notes,
+    );
+    (s, narration)
 }
 
-/// Deliver a roll line to the room (public) or the roller + in-room staff
-/// (private), always also pushing a `wod.roll` panel keyframe to the roller.
+/// Deliver a roll to the room (public: the one-line `narration`) or to the
+/// roller + in-room staff (private: the classic `line`), always also pushing
+/// a `wod.roll` panel keyframe to the roller.
 ///
 /// `silent` (the `/silent` switch) is stronger than `priv_roll`: the line goes
 /// to the roller alone — no room line and no staff copy — so no other observer
 /// receives any event at all.
+#[allow(clippy::too_many_arguments)]
 fn emit_roll(
     cmd: &WodCmd,
     ctx: &mut Ctx<'_>,
@@ -729,6 +775,7 @@ fn emit_roll(
     priv_roll: bool,
     silent: bool,
     line: &str,
+    narration: &RichText,
     outcome: &Owod20Outcome,
 ) -> Option<ObjId> {
     // The room a public roll was shown in, if any — the caller emits the
@@ -761,7 +808,7 @@ fn emit_roll(
             OutputEvent::Narrative {
                 kind: NarrativeKind::Emit,
                 actor: Some(mush_core::obj_ref(ctx.w, who)),
-                text: RichText::plain(line),
+                text: narration.clone(),
             },
         );
         public_room = Some(loc);

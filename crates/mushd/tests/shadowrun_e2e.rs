@@ -169,7 +169,7 @@ async fn login_create(
     term.expect("Welcome to the SR5 e2e MUSH!").await;
     term.send_line(&format!("create {name} {pw}")).await;
     term.expect(&format!("Connected as {name}")).await;
-    term.expect("Limbo(#0)").await;
+    term.expect("Limbo #0").await;
     (handle, term)
 }
 
@@ -187,7 +187,7 @@ async fn sr5_full_journey_over_ssh() {
     god.expect("Welcome to the SR5 e2e MUSH!").await;
     god.send_line(&format!("connect boss {GM_PASSWORD}")).await;
     god.expect("Connected as God").await;
-    god.expect("Limbo(#0)").await;
+    god.expect("Limbo #0").await;
 
     let (_razor_handle, mut razor) = login_create(addr, "Razor", "secret123").await;
     god.expect("Razor has connected.").await;
@@ -275,24 +275,27 @@ async fn sr5_full_journey_over_ssh() {
     // seed forces a plain glitch (more than half 1s, at least one hit).
     let mark = razor.mark();
     razor.send_line("+roll 4").await;
-    razor.expect_after(mark, "(4 dice)").await;
+    razor.expect_after(mark, "roll  Razor  ").await;
     razor.expect_after(mark, "glitch (").await;
     assert!(
         !strip_ansi(&razor.seen[mark..]).contains("critical glitch"),
         "the seeded roll must be a plain glitch (has hits), not a critical glitch"
     );
 
-    // ================= public roll: dice count + the auto Physical limit ===
+    // ================= public roll: the one-line form + the auto limit ===
     // Agility 5 + Pistols 6 = 11 dice; Physical Limit ceil((STR3*2+BOD4+REA4)/3)
-    // = ceil(14/3) = 5.
+    // = ceil(14/3) = 5: `roll  Razor  Agility+Pistols  <faces> = <hits>
+    // [Physical limit 5]`.
     let wisp_mark = wisp.mark();
     let mark = razor.mark();
     razor.send_line("+roll agility+pistols").await;
-    razor.expect_after(mark, "(11 dice)").await;
-    razor.expect_after(mark, "Physical limit 5").await;
+    razor
+        .expect_after(mark, "roll  Razor  Agility+Pistols  ")
+        .await;
+    razor.expect_after(mark, "[Physical limit 5]").await;
     // The witness in the room sees the same public roll (the render uses the
     // traits' display labels, "Agility+Pistols").
-    wisp.expect_after(wisp_mark, "Razor rolls Agility+Pistols (11 dice)")
+    wisp.expect_after(wisp_mark, "roll  Razor  Agility+Pistols  ")
         .await;
 
     // ================= /edge pushes past the Limit ======================
@@ -338,7 +341,9 @@ async fn sr5_full_journey_over_ssh() {
 
     let mark = razor.mark();
     razor.send_line("+roll agility+pistols").await;
-    razor.expect_after(mark, "(10 dice)").await;
+    razor
+        .expect_after(mark, "roll  Razor  Agility+Pistols  ")
+        .await;
     razor.expect_after(mark, "wound -1").await;
 
     // The same character now has typed Condition Monitor authority. The
@@ -352,8 +357,8 @@ async fn sr5_full_journey_over_ssh() {
     // ================= initiative ======================================
     let mark = razor.mark();
     razor.send_line("+init/roll").await;
-    razor.expect_after(mark, "Razor rolls Initiative:").await;
-    razor.expect_after(mark, "= ").await;
+    razor.expect_after(mark, "roll  Razor  Initiative  ").await;
+    razor.expect_after(mark, " = ").await;
 
     // ================= Karma: award, spend, approve, applied ===========
     god.send_line("+karma/award Razor=20").await;
@@ -393,7 +398,7 @@ async fn sr5_full_journey_over_ssh() {
         razor.seen.contains('\u{1b}'),
         "SR5 SSH output must carry ANSI escapes"
     );
-    assert!(strip_ansi(&razor.seen).contains("Razor rolls Agility+Pistols"));
+    assert!(strip_ansi(&razor.seen).contains("roll  Razor  Agility+Pistols"));
 
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -561,12 +566,12 @@ async fn sr5_sheet_survives_redis_reboot_gated() {
     god.expect("connect <account> <password>").await;
     god.send_line(&format!("connect boss {GM_PASSWORD}")).await;
     god.expect("Connected as God").await;
-    god.expect("Limbo(#0)").await;
+    god.expect("Limbo #0").await;
 
     let (_razor_handle, mut razor) = play_client(addr).await;
     razor.send_line("create Razor secret123").await;
     razor.expect("Connected as Razor").await;
-    razor.expect("Limbo(#0)").await;
+    razor.expect("Limbo #0").await;
     god.expect("Razor has connected.").await;
 
     // Each @sheet/set recomputes the SR5 derived stats (Limits, Condition
@@ -609,7 +614,7 @@ async fn sr5_sheet_survives_redis_reboot_gated() {
     // The account survived — the runner logs back in.
     razor2.send_line("connect Razor secret123").await;
     razor2.expect("Connected as Razor").await;
-    razor2.expect("Limbo(#0)").await;
+    razor2.expect("Limbo #0").await;
 
     // The sheet survived, decodes, and validates: it renders...
     let mark = razor2.mark();
@@ -619,7 +624,9 @@ async fn sr5_sheet_survives_redis_reboot_gated() {
     // Physical Limit ceil((STR3*2 + BOD5 + REA4)/3) = 5 intact.
     let mark = razor2.mark();
     razor2.send_line("+roll agility+pistols").await;
-    razor2.expect_after(mark, "(11 dice)").await;
+    razor2
+        .expect_after(mark, "roll  Razor  Agility+Pistols  ")
+        .await;
     razor2.expect_after(mark, "Physical limit 5").await;
 
     server2.kill_hard();

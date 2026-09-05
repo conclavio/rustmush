@@ -308,7 +308,30 @@ export function roomLines(view: RoomView): RLine[] {
     });
     lines.push(line);
   }
+  const weather = ambientWeatherLine(view);
+  if (weather !== null) {
+    lines.push([mk("Weather: "), mk(weather, "weather")]);
+  }
   return lines;
+}
+
+/**
+ * The weather module's conditions prose from `RoomView.ambient` (interface
+ * plan I3: it rides under `ambient.weather.line`, no longer as a separate
+ * line after the room). Every ambient value is a module's own shape, so
+ * this reads defensively and yields `null` for anything but a string.
+ */
+export function ambientWeatherLine(view: RoomView): string | null {
+  const ambient = view.ambient;
+  if (!ambient || typeof ambient !== "object") {
+    return null;
+  }
+  const weather = (ambient as Record<string, unknown>)["weather"];
+  if (!weather || typeof weather !== "object") {
+    return null;
+  }
+  const line = (weather as Record<string, unknown>)["line"];
+  return typeof line === "string" && line.length > 0 ? line : null;
 }
 
 // ---------------------------------------------------------------------------

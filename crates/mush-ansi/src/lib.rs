@@ -22,8 +22,9 @@
 //!   stripped (embedded `\n` becomes a line break) — spans can never
 //!   smuggle raw escapes to another player's terminal.
 //!
-//! [`ansi_len`] and [`wrap`] are public because `mush-net-ssh` reuses them
-//! for line-editor redraw math.
+//! [`ansi_len`], [`wrap`] and [`wrap_indent`] are public because
+//! `mush-net-ssh` reuses them for line-editor redraw math and the TUI's
+//! scrollback gutter.
 
 mod color;
 mod render;
@@ -33,4 +34,4 @@ mod wrap;
 pub use color::{ANSI16_RGB, PALETTE_256, downgrade, nearest_16, nearest_256, sgr};
 pub use render::{fmt_duration, render};
 pub use theme::{AnsiTheme, merge_styles};
-pub use wrap::{RESET, ansi_len, wrap};
+pub use wrap::{MIN_HANG_BODY, RESET, ansi_len, wrap, wrap_indent};

@@ -56,8 +56,14 @@ group rating. Your **wound modifier** (-1 per three boxes of damage) and the
 
   +roll/last [<target>]      Show recent rolls (staff may read another's).
 
-Every roll is announced to the room, kept in your personal roll log, and pushed
-to the `sr.roll` panel with the full per-die record.
+Every roll is announced to the room as one line — the dice as thrown, the
+hits, then the Limit and any notes:
+
+  roll  Razor  Agility+Pistols  5 6 3 1 6 = 3 hits  [Physical limit 5]
+
+It is also kept in your personal roll log and pushed to the `sr.roll` panel
+with the full per-die record; a private (/priv) roll shows you the classic
+sentence, which is what +roll/last and the panel keep.
 
 ## Damage & Condition Monitors
 

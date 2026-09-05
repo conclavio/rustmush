@@ -111,9 +111,17 @@ pub struct WhoEntry {
     pub idle_s: u64,
     /// Seconds connected.
     pub conn_s: u64,
-    /// Location name, when the viewer is allowed to see it.
+    /// Location name, when the viewer is allowed to see it: always for
+    /// staff, and for a player only when the entry is in the viewer's own
+    /// room (interface plan I3, D-I-12).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub location: Option<String>,
+    /// Whether the entry is in the viewer's own room. Absent on the wire
+    /// when false. The one fact a `Where` column and a "N in your room"
+    /// footer need that `location` alone cannot carry for staff, who see
+    /// every location.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub here: bool,
     /// The player's `@doing` string, when set.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub doing: Option<String>,
