@@ -848,6 +848,62 @@ pub struct DecisionLeaseTransition {
     worker: DecisionWorkerLease,
 }
 
+/// Exact Leased-to-Resolving post-image recorded only after the selected
+/// ordinary action has durable custody of its idempotency key.
+#[must_use = "the resolving post-image must enter the authoritative coordinator"]
+#[derive(Clone, Debug)]
+pub struct DecisionResolvingTransition {
+    post_image: PendingDecision,
+}
+
+/// Exact Resolving-to-Terminal post-image recorded only after recovery has
+/// established that the bound ordinary action finalized.
+#[must_use = "the terminal post-image must enter the authoritative coordinator"]
+#[derive(Clone, Debug)]
+pub struct DecisionTerminalTransition {
+    post_image: PendingDecision,
+}
+
+impl DecisionTerminalTransition {
+    #[must_use]
+    pub const fn post_image(&self) -> &PendingDecision {
+        &self.post_image
+    }
+
+    pub fn stage(
+        self,
+        txn: &mut ActionTxn<'_>,
+        families: &DecisionCaptureFamilies,
+    ) -> Result<(), DecisionError> {
+        if txn.owner() != families.owner() || txn.owner() != &self.post_image.controller.owner {
+            return Err(DecisionError::CaptureOwnerMismatch);
+        }
+        let decision = self.post_image.id;
+        txn.replace(&families.pending, &decision, self.post_image)
+            .map_err(|error| DecisionError::State(error.to_string()))
+    }
+}
+
+impl DecisionResolvingTransition {
+    #[must_use]
+    pub const fn post_image(&self) -> &PendingDecision {
+        &self.post_image
+    }
+
+    pub fn stage(
+        self,
+        txn: &mut ActionTxn<'_>,
+        families: &DecisionCaptureFamilies,
+    ) -> Result<(), DecisionError> {
+        if txn.owner() != families.owner() || txn.owner() != &self.post_image.controller.owner {
+            return Err(DecisionError::CaptureOwnerMismatch);
+        }
+        let decision = self.post_image.id;
+        txn.replace(&families.pending, &decision, self.post_image)
+            .map_err(|error| DecisionError::State(error.to_string()))
+    }
+}
+
 impl DecisionLeaseTransition {
     #[must_use]
     pub const fn post_image(&self) -> &PendingDecision {
@@ -1134,6 +1190,65 @@ impl PendingDecision {
             action_binding: binding,
         };
         Ok(())
+    }
+
+    /// Plan the exact owner-local lifecycle post-image after the selected
+    /// ordinary action has obtained durable custody. The completion fence is
+    /// rechecked against the live Leased state before any transaction exists.
+    pub fn plan_resolving(
+        &self,
+        fence: &DecisionCompletionFence,
+        binding: DecisionActionBinding,
+    ) -> Result<DecisionResolvingTransition, DecisionError> {
+        if &self.controller != fence.controller() || self.id != fence.decision() {
+            return Err(DecisionError::InvalidTransition);
+        }
+        let mut post_image = self.clone();
+        post_image.begin_resolving(
+            fence.revision(),
+            fence.attempt(),
+            fence.lease_until(),
+            binding,
+        )?;
+        Ok(DecisionResolvingTransition { post_image })
+    }
+
+    /// Plan an exact terminal post-image from a matching Resolving binding.
+    /// The caller must first establish the bound ordinary action's durable
+    /// terminal status; this method prevents that proof from being applied to
+    /// another decision revision, lease attempt, or action request.
+    pub fn plan_terminal(
+        &self,
+        fence: &DecisionCompletionFence,
+        binding: &DecisionActionBinding,
+        outcome: DecisionTerminalOutcome,
+    ) -> Result<DecisionTerminalTransition, DecisionError> {
+        if &self.controller != fence.controller()
+            || self.id != fence.decision()
+            || self.revision != fence.revision()
+        {
+            return Err(DecisionError::InvalidTransition);
+        }
+        let PendingDecisionStatus::Resolving {
+            attempt,
+            lease_until,
+            action_binding,
+        } = &self.status
+        else {
+            return Err(DecisionError::InvalidTransition);
+        };
+        if *attempt != fence.attempt() {
+            return Err(DecisionError::StaleAttempt);
+        }
+        if lease_until != fence.lease_until() {
+            return Err(DecisionError::StaleLease);
+        }
+        if action_binding != binding {
+            return Err(DecisionError::InvalidTransition);
+        }
+        let mut post_image = self.clone();
+        post_image.finish(self.revision, outcome, Some(binding.clone()))?;
+        Ok(DecisionTerminalTransition { post_image })
     }
 
     pub fn retry_expired_lease(

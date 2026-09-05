@@ -5183,6 +5183,10 @@ pub enum ActionProviderPrepareError {
     Schedule(#[source] Box<crate::schedule_source::ScheduleAdvanceAdmissionError>),
     #[error("delayed-decision lease was not admissible: {0}")]
     DecisionLease(#[source] Box<crate::decision_source::DecisionSourcePlanError>),
+    #[error("delayed-decision lifecycle transition was not admissible: {0}")]
+    DecisionLifecycle(#[source] Box<crate::decision_source::DecisionResolvingPlanError>),
+    #[error("delayed-decision terminal transition was not admissible: {0}")]
+    DecisionTerminal(#[source] Box<crate::decision_source::DecisionTerminalPlanError>),
 }
 
 /// Exact action-provider dispatch failure.

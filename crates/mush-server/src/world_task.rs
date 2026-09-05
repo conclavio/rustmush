@@ -87,8 +87,8 @@ use mush_ipc::{
 use mush_llm::LlmService;
 use mush_proto::{ActionStatusId, OutputEvent, ProjectedActionStatus, RichText};
 use mush_store::{
-    AccountRec, AuthoritativeReceipt, AuthoritativeStore, BundleStatus, InMemoryStore,
-    IntentReceipt, ObjectStore, SshKeyRec, WriteBatch,
+    AccountRec, AuthoritativeReceipt, AuthoritativeStore, BoundIdempotencyStatus, BundleStatus,
+    InMemoryStore, IntentReceipt, ObjectStore, SshKeyRec, WriteBatch,
 };
 use sha2::{Digest, Sha256};
 use smol_str::SmolStr;
@@ -1718,6 +1718,7 @@ enum Wake {
 struct DurableDecisionDriver {
     cursor: Option<mush_core::DecisionSourceCursor>,
     retry: Option<mush_core::DecisionDispatchCandidate>,
+    reconciliation: Option<mush_core::DecisionReconciliationCandidate>,
     idempotency_epoch: u64,
     dispatcher: Arc<DecisionDispatcher>,
 }
@@ -1727,6 +1728,7 @@ impl DurableDecisionDriver {
         Self {
             cursor: None,
             retry: None,
+            reconciliation: None,
             idempotency_epoch,
             dispatcher,
         }
@@ -1741,18 +1743,73 @@ impl DurableDecisionDriver {
         if engine.has_legacy_persistence_work() {
             return Ok(DurableDecisionDrive::DeferredByLegacyPredecessor);
         }
-        if self.retry.is_none() {
-            self.retry = if let Some(wake) = wake {
-                engine
+        if self.retry.is_none() && self.reconciliation.is_none() {
+            if let Some(wake) = wake {
+                self.retry = engine
                     .decision_dispatch_for_wake(wake.owner(), &wake.wake())
-                    .map_err(|error| error.to_string())?
+                    .map_err(|error| error.to_string())?;
             } else {
                 let page = engine
                     .discover_decision_dispatches(self.cursor.as_ref(), 1)
                     .map_err(|error| error.to_string())?;
                 self.cursor = page.next_cursor().cloned();
-                page.candidates().first().cloned()
-            };
+                self.retry = page.candidates().first().cloned();
+                self.reconciliation = page.reconciliations().first().cloned();
+            }
+        }
+        if let Some(candidate) = self.reconciliation.clone() {
+            let status = store
+                .bound_authoritative_idempotency_status(candidate.action_idempotency())
+                .await
+                .map_err(|error| error.to_string())?;
+            match status {
+                BoundIdempotencyStatus::FinalizedExact(receipt) => {
+                    if receipt.idempotency() != candidate.action_idempotency()
+                        || receipt.request() != candidate.binding().request
+                        || receipt.request_hash() != candidate.binding().request_hash
+                    {
+                        return Err(
+                            "resolving decision binding disagrees with finalized action receipt"
+                                .to_owned(),
+                        );
+                    }
+                    match stage_decision_terminal(
+                        engine,
+                        store,
+                        candidate.fence(),
+                        candidate.binding(),
+                        mush_core::DecisionTerminalOutcome::Executed,
+                        self.idempotency_epoch,
+                    )
+                    .await?
+                    {
+                        Some(staged) => {
+                            self.reconciliation = None;
+                            return Ok(DurableDecisionDrive::StagedLifecycle(staged));
+                        }
+                        None => {
+                            return Ok(DurableDecisionDrive::Transient(
+                                "resolving decision terminal action already has durable custody"
+                                    .to_owned(),
+                            ));
+                        }
+                    }
+                }
+                BoundIdempotencyStatus::PendingExact { .. } => {
+                    return Ok(DurableDecisionDrive::Transient(
+                        "resolving decision waits for its selected action receipt".to_owned(),
+                    ));
+                }
+                BoundIdempotencyStatus::Vacant => {
+                    return Err("resolving decision binding has no authoritative action".to_owned());
+                }
+                BoundIdempotencyStatus::Retired { .. } => {
+                    return Err("resolving decision action binding was retired".to_owned());
+                }
+                BoundIdempotencyStatus::QuarantinedExact(_) => {
+                    return Err("resolving decision action is quarantined".to_owned());
+                }
+            }
         }
         let Some(candidate) = self.retry.as_ref() else {
             return Ok(DurableDecisionDrive::Idle);
@@ -1839,6 +1896,7 @@ enum DurableDecisionDrive {
     DiscardedStale(String),
     Transient(String),
     Staged(Box<StagedDecisionDispatch>),
+    StagedLifecycle(StagedAuthoritativeAction),
 }
 
 fn decision_lease_stale(error: &crate::action_coordinator::ActionCoordinatorError) -> bool {
@@ -1859,6 +1917,101 @@ fn decision_lease_stale(error: &crate::action_coordinator::ActionCoordinatorErro
                     )
             )
     )
+}
+
+/// Stage the bounded owner-local lifecycle follow-up after the selected
+/// ordinary action's exact receipt has installed. Returning `None` means the
+/// identical lifecycle key already has durable custody or a final receipt.
+async fn stage_decision_resolving(
+    engine: &mut Engine,
+    store: &dyn AuthoritativeStore,
+    fence: &mush_core::DecisionCompletionFence,
+    binding: &mush_core::DecisionActionBinding,
+    mut idempotency_epoch: u64,
+) -> Result<Option<StagedAuthoritativeAction>, String> {
+    for _ in 0..3 {
+        let ingress = ActionCoordinator::decision_resolving_ingress(
+            engine,
+            fence,
+            binding,
+            idempotency_epoch,
+        )
+        .map_err(|error| error.to_string())?;
+        match ActionCoordinator::preflight(store, ingress)
+            .await
+            .map_err(|error| error.to_string())?
+        {
+            ActionPreflight::Retired {
+                minimum_accepted_epoch,
+            } => idempotency_epoch = idempotency_epoch.max(minimum_accepted_epoch),
+            ActionPreflight::Vacant(permit) => {
+                return ActionCoordinator::prepare_and_stage_decision_resolving(
+                    permit, engine, fence, binding,
+                )
+                .map(Some)
+                .map_err(|error| error.to_string());
+            }
+            ActionPreflight::Pending { .. } | ActionPreflight::Finalized(_) => return Ok(None),
+            ActionPreflight::Quarantined(receipt) => {
+                return Err(format!(
+                    "decision resolving action {} is quarantined",
+                    receipt.token()
+                ));
+            }
+            ActionPreflight::Conflict => {
+                return Err("decision resolving idempotency identity conflicts".to_owned());
+            }
+        }
+    }
+    Err("decision resolving retirement watermark changed repeatedly".to_owned())
+}
+
+/// Stage an exact owner-local terminal transition after the resolving binding
+/// is durable. Recovery may safely join the same deterministic lifecycle key.
+async fn stage_decision_terminal(
+    engine: &mut Engine,
+    store: &dyn AuthoritativeStore,
+    fence: &mush_core::DecisionCompletionFence,
+    binding: &mush_core::DecisionActionBinding,
+    outcome: mush_core::DecisionTerminalOutcome,
+    mut idempotency_epoch: u64,
+) -> Result<Option<StagedAuthoritativeAction>, String> {
+    for _ in 0..3 {
+        let ingress = ActionCoordinator::decision_terminal_ingress(
+            engine,
+            fence,
+            binding,
+            outcome,
+            idempotency_epoch,
+        )
+        .map_err(|error| error.to_string())?;
+        match ActionCoordinator::preflight(store, ingress)
+            .await
+            .map_err(|error| error.to_string())?
+        {
+            ActionPreflight::Retired {
+                minimum_accepted_epoch,
+            } => idempotency_epoch = idempotency_epoch.max(minimum_accepted_epoch),
+            ActionPreflight::Vacant(permit) => {
+                return ActionCoordinator::prepare_and_stage_decision_terminal(
+                    permit, engine, fence, binding, outcome,
+                )
+                .map(Some)
+                .map_err(|error| error.to_string());
+            }
+            ActionPreflight::Pending { .. } | ActionPreflight::Finalized(_) => return Ok(None),
+            ActionPreflight::Quarantined(receipt) => {
+                return Err(format!(
+                    "decision terminal action {} is quarantined",
+                    receipt.token()
+                ));
+            }
+            ActionPreflight::Conflict => {
+                return Err("decision terminal idempotency identity conflicts".to_owned());
+            }
+        }
+    }
+    Err("decision terminal retirement watermark changed repeatedly".to_owned())
 }
 
 struct DurableScheduleDriver {
@@ -2051,6 +2204,7 @@ struct ActionCompletion {
     ownership_valid: bool,
     post_commit_decision: Option<DecisionPostCommit>,
     post_commit_decision_response: Option<DecisionResponsePostCommit>,
+    post_commit_decision_terminal: Option<DecisionTerminalPostCommit>,
 }
 
 struct DecisionPostCommit {
@@ -2061,6 +2215,12 @@ struct DecisionPostCommit {
 struct DecisionResponsePostCommit {
     fence: mush_core::DecisionCompletionFence,
     binding: mush_core::DecisionActionBinding,
+}
+
+struct DecisionTerminalPostCommit {
+    fence: mush_core::DecisionCompletionFence,
+    binding: mush_core::DecisionActionBinding,
+    outcome: mush_core::DecisionTerminalOutcome,
 }
 
 /// One authoritative batch whose presentation and external work remain held
@@ -2203,6 +2363,8 @@ struct CompletedPending {
     outcome: DeliveryOutcome,
     barriers: Vec<oneshot::Sender<Result<(), WorldReadError>>>,
     coalesced_reattach: Option<Box<[ReAttachRec]>>,
+    decision_response: Option<DecisionResponsePostCommit>,
+    decision_terminal: Option<DecisionTerminalPostCommit>,
 }
 
 impl PendingCommit {
@@ -2731,6 +2893,7 @@ async fn run(
                                         ownership_valid: false,
                                         post_commit_decision: None,
                                         post_commit_decision_response: None,
+                                        post_commit_decision_terminal: None,
                                     });
                                 }
                                 Err(detail) => {
@@ -2851,7 +3014,7 @@ async fn run(
                     .take()
                     .expect("commit receipt cannot resolve without a pending commit");
                 let exit_after_ack = pending.exit_after_ack;
-                let completed = complete_pending_commit(
+                let mut completed = complete_pending_commit(
                     pending,
                     ack,
                     &mut engine,
@@ -2861,7 +3024,86 @@ async fn run(
                     &tx,
                     llm.as_ref(),
                 );
+                let decision_response = completed.decision_response.take();
+                let decision_terminal = completed.decision_terminal.take();
                 finish_pending_operational(&mut engine, &gateway, completed);
+                if let Some(response) = decision_response {
+                    let resolving = if let Some(store) = deps.store.authoritative_store() {
+                        stage_decision_resolving(
+                            &mut engine,
+                            store,
+                            &response.fence,
+                            &response.binding,
+                            action_epoch,
+                        )
+                        .await
+                    } else {
+                        Err("authoritative store capability disappeared".to_owned())
+                    };
+                    match resolving {
+                        Ok(Some(staged)) => {
+                            action_completion = Some(ActionCompletion {
+                                staged,
+                                owned: None,
+                                finished: None,
+                                ownership_valid: false,
+                                post_commit_decision: None,
+                                post_commit_decision_response: None,
+                                post_commit_decision_terminal: Some(DecisionTerminalPostCommit {
+                                    fence: response.fence,
+                                    binding: response.binding,
+                                    outcome: mush_core::DecisionTerminalOutcome::Executed,
+                                }),
+                            });
+                        }
+                        Ok(None) => {}
+                        Err(error) => {
+                            tracing::error!(
+                                owner = %response.fence.controller().owner,
+                                decision = ?response.fence.decision(),
+                                error = %error,
+                                "failed to bind committed selected action to pending decision"
+                            );
+                        }
+                    }
+                }
+                if let Some(terminal) = decision_terminal {
+                    let staged = if let Some(store) = deps.store.authoritative_store() {
+                        stage_decision_terminal(
+                            &mut engine,
+                            store,
+                            &terminal.fence,
+                            &terminal.binding,
+                            terminal.outcome,
+                            action_epoch,
+                        )
+                        .await
+                    } else {
+                        Err("authoritative store capability disappeared".to_owned())
+                    };
+                    match staged {
+                        Ok(Some(staged)) => {
+                            action_completion = Some(ActionCompletion {
+                                staged,
+                                owned: None,
+                                finished: None,
+                                ownership_valid: false,
+                                post_commit_decision: None,
+                                post_commit_decision_response: None,
+                                post_commit_decision_terminal: None,
+                            });
+                        }
+                        Ok(None) => {}
+                        Err(error) => {
+                            tracing::error!(
+                                owner = %terminal.fence.controller().owner,
+                                decision = ?terminal.fence.decision(),
+                                error = %error,
+                                "failed to terminalize resolved decision"
+                            );
+                        }
+                    }
+                }
                 if std::mem::take(&mut recovery_waits_for_commit) {
                     apply_store_status(&engine.world, &gateway, &mut health, true, "");
                 }
@@ -2925,6 +3167,7 @@ async fn run(
                             ownership_valid: false,
                             post_commit_decision: None,
                             post_commit_decision_response: None,
+                            post_commit_decision_terminal: None,
                         });
                     }
                     Err(detail) => {
@@ -2998,6 +3241,19 @@ async fn run(
                                 worker,
                             }),
                             post_commit_decision_response: None,
+                            post_commit_decision_terminal: None,
+                        });
+                    }
+                    Ok(DurableDecisionDrive::StagedLifecycle(staged)) => {
+                        durable_decision_transient_alarmed = false;
+                        action_completion = Some(ActionCompletion {
+                            staged,
+                            owned: None,
+                            finished: None,
+                            ownership_valid: false,
+                            post_commit_decision: None,
+                            post_commit_decision_response: None,
+                            post_commit_decision_terminal: None,
                         });
                     }
                     Err(detail) => {
@@ -3090,6 +3346,7 @@ async fn run(
                                             post_commit_decision_response: Some(
                                                 DecisionResponsePostCommit { fence, binding },
                                             ),
+                                            post_commit_decision_terminal: None,
                                         });
                                     }
                                     Err(error) => {
@@ -3109,11 +3366,58 @@ async fn run(
                                 );
                             }
                             ActionPreflight::Finalized(receipt) => {
-                                tracing::info!(
-                                    token = %receipt.token(),
-                                    decision = ?fence.decision(),
-                                    "decision response joined an already finalized selected action"
-                                );
+                                let binding = mush_core::DecisionActionBinding {
+                                    request: receipt.request(),
+                                    request_hash: receipt.request_hash(),
+                                };
+                                match stage_decision_resolving(
+                                    &mut engine,
+                                    store,
+                                    &fence,
+                                    &binding,
+                                    action_epoch,
+                                )
+                                .await
+                                {
+                                    Ok(Some(staged)) => {
+                                        tracing::info!(
+                                            token = %receipt.token(),
+                                            decision = ?fence.decision(),
+                                            "reconciled an already finalized selected action"
+                                        );
+                                        action_completion = Some(ActionCompletion {
+                                            staged,
+                                            owned: None,
+                                            finished: None,
+                                            ownership_valid: false,
+                                            post_commit_decision: None,
+                                            post_commit_decision_response: None,
+                                            post_commit_decision_terminal: Some(
+                                                DecisionTerminalPostCommit {
+                                                    fence,
+                                                    binding,
+                                                    outcome:
+                                                        mush_core::DecisionTerminalOutcome::Executed,
+                                                },
+                                            ),
+                                        });
+                                    }
+                                    Ok(None) => {
+                                        tracing::info!(
+                                            token = %receipt.token(),
+                                            decision = ?fence.decision(),
+                                            "joined an existing selected-action lifecycle intent"
+                                        );
+                                    }
+                                    Err(error) => {
+                                        tracing::error!(
+                                            token = %receipt.token(),
+                                            decision = ?fence.decision(),
+                                            error = %error,
+                                            "failed to reconcile finalized selected action"
+                                        );
+                                    }
+                                }
                             }
                             ActionPreflight::Retired {
                                 minimum_accepted_epoch,
@@ -5951,16 +6255,11 @@ fn complete_pending_commit(
             &format!("committed decision lease could not release worker custody: {error}"),
         );
     }
-    if let Some(response) = action
+    let decision_response = action
         .as_mut()
         .and_then(|completion| completion.post_commit_decision_response.take())
-        && outcome == DeliveryOutcome::Committed
-        && !health.mode.integrity_frozen()
-    {
-        // The selected action now has durable ordinary-action custody. K7.2's
-        // lifecycle follow-up records this binding as Resolving/Terminal; a
-        // crash before that follow-up is recoverable from the exact scoped
-        // action idempotency status and cannot execute a second action.
+        .filter(|_| outcome == DeliveryOutcome::Committed && !health.mode.integrity_frozen());
+    if let Some(response) = decision_response.as_ref() {
         tracing::info!(
             owner = %response.fence.controller().owner,
             decision = ?response.fence.decision(),
@@ -5968,9 +6267,13 @@ fn complete_pending_commit(
             attempt = response.fence.attempt(),
             request = %response.binding.request,
             request_hash = %response.binding.request_hash,
-            "decision response selected action committed through ordinary coordinator"
+            "decision response selected action committed; lifecycle binding retained"
         );
     }
+    let decision_terminal = action
+        .as_mut()
+        .and_then(|completion| completion.post_commit_decision_terminal.take())
+        .filter(|_| outcome == DeliveryOutcome::Committed && !health.mode.integrity_frozen());
     if let Some(completion) = action.as_mut()
         && let Some(finished) = completion.finished.take()
     {
@@ -6028,6 +6331,8 @@ fn complete_pending_commit(
         outcome,
         barriers,
         coalesced_reattach,
+        decision_response,
+        decision_terminal,
     }
 }
 
@@ -7191,13 +7496,6 @@ mod tests {
             registration.families.pending.descriptor().id(),
             pending.id.canonical_hash().to_hex()
         );
-        let persisted = store
-            .module_json_get(DECISION_HARNESS_OWNER, &persistence_key)
-            .await
-            .expect("persisted lease read")
-            .expect("persisted lease post-image");
-        assert_eq!(persisted["value"]["status"]["state"], "leased");
-        assert_eq!(persisted["value"]["status"]["attempt"], 1);
         assert_eq!(calls.load(AtomicOrdering::SeqCst), 1);
 
         let selection_key = format!(
@@ -7219,6 +7517,25 @@ mod tests {
         .await
         .expect("authenticated decision response did not commit its selected action");
         assert_eq!(selected["value"]["count"], 1);
+
+        let terminal = tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                let value = store
+                    .module_json_get(DECISION_HARNESS_OWNER, &persistence_key)
+                    .await
+                    .expect("terminal decision read")
+                    .expect("terminal decision record");
+                if value["value"]["status"]["state"] == "terminal" {
+                    break value;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("selected action did not advance through resolving to terminal");
+        assert_eq!(terminal["value"]["status"]["outcome"], "executed");
+        assert!(terminal["value"]["status"]["action_binding"]["request"].is_string());
+        assert!(terminal["value"]["status"]["action_binding"]["request_hash"].is_string());
 
         stop_test_server(handles).await;
     }
@@ -7247,12 +7564,14 @@ mod tests {
 
         let calls = Arc::new(AtomicUsize::new(0));
         let first_called = Arc::new(tokio::sync::Notify::new());
+        let first_release = Arc::new(tokio::sync::Semaphore::new(0));
         let mut first_providers = DecisionProviderRegistry::new();
         first_providers
-            .register(Arc::new(RecordingDecisionProvider {
+            .register(Arc::new(BlockingDecisionProvider {
                 owner: OwnerId::new(DECISION_HARNESS_OWNER).expect("static harness owner"),
                 calls: Arc::clone(&calls),
                 called: Arc::clone(&first_called),
+                release: Arc::clone(&first_release),
             }))
             .expect("first decision provider registration");
         let first = spawn_persist_with_gateway_and_decisions(
@@ -7272,6 +7591,7 @@ mod tests {
         .await
         .expect("first decision lease did not dispatch");
         stop_test_server(first).await;
+        first_release.add_permits(1);
 
         tokio::time::sleep(Duration::from_millis(1_100)).await;
         let (mut restarted, restarted_registration, _plan, _keys) = decision_harness(1);
@@ -7288,12 +7608,14 @@ mod tests {
             .expect("decision state hydration after restart");
 
         let second_called = Arc::new(tokio::sync::Notify::new());
+        let second_release = Arc::new(tokio::sync::Semaphore::new(0));
         let mut second_providers = DecisionProviderRegistry::new();
         second_providers
-            .register(Arc::new(RecordingDecisionProvider {
+            .register(Arc::new(BlockingDecisionProvider {
                 owner: OwnerId::new(DECISION_HARNESS_OWNER).expect("static harness owner"),
                 calls: Arc::clone(&calls),
                 called: Arc::clone(&second_called),
+                release: Arc::clone(&second_release),
             }))
             .expect("second decision provider registration");
         let second = spawn_persist_with_gateway_and_decisions(
@@ -7326,6 +7648,7 @@ mod tests {
         assert_eq!(persisted["value"]["status"]["state"], "leased");
         assert_eq!(persisted["value"]["status"]["attempt"], 2);
         stop_test_server(second).await;
+        second_release.add_permits(1);
     }
 
     #[tokio::test]
@@ -7509,6 +7832,7 @@ mod tests {
                     worker,
                 }),
                 post_commit_decision_response: None,
+                post_commit_decision_terminal: None,
             }),
             prepared_installation: Some(installation),
             barriers: Vec::new(),
@@ -7712,6 +8036,132 @@ mod tests {
             first_ingress.ingress_hash(),
             "operational retry fences must not change semantic action identity"
         );
+
+        let ActionPreflight::Vacant(permit) = ActionCoordinator::preflight(&store, second_ingress)
+            .await
+            .expect("second response preflight")
+        else {
+            panic!("second-attempt selected action idempotency was not vacant")
+        };
+        let selected = ActionCoordinator::prepare_and_stage_decision_response(
+            permit,
+            &mut engine,
+            second_fence.clone(),
+            &response,
+        )
+        .expect("second-attempt response resolution");
+        let binding = selected.binding.clone();
+        let staged = engine
+            .take_staged_action()
+            .expect("selected action admission")
+            .expect("selected action stage");
+        let (persistence, installation) = staged.into_parts();
+        let StagedActionPersistence::Authoritative(bundle) = persistence else {
+            panic!("selected action used legacy persistence")
+        };
+        store
+            .reserve_authoritative_intent((*bundle).clone())
+            .await
+            .expect("selected action intent");
+        store
+            .reconcile_authoritative(bundle.token(), bundle.bundle_hash())
+            .await
+            .expect("selected action reconcile");
+        engine.install_prepared_action(installation);
+
+        assert!(
+            matches!(
+                engine
+                    .action_state()
+                    .get(&registration.families.pending, &pending.id)
+                    .expect("pending read")
+                    .expect("pending record")
+                    .status,
+                PendingDecisionStatus::Leased { attempt: 2, .. }
+            ),
+            "selected action receipt alone must not cross the owner-local lifecycle boundary"
+        );
+        let resolving = stage_decision_resolving(&mut engine, &store, &second_fence, &binding, 1)
+            .await
+            .expect("resolving stage")
+            .expect("resolving lifecycle was vacant");
+        let staged = engine
+            .take_staged_action()
+            .expect("resolving action admission")
+            .expect("resolving action stage");
+        let (persistence, installation) = staged.into_parts();
+        let StagedActionPersistence::Authoritative(bundle) = persistence else {
+            panic!("resolving action used legacy persistence")
+        };
+        assert_eq!(bundle.token(), resolving.token);
+        assert_eq!(bundle.bundle_hash(), resolving.bundle_hash);
+        store
+            .reserve_authoritative_intent((*bundle).clone())
+            .await
+            .expect("resolving intent");
+        store
+            .reconcile_authoritative(bundle.token(), bundle.bundle_hash())
+            .await
+            .expect("resolving reconcile");
+        engine.install_prepared_action(installation);
+        let resolved = engine
+            .action_state()
+            .get(&registration.families.pending, &pending.id)
+            .expect("resolved pending read")
+            .expect("resolved pending record");
+        assert!(matches!(
+            &resolved.status,
+            PendingDecisionStatus::Resolving {
+                attempt: 2,
+                action_binding,
+                ..
+            } if action_binding == &binding
+        ));
+
+        // Simulate losing the volatile post-Resolving follow-up. The bounded
+        // typed-family scan must rediscover the binding, authenticate its
+        // finalized ordinary receipt, and stage the exact terminal action.
+        driver.cursor = None;
+        driver.retry = None;
+        driver.reconciliation = None;
+        let DurableDecisionDrive::StagedLifecycle(terminal) = driver
+            .drive_one(&mut engine, &store, None)
+            .await
+            .expect("resolving recovery drive")
+        else {
+            panic!("resolving recovery did not stage the terminal lifecycle")
+        };
+        let staged = engine
+            .take_staged_action()
+            .expect("terminal action admission")
+            .expect("terminal action stage");
+        let (persistence, installation) = staged.into_parts();
+        let StagedActionPersistence::Authoritative(bundle) = persistence else {
+            panic!("terminal action used legacy persistence")
+        };
+        assert_eq!(bundle.token(), terminal.token);
+        assert_eq!(bundle.bundle_hash(), terminal.bundle_hash);
+        store
+            .reserve_authoritative_intent((*bundle).clone())
+            .await
+            .expect("terminal intent");
+        store
+            .reconcile_authoritative(bundle.token(), bundle.bundle_hash())
+            .await
+            .expect("terminal reconcile");
+        engine.install_prepared_action(installation);
+        let terminal = engine
+            .action_state()
+            .get(&registration.families.pending, &pending.id)
+            .expect("terminal pending read")
+            .expect("terminal pending record");
+        assert!(matches!(
+            &terminal.status,
+            PendingDecisionStatus::Terminal {
+                outcome: mush_core::DecisionTerminalOutcome::Executed,
+                action_binding: Some(action_binding),
+            } if action_binding == &binding
+        ));
     }
 
     #[tokio::test]

@@ -335,6 +335,33 @@ impl ActionCoordinator {
             .map_err(|source| ActionCoordinatorError::DecisionResponseIngress(Box::new(source)))
     }
 
+    /// Construct canonical owner-local ingress for recording an already
+    /// durable selected-action binding on its exact pending decision.
+    pub fn decision_resolving_ingress(
+        engine: &Engine,
+        fence: &mush_core::DecisionCompletionFence,
+        binding: &mush_core::DecisionActionBinding,
+        idempotency_epoch: u64,
+    ) -> Result<IngressEnvelope, ActionCoordinatorError> {
+        engine
+            .decision_resolving_ingress(fence, binding, idempotency_epoch)
+            .map_err(|source| ActionCoordinatorError::DecisionResolvingIngress(Box::new(source)))
+    }
+
+    /// Construct canonical owner-local ingress for terminalizing one exact
+    /// resolving decision binding.
+    pub fn decision_terminal_ingress(
+        engine: &Engine,
+        fence: &mush_core::DecisionCompletionFence,
+        binding: &mush_core::DecisionActionBinding,
+        outcome: mush_core::DecisionTerminalOutcome,
+        idempotency_epoch: u64,
+    ) -> Result<IngressEnvelope, ActionCoordinatorError> {
+        engine
+            .decision_terminal_ingress(fence, binding, outcome, idempotency_epoch)
+            .map_err(|source| ActionCoordinatorError::DecisionTerminalIngress(Box::new(source)))
+    }
+
     /// Authorized semantic `action/status` lookup. Finalized outcomes are
     /// returned only to an event-time eligible witness.
     pub async fn semantic_status(
@@ -586,6 +613,102 @@ impl ActionCoordinator {
             binding,
         })
     }
+
+    /// Record the exact selected-action binding through the controller
+    /// owner's registered action. The post-image and lifecycle action share
+    /// one authoritative bundle.
+    pub fn prepare_and_stage_decision_resolving(
+        permit: Box<ActionPermit>,
+        engine: &mut Engine,
+        fence: &mush_core::DecisionCompletionFence,
+        binding: &mush_core::DecisionActionBinding,
+    ) -> Result<StagedAuthoritativeAction, ActionCoordinatorError> {
+        let plan = engine
+            .plan_decision_resolving(fence, binding, permit.ingress())
+            .map_err(|source| ActionCoordinatorError::DecisionResolvingPlan(Box::new(source)))?;
+        let (action, invocation, guards, transition) = plan.into_parts();
+        validate_invocation_identity(permit.ingress(), &invocation)?;
+        let token = deterministic_commit_token(permit.ingress())?;
+        let (prepared, output) = engine
+            .prepare_registered_decision_resolving_action(
+                fence,
+                &action,
+                &invocation,
+                transition,
+                token,
+            )
+            .map_err(ActionCoordinatorError::Provider)?;
+        let bundle = match assemble_bundle(
+            permit.ingress(),
+            &action,
+            &invocation,
+            token,
+            &prepared,
+            output,
+        ) {
+            Ok(bundle) => bundle,
+            Err(error) => {
+                engine.abort_prepared_transaction(prepared);
+                return Err(error);
+            }
+        };
+        let staged = StagedAuthoritativeAction {
+            token: bundle.token(),
+            bundle_hash: bundle.bundle_hash(),
+        };
+        engine
+            .stage_authoritative_action(prepared, guards, bundle)
+            .map_err(ActionCoordinatorError::Stage)?;
+        Ok(staged)
+    }
+
+    /// Record one exact resolving decision's terminal post-image through the
+    /// controller owner's registered action.
+    pub fn prepare_and_stage_decision_terminal(
+        permit: Box<ActionPermit>,
+        engine: &mut Engine,
+        fence: &mush_core::DecisionCompletionFence,
+        binding: &mush_core::DecisionActionBinding,
+        outcome: mush_core::DecisionTerminalOutcome,
+    ) -> Result<StagedAuthoritativeAction, ActionCoordinatorError> {
+        let plan = engine
+            .plan_decision_terminal(fence, binding, outcome, permit.ingress())
+            .map_err(|source| ActionCoordinatorError::DecisionTerminalPlan(Box::new(source)))?;
+        let (action, invocation, guards, transition) = plan.into_parts();
+        validate_invocation_identity(permit.ingress(), &invocation)?;
+        let token = deterministic_commit_token(permit.ingress())?;
+        let (prepared, output) = engine
+            .prepare_registered_decision_terminal_action(
+                fence,
+                &action,
+                &invocation,
+                transition,
+                token,
+            )
+            .map_err(ActionCoordinatorError::Provider)?;
+        let bundle = match assemble_bundle(
+            permit.ingress(),
+            &action,
+            &invocation,
+            token,
+            &prepared,
+            output,
+        ) {
+            Ok(bundle) => bundle,
+            Err(error) => {
+                engine.abort_prepared_transaction(prepared);
+                return Err(error);
+            }
+        };
+        let staged = StagedAuthoritativeAction {
+            token: bundle.token(),
+            bundle_hash: bundle.bundle_hash(),
+        };
+        engine
+            .stage_authoritative_action(prepared, guards, bundle)
+            .map_err(ActionCoordinatorError::Stage)?;
+        Ok(staged)
+    }
 }
 
 /// Failure at the authenticated durable-result projection boundary.
@@ -724,6 +847,14 @@ pub enum ActionCoordinatorError {
     DecisionResponseIngress(#[source] Box<mush_core::DecisionResponseIngressError>),
     #[error("decision response resolution failed: {0}")]
     DecisionResponseResolve(#[source] Box<mush_core::DecisionResponseResolveError>),
+    #[error("decision resolving ingress is invalid: {0}")]
+    DecisionResolvingIngress(#[source] Box<mush_core::DecisionResolvingIngressError>),
+    #[error("decision resolving planning failed: {0}")]
+    DecisionResolvingPlan(#[source] Box<mush_core::DecisionResolvingPlanError>),
+    #[error("decision terminal ingress is invalid: {0}")]
+    DecisionTerminalIngress(#[source] Box<mush_core::DecisionTerminalIngressError>),
+    #[error("decision terminal planning failed: {0}")]
+    DecisionTerminalPlan(#[source] Box<mush_core::DecisionTerminalPlanError>),
     #[error("semantic invocation identity does not match its preflight ingress")]
     IngressInvocationMismatch,
     #[error("action provider preparation failed: {0}")]

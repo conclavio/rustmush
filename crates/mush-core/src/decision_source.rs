@@ -21,9 +21,10 @@ use crate::action::{
 use crate::action_state::{ActionStateError, ActionTxn, StateFamilyRegistry};
 use crate::decision::{
     DecisionActionBinding, DecisionCaptureFamilies, DecisionCompletionFence, DecisionControllerId,
-    DecisionError, DecisionId, DecisionKeyRing, DecisionLeaseTransition, DecisionResponse,
-    DecisionWake, DecisionWorkerLease, MAX_DECISION_ATTEMPTS, MAX_DECISION_RECOVERY_PAGE,
-    PendingDecision, PendingDecisionStatus, PendingOfferWitness,
+    DecisionError, DecisionId, DecisionKeyRing, DecisionLeaseTransition,
+    DecisionResolvingTransition, DecisionResponse, DecisionTerminalOutcome,
+    DecisionTerminalTransition, DecisionWake, DecisionWorkerLease, MAX_DECISION_ATTEMPTS,
+    MAX_DECISION_RECOVERY_PAGE, PendingDecision, PendingDecisionStatus, PendingOfferWitness,
 };
 use crate::durable_schedule::ScheduleId;
 use crate::mechanics::{
@@ -184,6 +185,32 @@ pub struct DecisionDispatchCandidate {
     attempt: u8,
 }
 
+/// One durable Resolving record whose bound ordinary action status must be
+/// reconciled before the decision can terminalize.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DecisionReconciliationCandidate {
+    fence: DecisionCompletionFence,
+    binding: DecisionActionBinding,
+    action_idempotency: ScopedIdempotencyKey,
+}
+
+impl DecisionReconciliationCandidate {
+    #[must_use]
+    pub const fn fence(&self) -> &DecisionCompletionFence {
+        &self.fence
+    }
+
+    #[must_use]
+    pub const fn binding(&self) -> &DecisionActionBinding {
+        &self.binding
+    }
+
+    #[must_use]
+    pub const fn action_idempotency(&self) -> &ScopedIdempotencyKey {
+        &self.action_idempotency
+    }
+}
+
 impl DecisionDispatchCandidate {
     #[must_use]
     pub const fn owner(&self) -> &OwnerId {
@@ -210,6 +237,7 @@ impl DecisionDispatchCandidate {
 #[derive(Debug)]
 pub struct DecisionSourcePage {
     candidates: Vec<DecisionDispatchCandidate>,
+    reconciliations: Vec<DecisionReconciliationCandidate>,
     records_scanned: usize,
     next_cursor: Option<DecisionSourceCursor>,
 }
@@ -218,6 +246,11 @@ impl DecisionSourcePage {
     #[must_use]
     pub fn candidates(&self) -> &[DecisionDispatchCandidate] {
         &self.candidates
+    }
+
+    #[must_use]
+    pub fn reconciliations(&self) -> &[DecisionReconciliationCandidate] {
+        &self.reconciliations
     }
 
     #[must_use]
@@ -238,6 +271,27 @@ pub struct DecisionDispatchPlan {
     invocation: ActionInvocation,
     guards: GuardSet,
     transition: DecisionLeaseTransition,
+}
+
+/// Exact coordinator material for the owner-local Leased-to-Resolving
+/// lifecycle action. This action records only the binding of an already
+/// durable selected ordinary action.
+#[derive(Debug)]
+pub struct DecisionResolvingPlan {
+    action: DefinitionRef,
+    invocation: ActionInvocation,
+    guards: GuardSet,
+    transition: DecisionResolvingTransition,
+}
+
+/// Exact coordinator material for an owner-local Resolving-to-Terminal
+/// lifecycle action.
+#[derive(Debug)]
+pub struct DecisionTerminalPlan {
+    action: DefinitionRef,
+    invocation: ActionInvocation,
+    guards: GuardSet,
+    transition: DecisionTerminalTransition,
 }
 
 /// Authenticated provider selection after current offer regeneration and
@@ -269,6 +323,32 @@ impl DecisionDispatchPlan {
         ActionInvocation,
         GuardSet,
         DecisionLeaseTransition,
+    ) {
+        (self.action, self.invocation, self.guards, self.transition)
+    }
+}
+
+impl DecisionResolvingPlan {
+    pub fn into_parts(
+        self,
+    ) -> (
+        DefinitionRef,
+        ActionInvocation,
+        GuardSet,
+        DecisionResolvingTransition,
+    ) {
+        (self.action, self.invocation, self.guards, self.transition)
+    }
+}
+
+impl DecisionTerminalPlan {
+    pub fn into_parts(
+        self,
+    ) -> (
+        DefinitionRef,
+        ActionInvocation,
+        GuardSet,
+        DecisionTerminalTransition,
     ) {
         (self.action, self.invocation, self.guards, self.transition)
     }
@@ -359,6 +439,199 @@ impl DecisionSourceRegistry {
             }))?,
             pending.action_idempotency.clone(),
         )?)
+    }
+
+    /// Construct stable owner-local ingress for recording the binding of a
+    /// selected action that already has durable custody. Time is deliberately
+    /// absent: an exact response authorized before lease expiry may finish its
+    /// ordinary commit after expiry and must still be reconciled.
+    pub(crate) fn resolving_ingress(
+        &self,
+        engine: &crate::engine::Engine,
+        fence: &DecisionCompletionFence,
+        binding: &DecisionActionBinding,
+        idempotency_epoch: u64,
+    ) -> Result<IngressEnvelope, DecisionResolvingIngressError> {
+        let entry = self.entry_for_fence(fence)?;
+        self.validate_resolving_fence(engine, entry, fence)?;
+        decision_resolving_ingress(&entry.lease_action, fence, binding, idempotency_epoch)
+    }
+
+    /// Re-read the exact owner-local pending record after store preflight and
+    /// plan its Leased-to-Resolving post-image.
+    pub(crate) fn plan_resolving(
+        &self,
+        engine: &crate::engine::Engine,
+        fence: &DecisionCompletionFence,
+        binding: &DecisionActionBinding,
+        ingress: &IngressEnvelope,
+    ) -> Result<DecisionResolvingPlan, DecisionResolvingPlanError> {
+        let entry = self.entry_for_fence(fence)?;
+        let expected = decision_resolving_ingress(
+            &entry.lease_action,
+            fence,
+            binding,
+            ingress.idempotency().epoch(),
+        )?;
+        if &expected != ingress {
+            return Err(DecisionResolvingPlanError::IngressMismatch);
+        }
+        let pending = self.validate_resolving_fence(engine, entry, fence)?.clone();
+        let transition = pending.plan_resolving(fence, binding.clone())?;
+        let offered_action = ActionOfferId(CanonicalHash::for_canonical_value(
+            "decision_resolving_offer.v1",
+            1,
+            &json!({
+                "action": entry.lease_action,
+                "decision": fence.decision(),
+                "revision": fence.revision(),
+                "attempt": fence.attempt(),
+                "binding": binding,
+            }),
+            32 * 1024,
+        )?);
+        let invocation = ActionInvocation::new(ActionInvocationDraft {
+            request: ingress.request(),
+            principal: ingress.principal().clone(),
+            actor: pending.actor,
+            offered_action,
+            subject: PerceivedRef::SelfActor,
+            targets: Vec::new(),
+            parameters: json!({
+                "decision": fence.decision(),
+                "revision": fence.revision(),
+                "attempt": fence.attempt(),
+                "phase": "resolving",
+                "binding": binding,
+            }),
+            idempotency: ingress.idempotency().clone(),
+        })?;
+        let definitions = engine
+            .registry
+            .definitions()
+            .ok_or(DecisionResolvingPlanError::RegistryUnavailable)?;
+        let mut guards = engine
+            .registry
+            .server_guard_set_builder(RevisionSet::default())?;
+        guards.add_definition(entry.lease_action.clone(), definitions)?;
+        self.owner_readiness.require_ready(&entry.owner)?;
+        Ok(DecisionResolvingPlan {
+            action: entry.lease_action.clone(),
+            invocation,
+            guards: guards.finish()?,
+            transition,
+        })
+    }
+
+    pub(crate) fn seed_resolving(
+        &self,
+        fence: &DecisionCompletionFence,
+        transition: DecisionResolvingTransition,
+        txn: &mut ActionTxn<'_>,
+    ) -> Result<(), DecisionResolvingPlanError> {
+        let entry = self.entry_for_fence(fence)?;
+        transition.stage(txn, &entry.families)?;
+        Ok(())
+    }
+
+    pub(crate) fn terminal_ingress(
+        &self,
+        engine: &crate::engine::Engine,
+        fence: &DecisionCompletionFence,
+        binding: &DecisionActionBinding,
+        outcome: DecisionTerminalOutcome,
+        idempotency_epoch: u64,
+    ) -> Result<IngressEnvelope, DecisionTerminalIngressError> {
+        let entry = self.entry_for_terminal_fence(fence)?;
+        self.validate_terminal_fence(engine, entry, fence, binding)?;
+        decision_terminal_ingress(
+            &entry.lease_action,
+            fence,
+            binding,
+            outcome,
+            idempotency_epoch,
+        )
+    }
+
+    pub(crate) fn plan_terminal(
+        &self,
+        engine: &crate::engine::Engine,
+        fence: &DecisionCompletionFence,
+        binding: &DecisionActionBinding,
+        outcome: DecisionTerminalOutcome,
+        ingress: &IngressEnvelope,
+    ) -> Result<DecisionTerminalPlan, DecisionTerminalPlanError> {
+        let entry = self.entry_for_terminal_fence(fence)?;
+        let expected = decision_terminal_ingress(
+            &entry.lease_action,
+            fence,
+            binding,
+            outcome,
+            ingress.idempotency().epoch(),
+        )?;
+        if &expected != ingress {
+            return Err(DecisionTerminalPlanError::IngressMismatch);
+        }
+        let pending = self
+            .validate_terminal_fence(engine, entry, fence, binding)?
+            .clone();
+        let transition = pending.plan_terminal(fence, binding, outcome)?;
+        let offered_action = ActionOfferId(CanonicalHash::for_canonical_value(
+            "decision_terminal_offer.v1",
+            1,
+            &json!({
+                "action": entry.lease_action,
+                "decision": fence.decision(),
+                "revision": fence.revision(),
+                "attempt": fence.attempt(),
+                "binding": binding,
+                "outcome": outcome,
+            }),
+            32 * 1024,
+        )?);
+        let invocation = ActionInvocation::new(ActionInvocationDraft {
+            request: ingress.request(),
+            principal: ingress.principal().clone(),
+            actor: pending.actor,
+            offered_action,
+            subject: PerceivedRef::SelfActor,
+            targets: Vec::new(),
+            parameters: json!({
+                "decision": fence.decision(),
+                "revision": fence.revision(),
+                "attempt": fence.attempt(),
+                "phase": "terminal",
+                "binding": binding,
+                "outcome": outcome,
+            }),
+            idempotency: ingress.idempotency().clone(),
+        })?;
+        let definitions = engine
+            .registry
+            .definitions()
+            .ok_or(DecisionTerminalPlanError::RegistryUnavailable)?;
+        let mut guards = engine
+            .registry
+            .server_guard_set_builder(RevisionSet::default())?;
+        guards.add_definition(entry.lease_action.clone(), definitions)?;
+        self.owner_readiness.require_ready(&entry.owner)?;
+        Ok(DecisionTerminalPlan {
+            action: entry.lease_action.clone(),
+            invocation,
+            guards: guards.finish()?,
+            transition,
+        })
+    }
+
+    pub(crate) fn seed_terminal(
+        &self,
+        fence: &DecisionCompletionFence,
+        transition: DecisionTerminalTransition,
+        txn: &mut ActionTxn<'_>,
+    ) -> Result<(), DecisionTerminalPlanError> {
+        let entry = self.entry_for_terminal_fence(fence)?;
+        transition.stage(txn, &entry.families)?;
+        Ok(())
     }
 
     pub(crate) fn resolve_response(
@@ -505,6 +778,95 @@ impl DecisionSourceRegistry {
         Ok((pending, prompt, offered))
     }
 
+    fn entry_for_fence(
+        &self,
+        fence: &DecisionCompletionFence,
+    ) -> Result<&DecisionSourceEntry, DecisionResolvingIngressError> {
+        let entry = self.entries.get(&fence.controller().owner).ok_or_else(|| {
+            DecisionResolvingIngressError::SourceUnavailable {
+                owner: fence.controller().owner.clone(),
+            }
+        })?;
+        self.owner_readiness.require_ready(&entry.owner)?;
+        Ok(entry)
+    }
+
+    fn validate_resolving_fence<'a>(
+        &self,
+        engine: &'a crate::engine::Engine,
+        entry: &DecisionSourceEntry,
+        fence: &DecisionCompletionFence,
+    ) -> Result<&'a PendingDecision, DecisionResolvingIngressError> {
+        let pending = engine
+            .action_state()
+            .get(entry.families.pending(), &fence.decision())?
+            .ok_or(DecisionResolvingIngressError::MissingDecision)?;
+        if &pending.controller != fence.controller()
+            || pending.id != fence.decision()
+            || pending.revision != fence.revision()
+        {
+            return Err(DecisionResolvingIngressError::StaleCompletion);
+        }
+        let PendingDecisionStatus::Leased {
+            attempt,
+            lease_until,
+        } = &pending.status
+        else {
+            return Err(DecisionResolvingIngressError::StaleCompletion);
+        };
+        if *attempt != fence.attempt() || lease_until != fence.lease_until() {
+            return Err(DecisionResolvingIngressError::StaleCompletion);
+        }
+        Ok(pending)
+    }
+
+    fn entry_for_terminal_fence(
+        &self,
+        fence: &DecisionCompletionFence,
+    ) -> Result<&DecisionSourceEntry, DecisionTerminalIngressError> {
+        let entry = self.entries.get(&fence.controller().owner).ok_or_else(|| {
+            DecisionTerminalIngressError::SourceUnavailable {
+                owner: fence.controller().owner.clone(),
+            }
+        })?;
+        self.owner_readiness.require_ready(&entry.owner)?;
+        Ok(entry)
+    }
+
+    fn validate_terminal_fence<'a>(
+        &self,
+        engine: &'a crate::engine::Engine,
+        entry: &DecisionSourceEntry,
+        fence: &DecisionCompletionFence,
+        binding: &DecisionActionBinding,
+    ) -> Result<&'a PendingDecision, DecisionTerminalIngressError> {
+        let pending = engine
+            .action_state()
+            .get(entry.families.pending(), &fence.decision())?
+            .ok_or(DecisionTerminalIngressError::MissingDecision)?;
+        if &pending.controller != fence.controller()
+            || pending.id != fence.decision()
+            || pending.revision != fence.revision()
+        {
+            return Err(DecisionTerminalIngressError::StaleResolution);
+        }
+        let PendingDecisionStatus::Resolving {
+            attempt,
+            lease_until,
+            action_binding,
+        } = &pending.status
+        else {
+            return Err(DecisionTerminalIngressError::StaleResolution);
+        };
+        if *attempt != fence.attempt()
+            || lease_until != fence.lease_until()
+            || action_binding != binding
+        {
+            return Err(DecisionTerminalIngressError::StaleResolution);
+        }
+        Ok(pending)
+    }
+
     pub(crate) fn scan(
         &self,
         engine: &crate::engine::Engine,
@@ -526,6 +888,7 @@ impl DecisionSourceRegistry {
             });
         }
         let mut candidates = Vec::new();
+        let mut reconciliations = Vec::new();
         let mut records_scanned = 0;
         let mut last_scanned = None;
         for (owner, entry) in &self.entries {
@@ -590,11 +953,30 @@ impl DecisionSourceRegistry {
                         attempt,
                     });
                 }
+                if let PendingDecisionStatus::Resolving {
+                    attempt,
+                    lease_until,
+                    action_binding,
+                } = &pending.status
+                {
+                    reconciliations.push(DecisionReconciliationCandidate {
+                        fence: DecisionCompletionFence::new(
+                            pending.controller.clone(),
+                            pending.id,
+                            pending.revision,
+                            *attempt,
+                            lease_until.clone(),
+                        )?,
+                        binding: action_binding.clone(),
+                        action_idempotency: pending.action_idempotency.clone(),
+                    });
+                }
             }
             self.owner_readiness.require_ready(owner)?;
             if records_scanned == limit {
                 return Ok(DecisionSourcePage {
                     candidates,
+                    reconciliations,
                     records_scanned,
                     next_cursor: last_scanned,
                 });
@@ -602,6 +984,7 @@ impl DecisionSourceRegistry {
         }
         Ok(DecisionSourcePage {
             candidates,
+            reconciliations,
             records_scanned,
             next_cursor: None,
         })
@@ -897,6 +1280,128 @@ pub fn decision_lease_ingress(
     )?)
 }
 
+/// Canonical internal ingress for recording one exact selected-action binding
+/// on its controller owner's pending-decision record.
+pub fn decision_resolving_ingress(
+    action: &DefinitionRef,
+    fence: &DecisionCompletionFence,
+    binding: &DecisionActionBinding,
+    idempotency_epoch: u64,
+) -> Result<IngressEnvelope, DecisionResolvingIngressError> {
+    if action.key().owner != fence.controller().owner {
+        return Err(DecisionResolvingIngressError::OwnerMismatch);
+    }
+    let request_hash = CanonicalHash::for_canonical_value(
+        "decision_resolving_request.v1",
+        1,
+        &json!({
+            "action": action,
+            "decision": fence.decision(),
+            "revision": fence.revision(),
+            "attempt": fence.attempt(),
+            "lease_until": fence.lease_until(),
+            "binding": binding,
+        }),
+        32 * 1024,
+    )?;
+    let mut request_bytes = [0_u8; 16];
+    request_bytes.copy_from_slice(&request_hash.as_bytes()[..16]);
+    let request = crate::action::RequestUid::from_bytes(request_bytes);
+    let principal = PrincipalId::Scoped {
+        owner: fence.controller().owner.clone(),
+        class: CanonicalId::new("decision_lifecycle").expect("static principal class"),
+        id: IdempotencyKeyText::parse_canonical(fence.decision().canonical_hash().to_hex())?,
+    };
+    let idempotency = ScopedIdempotencyKey::new(
+        IdempotencyScope {
+            principal: principal.clone(),
+            owner: fence.controller().owner.clone(),
+            namespace: CanonicalId::new(action.key().id.as_str())?,
+        },
+        idempotency_epoch,
+        IdempotencyKey::Deterministic(request_hash),
+    );
+    Ok(IngressEnvelope::new(
+        request,
+        principal,
+        IngressSurfaceVersion::new(
+            CanonicalId::new("kernel.decision_resolving").expect("static surface id"),
+            1,
+        )?,
+        IngressPayload::structured(json!({
+            "action": action,
+            "decision": fence.decision(),
+            "revision": fence.revision(),
+            "attempt": fence.attempt(),
+            "lease_until": fence.lease_until(),
+            "binding": binding,
+        }))?,
+        idempotency,
+    )?)
+}
+
+/// Canonical internal ingress for terminalizing one exact resolving binding.
+pub fn decision_terminal_ingress(
+    action: &DefinitionRef,
+    fence: &DecisionCompletionFence,
+    binding: &DecisionActionBinding,
+    outcome: DecisionTerminalOutcome,
+    idempotency_epoch: u64,
+) -> Result<IngressEnvelope, DecisionTerminalIngressError> {
+    if action.key().owner != fence.controller().owner {
+        return Err(DecisionTerminalIngressError::OwnerMismatch);
+    }
+    let request_hash = CanonicalHash::for_canonical_value(
+        "decision_terminal_request.v1",
+        1,
+        &json!({
+            "action": action,
+            "decision": fence.decision(),
+            "revision": fence.revision(),
+            "attempt": fence.attempt(),
+            "lease_until": fence.lease_until(),
+            "binding": binding,
+            "outcome": outcome,
+        }),
+        32 * 1024,
+    )?;
+    let mut request_bytes = [0_u8; 16];
+    request_bytes.copy_from_slice(&request_hash.as_bytes()[..16]);
+    let request = crate::action::RequestUid::from_bytes(request_bytes);
+    let principal = PrincipalId::Scoped {
+        owner: fence.controller().owner.clone(),
+        class: CanonicalId::new("decision_lifecycle").expect("static principal class"),
+        id: IdempotencyKeyText::parse_canonical(fence.decision().canonical_hash().to_hex())?,
+    };
+    let idempotency = ScopedIdempotencyKey::new(
+        IdempotencyScope {
+            principal: principal.clone(),
+            owner: fence.controller().owner.clone(),
+            namespace: CanonicalId::new(action.key().id.as_str())?,
+        },
+        idempotency_epoch,
+        IdempotencyKey::Deterministic(request_hash),
+    );
+    Ok(IngressEnvelope::new(
+        request,
+        principal,
+        IngressSurfaceVersion::new(
+            CanonicalId::new("kernel.decision_terminal").expect("static surface id"),
+            1,
+        )?,
+        IngressPayload::structured(json!({
+            "action": action,
+            "decision": fence.decision(),
+            "revision": fence.revision(),
+            "attempt": fence.attempt(),
+            "lease_until": fence.lease_until(),
+            "binding": binding,
+            "outcome": outcome,
+        }))?,
+        idempotency,
+    )?)
+}
+
 #[derive(Debug, Error)]
 pub enum DecisionSourceRegistryError {
     #[error("decision-source registry exceeds its hard limit of {max}")]
@@ -939,6 +1444,98 @@ pub enum DecisionLeaseIngressError {
     CanonicalId(#[from] CanonicalIdError),
     #[error("decision lease idempotency text is invalid: {0}")]
     IdempotencyText(#[from] IdempotencyKeyTextError),
+}
+
+#[derive(Debug, Error)]
+pub enum DecisionResolvingIngressError {
+    #[error("decision resolving source registry is unavailable")]
+    RegistryUnavailable,
+    #[error("decision resolving source for owner {owner} is unavailable")]
+    SourceUnavailable { owner: OwnerId },
+    #[error("decision resolving action and controller have different owners")]
+    OwnerMismatch,
+    #[error("decision resolving references a missing pending record")]
+    MissingDecision,
+    #[error("decision resolving does not match the exact leased record")]
+    StaleCompletion,
+    #[error(transparent)]
+    State(#[from] ActionStateError),
+    #[error(transparent)]
+    Hash(#[from] CanonicalHashError),
+    #[error(transparent)]
+    Metadata(#[from] ActionMetadataError),
+    #[error(transparent)]
+    CanonicalId(#[from] CanonicalIdError),
+    #[error(transparent)]
+    IdempotencyText(#[from] IdempotencyKeyTextError),
+    #[error(transparent)]
+    OwnerNotReady(#[from] MechanicalOwnerReadinessError),
+}
+
+#[derive(Debug, Error)]
+pub enum DecisionResolvingPlanError {
+    #[error("decision resolving source registry is unavailable")]
+    RegistryUnavailable,
+    #[error(transparent)]
+    Ingress(#[from] DecisionResolvingIngressError),
+    #[error("decision resolving ingress differs from its canonical fenced payload")]
+    IngressMismatch,
+    #[error(transparent)]
+    Decision(#[from] DecisionError),
+    #[error(transparent)]
+    Guard(#[from] crate::action::GuardSetBuildError),
+    #[error(transparent)]
+    Metadata(#[from] ActionMetadataError),
+    #[error(transparent)]
+    Hash(#[from] CanonicalHashError),
+    #[error(transparent)]
+    OwnerNotReady(#[from] MechanicalOwnerReadinessError),
+}
+
+#[derive(Debug, Error)]
+pub enum DecisionTerminalIngressError {
+    #[error("decision terminal source registry is unavailable")]
+    RegistryUnavailable,
+    #[error("decision terminal source for owner {owner} is unavailable")]
+    SourceUnavailable { owner: OwnerId },
+    #[error("decision terminal action and controller have different owners")]
+    OwnerMismatch,
+    #[error("decision terminal transition references a missing pending record")]
+    MissingDecision,
+    #[error("decision terminal transition does not match the exact resolving binding")]
+    StaleResolution,
+    #[error(transparent)]
+    State(#[from] ActionStateError),
+    #[error(transparent)]
+    Hash(#[from] CanonicalHashError),
+    #[error(transparent)]
+    Metadata(#[from] ActionMetadataError),
+    #[error(transparent)]
+    CanonicalId(#[from] CanonicalIdError),
+    #[error(transparent)]
+    IdempotencyText(#[from] IdempotencyKeyTextError),
+    #[error(transparent)]
+    OwnerNotReady(#[from] MechanicalOwnerReadinessError),
+}
+
+#[derive(Debug, Error)]
+pub enum DecisionTerminalPlanError {
+    #[error("decision terminal source registry is unavailable")]
+    RegistryUnavailable,
+    #[error(transparent)]
+    Ingress(#[from] DecisionTerminalIngressError),
+    #[error("decision terminal ingress differs from its canonical fenced payload")]
+    IngressMismatch,
+    #[error(transparent)]
+    Decision(#[from] DecisionError),
+    #[error(transparent)]
+    Guard(#[from] crate::action::GuardSetBuildError),
+    #[error(transparent)]
+    Metadata(#[from] ActionMetadataError),
+    #[error(transparent)]
+    Hash(#[from] CanonicalHashError),
+    #[error(transparent)]
+    OwnerNotReady(#[from] MechanicalOwnerReadinessError),
 }
 
 #[derive(Debug, Error)]

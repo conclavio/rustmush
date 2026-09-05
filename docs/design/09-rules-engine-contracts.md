@@ -2782,8 +2782,8 @@ work, and the world task retains the worker reservation through the lease action
 installing the post-image before spawn. The composed production-path fixture now proves commit,
 abort-without-spawn, wake loss followed by typed-family rediscovery, expired-lease recovery across a
 fresh engine hydration, and worker saturation that leaves later work durably `Ready` until capacity
-returns. K7.1 is closed. K7.2 still owns completion consumption, so production ruleset migration
-remains disabled until that ingress lands.
+returns. K7.1 is closed. K7.2 now owns the adjacent authenticated completion and lifecycle path;
+production ruleset migration remains disabled through the K7.3 failure/deadline/fallback slice.
 
 **K7.2 — untrusted response ingress.** The async worker owns only the projected prompt and returns
 the bounded parsed `DecisionResponse`; raw model prose or reasoning never enters authoritative
@@ -2805,14 +2805,19 @@ K7.2 adds a sibling authenticated decision-response ingress that ends in the exi
 It does not change `ScheduleActionDraft`, the canonical `scheduler` principal class, or
 `ActionCoordinator::prepare_and_stage_resolved`'s signature.
 
-Implementation status: the exact completion fence, token/prompt/lease/deadline authentication,
-canonical response ingress on the predeclared action-idempotency key, current legal-offer
-regeneration, selected-target filtering, private prompt-time revision/bridge witness restoration,
-and ordinary resolved-action coordinator entry are implemented. A composed test proves a lost wake
-through provider response to a committed selected-action post-image, and adversarial tests reject a
-forged token and wrong lease attempt before offer resolution. The remaining K7.2 slice is the
-owner-local `Resolving` binding transition and finalized-action reconciliation; until it lands,
-production ruleset migration remains disabled and the durable lease remains the recovery owner.
+Implementation status: K7.2 is closed. The exact completion fence, token/prompt/lease/deadline
+authentication, canonical response ingress on the predeclared action-idempotency key, current
+legal-offer regeneration, selected-target filtering, private prompt-time revision/bridge witness
+restoration, and ordinary resolved-action coordinator entry are implemented. Operational lease
+attempt and expiry data fence authority but do not enter the semantic response ingress, so a retry
+that selects the same response joins the same ordinary action. Only that selected action's exact
+commit acknowledgement releases one bounded owner-local follow-up; separate deterministic
+lifecycle actions then commit `Leased -> Resolving(binding) -> Terminal(executed)`. A bounded typed
+family scan also discovers a stranded `Resolving` record, reads the selected action through its
+stored scoped idempotency key, verifies the finalized receipt's request and request hash against the
+binding, and resumes terminalization without resubmitting the action. The composed tests prove the
+complete ack chain, loss of the volatile post-`Resolving` follow-up, and a second-attempt semantic
+join; adversarial tests reject a forged token and wrong lease attempt before offer resolution.
 
 **K7.3 — cancellation, deadlines, and fallback.** Cancellation is an exact revision transition and
 invalidates the token before acknowledging success. A durable one-shot schedule owns the deadline.

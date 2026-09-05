@@ -815,6 +815,72 @@ impl Engine {
             .resolve_response(self, keys, fence, response, ingress)
     }
 
+    /// Construct stable owner-local ingress for binding an already durable
+    /// selected ordinary action to its exact pending decision.
+    pub fn decision_resolving_ingress(
+        &self,
+        fence: &crate::decision::DecisionCompletionFence,
+        binding: &crate::decision::DecisionActionBinding,
+        idempotency_epoch: u64,
+    ) -> Result<crate::action::IngressEnvelope, crate::decision_source::DecisionResolvingIngressError>
+    {
+        self.registry
+            .decision_sources()
+            .ok_or(crate::decision_source::DecisionResolvingIngressError::RegistryUnavailable)?
+            .resolving_ingress(self, fence, binding, idempotency_epoch)
+    }
+
+    /// Re-read and plan an exact owner-local Leased-to-Resolving transition
+    /// after its lifecycle ingress has passed store preflight.
+    pub fn plan_decision_resolving(
+        &self,
+        fence: &crate::decision::DecisionCompletionFence,
+        binding: &crate::decision::DecisionActionBinding,
+        ingress: &crate::action::IngressEnvelope,
+    ) -> Result<
+        crate::decision_source::DecisionResolvingPlan,
+        crate::decision_source::DecisionResolvingPlanError,
+    > {
+        self.registry
+            .decision_sources()
+            .ok_or(crate::decision_source::DecisionResolvingPlanError::RegistryUnavailable)?
+            .plan_resolving(self, fence, binding, ingress)
+    }
+
+    /// Construct stable owner-local ingress for terminalizing one exact
+    /// resolving decision binding.
+    pub fn decision_terminal_ingress(
+        &self,
+        fence: &crate::decision::DecisionCompletionFence,
+        binding: &crate::decision::DecisionActionBinding,
+        outcome: crate::decision::DecisionTerminalOutcome,
+        idempotency_epoch: u64,
+    ) -> Result<crate::action::IngressEnvelope, crate::decision_source::DecisionTerminalIngressError>
+    {
+        self.registry
+            .decision_sources()
+            .ok_or(crate::decision_source::DecisionTerminalIngressError::RegistryUnavailable)?
+            .terminal_ingress(self, fence, binding, outcome, idempotency_epoch)
+    }
+
+    /// Re-read and plan one exact owner-local Resolving-to-Terminal
+    /// transition after its lifecycle ingress passes store preflight.
+    pub fn plan_decision_terminal(
+        &self,
+        fence: &crate::decision::DecisionCompletionFence,
+        binding: &crate::decision::DecisionActionBinding,
+        outcome: crate::decision::DecisionTerminalOutcome,
+        ingress: &crate::action::IngressEnvelope,
+    ) -> Result<
+        crate::decision_source::DecisionTerminalPlan,
+        crate::decision_source::DecisionTerminalPlanError,
+    > {
+        self.registry
+            .decision_sources()
+            .ok_or(crate::decision_source::DecisionTerminalPlanError::RegistryUnavailable)?
+            .plan_terminal(self, fence, binding, outcome, ingress)
+    }
+
     /// Re-read and plan one exact decision lease after store preflight.
     pub fn plan_decision_dispatch(
         &self,
@@ -1519,6 +1585,84 @@ impl Engine {
             output,
             worker.expect("successful decision lease seed returns worker custody"),
         ))
+    }
+
+    /// Prepare the registered controller-owner action while the kernel seeds
+    /// the exact Leased-to-Resolving post-image into the same transaction.
+    pub fn prepare_registered_decision_resolving_action(
+        &mut self,
+        fence: &crate::decision::DecisionCompletionFence,
+        action: &crate::mechanics::DefinitionRef,
+        invocation: &crate::action::ActionInvocation,
+        transition: crate::decision::DecisionResolvingTransition,
+        commit_token: crate::action::CommitToken,
+    ) -> Result<
+        (PreparedTxn, crate::action::PreparedAuthoritativeAction),
+        crate::action::ActionProviderPrepareError,
+    > {
+        let providers = self
+            .registry
+            .action_providers()
+            .ok_or(crate::action::ActionProviderPrepareError::RegistryUnavailable)?;
+        let decisions = self
+            .registry
+            .decision_sources()
+            .ok_or(crate::action::ActionProviderPrepareError::RegistryUnavailable)?;
+        providers.prepare_authoritative_invocation_seeded(
+            action,
+            invocation,
+            commit_token,
+            &mut self.action_state,
+            self.resolution_keys.as_ref(),
+            |txn| {
+                decisions
+                    .seed_resolving(fence, transition, txn)
+                    .map_err(|source| {
+                        crate::action::ActionProviderPrepareError::DecisionLifecycle(Box::new(
+                            source,
+                        ))
+                    })
+            },
+        )
+    }
+
+    /// Prepare the registered controller-owner action while the kernel seeds
+    /// an exact Resolving-to-Terminal post-image in the same transaction.
+    pub fn prepare_registered_decision_terminal_action(
+        &mut self,
+        fence: &crate::decision::DecisionCompletionFence,
+        action: &crate::mechanics::DefinitionRef,
+        invocation: &crate::action::ActionInvocation,
+        transition: crate::decision::DecisionTerminalTransition,
+        commit_token: crate::action::CommitToken,
+    ) -> Result<
+        (PreparedTxn, crate::action::PreparedAuthoritativeAction),
+        crate::action::ActionProviderPrepareError,
+    > {
+        let providers = self
+            .registry
+            .action_providers()
+            .ok_or(crate::action::ActionProviderPrepareError::RegistryUnavailable)?;
+        let decisions = self
+            .registry
+            .decision_sources()
+            .ok_or(crate::action::ActionProviderPrepareError::RegistryUnavailable)?;
+        providers.prepare_authoritative_invocation_seeded(
+            action,
+            invocation,
+            commit_token,
+            &mut self.action_state,
+            self.resolution_keys.as_ref(),
+            |txn| {
+                decisions
+                    .seed_terminal(fence, transition, txn)
+                    .map_err(|source| {
+                        crate::action::ActionProviderPrepareError::DecisionTerminal(Box::new(
+                            source,
+                        ))
+                    })
+            },
+        )
     }
 
     /// Release a prepared transaction that could not be assembled into a
