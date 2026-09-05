@@ -355,8 +355,6 @@ impl DecisionSourceRegistry {
             IngressPayload::structured(json!({
                 "decision": fence.decision(),
                 "revision": fence.revision(),
-                "attempt": fence.attempt(),
-                "lease_until": fence.lease_until(),
                 "response": response,
             }))?,
             pending.action_idempotency.clone(),

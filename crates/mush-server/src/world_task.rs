@@ -7642,6 +7642,7 @@ mod tests {
 
         let ingress = ActionCoordinator::decision_response_ingress(&engine, &fence, &response)
             .expect("valid response ingress");
+        let first_ingress = ingress.clone();
         assert_eq!(ingress.idempotency(), &pending.action_idempotency);
         let ActionPreflight::Vacant(permit) = ActionCoordinator::preflight(&store, ingress)
             .await
@@ -7666,6 +7667,51 @@ mod tests {
             .expect("selected staged action");
         let (_persistence, installation) = staged.into_parts();
         engine.abort_prepared_action(installation);
+
+        let retry_at = worker.lease_until().clone();
+        engine.set_now(retry_at.at);
+        let mut retry = engine
+            .action_state()
+            .get(&registration.families.pending, &pending.id)
+            .expect("leased decision read")
+            .expect("leased decision")
+            .clone();
+        retry
+            .retry_expired_lease(retry.revision, &retry_at)
+            .expect("expire first lease");
+        let second_lease_until = ClockStamp {
+            clock: retry_at.clock.clone(),
+            at: retry_at.at + 1,
+        };
+        retry
+            .lease(retry.revision, second_lease_until.clone())
+            .expect("second lease");
+        let mut transaction = engine
+            .action_transaction(&registration.families.pending)
+            .expect("retry transaction");
+        transaction
+            .replace(&registration.families.pending, &pending.id, retry)
+            .expect("retry post-image");
+        let prepared = transaction.prepare().expect("retry preparation");
+        let (_, installation) = prepared.into_parts();
+        engine.install_prepared_action(installation);
+        let second_fence = mush_core::DecisionCompletionFence::new(
+            worker.controller().clone(),
+            worker.decision(),
+            worker.revision(),
+            2,
+            second_lease_until,
+        )
+        .expect("second completion fence");
+        let second_ingress =
+            ActionCoordinator::decision_response_ingress(&engine, &second_fence, &response)
+                .expect("second-attempt response ingress");
+        assert_eq!(second_ingress.request(), first_ingress.request());
+        assert_eq!(
+            second_ingress.ingress_hash(),
+            first_ingress.ingress_hash(),
+            "operational retry fences must not change semantic action identity"
+        );
     }
 
     #[tokio::test]
