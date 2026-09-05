@@ -221,9 +221,9 @@ pub use durable_schedule::{
     ScheduleState, durable_schedule_state_family_descriptor,
 };
 pub use engine::{
-    ControlMsg, Deferred, DisconnectKind, Effect, Effects, Engine, Inbound, ModuleComposition,
-    StagePreparedActionError, StagedAction, StagedActionAdmissionError, StagedActionPersistence,
-    StepOutcome, WorldCommand, register_engine_commands,
+    AuthoritativeSubmit, ControlMsg, Deferred, DisconnectKind, Effect, Effects, Engine, Inbound,
+    ModuleComposition, StagePreparedActionError, StagedAction, StagedActionAdmissionError,
+    StagedActionPersistence, StepOutcome, WorldCommand, register_engine_commands,
 };
 pub use flags::{Flags, Powers, Role};
 pub use ledger::{

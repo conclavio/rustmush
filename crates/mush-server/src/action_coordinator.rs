@@ -124,6 +124,18 @@ pub struct StagedDecisionFallbackTrigger {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ActionCoordinator;
 
+/// Domain tag of the deterministic request identity minted for one
+/// command-originated authoritative submission (E7c2 B1).
+///
+/// It names the **surface**, not a crate: this seam is shared by every future
+/// `CommandCompatibility::Authoritative` handler, and the action's own owner and
+/// id are inside the hashed value, so two crates' commands cannot collide.
+pub(crate) const COMMAND_REQUEST_DOMAIN: &str = "cmd.legal_action.v1";
+/// Canonical-encoding ceiling for that hashed request. Well below the bundle
+/// ceiling: a command's selector is an action ref, a subject, bounded targets
+/// and bounded parameters.
+pub(crate) const MAX_COMMAND_REQUEST_BYTES: usize = 64 * 1024;
+
 /// Process-local epoch for direct interactive action identities. Kept outside
 /// provider implementation files so the C5 architectural tripwire can prove
 /// providers have no ambient RNG access.
@@ -299,6 +311,84 @@ impl ActionCoordinator {
             principal,
             IngressSurfaceVersion::new(
                 CanonicalId::new("ipc.legal_action").expect("static surface id is valid"),
+                1,
+            )
+            .expect("non-zero static surface version"),
+            canonical_payload,
+            idempotency,
+        )
+        .map_err(|error| error.to_string())
+    }
+
+    // ---- E7c2: B1 — the `Authoritative` ingress adapter seam ----
+    /// Construct canonical coordinator ingress for one command-originated
+    /// authoritative submission.
+    ///
+    /// This sits beside [`Self::gateway_ingress`] and [`Self::scheduled_ingress`]
+    /// as the third — and, for a `CommandCompatibility::Authoritative` handler,
+    /// the only — way into the same mandatory store preflight. It discharges
+    /// 08j §5 (iii) (*"the first `Authoritative` registration needs an adapter
+    /// seam that does not exist"*) and 08i §2 row 5 (*"There is no `Ctx`-level
+    /// action submit"*).
+    ///
+    /// **The request identity is deterministic**, not a fresh UID:
+    /// `ActionCoordinator::status_id` refuses a `Deterministic` key
+    /// ([`ActionStatusError::UnsupportedKey`]), so the ingress key must stay
+    /// `IdempotencyKey::Request` — and a *random* UID would make a retyped
+    /// identical command a second commit. The UID is therefore the first 16
+    /// bytes of a canonical hash over the complete semantic request
+    /// `{actor, action, subject, targets, parameters, key}`, so an identical
+    /// command inside one process epoch preflights as a **HIT**. Cross-restart
+    /// replay is the mechanic's job, not the ingress's:
+    /// `ReservationId::derive(holder, resource)` makes the second attempt a HIT
+    /// at the provider.
+    pub fn command_ingress(
+        submission: &mush_core::AuthoritativeSubmit,
+        idempotency_epoch: u64,
+    ) -> Result<IngressEnvelope, String> {
+        let principal = PrincipalId::Object {
+            id: submission.actor,
+        };
+        let namespace = CanonicalId::new(submission.action.key().id.as_str())
+            .map_err(|error| error.to_string())?;
+        let digest = CanonicalHash::for_canonical_value(
+            COMMAND_REQUEST_DOMAIN,
+            1,
+            &json!({
+                "actor": submission.actor,
+                "action": submission.action,
+                "subject": submission.subject,
+                "targets": submission.targets,
+                "parameters": submission.parameters,
+                "key": submission.key,
+            }),
+            MAX_COMMAND_REQUEST_BYTES,
+        )
+        .map_err(|error| error.to_string())?;
+        let mut uid = [0_u8; 16];
+        uid.copy_from_slice(&digest.as_bytes()[..16]);
+        let request = mush_core::RequestUid::from_bytes(uid);
+        let idempotency = ScopedIdempotencyKey::new(
+            IdempotencyScope {
+                principal: principal.clone(),
+                owner: submission.action.key().owner.clone(),
+                namespace,
+            },
+            idempotency_epoch,
+            IdempotencyKey::Request(request),
+        );
+        let canonical_payload = IngressPayload::structured(json!({
+            "action": submission.action,
+            "subject": submission.subject,
+            "targets": submission.targets,
+            "parameters": submission.parameters,
+        }))
+        .map_err(|error| error.to_string())?;
+        IngressEnvelope::new(
+            request,
+            principal,
+            IngressSurfaceVersion::new(
+                CanonicalId::new("cmd.legal_action").expect("static surface id is valid"),
                 1,
             )
             .expect("non-zero static surface version"),

@@ -3329,6 +3329,49 @@ impl Ctx<'_> {
         self.out.defer(Deferred::Persist(op));
     }
 
+    // ---- E7c2: B1 — the `Authoritative` ingress adapter seam ----
+    /// Submit one registered authoritative action for this command's actor.
+    ///
+    /// This is the `Ctx`-level action submit 08j §5 (iii) and 08i §2 row 5
+    /// named as missing, and it is the **only** way a
+    /// [`CommandCompatibility::Authoritative`](crate::cmd::CommandCompatibility::Authoritative)
+    /// handler reaches `ActionCoordinator::prepare_and_stage_resolved`.
+    ///
+    /// It is a **selector, not an offer**. The handler names a registered
+    /// action definition, the subject it expects, its bounded targets and its
+    /// parameters; the driving loop then regenerates *this actor's own*
+    /// projected legal actions, resolves the matching offer, and runs the same
+    /// five steps as the `WorldMsg::AuthoritativeAction` arm — one code path,
+    /// not two spellings. A handler therefore cannot construct an opaque
+    /// `ActionOfferId`, cannot skip projection, and cannot target an action the
+    /// actor has no offer for.
+    ///
+    /// **Contract for the handler.** Perform no world or module mutation of
+    /// your own and emit no success line: the whole mechanic belongs to the
+    /// registered provider, and the actor's confirmation is released only after
+    /// the durable receipt. **Calling this twice in one command is a refusal**
+    /// — the engine stages nothing at all and tells the actor so — because a
+    /// command that fans out could commit one half and lose the other.
+    pub fn submit_authoritative(
+        &mut self,
+        action: crate::mechanics::DefinitionRef,
+        subject: crate::action::PerceivedRef,
+        targets: Vec<crate::action::PerceivedRef>,
+        parameters: serde_json::Value,
+        key: crate::action::IdempotencyKeyText,
+    ) {
+        self.out.defer(Deferred::AuthoritativeSubmit(Box::new(
+            crate::engine::AuthoritativeSubmit {
+                actor: self.actor,
+                action,
+                subject,
+                targets,
+                parameters,
+                key,
+            },
+        )));
+    }
+
     /// Mark the acting player as the preferred recipient for a durable-write
     /// failure diagnostic. The server already receipt-gates every dirty step's
     /// commit-bound output and all external effects; this marker preserves the

@@ -228,6 +228,20 @@ pub enum Deferred {
         /// The scene.
         scene: SceneId,
     },
+    // ---- E7c2: B1 — the `Authoritative` ingress adapter seam ----
+    /// One authoritative action a command handler selected through
+    /// [`Ctx::submit_authoritative`](crate::cmd::Ctx::submit_authoritative).
+    ///
+    /// This is the whole `Ctx`-level action submit 08j §5 (iii) and 08i §2 row
+    /// 5 named as missing. It is a **selector, not an offer**: the handler
+    /// names a registered action definition and its parameters, and the driving
+    /// loop regenerates that actor's own projected offer, resolves it, and
+    /// enters `ActionCoordinator::prepare_and_stage_resolved` — the identical
+    /// five steps the `WorldMsg::AuthoritativeAction` arm takes. A handler can
+    /// therefore neither construct an opaque `ActionOfferId` nor bypass
+    /// projection, and **a second submission in one command is a refusal**
+    /// ([`Engine::drain_deferred`] stages nothing at all in that case).
+    AuthoritativeSubmit(Box<AuthoritativeSubmit>),
     /// Select the actor for the dirty step's durable-write failure diagnostic
     /// ([`Ctx::gate_on_durable_ack`](crate::cmd::Ctx::gate_on_durable_ack)).
     /// Receipt-gating itself is unconditional at the server boundary.
@@ -240,6 +254,34 @@ pub enum Deferred {
         /// (mail/XP) still delivers the RAM effect with a "may not survive" warning.
         strict: bool,
     },
+}
+
+// ---- E7c2: B1 — the `Authoritative` ingress adapter seam ----
+
+/// One command-originated authoritative action, awaiting the driving loop.
+///
+/// The handler that produced it performs **no mutation of its own**: the whole
+/// mechanic is the registered [`ActionProvider`](crate::ActionProvider)'s, and
+/// the actor's confirmation is released only by the durable receipt (§4's
+/// standing checklist item 1). `key` is the handler's own deterministic
+/// discriminator for the command; it enters the request identity so a retyped
+/// identical command inside one process epoch is a preflight HIT rather than a
+/// second commit.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AuthoritativeSubmit {
+    /// The acting object. The driving loop projects **this actor's** offers.
+    pub actor: ObjId,
+    /// The registered action definition to select.
+    pub action: crate::mechanics::DefinitionRef,
+    /// The subject the handler expects the projected offer to carry. A
+    /// disagreement is a refusal, never a silent re-target.
+    pub subject: crate::action::PerceivedRef,
+    /// Bounded target list, exactly as the offer's target schema admits.
+    pub targets: Vec<crate::action::PerceivedRef>,
+    /// Submitted parameters, validated against the offer's own schema.
+    pub parameters: serde_json::Value,
+    /// The command's deterministic idempotency discriminator.
+    pub key: crate::action::IdempotencyKeyText,
 }
 
 /// The queue of [`Effect`]s one loop iteration produced. The driving loop
@@ -554,6 +596,11 @@ pub struct Engine {
     lag_last_ms: u64,
     /// Worst loop-iteration lag reported since boot (ms).
     lag_max_ms: u64,
+    /// E7c2 B1: at most one command-originated authoritative submission
+    /// awaiting [`Engine::take_authoritative_submit`]. One is the whole queue —
+    /// the store admits one unresolved authoritative intent per backend
+    /// (D-E7-39), so a second is back-pressure, not a buffer.
+    authoritative_submit: Option<Box<AuthoritativeSubmit>>,
 }
 
 impl Engine {
@@ -585,6 +632,7 @@ impl Engine {
             pending_waits: HashMap::new(),
             lag_last_ms: 0,
             lag_max_ms: 0,
+            authoritative_submit: None,
         }
     }
 
@@ -2956,6 +3004,10 @@ impl Engine {
     /// capped per actor ([`WAIT_QUEUE_MAX`]) so no player can grow the heap
     /// without bound.
     fn drain_deferred(&mut self, out: &mut Outbox, fx: &mut Effects) {
+        // E7c2 B1: how many authoritative submissions *this* drain saw. A
+        // handler that submits twice fans out, so the second one voids the
+        // first: nothing at all is staged and the actor is told plainly.
+        let mut submits = 0_usize;
         for d in out.take_deferred() {
             match d {
                 Deferred::Effect(e) => fx.push(e),
@@ -3007,6 +3059,29 @@ impl Engine {
                         self.sched.cancel(info.timer);
                     }
                 }
+                Deferred::AuthoritativeSubmit(request) => {
+                    submits = submits.saturating_add(1);
+                    if submits > 1 {
+                        // Fan-out: void whatever this drain queued, so the
+                        // command stages NOTHING rather than an arbitrary half.
+                        self.authoritative_submit = None;
+                        out.best_effort_error(
+                            request.actor,
+                            "That command tried to submit more than one authoritative action; nothing was staged.",
+                        );
+                        continue;
+                    }
+                    if self.authoritative_submit.is_some() {
+                        // One unresolved authoritative intent per backend
+                        // (D-E7-39). This is back-pressure, not a buffer.
+                        out.best_effort_error(
+                            request.actor,
+                            "An earlier action is still committing; try again in a moment.",
+                        );
+                        continue;
+                    }
+                    self.authoritative_submit = Some(request);
+                }
                 Deferred::DurableGate { actor, strict } => {
                     // First gate of the step sets the actor; strictness DOMINATES —
                     // if any gate in the step is strict, the whole step is strict
@@ -3016,6 +3091,20 @@ impl Engine {
                 }
             }
         }
+    }
+
+    /// E7c2 B1: whether one command-originated authoritative submission is
+    /// waiting for the driving loop. The loop arms its drain on this.
+    #[must_use]
+    pub const fn has_authoritative_submit(&self) -> bool {
+        self.authoritative_submit.is_some()
+    }
+
+    /// E7c2 B1: take the one waiting command-originated authoritative
+    /// submission. The driving loop owns every later step; nothing here
+    /// projects, resolves, prepares or persists.
+    pub fn take_authoritative_submit(&mut self) -> Option<Box<AuthoritativeSubmit>> {
+        self.authoritative_submit.take()
     }
 
     /// Take the durable-ack output gate the last step requested (if any):

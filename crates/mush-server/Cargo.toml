@@ -27,6 +27,8 @@ mush-comsys.workspace = true
 mush-faction.workspace = true
 mush-party.workspace = true
 mush-market.workspace = true
+# E7 cut 2: the neutral quantity authority, composed after the economy.
+mush-inventory.workspace = true
 # The M22 durable scenes + timestop driver, and the canon event ledger.
 mush-scenes.workspace = true
 mush-sim.workspace = true

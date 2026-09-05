@@ -911,6 +911,24 @@ impl ProjectedLegalActionSink {
         self.offers.values()
     }
 
+    // ---- E7c2: B1 — the `Authoritative` ingress adapter seam ----
+    /// The projected offer this viewer holds for one exact registered action,
+    /// if any.
+    ///
+    /// A command handler names an action definition, never an opaque
+    /// [`ActionOfferId`]; this is how the driving loop turns that selector into
+    /// the *actor's own* offer before resolving it. It exposes nothing a
+    /// [`Self::projected`] caller could not already see — the same public
+    /// projection, looked up by action instead of scanned — and it grants no
+    /// authority: resolution still regenerates and re-verifies the binding.
+    #[must_use]
+    pub fn projected_for_action(
+        &self,
+        action: &crate::mechanics::DefinitionRef,
+    ) -> Option<&ProjectedLegalAction> {
+        self.offers.get(action).map(|offer| &offer.projected)
+    }
+
     /// Resolve one opaque submission without distinguishing unknown, expired,
     /// changed, or wrong-viewer offers to the caller.
     pub(crate) fn resolve(

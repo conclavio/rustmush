@@ -5,6 +5,7 @@
 //! rulesets, tactics, simulation, server, and fault stores without creating a
 //! production dependency cycle.
 
+pub mod b1_seam;
 pub mod tactical_gate;
 
 use mush_core::{

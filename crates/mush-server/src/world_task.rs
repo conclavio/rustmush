@@ -1728,6 +1728,9 @@ enum Wake {
     Signal(WriterSignal),
     CommitReceipt(PendingReceiptEvent),
     Timer,
+    /// E7c2 B1: one command-originated authoritative submission is queued and
+    /// every precondition for staging it holds.
+    CommandSubmits,
     DurableSchedules,
     DecisionNotification(DecisionWakeDispatch),
     DecisionResult(Box<DecisionWorkerCompletion>),
@@ -2390,6 +2393,227 @@ async fn stage_decision_fallback_trigger(
     Err("decision fallback trigger retirement watermark changed repeatedly".to_owned())
 }
 
+// ---- E7c2: B1 — the `Authoritative` ingress adapter seam ----
+
+/// The five steps every authoritative offer execution takes inside the world
+/// single-writer: recover the actor from the permit, build its legal-action
+/// query, project **that actor's own** offers, resolve the submitted opaque
+/// offer against them, and hand the resolved offer to
+/// [`ActionCoordinator::prepare_and_stage_resolved`].
+///
+/// Both ingresses call exactly this: the gateway's
+/// [`WorldMsg::AuthoritativeAction`] arm and the command adapter's
+/// [`CommandSubmitDriver`]. Forking a second spelling is the failure mode B1
+/// exists to prevent, and a test pins that both call this one function.
+fn resolve_and_stage_offer(
+    engine: &mut Engine,
+    permit: Box<ActionPermit>,
+    submission: OfferSubmission,
+) -> Result<(StagedAuthoritativeAction, ObjId), String> {
+    let principal = permit.ingress().principal().clone();
+    let PrincipalId::Object { id: actor } = principal else {
+        return Err("coordinator principal is not an object actor".to_owned());
+    };
+    let query = legal_action_query(
+        engine,
+        PrincipalId::Object { id: actor },
+        actor,
+        submission.subject.clone(),
+    )
+    .map_err(|error| error.to_string())?;
+    let offers = engine
+        .project_legal_actions(&query)
+        .map_err(|error| error.to_string())?;
+    let resolved = engine
+        .resolve_legal_action(
+            &offers,
+            OfferExecutionContext {
+                request: permit.ingress().request(),
+                principal: PrincipalId::Object { id: actor },
+                actor,
+                idempotency: permit.ingress().idempotency().clone(),
+                viewer_scope: query.viewer_scope(),
+                now: None,
+            },
+            submission,
+        )
+        .map_err(|error| error.to_string())?;
+    ActionCoordinator::prepare_and_stage_resolved(permit, engine, resolved)
+        .map(|staged| (staged, actor))
+        .map_err(|error| error.to_string())
+}
+
+/// Turn a command handler's **selector** (an action definition plus the subject
+/// it expects) into the actor's own opaque offer.
+///
+/// This is the whole reason `Ctx::submit_authoritative` cannot be an offer: the
+/// handler never sees an `ActionOfferId`, and the id used here is the one this
+/// actor's projection just minted. A subject the handler did not expect is a
+/// refusal, never a silent re-target.
+fn command_offer_submission(
+    engine: &Engine,
+    submit: &mush_core::AuthoritativeSubmit,
+) -> Result<OfferSubmission, String> {
+    let query = legal_action_query(
+        engine,
+        PrincipalId::Object { id: submit.actor },
+        submit.actor,
+        submit.subject.clone(),
+    )
+    .map_err(|error| error.to_string())?;
+    let offers = engine
+        .project_legal_actions(&query)
+        .map_err(|error| error.to_string())?;
+    let projected = offers
+        .projected_for_action(&submit.action)
+        .ok_or_else(|| "that action is not currently available".to_owned())?;
+    if projected.subject() != &submit.subject {
+        return Err("that action's subject is not the one the command named".to_owned());
+    }
+    Ok(OfferSubmission {
+        offer: projected.offer(),
+        subject: projected.subject().clone(),
+        targets: submit.targets.clone(),
+        parameters: submit.parameters.clone(),
+    })
+}
+
+/// Drives the one command-originated authoritative submission an
+/// [`Engine::step`] may have queued.
+///
+/// Shaped on [`DurableScheduleDriver`] deliberately: **at most one per step**,
+/// deferred while legacy persistence work is pending (a prepared action may
+/// never ride alongside it), and epoch retirement recovered by raising the
+/// watermark and retrying a bounded number of times.
+struct CommandSubmitDriver {
+    idempotency_epoch: u64,
+}
+
+/// What one command-ingress drive did. Every arm is terminal for the
+/// submission except [`Self::DeferredByLegacyPredecessor`], which leaves it
+/// queued for the next iteration.
+enum CommandSubmitDrive {
+    Idle,
+    DeferredByLegacyPredecessor,
+    /// Nothing was staged; the actor is told and no durable intent exists.
+    Refused {
+        actor: ObjId,
+        detail: String,
+    },
+    /// The same request already owns a durable, not-yet-finalized intent.
+    AlreadyOwned {
+        actor: ObjId,
+    },
+    /// The same request already committed: the actor's confirmation is
+    /// projected from the durable receipt, and no provider or RNG runs again.
+    AlreadyFinished {
+        actor: ObjId,
+        receipt: Box<AuthoritativeReceipt>,
+        status: mush_proto::ActionStatusId,
+    },
+    Staged {
+        staged: StagedAuthoritativeAction,
+        actor: ObjId,
+    },
+}
+
+impl CommandSubmitDriver {
+    const fn new(idempotency_epoch: u64) -> Self {
+        Self { idempotency_epoch }
+    }
+
+    async fn drive_one(
+        &mut self,
+        engine: &mut Engine,
+        store: &dyn AuthoritativeStore,
+    ) -> Result<CommandSubmitDrive, String> {
+        if !engine.has_authoritative_submit() {
+            return Ok(CommandSubmitDrive::Idle);
+        }
+        // Same rule as `DurableScheduleDriver::drive_one`: legacy work owns the
+        // next FIFO commit, and `flush_prepared_action` rejects a prepared
+        // action that reaches submission beside it. The submission stays queued.
+        if engine.has_legacy_persistence_work() {
+            return Ok(CommandSubmitDrive::DeferredByLegacyPredecessor);
+        }
+        let Some(submit) = engine.take_authoritative_submit() else {
+            return Ok(CommandSubmitDrive::Idle);
+        };
+        let actor = submit.actor;
+        for _ in 0..3 {
+            let envelope = match ActionCoordinator::command_ingress(&submit, self.idempotency_epoch)
+            {
+                Ok(envelope) => envelope,
+                Err(detail) => return Ok(CommandSubmitDrive::Refused { actor, detail }),
+            };
+            let status = match ActionCoordinator::status_id(envelope.idempotency()) {
+                Ok(status) => status,
+                Err(error) => {
+                    return Ok(CommandSubmitDrive::Refused {
+                        actor,
+                        detail: error.to_string(),
+                    });
+                }
+            };
+            let preflight = match ActionCoordinator::preflight(store, envelope).await {
+                Ok(preflight) => preflight,
+                // A transient store is not a durable fact: nothing was staged,
+                // so refusing is fail-closed and the actor may simply retype.
+                Err(error) if error.is_transient() => {
+                    return Ok(CommandSubmitDrive::Refused {
+                        actor,
+                        detail: error.to_string(),
+                    });
+                }
+                Err(error) => return Err(error.to_string()),
+            };
+            match preflight {
+                ActionPreflight::Retired {
+                    minimum_accepted_epoch,
+                } => {
+                    self.idempotency_epoch = self.idempotency_epoch.max(minimum_accepted_epoch);
+                }
+                ActionPreflight::Vacant(permit) => {
+                    let submission = match command_offer_submission(engine, &submit) {
+                        Ok(submission) => submission,
+                        Err(detail) => return Ok(CommandSubmitDrive::Refused { actor, detail }),
+                    };
+                    return Ok(match resolve_and_stage_offer(engine, permit, submission) {
+                        Ok((staged, actor)) => CommandSubmitDrive::Staged { staged, actor },
+                        Err(detail) => CommandSubmitDrive::Refused { actor, detail },
+                    });
+                }
+                ActionPreflight::Pending { .. } => {
+                    return Ok(CommandSubmitDrive::AlreadyOwned { actor });
+                }
+                ActionPreflight::Finalized(receipt) => {
+                    return Ok(CommandSubmitDrive::AlreadyFinished {
+                        actor,
+                        receipt,
+                        status,
+                    });
+                }
+                ActionPreflight::Quarantined(_) => {
+                    return Ok(CommandSubmitDrive::Refused {
+                        actor,
+                        detail: "that request is quarantined and will not be replanned".to_owned(),
+                    });
+                }
+                ActionPreflight::Conflict => {
+                    return Ok(CommandSubmitDrive::Refused {
+                        actor,
+                        detail: "that request identity conflicts with different ingress".to_owned(),
+                    });
+                }
+            }
+        }
+        Ok(CommandSubmitDrive::Refused {
+            actor,
+            detail: "the idempotency retirement watermark changed repeatedly".to_owned(),
+        })
+    }
+}
+
 struct DurableScheduleDriver {
     cursor: Option<mush_core::ScheduleSourceCursor>,
     retry: Option<mush_core::ScheduledActionCandidate>,
@@ -2834,6 +3058,9 @@ async fn run(
     let llm = deps.llm.clone();
     let metrics = Arc::clone(&deps.metrics);
     let mut durable_schedules = DurableScheduleDriver::new(action_epoch);
+    // E7c2 B1: the command-ingress adapter, sharing the same process epoch as
+    // every other in-process action identity.
+    let mut command_submits = CommandSubmitDriver::new(action_epoch);
     let mut durable_schedule_tick = tokio::time::interval(DURABLE_SCHEDULE_POLL_INTERVAL);
     durable_schedule_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut durable_schedule_transient_alarmed = false;
@@ -2968,6 +3195,17 @@ async fn run(
         let durable_decision_armed = durable_decisions.is_some()
             && retained.is_empty()
             && admission_for(admission_mode, IngressClass::Timer) == Admission::Allow;
+        // E7c2 B1: arm the command-ingress adapter only when a prepared action
+        // could legally be staged right now — no queued legacy persistence
+        // work, no unresolved ledger predecessor, no pending commit. That is
+        // also what makes the ready-future arm below terminate: every drive
+        // either consumes the submission or leaves it queued behind a condition
+        // the foot-of-loop flush clears.
+        let command_submit_armed = engine.has_authoritative_submit()
+            && pending_commit.is_none()
+            && retained.is_empty()
+            && !engine.has_legacy_persistence_work()
+            && admission_for(admission_mode, IngressClass::Timer) == Admission::Allow;
         let ready_deferred = if pending_commit.is_none() {
             deferred_world_msg.take()
         } else {
@@ -2996,6 +3234,9 @@ async fn run(
                 }
             } => Wake::CommitReceipt(receipt),
             () = sleep_until_unix_ms(next_due), if sched_armed => Wake::Timer,
+            // E7c2 B1: a queued command submission is ready work, not polled
+            // work — a player's `@inv/move` must not wait on a 250 ms tick.
+            () = std::future::ready(()), if command_submit_armed => Wake::CommandSubmits,
             _ = durable_schedule_tick.tick(), if durable_schedule_armed => Wake::DurableSchedules,
             wake = async {
                 match decision_wakes.as_mut() {
@@ -3215,45 +3456,10 @@ async fn run(
                                 submission,
                                 reply,
                             } = *request;
-                            let staged = (|| -> Result<_, String> {
-                                let principal = permit.ingress().principal().clone();
-                                let PrincipalId::Object { id: actor } = principal else {
-                                    return Err(
-                                        "coordinator principal is not an object actor".to_owned()
-                                    );
-                                };
-                                let query = legal_action_query(
-                                    &engine,
-                                    PrincipalId::Object { id: actor },
-                                    actor,
-                                    submission.subject.clone(),
-                                )
-                                .map_err(|error| error.to_string())?;
-                                let offers = engine
-                                    .project_legal_actions(&query)
-                                    .map_err(|error| error.to_string())?;
-                                let resolved = engine
-                                    .resolve_legal_action(
-                                        &offers,
-                                        OfferExecutionContext {
-                                            request: permit.ingress().request(),
-                                            principal: PrincipalId::Object { id: actor },
-                                            actor,
-                                            idempotency: permit.ingress().idempotency().clone(),
-                                            viewer_scope: query.viewer_scope(),
-                                            now: None,
-                                        },
-                                        submission,
-                                    )
-                                    .map_err(|error| error.to_string())?;
-                                ActionCoordinator::prepare_and_stage_resolved(
-                                    permit,
-                                    &mut engine,
-                                    resolved,
-                                )
-                                .map(|staged| (staged, actor))
-                                .map_err(|error| error.to_string())
-                            })();
+                            // E7c2 B1: the five steps live in ONE function, so
+                            // the command-ingress adapter cannot fork a second
+                            // spelling of them.
+                            let staged = resolve_and_stage_offer(&mut engine, permit, submission);
                             match staged {
                                 Ok((staged, actor)) => {
                                     let (owned, owned_rx) = oneshot::channel();
@@ -3499,6 +3705,97 @@ async fn run(
                 // foot-of-loop persistence flush (re-emit stays live while frozen).
                 if admission_for(admission_mode, IngressClass::Timer) == Admission::Allow {
                     engine.fire_due(unix_now_ms(), &mut out, &mut fx);
+                }
+                StepOutcome::Continue
+            }
+            // ---- E7c2: B1 — the `Authoritative` ingress adapter seam ----
+            Wake::CommandSubmits => {
+                let Some(store) = deps.store.authoritative_store() else {
+                    apply_integrity_freeze(
+                        &engine.world,
+                        &gateway,
+                        &mut health,
+                        &persistence_integrity,
+                        "command ingress adapter has no authoritative store capability",
+                    );
+                    continue;
+                };
+                match command_submits.drive_one(&mut engine, store).await {
+                    Ok(
+                        CommandSubmitDrive::Idle | CommandSubmitDrive::DeferredByLegacyPredecessor,
+                    ) => {}
+                    Ok(CommandSubmitDrive::Refused { actor, detail }) => {
+                        tracing::info!(
+                            actor = %actor,
+                            detail = %detail,
+                            "command authoritative submission refused before any durable intent"
+                        );
+                        // Nothing was staged, so this is transient runtime
+                        // truth: it is delivered whatever the step's unrelated
+                        // writes do, and it never claims a mutation happened.
+                        out.best_effort_error(actor, "That did not go through. Nothing changed.");
+                    }
+                    Ok(CommandSubmitDrive::AlreadyOwned { actor }) => {
+                        out.best_effort_error(
+                            actor,
+                            "That exact request is already committing; nothing was done twice.",
+                        );
+                    }
+                    Ok(CommandSubmitDrive::AlreadyFinished {
+                        actor,
+                        receipt,
+                        status,
+                    }) => {
+                        // A HIT. The confirmation is projected from the DURABLE
+                        // receipt — no provider, no RNG and no second commit.
+                        let projections = engine
+                            .registry
+                            .action_providers()
+                            .map(mush_core::ActionProviderRegistry::receipt_projection_table);
+                        let line = projections
+                            .and_then(|projections| {
+                                ActionCoordinator::project_finalized_receipt(
+                                    &projections,
+                                    &PrincipalId::Object { id: actor },
+                                    status,
+                                    &receipt,
+                                )
+                                .ok()
+                            })
+                            .and_then(|projected| {
+                                projected.result().map(|result| result.summary().to_owned())
+                            });
+                        match line {
+                            Some(summary) => out.info(actor, format!("{summary} (already done)")),
+                            None => out.info(actor, "That was already done."),
+                        }
+                    }
+                    Ok(CommandSubmitDrive::Staged { staged, actor }) => {
+                        // The confirmation is COMMIT-BOUND: `resolve_classified_sends`
+                        // collects it below and the delivery boundary withholds
+                        // it until this exact bundle's durable receipt resolves,
+                        // suppressing it entirely on abort (§4 checklist item 1).
+                        failure_actor = Some(actor);
+                        out.info(actor, format!("Done. (commit {})", staged.token));
+                        action_completion = Some(ActionCompletion {
+                            staged,
+                            owned: None,
+                            finished: None,
+                            ownership_valid: false,
+                            post_commit_decision: None,
+                            post_commit_decision_response: None,
+                            post_commit_decision_terminal: None,
+                        });
+                    }
+                    Err(detail) => {
+                        apply_integrity_freeze(
+                            &engine.world,
+                            &gateway,
+                            &mut health,
+                            &persistence_integrity,
+                            &format!("command ingress adapter failed: {detail}"),
+                        );
+                    }
                 }
                 StepOutcome::Continue
             }
@@ -13240,5 +13537,303 @@ mod tests {
             })
             .collect();
         assert!(recipients.contains(&a) && recipients.contains(&b));
+    }
+
+    // ---- E7c2: B1 — the `Authoritative` ingress adapter seam ----
+    //
+    // 08j §5 (iii) verbatim: *"Settle the ingress shape before cut 2:
+    // `CommandHandler`/`Ctx` is synchronous and cannot reach
+    // `ActionCoordinator::gateway_ingress`, so the first `Authoritative`
+    // registration needs an adapter seam that does not exist."* 08i §2 row 5:
+    // *"There is no `Ctx`-level action submit."* These tests are the discharge.
+
+    fn b1_world() -> mush_testkit::TestWorld {
+        let mut world = mush_testkit::TestWorld::with_modules(vec![Box::new(
+            mush_contract_tests::b1_seam::B1SeamModule,
+        )]);
+        world.engine_mut().set_offer_keys(
+            OfferKeyRing::new(OfferSecret::new(1, [0x61; 32]).unwrap(), []).unwrap(),
+        );
+        world
+    }
+
+    fn b1_run(world: &mut mush_testkit::TestWorld, line: &str) -> Outbox {
+        let mut out = Outbox::new();
+        let mut fx = Effects::new();
+        world.engine_mut().step(
+            Inbound::Cmd {
+                conn: 1,
+                actor: GOD,
+                line: line.to_owned(),
+            },
+            &mut out,
+            &mut fx,
+        );
+        out
+    }
+
+    fn b1_lines(out: &Outbox) -> Vec<String> {
+        out.events()
+            .iter()
+            .map(|(_, event)| mush_testkit::text_of(event))
+            .collect()
+    }
+
+    /// The whole point of B1: a command classified `Authoritative` reaches
+    /// `ActionCoordinator::prepare_and_stage_resolved`, and what it stages is an
+    /// authoritative bundle — never the legacy lane.
+    #[tokio::test]
+    async fn e7c2_b1_a_command_reaches_prepare_and_stage_resolved() {
+        let mut world = b1_world();
+        let out = b1_run(&mut world, "@b1submit 3");
+        assert!(
+            world.engine().has_authoritative_submit(),
+            "the handler's one submission must be queued"
+        );
+        assert!(
+            out.events().is_empty(),
+            "the handler itself confirms nothing: {:?}",
+            b1_lines(&out)
+        );
+        let store = mush_store::InMemoryStore::new();
+        let _ = world.drain_write_batch();
+        let mut engine = world.into_engine();
+        let mut driver = CommandSubmitDriver::new(1);
+        let staged = match driver.drive_one(&mut engine, &store).await.unwrap() {
+            CommandSubmitDrive::Staged { staged, actor } => {
+                assert_eq!(actor, GOD);
+                staged
+            }
+            CommandSubmitDrive::Refused { detail, .. } => {
+                panic!("the command submission was refused: {detail}")
+            }
+            _ => panic!("the command submission must stage an authoritative action"),
+        };
+        let (persistence, _installation) = engine
+            .take_staged_action()
+            .unwrap()
+            .expect("staged action")
+            .into_parts();
+        let bundle = match persistence {
+            StagedActionPersistence::Authoritative(bundle) => *bundle,
+            StagedActionPersistence::Legacy(_) => {
+                panic!("the seam must never use the legacy lane")
+            }
+        };
+        assert_eq!(bundle.token(), staged.token);
+        assert_eq!(
+            bundle.action().key().id.as_str(),
+            mush_contract_tests::b1_seam::B1_ACTION
+        );
+        assert!(!engine.has_authoritative_submit());
+    }
+
+    /// A handler that fans out stages **nothing at all** — not one half.
+    #[tokio::test]
+    async fn e7c2_b1_a_handler_submitting_twice_refuses_and_stages_nothing() {
+        let mut world = b1_world();
+        let out = b1_run(&mut world, "@b1submit/twice 3");
+        assert!(
+            !world.engine().has_authoritative_submit(),
+            "a fan-out voids the first submission too"
+        );
+        let lines = b1_lines(&out);
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("more than one authoritative action")),
+            "{lines:?}"
+        );
+        let store = mush_store::InMemoryStore::new();
+        let _ = world.drain_write_batch();
+        let mut engine = world.into_engine();
+        let mut driver = CommandSubmitDriver::new(1);
+        assert!(matches!(
+            driver.drive_one(&mut engine, &store).await.unwrap(),
+            CommandSubmitDrive::Idle
+        ));
+        assert!(engine.take_staged_action().unwrap().is_none());
+    }
+
+    /// A submission that arrives beside legacy persistence work is **deferred,
+    /// not dropped** — the same rule `DurableScheduleDriver::drive_one` follows,
+    /// and the one `flush_prepared_action` enforces at the writer boundary.
+    #[tokio::test]
+    async fn e7c2_b1_a_submission_beside_legacy_work_is_deferred_not_dropped() {
+        let mut world = b1_world();
+        // Clear boot dirt first, so the only legacy work is the handler's own.
+        let _ = world.drain_write_batch();
+        let _ = b1_run(&mut world, "@b1submit/dirty 2");
+        let store = mush_store::InMemoryStore::new();
+        let mut engine = world.into_engine();
+        assert!(engine.has_legacy_persistence_work());
+        let mut driver = CommandSubmitDriver::new(1);
+        assert!(matches!(
+            driver.drive_one(&mut engine, &store).await.unwrap(),
+            CommandSubmitDrive::DeferredByLegacyPredecessor
+        ));
+        assert!(
+            engine.has_authoritative_submit(),
+            "the deferred submission is retained, never dropped"
+        );
+        // The flush drains the legacy op; the very next drive stages it.
+        let ops = engine.take_module_ops();
+        assert_eq!(ops.len(), 1);
+        assert!(!engine.has_legacy_persistence_work());
+        assert!(matches!(
+            driver.drive_one(&mut engine, &store).await.unwrap(),
+            CommandSubmitDrive::Staged { .. }
+        ));
+    }
+
+    /// Two identical `@b1submit`s inside one epoch produce **one** commit: the
+    /// second preflights as a HIT and its confirmation is projected from the
+    /// durable receipt, with no provider and no second bundle.
+    #[tokio::test]
+    async fn e7c2_b1_two_identical_submissions_in_one_epoch_produce_one_commit() {
+        let mut world = b1_world();
+        let _ = b1_run(&mut world, "@b1submit 4");
+        let store = mush_store::InMemoryStore::new();
+        let _ = world.drain_write_batch();
+        let mut engine = world.into_engine();
+        let mut driver = CommandSubmitDriver::new(1);
+        assert!(matches!(
+            driver.drive_one(&mut engine, &store).await.unwrap(),
+            CommandSubmitDrive::Staged { .. }
+        ));
+        let (persistence, installation) = engine
+            .take_staged_action()
+            .unwrap()
+            .expect("staged action")
+            .into_parts();
+        let StagedActionPersistence::Authoritative(bundle) = persistence else {
+            panic!("authoritative lane")
+        };
+        store
+            .reserve_authoritative_intent(*bundle.clone())
+            .await
+            .unwrap();
+        store
+            .reconcile_authoritative(bundle.token(), bundle.bundle_hash())
+            .await
+            .unwrap();
+        engine.install_prepared_action(installation);
+        store
+            .checkpoint_authoritative(bundle.token(), bundle.bundle_hash())
+            .await
+            .unwrap();
+
+        // The identical command again, in the same epoch.
+        let mut out = Outbox::new();
+        let mut fx = Effects::new();
+        engine.step(
+            Inbound::Cmd {
+                conn: 1,
+                actor: GOD,
+                line: "@b1submit 4".to_owned(),
+            },
+            &mut out,
+            &mut fx,
+        );
+        match driver.drive_one(&mut engine, &store).await.unwrap() {
+            CommandSubmitDrive::AlreadyFinished { actor, receipt, .. } => {
+                assert_eq!(actor, GOD);
+                assert_eq!(receipt.token(), bundle.token());
+            }
+            CommandSubmitDrive::Refused { detail, .. } => {
+                panic!("the retyped identical command must be a preflight HIT: {detail}")
+            }
+            CommandSubmitDrive::Staged { .. } => panic!("a HIT must not stage a second commit"),
+            _ => panic!("unexpected command-ingress outcome"),
+        }
+        assert!(
+            engine.take_staged_action().unwrap().is_none(),
+            "a HIT stages nothing"
+        );
+    }
+
+    /// A retired idempotency epoch is recoverable for the command lane exactly
+    /// as it is for the schedule lane: raise the watermark and retry.
+    #[tokio::test]
+    async fn e7c2_b1_a_retired_epoch_is_raised_and_the_retry_succeeds() {
+        let mut world = b1_world();
+        let _ = b1_run(&mut world, "@b1submit 5");
+        let store = mush_store::InMemoryStore::new();
+        let submit = {
+            let mut probe = b1_world();
+            let _ = b1_run(&mut probe, "@b1submit 5");
+            let mut engine = probe.into_engine();
+            *engine
+                .take_authoritative_submit()
+                .expect("probe submission")
+        };
+        let old = ActionCoordinator::command_ingress(&submit, 1).unwrap();
+        store
+            .retire_authoritative_epochs(old.idempotency().scope(), 9)
+            .await
+            .expect("seed a retired command epoch");
+        let _ = world.drain_write_batch();
+        let mut engine = world.into_engine();
+        let mut driver = CommandSubmitDriver::new(1);
+        assert!(matches!(
+            driver.drive_one(&mut engine, &store).await.unwrap(),
+            CommandSubmitDrive::Staged { .. }
+        ));
+        assert!(
+            driver.idempotency_epoch >= 9,
+            "the retirement watermark must be adopted"
+        );
+    }
+
+    /// §4's standing checklist item 1 — *no command can confirm before its
+    /// durable acknowledgement*. The handler emits nothing; the seam's own
+    /// confirmation is `OnCommit`, so the delivery boundary withholds it until
+    /// this exact bundle's receipt resolves and suppresses it on abort.
+    #[tokio::test]
+    async fn e7c2_b1_the_confirmation_never_outruns_the_durable_ack() {
+        let mut world = b1_world();
+        let handler_out = b1_run(&mut world, "@b1submit 6");
+        assert!(
+            handler_out.events().is_empty(),
+            "an Authoritative handler emits no success presentation of its own"
+        );
+        let store = mush_store::InMemoryStore::new();
+        let _ = world.drain_write_batch();
+        let mut engine = world.into_engine();
+        let mut driver = CommandSubmitDriver::new(1);
+        let CommandSubmitDrive::Staged { staged, actor } =
+            driver.drive_one(&mut engine, &store).await.unwrap()
+        else {
+            panic!("staged")
+        };
+        // What the world loop then queues, and its delivery class.
+        let mut out = Outbox::new();
+        out.info(actor, format!("Done. (commit {})", staged.token));
+        assert_eq!(out.classes(), [mush_core::DeliveryClass::OnCommit]);
+    }
+
+    /// The seam must not fork a second spelling of the five steps. Both
+    /// ingresses call `resolve_and_stage_offer`, and it is the only site in this
+    /// file that calls `prepare_and_stage_resolved`.
+    #[test]
+    fn e7c2_b1_both_ingresses_call_one_five_step_function() {
+        // Only the production half of this file; the assertions below name the
+        // very symbols they count.
+        let source = include_str!("world_task.rs")
+            .split("#[cfg(test)]")
+            .next()
+            .expect("the file has a production half");
+        let calls = source.matches("resolve_and_stage_offer(").count();
+        assert!(
+            calls >= 3,
+            "expected the definition plus both call sites, found {calls}"
+        );
+        let staged = source
+            .matches("ActionCoordinator::prepare_and_stage_resolved(")
+            .count();
+        assert_eq!(
+            staged, 1,
+            "prepare_and_stage_resolved must be reached through exactly one function"
+        );
     }
 }

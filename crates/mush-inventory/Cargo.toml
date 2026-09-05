@@ -1,0 +1,34 @@
+[package]
+name = "mush-inventory"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "mush-inventory (E7 cut 2): the single source of quantity truth — pools and lots bound to E3 custody endpoints, append-only lineage, and K's ReservationBook as the one contention gate."
+
+# 10b §3.2 / D-E7-3 / §9 q9: `mush-inventory -> {mush-core, mush-economy}` plus the
+# serde vocabulary every E crate already uses, and **nothing else**. No industry,
+# market, tacsim, sim, tactics or org edge: the crate holds quantity, locality and
+# lineage, and the *ruleset* decides representation per commodity (Q2D). The economy
+# edge is `mush-market`'s precedent (`{core, org, economy}`) and is what binds a pool
+# to an E3 vault; D-E7-3's neutrality is about *industry* (§9 q9).
+# `cargo tree -p mush-inventory` is the test.
+[dependencies]
+mush-core.workspace = true
+mush-economy.workspace = true
+# `ActionProvider::project_receipt` returns a `mush_proto::ProjectedActionResult`,
+# so the wire vocabulary is a real edge, not a dev one.
+mush-proto.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+smol_str.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+mush-testkit.workspace = true
+mush-store.workspace = true
+tokio.workspace = true
+
+[lints]
+workspace = true

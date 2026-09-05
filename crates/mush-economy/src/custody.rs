@@ -423,3 +423,72 @@ impl CustodyEval for WorldCustody<'_> {
         false
     }
 }
+
+// ---- E7c2: the quantity-endpoint state seam (10b §3.2, OPEN 1) ------------
+
+/// What a quantity endpoint (`mush-inventory`'s `EndpointRef(VaultId)`) may do
+/// right now.
+///
+/// E7 cut 2 binds every balance to an **E3 custody endpoint** and adds no second
+/// custody model: this is the one question it asks, answered here so the rules
+/// stay E3's — the vault's own lifecycle, the frozen provider table's
+/// `backing_valid`, and [`resolve`]'s exactly-one-claiming-provider rule.
+/// Nothing here mutates, and nothing here is a permission check: who may *see*
+/// or *use* an endpoint is the caller's own disclosure question.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum EndpointState {
+    /// No such vault.
+    Missing,
+    /// The vault exists but is `Frozen` or `Closed`.
+    Inactive(crate::record::VaultStatus),
+    /// No registered provider handles the backing, or the provider cannot
+    /// confirm it is a live usable container (`None` is fail-closed).
+    BackingUnavailable,
+    /// Another registered provider claims the backing object, so routing
+    /// anything through this endpoint would strand it (E3's `resolve`).
+    Contested {
+        /// The provider that claims it.
+        provider: String,
+    },
+    /// Live: active, backed, and uncontested.
+    Live,
+}
+
+impl EndpointState {
+    /// Whether quantity may move at this endpoint at all.
+    #[must_use]
+    pub const fn is_live(&self) -> bool {
+        matches!(self, Self::Live)
+    }
+}
+
+/// Resolve one quantity endpoint's state, asking E3's own rules and rebuilding
+/// none of them.
+///
+/// The economy is the only crate that may read the wiring-frozen provider table,
+/// so this is the seam a neutral quantity authority calls instead of growing a
+/// custody model of its own (10b §3.2's rules; D-E7-3).
+#[must_use]
+pub fn endpoint_state(w: &World, vault: crate::ids::VaultId) -> EndpointState {
+    let Some(store) = w.module_state::<EconomyStore>() else {
+        return EndpointState::BackingUnavailable;
+    };
+    let Some(record) = store.snapshot().vault(vault) else {
+        return EndpointState::Missing;
+    };
+    if record.status != crate::record::VaultStatus::Active {
+        return EndpointState::Inactive(record.status);
+    }
+    let providers = store.providers();
+    match resolve(&providers, w, &record.backing, record.backing.object()) {
+        Ok(provider) => {
+            if provider.backing_valid(w, &record.backing) == Some(true) {
+                EndpointState::Live
+            } else {
+                EndpointState::BackingUnavailable
+            }
+        }
+        Err(CustodyError::Claimed { provider, .. }) => EndpointState::Contested { provider },
+        Err(_) => EndpointState::BackingUnavailable,
+    }
+}

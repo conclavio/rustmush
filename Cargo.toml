@@ -146,6 +146,11 @@ mush-party = { path = "crates/mush-party" }
 # and the safe aggregate public projection. `mush-market -> {core, org, economy}`
 # only, and the economy never depends on it (doc 08 D11, doc 10 §14).
 mush-market = { path = "crates/mush-market" }
+# E7 cut 2 (10b §3.2): the neutral quantity authority — pools and lots bound to E3
+# custody endpoints, on K's `ReservationBook`. `mush-inventory -> {core, economy}`
+# only; industry, market, contracts and simulation CONSUME it and none keeps a
+# private stock number (Q13A/Q2D, D-E7-3).
+mush-inventory = { path = "crates/mush-inventory" }
 ruleset-shadowrun = { path = "crates/ruleset-shadowrun" }
 # E7 cut 1 (10b §3.1): TacSim's packs, seed latch and corridor fixture. It is a
 # LAYER, not a `[rulesets].enabled` id — doc 10 §20 keeps ruleset metaphysics and

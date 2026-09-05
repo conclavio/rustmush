@@ -1748,6 +1748,26 @@ impl<'a> AuthorityGuardContext<'a> {
     {
         self.action_state.get(handle, key)
     }
+
+    /// Scan one bounded canonical page of a family this validator owns.
+    ///
+    /// E7c2 B4: a guard whose subject is not its family's key needs a bounded
+    /// walk, not a point lookup — `AuthorityGuard::Reservation { provider, id,
+    /// revision }` names the reservation, while the book it lives in is keyed by
+    /// its own resource. The read boundary is unchanged: still immutable, still
+    /// no I/O, still bounded on records **visited** by the caller's `limit`.
+    pub fn scan_action_state<K, V>(
+        &self,
+        handle: &StateFamilyHandle<K, V>,
+        after: Option<&str>,
+        limit: usize,
+    ) -> Result<crate::action_state::StateFamilyPage<'a, V>, ActionStateError>
+    where
+        K: Send + Sync + 'static,
+        V: Clone + Send + Sync + 'static,
+    {
+        self.action_state.scan_family(handle, after, limit)
+    }
 }
 
 /// Pure, object-safe final authority check owned by a module.

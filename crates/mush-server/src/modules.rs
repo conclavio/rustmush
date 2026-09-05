@@ -206,7 +206,14 @@ pub fn server_modules_with(
             // facts next), the observer table carries the canon evidence bridge,
             // and the title-issuer table is empty until a ruleset registers one —
             // `@asset/title` stays the staff path meanwhile.
-            .with_facts(vec![Arc::new(mush_jobs::JobsFactProvider)])
+            // E7 cut 2 (OPEN 5, D-E7-30, §10): `inventory.*` joins `jobs.*`.
+            // One provider per crate — `with_facts` PANICS on a duplicate
+            // namespace — and both inventory facts are answered from the
+            // committed bundle's own applied marker, never from a status.
+            .with_facts(vec![
+                Arc::new(mush_jobs::JobsFactProvider),
+                Arc::new(mush_inventory::InventoryFactProvider),
+            ])
             // E5b: housing's exact-mode mirror joins the canon bridge. It hears the
             // obligation and contract transitions a lease is made of; abstract mode
             // does not need it at all.
@@ -248,6 +255,15 @@ pub fn server_modules_with(
             // account's own debit authority and still refuses when it is short.
             .with_party_caps(vendor_caps(shadowrun)),
         ),
+        // E7 cut 2 (10b §3.2, Q13A/Q2D, D-E7-3): the neutral quantity authority.
+        // It boots **immediately after `mush-economy`** because its own boot
+        // reconciliation asks the economy about vault status — the housing
+        // precedent exactly — and before `mush-market`, which must never learn
+        // that quantities have another owner: a listing's `quantity` stays the
+        // market's own advertised counter and becomes no `Pool` claim.
+        // `mush-inventory -> {core, economy}` only; nothing industry-, market- or
+        // TacSim-shaped is inside it.
+        Box::new(mush_inventory::InventoryModule::new()),
         Box::new(mush_mail::MailModule),
         Box::new(mush_jobs::JobsModule::new()),
         // E5: housing boots after `{org, sim, tactics, economy, jobs}` (08a decision
@@ -1577,6 +1593,17 @@ mod tests {
                 }),
                 "the TacSim layer must publish its compatibility lane"
             );
+            // E7 cut 2: the FIRST `Authoritative` command registration on the
+            // tree. `@inv` is one `CommandSpec`, so it is one registration and
+            // takes the ceiling class of its nine switches.
+            assert!(
+                registrations.iter().any(|(spec, owner, class)| {
+                    spec.name == "@inv"
+                        && *owner == Some("inventory")
+                        && *class == mush_core::CommandCompatibility::Authoritative
+                }),
+                "the inventory lane must publish `Authoritative`"
+            );
             assert!(registrations.iter().any(|(_, owner, class)| {
                 *owner == Some("economy")
                     && *class == mush_core::CommandCompatibility::EconomyCarveOut
@@ -1747,8 +1774,25 @@ mod tests {
         assert_eq!(
             names,
             [
-                "comsys", "canon", "org", "faction", "scenes", "sim", "tactics", "economy", "mail",
-                "jobs", "housing", "weather", "party", "market", "script"
+                "comsys",
+                "canon",
+                "org",
+                "faction",
+                "scenes",
+                "sim",
+                "tactics",
+                "economy",
+                // E7 cut 2: immediately after the economy (its boot asks about
+                // vault status) and before the market (whose listing quantity is
+                // its own advertised counter, never a `Pool` claim).
+                "inventory",
+                "mail",
+                "jobs",
+                "housing",
+                "weather",
+                "party",
+                "market",
+                "script"
             ]
         );
     }
@@ -1785,8 +1829,23 @@ mod tests {
             assert_eq!(
                 names,
                 [
-                    "comsys", "canon", "org", "faction", "scenes", "sim", "tactics", "economy",
-                    "mail", "jobs", "housing", "weather", "party", "market", "script", ruleset,
+                    "comsys",
+                    "canon",
+                    "org",
+                    "faction",
+                    "scenes",
+                    "sim",
+                    "tactics",
+                    "economy",
+                    "inventory",
+                    "mail",
+                    "jobs",
+                    "housing",
+                    "weather",
+                    "party",
+                    "market",
+                    "script",
+                    ruleset,
                     "tacsim"
                 ],
                 "the TacSim layer must be last, after the character ruleset"
@@ -1981,8 +2040,24 @@ mod tests {
         assert_eq!(
             names,
             [
-                "comsys", "canon", "org", "faction", "scenes", "sim", "tactics", "economy", "mail",
-                "jobs", "housing", "weather", "party", "market", "script", "worldgen", "wod"
+                "comsys",
+                "canon",
+                "org",
+                "faction",
+                "scenes",
+                "sim",
+                "tactics",
+                "economy",
+                "inventory",
+                "mail",
+                "jobs",
+                "housing",
+                "weather",
+                "party",
+                "market",
+                "script",
+                "worldgen",
+                "wod"
             ]
         );
         assert!(tw.registry().spec_of("@gen").is_some());
@@ -2098,8 +2173,23 @@ mod tests {
         assert_eq!(
             names,
             [
-                "comsys", "canon", "org", "faction", "scenes", "sim", "tactics", "economy", "mail",
-                "jobs", "housing", "weather", "party", "market", "script", "wod"
+                "comsys",
+                "canon",
+                "org",
+                "faction",
+                "scenes",
+                "sim",
+                "tactics",
+                "economy",
+                "inventory",
+                "mail",
+                "jobs",
+                "housing",
+                "weather",
+                "party",
+                "market",
+                "script",
+                "wod"
             ]
         );
         // The ruleset's surface is live: +roll / +sheet registered, the

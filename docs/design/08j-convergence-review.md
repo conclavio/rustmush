@@ -328,7 +328,7 @@ extend it rather than fork it.
 - E2-D30: a Redis-gated reboot test in the same cut as each money-adjacent boot path (08g §11) — E.
 - An inventory test asserting every `*_gated` test name appears in `ci.yml` (makes S4 self-enforcing) — E.
 - `consent_digest(domain, canonical)` factoring under `"campaign.seat.v1"` (S14) — E, ships with cut 9.
-- First `Authoritative` command registration needs an ingress adapter seam (§5 (iii)) — E, before cut 2.
+- ~~First `Authoritative` command registration needs an ingress adapter seam (§5 (iii)) — E, before cut 2.~~ **DISCHARGED by E7 cut 2's B1 (2026-09-05).** The seam is `mush_core::cmd::Ctx::submit_authoritative` → `mush_core::Deferred::AuthoritativeSubmit` (a new arm beside `Persist`, drained by `Engine::drain_deferred` into a single-slot queue `Engine::take_authoritative_submit` empties) → `mush_server::world_task::CommandSubmitDriver::drive_one` → `ActionCoordinator::command_ingress` + `ActionCoordinator::preflight` → `mush_server::world_task::resolve_and_stage_offer` → `ActionCoordinator::prepare_and_stage_resolved`. It is a **selector, not an offer**: the handler names a registered `DefinitionRef` and the driver regenerates that actor's own projected offer (`ProjectedLegalActionSink::projected_for_action`), so no handler can construct an `ActionOfferId`; a second submission in one command voids the first and stages nothing; and `resolve_and_stage_offer` is the **one** spelling of the five steps, shared with the `WorldMsg::AuthoritativeAction` arm and pinned by `e7c2_b1_both_ingresses_call_one_five_step_function`. 08i §2 row 5 (*"There is no `Ctx`-level action submit"*) closes with it. Shape and proofs: 10b §3.2's "As built".
 
 **Accept**
 

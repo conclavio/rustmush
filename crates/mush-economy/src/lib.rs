@@ -258,7 +258,9 @@ pub use commands::{
     parse_amount, parse_catalog, parse_opts, parse_principal, refuse, refuse_named, render_account,
     render_account_entry, render_org_listed, render_principal, resolve_org_visible,
 };
-pub use custody::{ContainerProvider, CustodyError, CustodyProvider, CustodyTable};
+pub use custody::{
+    ContainerProvider, CustodyError, CustodyProvider, CustodyTable, EndpointState, endpoint_state,
+};
 pub use module::{
     CHECKPOINT_REVIEW_ENTRIES, CHECKPOINT_REVIEW_SECS, EconomyModule, EconomyScopeUse,
     EconomyStore, JOURNAL_LOG, MAX_WINDOW_ENTRIES, NS, WindowTail,
