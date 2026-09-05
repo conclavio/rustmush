@@ -1982,9 +1982,9 @@ dependencies = [
  "mush-testkit",
  "serde",
  "serde_json",
- "toml",
  "static_assertions",
  "tokio",
+ "toml",
 ]
 
 [[package]]

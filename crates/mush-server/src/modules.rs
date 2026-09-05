@@ -1423,14 +1423,16 @@ mod tests {
         for ruleset in ["wod", "shadowrun"] {
             let onboarding = ruleset_wod::OnboardingConfig::default();
             let wod = ruleset_wod::WodEconomyConfig::default();
+            let shadowrun = ruleset_shadowrun::SrEconomyConfig::default();
             let mut modules = server_modules_with(
                 mush_weather::WeatherConfig::default(),
                 mush_economy::EconomyConfig::default(),
                 &onboarding,
                 (ruleset == "wod").then_some(&wod),
+                (ruleset == "shadowrun").then_some(&shadowrun),
             );
             modules.extend(
-                ruleset_modules(&[ruleset.to_owned()], &onboarding, &wod)
+                ruleset_modules(&[ruleset.to_owned()], &onboarding, &wod, &shadowrun)
                     .expect("one production ruleset"),
             );
             let composition = Engine::compose_modules(crate::world_task::base_registry(), modules)
