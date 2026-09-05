@@ -223,8 +223,8 @@ pub use sweep::SWEEP_TAG;
 pub use contract_live::{
     AcceptOutcome, AmendOutcome, AmendReoffer, ConsiderationSpec, ContractAmendment, ContractSpec,
     LeaseEnd, LeaseKey, LeaseSpec, accept_contract, amend_contract, cancel_contract,
-    contract_notice, end_lease, may_view_contract, offer_contract, offer_lease, refuse_contract,
-    refuse_contract_offer, stands_in_contract,
+    contract_notice, deliver_settled, end_lease, may_view_contract, offer_contract, offer_lease,
+    refuse_contract, refuse_contract_offer, stands_in_contract,
 };
 
 // E4c — facts, events, evidence.

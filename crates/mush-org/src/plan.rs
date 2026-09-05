@@ -46,6 +46,44 @@ pub enum OrgMutationOp {
         /// The new role.
         role: OrgRole,
     },
+    /// **Set an organization's lifecycle state and/or its hidden flag** (E6c B10,
+    /// DL-06 / 08g §3 #3, the minimal slice).
+    ///
+    /// `OrgStatus::{Suspended, Dissolving, Closed}` have existed since E1a and
+    /// **nothing moved them**: closing was documented as a workflow with no op and no
+    /// verb, so a retired vendor could not be retired and a suspended organization
+    /// could not be suspended. This is that write, and no more of it: the full close
+    /// workflow — resolving the accounts, assets and memberships a `Dissolving`
+    /// organization still holds — stays E7's, as does the membership producer
+    /// (`@org/member`).
+    ///
+    /// `hidden` is the same story from the other side. `Organization.hidden` has been
+    /// read by the economy's existence-hiding renderer since E6a's D11 and **written
+    /// by nothing in the shipped surface**, which is why that fold shipped
+    /// preventively with no end-to-end test and E6b's scenario 12 had to reach into
+    /// the store. This is its first write path.
+    ///
+    /// Both fields are optional so a staffer can move one without touching the other,
+    /// and either move bumps the org's `revision` — the staleness stamp every
+    /// [`ExpectedRevision`] guard reads.
+    SetOrgStatus {
+        /// Which organization.
+        org: OrgId,
+        /// The new lifecycle state, or `None` to leave it.
+        status: Option<crate::record::OrgStatus>,
+        /// Whether it hides its existence from non-members, or `None` to leave it.
+        hidden: Option<bool>,
+    },
+    /// **Add or replace a role template** (E6c B10).
+    ///
+    /// [`OrgMutationOp::CreateRole`] refuses an id that already exists, which makes a
+    /// role template immutable once written — so a role whose capability set was
+    /// wrong could never be corrected, only abandoned. This is the upsert, and it
+    /// bumps the owning organization's revision like every other mutation.
+    PutRole {
+        /// The role.
+        role: OrgRole,
+    },
     /// Add (or replace) a membership.
     PutMembership {
         /// The membership.
@@ -257,6 +295,49 @@ fn apply_one(state: &mut OrgState, op: &OrgMutationOp) -> Result<(), OrgError> {
                 return Err(OrgError::NotFound(format!("org {}", role.org)));
             }
             state.put_role(role.clone());
+        }
+        OrgMutationOp::SetOrgStatus {
+            org,
+            status,
+            hidden,
+        } => {
+            let mut o = state
+                .org(*org)
+                .cloned()
+                .ok_or_else(|| OrgError::NotFound(format!("org {org}")))?;
+            // `Closed` is terminal and the id is retired: an organization that has
+            // closed does not re-open, and a re-opened one would hand back authority
+            // every grantee was told had ended.
+            if o.status == crate::record::OrgStatus::Closed {
+                return Err(OrgError::Invalid(
+                    "a closed organization is terminal".into(),
+                ));
+            }
+            if let Some(s) = status {
+                o.status = *s;
+            }
+            if let Some(h) = hidden {
+                o.hidden = *h;
+            }
+            o.revision = o.revision.saturating_add(1);
+            state.put_org(o);
+        }
+        OrgMutationOp::PutRole { role } => {
+            if state.org(role.org).is_none() {
+                return Err(OrgError::NotFound(format!("org {}", role.org)));
+            }
+            if let Some(existing) = state.role(role.id)
+                && existing.org != role.org
+            {
+                return Err(OrgError::Invalid(
+                    "a role cannot change organization".into(),
+                ));
+            }
+            state.put_role(role.clone());
+            if let Some(mut o) = state.org(role.org).cloned() {
+                o.revision = o.revision.saturating_add(1);
+                state.put_org(o);
+            }
         }
         OrgMutationOp::PutMembership { membership } => {
             if state.org(membership.org).is_none() {

@@ -1,0 +1,34 @@
+[package]
+name = "mush-market"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "mush-market (E6c): the neutral market — bounded catalogs and content packs, listings, buyer-as-issuer quotes, vendors and NPC market makers, and the safe aggregate public projection. Game-neutral: it serves WoD and TacSim as well as Shadowrun."
+
+# 08e answer 20 / doc 08 D11 / doc 10 §14: the market names principals and settles
+# through contracts, so it depends on `{core, org, economy}` — and the economy never
+# depends on the market. There is no `mush-party` edge, no `mush-canon` edge and no
+# ruleset edge: a run is a contract with an audience notice (D-E6-17), a seal is
+# canon's, and prices, availability, legality and item meaning are the ruleset's.
+# `cargo tree -p mush-market` is the test.
+#
+# `tracing` is the logging facade a loud skip at boot needs; `serde`/`serde_json`/
+# `smol_str` are the persistence vocabulary every E crate already uses.
+[dependencies]
+mush-core.workspace = true
+mush-org.workspace = true
+mush-economy.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+smol_str.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+mush-testkit.workspace = true
+mush-store.workspace = true
+mush-proto.workspace = true
+tokio.workspace = true
+
+[lints]
+workspace = true

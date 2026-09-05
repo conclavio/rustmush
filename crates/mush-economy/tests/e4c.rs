@@ -102,7 +102,7 @@ impl GameModule for TitleIssuingRuleset {
             CommandSpec {
                 name: "@titleissue".into(),
                 shape: ArgShape::EqPair,
-                help: "@titleissue <obj>=<issuer> <owner>   test: mint title as a system principal"
+                help: "@titleissue <obj>=<issuer> <owner> [catalog=<ruleset>:<code>]   test: mint title as a system principal"
                     .into(),
                 ..CommandSpec::default()
             },
@@ -127,9 +127,52 @@ impl GameModule for TitleIssuingRuleset {
                         .parse()
                         .map_err(|_| bad())?,
                 );
-                mush_economy::issue_title(ctx, object, PrincipalId::Object(owner), None, issuer)
-                    .map(|_| ())
-                    .map_err(|e| CmdError::msg(e.to_string()))
+                // E6c B4(a): the issuer says what the thing **is**, at the moment
+                // title is minted.
+                let catalog = words.next().and_then(|w| {
+                    w.strip_prefix("catalog=")
+                        .and_then(mush_economy::parse_catalog)
+                });
+                mush_economy::issue_title(
+                    ctx,
+                    object,
+                    PrincipalId::Object(owner),
+                    None,
+                    issuer,
+                    catalog,
+                )
+                .map(|_| ())
+                .map_err(|e| CmdError::msg(e.to_string()))
+            }),
+        )?;
+        // E6c B4(b): the **asset** latch has the same shape — `@asset/unfreeze`
+        // clears it and boot's principal-gone sweep sets it, with no staff set at
+        // all. This drives the seam the way boot does, so E3-C36's reachable state
+        // can be reached from a test.
+        reg.command(
+            CommandSpec {
+                name: "@assetfreeze".into(),
+                shape: ArgShape::EqPair,
+                help: "@assetfreeze <obj>=<reason>   test: latch one asset frozen".into(),
+                ..CommandSpec::default()
+            },
+            Arc::new(|ctx: &mut Ctx<'_>| -> Result<(), CmdError> {
+                let object = ObjId(
+                    ctx.args
+                        .lhs()
+                        .trim()
+                        .trim_start_matches('#')
+                        .parse()
+                        .map_err(|_| CmdError::msg("Usage: @assetfreeze <obj>=<reason>"))?,
+                );
+                let reason = ctx.args.rhs().unwrap_or("test").to_string();
+                mush_economy::set_asset_frozen(
+                    ctx,
+                    object,
+                    true,
+                    Some(smol_str::SmolStr::new(reason)),
+                );
+                Ok(())
             }),
         )?;
         // E4c verify fold (E4a): the whole-economy latch has a staff clear
@@ -2293,5 +2336,156 @@ fn e6s1_s7_a_non_positive_age_pages_nothing() {
     assert!(
         store(&tw).escalations().next().is_none(),
         "an age of zero paged a live contract"
+    );
+}
+
+// ======================================================================
+// ---- E6c: B4 -- a purchase can stamp its catalogue, and title over a
+// frozen record refuses ----
+// ======================================================================
+
+/// **B4(a)**: `issue_title` takes a `catalog`, and it lands on the record.
+///
+/// `AssetOp::Title` has carried one since E3 and **both** producers hard-coded
+/// `None`, so nothing a ruleset produced could ever be catalogued at birth — which
+/// made every catalogue-keyed rule (E6b's fence baseline first) permanently
+/// unreachable for it, and `AssetOp::SetCatalog` a mandatory second staff act for
+/// every single sale.
+#[test]
+fn e6c_b4_a_title_issuer_stamps_the_catalogue_reference_at_birth() {
+    let mut tw = boot_with(Vec::new(), Vec::new(), vec![issuer("sr.market")]);
+    let owner = tw.spawn_player("Buyer");
+    let gun = thing(&mut tw, "gun");
+    ok(
+        &mut tw,
+        GOD,
+        &format!(
+            "@titleissue #{}=sr.market #{} catalog=sr:ares.predator",
+            gun.0, owner.0
+        ),
+    );
+    let asset = snap(&tw).asset(gun).expect("a title record");
+    assert_eq!(
+        asset.catalog.as_ref().map(|c| c.code.as_str()),
+        Some("ares.predator"),
+        "the issuer's catalogue reference did not land"
+    );
+    assert_eq!(
+        asset.catalog.as_ref().map(|c| c.ruleset.as_str()),
+        Some("sr")
+    );
+
+    // …and an issuer that names none still mints an uncatalogued title, exactly as
+    // before, so nothing that already worked changed shape.
+    let plain = thing(&mut tw, "crate");
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@titleissue #{}=sr.market #{}", plain.0, owner.0),
+    );
+    assert!(snap(&tw).asset(plain).expect("a record").catalog.is_none());
+}
+
+/// **B4(a), the command half**: `@asset/title … catalog=<ruleset>:<code>` round-trips
+/// through the record (E6b shipped the option; this pins it beside the seam).
+#[test]
+fn e6c_b4_the_asset_title_catalogue_option_round_trips() {
+    let mut tw = boot_with(Vec::new(), Vec::new(), Vec::new());
+    let owner = tw.spawn_player("Owner");
+    let gun = thing(&mut tw, "gun");
+    ok(
+        &mut tw,
+        GOD,
+        &format!(
+            "@asset/title #{}=#{} catalog=sr:colt.america",
+            gun.0, owner.0
+        ),
+    );
+    assert_eq!(
+        snap(&tw)
+            .asset(gun)
+            .and_then(|a| a.catalog.clone())
+            .map(|c| format!("{}:{}", c.ruleset, c.code)),
+        Some("sr:colt.america".to_string())
+    );
+    // A malformed reference is refused rather than stored half-parsed.
+    let other = thing(&mut tw, "knife");
+    err(
+        &mut tw,
+        GOD,
+        &format!("@asset/title #{}=#{} catalog=nonsense", other.0, owner.0),
+    );
+    assert!(snap(&tw).asset(other).is_none());
+}
+
+/// **B4(b) — E3-C36** (08g §3 #2, filed "before E6c — titles every purchase").
+///
+/// The `Title` arm admits a re-issue over a `WrittenOff` asset with no encumbrances
+/// and **never consulted `a.frozen`**: the frozen check sits in the non-`Title` arm.
+/// Boot's principal-gone sweep can freeze a written-off asset, so a fresh, *unfrozen*
+/// title could be minted straight over a frozen record — discarding the reason the
+/// freeze was placed. It refuses `AssetFrozen` now; staff `@asset/unfreeze` first.
+#[test]
+fn e6c_b4_a_title_over_a_frozen_written_off_record_refuses() {
+    let mut tw = boot_with(Vec::new(), Vec::new(), vec![issuer("sr.market")]);
+    let owner = tw.spawn_player("Owner");
+    let gun = thing(&mut tw, "gun");
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@asset/title #{}=#{}", gun.0, owner.0),
+    );
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@asset/writeoff #{}=scrapped", gun.0),
+    );
+    assert_eq!(
+        snap(&tw).asset(gun).expect("a record").lifecycle,
+        mush_economy::AssetLifecycle::WrittenOff
+    );
+    // A written-off, UNFROZEN record still re-issues — that is E4c's own fold (E7),
+    // and it must keep working.
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@titleissue #{}=sr.market #{}", gun.0, owner.0),
+    );
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@asset/writeoff #{}=scrapped again", gun.0),
+    );
+
+    // Frozen: the re-issue is refused, and the record is untouched.
+    ok(&mut tw, GOD, &format!("@assetfreeze #{}=drift", gun.0));
+    let before = snap(&tw).asset(gun).expect("a record").clone();
+    let refused = err(
+        &mut tw,
+        GOD,
+        &format!("@titleissue #{}=sr.market #{}", gun.0, owner.0),
+    );
+    assert!(refused.to_lowercase().contains("frozen"), "{refused}");
+    let after = snap(&tw).asset(gun).expect("a record").clone();
+    assert_eq!(before.revision, after.revision, "the refusal wrote anyway");
+    assert!(after.frozen, "the freeze was cleared by the refusal");
+
+    // The staff path is refused identically, so the seam and the command agree.
+    err(
+        &mut tw,
+        GOD,
+        &format!("@asset/title #{}=#{}", gun.0, owner.0),
+    );
+
+    // Unfreeze, and the re-issue works again: the refusal is a gate, not a wall.
+    ok(&mut tw, GOD, &format!("@asset/unfreeze #{}", gun.0));
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@titleissue #{}=sr.market #{}", gun.0, owner.0),
+    );
+    assert_eq!(
+        snap(&tw).asset(gun).expect("a record").lifecycle,
+        mush_economy::AssetLifecycle::Active
     );
 }

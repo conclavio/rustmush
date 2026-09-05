@@ -31,7 +31,7 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
         CommandSpec {
             name: "@org".into(),
             shape: ArgShape::EqPair,
-            switches: ["create", "list", "show", "grant", "scope", "audit"]
+            switches: ["create", "list", "show", "grant", "scope", "status", "audit"]
                 .iter()
                 .copied()
                 .map(SmolStr::new)
@@ -112,11 +112,13 @@ fn cmd_org(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         org_grant(ctx)
     } else if ctx.switches.has("scope") {
         org_scope(ctx)
+    } else if ctx.switches.has("status") {
+        org_status(ctx)
     } else if ctx.switches.has("audit") {
         org_audit(ctx)
     } else {
         Err(CmdError::msg(
-            "Usage: @org/create|list|show|scope|grant|audit …",
+            "Usage: @org/create|list|show|scope|grant|status|audit …",
         ))
     }
 }
@@ -638,6 +640,75 @@ fn org_audit(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         info(ctx, l);
     }
     Ok(())
+}
+
+/// `@org/status <id|name>=<state> [hidden=yes|no]` (E6c B10, DL-06's minimal slice).
+///
+/// The first — and only — write path for `Organization.status` past `Active` and for
+/// `Organization.hidden`, both of which have existed since E1a with no producer at
+/// all. Deliberately narrow: it moves two fields and bumps the revision, and it
+/// **never touches an account, an asset, a membership or a live contract**. A
+/// suspended or dissolving organization stops being registrable as a trading vendor
+/// (E6c B5/B10) and its live contracts settle through E4 exactly as before; the close
+/// workflow that resolves what a `Dissolving` organization still holds is E7's.
+fn org_status(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    const USAGE: &str = "Usage: @org/status <id|name>=<active|suspended|dissolving|closed>                          [hidden=yes|no]";
+    let Some(org) = resolve_org(ctx, ctx.args.lhs()) else {
+        return Err(CmdError::msg("No such organization."));
+    };
+    let rhs = ctx.args.rhs().unwrap_or_default();
+    let mut status: Option<OrgStatus> = None;
+    let mut hidden: Option<bool> = None;
+    for word in rhs.split_whitespace() {
+        if let Some(v) = word.strip_prefix("hidden=") {
+            hidden = match v.trim().to_ascii_lowercase().as_str() {
+                "yes" | "true" | "on" | "1" => Some(true),
+                "no" | "false" | "off" | "0" => Some(false),
+                _ => return Err(CmdError::msg(USAGE)),
+            };
+        } else {
+            status = match word.trim().to_ascii_lowercase().as_str() {
+                "active" => Some(OrgStatus::Active),
+                "suspended" => Some(OrgStatus::Suspended),
+                "dissolving" => Some(OrgStatus::Dissolving),
+                "closed" => Some(OrgStatus::Closed),
+                _ => return Err(CmdError::msg(USAGE)),
+            };
+        }
+    }
+    if status.is_none() && hidden.is_none() {
+        return Err(CmdError::msg(USAGE));
+    }
+    let plan = OrgMutationPlan::of(vec![OrgMutationOp::SetOrgStatus {
+        org,
+        status,
+        hidden,
+    }]);
+    api::submit(
+        ctx,
+        &plan,
+        OrgAction {
+            action: SmolStr::new_static("org.status"),
+            org: Some(org),
+            detail: serde_json::json!({
+                "status": status.map(status_label),
+                "hidden": hidden,
+            }),
+        },
+    )
+    .map_err(|e| CmdError::msg(e.to_string()))?;
+    let said = match (status, hidden) {
+        (Some(s), Some(h)) => format!("{} and {}", status_label(s), hidden_label(h)),
+        (Some(s), None) => status_label(s).to_string(),
+        (None, Some(h)) => hidden_label(h).to_string(),
+        (None, None) => String::new(),
+    };
+    info(ctx, format!("Org #{org} is now {said}."));
+    Ok(())
+}
+
+fn hidden_label(h: bool) -> &'static str {
+    if h { "hidden" } else { "listed" }
 }
 
 fn status_label(s: OrgStatus) -> &'static str {

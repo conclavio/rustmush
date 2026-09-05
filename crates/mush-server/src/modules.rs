@@ -112,11 +112,17 @@ pub fn server_modules_with(
     // list and `HousingModule::with_issuer`, so the two are computed once, here, and
     // a mismatch is impossible by construction.
     let housing_on = wod.is_some_and(|w| w.housing);
-    let issuers: Vec<mush_org::SystemPrincipalId> = if housing_on {
+    let mut issuers: Vec<mush_org::SystemPrincipalId> = if housing_on {
         vec![housing_title_issuer()]
     } else {
         Vec::new()
     };
+    // E6c (§2 item 8, B11): the market mints the title of a stocked asset, so
+    // `sr.market` joins the frozen issuer table when the Shadowrun economic layer is
+    // enabled — and only then, exactly as housing's joins only for a configured WoD.
+    if shadowrun.is_some_and(|s| s.enabled) {
+        issuers.push(market_title_issuer());
+    }
     let issuer = housing_on.then(housing_title_issuer);
     // `[onboarding]`'s two start rooms plus Limbo (E5b fold H4), extended by whatever
     // the ruleset knows is never somebody's living room (E5b's handoff to E5c).
@@ -272,6 +278,19 @@ pub fn server_modules_with(
         // none of it, so it sits anywhere before the rulesets; here, beside the other
         // player-facing subsystems and ahead of `mush-script`'s deliberate last place.
         Box::new(mush_party::PartyModule::new()),
+        // E6c (08f §2, §5): the neutral market. It boots **after** `mush-economy` —
+        // it validates listings against real accounts, assets and vaults, and reads
+        // the economy's own contract state for the trade tape the safe projection
+        // folds — and before the rulesets, which register content, dice and delivery
+        // into its three wiring-frozen tables. `mush-market -> {core, org, economy}`
+        // only; nothing Shadowrun-shaped is inside it (answer 20).
+        Box::new(
+            mush_market::MarketModule::new()
+                .with_catalog_sources(market_catalog_sources(shadowrun))
+                .with_availability(market_availability(shadowrun))
+                .with_delivery(market_delivery(shadowrun))
+                .with_issuer(market_title_issuer()),
+        ),
         Box::new(mush_script::ScriptModule::new()),
     ]
 }
@@ -300,6 +319,51 @@ fn vendor_caps(
         .unwrap_or_default()
 }
 
+/// The market's content-pack sources (E6c B9). Empty unless the Shadowrun economic
+/// layer is enabled: a server with no ruleset content loads no pack, which is the
+/// fail-closed default.
+fn market_catalog_sources(
+    shadowrun: Option<&ruleset_shadowrun::SrEconomyConfig>,
+) -> Vec<Arc<dyn mush_market::CatalogSource>> {
+    shadowrun
+        .filter(|s| s.enabled)
+        .map(|s| {
+            let source: Arc<dyn mush_market::CatalogSource> =
+                Arc::new(ruleset_shadowrun::SrCatalogSource::new(s));
+            vec![source]
+        })
+        .unwrap_or_default()
+}
+
+/// The market's availability engines (E6c B7). `mush-market` holds the rule shape and
+/// the recorded outcome and **rolls nothing**; the dice are the ruleset's.
+fn market_availability(
+    shadowrun: Option<&ruleset_shadowrun::SrEconomyConfig>,
+) -> Vec<Arc<dyn mush_market::AvailabilityProvider>> {
+    shadowrun
+        .filter(|s| s.enabled)
+        .map(|_| {
+            let p: Arc<dyn mush_market::AvailabilityProvider> =
+                Arc::new(ruleset_shadowrun::SrAvailability::new());
+            vec![p]
+        })
+        .unwrap_or_default()
+}
+
+/// The market's delivery providers (E6c B6). A `Representation::Asset` needs none —
+/// its title moves as an ordinary E4b2 deliverable inside the settlement.
+fn market_delivery(
+    shadowrun: Option<&ruleset_shadowrun::SrEconomyConfig>,
+) -> Vec<Arc<dyn mush_market::DeliveryProvider>> {
+    shadowrun
+        .filter(|s| s.enabled)
+        .map(|_| {
+            let p: Arc<dyn mush_market::DeliveryProvider> = Arc::new(ruleset_shadowrun::SrDelivery);
+            vec![p]
+        })
+        .unwrap_or_default()
+}
+
 /// The economy observer table this server freezes at wiring.
 ///
 /// The Shadowrun board's mirror joins it **only when the Shadowrun economic layer is
@@ -318,6 +382,12 @@ fn econ_observers(
         // E6a step 1 (DL-05): the ladder's pages reach connected wizards on the
         // ladder's own re-notify schedule, deduped per step.
         Arc::new(crate::econ_alerts::StaffAlerts::default()),
+        // E6c: the market's ear. It hears one thing — a contract reaching a terminal
+        // state — and turns a settlement into the trade-tape row the safe public
+        // projection folds, a cancellation or expiry back into stock. It is
+        // unconditional because `mush-market` is game-neutral and a WoD or TacSim
+        // server's market is the same market.
+        Arc::new(mush_market::MarketObserver),
     ];
     if let Some(sr) = shadowrun.filter(|s| s.enabled) {
         // E6a (D-E6-5): mirrors `ContractChanged` onto the run board and releases the
@@ -339,6 +409,19 @@ fn econ_observers(
 #[must_use]
 pub fn housing_title_issuer() -> mush_org::SystemPrincipalId {
     mush_org::SystemPrincipalId::new("wod.housing")
+        .expect("a built-in system principal id is well-formed")
+}
+
+/// The system principal the market mints a stocked asset's title under (E6c B11,
+/// §2 item 8, D-E3-13).
+///
+/// Named in exactly two places — `EconomyModule::with_title_issuers` and
+/// `@market/vendor stock`'s own call — and `mush_economy::issue_title` refuses an
+/// issuer that is not on the economy's list, so a typo is a loud refusal rather than
+/// a silent capability. Registration, not code.
+#[must_use]
+pub fn market_title_issuer() -> mush_org::SystemPrincipalId {
+    mush_org::SystemPrincipalId::new("sr.market")
         .expect("a built-in system principal id is well-formed")
 }
 
@@ -1582,7 +1665,7 @@ mod tests {
             names,
             [
                 "comsys", "canon", "org", "faction", "scenes", "sim", "tactics", "economy", "mail",
-                "jobs", "housing", "weather", "party", "script"
+                "jobs", "housing", "weather", "party", "market", "script"
             ]
         );
     }
@@ -1743,7 +1826,7 @@ mod tests {
             names,
             [
                 "comsys", "canon", "org", "faction", "scenes", "sim", "tactics", "economy", "mail",
-                "jobs", "housing", "weather", "party", "script", "worldgen", "wod"
+                "jobs", "housing", "weather", "party", "market", "script", "worldgen", "wod"
             ]
         );
         assert!(tw.registry().spec_of("@gen").is_some());
@@ -1860,7 +1943,7 @@ mod tests {
             names,
             [
                 "comsys", "canon", "org", "faction", "scenes", "sim", "tactics", "economy", "mail",
-                "jobs", "housing", "weather", "party", "script", "wod"
+                "jobs", "housing", "weather", "party", "market", "script", "wod"
             ]
         );
         // The ruleset's surface is live: +roll / +sheet registered, the

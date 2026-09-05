@@ -328,6 +328,20 @@ fn persist_ops(out: &mut Outbox, ops: &[OrgMutationOp], post: &crate::OrgState) 
                 }
             }
             OrgMutationOp::CreateRole { role } => persist_role(out, role),
+            // E6c B10: both flip a field on the LIVE record and bump the org's
+            // revision, so the documents come from the post-image — the
+            // `RetireScope` shape, for the same reason.
+            OrgMutationOp::SetOrgStatus { org, .. } => {
+                if let Some(o) = post.org(*org) {
+                    persist_org(out, o);
+                }
+            }
+            OrgMutationOp::PutRole { role } => {
+                persist_role(out, role);
+                if let Some(o) = post.org(role.org) {
+                    persist_org(out, o);
+                }
+            }
             OrgMutationOp::PutMembership { membership } => persist_membership(out, membership),
             OrgMutationOp::RemoveMembership { org, member } => {
                 persist_del(out, member_key(*org, *member))

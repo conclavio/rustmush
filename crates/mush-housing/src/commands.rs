@@ -695,7 +695,7 @@ fn property_create(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     p.landlord_scope = scope;
     // **Title first**: it is the fallible half, and the module's rule is the
     // economy's — do the thing that can be refused before the thing that cannot.
-    match mush_economy::issue_title(ctx, anchor, landlord.clone(), scope, issuer) {
+    match mush_economy::issue_title(ctx, anchor, landlord.clone(), scope, issuer, None) {
         Ok(_) => {}
         Err(error) => {
             return Err(CmdError::msg(format!(

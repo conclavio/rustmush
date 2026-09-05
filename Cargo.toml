@@ -141,6 +141,10 @@ mush-housing = { path = "crates/mush-housing" }
 # state machine. NOT an economic principal (D-E6-5): it depends on mush-core alone
 # and must never gain an economy, org or faction edge.
 mush-party = { path = "crates/mush-party" }
+# E6c: the neutral market — catalogs, listings, quotes, vendors, NPC market makers
+# and the safe aggregate public projection. `mush-market -> {core, org, economy}`
+# only, and the economy never depends on it (doc 08 D11, doc 10 §14).
+mush-market = { path = "crates/mush-market" }
 ruleset-shadowrun = { path = "crates/ruleset-shadowrun" }
 mush-testkit = { path = "crates/mush-testkit" }
 mush-contract-tests = { path = "crates/mush-contract-tests" }

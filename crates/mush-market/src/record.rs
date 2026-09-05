@@ -1,0 +1,1106 @@
+//! The market's five document families and the caps every one of them re-runs on
+//! load (E6c, 08f §5.1–§5.2).
+//!
+//! | family | record | corrupt → |
+//! |---|---|---|
+//! | `market:catalog:{pack}:{code}` | [`CatalogEntry`] | **skipped loudly**; the entry is re-loadable from its source pack (`@market/catalog load`) |
+//! | `market:listing:{id}` | [`Listing`] | **skipped loudly**; a listing is an offer to sell, never an escrow — the vendor lists it again |
+//! | `market:quote:{id}` | [`Quote`] | **skipped loudly**; an unsettled quote is a price anyone can ask for again, and a settled one is a *trade tape row* whose authority is the economy's own `ContractState::Settled` |
+//! | `market:vendor:{id}` | [`Vendor`] | **skipped loudly**; staff re-register it, and its money and goods are the organization's, never this record's |
+//! | `market:source:{id}` | [`MarketSource`] | **skipped loudly**; a maker that will not load simply stops quoting, which is the fail-closed direction |
+//!
+//! Every one follows the E5a fold rule exactly: the persisted shape is a separate
+//! `…Wire` struct and the live record is reached only through a `TryFrom` that
+//! re-runs the constructor invariants with documented caps. **No document failure
+//! ever fails the boot** — the direction of each loss is stated above, and in every
+//! case the money is the economy's and survives.
+//!
+//! ## What no record here holds
+//!
+//! No balance, no hold, no journal line and no authority. A listing is a *published
+//! intention*; a quote is a *price with an expiry*; a vendor and a maker are
+//! *pointers at an organization's own account and vault*. Everything that moves money
+//! moves it through E4 under an E4 authority.
+
+use std::collections::BTreeSet;
+
+use mush_core::ObjId;
+use mush_economy::{AccountId, Amount, CatalogRef, ContractId, EconomicDeadline, VaultId};
+use mush_org::{OrgId, PrincipalId};
+use serde::{Deserialize, Serialize};
+use smol_str::SmolStr;
+
+use crate::ids::{ListingId, MarketId, MarketSourceId, QuoteId, VendorId};
+
+// ---- caps -----------------------------------------------------------------
+
+/// The most entries one content pack may carry (08f §9).
+pub const MAX_CATALOG_ENTRIES_PER_PACK: usize = 512;
+/// The most catalog entries the whole store holds, across every pack.
+pub const MAX_CATALOG_ENTRIES: usize = 4_096;
+/// The most listings one vendor may hold open (08f §9).
+pub const MAX_LISTINGS_PER_VENDOR: usize = 64;
+/// The most listings the whole store holds.
+pub const MAX_LISTINGS: usize = 1_024;
+/// The most quotes the whole store holds — open offers and trade-tape rows alike.
+pub const MAX_QUOTES: usize = 2_048;
+/// The most **open** quotes one buyer may hold at a time.
+pub const MAX_OPEN_QUOTES_PER_BUYER: usize = 8;
+/// The most registered vendors one server holds.
+pub const MAX_VENDORS: usize = 64;
+/// The most registered NPC market makers one server holds.
+pub const MAX_SOURCES: usize = 32;
+/// The longest pack name.
+pub const MAX_PACK_BYTES: usize = 32;
+/// The longest catalog code (`CatalogRef.code`) — E6b's own ceiling.
+pub const MAX_CATALOG_CODE_BYTES: usize = 64;
+/// The longest catalog entry display name.
+pub const MAX_ENTRY_NAME_BYTES: usize = 64;
+/// The most tags one entry carries.
+pub const MAX_ENTRY_TAGS: usize = 8;
+/// The longest tag.
+pub const MAX_TAG_BYTES: usize = 24;
+/// The longest book/page citation an entry carries. It is a citation and never
+/// mechanics: nothing in this crate reads it.
+pub const MAX_RULES_REF_BYTES: usize = 64;
+/// The longest vendor or maker display name.
+pub const MAX_VENDOR_NAME_BYTES: usize = 48;
+/// The longest availability-test skill label.
+pub const MAX_SKILL_BYTES: usize = 32;
+/// The most dice an availability test may declare as its threshold.
+pub const MAX_AVAILABILITY_THRESHOLD: u8 = 24;
+/// The longest note an availability outcome records.
+pub const MAX_OUTCOME_NOTE_BYTES: usize = 120;
+/// The most units one listing may carry, and the most one quote may ask for.
+pub const MAX_QUANTITY: u64 = 100_000;
+
+/// What went wrong loading a document. A `&'static str` on purpose: the caps are
+/// source-controlled, so every reason is a fixed sentence and no document's own bytes
+/// can ever reach a refusal string.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RecordError(pub &'static str);
+
+impl std::fmt::Display for RecordError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.0)
+    }
+}
+
+impl std::error::Error for RecordError {}
+
+// ---- the catalog (§5.1, D-E6-12, answers 9-10) -----------------------------
+
+/// **The policy decision** — what a purchase of this entry becomes (D-E6-12).
+///
+/// Decided per entry by category and gameplay significance, with price only as a
+/// hint (answer 9): important, serialized, restricted, upgradeable or stealable gear
+/// is [`Representation::Asset`]; ammunition, drugs, reagents and commodities are
+/// [`Representation::Instrument`]; licences and programs are
+/// [`Representation::Entitlement`]; cyberware is [`Representation::Installed`].
+///
+/// [`Representation::Lot`] is **policy only in E6c** and no `Lot` record exists:
+/// doc 10b §3.2 (Q2D) puts the lot in `mush-inventory` as the single source of
+/// quantity truth, with a different field list (`commodity: CanonicalId`, a
+/// `Lineage`, and explicitly **not** `legal` or `custody`), and E7 cut 2 owns it.
+/// A listing whose entry declares `Lot` is therefore refused at creation rather than
+/// producing a second, divergent definition of the same concept.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Representation {
+    /// A fungible commodity: an `InstrumentKind::Commodity` account line.
+    Instrument,
+    /// Provenance-bearing stock. **E7 cut 2's** (`mush-inventory`); policy only here.
+    Lot,
+    /// An `EconomicAsset` with title, custody and encumbrances (E3).
+    Asset,
+    /// An `InstrumentKind::Entitlement` line — licences, programs.
+    Entitlement,
+    /// Becomes an installed record on installation (08f §4.4, D-E6-16).
+    Installed,
+}
+
+impl Representation {
+    /// The config/pack word.
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Representation::Instrument => "instrument",
+            Representation::Lot => "lot",
+            Representation::Asset => "asset",
+            Representation::Entitlement => "entitlement",
+            Representation::Installed => "installed",
+        }
+    }
+    /// Whether E6c can actually deliver this representation (OPEN 1: `Lot` cannot).
+    #[must_use]
+    pub fn is_stockable(self) -> bool {
+        !matches!(self, Representation::Lot)
+    }
+}
+
+/// How legal the goods are where they are sold. Recorded, rendered and filtered on;
+/// **never** enforced by this crate — jurisdiction is a policy test at transaction
+/// time (10b §3.2), and the ruleset owns it.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Legality {
+    /// Openly sold.
+    #[default]
+    Legal,
+    /// Sold under a licence.
+    Restricted,
+    /// Not sold openly at all.
+    Forbidden,
+}
+
+impl Legality {
+    /// The config/pack word.
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Legality::Legal => "legal",
+            Legality::Restricted => "restricted",
+            Legality::Forbidden => "forbidden",
+        }
+    }
+    /// Parse a pack or filter word.
+    #[must_use]
+    pub fn parse(s: &str) -> Option<Legality> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "legal" => Some(Legality::Legal),
+            "restricted" => Some(Legality::Restricted),
+            "forbidden" => Some(Legality::Forbidden),
+            _ => None,
+        }
+    }
+}
+
+/// Whether getting hold of this at all is itself uncertain (answer 11).
+///
+/// `mush-market` holds the **shape** and the recorded outcome and rolls nothing: the
+/// dice are the ruleset's, behind the wiring-frozen
+/// [`AvailabilityProvider`](crate::AvailabilityProvider) table.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AvailabilityRule {
+    /// Stocked legal goods: no test at all.
+    #[default]
+    None,
+    /// Scarce or restricted goods: an engine-resolved, **recorded** test.
+    Test {
+        /// The ruleset's own skill label (opaque here).
+        skill: SmolStr,
+        /// The hits the test must reach.
+        threshold: u8,
+        /// The seconds a failed test bars a retry for; `0` means none.
+        interval: i64,
+    },
+    /// Exceptional or authored availability: a storyteller attests it. Rides the
+    /// contract's existing `Attestation` condition, never a new one.
+    Attested,
+}
+
+impl AvailabilityRule {
+    /// Whether the buyer has to pass a test before a quote binds.
+    #[must_use]
+    pub fn needs_test(&self) -> bool {
+        matches!(self, AvailabilityRule::Test { .. })
+    }
+}
+
+/// The **recorded** result of one availability test — stored on the quote and
+/// binding thereafter (answer 11). A re-read never re-rolls.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "AvailabilityOutcomeWire")]
+pub struct AvailabilityOutcome {
+    /// Whether the goods can be got at all.
+    pub passed: bool,
+    /// The hits the engine recorded.
+    pub hits: u8,
+    /// The threshold it was against.
+    pub threshold: u8,
+    /// When, on the wall clock.
+    pub at: i64,
+    /// A short, bounded engine note ("6 dice, 2 hits").
+    pub note: SmolStr,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct AvailabilityOutcomeWire {
+    passed: bool,
+    #[serde(default)]
+    hits: u8,
+    #[serde(default)]
+    threshold: u8,
+    #[serde(default)]
+    at: i64,
+    #[serde(default)]
+    note: SmolStr,
+}
+
+impl TryFrom<AvailabilityOutcomeWire> for AvailabilityOutcome {
+    type Error = RecordError;
+
+    fn try_from(w: AvailabilityOutcomeWire) -> Result<AvailabilityOutcome, RecordError> {
+        if w.threshold > MAX_AVAILABILITY_THRESHOLD {
+            return Err(RecordError("an availability threshold is out of range"));
+        }
+        if w.note.len() > MAX_OUTCOME_NOTE_BYTES {
+            return Err(RecordError("an availability note is too long"));
+        }
+        Ok(AvailabilityOutcome {
+            passed: w.passed,
+            hits: w.hits,
+            threshold: w.threshold,
+            at: w.at,
+            note: w.note,
+        })
+    }
+}
+
+/// `market:catalog:{pack}:{code}` — one catalog entry (§5.1, answers 9–10).
+///
+/// A vendor produces offers **from** an entry and never mutates one. `baseline` is a
+/// **reference price, never an intrinsic one** (doc 08 §9.4 / D9): nothing in this
+/// crate charges it, and a listing names its own price.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "CatalogEntryWire")]
+pub struct CatalogEntry {
+    /// The economy's opaque catalog reference — `{ ruleset, code }`.
+    pub catalog: CatalogRef,
+    /// The content pack this entry came from.
+    pub pack: SmolStr,
+    /// Bumped by the pack; a quote records the version it priced against.
+    pub definition_version: u32,
+    /// Display name.
+    pub name: SmolStr,
+    /// A **reference** price. Never charged by this crate.
+    pub baseline: Option<Amount>,
+    /// Whether getting hold of it is itself uncertain.
+    pub availability: AvailabilityRule,
+    /// How legal it is. Recorded and filtered on; never enforced here.
+    pub legality: Legality,
+    /// **The policy decision** (D-E6-12).
+    pub representation: Representation,
+    /// Whether many of it are one line.
+    pub stackable: bool,
+    /// Bounded, sorted tags.
+    pub tags: BTreeSet<SmolStr>,
+    /// A book/page citation, never mechanics.
+    pub rules_ref: Option<SmolStr>,
+}
+
+impl CatalogEntry {
+    /// The document key component this entry occupies: `{pack}:{code}`.
+    #[must_use]
+    pub fn slug(&self) -> String {
+        format!("{}:{}", self.pack, self.catalog.code)
+    }
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct CatalogEntryWire {
+    catalog: CatalogRef,
+    pack: SmolStr,
+    #[serde(default = "one")]
+    definition_version: u32,
+    #[serde(default)]
+    name: SmolStr,
+    #[serde(default)]
+    baseline: Option<Amount>,
+    #[serde(default)]
+    availability: AvailabilityRule,
+    #[serde(default)]
+    legality: Legality,
+    representation: Representation,
+    #[serde(default)]
+    stackable: bool,
+    #[serde(default)]
+    tags: BTreeSet<SmolStr>,
+    #[serde(default)]
+    rules_ref: Option<SmolStr>,
+}
+
+fn one() -> u32 {
+    1
+}
+
+/// The one place a catalog entry's invariants live — run by the wire on load and by
+/// the pack loader on write, so a document and a pack cannot disagree about what a
+/// legal entry is.
+///
+/// # Errors
+///
+/// [`RecordError`] naming the first violated cap.
+pub fn check_entry(e: &CatalogEntry) -> Result<(), RecordError> {
+    if e.pack.trim().is_empty() || e.pack.len() > MAX_PACK_BYTES {
+        return Err(RecordError("a catalog entry names no usable pack"));
+    }
+    if !e
+        .pack
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_'))
+    {
+        return Err(RecordError("a pack name holds a character a key cannot"));
+    }
+    if e.catalog.ruleset.trim().is_empty()
+        || e.catalog.ruleset.len() > MAX_CATALOG_CODE_BYTES
+        || e.catalog.code.trim().is_empty()
+        || e.catalog.code.len() > MAX_CATALOG_CODE_BYTES
+    {
+        return Err(RecordError(
+            "a catalog entry names no usable catalogue code",
+        ));
+    }
+    if !e
+        .catalog
+        .code
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_'))
+    {
+        return Err(RecordError(
+            "a catalogue code holds a character a key cannot",
+        ));
+    }
+    if e.name.trim().is_empty() || e.name.len() > MAX_ENTRY_NAME_BYTES {
+        return Err(RecordError("a catalog entry's name is empty or too long"));
+    }
+    if e.definition_version == 0 {
+        return Err(RecordError("a catalog entry's definition version is zero"));
+    }
+    if e.baseline.is_some_and(|b| b.minor() < 0) {
+        return Err(RecordError("a catalog entry's baseline is negative"));
+    }
+    if e.tags.len() > MAX_ENTRY_TAGS
+        || e.tags
+            .iter()
+            .any(|t| t.trim().is_empty() || t.len() > MAX_TAG_BYTES)
+    {
+        return Err(RecordError("a catalog entry's tags are malformed"));
+    }
+    if e.rules_ref
+        .as_ref()
+        .is_some_and(|r| r.len() > MAX_RULES_REF_BYTES)
+    {
+        return Err(RecordError("a catalog entry's rules reference is too long"));
+    }
+    if let AvailabilityRule::Test {
+        skill,
+        threshold,
+        interval,
+    } = &e.availability
+    {
+        if skill.trim().is_empty() || skill.len() > MAX_SKILL_BYTES {
+            return Err(RecordError("an availability test names no usable skill"));
+        }
+        if *threshold == 0 || *threshold > MAX_AVAILABILITY_THRESHOLD {
+            return Err(RecordError("an availability threshold is out of range"));
+        }
+        if *interval < 0 || *interval > 365 * 86_400 {
+            return Err(RecordError("an availability interval is out of range"));
+        }
+    }
+    Ok(())
+}
+
+impl TryFrom<CatalogEntryWire> for CatalogEntry {
+    type Error = RecordError;
+
+    fn try_from(w: CatalogEntryWire) -> Result<CatalogEntry, RecordError> {
+        let e = CatalogEntry {
+            catalog: w.catalog,
+            pack: w.pack,
+            definition_version: w.definition_version,
+            name: w.name,
+            baseline: w.baseline,
+            availability: w.availability,
+            legality: w.legality,
+            representation: w.representation,
+            stackable: w.stackable,
+            tags: w.tags,
+            rules_ref: w.rules_ref,
+        };
+        check_entry(&e)?;
+        Ok(e)
+    }
+}
+
+// ---- listings (§5.2) -------------------------------------------------------
+
+/// Who may see a listing at all.
+///
+/// `Hidden` is the projection's own boundary: a hidden listing contributes **nothing**
+/// to band, depth, volume or last trade, not even a rounding difference.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MarketVisibility {
+    /// Anyone may see it, and it is in the public projection.
+    #[default]
+    Public,
+    /// Only the seller (and staff) may see it, and it is in **no** projection.
+    Hidden,
+}
+
+/// Where the goods come from (§5.2).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Supply {
+    /// Held in the vendor's storefront vault, right now.
+    Stock {
+        /// The vault.
+        vault: VaultId,
+    },
+    /// Quoted by a registered NPC market maker inside its budgets.
+    Market {
+        /// Which maker.
+        source: MarketSourceId,
+    },
+    /// A delayed delivery: the contract carries the lead time as a `Before`
+    /// deadline, and nothing is stocked today.
+    Procurement {
+        /// When it can be delivered by.
+        lead: EconomicDeadline,
+    },
+}
+
+/// `market:listing:{id}` — one published intention to sell (§5.2).
+///
+/// It holds no money and reserves nothing. `quantity` decrements only at contract
+/// **activation** (OPEN 4), which is the single serialization point that makes
+/// oversell unreachable.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "ListingWire")]
+pub struct Listing {
+    /// Identity (never reused).
+    pub id: ListingId,
+    /// Who is selling.
+    pub seller: PrincipalId,
+    /// The vendor record behind the seller.
+    pub vendor: VendorId,
+    /// The venue — the projection's second key.
+    pub market: MarketId,
+    /// What is for sale.
+    pub catalog: CatalogRef,
+    /// The catalog entry version this listing was published against.
+    pub definition_version: u32,
+    /// Where the goods come from.
+    pub source: Supply,
+    /// The **specific** titled object this listing conveys, for a
+    /// `Representation::Asset`. `None` for every other representation.
+    #[serde(default)]
+    pub object: Option<ObjId>,
+    /// The asking price, per unit.
+    pub price: Amount,
+    /// How many are left.
+    pub quantity: u64,
+    /// Whether it is in the public projection at all.
+    pub visibility: MarketVisibility,
+    /// When the listing lapses, on its own clock.
+    pub expires: EconomicDeadline,
+    /// Bumped by every write; a quote is bound to it.
+    pub revision: u64,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct ListingWire {
+    id: u64,
+    seller: PrincipalId,
+    vendor: u64,
+    market: MarketId,
+    catalog: CatalogRef,
+    #[serde(default = "one")]
+    definition_version: u32,
+    source: Supply,
+    #[serde(default)]
+    object: Option<ObjId>,
+    price: Amount,
+    #[serde(default)]
+    quantity: u64,
+    #[serde(default)]
+    visibility: MarketVisibility,
+    expires: EconomicDeadline,
+    #[serde(default)]
+    revision: u64,
+}
+
+impl TryFrom<ListingWire> for Listing {
+    type Error = RecordError;
+
+    fn try_from(w: ListingWire) -> Result<Listing, RecordError> {
+        // D-E6-4's rule applied one layer up: a `System` principal can never be a
+        // contract party, so a listing whose seller is one could never settle. It is
+        // refused **on the wire**, so no document can re-introduce it.
+        if matches!(w.seller, PrincipalId::System(_)) {
+            return Err(RecordError("a listing names a system seller"));
+        }
+        if w.price.minor() <= 0 {
+            return Err(RecordError("a listing asks nothing"));
+        }
+        if w.quantity == 0 || w.quantity > MAX_QUANTITY {
+            return Err(RecordError("a listing's quantity is out of range"));
+        }
+        if w.catalog.code.trim().is_empty() || w.catalog.code.len() > MAX_CATALOG_CODE_BYTES {
+            return Err(RecordError("a listing names no usable catalogue code"));
+        }
+        if w.definition_version == 0 {
+            return Err(RecordError("a listing's definition version is zero"));
+        }
+        // An `Asset` listing conveys exactly one named object; every other shape
+        // names none. That is the invariant `TitleTransfer` needs and the reason a
+        // quantity above one can never mint a second title.
+        if w.object.is_some() && w.quantity != 1 {
+            return Err(RecordError(
+                "a listing that names an object sells exactly one",
+            ));
+        }
+        Ok(Listing {
+            id: ListingId(w.id),
+            seller: w.seller,
+            vendor: VendorId(w.vendor),
+            market: w.market,
+            catalog: w.catalog,
+            definition_version: w.definition_version,
+            source: w.source,
+            object: w.object,
+            price: w.price,
+            quantity: w.quantity,
+            visibility: w.visibility,
+            expires: w.expires,
+            revision: w.revision,
+        })
+    }
+}
+
+// ---- quotes (§5.2, D-E6-13) ------------------------------------------------
+
+/// The declared state a quote was priced against (D-E6-13, scenario 29; OPEN 2).
+///
+/// `mush_core::RevisionSet` — which 08f §5.2 named — is a `BTreeMap<RevisionKey, u64>`
+/// in K's **action-gate** vocabulary, not an economy or market type; E6b hit exactly
+/// this and landed per-record stamps
+/// ([`QuoteObserved`](../../ruleset_shadowrun/economy/fence_record/struct.QuoteObserved.html)).
+/// This is that decision reused: three declared stamps, each compared for
+/// **equality**, and a difference refuses deterministically rather than re-pricing.
+///
+/// The `artefact` half is deliberately **not** an `EconomicAsset.revision`. E6b's
+/// verify fold (D1) proved that construct is an oracle — every asset op bumps the
+/// revision, a **covert** theft report included, so binding to it publishes a hidden
+/// fact as a state change the holder can read. It is a stable hash of the
+/// **declared** catalogue code instead, which no hidden fact can move.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ObservedRevisions {
+    /// The catalog entry's version at pricing time.
+    pub definition_version: u32,
+    /// The listing's own revision at pricing time.
+    pub listing: u64,
+    /// A stable hash of the declared catalogue code the quote conveys, when the
+    /// listing conveys a titled artefact at all.
+    pub artefact: Option<u64>,
+}
+
+/// A stable, declaration-only hash — the same FNV-1a E6b's fence uses, so the two
+/// layers stamp the same declared fact the same way.
+#[must_use]
+pub fn declared_hash(s: &str) -> u64 {
+    let mut h: u64 = 1_469_598_103_934_665_603;
+    for b in s.as_bytes() {
+        h ^= u64::from(*b);
+        h = h.wrapping_mul(1_099_511_628_211);
+    }
+    h
+}
+
+/// What a settled quote records — the **trade tape row** the aggregate projection
+/// folds (§5.3).
+///
+/// The row is an *index*, never the authority: `projection` re-asks the economy
+/// whether the named contract really is `ContractState::Settled { transaction }` with
+/// this transaction, so last trade and volume come from settled journal transactions
+/// and from nothing else. An unsettled or withdrawn offer is invisible by
+/// construction, because it carries no row at all.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Settlement {
+    /// The transaction the contract's terminal transition landed on.
+    pub transaction: mush_economy::TransactionId,
+    /// When, on the wall clock.
+    pub at: i64,
+}
+
+/// `market:quote:{id}` — one buyer's bound price (§5.2, D-E6-13, answer 11).
+///
+/// **A quote reserves nothing** (OPEN 4; 08i §4 rule 1's exemption explicitly does not
+/// cover reservations or mechanical offers, and doc 10 T4 keeps E4 `Hold`s
+/// money-only). The listing's `quantity` decrements at contract **activation** and
+/// nowhere else, so two quotes on the last unit are a race the economy serializes:
+/// the loser refuses at `+market/accept` with the same deterministic refusal a stale
+/// quote gets, and nothing is charged.
+///
+/// The terms are **denormalized** onto the quote deliberately: a quote must price
+/// identically after its listing moved or lapsed, and a settled quote is the trade
+/// tape row the projection folds, which has to describe itself when the listing is
+/// gone.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "QuoteWire")]
+pub struct Quote {
+    /// Identity (never reused).
+    pub id: QuoteId,
+    /// The listing it was asked against.
+    pub listing: ListingId,
+    /// Who asked.
+    pub buyer: PrincipalId,
+    /// Who is selling (denormalized; the projection's public test asks about them).
+    pub seller: PrincipalId,
+    /// What is being bought (denormalized).
+    pub catalog: CatalogRef,
+    /// Where (denormalized) — the projection's second key.
+    pub market: MarketId,
+    /// Whether the listing was in the public projection (denormalized).
+    pub visibility: MarketVisibility,
+    /// How the listing was supplied (denormalized) — a maker's own budget is charged
+    /// against this.
+    pub source: Option<MarketSourceId>,
+    /// The unit price, frozen.
+    pub price: Amount,
+    /// How many units.
+    pub quantity: u64,
+    /// The catalog entry version priced against.
+    pub definition_version: u32,
+    /// Every declared stamp the price was bound to.
+    pub observed: ObservedRevisions,
+    /// When it lapses — **its clock is declared** (answer 11, D-E6-13).
+    pub expires: EconomicDeadline,
+    /// The recorded availability test, when the entry demanded one.
+    #[serde(default)]
+    pub availability: Option<AvailabilityOutcome>,
+    /// The contract, once `+market/accept` drafted one.
+    #[serde(default)]
+    pub contract: Option<ContractId>,
+    /// The trade tape row, once that contract settled.
+    #[serde(default)]
+    pub settled: Option<Settlement>,
+    /// Bumped by every write.
+    pub revision: u64,
+}
+
+impl Quote {
+    /// What the whole quote costs — unit price times quantity, saturating.
+    #[must_use]
+    pub fn total(&self) -> Amount {
+        Amount::from_minor(
+            self.price
+                .minor()
+                .saturating_mul(i64::try_from(self.quantity).unwrap_or(i64::MAX)),
+        )
+    }
+    /// Whether this quote is a settled **trade**, not an open offer.
+    #[must_use]
+    pub fn is_trade(&self) -> bool {
+        self.settled.is_some()
+    }
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct QuoteWire {
+    id: u64,
+    listing: u64,
+    buyer: PrincipalId,
+    seller: PrincipalId,
+    catalog: CatalogRef,
+    market: MarketId,
+    #[serde(default)]
+    visibility: MarketVisibility,
+    #[serde(default)]
+    source: Option<MarketSourceId>,
+    price: Amount,
+    #[serde(default)]
+    quantity: u64,
+    #[serde(default = "one")]
+    definition_version: u32,
+    observed: ObservedRevisions,
+    expires: EconomicDeadline,
+    #[serde(default)]
+    availability: Option<AvailabilityOutcome>,
+    #[serde(default)]
+    contract: Option<u64>,
+    #[serde(default)]
+    settled: Option<Settlement>,
+    #[serde(default)]
+    revision: u64,
+}
+
+impl TryFrom<QuoteWire> for Quote {
+    type Error = RecordError;
+
+    fn try_from(w: QuoteWire) -> Result<Quote, RecordError> {
+        if matches!(w.buyer, PrincipalId::System(_)) || matches!(w.seller, PrincipalId::System(_)) {
+            return Err(RecordError("a quote names a system principal"));
+        }
+        if w.price.minor() <= 0 {
+            return Err(RecordError("a quote offers nothing"));
+        }
+        if w.quantity == 0 || w.quantity > MAX_QUANTITY {
+            return Err(RecordError("a quote's quantity is out of range"));
+        }
+        if w.catalog.code.trim().is_empty() || w.catalog.code.len() > MAX_CATALOG_CODE_BYTES {
+            return Err(RecordError("a quote names no usable catalogue code"));
+        }
+        if w.definition_version == 0 {
+            return Err(RecordError("a quote's definition version is zero"));
+        }
+        // A settled quote is a trade-tape row and a trade needs the contract it
+        // settled on: a row naming no contract could never be re-checked against the
+        // economy, which is the one thing that makes the projection's inputs
+        // *journal* transactions rather than market documents.
+        if w.settled.is_some() && w.contract.is_none() {
+            return Err(RecordError("a settled quote names no contract"));
+        }
+        Ok(Quote {
+            id: QuoteId(w.id),
+            listing: ListingId(w.listing),
+            buyer: w.buyer,
+            seller: w.seller,
+            catalog: w.catalog,
+            market: w.market,
+            visibility: w.visibility,
+            source: w.source,
+            price: w.price,
+            quantity: w.quantity,
+            definition_version: w.definition_version,
+            observed: w.observed,
+            expires: w.expires,
+            availability: w.availability,
+            contract: w.contract.map(ContractId),
+            settled: w.settled,
+            revision: w.revision,
+        })
+    }
+}
+
+// ---- vendors (§5.2, B5) ----------------------------------------------------
+
+/// A vendor's lifecycle. A retired vendor stops quoting; its live contracts settle
+/// through E4 untouched (B10).
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VendorStatus {
+    /// Trading.
+    #[default]
+    Active,
+    /// Retired. Quotes nothing; live contracts still settle.
+    Retired,
+}
+
+/// `market:vendor:{id}` — a staff-registered vendor **organization** (B5).
+///
+/// The neutral generalization of E6b's `@sr/fence <org>=<vault>`, and the table
+/// `with_party_caps` is fed from: it holds no money and no authority of its own, and
+/// all it adds is that the world knows this organization trades, from which vault,
+/// into which account, in which market.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "VendorWire")]
+pub struct Vendor {
+    /// Identity (never reused).
+    pub id: VendorId,
+    /// The organization that is the vendor.
+    pub org: OrgId,
+    /// The venue it trades in.
+    pub market: MarketId,
+    /// Its own cash account.
+    pub account: AccountId,
+    /// Its storefront vault — where a delivered object lands.
+    pub vault: VaultId,
+    /// Its shop sign. The organization's own name renders through the economy's
+    /// hidden-org renderer and never from here.
+    pub name: SmolStr,
+    /// The permille of an entry's baseline it pays a player for goods
+    /// (`+market/sell`), clamped to 0..=1000.
+    pub buy_permille: u32,
+    /// Lifecycle.
+    pub status: VendorStatus,
+    /// Bumped by every write.
+    pub revision: u64,
+}
+
+impl Vendor {
+    /// Whether this vendor may issue new offers at all.
+    #[must_use]
+    pub fn is_trading(&self) -> bool {
+        matches!(self.status, VendorStatus::Active)
+    }
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct VendorWire {
+    id: u64,
+    org: OrgId,
+    market: MarketId,
+    account: AccountId,
+    vault: VaultId,
+    #[serde(default)]
+    name: SmolStr,
+    #[serde(default)]
+    buy_permille: u32,
+    #[serde(default)]
+    status: VendorStatus,
+    #[serde(default)]
+    revision: u64,
+}
+
+impl TryFrom<VendorWire> for Vendor {
+    type Error = RecordError;
+
+    fn try_from(w: VendorWire) -> Result<Vendor, RecordError> {
+        if w.name.len() > MAX_VENDOR_NAME_BYTES {
+            return Err(RecordError("a vendor's name is too long"));
+        }
+        if w.buy_permille > 1_000 {
+            return Err(RecordError("a vendor's buy rate is out of range"));
+        }
+        Ok(Vendor {
+            id: VendorId(w.id),
+            org: w.org,
+            market: w.market,
+            account: w.account,
+            vault: w.vault,
+            name: w.name,
+            buy_permille: w.buy_permille,
+            status: w.status,
+            revision: w.revision,
+        })
+    }
+}
+
+// ---- NPC market makers (§5.2, doc 10 7A, D-E6-15) --------------------------
+
+/// `market:source:{id}` — an NPC market maker with **explicit, exhaustible** budgets
+/// (doc 10 7A, D-E6-15).
+///
+/// Rejected by 7A and unreachable here: an infinite system market maker. A maker is
+/// never a `System` party (D-E6-4), never holds an unlimited account, and nothing
+/// recapitalizes it without an attributed act. "Mediocre prices is a trading policy,
+/// not a substitute for funding": `spread` moves the price and never the funding.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "MarketSourceWire")]
+pub struct MarketSource {
+    /// Identity (never reused).
+    pub id: MarketSourceId,
+    /// The organization behind it. Never a `System` principal.
+    pub principal: OrgId,
+    /// The venue it makes a market in.
+    pub market: MarketId,
+    /// Its cash account — the whole of its money.
+    pub cash: AccountId,
+    /// Its inventory vault.
+    pub inventory: VaultId,
+    /// Its price spread over the catalog baseline, in permille.
+    pub spread: i64,
+    /// The most it may sell, in minor units, per window.
+    pub volume_budget: Amount,
+    /// The most it may lose against baseline, in minor units, per window.
+    pub loss_budget: Amount,
+    /// The window length in seconds.
+    pub window: i64,
+    /// How much it has sold in the current window.
+    pub volume_used: Amount,
+    /// How much it has lost against baseline in the current window.
+    pub loss_used: Amount,
+    /// When the current window began, on the wall clock.
+    pub window_started: i64,
+    /// Whether staff halted it. A halted maker quotes nothing; its outstanding
+    /// quotes expire and settle nothing.
+    pub halted: bool,
+    /// Bumped by every write.
+    pub revision: u64,
+}
+
+impl MarketSource {
+    /// Roll the window forward when it has lapsed, zeroing the per-window counters.
+    /// Pure — the caller writes the record.
+    #[must_use]
+    pub fn rolled(&self, now: i64) -> MarketSource {
+        if self.window <= 0 || now < self.window_started.saturating_add(self.window) {
+            return self.clone();
+        }
+        MarketSource {
+            volume_used: Amount::ZERO,
+            loss_used: Amount::ZERO,
+            window_started: now,
+            ..self.clone()
+        }
+    }
+    /// Whether the maker may quote `total` more minor units right now, and why not.
+    ///
+    /// Every budget is checked **before the quote is issued**, never at accept
+    /// (D-E6-15): a maker that has run out simply stops quoting, and there is no
+    /// half-committed state to unwind.
+    #[must_use]
+    pub fn refuses(&self, total: Amount, loss: Amount) -> Option<&'static str> {
+        if self.halted {
+            return Some("halted");
+        }
+        if self.volume_used.minor().saturating_add(total.minor()) > self.volume_budget.minor() {
+            return Some("volume");
+        }
+        if self.loss_used.minor().saturating_add(loss.minor().max(0)) > self.loss_budget.minor() {
+            return Some("loss");
+        }
+        None
+    }
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct MarketSourceWire {
+    id: u64,
+    principal: OrgId,
+    market: MarketId,
+    cash: AccountId,
+    inventory: VaultId,
+    #[serde(default)]
+    spread: i64,
+    #[serde(default = "zero")]
+    volume_budget: Amount,
+    #[serde(default = "zero")]
+    loss_budget: Amount,
+    #[serde(default)]
+    window: i64,
+    #[serde(default = "zero")]
+    volume_used: Amount,
+    #[serde(default = "zero")]
+    loss_used: Amount,
+    #[serde(default)]
+    window_started: i64,
+    #[serde(default)]
+    halted: bool,
+    #[serde(default)]
+    revision: u64,
+}
+
+fn zero() -> Amount {
+    Amount::ZERO
+}
+
+impl TryFrom<MarketSourceWire> for MarketSource {
+    type Error = RecordError;
+
+    fn try_from(w: MarketSourceWire) -> Result<MarketSource, RecordError> {
+        if !(-1_000..=1_000).contains(&w.spread) {
+            return Err(RecordError("a maker's spread is out of range"));
+        }
+        if w.volume_budget.minor() < 0 || w.loss_budget.minor() < 0 {
+            return Err(RecordError("a maker's budget is negative"));
+        }
+        if w.volume_used.minor() < 0 || w.loss_used.minor() < 0 {
+            return Err(RecordError("a maker's usage is negative"));
+        }
+        if !(60..=365 * 86_400).contains(&w.window) {
+            return Err(RecordError("a maker's window is out of range"));
+        }
+        Ok(MarketSource {
+            id: MarketSourceId(w.id),
+            principal: w.principal,
+            market: w.market,
+            cash: w.cash,
+            inventory: w.inventory,
+            spread: w.spread,
+            volume_budget: w.volume_budget,
+            loss_budget: w.loss_budget,
+            window: w.window,
+            volume_used: w.volume_used,
+            loss_used: w.loss_used,
+            window_started: w.window_started,
+            halted: w.halted,
+            revision: w.revision,
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entry_json() -> serde_json::Value {
+        serde_json::json!({
+            "catalog": { "ruleset": "sr", "code": "ares.predator" },
+            "pack": "sr.core", "definition_version": 1, "name": "Ares Predator V",
+            "baseline": 725, "representation": "asset", "legality": "restricted",
+        })
+    }
+
+    #[test]
+    fn a_catalog_entry_round_trips_and_its_caps_are_on_the_wire() {
+        let e: CatalogEntry = serde_json::from_value(entry_json()).expect("loads");
+        assert_eq!(e.representation, Representation::Asset);
+        assert_eq!(e.legality, Legality::Restricted);
+        let mut bad = entry_json();
+        bad["name"] = serde_json::json!("x".repeat(MAX_ENTRY_NAME_BYTES + 1));
+        assert!(serde_json::from_value::<CatalogEntry>(bad).is_err());
+        let mut bad = entry_json();
+        bad["definition_version"] = serde_json::json!(0);
+        assert!(serde_json::from_value::<CatalogEntry>(bad).is_err());
+        let mut bad = entry_json();
+        bad["catalog"]["code"] = serde_json::json!("has space");
+        assert!(serde_json::from_value::<CatalogEntry>(bad).is_err());
+    }
+
+    #[test]
+    fn a_system_seller_never_loads() {
+        let bad = serde_json::json!({
+            "id": 1, "seller": { "System": "sr.chargen" }, "vendor": 1, "market": "seattle",
+            "catalog": { "ruleset": "sr", "code": "ammo" }, "source": { "stock": { "vault": 1 } },
+            "price": 10, "quantity": 5, "expires": { "clock": "RealUtc", "at": 10 },
+        });
+        assert!(serde_json::from_value::<Listing>(bad).is_err());
+    }
+
+    #[test]
+    fn a_settled_quote_naming_no_contract_never_loads() {
+        let bad = serde_json::json!({
+            "id": 1, "listing": 1, "buyer": { "Object": 5 }, "seller": { "Organization": 1 },
+            "catalog": { "ruleset": "sr", "code": "ammo" }, "market": "seattle",
+            "price": 10, "quantity": 1, "observed": { "definition_version": 1, "listing": 1, "artefact": null },
+            "expires": { "clock": "RealUtc", "at": 10 },
+            "settled": { "transaction": 3, "at": 1 },
+        });
+        assert!(serde_json::from_value::<Quote>(bad).is_err());
+    }
+
+    #[test]
+    fn a_makers_budgets_refuse_before_the_quote_is_issued() {
+        let m = MarketSource {
+            id: MarketSourceId(1),
+            principal: OrgId(1),
+            market: MarketId::new("seattle").expect("valid"),
+            cash: AccountId(1),
+            inventory: VaultId(1),
+            spread: 0,
+            volume_budget: Amount::from_minor(100),
+            loss_budget: Amount::from_minor(10),
+            window: 3_600,
+            volume_used: Amount::from_minor(95),
+            loss_used: Amount::ZERO,
+            window_started: 0,
+            halted: false,
+            revision: 1,
+        };
+        assert_eq!(m.refuses(Amount::from_minor(4), Amount::ZERO), None);
+        assert_eq!(
+            m.refuses(Amount::from_minor(6), Amount::ZERO),
+            Some("volume")
+        );
+        assert_eq!(
+            m.refuses(Amount::from_minor(1), Amount::from_minor(11)),
+            Some("loss")
+        );
+        let halted = MarketSource {
+            halted: true,
+            ..m.clone()
+        };
+        assert_eq!(
+            halted.refuses(Amount::ZERO, Amount::ZERO),
+            Some("halted"),
+            "a halted maker quotes nothing at all"
+        );
+        let rolled = m.rolled(m.window_started + m.window + 1);
+        assert_eq!(rolled.volume_used, Amount::ZERO);
+    }
+}

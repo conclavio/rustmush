@@ -40,9 +40,11 @@
 //! | [`chargen`] | the approval allotment and `@sr/migrate` |
 //! | [`observer`] | the board's ear on the economy |
 //! | [`commands`] | `+run`, `+lifestyle`, `+nuyen`, `@sr` |
+//! | [`catalog`] | E6c: the `sr.core` starter pack and the three `mush-market` tables |
 
 pub mod board;
 pub mod boot;
+pub mod catalog;
 pub mod chargen;
 pub mod commands;
 pub mod config;
@@ -56,6 +58,10 @@ pub mod store;
 use mush_core::{Role, World, perm};
 
 pub use board::{BoardError, NO_SUCH_RUN, PostError, RunSplit, SplitSlot};
+pub use catalog::{
+    MAX_PACK_BYTES, SR_CORE_PACK, SrAvailability, SrCatalogSource, SrDelivery, baseline_minor,
+    goods_instrument,
+};
 pub use config::{
     BOARD_CAP, BOARD_PAGE, BOARD_TTL_SECS, FAUCET_CHARGEN, FAUCET_MIGRATION, FENCE_DELAY_MAX_SECS,
     FENCE_DELAY_MIN_SECS, FENCE_QUOTE_TTL_SECS, LIFESTYLE_CATCH_UP, LifestyleTier,

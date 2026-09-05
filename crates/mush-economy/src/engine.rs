@@ -947,8 +947,22 @@ fn resolve_asset_ops(
                 // as before, and so is one still carrying claims: a lien outlives the
                 // write-off it was recorded against, and a fresh title over it would
                 // silently drop somebody's security.
+                //
+                // E6c B4(b) — **E3-C36** (08g §3 #2, filed "before E6c — titles every
+                // purchase"). The arm above admits a re-issue over a `WrittenOff`
+                // asset with no encumbrances and **never consulted `a.frozen`**: the
+                // frozen check sits in the non-`Title` arm below, so a title could be
+                // minted straight over a frozen record. That is reachable without any
+                // staff act — boot's principal-gone sweep freezes an asset whose owner
+                // has vanished, and a written-off one is exactly the shape it can
+                // catch — and it would hand a fresh, unfrozen title to whoever asked
+                // for the object next, discarding the reason the freeze was placed.
+                // A frozen record is refused here; staff `@asset/unfreeze` first. The
+                // mitigation that carries `prev.frozen` onto the new generation stays
+                // where it is, for every path this one does not cover.
                 let previous = match snapshot.asset(object) {
                     None => None,
+                    Some(a) if a.frozen => return Err(EconomyError::AssetFrozen(object)),
                     Some(a)
                         if a.lifecycle == AssetLifecycle::WrittenOff
                             && a.encumbrances.is_empty() =>

@@ -133,7 +133,26 @@ pub fn price(
     catalog_code: &str,
     settlement: FenceSettlement,
 ) -> Option<(Amount, Vec<PriceFactor>)> {
-    let baseline = cfg.baseline_minor(catalog_code)?;
+    price_from(cfg.baseline_minor(catalog_code)?, cfg, fence, settlement)
+}
+
+/// The same arithmetic over an **already-resolved** baseline (E6c B9).
+///
+/// E6b's basis was the source-controlled `[shadowrun.economy.fence_baseline]` table
+/// keyed on `CatalogRef.code`, because no catalogue existed. E6c's does, and
+/// `CatalogEntry.baseline` is the reference price (doc 08 §9.4 / D9); the config
+/// table is kept only as an **override**, asked first
+/// ([`crate::economy::catalog::baseline_minor`]). Nothing else about the basis moved:
+/// three declared inputs and no more, a hidden fact contributing **no factor at all**
+/// (D-E6-11), and a code with neither an override nor an entry still refusing rather
+/// than being guessed.
+#[must_use]
+pub fn price_from(
+    baseline: i64,
+    cfg: &SrEconomyConfig,
+    fence: &SrFence,
+    settlement: FenceSettlement,
+) -> Option<(Amount, Vec<PriceFactor>)> {
     let rate = i64::from(match settlement {
         FenceSettlement::Immediate => cfg.fence_rate_immediate,
         FenceSettlement::Consign { .. } => cfg.fence_rate_consign,
@@ -404,7 +423,13 @@ pub fn quote(
     } else {
         FenceSettlement::Immediate
     };
-    let Some((offer, basis)) = price(cfg, &f, &code, settlement) else {
+    // E6c B9: the catalogue's own baseline, with the config table as an override.
+    let Some(baseline) = crate::economy::catalog::baseline_minor(ctx, cfg, &code) else {
+        return Err(FenceError::Bad(
+            "That has no catalogue entry, so no fence can put a price on it.".to_string(),
+        ));
+    };
+    let Some((offer, basis)) = price_from(baseline, cfg, &f, settlement) else {
         return Err(FenceError::Bad(
             "That has no catalogue entry, so no fence can put a price on it.".to_string(),
         ));
@@ -704,6 +729,7 @@ fn fence_spec(
         // The deliverable IS the deposit; `TitleTransfer` is never in a fence
         // template (D-E6-10).
         deterministic: true,
+        deliverables: Vec::new(),
     }
 }
 

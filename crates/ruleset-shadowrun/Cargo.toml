@@ -19,6 +19,10 @@ mush-economy.workspace = true
 mush-org.workspace = true
 mush-party.workspace = true
 mush-faction.workspace = true
+# E6c (08f §2, §5): the neutral market. The ruleset registers content, dice and
+# delivery into its three wiring-frozen tables; `mush-market` gains no ruleset edge
+# in return, and nothing Shadowrun-shaped is inside it.
+mush-market.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 smol_str.workspace = true

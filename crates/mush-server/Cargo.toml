@@ -26,6 +26,7 @@ mush-comsys.workspace = true
 # The M21 faction registry.
 mush-faction.workspace = true
 mush-party.workspace = true
+mush-market.workspace = true
 # The M22 durable scenes + timestop driver, and the canon event ledger.
 mush-scenes.workspace = true
 mush-sim.workspace = true

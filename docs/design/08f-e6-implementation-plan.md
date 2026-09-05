@@ -1485,7 +1485,7 @@ pub enum Supply { Stock { vault: VaultId },                 // held in the store
                   Market { source: MarketSourceId },        // a registered NPC market source
                   Procurement { lead: EconomicDeadline } }  // a delayed delivery contract
 pub struct Quote { pub id, pub listing, pub buyer: PrincipalId, pub price: Amount,
-                   pub definition_version: u32, pub observed: RevisionSet,
+                   pub definition_version: u32, pub observed: ObservedRevisions,  // NOT `RevisionSet` — see §5.6
                    pub expires: EconomicDeadline,           // ITS CLOCK IS DECLARED (answer 11)
                    pub availability: Option<AvailabilityOutcome> }
 ```
@@ -1494,16 +1494,18 @@ pub struct Quote { pub id, pub listing, pub buyer: PrincipalId, pub price: Amoun
 session, `QUOTE_TTL_REMOTE` ≈ 24 h for asynchronous offers, both configurable. A quote whose
 `definition_version` or `observed` revisions have moved is refused **deterministically**, not
 re-priced (scenario 29). Stocked legal goods need no availability test; scarce or restricted goods
-run an **engine-resolved, recorded** Shadowrun test through the ruleset's own dice
-(`crates/ruleset-shadowrun/src/roll.rs`), stored on the quote; ST attestation is only for exceptional
-or authored availability. Accepting a quote drafts an ordinary E4b2 contract — consideration, a
+run an **engine-resolved, recorded** Shadowrun test through the ruleset's own dice — the
+**non-rendering** seam `mush_dice::sr5::{Sr5Pool, Sr5Opts}` under a `RollCtx` (the shape `agent.rs`
+uses), *not* `roll.rs`'s `roll_labeled`, which renders to the actor — stored on the quote; ST
+attestation is only for exceptional or authored availability. Accepting a quote drafts an ordinary E4b2 contract — consideration, a
 `TitleTransfer` or `DepositInto` deliverable, a `Before` deadline — so E6c adds no settlement
 machinery at all. **Only the issuer offers** (E4b2's rule), so a buyer
 accepting a quote is the issuer and the vendor accepts programmatically through DL-11's
 `with_party_caps`, landed with E6b's fence and reused here (G8); a hidden vendor renders through
 `render_org_listed` and its listings are absent for non-members, never "No such" (G3). **NPC market makers (doc 10 7A):** `MarketSource { principal: OrgId, cash:
 AccountId, inventory: VaultId, spread, volume_budget, loss_budget, window }`. A maker quotes only
-inside its budgets and **stops quoting** when cash or inventory runs out. Funding is explicit —
+inside its budgets — every one checked **before the quote is issued**, never at accept — and
+**stops quoting** when cash, volume or loss runs out. Funding is explicit —
 world-start capitalization, sales, or a `create_system_obligation` drip from a registered faucet
 under the `[economy]` mint cap — never an unlimited account (7A; answer 4's rule applied to NPCs).
 
@@ -1525,15 +1527,310 @@ projection, not the full belief engine".
 @market/source create|budget|halt <source>                                        (all staff)
 ```
 
-### 5.4 E6c tests (~28)
+### 5.4 E6c tests (~28 planned; **57 built**, §5.6)
 
-**Catalog:** a pack loads, versions and reloads idempotently; a bad entry fails the pack, not the server; each `Representation` produces the right artefact on purchase (a `Commodity` account line, a `Lot`, an `EconomicAsset` with title, an `Entitlement`, an `InstalledAugmentation`); a split then merge keeps every parent in the lineage and a coarsened render never loses it.
+**Catalog:** a pack loads, versions and reloads idempotently; a bad entry fails the pack, not the server; each **shipped** `Representation` produces the right artefact on purchase (a `Commodity` account line, an `EconomicAsset` with title **and its `CatalogRef`**, an `Entitlement`, an `InstalledAugmentation`); a `Lot`-represented entry is refused at listing creation. *(The `Lot` artefact row and the split/merge lineage row moved to **E7 cut 2** with the record itself — OPEN 1, §5.6.)*
 **Quotes:** expiry on each declared clock; a stale `definition_version` refuses; a stale `observed` revision refuses; an availability test is recorded and a failure refuses without charging.
 **Vendors:** stock, market-source and procurement each settle through a real contract; a procurement's lead time is a `Before` deadline.
 **Projection:** two worlds differing only in hidden listings publish identical projections; a single large listing is not identifiable from depth; an unviewable listing renders "No such listing."; filters return empty rather than refusing.
-**Makers:** a maker stops quoting at its cash, inventory and loss budgets; funding above the mint cap is refused; a halted maker's outstanding quotes expire and settle nothing.
+**Makers:** a maker stops quoting at its cash, volume and loss budgets, and when halted; funding above the mint cap is refused; a halted maker's outstanding quotes expire and settle nothing.
 
 **Hazards on this axis.** *Market existence oracles:* aggregate-only projection, bucketed depth, the shared existence-hiding renderer. *Stale quotes:* version + revision binding, refused deterministically. *Insolvency:* explicit budgets checked before every quote, no faucet behind them.
+
+### 5.6 As built (2026-09-05)
+
+E6c on top of E6a, E6b and both of their verify folds (`4f22916`). One new crate,
+`mush-market`, whose dependency list **is** the game-neutrality claim; three economy additions, all
+game-neutral and all named below; one org slice; and the ruleset's registration into the market's
+three wiring-frozen tables. Nothing Shadowrun-shaped is inside `mush-market` — nothing in it names a
+run, a fence, nuyen or a runner (answer 20). All money still moves through E4 under an E4 authority;
+every persisted addition is a `TryFrom` wire with documented caps; every observer and boot path is an
+exhaustive match with no `?`, `unwrap`, `expect` or panicking index. Both digest pins (E2
+`9c917eee…`, E3-shaped `b780e3a0…`) are green.
+
+**`file:line` in §5.1–§5.4 is historical.** The symbol beside each cite is the citation; the numbers
+were true at Draft 0.3 and are not re-numbered here (08i §8's rule).
+
+**B1 — the gate: the safe public projection** (`mush-market/src/projection.rs`). The condition, and
+how each half of it is a property of the *code*:
+
+| the claim | what makes it true |
+|---|---|
+| there is no per-viewer projection | `MarketStore::projection(&self, catalog: &CatalogRef, market: &MarketId, snapshot: &EconomySnapshot, hidden_orgs: &[OrgId], now: i64) -> Projection` — **no viewer parameter, and no authority consulted anywhere inside it**. The signature is the proof, and `+market/depth` renders exactly this and nothing else |
+| the public set is the whole input | `band`/`depth` fold listings of the `(catalog, market)` index filtered on `MarketVisibility::Public` **and** `is_public_seller` (a hidden organization is not in the public set) **and** an unlapsed deadline. A hidden listing, a hidden vendor's listing and every open quote are never summed at all — not rounded, not floored, **not visited** |
+| last trade and volume are *journal* facts | a settled quote carries `Settlement { transaction, at }` and is the trade-tape row; `is_settled_in_journal` re-asks the economy whether that contract really is `ContractState::Settled { transaction }` **with that transaction** before it counts. The market document is the index; the journal is the authority. An unsettled or withdrawn offer carries no row, so it is invisible by construction rather than by a filter |
+| depth cannot fingerprint a seller | two controls, not one: prices fold into exactly `DEPTH_BUCKETS` (8) equal-width levels across the band, **and** each level's quantity is floored to `DEPTH_QUANTITY_STEP` (10). Price bucketing alone is not enough — a narrow band leaves one offer alone in a level and republishes its exact quantity — so 137 units publish as 130, and a market too thin to reach the step publishes zero |
+| the per-viewer surface is the list, and it hides existence | `may_view_listing` is the only viewer-sensitive read in the cut; `+market/show` answers `No such listing.` identically for nonexistent and unviewable; an unknown or unusable filter parses to `MarketFilter::Nothing`, which matches nothing and renders an **empty list**, never a refusal (08a decision 13); a hidden vendor's listings are **absent** from `+market/list` and `+market/vendors` rather than refused (G3) |
+| the *shape* of a reply is not an oracle either | found and closed during the build: `+market/depth`'s **venue default** read every listing to pick one, so a hidden listing could choose the venue, and a good with no venue at all answered a different *sentence* — so "only hidden listings exist for this" and "nothing exists for this" were distinguishable without a single number changing. The default now reads exactly the set the projection folds (public listings of non-hidden sellers, then settled public trades) and falls back to a fixed venue, so both render the empty projection byte for byte |
+| the walk is bounded on records visited | `visible` walks at most `MARKET_PAGE_VISIT` (256) live listings from an `after=` cursor and returns at most `MARKET_PAGE_MAX` (256) rows (08i §9 answer 11), with the cursor being the last record **visited** — so a narrow viewer and a staffer page in step (E6b fold D3/D10's rule). `projection` takes `PROJECTION_VISIT` after filtering on the index, never before it (E6b independent fold R1) |
+
+`hidden_orgs` is supplied by the caller rather than read inside, which is what makes "two worlds
+differing only in hidden state" a statement about *arguments*; `hidden_seller_orgs` computes it from
+the **vendor** table, so it is complete (every listing and every trade row is a registered vendor's)
+and bounded at `MAX_VENDORS` (64) whatever the org registry holds. `is_hidden_org` fails **closed**:
+an org the registry cannot answer for is hidden.
+
+**B2 — the crate** (`crates/mush-market`, ~5 700 lines over eight modules). `mush-market → {core,
+org, economy}` plus serde/serde_json/smol_str/tracing and **nothing else** — no `mush-party`, no
+`mush-canon`, no ruleset edge, and the economy gains no edge to it (doc 08 D11). Five document
+families — `market:catalog:{pack}:{code}` · `market:listing:{id}` · `market:quote:{id}` ·
+`market:vendor:{id}` · `market:source:{id}` — each behind a `TryFrom` wire re-running its
+constructor invariants with documented caps, on `ruleset-shadowrun`'s `economy::store` pattern
+exactly: the RAM slot as the single runtime truth, `put_*`/`del_*` as the single write paths, every
+index a **re-derived** projection (`MarketStore::reindex`, asserted by `indexes_agree`), the `live`
+set driving the caps and the page, a closed listing `Del`'d so a list/withdraw loop mints no
+permanent documents, key-derived saturating allocator floors (E6b fold R8), and a **total** `load`
+that skips a corrupt document loudly and boots anyway. Wired in `server_modules_with` **after**
+`mush-economy` and **before** the rulesets (`modules.rs`, the module-order pins updated); the
+`MarketObserver` joins `EconomyModule::with_observers` unconditionally, because a WoD or TacSim
+market is the same market.
+
+**B3 — the catalog** (`record.rs`, `api.rs`). `CatalogEntry { catalog, pack, definition_version,
+name, baseline, availability, legality, representation, stackable, tags, rules_ref }` with
+`check_entry` as the **one** place its invariants live — run by the wire on load and by the pack
+loader on write, so a document and a pack cannot disagree about what a legal entry is.
+`Representation::{Instrument, Lot, Asset, Entitlement, Installed}`;
+`MAX_CATALOG_ENTRIES_PER_PACK` 512, `MAX_CATALOG_ENTRIES` 4 096. `load_pack` validates the **whole**
+pack before a single document is written, so a bad entry costs the pack and leaves the catalogue
+exactly as it was; it is idempotent (a byte-identical entry is a no-op), it **versions** in place,
+and it drops what the pack no longer defines. One live entry per `CatalogRef` across every pack, or
+"what is this" would be a question about load order. `baseline` is a **reference price, never an
+intrinsic one** (doc 08 §9.4 / D9): nothing in this crate charges it.
+
+**B4 — a purchase can stamp its catalogue, and title over a frozen record refuses** (both
+game-neutral, both `mush-economy`). (a) `issue_title(ctx, object, owner, scope, issuer, catalog:
+Option<CatalogRef>)` threads the reference into the `AssetOp::Title { catalog }` it already built and
+hard-coded `None` into; `@asset/title … catalog=` (E6b's) is the command half. Without this nothing
+the market sells could ever be quoted by E6b's fence — `price` reads the asset's `catalog` and
+refuses an object carrying none — and every sale would have needed a second staff act
+(`@asset/catalog`) to become sellable again. (b) **E3-C36**: the `Title` arm admitted a re-issue over
+a `WrittenOff` asset with no encumbrances and **never consulted `a.frozen`** (the frozen check sits
+in the non-`Title` arm), while boot's principal-gone sweep can freeze a written-off asset — so a
+fresh, *unfrozen* title could be minted straight over a frozen record, discarding the reason the
+freeze was placed. It refuses `EconomyError::AssetFrozen` now; staff `@asset/unfreeze` first, and the
+mitigation carrying `prev.frozen` onto the new generation stays where it is.
+
+**B5 — vendors and listings.** `Vendor { id, org, market, account, vault, name, buy_permille,
+status, revision }` — the neutral generalization of E6b's `@sr/fence <org>=<vault>`, and the table
+`with_party_caps` is fed from. Its account is **derived** from the organization's own live account,
+so nobody names a wallet: every escrow it places posts under that account's own debit authority, and
+a vendor that has run out simply cannot accept (M19, D-E6-15). `Listing { id, seller, vendor, market,
+catalog, definition_version, source, object, price, quantity, visibility, expires, revision }`;
+`Supply::{Stock, Market, Procurement}`; `MAX_LISTINGS_PER_VENDOR` 64. A vendor's vault **does not
+move under a live listing** (E6b independent fold M9's rule, one layer up). `+market/sell
+<obj>=<vendor>` is the player-side offer on E6b's fence shape: the vendor buys **custody** at its
+declared `buy_permille` of the catalogue baseline, accepts first (so the money is committed before
+the goods move — D-E6-9), and **no `TitleTransfer` is ever in that template** (D-E6-10 generalized).
+
+**B6 — the buyer-as-issuer purchase, and which authority each step uses.**
+
+| step | verb | authority |
+|---|---|---|
+| quote | `+market/quote <listing>[=<qty>] [remote]` | **none** — a quote is a price and reserves nothing |
+| draft + offer | `+market/accept <quote>` | the **buyer is the issuer** (E4b2's only-the-issuer-offers rule): `offer_contract` runs with the buyer as actor |
+| escrow | (the same call) | the buyer's **own** `accept_contract` — their consideration hold posts under their own account's debit authority |
+| vendor accept | (the same call) | `accept_contract_as` under E6b's wiring-frozen `with_party_caps` (G8), which grants **no money authority whatever**: `accept_core_as` runs the command's own core, the plan's actor is the vendor, and an org that cannot stand behind the deal is refused |
+| activate | (the same call) | the last acceptance activates, and **this is where `quantity` decrements** — the single serialization point (OPEN 4) |
+| settle | the economy's sweep | `ContractAuth`; `Deliverable::TitleTransfer` moves title inside it, needing **both** acceptances (D-E3-12) |
+| deliver | the frozen `DeliveryProvider` table | the provider's own, at settlement |
+
+`Quote` denormalizes its terms (`seller`, `catalog`, `market`, `visibility`, `source`, `price`,
+`quantity`) because a quote must price identically after its listing moved or lapsed, **and** because
+a settled quote *is* the trade-tape row the projection folds and has to describe itself when the
+listing is gone. A refused vendor accept cancels the draft, so a buyer never holds an escrow against
+a deal the vendor could not take.
+
+**What a quote does and does not reserve** (OPEN 4). It records a price, a quantity, an expiry on a
+**declared** clock, every declared stamp it was priced against, and the recorded availability
+outcome. It reserves **nothing**: there is no reservation family and no new `Hold` field (08i §4
+rule 1's exemption excludes reservations and mechanical offers; doc 10 T4 keeps holds money-only).
+The listing's `quantity` decrements at contract **activation** and nowhere else, so two quotes on the
+last unit are a race the economy has already serialized — the loser reads `STALE_QUOTE`, and nothing
+is charged.
+
+**One refusal for every stale reason** (D-E6-13, scenario 29). `is_current` compares declared stamps
+for **equality** and never re-prices: `ObservedRevisions { definition_version, listing, artefact }`,
+plus a lapsed expiry, a retired vendor, a halted maker and a sold-out listing. All of them render the
+single `STALE_QUOTE` string, so a buyer who watched the price and waited gets the answer one who
+never looked gets, and "somebody else bought it" is not readable off the difference.
+
+**B7 — recorded availability.** `AvailabilityRule::{None, Test { skill, threshold, interval },
+Attested}` and `AvailabilityOutcome { passed, hits, threshold, at, note }` live in `mush-market`,
+which **rolls nothing**: the engine is the ruleset's, behind `MarketModule::with_availability`.
+Shadowrun's resolves the buyer's pool from **their own sheet** and rolls `Sr5Pool` under a `RollCtx`
+over the server RNG — the non-rendering seam (`agent.rs`'s shape), never `roll.rs`'s `roll_labeled`.
+The outcome is stored on the quote and binding thereafter; a re-read never re-rolls; a failure
+refuses **without charging**, because nothing has been charged; and a server with no provider refuses
+rather than passing (fail closed).
+
+**B8 — NPC market makers.** `MarketSource { id, principal: OrgId, market, cash, inventory, spread,
+volume_budget, loss_budget, window, volume_used, loss_used, window_started, halted, revision }`;
+`@market/source create|budget|halt`. Every budget is checked **before the quote is issued**, never at
+accept, so there is no half-committed state to unwind: `refuses` answers `halted` / `volume` /
+`loss`, and the maker's own cash account answers the fourth. They are **consumed at activation** —
+the same serialization point the listing's quantity moves at, because a budget that is checked and
+never spent is not a budget — and **returned** when the deal is cancelled or expires, saturating at
+zero so a return can never mint budget. `volume_used` takes the whole trade; `loss_used` takes what
+the sale books against the catalogue's own reference price, and a sale above baseline books nothing.
+The window rolls forward on first use after it lapses. **Funding is enumerated and nothing
+else adds to it**: world-start capitalization, sales, and a `create_system_obligation` drip from a
+**registered faucet** under the `[economy]` mint cap (`DEFAULT_MINT_OBLIGATION_CAP_MAJOR` 50 000,
+re-checked live at every settlement by the economy's own sweep). A maker is an `Organization`, never
+a `System` party (D-E6-4) — a document naming one is refused on the wire — and `spread` moves the
+price, never the funding ("mediocre prices is a trading policy, not a substitute for funding", doc 10
+7A).
+
+**B9 — the Shadowrun layer.** `ruleset-shadowrun/src/economy/catalog.rs` registers into all three
+market tables: `SrCatalogSource` (the source-controlled `sr.core` pack, compiled in, **27 entries** —
+weapons, armour, drugs, programs, a deck, magical goods, a service, cyberware — plus any pack named
+in `[shadowrun.economy].catalog_paths`, which stops being inert), `SrAvailability`, and `SrDelivery`.
+**The fence's baseline is the catalogue's now**: `fence::price_from` takes an already-resolved
+baseline, and `catalog::baseline_minor` asks the `[shadowrun.economy.fence_baseline]` table first —
+kept only as an **override** an operator can correct one code with — then `CatalogEntry.baseline`. A
+`CatalogRef` with neither keeps E6b's "cannot be quoted" refusal, and hidden provenance still
+contributes nothing, not even a discount (D-E6-11). `ruleset-shadowrun` gained exactly one crate
+edge: `market`. `chargen_shopping` and `chargen_carryover_cap` stay **off** and unapplied (§11 q9's
+default is not exercised, so answer 17's one-live-cash-authority rule is untouched).
+
+**B10 — DL-06, the minimal org lifecycle.** `OrgMutationOp::{SetOrgStatus { org, status, hidden },
+PutRole { role }}` beside the eleven, both bumping the owning organization's `revision`, plus
+`@org/status <org>=<state> [hidden=yes|no]` on the existing `@org` spec. `Closed` is **terminal** —
+a closed organization does not re-open, because re-opening it would hand back authority every grantee
+was told had ended. This is `Organization.hidden`'s **first write path**, which is what let E6a's D11
+finally get its end-to-end test (a hidden org reads as an unknown one by name *and* by id, for an
+outsider, through the market's own surface). The close workflow that resolves what a `Dissolving`
+organization still holds, and the membership producer, stay E7's (OPEN 5).
+
+**B11 — wiring, the allowlist, the handoff.** `mush-market` in `server_modules_with` after the
+economy; `market_title_issuer()` = `sr.market` added to `with_title_issuers` **when the Shadowrun
+layer is enabled**, and to `MarketModule::with_issuer`, so `issue_title` refuses a mismatch loudly at
+`@market/vendor stock` rather than granting a silent capability; `MarketObserver` in the observer
+table. Two new primary verbs pinned in `legacy-handlers.toml` in this commit — `+market`
+(`legacy-post-image`, `family = "market:listing"`) and `@market` (`legacy-post-image`,
+`family = "market:catalog"`) — sorted in byte order, with `PINNED_BASELINE` **untouched at 158**. The
+switches added to existing specs (`@org/status`) changed no `CommandSpec::name` and needed no stanza.
+
+**The OPEN decisions, as taken.**
+
+1. **`Lot` — SEQ-07.** E6c builds **no `Lot` record**. `Representation::Lot` stays in the catalog
+   enum as policy (D-E6-12), the `sr.core` pack ships no `Lot` entry, and a listing whose entry
+   declares one is refused at creation ("not stockable on this server yet"). 10b §3.2 (Q2D) fixes
+   the lot's fields exactly — `{ id, commodity: CanonicalId, quantity, grade, lineage: Lineage }`,
+   **not** `legal`, **not** `custody` — in `mush-inventory` as *the single source of quantity truth*
+   where "none keeps a private stock number", and E7 cut 2 owns it. Defining a second, divergent one
+   here would have inverted the intended `mush-inventory → mush-market` edge. §5.4's lot-artefact and
+   split/merge rows moved with it.
+2. **`Quote.observed`.** `mush_core::RevisionSet` is a `BTreeMap<RevisionKey, u64>` in K's
+   **action-gate** vocabulary, not an economy or market type; E6b hit exactly this and landed
+   per-record stamps (`QuoteObserved`). This is that decision reused: `ObservedRevisions {
+   definition_version: u32, listing: u64, artefact: Option<u64> }` behind the quote's own `TryFrom`
+   wire, each compared for **equality**. The third field is named `artefact` rather than `asset`
+   because it is deliberately **not** an `EconomicAsset.revision` — E6b's fold (D1) proved that
+   construct is an oracle, since every asset op bumps the revision and a **covert** theft report is
+   an asset op — but a stable hash of the **declared** catalogue code the listing conveys, which no
+   hidden fact can move, and `None` for every representation that conveys no titled artefact.
+3. **The projection is not per-viewer.** One global public projection with no viewer parameter; the
+   viewer-sensitive half is the listing list. §5.3's "no listing id the viewer may not see" is
+   satisfied the stronger way: it publishes **no listing id at all**.
+4. **A quote reserves nothing.** As above.
+5. **DL-06 is the minimal slice.** As above.
+
+**§5 statements the tree contradicted, and what was built instead.**
+
+- **(i) `RevisionSet`** — OPEN 2; §5.2's type is corrected in place.
+- **(ii) `CatalogRef` had no producer, and both `AssetOp::Title` producers hard-coded `None`** —
+  worse for E6c than §5.1 stated, because E6b's fence refuses to quote an object whose asset record
+  carries no `catalog`, so nothing the market sold could ever have been fenced. Closed by B4(a).
+- **(iii) `Lot`** — OPEN 1.
+- **(iv) `with_party_caps` "landed with E6b's fence"** — true at `4f22916` (it did not exist at
+  `ff3f581`, which is what the brief was drafted against). Reused unchanged.
+- **(v) "the ruleset's own dice (`roll.rs`)"** — `roll.rs` is a *command* module that renders to the
+  actor. The non-rendering seam is `mush_dice::sr5::{Sr5Pool, Sr5Opts}` under a `RollCtx`; §5.2 is
+  corrected in place.
+- **(vi) `render_org_listed` / a `pub may_view_asset`** — E6b's B1; both exist and are used.
+- **(vii) the `Lot` artefact and split/merge test rows** — moved to E7 cut 2 with the record.
+- **(viii) the module-order cite** — the block has moved; the order pin in `modules.rs`'s own tests
+  is the citation, and it now names `market` between `party` and `script`.
+- **08g §11's filing of DL-11 and C16 under "E6c"/"E6b" is superseded**: both landed in **E6b**
+  (§4.6, B4 and B5). **DL-06** and **E3-C36**, which 08g files "before E6c", landed **here** (B10 and
+  B4(b)).
+- **08g §4's `transferable: false` row**: `Entitlement` listings in E6c rely on **catalogue policy**,
+  not on engine enforcement — `negative_policy`/`transferable` are recorded and never enforced, and
+  that matters when **E7 requisitions** arrive, not before.
+
+**Three `mush-economy` additions, all game-neutral.**
+
+1. **`ContractSpec.deliverables: Vec<Deliverable>`** — `offer_contract` hard-coded
+   `deliverables: Vec::new()`, so a programmatic offer could move money and never goods. A market
+   purchase of a titled artefact **is** a `Deliverable::TitleTransfer`, which E4b2 already executes at
+   settlement under D-E3-12's both-parties-accepted rule; `check_offer` validates the field exactly as
+   it validates the `@contract/deliver` builder's. No new settlement machinery.
+2. **`deliver_settled(ctx, contract, from, to, amount)`** — the seventh programmatic seam (after
+   `offer`/`accept`/`amend`/`cancel_contract`, `accept_contract_as` and `deposit_into_vault`), and the
+   reason it exists is arithmetic: a contract holds **one instrument** (`check_structure`'s
+   `InstrumentMismatch`), so a purchase paid in currency cannot also pay out a commodity or an
+   entitlement. Those move as a second, ordinary journal post afterwards, and until now no caller
+   could make one, because the debit is the **seller's** and every command's actor is
+   `PrincipalId::Object(ctx.actor)`. Bounded exactly as `accept_contract_as` is, by the same
+   wiring-frozen table plus two facts about the contract: `from`'s owner holds `PartyCap::Accept`, is
+   a **party** to that contract, and the contract is **`Settled`**. It confers no money authority —
+   the plan's actor is the seller, so the debit posts under that account's own authority and its
+   `ApprovalRule` still binds — and the key `contract.deliver/{contract}` makes a re-entered observer
+   deliver once.
+3. **`issue_title` takes a `catalog`** (B4a).
+
+**Deviations, with reasons.**
+
+1. **`Instrument` and `Entitlement` deliver through a provider, not through the contract.** One
+   instrument per contract is E4's own rule, so the goods leg cannot be a payout. It is a *delivery*
+   act after settlement — the shape `+fence/deliver` already has for custody — through
+   `deliver_settled` above. A refusal at settlement is logged **loudly** with the contract and the
+   quote id, because the money has already moved and staff must be able to see it; it is reachable
+   only by a world change between the accept — which proved the goods deliverable — and the
+   settlement, and a *pre*-check at accept is not possible in `mush-market` itself, because which
+   instrument a commodity entry settles in is the provider's rule and not the market's. That is the
+   honest residual, and it is E7's to close beside `mush-inventory`'s pools.
+2. **`@instrument/register` still records `InstrumentKind::Currency`.** The goods instrument for an
+   `Instrument`/`Entitlement` entry is `<ruleset>.<code>`, registered by staff; the command has no
+   `kind=` option and adding one is not E6c's. Nothing in this cut reads the kind, and 08g §4 already
+   records that the instrument stance is advisory.
+3. **The trade tape is the quote family, not a sixth one.** A settled quote *is* the trade row: it
+   already carries the terms, the parties and the contract, and re-using it means the projection's
+   inputs and the buyer's own order history are the same records. It is bounded at
+   `MAX_TRADES_PER_PAIR` (32) per `(catalog, market)`, oldest evicted, so the tape is a **window**
+   and the world's history stays the journal's.
+4. **`+market/list` and `+market/depth` read `ctx.args.raw()`.** Their grammar is `key=value` words
+   and `ArgShape::EqPair` splits on the first `=`, so `legal=restricted` would arrive as lhs/rhs and
+   match nothing.
+5. **A vendor's `market` is a name, not an allocated id.** The projection is keyed on
+   `(catalog, market)`, a venue is declared rather than minted, and `MarketId` is a bounded
+   `[a-z0-9._-]` token so it is a safe document-key component.
+6. **A pack is read from disk in a staff command.** `@market/catalog load` is staff-only, one-shot,
+   and bounded (`MAX_PACK_BYTES` 512 KiB, refused by name past it). The built-in `sr.core` needs no
+   IO at all.
+
+**Tests (57).** `ruleset-shadowrun/tests/e6c.rs` 31 (the gate, the catalog, the purchase, the stale
+refusals, the makers, the restart, B10 end to end), `mush-org/tests/e6c_lifecycle.rs` 6,
+`mush-economy/tests/e4c.rs` +3 (B4), 15 in-crate units in `mush-market`
+(`ids.rs` 2, `record.rs` 4, `store.rs` 5, `projection.rs` 4) and 2 in
+`ruleset-shadowrun/src/economy/catalog.rs` (the starter pack's shape, and a bad entry naming its
+file). The gate (`mush-market`, `mush-economy`, `mush-org`, `mush-server`, `ruleset-shadowrun`,
+`mush-contract-tests`, `mush-config`) runs **1 053 passing, 0 failing, 3 ignored**; clippy
+`-D warnings` and `cargo fmt --all --check` are clean; the per-crate tally is in 08a.
+
+**Handoff to E7.** Cut 2 reads **`CatalogRef`**, the quote, and OPEN 1's `Lot` decision, and nothing
+else. The corridor's sale is a plain two-party E4b2 contract with a funded NPC `Organization`
+(D-E7-31) and depends on E6c for none of it; when cut 2 lands, `mush-inventory` owns `Lot`,
+`EndpointRef` and `Pool`, and the market consumes them rather than defining them —
+`CatalogRef` ↔ `commodity: CanonicalId` is the mapping to write. The residual E6c owes: an
+`Entitlement`'s non-transferability is catalogue policy until E7 requisitions make
+`transferable: false` an engine rule; a two-instrument exchange (money for goods in **one** consent
+surface) is still not expressible and would be an E4 consent-model change, not a market one.
+
+**Changelog.** Draft 0.3a → 0.3b (2026-09-05): §5.6 added; §5.2's `RevisionSet` and `roll.rs`
+sentences corrected to what was built; §5.4's count updated and its two `Lot` rows moved to E7 cut 2;
+08g §11's DL-11/C16 filing recorded as superseded (both E6b's) and DL-06/E3-C36 recorded as landed
+here; §5's `file:line` cites marked historical.
 
 ---
 

@@ -2405,6 +2405,7 @@ pub fn issue_title(
     owner: PrincipalId,
     scope: Option<OrgScopeId>,
     issuer: mush_org::SystemPrincipalId,
+    catalog: Option<crate::record::CatalogRef>,
 ) -> Result<PostOutcome, EconomyError> {
     // E4c verify fold, E6: **the object has to exist.** The staff path reaches
     // `@asset/title` through `asset_target`, which resolves a live world object; this
@@ -2463,7 +2464,13 @@ pub fn issue_title(
         object,
         owner: owner.clone(),
         scope,
-        catalog: None,
+        // E6c B4(a): the issuer says what the thing **is**, at the moment title is
+        // minted. `AssetOp::Title` has carried a `catalog` since E3 and **both**
+        // producers hard-coded `None`, so nothing a ruleset produced could ever be
+        // catalogued at birth — which made every catalogue-keyed rule (E6b's fence
+        // baseline first, E6c's own entry lookup second) unreachable for it, and
+        // `AssetOp::SetCatalog` a mandatory second act for every single sale.
+        catalog,
     }];
     plan.description = format!("title issued for #{} by {actor:?}", object.0);
     let auth = TitleIssuerAuth {

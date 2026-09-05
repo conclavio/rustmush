@@ -1,0 +1,835 @@
+//! The market's module state and its five document families (namespace `market`).
+//!
+//! Built on `ruleset-shadowrun`'s `economy::store` pattern exactly, because that
+//! pattern is what the E-series folds have already hardened:
+//!
+//! - **the RAM slot is the single runtime truth**, and every index on it is a
+//!   *re-derived projection* — never authority, and never maintained anywhere but the
+//!   one function that rebuilds it;
+//! - **`put_*` are the single write paths**, so RAM, the indexes and the queued
+//!   document always move together;
+//! - **the allocator floor comes from every document's parsed key**, loaded or not
+//!   (E6b verify fold R8): a key that parses is a claim on an id whether or not its
+//!   body does, so a corrupt document plus a lost allocator can never re-mint a live
+//!   id and write over the evidence;
+//! - **the `live` set drives the caps and the pages**, and a closed record is `Del`'d
+//!   so a list/withdraw loop mints no permanent documents;
+//! - **[`load`] is total.** Every document it cannot use is skipped **loudly** and the
+//!   world boots. The direction of each loss is stated in [`crate::record`]'s header
+//!   and is deliberate in every case: the money is the economy's, and it survives.
+
+use std::collections::{BTreeMap, BTreeSet};
+
+use mush_core::{Ctx, ModuleOp, ModuleWrite, ObjId, Outbox};
+use mush_economy::{CatalogRef, ContractId};
+use mush_org::{OrgId, PrincipalId};
+
+use smol_str::SmolStr;
+
+use crate::ids::{ListingId, MarketId, MarketSourceId, QuoteId, VendorId};
+use crate::record::{
+    CatalogEntry, Listing, MAX_CATALOG_ENTRIES, MAX_LISTINGS, MAX_QUOTES, MAX_SOURCES, MAX_VENDORS,
+    MarketSource, Quote, Vendor,
+};
+
+/// The module namespace.
+pub const NS: &str = "market";
+/// The allocator document.
+pub const META_KEY: &str = "market:meta";
+
+/// The most **settled** trade rows the tape keeps per `(catalog, market)` pair.
+///
+/// The tape is the projection's only input for last trade and volume, and it is a
+/// window rather than a history: 32 rows per pair bounds the store against a busy
+/// market without bounding the *world's* history, which is the journal's and is
+/// complete. Beyond it the oldest row is deleted, exactly as a closed listing is.
+pub const MAX_TRADES_PER_PAIR: usize = 32;
+
+/// The most listing or quote records one read may **visit** (D-LBK-5): a bounded read
+/// bounds the records it *touches*, never the ones it *matches*.
+pub const MARKET_PAGE_VISIT: usize = 256;
+
+/// The most rows one market page renders (08i §9 answer 11: at most 256 opaque
+/// choices per offer, applied to every page and fan-out in this cut).
+pub const MARKET_PAGE_MAX: usize = 256;
+
+/// The default rows one market page renders.
+pub const MARKET_PAGE: usize = 20;
+
+/// `market:catalog:{pack}:{code}`.
+#[must_use]
+pub fn catalog_key(pack: &str, code: &str) -> SmolStr {
+    SmolStr::new(format!("market:catalog:{pack}:{code}"))
+}
+/// `market:listing:{id}`.
+#[must_use]
+pub fn listing_key(id: ListingId) -> SmolStr {
+    SmolStr::new(format!("market:listing:{}", id.0))
+}
+/// `market:quote:{id}`.
+#[must_use]
+pub fn quote_key(id: QuoteId) -> SmolStr {
+    SmolStr::new(format!("market:quote:{}", id.0))
+}
+/// `market:vendor:{id}`.
+#[must_use]
+pub fn vendor_key(id: VendorId) -> SmolStr {
+    SmolStr::new(format!("market:vendor:{}", id.0))
+}
+/// `market:source:{id}`.
+#[must_use]
+pub fn source_key(id: MarketSourceId) -> SmolStr {
+    SmolStr::new(format!("market:source:{}", id.0))
+}
+
+/// The in-RAM market slot — the single runtime source of truth.
+#[derive(Clone, Debug, Default)]
+pub struct MarketStore {
+    /// The three wiring-frozen provider tables — content packs, availability engines
+    /// and delivery. Frozen at composition and never written again, so "who could
+    /// sell you this, and at what odds" is not a function of when you asked.
+    pub(crate) tables: crate::module::MarketTables,
+    pub(crate) entries: BTreeMap<SmolStr, CatalogEntry>,
+    /// **catalogue reference → entry slug**, re-derived on every write: one live entry
+    /// per `CatalogRef` across every pack, so "what is this" has one answer.
+    pub(crate) by_code: BTreeMap<CatalogRef, SmolStr>,
+    pub(crate) listings: BTreeMap<ListingId, Listing>,
+    /// The ids of every listing still open — the caps' and the page's working set.
+    pub(crate) live: BTreeSet<ListingId>,
+    /// **(catalog, market) → listings**, the projection's own walk (filter, then take).
+    pub(crate) by_pair: BTreeMap<(CatalogRef, MarketId), BTreeSet<ListingId>>,
+    /// **vendor → listings**, what `MAX_LISTINGS_PER_VENDOR` bounds.
+    pub(crate) by_vendor: BTreeMap<VendorId, BTreeSet<ListingId>>,
+    pub(crate) quotes: BTreeMap<QuoteId, Quote>,
+    /// **buyer → quotes**, so the per-buyer cap is the buyer's own walk.
+    ///
+    /// Keyed by `mush_economy::principal_token` because `PrincipalId` is
+    /// `Hash`-but-not-`Ord` — the same reason E6b's `with_party_caps` table is.
+    pub(crate) by_buyer: BTreeMap<SmolStr, BTreeSet<QuoteId>>,
+    /// **listing → quotes**, so a re-priced listing finds its outstanding quotes.
+    pub(crate) by_listing: BTreeMap<ListingId, BTreeSet<QuoteId>>,
+    /// **contract → quote**, so the settlement observer answers in O(log n).
+    pub(crate) by_quote_contract: BTreeMap<ContractId, QuoteId>,
+    /// **(catalog, market) → settled quotes** — the trade tape the projection folds.
+    pub(crate) trades: BTreeMap<(CatalogRef, MarketId), BTreeSet<QuoteId>>,
+    pub(crate) vendors: BTreeMap<VendorId, Vendor>,
+    /// **organization → vendor**: one vendor per org, so "which one did I buy from"
+    /// is a question about the world and not about ids.
+    pub(crate) by_org: BTreeMap<OrgId, VendorId>,
+    pub(crate) sources: BTreeMap<MarketSourceId, MarketSource>,
+    pub(crate) next_listing: u64,
+    pub(crate) next_quote: u64,
+    pub(crate) next_vendor: u64,
+    pub(crate) next_source: u64,
+}
+
+impl MarketStore {
+    // ---- catalog ----------------------------------------------------------
+
+    /// One entry by its `{pack}:{code}` slug.
+    #[must_use]
+    pub fn entry(&self, slug: &str) -> Option<&CatalogEntry> {
+        self.entries.get(slug)
+    }
+    /// The live entry for a catalogue reference, whichever pack defines it.
+    #[must_use]
+    pub fn entry_of(&self, catalog: &CatalogRef) -> Option<&CatalogEntry> {
+        self.by_code
+            .get(catalog)
+            .and_then(|slug| self.entries.get(slug))
+    }
+    /// Every entry, in slug order.
+    pub fn entries(&self) -> impl Iterator<Item = &CatalogEntry> {
+        self.entries.values()
+    }
+    /// Every entry of one pack, in slug order.
+    pub fn entries_of_pack<'a>(&'a self, pack: &'a str) -> impl Iterator<Item = &'a CatalogEntry> {
+        self.entries.values().filter(move |e| e.pack == pack)
+    }
+    /// Every pack name that has at least one entry.
+    #[must_use]
+    pub fn packs(&self) -> BTreeSet<SmolStr> {
+        self.entries.values().map(|e| e.pack.clone()).collect()
+    }
+
+    // ---- listings ---------------------------------------------------------
+
+    /// One listing.
+    #[must_use]
+    pub fn listing(&self, id: ListingId) -> Option<&Listing> {
+        self.listings.get(&id)
+    }
+    /// Every open listing, newest first — the page's walk order.
+    pub fn live_ids_desc(&self) -> impl Iterator<Item = ListingId> + '_ {
+        self.live.iter().rev().copied()
+    }
+    /// Every open listing, in id order.
+    pub fn live_listings(&self) -> impl Iterator<Item = &Listing> {
+        self.live.iter().filter_map(|id| self.listings.get(id))
+    }
+    /// How many listings this vendor holds open — what `MAX_LISTINGS_PER_VENDOR`
+    /// bounds.
+    #[must_use]
+    pub fn listings_of_vendor(&self, vendor: VendorId) -> usize {
+        self.by_vendor.get(&vendor).map_or(0, BTreeSet::len)
+    }
+    /// The open listings of one `(catalog, market)` pair, in id order — the
+    /// projection's own walk, filtered before it is taken.
+    pub fn listings_for<'a>(
+        &'a self,
+        catalog: &CatalogRef,
+        market: &MarketId,
+    ) -> impl Iterator<Item = &'a Listing> {
+        self.by_pair
+            .get(&(catalog.clone(), market.clone()))
+            .into_iter()
+            .flat_map(|set| set.iter().filter_map(|id| self.listings.get(id)))
+    }
+
+    // ---- quotes -----------------------------------------------------------
+
+    /// One quote.
+    #[must_use]
+    pub fn quote(&self, id: QuoteId) -> Option<&Quote> {
+        self.quotes.get(&id)
+    }
+    /// Every quote, in id order.
+    pub fn quotes(&self) -> impl DoubleEndedIterator<Item = &Quote> {
+        self.quotes.values()
+    }
+    /// Every quote this buyer holds, in id order.
+    pub fn quotes_of_buyer<'a>(&'a self, buyer: &PrincipalId) -> impl Iterator<Item = &'a Quote> {
+        self.by_buyer
+            .get(&mush_economy::principal_token(buyer))
+            .into_iter()
+            .flat_map(|set| set.iter().filter_map(|id| self.quotes.get(id)))
+    }
+    /// Every quote asked against one listing, in id order.
+    pub fn quotes_of_listing(&self, listing: ListingId) -> impl Iterator<Item = &Quote> {
+        self.by_listing
+            .get(&listing)
+            .into_iter()
+            .flat_map(|set| set.iter().filter_map(|id| self.quotes.get(id)))
+    }
+    /// The quote a contract belongs to, if any.
+    #[must_use]
+    pub fn quote_of_contract(&self, contract: ContractId) -> Option<QuoteId> {
+        self.by_quote_contract.get(&contract).copied()
+    }
+    /// The **settled** quotes of one `(catalog, market)` pair — the trade tape.
+    pub fn trades_for<'a>(
+        &'a self,
+        catalog: &CatalogRef,
+        market: &MarketId,
+    ) -> impl Iterator<Item = &'a Quote> {
+        self.trades
+            .get(&(catalog.clone(), market.clone()))
+            .into_iter()
+            .flat_map(|set| set.iter().filter_map(|id| self.quotes.get(id)))
+    }
+
+    // ---- vendors and makers -----------------------------------------------
+
+    /// One vendor.
+    #[must_use]
+    pub fn vendor(&self, id: VendorId) -> Option<&Vendor> {
+        self.vendors.get(&id)
+    }
+    /// Every vendor, in id order.
+    pub fn vendors(&self) -> impl Iterator<Item = &Vendor> {
+        self.vendors.values()
+    }
+    /// The vendor an organization is, if it is one.
+    #[must_use]
+    pub fn vendor_of_org(&self, org: OrgId) -> Option<&Vendor> {
+        self.by_org.get(&org).and_then(|id| self.vendors.get(id))
+    }
+    /// One market maker.
+    #[must_use]
+    pub fn source(&self, id: MarketSourceId) -> Option<&MarketSource> {
+        self.sources.get(&id)
+    }
+    /// Every market maker, in id order.
+    pub fn sources(&self) -> impl Iterator<Item = &MarketSource> {
+        self.sources.values()
+    }
+
+    // ---- allocators -------------------------------------------------------
+
+    /// Mint the next listing id, or `None` at the ceiling (the E4b1 B2 rule: an
+    /// exhausted allocator refuses one operation loudly and never wraps a live id).
+    pub fn alloc_listing(&mut self) -> Option<ListingId> {
+        let id = ListingId(self.next_listing);
+        self.next_listing = self.next_listing.checked_add(1)?;
+        Some(id)
+    }
+    /// Mint the next quote id, or `None` at the ceiling.
+    pub fn alloc_quote(&mut self) -> Option<QuoteId> {
+        let id = QuoteId(self.next_quote);
+        self.next_quote = self.next_quote.checked_add(1)?;
+        Some(id)
+    }
+    /// Mint the next vendor id, or `None` at the ceiling.
+    pub fn alloc_vendor(&mut self) -> Option<VendorId> {
+        let id = VendorId(self.next_vendor);
+        self.next_vendor = self.next_vendor.checked_add(1)?;
+        Some(id)
+    }
+    /// Mint the next maker id, or `None` at the ceiling.
+    pub fn alloc_source(&mut self) -> Option<MarketSourceId> {
+        let id = MarketSourceId(self.next_source);
+        self.next_source = self.next_source.checked_add(1)?;
+        Some(id)
+    }
+
+    /// The allocator document.
+    #[must_use]
+    pub fn meta_doc(&self) -> serde_json::Value {
+        serde_json::json!({
+            "next_listing_id": self.next_listing,
+            "next_quote_id": self.next_quote,
+            "next_vendor_id": self.next_vendor,
+            "next_source_id": self.next_source,
+        })
+    }
+
+    /// Re-derive **every** index from the records — the one place they are built, so
+    /// they cannot drift.
+    pub(crate) fn reindex(&mut self) {
+        self.by_code = self
+            .entries
+            .iter()
+            .map(|(slug, e)| (e.catalog.clone(), slug.clone()))
+            .collect();
+        self.live = self
+            .listings
+            .values()
+            .filter(|l| l.quantity > 0)
+            .map(|l| l.id)
+            .collect();
+        self.by_pair = BTreeMap::new();
+        self.by_vendor = BTreeMap::new();
+        for l in self.listings.values() {
+            self.by_pair
+                .entry((l.catalog.clone(), l.market.clone()))
+                .or_default()
+                .insert(l.id);
+            self.by_vendor.entry(l.vendor).or_default().insert(l.id);
+        }
+        self.by_buyer = BTreeMap::new();
+        self.by_listing = BTreeMap::new();
+        self.by_quote_contract = BTreeMap::new();
+        self.trades = BTreeMap::new();
+        for q in self.quotes.values() {
+            self.by_buyer
+                .entry(mush_economy::principal_token(&q.buyer))
+                .or_default()
+                .insert(q.id);
+            self.by_listing.entry(q.listing).or_default().insert(q.id);
+            if let Some(c) = q.contract {
+                self.by_quote_contract.insert(c, q.id);
+            }
+            if q.is_trade() {
+                self.trades
+                    .entry((q.catalog.clone(), q.market.clone()))
+                    .or_default()
+                    .insert(q.id);
+            }
+        }
+        self.by_org = self.vendors.values().map(|v| (v.org, v.id)).collect();
+    }
+
+    /// Whether every derived index agrees with the records.
+    ///
+    /// A test-and-`debug_assert` predicate, not a runtime gate: the indexes are
+    /// re-derived by [`MarketStore::reindex`] on every write path and at boot, and
+    /// this is what says so out loud (E6a verify fold D7's shape).
+    #[must_use]
+    pub fn indexes_agree(&self) -> bool {
+        let mut probe = self.clone();
+        probe.reindex();
+        probe.by_code == self.by_code
+            && probe.live == self.live
+            && probe.by_pair == self.by_pair
+            && probe.by_vendor == self.by_vendor
+            && probe.by_buyer == self.by_buyer
+            && probe.by_listing == self.by_listing
+            && probe.by_quote_contract == self.by_quote_contract
+            && probe.trades == self.trades
+            && probe.by_org == self.by_org
+    }
+
+    /// The trade-tape rows of a pair that are past [`MAX_TRADES_PER_PAIR`], oldest
+    /// first — what a fresh trade evicts.
+    #[must_use]
+    pub(crate) fn overflow_trades(&self, catalog: &CatalogRef, market: &MarketId) -> Vec<QuoteId> {
+        let Some(set) = self.trades.get(&(catalog.clone(), market.clone())) else {
+            return Vec::new();
+        };
+        let over = set.len().saturating_sub(MAX_TRADES_PER_PAIR);
+        set.iter().copied().take(over).collect()
+    }
+}
+
+// ---- write paths -----------------------------------------------------------
+
+/// Queue one module write.
+pub(crate) fn push_op(out: &mut Outbox, op: ModuleWrite) {
+    out.defer(mush_core::Deferred::Persist(ModuleOp {
+        ns: SmolStr::new_static(NS),
+        op,
+    }));
+}
+
+macro_rules! put_record {
+    ($fn_name:ident, $ty:ty, $field:ident, $key:expr, $what:literal) => {
+        /// Install a record into RAM, re-derive the indexes and queue its document —
+        /// the single write path.
+        pub(crate) fn $fn_name(ctx: &mut Ctx<'_>, r: $ty) {
+            let key = $key(&r);
+            if let Some(store) = ctx.w.module_state_mut::<MarketStore>() {
+                store.$field.insert(key.0, r.clone());
+                store.reindex();
+            }
+            let Ok(value) = serde_json::to_value(&r) else {
+                tracing::error!(concat!("market: a ", $what, " did not serialize"));
+                return;
+            };
+            push_op(ctx.out, ModuleWrite::JsonSet { key: key.1, value });
+        }
+    };
+}
+
+put_record!(
+    put_listing,
+    Listing,
+    listings,
+    |l: &Listing| (l.id, listing_key(l.id)),
+    "listing"
+);
+put_record!(
+    put_vendor,
+    Vendor,
+    vendors,
+    |v: &Vendor| (v.id, vendor_key(v.id)),
+    "vendor"
+);
+put_record!(
+    put_source,
+    MarketSource,
+    sources,
+    |s: &MarketSource| (s.id, source_key(s.id)),
+    "market maker"
+);
+
+/// Install a quote and queue its document — the single write path, and the one place
+/// the trade tape is trimmed.
+pub(crate) fn put_quote(ctx: &mut Ctx<'_>, q: Quote) {
+    let (catalog, market, trade) = (q.catalog.clone(), q.market.clone(), q.is_trade());
+    if let Some(store) = ctx.w.module_state_mut::<MarketStore>() {
+        store.quotes.insert(q.id, q.clone());
+        store.reindex();
+    }
+    let Ok(value) = serde_json::to_value(&q) else {
+        tracing::error!(quote = q.id.0, "market: a quote did not serialize");
+        return;
+    };
+    push_op(
+        ctx.out,
+        ModuleWrite::JsonSet {
+            key: quote_key(q.id),
+            value,
+        },
+    );
+    if trade {
+        let evict = ctx
+            .w
+            .module_state::<MarketStore>()
+            .map(|s| s.overflow_trades(&catalog, &market))
+            .unwrap_or_default();
+        for id in evict {
+            del_quote(ctx, id);
+        }
+    }
+}
+
+/// Install a catalog entry and queue its document — the single write path.
+pub(crate) fn put_entry(ctx: &mut Ctx<'_>, e: CatalogEntry) {
+    let slug = SmolStr::new(e.slug());
+    if let Some(store) = ctx.w.module_state_mut::<MarketStore>() {
+        store.entries.insert(slug.clone(), e.clone());
+        store.reindex();
+    }
+    let Ok(value) = serde_json::to_value(&e) else {
+        tracing::error!(%slug, "market: a catalog entry did not serialize");
+        return;
+    };
+    push_op(
+        ctx.out,
+        ModuleWrite::JsonSet {
+            key: catalog_key(&e.pack, &e.catalog.code),
+            value,
+        },
+    );
+}
+
+/// Forget a listing: out of RAM, out of the indexes, out of the store.
+///
+/// The money was never here — it is the contract's, and the contract keeps its own
+/// terminal record — so a deleted listing costs a market row and nothing else. That
+/// is the trade E6a's `del_run` and E6b's `del_quote` already make, and it is what
+/// keeps a list/withdraw loop from minting permanent documents.
+pub(crate) fn del_listing(ctx: &mut Ctx<'_>, id: ListingId) {
+    if let Some(store) = ctx.w.module_state_mut::<MarketStore>() {
+        store.listings.remove(&id);
+        store.reindex();
+    }
+    push_op(
+        ctx.out,
+        ModuleWrite::Del {
+            key: listing_key(id),
+        },
+    );
+}
+
+/// Forget a quote — a lapsed offer, or a trade tape row the window rolled past.
+pub(crate) fn del_quote(ctx: &mut Ctx<'_>, id: QuoteId) {
+    if let Some(store) = ctx.w.module_state_mut::<MarketStore>() {
+        store.quotes.remove(&id);
+        store.reindex();
+    }
+    push_op(ctx.out, ModuleWrite::Del { key: quote_key(id) });
+}
+
+/// Forget a catalog entry (a pack reload that dropped it).
+pub(crate) fn del_entry(ctx: &mut Ctx<'_>, pack: &str, code: &str) {
+    let slug = SmolStr::new(format!("{pack}:{code}"));
+    if let Some(store) = ctx.w.module_state_mut::<MarketStore>() {
+        store.entries.remove(&slug);
+        store.reindex();
+    }
+    push_op(
+        ctx.out,
+        ModuleWrite::Del {
+            key: catalog_key(pack, code),
+        },
+    );
+}
+
+/// Queue the allocator document.
+pub(crate) fn persist_meta(ctx: &mut Ctx<'_>) {
+    let Some(meta) = ctx
+        .w
+        .module_state::<MarketStore>()
+        .map(MarketStore::meta_doc)
+    else {
+        return;
+    };
+    push_op(
+        ctx.out,
+        ModuleWrite::JsonSet {
+            key: SmolStr::new_static(META_KEY),
+            value: meta,
+        },
+    );
+}
+
+// ---- boot ------------------------------------------------------------------
+
+/// Build the slot from the module's boot documents.
+///
+/// **Total**: every document it cannot use is skipped loudly and the world boots. The
+/// allocator floors come from every document's parsed **key**, loaded or not, so a
+/// corrupt `market:listing:9` plus a lost `market:meta` can never re-mint id 9 and
+/// `JsonSet` straight over the evidence (E6b verify fold, R8).
+#[must_use]
+pub fn load(kv: &[(SmolStr, serde_json::Value)]) -> MarketStore {
+    let mut store = MarketStore::default();
+    let mut seen = [0u64; 4];
+    for (key, value) in kv {
+        let key = key.as_str();
+        if let Some(rest) = key.strip_prefix("market:catalog:") {
+            load_entry(&mut store, key, rest, value);
+        } else if let Some(rest) = key.strip_prefix("market:listing:") {
+            claim(&mut seen[0], rest);
+            load_one(
+                &mut store,
+                key,
+                rest,
+                value,
+                "listing",
+                MAX_LISTINGS,
+                |s| s.listings.len(),
+                |s, id, r: Listing| {
+                    if r.id != ListingId(id) {
+                        return false;
+                    }
+                    s.listings.insert(ListingId(id), r);
+                    true
+                },
+            );
+        } else if let Some(rest) = key.strip_prefix("market:quote:") {
+            claim(&mut seen[1], rest);
+            load_one(
+                &mut store,
+                key,
+                rest,
+                value,
+                "quote",
+                MAX_QUOTES,
+                |s| s.quotes.len(),
+                |s, id, r: Quote| {
+                    if r.id != QuoteId(id) {
+                        return false;
+                    }
+                    s.quotes.insert(QuoteId(id), r);
+                    true
+                },
+            );
+        } else if let Some(rest) = key.strip_prefix("market:vendor:") {
+            claim(&mut seen[2], rest);
+            load_one(
+                &mut store,
+                key,
+                rest,
+                value,
+                "vendor",
+                MAX_VENDORS,
+                |s| s.vendors.len(),
+                |s, id, r: Vendor| {
+                    if r.id != VendorId(id) {
+                        return false;
+                    }
+                    s.vendors.insert(VendorId(id), r);
+                    true
+                },
+            );
+        } else if let Some(rest) = key.strip_prefix("market:source:") {
+            claim(&mut seen[3], rest);
+            load_one(
+                &mut store,
+                key,
+                rest,
+                value,
+                "market maker",
+                MAX_SOURCES,
+                |s| s.sources.len(),
+                |s, id, r: MarketSource| {
+                    if r.id != MarketSourceId(id) {
+                        return false;
+                    }
+                    s.sources.insert(MarketSourceId(id), r);
+                    true
+                },
+            );
+        } else if key == META_KEY {
+            store.next_listing = read_u64(value, "next_listing_id");
+            store.next_quote = read_u64(value, "next_quote_id");
+            store.next_vendor = read_u64(value, "next_vendor_id");
+            store.next_source = read_u64(value, "next_source_id");
+        }
+        // Every other key belongs to a forward schema; tolerated in both directions.
+    }
+    store.next_listing = store
+        .next_listing
+        .max(floor(store.listings.keys().map(|i| i.0)))
+        .max(seen[0]);
+    store.next_quote = store
+        .next_quote
+        .max(floor(store.quotes.keys().map(|i| i.0)))
+        .max(seen[1]);
+    store.next_vendor = store
+        .next_vendor
+        .max(floor(store.vendors.keys().map(|i| i.0)))
+        .max(seen[2]);
+    store.next_source = store
+        .next_source
+        .max(floor(store.sources.keys().map(|i| i.0)))
+        .max(seen[3]);
+    store.reindex();
+    store
+}
+
+fn read_u64(value: &serde_json::Value, field: &str) -> u64 {
+    value
+        .get(field)
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0)
+}
+
+fn floor(ids: impl Iterator<Item = u64>) -> u64 {
+    ids.map(|n| n.saturating_add(1)).max().unwrap_or(0)
+}
+
+/// Record an id claim from a **parsed key**, loaded or not (R8's rule).
+fn claim(slot: &mut u64, rest: &str) {
+    if let Ok(n) = rest.parse::<u64>() {
+        *slot = (*slot).max(n.saturating_add(1));
+    }
+}
+
+/// The one loader body every numeric family shares: parse the key, enforce the
+/// whole-store cap on **load** as well as on write (E6b verify fold, D6), decode
+/// through the record's own `TryFrom` wire, and apply the identity rule (DL-07) —
+/// a document that disagrees with its own key is dropped loudly, never trusted.
+#[allow(clippy::too_many_arguments)]
+fn load_one<T, C, I>(
+    store: &mut MarketStore,
+    key: &str,
+    rest: &str,
+    value: &serde_json::Value,
+    what: &str,
+    cap: usize,
+    count: C,
+    insert: I,
+) where
+    T: serde::de::DeserializeOwned,
+    C: Fn(&MarketStore) -> usize,
+    I: Fn(&mut MarketStore, u64, T) -> bool,
+{
+    let Ok(n) = rest.parse::<u64>() else {
+        tracing::warn!(%key, %what, "market: a document has an unreadable key; skipped");
+        return;
+    };
+    if count(store) >= cap {
+        tracing::warn!(%key, %what, "market: past the store cap; skipped");
+        return;
+    }
+    match serde_json::from_value::<T>(value.clone()) {
+        Ok(r) => {
+            if !insert(store, n, r) {
+                tracing::warn!(
+                    %key, %what,
+                    "market: a document disagrees with its own key; skipped"
+                );
+            }
+        }
+        Err(error) => {
+            tracing::warn!(%key, %what, %error, "market: a document did not parse; skipped");
+        }
+    }
+}
+
+/// Load one `market:catalog:{pack}:{code}` document.
+fn load_entry(store: &mut MarketStore, key: &str, rest: &str, value: &serde_json::Value) {
+    let Some((pack, code)) = rest.split_once(':') else {
+        tracing::warn!(%key, "market: a catalog document has an unreadable key; skipped");
+        return;
+    };
+    if store.entries.len() >= MAX_CATALOG_ENTRIES {
+        tracing::warn!(%key, "market: past the catalog cap; skipped");
+        return;
+    }
+    match serde_json::from_value::<CatalogEntry>(value.clone()) {
+        // The identity rule: the record must agree with its own key on both halves.
+        Ok(e) if e.pack == pack && e.catalog.code == code => {
+            store.entries.insert(SmolStr::new(e.slug()), e);
+        }
+        Ok(_) => {
+            tracing::warn!(%key, "market: a catalog document disagrees with its own key; skipped");
+        }
+        Err(error) => {
+            tracing::warn!(%key, %error, "market: a catalog document did not parse; skipped");
+        }
+    }
+}
+
+/// A live world object that is not on its way out — what a listing's named object and
+/// a delivery destination must be.
+#[must_use]
+pub fn is_live_object(w: &mush_core::World, id: ObjId) -> bool {
+    w.get(id)
+        .is_some_and(|o| !o.flags.contains(mush_core::Flags::GOING))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn listing_doc(id: u64) -> serde_json::Value {
+        serde_json::json!({
+            "id": id, "seller": { "Organization": 1 }, "vendor": 1, "market": "seattle",
+            "catalog": { "ruleset": "sr", "code": "ammo" },
+            "source": { "stock": { "vault": 1 } },
+            "price": 10, "quantity": 5, "visibility": "public",
+            "expires": { "clock": "RealUtc", "at": 10_000 }, "revision": 1
+        })
+    }
+
+    #[test]
+    fn the_allocator_floor_never_reissues_a_live_id() {
+        let kv = vec![
+            (SmolStr::new(META_KEY), serde_json::json!({})),
+            (SmolStr::new("market:listing:9"), listing_doc(9)),
+        ];
+        let store = load(&kv);
+        assert_eq!(store.listings.len(), 1);
+        assert_eq!(store.next_listing, 10);
+    }
+
+    #[test]
+    fn a_corrupt_document_still_claims_its_id_and_the_world_boots() {
+        let kv = vec![
+            (
+                SmolStr::new("market:listing:4"),
+                serde_json::json!({ "nope": true }),
+            ),
+            (
+                SmolStr::new("market:vendor:2"),
+                serde_json::json!("not even an object"),
+            ),
+        ];
+        let store = load(&kv);
+        assert!(store.listings.is_empty() && store.vendors.is_empty());
+        assert_eq!(store.next_listing, 5, "a parsed key is a claim on its id");
+        assert_eq!(store.next_vendor, 3);
+    }
+
+    #[test]
+    fn a_document_that_disagrees_with_its_key_is_skipped() {
+        let kv = vec![(SmolStr::new("market:listing:4"), listing_doc(9))];
+        assert!(load(&kv).listings.is_empty());
+    }
+
+    #[test]
+    fn a_corrupt_catalog_document_is_skipped_and_the_rest_of_the_pack_loads() {
+        let good = serde_json::json!({
+            "catalog": { "ruleset": "sr", "code": "ammo" },
+            "pack": "sr.core", "definition_version": 1, "name": "Ammo",
+            "representation": "instrument"
+        });
+        let mut wrong_key = good.clone();
+        wrong_key["catalog"]["code"] = serde_json::json!("other");
+        let kv = vec![
+            (SmolStr::new("market:catalog:sr.core:ammo"), good),
+            // A body that will not parse at all…
+            (
+                SmolStr::new("market:catalog:sr.core:broken"),
+                serde_json::json!({ "nope": true }),
+            ),
+            // …a body that disagrees with its own key (the identity rule)…
+            (SmolStr::new("market:catalog:sr.core:other2"), wrong_key),
+            // …and a key with no `{pack}:{code}` shape at all.
+            (
+                SmolStr::new("market:catalog:nocolon"),
+                serde_json::json!({ "nope": true }),
+            ),
+        ];
+        let store = load(&kv);
+        assert_eq!(store.entries().count(), 1, "the loss was not contained");
+        assert!(store.entry("sr.core:ammo").is_some());
+        assert!(store.indexes_agree());
+    }
+
+    #[test]
+    fn every_index_is_re_derived_from_the_records() {
+        let kv = vec![
+            (SmolStr::new("market:listing:1"), listing_doc(1)),
+            (SmolStr::new("market:listing:2"), listing_doc(2)),
+        ];
+        let store = load(&kv);
+        assert!(store.indexes_agree());
+        assert_eq!(store.live.len(), 2);
+        assert_eq!(store.listings_of_vendor(VendorId(1)), 2);
+    }
+}

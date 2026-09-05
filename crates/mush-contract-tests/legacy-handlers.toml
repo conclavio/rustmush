@@ -252,6 +252,12 @@ category = "baseline"
 note = "baseline pinned at b0e3b52 (module, shadowrun composition only)"
 
 [[handler]]
+name = "+market"
+category = "legacy-post-image"
+family = "market:listing"
+note = "E6c (08f 5.2/5.3): the neutral market's player surface -- listings, buyer-as-issuer quotes with a declared expiry clock, +market/sell, and the aggregate public projection. Bounded whole-document catalog/workflow records (market:listing:{id}, market:quote:{id}) with strict TryFrom wires re-running documented caps, deterministic keys, and no part in authority or prepared mechanics: every money act rides the economy's owner-exported offer_contract / accept_contract / accept_contract_as / cancel_contract seams under an E4 authority, a quote RESERVES NOTHING (08i 4 rule 1 excludes reservations and mechanical offers; doc 10 T4 keeps holds money-only), and a stale quote refuses deterministically rather than re-pricing. The future family is the market record K8.5 replaces this allowlist with."
+
+[[handler]]
 name = "+note"
 category = "baseline"
 note = "baseline pinned at b0e3b52 (module, every composition)"
@@ -583,6 +589,12 @@ note = "baseline pinned at b0e3b52 (module, every composition)"
 name = "@mail"
 category = "baseline"
 note = "baseline pinned at b0e3b52 (module, every composition)"
+
+[[handler]]
+name = "@market"
+category = "legacy-post-image"
+family = "market:catalog"
+note = "E6c (08f 5.1/5.2): staff catalogue and vendor administration -- @market/catalog load|list|show over a wiring-frozen content-pack source, @market/vendor create|fund|stock|retire, @market/source create|budget|halt. Bounded whole-document catalog records (market:catalog:{pack}:{code}, market:vendor:{id}, market:source:{id}) with strict TryFrom wires and deterministic keys; a bad entry fails the PACK and never the server. It takes no part in authority or prepared mechanics: funding is a create_system_obligation drip from a registered faucet under the [economy] mint cap, stocking a titled asset goes through mush_economy::issue_title under the composition-frozen sr.market issuer, and no @contract/@obligation/@asset/@vault/@org command is ever dispatched from the handler."
 
 [[handler]]
 name = "@name"

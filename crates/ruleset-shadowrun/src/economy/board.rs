@@ -793,6 +793,7 @@ pub fn post(
             facilitator: None,
         },
         deterministic,
+        deliverables: Vec::new(),
     };
     let contract = mush_economy::offer_contract(ctx, spec)
         .map_err(|e| (PostError::Contract(e), named.clone()))?;

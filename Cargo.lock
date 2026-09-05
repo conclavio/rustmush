@@ -2165,6 +2165,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "mush-market"
+version = "0.1.0"
+dependencies = [
+ "mush-core",
+ "mush-economy",
+ "mush-org",
+ "mush-proto",
+ "mush-store",
+ "mush-testkit",
+ "serde",
+ "serde_json",
+ "smol_str",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "mush-net-ssh"
 version = "0.1.0"
 dependencies = [
@@ -2321,6 +2338,7 @@ dependencies = [
  "mush-jobs",
  "mush-llm",
  "mush-mail",
+ "mush-market",
  "mush-npc",
  "mush-org",
  "mush-party",
@@ -3312,6 +3330,7 @@ dependencies = [
  "mush-economy",
  "mush-faction",
  "mush-jobs",
+ "mush-market",
  "mush-org",
  "mush-party",
  "mush-proto",

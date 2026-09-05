@@ -5068,6 +5068,7 @@ fn run_spec(
         visibility: EconomicVisibility::Parties,
         roles: ContractRoles::default(),
         deterministic: false,
+        deliverables: Vec::new(),
     }
 }
 
@@ -5367,6 +5368,7 @@ fn e6s1_s4_needs_approval_on_an_org_payers_accept_leaves_no_acceptance() {
         visibility: EconomicVisibility::Parties,
         roles: ContractRoles::default(),
         deterministic: false,
+        deliverables: Vec::new(),
     };
     e6.stage_offer(spec);
     ok(&mut tw, GOD, "@e6/offer");

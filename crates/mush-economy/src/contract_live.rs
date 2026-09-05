@@ -4665,6 +4665,17 @@ pub struct ContractSpec {
     /// Admit `DepositInto`/`TitleHeld`/`Fact`/`Before`/`After` conditions — E6b's
     /// settlement routes. Off by default.
     pub deterministic: bool,
+    /// What the contract delivers besides money (E6c).
+    ///
+    /// The field E6a step 1 left out and E6c needs: `offer_contract` hard-coded
+    /// `deliverables: Vec::new()`, so a programmatic offer could move money and never
+    /// goods — and a market purchase of a titled artefact **is** a
+    /// [`Deliverable::TitleTransfer`], which E4b2 already executes at settlement under
+    /// D-E3-12's both-parties-accepted rule. Adding the field costs no new settlement
+    /// machinery at all: `check_offer` validates it exactly as it validates the
+    /// `@contract/deliver` builder's, and each outcome row names the indexes it
+    /// causes through `OutcomeTerms::asset_consequences`.
+    pub deliverables: Vec<Deliverable>,
 }
 
 /// What [`amend_contract`] changes (E6a step 1). Each field is optional so a
@@ -4858,7 +4869,7 @@ pub fn offer_contract(ctx: &mut Ctx<'_>, spec: ContractSpec) -> Result<ContractI
         parties,
         terms: ContractTerms {
             consideration,
-            deliverables: Vec::new(),
+            deliverables: spec.deliverables,
             split: Vec::new(),
             remainder_to: spec.remainder_to,
             on_expiry: spec.on_expiry,
@@ -4998,6 +5009,104 @@ pub fn accept_contract_as(
         return Err(ContractError::NoStanding);
     }
     accept_core_as(ctx, c, party.clone(), party.clone())
+}
+
+/// **Deliver the goods leg of a contract that has already settled** (E6c B6) — the
+/// seventh programmatic seam, game-neutral, and the reason it exists is arithmetic:
+/// an [`EconomicContract`] holds **one instrument** (`check_structure`'s
+/// `InstrumentMismatch`; there is no implicit exchange in this economy), so a
+/// purchase paid in currency cannot also pay out a commodity or an entitlement.
+/// Those move as a second, ordinary journal post afterwards — and until now no
+/// caller could make one, because the debit is the **seller's** and every command's
+/// actor is `PrincipalId::Object(ctx.actor)`.
+///
+/// It is bounded exactly as [`accept_contract_as`] is, by the same wiring-frozen
+/// table and two facts about the contract:
+///
+/// 1. `from`'s owner holds [`PartyCap::Accept`] — a composition-named vendor
+///    organization, never something a command, a document or a grant can add to;
+/// 2. that owner is a **party to `contract`**, so a vendor can only ever deliver
+///    against a deal it actually made;
+/// 3. `contract` is `Settled`, so the goods move only after the money did.
+///
+/// It confers **no money authority whatever**: the plan's actor is the seller, so
+/// the debit posts under that account's own authority (`WorldAuth`'s organization
+/// arm, over its own live compartment), its `ApprovalRule` still binds, and a seller
+/// with no stock is refused exactly as one with no money is. The key is
+/// `contract.deliver/{contract}`, so a re-entered observer delivers **once**.
+///
+/// # Errors
+///
+/// [`ContractError::NoStanding`] when the economy is frozen, the contract is
+/// unviewable or unsettled, the wiring never named the seller, or the seller is not a
+/// party; [`ContractError::Refused`] carrying the economy's own refusal otherwise.
+pub fn deliver_settled(
+    ctx: &mut Ctx<'_>,
+    contract: ContractId,
+    from: AccountId,
+    to: AccountId,
+    amount: Amount,
+) -> Result<PostOutcome, ContractError> {
+    if amount.minor() <= 0 {
+        return Err(ContractError::Infeasible(
+            "a delivery moves a positive amount",
+        ));
+    }
+    if ctx
+        .w
+        .module_state::<EconomyStore>()
+        .is_none_or(EconomyStore::is_frozen)
+    {
+        return Err(ContractError::Infeasible("the economy is frozen"));
+    }
+    let (seller, settled) = {
+        let store = ctx
+            .w
+            .module_state::<EconomyStore>()
+            .ok_or(ContractError::NoStanding)?;
+        let snap = store.snapshot();
+        let account = snap.account(from).ok_or(ContractError::NoStanding)?;
+        let c = snap.contract(contract).ok_or(ContractError::NoStanding)?;
+        (
+            account.owner.clone(),
+            matches!(c.state, ContractState::Settled { .. })
+                && c.consent.parties.contains(&account.owner),
+        )
+    };
+    if !settled {
+        return Err(ContractError::NoStanding);
+    }
+    if ctx
+        .w
+        .module_state::<EconomyStore>()
+        .is_none_or(|s| !s.has_party_cap(&seller, crate::contract::PartyCap::Accept))
+    {
+        return Err(ContractError::NoStanding);
+    }
+    let plan = EconomyPlan::new(
+        crate::record::IdempotencyKey::new(
+            SmolStr::new_static("contract.deliver"),
+            SmolStr::new(contract.0.to_string()),
+        ),
+        seller,
+        crate::record::EconomicCause::Internal {
+            kind: SmolStr::new_static("contract.deliver"),
+            id: contract.0,
+        },
+        vec![
+            crate::plan::RequestedLine {
+                account: from,
+                delta: Amount::from_minor(-amount.minor()),
+                memo: SmolStr::new_static("delivery"),
+            },
+            crate::plan::RequestedLine {
+                account: to,
+                delta: amount,
+                memo: SmolStr::new_static("delivery"),
+            },
+        ],
+    );
+    api::post(ctx, &plan).map_err(ContractError::Refused)
 }
 
 /// **Amend an offered contract** on behalf of its issuer (E6a step 1): S1's rules —

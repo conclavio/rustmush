@@ -1,0 +1,988 @@
+//! The market's own seams: the catalog, vendors, listings and NPC market makers
+//! (E6c, B3/B5/B8).
+//!
+//! Everything that moves money moves it through E4 under an E4 authority — the
+//! `offer_contract` / `accept_contract` / `accept_contract_as` / `cancel_contract`
+//! seams and `create_system_obligation` for a registered faucet's drip. **No
+//! `@contract`, `@obligation`, `@asset`, `@vault` or `@org` command is ever
+//! dispatched from a handler in this crate**, and there is no journal write anywhere
+//! in it.
+
+use mush_core::{Ctx, ObjId, World};
+use mush_economy::{
+    AccountId, AccountStatus, Amount, CatalogRef, EconomicClock, EconomicDeadline, EconomyStore,
+    InstrumentId, VaultId, VaultStatus,
+};
+use mush_org::{OrgId, PrincipalId};
+use smol_str::SmolStr;
+
+use crate::ids::{ListingId, MarketId, MarketSourceId, VendorId};
+use crate::record::{
+    CatalogEntry, Legality, Listing, MAX_CATALOG_ENTRIES_PER_PACK, MAX_LISTINGS,
+    MAX_LISTINGS_PER_VENDOR, MAX_SOURCES, MAX_VENDORS, MarketSource, MarketVisibility,
+    Representation, Supply, Vendor, VendorStatus, check_entry,
+};
+use crate::store::{
+    MARKET_PAGE_MAX, MARKET_PAGE_VISIT, MarketStore, del_entry, del_listing, is_live_object,
+    persist_meta, put_entry, put_listing, put_source, put_vendor,
+};
+
+/// The one refusal a listing the actor may not use ever gets — identical for
+/// nonexistent and unviewable (08a decision 13).
+pub const NO_SUCH_LISTING: &str = "No such listing.";
+/// The same, for a quote.
+pub const NO_SUCH_QUOTE: &str = "No such quote.";
+/// The same, for a vendor.
+pub const NO_SUCH_VENDOR: &str = "No such vendor.";
+/// The same, for a market maker.
+pub const NO_SUCH_SOURCE: &str = "No such market source.";
+/// The same, for a catalogue entry.
+pub const NO_SUCH_ENTRY: &str = "No such catalogue entry.";
+
+/// The longest a listing stands before it lapses, in seconds, and the ceiling on a
+/// caller-supplied window.
+pub const MAX_LISTING_TTL_SECS: i64 = 90 * 86_400;
+/// The default listing window.
+pub const DEFAULT_LISTING_TTL_SECS: i64 = 14 * 86_400;
+
+/// Why a market act was refused.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum MarketError {
+    /// Nothing the actor may act on — the existence-hiding answer, and the **only**
+    /// answer a nonexistent and an unviewable record both get.
+    NoStanding(&'static str),
+    /// A shaped refusal that says something true about the command itself.
+    Bad(String),
+    /// The economy refused the offer or the accept.
+    Contract(mush_economy::ContractError),
+    /// The economy refused a post.
+    Economy(mush_economy::EconomyError),
+}
+
+impl MarketError {
+    /// A `Bad` from anything string-shaped.
+    #[must_use]
+    pub fn bad(msg: impl Into<String>) -> MarketError {
+        MarketError::Bad(msg.into())
+    }
+}
+
+/// Render a [`MarketError`] under the existence-hiding discipline, counting every
+/// existence probe through the economy's own C16 refusal telemetry (E6b, D8): the
+/// market mints four brand-new enumerable id spaces, and a refusal built straight
+/// into a `CmdError` would never reach the tally staff read the shape of a walk from.
+#[must_use]
+pub fn refuse_market(ctx: &mut Ctx<'_>, e: &MarketError) -> mush_core::CmdError {
+    match e {
+        MarketError::NoStanding(why) => {
+            mush_economy::note_refusal(ctx, true);
+            mush_core::CmdError::msg((*why).to_string())
+        }
+        MarketError::Bad(why) => {
+            mush_economy::note_refusal(ctx, false);
+            mush_core::CmdError::msg(why.clone())
+        }
+        MarketError::Contract(e) => mush_economy::refuse_contract_offer(ctx, e, Vec::new()),
+        MarketError::Economy(e) => {
+            mush_economy::refuse(ctx, mush_economy::NamedResource::Asset(ObjId(0)), &[], e)
+        }
+    }
+}
+
+// ---- small world questions -------------------------------------------------
+
+/// Staff, by the economy's own definition — one rule across the E-series.
+#[must_use]
+pub fn is_staff(w: &World, who: ObjId) -> bool {
+    mush_core::perm::has_power(w, who, mush_core::Powers::SIM_ADMIN)
+        || mush_core::perm::has_role(w, who, mush_core::Role::Royalty)
+}
+
+/// A principal's own `Active` account in one instrument — the derivation E6b's fence
+/// uses, so nobody ever names a wallet.
+///
+/// A person's is their **unscoped** one; an organization's is always scoped, so the
+/// rule is "the principal's own live account in this instrument, lowest id first".
+#[must_use]
+pub fn principal_account(
+    ctx: &Ctx<'_>,
+    instrument: &InstrumentId,
+    who: &PrincipalId,
+) -> Option<AccountId> {
+    let personal = matches!(who, PrincipalId::Object(_));
+    ctx.w
+        .module_state::<EconomyStore>()?
+        .snapshot()
+        .accounts_of(who)
+        .find(|a| {
+            a.instrument == *instrument
+                && (!personal || a.scope.is_none())
+                && a.status == AccountStatus::Active
+        })
+        .map(|a| a.id)
+}
+
+/// The instrument one account holds.
+#[must_use]
+pub fn account_instrument(ctx: &Ctx<'_>, account: AccountId) -> Option<InstrumentId> {
+    ctx.w
+        .module_state::<EconomyStore>()?
+        .snapshot()
+        .account(account)
+        .map(|a| a.instrument.clone())
+}
+
+/// The **hidden** selling organizations, for the projection's public test.
+///
+/// Complete and bounded by construction: every listing and every trade row is a
+/// registered vendor's, vendors are capped at [`MAX_VENDORS`], and a listing whose
+/// seller is not a vendor cannot be created. So this walk sees every organization
+/// that could ever appear in the projection's inputs, and it is at most 64 records
+/// long whatever the org registry holds.
+#[must_use]
+pub fn hidden_seller_orgs(ctx: &Ctx<'_>) -> Vec<OrgId> {
+    let Some(store) = ctx.w.module_state::<MarketStore>() else {
+        return Vec::new();
+    };
+    let orgs: Vec<OrgId> = store.vendors().map(|v| v.org).take(MAX_VENDORS).collect();
+    orgs.into_iter()
+        .filter(|org| is_hidden_org(ctx.w, *org))
+        .collect()
+}
+
+/// Whether an organization is hidden. Fails **closed**: an org the registry cannot
+/// answer for is treated as hidden, so a missing record can never widen the public
+/// set.
+#[must_use]
+pub fn is_hidden_org(w: &World, org: OrgId) -> bool {
+    w.module_state::<mush_org::OrgStore>()
+        .and_then(|st| st.state().org(org).map(|o| o.hidden))
+        .unwrap_or(true)
+}
+
+// ---- B3: the catalog and its content packs ---------------------------------
+
+/// What loading one pack did.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PackLoad {
+    /// The pack's name.
+    pub pack: SmolStr,
+    /// How many entries it now holds.
+    pub entries: usize,
+    /// How many were newly added.
+    pub added: usize,
+    /// How many were replaced by a newer definition version.
+    pub updated: usize,
+    /// How many the reload dropped (they are no longer in the pack).
+    pub dropped: usize,
+}
+
+/// **Load one content pack** (B3, answers 9–10).
+///
+/// Idempotent: loading the same pack twice adds nothing and drops nothing. A pack
+/// whose entries carry a higher `definition_version` **versions** the entries in
+/// place, which is what a quote's stale-version refusal is about. Every entry that
+/// the pack no longer defines is removed.
+///
+/// **A bad entry fails the pack, not the server** (B3): validation runs over the
+/// whole list before a single document is written, and the refusal names the entry.
+/// The caller — `@market/catalog load` — names the file.
+///
+/// # Errors
+///
+/// [`MarketError::Bad`] naming the first entry that failed and why.
+pub fn load_pack(
+    ctx: &mut Ctx<'_>,
+    pack: &str,
+    entries: Vec<CatalogEntry>,
+) -> Result<PackLoad, MarketError> {
+    let pack = SmolStr::new(pack.trim());
+    if entries.len() > MAX_CATALOG_ENTRIES_PER_PACK {
+        return Err(MarketError::bad(format!(
+            "pack '{pack}' declares {} entries; this server allows {MAX_CATALOG_ENTRIES_PER_PACK} \
+             per pack.",
+            entries.len()
+        )));
+    }
+    // Validate the WHOLE pack first: nothing is written until every entry is good,
+    // so a bad entry costs the pack and leaves the catalog exactly as it was.
+    let mut seen: std::collections::BTreeSet<SmolStr> = std::collections::BTreeSet::new();
+    for e in &entries {
+        if e.pack != pack {
+            return Err(MarketError::bad(format!(
+                "entry '{}' claims pack '{}' but was loaded as '{pack}'.",
+                e.catalog.code, e.pack
+            )));
+        }
+        check_entry(e).map_err(|why| {
+            MarketError::bad(format!("entry '{}' is malformed: {why}.", e.catalog.code))
+        })?;
+        if !seen.insert(e.catalog.code.clone()) {
+            return Err(MarketError::bad(format!(
+                "entry '{}' is declared twice in pack '{pack}'.",
+                e.catalog.code
+            )));
+        }
+        // One live entry per `CatalogRef` across every pack: two packs defining the
+        // same code would make "what is this" a question about load order.
+        let clash = ctx.w.module_state::<MarketStore>().and_then(|s| {
+            s.entry_of(&e.catalog)
+                .filter(|other| other.pack != pack)
+                .map(|other| other.pack.clone())
+        });
+        if let Some(other) = clash {
+            return Err(MarketError::bad(format!(
+                "entry '{}' is already defined by pack '{other}'.",
+                e.catalog.code
+            )));
+        }
+    }
+    let previous: Vec<CatalogEntry> = ctx
+        .w
+        .module_state::<MarketStore>()
+        .map(|s| s.entries_of_pack(pack.as_str()).cloned().collect())
+        .unwrap_or_default();
+    // The whole-store ceiling on **write** as well as on load (E6b independent verify
+    // fold, D5's rule): a cap enforced only at boot lets a store grow past it
+    // legitimately and then silently drops the overflow on the next restart. Counted
+    // against what this pack would *add*, so a reload of a pack already in the
+    // catalogue never trips it.
+    let net_new = entries
+        .iter()
+        .filter(|e| !previous.iter().any(|p| p.catalog.code == e.catalog.code))
+        .count();
+    let held = ctx
+        .w
+        .module_state::<MarketStore>()
+        .map_or(0, |s| s.entries().count());
+    if held.saturating_add(net_new) > crate::record::MAX_CATALOG_ENTRIES {
+        return Err(MarketError::bad(format!(
+            "pack '{pack}' would take the catalogue past the {} entries this server holds.",
+            crate::record::MAX_CATALOG_ENTRIES
+        )));
+    }
+    let mut out = PackLoad {
+        pack: pack.clone(),
+        entries: entries.len(),
+        ..PackLoad::default()
+    };
+    for e in &entries {
+        match previous.iter().find(|p| p.catalog.code == e.catalog.code) {
+            None => out.added = out.added.saturating_add(1),
+            Some(p) if p != e => out.updated = out.updated.saturating_add(1),
+            Some(_) => continue, // byte-identical: the reload is a no-op for it
+        }
+        put_entry(ctx, e.clone());
+    }
+    for p in &previous {
+        if !seen.contains(&p.catalog.code) {
+            out.dropped = out.dropped.saturating_add(1);
+            del_entry(ctx, &p.pack, &p.catalog.code);
+        }
+    }
+    Ok(out)
+}
+
+// ---- B5: vendors -----------------------------------------------------------
+
+/// **Register (or re-register) a vendor organization** (B5) — the neutral
+/// generalization of E6b's `@sr/fence <org>=<vault>`.
+///
+/// The vendor's account is **derived** from the organization's own live account in
+/// `instrument`, so nobody names a wallet: every escrow it places posts under that
+/// account's own debit authority, and a vendor that has run out simply cannot accept.
+/// That is the whole of "a vendor that runs out stops quoting" (M19, D-E6-15).
+///
+/// # Errors
+///
+/// [`MarketError`]; render it with [`refuse_market`].
+pub fn register_vendor(
+    ctx: &mut Ctx<'_>,
+    instrument: &InstrumentId,
+    org: OrgId,
+    vault: VaultId,
+    market: MarketId,
+    name: SmolStr,
+    buy_permille: u32,
+) -> Result<VendorId, MarketError> {
+    let principal = PrincipalId::Organization(org);
+    let account = principal_account(ctx, instrument, &principal)
+        .ok_or(MarketError::NoStanding(NO_SUCH_VENDOR))?;
+    // The vault must exist, be active, and belong to the same organization: a vendor
+    // taking custody into somebody else's vault would hand the goods to a third party
+    // under the buyer's nose.
+    let ok = ctx
+        .w
+        .module_state::<EconomyStore>()
+        .and_then(|s| s.snapshot().vault(vault).cloned())
+        .is_some_and(|v| v.owner == principal && v.status == VaultStatus::Active);
+    if !ok {
+        return Err(MarketError::NoStanding(NO_SUCH_VENDOR));
+    }
+    if buy_permille > 1_000 {
+        return Err(MarketError::bad(
+            "A vendor's buy rate is a permille of the catalogue baseline, 0..=1000.",
+        ));
+    }
+    if let Some(existing) = ctx
+        .w
+        .module_state::<MarketStore>()
+        .and_then(|s| s.vendor_of_org(org).cloned())
+    {
+        // E6b independent verify fold (M9), the same rule one layer up: **a vendor's
+        // vault does not move under a live deal.** A frozen `TitleHeld`/`DepositInto`
+        // names the vault by id and no re-pointing can re-open a frozen surface, so
+        // the change is refused while anything still stands against it.
+        if existing.vault != vault
+            && ctx
+                .w
+                .module_state::<MarketStore>()
+                .is_some_and(|s| s.listings_of_vendor(existing.id) > 0)
+        {
+            return Err(MarketError::bad(format!(
+                "Vendor #{} still has listings standing against vault #{}; retire them first.",
+                existing.id, existing.vault
+            )));
+        }
+        let updated = Vendor {
+            vault,
+            account,
+            market,
+            name,
+            buy_permille,
+            status: VendorStatus::Active,
+            revision: existing.revision.saturating_add(1),
+            ..existing
+        };
+        put_vendor(ctx, updated);
+        return Ok(existing.id);
+    }
+    if ctx
+        .w
+        .module_state::<MarketStore>()
+        .is_some_and(|s| s.vendors().count() >= MAX_VENDORS)
+    {
+        return Err(MarketError::bad(
+            "This server already registers as many vendors as it allows.",
+        ));
+    }
+    let Some(id) = ctx
+        .w
+        .module_state_mut::<MarketStore>()
+        .and_then(MarketStore::alloc_vendor)
+    else {
+        return Err(MarketError::bad("The vendor-id allocator is exhausted."));
+    };
+    put_vendor(
+        ctx,
+        Vendor {
+            id,
+            org,
+            market,
+            account,
+            vault,
+            name,
+            buy_permille,
+            status: VendorStatus::Active,
+            revision: 1,
+        },
+    );
+    persist_meta(ctx);
+    Ok(id)
+}
+
+/// **Retire a vendor** (B5, B10): it stops quoting immediately and every listing it
+/// holds is withdrawn. Its **live contracts settle through E4 untouched** — retiring
+/// a shop is not tearing up its agreements.
+///
+/// # Errors
+///
+/// [`MarketError`]; render it with [`refuse_market`].
+pub fn retire_vendor(ctx: &mut Ctx<'_>, id: VendorId) -> Result<usize, MarketError> {
+    let Some(v) = ctx
+        .w
+        .module_state::<MarketStore>()
+        .and_then(|s| s.vendor(id).cloned())
+    else {
+        return Err(MarketError::NoStanding(NO_SUCH_VENDOR));
+    };
+    let listings: Vec<ListingId> = ctx
+        .w
+        .module_state::<MarketStore>()
+        .map(|s| {
+            s.by_vendor
+                .get(&id)
+                .into_iter()
+                .flatten()
+                .copied()
+                .take(MAX_LISTINGS_PER_VENDOR)
+                .collect()
+        })
+        .unwrap_or_default();
+    let n = listings.len();
+    for l in listings {
+        del_listing(ctx, l);
+    }
+    put_vendor(
+        ctx,
+        Vendor {
+            status: VendorStatus::Retired,
+            revision: v.revision.saturating_add(1),
+            ..v
+        },
+    );
+    Ok(n)
+}
+
+/// **Fund a vendor or a maker from a registered faucet** (B8, doc 10 7A).
+///
+/// The **only** route by which value enters a vendor or a maker other than a sale:
+/// a `create_system_obligation` drip from a registered faucet, under the `[economy]`
+/// mint cap, re-checked live at every settlement by the economy's own sweep. There is
+/// no other mint here — a maker is never a `System` party (D-E6-4), never holds an
+/// unlimited account, and nothing recapitalizes it without an attributed act.
+///
+/// # Errors
+///
+/// [`MarketError::Economy`] carries the economy's own refusal, mint cap included.
+pub fn fund_from_faucet(
+    ctx: &mut Ctx<'_>,
+    faucet: &mush_org::SystemPrincipalId,
+    faucet_account: AccountId,
+    credit: AccountId,
+    amount: Amount,
+    period_secs: i64,
+    namespace: &str,
+) -> Result<mush_economy::ObligationId, MarketError> {
+    if amount.minor() <= 0 {
+        return Err(MarketError::bad("A funding drip is a positive amount."));
+    }
+    let now = ctx.w.now();
+    mush_economy::create_system_obligation(
+        ctx,
+        faucet,
+        mush_economy::ObligationSpec {
+            debit_account: faucet_account,
+            credit_account: credit,
+            amount,
+            schedule: mush_economy::EconomicSchedule::new(
+                EconomicClock::RealUtc,
+                now.saturating_add(period_secs.max(60)),
+                Some(period_secs.max(60)),
+                1,
+            ),
+            grace: mush_economy::GracePolicy::default(),
+            notify_on_success: false,
+            cause: mush_economy::ObligationCause::Ruleset {
+                namespace: SmolStr::new(namespace),
+            },
+        },
+    )
+    .map_err(MarketError::Economy)
+}
+
+// ---- B5: listings ----------------------------------------------------------
+
+/// What `list_goods` was asked for.
+#[derive(Clone, Debug)]
+pub struct ListingSpec {
+    /// Which vendor is selling.
+    pub vendor: VendorId,
+    /// What.
+    pub catalog: CatalogRef,
+    /// The asking price, per unit.
+    pub price: Amount,
+    /// How many.
+    pub quantity: u64,
+    /// Where the goods come from.
+    pub source: Supply,
+    /// The specific titled object, for a `Representation::Asset`.
+    pub object: Option<ObjId>,
+    /// Whether it is in the public projection at all.
+    pub visibility: MarketVisibility,
+    /// How long it stands, in seconds.
+    pub ttl_secs: i64,
+}
+
+/// **Publish a listing** (B5).
+///
+/// A listing reserves nothing and escrows nothing: it is a published intention, and
+/// its `quantity` decrements only at a purchase contract's **activation** (OPEN 4).
+///
+/// A listing whose catalog entry declares [`Representation::Lot`] is refused here
+/// (OPEN 1): the lot is `mush-inventory`'s in E7 cut 2, with a different field list,
+/// and E6c will not define a second one.
+///
+/// # Errors
+///
+/// [`MarketError`]; render it with [`refuse_market`].
+pub fn list_goods(ctx: &mut Ctx<'_>, spec: ListingSpec) -> Result<ListingId, MarketError> {
+    let Some(vendor) = ctx
+        .w
+        .module_state::<MarketStore>()
+        .and_then(|s| s.vendor(spec.vendor).cloned())
+    else {
+        return Err(MarketError::NoStanding(NO_SUCH_VENDOR));
+    };
+    if !vendor.is_trading() {
+        return Err(MarketError::bad(
+            "That vendor has retired and is not trading.",
+        ));
+    }
+    let Some(entry) = ctx
+        .w
+        .module_state::<MarketStore>()
+        .and_then(|s| s.entry_of(&spec.catalog).cloned())
+    else {
+        return Err(MarketError::NoStanding(NO_SUCH_ENTRY));
+    };
+    // OPEN 1: `Representation::Lot` is catalog **policy** in E6c and no `Lot` record
+    // exists. 10b §3.2 (Q2D) puts the lot in `mush-inventory` as the single source of
+    // quantity truth with a different field list, E7 cut 2 owns it, and defining a
+    // second one here would invert the intended `mush-inventory -> mush-market` edge.
+    if !entry.representation.is_stockable() {
+        return Err(MarketError::bad(format!(
+            "'{}' is a lot-represented good, and lots are not stockable on this server yet.",
+            entry.name
+        )));
+    }
+    if spec.price.minor() <= 0 {
+        return Err(MarketError::bad("A listing asks a positive price."));
+    }
+    if spec.quantity == 0 || spec.quantity > crate::record::MAX_QUANTITY {
+        return Err(MarketError::bad(
+            "That is not a quantity this market sells.",
+        ));
+    }
+    // An `Asset` listing conveys exactly one **named, titled** object, because that
+    // is what `Deliverable::TitleTransfer` moves. Every other representation conveys
+    // no object at all.
+    match (entry.representation, spec.object) {
+        (Representation::Asset, None) => {
+            return Err(MarketError::bad(
+                "An asset listing names the object it conveys.",
+            ));
+        }
+        (Representation::Asset, Some(o)) => {
+            if !is_live_object(ctx.w, o) {
+                return Err(MarketError::NoStanding(NO_SUCH_LISTING));
+            }
+            if spec.quantity != 1 {
+                return Err(MarketError::bad("An asset listing sells exactly one."));
+            }
+            let titled = ctx
+                .w
+                .module_state::<EconomyStore>()
+                .and_then(|s| s.snapshot().asset(o).cloned());
+            match titled {
+                Some(a)
+                    if a.title_owner == PrincipalId::Organization(vendor.org)
+                        && a.lifecycle == mush_economy::AssetLifecycle::Active
+                        && !a.frozen => {}
+                // **Stocking mints the title, stamped with its catalogue reference**
+                // (B4a, B11). Without the stamp nothing the market sells could ever
+                // be quoted by a fence — E6b's `price` reads the asset's `catalog`
+                // and refuses an object that carries none — and every sale would
+                // need a second staff act (`@asset/catalog`) to become sellable
+                // again. `issue_title` refuses an issuer the composition did not
+                // freeze, so a server that named none simply cannot stock assets.
+                None => {
+                    let Some(issuer) = crate::module::title_issuer(ctx) else {
+                        return Err(MarketError::bad(
+                            "This server registers no market title issuer, so it cannot stock                              titled goods.",
+                        ));
+                    };
+                    mush_economy::issue_title(
+                        ctx,
+                        o,
+                        PrincipalId::Organization(vendor.org),
+                        None,
+                        issuer,
+                        Some(spec.catalog.clone()),
+                    )
+                    .map_err(MarketError::Economy)?;
+                }
+                Some(_) => {
+                    return Err(MarketError::bad(
+                        "That vendor does not hold a live title to that object.",
+                    ));
+                }
+            }
+        }
+        (_, Some(_)) => {
+            return Err(MarketError::bad("Only an asset listing names an object."));
+        }
+        (_, None) => {}
+    }
+    if ctx
+        .w
+        .module_state::<MarketStore>()
+        .is_some_and(|s| s.listings_of_vendor(spec.vendor) >= MAX_LISTINGS_PER_VENDOR)
+    {
+        return Err(MarketError::bad(
+            "That vendor already holds as many listings as the market allows.",
+        ));
+    }
+    if ctx
+        .w
+        .module_state::<MarketStore>()
+        .is_some_and(|s| s.listings.len() >= MAX_LISTINGS)
+    {
+        return Err(MarketError::bad("The market is full; try later."));
+    }
+    let ttl = spec.ttl_secs.clamp(60, MAX_LISTING_TTL_SECS);
+    let now = ctx.w.now();
+    let Some(id) = ctx
+        .w
+        .module_state_mut::<MarketStore>()
+        .and_then(MarketStore::alloc_listing)
+    else {
+        return Err(MarketError::bad("The listing-id allocator is exhausted."));
+    };
+    put_listing(
+        ctx,
+        Listing {
+            id,
+            seller: PrincipalId::Organization(vendor.org),
+            vendor: vendor.id,
+            market: vendor.market.clone(),
+            catalog: spec.catalog,
+            definition_version: entry.definition_version,
+            source: spec.source,
+            object: spec.object,
+            price: spec.price,
+            quantity: spec.quantity,
+            visibility: spec.visibility,
+            expires: EconomicDeadline {
+                clock: EconomicClock::RealUtc,
+                at: now.saturating_add(ttl),
+            },
+            revision: 1,
+        },
+    );
+    persist_meta(ctx);
+    Ok(id)
+}
+
+/// Take a listing down.
+///
+/// # Errors
+///
+/// [`MarketError::NoStanding`] when there is no such listing to the actor.
+pub fn withdraw_listing(ctx: &mut Ctx<'_>, id: ListingId) -> Result<(), MarketError> {
+    if ctx
+        .w
+        .module_state::<MarketStore>()
+        .and_then(|s| s.listing(id))
+        .is_none()
+    {
+        return Err(MarketError::NoStanding(NO_SUCH_LISTING));
+    }
+    del_listing(ctx, id);
+    Ok(())
+}
+
+// ---- the per-viewer half: who may see a listing -----------------------------
+
+/// Whether `viewer` may see this listing **at all**.
+///
+/// The per-viewer half of §5.3, and the only viewer-sensitive read in the cut. A
+/// listing fails it three ways, and all three answer with the same
+/// [`NO_SUCH_LISTING`] text: it is `Hidden` and the viewer is neither its seller nor
+/// staff; its selling organization is hidden from the viewer; or it does not exist.
+#[must_use]
+pub fn may_view_listing(w: &World, viewer: ObjId, l: &Listing) -> bool {
+    if is_staff(w, viewer) {
+        return true;
+    }
+    if mush_economy::acts_for(w, viewer, &l.seller) {
+        return true;
+    }
+    if !matches!(l.visibility, MarketVisibility::Public) {
+        return false;
+    }
+    // A hidden vendor's listings are **absent**, never refused (G3): the economy owns
+    // the render, the market owns the omission.
+    match &l.seller {
+        PrincipalId::Organization(org) => list_org(w, viewer, *org),
+        PrincipalId::Object(_) => true,
+        PrincipalId::System(_) => false,
+    }
+}
+
+/// Whether `viewer` may see this **vendor** at all — the same rule as a listing's,
+/// asked of the shop rather than the shelf. A hidden vendor is absent from
+/// `+market/vendors` for a non-member rather than refused (G3).
+#[must_use]
+pub fn may_list_vendor(w: &World, viewer: ObjId, v: &Vendor) -> bool {
+    list_org(w, viewer, v.org)
+}
+
+/// `mush_economy::may_list_org` against a `&World` — the same pair, asked without a
+/// `&mut Ctx`, so a read path never needs one.
+#[must_use]
+fn list_org(w: &World, viewer: ObjId, org: OrgId) -> bool {
+    if !is_hidden_org(w, org) {
+        return true;
+    }
+    is_staff(w, viewer) || mush_economy::acts_for(w, viewer, &PrincipalId::Organization(org))
+}
+
+/// One page of the market, newest first, from `after` (exclusive).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct MarketPage {
+    /// The listings this page shows.
+    pub ids: Vec<ListingId>,
+    /// Where the next page starts, when the walk stopped before the end.
+    pub next: Option<ListingId>,
+    /// How many records the walk **visited** — what [`MARKET_PAGE_VISIT`] bounds.
+    pub visited: usize,
+}
+
+/// The listings `viewer` may see, newest first (§5.3's per-viewer half).
+///
+/// **Bounded on records VISITED, not records matched** (D-LBK-5; E6b verify fold D3's
+/// "filter, then page"). An unauthorized or unknown filter returns an **empty list**,
+/// never a refusal (08a decision 13), and the page never exceeds
+/// [`MARKET_PAGE_MAX`] rows (08i §9 answer 11).
+#[must_use]
+pub fn visible(
+    w: &World,
+    viewer: ObjId,
+    filter: Option<&MarketFilter>,
+    page: usize,
+    after: Option<ListingId>,
+) -> MarketPage {
+    let Some(store) = w.module_state::<MarketStore>() else {
+        return MarketPage::default();
+    };
+    let page = page.clamp(1, MARKET_PAGE_MAX);
+    let mut out = MarketPage::default();
+    let mut last: Option<ListingId> = None;
+    let walk: Box<dyn Iterator<Item = &Listing>> = match after {
+        Some(cursor) => Box::new(
+            store
+                .live
+                .range(..cursor)
+                .rev()
+                .filter_map(|id| store.listing(*id)),
+        ),
+        None => Box::new(store.live_ids_desc().filter_map(|id| store.listing(id))),
+    };
+    for l in walk {
+        if out.visited >= MARKET_PAGE_VISIT || out.ids.len() >= page {
+            out.next = last;
+            return out;
+        }
+        out.visited = out.visited.saturating_add(1);
+        last = Some(l.id);
+        let matches = filter.is_none_or(|f| f.matches(store, l));
+        if matches && may_view_listing(w, viewer, l) {
+            out.ids.push(l.id);
+        }
+    }
+    out
+}
+
+/// What `+market/list` was asked to narrow to.
+///
+/// An **unknown** filter word produces [`MarketFilter::Nothing`], which matches
+/// nothing and therefore renders an empty list — never a refusal, and never a
+/// different shape from "there is nothing here" (08a decision 13).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum MarketFilter {
+    /// Only this legality class.
+    Legal(Legality),
+    /// Only entries carrying this tag.
+    Tag(SmolStr),
+    /// Only this market.
+    Market(MarketId),
+    /// A filter the actor may not use, or one this server does not know.
+    Nothing,
+}
+
+impl MarketFilter {
+    /// Parse one `key=value` filter word.
+    #[must_use]
+    pub fn parse(s: &str) -> MarketFilter {
+        let s = s.trim();
+        if let Some(rest) = s.strip_prefix("legal=") {
+            return Legality::parse(rest).map_or(MarketFilter::Nothing, MarketFilter::Legal);
+        }
+        if let Some(rest) = s.strip_prefix("tag=") {
+            let rest = rest.trim();
+            if rest.is_empty() || rest.len() > crate::record::MAX_TAG_BYTES {
+                return MarketFilter::Nothing;
+            }
+            return MarketFilter::Tag(SmolStr::new(rest));
+        }
+        if let Some(rest) = s.strip_prefix("market=") {
+            return MarketId::new(rest).map_or(MarketFilter::Nothing, MarketFilter::Market);
+        }
+        MarketFilter::Nothing
+    }
+
+    fn matches(&self, store: &MarketStore, l: &Listing) -> bool {
+        match self {
+            MarketFilter::Nothing => false,
+            MarketFilter::Market(m) => l.market == *m,
+            MarketFilter::Legal(want) => store
+                .entry_of(&l.catalog)
+                .is_some_and(|e| e.legality == *want),
+            MarketFilter::Tag(t) => store
+                .entry_of(&l.catalog)
+                .is_some_and(|e| e.tags.contains(t)),
+        }
+    }
+}
+
+// ---- B8: NPC market makers --------------------------------------------------
+
+/// **Register an NPC market maker** with explicit, exhaustible budgets (B8, doc 10
+/// 7A, D-E6-15).
+///
+/// # Errors
+///
+/// [`MarketError`]; render it with [`refuse_market`].
+#[allow(clippy::too_many_arguments)]
+pub fn create_source(
+    ctx: &mut Ctx<'_>,
+    instrument: &InstrumentId,
+    principal: OrgId,
+    inventory: VaultId,
+    market: MarketId,
+    spread: i64,
+    volume_budget: Amount,
+    loss_budget: Amount,
+    window: i64,
+) -> Result<MarketSourceId, MarketError> {
+    // D-E6-4, structurally: a maker is an `Organization`, never a `System` principal,
+    // and it holds an ordinary account nobody can overdraw.
+    let who = PrincipalId::Organization(principal);
+    let cash =
+        principal_account(ctx, instrument, &who).ok_or(MarketError::NoStanding(NO_SUCH_SOURCE))?;
+    let ok = ctx
+        .w
+        .module_state::<EconomyStore>()
+        .and_then(|s| s.snapshot().vault(inventory).cloned())
+        .is_some_and(|v| v.owner == who && v.status == VaultStatus::Active);
+    if !ok {
+        return Err(MarketError::NoStanding(NO_SUCH_SOURCE));
+    }
+    if !(-1_000..=1_000).contains(&spread) {
+        return Err(MarketError::bad(
+            "A maker's spread is a permille of the catalogue baseline, -1000..=1000.",
+        ));
+    }
+    if volume_budget.minor() < 0 || loss_budget.minor() < 0 {
+        return Err(MarketError::bad("A maker's budgets are never negative."));
+    }
+    if !(60..=365 * 86_400).contains(&window) {
+        return Err(MarketError::bad(
+            "A maker's budget window is 60 seconds to a year.",
+        ));
+    }
+    if ctx
+        .w
+        .module_state::<MarketStore>()
+        .is_some_and(|s| s.sources().count() >= MAX_SOURCES)
+    {
+        return Err(MarketError::bad(
+            "This server already registers as many market makers as it allows.",
+        ));
+    }
+    let Some(id) = ctx
+        .w
+        .module_state_mut::<MarketStore>()
+        .and_then(MarketStore::alloc_source)
+    else {
+        return Err(MarketError::bad("The maker-id allocator is exhausted."));
+    };
+    let now = ctx.w.now();
+    put_source(
+        ctx,
+        MarketSource {
+            id,
+            principal,
+            market,
+            cash,
+            inventory,
+            spread,
+            volume_budget,
+            loss_budget,
+            window,
+            volume_used: Amount::ZERO,
+            loss_used: Amount::ZERO,
+            window_started: now,
+            halted: false,
+            revision: 1,
+        },
+    );
+    persist_meta(ctx);
+    Ok(id)
+}
+
+/// Re-budget a maker.
+///
+/// # Errors
+///
+/// [`MarketError::NoStanding`] for an unknown maker, [`MarketError::Bad`] for a
+/// budget out of range.
+pub fn budget_source(
+    ctx: &mut Ctx<'_>,
+    id: MarketSourceId,
+    volume_budget: Option<Amount>,
+    loss_budget: Option<Amount>,
+    spread: Option<i64>,
+) -> Result<(), MarketError> {
+    let Some(s) = ctx
+        .w
+        .module_state::<MarketStore>()
+        .and_then(|st| st.source(id).cloned())
+    else {
+        return Err(MarketError::NoStanding(NO_SUCH_SOURCE));
+    };
+    if volume_budget.is_some_and(|a| a.minor() < 0) || loss_budget.is_some_and(|a| a.minor() < 0) {
+        return Err(MarketError::bad("A maker's budgets are never negative."));
+    }
+    if spread.is_some_and(|p| !(-1_000..=1_000).contains(&p)) {
+        return Err(MarketError::bad("A maker's spread is -1000..=1000."));
+    }
+    put_source(
+        ctx,
+        MarketSource {
+            volume_budget: volume_budget.unwrap_or(s.volume_budget),
+            loss_budget: loss_budget.unwrap_or(s.loss_budget),
+            spread: spread.unwrap_or(s.spread),
+            revision: s.revision.saturating_add(1),
+            ..s
+        },
+    );
+    Ok(())
+}
+
+/// Halt (or resume) a maker. **A halted maker's outstanding quotes expire and settle
+/// nothing**: the quote's own `is_current` asks the maker, so halting is what makes
+/// every one of them refuse deterministically at accept.
+///
+/// # Errors
+///
+/// [`MarketError::NoStanding`] for an unknown maker.
+pub fn halt_source(ctx: &mut Ctx<'_>, id: MarketSourceId, halted: bool) -> Result<(), MarketError> {
+    let Some(s) = ctx
+        .w
+        .module_state::<MarketStore>()
+        .and_then(|st| st.source(id).cloned())
+    else {
+        return Err(MarketError::NoStanding(NO_SUCH_SOURCE));
+    };
+    put_source(
+        ctx,
+        MarketSource {
+            halted,
+            revision: s.revision.saturating_add(1),
+            ..s
+        },
+    );
+    Ok(())
+}
