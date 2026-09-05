@@ -3015,9 +3015,17 @@ recovers the terminal result through authenticated `action/status`. Cuts after d
 finalization/before checkpoint and after checkpoint/before the final client acknowledgement cover
 the remaining server-side acknowledgement gaps. Every replacement server crosses the ordinary
 boot recovery barrier, the action remains queryable, and the exact tactical post-image is present
-at revision one rather than being executed twice. The remaining K8.2 process work is the Ledger
-rollover and quarantine-spool interruption matrix named below; structured-client acknowledgement
-and line/keyframe recovery remain K8.3.
+at revision one rather than being executed twice.
+
+K8.2's persistence-local remainder is closed too. A child process constructs a real target-zero
+`Ledger` append, proves it rolled RAM to a fresh tail, commits its sealed replay write through the
+production authoritative writer, and dies after finalization; boot checkpoints the retained bundle
+and finds exactly one intact sealed chunk. A second child drives a real Redis `WRONGTYPE` failure
+through the bounded poison attempts and dies after the unified spool fsyncs its exact temp envelope
+but before final-name publication. Reopen promotes the validated temp, retains the writable-boot
+gate, and—after the type-clobber is repaired—reconciles the pending bundle, archives the evidence,
+and permits ordinary checkpoint. K8.2's named server/persistence process cuts are therefore closed;
+structured-client acknowledgement, gateway/client loss, and line/keyframe recovery remain K8.3.
 
 Work:
 

@@ -2562,6 +2562,7 @@ fn write_record_atomic(
     retrying: bool,
 ) -> std::io::Result<()> {
     let source = prepare_runtime_temp(dir, identity, bytes, retrying)?;
+    crate::process_fault::terminate_sync_at("quarantine_after_temp_sync");
 
     // `rename` replaces an existing destination on Unix. A hard link gives us
     // an atomic, no-overwrite publication: both names briefly reference the

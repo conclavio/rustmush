@@ -12,15 +12,28 @@ use std::net::{SocketAddr, TcpListener};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
 use std::time::Duration;
 
+use fred::interfaces::KeysInterface as _;
 use futures::future::BoxFuture;
 use mush_config::accounts::hash_password;
 use mush_config::config::Config;
-use mush_core::GOD;
+use mush_config::metrics::Metrics;
+use mush_core::{
+    AuthoritativeBundle, AuthoritativeBundleDraft, AuthoritativeKey, AuthoritativeSemanticEvent,
+    CanonicalHash, CanonicalId, CommitToken, DefinitionDescriptor, DefinitionId, DefinitionKind,
+    DefinitionRegistryBuilder, GOD, IdempotencyKey, IdempotencyScope, Ledger, OwnerId,
+    PreparedCausalRef, PrincipalId, ReplayWrite, RequestUid, RulesValue, ScopedIdempotencyKey,
+};
 use mush_gateway::{GatewayOptions, LaunchedServer, RestartTrigger, ServerLauncher, ServerSource};
 use mush_ipc::IpcEndpoint;
-use mush_store::{AccountRec, CharacterRef, InMemoryStore, ObjectStore, RedisStore};
+use mush_server::persist::{PersistenceIntegrityLatch, StoreJob};
+use mush_server::quarantine::QuarantineSpool;
+use mush_store::{
+    AccountRec, AuthoritativeStore, BundleStatus, CharacterRef, InMemoryStore, ObjectStore,
+    RedisStore,
+};
 use russh::ChannelMsg;
 use tokio::sync::oneshot;
 
@@ -32,6 +45,13 @@ const STOP_ENV: &str = "RUSTMUSH_K8_SERVER_STOP";
 const CUT_ENV: &str = "RUSTMUSH_K8_PROCESS_CUT";
 const CUT_MARKER_ENV: &str = "RUSTMUSH_K8_PROCESS_CUT_MARKER";
 const CUT_RELEASE_ENV: &str = "RUSTMUSH_K8_PROCESS_CUT_RELEASE";
+const DIRECT_WORKER_ENV: &str = "RUSTMUSH_K8_DIRECT_WORKER";
+const DIRECT_MODE_ENV: &str = "RUSTMUSH_K8_DIRECT_MODE";
+const DIRECT_REDIS_ENV: &str = "RUSTMUSH_K8_DIRECT_REDIS";
+const DIRECT_SPOOL_ENV: &str = "RUSTMUSH_K8_DIRECT_SPOOL";
+
+const LEDGER_MODE: &str = "ledger_rollover";
+const QUARANTINE_MODE: &str = "quarantine_interrupt";
 
 static PROCESS_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
@@ -58,6 +78,96 @@ fn redis_url_with_db(base: &str, db: u32) -> String {
     let (scheme, rest) = base.split_once("://").unwrap_or(("redis", base));
     let authority = rest.split(['/', '?']).next().unwrap_or(rest);
     format!("{scheme}://{authority}/{db}")
+}
+
+fn direct_bundle(mode: &str) -> AuthoritativeBundle {
+    let owner = OwnerId::new("k8_process").unwrap();
+    let mut definitions = DefinitionRegistryBuilder::new();
+    let action = definitions
+        .register(
+            owner.clone(),
+            DefinitionDescriptor::new(
+                DefinitionKind::new("action").unwrap(),
+                DefinitionId::new(mode).unwrap(),
+                1,
+                serde_json::json!({}),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    let outcome = definitions
+        .register(
+            owner.clone(),
+            DefinitionDescriptor::new(
+                DefinitionKind::new("outcome").unwrap(),
+                DefinitionId::new("committed").unwrap(),
+                1,
+                serde_json::json!({}),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    let identity = if mode == LEDGER_MODE { 0xc1 } else { 0xd1 };
+    let request = RequestUid::from_bytes([identity; 16]);
+    let token = CommitToken::from_bytes([identity.wrapping_add(1); 16]);
+    let principal = PrincipalId::Object { id: GOD };
+    let writes = match mode {
+        LEDGER_MODE => {
+            let mut ledger = Ledger::with_chunk_target(0);
+            let prepared = ledger
+                .prepare_append("rollover", serde_json::json!({"amount": 7}))
+                .unwrap();
+            let replay = prepared.authoritative_replay_write(owner.clone()).unwrap();
+            ledger.apply_prepared(prepared).unwrap();
+            assert!(
+                ledger.open_entries("rollover").is_empty(),
+                "target-zero append must roll to a fresh empty tail"
+            );
+            vec![replay]
+        }
+        QUARANTINE_MODE => vec![ReplayWrite::ModuleJsonSet {
+            namespace: owner.clone(),
+            key: AuthoritativeKey::parse_canonical("action-state/v1/process_poison/1").unwrap(),
+            value: serde_json::json!({"value": 1}),
+        }],
+        _ => panic!("unknown direct worker mode {mode}"),
+    };
+    let outcome_value = RulesValue::new(outcome.clone(), serde_json::json!({"ok": true})).unwrap();
+    let cause = PreparedCausalRef::new(request, None, 0).unwrap();
+    let semantic_event = AuthoritativeSemanticEvent::root(
+        cause,
+        &action,
+        outcome_value.clone(),
+        vec![principal.clone()],
+    )
+    .unwrap();
+    AuthoritativeBundle::new(AuthoritativeBundleDraft {
+        token,
+        request,
+        idempotency: ScopedIdempotencyKey::new(
+            IdempotencyScope {
+                principal: principal.clone(),
+                owner: owner.clone(),
+                namespace: CanonicalId::new("process_cut").unwrap(),
+            },
+            0,
+            IdempotencyKey::Request(request),
+        ),
+        ingress_hash: CanonicalHash::from_bytes([identity.wrapping_add(2); 32]),
+        request_hash: CanonicalHash::from_bytes([identity.wrapping_add(3); 32]),
+        plan_hash: CanonicalHash::from_bytes([identity.wrapping_add(4); 32]),
+        action: action.clone(),
+        provider: owner,
+        cause,
+        definitions: vec![action, outcome],
+        writes,
+        outcome: outcome_value,
+        resolution: None,
+        semantic_events: vec![semantic_event],
+        eligible_witnesses: vec![principal],
+        durable_outbox: vec![],
+    })
+    .unwrap()
 }
 
 fn reserve_loopback_addr() -> SocketAddr {
@@ -418,6 +528,86 @@ fn authoritative_server_process_worker() {
     }
 }
 
+/// Separate process that drives one exact bundle through the production store
+/// writer without involving a presentation path. The parent uses this for
+/// crash boundaries whose proof is entirely persistence-local: a sealed
+/// Ledger rollover and atomic quarantine publication.
+#[test]
+fn authoritative_direct_process_worker() {
+    if std::env::var_os(DIRECT_WORKER_ENV).is_none() {
+        return;
+    }
+    init_tracing();
+    let mode = std::env::var(DIRECT_MODE_ENV).expect("direct worker mode");
+    let redis_url = std::env::var(DIRECT_REDIS_ENV).expect("direct worker Redis URL");
+    let spool_path = PathBuf::from(
+        std::env::var_os(DIRECT_SPOOL_ENV).expect("direct worker quarantine spool path"),
+    );
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async move {
+        let store: Arc<dyn ObjectStore> = Arc::new(RedisStore::connect(&redis_url).await.unwrap());
+        let spool = QuarantineSpool::open(spool_path).unwrap();
+        let (signals, _signal_rx) = mush_server::world_task::writer_signal_channel();
+        let (writer, _join) = mush_server::persist::spawn_store_writer(
+            store,
+            signals,
+            Arc::new(Metrics::default()),
+            Arc::new(AtomicU64::new(0)),
+            spool,
+            PersistenceIntegrityLatch::new(),
+        );
+        let (ownership, owned) = oneshot::channel();
+        let (notify, done) = oneshot::channel();
+        writer
+            .send(StoreJob::Authoritative {
+                bundle: Box::new(direct_bundle(&mode)),
+                ownership,
+                notify,
+            })
+            .await
+            .unwrap();
+        let _ = owned.await;
+        let result = done.await;
+        panic!("direct process cut did not terminate the worker: {result:?}");
+    });
+}
+
+async fn run_direct_process_cut(
+    redis_url: &str,
+    spool_path: &Path,
+    mode: &str,
+    cut: &str,
+    marker: &Path,
+) {
+    let mut child = tokio::process::Command::new(std::env::current_exe().unwrap())
+        .arg("--exact")
+        .arg("authoritative_direct_process_worker")
+        .arg("--nocapture")
+        .arg("--test-threads=1")
+        .env(DIRECT_WORKER_ENV, "1")
+        .env(DIRECT_MODE_ENV, mode)
+        .env(DIRECT_REDIS_ENV, redis_url)
+        .env(DIRECT_SPOOL_ENV, spool_path)
+        .env(CUT_ENV, cut)
+        .env(CUT_MARKER_ENV, marker)
+        .env_remove(CUT_RELEASE_ENV)
+        .stdin(Stdio::null())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+    wait_for_file(marker).await;
+    let status = tokio::time::timeout(STEP_TIMEOUT, child.wait())
+        .await
+        .expect("direct process worker did not exit")
+        .expect("waiting for direct process worker");
+    assert!(!status.success(), "process cut must terminate the worker");
+}
+
 async fn run_process_cut(base_redis: &str, db: u32, cut: &'static str, owned_cut: bool) {
     let root = scratch_dir(cut);
     let redis_url = redis_url_with_db(base_redis, db);
@@ -490,6 +680,142 @@ async fn run_process_cut(base_redis: &str, db: u32, cut: &'static str, owned_cut
     let _ = std::fs::remove_dir_all(root);
 }
 
+async fn run_ledger_rollover_process_cut(base_redis: &str) {
+    let root = scratch_dir(LEDGER_MODE);
+    let redis_url = redis_url_with_db(base_redis, 0);
+    let admin = RedisStore::connect(&redis_url).await.unwrap();
+    admin.wipe_namespaces().await.unwrap();
+    mush_server::persist::load_or_seed_world(&admin)
+        .await
+        .unwrap();
+    let spool_path = root.join("quarantine");
+    let marker = root.join("cut.ready");
+    run_direct_process_cut(
+        &redis_url,
+        &spool_path,
+        LEDGER_MODE,
+        "after_finalize_before_checkpoint",
+        &marker,
+    )
+    .await;
+
+    let bundle = direct_bundle(LEDGER_MODE);
+    let report = mush_server::persist::reconcile_authoritative_for_writable_boot(
+        admin.authoritative_store().unwrap(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(report.already_finalized, 1);
+    assert_eq!(report.checkpointed, 1);
+    assert!(matches!(
+        admin
+            .authoritative_status(bundle.token(), bundle.bundle_hash())
+            .await
+            .unwrap(),
+        BundleStatus::FinalizedExact(receipt) if receipt.matches_bundle(&bundle)
+    ));
+    let chunk = admin
+        .module_json_get("k8_process", "log:rollover:0")
+        .await
+        .unwrap()
+        .expect("sealed rollover chunk survived process death");
+    assert_eq!(chunk["sealed"], true);
+    assert_eq!(chunk["chunk"], 0);
+    assert_eq!(chunk["entries"].as_array().map(Vec::len), Some(1));
+
+    admin.wipe_namespaces().await.unwrap();
+    admin.close().await.ok();
+    let _ = std::fs::remove_dir_all(root);
+}
+
+async fn run_quarantine_process_cut(base_redis: &str) {
+    let root = scratch_dir(QUARANTINE_MODE);
+    let redis_url = redis_url_with_db(base_redis, 0);
+    let admin = RedisStore::connect(&redis_url).await.unwrap();
+    admin.wipe_namespaces().await.unwrap();
+    mush_server::persist::load_or_seed_world(&admin)
+        .await
+        .unwrap();
+    let poison_key = "mod:k8_process:action-state/v1/process_poison/1";
+    let _: () = admin
+        .client()
+        .set(poison_key, "wrong type", None, None, false)
+        .await
+        .unwrap();
+    let spool_path = root.join("quarantine");
+    let marker = root.join("cut.ready");
+    run_direct_process_cut(
+        &redis_url,
+        &spool_path,
+        QUARANTINE_MODE,
+        "quarantine_after_temp_sync",
+        &marker,
+    )
+    .await;
+
+    let active_before_recovery: Vec<_> = std::fs::read_dir(&spool_path)
+        .unwrap()
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .collect();
+    assert_eq!(
+        active_before_recovery
+            .iter()
+            .filter(|path| path.extension().is_some_and(|ext| ext == "tmp"))
+            .count(),
+        1,
+        "the killed writer leaves one exact, fsynced temp record"
+    );
+    assert_eq!(
+        active_before_recovery
+            .iter()
+            .filter(|path| path.extension().is_some_and(|ext| ext == "json"))
+            .count(),
+        0,
+        "the cut occurs before atomic final-name publication"
+    );
+
+    let deleted: i64 = admin.client().del(poison_key).await.unwrap();
+    assert_eq!(deleted, 1);
+    let mut spool = QuarantineSpool::open(&spool_path).unwrap();
+    assert_eq!(spool.opened_state().unresolved_records, 1);
+    let mut config = Config::default();
+    config.server.data_dir = root.clone();
+    config.store.store = "redis".to_owned();
+    config.store.redis_url = redis_url.clone();
+    mush_server::prepare_quarantine_for_writable_boot(&config, &mut spool, Some(&admin))
+        .await
+        .unwrap();
+    assert_eq!(spool.opened_state().unresolved_records, 0);
+    let bundle = direct_bundle(QUARANTINE_MODE);
+    let report = mush_server::persist::reconcile_authoritative_for_writable_boot(
+        admin.authoritative_store().unwrap(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(report.already_finalized, 1);
+    assert_eq!(report.checkpointed, 1);
+    assert_eq!(
+        admin
+            .module_json_get("k8_process", "action-state/v1/process_poison/1")
+            .await
+            .unwrap(),
+        Some(serde_json::json!({"value": 1}))
+    );
+    assert!(matches!(
+        admin
+            .authoritative_status(bundle.token(), bundle.bundle_hash())
+            .await
+            .unwrap(),
+        BundleStatus::FinalizedExact(receipt) if receipt.matches_bundle(&bundle)
+    ));
+
+    drop(spool);
+    admin.wipe_namespaces().await.unwrap();
+    admin.close().await.ok();
+    let _ = std::fs::remove_dir_all(root);
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn split_gateway_recovers_across_authoritative_process_cuts() {
     let Some(base) = std::env::var("REDIS_URL")
@@ -508,4 +834,6 @@ async fn split_gateway_recovers_across_authoritative_process_cuts() {
     run_process_cut(&base, 0, "after_ownership_before_materialization", true).await;
     run_process_cut(&base, 0, "after_finalize_before_checkpoint", true).await;
     run_process_cut(&base, 0, "after_checkpoint_before_final_ack", true).await;
+    run_ledger_rollover_process_cut(&base).await;
+    run_quarantine_process_cut(&base).await;
 }
