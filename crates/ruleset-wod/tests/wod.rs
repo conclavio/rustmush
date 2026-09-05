@@ -152,31 +152,17 @@ fn difficulty_switch_and_vs() {
 }
 
 #[test]
-fn willpower_spends_and_prevents_botch() {
+fn legacy_willpower_roll_refuses_without_spending() {
     let (mut tw, nick) = world(S);
     nick_sheet(&mut tw);
     set(&mut tw, "@sheet/set Nick/willpower_temp=1");
-    tw.run(nick, "+roll/wp strength+brawl");
-    let expected = Owod20Pool::score(
-        &faces(S, 0, 5),
-        &Owod20Opts {
-            willpower: true,
-            ..Owod20Opts::new(6)
-        },
-    );
-    let out = last_outcome(&tw, nick);
-    assert_eq!(out, expected);
-    assert!(out.willpower_success);
-    assert!(!out.is_botch(), "a willpower roll can never botch");
-    // The temporary point was deducted; a second /wp is refused.
-    let doc = read_sheet(&tw, nick);
-    assert_eq!(doc.number("willpower_temp"), Some(0));
     let ev = tw.run(nick, "+roll/wp strength+brawl");
     assert!(
         tw.seen_by(&ev, nick)
             .iter()
-            .any(|l| l.contains("no temporary Willpower"))
+            .any(|line| line.contains("authoritative action surface"))
     );
+    assert_eq!(read_sheet(&tw, nick).number("willpower_temp"), Some(1));
 }
 
 #[test]
@@ -747,40 +733,37 @@ fn botch_surfaces_through_roll() {
 }
 
 #[test]
-fn contested_roll_validates_opponent_before_spending_willpower() {
+fn legacy_contested_willpower_roll_refuses_before_resolution() {
     let (mut tw, nick) = world(S);
     let _bob = tw.spawn_player("Bob");
     set(&mut tw, "@sheet/set Nick/strength=3");
     set(&mut tw, "@sheet/set Nick/brawl=2");
     set(&mut tw, "@sheet/set Nick/willpower_temp=1");
     set(&mut tw, "@sheet/set Bob/strength=2");
-    // Bob's pool expression is unresolvable, so the command errors before
-    // Nick's Willpower is deducted.
     let ev = tw.run(nick, "+roll/wp strength+brawl contested Bob=notatrait");
     assert!(
         tw.seen_by(&ev, nick)
             .iter()
-            .any(|l| l.contains("notatrait")),
-        "the bad opponent pool should be reported"
+            .any(|line| line.contains("authoritative action surface"))
     );
-    // The temporary Willpower point is intact: it was not burned on a roll
-    // that never resolved.
-    let doc = read_sheet(&tw, nick);
-    assert_eq!(doc.number("willpower_temp"), Some(1));
+    assert_eq!(read_sheet(&tw, nick).number("willpower_temp"), Some(1));
 }
 
 #[test]
-fn willpower_temp_spend_is_clamped_to_permanent() {
+fn legacy_willpower_roll_never_repairs_or_mutates_the_sheet() {
     let (mut tw, nick) = world(S);
     set(&mut tw, "@sheet/set Nick/strength=3");
     set(&mut tw, "@sheet/set Nick/willpower=2");
     // Staff over-sets the temporary pool above permanent (invariant break).
     set(&mut tw, "@sheet/set Nick/willpower_temp=9");
-    // Spending clamps the read to permanent (2) and self-heals the stored
-    // value: 2 - 1 = 1, not 8.
-    tw.run(nick, "+roll/wp strength");
+    let ev = tw.run(nick, "+roll/wp strength");
+    assert!(
+        tw.seen_by(&ev, nick)
+            .iter()
+            .any(|line| line.contains("authoritative action surface"))
+    );
     let doc = read_sheet(&tw, nick);
-    assert_eq!(doc.number("willpower_temp"), Some(1));
+    assert_eq!(doc.number("willpower_temp"), Some(9));
 }
 
 #[test]
@@ -2465,39 +2448,18 @@ fn wod_roll_applies_wound_penalty() {
 }
 
 #[test]
-fn wod_roll_willpower_spend_is_bounded_to_the_npc_sheet() {
+fn direct_npc_willpower_roll_requires_the_authoritative_offer_path() {
     let (mut tw, _nick) = world(S);
     let bart = tw.spawn_player("Bartender");
     set(&mut tw, "@sheet/set Bartender/strength=3");
     set(&mut tw, "@sheet/set Bartender/willpower=5");
     set(&mut tw, "@sheet/set Bartender/willpower_temp=1");
 
-    // First spend: honored — matches a direct roll with the willpower option,
-    // and deducts the temporary point from the NPC's own sheet.
-    let (outcome, _) = wod_roll(
+    let result = wod_roll(
         &mut tw,
         bart,
         serde_json::json!({ "pool_expr": "strength", "willpower": true }),
-    )
-    .expect("wod_roll resolves");
-    let expected = Owod20Pool::score(
-        &faces(S, 0, 3),
-        &Owod20Opts {
-            willpower: true,
-            ..Owod20Opts::new(6)
-        },
     );
-    assert_eq!(last_outcome(&tw, bart), expected);
-    assert_eq!(outcome.data["willpower_applied"], serde_json::json!(true));
-    assert_eq!(read_sheet(&tw, bart).number("willpower_temp"), Some(0));
-
-    // Second spend: no temporary point left, so the request is silently not
-    // honored (the model cannot conjure an automatic success it hasn't got).
-    let (outcome, _) = wod_roll(
-        &mut tw,
-        bart,
-        serde_json::json!({ "pool_expr": "strength", "willpower": true }),
-    )
-    .expect("wod_roll resolves");
-    assert_eq!(outcome.data["willpower_applied"], serde_json::json!(false));
+    assert!(result.is_err());
+    assert_eq!(read_sheet(&tw, bart).number("willpower_temp"), Some(1));
 }

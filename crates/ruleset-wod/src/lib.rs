@@ -28,6 +28,7 @@
 
 pub mod action;
 pub mod agent;
+mod authoritative;
 pub mod chargen;
 pub mod chargen_cmds;
 pub mod config;
@@ -89,6 +90,8 @@ pub(crate) struct WodCmd {
     /// E5c's frozen `[wod.economy]`, so the chargen wizard's Residence step knows
     /// whether housing is on and what a support level can carry.
     pub econ: WodEconomyConfig,
+    /// K8.4 authoritative temporary-Willpower and roll-sequence projection.
+    pub(crate) roll_state: mush_core::StateFamilyHandle<ObjId, authoritative::WodRollState>,
 }
 
 impl WodCmd {
@@ -113,10 +116,56 @@ impl WodCmd {
         self.default_store().get(w, obj)
     }
 
+    /// Read a sheet through the authoritative temporary-Willpower overlay.
+    pub(crate) fn read_ctx(
+        &self,
+        ctx: &mush_core::Ctx<'_>,
+        obj: ObjId,
+    ) -> Result<Option<SheetDoc>, mush_core::CmdError> {
+        let mut sheet = self.read(ctx.w, obj);
+        let roll_state = match ctx.action_state(&self.roll_state, &obj) {
+            Ok(roll_state) => roll_state,
+            Err(mush_core::ModuleActionStateReadError::Unavailable) => None,
+            Err(_) => return Err(mush_core::CmdError::msg("WoD roll state is unavailable.")),
+        };
+        if let (Some(sheet), Some(roll_state)) = (&mut sheet, roll_state) {
+            let permanent = sheet.number("willpower").unwrap_or(0).clamp(0, 10);
+            sheet.set_number(
+                "willpower_temp",
+                roll_state.willpower_current.min(permanent),
+            );
+        }
+        Ok(sheet)
+    }
+
     /// Read `obj`'s sheet, or a fresh default (mortal) sheet if they have none.
     pub(crate) fn read_or_default(&self, w: &World, obj: ObjId) -> SheetDoc {
         self.read(w, obj)
             .unwrap_or_else(|| SheetDoc::new_default(&self.default_schema()))
+    }
+
+    pub(crate) fn read_or_default_ctx(
+        &self,
+        ctx: &mush_core::Ctx<'_>,
+        obj: ObjId,
+    ) -> Result<SheetDoc, mush_core::CmdError> {
+        Ok(self
+            .read_ctx(ctx, obj)?
+            .unwrap_or_else(|| SheetDoc::new_default(&self.default_schema())))
+    }
+
+    pub(crate) fn roll_state_is_authoritative(
+        &self,
+        ctx: &mush_core::Ctx<'_>,
+        obj: ObjId,
+    ) -> Result<bool, mush_core::CmdError> {
+        match ctx.action_state(&self.roll_state, &obj) {
+            Ok(state) => Ok(state.is_some()),
+            Err(mush_core::ModuleActionStateReadError::Unavailable) => Ok(false),
+            Err(_) => Err(mush_core::CmdError::msg(
+                "WoD roll-state authority cannot be verified.",
+            )),
+        }
     }
 
     /// The active schema for a sheet, selected by its `template` field.
@@ -247,6 +296,9 @@ impl GameModule for WodRuleset {
         };
         reg.state(state);
 
+        // K8.4: the first production ruleset action on the shared kernel.
+        let roll_state = authoritative::register(reg, Arc::clone(&self.dispatch))?;
+
         // Approval queues.
         reg.job_queue(JobQueueSpec {
             name: chargen_cmds::CHARGEN_QUEUE.into(),
@@ -266,6 +318,7 @@ impl GameModule for WodRuleset {
             config: self.config.clone(),
             roll_feed,
             econ: self.econ.clone(),
+            roll_state,
         });
 
         // Template-dispatching sheet surface (+sheet/@sheet/@sheet/set + the

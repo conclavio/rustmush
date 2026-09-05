@@ -11,8 +11,8 @@
 use std::sync::Arc;
 
 use mush_core::{
-    ArgShape, CmdError, CommandSpec, Ctx, ModError, ObjId, QueryHandler, Registrar, Role, World,
-    match_object, perm,
+    ArgShape, CmdError, CommandSpec, Ctx, HookReadContext, ModError, ObjId, QueryHandler,
+    Registrar, Role, World, match_object, perm,
 };
 use mush_proto::{OutputEvent, PanelFrameKind, RichText};
 use mush_ruleset::SheetDoc;
@@ -45,6 +45,7 @@ pub(crate) fn register(reg: &mut Registrar<'_>, cmd: Arc<WodCmd>) -> Result<(), 
         Arc::new(SheetQuery {
             dispatch: Arc::clone(&cmd.dispatch),
             feed: feed.clone(),
+            roll_state: cmd.roll_state.clone(),
         }),
     )?;
 
@@ -109,7 +110,7 @@ fn resolve_view_target(ctx: &Ctx<'_>, raw: &str) -> Result<ObjId, CmdError> {
 /// `+sheet` / `@sheet` — render against the character's active schema.
 fn sheet_view(cmd: &WodCmd, ctx: &mut Ctx<'_>, staff: bool) -> Result<(), CmdError> {
     let target = resolve_view_target(ctx, ctx.args.raw())?;
-    let Some(doc) = cmd.read(ctx.w, target) else {
+    let Some(doc) = cmd.read_ctx(ctx, target)? else {
         return Err(CmdError::msg("That character has no sheet."));
     };
     let schema = cmd.schema_for_doc(&doc);
@@ -148,8 +149,16 @@ fn sheet_set(cmd: &WodCmd, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         let id = value_raw.trim().to_string();
         return staff_set_template(cmd, ctx, target, &id);
     }
+    if field.eq_ignore_ascii_case("willpower_temp")
+        && cmd.roll_state_is_authoritative(ctx, target)?
+    {
+        return Err(CmdError::msg(format!(
+            "Temporary Willpower is authoritative. Use +act willpower-set on {target} with \
+             {{\"current\":<0-10>}}."
+        )));
+    }
 
-    let mut doc = cmd.read_or_default(ctx.w, target);
+    let mut doc = cmd.read_or_default_ctx(ctx, target)?;
     let schema = cmd.schema_for_doc(&doc);
     let fdef = schema
         .field(field)
@@ -228,7 +237,7 @@ fn staff_set_template(
         )));
     }
     let schema = cmd.schemas().schema_for_id(&id);
-    let mut doc = cmd.read_or_default(ctx.w, target);
+    let mut doc = cmd.read_or_default_ctx(ctx, target)?;
     retemplate(&mut doc, &schema, &id);
     cmd.store_for_doc(&doc)
         .put_by(ctx.w, target, &doc, ctx.actor)
@@ -257,14 +266,16 @@ fn coerce(ty: &FieldType, raw: &str) -> Result<serde_json::Value, String> {
 struct SheetQuery {
     dispatch: Arc<Dispatch>,
     feed: SmolStr,
+    roll_state: mush_core::StateFamilyHandle<ObjId, crate::authoritative::WodRollState>,
 }
 
-impl QueryHandler for SheetQuery {
-    fn query(
+impl SheetQuery {
+    fn query_inner(
         &self,
         w: &World,
         actor: ObjId,
         params: &serde_json::Value,
+        roll_state: Option<&crate::authoritative::WodRollState>,
     ) -> Result<OutputEvent, RichText> {
         let target = match params.get("target") {
             None | Some(serde_json::Value::Null) => actor,
@@ -280,10 +291,17 @@ impl QueryHandler for SheetQuery {
                 t
             }
         };
-        let doc = self
+        let mut doc = self
             .dispatch
             .read(w, target)
             .ok_or_else(|| RichText::tag("error", "That character has no sheet."))?;
+        if let Some(roll_state) = roll_state {
+            let permanent = doc.number("willpower").unwrap_or(0).clamp(0, 10);
+            doc.set_number(
+                "willpower_temp",
+                roll_state.willpower_current.min(permanent),
+            );
+        }
         let schema = self.dispatch.schemas.schema_for_doc(&doc);
         let show_staff = perm::has_role(w, actor, Role::Royalty);
         let data = if show_staff {
@@ -301,6 +319,47 @@ impl QueryHandler for SheetQuery {
                 "data": data,
             }),
         })
+    }
+}
+
+impl QueryHandler for SheetQuery {
+    fn query(
+        &self,
+        w: &World,
+        actor: ObjId,
+        params: &serde_json::Value,
+    ) -> Result<OutputEvent, RichText> {
+        self.query_inner(w, actor, params, None)
+    }
+
+    fn query_with_context(
+        &self,
+        context: &HookReadContext<'_>,
+        actor: ObjId,
+        params: &serde_json::Value,
+    ) -> Result<OutputEvent, RichText> {
+        let target = query_target(context.world(), actor, params)?;
+        let roll_state = context
+            .action_state(&self.roll_state, &target)
+            .map_err(|_| RichText::tag("error", "WoD roll state is unavailable."))?;
+        self.query_inner(context.world(), actor, params, roll_state)
+    }
+}
+
+fn query_target(w: &World, actor: ObjId, params: &serde_json::Value) -> Result<ObjId, RichText> {
+    match params.get("target") {
+        None | Some(serde_json::Value::Null) => Ok(actor),
+        Some(v) => {
+            let spec = v
+                .as_str()
+                .ok_or_else(|| RichText::tag("error", "bad target"))?;
+            let target =
+                match_object(w, actor, spec).map_err(|e| RichText::tag("error", e.to_string()))?;
+            if target != actor && !perm::can_examine(w, actor, target) {
+                return Err(RichText::tag("error", "You can't examine that sheet."));
+            }
+            Ok(target)
+        }
     }
 }
 

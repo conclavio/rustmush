@@ -10,7 +10,7 @@
 //! 2. God (`+job/approve`) approves the `wod-chargen` job → the sheet is Approved;
 //! 3. the approved character `+roll`s `strength+brawl vs 6` and the room (a
 //!    witness) sees a correct classic Storyteller result line;
-//! 4. a `/wp` roll spends the character's temporary Willpower (a second is refused);
+//! 4. an authoritative roll spends temporary Willpower (a second is unavailable);
 //! 5. `+harm` (staff) marks Lethal damage and the wound penalty then shrinks a
 //!    subsequent pool;
 //! 6. `+xp/award` + `+xp/spend` files a costed raise; on `+job/approve` the stat
@@ -29,7 +29,9 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-use mush_core::{Engine, GOD, World};
+use mush_core::{
+    Engine, GOD, OfferKeyRing, OfferSecret, ResolutionKeyRing, ResolutionSecret, World,
+};
 use mush_session::{SessionConfig, SessionManager};
 use mush_store::{AccountRec, CharacterRef, InMemoryStore, ObjectStore};
 
@@ -40,7 +42,7 @@ use mushd::staff::{StaffQueue, register_server_commands};
 use mushd::world_task::{self, ServerDeps};
 use mushd::{modules, unix_now_s};
 
-use support::{Term, play_client, scratch_dir, strip_ansi};
+use support::{Term, play_client, scratch_dir, strip_ansi, submit_action};
 
 /// Fixed RNG seed → deterministic dice for the whole run.
 const S: u64 = 12345;
@@ -91,6 +93,10 @@ async fn boot_server(dir: &Path) -> SocketAddr {
     let mut mods = modules::server_modules();
     mods.push(Box::new(ruleset_wod::WodRuleset::with_seed(S)));
     let mut engine = Engine::with_modules(world, registry, mods).unwrap();
+    engine.set_offer_keys(OfferKeyRing::new(OfferSecret::new(1, [0x51; 32]).unwrap(), []).unwrap());
+    engine.set_resolution_keys(
+        ResolutionKeyRing::new(ResolutionSecret::new(1, [0x52; 32]).unwrap(), []).unwrap(),
+    );
     modules::boot_modules(&mut engine, &*store).await.unwrap();
 
     let handles = world_task::spawn_persist(
@@ -241,13 +247,18 @@ async fn m6_wod_full_journey() {
 
     // ================= willpower spend =================
     // Chargen finalize set temporary Willpower to full (== Courage baseline,
-    // 1). One /wp roll spends it; the second is refused.
+    // 1). One authoritative roll spends it; its offer then disappears.
+    submit_action(
+        &mut nick,
+        r#"+act willpower-roll with {"pool":"strength+brawl","difficulty":6}"#,
+        "+WP",
+    )
+    .await;
     let mark = nick.mark();
-    nick.send_line("+roll/wp strength+brawl").await;
-    nick.expect_after(mark, "Nick rolls strength+brawl").await;
-    let mark = nick.mark();
-    nick.send_line("+roll/wp strength+brawl").await;
-    nick.expect_after(mark, "no temporary Willpower").await;
+    nick.send_line(r#"+act willpower-roll with {"pool":"strength+brawl","difficulty":6}"#)
+        .await;
+    nick.expect_after(mark, "That action is no longer available.")
+        .await;
 
     // ================= damage → wound penalty shrinks the pool ===========
     // 4 Lethal → Wounded (-2). The next strength+brawl pool is 7 - 2 = 5,

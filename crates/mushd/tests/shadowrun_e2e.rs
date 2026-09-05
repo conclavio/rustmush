@@ -15,8 +15,9 @@
 //! 4. `+roll agility+pistols` shows the dice count and the auto **Physical limit**,
 //!    and a room witness sees the public roll;
 //! 5. `/edge` **pushes the limit** (adds Edge dice, waives the Limit, Rule of Six);
-//! 6. `+damage` (staff) then a subsequent pool shrinks by the **wound modifier**;
-//! 7. the magician `+cast`s a spell and resists **Drain**;
+//! 6. the magician `+cast`s a spell and resists **Drain** before typed condition ownership;
+//! 7. authoritative staff healing/damage then shrinks a subsequent pool by the **wound modifier**,
+//!    and the legacy compound writer is fenced once typed ownership exists;
 //! 8. `+init/roll` announces an Initiative score;
 //! 9. `+karma/award` + `+karma/spend` files a costed raise; on `+job/approve` the
 //!    skill goes up and the Karma is deducted;
@@ -34,7 +35,9 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-use mush_core::{Audience, Engine, GOD, World};
+use mush_core::{
+    Audience, Engine, GOD, OfferKeyRing, OfferSecret, ResolutionKeyRing, ResolutionSecret, World,
+};
 use mush_proto::OutputEvent;
 use mush_session::{SessionConfig, SessionManager};
 use mush_store::{AccountRec, CharacterRef, InMemoryStore, ObjectStore};
@@ -50,6 +53,7 @@ use mushd::{modules, unix_now_s};
 
 use support::{
     ChildServer, Term, play_client, redis_url_with_db, scratch_dir, seed_boss_account, strip_ansi,
+    submit_action,
 };
 
 const GM_PASSWORD: &str = "gm-secret-6";
@@ -119,6 +123,10 @@ async fn boot_server(dir: &Path, seed: u64) -> SocketAddr {
         seed,
     )));
     let mut engine = Engine::with_modules(world, registry, mods).unwrap();
+    engine.set_offer_keys(OfferKeyRing::new(OfferSecret::new(1, [0x51; 32]).unwrap(), []).unwrap());
+    engine.set_resolution_keys(
+        ResolutionKeyRing::new(ResolutionSecret::new(1, [0x52; 32]).unwrap(), []).unwrap(),
+    );
     modules::boot_modules(&mut engine, &*store).await.unwrap();
 
     let handles = world_task::spawn_persist(
@@ -297,6 +305,23 @@ async fn sr5_full_journey_over_ssh() {
         "an Edge push must waive (not show) the Limit"
     );
 
+    // ================= magic: +cast rolls spellcasting then Drain =======
+    // Compound casting is still on the legacy lane in K8.4, so exercise it
+    // before the first typed Condition Monitor action claims this record.
+    let mark = razor.mark();
+    razor.send_line("+cast Manabolt force 3").await;
+    razor.expect_after(mark, "Cast Manabolt").await;
+    razor.expect_after(mark, "Drain").await;
+
+    // Clear any resisted-or-taken Stun before pinning the wound test. This is
+    // also the first authoritative condition commit for Razor.
+    submit_action(
+        &mut god,
+        r#"+act condition-heal on #2 with {"amount":100,"kind":"stun"}"#,
+        "stun box(es) from #2",
+    )
+    .await;
+
     // ================= damage → wound penalty shrinks the pool ==========
     // 3 Physical → wound −1; the next agility+pistols pool is 11 − 1 = 10.
     // +damage is staff-gated; wait for God's confirmation before Razor rolls so
@@ -304,19 +329,25 @@ async fn sr5_full_journey_over_ssh() {
     let mark = razor.mark();
     razor.send_line("+damage Razor=3P").await;
     razor.expect_after(mark, "Permission denied").await;
-    god.send_line("+damage Razor=3P").await;
-    god.expect("Razor takes 3 physical damage.").await;
+    submit_action(
+        &mut god,
+        r#"+act condition-damage on #2 with {"amount":3,"kind":"physical"}"#,
+        "Applied 3 physical damage to #2.",
+    )
+    .await;
 
     let mark = razor.mark();
     razor.send_line("+roll agility+pistols").await;
     razor.expect_after(mark, "(10 dice)").await;
     razor.expect_after(mark, "wound -1").await;
 
-    // ================= magic: +cast rolls spellcasting then Drain =======
+    // The same character now has typed Condition Monitor authority. The
+    // remaining compound legacy writer must fail before it rolls or mutates.
     let mark = razor.mark();
     razor.send_line("+cast Manabolt force 3").await;
-    razor.expect_after(mark, "Cast Manabolt").await;
-    razor.expect_after(mark, "Drain").await;
+    razor
+        .expect_after(mark, "Condition Monitor is authoritative")
+        .await;
 
     // ================= initiative ======================================
     let mark = razor.mark();

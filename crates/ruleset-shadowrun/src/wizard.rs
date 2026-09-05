@@ -405,7 +405,7 @@ impl ChargenWizard {
     /// Append a value to a list field (spells / complex forms) on the sheet.
     fn learn_list(&self, ctx: &mut Ctx<'_>, field: &str, value: &str) -> Result<(), CmdError> {
         let actor = ctx.actor;
-        let mut doc = self.cmd.read_or_default(ctx.w, actor);
+        let mut doc = self.cmd.read_or_default_ctx(ctx, actor)?;
         let mut list: Vec<serde_json::Value> = doc.list(field).cloned().unwrap_or_default();
         if list
             .iter()

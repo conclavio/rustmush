@@ -781,6 +781,20 @@ pub trait QueryHandler: Send + Sync {
         actor: ObjId,
         params: &serde_json::Value,
     ) -> Result<OutputEvent, RichText>;
+
+    /// Answer one query with the live owner-scoped authoritative snapshot.
+    ///
+    /// Existing handlers remain source-compatible through the default
+    /// delegation. A handler that projects a migrated typed family overrides
+    /// this method and reads only handles owned by its registered module.
+    fn query_with_context(
+        &self,
+        context: &HookReadContext<'_>,
+        actor: ObjId,
+        params: &serde_json::Value,
+    ) -> Result<OutputEvent, RichText> {
+        self.query(context.world(), actor, params)
+    }
 }
 
 /// Read-only, bounded recovery diagnostics contributed by a mechanics-owning

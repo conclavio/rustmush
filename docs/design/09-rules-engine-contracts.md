@@ -3049,6 +3049,31 @@ covered on both Rust TUI and TypeScript structured clients. A gateway process de
 the declared Gate-5 policy: before `Owned`, volatile ingress may be lost; after `Owned`, the durable
 transaction reference plus `action/status`/current keyframes is authoritative recovery.
 
+K8.4 is closed for its two selected production domains. `ruleset-wod` registers exact version-1
+definitions for `willpower_roll`, `willpower_set`, their durable outcomes, and the typed
+`roll_state` family. A Willpower-backed roll now spends the typed resource and records its dice only
+through `PrepareCtx`; the direct player/NPC mutation paths refuse. The staff-only set action keeps
+the resource replenishable after its first typed commit, while direct `@sheet/set` is fenced once
+that character has acquired typed authority. `ruleset-shadowrun` registers `condition_damage`,
+`condition_heal`, their outcome, and a condition-only typed family rather than claiming the whole
+legacy sheet. The provider overlays physical/stun fill and overflow onto the current sheet, so
+unrelated sheet ownership remains unchanged. The old `+damage`/`+heal` handlers now return exact
+`+act` guidance without mutating. Compound legacy Drain/Fading remains legal only before a
+character's first typed Condition Monitor commit; a per-record authority fence refuses it before
+rolling afterward, preventing simultaneous legacy and typed writers until those compound actions
+receive their own migration.
+
+The line gateway accepts bounded JSON-object parameters and an optional staff object subject
+(`+act <verb> on #N with {...}`), with case-insensitive grammar. Core admits a visible revision-1
+`KnownObject` as a neutral Royalty subject without fabricating a station grant; provider role checks
+still decide legality and required-channel offers still require one exact grant. Revision 1 here is
+the fixed administrative projection generation, not an object revision. Query handlers gained a
+backward-compatible owner-scoped typed read callback, and both setting sheet keyframes override it,
+so line and structured presentation read the acknowledged post-image rather than stale legacy JSON.
+Production goldens drive the real offer resolver, coordinator, authoritative store, receipt,
+installation, line view, and structured keyframe. They pin Willpower clamping/spend/depletion/
+restoration plus deterministic RNG, and Shadowrun Stun overflow/healing plus the migration fence.
+
 Work:
 
 1. Run every Gate-5 cut point against each toy vertical slice, not only a synthetic bundle.

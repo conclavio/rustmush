@@ -165,6 +165,56 @@ impl Term {
     }
 }
 
+fn transaction_after(output: &str, mark: usize) -> String {
+    let output = strip_ansi(&output[mark..]);
+    let at = output
+        .rfind("Transaction:")
+        .unwrap_or_else(|| panic!("missing transaction reference in {output:?}"));
+    output[at + "Transaction:".len()..]
+        .trim_start()
+        .chars()
+        .take_while(|character| !character.is_whitespace())
+        .collect()
+}
+
+/// Submit an authoritative line action and follow its durable transaction to
+/// completion. The all-in-one bridge returns ownership before the writer has
+/// necessarily installed the post-image, so the stable `action/status` path is
+/// the ordering fence for subsequent commands in a journey.
+pub async fn submit_action(term: &mut Term, line: &str, expected: &str) {
+    let action_mark = term.mark();
+    term.send_line(line).await;
+    let response = term
+        .expect_one_of_after(action_mark, &[expected, "Action accepted. Transaction:"])
+        .await;
+    if response == 0 {
+        return;
+    }
+
+    let transaction = transaction_after(&term.seen, action_mark);
+    for _ in 0..100 {
+        let status_mark = term.mark();
+        term.send_line(&format!("action/status {transaction}"))
+            .await;
+        let status = term
+            .expect_one_of_after(
+                status_mark,
+                &[
+                    expected,
+                    "Action is still pending.",
+                    "That transaction needs recovery.",
+                ],
+            )
+            .await;
+        if status == 0 {
+            return;
+        }
+        assert_ne!(status, 2, "authoritative action requires recovery");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("authoritative action remained pending: {transaction}");
+}
+
 /// `ssh play@addr` with a PTY + shell, landing on the welcome screen.
 pub async fn play_client(addr: SocketAddr) -> (russh::client::Handle<AcceptAll>, Term) {
     let config = Arc::new(russh::client::Config::default());

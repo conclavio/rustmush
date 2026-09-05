@@ -1269,6 +1269,7 @@ impl Engine {
         subject: crate::action::PerceivedRef,
     ) -> Result<crate::offer::LegalActionQuery, crate::offer::LegalActionSubjectError> {
         const BOOTSTRAP_SELF_PROJECTION_GENERATION: u64 = 1;
+        const BOOTSTRAP_STAFF_PROJECTION_GENERATION: u64 = 1;
 
         let (truth_subject, projection_generation, witness) = match &subject {
             crate::action::PerceivedRef::SelfActor => (
@@ -1288,19 +1289,34 @@ impl Engine {
                 {
                     return Err(crate::offer::LegalActionSubjectError::Invalid);
                 }
-                let mut epochs = self
-                    .world
-                    .command_subjects_of(actor)
-                    .iter()
-                    .filter(|grant| grant.subject == *id)
-                    .map(|grant| grant.epoch);
-                let Some(epoch) = epochs.next() else {
-                    return Err(crate::offer::LegalActionSubjectError::Invalid);
-                };
-                if epoch != *revision || epochs.any(|candidate| candidate != epoch) {
-                    return Err(crate::offer::LegalActionSubjectError::Invalid);
+                // Administrative providers may expose a visible object as a
+                // neutral staff subject without fabricating a control-seat
+                // grant. The provider still owns the role/legality check. Any
+                // action requiring control channels continues through the
+                // exact station-grant selection below and will not project.
+                if crate::perm::has_role(&self.world, actor, crate::Role::Royalty)
+                    && *revision == BOOTSTRAP_STAFF_PROJECTION_GENERATION
+                {
+                    (
+                        crate::action::SubjectKey::Object { id: *id },
+                        BOOTSTRAP_STAFF_PROJECTION_GENERATION,
+                        None,
+                    )
+                } else {
+                    let mut epochs = self
+                        .world
+                        .command_subjects_of(actor)
+                        .iter()
+                        .filter(|grant| grant.subject == *id)
+                        .map(|grant| grant.epoch);
+                    let Some(epoch) = epochs.next() else {
+                        return Err(crate::offer::LegalActionSubjectError::Invalid);
+                    };
+                    if epoch != *revision || epochs.any(|candidate| candidate != epoch) {
+                        return Err(crate::offer::LegalActionSubjectError::Invalid);
+                    }
+                    (crate::action::SubjectKey::Object { id: *id }, epoch, None)
                 }
-                (crate::action::SubjectKey::Object { id: *id }, epoch, None)
             }
             crate::action::PerceivedRef::Contact {
                 provider,
@@ -2854,10 +2870,17 @@ impl Engine {
             return;
         }
         let event = match self.registry.query_handler(name) {
-            Some((_module, handler)) => match handler.query(&self.world, actor, args) {
-                Ok(event) => event,
-                Err(err) => OutputEvent::Sys(err),
-            },
+            Some((module, handler)) => {
+                let context = crate::module::HookReadContext::for_module(
+                    &self.world,
+                    Some(&self.action_state),
+                    module,
+                );
+                match handler.query_with_context(&context, actor, args) {
+                    Ok(event) => event,
+                    Err(err) => OutputEvent::Sys(err),
+                }
+            }
             None => OutputEvent::Sys(RichText::tag("error", format!("Unknown query {name:?}."))),
         };
         out.best_effort_to_conn(
@@ -3162,6 +3185,51 @@ mod tests {
     }
 
     #[test]
+    fn staff_known_object_subject_needs_no_fabricated_station_grant() {
+        use crate::action::{PerceivedRef, PrincipalId, SubjectKey};
+        use crate::offer::LegalActionSubjectError;
+
+        let (engine, nick) = setup();
+        let perceived = PerceivedRef::KnownObject {
+            id: nick,
+            revision: 1,
+        };
+        let query = engine
+            .legal_action_query(PrincipalId::Object { id: GOD }, GOD, perceived.clone())
+            .unwrap();
+        assert_eq!(query.truth_subject(), &SubjectKey::Object { id: nick });
+        assert_eq!(query.projected_subject(), &perceived);
+        assert!(query.authority_guards().is_empty());
+
+        assert_eq!(
+            engine
+                .legal_action_query(
+                    PrincipalId::Object { id: nick },
+                    nick,
+                    PerceivedRef::KnownObject {
+                        id: GOD,
+                        revision: 1,
+                    },
+                )
+                .unwrap_err(),
+            LegalActionSubjectError::Invalid
+        );
+        assert_eq!(
+            engine
+                .legal_action_query(
+                    PrincipalId::Object { id: GOD },
+                    GOD,
+                    PerceivedRef::KnownObject {
+                        id: nick,
+                        revision: 2,
+                    },
+                )
+                .unwrap_err(),
+            LegalActionSubjectError::Invalid
+        );
+    }
+
+    #[test]
     fn module_composition_defers_state_install_until_world_is_supplied() {
         #[derive(Clone, Debug, PartialEq, Eq)]
         struct DeferredState(u32);
@@ -3325,6 +3393,40 @@ mod tests {
             captured: Arc<Mutex<Option<StateFamilyHandle<u32, u32>>>>,
         }
 
+        struct TypedQuery {
+            handle: StateFamilyHandle<u32, u32>,
+        }
+
+        impl crate::module::QueryHandler for TypedQuery {
+            fn query(
+                &self,
+                _world: &World,
+                _actor: ObjId,
+                _params: &serde_json::Value,
+            ) -> Result<OutputEvent, mush_proto::RichText> {
+                Err(mush_proto::RichText::tag(
+                    "error",
+                    "typed query context missing",
+                ))
+            }
+
+            fn query_with_context(
+                &self,
+                context: &crate::module::HookReadContext<'_>,
+                _actor: ObjId,
+                _params: &serde_json::Value,
+            ) -> Result<OutputEvent, mush_proto::RichText> {
+                let value = context
+                    .action_state(&self.handle, &7)
+                    .map_err(|error| mush_proto::RichText::tag("error", error.to_string()))?
+                    .copied()
+                    .ok_or_else(|| mush_proto::RichText::tag("error", "typed record missing"))?;
+                Ok(OutputEvent::Sys(mush_proto::RichText::plain(format!(
+                    "query-typed={value}"
+                ))))
+            }
+        }
+
         impl GameModule for TypedReaderModule {
             fn name(&self) -> &'static str {
                 "typed_reader"
@@ -3371,6 +3473,12 @@ mod tests {
                         Ok(())
                     }),
                 )?;
+                reg.query_handler(
+                    "typed.query",
+                    Arc::new(TypedQuery {
+                        handle: handle.clone(),
+                    }),
+                )?;
                 *self.captured.lock().unwrap() = Some(handle);
                 Ok(())
             }
@@ -3403,6 +3511,24 @@ mod tests {
             &mut effects,
         );
         assert!(texts(&out).iter().any(|line| line == "typed=41; records=1"));
+
+        let mut query_out = Outbox::new();
+        engine.step(
+            Inbound::Query {
+                conn: 1,
+                actor: GOD,
+                id: 77,
+                name: "typed.query".into(),
+                args: serde_json::json!({}),
+            },
+            &mut query_out,
+            &mut effects,
+        );
+        assert!(query_out.events().iter().any(|(_, event)| matches!(
+            event,
+            OutputEvent::Reply { id: 77, event }
+                if matches!(event.as_ref(), OutputEvent::Sys(text) if text.to_plain_text() == "query-typed=41")
+        )));
 
         let foreign =
             ModuleActionState::for_module(Some(engine.action_state()), Some("different_owner"));

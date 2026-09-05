@@ -46,7 +46,7 @@ fn chargen_cmd(cmd: &Sr5Cmd, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 /// whether a session was already open. Emits no output. Shared with the wizard.
 pub(crate) fn open_chargen_session(cmd: &Sr5Cmd, ctx: &mut Ctx<'_>) -> Result<bool, CmdError> {
     let actor = ctx.actor;
-    let existing = cmd.read(ctx.w, actor);
+    let existing = cmd.read_ctx(ctx, actor)?;
     if let Some(doc) = &existing {
         match doc.approved {
             ApprovalState::Approved { .. } => {
@@ -135,7 +135,7 @@ pub(crate) fn apply_priorities(
             .ok_or_else(|| CmdError::msg("You are not in chargen."))?;
         session.priorities = priorities.map.clone();
     }
-    let mut doc = cmd.read_or_default(ctx.w, actor);
+    let mut doc = cmd.read_or_default_ctx(ctx, actor)?;
     let store = cmd.store();
     for (cat, p) in &priorities.map {
         store
@@ -190,7 +190,7 @@ pub(crate) fn apply_stat(
              Monitors, Karma, and bookkeeping fields are not set with +stat."
         )));
     }
-    let mut doc = cmd.read_or_default(ctx.w, actor);
+    let mut doc = cmd.read_or_default_ctx(ctx, actor)?;
     let fdef = cmd
         .schema
         .field(field)
@@ -285,7 +285,7 @@ pub(crate) fn apply_spec(
     }
     let sk = crate::data::active_skill(&skill)
         .ok_or_else(|| CmdError::msg(format!("No such active skill: {skill}")))?;
-    let mut doc = cmd.read_or_default(ctx.w, actor);
+    let mut doc = cmd.read_or_default_ctx(ctx, actor)?;
     let id = sk.id.to_string();
     let mut list: Vec<serde_json::Value> = doc
         .map(crate::schema::SKILL_SPECIALIZATIONS_FIELD)
@@ -332,7 +332,7 @@ pub(crate) fn budget_report(
 > {
     let actor = ctx.actor;
     let priorities = session_priorities(ctx, actor)?;
-    let doc = cmd.read_or_default(ctx.w, actor);
+    let doc = cmd.read_or_default_ctx(ctx, actor)?;
     let ls = ledgers(&cmd.config, &doc, &priorities);
     let iss = chargen::issues(&cmd.config, &doc, &priorities);
     Ok((ls, iss))
@@ -383,7 +383,7 @@ fn status(cmd: &Sr5Cmd, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 /// `+chargen/submit` — finalize, flip to Pending, open a shadowrun-chargen job.
 pub(crate) fn submit(cmd: &Sr5Cmd, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let actor = ctx.actor;
-    if let Some(doc) = cmd.read(ctx.w, actor) {
+    if let Some(doc) = cmd.read_ctx(ctx, actor)? {
         match doc.approved {
             ApprovalState::Pending(job) => {
                 return Err(CmdError::msg(format!(
@@ -403,7 +403,7 @@ pub(crate) fn submit(cmd: &Sr5Cmd, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         ));
     }
     let mut doc = cmd
-        .read(ctx.w, actor)
+        .read_ctx(ctx, actor)?
         .ok_or_else(|| CmdError::msg("You have no sheet to submit."))?;
     chargen::finalize_sheet(&cmd.config, &mut doc, &priorities)
         .map_err(|i| CmdError::msg(format!("Cannot submit: {i}")))?;

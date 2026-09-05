@@ -20,8 +20,8 @@
 use std::sync::Arc;
 
 use mush_core::{ArgShape, CmdError, CommandSpec, Ctx, ObjId, Registrar, Role, match_object, perm};
-use mush_proto::{NarrativeKind, OutputEvent, RichText};
 use mush_ruleset::SheetDoc;
+use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 
 use crate::Sr5Cmd;
@@ -97,7 +97,7 @@ pub fn parse_damage_spec(raw: &str) -> Option<DamageSpec> {
 }
 
 /// Filled boxes on a track field.
-fn filled(doc: &SheetDoc, field: &str) -> usize {
+pub(crate) fn filled(doc: &SheetDoc, field: &str) -> usize {
     doc.track(field)
         .map(|m| m.iter().filter(|b| b.is_some()).count())
         .unwrap_or(0)
@@ -113,7 +113,7 @@ fn boxes(doc: &SheetDoc, field: &str) -> usize {
 
 /// Rewrite a track so its first `fill` boxes are marked `mark` and the rest are
 /// empty, preserving the track's length.
-fn set_filled(doc: &mut SheetDoc, field: &str, fill: usize, mark: &str) {
+pub(crate) fn set_filled(doc: &mut SheetDoc, field: &str, fill: usize, mark: &str) {
     let len = doc.track(field).map(|m| m.len()).unwrap_or(0);
     let fill = fill.min(len);
     let marks: Vec<Option<SmolStr>> = (0..len)
@@ -123,7 +123,7 @@ fn set_filled(doc: &mut SheetDoc, field: &str, fill: usize, mark: &str) {
 }
 
 /// The result of applying damage, for the room transition messages.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct DamageReport {
     /// Physical boxes filled after.
     pub physical_filled: usize,
@@ -276,64 +276,25 @@ pub fn summary(doc: &SheetDoc) -> Vec<String> {
 /// `+damage <target>=<n>P|<n>S` — apply Condition-Monitor damage (staff).
 fn damage_cmd(cmd: &Sr5Cmd, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let (target, spec) = parse_target_spec(ctx)?;
-    let mut doc = cmd
-        .read(ctx.w, target)
-        .ok_or_else(|| CmdError::msg("That character has no sheet."))?;
-    let report = apply(&mut doc, spec.kind, spec.count);
-    cmd.store()
-        .put_by(ctx.w, target, &doc, ctx.actor)
-        .map_err(|es| CmdError::msg(fmt_errs(&es)))?;
-
-    let name = name_of(ctx, target);
-    ctx.out.sys_to_actor(
-        ctx.actor,
-        "sr",
-        format!(
-            "{name} takes {} {} damage.",
-            spec.count,
-            spec.kind.word().to_lowercase()
-        ),
-    );
-    for line in summary(&doc) {
-        ctx.out.sys_to_actor(ctx.actor, "sr", format!("  {line}"));
-    }
-    if report.dead {
-        room_emit(
-            ctx,
-            target,
-            &format!("{name} takes a fatal wound and goes down."),
-        );
-    } else if report.newly_down {
-        room_emit(ctx, target, &format!("{name} collapses, badly wounded."));
-    } else if report.newly_stunned {
-        room_emit(ctx, target, &format!("{name} is knocked out."));
-    }
-    Ok(())
+    let _ = cmd;
+    Err(CmdError::msg(format!(
+        "Condition damage is authoritative. Use +act condition-damage on {target} with \
+         {{\"amount\":{},\"kind\":\"{}\"}}.",
+        spec.count,
+        spec.kind.word().to_ascii_lowercase()
+    )))
 }
 
 /// `+heal <target>=<n>P|<n>S` — clear Condition-Monitor boxes (staff).
 fn heal_cmd(cmd: &Sr5Cmd, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let (target, spec) = parse_target_spec(ctx)?;
-    let mut doc = cmd
-        .read(ctx.w, target)
-        .ok_or_else(|| CmdError::msg("That character has no sheet."))?;
-    let cleared = heal(&mut doc, spec.kind, spec.count);
-    cmd.store()
-        .put_by(ctx.w, target, &doc, ctx.actor)
-        .map_err(|es| CmdError::msg(fmt_errs(&es)))?;
-    let name = name_of(ctx, target);
-    ctx.out.sys_to_actor(
-        ctx.actor,
-        "sr",
-        format!(
-            "Cleared {cleared} {} box(es) from {name}.",
-            spec.kind.word().to_lowercase()
-        ),
-    );
-    for line in summary(&doc) {
-        ctx.out.sys_to_actor(ctx.actor, "sr", format!("  {line}"));
-    }
-    Ok(())
+    let _ = cmd;
+    Err(CmdError::msg(format!(
+        "Condition healing is authoritative. Use +act condition-heal on {target} with \
+         {{\"amount\":{},\"kind\":\"{}\"}}.",
+        spec.count,
+        spec.kind.word().to_ascii_lowercase()
+    )))
 }
 
 /// `+condition [<target>]` / `+cm [<target>]` — show both tracks.
@@ -349,7 +310,7 @@ fn condition_cmd(cmd: &Sr5Cmd, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         t
     };
     let doc = cmd
-        .read(ctx.w, target)
+        .read_ctx(ctx, target)?
         .ok_or_else(|| CmdError::msg("That character has no sheet."))?;
     let name = name_of(ctx, target);
     ctx.out
@@ -377,32 +338,11 @@ fn parse_target_spec(ctx: &Ctx<'_>) -> Result<(ObjId, DamageSpec), CmdError> {
     Ok((target, spec))
 }
 
-fn room_emit(ctx: &mut Ctx<'_>, who: ObjId, line: &str) {
-    if let Some(loc) = ctx.w.get(who).and_then(|o| o.location) {
-        ctx.out.to_room(
-            loc,
-            Vec::new(),
-            OutputEvent::Narrative {
-                kind: NarrativeKind::Emit,
-                actor: Some(mush_core::obj_ref(ctx.w, who)),
-                text: RichText::plain(line),
-            },
-        );
-    }
-}
-
 fn name_of(ctx: &Ctx<'_>, who: ObjId) -> String {
     ctx.w.get(who).map_or_else(
         || who.to_string(),
         |o| mush_core::output::primary_name(&o.name).to_string(),
     )
-}
-
-fn fmt_errs(errs: &[mush_ruleset::SheetError]) -> String {
-    errs.iter()
-        .map(std::string::ToString::to_string)
-        .collect::<Vec<_>>()
-        .join("; ")
 }
 
 /// Register `+damage`, `+heal`, `+condition`, `+cm`.

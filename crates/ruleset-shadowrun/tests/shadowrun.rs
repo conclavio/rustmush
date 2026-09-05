@@ -166,8 +166,19 @@ fn roll_applies_the_wound_modifier() {
     let (mut tw, nick) = world(S);
     samurai(&mut tw);
     // 3 physical boxes → wound −1; the pool loses one die (10 → 9).
-    tw.run(GOD, "+damage Nick=3P");
-    let doc = read_sheet(&tw, nick);
+    let mut doc = read_sheet(&tw, nick);
+    ruleset_shadowrun::condition::apply(
+        &mut doc,
+        ruleset_shadowrun::condition::Damage::Physical,
+        3,
+    );
+    tw.world_mut()
+        .set_attr(
+            nick,
+            "sheet:shadowrun",
+            mush_core::Attr::json(serde_json::to_value(&doc).unwrap(), nick),
+        )
+        .unwrap();
     let phys = derive::limits(&doc).physical as u8;
     let ev = tw.run(nick, "+roll agility+pistols");
     let expected = Sr5Pool::score(&faces(S, 0, 9), &Sr5Opts::new(1).with_limit(phys));
@@ -360,44 +371,38 @@ fn roll_last_shows_history_for_staff() {
 // ----------------------------------------------------------------------
 
 #[test]
-fn damage_stun_overflow_and_wound_modifier() {
+fn legacy_damage_and_heal_aliases_refuse_without_mutation() {
     let (mut tw, nick) = world(S);
-    samurai(&mut tw); // Body 5 → 11 physical; Willpower 4 → 10 stun.
-    // 12 Stun: fills 10 Stun, 2 spill to Physical.
-    tw.run(GOD, "+damage Nick=12S");
-    let doc = read_sheet(&tw, nick);
-    let stun = doc.track(schema::CONDITION_STUN).unwrap();
-    let phys = doc.track(schema::CONDITION_PHYSICAL).unwrap();
-    assert_eq!(stun.iter().filter(|b| b.is_some()).count(), 10);
-    assert_eq!(phys.iter().filter(|b| b.is_some()).count(), 2);
-    // Wound modifier: −⌊10/3⌋ − ⌊2/3⌋ = −3 − 0 = −3.
-    assert_eq!(derive::wound_modifier(&doc), -3);
-    // Heal clears boxes.
-    tw.run(GOD, "+heal Nick=5S");
-    assert_eq!(
-        read_sheet(&tw, nick)
-            .track(schema::CONDITION_STUN)
-            .unwrap()
+    samurai(&mut tw);
+    let before = read_sheet(&tw, nick);
+    let damage = tw.run(GOD, "+damage Nick=12S");
+    assert!(
+        tw.seen_by(&damage, GOD)
             .iter()
-            .filter(|b| b.is_some())
-            .count(),
-        5
+            .any(|line| line.contains("+act condition-damage on #"))
     );
+    let heal = tw.run(GOD, "+heal Nick=5S");
+    assert!(
+        tw.seen_by(&heal, GOD)
+            .iter()
+            .any(|line| line.contains("+act condition-heal on #"))
+    );
+    assert_eq!(read_sheet(&tw, nick), before);
 }
 
 #[test]
-fn physical_overflow_is_capped_at_body() {
+fn legacy_physical_damage_alias_names_the_authoritative_parameters() {
     let (mut tw, nick) = world(S);
-    samurai(&mut tw); // Body 5, 11 physical boxes.
-    // 11 fills the track, +3 overflow (Body 5 cap not exceeded).
-    tw.run(GOD, "+damage Nick=14P");
-    let doc = read_sheet(&tw, nick);
-    assert_eq!(doc.number(schema::PHYSICAL_OVERFLOW), Some(3));
-    let ev = tw.run(GOD, "+condition Nick");
+    samurai(&mut tw);
+    let ev = tw.run(GOD, "+damage Nick=14P");
     assert!(
         tw.seen_by(&ev, GOD)
             .iter()
-            .any(|l| l.contains("overflow 3/5"))
+            .any(|line| line.contains(r#"{"amount":14,"kind":"physical"}"#))
+    );
+    assert_eq!(
+        read_sheet(&tw, nick).number(schema::PHYSICAL_OVERFLOW),
+        Some(0)
     );
 }
 
