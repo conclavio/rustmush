@@ -152,7 +152,7 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
             shape: ArgShape::EqPair,
             switches: [
                 "title", "transfer", "assign", "unassign", "maintenance", "lien", "release",
-                "writeoff", "unfreeze", "show", "list", "stolen",
+                "writeoff", "unfreeze", "show", "list", "stolen", "catalog",
             ]
             .iter()
             .copied()
@@ -172,8 +172,15 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
                    \x20                                      compartment, or staff). It records a\n\
                    \x20                                      disputed claim; title never moves, and a\n\
                    \x20                                      later purchase is evidence, not guilt.\n\
+                   @asset/catalog <obj>=<ruleset>:<code>|none    set the catalogue reference\n\
+                   \x20                                      (staff). It is what a catalogue-keyed\n\
+                   \x20                                      rule reads; changing it bumps the\n\
+                   \x20                                      record's revision, so an outstanding\n\
+                   \x20                                      quote priced against the old code\n\
+                   \x20                                      lapses deterministically.\n\
                    @asset/unfreeze <obj>                         clear the recovery latch (staff)\n\
-                   @asset/show <obj>   @asset/list [owner=<principal>] [scope=<id>]\n\
+                   @asset/show <obj>\n\
+                   @asset/list [owner=<principal>] [scope=<id>] [after=<obj>]  one bounded page\n\
                    <principal> is #obj, org:<id|name>, or sys:<name>. Title never moves an object,\n\
                    and moving or @chowning an object never moves title."
                 .into(),
@@ -341,6 +348,12 @@ pub(crate) fn cmd_key(ctx: &Ctx<'_>) -> IdempotencyKey {
 
 /// The row cap every `*/list` obeys (§4.5).
 pub(crate) const LIST_CAP: usize = 20;
+
+/// How many asset records one `@asset/list` page **visits** (E6b independent verify
+/// fold, D10) — D-LBK-5's rule and `FENCE_PAGE_VISIT`'s number: a bounded read bounds
+/// the records it touches, never the ones it matches, and the page names its own
+/// cursor when there is more.
+pub const ASSET_PAGE_VISIT: usize = 256;
 
 /// Pull `key=value` options out of a free-form tail, returning the remaining words
 /// and the recognized options (lower-cased keys). Unknown `k=v` words stay in the
@@ -2123,7 +2136,7 @@ fn econ_unfreeze(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     // landed while the freeze was set was dropped on the floor by the attestation
     // observer — deliberately, because a frozen economy cannot act on it. Re-scan
     // what the world announced meanwhile, now that it can.
-    crate::attest::rescan_canon_tail(ctx);
+    crate::attest::rescan_canon_tail(ctx, crate::attest::RescanTrigger::Recovery);
     // A control-doc write, not money: the ordinary durable gate (§4.2).
     ctx.gate_on_durable_ack();
     Ok(())
@@ -2822,6 +2835,13 @@ fn econ_history(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 parts.push(MASKED_ACCOUNTS.to_string());
             }
         }
+        // E6b independent verify fold (D7): the **arity** of the hidden half is not
+        // published either. The line half collapses every masked account into one
+        // `MASKED_ACCOUNTS` token precisely so a runner cannot count the other
+        // runners, and the hold half sat below it emitting one "a reservation … on
+        // another account" per hidden hold — the same count, by a different route.
+        // One token, the same way.
+        let mut masked_holds = false;
         for e in &t.hold_effects {
             // A reservation is read through its own view standing (`may_view_hold`)
             // AND the account's: the id of somebody else's escrow is exactly the sort
@@ -2836,11 +2856,9 @@ fn econ_history(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                     money_on(ctx, e.hold.account, e.hold.amount),
                     e.hold.account
                 ));
-            } else {
-                parts.push(format!(
-                    "a reservation {} on another account",
-                    hold_word(e.kind)
-                ));
+            } else if !masked_holds {
+                masked_holds = true;
+                parts.push(format!("reservations on {MASKED_ACCOUNTS}"));
             }
         }
         rows.push(format!(
@@ -2912,6 +2930,8 @@ fn cmd_asset(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         asset_release(ctx)
     } else if ctx.switches.has("stolen") {
         asset_stolen(ctx)
+    } else if ctx.switches.has("catalog") {
+        asset_catalog(ctx)
     } else if ctx.switches.has("writeoff") {
         asset_writeoff(ctx)
     } else if ctx.switches.has("unfreeze") {
@@ -2922,9 +2942,52 @@ fn cmd_asset(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         asset_list(ctx)
     } else {
         Err(CmdError::msg(
-            "Usage: @asset/title|transfer|assign|unassign|maintenance|lien|release|writeoff|unfreeze|show|list",
+            "Usage: @asset/title|transfer|assign|unassign|maintenance|lien|release|catalog|writeoff|unfreeze|show|list",
         ))
     }
+}
+
+/// `@asset/catalog <obj>=<ruleset>:<code>|none` (staff) — E6b independent verify
+/// fold, M7.
+///
+/// `CatalogRef` was writable only by `AssetOp::Title`, and `Title` refuses an object
+/// that already has a live record — so **every title minted before E6b could never be
+/// catalogued**, and every catalogue-keyed rule was unreachable for it (the fence
+/// refuses an object with no `catalog`, which is the whole of the shipped
+/// consequence). The refusals go through the existence-hiding renderer like every
+/// other `@asset` verb.
+fn asset_catalog(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    const USAGE: &str = "Usage: @asset/catalog <obj>=<ruleset>:<code>|none";
+    let object = asset_target(ctx, ctx.args.lhs())?;
+    if !may_view_asset(ctx.w, ctx.actor, object) {
+        return Err(refuse_named(
+            ctx,
+            NamedResource::Asset(object),
+            [],
+            "No such asset.".to_string(),
+        ));
+    }
+    let rhs = ctx
+        .args
+        .rhs()
+        .map(str::trim)
+        .unwrap_or_default()
+        .to_string();
+    if rhs.is_empty() {
+        return Err(CmdError::msg(USAGE));
+    }
+    let catalog = if rhs.eq_ignore_ascii_case("none") {
+        None
+    } else {
+        Some(parse_catalog(&rhs).ok_or_else(|| CmdError::msg(USAGE))?)
+    };
+    let plan = ops_plan(
+        ctx,
+        vec![AssetOp::SetCatalog { object, catalog }],
+        Vec::new(),
+    );
+    let outcome = api::post(ctx, &plan);
+    finish_asset(ctx, object, outcome, "Catalogue reference set")
 }
 
 /// `<principal> [scope=<id>]` — the owner half shared by `title` and `transfer`.
@@ -3104,16 +3167,39 @@ fn asset_release(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         .filter(|n| *n >= 1)
         .ok_or_else(|| CmdError::msg("Usage: @asset/release <obj>=<n>   (n from @asset/show)"))?;
     // Resolve the exact recorded claim BEFORE `post` — `Release` is an exact match.
-    let encumbrance = {
+    let (encumbrance, hidden_claim) = {
         let store = ctx
             .w
             .module_state::<EconomyStore>()
             .ok_or_else(|| CmdError::msg("No economy."))?;
-        store
-            .snapshot()
-            .asset(object)
-            .and_then(|a| a.encumbrances.get(n - 1).cloned())
+        let asset = store.snapshot().asset(object);
+        let encumbrance = asset.and_then(|a| a.encumbrances.get(n - 1).cloned());
+        // The claim a **hidden** theft report placed, reconstructed exactly as
+        // `AssetOp::ReportStolen` writes it.
+        let hidden_claim = asset.and_then(|a| a.stolen.as_ref()).map(|r| {
+            (
+                Encumbrance::Disputed {
+                    claimant: r.by.clone(),
+                    reason: r.reason.clone(),
+                },
+                r.clone(),
+            )
+        });
+        (encumbrance, hidden_claim)
     };
+    // E6b independent verify fold (D2): **the index is not an oracle.** The resolve
+    // ran with no view gate at all, so an out-of-range index answered "No such
+    // encumbrance." and an in-range one answered "unauthorized" — and an assignee
+    // holds `may_view_asset`, so a covert theft report was readable off which of the
+    // two sentences came back. A claim the viewer may not be told about answers
+    // exactly as an index past the end does, which is the rule D2's own count fix
+    // already applies one line above the report in `@asset/show`.
+    if let (Some(e), Some((claim, report))) = (encumbrance.as_ref(), hidden_claim.as_ref())
+        && e == claim
+        && !may_view_stolen_report(ctx, object, report)
+    {
+        return Err(asset_refusal(ctx, object, "No such encumbrance."));
+    }
     let Some(encumbrance) = encumbrance else {
         return Err(asset_refusal(ctx, object, "No such encumbrance."));
     };
@@ -3398,7 +3484,20 @@ fn asset_list(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     // `owner=`/`scope=` carry their own `=`, which `ArgShape::EqPair` would eat as the
     // pair separator — read the untouched argument text instead.
     let raw = ctx.args.raw().to_string();
-    let (_, opts) = parse_opts(&raw, &["owner", "scope"]);
+    let (_, opts) = parse_opts(&raw, &["owner", "scope", "after"]);
+    // E6b independent verify fold (D10): the walk is bounded on records **visited**
+    // and pages from a cursor (`+fence/list`'s shape, D-LBK-5's rule). It read the
+    // whole registry before filtering, so on a world with a hundred thousand titles
+    // one `@asset/list` was a hundred thousand `may_view_asset` calls whatever the
+    // filter said — and the filters ran ahead of the view gate, so the work was done
+    // for rows the caller was never going to be shown.
+    let after: Option<ObjId> = match opts.get("after") {
+        Some(s) => match s.trim().trim_start_matches('#').parse::<u32>() {
+            Ok(n) => Some(ObjId(n)),
+            Err(_) => return empty_list(ctx, "No assets."),
+        },
+        None => None,
+    };
     // §4.5: an unauthorized, hidden, or nonexistent filter yields an EMPTY list —
     // never an error that would confirm the filter's existence.
     let owner = match opts.get("owner") {
@@ -3415,19 +3514,36 @@ fn asset_list(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         },
         None => None,
     };
-    let candidates: Vec<ObjId> = {
+    // The candidates come from the **owner index** when one is named, so the walk is
+    // over that principal's own titles rather than the registry; otherwise it is the
+    // registry in object order, resumed from the cursor and bounded at
+    // [`ASSET_PAGE_VISIT`] records visited.
+    let (candidates, last_visited) = {
         let store = ctx
             .w
             .module_state::<EconomyStore>()
             .ok_or_else(|| CmdError::msg("No economy."))?;
-        store
-            .snapshot()
-            .assets()
-            .filter(|a| owner.as_ref().is_none_or(|o| a.title_owner == *o))
-            .filter(|a| scope.is_none_or(|s| a.scope == Some(s)))
-            .map(|a| a.object)
-            .collect()
+        let snapshot = store.snapshot();
+        let walk: Vec<ObjId> = match owner.as_ref() {
+            Some(o) => snapshot
+                .assets_of(o)
+                .filter(|a| after.is_none_or(|c| a.object > c))
+                .filter(|a| scope.is_none_or(|s| a.scope == Some(s)))
+                .map(|a| a.object)
+                .take(ASSET_PAGE_VISIT)
+                .collect(),
+            None => snapshot
+                .assets()
+                .filter(|a| after.is_none_or(|c| a.object > c))
+                .filter(|a| scope.is_none_or(|s| a.scope == Some(s)))
+                .map(|a| a.object)
+                .take(ASSET_PAGE_VISIT)
+                .collect(),
+        };
+        let last = walk.last().copied();
+        (walk, last)
     };
+    let visited = candidates.len();
     let rows: Vec<String> = candidates
         .into_iter()
         .filter(|o| may_view_asset(ctx.w, ctx.actor, *o))
@@ -3446,7 +3562,14 @@ fn asset_list(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             )
         })
         .collect();
+    let more = visited >= ASSET_PAGE_VISIT;
     emit_list(ctx, rows, "No assets.");
+    // The cursor is the last record **visited**, not the last one shown: a page that
+    // filtered everything out still advances, so a viewer with narrow standing walks
+    // the same number of pages a staffer does and the two truncate identically.
+    if more && let Some(cursor) = last_visited {
+        info(ctx, format!("(more — @asset/list after=#{})", cursor.0));
+    }
     Ok(())
 }
 

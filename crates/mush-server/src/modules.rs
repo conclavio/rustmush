@@ -157,7 +157,20 @@ pub fn server_modules_with(
         ),
         // After org (see above): `Faction.org` links are checked at faction boot.
         Box::new(mush_faction::FactionModule::new()),
-        Box::new(mush_scenes::ScenesModule::new()),
+        // E6b independent verify fold (M4): the **sealer gate**. `+scene/outcome` is
+        // a settlement authority for whatever run staff bound the scene to, and
+        // `@scene/facilitate` had no party check at all — so a run's own payee could
+        // be conferred the seal that decides which row pays them. `mush-scenes` has
+        // no economy edge and must not gain one, so the question is asked through a
+        // boxed closure frozen here, exactly as the economy's own seven wiring tables
+        // are: the run id stays opaque on the scenes side, and `stands_in_contract`
+        // (party through `acts_for`, or author / payer / Johnson / facilitator) is
+        // the economy's own answer.
+        Box::new(mush_scenes::ScenesModule::new().with_sealer_gate(Arc::new(
+            |w: &mush_core::World, run: u64, who: mush_core::ObjId| {
+                mush_economy::stands_in_contract(w, mush_economy::ContractId(run), who)
+            },
+        ))),
         Box::new(mush_sim::SimulationModule::new()),
         Box::new(mush_tactics::TacticsModule::new()),
         // E2: the accountable-value engine — the double-entry journal, accounts, and

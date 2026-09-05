@@ -746,3 +746,118 @@ fn vf_r3_the_namespace_is_stamped_so_a_rollback_refuses() {
     assert!(rec.validate_clock().is_ok());
     assert_eq!(rec.scene_ic_time(), 5, "the floor changes nothing at zero");
 }
+
+// ---------------------------------------------------------------------------
+// E6b independent verify fold
+// ---------------------------------------------------------------------------
+
+/// **D3.** The chronicle line named the contract to a non-party. `scene.outcome` is
+/// `Restricted`, and a `Restricted` record is shown to every entity it names — but
+/// the entities are the seal's **subjects**, who need not be parties to the run. So
+/// interpolating `run:{id}#{row}` into `summary` told a subject which contract paid
+/// for the work and which row of its table was selected, off a chronicle read. The
+/// source stays where it is load-bearing: `detail`, and the `CanonRecorded` event.
+#[test]
+fn vf2_d3_the_chronicle_summary_does_not_name_the_contract() {
+    let mut r = rig();
+    let nick = r.nick;
+    scened(&mut r, nick);
+    let out = run(&mut r.engine, r.nick, "+scene/outcome success=Ann run=7");
+    assert!(texts(&out).contains("sealed"), "{}", texts(&out));
+    let ev = canon(&r.engine)
+        .into_iter()
+        .find(|e| e.kind == mush_scenes::KIND_SCENE_OUTCOME)
+        .expect("the seal reached canon");
+    assert!(
+        !ev.summary.contains("run:"),
+        "the chronicle line names the run: {}",
+        ev.summary
+    );
+    assert!(
+        ev.summary.contains("success"),
+        "the chronicle line lost the outcome it is for: {}",
+        ev.summary
+    );
+    // The source itself is unchanged — it is the economy's whole match key.
+    assert_eq!(ev.source, "run:7#success");
+    assert_eq!(
+        ev.detail.get("outcome").and_then(|v| v.as_str()),
+        Some("success"),
+        "the staff-facing detail lost the outcome: {}",
+        ev.detail
+    );
+}
+
+/// **R6.** A `SceneOutcome` that will not decode used to fail the whole
+/// `SceneRecord`, and `load_boot` turned that into a `ModError` — so one over-long
+/// note in one persisted outcome was a server that could not start. The outcome is
+/// decoded leniently instead: the scene boots **unsealed**, keeps its conferred
+/// sealer and its run binding, and the sealer can simply seal it again (the
+/// economy's write-once slots make a second canon record for a filled slot inert).
+#[test]
+fn vf2_r6_a_corrupt_persisted_outcome_does_not_brick_the_boot() {
+    let mut r = rig();
+    let nick = r.nick;
+    scened(&mut r, nick);
+    let id = scene(&r).id;
+    run(&mut r.engine, r.nick, "+scene/outcome success=Ann run=7");
+    assert!(scene(&r).outcome.is_some(), "the seal did not land");
+
+    // Corrupt exactly the outcome, the way an older build or a hand edit would: a
+    // note past `MAX_OUTCOME_NOTE_BYTES`, which the wire refuses.
+    let mut kv: Vec<(smol_str::SmolStr, serde_json::Value)> = Vec::new();
+    for op in r.engine.take_module_ops() {
+        if op.ns.as_str() != mush_scenes::NS {
+            continue;
+        }
+        match op.op {
+            mush_core::ModuleWrite::JsonSet { key, mut value } => {
+                if key.as_str() == mush_scenes::scene_key(id).as_str()
+                    && let Some(outcome) = value.get_mut("outcome").and_then(|o| o.as_object_mut())
+                {
+                    outcome.insert(
+                        "note".to_owned(),
+                        serde_json::Value::String(
+                            "x".repeat(mush_scenes::MAX_OUTCOME_NOTE_BYTES + 1),
+                        ),
+                    );
+                }
+                kv.retain(|(k, _)| *k != key);
+                kv.push((key, value));
+            }
+            mush_core::ModuleWrite::Del { key } => kv.retain(|(k, _)| *k != key),
+            mush_core::ModuleWrite::StreamAppend { .. } => {}
+        }
+    }
+    let mut boot: HashMap<smol_str::SmolStr, mush_core::ModuleBootData> = HashMap::new();
+    boot.insert(
+        smol_str::SmolStr::new(mush_scenes::NS),
+        mush_core::ModuleBootData {
+            kv,
+            streams: HashMap::new(),
+        },
+    );
+    let (mut out, mut fx) = (Outbox::new(), Effects::new());
+    r.engine
+        .modules_loaded(boot, &mut out, &mut fx)
+        .expect("an unreadable outcome must not fail the boot");
+
+    let rec = scenes(&r.engine)
+        .scenes
+        .get(&id)
+        .cloned()
+        .expect("the scene still loaded");
+    assert!(
+        rec.outcome.is_none(),
+        "the unreadable outcome loaded anyway"
+    );
+    assert_eq!(
+        rec.sealer,
+        Some(r.nick),
+        "the conferred sealer was lost with the outcome"
+    );
+    assert_eq!(rec.seal_run, Some(7), "the run binding was lost with it");
+    // And the remedy really works: the sealer seals again.
+    let again = run(&mut r.engine, r.nick, "+scene/outcome success=Ann run=7");
+    assert!(texts(&again).contains("sealed"), "{}", texts(&again));
+}

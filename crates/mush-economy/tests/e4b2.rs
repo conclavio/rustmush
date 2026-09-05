@@ -6760,6 +6760,7 @@ fn dl03_fixture(org_has_vault: bool) -> (EconomySnapshot, mush_economy::Economic
         roles: ContractRoles::default(),
         consent_hash: [0u8; 32],
         amendments: 0,
+        generation_started_at: 0,
         roster_locked: false,
         pending: None,
         canon_published: None,
@@ -6949,5 +6950,516 @@ fn vf_r1_releasing_the_claim_clears_the_report_so_a_second_theft_can_be_filed() 
         &mut tw,
         r.a,
         &format!("@asset/stolen #{}=public taken again", obj.0),
+    );
+}
+
+// ===========================================================================
+// E6b independent verify fold
+// ===========================================================================
+
+/// **D2.** `@asset/release <obj>=<n>` resolved the index with **no view gate at
+/// all**: out of range answered "No such encumbrance.", in range answered
+/// "unauthorized". An assignee holds `may_view_asset`, so both were visible — and the
+/// difference between them was a covert theft report, read off an index probe. The
+/// hidden claim now answers exactly as an index past the end does.
+#[test]
+fn vf2_d2_the_release_index_is_not_an_oracle_for_a_covert_report() {
+    let mut tw = boot();
+    let owner = tw.spawn_player("Owner");
+    let assignee = tw.spawn_player("Assignee");
+    ok(&mut tw, GOD, "@instrument/register nuyen=0");
+    let clean = tw
+        .world_mut()
+        .create(ObjKind::Thing, "clean case", GOD, Some(owner))
+        .expect("an object");
+    let claimed = tw
+        .world_mut()
+        .create(ObjKind::Thing, "hot case", GOD, Some(owner))
+        .expect("an object");
+    for obj in [clean, claimed] {
+        ok(
+            &mut tw,
+            GOD,
+            &format!("@asset/title #{}=#{}", obj.0, owner.0),
+        );
+        ok(
+            &mut tw,
+            GOD,
+            &format!("@asset/assign #{}=#{} carry", obj.0, assignee.0),
+        );
+    }
+    // A covert report on one of them, filed by its own title owner.
+    ok(
+        &mut tw,
+        owner,
+        &format!("@asset/stolen #{}=covert lifted", claimed.0),
+    );
+    assert!(
+        mush_economy::may_view_asset(tw.world(), assignee, claimed),
+        "the probe needs an assignee who can see the asset at all"
+    );
+
+    // The two worlds differ only in the hidden claim, and the answers are identical.
+    let a = err(&mut tw, assignee, &format!("@asset/release #{}=1", clean.0));
+    let b = err(
+        &mut tw,
+        assignee,
+        &format!("@asset/release #{}=1", claimed.0),
+    );
+    assert_eq!(a, b, "the index published the covert claim");
+    assert!(a.contains("No such encumbrance."), "{a}");
+    // …and the claim is still there for the people who may see it.
+    assert_eq!(
+        snap(&tw)
+            .asset(claimed)
+            .map(|x| x.encumbrances.len())
+            .unwrap_or_default(),
+        1
+    );
+}
+
+/// **D6.** A `Canon` attestor set's `kind` and `source` are stored strings frozen
+/// into the consent surface and rendered to every party, and **nothing bounded
+/// either**. `parse_route_spec` takes the source as the remainder verbatim, so any
+/// producer of a `ContractSpec` could freeze an arbitrarily large one. The cap is the
+/// same 64 bytes an outcome row name already carries, in the same place.
+#[test]
+fn vf2_d6_an_oversized_canon_source_is_refused_at_offer() {
+    let (mut tw, e6) = boot_e6();
+    let r = run_rig(&mut tw, 3_000);
+    for (kind, source) in [
+        (
+            "scene.outcome".to_string(),
+            "run:".to_string() + &"9".repeat(mush_economy::MAX_OUTCOME_NAME_BYTES),
+        ),
+        (
+            "k".repeat(mush_economy::MAX_OUTCOME_NAME_BYTES + 1),
+            "run:1".to_string(),
+        ),
+    ] {
+        let mut spec = run_spec(
+            "Extraction",
+            r.johnson,
+            (r.j_acct, 1_000),
+            vec![PrincipalId::Object(r.johnson)],
+            vec![row("success", vec![0], vec![exact(r.a_acct, 1_000)])],
+        );
+        spec.conditions = vec![TypedCondition::Attestation {
+            by: AttestorSet::Canon {
+                kind: SmolStr::new(&kind),
+                source: Some(SmolStr::new(&source)),
+            },
+        }];
+        spec.adjudicator = None;
+        spec.evidence = vec![mush_economy::EvidenceKind::Attestation];
+        e6.stage_offer(spec);
+        ok(&mut tw, r.johnson, "@e6/offer");
+        assert!(
+            e6.offered().is_err(),
+            "an oversized canon set was accepted at offer"
+        );
+        assert_eq!(
+            snap(&tw).contracts().count(),
+            0,
+            "an oversized canon set was frozen into a surface"
+        );
+    }
+}
+
+/// **D7.** `@econ/history` collapses every masked **line** into one
+/// `MASKED_ACCOUNTS` token precisely so a runner cannot count the other runners — and
+/// then published the same arity through the hold half, one "a reservation … on
+/// another account" per hidden hold. One token, the same way.
+#[test]
+fn vf2_d7_hidden_holds_collapse_into_one_line() {
+    let mut tw = boot();
+    let r = run_rig(&mut tw, 10_000);
+    // Two escrow placements the watcher cannot see, on one contract's own entry: the
+    // Johnson's consideration and a second payer's.
+    let faucet = snap(&tw)
+        .accounts()
+        .find(|x| matches!(x.owner, PrincipalId::System(_)))
+        .expect("faucet")
+        .id;
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@econ/mint {faucet}={} 5000", r.a_acct),
+    );
+    // Staff draft it, so both payers' accounts are viewable at draft time; the
+    // viewer below can see neither.
+    ok(&mut tw, GOD, "@contract/draft Extraction");
+    let id = only_contract(&tw);
+    for who in [r.johnson, r.a] {
+        ok(&mut tw, GOD, &format!("@contract/party {id}=#{}", who.0));
+    }
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@contract/pay {id}={} 1000", r.j_acct),
+    );
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@contract/pay {id}={} 1000", r.a_acct),
+    );
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@contract/split {id}={} 2000", r.b_acct),
+    );
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@contract/remainder {id}={}", r.j_acct),
+    );
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@contract/condition {id}=attest staff"),
+    );
+    ok(&mut tw, GOD, &format!("@contract/offer {id}"));
+    for who in [GOD, r.johnson, r.a] {
+        ok(&mut tw, who, &format!("@contract/accept {id}"));
+    }
+    // The settlement captures **both** escrow holds in one transaction and pays the
+    // payee — so one entry in their history carries two hold effects, neither of
+    // which is theirs to see.
+    ok(&mut tw, GOD, &format!("@contract/attest {id}=0"));
+    assert!(matches!(state(&tw, id), ContractState::Settled { .. }));
+
+    // The payee reads their own account's history.
+    let seen = ok(&mut tw, r.b, &format!("@econ/history {}", r.b_acct));
+    assert_eq!(
+        seen.matches("reservations on other accounts").count(),
+        1,
+        "the hidden holds published their arity: {seen}"
+    );
+    assert!(
+        !seen.contains("a reservation"),
+        "the old per-hold token is still emitted: {seen}"
+    );
+}
+
+/// **D8.** `EconomicAsset` was raw `Deserialize`, so `StolenReport.reason` — and the
+/// `Disputed` claim's, and the claim count — were bounded on the **write path
+/// only**. A document with an over-long reason is refused by the wire now, and boot
+/// skips it loudly rather than failing: every field above the latch is journal
+/// authority, so the projection rebuilds from the journal and comes back frozen.
+#[test]
+fn vf2_d8_an_oversized_theft_report_reason_does_not_load() {
+    let mut tw = boot();
+    let owner = tw.spawn_player("Owner");
+    ok(&mut tw, GOD, "@instrument/register nuyen=0");
+    let obj = tw
+        .world_mut()
+        .create(ObjKind::Thing, "case", GOD, Some(owner))
+        .expect("an object");
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@asset/title #{}=#{}", obj.0, owner.0),
+    );
+    ok(
+        &mut tw,
+        owner,
+        &format!("@asset/stolen #{}=public lifted", obj.0),
+    );
+
+    let mut kv = fold_kv(&mut tw);
+    let key = format!("asset:{}", obj.0);
+    patch(&mut kv, &key, |v| {
+        if let Some(map) = v.as_object_mut()
+            && let Some(report) = map.get_mut("stolen").and_then(|s| s.as_object_mut())
+        {
+            report.insert(
+                "reason".to_owned(),
+                serde_json::Value::String("x".repeat(mush_economy::MAX_REASON_BYTES + 1)),
+            );
+        }
+    });
+    // The wire refuses it outright…
+    let raw = kv
+        .iter()
+        .find(|(k, _)| k.as_str() == key)
+        .map(|(_, v)| v.clone())
+        .expect("the asset doc");
+    assert!(
+        serde_json::from_value::<mush_economy::EconomicAsset>(raw).is_err(),
+        "an over-long theft report reason still decodes"
+    );
+    // …and the boot survives it, rebuilding the title from the journal, frozen.
+    reboot(&mut tw, kv);
+    let a = snap(&tw).asset(obj).cloned().expect("the title survived");
+    assert!(a.frozen, "the rebuilt title is not latched: {a:?}");
+    assert_eq!(a.title_owner, PrincipalId::Object(owner));
+}
+
+/// **D10.** `@asset/list` walked **every** asset before the view gate, so one command
+/// on a large world was one `may_view_asset` per title whatever the filter said. It
+/// is bounded on records visited and pages from an `after=` cursor, and the cursor is
+/// the last record *visited* rather than the last one shown — so a narrow viewer and
+/// a staffer walk the same number of pages and truncate identically.
+#[test]
+fn vf2_d10_asset_list_is_bounded_on_records_visited_and_pages() {
+    let mut tw = boot();
+    let owner = tw.spawn_player("Owner");
+    ok(&mut tw, GOD, "@instrument/register nuyen=0");
+    let mut objs = Vec::new();
+    for i in 0..(mush_economy::ASSET_PAGE_VISIT + 40) {
+        let obj = tw
+            .world_mut()
+            .create(ObjKind::Thing, &format!("case {i}"), GOD, Some(owner))
+            .expect("an object");
+        ok(
+            &mut tw,
+            GOD,
+            &format!("@asset/title #{}=#{}", obj.0, owner.0),
+        );
+        objs.push(obj);
+    }
+    let first = ok(&mut tw, GOD, "@asset/list");
+    assert!(
+        first.contains("@asset/list after=#"),
+        "the page names no cursor: {first}"
+    );
+    // The cursor is the 256th record visited, not the 20th row rendered.
+    let cursor = objs
+        .get(mush_economy::ASSET_PAGE_VISIT - 1)
+        .copied()
+        .expect("the 256th title");
+    assert!(
+        first.contains(&format!("@asset/list after=#{}", cursor.0)),
+        "the cursor is not the last record visited: {first}"
+    );
+    // The last page names no cursor at all.
+    let last = ok(&mut tw, GOD, &format!("@asset/list after=#{}", cursor.0));
+    assert!(
+        !last.contains("after=#"),
+        "the last page offers a cursor: {last}"
+    );
+}
+
+/// **R2.** `owner_home` took its 256-vault budget **before** filtering by owner and
+/// `Active`, so an organization whose own vault sorted past the bound resolved `None`:
+/// its deposit stayed in the counterparty's vault, and the stranded page's own remedy
+/// (`@vault/create`) minted a **higher** id, so the page could never be cleared.
+#[test]
+fn vf2_r2_owner_home_filters_by_owner_before_it_takes_its_budget() {
+    let mut tw = boot();
+    let owner = tw.spawn_player("Owner");
+    ok(&mut tw, GOD, "@instrument/register nuyen=0");
+    // 256 vaults belonging to somebody else, ahead of the one we are looking for.
+    for i in 0..mush_economy::MAX_HOME_VAULT_VISIT {
+        let backing = tw
+            .world_mut()
+            .create(ObjKind::Thing, &format!("box {i}"), GOD, None)
+            .expect("a container");
+        ok(
+            &mut tw,
+            GOD,
+            &format!("@vault/create Foreign{i}=container:#{}", backing.0),
+        );
+    }
+    let backing = tw
+        .world_mut()
+        .create(ObjKind::Thing, "the right box", GOD, None)
+        .expect("a container");
+    ok(
+        &mut tw,
+        GOD,
+        &format!(
+            "@vault/create Home=container:#{} owner=#{}",
+            backing.0, owner.0
+        ),
+    );
+    let home = mush_economy::owner_home(snap(&tw), &PrincipalId::Object(owner));
+    assert_eq!(
+        home.map(|(_, o)| o),
+        Some(backing),
+        "the owner's own vault sorted past the budget the foreign ones spent"
+    );
+}
+
+/// **M8.** Re-verification **ORed** the condition's own attestor set with the
+/// adjudicator's, where `@contract/attest` and the canon observer's `answers` both
+/// **replace**. So an attestation neither writing path would ever have recorded —
+/// one under the condition's own set on a surface that later named an adjudicator —
+/// still re-verified, and settled a contract whose parties consented to one authority
+/// and got another. Three sites, one rule (D-E6-8).
+#[test]
+fn vf2_m8_reverification_replaces_the_condition_set_with_the_adjudicators() {
+    let mut tw = boot();
+    let r = run_rig(&mut tw, 3_000);
+    ok(&mut tw, r.johnson, "@contract/draft Extraction");
+    let id = only_contract(&tw);
+    ok(
+        &mut tw,
+        r.johnson,
+        &format!("@contract/party {id}=#{}", r.a.0),
+    );
+    ok(
+        &mut tw,
+        r.johnson,
+        &format!("@contract/pay {id}={} 1000", r.j_acct),
+    );
+    ok(
+        &mut tw,
+        r.johnson,
+        &format!("@contract/split {id}={} 1000", r.a_acct),
+    );
+    ok(
+        &mut tw,
+        r.johnson,
+        &format!("@contract/remainder {id}={}", r.j_acct),
+    );
+    // The condition's own set names the payee; the surface's adjudicator names the
+    // watcher, and it is the adjudicator that binds.
+    ok(
+        &mut tw,
+        r.johnson,
+        &format!("@contract/condition {id}=attest party:#{}", r.a.0),
+    );
+    ok(
+        &mut tw,
+        r.johnson,
+        &format!("@contract/adjudicator {id}=party:#{}", r.watcher.0),
+    );
+    ok(&mut tw, r.johnson, &format!("@contract/offer {id}"));
+    ok(&mut tw, r.johnson, &format!("@contract/accept {id}"));
+    ok(&mut tw, r.a, &format!("@contract/accept {id}"));
+    assert_eq!(state(&tw, id), ContractState::Active);
+
+    // Patch in exactly the attestation the ORed rule accepted and the replacing rule
+    // never writes: the payee's own word, under the condition's own set.
+    let mut kv = fold_kv(&mut tw);
+    patch(&mut kv, &format!("contract:{id}"), |v| {
+        if let Some(map) = v.as_object_mut() {
+            let divergent = mush_economy::Attestation {
+                by: mush_economy::AttestorRef::Principal(PrincipalId::Object(r.a)),
+                at: 1,
+                clock: mush_economy::EconomicClock::RealUtc,
+                source: SmolStr::new(format!("actor:{}", r.a.0)),
+            };
+            map.insert(
+                "satisfied".to_owned(),
+                serde_json::to_value(vec![Some(divergent)]).expect("serializes"),
+            );
+        }
+    });
+    reboot(&mut tw, kv);
+    let before = bal(&tw, r.a_acct);
+    sweep_at(&mut tw, 100_000);
+    assert_eq!(
+        bal(&tw, r.a_acct),
+        before,
+        "a divergent attestation satisfied a condition the adjudicator's set governs"
+    );
+    assert!(
+        !matches!(state(&tw, id), ContractState::Settled { .. }),
+        "the contract settled on it: {:?}",
+        state(&tw, id)
+    );
+}
+
+/// **M6.** `stranded_deposits` filtered on `r.to.is_none()` alone, while `returnable`
+/// asked a *second* question — is the object still in the vault, is the home vault's
+/// backing usable — so a deposit with a destination that could not actually be used
+/// was dropped by the plan and reported by nothing at all. It is the complement of
+/// `returnable` now, and the page names the object.
+#[test]
+fn vf2_m6_a_deposit_whose_object_left_the_vault_is_paged_not_dropped() {
+    let mut tw = boot();
+    let r = run_rig(&mut tw, 3_000);
+    let backing = tw
+        .world_mut()
+        .create(ObjKind::Thing, "strongbox", GOD, None)
+        .expect("a container");
+    ok(
+        &mut tw,
+        GOD,
+        &format!(
+            "@vault/create Box=container:#{} owner=#{}",
+            backing.0, r.johnson.0
+        ),
+    );
+    let vault = snap(&tw).vaults().map(|v| v.id).max().expect("a vault");
+    let goods = tw
+        .world_mut()
+        .create(ObjKind::Thing, "crate", GOD, Some(r.a))
+        .expect("an object");
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@asset/title #{}=#{}", goods.0, r.a.0),
+    );
+
+    ok(&mut tw, r.johnson, "@contract/draft Delivery");
+    let id = only_contract(&tw);
+    ok(
+        &mut tw,
+        r.johnson,
+        &format!("@contract/party {id}=#{}", r.a.0),
+    );
+    ok(
+        &mut tw,
+        r.johnson,
+        &format!("@contract/pay {id}={} 1000", r.j_acct),
+    );
+    ok(
+        &mut tw,
+        r.johnson,
+        &format!("@contract/split {id}={} 1000", r.a_acct),
+    );
+    ok(
+        &mut tw,
+        r.johnson,
+        &format!("@contract/remainder {id}={}", r.j_acct),
+    );
+    ok(
+        &mut tw,
+        r.johnson,
+        &format!("@contract/condition {id}=deposit #{} {vault}", goods.0),
+    );
+    ok(
+        &mut tw,
+        r.johnson,
+        &format!("@contract/deadline {id}=500 refund"),
+    );
+    ok(&mut tw, r.johnson, &format!("@contract/offer {id}"));
+    ok(&mut tw, r.johnson, &format!("@contract/accept {id}"));
+    ok(&mut tw, r.a, &format!("@contract/accept {id}"));
+    ok(
+        &mut tw,
+        r.a,
+        &format!("@vault/deposit #{}={vault}", goods.0),
+    );
+    assert_eq!(
+        tw.world().get(goods).and_then(|o| o.location),
+        Some(backing),
+        "the deposit did not land"
+    );
+
+    // The object leaves the vault behind the contract's back — a staff move, a
+    // destroyed container, anything the journal did not route. `deposit_returns`
+    // still has a destination for it; `returnable` does not.
+    tw.world_mut().move_to(goods, LIMBO).expect("the move");
+    // The deadline unwinds it with a refund, so the only page on this subject is the
+    // one the deposit earns.
+    sweep_at(&mut tw, 1_000);
+    assert_eq!(state(&tw, id), ContractState::Expired);
+
+    let paged = tw
+        .world()
+        .module_state::<EconomyStore>()
+        .expect("economy store")
+        .escalations()
+        .find(|e| e.subject == EscalationSubject::Contract(id))
+        .cloned()
+        .expect("a page about the deposit that could not go home");
+    assert!(
+        paged.context.contains(&format!("#{}", goods.0)),
+        "the page does not name the object: {}",
+        paged.context
     );
 }

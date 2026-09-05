@@ -224,11 +224,11 @@ pub use contract_live::{
     AcceptOutcome, AmendOutcome, AmendReoffer, ConsiderationSpec, ContractAmendment, ContractSpec,
     LeaseEnd, LeaseKey, LeaseSpec, accept_contract, amend_contract, cancel_contract,
     contract_notice, end_lease, may_view_contract, offer_contract, offer_lease, refuse_contract,
-    refuse_contract_offer,
+    refuse_contract_offer, stands_in_contract,
 };
 
 // E4c — facts, events, evidence.
-pub use attest::MAX_OBSERVER_SETTLEMENTS_PER_EVENT;
+pub use attest::{MAX_CANON_CONTRACTS_VISITED, MAX_OBSERVER_SETTLEMENTS_PER_EVENT};
 pub use facts::{FactProvider, FactState, FactTable, WorldFacts};
 pub use module::CANON_TAIL;
 pub use observer::{EconomyObserver, MAX_OBSERVER_DEPTH, ObserverTable, observer_depth};
@@ -245,7 +245,9 @@ pub use api::{
     set_account_status, set_asset_frozen, set_economy_frozen, set_system_obligation,
     set_vault_status, suspend_obligation, vault_key,
 };
-pub use commands::{may_view_account, may_view_asset, may_view_hold, may_view_obligation};
+pub use commands::{
+    ASSET_PAGE_VISIT, may_view_account, may_view_asset, may_view_hold, may_view_obligation,
+};
 // E6a step 1 (E5b-D36/D37): the parsing and existence-hiding helpers a ruleset
 // layered on the economy needs, exported so it never keeps a third copy.
 // E6b (B1): one masking renderer — `render_account` plus the history collapse

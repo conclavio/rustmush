@@ -187,7 +187,7 @@ pub use ledger::{
     BreachKind, ContiguityBreach, Ledger, LedgerAppendError, LedgerApplyError, LedgerChunk,
     LedgerEntry, LedgerRestoreError, LedgerRestoreReport, MAX_LEDGER_LOG_ID_BYTES,
     MAX_RESTORE_BREACH_DETAILS, PreparedLedgerAppend, chunk_key, is_log_key, is_sealed_chunk,
-    scan_contiguity,
+    recent_sealed, scan_contiguity,
 };
 pub use lock::{LockExpr, LockParseError, LockType, eval_lock, glob_match, parse_lock};
 pub use matchit::{MatchErr, match_object};

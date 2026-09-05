@@ -52,6 +52,12 @@ pub struct EconomySnapshot {
     assets_by_owner: HashMap<PrincipalId, BTreeSet<ObjId>>,
     /// Derived: one vault per backing.
     vaults_by_backing: BTreeMap<CustodyRef, VaultId>,
+    /// Derived: the vaults each principal owns, in id order (E6b independent verify
+    /// fold, R2). `Vault.owner` is immutable after [`EconomySnapshot::put_vault`]
+    /// (`vault_mut` touches `status`/`revision` only), so this cannot drift. It is
+    /// the indexed answer to "where does this principal's property go home to",
+    /// which `owner_home` asked by walking every vault.
+    vaults_by_owner: HashMap<PrincipalId, BTreeSet<VaultId>>,
     // ---- E4a ----
     holds: BTreeMap<HoldId, Hold>,
     /// Derived: every hold on an account, in id order — the `held_amount`
@@ -138,6 +144,18 @@ impl EconomySnapshot {
     /// Every vault, in id order.
     pub fn vaults(&self) -> impl Iterator<Item = &Vault> {
         self.vaults.values()
+    }
+    /// The vaults a principal owns, in id order (E6b independent verify fold, R2).
+    ///
+    /// The indexed answer `accounts_of`/`assets_of` already give for the other two
+    /// registries. `owner_home` walked `vaults()` and bounded the walk *before* the
+    /// owner filter, so an org whose vault sorted past the bound had no home at all
+    /// and its deposit stayed in the counterparty's vault for ever.
+    pub fn vaults_of(&self, owner: &PrincipalId) -> impl Iterator<Item = &Vault> {
+        self.vaults_by_owner
+            .get(owner)
+            .into_iter()
+            .flat_map(|set| set.iter().filter_map(|id| self.vaults.get(id)))
     }
     /// The single vault bound to a backing, if any (one vault per backing).
     #[must_use]
@@ -248,6 +266,25 @@ impl EconomySnapshot {
     pub fn custody_lock(&self, object: ObjId, vault: VaultId) -> Option<ContractId> {
         self.contract_locks.get(&(object, vault)).copied()
     }
+    /// Which live contract already names `object` as a deposit deliverable, into
+    /// **any** vault (E6b independent verify fold, M1).
+    ///
+    /// `TypedCondition::DepositInto` is a pure state predicate: it asks whether the
+    /// object is in the vault, and nothing anywhere asked whether some *other*
+    /// contract was already being paid for the same delivery. Eight contracts naming
+    /// one object were eight escrows and eight settlements off one hand-over. One
+    /// object is one deposit deliverable at a time — the `MAX_DEPOSITS` 1 spirit,
+    /// applied across contracts instead of within one.
+    ///
+    /// The lookup is a range over the `(object, vault)` key, so it is O(log n) and
+    /// never a walk.
+    #[must_use]
+    pub fn deposit_lock_of(&self, object: ObjId) -> Option<ContractId> {
+        self.contract_locks
+            .range((object, VaultId(u64::MIN))..=(object, VaultId(u64::MAX)))
+            .map(|(_, c)| *c)
+            .next()
+    }
 
     // ---- writes (test construction + `apply`) -----------------------------
 
@@ -302,13 +339,29 @@ impl EconomySnapshot {
     /// Insert/replace a vault, keeping the backing index coherent (one vault per
     /// backing; a re-bound vault releases its old backing).
     pub fn put_vault(&mut self, vault: Vault) {
-        if let Some(prev) = self.vaults.get(&vault.id)
-            && prev.backing != vault.backing
-        {
-            self.vaults_by_backing.remove(&prev.backing);
+        if let Some(prev) = self.vaults.get(&vault.id) {
+            if prev.backing != vault.backing {
+                self.vaults_by_backing.remove(&prev.backing);
+            }
+            // E6b independent verify fold (R2): the owner index stays coherent the
+            // same way `accounts_by_owner` does — a re-owned vault leaves its old
+            // owner's set, and an emptied set leaves the map.
+            if prev.owner != vault.owner
+                && let Some(set) = self.vaults_by_owner.get_mut(&prev.owner)
+            {
+                set.remove(&vault.id);
+                if set.is_empty() {
+                    let owner = prev.owner.clone();
+                    self.vaults_by_owner.remove(&owner);
+                }
+            }
         }
         self.vaults_by_backing
             .insert(vault.backing.clone(), vault.id);
+        self.vaults_by_owner
+            .entry(vault.owner.clone())
+            .or_default()
+            .insert(vault.id);
         self.vaults.insert(vault.id, vault);
     }
     /// Insert/replace an approval request, keeping the by-hash index coherent.

@@ -54,10 +54,17 @@ const CATEGORIES: [&str; 5] = [
 const RULESETS: [&str; 2] = ["wod", "shadowrun"];
 
 /// How many `baseline` entries the pin carries — every command registered on
-/// `main` at `b0e3b52`. A baseline entry may be **retired** with its verb (lower
-/// this number in the same commit); one may never be **added**: a new handler is
-/// listed with a non-baseline category.
-const PINNED_BASELINE: usize = 159;
+/// `main` at `b0e3b52`, **less the ones since re-categorized**. A baseline entry may
+/// be **retired** with its verb, or **re-declared** under a real category once it
+/// stops being the handler that was pinned (lower this number in the same commit);
+/// one may never be **added**: a new handler is listed with a non-baseline category.
+///
+/// 159 → 158 with the E6b independent verify fold (D9): `+scene` was pinned as a
+/// read with no switches and no arguments, and E6b gave it `/outcome`, which writes
+/// a terminal sealed outcome and commits canon an escrow settles from. It is
+/// `legacy-post-image` now, with its family and its reasons in the stanza. The
+/// tripwire still fails on an **unlisted** verb, which is what it is for.
+const PINNED_BASELINE: usize = 158;
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]

@@ -100,11 +100,33 @@ impl GameModule for CanonModule {
         let next_canon_id = next_from_meta
             .unwrap_or(0)
             .max(tail_max.map_or(0, |m| m + 1));
+        // E6b independent verify fold (R3): decode the trailing **sealed** chunks
+        // once, here, where the boot documents are still in hand. A sealed tail
+        // restores as an empty open chunk, so without this the durable read seam
+        // answers nothing at all whenever a 16 KB boundary fell between a seal and
+        // the bounce — and the settlement that seal was evidence for waits for its
+        // deadline. Bounded at `SEALED_TAIL_CHUNKS`, decoded once per boot, never
+        // appended to afterwards.
+        let sealed_tail: Vec<CanonEvent> =
+            mush_core::recent_sealed(&data.kv, LOG, data::SEALED_TAIL_CHUNKS)
+                .into_iter()
+                .filter_map(|e| serde_json::from_value::<CanonEvent>(e.value).ok())
+                .collect();
+        // The allocator floor takes the sealed window into account too: it is the
+        // half of the documented restore limitation above that this window can now
+        // answer.
+        let sealed_max = sealed_tail.iter().map(|e| e.id.0).max();
+        let next_canon_id = next_canon_id.max(sealed_max.map_or(0, |m| m.saturating_add(1)));
+        tracing::info!(
+            sealed_events = sealed_tail.len(),
+            "canon: sealed-tail evidence window restored"
+        );
         *ctx.w
             .module_state_mut::<CanonState>()
             .expect("canon state slot installed at registration") = CanonState {
             ledger,
             next_canon_id,
+            sealed_tail,
         };
         Ok(())
     }
@@ -233,18 +255,34 @@ pub const MAX_RECORDS_PER_SOURCE: usize = 8;
 /// type to reach across.
 #[must_use]
 pub fn records_for_source(state: &CanonState, source: &str, limit: usize) -> Vec<CanonEvent> {
+    // E6b independent verify fold (R7): **decode the open tail once.** It was decoded
+    // twice per lookup — once by `superseded_in_tail` and once by `recent` — and the
+    // re-scan asks this per source, so a 64-entry tail was decoded 64 times per
+    // recovery for nothing.
+    let mut events = state.recent();
+    // E6b independent verify fold (R3): and the last sealed chunks join it. The open
+    // tail is empty whenever the tail chunk sealed before the process ended, which is
+    // exactly the reboot DL-09 exists for; the boot-time window is the rest of the
+    // seam. Sealed entries are older, so they go first and the newest-first reversal
+    // below still holds.
+    let mut all = state.sealed_tail.clone();
+    all.append(&mut events);
     // E6b verify fold (R2): **a retconned record is not evidence.** A retcon appends
     // rather than rewrites and deliberately emits no `CanonRecorded`, so the economy
     // never hears it; without this filter the recovery path would resurrect a seal a
     // staffer had already superseded — the one route by which a re-scan could settle
     // a contract on retracted evidence, which the live path could never do.
-    let superseded = state.superseded_in_tail();
-    let mut out: Vec<CanonEvent> = state
-        .recent()
+    let superseded = CanonState::superseded_in(&all);
+    let mut out: Vec<CanonEvent> = all
         .into_iter()
         .filter(|e| e.source == source && e.supersedes.is_none() && !superseded.contains(&e.id))
         .collect();
     out.reverse();
+    // A record can appear in both windows only if a chunk were both sealed and open,
+    // which the ledger's own invariants forbid; the id is still the dedupe key, so a
+    // future window change cannot double-count evidence.
+    let mut seen = std::collections::BTreeSet::new();
+    out.retain(|e| seen.insert(e.id));
     out.truncate(limit.min(MAX_RECORDS_PER_SOURCE));
     out
 }

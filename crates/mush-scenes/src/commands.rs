@@ -655,6 +655,22 @@ fn is_sealable_principal(w: &World, who: ObjId) -> bool {
     w.get(who).is_some_and(|o| o.kind == ObjKind::Player)
 }
 
+/// **Rule 22 for the seal** (E6b independent verify fold, M4): whether `who` stands
+/// on one side of run `run`, and so may not be the authority that ends it.
+///
+/// The answer comes from the composition-frozen [`crate::SealerGate`] the server
+/// wires from the economy — `mush-scenes` has no economy edge and the run id is
+/// opaque here. A composition that wired none cannot ask the question, and answers
+/// `false`: that server has no runs for a seal to settle.
+fn seals_own_run(w: &World, run: u64, who: ObjId) -> bool {
+    w.module_state::<ScenesState>()
+        .and_then(|st| st.sealer_gate.0.clone())
+        .is_some_and(|gate| gate(w, run, who))
+}
+
+/// The refusal both ends share, so conferral and seal say the same thing.
+const SEALER_IS_A_PARTY: &str = "The seal settles that run, so it is never held by someone standing in it — not a party,      not its fixer, not its Johnson.";
+
 /// The scene a **staff** verb names: `@scene/... <id|here>=...`.
 fn staff_scene(ctx: &Ctx<'_>, arg: &str) -> Result<SceneRecord, CmdError> {
     let arg = arg.trim();
@@ -756,6 +772,18 @@ fn scene_facilitate(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         return Err(CmdError::msg(
             "That scene is already sealed; its outcome is terminal.",
         ));
+    }
+    // E6b independent verify fold (M4): **a run's own payee may not be conferred the
+    // seal that pays them.** `@scene/facilitate` performed no party check of any
+    // kind, and the economy has no edge here to make one — so a staffer could hand a
+    // crew member the authority that decides which outcome row their own run pays,
+    // and the shipped acceptance test did exactly that. This is 08e answer 22's rule
+    // (the authority that ends a run never stands on one side of it) applied to the
+    // canon route, where the adjudicator rule already applies it to the other three.
+    if let Some(run) = run
+        && seals_own_run(ctx.w, run, who)
+    {
+        return Err(CmdError::msg(SEALER_IS_A_PARTY));
     }
     rec.sealer = Some(who);
     rec.seal_run = run;
@@ -966,6 +994,15 @@ fn scene_outcome(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         return Err(CmdError::msg(
             "This scene's seal is not for that run. Staff bind a scene to the run it settles              (@scene/facilitate <scene>=<who> run=<id>).",
         ));
+    }
+    // E6b independent verify fold (M4), **again at seal**: a contract's roster moves
+    // between conferral and seal (`+run/crew accept` amends it), so a sealer who was
+    // a bystander when staff conferred can be a crew member by the time they seal.
+    // Asked of the actor as well as the conferred sealer, because staff may seal too.
+    if let Some(run) = rec.seal_run
+        && (seals_own_run(ctx.w, run, sealer) || seals_own_run(ctx.w, run, actor))
+    {
+        return Err(CmdError::msg(SEALER_IS_A_PARTY));
     }
     let mut subjects: Vec<ObjId> = Vec::with_capacity(args.subjects.len());
     for s in &args.subjects {

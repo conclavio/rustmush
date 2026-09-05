@@ -125,7 +125,7 @@ pub(crate) fn sweep(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<SceneId>) {
         if let Some(store) = ctx.w.module_state_mut::<EconomyStore>() {
             store.canon_boot_scan_done = true;
         }
-        crate::attest::rescan_canon_sources(ctx);
+        crate::attest::rescan_canon_sources(ctx, crate::attest::RescanTrigger::Recovery);
     }
     advance_cadences(ctx, now, ic_now);
     expire_holds(ctx, now, ic_now);

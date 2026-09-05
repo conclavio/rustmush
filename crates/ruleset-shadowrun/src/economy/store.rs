@@ -108,6 +108,12 @@ pub struct SrEconomyStore {
     /// **contract to quote**, re-derived on every write, so the board observer
     /// answers a `ContractChanged` without scanning the quotes.
     pub(crate) by_quote_contract: BTreeMap<ContractId, QuoteId>,
+    /// **seller to quotes** and **object to quotes**, re-derived beside it (E6b
+    /// independent verify fold, D4/M1). The per-seller cap and the one-open-quote
+    /// rule are asked once per `+fence/quote`, and both used to be answered by
+    /// walking every quote in the store — E6a's `live` index for runs, for the fence.
+    pub(crate) by_quote_seller: BTreeMap<ObjId, BTreeSet<QuoteId>>,
+    pub(crate) by_quote_object: BTreeMap<ObjId, BTreeSet<QuoteId>>,
     pub(crate) next_fence: u64,
     pub(crate) next_quote: u64,
     /// The registered instrument, once boot has found or made it.
@@ -266,6 +272,20 @@ impl SrEconomyStore {
     pub fn quote(&self, id: QuoteId) -> Option<&FenceQuote> {
         self.quotes.get(&id)
     }
+    /// Every quote this seller holds, in id order (E6b independent verify fold, D4).
+    pub fn quotes_of_seller(&self, seller: ObjId) -> impl Iterator<Item = &FenceQuote> {
+        self.by_quote_seller
+            .get(&seller)
+            .into_iter()
+            .flat_map(|set| set.iter().filter_map(|id| self.quotes.get(id)))
+    }
+    /// Every quote naming this object, in id order (E6b independent verify fold, M1).
+    pub fn quotes_for_object(&self, object: ObjId) -> impl Iterator<Item = &FenceQuote> {
+        self.by_quote_object
+            .get(&object)
+            .into_iter()
+            .flat_map(|set| set.iter().filter_map(|id| self.quotes.get(id)))
+    }
     /// Every open quote, in id order (double-ended, so a caller can walk the newest
     /// first under a visit bound).
     pub fn quotes(&self) -> impl DoubleEndedIterator<Item = &FenceQuote> {
@@ -303,6 +323,18 @@ impl SrEconomyStore {
             .values()
             .filter_map(|q| q.contract.map(|c| (c, q.id)))
             .collect();
+        self.by_quote_seller = BTreeMap::new();
+        self.by_quote_object = BTreeMap::new();
+        for q in self.quotes.values() {
+            self.by_quote_seller
+                .entry(q.seller)
+                .or_default()
+                .insert(q.id);
+            self.by_quote_object
+                .entry(q.object)
+                .or_default()
+                .insert(q.id);
+        }
     }
 
     /// The allocator document.
@@ -654,9 +686,38 @@ fn load_quote(
     // E6b verify fold (D6): the same on the quote family, against the whole-store
     // ceiling rather than the per-seller one — a quote is a projection of a price
     // anyone can ask for again, so dropping the overflow costs a row and nothing.
+    //
+    // E6b independent verify fold (D5): **not quite nothing.** A quote with a live
+    // contract is not a re-askable price: it is the seller's handle on a deal whose
+    // escrow is already standing, and `+fence/deliver` names it. So at the cap a
+    // contract-bound quote **displaces** the lowest-id contract-less one rather than
+    // being dropped, and only the re-askable half is ever lost. The write path now
+    // refuses past the cap too (`fence::quote`), so reaching this is a store that
+    // grew under an older build or by hand.
     if store.quotes.len() >= MAX_QUOTES {
-        tracing::warn!(%key, "sr.economy: past the quote cap; skipped");
-        return None;
+        let bound = serde_json::from_value::<FenceQuote>(value.clone())
+            .ok()
+            .filter(|q| q.id == id && q.contract.is_some());
+        let Some(q) = bound else {
+            tracing::warn!(%key, "sr.economy: past the quote cap; skipped");
+            return None;
+        };
+        let Some(evict) = store
+            .quotes
+            .values()
+            .find(|other| other.contract.is_none())
+            .map(|other| other.id)
+        else {
+            tracing::warn!(%key, "sr.economy: past the quote cap and every quote is bound to a contract; skipped");
+            return None;
+        };
+        tracing::warn!(
+            %key, evicted = evict.0,
+            "sr.economy: past the quote cap; a contract-bound quote displaced an unbound one"
+        );
+        store.quotes.remove(&evict);
+        store.quotes.insert(id, q);
+        return Some(());
     }
     match serde_json::from_value::<FenceQuote>(value.clone()) {
         Ok(q) if q.id == id => {

@@ -165,6 +165,26 @@ pub enum AssetOp {
         /// Why (≤ [`crate::MAX_REASON_BYTES`]).
         reason: String,
     },
+    /// **Set (or clear) the catalogue reference** on a live title (E6b independent
+    /// verify fold, M7).
+    ///
+    /// `AssetOp::Title` carries a `catalog`, and nothing else ever set one: a title
+    /// created before a catalogue existed — which is every title minted before E6b —
+    /// could never acquire one, so every catalogue-keyed rule (the fence baseline
+    /// first) was permanently unreachable for it, and `Title` refuses an object that
+    /// already has a live record. This is the missing verb, and it is deliberately
+    /// **not** a title change: the owner does not move, the encumbrances do not move,
+    /// and the acquisition does not move.
+    ///
+    /// It bumps the asset's `revision` like every other asset op, which is what makes
+    /// a re-catalogue lapse an outstanding quote **deterministically** rather than
+    /// silently re-pricing it (D-E6-13).
+    SetCatalog {
+        /// The asset.
+        object: ObjId,
+        /// The new reference, or `None` to clear it.
+        catalog: Option<crate::record::CatalogRef>,
+    },
 }
 
 impl AssetOp {
@@ -180,7 +200,8 @@ impl AssetOp {
             | AssetOp::Release { object, .. }
             | AssetOp::SetMaintenance { object, .. }
             | AssetOp::WriteOff { object, .. }
-            | AssetOp::ReportStolen { object, .. } => *object,
+            | AssetOp::ReportStolen { object, .. }
+            | AssetOp::SetCatalog { object, .. } => *object,
         }
     }
     /// The canonical op ordinal — the second key of the plan-hash total order, and
@@ -203,6 +224,7 @@ impl AssetOp {
             AssetOp::SetMaintenance { .. } => 6,
             AssetOp::WriteOff { .. } => 7,
             AssetOp::ReportStolen { .. } => 8,
+            AssetOp::SetCatalog { .. } => 9,
         }
     }
     /// Whether this op changes who holds title (`Title` / `TransferTitle` /

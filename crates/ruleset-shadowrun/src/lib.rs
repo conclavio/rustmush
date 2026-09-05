@@ -74,9 +74,9 @@ pub use crate::data::Sr5Config;
 pub use crate::economy::{
     FENCE_DELAY_MAX_SECS, FENCE_DELAY_MIN_SECS, FENCE_QUOTE_TTL_SECS, FenceId, FenceQuote,
     FenceSettlement, InstalledAugmentation, LifestyleTier, MAX_AUGMENTATIONS,
-    MAX_CATALOG_CODE_BYTES, MAX_FENCES, MAX_QUOTES, QuoteId, SR_MONTH, SR_MONTH_CATCH_UP,
-    SR_MONTH_PERIOD_SECS, SrBoardObserver, SrEconomyConfig, SrEconomyStore, SrFence,
-    default_lifestyle_costs,
+    MAX_CATALOG_CODE_BYTES, MAX_FENCES, MAX_OPEN_QUOTES_PER_SELLER, MAX_QUOTES, NS, QuoteId,
+    SR_MONTH, SR_MONTH_CATCH_UP, SR_MONTH_PERIOD_SECS, SrBoardObserver, SrEconomyConfig,
+    SrEconomyStore, SrFence, default_lifestyle_costs, load_store, quote_key,
 };
 pub use crate::state::Sr5State;
 

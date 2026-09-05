@@ -52,7 +52,10 @@ use mush_economy::{
 use mush_org::{OrgId, PrincipalId};
 use smol_str::SmolStr;
 
-use crate::economy::config::{FENCE_QUOTE_TTL_SECS, MAX_OPEN_QUOTES_PER_SELLER, SrEconomyConfig};
+use crate::economy::config::{
+    FENCE_QUOTE_TTL_SECS, MAX_LAPSED_SWEEP_PER_CALL, MAX_OPEN_QUOTES_PER_SELLER, MAX_QUOTES,
+    SrEconomyConfig,
+};
 use crate::economy::fence_record::{
     FenceId, FenceQuote, FenceSettlement, PriceFactor, QuoteId, QuoteObserved, SrFence,
 };
@@ -287,6 +290,40 @@ pub fn register_fence(
             .module_state::<SrEconomyStore>()
             .and_then(|s| s.fence(existing).cloned())
             .ok_or(FenceError::NoStanding(NO_SUCH_FENCE))?;
+        // E6b independent verify fold (M9): **a fence's vault does not move under a
+        // live deal.** A `DepositInto` is frozen into the consent surface at offer
+        // and names the vault by id, so re-registering the fence onto a different
+        // vault left every standing contract pointing at the old one: the seller's
+        // `+fence/deliver` deposits where the condition still says, or into a vault
+        // the fence no longer uses, and the deal either settles into an abandoned
+        // container or sits until its deadline. Re-pointing the record cannot
+        // re-open a frozen surface — that is what freezing means — so the answer is
+        // to refuse the change and say what has to end first. Everything else about a
+        // fence (its name, its declared demand) is still editable at any time, and
+        // that bumps the revision, which lapses outstanding quotes deterministically.
+        if f.vault != vault {
+            let theirs: Vec<FenceQuote> = ctx
+                .w
+                .module_state::<SrEconomyStore>()
+                .map(|s| {
+                    s.quotes()
+                        .filter(|q| q.fence == existing)
+                        .cloned()
+                        .collect()
+                })
+                .unwrap_or_default();
+            let busy = theirs
+                .iter()
+                .any(|q| q.contract.is_some() || is_current(ctx, q));
+            if busy {
+                return Err(FenceError::Bad(format!(
+                    "Fence #{existing} has quotes or deals still standing against vault #{}; a \
+                     live deal names that vault in terms nobody can re-open. Wait for them to \
+                     settle or lapse, or cancel them, then re-register.",
+                    f.vault
+                )));
+            }
+        }
         f.vault = vault;
         f.account = account;
         f.name = name;
@@ -375,14 +412,84 @@ pub fn quote(
     let Some(stamp) = declared_stamp(ctx, object) else {
         return Err(FenceError::NoStanding(NO_SUCH_ASSET));
     };
-    let open = ctx
+    // E6b independent verify fold (M1): **one object, one open quote.** Nothing
+    // refused a second quote on an object that already had one, and `DepositInto` is
+    // a pure state predicate — so eight quotes on one item became eight contracts,
+    // eight escrows, and eight settlements off the single `+fence/deliver` that put
+    // it in the vault. The economy closes the same hole one layer down
+    // (`check_offerable` and `activate` refuse a deposit a live contract already
+    // names); this is the refusal a seller can read, at the moment the second quote
+    // is asked for. It is by **any** seller: two people cannot both be quoted for the
+    // same object either.
+    let already_quoted: Vec<QuoteId> = ctx
         .w
         .module_state::<SrEconomyStore>()
-        .map_or(0, |s| s.quotes().filter(|q| q.seller == seller).count());
+        .map(|s| s.quotes_for_object(object).map(|q| q.id).collect())
+        .unwrap_or_default();
+    for id in already_quoted {
+        let Some(q) = ctx
+            .w
+            .module_state::<SrEconomyStore>()
+            .and_then(|s| s.quote(id).cloned())
+        else {
+            continue;
+        };
+        if q.contract.is_some() || is_current(ctx, &q) {
+            return Err(FenceError::Bad(
+                "That is already under an open quote; a fence buys one delivery, not several."
+                    .to_string(),
+            ));
+        }
+    }
+    // E6b independent verify fold (D4): **a lapsed quote is not permanent.**
+    // `close_quote` runs only from the contract observer, so a quote that simply
+    // expired was never deleted — and the per-seller count included it, so eight
+    // lapses wedged a seller out of the fence for ever behind a refusal that told
+    // them to "let one lapse". The count is of quotes that are actually live, and the
+    // walk deletes the dead ones it passes (bounded per call), which is what makes
+    // `store.rs`'s "a quote/lapse loop mints no permanent documents" true.
+    let mine: Vec<QuoteId> = ctx
+        .w
+        .module_state::<SrEconomyStore>()
+        .map(|s| s.quotes_of_seller(seller).map(|q| q.id).collect())
+        .unwrap_or_default();
+    let mut open = 0usize;
+    let mut sweep: Vec<QuoteId> = Vec::new();
+    for id in mine {
+        let Some(q) = ctx
+            .w
+            .module_state::<SrEconomyStore>()
+            .and_then(|s| s.quote(id).cloned())
+        else {
+            continue;
+        };
+        if q.contract.is_some() || is_current(ctx, &q) {
+            open = open.saturating_add(1);
+        } else if sweep.len() < MAX_LAPSED_SWEEP_PER_CALL {
+            sweep.push(id);
+        }
+    }
+    for id in sweep {
+        del_quote(ctx, id);
+    }
     if open >= MAX_OPEN_QUOTES_PER_SELLER {
         return Err(FenceError::Bad(
-            "You have as many open quotes as the board allows; accept or let one lapse."
+            "You have as many open quotes as the board allows; take one up or let one lapse."
                 .to_string(),
+        ));
+    }
+    // E6b independent verify fold (D5): the **whole-store** ceiling was enforced on
+    // load only, while `quote()` checked the per-seller eight — so 128 sellers put the
+    // store past `MAX_QUOTES` legitimately and the next boot silently dropped the
+    // overflow, contract-bound quotes included. Refused on write, where a human can
+    // read it.
+    if ctx
+        .w
+        .module_state::<SrEconomyStore>()
+        .is_some_and(|s| s.quotes().count() >= MAX_QUOTES)
+    {
+        return Err(FenceError::Bad(
+            "The fences are busy; try later.".to_string(),
         ));
     }
     let Some(id) = ctx
@@ -473,6 +580,22 @@ pub fn accept(
         return Err(FenceError::Bad(
             "That quote has lapsed or the goods have changed since it was priced. Ask for a new \
              one."
+                .to_string(),
+        ));
+    }
+    // E6b independent verify fold (M5): **custody is re-asserted, not remembered.**
+    // `quote` proves the seller is holding the object; `accept` re-checked the
+    // revisions and the expiry and not that — so a seller could be quoted, hand the
+    // goods to a confederate (or simply drop them), and still make the fence escrow
+    // the whole price. The fence's liquidity is then locked until the deal's deadline
+    // against goods the seller demonstrably does not have, and `+fence/deliver` can
+    // never succeed; repeat across a shop's worth of catalogued objects and the fence
+    // stops being able to quote at all. It is the same world fact `quote` asks, asked
+    // again at the moment the money moves — E4's own re-verification rule, one layer
+    // up.
+    if ctx.w.get(q.object).and_then(|o| o.location) != Some(q.seller) {
+        return Err(FenceError::Bad(
+            "You are not holding that any more, so there is nothing to sell. Nothing was agreed."
                 .to_string(),
         ));
     }

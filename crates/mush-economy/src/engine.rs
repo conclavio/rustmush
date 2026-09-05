@@ -843,6 +843,21 @@ fn caps(plan: &EconomyPlan) -> Result<(), EconomyError> {
             AssetOp::ReportStolen { reason, .. } if reason.len() > MAX_REASON_BYTES => {
                 return Err(EconomyError::TooLarge("theft report reason too long"));
             }
+            // E6b independent verify fold (M7): the catalogue reference is a stored,
+            // rendered pair, bounded in the pure engine and not only at the command
+            // that parses it — `AssetOp` is a `pub` alphabet and the next producer
+            // will not go through `parse_catalog`.
+            AssetOp::SetCatalog {
+                catalog: Some(c), ..
+            } if c.ruleset.is_empty()
+                || c.code.is_empty()
+                || c.ruleset.len() > crate::commands::MAX_CATALOG_PART_BYTES
+                || c.code.len() > crate::commands::MAX_CATALOG_PART_BYTES =>
+            {
+                return Err(EconomyError::TooLarge(
+                    "a catalogue reference half is empty or too long",
+                ));
+            }
             _ => {}
         }
     }
@@ -1194,6 +1209,19 @@ fn apply_asset_op(
                 at: env.now,
             });
             Ok(AssetEffectKind::StolenReported)
+        }
+        // ---- E6b independent verify fold (M7): catalogue an existing title ----
+        AssetOp::SetCatalog { object, catalog } => {
+            // A written-off title is not a thing any more; re-cataloguing one would
+            // be describing a record instead of an object.
+            if post.lifecycle != AssetLifecycle::Active {
+                return Err(EconomyError::NoSuchAsset(*object));
+            }
+            if !env.auth.authorize_asset(actor, Some(post), op) {
+                return Err(EconomyError::Unauthorized);
+            }
+            post.catalog = catalog.clone();
+            Ok(AssetEffectKind::CatalogSet)
         }
     }
 }

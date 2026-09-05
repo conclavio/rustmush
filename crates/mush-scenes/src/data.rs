@@ -563,9 +563,38 @@ impl SceneEvent {
     }
 }
 
+/// The composition-frozen [`crate::SealerGate`], held in module state (E6b
+/// independent verify fold, M4).
+///
+/// A newtype so [`ScenesState`] keeps its derives: a boxed closure is `Clone` but
+/// neither `Debug` nor `PartialEq`, and both of those are about the *state*, not
+/// about the wiring — two states with the same scenes are the same state whichever
+/// composition built them.
+#[derive(Clone, Default)]
+pub struct SealerGateSlot(pub Option<crate::SealerGate>);
+
+impl std::fmt::Debug for SealerGateSlot {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(if self.0.is_some() {
+            "SealerGateSlot(wired)"
+        } else {
+            "SealerGateSlot(none)"
+        })
+    }
+}
+
+impl PartialEq for SealerGateSlot {
+    fn eq(&self, other: &SealerGateSlot) -> bool {
+        self.0.is_some() == other.0.is_some()
+    }
+}
+
 /// The live scenes state, held in a module state slot on the `World`.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ScenesState {
+    /// The wiring-frozen sealer gate (E6b independent verify fold, M4). `None` on
+    /// any composition that wires no economy, which is the pre-fold behaviour.
+    pub sealer_gate: SealerGateSlot,
     /// Every scene by durable id (Closed ones retained as history).
     pub scenes: BTreeMap<SceneUid, SceneRecord>,
     /// The durable-id allocator resume point (persisted in the meta doc).

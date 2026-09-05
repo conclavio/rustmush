@@ -705,21 +705,39 @@ pub fn post(
             *source = SmolStr::new(format!("run:{next}"));
         }
     }
-    // E6b verify fold (M11): a `canon:` source of the shape `run:<n>` may only ever
-    // name **this** run. Written free-hand it let one listing piggyback on another's
-    // seal — the attacker escrows their own money and settles it off somebody else's
-    // outcome, which is not theft but is not a thing a board should accept either.
-    if req.routes.iter().chain(req.gates.iter()).any(|r| match r {
-        RunRoute::Canon { source, .. } => source
-            .strip_prefix("run:")
-            .and_then(|rest| rest.split('#').next())
-            .and_then(|n| n.parse::<u64>().ok())
-            .is_some_and(|n| n != next),
-        _ => false,
-    }) {
+    // E6b verify fold (M11), **inverted to an allowlist by the independent fold
+    // (D1, and it bounds the source for D6)**. The refusal used to name the one shape
+    // it knew was wrong — a `run:<n>` that is not this run — so every *other* prefix
+    // passed: `route=success:canon:scene.outcome:scene:41` listed happily, and a
+    // scene bound to no run at all seals under exactly `scene:{uid}`. Staff's
+    // "chronicle only" conferral was therefore a live settlement authority for any
+    // run that named the uid, and a listing could cite a seal that was never meant to
+    // settle anything.
+    //
+    // So: after the `run:self` substitution above, a canon source is **exactly**
+    // `run:{next}` or `run:{next}#{row}`, and nothing else lists. `run:self` is the
+    // only spelling a poster can write, which is the point — the source of a seal is
+    // not a free-text field on a run board.
+    let allowed_prefix = format!("run:{next}");
+    let source_ok = |source: &SmolStr| -> bool {
+        match source.strip_prefix(&allowed_prefix) {
+            Some("") => true,
+            Some(rest) => rest
+                .strip_prefix('#')
+                .is_some_and(|row| names.iter().any(|n| n.as_str() == row)),
+            None => false,
+        }
+    };
+    if req
+        .routes
+        .iter()
+        .chain(req.gates.iter())
+        .any(|r| matches!(r, RunRoute::Canon { source, .. } if !source_ok(source)))
+    {
         return Err((
             PostError::Bad(
-                "A run's canon route names its own run (route=<row>:canon:<kind>:run:self)."
+                "A run's canon route names its own run and one of its own outcome rows \
+                 (route=<row>:canon:<kind>:run:self)."
                     .to_string(),
             ),
             named,

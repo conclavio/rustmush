@@ -1367,6 +1367,7 @@ fn contract_shell() -> EconomicContract {
         settle_attempts: 0,
         created_at: NOW,
         amendments: 0,
+        generation_started_at: 0,
         disputed_at: None,
         canon_published: None,
         roster_locked: true,

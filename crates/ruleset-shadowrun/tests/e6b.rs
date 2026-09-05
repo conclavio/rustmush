@@ -512,7 +512,9 @@ fn e6b_b9_an_expired_or_restated_quote_is_refused_and_never_repriced() {
     assert!(refusal.contains("lapsed"), "{refusal}");
 
     // And a fence that re-declares its terms invalidates its own outstanding quotes.
-    tw.set_now(now);
+    // The clock is deliberately NOT rewound: E6b's independent verify fold (M1)
+    // refuses a second quote on an object that still has a live one, and D4's sweep
+    // clears the lapsed one this walk passes.
     ok(
         &mut tw,
         seller,
@@ -805,11 +807,18 @@ fn e6b_b9_a_fence_cannot_launder_a_stolen_title() {
 fn e6b_b8_a_deterministic_route_sets_the_notice_kinds_and_the_deterministic_flag() {
     let mut tw = boot();
     let payer = runner(&mut tw, "Johnson", 10_000);
+    // E6b independent verify fold (M2): a run that routes one row and leaves another
+    // on an attestation must name the adjudicator whose word settles that row --
+    // otherwise the payer settles it on their own.
+    let arbiter = runner(&mut tw, "Arbiter", 0);
     let deadline = tw.world().now() + 10_000;
     ok(
         &mut tw,
         payer,
-        &format!("+run/post Milkrun=1000 outcomes=success,failure route=failure:before:{deadline}"),
+        &format!(
+            "+run/post Milkrun=1000 outcomes=success,failure route=failure:before:{deadline} adjudicator=#{}",
+            arbiter.0
+        ),
     );
     let run = sr(&tw).runs().next().expect("a listing").clone();
     assert_eq!(
@@ -833,11 +842,17 @@ fn e6b_b8_a_deterministic_route_sets_the_notice_kinds_and_the_deterministic_flag
 fn e6b_b8_a_composite_needs_every_gate_plus_one_row() {
     let mut tw = boot();
     let payer = runner(&mut tw, "Johnson", 10_000);
+    // M2 again: every row here is an attestation, so the surface names the
+    // adjudicator whose word ends the run.
+    let arbiter = runner(&mut tw, "Arbiter", 0);
     let deadline = tw.world().now() + 10_000;
     ok(
         &mut tw,
         payer,
-        &format!("+run/post Milkrun=1000 outcomes=success,failure gate=before:{deadline}"),
+        &format!(
+            "+run/post Milkrun=1000 outcomes=success,failure gate=before:{deadline} adjudicator=#{}",
+            arbiter.0
+        ),
     );
     let run = sr(&tw).runs().next().expect("a listing").clone();
     assert_eq!(run.gates, vec![2], "the gate index is not after the rows");
@@ -862,7 +877,7 @@ fn e6b_b8_a_canon_routed_run_names_no_person_adjudicator() {
         &mut tw,
         payer,
         "+run/post Extraction=1000 outcomes=success,failure \
-         route=success:canon:scene.outcome:run:self",
+         route=success:canon:scene.outcome:run:self|failure:canon:scene.outcome:run:self",
     );
     let run = sr(&tw).runs().next().expect("a listing").clone();
     let c = snap(&tw).contract(run.contract).expect("contract").clone();
@@ -1371,9 +1386,499 @@ fn vf_m11_a_canon_route_naming_another_run_is_refused_at_post() {
     let refusal = err(
         &mut tw,
         payer,
-        "+run/post Extraction=1000 route=success:canon:scene.outcome:run:99",
+        "+run/post Extraction=1000 route=success:canon:scene.outcome:run:99|failure:canon:scene.outcome:run:99",
     );
     assert!(refusal.contains("names its own run"), "{refusal}");
     assert_eq!(sr(&tw).runs().count(), 0);
     assert_eq!(held(&tw, account_of(&tw, payer)), 0);
+}
+
+// ===========================================================================
+// E6b independent verify fold
+// ===========================================================================
+
+/// **D1.** The `canon:` source check was a **denylist** — it refused only a
+/// `run:<n>` naming another run — so every other prefix listed happily. A run could
+/// cite `scene:{uid}`, which is exactly the source a scene bound to **no** run seals
+/// under: staff's "chronicle only" conferral was therefore a live settlement
+/// authority for any listing that named the uid. It is an allowlist now: after the
+/// `run:self` substitution a canon source is exactly `run:{this}#{one of its rows}`.
+#[test]
+fn vf2_d1_a_canon_route_is_allowlisted_to_this_runs_own_rows() {
+    let mut tw = boot();
+    let payer = runner(&mut tw, "Johnson", 10_000);
+
+    // The probe: a scene source. A `scene:{uid}` is what an unbound scene's seal
+    // carries, so this listing would have settled on a chronicle-only seal.
+    let refusal = err(
+        &mut tw,
+        payer,
+        "+run/post Extraction=1000 route=success:canon:scene.outcome:scene:1|\
+         failure:canon:scene.outcome:scene:1",
+    );
+    assert!(refusal.contains("names its own run"), "{refusal}");
+
+    // Another run's id, and a row this run does not carry, are refused the same way.
+    for spec in [
+        "route=success:canon:scene.outcome:run:99|failure:canon:scene.outcome:run:99",
+        "route=success:canon:scene.outcome:run:self|failure:canon:scene.outcome:run:0#nosuchrow",
+    ] {
+        let refusal = err(&mut tw, payer, &format!("+run/post Extraction=1000 {spec}"));
+        assert!(refusal.contains("names its own run"), "{spec}: {refusal}");
+    }
+    assert_eq!(sr(&tw).runs().count(), 0, "a refused post left a listing");
+    assert_eq!(
+        held(&tw, account_of(&tw, payer)),
+        0,
+        "it left an escrow too"
+    );
+
+    // And `run:self` still lists, resolved to this run and this row.
+    ok(
+        &mut tw,
+        payer,
+        "+run/post Extraction=1000 route=success:canon:scene.outcome:run:self|\
+         failure:canon:scene.outcome:run:self",
+    );
+    let run = sr(&tw).runs().next().expect("a listing").clone();
+    let c = snap(&tw).contract(run.contract).expect("contract").clone();
+    let sources: Vec<String> = c
+        .consent
+        .conditions
+        .iter()
+        .filter_map(|cond| match cond {
+            mush_economy::TypedCondition::Attestation {
+                by: mush_economy::AttestorSet::Canon { source, .. },
+            } => source.as_ref().map(ToString::to_string),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        sources,
+        vec![
+            format!("run:{}#success", run.contract.0),
+            format!("run:{}#failure", run.contract.0),
+        ]
+    );
+}
+
+/// **M3.** A `canon:` **gate** could never be satisfied: `+run/post` rewrote a
+/// gate's `run:self` to a bare `run:{next}`, while the producer's seal always emits
+/// `run:{contract}#{row}`. A crewed run carrying one froze its escrow to the
+/// deadline with nothing anywhere saying why. Canon evidence is per row.
+#[test]
+fn vf2_m3_a_canon_gate_is_refused_at_post() {
+    let mut tw = boot();
+    let payer = runner(&mut tw, "Johnson", 10_000);
+    let refusal = err(
+        &mut tw,
+        payer,
+        "+run/post Extraction=1000 gate=canon:scene.outcome:run:self",
+    );
+    assert!(
+        refusal.contains("A gate cannot be a canon route"),
+        "{refusal}"
+    );
+    assert_eq!(sr(&tw).runs().count(), 0);
+    assert_eq!(held(&tw, account_of(&tw, payer)), 0);
+}
+
+/// **M2.** `parse_routes` defaults every unnamed row to `attest`, and a deterministic
+/// surface names **no person adjudicator** — so `consent.adjudicator` was `None`, and
+/// `@contract/attest`'s `None` arm fell back to the condition's own set, which is
+/// `Party(payer)`. The payer could settle the unrouted row on their own word while
+/// the crew check read the surface as `Impersonal`. Either every row is routed, or
+/// the adjudicator is named.
+#[test]
+fn vf2_m2_a_partly_routed_run_must_name_the_adjudicator_of_the_rest() {
+    let mut tw = boot();
+    let payer = runner(&mut tw, "Johnson", 10_000);
+    let arbiter = runner(&mut tw, "Arbiter", 0);
+    let deadline = tw.world().now() + 10_000;
+
+    let refusal = err(
+        &mut tw,
+        payer,
+        &format!("+run/post Extraction=1000 route=failure:before:{deadline}"),
+    );
+    assert!(refusal.contains("settle the unrouted row"), "{refusal}");
+    assert_eq!(sr(&tw).runs().count(), 0);
+    assert_eq!(held(&tw, account_of(&tw, payer)), 0);
+
+    // Named, and the surface hands the row to the adjudicator rather than the payer.
+    ok(
+        &mut tw,
+        payer,
+        &format!(
+            "+run/post Extraction=1000 route=failure:before:{deadline} adjudicator=#{}",
+            arbiter.0
+        ),
+    );
+    let run = sr(&tw).runs().next().expect("a listing").clone();
+    let c = snap(&tw).contract(run.contract).expect("contract").clone();
+    assert_eq!(
+        c.consent.adjudicator,
+        Some(mush_economy::AttestorSet::Party(PrincipalId::Object(
+            arbiter
+        ))),
+        "the adjudicator is not the named one: {:?}",
+        c.consent.adjudicator
+    );
+    // The payer's own attest of the unrouted row is refused: the adjudicator
+    // replaces every condition's set.
+    let refusal = err(
+        &mut tw,
+        payer,
+        &format!("@contract/attest {}=0", run.contract),
+    );
+    assert!(refusal.contains("names an adjudicator"), "{refusal}");
+}
+
+/// **M1.** `TypedCondition::DepositInto` is a pure state predicate, and nothing
+/// refused a second quote — or a second contract — naming the same object. Eight
+/// quotes on one item were eight escrows, all satisfied by the single hand-over that
+/// satisfies the first: one object, one delivery, N payments.
+#[test]
+fn vf2_m1_one_object_is_one_open_quote_and_one_live_deposit() {
+    let mut tw = boot();
+    let seller = runner(&mut tw, "Jax", 0);
+    let f = fence(&mut tw, "Ares", 10_000, 0);
+    let other = fence(&mut tw, "Aztech", 10_000, 0);
+    let obj = goods(&mut tw, seller, "predator", true);
+
+    ok(
+        &mut tw,
+        seller,
+        &format!("+fence/quote {}=#{}", f.id, obj.0),
+    );
+    // A second quote on the same object, at the same fence and at another one.
+    for id in [f.id, other.id] {
+        let refusal = err(&mut tw, seller, &format!("+fence/quote {id}=#{}", obj.0));
+        assert!(refusal.contains("already under an open quote"), "{refusal}");
+    }
+    assert_eq!(sr(&tw).quotes().count(), 1);
+
+    // And with the deal live, the economy refuses a second contract naming the same
+    // deposit — the layer under the fence, and the one a different producer would
+    // otherwise walk straight past.
+    let q = sr(&tw).quotes().next().expect("a quote").id.0;
+    ok(&mut tw, seller, &format!("+fence/accept {q}"));
+    let contract = newest_contract(&tw);
+    ok(&mut tw, seller, &format!("@contract/accept {contract}"));
+    assert_eq!(state(&tw, contract), ContractState::Active);
+
+    // The second contract names a vault the **seller** owns, so the vault-owner rule
+    // the earlier fold added is not what refuses: the deposit lock is.
+    let backing = tw
+        .world_mut()
+        .create(ObjKind::Thing, "footlocker", GOD, None)
+        .expect("a container");
+    ok(
+        &mut tw,
+        GOD,
+        &format!(
+            "@vault/create Locker=container:#{} owner=#{}",
+            backing.0, seller.0
+        ),
+    );
+    let mine = snap(&tw).vaults().map(|v| v.id).max().expect("a vault");
+    ok(&mut tw, seller, "@contract/draft Poach");
+    let second = newest_contract(&tw);
+    let s_acct = account_of(&tw, seller);
+    ok(
+        &mut tw,
+        seller,
+        &format!("@contract/pay {second}={s_acct} 1"),
+    );
+    ok(
+        &mut tw,
+        seller,
+        &format!("@contract/remainder {second}={s_acct}"),
+    );
+    ok(
+        &mut tw,
+        seller,
+        &format!("@contract/condition {second}=deposit #{} {}", obj.0, mine.0),
+    );
+    let refusal = err(&mut tw, seller, &format!("@contract/offer {second}"));
+    assert!(refusal.contains("already names that object"), "{refusal}");
+    assert_eq!(held(&tw, f.account), 300, "a second escrow was placed");
+}
+
+/// **M5.** `+fence/accept` re-checked the expiry and the revisions but **not
+/// custody**, so a seller could be quoted, hand the goods away, and still make the
+/// fence escrow the whole price against goods they demonstrably do not have — the
+/// fence's liquidity locked to the deal's deadline for nothing.
+#[test]
+fn vf2_m5_accept_re_asserts_custody_before_the_fence_escrows() {
+    let mut tw = boot();
+    let seller = runner(&mut tw, "Jax", 0);
+    let confederate = runner(&mut tw, "Kez", 0);
+    let f = fence(&mut tw, "Ares", 10_000, 0);
+    let obj = goods(&mut tw, seller, "predator", true);
+
+    ok(
+        &mut tw,
+        seller,
+        &format!("+fence/quote {}=#{}", f.id, obj.0),
+    );
+    let q = sr(&tw).quotes().next().expect("a quote").id.0;
+    tw.world_mut()
+        .move_to(obj, confederate)
+        .expect("the goods move");
+
+    let refusal = err(&mut tw, seller, &format!("+fence/accept {q}"));
+    assert!(refusal.contains("not holding that any more"), "{refusal}");
+    assert_eq!(held(&tw, f.account), 0, "the fence escrowed anyway");
+    assert_eq!(snap(&tw).contracts().count(), 0, "a contract was offered");
+}
+
+/// **D4.** `close_quote` runs only from the contract observer, so a quote that simply
+/// **lapsed** was never deleted — and the per-seller count included it. Eight lapses
+/// wedged a seller out of the fence for ever, behind a refusal telling them to let
+/// one lapse. The count is of live quotes, and the walk clears the dead ones.
+#[test]
+fn vf2_d4_lapsed_quotes_are_swept_and_do_not_wedge_their_seller() {
+    let mut tw = boot();
+    let seller = runner(&mut tw, "Jax", 0);
+    let f = fence(&mut tw, "Ares", 10_000, 0);
+    let cap = ruleset_shadowrun::MAX_OPEN_QUOTES_PER_SELLER;
+    let mut objs = Vec::new();
+    for i in 0..cap {
+        let obj = goods(&mut tw, seller, &format!("predator {i}"), true);
+        ok(
+            &mut tw,
+            seller,
+            &format!("+fence/quote {}=#{}", f.id, obj.0),
+        );
+        objs.push(obj);
+    }
+    assert_eq!(sr(&tw).quotes().count(), cap);
+    // At the cap, a ninth is refused — that part is unchanged.
+    let ninth = goods(&mut tw, seller, "ninth", true);
+    let refusal = err(
+        &mut tw,
+        seller,
+        &format!("+fence/quote {}=#{}", f.id, ninth.0),
+    );
+    assert!(refusal.contains("as many open quotes"), "{refusal}");
+
+    // Let every one of them lapse.
+    let now = tw.world().now();
+    tw.set_now(now + ruleset_shadowrun::FENCE_QUOTE_TTL_SECS + 1);
+    ok(
+        &mut tw,
+        seller,
+        &format!("+fence/quote {}=#{}", f.id, ninth.0),
+    );
+    assert_eq!(
+        sr(&tw).quotes().count(),
+        1,
+        "the lapsed quotes are still on the store: {:?}",
+        sr(&tw).quotes().map(|q| q.id.0).collect::<Vec<_>>()
+    );
+    assert!(
+        sr(&tw).quotes().all(|q| q.object == ninth),
+        "the surviving quote is not the new one"
+    );
+}
+
+/// **D5.** The whole-store quote ceiling was enforced on **load** only, while the
+/// write path checked the per-seller eight — so many sellers put the store past it
+/// legitimately and the next boot silently dropped the overflow, contract-bound
+/// quotes included. The write path refuses now, and the loader prefers a quote whose
+/// deal is standing over a re-askable price.
+#[test]
+fn vf2_d5_the_quote_ceiling_is_enforced_on_write_and_the_loader_keeps_the_bound_ones() {
+    let mut tw = boot();
+    let seller = runner(&mut tw, "Jax", 0);
+    let f = fence(&mut tw, "Ares", 10_000, 0);
+    let obj = goods(&mut tw, seller, "predator", true);
+    ok(
+        &mut tw,
+        seller,
+        &format!("+fence/quote {}=#{}", f.id, obj.0),
+    );
+    let template = sr(&tw).quotes().next().expect("a quote").clone();
+
+    // A store that already carries the ceiling, filled with somebody else's quotes
+    // so the per-seller cap is not what answers.
+    let mut kv = fold_all(&mut tw);
+    let quotes = kv.entry(SmolStr::new(ruleset_shadowrun::NS)).or_default();
+    quotes.retain(|(k, _)| !k.starts_with("sr:quote:"));
+    for n in 0..ruleset_shadowrun::MAX_QUOTES as u64 {
+        let mut q = template.clone();
+        q.id = ruleset_shadowrun::QuoteId(1_000 + n);
+        q.seller = GOD;
+        q.object = ObjId(90_000 + u32::try_from(n).expect("small"));
+        quotes.push((
+            ruleset_shadowrun::quote_key(q.id),
+            serde_json::to_value(&q).expect("a quote serializes"),
+        ));
+    }
+    reboot(&mut tw, &kv);
+    assert_eq!(sr(&tw).quotes().count(), ruleset_shadowrun::MAX_QUOTES);
+
+    let more = goods(&mut tw, seller, "one too many", true);
+    let refusal = err(
+        &mut tw,
+        seller,
+        &format!("+fence/quote {}=#{}", f.id, more.0),
+    );
+    assert!(refusal.contains("fences are busy"), "{refusal}");
+
+    // And the loader half: past the ceiling, a quote **bound to a live contract** is
+    // not a re-askable price, so it displaces an unbound one instead of being
+    // dropped. Six bound quotes, all of them past the cap in id order.
+    let mut docs: Vec<(SmolStr, serde_json::Value)> = Vec::new();
+    for n in 0..ruleset_shadowrun::MAX_QUOTES as u64 {
+        let mut q = template.clone();
+        q.id = ruleset_shadowrun::QuoteId(n);
+        q.contract = None;
+        q.object = ObjId(90_000 + u32::try_from(n).expect("small"));
+        docs.push((
+            ruleset_shadowrun::quote_key(q.id),
+            serde_json::to_value(&q).expect("serializes"),
+        ));
+    }
+    let bound: Vec<ruleset_shadowrun::QuoteId> = (0..6)
+        .map(|n| ruleset_shadowrun::QuoteId(ruleset_shadowrun::MAX_QUOTES as u64 + n))
+        .collect();
+    for (i, id) in bound.iter().enumerate() {
+        let mut q = template.clone();
+        q.id = *id;
+        q.contract = Some(ContractId(500 + i as u64));
+        q.object = ObjId(80_000 + u32::try_from(i).expect("small"));
+        docs.push((
+            ruleset_shadowrun::quote_key(*id),
+            serde_json::to_value(&q).expect("serializes"),
+        ));
+    }
+    let loaded = ruleset_shadowrun::load_store(&docs, sr_config());
+    assert_eq!(loaded.quotes().count(), ruleset_shadowrun::MAX_QUOTES);
+    for id in &bound {
+        assert!(
+            loaded.quote(*id).is_some(),
+            "a contract-bound quote was dropped at the cap: {}",
+            id.0
+        );
+    }
+}
+
+/// **M9.** A live `DepositInto` names the fence's vault by id and is **frozen** into
+/// the consent surface, so re-registering the fence onto another vault left every
+/// standing deal pointing at the old one — the seller's delivery lands where the
+/// condition still says, or the deal simply never settles. Refused while anything is
+/// standing, with what has to end first.
+#[test]
+fn vf2_m9_a_fences_vault_does_not_move_under_a_live_deal() {
+    let mut tw = boot();
+    let seller = runner(&mut tw, "Jax", 0);
+    let f = fence(&mut tw, "Ares", 10_000, 0);
+    let obj = goods(&mut tw, seller, "predator", true);
+    ok(
+        &mut tw,
+        seller,
+        &format!("+fence/quote {}=#{}", f.id, obj.0),
+    );
+    let q = sr(&tw).quotes().next().expect("a quote").id.0;
+    ok(&mut tw, seller, &format!("+fence/accept {q}"));
+
+    let backing = tw
+        .world_mut()
+        .create(ObjKind::Thing, "second strongbox", GOD, None)
+        .expect("a container");
+    ok(
+        &mut tw,
+        GOD,
+        &format!(
+            "@vault/create Ares2=container:#{} owner=org:#{}",
+            backing.0, f.org.0
+        ),
+    );
+    let other = snap(&tw)
+        .vaults()
+        .map(|v| v.id)
+        .max()
+        .expect("the second vault");
+    let refusal = err(
+        &mut tw,
+        GOD,
+        &format!("@sr/fence #{}=#{} name=Ares", f.org.0, other.0),
+    );
+    assert!(refusal.contains("still standing"), "{refusal}");
+    assert_eq!(
+        sr(&tw)
+            .fence(ruleset_shadowrun::FenceId(f.id))
+            .map(|x| x.vault),
+        Some(f.vault),
+        "the vault moved anyway"
+    );
+    // Everything else about the fence is still editable, and bumping its revision
+    // lapses the outstanding quote deterministically.
+    ok(
+        &mut tw,
+        GOD,
+        &format!(
+            "@sr/fence #{}=#{} name=Ares demand=-100",
+            f.org.0, f.vault.0
+        ),
+    );
+}
+
+/// **M7.** `CatalogRef` was writable only by `AssetOp::Title`, and `Title` refuses an
+/// object that already has a live record — so every title minted before E6b could
+/// never be catalogued, and every catalogue-keyed rule was unreachable for it. The
+/// fence is the shipped consequence: an uncatalogued object cannot be quoted at all.
+/// `@asset/catalog` is the missing verb, and it bumps the revision, which is what
+/// makes D-E6-13's stale-revision refusal reachable.
+#[test]
+fn vf2_m7_an_existing_title_can_be_catalogued_and_the_change_lapses_a_quote() {
+    let mut tw = boot();
+    let seller = runner(&mut tw, "Jax", 0);
+    let f = fence(&mut tw, "Ares", 10_000, 0);
+    // A pre-E6b shaped title: no catalogue reference at all.
+    let obj = goods(&mut tw, seller, "predator", false);
+    let refusal = err(
+        &mut tw,
+        seller,
+        &format!("+fence/quote {}=#{}", f.id, obj.0),
+    );
+    assert!(refusal.contains("no catalogue entry"), "{refusal}");
+
+    // Staff catalogue it, and it becomes quotable.
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@asset/catalog #{}=sr:{CODE}", obj.0),
+    );
+    assert_eq!(
+        snap(&tw)
+            .asset(obj)
+            .and_then(|a| a.catalog.as_ref().map(|c| c.code.to_string())),
+        Some(CODE.to_string())
+    );
+    ok(
+        &mut tw,
+        seller,
+        &format!("+fence/quote {}=#{}", f.id, obj.0),
+    );
+    let q = sr(&tw).quotes().next().expect("a quote").id.0;
+
+    // Re-cataloguing is a **declared** change to what the thing is, so the
+    // outstanding quote lapses rather than being re-priced.
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@asset/catalog #{}=sr:other.code", obj.0),
+    );
+    let refusal = err(&mut tw, seller, &format!("+fence/accept {q}"));
+    assert!(refusal.contains("lapsed"), "{refusal}");
+    // …and a player is not staff.
+    let refusal = err(
+        &mut tw,
+        seller,
+        &format!("@asset/catalog #{}=sr:{CODE}", obj.0),
+    );
+    assert!(!refusal.is_empty(), "a non-staff catalogue was accepted");
 }

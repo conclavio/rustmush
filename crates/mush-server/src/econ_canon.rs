@@ -290,6 +290,10 @@ impl mush_economy::CanonEvidence for CanonEvidenceReader {
                 kind: e.kind,
                 source: SmolStr::new(e.source),
                 entities: e.entities,
+                // E6b independent verify fold (R4): the record's own wall-clock
+                // stamp, so the economy can tell evidence that predates a contract's
+                // current consent surface from evidence that answers it.
+                at: e.at,
             })
             .collect()
     }

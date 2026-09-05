@@ -520,7 +520,14 @@ impl EconomyStore {
     }
 
     /// Remember one canon record the world announced (E4c verify fold, E4a).
-    pub(crate) fn note_canon(&mut self, id: u64, kind: &str, source: &str, entities: &[ObjId]) {
+    pub(crate) fn note_canon(
+        &mut self,
+        id: u64,
+        kind: &str,
+        source: &str,
+        entities: &[ObjId],
+        at: i64,
+    ) {
         if self.canon_tail.iter().any(|seen| seen.canon_id == id) {
             return;
         }
@@ -539,6 +546,7 @@ impl EconomyStore {
             kind: SmolStr::new(kind),
             source: SmolStr::new(source),
             entities,
+            at,
         });
     }
     /// The canon records this world has seen, oldest first (E4c verify fold, E4a).

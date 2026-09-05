@@ -1445,8 +1445,15 @@ fn vf_d4_consecutive_masked_lines_collapse_into_one_token() {
         runners[0],
         &format!("@econ/history {}", accounts[0]),
     );
+    // Counted as whole comma-separated parts, not as a substring: the E6b
+    // independent verify fold (D7) collapses the **hold** half of an entry the same
+    // way, into "reservations on other accounts", and a bare substring count would
+    // read that as a second masked line.
     assert_eq!(
-        seen.matches("other accounts").count(),
+        seen.split(", ")
+            .filter(|part| part.trim_end().ends_with("other accounts"))
+            .filter(|part| !part.contains("reservations"))
+            .count(),
         1,
         "masked arity was published: {seen}"
     );

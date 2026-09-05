@@ -355,8 +355,9 @@ note = "E6a (08f 3.2/3.4, D-E6-17): /list and /show are reads; the mutating swit
 
 [[handler]]
 name = "+scene"
-category = "baseline"
-note = "baseline pinned at b0e3b52 (module, every composition)"
+category = "legacy-post-image"
+family = "scenes:scene"
+note = "E6b independent verify fold (D9): `+scene` was pinned baseline when it was ArgShape::None with no switches -- a pure read. E6b gave it `/outcome`, which WRITES the terminal SceneOutcome onto the whole-document `scene:{uid}` record and then commits canon, and canon's commit is what an economy observer settles an escrow from. A read that became a mutating whole-document post is exactly what rule 1 asks to be declared, and leaving it baseline let the tripwire's own provenance note -- pinned at b0e3b52 -- stand for a handler that no longer resembles the one pinned. It qualifies for the exception: the record is bounded and strictly decoded (SceneOutcome is a TryFrom wire with MAX_OUTCOME_{NAME,NOTE}_BYTES and MAX_OUTCOME_SUBJECTS; SceneRecord re-runs its invariants in validate_clock), the key is deterministic, the seal is write-once and terminal, and it participates in no prepared mechanic -- mush_canon::commit is terminal and pins the deferred prefix, and every fallible step runs before it. The future family is the scenes typed record K8.5 replaces this allowlist with."
 
 [[handler]]
 name = "+sheet"

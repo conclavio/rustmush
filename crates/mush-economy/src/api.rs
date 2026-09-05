@@ -464,6 +464,15 @@ impl AuthEval for WorldAuth<'_> {
                     || asset.title_owner == *actor
                     || self.scoped_capability(asset.scope, &asset.title_owner, "asset.insure", *a)
             }
+            // E6b independent verify fold (M7): **staff.** Cataloguing declares what
+            // a thing *is*, and catalogue-keyed rules price from it — the fence
+            // baseline first — so it is the same bar `AssetOp::Title` sets for
+            // writing the reference in the first place (invariant 20's seam half),
+            // not the `asset.title.transfer` bar the catch-all below would have
+            // given it. A ruleset that mints its own titles through
+            // [`issue_title`]'s registered system principal declares the catalogue
+            // in that same `Title` op.
+            AssetOp::SetCatalog { .. } => staff,
             _ => {
                 let Some(asset) = asset else { return false };
                 if staff || asset.title_owner == *actor {

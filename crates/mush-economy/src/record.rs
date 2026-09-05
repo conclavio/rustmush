@@ -537,6 +537,7 @@ pub struct IdempotencyRecord {
 /// ignored by replay and by drift comparison — exactly the `Account.status` split
 /// (E2b boot compares `posted_balance`, never `status`).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "EconomicAssetWire")]
 pub struct EconomicAsset {
     /// The world object this asset titles.
     pub object: ObjId,
@@ -580,6 +581,96 @@ pub struct EconomicAsset {
     /// Why it was frozen.
     #[serde(default)]
     pub frozen_reason: Option<SmolStr>,
+}
+
+/// The persisted wire of [`EconomicAsset`] (E6b independent verify fold, D8).
+///
+/// The record was raw `Deserialize`, so **every bound the write path enforces was
+/// enforced on the write path only**: `MAX_REASON_BYTES` on a theft report's reason
+/// and on a `Disputed` claim's, and `MAX_ENCUMBRANCES_PER_ASSET` on the claim list.
+/// A document edited on disk, restored from an older build, or written by a future
+/// schema could therefore carry an unbounded reason straight into `@asset/show`,
+/// every notice over it and the `AssetEffect` post-state the journal then replays.
+/// The cut's rule is that every persisted type is a `TryFrom` wire carrying the write
+/// path's own caps; this is that type for assets.
+///
+/// A document that fails these bounds does not load, and boot says so and continues:
+/// every field above the latch is journal authority, so the projection is rebuilt
+/// from the journal and comes back **frozen** with reason `doc-lost` — the same
+/// treatment a vanished document already gets, and the reason it is safe to be
+/// non-fatal.
+#[derive(Deserialize)]
+struct EconomicAssetWire {
+    object: ObjId,
+    title_owner: PrincipalId,
+    #[serde(default)]
+    scope: Option<OrgScopeId>,
+    #[serde(default)]
+    assignment: Option<AssetAssignment>,
+    #[serde(default)]
+    maintenance_account: Option<AccountId>,
+    #[serde(default)]
+    catalog: Option<CatalogRef>,
+    #[serde(default)]
+    encumbrances: Vec<Encumbrance>,
+    #[serde(default)]
+    acquisition: Option<AcquisitionRecord>,
+    lifecycle: AssetLifecycle,
+    #[serde(default)]
+    last_journal_seq: u64,
+    #[serde(default)]
+    revision: u64,
+    #[serde(default)]
+    stolen: Option<StolenReport>,
+    #[serde(default)]
+    frozen: bool,
+    #[serde(default)]
+    frozen_reason: Option<SmolStr>,
+}
+
+impl TryFrom<EconomicAssetWire> for EconomicAsset {
+    type Error = &'static str;
+
+    fn try_from(w: EconomicAssetWire) -> Result<EconomicAsset, &'static str> {
+        if w.encumbrances.len() > crate::MAX_ENCUMBRANCES_PER_ASSET {
+            return Err("an asset carries more claims than the cap allows");
+        }
+        for e in &w.encumbrances {
+            if let Encumbrance::Disputed { reason, .. } = e
+                && reason.len() > crate::MAX_REASON_BYTES
+            {
+                return Err("a disputed claim's reason is too long");
+            }
+        }
+        if w.stolen
+            .as_ref()
+            .is_some_and(|r| r.reason.len() > crate::MAX_REASON_BYTES)
+        {
+            return Err("a theft report's reason is too long");
+        }
+        if w.assignment
+            .as_ref()
+            .is_some_and(|a| a.purpose.len() > crate::MAX_REASON_BYTES)
+        {
+            return Err("an assignment purpose is too long");
+        }
+        Ok(EconomicAsset {
+            object: w.object,
+            title_owner: w.title_owner,
+            scope: w.scope,
+            assignment: w.assignment,
+            maintenance_account: w.maintenance_account,
+            catalog: w.catalog,
+            encumbrances: w.encumbrances,
+            acquisition: w.acquisition,
+            lifecycle: w.lifecycle,
+            last_journal_seq: w.last_journal_seq,
+            revision: w.revision,
+            stolen: w.stolen,
+            frozen: w.frozen,
+            frozen_reason: w.frozen_reason,
+        })
+    }
 }
 
 // ---- E6b: B2 — the typed theft report -------------------------------------
@@ -968,6 +1059,10 @@ pub enum AssetEffectKind {
     /// The asset was **reported stolen** (E6b): a `Disputed` claim plus the
     /// bounded [`StolenReport`] the visibility lives on.
     StolenReported,
+    /// The **catalogue reference** was set or cleared (E6b independent verify fold,
+    /// M7). Title does not move and no claim moves; only what the thing is declared
+    /// to be, and the revision that stamps it.
+    CatalogSet,
 }
 
 /// One custody movement carried by a transaction — **audit only**: the world move is

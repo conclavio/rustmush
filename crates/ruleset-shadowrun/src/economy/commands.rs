@@ -519,7 +519,23 @@ fn parse_gates(raw: Option<&str>, rows: &[SmolStr]) -> Result<Vec<RunRoute>, Cmd
     };
     let mut out: Vec<RunRoute> = Vec::new();
     for part in raw.split('|').map(str::trim).filter(|p| !p.is_empty()) {
-        out.push(parse_route_spec(part, rows)?);
+        let route = parse_route_spec(part, rows)?;
+        // E6b independent verify fold (M3): **a gate is not a row, so it is never
+        // canon.** A `canon:` gate could not be satisfied by anything: `+run/post`
+        // rewrote its `run:self` to a bare `run:{next}`, while the producer's seal
+        // always emits `run:{contract}#{row}` (M5, because one source per run made
+        // one seal fill every row) — so the two could never match, and a crewed run
+        // carrying such a gate simply froze its escrow until the deadline with no
+        // refusal anywhere saying why. Canon evidence is per row by construction;
+        // refusing it here is the honest answer, at the moment a human can still fix
+        // the listing.
+        if matches!(route, RunRoute::Canon { .. }) {
+            return Err(CmdError::msg(
+                "A gate cannot be a canon route: a sealed outcome answers one outcome row, so it \
+                 belongs in route=<row>:canon:… and not in gate=.",
+            ));
+        }
+        out.push(route);
         if out.len() + rows.len() > mush_economy::MAX_CONDITIONS {
             return Err(CmdError::msg("That run names too many conditions."));
         }
@@ -685,6 +701,30 @@ fn run_post(ctx: &mut Ctx<'_>, cfg: &SrEconomyConfig) -> Result<(), CmdError> {
     // source, so `route=success:canon:scene.outcome` (no source) never lists.
     let routes = parse_routes(opts.get("route").map(String::as_str), &names)?;
     let gate_routes = parse_gates(opts.get("gate").map(String::as_str), &names)?;
+    // E6b independent verify fold (M2): **a routed run does not leave a row on the
+    // payer's word.** Every unnamed row defaults to `attest`, and B8 deliberately
+    // names *no* person adjudicator on a routed run — so on a deterministic surface
+    // `consent.adjudicator` is `None`, `@contract/attest`'s `None` arm falls back to
+    // the condition's own set, and that set is `AttestorSet::Party(payer)`. The payer
+    // could therefore attest the one row nobody routed and settle the run on their
+    // own word, while `AdjudicatorShape::Impersonal` told the crew check there was no
+    // person to conflict with and the board read the run as deterministic.
+    //
+    // So: once any row is routed, either every row is routed, or `adjudicator=` names
+    // somebody — the very thing whose consent the crew agreed to at acceptance.
+    if routes
+        .iter()
+        .chain(gate_routes.iter())
+        .any(RunRoute::is_deterministic)
+        && routes.iter().any(|r| !r.is_deterministic())
+        && !adjudicator_named
+    {
+        return Err(CmdError::msg(
+            "This run routes some outcomes and leaves others on an attestation, and it names no \
+             adjudicator — so the payer would settle the unrouted row on their own word. Route \
+             every row, or name an adjudicator (adjudicator=<who>).",
+        ));
+    }
     // The gates sit after the per-row conditions, so their indexes are known before
     // the surface exists.
     let gates: Vec<usize> = (names.len()..names.len() + gate_routes.len()).collect();

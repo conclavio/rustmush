@@ -160,7 +160,26 @@ pub struct CanonState {
     pub ledger: Ledger,
     /// The durable-id allocator resume point (persisted in the meta doc).
     pub next_canon_id: u64,
+    /// The decoded entries of the last [`SEALED_TAIL_CHUNKS`] **sealed** chunks, as
+    /// they stood at boot (E6b independent verify fold, R3).
+    ///
+    /// `Ledger::restore_from_kv` restores a sealed tail chunk as an *empty* open
+    /// chunk one index on, so a chronicle whose newest records happened to fill a
+    /// chunk just before the process ended rehydrated with nothing readable in
+    /// [`CanonState::recent`] at all — and DL-09's whole point is that a seal
+    /// committed just before a reboot is still findable. The window is bounded, read
+    /// once at boot, and deliberately not appended to: records made *after* boot are
+    /// in the open tail, which is where they belong.
+    pub sealed_tail: Vec<CanonEvent>,
 }
+
+/// How many trailing sealed ledger chunks the canon read seam decodes at boot
+/// (E6b independent verify fold, R3).
+///
+/// Two: a 16 KB chunk holds a great many canon events, and the loss this closes is a
+/// boundary that fell between the last seal and the bounce — one chunk back is the
+/// case, and the second is the margin for a boundary that fell twice.
+pub const SEALED_TAIL_CHUNKS: usize = 2;
 
 impl CanonState {
     /// Allocate the next canon id (callers persist the meta doc).
@@ -186,6 +205,14 @@ impl CanonState {
     #[must_use]
     pub fn superseded_in_tail(&self) -> BTreeSet<CanonId> {
         self.recent().iter().filter_map(|e| e.supersedes).collect()
+    }
+
+    /// The set of ids superseded by a retcon within an **already-decoded** slice —
+    /// the same rule as [`CanonState::superseded_in_tail`] without a second decode
+    /// (E6b independent verify fold, R7).
+    #[must_use]
+    pub fn superseded_in(events: &[CanonEvent]) -> BTreeSet<CanonId> {
+        events.iter().filter_map(|e| e.supersedes).collect()
     }
 }
 

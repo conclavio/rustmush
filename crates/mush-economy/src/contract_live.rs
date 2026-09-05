@@ -85,6 +85,40 @@ const NO_SUCH: &str = "No such contract.";
 ///
 /// The renderer treats a contract id exactly like an account id for everyone else,
 /// so the nonexistent and the unviewable produce identical text.
+/// Whether `who` **stands on one side of** contract `id` (E6b independent verify
+/// fold, M4).
+///
+/// True when they are a party (directly, or through `acts_for` — an org's officer
+/// stands in their org's contract) or hold one of its named roles: author, payer,
+/// representative or facilitator. An unknown contract answers `false`.
+///
+/// This is the seam a *producer* asks so it can keep 08e answer 22's rule — the
+/// authority that ends a contract never stands inside it — on an authority the
+/// economy does not own. `mush-scenes` wires it in as its `SealerGate` and never
+/// learns what a contract is; the run id it holds stays opaque there.
+#[must_use]
+pub fn stands_in_contract(w: &World, id: ContractId, who: ObjId) -> bool {
+    let Some(store) = w.module_state::<EconomyStore>() else {
+        return false;
+    };
+    let Some(c) = store.snapshot().contract(id) else {
+        return false;
+    };
+    let me = PrincipalId::Object(who);
+    let auth = api::WorldAuth { w };
+    let stands = |p: &PrincipalId| p == &me || auth.acts_for(&me, p);
+    c.consent.parties.iter().any(&stands)
+        || [
+            c.roles.author.as_ref(),
+            c.roles.payer.as_ref(),
+            c.roles.representative.as_ref(),
+            c.roles.facilitator.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
+        .any(stands)
+}
+
 #[must_use]
 pub fn may_view_contract(w: &World, actor: ObjId, id: ContractId) -> bool {
     if api::is_staff(w, actor) {
@@ -555,6 +589,7 @@ fn contract_draft(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         settle_attempts: 0,
         created_at: now,
         amendments: 0,
+        generation_started_at: now,
         disputed_at: None,
         canon_published: None,
         roster_locked: false,
@@ -1945,6 +1980,45 @@ pub(crate) fn activate(ctx: &mut Ctx<'_>, id: ContractId) {
     if c.state != ContractState::Offered || !c.fully_accepted() {
         return;
     }
+    // E6b independent verify fold (M1): **the same object cannot be two live
+    // contracts' deposit deliverable.** `check_offerable` refuses it at the offer,
+    // but two offers can both pass that gate before either activates — the lock is
+    // taken at `Active` — so the last gate is here, where the lock is about to be
+    // taken. Activating anyway would make one hand-over satisfy both escrows.
+    // Nothing is stranded: the contract goes `Disputed` with its escrow frozen, which
+    // is exactly what an activation that cannot place its pledges already does.
+    let contested: Option<(ObjId, ContractId)> = {
+        let Some(store) = ctx.w.module_state::<EconomyStore>() else {
+            return;
+        };
+        let snapshot = store.snapshot();
+        c.consent
+            .conditions
+            .iter()
+            .filter_map(|con| match con {
+                crate::contract::TypedCondition::DepositInto { object, .. } => Some(*object),
+                _ => None,
+            })
+            .find_map(|object| {
+                snapshot
+                    .deposit_lock_of(object)
+                    .filter(|held| *held != id)
+                    .map(|held| (object, held))
+            })
+    };
+    if let Some((object, held)) = contested {
+        dispute_with(
+            ctx,
+            id,
+            format!(
+                "contract #{id} names object #{} as its deposit, and live contract #{held} already \
+                 does: one delivery cannot pay two agreements. Its escrow is frozen until a human \
+                 decides",
+                object.0
+            ),
+        );
+        return;
+    }
     c.state = ContractState::Active;
     c.deposits = record_deposits(ctx, &c);
     save(ctx, c.clone());
@@ -2004,7 +2078,7 @@ pub(crate) fn activate(ctx: &mut Ctx<'_>, id: ContractId) {
     // what the world has announced since the economy booted, now that there is a live
     // contract to answer. It records nothing twice — a filled slot is skipped — and
     // it may settle in this same step, which is the point.
-    crate::attest::rescan_canon_tail(ctx);
+    crate::attest::rescan_canon_tail(ctx, crate::attest::RescanTrigger::Activation);
 }
 
 /// Record what is already deposited into this contract's named vaults, and who put
@@ -2999,6 +3073,7 @@ fn amended_draft(
     snapshot: &crate::snapshot::EconomySnapshot,
     author: &PrincipalId,
     refund: Option<&EconomyPlan>,
+    now: i64,
 ) -> (EconomicContract, Vec<Acceptance>) {
     let key = principal_key(author);
     let (kept, voided): (Vec<Acceptance>, Vec<Acceptance>) = c
@@ -3042,6 +3117,14 @@ fn amended_draft(
     // An attestation belongs to the surface it attested; a re-opened surface starts
     // with none (only an author-only live contract can carry any here).
     back.satisfied = vec![None; back.consent.conditions.len()];
+    // E6b independent verify fold (R4): and so does a **canon** attestation, which
+    // clearing `satisfied` alone did not achieve. A seal's source names the run and
+    // the row, not the generation, so the next re-scan — from the re-activation,
+    // from `@econ/unfreeze`, or from the first sweep after a boot — found the old
+    // record again and put the old attestation straight back. The stamp is what makes
+    // "evidence for the surface you agreed to" checkable: `record_and_settle` ignores
+    // a record older than it.
+    back.generation_started_at = now;
     back.roster_locked = false;
     back.settle_attempts = 0;
     back.revision = back.revision.saturating_add(1);
@@ -3109,6 +3192,7 @@ pub(crate) fn amend_core(
     if !c.consent_intact() {
         return Err(ContractError::ConsentMismatch);
     }
+    let now = ctx.w.now();
     let (plan, mut back, voided, refund_landed) = {
         let store = ctx
             .w
@@ -3123,7 +3207,7 @@ pub(crate) fn amend_core(
         } else {
             None
         };
-        let (back, voided) = amended_draft(&c, snap, author, plan.as_ref());
+        let (back, voided) = amended_draft(&c, snap, author, plan.as_ref(), now);
         // E6a step 1 verify fold (R2): **the already-posted shape.** A hold this
         // record still lists as its own escrow, for a consideration a voided party
         // owed, that the journal says is already terminal — the refund landed and the
@@ -3358,8 +3442,8 @@ pub(crate) fn finish_terminal(ctx: &mut Ctx<'_>, id: ContractId) -> bool {
     // E6b (DL-03): a deposit with nowhere to go is **paged**, never silently
     // stranded in the counterparty's vault. The page names the principal and the
     // command that fixes it, and the unwind still proceeds for everything else.
-    for owner in stranded_deposits(ctx, &working) {
-        page_stranded_deposit(ctx, id, &owner);
+    for (owner, object) in stranded_deposits(ctx, &working) {
+        page_stranded_deposit(ctx, id, &owner, object);
     }
     working.deposits.retain(|d| returnable(ctx, d));
 
@@ -3551,7 +3635,7 @@ fn returnable(ctx: &Ctx<'_>, d: &DepositRecord) -> bool {
 /// The subject is the **contract**, so the ladder's per-subject dedupe means one
 /// page per stuck unwind rather than one per retry, and the recommended command is
 /// the one that fixes it: give the depositor a vault. Nothing is silently dropped.
-fn page_stranded_deposit(ctx: &mut Ctx<'_>, id: ContractId, owner: &PrincipalId) {
+fn page_stranded_deposit(ctx: &mut Ctx<'_>, id: ContractId, owner: &PrincipalId, object: ObjId) {
     let now = ctx.w.now();
     let who = match owner {
         PrincipalId::Object(o) => format!("#{}", o.0),
@@ -3564,8 +3648,10 @@ fn page_stranded_deposit(ctx: &mut Ctx<'_>, id: ContractId, owner: &PrincipalId)
         EscalationSubject::Contract(id),
         None,
         format!(
-            "contract #{id} is unwinding but {who} deposited goods and owns no active vault to \
-             return them into; they are still in the counterparty's vault"
+            "contract #{id} is unwinding but {who}'s deposit of object #{} cannot be returned: \
+             they own no active vault to take it back into, or it is no longer where the contract \
+             recorded it",
+            object.0
         ),
         vec![
             format!("@contract/show #{id}"),
@@ -3579,14 +3665,21 @@ fn page_stranded_deposit(ctx: &mut Ctx<'_>, id: ContractId, owner: &PrincipalId)
 /// with no world object and no `Active` vault of their own. Never silently dropped —
 /// [`finish_terminal`] pages with the command to fix it, because a stranded deposit
 /// is exactly the shape 08a's staff-scarce rule forbids parking on silence.
-fn stranded_deposits(ctx: &Ctx<'_>, c: &EconomicContract) -> Vec<PrincipalId> {
+fn stranded_deposits(ctx: &Ctx<'_>, c: &EconomicContract) -> Vec<(PrincipalId, ObjId)> {
     let Some(store) = ctx.w.module_state::<EconomyStore>() else {
         return Vec::new();
     };
-    crate::contract::deposit_returns(c, store.snapshot())
+    // E6b independent verify fold (M6): **the complement of `returnable`, exactly.**
+    // The router answers "where would this go", and `returnable` answers "can it
+    // actually go there right now" — a deposit whose object has left the vault, or
+    // whose home vault's backing was destroyed, has a `to` and is still not
+    // returnable, so it fell in the gap between the two: dropped by the plan and
+    // reported by nothing. One predicate, and the page names it.
+    let routes = crate::contract::deposit_returns(c, store.snapshot());
+    routes
         .iter()
-        .filter(|r| r.to.is_none())
-        .map(|r| r.deposit.deposited_by.clone())
+        .filter(|r| r.to.is_none() || !returnable(ctx, r.deposit))
+        .map(|r| (r.deposit.deposited_by.clone(), r.deposit.object))
         .collect()
 }
 
@@ -4324,6 +4417,7 @@ pub fn offer_lease(ctx: &mut Ctx<'_>, spec: LeaseSpec) -> Result<ContractId, Con
         settle_attempts: 0,
         created_at: now,
         amendments: 0,
+        generation_started_at: now,
         disputed_at: None,
         canon_published: None,
         roster_locked: true,
@@ -4792,6 +4886,7 @@ pub fn offer_contract(ctx: &mut Ctx<'_>, spec: ContractSpec) -> Result<ContractI
         settle_attempts: 0,
         created_at: now,
         amendments: 0,
+        generation_started_at: now,
         disputed_at: None,
         canon_published: None,
         roster_locked: false,
@@ -4945,6 +5040,7 @@ pub fn amend_contract(
         return Err(ContractError::NoStanding);
     }
     let author = amend_author(ctx, &c);
+    let now = ctx.w.now();
     // ---- R1: every fallible step, BEFORE the refund posts ----
     //
     // `amend_core` posts the A′ refund through `post_with_companions`, and four
@@ -4975,7 +5071,7 @@ pub fn amend_contract(
         } else {
             None
         };
-        let (draft, _) = amended_draft(&c, snap, &author, refund.as_ref());
+        let (draft, _) = amended_draft(&c, snap, &author, refund.as_ref(), now);
         draft
     };
     let probe = apply_amendment(probe, &amend)?;

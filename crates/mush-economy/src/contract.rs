@@ -746,6 +746,18 @@ pub struct EconomicContract {
     /// nothing back — an idempotency HIT quietly stranding the new escrow.
     #[serde(default)]
     pub amendments: u32,
+    /// When this **generation** of the consent surface began (wall clock; 0 on a
+    /// record written before E6b's independent fold).
+    ///
+    /// E6b independent verify fold (R4): an amendment clears `satisfied`, and a
+    /// canon source (`run:{id}#{row}`) names no generation — so a seal recorded
+    /// against the *previous* surface was put straight back by the next re-scan,
+    /// from activation, `@econ/unfreeze`, or the first sweep after boot. A seal made
+    /// before the crew joined would then pay the crew. Canon evidence older than the
+    /// generation it would attest is ignored (and the skip is logged); an
+    /// attestation *already recorded* stands, because `amended_draft` cleared it.
+    #[serde(default)]
+    pub generation_started_at: i64,
     /// When it entered `Disputed` (wall clock) — the `DISPUTE_TTL_SECS` clock the
     /// sweep pages on. `None` on a contract that has never been disputed.
     #[serde(default)]
@@ -1650,6 +1662,38 @@ fn check_structure_basic(c: &EconomicContract) -> Result<(), ContractError> {
             ));
         }
     }
+    // E6b independent verify fold (D6): a `Canon` set's **kind and source are stored
+    // strings that reach every party**. The set is frozen into the consent surface,
+    // rendered by `contract_notice` to everybody the contract is visible to, and
+    // copied into every attestation it matches — and nothing bounded either one, so
+    // any producer of a `ContractSpec` could freeze a megabyte into the surface. The
+    // bound is the same 64 bytes an outcome row name already carries (E6a fold D2),
+    // for the same reason and in the same place, and it is game-neutral: the
+    // ruleset's own allowlist (D1) is a *different*, narrower rule about which
+    // sources a run board will write.
+    for set in consent
+        .conditions
+        .iter()
+        .filter_map(|con| match con {
+            TypedCondition::Attestation { by } => Some(by),
+            _ => None,
+        })
+        .chain(consent.adjudicator.iter())
+    {
+        if let AttestorSet::Canon { kind, source } = set {
+            if kind.len() > MAX_OUTCOME_NAME_BYTES {
+                return Err(ContractError::TooLarge("a canon attestor kind is too long"));
+            }
+            if source
+                .as_ref()
+                .is_some_and(|s| s.len() > MAX_OUTCOME_NAME_BYTES)
+            {
+                return Err(ContractError::TooLarge(
+                    "a canon attestor source is too long",
+                ));
+            }
+        }
+    }
     if consent
         .adjudicator
         .as_ref()
@@ -1851,10 +1895,27 @@ pub fn check_offerable(
         }
     }
     for con in &consent.conditions {
-        if let TypedCondition::DepositInto { vault, .. } = con {
+        if let TypedCondition::DepositInto { object, vault } = con {
             let v = snapshot
                 .vault(*vault)
                 .ok_or(ContractError::NoSuchVault(*vault))?;
+            // E6b independent verify fold (M1): **one object is one deposit
+            // deliverable at a time.** `DepositInto` is a pure state predicate — it
+            // asks whether the object is in the vault — and nothing asked whether a
+            // *different* live contract was already being paid for the same delivery.
+            // So N contracts naming one object were N escrows, all satisfied by the
+            // single hand-over that satisfies the first: one object, one delivery, N
+            // payments, and the counterparty's account drained by arithmetic rather
+            // than by theft. It is `MAX_DEPOSITS` 1 applied across contracts instead
+            // of within one, and it is game-neutral: the fence is only the first
+            // producer to reach it.
+            if let Some(held) = snapshot.deposit_lock_of(*object)
+                && held != c.id
+            {
+                return Err(ContractError::Infeasible(
+                    "a live contract already names that object as its deposit",
+                ));
+            }
             // E6b verify fold (M1): **the vault's owner has to be a party.** E6b let
             // a `DepositInto` on a live contract stand in for the vault owner's
             // consent to the deposit (`WorldAuth::authorize_vault`), and that is only
@@ -1985,19 +2046,22 @@ pub fn condition_holds(
     let clocks = Clocks::new(env.now, env.ic_now);
     {
         match condition {
-            // The condition's own attestor set, OR — when the consent surface names
-            // one — the **adjudicator's** (08e answer 6). A named adjudicator
-            // replaces each condition's set at attestation time, so re-verification
-            // has to accept their word symmetrically or an adjudicated contract
-            // could be attested and then never settle.
+            // The **adjudicator's** set when the surface names one, and the
+            // condition's own otherwise (08e answer 6, D-E6-8: one rule).
+            //
+            // E6b independent verify fold (M8): this **replaces**, and used to OR.
+            // `@contract/attest` replaces (`contract_live.rs`) and the canon
+            // observer's `answers` replaces (`attest.rs`); re-verification ORing
+            // meant an attestation the two writing paths would never have recorded
+            // still re-verified — a stored attestation under the condition's own set
+            // (a migration, a hand-patched document, or a set the adjudicator was
+            // named *after*) settled a contract whose parties had consented to one
+            // authority and got another. Three sites, one rule.
             TypedCondition::Attestation { by } => match recorded {
                 None => false,
                 Some(att) => {
-                    attestation_matches(att, by, env)
-                        || c.consent
-                            .adjudicator
-                            .as_ref()
-                            .is_some_and(|set| attestation_matches(att, set, env))
+                    let effective: &AttestorSet = c.consent.adjudicator.as_ref().unwrap_or(by);
+                    attestation_matches(att, effective, env)
                 }
             },
             TypedCondition::DepositInto { object, vault } => snapshot
@@ -2553,10 +2617,19 @@ pub fn owner_home(snapshot: &EconomySnapshot, owner: &PrincipalId) -> Option<(Va
     // E6b verify fold (D11): bounded on vaults **visited**. It is asked once per
     // deposit, from the plan, from the authority and from the returnability check,
     // so an unbounded scan here is three unbounded scans per unwind.
+    //
+    // E6b independent verify fold (R2): **filter, then take.** The bound sat before
+    // the owner/`Active` filter, so on a world with more than `MAX_HOME_VAULT_VISIT`
+    // vaults an organization whose own vault sorted past the bound resolved `None`:
+    // its deposit stayed in the counterparty's vault, and the stranded page's own
+    // remedy (`@vault/create`) minted a *higher* id, so the page could never be
+    // cleared. `vaults_of` is the owner index, so the walk is over that principal's
+    // own vaults and the bound is a ceiling on their number rather than on the
+    // registry's — the same rule R1 applies to the canon re-scan.
     snapshot
-        .vaults()
+        .vaults_of(owner)
+        .filter(|v| v.status == crate::record::VaultStatus::Active)
         .take(MAX_HOME_VAULT_VISIT)
-        .filter(|v| &v.owner == owner && v.status == crate::record::VaultStatus::Active)
         .find_map(|v| match &v.backing {
             crate::record::CustodyRef::Container(o)
             | crate::record::CustodyRef::SpatialInterior(o) => Some((v.id, *o)),

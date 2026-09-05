@@ -665,6 +665,47 @@ pub fn is_log_key(key: &str) -> bool {
     parse_chunk_key(key).is_some()
 }
 
+/// The entries of the **last `n` sealed chunks** of one log, oldest first
+/// (E6b independent verify fold, R3).
+///
+/// [`Ledger::restore_from_kv`] deliberately keeps only the open tail in RAM, and a
+/// *sealed* tail chunk restores as an **empty** open chunk one index further on — so
+/// a log whose newest entries happened to fill a chunk just before the process ended
+/// comes back with nothing readable at all. For an ordinary append-only log that is
+/// the documented memory trade; for one whose newest entries are **evidence a
+/// contract settles on**, it is a silent loss with no signal.
+///
+/// This is the bounded read that closes it: a caller that already holds its boot
+/// documents (the module's own `ModuleBootData`) can decode the trailing sealed
+/// chunks once, at boot, and keep exactly that much. It validates each candidate the
+/// way [`is_sealed_chunk`] does — a malformed or oversized document contributes
+/// nothing — and it is `n` chunks, never "all the history you have".
+#[must_use]
+pub fn recent_sealed(
+    kv: &[(SmolStr, serde_json::Value)],
+    log_id: &str,
+    n: usize,
+) -> Vec<LedgerEntry> {
+    if n == 0 {
+        return Vec::new();
+    }
+    let mut chunks: BTreeMap<u64, Vec<LedgerEntry>> = BTreeMap::new();
+    for (key, value) in kv {
+        let Some((id, seq)) = parse_chunk_key(key) else {
+            continue;
+        };
+        if id != log_id || !is_sealed_chunk(key, value) {
+            continue;
+        }
+        let Ok(chunk) = serde_json::from_value::<LedgerChunk>(value.clone()) else {
+            continue;
+        };
+        chunks.insert(seq, chunk.entries);
+    }
+    let skip = chunks.len().saturating_sub(n);
+    chunks.into_values().skip(skip).flatten().collect()
+}
+
 /// Whether a persisted module write `(key, value)` is a **valid sealed** ledger
 /// chunk. This is the single-source definition of a retained authoritative
 /// write, shared by world retention, isolation, and the quarantine sink.

@@ -123,6 +123,14 @@ pub const MAX_OPEN_QUOTES_PER_SELLER: usize = 8;
 /// The most open quotes the whole store holds (E6b verify fold, D6): the per-seller
 /// cap bounds one character, and this bounds the roster.
 pub const MAX_QUOTES: usize = 1_024;
+
+/// How many **lapsed, contract-less** quotes one `+fence/quote` clears as it counts
+/// (E6b independent verify fold, D4).
+///
+/// The count of a seller's open quotes is a walk over their own index, so the sweep
+/// rides a walk that already had to happen; bounding it keeps the command's cost
+/// flat whatever a seller has accumulated, and the next call clears the rest.
+pub const MAX_LAPSED_SWEEP_PER_CALL: usize = 32;
 /// The most listings or quotes one `+fence/list` page renders.
 pub const FENCE_PAGE: usize = 20;
 /// The most fence or quote records one `+fence/*` read may **visit** (E6b verify

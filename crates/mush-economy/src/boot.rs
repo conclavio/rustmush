@@ -157,11 +157,28 @@ pub(crate) fn load_boot(
             }
             stored_accounts.insert(acct.id, acct);
         } else if let Some(id) = key.strip_prefix("asset:") {
-            let asset = serde_json::from_value::<EconomicAsset>(value.clone())
-                .map_err(|e| ModError::msg(format!("economy: bad asset doc {key:?}: {e}")))?;
             let id = id
                 .parse::<u32>()
                 .map_err(|_| ModError::msg(format!("economy: bad asset key {key:?}")))?;
+            // E6b independent verify fold (D8): an asset **projection** that will not
+            // decode is skipped loudly, not fatal. `EconomicAsset` is now a `TryFrom`
+            // wire carrying the write path's own caps, and a document that fails them
+            // is exactly the shape a lost document already has: every field above the
+            // latch is journal authority, so the recovery pass below rebuilds it from
+            // the journal and latches it **frozen** with reason `doc-lost`. Refusing
+            // the whole boot instead would have made one over-long theft report — a
+            // string no bound protected before this — a server that cannot start.
+            let asset = match serde_json::from_value::<EconomicAsset>(value.clone()) {
+                Ok(asset) => asset,
+                Err(error) => {
+                    tracing::error!(
+                        %key, %error,
+                        "economy: asset doc does not decode; NOT loaded — it rebuilds from the \
+                         journal, frozen"
+                    );
+                    continue;
+                }
+            };
             if asset.object != ObjId(id) {
                 return Err(ModError::msg(format!(
                     "economy: asset doc {key:?} claims object {}",

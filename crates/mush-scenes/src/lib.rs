@@ -56,7 +56,8 @@ use smol_str::SmolStr;
 pub use data::{
     KIND_TIMESTOP, MAX_IC_FLOOR_LEAD_SECS, MAX_OUTCOME_NAME_BYTES, MAX_OUTCOME_NOTE_BYTES,
     MAX_OUTCOME_SUBJECTS, NS, PauseReason, SceneAdvanceError, SceneEvent, SceneEventKind,
-    SceneMode, SceneOutcome, SceneRecord, SceneStatus, SceneUid, ScenesState, scene_key,
+    SceneMode, SceneOutcome, SceneRecord, SceneStatus, SceneUid, ScenesState, SealerGateSlot,
+    scene_key,
 };
 
 /// The canon kind a **sealed scene outcome** is recorded under (E6b, 08f §4.1).
@@ -74,14 +75,46 @@ fn is_scene_staff(w: &World, who: ObjId) -> bool {
     perm::has_role(w, who, Role::Royalty)
 }
 
+/// The **sealer gate** (E6b independent verify fold, M4).
+///
+/// `@scene/facilitate <scene>=<who> run=<id>` had no party check of any kind, and
+/// `mush-scenes` has no economy edge to make one with — so staff could confer the
+/// seal of a run on one of that run's own payees, and the shipped acceptance test
+/// did exactly that. The seal is a settlement authority; 08e answer 22's rule that
+/// the authority ending a run never stands on one side of it applies to it as much
+/// as to the adjudicator.
+///
+/// The gate is a **composition-frozen boxed closure**, supplied by the server from
+/// the economy at wiring, so `mush-scenes -> {core, canon, proto}` is unchanged: the
+/// run id stays opaque here, and the answer to "is this object a party to, or a role
+/// holder of, that contract" comes from the crate that knows. `None` (the default,
+/// and every composition that wires no economy) means the question cannot be asked
+/// and conferral is unrestricted — which is exactly the pre-fold behaviour, on a
+/// server that has no runs to protect.
+pub type SealerGate = Arc<dyn Fn(&World, u64, ObjId) -> bool + Send + Sync>;
+
 /// The scenes game module. Hand one to `Engine::with_modules`.
-pub struct ScenesModule;
+pub struct ScenesModule {
+    sealer_gate: Option<SealerGate>,
+}
 
 impl ScenesModule {
-    /// A fresh module instance.
+    /// A fresh module instance, with no sealer gate (conferral is unrestricted).
     #[must_use]
     pub fn new() -> ScenesModule {
-        ScenesModule
+        ScenesModule { sealer_gate: None }
+    }
+
+    /// Freeze the **sealer gate** at wiring (E6b independent verify fold, M4).
+    ///
+    /// The predicate answers "is `who` a party to — or a named role holder of — run
+    /// `run`?". `@scene/facilitate … run=<id>` refuses a sealer it answers `true`
+    /// for, and `+scene/outcome` asks it again at seal time, because the roster of a
+    /// contract moves between conferral and seal.
+    #[must_use]
+    pub fn with_sealer_gate(mut self, gate: SealerGate) -> ScenesModule {
+        self.sealer_gate = Some(gate);
+        self
     }
 }
 
@@ -97,7 +130,10 @@ impl GameModule for ScenesModule {
     }
 
     fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
-        reg.state(ScenesState::default());
+        reg.state(ScenesState {
+            sealer_gate: data::SealerGateSlot(self.sealer_gate.clone()),
+            ..ScenesState::default()
+        });
         reg.scene_clock_provider(DurableSceneClock)?;
         reg.migrations(
             NS,
@@ -497,8 +533,16 @@ pub(crate) fn emit_scene_outcome(
         entities.push(outcome.sealed_by);
     }
     let room_name = display_name(ctx.w, rec.anchor);
+    // E6b independent verify fold (D3): **the summary does not name the contract.**
+    // A `scene.outcome` record is `Restricted`, and `+chronicle` shows a `Restricted`
+    // record to every entity it names — but the entities are the seal's *subjects*,
+    // who need not be parties to the run. Interpolating `run:{id}#{row}` into the
+    // line therefore told a subject which contract paid for the work, and which row
+    // of its outcome table was selected, off a chronicle read. The source stays in
+    // `detail` (staff) and in the `CanonRecorded` event (the economy's own match key),
+    // which is where it is load-bearing; the chronicle line is prose.
     let summary = format!(
-        "A sealed outcome in {room_name}: {} (scene #{}, {source}).",
+        "A sealed outcome in {room_name}: {} (scene #{}).",
         outcome.name, rec.id
     );
     let draft = mush_canon::CanonDraft {
@@ -768,6 +812,25 @@ fn on_moved(ctx: &mut Ctx<'_>, ev: &WorldEvent) {
 /// room stays frozen until a facilitator resumes. A scene document that fails
 /// to decode FAILS THE BOOT — dropping it would silently unfreeze its members
 /// and lose the scene; corrupt data is an operational problem to fix.
+/// Drop an `outcome` field that will not decode, leaving the rest of the document
+/// strict (E6b independent verify fold, R6). Returns the document and whether an
+/// outcome was lost.
+fn strip_unreadable_outcome(mut value: serde_json::Value) -> (serde_json::Value, bool) {
+    let Some(map) = value.as_object_mut() else {
+        return (value, false);
+    };
+    match map.get("outcome") {
+        None | Some(serde_json::Value::Null) => (value, false),
+        Some(raw) => {
+            if serde_json::from_value::<data::SceneOutcome>(raw.clone()).is_ok() {
+                return (value, false);
+            }
+            map.insert("outcome".to_owned(), serde_json::Value::Null);
+            (value, true)
+        }
+    }
+}
+
 fn load_boot(ctx: &mut ModuleCtx<'_>, data: ModuleBootData) -> Result<(), ModError> {
     let mut scenes: std::collections::BTreeMap<SceneUid, SceneRecord> =
         std::collections::BTreeMap::new();
@@ -782,7 +845,27 @@ fn load_boot(ctx: &mut ModuleCtx<'_>, data: ModuleBootData) -> Result<(), ModErr
             let id = id
                 .parse::<u64>()
                 .map_err(|_| ModError::msg(format!("scenes: bad scene key {key:?}")))?;
-            let mut rec = serde_json::from_value::<SceneRecord>(value.clone())
+            // E6b independent verify fold (R6): **a corrupt sealed outcome does not
+            // brick the boot.** `SceneOutcome` is a `TryFrom` wire, and its failure
+            // failed the whole `SceneRecord`, which `load_boot` turned into a
+            // `ModError` — so one over-long note in one persisted outcome (written by
+            // an older build, a hand edit, or a future schema) was a server that
+            // could not start, and the scene it belonged to was otherwise perfectly
+            // readable. The outcome is decoded leniently instead: the scene loads
+            // with `outcome: None`, its **sealer and its run binding are kept**, and
+            // the loss is loud. The economy's write-once slots make a re-seal
+            // harmless — a second canon record for a filled slot attests nothing —
+            // so "re-seal it" is a real remedy, which is what makes this the right
+            // trade. Every other field stays strict.
+            let (value, lost_outcome) = strip_unreadable_outcome(value.clone());
+            if lost_outcome {
+                tracing::error!(
+                    %key,
+                    "scenes: a persisted scene outcome does not decode; the scene loads UNSEALED \
+                     and its sealer may seal it again (+scene/outcome)"
+                );
+            }
+            let mut rec = serde_json::from_value::<SceneRecord>(value)
                 .map_err(|e| ModError::msg(format!("scenes: bad scene doc {key:?}: {e}")))?;
             if rec.id != SceneUid(id) {
                 return Err(ModError::msg(format!(
@@ -855,7 +938,15 @@ fn load_boot(ctx: &mut ModuleCtx<'_>, data: ModuleBootData) -> Result<(), ModErr
     events
         .restore_from_kv(&live_log_kv)
         .map_err(|error| ModError::msg(format!("scene ledger restore failed: {error}")))?;
+    // The gate is wiring, not boot data: it is installed at registration and must
+    // survive `on_world_loaded` replacing the state slot wholesale.
+    let sealer_gate = ctx
+        .w
+        .module_state::<ScenesState>()
+        .map(|st| st.sealer_gate.clone())
+        .unwrap_or_default();
     let st = ScenesState {
+        sealer_gate,
         scenes,
         next_scene_uid,
         events,
