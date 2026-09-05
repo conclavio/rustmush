@@ -137,6 +137,20 @@ fn sheet_set(cmd: &Sr5Cmd, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     };
 
     let mut doc = cmd.read_or_default(ctx.w, target);
+    // E6a (D-E6-1, 08f §3.5): after approval the **account** is authoritative and the
+    // sheet's `nuyen` is the chargen budget and the migration source and nothing
+    // else. Editing it afterwards would either be money nobody minted, or a silent
+    // disagreement with the balance every render already shows. `chargen_settable`
+    // is untouched, so `+stat nuyen=` still works *in* chargen, which is where the
+    // number belongs.
+    if field.eq_ignore_ascii_case("nuyen")
+        && matches!(doc.approved, mush_ruleset::ApprovalState::Approved { .. })
+    {
+        return Err(CmdError::msg(
+            "Nuyen is money after approval: it lives in the character's sr.nuyen account, not on \
+             the sheet. Move it with @econ/pay or @econ/mint.",
+        ));
+    }
     let fdef = cmd
         .schema
         .field(field)

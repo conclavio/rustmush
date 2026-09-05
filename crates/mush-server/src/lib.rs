@@ -262,11 +262,33 @@ async fn build_engine(
         .enabled
         .iter()
         .any(|r| r.trim().eq_ignore_ascii_case("wod"));
+    // E6a: `[shadowrun.economy]`, validated here (an unknown lifestyle tier is a hard
+    // boot error). `None` when no Shadowrun ruleset is enabled — that is what gates
+    // the run board's economy observer (08f §2's `issuers` pattern).
+    let sr_economy = crate::config_ext::shadowrun_economy_config(&config.shadowrun)?;
+    let sr_selected = config
+        .rulesets
+        .enabled
+        .iter()
+        .any(|r| r.trim().eq_ignore_ascii_case("shadowrun"));
+    // SP1 / D-LBK-7: a Shadowrun server needs `sr.month` declared or no lifestyle
+    // obligation can exist, so the host contributes the stanza — unless the operator
+    // declared one of that name themselves, in which case theirs stands.
+    let contributed: Vec<(String, mush_economy::DeclaredCadence)> = if sr_selected {
+        crate::config_ext::shadowrun_cadences(&sr_economy)
+    } else {
+        Vec::new()
+    };
+    let contributed: Vec<(&str, mush_economy::DeclaredCadence)> = contributed
+        .iter()
+        .map(|(n, d)| (n.as_str(), d.clone()))
+        .collect();
     let mut mods = modules::server_modules_with(
         crate::config_ext::weather_config(&config.weather),
-        crate::config_ext::economy_config(&config.economy)?,
+        crate::config_ext::economy_config_with(&config.economy, &contributed)?,
         &onboarding,
         wod_selected.then_some(&wod_economy),
+        sr_selected.then_some(&sr_economy),
     );
     mods.push(modules::worldgen_module_with(
         Arc::clone(&llm),
@@ -274,8 +296,13 @@ async fn build_engine(
     ));
     let npc_grounding = modules::npc_agent_adapter(&config.rulesets.enabled);
     mods.push(modules::npc_module(npc_grounding));
-    let rulesets = modules::ruleset_modules(&config.rulesets.enabled, &onboarding, &wod_economy)
-        .map_err(|e| format!("ruleset selection: {e}"))?;
+    let rulesets = modules::ruleset_modules(
+        &config.rulesets.enabled,
+        &onboarding,
+        &wod_economy,
+        &sr_economy,
+    )
+    .map_err(|e| format!("ruleset selection: {e}"))?;
     mods.extend(rulesets);
     // Compose and freeze every mechanics registry before any persisted world
     // record is loaded. Rules-bearing attrs must never be interpreted against

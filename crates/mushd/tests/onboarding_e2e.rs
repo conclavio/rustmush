@@ -140,6 +140,7 @@ async fn boot(tag: &str, chargen_required: bool) -> Server {
             &["wod".to_string()],
             &onboarding,
             &ruleset_wod::WodEconomyConfig::default(),
+            &ruleset_shadowrun::SrEconomyConfig::default(),
         )
         .expect("wod ruleset"),
     );

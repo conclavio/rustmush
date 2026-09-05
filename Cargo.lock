@@ -2236,6 +2236,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "mush-party"
+version = "0.1.0"
+dependencies = [
+ "mush-core",
+ "mush-proto",
+ "mush-store",
+ "mush-testkit",
+ "serde",
+ "serde_json",
+ "smol_str",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "mush-proto"
 version = "0.1.0"
 dependencies = [
@@ -2308,6 +2323,7 @@ dependencies = [
  "mush-mail",
  "mush-npc",
  "mush-org",
+ "mush-party",
  "mush-proto",
  "mush-ruleset",
  "mush-scenes",
@@ -3292,7 +3308,11 @@ version = "0.1.0"
 dependencies = [
  "mush-core",
  "mush-dice",
+ "mush-economy",
+ "mush-faction",
  "mush-jobs",
+ "mush-org",
+ "mush-party",
  "mush-proto",
  "mush-ruleset",
  "mush-store",
@@ -3303,6 +3323,7 @@ dependencies = [
  "serde_json",
  "smol_str",
  "tokio",
+ "tracing",
 ]
 
 [[package]]

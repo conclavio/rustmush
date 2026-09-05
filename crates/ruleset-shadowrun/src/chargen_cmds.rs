@@ -476,6 +476,34 @@ pub(crate) fn chargen_approval(
     Ok(())
 }
 
+/// The E6a half of approval (08f §3.5): open the `sr.nuyen` account and mint the
+/// priority allotment, **after** [`chargen_approval`] has stamped the sheet.
+///
+/// It is deliberately a second call rather than a step inside `chargen_approval`,
+/// and deliberately returns nothing: a sheet that has been signed off is not
+/// un-signed by an economic hiccup (08d deviation 11), so the mint's own refusal is
+/// reported to the approving staffer and the approval stands. `@sr/migrate commit`
+/// adopts a character approved with an empty account (M13).
+pub(crate) fn chargen_economy(
+    econ: &crate::economy::SrEconomyConfig,
+    _config: &Sr5Config,
+    cmd: &Sr5Cmd,
+    ctx: &mut Ctx<'_>,
+    job: &Job,
+) {
+    let Ok(target) = payload_target(job) else {
+        return;
+    };
+    let Some(doc) = cmd.read(ctx.w, target) else {
+        return;
+    };
+    let lines = crate::economy::chargen::on_approved(ctx, econ, &cmd.config, &doc, target);
+    let actor = ctx.actor;
+    for line in lines {
+        ctx.out.sys_to_actor(actor, "sr.economy", line);
+    }
+}
+
 fn payload_target(job: &Job) -> Result<ObjId, String> {
     job.payload
         .as_ref()

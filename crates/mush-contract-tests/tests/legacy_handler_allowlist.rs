@@ -104,11 +104,15 @@ fn production_commands(ruleset: &str) -> BTreeSet<String> {
     let wod_economy =
         config_ext::wod_economy_config(&config.wod).expect("the default [wod.economy] converts");
     let wod_selected = enabled.iter().any(|r| r.eq_ignore_ascii_case("wod"));
+    let sr_economy = config_ext::shadowrun_economy_config(&config.shadowrun)
+        .expect("the default [shadowrun.economy] converts");
+    let sr_selected = enabled.iter().any(|r| r.eq_ignore_ascii_case("shadowrun"));
     let mut mods = modules::server_modules_with(
         config_ext::weather_config(&config.weather),
         config_ext::economy_config(&config.economy).expect("the default [economy] converts"),
         &onboarding,
         wod_selected.then_some(&wod_economy),
+        sr_selected.then_some(&sr_economy),
     );
     mods.push(modules::worldgen_module_with(
         Arc::clone(&llm),
@@ -116,7 +120,7 @@ fn production_commands(ruleset: &str) -> BTreeSet<String> {
     ));
     mods.push(modules::npc_module(modules::npc_agent_adapter(&enabled)));
     mods.extend(
-        modules::ruleset_modules(&enabled, &onboarding, &wod_economy)
+        modules::ruleset_modules(&enabled, &onboarding, &wod_economy, &sr_economy)
             .expect("a known ruleset composes"),
     );
     // `build_engine`'s own step: compose and freeze every registry before any world

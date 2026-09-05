@@ -82,6 +82,7 @@ pub fn server_modules() -> Vec<Box<dyn GameModule>> {
         // it. A host that enables no WoD ruleset passes `None` (see
         // [`server_modules_with`]).
         Some(&ruleset_wod::WodEconomyConfig::default()),
+        None,
     )
 }
 
@@ -104,6 +105,7 @@ pub fn server_modules_with(
     economy: mush_economy::EconomyConfig,
     onboarding: &ruleset_wod::OnboardingConfig,
     wod: Option<&ruleset_wod::WodEconomyConfig>,
+    shadowrun: Option<&ruleset_shadowrun::SrEconomyConfig>,
 ) -> Vec<Box<dyn GameModule>> {
     // The issuer is registered when the WoD ruleset is configured **and** its housing
     // knob is on. `issue_title` refuses an issuer that is not on both the economy's
@@ -189,16 +191,7 @@ pub fn server_modules_with(
             // E5b: housing's exact-mode mirror joins the canon bridge. It hears the
             // obligation and contract transitions a lease is made of; abstract mode
             // does not need it at all.
-            .with_observers(vec![
-                Arc::new(crate::econ_canon::CanonEvidenceBridge),
-                Arc::new(mush_housing::HousingEconomyObserver),
-                // E6a step 1 (DL-04): an organization's officers are told, kinds
-                // only, what its contracts and obligations did.
-                Arc::new(crate::econ_inbox::OrgInbox),
-                // E6a step 1 (DL-05): the ladder's pages reach connected wizards on
-                // the ladder's own re-notify schedule, deduped per step.
-                Arc::new(crate::econ_alerts::StaffAlerts::default()),
-            ])
+            .with_observers(econ_observers(shadowrun))
             // E5b: `system:wod.housing` mints the title record on a property's anchor
             // room through `mush_economy::issue_title` (D-E3-13, 08d §2). The same
             // principal is wired into `HousingModule::with_issuer` below, and
@@ -241,8 +234,44 @@ pub fn server_modules_with(
             }
         }),
         Box::new(mush_weather::WeatherModule::with_config(weather)),
+        // E6a (08f §2): the ephemeral party subsystem. `mush-party -> {core}` only —
+        // it is **not** an economic principal and must never learn about money
+        // (answers 5 and 21, D-E6-5). It reads no economy state and the economy reads
+        // none of it, so it sits anywhere before the rulesets; here, beside the other
+        // player-facing subsystems and ahead of `mush-script`'s deliberate last place.
+        Box::new(mush_party::PartyModule::new()),
         Box::new(mush_script::ScriptModule::new()),
     ]
+}
+
+/// The economy observer table this server freezes at wiring.
+///
+/// The Shadowrun board's mirror joins it **only when the Shadowrun economic layer is
+/// configured** (08f §2's `issuers` pattern): an observer that fires on every
+/// contract transition on a WoD server would be a table entry doing nothing, and the
+/// board it mirrors would not exist.
+fn econ_observers(
+    shadowrun: Option<&ruleset_shadowrun::SrEconomyConfig>,
+) -> Vec<Arc<dyn mush_economy::EconomyObserver>> {
+    let mut out: Vec<Arc<dyn mush_economy::EconomyObserver>> = vec![
+        Arc::new(crate::econ_canon::CanonEvidenceBridge),
+        Arc::new(mush_housing::HousingEconomyObserver),
+        // E6a step 1 (DL-04): an organization's officers are told, kinds only, what
+        // its contracts and obligations did.
+        Arc::new(crate::econ_inbox::OrgInbox),
+        // E6a step 1 (DL-05): the ladder's pages reach connected wizards on the
+        // ladder's own re-notify schedule, deduped per step.
+        Arc::new(crate::econ_alerts::StaffAlerts::default()),
+    ];
+    if let Some(sr) = shadowrun.filter(|s| s.enabled) {
+        // E6a (D-E6-5): mirrors `ContractChanged` onto the run board and releases the
+        // crewed party through `mush_party`'s own seam; drives the lifestyle
+        // miss/downgrade rule from `ObligationChanged`.
+        out.push(Arc::new(ruleset_shadowrun::SrBoardObserver::new(
+            sr.clone(),
+        )));
+    }
+    out
 }
 
 /// The system principal housing mints property titles under (08d §2, D-E3-13).
@@ -304,6 +333,7 @@ pub fn ruleset_modules(
     enabled: &[String],
     onboarding: &ruleset_wod::OnboardingConfig,
     wod: &ruleset_wod::WodEconomyConfig,
+    shadowrun: &ruleset_shadowrun::SrEconomyConfig,
 ) -> Result<Vec<Box<dyn GameModule>>, String> {
     let mut seen: Vec<String> = Vec::new();
     let mut mods: Vec<Box<dyn GameModule>> = Vec::new();
@@ -324,7 +354,13 @@ pub fn ruleset_modules(
                 // SR5 (M10b). Single-ruleset-per-server: wod and shadowrun both
                 // register +roll/+sheet/+chargen, so a server runs one of them.
                 // SR5 has no onboarding gate wired yet.
-                mods.push(Box::new(ruleset_shadowrun::ShadowrunRuleset::new()));
+                //
+                // E6a: `[shadowrun.economy]` is frozen into the ruleset here, exactly
+                // as `[wod.economy]` is above. `enabled = false` off-config, so an
+                // unconfigured server keeps its pre-E6a behaviour.
+                mods.push(Box::new(
+                    ruleset_shadowrun::ShadowrunRuleset::new().economy(shadowrun.clone()),
+                ));
             }
             _ => {
                 return Err(format!(
@@ -1356,6 +1392,7 @@ mod tests {
             mush_economy::EconomyConfig::default(),
             &onboarding,
             Some(&wod),
+            None,
         ));
         let store = tw
             .world()
@@ -1388,6 +1425,7 @@ mod tests {
             mush_weather::WeatherConfig::default(),
             mush_economy::EconomyConfig::default(),
             &onboarding,
+            None,
             None,
         ));
         let store = tw
@@ -1422,8 +1460,17 @@ mod tests {
             economy,
             &onboarding,
             Some(&wod),
+            None,
         );
-        mods.extend(ruleset_modules(&["wod".to_string()], &onboarding, &wod).expect("wod"));
+        mods.extend(
+            ruleset_modules(
+                &["wod".to_string()],
+                &onboarding,
+                &wod,
+                &ruleset_shadowrun::SrEconomyConfig::default(),
+            )
+            .expect("wod"),
+        );
         let tw = TestWorld::with_modules(mods);
         let clock = mush_core::ClockRef::Registered {
             owner: mush_core::OwnerId::new("economy").expect("owner"),
@@ -1479,7 +1526,7 @@ mod tests {
             names,
             [
                 "comsys", "canon", "org", "faction", "scenes", "sim", "tactics", "economy", "mail",
-                "jobs", "housing", "weather", "script"
+                "jobs", "housing", "weather", "party", "script"
             ]
         );
     }
@@ -1523,6 +1570,7 @@ mod tests {
             &["wod".to_string()],
             &ruleset_wod::OnboardingConfig::default(),
             &ruleset_wod::WodEconomyConfig::default(),
+            &ruleset_shadowrun::SrEconomyConfig::default(),
         )
         .unwrap();
         assert_eq!(mods.len(), 1);
@@ -1532,6 +1580,7 @@ mod tests {
             &["  WoD ".to_string()],
             &ruleset_wod::OnboardingConfig::default(),
             &ruleset_wod::WodEconomyConfig::default(),
+            &ruleset_shadowrun::SrEconomyConfig::default(),
         )
         .unwrap();
         assert_eq!(mods[0].name(), "wod");
@@ -1541,6 +1590,7 @@ mod tests {
                 &[],
                 &ruleset_wod::OnboardingConfig::default(),
                 &ruleset_wod::WodEconomyConfig::default(),
+                &ruleset_shadowrun::SrEconomyConfig::default(),
             )
             .unwrap()
             .is_empty()
@@ -1554,6 +1604,7 @@ mod tests {
             &["shadowrun".to_string()],
             &ruleset_wod::OnboardingConfig::default(),
             &ruleset_wod::WodEconomyConfig::default(),
+            &ruleset_shadowrun::SrEconomyConfig::default(),
         )
         .unwrap();
         assert_eq!(mods.len(), 1);
@@ -1569,6 +1620,7 @@ mod tests {
             &["wod".to_string(), "shadowrun".to_string()],
             &ruleset_wod::OnboardingConfig::default(),
             &ruleset_wod::WodEconomyConfig::default(),
+            &ruleset_shadowrun::SrEconomyConfig::default(),
         ) {
             Err(e) => e,
             Ok(_) => panic!("enabling two rulesets must be rejected"),
@@ -1584,6 +1636,7 @@ mod tests {
             &["tacsim".to_string()],
             &ruleset_wod::OnboardingConfig::default(),
             &ruleset_wod::WodEconomyConfig::default(),
+            &ruleset_shadowrun::SrEconomyConfig::default(),
         ) {
             Err(e) => e,
             Ok(_) => panic!("unknown ruleset must be rejected"),
@@ -1593,6 +1646,7 @@ mod tests {
             &["wod".to_string(), "wod".to_string()],
             &ruleset_wod::OnboardingConfig::default(),
             &ruleset_wod::WodEconomyConfig::default(),
+            &ruleset_shadowrun::SrEconomyConfig::default(),
         ) {
             Err(e) => e,
             Ok(_) => panic!("duplicate ruleset must be rejected"),
@@ -1623,6 +1677,7 @@ mod tests {
                 &["wod".to_string()],
                 &ruleset_wod::OnboardingConfig::default(),
                 &ruleset_wod::WodEconomyConfig::default(),
+                &ruleset_shadowrun::SrEconomyConfig::default(),
             )
             .unwrap(),
         );
@@ -1632,7 +1687,7 @@ mod tests {
             names,
             [
                 "comsys", "canon", "org", "faction", "scenes", "sim", "tactics", "economy", "mail",
-                "jobs", "housing", "weather", "script", "worldgen", "wod"
+                "jobs", "housing", "weather", "party", "script", "worldgen", "wod"
             ]
         );
         assert!(tw.registry().spec_of("@gen").is_some());
@@ -1682,6 +1737,7 @@ mod tests {
                 &["shadowrun".to_string()],
                 &ruleset_wod::OnboardingConfig::default(),
                 &ruleset_wod::WodEconomyConfig::default(),
+                &ruleset_shadowrun::SrEconomyConfig::default(),
             )
             .unwrap(),
         );
@@ -1738,6 +1794,7 @@ mod tests {
                 &["wod".to_string()],
                 &ruleset_wod::OnboardingConfig::default(),
                 &ruleset_wod::WodEconomyConfig::default(),
+                &ruleset_shadowrun::SrEconomyConfig::default(),
             )
             .unwrap(),
         );
@@ -1747,7 +1804,7 @@ mod tests {
             names,
             [
                 "comsys", "canon", "org", "faction", "scenes", "sim", "tactics", "economy", "mail",
-                "jobs", "housing", "weather", "script", "wod"
+                "jobs", "housing", "weather", "party", "script", "wod"
             ]
         );
         // The ruleset's surface is live: +roll / +sheet registered, the

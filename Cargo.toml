@@ -137,6 +137,10 @@ mush-org = { path = "crates/mush-org" }
 mush-economy = { path = "crates/mush-economy" }
 # E5: game-neutral housing — properties, tenancies, support assessment, access.
 mush-housing = { path = "crates/mush-housing" }
+# E6a: the ephemeral party — a game-neutral roster with a Forming/Locked/Disbanded
+# state machine. NOT an economic principal (D-E6-5): it depends on mush-core alone
+# and must never gain an economy, org or faction edge.
+mush-party = { path = "crates/mush-party" }
 ruleset-shadowrun = { path = "crates/ruleset-shadowrun" }
 mush-testkit = { path = "crates/mush-testkit" }
 mush-contract-tests = { path = "crates/mush-contract-tests" }

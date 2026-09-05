@@ -38,6 +38,13 @@
 //! | `[wod.economy].starting_funds_major` | `0` | exact mode: chargen starting funds, in major units |
 //! | `[wod.economy].reserved_rooms` | `[]` | extra `#N` rooms that may never become property rooms (D-E5-12) |
 //! | `[wod.economy.income]."<dots>"` | (none) | exact mode: income per period per Resources dot (`"0"`…`"5"`), major units |
+//! | `[shadowrun.economy].enabled` | `false` | E6a Shadowrun run-and-pay layer: accounts, lifestyle, the run board |
+//! | `[shadowrun.economy].instrument` | `"sr.nuyen"` | the currency code registered at scale 0 (D-E6-1) |
+//! | `[shadowrun.economy].lifestyle_clock` | `"sr.month"` | the declared cadence lifestyle is billed on (contributed to `[economy.cadences]`) |
+//! | `[shadowrun.economy].lifestyle` | `true` | whether lifestyle obligations are created |
+//! | `[shadowrun.economy].player_run_offers` | `true` | whether `+run/post` accepts a personal payer |
+//! | `[shadowrun.economy].organization_run_offers` | `true` | whether `+run/post … scope=<org>` is accepted |
+//! | `[shadowrun.economy.lifestyle_costs]."<tier>"` | (SR5 defaults) | monthly cost per tier, major units |
 //! | `[llm]` | `enabled = false` | M7 LLM layer (providers, routes, budgets); into [`mush_llm::LlmConfig`] |
 //!
 //! The `[web]` table deserializes straight into
@@ -495,6 +502,99 @@ impl Default for WodEconomyCfg {
     }
 }
 
+/// `[shadowrun]` — the Shadowrun ruleset's own configuration (E6a, 08f §9).
+///
+/// Ruleset-owned exactly as `[wod]` is (D-E5-9): there is no platform economy switch,
+/// and the knobs below turn the *Shadowrun layer* on and off, never the E2–E4 economy
+/// the server runs regardless.
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default)]
+pub struct ShadowrunCfg {
+    /// `[shadowrun.economy]`.
+    pub economy: ShadowrunEconomyCfg,
+}
+
+/// `[shadowrun.economy]` — 08f §9's block (answer 16), plus the board bounds.
+///
+/// The default is **`enabled = false`**: a server that has never heard of this
+/// section keeps exactly its pre-E6a behaviour — SR5 rolls dice, `nuyen` is a sheet
+/// number, and the economic layer creates nothing, evaluates nothing and shows
+/// nothing.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(default)]
+pub struct ShadowrunEconomyCfg {
+    /// Whether the layer exists at all. An `enabled = false` server still registers
+    /// the verbs; they answer "not enabled on this server".
+    pub enabled: bool,
+    /// The instrument code. `sr.nuyen` at scale 0 (D-E6-1).
+    pub instrument: String,
+    /// The **name** of the cadence clock lifestyle is assessed on. When
+    /// `[rulesets].enabled` names `shadowrun`, the host contributes the matching
+    /// `[economy.cadences]` stanza unless the operator declared it (SP1, D-LBK-7).
+    pub lifestyle_clock: String,
+    /// Whether lifestyle obligations are created at all. `false` creates no new one
+    /// and cancels nothing at boot — `@sr/migrate` ends the existing ones.
+    pub lifestyle: bool,
+    /// Whether `+run/post` accepts a personal payer.
+    pub player_run_offers: bool,
+    /// Whether `+run/post … scope=<org>` is accepted.
+    pub organization_run_offers: bool,
+    /// Parsed, inert until E6c (§11 q9).
+    pub chargen_shopping: bool,
+    /// Parsed, inert until E6c.
+    pub catalog_paths: Vec<String>,
+    /// `[shadowrun.economy.lifestyle_costs]` — one monthly cost in **major** units
+    /// per tier, keyed `"street"`…`"luxury"`. A tier the table does not name, or one
+    /// named with `0`, creates no obligation.
+    pub lifestyle_costs: BTreeMap<String, u64>,
+    /// Parsed, inert until E6c (`QUOTE_TTL_LIVE`, seconds).
+    pub quote_ttl_live: i64,
+    /// Parsed, inert until E6c (`QUOTE_TTL_REMOTE`, seconds).
+    pub quote_ttl_remote: i64,
+    /// Permille of the catalog baseline an immediate fence pays — inert until E6b.
+    pub fence_rate_immediate: u32,
+    /// Permille a consignment fence pays — inert until E6b.
+    pub fence_rate_consign: u32,
+    /// The consignment delay in seconds — inert until E6b.
+    pub fence_delay_secs: i64,
+    /// The per-principal open-listing cap (§9's `MAX_OPEN_RUNS_PER_PRINCIPAL`).
+    pub active_offer_cap: usize,
+    /// How long a listing lives, in seconds — the contract's own deadline (M8).
+    pub board_ttl_secs: i64,
+    /// The whole board's open-listing cap.
+    pub board_cap: usize,
+    /// The 5,000¥ carry-over cap: **parsed and deliberately not applied** until
+    /// chargen shopping ships (answer 17).
+    pub chargen_carryover_cap: u64,
+}
+
+impl Default for ShadowrunEconomyCfg {
+    fn default() -> Self {
+        // Every literal mirrors `ruleset_shadowrun::SrEconomyConfig::default()` (kept
+        // as literals so `mush-config` needs no ruleset dep); `config_ext` converts.
+        ShadowrunEconomyCfg {
+            enabled: false,
+            instrument: "sr.nuyen".to_string(),
+            lifestyle_clock: "sr.month".to_string(),
+            lifestyle: true,
+            player_run_offers: true,
+            organization_run_offers: true,
+            chargen_shopping: false,
+            catalog_paths: Vec::new(),
+            lifestyle_costs: BTreeMap::new(),
+            quote_ttl_live: 3_600,
+            quote_ttl_remote: 24 * 3_600,
+            fence_rate_immediate: 300,
+            fence_rate_consign: 600,
+            fence_delay_secs: 48 * 3_600,
+            active_offer_cap: 4,
+            board_ttl_secs: 14 * 86_400,
+            board_cap: 128,
+            chargen_carryover_cap: 5_000,
+        }
+    }
+}
+
 /// `[worldgen]` section — the M10 batch `@gen/building` knobs.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(default)]
@@ -710,6 +810,9 @@ pub struct Config {
     /// `[wod]` — the WoD ruleset's own knobs (E5c, D-E5-9). `personal_mode` is
     /// `"off"` off-config, so an unconfigured server keeps its pre-E5c behaviour.
     pub wod: WodCfg,
+    /// `[shadowrun]` — the Shadowrun ruleset's own knobs (E6a, 08f §9). `enabled` is
+    /// `false` off-config, so an unconfigured server keeps its pre-E6a behaviour.
+    pub shadowrun: ShadowrunCfg,
     /// `[llm]` — the M7 LLM layer (providers, feature routes, budgets, kill
     /// switch). The raw section, deserialized into `mush_llm::LlmConfig` by the
     /// server / all-in-one binary (kept untyped here so `mush-config` need not
@@ -740,6 +843,7 @@ impl Default for Config {
             economy: EconomyCfg::default(),
             onboarding: OnboardingCfg::default(),
             wod: WodCfg::default(),
+            shadowrun: ShadowrunCfg::default(),
             llm: empty_toml_table(),
             ipc: IpcCfg::default(),
         }

@@ -12,11 +12,19 @@ mush-dice.workspace = true
 mush-core.workspace = true
 mush-jobs.workspace = true
 mush-proto.workspace = true
+# E6a (08f §2): the run-and-pay layer. `economy` for the contract/obligation seams,
+# `org` for principals and scopes, `party` for the ephemeral crew (which learns
+# nothing about money), `faction` for board membership (M5).
+mush-economy.workspace = true
+mush-org.workspace = true
+mush-party.workspace = true
+mush-faction.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 smol_str.workspace = true
 rand.workspace = true
 rand_chacha.workspace = true
+tracing.workspace = true
 
 [dev-dependencies]
 mush-testkit.workspace = true

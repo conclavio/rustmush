@@ -4868,6 +4868,7 @@ struct E6State {
     offered: Option<Result<ContractId, ContractError>>,
     accepted: Option<Result<AcceptOutcome, ContractError>>,
     amended: Option<Result<AmendReoffer, ContractError>>,
+    cancelled: Option<Result<bool, ContractError>>,
 }
 
 #[derive(Clone, Default)]
@@ -4904,6 +4905,14 @@ impl E6 {
             .clone()
             .expect("an amend outcome was recorded")
     }
+    fn cancelled(&self) -> Result<bool, ContractError> {
+        self.0
+            .lock()
+            .expect("probe lock")
+            .cancelled
+            .clone()
+            .expect("a cancel outcome was recorded")
+    }
 }
 
 struct E6Mod(E6);
@@ -4918,7 +4927,7 @@ impl GameModule for E6Mod {
             CommandSpec {
                 name: "@e6".into(),
                 shape: ArgShape::EqPair,
-                switches: ["offer", "accept", "amend", "notice"]
+                switches: ["offer", "accept", "amend", "cancel", "notice"]
                     .iter()
                     .copied()
                     .map(SmolStr::new)
@@ -4969,6 +4978,9 @@ impl GameModule for E6Mod {
                     if fail {
                         return Err(CmdError::msg("the ruleset changed its mind"));
                     }
+                } else if ctx.switches.has("cancel") {
+                    let outcome = mush_economy::cancel_contract(ctx, id());
+                    st.0.lock().expect("probe lock").cancelled = Some(outcome);
                 } else if ctx.switches.has("notice") {
                     // S8: the exported notice class, rendered to the actor exactly as
                     // a run board's `+run/show` would render it.
@@ -6414,4 +6426,134 @@ fn vf_d8_the_account_help_names_the_rolling_window() {
         seen.to_lowercase().contains("budget"),
         "the help still says a threshold is the only control: {seen}"
     );
+}
+
+// ---- E6a: the cancel seam (08f §3.2's `+run/withdraw` and M17's refused accept) ---
+
+/// The fourth seam: a ruleset cancels the contract it issued without dispatching
+/// `@contract/cancel`, and the escrow comes back.
+#[test]
+fn e6a_cancel_contract_refunds_an_offered_contract_through_the_seam() {
+    let (mut tw, e6) = boot_e6();
+    let r = run_rig(&mut tw, 3_000);
+    let spec = run_spec(
+        "Withdrawn",
+        r.johnson,
+        (r.j_acct, 1_000),
+        vec![PrincipalId::Object(r.a)],
+        vec![
+            row("success", vec![0], vec![exact(r.a_acct, 1_000)]),
+            row("failure", vec![1], vec![exact(r.j_acct, 1_000)]),
+        ],
+    );
+    e6.stage_offer(spec);
+    ok(&mut tw, r.johnson, "@e6/offer");
+    let id = e6.offered().expect("the offer stands");
+    ok(&mut tw, r.johnson, &format!("@e6/accept {id}"));
+    assert_eq!(held(&tw, r.j_acct), 1_000);
+    assert_eq!(state(&tw, id), ContractState::Offered);
+    ok(&mut tw, r.johnson, &format!("@e6/cancel {id}"));
+    assert_eq!(
+        e6.cancelled(),
+        Ok(true),
+        "the cancel did not reach terminal"
+    );
+    assert_eq!(state(&tw, id), ContractState::Cancelled);
+    assert_eq!(held(&tw, r.j_acct), 0, "the escrow was not released");
+    assert_eq!(bal(&tw, r.j_acct), 3_000);
+}
+
+/// A′'s other face: a **live** contract with no deliverables that nobody but its own
+/// author has accepted is cancellable — that is exactly a run board's `Listed`
+/// entry, and "a live agreement is not one party's to tear up" is a rule about other
+/// people's consent.
+#[test]
+fn e6a_cancel_contract_admits_an_author_only_live_contract() {
+    let (mut tw, e6) = boot_e6();
+    let r = run_rig(&mut tw, 3_000);
+    let spec = run_spec(
+        "Listed",
+        r.johnson,
+        (r.j_acct, 1_000),
+        Vec::new(),
+        vec![
+            row("success", vec![0], vec![exact(r.j_acct, 1_000)]),
+            row("failure", vec![1], vec![exact(r.j_acct, 1_000)]),
+        ],
+    );
+    e6.stage_offer(spec);
+    ok(&mut tw, r.johnson, "@e6/offer");
+    let id = e6.offered().expect("the offer stands");
+    ok(&mut tw, r.johnson, &format!("@e6/accept {id}"));
+    assert_eq!(
+        state(&tw, id),
+        ContractState::Active,
+        "a one-party contract did not activate at its author's accept"
+    );
+    ok(&mut tw, r.johnson, &format!("@e6/cancel {id}"));
+    assert_eq!(e6.cancelled(), Ok(true));
+    assert_eq!(state(&tw, id), ContractState::Cancelled);
+    assert_eq!(held(&tw, r.j_acct), 0);
+    assert_eq!(bal(&tw, r.j_acct), 3_000);
+}
+
+/// …and a contract somebody **else** accepted is not: the routes stay the dispute,
+/// the deadline and staff. Nothing moves on the refusal.
+#[test]
+fn e6a_cancel_contract_refuses_a_contract_another_party_accepted() {
+    let (mut tw, e6) = boot_e6();
+    let r = run_rig(&mut tw, 3_000);
+    ok(&mut tw, GOD, &format!("@econ/mint 0={} 2000", r.a_acct));
+    let spec = run_spec(
+        "Bound",
+        r.johnson,
+        (r.j_acct, 1_000),
+        vec![PrincipalId::Object(r.a)],
+        vec![
+            row("success", vec![0], vec![exact(r.a_acct, 1_000)]),
+            row("failure", vec![1], vec![exact(r.j_acct, 1_000)]),
+        ],
+    );
+    e6.stage_offer(spec);
+    ok(&mut tw, r.johnson, "@e6/offer");
+    let id = e6.offered().expect("the offer stands");
+    ok(&mut tw, r.johnson, &format!("@e6/accept {id}"));
+    ok(&mut tw, r.a, &format!("@e6/accept {id}"));
+    assert_eq!(state(&tw, id), ContractState::Active);
+    let before = journal_len(&tw);
+    ok(&mut tw, r.johnson, &format!("@e6/cancel {id}"));
+    assert!(
+        matches!(e6.cancelled(), Err(ContractError::State(_))),
+        "a bound contract was cancellable: {:?}",
+        e6.cancelled()
+    );
+    assert_eq!(state(&tw, id), ContractState::Active);
+    assert_eq!(held(&tw, r.j_acct), 1_000, "escrow moved on a refusal");
+    assert_eq!(journal_len(&tw), before, "a refusal posted");
+}
+
+/// A non-issuer gets the one answer every standing failure gets — "No such
+/// contract." — and nothing changes.
+#[test]
+fn e6a_cancel_contract_answers_a_non_issuer_with_no_standing() {
+    let (mut tw, e6) = boot_e6();
+    let r = run_rig(&mut tw, 3_000);
+    let spec = run_spec(
+        "Theirs",
+        r.johnson,
+        (r.j_acct, 1_000),
+        vec![PrincipalId::Object(r.a)],
+        vec![
+            row("success", vec![0], vec![exact(r.a_acct, 1_000)]),
+            row("failure", vec![1], vec![exact(r.j_acct, 1_000)]),
+        ],
+    );
+    e6.stage_offer(spec);
+    ok(&mut tw, r.johnson, "@e6/offer");
+    let id = e6.offered().expect("the offer stands");
+    ok(&mut tw, r.johnson, &format!("@e6/accept {id}"));
+    ok(&mut tw, r.a, &format!("@e6/cancel {id}"));
+    assert_eq!(e6.cancelled(), Err(ContractError::NoStanding));
+    assert_eq!(state(&tw, id), ContractState::Offered);
+    assert_eq!(held(&tw, r.j_acct), 1_000);
 }

@@ -26,8 +26,8 @@ use mush_core::{ControlMsg, Engine, Inbound};
 use mush_llm::LlmService;
 use mush_net_web::{Metrics, WebConfig};
 use mush_server::config_ext::{
-    economy_config, llm_config, onboarding_ruleset, weather_config, wod_economy_config,
-    worldgen_config,
+    economy_config_with, llm_config, onboarding_ruleset, shadowrun_cadences,
+    shadowrun_economy_config, weather_config, wod_economy_config, worldgen_config,
 };
 use mush_session::{SessionConfig, SessionManager};
 use mush_store::{InMemoryStore, ObjectStore, RedisStore, core_migrations, run_migrations};
@@ -271,11 +271,33 @@ async fn serve(config: Config, mut quarantine_spool: QuarantineSpool) -> Result<
         .enabled
         .iter()
         .any(|r| r.trim().eq_ignore_ascii_case("wod"));
+    // E6a: `[shadowrun.economy]`, validated here (an unknown lifestyle tier is a hard
+    // boot error). `None` when no Shadowrun ruleset is enabled — that is what gates
+    // the run board's economy observer (08f §2's `issuers` pattern).
+    let sr_economy = shadowrun_economy_config(&config.shadowrun)?;
+    let sr_selected = config
+        .rulesets
+        .enabled
+        .iter()
+        .any(|r| r.trim().eq_ignore_ascii_case("shadowrun"));
+    // SP1 / D-LBK-7: a Shadowrun server needs `sr.month` declared or no lifestyle
+    // obligation can exist. The host contributes the stanza unless the operator
+    // declared one of that name themselves.
+    let contributed: Vec<(String, mush_server::config_ext::DeclaredCadence)> = if sr_selected {
+        shadowrun_cadences(&sr_economy)
+    } else {
+        Vec::new()
+    };
+    let contributed: Vec<(&str, mush_server::config_ext::DeclaredCadence)> = contributed
+        .iter()
+        .map(|(n, d)| (n.as_str(), d.clone()))
+        .collect();
     let mut mods = modules::server_modules_with(
         weather_config(&config.weather),
-        economy_config(&config.economy)?,
+        economy_config_with(&config.economy, &contributed)?,
         &onboarding,
         wod_selected.then_some(&wod_economy),
+        sr_selected.then_some(&sr_economy),
     );
     mods.push(modules::worldgen_module_with(
         Arc::clone(&llm),
@@ -286,8 +308,13 @@ async fn serve(config: Config, mut quarantine_spool: QuarantineSpool) -> Result<
     // Shadowrun, …); dialogue-only when no ruleset is enabled.
     let npc_grounding = modules::npc_agent_adapter(&config.rulesets.enabled);
     mods.push(modules::npc_module(npc_grounding));
-    let rulesets = modules::ruleset_modules(&config.rulesets.enabled, &onboarding, &wod_economy)
-        .map_err(|e| format!("ruleset selection: {e}"))?;
+    let rulesets = modules::ruleset_modules(
+        &config.rulesets.enabled,
+        &onboarding,
+        &wod_economy,
+        &sr_economy,
+    )
+    .map_err(|e| format!("ruleset selection: {e}"))?;
     if !rulesets.is_empty() {
         tracing::info!(rulesets = ?config.rulesets.enabled, "rulesets enabled");
     }

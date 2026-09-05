@@ -1,9 +1,10 @@
 # E6 implementation plan — the Shadowrun run-and-pay economy
 
-**Status:** Draft 0.3a — 2026-09-04. Re-grounded at `ce43714` after the E1–E5 look-back (08g §11
+**Status:** Draft 0.3a — 2026-09-04; **E6a is built** (§2.1 step one and its verify fold, §3.7 the
+ruleset half — 2026-09-05). Re-grounded at `ce43714` after the E1–E5 look-back (08g §11
 item 8, DL-02); DL-01 Option A′, DL-10's rolling budget and E2-C16's `InstrumentDisplay` are E6a
-economy items. Companion to
-[08-economy-organizations-ownership.md](08-economy-organizations-ownership.md) (§9.4, §11.2, §14.2,
+economy items. **Prefer §2.1 and §3.7 over §3's pre-build text wherever the two differ.**
+Companion to [08-economy-organizations-ownership.md](08-economy-organizations-ownership.md) (§9.4, §11.2, §14.2,
 §18-E6), [08a-economy-build-status.md](08a-economy-build-status.md) (the ledger and the E4 seams as
 shipped), [08c-e4-implementation-plan.md](08c-e4-implementation-plan.md) (**E4 as built** — prefer
 its §3.5a/§4.7/§5.1/§6.1 blocks over §3–§6's pre-build text), and
@@ -662,7 +663,7 @@ by `cause: Ruleset{"sr.lifestyle"}` plus credit = `system:sr.lifestyle`'s accoun
 is a cache, `sr::boot::run` adopts or cancels, and the identity rule (`obj == key`, loud skip) is
 DL-07.
 
-### 3.6 E6a tests (~40)
+### 3.6 E6a tests (~40 planned; **118 built** — 51 `mush-party`, 41 `ruleset-shadowrun/tests/e6a.rs`, 4 economy seam tests, plus the in-crate wire/config/store units; §3.7)
 
 **Party:** create/invite/accept/decline/leave/kick/disband; size and invite caps; idle expiry; `Locked` refuses membership change; a substitution needs the amendment and returns `Forming`; reboot at every status.
 **Board:** a post with no funds lists nothing and cancels the draft (M17); a listed run's escrow is real (assert `held_amount`); `MAX_OPEN_RUNS_PER_PRINCIPAL` and `BOARD_CAP` refuse the next post; an expired unbound listing closes and refunds; a faction-visible run is invisible to a non-member and renders a notice — never terms — to a faction member through `mush_faction` (M5); a non-viewer gets "No such run."; window budget: the fifth ≤ T run from an org account needs approval (DL-10); the org payer is notified through DL-04 when its run is crewed and settled.
@@ -674,6 +675,158 @@ DL-07.
 Extend the shipped **Shadowrun run rig** (`crates/mush-economy/tests/e4b2.rs:167-213`, whose instrument is already `@instrument/register nuyen=0` at `:186`) with an `sr.nuyen`-registered ruleset world.
 
 **Hazards on this axis.** *Board spam:* per-principal caps, escrow-at-publication, `BOARD_TTL` (= the contract deadline, M8), a page cap, and the rolling `window` on an org account against a ≤-threshold drip (M3, D-E6-21). *A fixer skimming:* every share is named and each row must sum — E4b2 already refuses an unmatched credit (`ContractPurpose::Settle` carries netted `(account, amount)` pairs, 08c §5.1); the fixer is never the issuer (M1) and payout accounts are derived, never input (M6). *An uncontrolled faucet:* D-E6-4 (a `System` payer refused at post, no draft left) plus the live mint cap on the campaign org's standing drip, re-read at every settlement; the chargen allotment is bounded by the priority table (M12).
+
+### 3.7 As built (2026-09-05)
+
+The ruleset half of E6a, on top of step one's seams. Nothing Shadowrun-shaped entered
+`mush-economy` or `mush-party`; the one economy addition is game-neutral and named below. All money
+still moves through E4 under an authority; every persisted addition is a `TryFrom` wire with caps;
+every tick/observer/boot path is exhaustive and panic-free.
+
+**`mush-party` (new crate; `mush-party → {core, serde, smol_str, tracing}`).** `Party`,
+`Invitation`, `PartyStatus::{Forming, Locked{by: ContractRef}, Disbanded{how}}` and
+`DisbandCause::{Disbanded, Empty, Expired, Settled, Released}` (`record.rs:95-206`), each loaded
+through a wire that re-runs every constructor invariant (name ≤ 48 B, `MAX_PARTY_SIZE` 8,
+`MAX_PARTY_INVITES` 16, roles ⊆ members, leader ∈ members while live). `ContractRef(pub u64)`
+(`ids.rs:49`) is **opaque** — the party never interprets it, and the contract never points back
+(D-E6-5). The three seams the ruleset drives it through are authority-free by construction, because
+the ruleset has already asked the authority question: `lock(ctx, id, by)` (`api.rs:64`),
+`release(ctx, id, how)` (`api.rs:92`), `unlock(ctx, id)` (`api.rs:114`); the reads are `parties_of`
+(`api.rs:134`) and `may_view` (`api.rs:150`), and every refusal renders `NO_SUCH_PARTY`
+(`api.rs:49`). `Locked` refuses **every** membership change, so a substitution must amend the
+contract and `unlock` first. One `+party` spec with nine switches, a 60 s expiry tick capped at 32
+parties per fire (a `Locked` party never expires — its contract's deadline governs), and a boot that
+drops a document disagreeing with its own key.
+
+**`ruleset-shadowrun::economy`** (`src/economy/`, ~4 400 lines over nine modules).
+
+- **`config.rs`** — the frozen `[shadowrun.economy]` block, `LifestyleTier` with the downgrade
+  ladder that terminates at the free `street`, and §9's constants. Default `enabled = false`: the
+  verbs register and answer "not enabled on this server" (E5c deviation 1).
+- **`record.rs`** — `SrProfile` (`sr:profile:{obj}`) and `RunTemplate` (`sr:run:{id}`), both
+  `#[serde(try_from = …)]` over a wire. The listing's wire refuses a `System` payer, an empty or
+  over-long name, an empty outcome table, impossible slots, a negative amount, and a denormalized
+  faction that disagrees with the board — so D-E6-4 cannot re-enter through a document.
+- **`store.rs`** — the slot, the two document families, `put_profile`/`put_run` as the single write
+  paths, a re-derived contract → listing index, and a `load` that is **total**: a corrupt profile or
+  listing is skipped loudly and the world boots. The direction of each loss is deliberate and
+  documented — a profile is re-derivable, and a listing is a *projection of a contract that still
+  exists*, so losing one costs a board row and never an escrow.
+- **`boot.rs`** — `run` (`:62`) registers `sr.nuyen` at scale 0 with `display = ¥:prefix` (`:88`),
+  opens the two faucets and the sink, then **finds** the declared `sr.month` (`:188` — it never
+  creates one) and reconciles: DL-07 adopts a self-identifying upkeep record and cancels one no
+  profile claims (`:303`; with `lifestyle = false` it cancels nothing), and `reconcile_board`
+  (`:418`) re-mirrors every listing onto its contract.
+- **`lifestyle.rs`** — `set_tier` (`:162`), `open_upkeep` (`:215`), `pay_arrears` (`:290`),
+  `on_obligation_changed` (`:383`), `miss` (`:450`), `apply_downgrade` (`:495`).
+- **`board.rs`** — `RunSplit` (`:166`) + `table` (`:200`) + `even_split` (`:116`), `may_view`
+  (`:273`), `post` (`:398`), `apply` (`:582`), `crew_accept` (`:641`), `crew_decline` (`:726`),
+  `split` (`:760`), `withdraw` (`:820`).
+- **`chargen.rs`** — `on_approved` (`:72`), one `mint` over a `MintSpec` (`:190`), `plan` (`:293`)
+  and `commit_one` (`:354`).
+- **`observer.rs`** — `SrBoardObserver`, exhaustive over all six `EconomicEvent` variants.
+- **`commands.rs`** — `register` (`:51`), the board's own notice (`:277`), `run_post` (`:350`),
+  `lifestyle_cmd` (`:753`), `nuyen_cmd` (`:830`), `sr_clock` (`:954`), `sr_migrate` (`:989`).
+
+**The run, end to end, and which authority each step uses.**
+
+| step | verb | authority |
+|---|---|---|
+| draft + offer | `+run/post` | the **payer is the issuer** (D-E6-19): personally, or through `scope=` an officer holding `contract.draft` on it (`resolve_issuer`) |
+| escrow | (the same call) | the payer's own `accept_contract` — E4b2 places the consideration hold at *their* accept, so **no listing exists before its escrow** (answer 24). A refusal cancels the draft (M17) |
+| apply | `+run/apply <id>=<party>` | the party's **leader**, gated first by `mush_party::may_view` |
+| crew | `+run/crew <id>=accept` | the payer again, as the **author** of an A′ amendment: the crew join as parties, every row is rewritten to their own `SrProfile.account`s, and the payer's acceptance and escrow stand |
+| bind | `@contract/accept` | each runner's own; the first locks the roster, the last activates |
+| attest | `@contract/attest <id>=<row>` | the **named adjudicator**, who replaces every condition's own attestor set |
+| settle | the economy sweep | `ContractAuth`; the board only mirrors what it hears |
+
+**The outcome table as built** (D-E6-6, answer 7). Every row's payouts are `Share::Exact` and sum to
+the escrowed total exactly, so `remainder_to` is inert and resolves to the payer's own account
+(M18). Three row shapes: the first row pays `pay − fee` to the crew; a middle row pays half of that
+(floored) to the crew and the rest back to the payer; the last row of a multi-row table pays the
+`advance` to the crew and the **reserve** back to the payer under `ExpenseTreatment::Returned`. The
+fixer's `fee` is a named share in **every** row. Before crewing the crew's share sits on the payer's
+own account (M6); at `+run/crew accept` it is split across the roster by `even_split` — the floor
+each, the remainder one minor unit at a time in roster order — so the sum is exact and **no
+remainder reaches the fixer**. Shares naming one account are merged and zero shares dropped.
+
+**The lifestyle downgrade rule as built** (D-E6-3, D-E6-23, M11). One fixed-amount obligation per
+profiled character on `sr.month`, created through `create_obligation` under the actor's own debit
+authority, `grace = 1`, `maximum_catch_up = 1`. The driver is `ObligationChanged`, and what acts is
+the **delta**: a miss counts only when the record's `missed_total` is above the high-water mark the
+profile already accounts for. `Grace` (the first miss) adds the period to `arrears`, bumps
+`unpaid_periods`, sends one private notice (capped at three, then silent) and **downgrades
+nothing**. `Delinquent` (the second) does the same and then replaces the record: cancel, drop one
+tier, `create_obligation` at the new tier with `unpaid_periods` and `arrears` **carried**. A
+forgiven period increments `forgiven_total` and never `missed_total`, so a downtime or clock-jump
+backlog moves nothing; catch-up 1 makes one fire one attempt, so a ten-period backlog can never be
+the second miss. `street` is free, so the ladder terminates. `+lifestyle/set` is refused while the
+profile or the live record is in arrears, so a tier change can never wipe a miss; `+lifestyle/pay`
+posts the arrears to `system:sr.lifestyle` under the player's **own** authority (keyed on the
+`sr.month` ordinal) and only then reinstates.
+
+**The one `mush-economy` addition: `cancel_contract`** (`contract_live.rs:4885`) — the fourth
+programmatic seam, game-neutral, and the reason it exists is E6a's own: `+run/post` must cancel a
+draft whose accept was refused (M17), `+run/withdraw` is the payer taking a listing down, and
+neither may dispatch `@contract/cancel` from inside a handler. It admits a `Draft`, an `Offered`
+contract, **and A′'s other face** — a live contract with no deliverables that nobody but its own
+author has accepted, which is exactly a `Listed` run (S1 deviation 2). It returns whether the
+contract actually reached a terminal state, so a refused refund is never reported as done. Four
+tests in `e4b2.rs` (`e6a_cancel_contract_…`).
+
+**Wiring.** `mush-party` in `server_modules_with` before the rulesets (`modules.rs:242`); the SR
+board observer appended by `econ_observers` (`modules.rs:253`) **only when Shadowrun is enabled**;
+`ruleset_modules(.., sr)` freezes `[shadowrun.economy]` into the ruleset; `ShadowrunCfg` /
+`ShadowrunEconomyCfg` in `mush-config` (`config.rs:512,525`) with
+`config_ext::shadowrun_economy_config` (`:250`) validating every word; and
+`config_ext::shadowrun_cadences` (`:223`) + `economy_config_with` (`:78`) contribute the `sr.month`
+stanza to `[economy.cadences]` **unless the operator declared one of that name** — so the economy
+registers its `ClockProvider` at composition and creates or adopts the clock at boot, and
+`@sr/clock` is show-only.
+
+**Deviations from §3, with reasons.**
+
+1. **`cancel_contract` is a fifth economy seam** (§2 listed four). Without it the ruleset had no way
+   to honour M17 or `+run/withdraw` except by dispatching a command from inside a handler.
+2. **`cancel_contract` admits an author-only live contract**, and `+run/withdraw` needs it: a
+   one-party contract activates at its author's own accept (S1 deviation 2), so a `Listed` run's
+   contract is `Active`, not `Offered`. The board's mirror therefore reads `Active` as `Crewed`
+   **only when a crew is on the listing** (`boot.rs:473`, `observer.rs`). "A live agreement is not
+   one party's to tear up" is a rule about other people's consent; here there is none to tear up.
+3. **`+run/post` takes `fixer=` / `fee=` / `advance=` / `account=` / `days=` beyond §3.4's
+   grammar**, and `+run/split` edits the `fee` and `advance` slots rather than a `<slot|who>`. While
+   a run is `Listed` there is no roster to re-split, so those two are the only editable slots; a
+   fixer named without a `fee` row is refused outright, because an unnamed remainder must never
+   reach them.
+4. **`RunTemplate` gains `applied: Vec<u64>`** (≤ 8). §3.1's shape had nowhere to hold a pending
+   application between `+run/apply` and `+run/crew`; `accept` answers the first applicant unless an
+   explicit party id follows.
+5. **`@sr/migrate commit` adopts an approved character with nothing to mint**, opening the account
+   and writing the profile. M13 asks for the adoption of a character whose profile records no mint;
+   the zero-allotment case is the same shape, and refusing it would leave them outside the layer.
+6. **`SrProfile` gains `unpaid_since`** — the `sr.month` ordinal the counters and the
+   `+lifestyle/pay` idempotency key are keyed on (E5c T3: never wall time).
+7. **A re-entered `on_world_loaded` tolerates a duplicate payload-handler registration**
+   (`lib.rs:88`). A restart composes a fresh engine, so this is not a production path; it is what
+   makes the boot reconciliation re-runnable, and therefore testable.
+8. **`ShadowrunRuleset` registers no tick.** The board needs none: a listing's expiry *is* its
+   contract's deadline (M8), swept by the economy, and the board hears the result through
+   `ContractChanged`. `store.rs` keeps the tick constants for E6b.
+
+**Handoffs.**
+
+- **E6b** registers `with_canon_outcome_kinds(vec!["scene.outcome"])`; `+run/post` then admits
+  `before`/`after`/`fact` rows (`ContractSpec::deterministic` is already the switch) and the board's
+  `notice.kinds` stops being the constant `["attest"]`. `fence_rate_immediate` /
+  `fence_rate_consign` / `fence_delay_secs` are parsed and inert, waiting for it.
+- **E6c** gets `catalog_paths`, `chargen_shopping`, `quote_ttl_*` and `chargen_carryover_cap` — all
+  parsed, all inert. Answer 17's carry-over cap is deliberately **not applied** and is read in
+  exactly one place (`chargen.rs`'s `commit_one`, as `let _ =`), so turning it on is a one-line
+  change beside a comment saying why it is off.
+- **E7** gets `sr.run.participated` answered from `Settled { transaction }`, never from board state,
+  and the account-distinctness verdict at the roster lock (doc 10 §15 R3, G10) — `+run/crew accept`
+  already derives every payout account from the roster and refuses a crew containing the
+  adjudicator.
 
 ---
 

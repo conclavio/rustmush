@@ -1,0 +1,36 @@
+[package]
+name = "mush-party"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "mush-party (E6a): the ephemeral party subsystem — a game-neutral, money-blind roster of players who mean to do a thing together, its Forming/Locked/Disbanded state machine, the ruleset lock/release/unlock seam, and the +party surface."
+
+# D-E6-5: a party is NOT an economic principal, and the contract never points back
+# at it. That is a *dependency* claim before it is a design claim, so this list is
+# the enforcement: mush-core plus serde, serde_json and smol_str, and nothing else.
+# No mush-economy, no mush-org, no mush-faction edge — ever. `cargo tree -p
+# mush-party` is the test.
+#
+# `tracing` is the one addition to that list, and it is not a game edge: it is the
+# logging facade mush-core already pulls in, needed because a party document that
+# fails its wire is dropped **loudly** at boot rather than failing it.
+[dependencies]
+mush-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+smol_str.workspace = true
+tracing.workspace = true
+
+# Dev-only, and therefore not part of the D-E6-5 claim above (`cargo tree -p
+# mush-party` without `--all-targets` shows none of these). `mush-proto` is here so
+# the acceptance suite can name `OutputEvent` when it asserts that a refusal really
+# was a refusal; neither `mush-core` nor `mush-testkit` re-exports it.
+[dev-dependencies]
+mush-testkit.workspace = true
+mush-store.workspace = true
+mush-proto.workspace = true
+tokio.workspace = true
+
+[lints]
+workspace = true

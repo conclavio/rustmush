@@ -2,8 +2,14 @@
 //! module configs. These live here (not in `mush-config`) so `mush-config` need
 //! not depend on `mush-llm` / `mush-weather` / `mush-worldgen` / `ruleset-wod`.
 
-use mush_config::config::{EconomyCfg, OnboardingCfg, WeatherCfg, WodCfg, WorldgenCfg};
+use mush_config::config::{
+    EconomyCfg, OnboardingCfg, ShadowrunCfg, WeatherCfg, WodCfg, WorldgenCfg,
+};
 use serde::Deserialize;
+
+/// Re-exported so a host that contributes a declared cadence needs no direct
+/// `mush-economy` dependency (the E6a addendum's `sr.month` contribution).
+pub use mush_economy::DeclaredCadence;
 
 /// Deserialize the raw `[llm]` section into a [`mush_llm::LlmConfig`].
 ///
@@ -51,6 +57,28 @@ pub fn worldgen_config(cfg: &WorldgenCfg) -> mush_worldgen::WorldgenConfig {
 /// refuses (a 33rd clock, a name that is not a canonical clock id, a non-positive
 /// period).
 pub fn economy_config(cfg: &EconomyCfg) -> Result<mush_economy::EconomyConfig, String> {
+    economy_config_with(cfg, &[])
+}
+
+/// [`economy_config`] with the **host-contributed** declared cadences a selected
+/// ruleset needs (SP1, D-LBK-7; the E6a addendum).
+///
+/// A ruleset's campaign clock is not the operator's to remember: when
+/// `[rulesets].enabled` names `shadowrun`, `sr.month` must exist as a declared
+/// cadence or no lifestyle obligation can be created at all. So the host contributes
+/// the stanza — **unless the operator declared one of that name themselves**, in
+/// which case theirs stands untouched, exactly as `declared::adopt` leaves a live
+/// clock alone. Nothing here rewrites a running clock; it only ensures the
+/// declaration exists so the economy registers a provider for it at composition and
+/// creates or adopts it at boot.
+///
+/// # Errors
+///
+/// Everything [`economy_config`] refuses.
+pub fn economy_config_with(
+    cfg: &EconomyCfg,
+    contributed: &[(&str, mush_economy::DeclaredCadence)],
+) -> Result<mush_economy::EconomyConfig, String> {
     let mut cadences = std::collections::BTreeMap::new();
     for (name, c) in &cfg.cadences {
         let clock = mush_economy::DeclaredCadenceClock::parse(&c.clock).ok_or_else(|| {
@@ -78,6 +106,17 @@ pub fn economy_config(cfg: &EconomyCfg) -> Result<mush_economy::EconomyConfig, S
                 catch_up,
             },
         );
+    }
+    for (name, decl) in contributed {
+        // The operator's own declaration always wins — matched the way the cadence
+        // table matches names (case-insensitively), so `SR.Month` is not a second clock.
+        if cadences
+            .keys()
+            .any(|k: &smol_str::SmolStr| k.eq_ignore_ascii_case(name))
+        {
+            continue;
+        }
+        cadences.insert(smol_str::SmolStr::new(name), decl.clone());
     }
     let config = mush_economy::EconomyConfig {
         mint_obligation_cap_major: cfg.mint_obligation_cap_major,
@@ -171,6 +210,103 @@ pub fn wod_economy_config(cfg: &WodCfg) -> Result<ruleset_wod::WodEconomyConfig,
             .map(mush_core::ObjId)
             .collect(),
         income,
+    })
+}
+
+/// The declared cadences a Shadowrun server contributes to `[economy.cadences]`
+/// (the E6a addendum; §11 q1's defaults).
+///
+/// `sr.month` on the world's IC clock, a thirty-IC-day period, clock-level catch-up
+/// 3 — the clock *forgives* on the clock; the lifestyle schedule's own
+/// `maximum_catch_up` is 1 and decides *attempts* (D-E6-23, G12).
+#[must_use]
+pub fn shadowrun_cadences(
+    cfg: &ruleset_shadowrun::SrEconomyConfig,
+) -> Vec<(String, mush_economy::DeclaredCadence)> {
+    if !cfg.enabled {
+        return Vec::new();
+    }
+    vec![(
+        cfg.lifestyle_clock.to_string(),
+        mush_economy::DeclaredCadence {
+            clock: mush_economy::DeclaredCadenceClock::WorldIc,
+            period_secs: ruleset_shadowrun::SR_MONTH_PERIOD_SECS,
+            catch_up: ruleset_shadowrun::SR_MONTH_CATCH_UP,
+        },
+    )]
+}
+
+/// The ruleset-facing `[shadowrun.economy]` config (E6a, 08f §9, answer 16).
+///
+/// Every word is validated here rather than defaulted, on `[rulesets].enabled`'s
+/// rule: a silently-ignored typo is worse than not starting. A `lifestyle_costs` key
+/// that is not a tier must not quietly become "this tier is free".
+///
+/// # Errors
+///
+/// An unknown lifestyle tier in `lifestyle_costs`, an empty `instrument` or
+/// `lifestyle_clock`, a permille fence rate above 1000, or a non-positive
+/// `board_ttl_secs`.
+pub fn shadowrun_economy_config(
+    cfg: &ShadowrunCfg,
+) -> Result<ruleset_shadowrun::SrEconomyConfig, String> {
+    let e = &cfg.economy;
+    let instrument = e.instrument.trim();
+    if instrument.is_empty() {
+        return Err("[shadowrun.economy].instrument: an instrument needs a code".to_string());
+    }
+    let clock = e.lifestyle_clock.trim();
+    if clock.is_empty() {
+        return Err(
+            "[shadowrun.economy].lifestyle_clock: a campaign clock needs a name".to_string(),
+        );
+    }
+    for rate in [e.fence_rate_immediate, e.fence_rate_consign] {
+        if rate > 1_000 {
+            return Err(format!(
+                "[shadowrun.economy]: a fence rate is permille of the baseline; {rate} is above \
+                 1000"
+            ));
+        }
+    }
+    if e.board_ttl_secs <= 0 {
+        return Err(
+            "[shadowrun.economy].board_ttl_secs: a listing needs a positive window".to_string(),
+        );
+    }
+    let mut lifestyle_costs = if e.lifestyle_costs.is_empty() {
+        ruleset_shadowrun::default_lifestyle_costs()
+    } else {
+        std::collections::BTreeMap::new()
+    };
+    for (tier, cost) in &e.lifestyle_costs {
+        let t = ruleset_shadowrun::LifestyleTier::parse(tier).ok_or_else(|| {
+            format!(
+                "[shadowrun.economy.lifestyle_costs]: {tier:?} is not a lifestyle tier (use \
+                 \"street\", \"squatter\", \"low\", \"middle\", \"high\" or \"luxury\")"
+            )
+        })?;
+        lifestyle_costs.insert(t, *cost);
+    }
+    Ok(ruleset_shadowrun::SrEconomyConfig {
+        enabled: e.enabled,
+        instrument: smol_str::SmolStr::new(instrument),
+        lifestyle_clock: smol_str::SmolStr::new(clock),
+        lifestyle: e.lifestyle,
+        player_run_offers: e.player_run_offers,
+        organization_run_offers: e.organization_run_offers,
+        chargen_shopping: e.chargen_shopping,
+        catalog_paths: e.catalog_paths.clone(),
+        lifestyle_costs,
+        quote_ttl_live: e.quote_ttl_live,
+        quote_ttl_remote: e.quote_ttl_remote,
+        fence_rate_immediate: e.fence_rate_immediate,
+        fence_rate_consign: e.fence_rate_consign,
+        fence_delay_secs: e.fence_delay_secs,
+        active_offer_cap: e.active_offer_cap,
+        board_ttl_secs: e.board_ttl_secs,
+        board_cap: e.board_cap,
+        chargen_carryover_cap: e.chargen_carryover_cap,
     })
 }
 

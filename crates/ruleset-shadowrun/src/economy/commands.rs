@@ -1,0 +1,1104 @@
+//! The E6a verb surface (08f §3.4).
+//!
+//! | verb | who | what |
+//! |---|---|---|
+//! | `+run` | player | `/list`, `/show`, `/post`, `/split`, `/apply`, `/crew`, `/withdraw` |
+//! | `+lifestyle` | player | view; `/set <tier>`, `/pay` |
+//! | `+nuyen` | player | the derived balance after approval; the sheet field before |
+//! | `@sr` | staff | `/economy [show]`, `/clock`, `/migrate [dry\|commit] [<who>]`, `/profile <who>` |
+//!
+//! Three disclosure rules run through all of them, and each is the economy's own:
+//!
+//! - **Existence hiding, always.** A run, party or profile the actor may not view is
+//!   `"No such run."` / `"No such party."` — identical for nonexistent and
+//!   unviewable (08a decision 13). Every account render goes through
+//!   [`mush_economy::money_on`], which asks `may_view_account` once for every call
+//!   site and renders an unviewable account exactly like an unknown one (D2).
+//! - **`+run/show` renders the board's own notice, never the terms** (M5, G7): the
+//!   name, the state, the window, the *kinds* of condition, and the Johnson when the
+//!   poster announced one. The contract's own notice is the economy's to render, and
+//!   `contract_notice` is what renders it.
+//! - **The sheet number is not money after approval** (D-E6-1). `+nuyen` shows the
+//!   account balance once the character is approved, the sheet field before; the
+//!   number itself is only ever shown to its owner and to staff.
+
+use std::sync::Arc;
+
+use mush_core::{
+    ArgShape, CmdError, CommandSpec, Ctx, ModError, ObjId, Registrar, Role, match_object, perm,
+};
+use mush_economy::{
+    AccountId, Amount, AttestorSet, EconomyStore, MAX_OUTCOMES, NamedResource, may_view_account,
+    parse_account, parse_opts, parse_principal,
+};
+use mush_faction::{FactionId, FactionState};
+use mush_org::{OrgScopeId, PrincipalId};
+use smol_str::SmolStr;
+
+use crate::Sr5Cmd;
+use crate::economy::board::{self, NO_SUCH_RUN, PostRequest, RunSplit, SplitSlot};
+use crate::economy::chargen::{MigrationVerdict, approval_stamp};
+use crate::economy::config::{
+    LifestyleTier, MAX_RUN_OUTCOMES, MAX_RUN_SLOTS, SR_MONTH, SrEconomyConfig,
+};
+use crate::economy::lifestyle::{self, LifestyleError};
+use crate::economy::record::{BoardVisibility, RunId, RunState, RunTemplate};
+use crate::economy::store::SrEconomyStore;
+
+/// Wire the E6a surface. Every verb registers whatever the switches say — an
+/// `enabled = false` server answers "not enabled on this server", it does not hide
+/// the verb (E5c deviation 1).
+pub(crate) fn register(reg: &mut Registrar<'_>, cmd: Arc<Sr5Cmd>) -> Result<(), ModError> {
+    reg.command(
+        CommandSpec {
+            name: "+run".into(),
+            switches: vec![
+                "list".into(),
+                "show".into(),
+                "post".into(),
+                "split".into(),
+                "apply".into(),
+                "crew".into(),
+                "withdraw".into(),
+            ],
+            shape: ArgShape::EqPair,
+            help: "+run/list [public|faction|mine]  --  the run board, newest first.\n\
+                   +run/show <id>  --  a listing's notice (never its terms).\n\
+                   +run/post <name>=<pay> [outcomes=success,failure] [scope=<org scope>] \
+                   [account=<id>] [johnson=<who>] [fixer=<who>] [fee=<amount>] \
+                   [advance=<amount>] [adjudicator=<who>] [slots=<n>] \
+                   [board=public|faction:<f>|invite:<party>] [days=<n>]  --  draft, offer and \
+                   escrow in one act. You are the payer and the issuer; the escrow is placed \
+                   from your own account, so nothing is listed that is not funded.\n\
+                   +run/split <id>=fee|advance <amount>  --  edit a slot while still listed.\n\
+                   +run/apply <id>=<party>  --  your party offers itself (leader only).\n\
+                   +run/crew <id>=accept|decline [<party>]  --  the payer's answer.\n\
+                   +run/withdraw <id>  --  take a listing down; the escrow is refunded."
+                .into(),
+            ..CommandSpec::default()
+        },
+        {
+            let cmd = Arc::clone(&cmd);
+            Arc::new(move |ctx: &mut Ctx<'_>| run_cmd(&cmd, ctx))
+        },
+    )?;
+
+    reg.command(
+        CommandSpec {
+            name: "+lifestyle".into(),
+            switches: vec!["set".into(), "pay".into()],
+            shape: ArgShape::EqPair,
+            help: "+lifestyle  --  your tier, its cost, and what you owe.\n\
+                   +lifestyle/set <tier>  --  street|squatter|low|middle|high|luxury. Applies \
+                   from the NEXT period, and is refused while you are in arrears.\n\
+                   +lifestyle/pay  --  pay the arrears, then reinstate."
+                .into(),
+            ..CommandSpec::default()
+        },
+        Arc::new(move |ctx: &mut Ctx<'_>| lifestyle_cmd(ctx)),
+    )?;
+
+    reg.command(
+        CommandSpec {
+            name: "+nuyen".into(),
+            shape: ArgShape::Raw,
+            help: "+nuyen [<who>]  --  your nuyen balance (the account after approval, the \
+                   sheet field before). Someone else's only if you are staff."
+                .into(),
+            ..CommandSpec::default()
+        },
+        {
+            let cmd = Arc::clone(&cmd);
+            Arc::new(move |ctx: &mut Ctx<'_>| nuyen_cmd(&cmd, ctx))
+        },
+    )?;
+
+    reg.command(
+        CommandSpec {
+            name: "@sr".into(),
+            switches: vec![
+                "economy".into(),
+                "clock".into(),
+                "migrate".into(),
+                "profile".into(),
+            ],
+            shape: ArgShape::EqPair,
+            min_role: Role::Royalty,
+            help: "@sr/economy [show]  --  the effective [shadowrun.economy] block.\n\
+                   @sr/clock  --  the sr.month cadence clock (declared in [economy.cadences]; \
+                   this verb shows it, it never creates one).\n\
+                   @sr/migrate dry|commit [<who>]  --  mint an approved character's sheet nuyen \
+                   once from system:sr.migration. Idempotent; a re-run reports the first result.\n\
+                   @sr/profile <who>  --  one character's economic profile."
+                .into(),
+            ..CommandSpec::default()
+        },
+        {
+            let cmd = Arc::clone(&cmd);
+            Arc::new(move |ctx: &mut Ctx<'_>| sr_cmd(&cmd, ctx))
+        },
+    )?;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// shared
+// ---------------------------------------------------------------------------
+
+fn config(ctx: &Ctx<'_>) -> SrEconomyConfig {
+    ctx.w
+        .module_state::<SrEconomyStore>()
+        .map_or_else(SrEconomyConfig::default, |s| s.config().clone())
+}
+
+fn require_enabled(cfg: &SrEconomyConfig) -> Result<(), CmdError> {
+    if cfg.enabled {
+        Ok(())
+    } else {
+        Err(CmdError::msg(
+            "The Shadowrun economic layer is not enabled on this server.",
+        ))
+    }
+}
+
+fn say(ctx: &mut Ctx<'_>, line: impl Into<String>) {
+    let actor = ctx.actor;
+    ctx.out.sys_to_actor(actor, "sr.economy", line.into());
+}
+
+fn parse_run_id(s: &str) -> Option<RunId> {
+    s.trim()
+        .trim_start_matches('#')
+        .parse::<u64>()
+        .ok()
+        .map(RunId)
+}
+
+fn parse_u64(s: &str) -> Option<u64> {
+    s.trim().trim_start_matches('#').parse::<u64>().ok()
+}
+
+fn amount_of(s: &str) -> Option<Amount> {
+    s.trim().parse::<i64>().ok().map(Amount::from_minor)
+}
+
+// ---------------------------------------------------------------------------
+// +run
+// ---------------------------------------------------------------------------
+
+fn run_cmd(cmd: &Sr5Cmd, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    let cfg = config(ctx);
+    let sw = ctx.switches.clone();
+    if sw.has("post") {
+        require_enabled(&cfg)?;
+        return run_post(ctx, &cfg);
+    }
+    if sw.has("split") {
+        require_enabled(&cfg)?;
+        return run_split(ctx);
+    }
+    if sw.has("apply") {
+        require_enabled(&cfg)?;
+        return run_apply(ctx);
+    }
+    if sw.has("crew") {
+        require_enabled(&cfg)?;
+        return run_crew(ctx);
+    }
+    if sw.has("withdraw") {
+        require_enabled(&cfg)?;
+        return run_withdraw(ctx);
+    }
+    if sw.has("show") {
+        require_enabled(&cfg)?;
+        return run_show(ctx);
+    }
+    let _ = cmd;
+    require_enabled(&cfg)?;
+    run_list(ctx, &cfg)
+}
+
+fn run_list(ctx: &mut Ctx<'_>, cfg: &SrEconomyConfig) -> Result<(), CmdError> {
+    let raw = ctx.args.lhs().trim().to_ascii_lowercase();
+    let filter = match raw.as_str() {
+        "" | "all" => None,
+        "public" | "faction" | "mine" => Some(raw.clone()),
+        _ => {
+            return Err(CmdError::msg("Usage: +run/list [public|faction|mine]"));
+        }
+    };
+    let page = cfg.board_cap.min(crate::economy::config::BOARD_PAGE);
+    let ids = board::visible(ctx.w, ctx.actor, filter.as_deref(), page);
+    if ids.is_empty() {
+        say(ctx, "The board has nothing for you.");
+        return Ok(());
+    }
+    say(ctx, format!("Run board ({} listing(s)):", ids.len()));
+    for id in ids {
+        let Some(r) = ctx
+            .w
+            .module_state::<SrEconomyStore>()
+            .and_then(|s| s.run(id).cloned())
+        else {
+            continue;
+        };
+        let line = format!(
+            "  #{}  {}  [{}]  {}  slots {}",
+            r.id,
+            r.notice.name,
+            r.state.word(),
+            r.board.word(),
+            r.slots
+        );
+        say(ctx, line);
+    }
+    Ok(())
+}
+
+fn run_show(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    let id = parse_run_id(ctx.args.lhs()).ok_or_else(|| CmdError::msg(NO_SUCH_RUN))?;
+    let Some(r) = ctx
+        .w
+        .module_state::<SrEconomyStore>()
+        .and_then(|s| s.run(id).cloned())
+        .filter(|r| board::may_view(ctx.w, ctx.actor, r))
+    else {
+        return Err(CmdError::msg(NO_SUCH_RUN));
+    };
+    for line in notice_lines(ctx, &r) {
+        say(ctx, line);
+    }
+    Ok(())
+}
+
+/// The **board's own notice** (M5, G7): name, state, window, condition kinds, and the
+/// Johnson when announced. Never the terms; the amounts are rendered only to somebody
+/// who may already view the funding account.
+fn notice_lines(ctx: &Ctx<'_>, r: &RunTemplate) -> Vec<String> {
+    let mut out = vec![
+        format!("Run #{}: {}", r.id, r.notice.name),
+        format!(
+            "  state: {}   board: {}   slots: {}",
+            r.state.word(),
+            r.board.word(),
+            r.slots
+        ),
+        format!(
+            "  window: closes at {} (posted {})",
+            r.expires_at, r.posted_at
+        ),
+        format!(
+            "  settles on: {}",
+            if r.notice.kinds.is_empty() {
+                "attest".to_string()
+            } else {
+                r.notice.kinds.join(", ")
+            }
+        ),
+        format!("  outcomes: {}", r.outcomes.join(", ")),
+    ];
+    if let Some(j) = &r.notice.johnson {
+        out.push(format!(
+            "  Johnson: {}",
+            mush_economy::render_principal(ctx, j)
+        ));
+    }
+    // The money is the contract's, and it is shown only to somebody the *account's*
+    // own view gate already admits (D2). Everybody else is told nothing at all —
+    // never a placeholder.
+    if may_view_account(ctx.w, ctx.actor, r.account) {
+        out.push(format!(
+            "  pay: {}   fixer fee: {}   advance: {}",
+            mush_economy::money_on(ctx, r.account, r.pay),
+            mush_economy::money_on(ctx, r.account, r.fee),
+            mush_economy::money_on(ctx, r.account, r.advance)
+        ));
+    }
+    // The contract's own notice, rendered by the economy so the ruleset never keeps a
+    // third copy of the rule (E5b-D36/D37).
+    if let Some(c) = ctx
+        .w
+        .module_state::<EconomyStore>()
+        .and_then(|s| s.snapshot().contract(r.contract).cloned())
+        && mush_economy::may_view_contract(ctx.w, ctx.actor, r.contract)
+    {
+        out.extend(
+            mush_economy::contract_notice(ctx, &c)
+                .into_iter()
+                .map(|l| format!("  {l}")),
+        );
+    }
+    out
+}
+
+/// The option keys `+run/post` understands.
+const POST_KEYS: [&str; 11] = [
+    "outcomes",
+    "scope",
+    "account",
+    "johnson",
+    "fixer",
+    "fee",
+    "advance",
+    "adjudicator",
+    "slots",
+    "board",
+    "days",
+];
+
+#[allow(clippy::too_many_lines)]
+fn run_post(ctx: &mut Ctx<'_>, cfg: &SrEconomyConfig) -> Result<(), CmdError> {
+    const USAGE: &str = "Usage: +run/post <name>=<pay> [outcomes=a,b] [scope=<id>] \
+                         [account=<id>] [johnson=<who>] [fixer=<who>] [fee=<n>] [advance=<n>] \
+                         [adjudicator=<who>] [slots=<n>] [board=public|faction:<f>|invite:<p>] \
+                         [days=<n>]";
+    let name = ctx.args.lhs().trim().to_string();
+    let rhs = ctx.args.rhs().ok_or_else(|| CmdError::msg(USAGE))?;
+    if name.is_empty() {
+        return Err(CmdError::msg(USAGE));
+    }
+    let (rest, opts) = parse_opts(rhs, &POST_KEYS);
+    let pay = amount_of(&rest).ok_or_else(|| CmdError::msg(USAGE))?;
+
+    let scope = match opts.get("scope") {
+        Some(s) => Some(
+            parse_u64(s)
+                .map(OrgScopeId)
+                .ok_or_else(|| CmdError::msg("No such scope."))?,
+        ),
+        None => None,
+    };
+    // §9's partial-switch table: each row says what it stops, in the off-mode words.
+    if scope.is_some() && !cfg.organization_run_offers {
+        return Err(CmdError::msg(
+            "Organizations do not post runs on this server.",
+        ));
+    }
+    if scope.is_none() && !cfg.player_run_offers {
+        return Err(CmdError::msg("Players do not post runs on this server."));
+    }
+    // The funding account: named, or the poster's own profile account, or the org's
+    // account on the named scope.
+    let account = resolve_account(ctx, scope, opts.get("account").map(String::as_str))?;
+    // **The payer is derived from the account's own owner** (answer 4: the accountable
+    // escrow principal is a fact about the wallet), never named by the poster.
+    let principal = ctx
+        .w
+        .module_state::<EconomyStore>()
+        .and_then(|s| s.snapshot().account(account).map(|a| a.owner.clone()))
+        .ok_or_else(|| refuse_account(ctx, account))?;
+    // §11 q7: the poster may not name an org account they cannot view.
+    if !may_view_account(ctx.w, ctx.actor, account) {
+        return Err(refuse_account(ctx, account));
+    }
+    // D-E6-4 / M4: a `System` account is refused **at post**, decided on the account
+    // owner before any draft exists, in that account's own hiding text.
+    if matches!(principal, PrincipalId::System(_)) {
+        return Err(CmdError::msg("No such account."));
+    }
+
+    let names = outcome_names(opts.get("outcomes").map(String::as_str))?;
+    let slots = match opts.get("slots") {
+        Some(s) => s
+            .trim()
+            .parse::<u8>()
+            .ok()
+            .filter(|n| (1..=MAX_RUN_SLOTS).contains(n))
+            .ok_or_else(|| CmdError::msg(format!("Slots must be 1..={MAX_RUN_SLOTS}.")))?,
+        None => 3,
+    };
+    let fee = match opts.get("fee") {
+        Some(s) => {
+            amount_of(s).ok_or_else(|| CmdError::msg("A fee is a whole number of nuyen."))?
+        }
+        None => Amount::ZERO,
+    };
+    let advance = match opts.get("advance") {
+        Some(s) => {
+            amount_of(s).ok_or_else(|| CmdError::msg("An advance is a whole number of nuyen."))?
+        }
+        None => Amount::ZERO,
+    };
+    let fixer = match opts.get("fixer") {
+        Some(s) => Some(parse_principal(ctx, s).ok_or_else(|| CmdError::msg("No such fixer."))?),
+        None => None,
+    };
+    // A fixer is `roles.author`/`representative` with a fee row, and NEVER the issuer
+    // (M1, D-E6-19): the fee is paid to their account, the run is still the payer's.
+    let fixer_account = match &fixer {
+        Some(p) => Some(principal_account(ctx, p).ok_or_else(|| {
+            CmdError::msg("That fixer has no nuyen account to be paid a fee into.")
+        })?),
+        None => None,
+    };
+    if fixer.is_some() && fee.minor() <= 0 {
+        return Err(CmdError::msg(
+            "A fixer needs a fee row (fee=<amount>); an unnamed remainder never reaches them.",
+        ));
+    }
+    let johnson = match opts.get("johnson") {
+        Some(s) => Some(parse_principal(ctx, s).ok_or_else(|| CmdError::msg("No such Johnson."))?),
+        None => None,
+    };
+    // The roles rule (answer 22, §3.3): the representative is never the payer.
+    if let Some(j) = &johnson
+        && *j == principal
+    {
+        return Err(CmdError::msg(
+            "The Johnson is the visible representative; on your own run that is you, so leave it \
+             unset.",
+        ));
+    }
+    // D-E6-20: `adjudicator=` defaults to `party:<payer>`; a NAMED one is never the
+    // payer and never the poster.
+    let (adjudicator, adjudicator_named) = match opts.get("adjudicator") {
+        Some(s) => {
+            let p = parse_principal(ctx, s).ok_or_else(|| CmdError::msg("No such adjudicator."))?;
+            if p == principal || p == PrincipalId::Object(ctx.actor) {
+                return Err(CmdError::msg(
+                    "The adjudicator settles the run and is never a party to it — not the payer, \
+                     and not you.",
+                ));
+            }
+            (AttestorSet::Party(p), true)
+        }
+        None => (AttestorSet::Party(principal.clone()), false),
+    };
+    let board = parse_board(ctx, opts.get("board").map(String::as_str))?;
+    let days = match opts.get("days") {
+        Some(s) => s
+            .trim()
+            .parse::<i64>()
+            .ok()
+            .filter(|n| *n > 0)
+            .ok_or_else(|| CmdError::msg("days must be a positive number."))?,
+        None => cfg.board_ttl() / 86_400,
+    };
+    let ttl = days.saturating_mul(86_400).min(cfg.board_ttl()).max(60);
+    let expires_at = ctx.w.now().saturating_add(ttl);
+
+    let req = PostRequest {
+        name: SmolStr::new(&name),
+        scope,
+        account,
+        principal,
+        split: RunSplit {
+            pay,
+            fee,
+            advance,
+            payer_account: account,
+            fixer_account,
+            names,
+        },
+        adjudicator,
+        adjudicator_named,
+        johnson,
+        fixer,
+        slots,
+        board,
+        expires_at,
+    };
+    match board::post(ctx, cfg, req) {
+        Ok(id) => {
+            say(
+                ctx,
+                format!(
+                    "Run #{id} is listed and its escrow is placed. Nothing is on the board that \
+                     is not funded."
+                ),
+            );
+            Ok(())
+        }
+        Err((e, named)) => Err(board::refuse_post(ctx, &e, &named)),
+    }
+}
+
+/// The funding account: named, the poster's own, or the org's on the named scope.
+fn resolve_account(
+    ctx: &Ctx<'_>,
+    scope: Option<OrgScopeId>,
+    named: Option<&str>,
+) -> Result<AccountId, CmdError> {
+    if let Some(s) = named {
+        return parse_account(s).ok_or_else(|| CmdError::msg("No such account."));
+    }
+    let instrument = ctx
+        .w
+        .module_state::<SrEconomyStore>()
+        .and_then(|s| s.instrument.clone())
+        .ok_or_else(|| CmdError::msg("The nuyen instrument is not registered."))?;
+    let Some(scope) = scope else {
+        return ctx
+            .w
+            .module_state::<SrEconomyStore>()
+            .and_then(|s| s.profile(ctx.actor).and_then(|p| p.account))
+            .or_else(|| crate::economy::boot::personal_account(ctx, ctx.actor, &instrument))
+            .ok_or_else(|| CmdError::msg("You have no nuyen account to fund a run from."));
+    };
+    let mut found: Vec<AccountId> = ctx
+        .w
+        .module_state::<EconomyStore>()
+        .map(|s| {
+            s.snapshot()
+                .accounts()
+                .filter(|a| a.scope == Some(scope) && a.instrument == instrument)
+                .map(|a| a.id)
+                .collect()
+        })
+        .unwrap_or_default();
+    found.sort_unstable();
+    match found.as_slice() {
+        [one] => Ok(*one),
+        [] => Err(CmdError::msg("No such account.")),
+        _ => Err(CmdError::msg(
+            "That compartment has more than one nuyen account; name it with account=<id>.",
+        )),
+    }
+}
+
+fn principal_account(ctx: &Ctx<'_>, p: &PrincipalId) -> Option<AccountId> {
+    let instrument = ctx
+        .w
+        .module_state::<SrEconomyStore>()
+        .and_then(|s| s.instrument.clone())?;
+    ctx.w
+        .module_state::<EconomyStore>()?
+        .snapshot()
+        .accounts()
+        .find(|a| a.owner == *p && a.instrument == instrument && a.scope.is_none())
+        .map(|a| a.id)
+}
+
+fn refuse_account(ctx: &Ctx<'_>, id: AccountId) -> CmdError {
+    mush_economy::refuse_named(
+        ctx,
+        NamedResource::Account(id),
+        [],
+        "No such account.".to_string(),
+    )
+}
+
+fn outcome_names(raw: Option<&str>) -> Result<Vec<SmolStr>, CmdError> {
+    let raw = raw.unwrap_or("success,failure");
+    let names: Vec<SmolStr> = raw
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(SmolStr::new)
+        .collect();
+    if names.is_empty() {
+        return Err(CmdError::msg(
+            "A run always carries an outcome table, even with one row.",
+        ));
+    }
+    if names.len() > MAX_RUN_OUTCOMES.min(MAX_OUTCOMES) {
+        return Err(CmdError::msg(format!(
+            "A run carries at most {MAX_RUN_OUTCOMES} outcome rows."
+        )));
+    }
+    // `resolve_outcome` refuses two satisfied rows, so two rows with the same name
+    // would be a table nobody can read even though the economy would accept it.
+    for (i, n) in names.iter().enumerate() {
+        if names.iter().skip(i + 1).any(|m| m == n) {
+            return Err(CmdError::msg("Two outcome rows have the same name."));
+        }
+    }
+    Ok(names)
+}
+
+fn parse_board(ctx: &Ctx<'_>, raw: Option<&str>) -> Result<BoardVisibility, CmdError> {
+    let Some(raw) = raw else {
+        return Ok(BoardVisibility::Public);
+    };
+    let raw = raw.trim();
+    if raw.eq_ignore_ascii_case("public") {
+        return Ok(BoardVisibility::Public);
+    }
+    if let Some(rest) = raw.strip_prefix("faction:") {
+        let f = resolve_faction(ctx, rest).ok_or_else(|| CmdError::msg("No such faction."))?;
+        return Ok(BoardVisibility::Faction(f));
+    }
+    if let Some(rest) = raw.strip_prefix("invite:") {
+        let party = parse_u64(rest).ok_or_else(|| CmdError::msg(mush_party::NO_SUCH_PARTY))?;
+        if !mush_party::may_view(ctx.w, ctx.actor, mush_party::PartyId(party)) {
+            return Err(CmdError::msg(mush_party::NO_SUCH_PARTY));
+        }
+        return Ok(BoardVisibility::Invitation { party });
+    }
+    Err(CmdError::msg(
+        "board= is public, faction:<f>, or invite:<party>.",
+    ))
+}
+
+fn resolve_faction(ctx: &Ctx<'_>, raw: &str) -> Option<FactionId> {
+    let st = ctx.w.module_state::<FactionState>()?;
+    let raw = raw.trim();
+    if let Some(n) = parse_u64(raw) {
+        let id = FactionId(n);
+        if st.factions.contains_key(&id) {
+            return Some(id);
+        }
+    }
+    let staff = crate::economy::is_staff(ctx.w, ctx.actor);
+    st.faction_by_name(raw)
+        .filter(|f| st.faction_listed(ctx.actor, staff, f))
+        .map(|f| f.id)
+}
+
+fn run_split(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    const USAGE: &str = "Usage: +run/split <id>=fee|advance <amount>";
+    let id = parse_run_id(ctx.args.lhs()).ok_or_else(|| CmdError::msg(NO_SUCH_RUN))?;
+    let rhs = ctx.args.rhs().ok_or_else(|| CmdError::msg(USAGE))?;
+    let mut words = rhs.split_whitespace();
+    let slot = match words.next().map(str::to_ascii_lowercase).as_deref() {
+        Some("fee") => SplitSlot::Fee,
+        Some("advance") => SplitSlot::Advance,
+        _ => return Err(CmdError::msg(USAGE)),
+    };
+    let amount = words
+        .next()
+        .and_then(amount_of)
+        .ok_or_else(|| CmdError::msg(USAGE))?;
+    let contract = ctx
+        .w
+        .module_state::<SrEconomyStore>()
+        .and_then(|s| s.run(id).map(|r| r.contract));
+    match board::split(ctx, id, slot, amount) {
+        Ok(line) => {
+            say(ctx, line);
+            Ok(())
+        }
+        Err(e) => Err(board::refuse_board(ctx, contract, &e)),
+    }
+}
+
+fn run_apply(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    const USAGE: &str = "Usage: +run/apply <id>=<party>";
+    let id = parse_run_id(ctx.args.lhs()).ok_or_else(|| CmdError::msg(NO_SUCH_RUN))?;
+    let party = ctx
+        .args
+        .rhs()
+        .and_then(parse_u64)
+        .ok_or_else(|| CmdError::msg(USAGE))?;
+    // The leader offers their party — the party subsystem's own view rule decides
+    // whether this actor may even see it, and its leader field decides who may offer.
+    let leads = ctx
+        .w
+        .module_state::<mush_party::PartyStore>()
+        .and_then(|s| s.party(mush_party::PartyId(party)).map(|p| p.leader))
+        == Some(ctx.actor);
+    if !mush_party::may_view(ctx.w, ctx.actor, mush_party::PartyId(party)) {
+        return Err(CmdError::msg(mush_party::NO_SUCH_PARTY));
+    }
+    if !leads {
+        return Err(CmdError::msg("Only a party's leader offers it for a run."));
+    }
+    let contract = ctx
+        .w
+        .module_state::<SrEconomyStore>()
+        .and_then(|s| s.run(id).map(|r| r.contract));
+    match board::apply(ctx, id, party) {
+        Ok(line) => {
+            say(ctx, line);
+            Ok(())
+        }
+        Err(e) => Err(board::refuse_board(ctx, contract, &e)),
+    }
+}
+
+fn run_crew(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    const USAGE: &str = "Usage: +run/crew <id>=accept|decline [<party>]";
+    let id = parse_run_id(ctx.args.lhs()).ok_or_else(|| CmdError::msg(NO_SUCH_RUN))?;
+    let rhs = ctx.args.rhs().ok_or_else(|| CmdError::msg(USAGE))?;
+    let mut words = rhs.split_whitespace();
+    let verb = words.next().map(str::to_ascii_lowercase);
+    let party = words.next().and_then(parse_u64);
+    let contract = ctx
+        .w
+        .module_state::<SrEconomyStore>()
+        .and_then(|s| s.run(id).map(|r| r.contract));
+    let outcome = match verb.as_deref() {
+        Some("accept") => board::crew_accept(ctx, id, party),
+        Some("decline") => board::crew_decline(ctx, id),
+        _ => return Err(CmdError::msg(USAGE)),
+    };
+    match outcome {
+        Ok(line) => {
+            say(ctx, line);
+            Ok(())
+        }
+        Err(e) => Err(board::refuse_board(ctx, contract, &e)),
+    }
+}
+
+fn run_withdraw(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    let id = parse_run_id(ctx.args.lhs()).ok_or_else(|| CmdError::msg(NO_SUCH_RUN))?;
+    let contract = ctx
+        .w
+        .module_state::<SrEconomyStore>()
+        .and_then(|s| s.run(id).map(|r| r.contract));
+    match board::withdraw(ctx, id) {
+        Ok(line) => {
+            say(ctx, line);
+            Ok(())
+        }
+        Err(e) => Err(board::refuse_board(ctx, contract, &e)),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// +lifestyle
+// ---------------------------------------------------------------------------
+
+fn lifestyle_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    let cfg = config(ctx);
+    require_enabled(&cfg)?;
+    let sw = ctx.switches.clone();
+    if sw.has("set") {
+        let raw = ctx.args.lhs().trim().to_string();
+        let tier = LifestyleTier::parse(&raw).ok_or_else(|| {
+            CmdError::msg("Usage: +lifestyle/set street|squatter|low|middle|high|luxury")
+        })?;
+        let who = ctx.actor;
+        return match lifestyle::set_tier(ctx, &cfg, who, tier) {
+            Ok(Some(line)) => {
+                say(ctx, line);
+                Ok(())
+            }
+            Ok(None) => Ok(()),
+            Err(e) => Err(refuse_lifestyle(&e)),
+        };
+    }
+    if sw.has("pay") {
+        let who = ctx.actor;
+        return match lifestyle::pay_arrears(ctx, &cfg, who) {
+            Ok(line) => {
+                say(ctx, line);
+                Ok(())
+            }
+            Err(e) => Err(refuse_lifestyle(&e)),
+        };
+    }
+    lifestyle_show(ctx, &cfg)
+}
+
+fn refuse_lifestyle(e: &LifestyleError) -> CmdError {
+    CmdError::msg(e.to_string())
+}
+
+fn lifestyle_show(ctx: &mut Ctx<'_>, cfg: &SrEconomyConfig) -> Result<(), CmdError> {
+    let who = ctx.actor;
+    let Some(p) = ctx
+        .w
+        .module_state::<SrEconomyStore>()
+        .and_then(|s| s.profile(who).cloned())
+    else {
+        return Err(CmdError::msg("You have no nuyen account yet."));
+    };
+    let cost = lifestyle::tier_amount(ctx, cfg, p.lifestyle);
+    let mut lines = vec![format!("Lifestyle: {}", p.lifestyle.label())];
+    match (cost, p.account) {
+        (Some(c), Some(a)) => lines.push(format!(
+            "  cost: {} per {SR_MONTH} period",
+            mush_economy::money_on(ctx, a, c)
+        )),
+        _ => lines.push("  cost: nothing (this tier is free)".to_string()),
+    }
+    if p.unpaid_periods > 0 {
+        let arrears = p
+            .account
+            .map(|a| mush_economy::money_on(ctx, a, p.arrears))
+            .unwrap_or_else(|| p.arrears.minor().to_string());
+        lines.push(format!(
+            "  ARREARS: {} unpaid period(s), {arrears} owed (+lifestyle/pay).",
+            p.unpaid_periods
+        ));
+    }
+    if let Some(o) = lifestyle::upkeep_of(ctx, who) {
+        lines.push(format!("  upkeep record: obligation #{}", o.id.0));
+    }
+    for line in lines {
+        say(ctx, line);
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// +nuyen
+// ---------------------------------------------------------------------------
+
+fn nuyen_cmd(cmd: &Sr5Cmd, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    let raw = ctx.args.raw().trim().to_string();
+    let target = if raw.is_empty() {
+        ctx.actor
+    } else {
+        let t = match_object(ctx.w, ctx.actor, &raw)?;
+        if t != ctx.actor && !perm::can_examine(ctx.w, ctx.actor, t) {
+            return Err(CmdError::msg("You can't examine that character."));
+        }
+        t
+    };
+    for line in nuyen_lines(cmd, ctx, target) {
+        say(ctx, line);
+    }
+    Ok(())
+}
+
+/// The balance render (§3.5, G2): the account after approval, the sheet field before,
+/// and **omitted, never placeholdered**, for a viewer the account's own gate refuses.
+fn nuyen_lines(cmd: &Sr5Cmd, ctx: &Ctx<'_>, who: ObjId) -> Vec<String> {
+    let account = ctx
+        .w
+        .module_state::<SrEconomyStore>()
+        .and_then(|s| s.profile(who).and_then(|p| p.account));
+    if let Some(account) = account
+        && may_view_account(ctx.w, ctx.actor, account)
+    {
+        let balance = ctx
+            .w
+            .module_state::<EconomyStore>()
+            .and_then(|s| s.snapshot().account(account).map(|a| a.posted_balance))
+            .unwrap_or(Amount::ZERO);
+        return vec![format!(
+            "Nuyen: {} (account #{account})",
+            mush_economy::money_on(ctx, account, balance)
+        )];
+    }
+    if account.is_some() {
+        // The account exists and this viewer may not see it — say nothing about it.
+        return Vec::new();
+    }
+    match cmd.read(ctx.w, who) {
+        Some(doc) => vec![format!(
+            "Nuyen (chargen sheet): {}",
+            doc.number("nuyen").unwrap_or(0)
+        )],
+        None => vec!["That character has no sheet.".to_string()],
+    }
+}
+
+// ---------------------------------------------------------------------------
+// @sr
+// ---------------------------------------------------------------------------
+
+fn sr_cmd(cmd: &Sr5Cmd, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    let cfg = config(ctx);
+    let sw = ctx.switches.clone();
+    if sw.has("clock") {
+        return sr_clock(ctx, &cfg);
+    }
+    if sw.has("migrate") {
+        require_enabled(&cfg)?;
+        return sr_migrate(cmd, ctx, &cfg);
+    }
+    if sw.has("profile") {
+        require_enabled(&cfg)?;
+        return sr_profile(ctx);
+    }
+    sr_economy(ctx, &cfg)
+}
+
+fn sr_economy(ctx: &mut Ctx<'_>, cfg: &SrEconomyConfig) -> Result<(), CmdError> {
+    let (profiles, runs, open) = ctx
+        .w
+        .module_state::<SrEconomyStore>()
+        .map(|s| (s.profiles().count(), s.runs().count(), s.open_runs()))
+        .unwrap_or((0, 0, 0));
+    let instrument = ctx
+        .w
+        .module_state::<SrEconomyStore>()
+        .and_then(|s| s.instrument.clone())
+        .map_or_else(|| "(unregistered)".to_string(), |i| i.to_string());
+    let cadence = ctx
+        .w
+        .module_state::<SrEconomyStore>()
+        .and_then(SrEconomyStore::cadence)
+        .map_or_else(|| "(missing)".to_string(), |c| format!("#{}", c.0));
+    let lines = vec![
+        format!("[shadowrun.economy] enabled = {}", cfg.enabled),
+        format!(
+            "  instrument = {instrument}   lifestyle_clock = {} ({cadence})",
+            cfg.lifestyle_clock
+        ),
+        format!(
+            "  lifestyle = {}   player_run_offers = {}   organization_run_offers = {}",
+            cfg.lifestyle, cfg.player_run_offers, cfg.organization_run_offers
+        ),
+        format!(
+            "  chargen_shopping = {} (inert until E6c)   chargen_carryover_cap = {} (parsed, not \
+             applied)",
+            cfg.chargen_shopping, cfg.chargen_carryover_cap
+        ),
+        format!(
+            "  fence rates = {}/{} permille, delay {} s (inert until E6b)",
+            cfg.fence_rate_immediate, cfg.fence_rate_consign, cfg.fence_delay_secs
+        ),
+        format!(
+            "  board: {} open of {} cap, {} per principal, ttl {} s",
+            open,
+            cfg.board_cap,
+            cfg.open_runs_cap(),
+            cfg.board_ttl()
+        ),
+        format!("  {profiles} profile(s), {runs} listing(s)"),
+    ];
+    for line in lines {
+        say(ctx, line);
+    }
+    Ok(())
+}
+
+/// `@sr/clock` — **show only** since SP1 (D-LBK-7): `sr.month` is a *declared*
+/// cadence, contributed to `[economy.cadences]` by the host and created or adopted by
+/// the economy at its own boot. Nothing here creates a clock.
+fn sr_clock(ctx: &mut Ctx<'_>, cfg: &SrEconomyConfig) -> Result<(), CmdError> {
+    let found = ctx
+        .w
+        .module_state::<EconomyStore>()
+        .and_then(|s| mush_economy::cadence_by_name(s.snapshot(), &cfg.lifestyle_clock).cloned());
+    match found {
+        Some(c) => {
+            say(
+                ctx,
+                format!(
+                    "{}: cadence #{} on {:?}, period {} s, catch-up {}, position {} (schema {}).",
+                    c.name, c.id.0, c.source, c.period, c.catch_up_cap, c.position, c.schema
+                ),
+            );
+            say(
+                ctx,
+                "Declared in [economy.cadences]; @sr/clock shows it and never creates one."
+                    .to_string(),
+            );
+        }
+        None => say(
+            ctx,
+            format!(
+                "{} does not exist. Declare it: [economy.cadences.\"{}\"] clock = \"world_ic\", \
+                 period_secs = {}, catch_up = {} — then restart.",
+                cfg.lifestyle_clock,
+                cfg.lifestyle_clock,
+                crate::economy::config::SR_MONTH_PERIOD_SECS,
+                crate::economy::config::SR_MONTH_CATCH_UP
+            ),
+        ),
+    }
+    Ok(())
+}
+
+fn sr_migrate(cmd: &Sr5Cmd, ctx: &mut Ctx<'_>, cfg: &SrEconomyConfig) -> Result<(), CmdError> {
+    const USAGE: &str = "Usage: @sr/migrate dry|commit [<who>]";
+    let raw = ctx.args.lhs().trim().to_string();
+    let mut words = raw.split_whitespace();
+    let mode = words
+        .next()
+        .map(str::to_ascii_lowercase)
+        .unwrap_or_default();
+    let who = match words.next() {
+        Some(w) => Some(match_object(ctx.w, ctx.actor, w)?),
+        None => None,
+    };
+    let commit = match mode.as_str() {
+        "dry" | "" => false,
+        "commit" => true,
+        _ => return Err(CmdError::msg(USAGE)),
+    };
+    let config = cmd.config.clone();
+    let plan = crate::economy::chargen::plan(ctx, cmd, &config, who);
+    if plan.is_empty() {
+        say(ctx, "No approved character has anything to migrate.");
+        return Ok(());
+    }
+    say(
+        ctx,
+        format!(
+            "@sr/migrate {} — {} approved character(s):",
+            if commit { "commit" } else { "dry" },
+            plan.len()
+        ),
+    );
+    for line in plan {
+        if !commit {
+            let text = match &line.verdict {
+                MigrationVerdict::WouldMint(n) => {
+                    format!("would mint {n} from system:sr.migration")
+                }
+                MigrationVerdict::Adopt(n) => {
+                    format!("would adopt with the priority allotment ({n})")
+                }
+                MigrationVerdict::Hit { amount, bound } => {
+                    format!(
+                        "already migrated ({} at sheet value {bound})",
+                        amount.minor()
+                    )
+                }
+                MigrationVerdict::Mismatch { bound } => {
+                    format!("MISMATCH — bound {bound}, sheet now {}", line.sheet_value)
+                }
+                MigrationVerdict::Skip(why) => (*why).to_string(),
+            };
+            say(ctx, format!("  #{}: {text}", line.who.0));
+            continue;
+        }
+        let stamp = cmd.read(ctx.w, line.who).as_ref().and_then(approval_stamp);
+        let (by, at) = stamp.unwrap_or((ctx.actor, ctx.w.now()));
+        let report = crate::economy::chargen::commit_one(ctx, cfg, &line, by, at);
+        say(ctx, format!("  {report}"));
+    }
+    Ok(())
+}
+
+fn sr_profile(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    let raw = ctx.args.lhs().trim().to_string();
+    if raw.is_empty() {
+        return Err(CmdError::msg("Usage: @sr/profile <who>"));
+    }
+    let who = match_object(ctx.w, ctx.actor, &raw)?;
+    let Some(p) = ctx
+        .w
+        .module_state::<SrEconomyStore>()
+        .and_then(|s| s.profile(who).cloned())
+    else {
+        return Err(CmdError::msg("That character has no SR economic profile."));
+    };
+    let mut lines = vec![
+        format!("Profile #{}: lifestyle {}", who.0, p.lifestyle.label()),
+        format!(
+            "  account: {}   upkeep: {}",
+            p.account
+                .map_or_else(|| "none".to_string(), |a| format!("#{a}")),
+            p.upkeep
+                .map_or_else(|| "none".to_string(), |o| format!("#{}", o.0))
+        ),
+        format!(
+            "  unpaid periods: {} (since sr.month {})   arrears: {}",
+            p.unpaid_periods,
+            p.unpaid_since,
+            p.arrears.minor()
+        ),
+    ];
+    if let Some(m) = &p.minted {
+        lines.push(format!(
+            "  minted: {} under {} at {}",
+            m.amount.minor(),
+            m.key,
+            m.at
+        ));
+    }
+    if let Some(m) = &p.migrated {
+        lines.push(format!(
+            "  migrated: sheet value {} bound, approved by #{} at {}",
+            m.from_sheet_value, m.approved_by.0, m.approved_at
+        ));
+    }
+    for line in lines {
+        say(ctx, line);
+    }
+    Ok(())
+}
+
+/// The listing states a run may be in, for tests and renders that need the word.
+#[must_use]
+pub fn state_word(s: RunState) -> &'static str {
+    s.word()
+}

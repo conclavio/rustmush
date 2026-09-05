@@ -825,6 +825,7 @@ async fn boot_wod_rig(
             &["wod".to_string()],
             &ruleset_wod::OnboardingConfig::default(),
             &ruleset_wod::WodEconomyConfig::default(),
+            &ruleset_shadowrun::SrEconomyConfig::default(),
         )
         .expect("wod ruleset"),
     );

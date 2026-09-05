@@ -45,6 +45,7 @@ pub mod condition;
 pub mod data;
 pub mod derive;
 pub mod dice;
+pub mod economy;
 pub mod initiative;
 pub mod karma;
 pub mod magic;
@@ -70,7 +71,26 @@ use mush_ruleset::{
 pub use crate::agent::{SR_ROLL_ABILITY, agent_profile, sr_roll_tool_spec};
 pub use crate::chargen::Sr5Chargen;
 pub use crate::data::Sr5Config;
+pub use crate::economy::{
+    LifestyleTier, SR_MONTH, SR_MONTH_CATCH_UP, SR_MONTH_PERIOD_SECS, SrBoardObserver,
+    SrEconomyConfig, SrEconomyStore, default_lifestyle_costs,
+};
 pub use crate::state::Sr5State;
+
+/// A second `on_world_loaded` over one live world is **not** a production path — a
+/// restart composes a fresh engine — but the E6a boot reconciliation has to be
+/// re-runnable to be testable, and `register_payload_handler` refuses a duplicate.
+///
+/// So a re-registration is tolerated: the handler already installed is the same
+/// closure over the same wiring-frozen config, and the alternative — failing the
+/// boot — would turn a re-entered load into a dead world. Every other registration
+/// error still fails the boot.
+fn tolerate_reregistration(r: Result<(), String>) -> Result<(), String> {
+    match r {
+        Err(e) if e.contains("already registered") => Ok(()),
+        other => other,
+    }
+}
 
 /// The shared bundle captured by every SR5 command closure: the (single) sheet
 /// schema, the tunable config, and the roll panel feed.
@@ -107,6 +127,9 @@ pub struct ShadowrunRuleset {
     chargen: Sr5Chargen,
     seed: Option<u64>,
     cmd: Option<Arc<Sr5Cmd>>,
+    /// E6a's frozen `[shadowrun.economy]` (08f §9, answer 16), parsed host-side and
+    /// handed in at wiring — never read from a document, never written by a command.
+    econ: SrEconomyConfig,
 }
 
 impl ShadowrunRuleset {
@@ -131,7 +154,25 @@ impl ShadowrunRuleset {
             config,
             seed,
             cmd: None,
+            econ: SrEconomyConfig::default(),
         }
+    }
+
+    /// Set the E6a `[shadowrun.economy]` configuration (08f §9, answer 16).
+    ///
+    /// The host parses and validates the block (`mush_server::config_ext`) and calls
+    /// this at wiring; the default is `enabled = false`, which is exactly the
+    /// pre-E6a server.
+    #[must_use]
+    pub fn economy(mut self, econ: SrEconomyConfig) -> ShadowrunRuleset {
+        self.econ = econ;
+        self
+    }
+
+    /// The frozen `[shadowrun.economy]` block.
+    #[must_use]
+    pub fn economy_config(&self) -> &SrEconomyConfig {
+        &self.econ
     }
 
     /// The composed SR5 schema (shared).
@@ -204,6 +245,12 @@ impl GameModule for ShadowrunRuleset {
         chargen_cmds::register(reg, Arc::clone(&cmd))?;
         karma::register(reg, Arc::clone(&cmd))?;
 
+        // E6a: the run-and-pay layer. The state slot always exists (an
+        // `enabled = false` server answers "not enabled" rather than hiding a verb —
+        // E5c deviation 1), and the config is frozen into it at boot.
+        reg.state(economy::SrEconomyStore::default());
+        economy::commands::register(reg, Arc::clone(&cmd))?;
+
         self.cmd = Some(cmd);
         Ok(())
     }
@@ -222,9 +269,17 @@ impl GameModule for ShadowrunRuleset {
         // is the only rehydration; the RNG, roll-log ring, and chargen are NOT
         // persisted (re-seed / transient / re-derivable), so the slot is never
         // replaced — only the extended field is.
+        //
+        // E6a reads the same namespace: its two document families (`sr:profile:{obj}`,
+        // `sr:run:{id}`) live alongside M17's one key, so the boot data is loaded once
+        // and each half takes its own keys. `load` is total — it skips what it cannot
+        // use and says so — so a corrupt profile or listing never fails the boot
+        // (`economy::store`'s table says why).
+        let econ_store = economy::load_store(&data.kv, self.econ.clone());
         let mut extended_doc = None;
         for (key, value) in data.kv {
-            // The one persisted key; any other is tolerated (forward schema).
+            // The one persisted key; any other is tolerated (forward schema) — E6a's
+            // included.
             if key == "extended" {
                 extended_doc = Some(value);
             }
@@ -252,31 +307,50 @@ impl GameModule for ShadowrunRuleset {
             ctx.persist(op);
         }
 
+        // E6a: install the loaded slot, then run the layer's own boot — the
+        // instrument, the three system accounts, the declared `sr.month` clock, and
+        // the two reconciliation passes. It runs **after** the org, faction, economy
+        // and party modules' own boots (the ruleset is last in the module list), so
+        // every one of them is loaded before a question is asked of it.
+        if let Some(slot) = ctx.w.module_state_mut::<economy::SrEconomyStore>() {
+            *slot = econ_store;
+        }
+        let econ_cfg = self.econ.clone();
+        economy::boot::run(ctx, &econ_cfg);
+
         let cmd = self
             .cmd
             .clone()
             .ok_or_else(|| ModError::msg("shadowrun register() did not run before load"))?;
 
-        // Chargen approval: re-validate the budget, stamp Approved.
+        // Chargen approval: re-validate the budget, stamp Approved, then — E6a — open
+        // the `sr.nuyen` account and mint the priority allotment. The mint is a
+        // one-shot attributed post keyed `sr.chargen/{obj}` and **never fails the
+        // approval** (08d deviation 11, M13).
         {
             let cmd = Arc::clone(&cmd);
             let config = self.config.clone();
-            register_payload_handler(
+            let econ = econ_cfg.clone();
+            tolerate_reregistration(register_payload_handler(
                 ctx.w,
                 chargen_cmds::CHARGEN_HANDLER,
-                Arc::new(move |ctx, job| chargen_cmds::chargen_approval(&config, &cmd, ctx, job)),
-            )
+                Arc::new(move |ctx, job| {
+                    chargen_cmds::chargen_approval(&config, &cmd, ctx, job)?;
+                    chargen_cmds::chargen_economy(&econ, &config, &cmd, ctx, job);
+                    Ok(())
+                }),
+            ))
             .map_err(ModError::msg)?;
         }
         // Karma spend: re-validate + apply atomically.
         {
             let cmd = Arc::clone(&cmd);
             let config = self.config.clone();
-            register_payload_handler(
+            tolerate_reregistration(register_payload_handler(
                 ctx.w,
                 karma::KARMA_HANDLER,
                 Arc::new(move |ctx, job| karma::karma_approval(&config, &cmd, ctx, job)),
-            )
+            ))
             .map_err(ModError::msg)?;
         }
         Ok(())

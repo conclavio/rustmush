@@ -208,8 +208,9 @@ pub use sweep::SWEEP_TAG;
 // E6a step 1 adds the programmatic offer/accept/amend seams a ruleset runs a board on.
 pub use contract_live::{
     AcceptOutcome, AmendOutcome, AmendReoffer, ConsiderationSpec, ContractAmendment, ContractSpec,
-    LeaseEnd, LeaseKey, LeaseSpec, accept_contract, amend_contract, contract_notice, end_lease,
-    may_view_contract, offer_contract, offer_lease, refuse_contract, refuse_contract_offer,
+    LeaseEnd, LeaseKey, LeaseSpec, accept_contract, amend_contract, cancel_contract,
+    contract_notice, end_lease, may_view_contract, offer_contract, offer_lease, refuse_contract,
+    refuse_contract_offer,
 };
 
 // E4c — facts, events, evidence.

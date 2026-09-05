@@ -4859,6 +4859,74 @@ pub fn amend_contract(
     Ok(AmendReoffer::Amended(outcome))
 }
 
+/// **Cancel a contract the actor issues** on behalf of a ruleset (E6a) — the fourth
+/// programmatic seam, and `@contract/cancel` without the command.
+///
+/// It exists because the other three make cancellation *reachable*: `+run/post`
+/// offers and then accepts, and a refused accept must leave no unfunded `Offered`
+/// contract standing against the issuer's cap (M17); `+run/withdraw` is the payer
+/// taking a listing down. A ruleset that had to type `@contract/cancel` would be
+/// dispatching a command from inside a handler, re-running its per-invocation gates
+/// against an actor who has already passed them.
+///
+/// Only a `Draft` or `Offered` contract: a live agreement is not one party's to tear
+/// up, and the routes for that stay the dispute, the deadline, and staff.
+///
+/// Returns whether the contract actually **reached a terminal state**. `Ok(false)`
+/// means the refund was refused — the contract stays in force with its escrow
+/// reserved while the sweep retries, and staff have been paged — which is exactly
+/// what `@contract/cancel` reports, and the caller must not treat it as done.
+///
+/// # Errors
+///
+/// [`ContractError::NoStanding`] (no such contract, unviewable, or not the issuer),
+/// [`ContractError::State`] (live, disputed or already finished),
+/// [`ContractError::Infeasible`] (a frozen economy).
+pub fn cancel_contract(ctx: &mut Ctx<'_>, id: ContractId) -> Result<bool, ContractError> {
+    if ctx
+        .w
+        .module_state::<EconomyStore>()
+        .is_none_or(EconomyStore::is_frozen)
+    {
+        return Err(ContractError::Infeasible("the economy is frozen"));
+    }
+    if !may_view_contract(ctx.w, ctx.actor, id) {
+        return Err(ContractError::NoStanding);
+    }
+    let c = live_contract(ctx, id).ok_or(ContractError::NoStanding)?;
+    if !is_issuer(ctx, &c) {
+        return Err(ContractError::NoStanding);
+    }
+    // `@contract/cancel`'s rule, plus **A′'s other face** (S1 deviation 2): a live
+    // contract with no deliverables that nobody but its own author has accepted. A
+    // one-party contract activates at its author's accept, so that is exactly the
+    // shape a run board's `Listed` entry has — the payer's escrow standing with no
+    // counterparty consented to anything. "A live agreement is not one party's to
+    // tear up" is a rule about *other people's* consent; where there is none to tear
+    // up, `+run/withdraw` is the payer taking back their own money.
+    let author = amend_author(ctx, &c);
+    let key = principal_key(&author);
+    let author_only_live = matches!(
+        c.state,
+        ContractState::Active | ContractState::ReadyToSettle
+    ) && c.consent.terms.deliverables.is_empty()
+        && c.acceptances.iter().all(|a| principal_key(&a.party) == key);
+    match c.state {
+        ContractState::Draft | ContractState::Offered => {}
+        _ if author_only_live => {}
+        ContractState::Active
+        | ContractState::ReadyToSettle
+        | ContractState::Disputed
+        | ContractState::Settled { .. }
+        | ContractState::Cancelled
+        | ContractState::Expired => return Err(ContractError::State(id)),
+    }
+    unwind(ctx, id, ContractState::Cancelled);
+    let done = live_contract(ctx, id).is_some_and(|c| c.state.is_terminal());
+    ctx.gate_on_durable_ack();
+    Ok(done)
+}
+
 /// Apply one [`ContractAmendment`]'s edits to a surface — pure and fallible, so the
 /// seam can run it against a projection before anything posts (R1).
 fn apply_amendment(
