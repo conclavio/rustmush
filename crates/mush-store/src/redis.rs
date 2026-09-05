@@ -386,6 +386,11 @@ fn plan_authoritative_replay(
                     kind: "delete",
                     post_image: String::new(),
                 },
+                ReplayWrite::LedgerChunkSet { write } => RedisReplayWrite {
+                    key: module_key(write.namespace().as_str(), write.key().as_str()),
+                    kind: "json_set",
+                    post_image: serde_json::to_string(write.chunk())?,
+                },
             })
         })
         .collect()

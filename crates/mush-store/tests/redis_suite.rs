@@ -19,9 +19,9 @@
 use mush_core::{
     AuthoritativeBundle, AuthoritativeBundleDraft, AuthoritativeKey, CanonicalHash, CanonicalId,
     CommitToken, DefinitionDescriptor, DefinitionId, DefinitionKind, DefinitionRegistryBuilder,
-    DurableOutboxIntent, GOD, IdempotencyKey, IdempotencyScope, Obj, ObjId, ObjKind, OwnerId,
-    PreparedCausalRef, PrincipalId, ReplayWrite, RequestUid, RulesValue, ScopedIdempotencyKey,
-    World,
+    DurableOutboxIntent, GOD, IdempotencyKey, IdempotencyScope, Ledger, Obj, ObjId, ObjKind,
+    OwnerId, PreparedCausalRef, PrincipalId, ReplayWrite, RequestUid, RulesValue,
+    ScopedIdempotencyKey, World,
 };
 use mush_store::{
     AuthoritativeOutboxAttemptResult, AuthoritativeRetentionUsage, AuthoritativeScanCursor,
@@ -78,6 +78,22 @@ fn authoritative_bundle_for_epoch_and_outbox(
     epoch: u64,
     durable_outbox: Vec<DurableOutboxIntent>,
 ) -> AuthoritativeBundle {
+    authoritative_bundle_for_epoch_outbox_and_writes(
+        token_byte,
+        request_byte,
+        epoch,
+        durable_outbox,
+        vec![],
+    )
+}
+
+fn authoritative_bundle_for_epoch_outbox_and_writes(
+    token_byte: u8,
+    request_byte: u8,
+    epoch: u64,
+    durable_outbox: Vec<DurableOutboxIntent>,
+    extra_writes: Vec<ReplayWrite>,
+) -> AuthoritativeBundle {
     let owner = OwnerId::new("redis_toy").unwrap();
     let mut definitions = DefinitionRegistryBuilder::new();
     let action = definitions
@@ -106,6 +122,18 @@ fn authoritative_bundle_for_epoch_and_outbox(
         .unwrap();
     let request = RequestUid::from_bytes([request_byte; 16]);
     let principal = PrincipalId::Object { id: GOD };
+    let mut writes = vec![
+        ReplayWrite::ObjectSet {
+            object: Obj::new(ObjId(2), ObjKind::Thing, "guard", GOD, 0),
+        },
+        ReplayWrite::ObjectAllocatorSet { next_id: 3 },
+        ReplayWrite::ModuleJsonSet {
+            namespace: owner.clone(),
+            key: AuthoritativeKey::parse_canonical("action-state/v1/guarded/2").unwrap(),
+            value: serde_json::json!({ "amount": 1 }),
+        },
+    ];
+    writes.extend(extra_writes);
     AuthoritativeBundle::new(AuthoritativeBundleDraft {
         token: CommitToken::from_bytes([token_byte; 16]),
         request,
@@ -125,17 +153,7 @@ fn authoritative_bundle_for_epoch_and_outbox(
         provider: owner.clone(),
         cause: PreparedCausalRef::new(request, None, 0).unwrap(),
         definitions: vec![action.clone(), outcome_definition.clone()],
-        writes: vec![
-            ReplayWrite::ObjectSet {
-                object: Obj::new(ObjId(2), ObjKind::Thing, "guard", GOD, 0),
-            },
-            ReplayWrite::ObjectAllocatorSet { next_id: 3 },
-            ReplayWrite::ModuleJsonSet {
-                namespace: owner,
-                key: AuthoritativeKey::parse_canonical("action-state/v1/guarded/2").unwrap(),
-                value: serde_json::json!({ "amount": 1 }),
-            },
-        ],
+        writes,
         outcome: RulesValue::new(
             outcome_definition.clone(),
             serde_json::json!({ "ok": true }),
@@ -155,6 +173,23 @@ fn authoritative_bundle_for_epoch_and_outbox(
         durable_outbox,
     })
     .unwrap()
+}
+
+fn authoritative_ledger_bundle(token_byte: u8, request_byte: u8) -> AuthoritativeBundle {
+    let ledger = Ledger::with_chunk_target(0);
+    let prepared = ledger
+        .prepare_append("economy", serde_json::json!({ "amount": 7 }))
+        .expect("prepare sealed Ledger append");
+    let replay = prepared
+        .authoritative_replay_write(OwnerId::new("redis_toy").unwrap())
+        .expect("build authoritative Ledger replay");
+    authoritative_bundle_for_epoch_outbox_and_writes(
+        token_byte,
+        request_byte,
+        0,
+        vec![],
+        vec![replay],
+    )
 }
 
 macro_rules! redis_gated {
@@ -220,6 +255,9 @@ redis_gated!(authoritative_module_prefix_is_store_owned, store, {
 });
 redis_gated!(authoritative_contract_exact_lifecycle, store, {
     suite::authoritative_exact_lifecycle(&store).await;
+});
+redis_gated!(authoritative_contract_mixed_ledger_lifecycle, store, {
+    suite::authoritative_mixed_ledger_lifecycle(&store).await;
 });
 redis_gated!(authoritative_contract_resolution_checkpoint, store, {
     suite::authoritative_resolution_checkpoint(&store).await;
@@ -1144,6 +1182,81 @@ redis_gated!(
             .await
             .expect("resume exact replay after repair");
         assert!(receipt.matches_bundle(&bundle));
+    }
+);
+
+redis_gated!(
+    authoritative_ledger_wrong_type_survives_partial_replay_and_reconnect,
+    store,
+    {
+        use fred::interfaces::KeysInterface;
+
+        seed_minimal_world(&store).await;
+        let bundle = authoritative_ledger_bundle(14, 24);
+        let token = bundle.token();
+        let hash = bundle.bundle_hash();
+        store
+            .reserve_authoritative_intent(bundle.clone())
+            .await
+            .expect("reserve mixed Ledger intent");
+
+        let ledger_key = "mod:redis_toy:log:economy:0";
+        let _: () = store
+            .client()
+            .set(ledger_key, "wrong type", None, None, false)
+            .await
+            .expect("install deterministic Ledger poison");
+        let error = store
+            .reconcile_authoritative(token, hash)
+            .await
+            .expect_err("RedisJSON must reject the poisoned Ledger target");
+        assert!(matches!(error, StoreError::Redis(_)), "got {error:?}");
+        assert!(!error.is_transient());
+        assert_eq!(
+            store
+                .authoritative_status(token, hash)
+                .await
+                .expect("mixed intent survives partial replay"),
+            BundleStatus::PendingExact
+        );
+        assert_eq!(
+            store
+                .module_json_get("redis_toy", "action-state/v1/guarded/2")
+                .await
+                .expect("typed post-image precedes Ledger target"),
+            Some(serde_json::json!({ "amount": 1 }))
+        );
+        let deleted: i64 = store
+            .client()
+            .del(ledger_key)
+            .await
+            .expect("remove deterministic Ledger poison");
+        assert_eq!(deleted, 1);
+        drop(store);
+
+        let url = std::env::var("REDIS_URL").expect("checked earlier");
+        let store = RedisStore::connect(&url).await.expect("reconnect");
+        let receipt = store
+            .reconcile_authoritative(token, hash)
+            .await
+            .expect("resume exact mixed replay after reconnect");
+        assert!(receipt.matches_bundle(&bundle));
+        assert_eq!(
+            store
+                .module_json_get("redis_toy", "log:economy:0")
+                .await
+                .expect("read recovered Ledger chunk"),
+            Some(serde_json::json!({
+                "chunk": 0,
+                "sealed": true,
+                "entries": [{ "seq": 0, "value": { "amount": 7 } }]
+            }))
+        );
+        let checkpoint = store
+            .checkpoint_authoritative(token, hash)
+            .await
+            .expect("checkpoint recovered mixed replay");
+        assert_eq!(checkpoint.receipt, receipt);
     }
 );
 

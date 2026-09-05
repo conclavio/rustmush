@@ -133,10 +133,10 @@ pub use action_window::{
 pub use attr::{Attr, AttrFlags, AttrMap, AttrValue, UncasedName};
 pub use authoritative::{
     AuthoritativeBundle, AuthoritativeBundleDraft, AuthoritativeBundleError, AuthoritativeKey,
-    AuthoritativeKeyError, AuthoritativeSemanticEvent, DurableOutboxIntent,
-    MAX_AUTHORITATIVE_BUNDLE_BYTES, MAX_AUTHORITATIVE_DEFINITIONS, MAX_AUTHORITATIVE_REPLAY_WRITES,
-    MAX_AUTHORITATIVE_WITNESSES, MAX_DURABLE_OUTBOX_INTENTS, MAX_DURABLE_OUTBOX_PAYLOAD_BYTES,
-    ReplayWrite,
+    AuthoritativeKeyError, AuthoritativeLedgerWrite, AuthoritativeLedgerWriteError,
+    AuthoritativeSemanticEvent, DurableOutboxIntent, MAX_AUTHORITATIVE_BUNDLE_BYTES,
+    MAX_AUTHORITATIVE_DEFINITIONS, MAX_AUTHORITATIVE_REPLAY_WRITES, MAX_AUTHORITATIVE_WITNESSES,
+    MAX_DURABLE_OUTBOX_INTENTS, MAX_DURABLE_OUTBOX_PAYLOAD_BYTES, ReplayWrite,
 };
 pub use behavior::{
     BINDING_SCHEMA_VERSION, BehaviorBinding, BehaviorCommand, BehaviorCommandHandler, BehaviorId,

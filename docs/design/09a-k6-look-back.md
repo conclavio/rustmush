@@ -83,14 +83,14 @@ has been explicitly handed to the E cuts named in section 3.
 - **Gate 3:** projection boundary and recursive leak shape closed in fixtures; production tactical
   authorization/feed/rendering remain E7 work.
 - **Gate 4:** open; K7.0–K7.5 owns delayed NPC/LLM decision custody and re-entry.
-- **Gate 5:** open; K8 owns the complete production/fault matrix. K8.0 closes the Ledger migration
-  prerequisites before that matrix expands.
+- **Gate 5:** open; K8 owns the complete production/fault matrix. K8.0 has closed the Ledger
+  migration prerequisites before that matrix expands.
 
-The separate typed-state migration accounting remains: mixed Ledger replay is open; owner-scoped
-typed reads are now closed for ordinary module contexts and for movement/carry/render/perception
-hooks through `HookReadContext`; folding the Ledger seal into the bundle is open. This is why
-economy/housing records may be valid domain work without yet being eligible for authoritative
-migration.
+The separate typed-state migration prerequisites are now closed: mixed Ledger replay and the
+in-bundle exact seal landed in K8.0, while owner-scoped typed reads are available to ordinary module
+contexts and movement/carry/render/perception hooks through `HookReadContext`. This opens the
+explicit E-owner migration review; it does not itself move economy/housing authority away from the
+journal or E-owned documents.
 
 ## 6. K7 entry decision
 

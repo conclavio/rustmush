@@ -85,6 +85,11 @@ async fn authoritative_contract_exact_lifecycle() {
 }
 
 #[tokio::test]
+async fn authoritative_contract_mixed_ledger_lifecycle() {
+    suite::authoritative_mixed_ledger_lifecycle(&InMemoryStore::new()).await;
+}
+
+#[tokio::test]
 async fn authoritative_contract_resolution_checkpoint() {
     suite::authoritative_resolution_checkpoint(&InMemoryStore::new()).await;
 }

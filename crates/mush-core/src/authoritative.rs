@@ -17,6 +17,7 @@ use crate::action::{
     CanonicalHash, CanonicalHashError, CommitToken, IdempotencyKey, MAX_SEMANTIC_EVENTS,
     PreparedCausalRef, PrincipalId, RequestUid, ScopedIdempotencyKey,
 };
+use crate::ledger::{LedgerChunk, MAX_LEDGER_LOG_ID_BYTES, MAX_SAFE_CHUNK_BYTES, chunk_key};
 use crate::mechanics::{
     CanonicalId, DefinitionLocator, DefinitionRef, OwnerId, RulesValue,
     canonical_json_bytes_with_limit,
@@ -255,6 +256,142 @@ pub enum AuthoritativeKeyError {
     InvalidByte { offset: usize, byte: u8 },
 }
 
+/// One exact replayable Ledger chunk post-image.
+///
+/// The physical module key is derived from `log_id` and the chunk's index;
+/// callers cannot supply an alias. A sealed chunk carries a domain-separated
+/// hash of its exact owner/location/post-image in the same immutable value.
+/// Unsealed tails remain replayable whole-document post-images but do not
+/// claim immutable-seal identity.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(try_from = "AuthoritativeLedgerWriteWire", deny_unknown_fields)]
+pub struct AuthoritativeLedgerWrite {
+    namespace: OwnerId,
+    log_id: SmolStr,
+    chunk: LedgerChunk,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    seal: Option<CanonicalHash>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AuthoritativeLedgerWriteWire {
+    namespace: OwnerId,
+    log_id: SmolStr,
+    chunk: LedgerChunk,
+    seal: Option<CanonicalHash>,
+}
+
+impl AuthoritativeLedgerWrite {
+    pub fn new(
+        namespace: OwnerId,
+        log_id: impl AsRef<str>,
+        chunk: LedgerChunk,
+    ) -> Result<Self, AuthoritativeLedgerWriteError> {
+        let log_id = log_id.as_ref();
+        if log_id.is_empty() {
+            return Err(AuthoritativeLedgerWriteError::EmptyLogId);
+        }
+        if log_id.len() > MAX_LEDGER_LOG_ID_BYTES {
+            return Err(AuthoritativeLedgerWriteError::LogIdTooLong {
+                actual: log_id.len(),
+                max: MAX_LEDGER_LOG_ID_BYTES,
+            });
+        }
+        let key = AuthoritativeKey::parse_canonical(chunk_key(log_id, chunk.chunk))
+            .map_err(AuthoritativeLedgerWriteError::Key)?;
+        if chunk.entries.is_empty()
+            || chunk
+                .entries
+                .windows(2)
+                .any(|pair| pair[0].seq.checked_add(1) != Some(pair[1].seq))
+        {
+            return Err(AuthoritativeLedgerWriteError::NonContiguousChunk);
+        }
+        canonical_json_bytes_with_limit(&serde_json::to_value(&chunk)?, MAX_SAFE_CHUNK_BYTES)
+            .map_err(|_| AuthoritativeLedgerWriteError::ChunkTooLarge {
+                max: MAX_SAFE_CHUNK_BYTES,
+            })?;
+        let log_id = SmolStr::new(log_id);
+        let seal = chunk.sealed.then(|| {
+            CanonicalHash::for_canonical_value(
+                "authoritative_ledger_seal.v1",
+                1,
+                &json!({
+                    "namespace": namespace,
+                    "key": key,
+                    "chunk": chunk,
+                }),
+                MAX_SAFE_CHUNK_BYTES + MAX_LEDGER_LOG_ID_BYTES + 1_024,
+            )
+        });
+        Ok(Self {
+            namespace,
+            log_id,
+            chunk,
+            seal: seal.transpose()?,
+        })
+    }
+
+    #[must_use]
+    pub const fn namespace(&self) -> &OwnerId {
+        &self.namespace
+    }
+
+    #[must_use]
+    pub fn log_id(&self) -> &str {
+        self.log_id.as_str()
+    }
+
+    #[must_use]
+    pub const fn chunk(&self) -> &LedgerChunk {
+        &self.chunk
+    }
+
+    #[must_use]
+    pub const fn seal(&self) -> Option<CanonicalHash> {
+        self.seal
+    }
+
+    #[must_use]
+    pub fn key(&self) -> AuthoritativeKey {
+        AuthoritativeKey::parse_canonical(chunk_key(self.log_id(), self.chunk.chunk))
+            .expect("validated authoritative Ledger keys remain canonical")
+    }
+}
+
+impl TryFrom<AuthoritativeLedgerWriteWire> for AuthoritativeLedgerWrite {
+    type Error = AuthoritativeLedgerWriteError;
+
+    fn try_from(value: AuthoritativeLedgerWriteWire) -> Result<Self, Self::Error> {
+        let expected = Self::new(value.namespace, value.log_id, value.chunk)?;
+        if expected.seal != value.seal {
+            return Err(AuthoritativeLedgerWriteError::SealMismatch);
+        }
+        Ok(expected)
+    }
+}
+
+#[derive(Debug, Error)]
+pub enum AuthoritativeLedgerWriteError {
+    #[error("authoritative Ledger log id is empty")]
+    EmptyLogId,
+    #[error("authoritative Ledger log id is {actual} bytes; maximum is {max}")]
+    LogIdTooLong { actual: usize, max: usize },
+    #[error("authoritative Ledger key is invalid: {0}")]
+    Key(#[source] AuthoritativeKeyError),
+    #[error("authoritative Ledger chunk entries are empty or non-contiguous")]
+    NonContiguousChunk,
+    #[error("authoritative Ledger chunk exceeds {max} canonical bytes")]
+    ChunkTooLarge { max: usize },
+    #[error("authoritative Ledger seal does not match its exact owner/location/post-image")]
+    SealMismatch,
+    #[error("authoritative Ledger seal hash failed: {0}")]
+    Hash(#[from] CanonicalHashError),
+    #[error("authoritative Ledger chunk could not be encoded: {0}")]
+    Encoding(#[from] serde_json::Error),
+}
+
 /// One exact idempotently replayable persistence post-image.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
@@ -277,6 +414,9 @@ pub enum ReplayWrite {
         namespace: OwnerId,
         key: AuthoritativeKey,
     },
+    LedgerChunkSet {
+        write: AuthoritativeLedgerWrite,
+    },
 }
 
 impl ReplayWrite {
@@ -287,6 +427,9 @@ impl ReplayWrite {
             Self::ObjectAllocatorSet { .. } => ReplayTarget::ObjectAllocator,
             Self::ModuleJsonSet { namespace, key, .. } | Self::ModuleDelete { namespace, key } => {
                 ReplayTarget::Module(namespace.clone(), key.clone())
+            }
+            Self::LedgerChunkSet { write } => {
+                ReplayTarget::Module(write.namespace().clone(), write.key())
             }
         }
     }
@@ -438,6 +581,8 @@ pub struct AuthoritativeBundle {
     cause: PreparedCausalRef,
     definitions: Vec<DefinitionRef>,
     writes: Vec<ReplayWrite>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ledger_seals: Option<Vec<CanonicalHash>>,
     outcome: RulesValue,
     #[serde(skip_serializing_if = "Option::is_none")]
     resolution: Option<ResolutionRecord>,
@@ -495,6 +640,30 @@ struct AuthoritativeBundleWireV3 {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+struct AuthoritativeBundleWireV4 {
+    schema_version: u16,
+    token: CommitToken,
+    request: RequestUid,
+    idempotency: ScopedIdempotencyKey,
+    ingress_hash: CanonicalHash,
+    request_hash: CanonicalHash,
+    plan_hash: CanonicalHash,
+    action: DefinitionRef,
+    provider: OwnerId,
+    cause: PreparedCausalRef,
+    definitions: Vec<DefinitionRef>,
+    writes: Vec<ReplayWrite>,
+    ledger_seals: Vec<CanonicalHash>,
+    outcome: RulesValue,
+    resolution: Option<ResolutionRecord>,
+    semantic_events: Vec<AuthoritativeSemanticEvent>,
+    eligible_witnesses: Vec<PrincipalId>,
+    durable_outbox: Vec<DurableOutboxIntent>,
+    bundle_hash: CanonicalHash,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct AuthoritativeBundleWireV1 {
     schema_version: u16,
     token: CommitToken,
@@ -517,23 +686,20 @@ struct AuthoritativeBundleWireV1 {
 #[derive(Deserialize)]
 #[serde(untagged)]
 enum AuthoritativeBundleWire {
+    V4(Box<AuthoritativeBundleWireV4>),
     V3(Box<AuthoritativeBundleWireV3>),
     V2(Box<AuthoritativeBundleWireV2>),
     V1(Box<AuthoritativeBundleWireV1>),
 }
 
 impl AuthoritativeBundle {
-    pub const SCHEMA_VERSION: u16 = 3;
+    pub const SCHEMA_VERSION: u16 = 4;
+    const RESOLUTION_SCHEMA_VERSION: u16 = 3;
     const SEMANTIC_EVENT_SCHEMA_VERSION: u16 = 2;
     const LEGACY_SCHEMA_VERSION: u16 = 1;
 
     pub fn new(draft: AuthoritativeBundleDraft) -> Result<Self, AuthoritativeBundleError> {
-        let schema_version = if draft.resolution.is_some() {
-            Self::SCHEMA_VERSION
-        } else {
-            Self::SEMANTIC_EVENT_SCHEMA_VERSION
-        };
-        Self::build(draft, schema_version, false, None)
+        Self::build(draft, Self::SCHEMA_VERSION, false, None, None)
     }
 
     fn build(
@@ -541,6 +707,7 @@ impl AuthoritativeBundle {
         schema_version: u16,
         require_canonical_order: bool,
         claimed_hash: Option<CanonicalHash>,
+        claimed_ledger_seals: Option<Vec<CanonicalHash>>,
     ) -> Result<Self, AuthoritativeBundleError> {
         validate_identity(&draft)?;
 
@@ -600,6 +767,28 @@ impl AuthoritativeBundle {
             });
         }
         validate_allocator(&draft.writes)?;
+        if schema_version < Self::SCHEMA_VERSION
+            && draft
+                .writes
+                .iter()
+                .any(|write| matches!(write, ReplayWrite::LedgerChunkSet { .. }))
+        {
+            return Err(AuthoritativeBundleError::LegacyLedgerWrite);
+        }
+        let ledger_seals: Vec<_> = draft
+            .writes
+            .iter()
+            .filter_map(|write| match write {
+                ReplayWrite::LedgerChunkSet { write } => write.seal(),
+                _ => None,
+            })
+            .collect();
+        if claimed_ledger_seals
+            .as_ref()
+            .is_some_and(|claimed| claimed != &ledger_seals)
+        {
+            return Err(AuthoritativeBundleError::LedgerSealSetMismatch);
+        }
 
         let original_witnesses = require_canonical_order.then(|| draft.eligible_witnesses.clone());
         draft.eligible_witnesses.sort();
@@ -683,6 +872,7 @@ impl AuthoritativeBundle {
             cause: draft.cause,
             definitions: draft.definitions,
             writes: draft.writes,
+            ledger_seals: (schema_version >= Self::SCHEMA_VERSION).then_some(ledger_seals),
             outcome: draft.outcome,
             resolution: draft.resolution,
             semantic_events: draft.semantic_events,
@@ -753,6 +943,11 @@ impl AuthoritativeBundle {
     }
 
     #[must_use]
+    pub fn ledger_seals(&self) -> &[CanonicalHash] {
+        self.ledger_seals.as_deref().unwrap_or_default()
+    }
+
+    #[must_use]
     pub const fn outcome(&self) -> &RulesValue {
         &self.outcome
     }
@@ -785,9 +980,42 @@ impl<'de> Deserialize<'de> for AuthoritativeBundle {
     {
         let wire = AuthoritativeBundleWire::deserialize(deserializer)?;
         match wire {
-            AuthoritativeBundleWire::V3(wire) => {
+            AuthoritativeBundleWire::V4(wire) => {
                 let wire = *wire;
                 if wire.schema_version != Self::SCHEMA_VERSION {
+                    return Err(D::Error::custom(format!(
+                        "unsupported authoritative bundle schema version {}",
+                        wire.schema_version
+                    )));
+                }
+                Self::build(
+                    AuthoritativeBundleDraft {
+                        token: wire.token,
+                        request: wire.request,
+                        idempotency: wire.idempotency,
+                        ingress_hash: wire.ingress_hash,
+                        request_hash: wire.request_hash,
+                        plan_hash: wire.plan_hash,
+                        action: wire.action,
+                        provider: wire.provider,
+                        cause: wire.cause,
+                        definitions: wire.definitions,
+                        writes: wire.writes,
+                        outcome: wire.outcome,
+                        resolution: wire.resolution,
+                        semantic_events: wire.semantic_events,
+                        eligible_witnesses: wire.eligible_witnesses,
+                        durable_outbox: wire.durable_outbox,
+                    },
+                    wire.schema_version,
+                    true,
+                    Some(wire.bundle_hash),
+                    Some(wire.ledger_seals),
+                )
+            }
+            AuthoritativeBundleWire::V3(wire) => {
+                let wire = *wire;
+                if wire.schema_version != Self::RESOLUTION_SCHEMA_VERSION {
                     return Err(D::Error::custom(format!(
                         "unsupported authoritative bundle schema version {}",
                         wire.schema_version
@@ -815,6 +1043,7 @@ impl<'de> Deserialize<'de> for AuthoritativeBundle {
                     wire.schema_version,
                     true,
                     Some(wire.bundle_hash),
+                    None,
                 )
             }
             AuthoritativeBundleWire::V1(wire) => {
@@ -847,6 +1076,7 @@ impl<'de> Deserialize<'de> for AuthoritativeBundle {
                     wire.schema_version,
                     true,
                     Some(wire.bundle_hash),
+                    None,
                 )
             }
             AuthoritativeBundleWire::V2(wire) => {
@@ -879,6 +1109,7 @@ impl<'de> Deserialize<'de> for AuthoritativeBundle {
                     wire.schema_version,
                     true,
                     Some(wire.bundle_hash),
+                    None,
                 )
             }
         }
@@ -891,12 +1122,12 @@ fn validate_resolution(
     schema_version: u16,
 ) -> Result<(), AuthoritativeBundleError> {
     let Some(resolution) = &draft.resolution else {
-        if schema_version >= AuthoritativeBundle::SCHEMA_VERSION {
+        if schema_version == AuthoritativeBundle::RESOLUTION_SCHEMA_VERSION {
             return Err(AuthoritativeBundleError::MissingResolution);
         }
         return Ok(());
     };
-    if schema_version < AuthoritativeBundle::SCHEMA_VERSION {
+    if schema_version < AuthoritativeBundle::RESOLUTION_SCHEMA_VERSION {
         return Err(AuthoritativeBundleError::LegacyResolution);
     }
     if resolution.action() != draft.token {
@@ -1036,11 +1267,25 @@ fn bundle_hash_material(draft: &AuthoritativeBundleDraft, schema_version: u16) -
             .expect("bundle hash material is an object")
             .insert("semantic_events".to_owned(), json!(draft.semantic_events));
     }
-    if schema_version >= AuthoritativeBundle::SCHEMA_VERSION {
+    if schema_version >= AuthoritativeBundle::RESOLUTION_SCHEMA_VERSION {
         material
             .as_object_mut()
             .expect("bundle hash material is always an object")
             .insert("resolution".to_owned(), json!(draft.resolution));
+    }
+    if schema_version >= AuthoritativeBundle::SCHEMA_VERSION {
+        let ledger_seals: Vec<_> = draft
+            .writes
+            .iter()
+            .filter_map(|write| match write {
+                ReplayWrite::LedgerChunkSet { write } => write.seal(),
+                _ => None,
+            })
+            .collect();
+        material
+            .as_object_mut()
+            .expect("bundle hash material is always an object")
+            .insert("ledger_seals".to_owned(), json!(ledger_seals));
     }
     material
 }
@@ -1104,6 +1349,10 @@ pub enum AuthoritativeBundleError {
     DuplicateWrite { target: Box<str> },
     #[error("bundle replay writes contain {actual} entries; maximum is {max}")]
     ReplayWriteLimit { actual: usize, max: usize },
+    #[error("authoritative bundle before v4 cannot contain Ledger replay writes")]
+    LegacyLedgerWrite,
+    #[error("persisted authoritative Ledger seal set does not match its replay writes")]
+    LedgerSealSetMismatch,
     #[error("object allocator next_id {next_id} does not exceed created object id {max_id}")]
     AllocatorBehindObject { next_id: u32, max_id: u32 },
     #[error("persisted bundle witnesses are not strictly canonical and duplicate-free")]
@@ -1222,18 +1471,7 @@ mod tests {
         }
     }
 
-    #[test]
-    fn bundle_normalizes_once_then_round_trips_strictly() {
-        let bundle = AuthoritativeBundle::new(draft()).unwrap();
-        assert_eq!(bundle.schema_version, 2);
-        assert_eq!(bundle.writes()[0].target(), ReplayTarget::Object(ObjId(7)));
-        let encoded = serde_json::to_string(&bundle).unwrap();
-        let decoded: AuthoritativeBundle = serde_json::from_str(&encoded).unwrap();
-        assert_eq!(decoded, bundle);
-    }
-
-    #[test]
-    fn resolution_record_is_commit_outcome_and_definition_bound() {
+    fn resolved_draft() -> AuthoritativeBundleDraft {
         let mut draft = draft();
         let domain = CanonicalId::new("brace_resolution").unwrap();
         let mut rng = ResolutionKeyRing::new(ResolutionSecret::new(1, [0x61; 32]).unwrap(), [])
@@ -1252,11 +1490,28 @@ mod tests {
             .unwrap()
             .bind(draft.token),
         );
+        draft
+    }
+
+    #[test]
+    fn bundle_normalizes_once_then_round_trips_strictly() {
+        let bundle = AuthoritativeBundle::new(draft()).unwrap();
+        assert_eq!(bundle.schema_version, AuthoritativeBundle::SCHEMA_VERSION);
+        assert_eq!(bundle.writes()[0].target(), ReplayTarget::Object(ObjId(7)));
+        let encoded = serde_json::to_string(&bundle).unwrap();
+        let decoded: AuthoritativeBundle = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded, bundle);
+    }
+
+    #[test]
+    fn resolution_record_is_commit_outcome_and_definition_bound() {
+        let draft = resolved_draft();
+        let domain = CanonicalId::new("brace_resolution").unwrap();
         let bundle = AuthoritativeBundle::new(draft.clone()).unwrap();
         assert_eq!(bundle.schema_version, AuthoritativeBundle::SCHEMA_VERSION);
         assert!(bundle.resolution().is_some());
         let encoded = serde_json::to_value(&bundle).unwrap();
-        assert_eq!(encoded["schema_version"], 3);
+        assert_eq!(encoded["schema_version"], 4);
         assert!(encoded.get("resolution").is_some());
         assert_eq!(
             serde_json::from_value::<AuthoritativeBundle>(encoded).unwrap(),
@@ -1298,6 +1553,7 @@ mod tests {
             AuthoritativeBundle::LEGACY_SCHEMA_VERSION,
             false,
             None,
+            None,
         )
         .unwrap();
         let encoded = serde_json::to_value(&bundle).unwrap();
@@ -1306,6 +1562,43 @@ mod tests {
         let decoded: AuthoritativeBundle = serde_json::from_value(encoded).unwrap();
         assert_eq!(decoded, bundle);
         assert!(decoded.semantic_events().is_empty());
+    }
+
+    #[test]
+    fn legacy_v2_and_v3_bundles_remain_strictly_readable() {
+        let v2 = AuthoritativeBundle::build(
+            draft(),
+            AuthoritativeBundle::SEMANTIC_EVENT_SCHEMA_VERSION,
+            false,
+            None,
+            None,
+        )
+        .unwrap();
+        let encoded_v2 = serde_json::to_value(&v2).unwrap();
+        assert_eq!(encoded_v2["schema_version"], 2);
+        assert!(encoded_v2.get("resolution").is_none());
+        assert!(encoded_v2.get("ledger_seals").is_none());
+        assert_eq!(
+            serde_json::from_value::<AuthoritativeBundle>(encoded_v2).unwrap(),
+            v2
+        );
+
+        let v3 = AuthoritativeBundle::build(
+            resolved_draft(),
+            AuthoritativeBundle::RESOLUTION_SCHEMA_VERSION,
+            false,
+            None,
+            None,
+        )
+        .unwrap();
+        let encoded_v3 = serde_json::to_value(&v3).unwrap();
+        assert_eq!(encoded_v3["schema_version"], 3);
+        assert!(encoded_v3.get("resolution").is_some());
+        assert!(encoded_v3.get("ledger_seals").is_none());
+        assert_eq!(
+            serde_json::from_value::<AuthoritativeBundle>(encoded_v3).unwrap(),
+            v3
+        );
     }
 
     #[test]
@@ -1396,6 +1689,86 @@ mod tests {
     }
 
     #[test]
+    fn ledger_write_embeds_exact_seal_and_collides_on_its_physical_module_key() {
+        let owner = OwnerId::new("toy").unwrap();
+        let mut ledger = crate::ledger::Ledger::with_chunk_target(0);
+        let prepared = ledger
+            .prepare_append("economy", json!({ "amount": 7 }))
+            .unwrap();
+        let ledger_write = prepared.authoritative_replay_write(owner.clone()).unwrap();
+        let ReplayWrite::LedgerChunkSet { write } = &ledger_write else {
+            panic!("prepared Ledger append returned another replay kind")
+        };
+        let seal = write.seal().expect("target-zero append seals");
+        assert_eq!(write.key().as_str(), "log:economy:0");
+
+        let mut with_ledger = draft();
+        with_ledger.writes.push(ledger_write.clone());
+        let bundle = AuthoritativeBundle::new(with_ledger).unwrap();
+        assert_eq!(bundle.ledger_seals(), &[seal]);
+        let encoded = serde_json::to_value(&bundle).unwrap();
+        assert_eq!(
+            serde_json::from_value::<AuthoritativeBundle>(encoded.clone()).unwrap(),
+            bundle
+        );
+
+        let mut tampered = encoded.clone();
+        tampered["ledger_seals"][0] = serde_json::to_value(hash(0xee)).unwrap();
+        assert!(serde_json::from_value::<AuthoritativeBundle>(tampered).is_err());
+
+        let mut tampered_write = encoded;
+        let ledger_wire = tampered_write["writes"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|value| value["kind"] == "ledger_chunk_set")
+            .expect("serialized Ledger replay write");
+        ledger_wire["write"]["seal"] = serde_json::to_value(hash(0xef)).unwrap();
+        assert!(serde_json::from_value::<AuthoritativeBundle>(tampered_write).is_err());
+
+        let mut collision = draft();
+        collision.writes.extend([
+            ledger_write,
+            ReplayWrite::ModuleJsonSet {
+                namespace: owner,
+                key: AuthoritativeKey::parse_canonical("log:economy:0").unwrap(),
+                value: json!({ "not": "the ledger" }),
+            },
+        ]);
+        assert!(matches!(
+            AuthoritativeBundle::new(collision),
+            Err(AuthoritativeBundleError::DuplicateWrite { .. })
+        ));
+
+        let (seq, legacy_write) = ledger.apply_prepared(prepared).unwrap();
+        assert_eq!(seq, 0);
+        assert!(matches!(
+            legacy_write,
+            crate::module::ModuleWrite::JsonSet { .. }
+        ));
+
+        let open_ledger = crate::ledger::Ledger::with_chunk_target(MAX_SAFE_CHUNK_BYTES);
+        let open_prepared = open_ledger
+            .prepare_append("open", json!({ "amount": 8 }))
+            .unwrap();
+        let open_replay = open_prepared
+            .authoritative_replay_write(OwnerId::new("toy").unwrap())
+            .unwrap();
+        let ReplayWrite::LedgerChunkSet { write } = &open_replay else {
+            panic!("prepared open Ledger append returned another replay kind")
+        };
+        assert!(write.seal().is_none());
+        let mut open_draft = draft();
+        open_draft.writes.push(open_replay);
+        let open_bundle = AuthoritativeBundle::new(open_draft).unwrap();
+        assert!(open_bundle.ledger_seals().is_empty());
+        assert_eq!(
+            serde_json::to_value(open_bundle).unwrap()["ledger_seals"],
+            json!([])
+        );
+    }
+
+    #[test]
     fn persisted_hash_and_order_tampering_fail_closed() {
         let bundle = AuthoritativeBundle::new(draft()).unwrap();
         let mut value = serde_json::to_value(bundle).unwrap();
@@ -1438,8 +1811,8 @@ mod tests {
 
         let encoded = serde_json::to_string(&AuthoritativeBundle::new(draft()).unwrap()).unwrap();
         let duplicated = encoded.replacen(
-            "{\"schema_version\":2",
-            "{\"schema_version\":2,\"schema_version\":2",
+            "{\"schema_version\":4",
+            "{\"schema_version\":4,\"schema_version\":4",
             1,
         );
         assert!(serde_json::from_str::<AuthoritativeBundle>(&duplicated).is_err());

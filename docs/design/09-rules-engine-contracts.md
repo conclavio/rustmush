@@ -2220,15 +2220,13 @@ Gate-5 work:
    construction gap: an outcome too large for any finite quarantine budget must be refused before
    live installation as legacy handlers are migrated, never "fixed" by an unbounded spool.
 
-Economy obligations/contracts remain on their legacy durable path until mixed authoritative write
-sets can include the Ledger append and the Ledger seal participates in the same bundle instead of
-blocking it. The module-read prerequisite is closed for engine-dispatched commands, observers,
-ticks, boot callbacks, async completions, and connection/scene/event callbacks: each receives an
-owner-scoped read-only `ModuleActionState`; exact opaque handles enforce family ownership, bounded
-canonical scans are available to drivers, and no mutation surface crosses the context. It remains
-open for movement, carry, render, and perception hooks until their narrow immutable hook-read
-context lands. The two remaining persistence changes are K8.0 work, not part of K3.1's kernel
-repair.
+Economy obligations/contracts remain on their legacy durable path pending their explicit owner
+migration review, but the three kernel prerequisites are now closed. K8.0 added a replayable
+Ledger chunk post-image and its exact seal to the authoritative bundle; K4/K6 provide synchronous
+owner-scoped typed reads to module and immutable hook contexts. Exact opaque handles enforce family
+ownership, bounded canonical scans are available to drivers, and no mutation surface crosses a
+read context. These later closures do not retroactively make economy records kernel-owned: the
+journal remains sole authority until the E owner accepts and proves each migration.
 
 Work:
 
@@ -2329,11 +2327,11 @@ two kernel primitives forward before finishing the rest of K4/K5:
    projection inspectors now scan nested field names and exact private values across the legal
    action DTO, semantic view, line/TUI renderings, and mock-LLM snapshot.
 
-The K3.1 checkpoint-readback and pending-allocator findings are already closed in both memory and
-Redis and therefore are not prerequisites. Mixed authoritative write sets, synchronous typed-family
-module reads, and folding a Ledger seal into an authoritative bundle remain the migration gate
-before E7 reservations or production settlement move from the economy journal onto kernel
-authority; they do not block E7 records and policy from using the two primitives above.
+The K3.1 checkpoint-readback and pending-allocator findings are closed in both memory and Redis.
+K4/K6 closed synchronous typed-family reads and K8.0 closed mixed Ledger replay plus in-bundle seal
+custody. The three prerequisites therefore open the E7 migration review; they do not authorize an
+automatic move of reservations or production settlement from the economy journal onto kernel
+authority.
 
 ### K4. Typed clocks, resolution RNG, resources, and effects
 
@@ -2956,6 +2954,26 @@ append. Run the unchanged lifecycle/materialization/readback assertions against 
 then add failure and restart probes at reserve, partial materialization, seal publication,
 finalization, acknowledgement loss, and checkpoint. K8.0 closes migration gates 1 and 3; the E
 side does not provide a fallback implementation in domain code.
+
+Implementation status: K8.0 is closed. `ReplayWrite::LedgerChunkSet` carries a validated exact
+`LedgerChunk` post-image under a key derived from `(owner, log_id, chunk_index)`; it deliberately
+does not expose stream-append semantics. Its physical target collides with an ordinary module write
+to the same key. Sealed chunks carry `authoritative_ledger_seal.v1`, bound to owner, derived key,
+and exact chunk bytes. Authoritative bundle wire v4 stores the canonically derived seal set inside
+the hash-bound bundle, rejects either inner-seal or aggregate-seal tampering, and remains strictly
+read-compatible with v1-v3 bundles while prohibiting the new write on legacy schemas. An unsealed
+tail is still an exact replayable post-image but correctly contributes no immutable seal.
+
+Memory and Redis normalize this write to the same exact JSON post-image used by their existing
+atomic replay/readback/checkpoint protocol. The shared backend contract proves a mixed object,
+allocator, typed-document and sealed-Ledger lifecycle through compact retry. The in-memory fault
+matrix covers pre-reserve, post-intent, every materialization prefix including the Ledger target,
+lost finalization acknowledgement, lost checkpoint acknowledgement, and repair. A live disposable
+Redis probe additionally proves deterministic `WRONGTYPE` at the Ledger target leaves the complete
+intent pending after earlier writes materialize, then resumes the exact replay after repair and a
+fresh connection. `PreparedLedgerAppend` retains the exact chunk and can derive this replay write
+without consuming its one-shot RAM installation plan, so an owner migration can bind persistence
+before applying the acknowledged append.
 
 Work:
 
