@@ -2779,9 +2779,11 @@ composition-frozen, one-source-per-owner registry now binds the pending/prompt/d
 exact lease action, wake adapter, and owner-selected bounded lease interval. Production startup
 validates every source/provider/adapter route, exact wakes and a periodic canonical scan rediscover
 work, and the world task retains the worker reservation through the lease action's exact receipt,
-installing the post-image before spawn. The remaining K7.1 proof is an end-to-end composed source
-fixture covering commit, abort, wake loss, expired-lease restart, and worker saturation; K7.2 owns
-completion consumption, so production ruleset migration remains disabled until that ingress lands.
+installing the post-image before spawn. The composed production-path fixture now proves commit,
+abort-without-spawn, wake loss followed by typed-family rediscovery, expired-lease recovery across a
+fresh engine hydration, and worker saturation that leaves later work durably `Ready` until capacity
+returns. K7.1 is closed. K7.2 still owns completion consumption, so production ruleset migration
+remains disabled until that ingress lands.
 
 **K7.2 — untrusted response ingress.** The async worker owns only the projected prompt and returns
 the bounded parsed `DecisionResponse`; raw model prose or reasoning never enters authoritative

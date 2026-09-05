@@ -56,7 +56,6 @@ impl DurableDecisionKeyStore {
     pub fn load_or_create(&self) -> Result<DecisionKeyRing, DecisionKeyStoreError> {
         self.inner.load_or_create()
     }
-
 }
 
 #[cfg(test)]
