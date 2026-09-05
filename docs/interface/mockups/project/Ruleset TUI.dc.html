@@ -1,0 +1,798 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<meta name="design_doc_mode" content="canvas">
+<style>
+  body { margin:0; background:#0a0d10; color:#d7dee5; font-family: system-ui, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; }
+  a { color:#6ea8fe; text-decoration:none; }
+  a:hover { color:#9cc4ff; text-decoration:underline; }
+</style>
+</helmet>
+
+<section style="padding:56px 64px 120px; display:flex; flex-direction:column; gap:44px; background:#0a0d10; width:max-content; min-width:100%; box-sizing:border-box;">
+
+  <div style="display:flex; flex-direction:column; gap:14px; max-width:80ch;">
+    <div style="font-family:ui-monospace, 'Cascadia Mono', Consolas, monospace; font-size:12px; letter-spacing:0.18em; text-transform:uppercase; color:#5b6672;">Turn 2 — ruleset screens, Console direction</div>
+    <h1 style="margin:0; font-size:34px; font-weight:600; letter-spacing:-0.01em;">TacSim and Shadowrun in the TUI</h1>
+    <p style="margin:0; font-size:15px; line-height:1.6; color:#8b98a5; text-wrap:pretty;">Five screens in the <strong style="color:#d7dee5;">Console</strong> vocabulary, at 160×44 (the size a HUD like this wants; every pane degrades out on narrower terminals the way the current TUI already does). TacSim panes are addressed in the vocabulary <code style="font-family:ui-monospace,monospace; color:#8ab8e8;">mush-tactics</code> actually has — sections, facets, scalar cells, components, capabilities, mobility modes — so the HUD is a rendering of <code style="font-family:ui-monospace,monospace; color:#8ab8e8;">TacticalUnit</code> rather than a new model. Shadowrun reads the real SR5 sheet fields (condition monitors, limits, Edge, initiative) and adds the two subsystems the ruleset doesn't have yet.</p>
+    <p style="margin:0; font-size:14px; line-height:1.6; color:#5b6672; text-wrap:pretty;">Unit designations, corps, callsigns and hardware names are invented for these mockups — the layouts recreate the <em>functions</em> a THUD-style HUD served, not any published game's material.</p>
+  </div>
+
+  <!-- ================= T1 — PILOTING HUD ================= -->
+  <div style="display:flex; flex-direction:column; gap:14px;">
+    <div style="display:flex; align-items:baseline; gap:14px;">
+      <span style="font-family:ui-monospace,monospace; font-size:12px; font-weight:700; letter-spacing:0.08em; color:#000; background:#e8c268; padding:3px 9px; border-radius:3px;">T1</span>
+      <h2 style="margin:0; font-size:22px; font-weight:600;">TacSim · piloting</h2>
+      <span style="font-size:14px; color:#8b98a5;">The one screen you fly from. Map, contacts, weapons, sections, comms.</span>
+    </div>
+
+    <div style="width:1300px; background:#000; border:1px solid #2a333d; padding:9px; font-family:ui-monospace, 'Cascadia Mono', Consolas, 'SF Mono', Menlo, monospace; font-size:12.5px; line-height:1.42; color:#d7dae0; display:flex; flex-direction:column; gap:7px;">
+
+      <!-- tab strip -->
+      <div style="display:flex; align-items:center;">
+        <span style="color:#5b6672; padding-right:12px;">rustmush</span>
+        <span style="background:#42b3c2; color:#000; padding:0 9px; font-weight:700;">1 hud</span>
+        <span style="color:#8b98a5; padding:0 9px;"><span style="color:#d1a458;">2</span> contacts</span>
+        <span style="color:#8b98a5; padding:0 9px;"><span style="color:#d1a458;">3</span> weapons</span>
+        <span style="color:#8b98a5; padding:0 9px;"><span style="color:#d1a458;">4</span> comms <span style="color:#e05561;">3</span></span>
+        <span style="color:#8b98a5; padding:0 9px;"><span style="color:#d1a458;">5</span> grid</span>
+        <span style="color:#8b98a5; padding:0 9px;"><span style="color:#d1a458;">6</span> sheet</span>
+        <span style="flex:1;"></span>
+        <span style="color:#5b6672;">Vissar</span>
+        <span style="color:#2a333d; padding:0 8px;">│</span>
+        <span style="color:#e05561; font-weight:700;">ENGAGED</span>
+        <span style="color:#2a333d; padding:0 8px;">│</span>
+        <span style="color:#5b6672;">turn 14 · 0.25s tick</span>
+      </div>
+
+      <!-- status line -->
+      <div style="display:flex; align-items:center; background:#1c242d; padding:1px 9px; white-space:pre;">
+        <span style="color:#d1a458; font-weight:700;">KESTREL-C</span><span style="color:#5b6672;"> “Halberd”</span>
+        <span style="color:#2a333d; padding:0 9px;">│</span><span style="color:#8b98a5;">heavy · 65t</span>
+        <span style="color:#2a333d; padding:0 9px;">│</span><span style="color:#8cc265;">mobility: walk</span>
+        <span style="color:#2a333d; padding:0 9px;">│</span><span style="color:#8b98a5;">hex 12-07</span>
+        <span style="color:#2a333d; padding:0 9px;">│</span><span style="color:#8b98a5;">hdg 047</span>
+        <span style="flex:1;"></span>
+        <span style="color:#5b6672;">lance </span><span style="color:#42b3c2; font-weight:700;">LANCE-2</span>
+        <span style="color:#2a333d; padding:0 9px;">│</span><span style="color:#5b6672;">scene </span><span style="color:#8b98a5;">tactics.battle #88</span>
+      </div>
+
+      <div style="display:flex; gap:7px; height:600px;">
+
+        <!-- LEFT: map + log -->
+        <div style="flex:1; min-width:0; display:flex; flex-direction:column; gap:7px;">
+          <div style="flex:none; height:250px; border:1px solid #6c7484; position:relative; padding:8px 11px; overflow:hidden;">
+            <span style="position:absolute; top:-9px; left:10px; background:#000; padding:0 5px; color:#d1a458;">grid</span>
+            <span style="position:absolute; top:-9px; right:10px; background:#000; padding:0 5px; color:#5b6672;">1:1 · cell 30 m · ^V zoom · arrows pan</span>
+            <div style="display:flex; gap:18px;">
+              <div style="display:flex; flex-direction:column; line-height:1.5; white-space:pre;">
+                <div><span style="color:#5b6672;">    14 15 16 17 18 19 20 21 22 23 24 25</span></div>
+                <div><span style="color:#5b6672;">05 </span><span style="color:#3d5a80;">.1 .1 </span><span style="color:#8b98a5;">^3 ^4 ^4 </span><span style="color:#3d5a80;">.2 .1 .1 .1 .0 .0 .1</span></div>
+                <div><span style="color:#5b6672;">06 </span><span style="color:#3d5a80;">.1 </span><span style="color:#8b98a5;">^3 ^4 </span><span style="color:#d7dae0;">▲6 </span><span style="color:#8b98a5;">^4 </span><span style="color:#3d5a80;">.2 .1 </span><span style="color:#e05561; font-weight:700;">2</span><span style="color:#3d5a80;">6 .1 .0 .0 .1</span></div>
+                <div><span style="color:#5b6672;">07 </span><span style="color:#3d5a80;">.1 </span><span style="color:#42b3c2;">~0 ~0 </span><span style="color:#3d5a80;">.1 </span><span style="color:#8cc265; font-weight:700;">@</span><span style="color:#3d5a80;">2 .2 </span><span style="color:#e05561; font-weight:700;">[1]</span><span style="color:#3d5a80;">.1 .1 .0 .0 .1</span></div>
+                <div><span style="color:#5b6672;">08 </span><span style="color:#42b3c2;">~0 ~0 ~0 </span><span style="color:#3d5a80;">.1 .1 .1 .1 .1 .0 .0 .0 .1</span></div>
+                <div><span style="color:#5b6672;">09 </span><span style="color:#42b3c2;">~0 ~0 </span><span style="color:#3d5a80;">.1 </span><span style="color:#42b3c2; font-weight:700;">3</span><span style="color:#3d5a80;">1 .1 .1 .1 </span><span style="color:#8b98a5;">^3 </span><span style="color:#3d5a80;">.1 .0 .0 .1</span></div>
+                <div><span style="color:#5b6672;">10 </span><span style="color:#8cc265;">♣2 ♣2 </span><span style="color:#3d5a80;">.1 .1 .1 .1 </span><span style="color:#8b98a5;">^3 ^3 </span><span style="color:#3d5a80;">.1 .1 .0 .1</span></div>
+                <div><span style="color:#5b6672;">11 </span><span style="color:#8cc265;">♣2 ♣2 ♣2 </span><span style="color:#3d5a80;">.1 .1 </span><span style="color:#d1a458;">R4</span><span style="color:#3d5a80;"> .1 .1 .1 .1 .0 .1</span></div>
+                <div><span style="color:#5b6672;">12 </span><span style="color:#8cc265;">♣2 ♣2 </span><span style="color:#3d5a80;">.1 .1 .1 .1 .1 .1 .1 .1 .1 .1</span></div>
+                <div><span style="color:#5b6672;">13 </span><span style="color:#3d5a80;">.1 .1 .1 .1 .1 .1 .1 .1 .1 .1 .1 .1</span></div>
+                <div style="padding-top:6px;"><span style="color:#5b6672;">zoom </span><span style="background:#d1a458; color:#000; font-weight:700;"> 1:1 </span><span style="color:#5b6672;"> 1:2  1:4  1:8    span 12×9 cells</span></div>
+              </div>
+              <div style="display:flex; flex-direction:column; line-height:1.6; white-space:pre;">
+                <div><span style="color:#5b6672;">glyph + elevation</span></div>
+                <div><span style="color:#3d5a80;">.</span><span style="color:#5b6672;"> clear</span></div>
+                <div><span style="color:#8b98a5;">^</span><span style="color:#5b6672;"> rough +1</span></div>
+                <div><span style="color:#d7dae0;">▲</span><span style="color:#5b6672;"> peak, blocks LOS</span></div>
+                <div><span style="color:#42b3c2;">~</span><span style="color:#5b6672;"> water</span></div>
+                <div><span style="color:#8cc265;">♣</span><span style="color:#5b6672;"> woods, +2 cover</span></div>
+                <div><span style="color:#5b6672;">&nbsp;</span></div>
+                <div><span style="color:#8cc265; font-weight:700;">@</span><span style="color:#5b6672;"> you</span></div>
+                <div><span style="color:#e05561; font-weight:700;">1 2</span><span style="color:#5b6672;"> hostile</span></div>
+                <div><span style="color:#e05561; font-weight:700;">[ ]</span><span style="color:#5b6672;"> current target</span></div>
+                <div><span style="color:#42b3c2; font-weight:700;">3</span><span style="color:#5b6672;"> friendly</span></div>
+                <div><span style="color:#d1a458;">R4</span><span style="color:#5b6672;"> last known</span></div>
+              </div>
+            </div>
+          </div>
+
+          <div style="flex:1; min-height:0; border:1px solid #6c7484; position:relative; padding:8px 11px; overflow:hidden;">
+            <span style="position:absolute; top:-9px; left:10px; background:#000; padding:0 5px; color:#d1a458;">log</span>
+            <span style="position:absolute; top:-9px; right:10px; background:#000; padding:0 5px; color:#5b6672;">^L filter: combat</span>
+            <div style="display:flex; flex-direction:column; gap:3px;">
+              <div style="display:flex; gap:10px;"><span style="flex:none; width:52px; color:#5b6672; text-align:right;">14.2</span><div style="flex:1;"><span style="color:#8cc265;">HIT</span> <span style="color:#8b98a5;">your</span> autocannon 100mm <span style="color:#8b98a5;">→</span> <span style="color:#e05561;">contact 1</span> <span style="color:#8b98a5;">torso.left/front</span> <span style="color:#d1a458;">−10 armor</span></div></div>
+              <div style="display:flex; gap:10px;"><span style="flex:none; width:52px; color:#5b6672; text-align:right;">14.2</span><div style="flex:1; color:#5b6672;">armor breached — 3 damage to structure, component <span style="color:#8b98a5;">heat_sink_2</span> → damaged</div></div>
+              <div style="display:flex; gap:10px;"><span style="flex:none; width:52px; color:#5b6672; text-align:right;">14.4</span><div style="flex:1;"><span style="color:#e05561;">HIT</span> <span style="color:#e05561;">contact 2</span> missile rack <span style="color:#8b98a5;">→</span> <span style="color:#d1a458;">you</span> <span style="color:#8b98a5;">arm.right/front</span> <span style="color:#e05561;">−17 armor</span></div></div>
+              <div style="display:flex; gap:10px;"><span style="flex:none; width:52px; color:#5b6672; text-align:right;">14.4</span><div style="flex:1; color:#e05561;">arm.right condition → destroyed · capability <span style="color:#d1a458;">tactics.action.attack</span> revoked (laser, light)</div></div>
+              <div style="display:flex; gap:10px;"><span style="flex:none; width:52px; color:#5b6672; text-align:right;">14.5</span><div style="flex:1;"><span style="color:#d1a458;">MISS</span> <span style="color:#8b98a5;">your</span> laser, medium <span style="color:#8b98a5;">→</span> <span style="color:#e05561;">contact 2</span> <span style="color:#5b6672;">(range 9.8, +4 movement, +2 woods)</span></div></div>
+              <div style="display:flex; gap:10px;"><span style="flex:none; width:52px; color:#5b6672; text-align:right;">14.6</span><div style="flex:1; color:#8b98a5;">heat 21/30 — <span style="color:#d1a458;">warning: 24 forces a shutdown check</span></div></div>
+              <div style="display:flex; gap:10px;"><span style="flex:none; width:52px; color:#42b3c2; text-align:right; font-weight:700;">Ordo</span><div style="flex:1;"><span style="color:#5b6672;">(pose)</span> swings wide of the treeline, kicking spray from the shallows.</div></div>
+              <div style="display:flex; gap:10px;"><span style="flex:none; width:52px; color:#5b6672; text-align:right;">14.8</span><div style="flex:1; color:#5b6672;">contact <span style="color:#d1a458;">R4</span> lost — sensor lock broken, last known hex 13-11</div></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- MIDDLE: contacts + weapons -->
+        <div style="flex:none; width:430px; display:flex; flex-direction:column; gap:7px; min-height:0;">
+          <div style="flex:none; border:1px solid #6c7484; position:relative; padding:8px 11px;">
+            <span style="position:absolute; top:-9px; left:10px; background:#000; padding:0 5px; color:#d1a458;">contacts</span>
+            <span style="position:absolute; top:-9px; right:10px; background:#000; padding:0 5px; color:#5b6672;">3 active · 1 lost</span>
+            <div style="display:flex; flex-direction:column; line-height:1.55;">
+              <div style="white-space:pre; color:#5b6672; font-weight:700;">id  designation      bear   rng   spd  hdg  lock</div>
+              <div style="white-space:pre;"><span style="color:#e05561; font-weight:700;">1 </span>  <span style="color:#e05561;">unknown heavy  </span>  <span style="color:#d7dae0;">047</span>   <span style="color:#d7dae0;">6.2</span>   <span style="color:#d7dae0;">43</span>  <span style="color:#d7dae0;">210</span>  <span style="color:#8cc265;">▰▰▰▰</span></div>
+              <div style="white-space:pre;"><span style="color:#e05561; font-weight:700;">2 </span>  <span style="color:#e05561;">“Vareg”        </span>  <span style="color:#d7dae0;">092</span>   <span style="color:#d7dae0;">9.8</span>   <span style="color:#d7dae0;">61</span>  <span style="color:#d7dae0;">315</span>  <span style="color:#d1a458;">▰▰</span><span style="color:#2a333d;">▱▱</span></div>
+              <div style="white-space:pre;"><span style="color:#42b3c2; font-weight:700;">3 </span>  <span style="color:#42b3c2;">Ordo · LANCE-2 </span>  <span style="color:#d7dae0;">268</span>   <span style="color:#d7dae0;">2.1</span>   <span style="color:#d7dae0;">38</span>  <span style="color:#d7dae0;">050</span>  <span style="color:#5b6672;">team</span></div>
+              <div style="white-space:pre;"><span style="color:#d1a458;">R4</span>  <span style="color:#5b6672;">lost 12s ago   </span>  <span style="color:#5b6672;">---</span>   <span style="color:#5b6672;">---</span>   <span style="color:#5b6672;">--</span>  <span style="color:#5b6672;">---</span>  <span style="color:#5b6672;">fading</span></div>
+              <div style="white-space:pre; color:#5b6672;">&nbsp;</div>
+              <div style="white-space:pre;"><span style="color:#5b6672;">target </span><span style="color:#e05561; font-weight:700;">1</span><span style="color:#5b6672;"> · aspect </span><span style="color:#d7dae0;">left flank</span><span style="color:#5b6672;"> · LOS </span><span style="color:#8cc265;">clear</span></div>
+              <div style="white-space:pre;"><span style="color:#5b6672;">to-hit  base 4  +2 range  +1 rough  = </span><span style="color:#d1a458; font-weight:700;">7</span></div>
+            </div>
+          </div>
+
+          <div style="flex:1; min-height:0; border:1px solid #6c7484; position:relative; padding:8px 11px; overflow:hidden;">
+            <span style="position:absolute; top:-9px; left:10px; background:#000; padding:0 5px; color:#d1a458;">weapons</span>
+            <span style="position:absolute; top:-9px; right:10px; background:#000; padding:0 5px; color:#5b6672;">^F fire group A</span>
+            <div style="display:flex; flex-direction:column; line-height:1.55;">
+              <div style="white-space:pre; color:#5b6672; font-weight:700;"> #  component          section   ammo  cycle</div>
+              <div style="white-space:pre;"><span style="color:#8cc265;"> 1</span>  <span style="color:#d7dae0;">missile rack, long</span>  <span style="color:#8b98a5;">torso.r </span>  <span style="color:#d7dae0;">16</span>  <span style="color:#8cc265;">▰▰▰▰▰▰▰▰</span> <span style="color:#8cc265;">ready</span></div>
+              <div style="white-space:pre;"><span style="color:#d1a458;"> 2</span>  <span style="color:#d7dae0;">autocannon 100mm </span>  <span style="color:#8b98a5;">torso.l </span>  <span style="color:#d7dae0;">22</span>  <span style="color:#d1a458;">▰▰▰</span><span style="color:#2a333d;">▱▱▱▱▱</span> <span style="color:#d1a458;">2.4s</span></div>
+              <div style="white-space:pre;"><span style="color:#8cc265;"> 3</span>  <span style="color:#d7dae0;">laser, medium    </span>  <span style="color:#8b98a5;">torso.c </span>  <span style="color:#5b6672;"> —</span>  <span style="color:#8cc265;">▰▰▰▰▰▰▰▰</span> <span style="color:#8cc265;">ready</span></div>
+              <div style="white-space:pre;"><span style="color:#d1a458;"> 4</span>  <span style="color:#d7dae0;">missile pod, short</span> <span style="color:#8b98a5;">torso.c </span>  <span style="color:#d7dae0;"> 9</span>  <span style="color:#2a333d;">▰▱▱▱▱▱▱▱</span> <span style="color:#d1a458;">4.8s</span></div>
+              <div style="white-space:pre;"><span style="color:#e05561;"> 5</span>  <span style="color:#5b6672;">laser, light     </span>  <span style="color:#5b6672;">arm.r   </span>  <span style="color:#5b6672;"> —</span>  <span style="color:#5b6672;">————————</span> <span style="color:#e05561;">DESTROYED</span></div>
+              <div style="white-space:pre;"><span style="color:#e05561;"> 6</span>  <span style="color:#5b6672;">ecm suite        </span>  <span style="color:#5b6672;">arm.r   </span>  <span style="color:#5b6672;"> —</span>  <span style="color:#5b6672;">————————</span> <span style="color:#e05561;">DESTROYED</span></div>
+              <div style="white-space:pre; color:#5b6672;">&nbsp;</div>
+              <div style="white-space:pre; color:#5b6672;">groups   <span style="color:#8cc265;">A</span> 1,3 ready   <span style="color:#d1a458;">B</span> 2,4 cycling   <span style="color:#5b6672;">C</span> —</div>
+              <div style="white-space:pre; color:#5b6672;">alpha    <span style="color:#e05561;">+13 heat</span> — would trip shutdown at 24</div>
+              <div style="white-space:pre; color:#5b6672;">&nbsp;</div>
+              <div style="white-space:pre; color:#5b6672;">capabilities</div>
+              <div style="white-space:pre;">  <span style="color:#8cc265;">✓</span> <span style="color:#8b98a5;">tactics.action.attack</span> <span style="color:#5b6672;">×4</span></div>
+              <div style="white-space:pre;">  <span style="color:#8cc265;">✓</span> <span style="color:#8b98a5;">tactics.mobility</span> <span style="color:#5b6672;">walk / run</span></div>
+              <div style="white-space:pre;">  <span style="color:#e05561;">✗</span> <span style="color:#5b6672;">tactics.observation.sensor</span> <span style="color:#e05561;">revoked</span></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- RIGHT: sections + heat -->
+        <div style="flex:none; width:330px; display:flex; flex-direction:column; gap:7px; min-height:0;">
+          <div style="flex:1; min-height:0; border:1px solid #6c7484; position:relative; padding:8px 11px; overflow:hidden;">
+            <span style="position:absolute; top:-9px; left:10px; background:#000; padding:0 5px; color:#d1a458;">sections</span>
+            <span style="position:absolute; top:-9px; right:10px; background:#000; padding:0 5px; color:#e05561;">arm.r lost</span>
+            <div style="display:flex; flex-direction:column; line-height:1.5; align-items:center; margin-bottom:8px;">
+              <div style="white-space:pre;"><span style="color:#5b6672;">      </span><span style="color:#8cc265;">██</span></div>
+              <div style="white-space:pre;"><span style="color:#8cc265;">██</span> <span style="color:#d1a458;">██</span> <span style="color:#e05561;">██</span></div>
+              <div style="white-space:pre;"><span style="color:#5b6672;">   </span><span style="color:#d1a458;">██</span></div>
+              <div style="white-space:pre;"><span style="color:#8cc265;">██</span>  <span style="color:#8cc265;">██</span></div>
+            </div>
+            <div style="display:flex; flex-direction:column; line-height:1.55;">
+              <div style="white-space:pre; color:#5b6672; font-weight:700;">section   front    rear    structure</div>
+              <div style="white-space:pre;"><span style="color:#d7dae0;">head    </span>  <span style="color:#8cc265;">▰▰▰▰▰</span><span style="color:#2a333d;">▱</span>  <span style="color:#5b6672;">————</span>   <span style="color:#8cc265;">▰▰▰</span></div>
+              <div style="white-space:pre;"><span style="color:#d7dae0;">torso.c </span>  <span style="color:#8cc265;">▰▰▰▰▰▰</span>  <span style="color:#d1a458;">▰▰</span><span style="color:#2a333d;">▱▱</span>   <span style="color:#8cc265;">▰▰▰▰▰▰▰</span></div>
+              <div style="white-space:pre;"><span style="color:#d7dae0;">torso.l </span>  <span style="color:#d1a458;">▰▰</span><span style="color:#2a333d;">▱▱▱▱</span>  <span style="color:#e05561;">▰</span><span style="color:#2a333d;">▱▱▱</span>   <span style="color:#d1a458;">▰▰▰▰</span><span style="color:#2a333d;">▱</span></div>
+              <div style="white-space:pre;"><span style="color:#d7dae0;">torso.r </span>  <span style="color:#8cc265;">▰▰▰▰▰</span><span style="color:#2a333d;">▱</span>  <span style="color:#d1a458;">▰▰</span><span style="color:#2a333d;">▱▱</span>   <span style="color:#8cc265;">▰▰▰▰▰</span></div>
+              <div style="white-space:pre;"><span style="color:#d7dae0;">arm.l   </span>  <span style="color:#8cc265;">▰▰▰▰</span>    <span style="color:#5b6672;">————</span>   <span style="color:#8cc265;">▰▰▰</span></div>
+              <div style="white-space:pre;"><span style="color:#e05561;">arm.r   </span>  <span style="color:#5b6672;">——————</span>  <span style="color:#5b6672;">————</span>   <span style="color:#e05561;">DESTROYED</span></div>
+              <div style="white-space:pre;"><span style="color:#d7dae0;">leg.l   </span>  <span style="color:#8cc265;">▰▰▰▰▰</span>   <span style="color:#5b6672;">————</span>   <span style="color:#8cc265;">▰▰▰▰</span></div>
+              <div style="white-space:pre;"><span style="color:#d7dae0;">leg.r   </span>  <span style="color:#8cc265;">▰▰▰▰▰</span>   <span style="color:#5b6672;">————</span>   <span style="color:#8cc265;">▰▰▰▰</span></div>
+              <div style="white-space:pre; color:#5b6672;">&nbsp;</div>
+              <div style="white-space:pre; color:#5b6672;">components in damaged sections</div>
+              <div style="white-space:pre;">  <span style="color:#d1a458;">◐</span> <span style="color:#8b98a5;">heat_sink_2</span>   <span style="color:#8b98a5;">torso.l</span>  <span style="color:#d1a458;">damaged</span></div>
+              <div style="white-space:pre;">  <span style="color:#e05561;">✗</span> <span style="color:#5b6672;">laser, light</span>  <span style="color:#5b6672;">arm.r  </span>  <span style="color:#e05561;">destroyed</span></div>
+              <div style="white-space:pre;">  <span style="color:#e05561;">✗</span> <span style="color:#5b6672;">ecm suite</span>     <span style="color:#5b6672;">arm.r  </span>  <span style="color:#e05561;">destroyed</span></div>
+            </div>
+          </div>
+
+          <div style="flex:none; border:1px solid #6c7484; position:relative; padding:8px 11px;">
+            <span style="position:absolute; top:-9px; left:10px; background:#000; padding:0 5px; color:#d1a458;">plant</span>
+            <div style="display:flex; flex-direction:column; line-height:1.6;">
+              <div style="white-space:pre;"><span style="color:#5b6672;">heat  </span><span style="color:#d1a458;">▰▰▰▰▰▰▰</span><span style="color:#2a333d;">▱▱▱</span> <span style="color:#d1a458;">21/30</span>  <span style="color:#e05561;">shutdown 24</span></div>
+              <div style="white-space:pre;"><span style="color:#5b6672;">sinks </span><span style="color:#d1a458;">9/10</span> <span style="color:#5b6672;">·  dissipating −2/turn</span></div>
+              <div style="white-space:pre;"><span style="color:#5b6672;">fuel  </span><span style="color:#8cc265;">▰▰▰▰▰▰▰▰</span><span style="color:#2a333d;">▱▱</span> <span style="color:#8cc265;">78%</span></div>
+              <div style="white-space:pre;"><span style="color:#5b6672;">pilot </span><span style="color:#8cc265;">▰▰▰▰▰</span><span style="color:#2a333d;">▱</span> <span style="color:#8b98a5;">no wounds · conscious</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- comms strip -->
+      <div style="border:1px solid #42b3c2; position:relative; padding:7px 11px;">
+        <span style="position:absolute; top:-9px; left:10px; background:#000; padding:0 5px; color:#42b3c2;">comms</span>
+        <span style="position:absolute; top:-9px; right:10px; background:#000; padding:0 5px; color:#5b6672;">4 for the full board</span>
+        <div style="display:flex; flex-direction:column; gap:2px;">
+          <div style="white-space:pre;"><span style="color:#42b3c2; font-weight:700;">[LANCE]</span> <span style="color:#42b3c2;">Ordo   </span> <span style="color:#d7dae0;">Moving to 14-08. Cover my left, I'm blind that side.</span></div>
+          <div style="white-space:pre;"><span style="color:#d1a458; font-weight:700;">[121.4]</span> <span style="color:#5b6672;">unknown</span> <span style="color:#8b98a5;">…ostile armor, repeat, hos—</span> <span style="color:#d1a458;">▁▂▁ 41%</span></div>
+          <div style="white-space:pre;"><span style="color:#c162de; font-weight:700;">[Public]</span> <span style="color:#8b98a5;">Wren   </span> <span style="color:#5b6672;">is the recycle timer server-side? (OOC)</span></div>
+        </div>
+      </div>
+
+      <!-- prompt gauges -->
+      <div style="display:flex; align-items:center; padding:0 2px; color:#8b98a5; white-space:pre;">
+        <span style="color:#5b6672;">[</span><span style="color:#d1a458;"> heat 21/30 </span><span style="color:#5b6672;">][</span><span style="color:#8b98a5;"> spd 43/54 </span><span style="color:#5b6672;">][</span><span style="color:#8b98a5;"> hdg 047 </span><span style="color:#5b6672;">][</span><span style="color:#8b98a5;"> hex 12-07 </span><span style="color:#5b6672;">][</span><span style="color:#8cc265;"> walk </span><span style="color:#5b6672;">][</span><span style="color:#e05561;"> arm.r lost </span><span style="color:#5b6672;">]</span>
+        <span style="flex:1;"></span>
+        <span style="color:#5b6672;">target 1 · group A ready</span>
+      </div>
+
+      <!-- input -->
+      <div style="border:1px solid #d1a458; position:relative; padding:6px 11px; display:flex; gap:9px;">
+        <span style="position:absolute; top:-9px; left:10px; background:#000; padding:0 5px; color:#d1a458;">input</span>
+        <span style="position:absolute; top:-9px; right:10px; background:#000; padding:0 5px; color:#5b6672;">^P mode</span>
+        <span style="color:#d1a458; font-weight:700;">‹cmd›</span>
+        <span style="flex:1;">fire a<span style="background:#d1a458; color:#000;"> </span></span>
+      </div>
+
+      <!-- legend -->
+      <div style="display:flex; align-items:center; font-size:12px; color:#5b6672;">
+        <span><span style="color:#d1a458;">^K</span> commands</span>
+        <span style="padding-left:14px;"><span style="color:#d1a458;">t</span> target</span>
+        <span style="padding-left:14px;"><span style="color:#d1a458;">^F</span> fire group</span>
+        <span style="padding-left:14px;"><span style="color:#d1a458;">^V</span> zoom grid</span>
+        <span style="padding-left:14px;"><span style="color:#d1a458;">^L</span> log filter</span>
+        <span style="padding-left:14px;"><span style="color:#d1a458;">^N</span> next net</span>
+        <span style="padding-left:14px;"><span style="color:#d1a458;">^]</span> detach</span>
+        <span style="flex:1;"></span>
+        <span><span style="color:#d1a458;">?</span> help tacsim</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ================= T2 — COMMS ================= -->
+  <div style="display:flex; flex-direction:column; gap:14px;">
+    <div style="display:flex; align-items:baseline; gap:14px;">
+      <span style="font-family:ui-monospace,monospace; font-size:12px; font-weight:700; letter-spacing:0.08em; color:#000; background:#e8c268; padding:3px 9px; border-radius:3px;">T2</span>
+      <h2 style="margin:0; font-size:22px; font-weight:600;">TacSim · comms</h2>
+      <span style="font-size:14px; color:#8b98a5;">IC nets left, OOC right. Never the same colour, never the same border.</span>
+    </div>
+    <p style="margin:0; max-width:86ch; font-size:14.5px; line-height:1.6; color:#8b98a5; text-wrap:pretty;">The one mistake that ruins a tactical scene is saying an IC thing on an OOC channel or vice versa. So IC and OOC are separated structurally, not just prefixed: two panes, cyan versus magenta borders, and a transmit bar whose active net is echoed in the input frame itself. IC traffic carries signal strength and gets degraded text at low signal; OOC never does.</p>
+
+    <div style="width:1300px; background:#000; border:1px solid #2a333d; padding:9px; font-family:ui-monospace, 'Cascadia Mono', Consolas, monospace; font-size:12.5px; line-height:1.42; color:#d7dae0; display:flex; flex-direction:column; gap:7px;">
+      <div style="display:flex; align-items:center;">
+        <span style="color:#5b6672; padding-right:12px;">rustmush</span>
+        <span style="color:#8b98a5; padding:0 9px;"><span style="color:#d1a458;">1</span> hud</span>
+        <span style="color:#8b98a5; padding:0 9px;"><span style="color:#d1a458;">2</span> contacts</span>
+        <span style="color:#8b98a5; padding:0 9px;"><span style="color:#d1a458;">3</span> weapons</span>
+        <span style="background:#42b3c2; color:#000; padding:0 9px; font-weight:700;">4 comms</span>
+        <span style="color:#8b98a5; padding:0 9px;"><span style="color:#d1a458;">5</span> grid</span>
+        <span style="flex:1;"></span>
+        <span style="color:#5b6672; white-space:pre;">Vissar · KESTREL-C · </span><span style="color:#e05561; font-weight:700;">ENGAGED</span>
+      </div>
+
+      <div style="display:flex; gap:7px; height:420px;">
+        <!-- IC -->
+        <div style="flex:1; min-width:0; display:flex; flex-direction:column; gap:7px;">
+          <div style="flex:none; border:1px solid #42b3c2; position:relative; padding:8px 11px;">
+            <span style="position:absolute; top:-9px; left:10px; background:#000; padding:0 5px; color:#42b3c2;">ic nets</span>
+            <div style="display:flex; flex-direction:column; line-height:1.55;">
+              <div style="white-space:pre;"><span style="background:#42b3c2; color:#000; font-weight:700;"> LANCE </span> <span style="color:#5b6672;">team net · 4 members · encrypted</span>  <span style="color:#8cc265;">▰▰▰▰ 100%</span></div>
+              <div style="white-space:pre;"><span style="color:#42b3c2;"> 121.4 </span> <span style="color:#5b6672;">open freq · anyone in 12 km</span>       <span style="color:#d1a458;">▰▰</span><span style="color:#2a333d;">▱▱</span> <span style="color:#d1a458;">41%</span></div>
+              <div style="white-space:pre;"><span style="color:#42b3c2;"> GUARD </span> <span style="color:#5b6672;">emergency · monitored, never quiet</span>  <span style="color:#8cc265;">▰▰▰</span><span style="color:#2a333d;">▱</span> <span style="color:#8cc265;">72%</span></div>
+              <div style="white-space:pre;"><span style="color:#5b6672;"> 088.0 </span> <span style="color:#5b6672;">salvage net · not joined</span>          <span style="color:#5b6672;">————</span></div>
+            </div>
+          </div>
+          <div style="flex:1; min-height:0; border:1px solid #42b3c2; position:relative; padding:8px 11px; overflow:hidden;">
+            <span style="position:absolute; top:-9px; left:10px; background:#000; padding:0 5px; color:#42b3c2;">in character</span>
+            <span style="position:absolute; top:-9px; right:10px; background:#000; padding:0 5px; color:#5b6672;">radio + team chatter</span>
+            <div style="display:flex; flex-direction:column; gap:3px;">
+              <div style="display:flex; gap:9px;"><span style="flex:none; width:54px; color:#5b6672; text-align:right;">14:02</span><div style="flex:1;"><span style="color:#42b3c2; font-weight:700;">[LANCE]</span> <span style="color:#42b3c2;">Ordo</span> <span style="color:#d7dae0;">Moving to 14-08. Cover my left, I'm blind that side.</span></div></div>
+              <div style="display:flex; gap:9px;"><span style="flex:none; width:54px; color:#5b6672; text-align:right;">14:02</span><div style="flex:1;"><span style="color:#42b3c2; font-weight:700;">[LANCE]</span> <span style="color:#d1a458;">Vissar</span> <span style="color:#d7dae0;">Ack. Missile lock on contact 2, holding for your call.</span></div></div>
+              <div style="display:flex; gap:9px;"><span style="flex:none; width:54px; color:#5b6672; text-align:right;">14:03</span><div style="flex:1;"><span style="color:#42b3c2; font-weight:700;">[LANCE]</span> <span style="color:#42b3c2;">Sarn</span> <span style="color:#5b6672;">(pose)</span> <span style="color:#8b98a5;">clicks the net twice — no words, just the two clicks.</span></div></div>
+              <div style="display:flex; gap:9px;"><span style="flex:none; width:54px; color:#5b6672; text-align:right;">14:03</span><div style="flex:1;"><span style="color:#d1a458; font-weight:700;">[121.4]</span> <span style="color:#5b6672;">unknown</span> <span style="color:#8b98a5;">…ostile armor, repeat, hos—</span> <span style="color:#d1a458;">▁▂▁ 41%</span></div></div>
+              <div style="display:flex; gap:9px;"><span style="flex:none; width:54px; color:#5b6672; text-align:right;">14:04</span><div style="flex:1;"><span style="color:#e05561; font-weight:700;">[GUARD]</span> <span style="color:#e05561;">AUTO</span> <span style="color:#d7dae0;">Emergency beacon, grid 09-22. No voice.</span></div></div>
+              <div style="display:flex; gap:9px;"><span style="flex:none; width:54px; color:#5b6672; text-align:right;">14:05</span><div style="flex:1;"><span style="color:#42b3c2; font-weight:700;">[LANCE]</span> <span style="color:#42b3c2;">Ordo</span> <span style="color:#d7dae0;">Leave it. That's how they took Kell.</span></div></div>
+              <div style="display:flex; gap:9px;"><span style="flex:none; width:54px; color:#5b6672; text-align:right;">14:06</span><div style="flex:1;"><span style="color:#d1a458; font-weight:700;">[121.4]</span> <span style="color:#5b6672;">unknown</span> <span style="color:#5b6672;">▁▁▁ signal lost</span></div></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- OOC -->
+        <div style="flex:none; width:520px; display:flex; flex-direction:column; gap:7px; min-height:0;">
+          <div style="flex:none; border:1px solid #c162de; position:relative; padding:8px 11px;">
+            <span style="position:absolute; top:-9px; left:10px; background:#000; padding:0 5px; color:#c162de;">ooc channels</span>
+            <div style="display:flex; flex-direction:column; line-height:1.55;">
+              <div style="white-space:pre;"><span style="background:#c162de; color:#000; font-weight:700;"> Public </span> <span style="color:#5b6672;">14 on</span>   <span style="color:#e05561;">3 new</span></div>
+              <div style="white-space:pre;"><span style="color:#c162de;"> Newbie </span> <span style="color:#5b6672;">6 on</span></div>
+              <div style="white-space:pre;"><span style="color:#c162de;"> Tacsim </span> <span style="color:#5b6672;">9 on</span>    <span style="color:#e05561;">1 new</span></div>
+              <div style="white-space:pre;"><span style="color:#5b6672;"> Salvage</span> <span style="color:#5b6672;">gagged</span></div>
+            </div>
+          </div>
+          <div style="flex:1; min-height:0; border:1px solid #c162de; position:relative; padding:8px 11px; overflow:hidden;">
+            <span style="position:absolute; top:-9px; left:10px; background:#000; padding:0 5px; color:#c162de;">out of character</span>
+            <span style="position:absolute; top:-9px; right:10px; background:#000; padding:0 5px; color:#5b6672;">comsys + wall</span>
+            <div style="display:flex; flex-direction:column; gap:3px;">
+              <div style="display:flex; gap:9px;"><span style="flex:none; width:54px; color:#5b6672; text-align:right;">14:01</span><div style="flex:1;"><span style="color:#c162de; font-weight:700;">[Public]</span> <span style="color:#42b3c2;">Wren</span> <span style="color:#8b98a5;">is the recycle timer server-side or client-side?</span></div></div>
+              <div style="display:flex; gap:9px;"><span style="flex:none; width:54px; color:#5b6672; text-align:right;">14:01</span><div style="flex:1;"><span style="color:#c162de; font-weight:700;">[Public]</span> <span style="color:#42b3c2;">Thea</span> <span style="color:#8b98a5;">server. the bar is just a render of the cell.</span></div></div>
+              <div style="display:flex; gap:9px;"><span style="flex:none; width:54px; color:#5b6672; text-align:right;">14:03</span><div style="flex:1;"><span style="color:#c162de; font-weight:700;">[Tacsim]</span> <span style="color:#42b3c2;">Ordo</span> <span style="color:#8b98a5;">anyone want a fourth for the 20:00 drop?</span></div></div>
+              <div style="display:flex; gap:9px;"><span style="flex:none; width:54px; color:#5b6672; text-align:right;">14:04</span><div style="flex:1;"><span style="color:#e05561; font-weight:700;">[wall]</span> <span style="color:#e05561;">STAFF</span> <span style="color:#d7dae0;">Reboot in 20 minutes. Battles will be saved and resumed.</span></div></div>
+              <div style="display:flex; gap:9px;"><span style="flex:none; width:54px; color:#5b6672; text-align:right;">14:05</span><div style="flex:1;"><span style="color:#8cc265; font-weight:700;">[job]</span> <span style="color:#8b98a5;">tacsim-refit #212 — your salvage claim was approved.</span></div></div>
+              <div style="display:flex; gap:9px;"><span style="flex:none; width:54px; color:#5b6672; text-align:right;">14:06</span><div style="flex:1;"><span style="color:#c162de; font-weight:700;">[Newbie]</span> <span style="color:#42b3c2;">Kel</span> <span style="color:#8b98a5;">how do I stop overheating, I keep shutting down</span></div></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div style="border:1px solid #42b3c2; position:relative; padding:6px 11px; display:flex; gap:9px; align-items:center;">
+        <span style="position:absolute; top:-9px; left:10px; background:#000; padding:0 5px; color:#42b3c2;">transmit</span>
+        <span style="position:absolute; top:-9px; right:10px; background:#000; padding:0 5px; color:#5b6672;">^N cycle net · ^O to OOC</span>
+        <span style="background:#42b3c2; color:#000; font-weight:700; padding:0 7px;">IC · LANCE</span>
+        <span style="flex:1;">Contact 2 is behind the treeline, he'll come out at 14-09<span style="background:#42b3c2; color:#000;"> </span></span>
+      </div>
+      <div style="display:flex; align-items:center; font-size:12px; color:#5b6672;">
+        <span style="color:#42b3c2;">cyan border = in character, heard by anyone in range</span>
+        <span style="padding-left:20px; color:#c162de;">magenta border = out of character, never heard IC</span>
+        <span style="flex:1;"></span>
+        <span><span style="color:#d1a458;">?</span> help comms</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ================= T3 — DAMAGE REPORT ================= -->
+  <div style="display:flex; flex-direction:column; gap:14px;">
+    <div style="display:flex; align-items:baseline; gap:14px;">
+      <span style="font-family:ui-monospace,monospace; font-size:12px; font-weight:700; letter-spacing:0.08em; color:#000; background:#e8c268; padding:3px 9px; border-radius:3px;">T3</span>
+      <h2 style="margin:0; font-size:22px; font-weight:600;">TacSim · damage &amp; refit</h2>
+      <span style="font-size:14px; color:#8b98a5;">The journal, read as a screen. Every line here is a real <code style="font-family:ui-monospace,monospace;">JournalEntry</code>.</span>
+    </div>
+    <p style="margin:0; max-width:86ch; font-size:14.5px; line-height:1.6; color:#8b98a5; text-wrap:pretty;"><code style="font-family:ui-monospace,monospace; color:#8ab8e8;">mush-tactics</code> already emits a per-plan <code style="font-family:ui-monospace,monospace; color:#8ab8e8;">Journal</code> of exactly what changed — cell deltas, section and component condition transitions, capability grants and revokes. This screen is that journal with a section diagram beside it, which means the post-battle "what actually happened to me" view costs almost no new server work.</p>
+
+    <div style="width:1300px; background:#000; border:1px solid #2a333d; padding:9px; font-family:ui-monospace, 'Cascadia Mono', Consolas, monospace; font-size:12.5px; line-height:1.42; color:#d7dae0; display:flex; flex-direction:column; gap:7px;">
+      <div style="display:flex; align-items:center; background:#1c242d; padding:1px 9px; white-space:pre;">
+        <span style="color:#d1a458; font-weight:700;">KESTREL-C</span><span style="color:#5b6672;"> “Halberd”</span>
+        <span style="color:#2a333d; padding:0 9px;">│</span><span style="color:#8b98a5;">revision 41 → 47</span>
+        <span style="color:#2a333d; padding:0 9px;">│</span><span style="color:#8b98a5;">battle #88, turn 14</span>
+        <span style="flex:1;"></span>
+        <span style="color:#e05561; font-weight:700;">2 sections lost · 3 components destroyed</span>
+      </div>
+
+      <div style="display:flex; gap:7px; height:400px;">
+        <div style="flex:none; width:330px; border:1px solid #6c7484; position:relative; padding:8px 11px; overflow:hidden;">
+          <span style="position:absolute; top:-9px; left:10px; background:#000; padding:0 5px; color:#d1a458;">status</span>
+          <span style="position:absolute; top:-9px; right:10px; background:#000; padding:0 5px; color:#5b6672;">armor / structure</span>
+          <div style="display:flex; flex-direction:column; line-height:1.5; white-space:pre; font-size:13px;">
+            <div><span style="color:#5b6672;">        FRONT             REAR</span></div>
+            <div><span style="color:#5b6672;">         (</span><span style="color:#d1a458;"> 7</span><span style="color:#5b6672;">)             (</span><span style="color:#5b6672;">--</span><span style="color:#5b6672;">)</span></div>
+            <div><span style="color:#5b6672;">     /</span><span style="color:#d1a458;">12</span><span style="color:#5b6672;">|</span><span style="color:#8cc265;">29</span><span style="color:#5b6672;">|</span><span style="color:#8cc265;">19</span><span style="color:#5b6672;">\        /</span><span style="color:#e05561;"> 4</span><span style="color:#5b6672;">|</span><span style="color:#8cc265;">10</span><span style="color:#5b6672;">|</span><span style="color:#d1a458;"> 6</span><span style="color:#5b6672;">\</span></div>
+            <div><span style="color:#5b6672;">    (</span><span style="color:#8cc265;">20</span><span style="color:#5b6672;">/ || \</span><span style="color:#e05561;">XX</span><span style="color:#5b6672;">)      (  / || \  )</span></div>
+            <div><span style="color:#5b6672;">        /    \             /    \</span></div>
+            <div><span style="color:#5b6672;">      (</span><span style="color:#8cc265;">30</span><span style="color:#5b6672;">/    \</span><span style="color:#e05561;">XX</span><span style="color:#5b6672;">)</span></div>
+            <div><span style="color:#5b6672;">&nbsp;</span></div>
+            <div><span style="color:#5b6672;">       INTERNAL</span></div>
+            <div><span style="color:#5b6672;">         (</span><span style="color:#8cc265;"> 3</span><span style="color:#5b6672;">)</span></div>
+            <div><span style="color:#5b6672;">     /</span><span style="color:#d1a458;">12</span><span style="color:#5b6672;">|</span><span style="color:#8cc265;">21</span><span style="color:#5b6672;">|</span><span style="color:#8cc265;">15</span><span style="color:#5b6672;">\</span></div>
+            <div><span style="color:#5b6672;">    (</span><span style="color:#8cc265;">10</span><span style="color:#5b6672;">/ || \</span><span style="color:#e05561;">XX</span><span style="color:#5b6672;">)</span></div>
+            <div><span style="color:#5b6672;">        /    \</span></div>
+            <div><span style="color:#5b6672;">      (</span><span style="color:#8cc265;">15</span><span style="color:#5b6672;">/    \</span><span style="color:#e05561;">XX</span><span style="color:#5b6672;">)</span></div>
+            <div><span style="color:#5b6672;">&nbsp;</span></div>
+            <div><span style="color:#8cc265;">green</span><span style="color:#5b6672;"> intact  </span><span style="color:#d1a458;">amber</span><span style="color:#5b6672;"> hit  </span><span style="color:#e05561;">XX</span><span style="color:#5b6672;"> section lost</span></div>
+            <div><span style="color:#5b6672;">--  no rear facet on that section</span></div>
+            <div><span style="color:#5b6672;">&nbsp;</span></div>
+            <div><span style="color:#5b6672;">actuators  </span><span style="color:#8cc265;">LARM ok</span><span style="color:#5b6672;">  </span><span style="color:#e05561;">RARM --</span></div>
+            <div><span style="color:#5b6672;">           </span><span style="color:#8cc265;">LLEG ok</span><span style="color:#5b6672;">  </span><span style="color:#e05561;">RLEG --</span></div>
+            <div><span style="color:#5b6672;">gyro       </span><span style="color:#d1a458;">1 hit</span><span style="color:#5b6672;"> · sensors </span><span style="color:#e05561;">out</span></div>
+            <div><span style="color:#5b6672;">pilot      </span><span style="color:#8cc265;">no injury</span><span style="color:#5b6672;"> · conscious</span></div>
+          </div>
+        </div>
+        <div style="flex:none; width:360px; border:1px solid #6c7484; position:relative; padding:8px 11px;">
+          <span style="position:absolute; top:-9px; left:10px; background:#000; padding:0 5px; color:#d1a458;">after action</span>
+          <div style="display:flex; flex-direction:column; line-height:1.55;">
+            <div style="white-space:pre; color:#5b6672; font-weight:700;">section   before        after</div>
+            <div style="white-space:pre;"><span style="color:#d7dae0;">head    </span>  <span style="color:#8cc265;">▰▰▰▰▰▰</span>  <span style="color:#5b6672;">→</span>  <span style="color:#8cc265;">▰▰▰▰▰</span><span style="color:#2a333d;">▱</span></div>
+            <div style="white-space:pre;"><span style="color:#d7dae0;">torso.c </span>  <span style="color:#8cc265;">▰▰▰▰▰▰</span>  <span style="color:#5b6672;">→</span>  <span style="color:#8cc265;">▰▰▰▰▰▰</span></div>
+            <div style="white-space:pre;"><span style="color:#d7dae0;">torso.l </span>  <span style="color:#8cc265;">▰▰▰▰▰▰</span>  <span style="color:#5b6672;">→</span>  <span style="color:#d1a458;">▰▰</span><span style="color:#2a333d;">▱▱▱▱</span></div>
+            <div style="white-space:pre;"><span style="color:#d7dae0;">torso.r </span>  <span style="color:#8cc265;">▰▰▰▰▰▰</span>  <span style="color:#5b6672;">→</span>  <span style="color:#8cc265;">▰▰▰▰▰</span><span style="color:#2a333d;">▱</span></div>
+            <div style="white-space:pre;"><span style="color:#d7dae0;">arm.l   </span>  <span style="color:#8cc265;">▰▰▰▰</span>    <span style="color:#5b6672;">→</span>  <span style="color:#8cc265;">▰▰▰▰</span></div>
+            <div style="white-space:pre;"><span style="color:#e05561;">arm.r   </span>  <span style="color:#8cc265;">▰▰▰▰</span>    <span style="color:#5b6672;">→</span>  <span style="color:#e05561;">DESTROYED</span></div>
+            <div style="white-space:pre;"><span style="color:#e05561;">leg.r   </span>  <span style="color:#8cc265;">▰▰▰▰▰</span>   <span style="color:#5b6672;">→</span>  <span style="color:#e05561;">DESTROYED</span></div>
+            <div style="white-space:pre; color:#5b6672;">&nbsp;</div>
+            <div style="white-space:pre; color:#5b6672;">capability changes</div>
+            <div style="white-space:pre;">  <span style="color:#e05561;">−</span> <span style="color:#8b98a5;">tactics.observation.sensor</span> <span style="color:#5b6672;">(ecm suite)</span></div>
+            <div style="white-space:pre;">  <span style="color:#e05561;">−</span> <span style="color:#8b98a5;">tactics.action.attack</span> <span style="color:#5b6672;">(laser, light)</span></div>
+            <div style="white-space:pre;">  <span style="color:#d1a458;">~</span> <span style="color:#8b98a5;">tactics.mobility</span> <span style="color:#5b6672;">run revoked, walk degraded</span></div>
+            <div style="white-space:pre; color:#5b6672;">&nbsp;</div>
+            <div style="white-space:pre; color:#5b6672;">refit estimate  <span style="color:#d1a458;">4h 20m</span> · <span style="color:#d1a458;">2 parts on order</span></div>
+          </div>
+        </div>
+
+        <div style="flex:1; min-width:0; border:1px solid #6c7484; position:relative; padding:8px 11px; overflow:hidden;">
+          <span style="position:absolute; top:-9px; left:10px; background:#000; padding:0 5px; color:#d1a458;">journal</span>
+          <span style="position:absolute; top:-9px; right:10px; background:#000; padding:0 5px; color:#5b6672;">rev 41-47 · 23 entries · ^E export</span>
+          <div style="display:flex; flex-direction:column; line-height:1.55;">
+            <div style="white-space:pre; color:#5b6672; font-weight:700;">rev  cause              entry</div>
+            <div style="white-space:pre;"><span style="color:#5b6672;">42</span>   <span style="color:#8b98a5;">weapon_hit        </span> <span style="color:#d7dae0;">cell facet(torso.l, front, armor)  22 → 12</span></div>
+            <div style="white-space:pre;"><span style="color:#5b6672;">42</span>   <span style="color:#8b98a5;">weapon_hit        </span> <span style="color:#d7dae0;">cell section(torso.l, structure)   15 → 12</span></div>
+            <div style="white-space:pre;"><span style="color:#5b6672;">42</span>   <span style="color:#8b98a5;">weapon_hit        </span> <span style="color:#d1a458;">component heat_sink_2  ok → damaged</span></div>
+            <div style="white-space:pre;"><span style="color:#5b6672;">43</span>   <span style="color:#8b98a5;">heat              </span> <span style="color:#d7dae0;">cell unit(heat)                    14 → 21</span></div>
+            <div style="white-space:pre;"><span style="color:#5b6672;">44</span>   <span style="color:#8b98a5;">weapon_hit        </span> <span style="color:#d7dae0;">cell facet(arm.r, front, armor)    17 → 0</span></div>
+            <div style="white-space:pre;"><span style="color:#5b6672;">44</span>   <span style="color:#8b98a5;">weapon_hit        </span> <span style="color:#e05561;">section arm.r          ok → destroyed</span></div>
+            <div style="white-space:pre;"><span style="color:#5b6672;">44</span>   <span style="color:#8b98a5;">cascade           </span> <span style="color:#e05561;">component laser, light ok → destroyed</span></div>
+            <div style="white-space:pre;"><span style="color:#5b6672;">44</span>   <span style="color:#8b98a5;">cascade           </span> <span style="color:#e05561;">component ecm suite    ok → destroyed</span></div>
+            <div style="white-space:pre;"><span style="color:#5b6672;">44</span>   <span style="color:#8b98a5;">cascade           </span> <span style="color:#e05561;">revoke tactics.action.attack (laser, light)</span></div>
+            <div style="white-space:pre;"><span style="color:#5b6672;">44</span>   <span style="color:#8b98a5;">cascade           </span> <span style="color:#e05561;">revoke tactics.observation.sensor (ecm suite)</span></div>
+            <div style="white-space:pre;"><span style="color:#5b6672;">45</span>   <span style="color:#8b98a5;">weapon_hit        </span> <span style="color:#d7dae0;">cell facet(leg.r, front, armor)    19 → 0</span></div>
+            <div style="white-space:pre;"><span style="color:#5b6672;">45</span>   <span style="color:#8b98a5;">weapon_hit        </span> <span style="color:#e05561;">section leg.r          ok → destroyed</span></div>
+            <div style="white-space:pre;"><span style="color:#5b6672;">46</span>   <span style="color:#8b98a5;">mobility_degrade  </span> <span style="color:#d1a458;">cell unit(mobility_penalty)         0 → 2</span></div>
+            <div style="white-space:pre;"><span style="color:#5b6672;">47</span>   <span style="color:#8b98a5;">shutdown_check    </span> <span style="color:#8cc265;">no change (roll passed)</span></div>
+          </div>
+        </div>
+      </div>
+
+      <div style="display:flex; align-items:center; font-size:12px; color:#5b6672;">
+        <span><span style="color:#d1a458;">^E</span> export report</span>
+        <span style="padding-left:14px;"><span style="color:#d1a458;">r</span> file refit job</span>
+        <span style="padding-left:14px;"><span style="color:#d1a458;">s</span> salvage claim</span>
+        <span style="flex:1;"></span>
+        <span><span style="color:#d1a458;">?</span> help tacsim damage</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ================= S1 — RIGGER ================= -->
+  <div style="display:flex; flex-direction:column; gap:14px;">
+    <div style="display:flex; align-items:baseline; gap:14px;">
+      <span style="font-family:ui-monospace,monospace; font-size:12px; font-weight:700; letter-spacing:0.08em; color:#000; background:#42b3c2; padding:3px 9px; border-radius:3px;">S1</span>
+      <h2 style="margin:0; font-size:22px; font-weight:600;">Shadowrun · rigger, jumped in</h2>
+      <span style="font-size:14px; color:#8b98a5;">Two bodies at once — and the screen never lets you forget which one you're in.</span>
+    </div>
+    <p style="margin:0; max-width:86ch; font-size:14.5px; line-height:1.6; color:#8b98a5; text-wrap:pretty;">A jumped-in rigger's whole problem is that damage arrives in two places and only one of them is where they're looking. So the drone you're piloting owns the big frame in the middle, and your meat body sits in its own permanently-visible pane on the right, with the biofeedback arrow between them. The drone roster keeps every other unit's mode and condition on screen, because a rigger loses drones by forgetting they exist.</p>
+
+    <div style="width:1300px; background:#000; border:1px solid #2a333d; padding:9px; font-family:ui-monospace, 'Cascadia Mono', Consolas, monospace; font-size:12.5px; line-height:1.42; color:#d7dae0; display:flex; flex-direction:column; gap:7px;">
+      <div style="display:flex; align-items:center;">
+        <span style="color:#5b6672; padding-right:12px;">rustmush</span>
+        <span style="background:#42b3c2; color:#000; padding:0 9px; font-weight:700;">1 rig</span>
+        <span style="color:#8b98a5; padding:0 9px;"><span style="color:#d1a458;">2</span> drones</span>
+        <span style="color:#8b98a5; padding:0 9px;"><span style="color:#d1a458;">3</span> sensors</span>
+        <span style="color:#8b98a5; padding:0 9px;"><span style="color:#d1a458;">4</span> comms <span style="color:#e05561;">2</span></span>
+        <span style="color:#8b98a5; padding:0 9px;"><span style="color:#d1a458;">5</span> matrix</span>
+        <span style="color:#8b98a5; padding:0 9px;"><span style="color:#d1a458;">6</span> sheet</span>
+        <span style="flex:1;"></span>
+        <span style="color:#5b6672;">Tessellate</span>
+        <span style="color:#2a333d; padding:0 8px;">│</span>
+        <span style="color:#e05561; font-weight:700;">HOT-SIM VR</span>
+        <span style="color:#2a333d; padding:0 8px;">│</span>
+        <span style="color:#5b6672;">init pass 2 of 3</span>
+      </div>
+
+      <div style="display:flex; align-items:center; background:#1c242d; padding:1px 9px; white-space:pre;">
+        <span style="color:#e05561; font-weight:700;">JUMPED IN</span>
+        <span style="color:#2a333d; padding:0 9px;">│</span><span style="color:#d1a458; font-weight:700;">SKIMMER-3</span><span style="color:#5b6672;"> rotor drone</span>
+        <span style="color:#2a333d; padding:0 9px;">│</span><span style="color:#8b98a5;">Kowloon rooftops, 40 m AGL</span>
+        <span style="color:#2a333d; padding:0 9px;">│</span><span style="color:#8cc265;">noise 2</span>
+        <span style="flex:1;"></span>
+        <span style="color:#5b6672;">control rig </span><span style="color:#8cc265; font-weight:700;">2</span>
+        <span style="color:#2a333d; padding:0 9px;">│</span><span style="color:#5b6672;">RCC </span><span style="color:#8b98a5;">Novatech Nav-4</span>
+      </div>
+
+      <div style="display:flex; gap:7px; height:520px;">
+
+        <!-- drone roster -->
+        <div style="flex:none; width:400px; display:flex; flex-direction:column; gap:7px; min-height:0;">
+          <div style="flex:none; border:1px solid #6c7484; position:relative; padding:8px 11px;">
+            <span style="position:absolute; top:-9px; left:10px; background:#000; padding:0 5px; color:#d1a458;">drones</span>
+            <span style="position:absolute; top:-9px; right:10px; background:#000; padding:0 5px; color:#5b6672;">4 of 5 slaved</span>
+            <div style="display:flex; flex-direction:column; line-height:1.55;">
+              <div style="white-space:pre; color:#5b6672; font-weight:700;">   unit         mode      condition   pilot</div>
+              <div style="white-space:pre;"><span style="color:#e05561;">▶</span> <span style="color:#d1a458; font-weight:700;">SKIMMER-3  </span> <span style="color:#e05561;">jumped  </span> <span style="color:#d1a458;">▰▰▰▰▰▰</span><span style="color:#2a333d;">▱▱▱</span> <span style="color:#5b6672;">—</span></div>
+              <div style="white-space:pre;">  <span style="color:#42b3c2;">SKIMMER-1  </span> <span style="color:#8cc265;">autopilot</span> <span style="color:#8cc265;">▰▰▰▰▰▰▰▰▰</span> <span style="color:#8b98a5;">3</span></div>
+              <div style="white-space:pre;">  <span style="color:#42b3c2;">CRAWLER-2  </span> <span style="color:#8b98a5;">remote  </span> <span style="color:#8cc265;">▰▰▰▰▰▰▰▰</span><span style="color:#2a333d;">▱</span> <span style="color:#8b98a5;">3</span></div>
+              <div style="white-space:pre;">  <span style="color:#42b3c2;">DOBERMAN-4 </span> <span style="color:#8cc265;">autopilot</span> <span style="color:#d1a458;">▰▰▰▰</span><span style="color:#2a333d;">▱▱▱▱▱</span> <span style="color:#8b98a5;">3</span></div>
+              <div style="white-space:pre;">  <span style="color:#5b6672;">FLYSPY-5   </span> <span style="color:#e05561;">OFFLINE </span> <span style="color:#e05561;">▱▱▱▱▱▱▱▱▱</span> <span style="color:#5b6672;">—</span></div>
+              <div style="white-space:pre; color:#5b6672;">&nbsp;</div>
+              <div style="white-space:pre; color:#5b6672;">^J jump · ^A autopilot · ^R remote</div>
+            </div>
+          </div>
+
+          <div style="flex:1; min-height:0; border:1px solid #6c7484; position:relative; padding:8px 11px; overflow:hidden;">
+            <span style="position:absolute; top:-9px; left:10px; background:#000; padding:0 5px; color:#d1a458;">sensors</span>
+            <span style="position:absolute; top:-9px; right:10px; background:#000; padding:0 5px; color:#5b6672;">rating 3 · sensor limit 3</span>
+            <div style="display:flex; flex-direction:column; line-height:1.55;">
+              <div style="white-space:pre; color:#5b6672; font-weight:700;">id  signature        rng   move  note</div>
+              <div style="white-space:pre;"><span style="color:#e05561;">1 </span>  <span style="color:#e05561;">2 metahuman    </span> <span style="color:#d7dae0;">28m</span>  <span style="color:#d7dae0;">slow</span>  <span style="color:#e05561;">armed, long gun</span></div>
+              <div style="white-space:pre;"><span style="color:#e05561;">2 </span>  <span style="color:#e05561;">wheeled vehicle</span> <span style="color:#d7dae0;">61m</span>  <span style="color:#d7dae0;">fast</span>  <span style="color:#d1a458;">closing, no plate</span></div>
+              <div style="white-space:pre;"><span style="color:#d1a458;">3 </span>  <span style="color:#d1a458;">drone, small   </span> <span style="color:#d7dae0;">14m</span>  <span style="color:#d7dae0;">hover</span> <span style="color:#d1a458;">not on your grid</span></div>
+              <div style="white-space:pre;"><span style="color:#42b3c2;">4 </span>  <span style="color:#42b3c2;">Kavi (team)    </span> <span style="color:#d7dae0;">9m </span>  <span style="color:#d7dae0;">still</span> <span style="color:#5b6672;">on the ledge</span></div>
+              <div style="white-space:pre; color:#5b6672;">&nbsp;</div>
+              <div style="white-space:pre; color:#5b6672;">last perception test</div>
+              <div style="white-space:pre;">  <span style="color:#8b98a5;">sensor+clearsight  </span><span style="color:#8cc265;">6 hits</span><span style="color:#5b6672;">, limit 3 → </span><span style="color:#d1a458;">3</span></div>
+              <div style="white-space:pre;">  <span style="color:#5b6672;">noise 2 applied before the roll</span></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- jumped drone -->
+        <div style="flex:1; min-width:0; display:flex; flex-direction:column; gap:7px; min-height:0;">
+          <div style="flex:none; border:1px solid #e05561; position:relative; padding:8px 11px;">
+            <span style="position:absolute; top:-9px; left:10px; background:#000; padding:0 5px; color:#e05561;">SKIMMER-3 · you are here</span>
+            <div style="display:flex; gap:26px;">
+              <div style="display:flex; flex-direction:column; line-height:1.6;">
+                <div style="white-space:pre;"><span style="color:#5b6672;">handling  </span><span style="color:#d7dae0;">+4</span><span style="color:#5b6672;"> / </span><span style="color:#d7dae0;">+3</span><span style="color:#5b6672;"> off-road</span></div>
+                <div style="white-space:pre;"><span style="color:#5b6672;">speed     </span><span style="color:#d7dae0;">4</span><span style="color:#5b6672;">  accel </span><span style="color:#d7dae0;">2</span></div>
+                <div style="white-space:pre;"><span style="color:#5b6672;">body      </span><span style="color:#d7dae0;">3</span><span style="color:#5b6672;">  armor </span><span style="color:#d7dae0;">2</span></div>
+                <div style="white-space:pre;"><span style="color:#5b6672;">pilot     </span><span style="color:#d7dae0;">3</span><span style="color:#5b6672;">  sensor </span><span style="color:#d7dae0;">3</span></div>
+              </div>
+              <div style="display:flex; flex-direction:column; line-height:1.6;">
+                <div style="white-space:pre;"><span style="color:#5b6672;">condition  </span><span style="color:#d1a458;">▰▰▰▰▰▰</span><span style="color:#2a333d;">▱▱▱</span> <span style="color:#d1a458;">6/9</span></div>
+                <div style="white-space:pre;"><span style="color:#5b6672;">wound mod  </span><span style="color:#e05561;">−2</span><span style="color:#5b6672;"> to every pool</span></div>
+                <div style="white-space:pre;"><span style="color:#5b6672;">rig bonus  </span><span style="color:#8cc265;">+2</span><span style="color:#5b6672;"> dice, </span><span style="color:#8cc265;">+2</span><span style="color:#5b6672;"> limits</span></div>
+                <div style="white-space:pre;"><span style="color:#5b6672;">vehicle test </span><span style="color:#8b98a5;">rea+pilot(veh) </span><span style="color:#d7dae0;">11</span></div>
+              </div>
+            </div>
+          </div>
+
+          <div style="flex:1; min-height:0; border:1px solid #6c7484; position:relative; padding:8px 11px; overflow:hidden;">
+            <span style="position:absolute; top:-9px; left:10px; background:#000; padding:0 5px; color:#d1a458;">log</span>
+            <div style="display:flex; flex-direction:column; gap:3px;">
+              <div style="display:flex; gap:9px;"><span style="flex:none; width:44px; color:#5b6672; text-align:right;">p1</span><div style="flex:1;"><span style="color:#8b98a5;">You</span> <span style="color:#d7dae0;">bank hard around the vent stack — Vehicle Test</span> <span style="color:#8cc265;">4 hits</span> <span style="color:#5b6672;">(limit 6)</span></div></div>
+              <div style="display:flex; gap:9px;"><span style="flex:none; width:44px; color:#5b6672; text-align:right;">p1</span><div style="flex:1;"><span style="color:#e05561;">Contact 1</span> <span style="color:#d7dae0;">fires — 8P, armor 2, resist</span> <span style="color:#e05561;">3 boxes</span> <span style="color:#5b6672;">→ SKIMMER-3 6/9</span></div></div>
+              <div style="display:flex; gap:9px;"><span style="flex:none; width:44px; color:#e05561; text-align:right; font-weight:700;">bio</span><div style="flex:1; color:#e05561;">hot-sim biofeedback — 3 Stun to Tessellate <span style="color:#5b6672;">(meat pane, right)</span></div></div>
+              <div style="display:flex; gap:9px;"><span style="flex:none; width:44px; color:#5b6672; text-align:right;">p2</span><div style="flex:1;"><span style="color:#8cc265;">DOBERMAN-4</span> <span style="color:#8b98a5;">autopilot engaged contact 1 —</span> <span style="color:#8cc265;">2 hits</span><span style="color:#8b98a5;">, no damage</span></div></div>
+              <div style="display:flex; gap:9px;"><span style="flex:none; width:44px; color:#d1a458; text-align:right;">warn</span><div style="flex:1; color:#d1a458;">FLYSPY-5 went offline 40s ago — no bricking message, likely jammed</div></div>
+              <div style="display:flex; gap:9px;"><span style="flex:none; width:44px; color:#42b3c2; text-align:right; font-weight:700;">Kavi</span><div style="flex:1;"><span style="color:#5b6672;">(team)</span> <span style="color:#d7dae0;">“Whatever you're doing up there, do it two minutes faster.”</span></div></div>
+              <div style="display:flex; gap:9px;"><span style="flex:none; width:44px; color:#5b6672; text-align:right;">p2</span><div style="flex:1; color:#8b98a5;">Edge available: 3 of 5 — <span style="color:#d1a458;">^X</span> to push a limit</div></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- meat -->
+        <div style="flex:none; width:300px; display:flex; flex-direction:column; gap:7px; min-height:0;">
+          <div style="flex:none; border:1px solid #c162de; position:relative; padding:8px 11px;">
+            <span style="position:absolute; top:-9px; left:10px; background:#000; padding:0 5px; color:#c162de;">meat body</span>
+            <span style="position:absolute; top:-9px; right:10px; background:#000; padding:0 5px; color:#e05561;">↑ biofeedback</span>
+            <div style="display:flex; flex-direction:column; line-height:1.6;">
+              <div style="white-space:pre;"><span style="color:#d7dae0; font-weight:700;">Tessellate</span> <span style="color:#5b6672;">elf · rigger</span></div>
+              <div style="white-space:pre; color:#5b6672;">in a parked van, 300 m south</div>
+              <div style="white-space:pre; color:#5b6672;">&nbsp;</div>
+              <div style="white-space:pre;"><span style="color:#5b6672;">physical </span><span style="color:#8cc265;">▰▰</span><span style="color:#2a333d;">▱▱▱▱▱▱▱▱</span> <span style="color:#8b98a5;">2/10</span></div>
+              <div style="white-space:pre;"><span style="color:#5b6672;">stun     </span><span style="color:#e05561;">▰▰▰▰▰▰</span><span style="color:#2a333d;">▱▱▱▱</span> <span style="color:#e05561;">6/10</span></div>
+              <div style="white-space:pre;"><span style="color:#5b6672;">wound    </span><span style="color:#e05561;">−2</span><span style="color:#5b6672;"> (both tracks)</span></div>
+              <div style="white-space:pre; color:#5b6672;">&nbsp;</div>
+              <div style="white-space:pre;"><span style="color:#5b6672;">edge     </span><span style="color:#8cc265;">▰▰▰</span><span style="color:#2a333d;">▱▱</span> <span style="color:#8b98a5;">3/5</span></div>
+              <div style="white-space:pre;"><span style="color:#5b6672;">essence  </span><span style="color:#8b98a5;">2.45</span></div>
+              <div style="white-space:pre;"><span style="color:#5b6672;">init     </span><span style="color:#d7dae0;">24</span><span style="color:#5b6672;">  4D6  pass 2/3</span></div>
+              <div style="white-space:pre; color:#5b6672;">&nbsp;</div>
+              <div style="white-space:pre; color:#e05561;">4 more Stun and you dump-shock</div>
+            </div>
+          </div>
+
+          <div style="flex:1; min-height:0; border:1px solid #c162de; position:relative; padding:8px 11px; overflow:hidden;">
+            <span style="position:absolute; top:-9px; left:10px; background:#000; padding:0 5px; color:#c162de;">limits</span>
+            <div style="display:flex; flex-direction:column; line-height:1.6;">
+              <div style="white-space:pre;"><span style="color:#5b6672;">physical </span><span style="color:#d7dae0;">4</span></div>
+              <div style="white-space:pre;"><span style="color:#5b6672;">mental   </span><span style="color:#d7dae0;">6</span></div>
+              <div style="white-space:pre;"><span style="color:#5b6672;">social   </span><span style="color:#d7dae0;">4</span></div>
+              <div style="white-space:pre; color:#5b6672;">&nbsp;</div>
+              <div style="white-space:pre; color:#5b6672;">while jumped in, vehicle</div>
+              <div style="white-space:pre; color:#5b6672;">limits replace yours:</div>
+              <div style="white-space:pre;"><span style="color:#5b6672;">handling </span><span style="color:#8cc265;">6</span> <span style="color:#5b6672;">(4 +2 rig)</span></div>
+              <div style="white-space:pre;"><span style="color:#5b6672;">sensor   </span><span style="color:#8cc265;">5</span> <span style="color:#5b6672;">(3 +2 rig)</span></div>
+              <div style="white-space:pre;"><span style="color:#5b6672;">speed    </span><span style="color:#8cc265;">6</span> <span style="color:#5b6672;">(4 +2 rig)</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div style="display:flex; align-items:center; padding:0 2px; white-space:pre;">
+        <span style="color:#5b6672;">[</span><span style="color:#d1a458;"> veh 6/9 </span><span style="color:#5b6672;">][</span><span style="color:#e05561;"> stun 6/10 </span><span style="color:#5b6672;">][</span><span style="color:#8cc265;"> phys 2/10 </span><span style="color:#5b6672;">][</span><span style="color:#8b98a5;"> noise 2 </span><span style="color:#5b6672;">][</span><span style="color:#8b98a5;"> init 24 · p2 </span><span style="color:#5b6672;">][</span><span style="color:#8cc265;"> edge 3/5 </span><span style="color:#5b6672;">]</span>
+        <span style="flex:1;"></span>
+        <span style="color:#e05561;">jumped in — damage lands twice</span>
+      </div>
+
+      <div style="border:1px solid #e05561; position:relative; padding:6px 11px; display:flex; gap:9px;">
+        <span style="position:absolute; top:-9px; left:10px; background:#000; padding:0 5px; color:#e05561;">input</span>
+        <span style="position:absolute; top:-9px; right:10px; background:#000; padding:0 5px; color:#5b6672;">^P mode · ^U unjump</span>
+        <span style="color:#e05561; font-weight:700;">‹SKIMMER-3›</span>
+        <span style="flex:1;">+roll reaction+gunnery /edge<span style="background:#e05561; color:#000;"> </span></span>
+      </div>
+
+      <div style="display:flex; align-items:center; font-size:12px; color:#5b6672;">
+        <span><span style="color:#d1a458;">^K</span> commands</span>
+        <span style="padding-left:14px;"><span style="color:#d1a458;">^J</span> jump</span>
+        <span style="padding-left:14px;"><span style="color:#d1a458;">^U</span> unjump</span>
+        <span style="padding-left:14px;"><span style="color:#d1a458;">^X</span> spend edge</span>
+        <span style="padding-left:14px;"><span style="color:#d1a458;">^I</span> next init pass</span>
+        <span style="padding-left:14px;"><span style="color:#d1a458;">Tab</span> pane</span>
+        <span style="flex:1;"></span>
+        <span><span style="color:#d1a458;">?</span> help rigging</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ================= S2 — HACKER ================= -->
+  <div style="display:flex; flex-direction:column; gap:14px;">
+    <div style="display:flex; align-items:baseline; gap:14px;">
+      <span style="font-family:ui-monospace,monospace; font-size:12px; font-weight:700; letter-spacing:0.08em; color:#000; background:#42b3c2; padding:3px 9px; border-radius:3px;">S2</span>
+      <h2 style="margin:0; font-size:22px; font-weight:600;">Shadowrun · hacker, inside a host</h2>
+      <span style="font-size:14px; color:#8b98a5;">One number dominates the screen, because one number ends the run.</span>
+    </div>
+    <p style="margin:0; max-width:86ch; font-size:14.5px; line-height:1.6; color:#8b98a5; text-wrap:pretty;">The Matrix has no map, so the spatial pane a rigger gets is replaced by an icon list — what's in here with you, what marks you hold on it, what marks it holds on you. Overwatch is given the loudest element on screen and its own full-width bar, since convergence is the clock the whole run is played against. Matrix attributes sit where the weapon list sits in TacSim, because reallocating them <em>is</em> the loadout decision.</p>
+
+    <div style="width:1300px; background:#000; border:1px solid #2a333d; padding:9px; font-family:ui-monospace, 'Cascadia Mono', Consolas, monospace; font-size:12.5px; line-height:1.42; color:#d7dae0; display:flex; flex-direction:column; gap:7px;">
+      <div style="display:flex; align-items:center;">
+        <span style="color:#5b6672; padding-right:12px;">rustmush</span>
+        <span style="background:#c162de; color:#000; padding:0 9px; font-weight:700;">1 matrix</span>
+        <span style="color:#8b98a5; padding:0 9px;"><span style="color:#d1a458;">2</span> icons</span>
+        <span style="color:#8b98a5; padding:0 9px;"><span style="color:#d1a458;">3</span> programs</span>
+        <span style="color:#8b98a5; padding:0 9px;"><span style="color:#d1a458;">4</span> comms <span style="color:#e05561;">1</span></span>
+        <span style="color:#8b98a5; padding:0 9px;"><span style="color:#d1a458;">5</span> meat</span>
+        <span style="color:#8b98a5; padding:0 9px;"><span style="color:#d1a458;">6</span> sheet</span>
+        <span style="flex:1;"></span>
+        <span style="color:#5b6672;">Pellet</span>
+        <span style="color:#2a333d; padding:0 8px;">│</span>
+        <span style="color:#e05561; font-weight:700;">HOT-SIM VR</span>
+        <span style="color:#2a333d; padding:0 8px;">│</span>
+        <span style="color:#5b6672;">init pass 1 of 4</span>
+      </div>
+
+      <div style="display:flex; align-items:center; background:#1c242d; padding:1px 9px; white-space:pre;">
+        <span style="color:#c162de; font-weight:700;">INSIDE HOST</span>
+        <span style="color:#2a333d; padding:0 9px;">│</span><span style="color:#d1a458; font-weight:700;">NORTHGATE MUTUAL — claims archive</span>
+        <span style="color:#2a333d; padding:0 9px;">│</span><span style="color:#8b98a5;">host rating 6</span>
+        <span style="color:#2a333d; padding:0 9px;">│</span><span style="color:#8cc265;">noise 0</span>
+        <span style="flex:1;"></span>
+        <span style="color:#5b6672;">deck </span><span style="color:#8b98a5;">Erika MCD-6</span>
+        <span style="color:#2a333d; padding:0 9px;">│</span><span style="color:#5b6672;">grid </span><span style="color:#8b98a5;">public</span>
+      </div>
+
+      <!-- OVERWATCH: full width, loudest thing on screen -->
+      <div style="border:1px solid #e05561; position:relative; padding:8px 11px; display:flex; align-items:center; gap:18px;">
+        <span style="position:absolute; top:-9px; left:10px; background:#000; padding:0 5px; color:#e05561;">overwatch</span>
+        <span style="color:#e05561; font-weight:700; font-size:15px;">OS 27</span>
+        <span style="color:#5b6672;">/ 40</span>
+        <span style="flex:1;"><span style="color:#e05561; letter-spacing:0.08em;">▰▰▰▰▰▰▰▰▰▰▰▰▰</span><span style="color:#d1a458; letter-spacing:0.08em;">▰▰</span><span style="color:#2a333d; letter-spacing:0.08em;">▱▱▱▱▱</span></span>
+        <span style="color:#d1a458;">+3 last action</span>
+        <span style="color:#5b6672;">·</span>
+        <span style="color:#5b6672;">+1 per minute</span>
+        <span style="color:#5b6672;">·</span>
+        <span style="color:#e05561; font-weight:700;">converge in ~4 actions</span>
+      </div>
+
+      <div style="display:flex; gap:7px; height:490px;">
+
+        <!-- icons -->
+        <div style="flex:1; min-width:0; display:flex; flex-direction:column; gap:7px; min-height:0;">
+          <div style="flex:none; border:1px solid #6c7484; position:relative; padding:8px 11px;">
+            <span style="position:absolute; top:-9px; left:10px; background:#000; padding:0 5px; color:#d1a458;">icons here</span>
+            <span style="position:absolute; top:-9px; right:10px; background:#000; padding:0 5px; color:#5b6672;">◈ your mark · ◆ mark on you</span>
+            <div style="display:flex; flex-direction:column; line-height:1.55;">
+              <div style="white-space:pre; color:#5b6672; font-weight:700;">   icon                 kind      rtg  marks   note</div>
+              <div style="white-space:pre;"><span style="color:#8cc265;">▶</span> <span style="color:#d1a458; font-weight:700;">claims_2061.db      </span> <span style="color:#8b98a5;">file    </span> <span style="color:#d7dae0;">6</span>  <span style="color:#8cc265;">◈◈◇</span>  <span style="color:#d1a458;">protected, needs 3</span></div>
+              <div style="white-space:pre;">  <span style="color:#8b98a5;">payroll_q3.db       </span> <span style="color:#8b98a5;">file    </span> <span style="color:#d7dae0;">6</span>  <span style="color:#5b6672;">◇◇◇</span>  <span style="color:#5b6672;">not your job</span></div>
+              <div style="white-space:pre;">  <span style="color:#42b3c2;">maintenance_node    </span> <span style="color:#8b98a5;">device  </span> <span style="color:#d7dae0;">4</span>  <span style="color:#8cc265;">◈</span><span style="color:#5b6672;">◇◇</span>  <span style="color:#8cc265;">your way out</span></div>
+              <div style="white-space:pre;">  <span style="color:#e05561;">“Wallis, T.”        </span> <span style="color:#e05561;">persona </span> <span style="color:#d7dae0;">5</span>  <span style="color:#5b6672;">◇◇◇</span>  <span style="color:#d1a458;">spider, not alerted</span></div>
+              <div style="white-space:pre;">  <span style="color:#c162de;">camera cluster 4-7  </span> <span style="color:#8b98a5;">device  </span> <span style="color:#d7dae0;">3</span>  <span style="color:#8cc265;">◈◈</span><span style="color:#5b6672;">◇</span>  <span style="color:#8cc265;">feed looped</span></div>
+            </div>
+          </div>
+
+          <div style="flex:none; border:1px solid #e05561; position:relative; padding:8px 11px;">
+            <span style="position:absolute; top:-9px; left:10px; background:#000; padding:0 5px; color:#e05561;">IC</span>
+            <span style="position:absolute; top:-9px; right:10px; background:#000; padding:0 5px; color:#5b6672;">host launches 1 per turn</span>
+            <div style="display:flex; flex-direction:column; line-height:1.55;">
+              <div style="white-space:pre; color:#5b6672; font-weight:700;">   ic        rtg  init  marks on you  intent</div>
+              <div style="white-space:pre;"><span style="color:#d1a458;">▶</span> <span style="color:#d1a458;">Patrol  </span>  <span style="color:#d7dae0;">6</span>   <span style="color:#d7dae0;">14</span>  <span style="color:#5b6672;">◇◇◇</span>         <span style="color:#8b98a5;">matrix perception, every turn</span></div>
+              <div style="white-space:pre;">  <span style="color:#e05561;">Probe   </span>  <span style="color:#d7dae0;">6</span>   <span style="color:#d7dae0;">11</span>  <span style="color:#e05561;">◆</span><span style="color:#5b6672;">◇◇</span>         <span style="color:#e05561;">one mark on you — it found you</span></div>
+              <div style="white-space:pre;">  <span style="color:#5b6672;">Killer  </span>  <span style="color:#5b6672;">—</span>   <span style="color:#5b6672;">—</span>   <span style="color:#5b6672;">—</span>           <span style="color:#5b6672;">not launched yet</span></div>
+              <div style="white-space:pre; color:#5b6672;">&nbsp;</div>
+              <div style="white-space:pre; color:#e05561;">if Probe gets a second mark, expect Killer next turn</div>
+            </div>
+          </div>
+
+          <div style="flex:1; min-height:0; border:1px solid #6c7484; position:relative; padding:8px 11px; overflow:hidden;">
+            <span style="position:absolute; top:-9px; left:10px; background:#000; padding:0 5px; color:#d1a458;">log</span>
+            <div style="display:flex; flex-direction:column; gap:3px;">
+              <div style="display:flex; gap:9px;"><span style="flex:none; width:44px; color:#5b6672; text-align:right;">p1</span><div style="flex:1;"><span style="color:#8b98a5;">You</span> <span style="color:#d7dae0;">Hack on the Fly → claims_2061.db —</span> <span style="color:#8cc265;">4 hits</span> <span style="color:#8b98a5;">vs</span> <span style="color:#d1a458;">2</span> <span style="color:#5b6672;">· mark 2 placed</span></div></div>
+              <div style="display:flex; gap:9px;"><span style="flex:none; width:44px; color:#e05561; text-align:right;">os</span><div style="flex:1; color:#e05561;">Overwatch +3 <span style="color:#5b6672;">(illegal action, hits on the defender)</span> → 27</div></div>
+              <div style="display:flex; gap:9px;"><span style="flex:none; width:44px; color:#5b6672; text-align:right;">p1</span><div style="flex:1;"><span style="color:#d1a458;">Patrol IC</span> <span style="color:#d7dae0;">Matrix Perception —</span> <span style="color:#5b6672;">3 hits vs your Sleaze 6, failed</span></div></div>
+              <div style="display:flex; gap:9px;"><span style="flex:none; width:44px; color:#5b6672; text-align:right;">p1</span><div style="flex:1;"><span style="color:#e05561;">Probe IC</span> <span style="color:#d7dae0;">Mark placed on your persona —</span> <span style="color:#e05561;">6 hits</span></div></div>
+              <div style="display:flex; gap:9px;"><span style="flex:none; width:44px; color:#e05561; text-align:right; font-weight:700;">bio</span><div style="flex:1;"><span style="color:#8b98a5;">no biofeedback yet — Probe doesn't do damage, </span><span style="color:#e05561;">Killer does</span></div></div>
+              <div style="display:flex; gap:9px;"><span style="flex:none; width:44px; color:#42b3c2; text-align:right; font-weight:700;">Kavi</span><div style="flex:1;"><span style="color:#5b6672;">(team)</span> <span style="color:#d7dae0;">“Door's still locked. Are you in or are you dead?”</span></div></div>
+              <div style="display:flex; gap:9px;"><span style="flex:none; width:44px; color:#5b6672; text-align:right;">hint</span><div style="flex:1; color:#5b6672;">one more mark on the file and Crack File becomes available</div></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- matrix attrs + programs + condition -->
+        <div style="flex:none; width:400px; display:flex; flex-direction:column; gap:7px; min-height:0;">
+          <div style="flex:none; border:1px solid #c162de; position:relative; padding:8px 11px;">
+            <span style="position:absolute; top:-9px; left:10px; background:#000; padding:0 5px; color:#c162de;">matrix attributes</span>
+            <span style="position:absolute; top:-9px; right:10px; background:#000; padding:0 5px; color:#5b6672;">^A swap two</span>
+            <div style="display:flex; flex-direction:column; line-height:1.6;">
+              <div style="white-space:pre;"><span style="color:#e05561;">attack     </span><span style="color:#e05561;">▰▰▰▰▰</span><span style="color:#2a333d;">▱▱</span> <span style="color:#d7dae0;">5</span></div>
+              <div style="white-space:pre;"><span style="color:#c162de;">sleaze     </span><span style="color:#c162de;">▰▰▰▰▰▰</span><span style="color:#2a333d;">▱</span> <span style="color:#d7dae0;">6</span> <span style="color:#8cc265;">← hiding behind this</span></div>
+              <div style="white-space:pre;"><span style="color:#42b3c2;">data proc  </span><span style="color:#42b3c2;">▰▰▰▰</span><span style="color:#2a333d;">▱▱▱</span> <span style="color:#d7dae0;">4</span></div>
+              <div style="white-space:pre;"><span style="color:#d1a458;">firewall   </span><span style="color:#d1a458;">▰▰▰</span><span style="color:#2a333d;">▱▱▱▱</span> <span style="color:#d7dae0;">3</span> <span style="color:#e05561;">← thin if Killer arrives</span></div>
+              <div style="white-space:pre; color:#5b6672;">&nbsp;</div>
+              <div style="white-space:pre; color:#5b6672;">deck array 6/5/4/3 · swapping is free</div>
+              <div style="white-space:pre; color:#5b6672;">once per turn</div>
+            </div>
+          </div>
+
+          <div style="flex:none; border:1px solid #6c7484; position:relative; padding:8px 11px;">
+            <span style="position:absolute; top:-9px; left:10px; background:#000; padding:0 5px; color:#d1a458;">programs</span>
+            <span style="position:absolute; top:-9px; right:10px; background:#000; padding:0 5px; color:#5b6672;">4 of 5 slots</span>
+            <div style="display:flex; flex-direction:column; line-height:1.6;">
+              <div style="white-space:pre;"><span style="color:#8cc265;">●</span> <span style="color:#d7dae0;">stealth        </span> <span style="color:#5b6672;">+2 Sleaze actions</span></div>
+              <div style="white-space:pre;"><span style="color:#8cc265;">●</span> <span style="color:#d7dae0;">exploit        </span> <span style="color:#5b6672;">+2 Hack on the Fly</span></div>
+              <div style="white-space:pre;"><span style="color:#8cc265;">●</span> <span style="color:#d7dae0;">biofeedback flt</span> <span style="color:#5b6672;">+2 resist bio damage</span></div>
+              <div style="white-space:pre;"><span style="color:#8cc265;">●</span> <span style="color:#d7dae0;">baby monitor   </span> <span style="color:#5b6672;">shows your own OS</span></div>
+              <div style="white-space:pre;"><span style="color:#5b6672;">○ empty          </span> <span style="color:#d1a458;">load armor? ^L</span></div>
+            </div>
+          </div>
+
+          <div style="flex:1; min-height:0; border:1px solid #c162de; position:relative; padding:8px 11px; overflow:hidden;">
+            <span style="position:absolute; top:-9px; left:10px; background:#000; padding:0 5px; color:#c162de;">damage</span>
+            <span style="position:absolute; top:-9px; right:10px; background:#000; padding:0 5px; color:#5b6672;">5 meat</span>
+            <div style="display:flex; flex-direction:column; line-height:1.6;">
+              <div style="white-space:pre; color:#5b6672;">deck (matrix condition)</div>
+              <div style="white-space:pre;"><span style="color:#8cc265;">▰▰</span><span style="color:#2a333d;">▱▱▱▱▱▱▱▱▱</span> <span style="color:#8b98a5;">2/11</span>   <span style="color:#5b6672;">bricks at 11</span></div>
+              <div style="white-space:pre; color:#5b6672;">&nbsp;</div>
+              <div style="white-space:pre; color:#5b6672;">Pellet (hot-sim: bio → Stun)</div>
+              <div style="white-space:pre;"><span style="color:#5b6672;">stun     </span><span style="color:#d1a458;">▰▰▰</span><span style="color:#2a333d;">▱▱▱▱▱▱▱</span> <span style="color:#8b98a5;">3/10</span></div>
+              <div style="white-space:pre;"><span style="color:#5b6672;">physical </span><span style="color:#8cc265;">▱▱▱▱▱▱▱▱▱▱</span> <span style="color:#8b98a5;">0/10</span></div>
+              <div style="white-space:pre;"><span style="color:#5b6672;">wound    </span><span style="color:#d1a458;">−1</span><span style="color:#5b6672;"> to every pool</span></div>
+              <div style="white-space:pre; color:#5b6672;">&nbsp;</div>
+              <div style="white-space:pre;"><span style="color:#5b6672;">edge     </span><span style="color:#8cc265;">▰▰▰▰</span><span style="color:#2a333d;">▱▱</span> <span style="color:#8b98a5;">4/6</span></div>
+              <div style="white-space:pre;"><span style="color:#5b6672;">init     </span><span style="color:#d7dae0;">18</span><span style="color:#5b6672;">  4D6  pass 1/4</span></div>
+              <div style="white-space:pre; color:#5b6672;">&nbsp;</div>
+              <div style="white-space:pre;"><span style="color:#5b6672;">jack out: </span><span style="color:#8cc265;">safe now</span><span style="color:#5b6672;">, dumpshock</span></div>
+              <div style="white-space:pre; color:#5b6672;">if a Killer connects first</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div style="display:flex; align-items:center; padding:0 2px; white-space:pre;">
+        <span style="color:#5b6672;">[</span><span style="color:#e05561;"> OS 27/40 </span><span style="color:#5b6672;">][</span><span style="color:#8b98a5;"> deck 2/11 </span><span style="color:#5b6672;">][</span><span style="color:#d1a458;"> stun 3/10 </span><span style="color:#5b6672;">][</span><span style="color:#8cc265;"> noise 0 </span><span style="color:#5b6672;">][</span><span style="color:#c162de;"> A5 S6 D4 F3 </span><span style="color:#5b6672;">][</span><span style="color:#8b98a5;"> init 18 · p1 </span><span style="color:#5b6672;">]</span>
+        <span style="flex:1;"></span>
+        <span style="color:#8cc265;">◈◈◇ on claims_2061.db</span>
+      </div>
+
+      <div style="border:1px solid #c162de; position:relative; padding:6px 11px; display:flex; gap:9px;">
+        <span style="position:absolute; top:-9px; left:10px; background:#000; padding:0 5px; color:#c162de;">input</span>
+        <span style="position:absolute; top:-9px; right:10px; background:#000; padding:0 5px; color:#5b6672;">^P mode · ^J jack out</span>
+        <span style="color:#c162de; font-weight:700;">‹matrix›</span>
+        <span style="flex:1;">hack claims_2061.db<span style="background:#c162de; color:#000;"> </span></span>
+      </div>
+
+      <div style="display:flex; align-items:center; font-size:12px; color:#5b6672;">
+        <span><span style="color:#d1a458;">^K</span> commands</span>
+        <span style="padding-left:14px;"><span style="color:#d1a458;">^A</span> swap attributes</span>
+        <span style="padding-left:14px;"><span style="color:#d1a458;">^L</span> load program</span>
+        <span style="padding-left:14px;"><span style="color:#d1a458;">m</span> mark target</span>
+        <span style="padding-left:14px;"><span style="color:#d1a458;">^J</span> jack out</span>
+        <span style="padding-left:14px;"><span style="color:#d1a458;">Tab</span> pane</span>
+        <span style="flex:1;"></span>
+        <span><span style="color:#d1a458;">?</span> help matrix</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ================= NOTES ================= -->
+  <div style="display:flex; gap:28px; flex-wrap:wrap; padding-top:36px; border-top:1px solid #2a333d;">
+    <div style="width:520px; background:#131920; border:1px solid #2a333d; border-radius:6px; padding:18px 20px;">
+      <div style="font-family:ui-monospace,monospace; font-size:10.5px; letter-spacing:0.14em; text-transform:uppercase; color:#5b6672; margin-bottom:12px;">Rules that hold all five screens together</div>
+      <div style="display:flex; flex-direction:column; gap:11px; font-size:13.5px; line-height:1.55; color:#8b98a5;">
+        <div><span style="color:#d7dee5;">One dominant number per screen.</span> Heat in TacSim, Overwatch in the Matrix, the drone's condition monitor for a rigger. Whatever kills you gets the biggest type and its own bar.</div>
+        <div><span style="color:#d7dee5;">Border colour carries meaning, not decoration.</span> Amber = your unit and your input. Cyan = IC comms. Magenta = OOC and the Matrix. Red = the thing currently hurting you. It's the same four colours on every screen.</div>
+        <div><span style="color:#d7dee5;">Gauges everywhere, numbers beside them.</span> <code style="font-family:ui-monospace,monospace; color:#8ab8e8;">▰▱</code> for the glance, the digits for the decision. Never one without the other.</div>
+        <div><span style="color:#d7dee5;">Two bodies get two panes.</span> A rigger's meat and a hacker's deck are never folded into the thing they're driving — that's how players lose characters they didn't know were dying.</div>
+        <div><span style="color:#d7dee5;">The legend is always on screen.</span> Bottom line, every screen, no exceptions. It's how a returning player relearns the HUD in ten seconds instead of reading help.</div>
+      </div>
+    </div>
+
+    <div style="width:520px; background:#131920; border:1px solid #2a333d; border-radius:6px; padding:18px 20px;">
+      <div style="font-family:ui-monospace,monospace; font-size:10.5px; letter-spacing:0.14em; text-transform:uppercase; color:#5b6672; margin-bottom:12px;">What exists vs. what these assume</div>
+      <div style="display:flex; flex-direction:column; gap:11px; font-size:13.5px; line-height:1.55; color:#8b98a5;">
+        <div><span style="color:#8cc265;">Already there.</span> <code style="font-family:ui-monospace,monospace; color:#8ab8e8;">TacticalUnit</code> sections, facets, scalar cells, components, conditions, capabilities, <code style="font-family:ui-monospace,monospace; color:#8ab8e8;">MobilityProfile</code> modes, the <code style="font-family:ui-monospace,monospace; color:#8ab8e8;">Journal</code>, the hex <code style="font-family:ui-monospace,monospace; color:#8ab8e8;">MapBlob</code> and the <code style="font-family:ui-monospace,monospace; color:#8ab8e8;">tactics.map</code> panel feed with keyframe + delta frames. T1's section pane and all of T3 are renderings of data the crate already produces.</div>
+        <div><span style="color:#8cc265;">Already there.</span> SR5's two condition monitors, wound modifier, limits, Edge/<code style="font-family:ui-monospace,monospace; color:#8ab8e8;">edge_current</code>, initiative base and dice, and the <code style="font-family:ui-monospace,monospace; color:#8ab8e8;">matrix</code> domain tag in the NPC agent. Every meat-body and limits pane above reads existing fields.</div>
+        <div><span style="color:#d1a458;">New panel feeds needed.</span> <code style="font-family:ui-monospace,monospace; color:#8ab8e8;">tactics.contacts</code>, <code style="font-family:ui-monospace,monospace; color:#8ab8e8;">tactics.weapons</code> (cycle timers as cells + a ready flag), <code style="font-family:ui-monospace,monospace; color:#8ab8e8;">comms.nets</code> (IC nets with signal strength, separate from comsys), <code style="font-family:ui-monospace,monospace; color:#8ab8e8;">sr.rig</code>, <code style="font-family:ui-monospace,monospace; color:#8ab8e8;">sr.matrix</code>.</div>
+        <div><span style="color:#d1a458;">New subsystems.</span> There is no Matrix or rigging module yet — S1 and S2 are a design target, not a skin over existing state. The good news is the shapes they need (bounded cells, opaque conditions, capability bits) are exactly what <code style="font-family:ui-monospace,monospace; color:#8ab8e8;">mush-tactics</code> already models, so a drone and a deck can both be <code style="font-family:ui-monospace,monospace; color:#8ab8e8;">TacticalUnit</code>s.</div>
+        <div><span style="color:#8ab8e8;">Line mode still works.</span> Every pane here has a text fallback: contacts and weapons are already tables, the section pane is the labelled-gutter form, and Overwatch is one line. Nothing in T1–S2 requires cursor addressing to be playable.</div>
+      </div>
+    </div>
+  </div>
+</section>
+</x-dc>
+</body>
+</html>

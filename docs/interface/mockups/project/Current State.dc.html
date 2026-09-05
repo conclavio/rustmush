@@ -1,0 +1,582 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<meta name="design_doc_mode" content="canvas">
+<style>
+  body { margin:0; background:#0a0d10; color:#d7dee5; font-family: system-ui, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; }
+  a { color:#6ea8fe; text-decoration:none; }
+  a:hover { color:#9cc4ff; text-decoration:underline; }
+</style>
+</helmet>
+
+<section style="padding:56px 64px 96px; display:flex; flex-direction:column; gap:14px; background:#0a0d10; width:max-content; min-width:100%; box-sizing:border-box;">
+  <div style="font-family:ui-monospace, 'Cascadia Mono', Consolas, 'SF Mono', Menlo, monospace; font-size:12px; letter-spacing:0.18em; text-transform:uppercase; color:#5b6672;">Recreation — as built today</div>
+  <h1 style="margin:0; font-size:34px; font-weight:600; letter-spacing:-0.01em; color:#d7dee5;">rustmush · current interfaces</h1>
+  <p style="margin:0; max-width:70ch; font-size:15px; line-height:1.6; color:#8b98a5; text-wrap:pretty;">Rebuilt from <code style="font-family:ui-monospace,monospace; color:#8ab8e8;">web/src</code> (Login, CharSelect, Game, WhoRail, ChannelTabs, Scrollback, RichLine, InputBar, RightPanel, RoomPanel, SheetPanel, MailPanel, RollsPanel, WorldgenPanel, app.css) and <code style="font-family:ui-monospace,monospace; color:#8ab8e8;">crates/mush-net-ssh/src/tui</code> + <code style="font-family:ui-monospace,monospace; color:#8ab8e8;">crates/mush-ansi</code>. Every colour, size and column width below is lifted from those files.</p>
+
+  <div style="display:flex; flex-wrap:wrap; gap:32px; margin-top:36px;">
+
+    <!-- ============ LOGIN ============ -->
+    <div style="display:flex; flex-direction:column; gap:10px;">
+      <div style="font-family:ui-monospace,monospace; font-size:11px; letter-spacing:0.16em; text-transform:uppercase; color:#5b6672;">Login.svelte</div>
+      <div style="width:520px; height:420px; background:#101418; border:1px solid #2a333d; display:flex; align-items:center; justify-content:center; padding:16px;">
+        <form style="width:352px; background:#171d24; border:1px solid #2a333d; border-radius:12px; padding:24px 25.6px; display:flex; flex-direction:column; gap:11.2px;">
+          <h1 style="margin:0; font-size:21px; letter-spacing:0.05em;">rustmush</h1>
+          <p style="margin:-6.4px 0 4.8px; color:#8b98a5; font-size:12.75px;">a modern MUSH — play in your browser or over SSH</p>
+          <div style="display:flex; gap:6.4px;">
+            <button type="button" style="flex:1; background:none; border:1px solid #6ea8fe; border-radius:6px; color:#6ea8fe; padding:5.6px; font:inherit; font-size:12.75px; cursor:pointer;">Sign in</button>
+            <button type="button" style="flex:1; background:none; border:1px solid #2a333d; border-radius:6px; color:#8b98a5; padding:5.6px; font:inherit; font-size:12.75px; cursor:pointer;">New account</button>
+          </div>
+          <label style="display:flex; flex-direction:column; gap:3.2px; font-size:12.3px; color:#8b98a5;">Account
+            <input value="nyx" style="background:#1c242d; color:#d7dee5; border:1px solid #2a333d; border-radius:6px; padding:7.2px 9.6px; font:inherit; font-size:15px;">
+          </label>
+          <label style="display:flex; flex-direction:column; gap:3.2px; font-size:12.3px; color:#8b98a5;">Password
+            <input type="password" value="hunter2hunter2" style="background:#1c242d; color:#d7dee5; border:1px solid #2a333d; border-radius:6px; padding:7.2px 9.6px; font:inherit; font-size:15px;">
+          </label>
+          <button type="button" style="background:#3d5a80; color:#d7dee5; border:none; border-radius:6px; padding:8px; font:inherit; font-weight:600; cursor:pointer;">Sign in</button>
+          <p style="margin:0; color:#5b6672; font-size:11.25px; text-align:center;">Prefer a terminal? <code style="font-family:ui-monospace,monospace;">ssh play@&lt;host&gt;</code> works too.</p>
+        </form>
+      </div>
+    </div>
+
+    <!-- ============ CHAR SELECT ============ -->
+    <div style="display:flex; flex-direction:column; gap:10px;">
+      <div style="font-family:ui-monospace,monospace; font-size:11px; letter-spacing:0.16em; text-transform:uppercase; color:#5b6672;">CharSelect.svelte</div>
+      <div style="width:600px; height:420px; background:#101418; border:1px solid #2a333d; display:flex; align-items:center; justify-content:center; padding:16px;">
+        <div style="width:480px; background:#171d24; border:1px solid #2a333d; border-radius:12px; padding:24px 25.6px; display:flex; flex-direction:column; gap:14.4px;">
+          <h1 style="margin:0; font-size:18px;">Choose a character</h1>
+          <p style="margin:-8px 0 0; color:#8b98a5; font-size:12.75px;">nyx — 3 characters</p>
+          <div style="display:grid; grid-template-columns:repeat(3, 1fr); gap:9.6px;">
+            <button type="button" style="display:flex; flex-direction:column; align-items:center; gap:7.2px; background:#1c242d; border:1px solid #6ea8fe; border-radius:10px; padding:14.4px 8px; cursor:pointer; font:inherit; color:#d7dee5;">
+              <span style="width:41.6px; height:41.6px; border-radius:50%; background:#3d5a80; display:flex; align-items:center; justify-content:center; font-size:19.2px; font-weight:700;">M</span>
+              <span style="font-weight:600;">Mireille</span>
+              <span style="font-size:10.9px; color:#6ea8fe;">last played</span>
+            </button>
+            <button type="button" style="display:flex; flex-direction:column; align-items:center; gap:7.2px; background:#1c242d; border:1px solid #2a333d; border-radius:10px; padding:14.4px 8px; cursor:pointer; font:inherit; color:#d7dee5;">
+              <span style="width:41.6px; height:41.6px; border-radius:50%; background:#3d5a80; display:flex; align-items:center; justify-content:center; font-size:19.2px; font-weight:700;">H</span>
+              <span style="font-weight:600;">Hollis</span>
+            </button>
+            <button type="button" style="display:flex; flex-direction:column; align-items:center; gap:7.2px; background:#1c242d; border:1px solid #2a333d; border-radius:10px; padding:14.4px 8px; cursor:pointer; font:inherit; color:#d7dee5;">
+              <span style="width:41.6px; height:41.6px; border-radius:50%; background:#3d5a80; display:flex; align-items:center; justify-content:center; font-size:19.2px; font-weight:700;">V</span>
+              <span style="font-weight:600;">Vaska</span>
+            </button>
+          </div>
+          <button type="button" style="align-self:flex-start; background:none; border:1px solid #2a333d; border-radius:6px; color:#8b98a5; padding:4.8px 12.8px; cursor:pointer; font:inherit; font-size:13.1px;">Sign out</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ GAME SCREEN ============ -->
+  <div style="display:flex; flex-direction:column; gap:10px; margin-top:40px;">
+    <div style="font-family:ui-monospace,monospace; font-size:11px; letter-spacing:0.16em; text-transform:uppercase; color:#5b6672;">Game.svelte — desktop, both rails open, Room tab</div>
+    <div style="width:1400px; height:760px; background:#101418; border:1px solid #2a333d; display:flex; flex-direction:column; font-size:15px; line-height:1.45;">
+
+      <!-- header -->
+      <div style="display:flex; align-items:center; gap:8.8px; padding:6.4px 11.2px; background:#171d24; border-bottom:1px solid #2a333d; flex:none;">
+        <button type="button" style="background:none; border:1px solid #2a333d; border-radius:6px; color:#8b98a5; cursor:pointer; font:inherit; font-size:13.6px; padding:2.4px 8px;">☰</button>
+        <h1 style="margin:0; font-size:16px; letter-spacing:0.04em;">rustmush</h1>
+        <span style="color:#8ab8e8; font-weight:600; font-size:13.5px;">Mireille</span>
+        <span style="color:#8b98a5; font-size:12px;">×2</span>
+        <span style="flex:1;"></span>
+        <span style="display:inline-flex; align-items:center; gap:5.6px; font-size:11.7px; color:#8b98a5;">
+          <span style="width:8.8px; height:8.8px; border-radius:50%; background:#63d471;"></span>connected
+        </span>
+        <button type="button" style="background:none; border:1px solid #2a333d; border-radius:6px; color:#8b98a5; cursor:pointer; font:inherit; font-size:13.6px; padding:2.4px 8px;">◐</button>
+        <button type="button" style="background:none; border:1px solid #2a333d; border-radius:6px; color:#8b98a5; cursor:pointer; font:inherit; font-size:13.6px; padding:2.4px 8px;">characters</button>
+        <button type="button" style="background:none; border:1px solid #2a333d; border-radius:6px; color:#8b98a5; cursor:pointer; font:inherit; font-size:13.6px; padding:2.4px 8px;">sign out</button>
+        <button type="button" style="background:none; border:1px solid #2a333d; border-radius:6px; color:#8b98a5; cursor:pointer; font:inherit; font-size:13.6px; padding:2.4px 8px;">⊞</button>
+      </div>
+
+      <div style="flex:1; display:flex; min-height:0;">
+        <!-- WHO rail 14rem -->
+        <div style="flex:none; width:224px; background:#171d24; border-right:1px solid #2a333d; display:flex; flex-direction:column; min-height:0;">
+          <div style="display:flex; align-items:center; gap:8px; padding:8px 12px; border-bottom:1px solid #2a333d;">
+            <strong>Who</strong>
+            <span style="background:#1c242d; border-radius:999px; padding:0 8px; font-size:12px; color:#8b98a5;">6</span>
+            <button type="button" style="margin-left:auto; background:none; border:1px solid #2a333d; border-radius:6px; color:#8b98a5; cursor:pointer; font:inherit; padding:0.8px 6.4px;">⟳</button>
+          </div>
+          <div style="flex:1; overflow:hidden; padding:6.4px 12px;">
+            <table style="width:100%; border-collapse:collapse; font-size:13.1px;">
+              <thead><tr>
+                <th style="text-align:left; color:#8b98a5; font-weight:500; padding:2.4px 4.8px 2.4px 0; border-bottom:1px solid #2a333d;">Name</th>
+                <th style="text-align:left; color:#8b98a5; font-weight:500; padding:2.4px 4.8px 2.4px 0; border-bottom:1px solid #2a333d;">Idle</th>
+                <th style="text-align:left; color:#8b98a5; font-weight:500; padding:2.4px 4.8px 2.4px 0; border-bottom:1px solid #2a333d;">On</th>
+              </tr></thead>
+              <tbody>
+                <tr><td style="padding:2.9px 4.8px 2.9px 0;">Mireille</td><td style="padding:2.9px 4.8px 2.9px 0; font-family:ui-monospace,monospace; font-size:12.5px; color:#8b98a5;">0s</td><td style="padding:2.9px 4.8px 2.9px 0; font-family:ui-monospace,monospace; font-size:12.5px; color:#8b98a5;">2h</td></tr>
+                <tr><td style="padding:2.9px 4.8px 2.9px 0;">Hollis</td><td style="padding:2.9px 4.8px 2.9px 0; font-family:ui-monospace,monospace; font-size:12.5px; color:#8b98a5;">4m</td><td style="padding:2.9px 4.8px 2.9px 0; font-family:ui-monospace,monospace; font-size:12.5px; color:#8b98a5;">3h</td></tr>
+                <tr><td colspan="3" style="color:#5b6672; font-size:12px; font-style:italic; padding-top:0;">brooding in the Chantry</td></tr>
+                <tr><td style="padding:2.9px 4.8px 2.9px 0;">Vaska <span style="color:#8b98a5;">(vas)</span></td><td style="padding:2.9px 4.8px 2.9px 0; font-family:ui-monospace,monospace; font-size:12.5px; color:#8b98a5;">12m</td><td style="padding:2.9px 4.8px 2.9px 0; font-family:ui-monospace,monospace; font-size:12.5px; color:#8b98a5;">1h</td></tr>
+                <tr><td style="padding:2.9px 4.8px 2.9px 0;">Ondine</td><td style="padding:2.9px 4.8px 2.9px 0; font-family:ui-monospace,monospace; font-size:12.5px; color:#8b98a5;">1m</td><td style="padding:2.9px 4.8px 2.9px 0; font-family:ui-monospace,monospace; font-size:12.5px; color:#8b98a5;">22m</td></tr>
+                <tr><td style="padding:2.9px 4.8px 2.9px 0;">Bastien</td><td style="padding:2.9px 4.8px 2.9px 0; font-family:ui-monospace,monospace; font-size:12.5px; color:#8b98a5;">31m</td><td style="padding:2.9px 4.8px 2.9px 0; font-family:ui-monospace,monospace; font-size:12.5px; color:#8b98a5;">5h</td></tr>
+                <tr><td style="padding:2.9px 4.8px 2.9px 0;">Wren</td><td style="padding:2.9px 4.8px 2.9px 0; font-family:ui-monospace,monospace; font-size:12.5px; color:#8b98a5;">2s</td><td style="padding:2.9px 4.8px 2.9px 0; font-family:ui-monospace,monospace; font-size:12.5px; color:#8b98a5;">48m</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- center -->
+        <div style="flex:1; min-width:0; min-height:0; display:flex; flex-direction:column;">
+          <!-- channel tabs -->
+          <div style="display:flex; gap:4px; padding:5.6px 8px 0; border-bottom:1px solid #2a333d; background:#171d24;">
+            <button type="button" style="display:inline-flex; align-items:center; gap:6.4px; padding:4.8px 11.2px; border:1px solid #2a333d; border-bottom:none; border-radius:8px 8px 0 0; background:#101418; color:#d7dee5; cursor:pointer; font:inherit; font-size:13.6px;">All</button>
+            <button type="button" style="display:inline-flex; align-items:center; gap:6.4px; padding:4.8px 11.2px; border:1px solid transparent; border-bottom:none; border-radius:8px 8px 0 0; background:none; color:#8b98a5; cursor:pointer; font:inherit; font-size:13.6px;">
+              <span style="width:8.8px; height:8.8px; border-radius:50%; background:#d1a458; flex:none;"></span>Public
+              <span style="background:#6ea8fe; color:#101418; border-radius:999px; font-size:10.9px; font-weight:700; padding:0 5.6px; min-width:17.6px; text-align:center;">7</span>
+            </button>
+            <button type="button" style="display:inline-flex; align-items:center; gap:6.4px; padding:4.8px 11.2px; border:1px solid transparent; border-bottom:none; border-radius:8px 8px 0 0; background:none; color:#8b98a5; cursor:pointer; font:inherit; font-size:13.6px;">
+              <span style="width:8.8px; height:8.8px; border-radius:50%; background:#c162de; flex:none;"></span>Camarilla
+            </button>
+            <button type="button" style="display:inline-flex; align-items:center; gap:6.4px; padding:4.8px 11.2px; border:1px solid transparent; border-bottom:none; border-radius:8px 8px 0 0; background:none; color:#8b98a5; opacity:0.55; text-decoration:line-through; cursor:pointer; font:inherit; font-size:13.6px;">
+              <span style="width:8.8px; height:8.8px; border-radius:50%; background:#5b6672; flex:none;"></span>Newbie
+            </button>
+          </div>
+
+          <!-- scrollback -->
+          <div style="flex:1; min-height:0; position:relative; display:flex;">
+            <div style="flex:1; overflow:hidden; padding:8px 12px; font-family:ui-monospace, 'Cascadia Mono', Consolas, 'SF Mono', Menlo, monospace; font-size:13.8px;">
+              <div style="display:flex; gap:9.6px; padding:1.1px 0; margin-top:4px;">
+                <span style="flex:none; width:46.4px; color:#5b6672; font-size:12px; line-height:1.7;">21:04</span>
+                <div style="flex:1; min-width:0; white-space:pre-wrap;"><span style="color:#e8c268; font-weight:700;">Rue Descartes, North End(#412)</span></div>
+              </div>
+              <div style="display:flex; gap:9.6px; padding:1.1px 0;">
+                <span style="flex:none; width:46.4px; color:#5b6672; font-size:12px; line-height:1.7;"></span>
+                <div style="flex:1; min-width:0; white-space:pre-wrap;">Sodium lamps stutter over wet cobbles. The tabac on the corner has been shuttered since the fire, its awning still smelling faintly of scorched canvas. Somewhere east, a tram grinds toward the river.</div>
+              </div>
+              <div style="display:flex; gap:9.6px; padding:1.1px 0;">
+                <span style="flex:none; width:46.4px; color:#5b6672; font-size:12px; line-height:1.7;"></span>
+                <div style="flex:1; min-width:0; white-space:pre-wrap;">Contents:</div>
+              </div>
+              <div style="display:flex; gap:9.6px; padding:1.1px 0;">
+                <span style="flex:none; width:46.4px; color:#5b6672; font-size:12px; line-height:1.7;"></span>
+                <div style="flex:1; min-width:0; display:flex; flex-direction:column;"><div style="white-space:pre;">Hollis</div><div style="white-space:pre;">Ondine</div><div style="white-space:pre;">a sodden newspaper</div></div>
+              </div>
+              <div style="display:flex; gap:9.6px; padding:1.1px 0;">
+                <span style="flex:none; width:46.4px; color:#5b6672; font-size:12px; line-height:1.7;"></span>
+                <div style="flex:1; min-width:0; display:flex; flex-direction:column;"><div style="white-space:pre;">Obvious exits:</div><div style="white-space:pre;"><span style="color:#63d471; text-decoration:underline dotted; text-underline-offset:2px;">south</span>  <span style="color:#63d471; text-decoration:underline dotted; text-underline-offset:2px;">quai</span>  <span style="color:#63d471; text-decoration:underline dotted; text-underline-offset:2px;">tabac</span></div></div>
+              </div>
+              <div style="display:flex; gap:9.6px; padding:1.1px 0;">
+                <span style="flex:none; width:46.4px; color:#5b6672; font-size:12px; line-height:1.7;">21:05</span>
+                <div style="flex:1; min-width:0; white-space:pre-wrap; color:#7fd4e0; font-style:italic;">A thin rain begins, hissing on the lamp housings.</div>
+              </div>
+              <div style="display:flex; gap:9.6px; padding:1.1px 0;">
+                <span style="flex:none; width:46.4px; color:#5b6672; font-size:12px; line-height:1.7;">21:05</span>
+                <div style="flex:1; min-width:0; white-space:pre-wrap;"><span style="color:#8ab8e8; font-weight:600;">Hollis</span> pulls his collar up and does not look at her.</div>
+              </div>
+              <div style="display:flex; gap:9.6px; padding:1.1px 0;">
+                <span style="flex:none; width:46.4px; color:#5b6672; font-size:12px; line-height:1.7;">21:06</span>
+                <div style="flex:1; min-width:0; white-space:pre-wrap;"><span style="color:#8ab8e8; font-weight:600;">Hollis</span> says, "You said the tabac. You didn't say it had burned."</div>
+              </div>
+              <div style="display:flex; gap:9.6px; padding:1.1px 0;">
+                <span style="flex:none; width:46.4px; color:#5b6672; font-size:12px; line-height:1.7;">21:06</span>
+                <div style="flex:1; min-width:0; white-space:pre-wrap; color:#5b6672;">&gt; pose glances at the shutters, unhurried.</div>
+              </div>
+              <div style="display:flex; gap:9.6px; padding:1.1px 0;">
+                <span style="flex:none; width:46.4px; color:#5b6672; font-size:12px; line-height:1.7;">21:06</span>
+                <div style="flex:1; min-width:0; white-space:pre-wrap;"><span style="color:#8ab8e8; font-weight:600;">Mireille</span> glances at the shutters, unhurried.</div>
+              </div>
+              <div style="display:flex; gap:9.6px; padding:1.1px 0;">
+                <span style="flex:none; width:46.4px; color:#5b6672; font-size:12px; line-height:1.7;">21:07</span>
+                <div style="flex:1; min-width:0; white-space:pre-wrap;"><span style="color:#c9a3e8; font-weight:600;">Ondine</span> says, "It burned in March. Everyone knows that."</div>
+              </div>
+              <div style="display:flex; gap:9.6px; padding:1.1px 0;">
+                <span style="flex:none; width:46.4px; color:#5b6672; font-size:12px; line-height:1.7;">21:07</span>
+                <div style="flex:1; min-width:0; white-space:pre-wrap; color:#8b98a5;">Mireille rolls Perception + Alertness: 4 dice, difficulty 6 — 2 successes.</div>
+              </div>
+              <div style="display:flex; gap:9.6px; padding:1.1px 0;">
+                <span style="flex:none; width:46.4px; color:#5b6672; font-size:12px; line-height:1.7;">21:08</span>
+                <div style="flex:1; min-width:0; white-space:pre-wrap;"><span style="color:#d1a458; font-weight:600;">[Public]</span> <span style="color:#8ab8e8; font-weight:600;">Wren</span>: anyone up for a scene in the Elysium later</div>
+              </div>
+              <div style="display:flex; gap:9.6px; padding:1.1px 0;">
+                <span style="flex:none; width:46.4px; color:#5b6672; font-size:12px; line-height:1.7;">21:08</span>
+                <div style="flex:1; min-width:0; white-space:pre-wrap; color:#8b98a5;">MAIL: New message (14) from Bastien: Re: the Prince's summons (2 unread)</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- prompt + input -->
+          <div style="padding:2.4px 12px; font-family:ui-monospace,monospace; font-size:12.3px; color:#6ea8fe; border-top:1px solid #2a333d; background:#171d24;">[Bruised] [BP 6/10] &gt;</div>
+          <div style="display:flex; align-items:center; gap:8px; padding:7.2px 12px; border-top:1px solid #2a333d; background:#171d24;">
+            <span style="color:#6ea8fe; font-family:ui-monospace,monospace;">&gt;</span>
+            <input placeholder="say hello, or /help" style="flex:1; background:#1c242d; color:#d7dee5; border:1px solid #3d5a80; border-radius:6px; padding:6.4px 9.6px; font-family:ui-monospace,monospace; font-size:13.8px; outline:none;">
+          </div>
+        </div>
+
+        <!-- right rail 19rem — Room tab -->
+        <div style="flex:none; width:304px; background:#171d24; border-left:1px solid #2a333d; display:flex; flex-direction:column; min-height:0;">
+          <div style="display:flex; gap:4px; padding:5.6px 8px 0; border-bottom:1px solid #2a333d;">
+            <button type="button" style="display:inline-flex; align-items:center; gap:5.6px; padding:4.8px 11.2px; border:1px solid transparent; border-bottom:none; border-radius:8px 8px 0 0; background:none; color:#8b98a5; cursor:pointer; font:inherit; font-size:13.6px;">Mail <span style="background:#6ea8fe; color:#101418; border-radius:999px; font-size:10.9px; font-weight:700; padding:0 5.6px; min-width:17.6px; text-align:center;">2</span></button>
+            <button type="button" style="padding:4.8px 11.2px; border:1px solid #2a333d; border-bottom:none; border-radius:8px 8px 0 0; background:#101418; color:#d7dee5; cursor:pointer; font:inherit; font-size:13.6px;">Room</button>
+            <button type="button" style="padding:4.8px 11.2px; border:1px solid transparent; border-bottom:none; border-radius:8px 8px 0 0; background:none; color:#8b98a5; cursor:pointer; font:inherit; font-size:13.6px;">Sheet</button>
+            <button type="button" style="display:inline-flex; align-items:center; gap:5.6px; padding:4.8px 11.2px; border:1px solid transparent; border-bottom:none; border-radius:8px 8px 0 0; background:none; color:#8b98a5; cursor:pointer; font:inherit; font-size:13.6px;">Rolls <span style="background:#6ea8fe; color:#101418; border-radius:999px; font-size:10.9px; font-weight:700; padding:0 5.6px; min-width:17.6px; text-align:center;">3</span></button>
+          </div>
+          <div style="flex:1; min-height:0; padding:9.6px 13.6px; font-size:14px;">
+            <h2 style="margin:0 0 6.4px; font-size:15.7px; color:#e8c268;">Rue Descartes, North End <span style="color:#5b6672; font-size:12px; font-family:ui-monospace,monospace;">#412</span></h2>
+            <div style="font-family:ui-monospace,monospace; font-size:13.6px; white-space:pre-wrap;">Sodium lamps stutter over wet cobbles. The tabac on the corner has been shuttered since the fire, its awning still smelling faintly of scorched canvas.</div>
+            <h3 style="margin:12.8px 0 4px; font-size:12.5px; text-transform:uppercase; letter-spacing:0.06em; color:#8b98a5;">Contents</h3>
+            <ul style="margin:0; padding-left:17.6px;">
+              <li><button type="button" style="background:none; border:none; padding:0; color:#8ab8e8; cursor:pointer; font:inherit; text-decoration:underline dotted; text-underline-offset:2px;">Hollis</button></li>
+              <li><button type="button" style="background:none; border:none; padding:0; color:#8ab8e8; cursor:pointer; font:inherit; text-decoration:underline dotted; text-underline-offset:2px;">Ondine</button></li>
+              <li><button type="button" style="background:none; border:none; padding:0; color:#8ab8e8; cursor:pointer; font:inherit; text-decoration:underline dotted; text-underline-offset:2px;">a sodden newspaper</button></li>
+            </ul>
+            <h3 style="margin:12.8px 0 4px; font-size:12.5px; text-transform:uppercase; letter-spacing:0.06em; color:#8b98a5;">Exits</h3>
+            <div style="display:flex; flex-wrap:wrap; gap:6.4px;">
+              <button type="button" style="background:#1c242d; border:1px solid #2a333d; border-radius:6px; color:#63d471; padding:4px 10.4px; cursor:pointer; font:inherit; font-size:13.6px;">south</button>
+              <button type="button" style="background:#1c242d; border:1px solid #2a333d; border-radius:6px; color:#63d471; padding:4px 10.4px; cursor:pointer; font:inherit; font-size:13.6px;">quai</button>
+              <button type="button" style="background:#1c242d; border:1px solid #2a333d; border-radius:6px; color:#63d471; padding:4px 10.4px; cursor:pointer; font:inherit; font-size:13.6px;">tabac</button>
+            </div>
+            <p style="margin-top:14.4px; color:#8b98a5; font-size:12px;">Zone: Left Bank</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ RIGHT PANEL VARIANTS ============ -->
+  <div style="display:flex; flex-direction:column; gap:10px; margin-top:40px;">
+    <div style="font-family:ui-monospace,monospace; font-size:11px; letter-spacing:0.16em; text-transform:uppercase; color:#5b6672;">RightPanel.svelte — the other tabs, at their real 19rem width</div>
+    <div style="display:flex; gap:24px; flex-wrap:wrap;">
+
+      <!-- Sheet -->
+      <div style="width:304px; height:560px; background:#171d24; border:1px solid #2a333d; display:flex; flex-direction:column; overflow:hidden;">
+        <div style="padding:5.6px 8px 0; border-bottom:1px solid #2a333d;"><span style="display:inline-block; padding:4.8px 11.2px; border:1px solid #2a333d; border-bottom:none; border-radius:8px 8px 0 0; background:#101418; color:#d7dee5; font-size:13.6px;">Sheet</span></div>
+        <div style="flex:1; padding:9.6px 12px; font-size:13.6px; display:flex; flex-direction:column; gap:9.6px;">
+          <div style="display:flex; align-items:center; gap:8px;">
+            <span style="border-radius:999px; padding:1.6px 9.6px; font-size:11.5px; font-weight:600; border:1px solid #63d471; color:#63d471;">approved</span>
+            <span style="flex:1;"></span>
+            <button type="button" style="background:none; border:1px solid #2a333d; border-radius:6px; color:#8b98a5; cursor:pointer; font-size:14.4px; line-height:1; padding:2.4px 7.2px;">↻</button>
+          </div>
+          <div>
+            <h3 style="margin:0 0 5.6px; font-size:12.5px; letter-spacing:0.03em; text-transform:uppercase; color:#8b98a5;">Identity</h3>
+            <div style="display:grid; grid-template-columns:repeat(2,1fr); column-gap:12px; row-gap:4.8px;">
+              <div style="display:flex; align-items:baseline; justify-content:space-between; gap:8px;"><span>Clan</span><span style="text-align:right;">Toreador</span></div>
+              <div style="display:flex; align-items:baseline; justify-content:space-between; gap:8px;"><span>Nature</span><span style="text-align:right;">Perfectionist</span></div>
+              <div style="display:flex; align-items:baseline; justify-content:space-between; gap:8px;"><span>Gen.</span><span style="text-align:right;">10th</span></div>
+              <div style="display:flex; align-items:baseline; justify-content:space-between; gap:8px;"><span>Sire</span><span style="text-align:right;">Bastien</span></div>
+            </div>
+          </div>
+          <div>
+            <h3 style="margin:0 0 5.6px; font-size:12.5px; letter-spacing:0.03em; text-transform:uppercase; color:#8b98a5;">Physical</h3>
+            <div style="display:flex; flex-direction:column; gap:4.8px;">
+              <div style="display:flex; align-items:baseline; justify-content:space-between; gap:8px;"><span>Strength</span><span style="display:inline-flex; align-items:center; gap:0.8px; white-space:nowrap;"><span style="color:#6ea8fe; font-size:13.6px;">●</span><span style="color:#6ea8fe; font-size:13.6px;">●</span><span style="color:#5b6672; font-size:13.6px;">○</span><span style="color:#5b6672; font-size:13.6px;">○</span><span style="color:#5b6672; font-size:13.6px;">○</span><span style="color:#8b98a5; font-size:11.2px; margin-left:4.8px;">2</span></span></div>
+              <div style="display:flex; align-items:baseline; justify-content:space-between; gap:8px;"><span>Dexterity</span><span style="display:inline-flex; align-items:center; gap:0.8px; white-space:nowrap;"><span style="color:#6ea8fe; font-size:13.6px;">●</span><span style="color:#6ea8fe; font-size:13.6px;">●</span><span style="color:#6ea8fe; font-size:13.6px;">●</span><span style="color:#6ea8fe; font-size:13.6px;">●</span><span style="color:#5b6672; font-size:13.6px;">○</span><span style="color:#8b98a5; font-size:11.2px; margin-left:4.8px;">4</span></span></div>
+              <div style="display:flex; align-items:baseline; justify-content:space-between; gap:8px;"><span>Stamina</span><span style="display:inline-flex; align-items:center; gap:0.8px; white-space:nowrap;"><span style="color:#6ea8fe; font-size:13.6px;">●</span><span style="color:#6ea8fe; font-size:13.6px;">●</span><span style="color:#5b6672; font-size:13.6px;">○</span><span style="color:#5b6672; font-size:13.6px;">○</span><span style="color:#5b6672; font-size:13.6px;">○</span><span style="color:#8b98a5; font-size:11.2px; margin-left:4.8px;">2</span></span></div>
+            </div>
+          </div>
+          <div>
+            <h3 style="margin:0 0 5.6px; font-size:12.5px; letter-spacing:0.03em; text-transform:uppercase; color:#8b98a5;">Blood Pool</h3>
+            <span style="display:inline-flex; align-items:center; gap:6.4px;">
+              <span style="font-variant-numeric:tabular-nums;">6<span style="color:#5b6672;">/10</span></span>
+              <span style="display:inline-block; width:72px; height:6.4px; border-radius:999px; background:#1c242d; overflow:hidden;"><span style="display:block; height:100%; width:60%; background:#6ea8fe;"></span></span>
+            </span>
+          </div>
+          <div>
+            <h3 style="margin:0 0 5.6px; font-size:12.5px; letter-spacing:0.03em; text-transform:uppercase; color:#8b98a5;">Health</h3>
+            <span style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+              <span style="display:inline-flex; gap:2.4px;">
+                <span style="display:inline-flex; align-items:center; justify-content:center; width:17.6px; height:17.6px; border:1px solid #ff6b6b; border-radius:3px; font-size:10.9px; font-weight:700; color:#ff6b6b;">/</span>
+                <span style="display:inline-flex; align-items:center; justify-content:center; width:17.6px; height:17.6px; border:1px solid #2a333d; border-radius:3px; font-size:10.9px; font-weight:700; color:#8b98a5;"></span>
+                <span style="display:inline-flex; align-items:center; justify-content:center; width:17.6px; height:17.6px; border:1px solid #2a333d; border-radius:3px; font-size:10.9px; font-weight:700; color:#8b98a5;"></span>
+                <span style="display:inline-flex; align-items:center; justify-content:center; width:17.6px; height:17.6px; border:1px solid #2a333d; border-radius:3px; font-size:10.9px; font-weight:700; color:#8b98a5;"></span>
+                <span style="display:inline-flex; align-items:center; justify-content:center; width:17.6px; height:17.6px; border:1px solid #2a333d; border-radius:3px; font-size:10.9px; font-weight:700; color:#8b98a5;"></span>
+                <span style="display:inline-flex; align-items:center; justify-content:center; width:17.6px; height:17.6px; border:1px solid #2a333d; border-radius:3px; font-size:10.9px; font-weight:700; color:#8b98a5;"></span>
+                <span style="display:inline-flex; align-items:center; justify-content:center; width:17.6px; height:17.6px; border:1px solid #2a333d; border-radius:3px; font-size:10.9px; font-weight:700; color:#8b98a5;"></span>
+              </span>
+              <span style="font-size:12px; color:#8b98a5;">Bruised</span>
+            </span>
+          </div>
+          <div>
+            <h3 style="margin:0 0 5.6px; font-size:12.5px; letter-spacing:0.03em; text-transform:uppercase; color:#8b98a5;">Disciplines</h3>
+            <div style="display:flex; align-items:baseline; justify-content:space-between; gap:8px; padding:1.6px 0; border-bottom:1px solid #2a333d;"><span>Auspex</span><span style="display:inline-flex; align-items:center; gap:0.8px;"><span style="color:#6ea8fe; font-size:13.6px;">●</span><span style="color:#6ea8fe; font-size:13.6px;">●</span><span style="color:#5b6672; font-size:13.6px;">○</span><span style="color:#5b6672; font-size:13.6px;">○</span><span style="color:#5b6672; font-size:13.6px;">○</span><span style="color:#8b98a5; font-size:11.2px; margin-left:4.8px;">2</span></span></div>
+            <div style="display:flex; align-items:baseline; justify-content:space-between; gap:8px; padding:1.6px 0; border-bottom:1px solid #2a333d;"><span>Celerity</span><span style="display:inline-flex; align-items:center; gap:0.8px;"><span style="color:#6ea8fe; font-size:13.6px;">●</span><span style="color:#5b6672; font-size:13.6px;">○</span><span style="color:#5b6672; font-size:13.6px;">○</span><span style="color:#5b6672; font-size:13.6px;">○</span><span style="color:#5b6672; font-size:13.6px;">○</span><span style="color:#8b98a5; font-size:11.2px; margin-left:4.8px;">1</span></span></div>
+            <div style="display:flex; align-items:baseline; justify-content:space-between; gap:8px; padding:1.6px 0; border-bottom:1px solid #2a333d;"><span>Presence</span><span style="display:inline-flex; align-items:center; gap:0.8px;"><span style="color:#6ea8fe; font-size:13.6px;">●</span><span style="color:#6ea8fe; font-size:13.6px;">●</span><span style="color:#6ea8fe; font-size:13.6px;">●</span><span style="color:#5b6672; font-size:13.6px;">○</span><span style="color:#5b6672; font-size:13.6px;">○</span><span style="color:#8b98a5; font-size:11.2px; margin-left:4.8px;">3</span></span></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Mail -->
+      <div style="width:304px; height:560px; background:#171d24; border:1px solid #2a333d; display:flex; flex-direction:column; overflow:hidden;">
+        <div style="padding:5.6px 8px 0; border-bottom:1px solid #2a333d;"><span style="display:inline-block; padding:4.8px 11.2px; border:1px solid #2a333d; border-bottom:none; border-radius:8px 8px 0 0; background:#101418; color:#d7dee5; font-size:13.6px;">Mail</span></div>
+        <div style="display:flex; gap:8px; padding:8px 12px; border-bottom:1px solid #2a333d;">
+          <select style="flex:1; background:#1c242d; color:#d7dee5; border:1px solid #2a333d; border-radius:6px; padding:4px 6.4px; font:inherit; font-size:13.6px;"><option>inbox (2 unread)</option></select>
+          <button type="button" style="background:#3d5a80; color:#d7dee5; border:none; border-radius:6px; padding:4px 11.2px; cursor:pointer; font:inherit; font-size:13.6px;">Compose</button>
+        </div>
+        <div style="flex:1; overflow:hidden; padding:4.8px 6.4px;">
+          <button type="button" style="display:grid; grid-template-columns:1fr auto; width:100%; gap:0 8px; text-align:left; background:none; border:none; border-bottom:1px solid #2a333d; padding:5.6px; color:#d7dee5; cursor:pointer; font:inherit; font-size:13.6px;">
+            <span style="font-weight:700; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;"><span style="color:#ff6b6b; font-weight:800; margin-right:3.2px;">!</span>Bastien</span>
+            <span style="color:#5b6672; font-size:12px;">21:08</span>
+            <span style="grid-column:1/-1; font-weight:700; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">Re: the Prince's summons</span>
+          </button>
+          <button type="button" style="display:grid; grid-template-columns:1fr auto; width:100%; gap:0 8px; text-align:left; background:none; border:none; border-bottom:1px solid #2a333d; padding:5.6px; color:#d7dee5; cursor:pointer; font:inherit; font-size:13.6px;">
+            <span style="font-weight:700; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">Wren</span>
+            <span style="color:#5b6672; font-size:12px;">19:41</span>
+            <span style="grid-column:1/-1; font-weight:700; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">Elysium next Tuesday?</span>
+          </button>
+          <button type="button" style="display:grid; grid-template-columns:1fr auto; width:100%; gap:0 8px; text-align:left; background:none; border:none; border-bottom:1px solid #2a333d; padding:5.6px; color:#8b98a5; cursor:pointer; font:inherit; font-size:13.6px;">
+            <span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">Ondine</span>
+            <span style="color:#5b6672; font-size:12px;">Mon</span>
+            <span style="grid-column:1/-1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">the tabac, again</span>
+          </button>
+          <button type="button" style="display:grid; grid-template-columns:1fr auto; width:100%; gap:0 8px; text-align:left; background:none; border:none; border-bottom:1px solid #2a333d; padding:5.6px; color:#8b98a5; cursor:pointer; font:inherit; font-size:13.6px;">
+            <span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">Staff</span>
+            <span style="color:#5b6672; font-size:12px;">Sun</span>
+            <span style="grid-column:1/-1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">chargen approved</span>
+          </button>
+        </div>
+        <div style="display:flex; justify-content:space-between; gap:8px; padding:5.6px 12px; border-top:1px solid #2a333d; flex-wrap:wrap;">
+          <span style="color:#8b98a5; font-size:13.6px;">quota 4/50</span>
+          <span style="color:#8b98a5; font-size:11.5px;">Full compose: `@mail/send` in the terminal.</span>
+        </div>
+      </div>
+
+      <!-- Rolls -->
+      <div style="width:304px; height:560px; background:#171d24; border:1px solid #2a333d; display:flex; flex-direction:column; overflow:hidden;">
+        <div style="padding:5.6px 8px 0; border-bottom:1px solid #2a333d;"><span style="display:inline-block; padding:4.8px 11.2px; border:1px solid #2a333d; border-bottom:none; border-radius:8px 8px 0 0; background:#101418; color:#d7dee5; font-size:13.6px;">Rolls</span></div>
+        <div style="flex:1; padding:9.6px 12px; display:flex; flex-direction:column; gap:8px;">
+          <div style="border:1px solid #2a333d; border-left:3px solid #63d471; border-radius:6px; padding:6.4px 8.8px; display:flex; flex-direction:column; gap:4.8px;">
+            <div style="display:flex; align-items:baseline; gap:6.4px; font-size:13.1px;">
+              <span style="font-weight:600;">You</span><span style="flex:1; color:#63d471;">2 successes</span><span style="color:#8b98a5; font-size:11.5px;">21:07</span>
+            </div>
+            <div style="display:flex; flex-wrap:wrap; gap:4px;">
+              <span style="display:inline-flex; align-items:center; justify-content:center; min-width:21.6px; height:21.6px; border-radius:4px; border:1px solid #63d471; color:#63d471; font-weight:700; font-size:12px;">8</span>
+              <span style="display:inline-flex; align-items:center; justify-content:center; min-width:21.6px; height:21.6px; border-radius:4px; border:1px solid #63d471; color:#63d471; font-weight:700; font-size:12px;">6</span>
+              <span style="display:inline-flex; align-items:center; justify-content:center; min-width:21.6px; height:21.6px; border-radius:4px; border:1px solid #2a333d; color:#8b98a5; font-size:12px;">4</span>
+              <span style="display:inline-flex; align-items:center; justify-content:center; min-width:21.6px; height:21.6px; border-radius:4px; border:1px solid #2a333d; color:#8b98a5; font-size:12px;">3</span>
+            </div>
+            <div style="font-size:11.5px; color:#8b98a5;">diff 6</div>
+          </div>
+          <div style="border:1px solid #2a333d; border-left:3px solid #ff6b6b; border-radius:6px; padding:6.4px 8.8px; display:flex; flex-direction:column; gap:4.8px;">
+            <div style="display:flex; align-items:baseline; gap:6.4px; font-size:13.1px;">
+              <span style="font-weight:600;">Hollis</span><span style="flex:1; color:#ff6b6b; font-weight:700;">botch</span><span style="color:#8b98a5; font-size:11.5px;">21:03</span>
+            </div>
+            <div style="display:flex; flex-wrap:wrap; gap:4px;">
+              <span style="display:inline-flex; align-items:center; justify-content:center; min-width:21.6px; height:21.6px; border-radius:4px; border:1px solid #ff6b6b; color:#ff6b6b; font-size:12px;">1</span>
+              <span style="display:inline-flex; align-items:center; justify-content:center; min-width:21.6px; height:21.6px; border-radius:4px; border:1px solid #ff6b6b; color:#ff6b6b; font-size:12px;">1</span>
+              <span style="display:inline-flex; align-items:center; justify-content:center; min-width:21.6px; height:21.6px; border-radius:4px; border:1px solid #2a333d; color:#8b98a5; font-size:12px;">5</span>
+            </div>
+            <div style="font-size:11.5px; color:#8b98a5;">diff 7</div>
+          </div>
+          <div style="border:1px solid #2a333d; border-left:3px solid #5b6672; border-radius:6px; padding:6.4px 8.8px; display:flex; flex-direction:column; gap:4.8px;">
+            <div style="display:flex; align-items:baseline; gap:6.4px; font-size:13.1px;">
+              <span style="font-weight:600;">Ondine</span><span style="flex:1; color:#8b98a5;">failure</span><span style="color:#8b98a5; font-size:11.5px;">20:58</span>
+            </div>
+            <div style="display:flex; flex-wrap:wrap; gap:4px;">
+              <span style="display:inline-flex; align-items:center; justify-content:center; min-width:21.6px; height:21.6px; border-radius:4px; border:1px solid #2a333d; color:#8b98a5; font-size:12px;">4</span>
+              <span style="display:inline-flex; align-items:center; justify-content:center; min-width:21.6px; height:21.6px; border-radius:4px; border:1px solid #2a333d; color:#8b98a5; font-size:12px;">2</span>
+              <span style="display:inline-flex; align-items:center; justify-content:center; min-width:21.6px; height:21.6px; border-radius:4px; border:1px solid #2a333d; color:#8b98a5; font-size:12px;">5</span>
+              <span style="display:inline-flex; align-items:center; justify-content:center; min-width:21.6px; height:21.6px; border-radius:4px; border:1px solid #2a333d; color:#8b98a5; font-size:12px;">3</span>
+              <span style="display:inline-flex; align-items:center; justify-content:center; min-width:21.6px; height:21.6px; border-radius:4px; border:1px solid #2a333d; color:#8b98a5; font-size:12px;">2</span>
+            </div>
+            <div style="font-size:11.5px; color:#8b98a5;">diff 6 · +WP</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Build / worldgen -->
+      <div style="width:304px; height:560px; background:#171d24; border:1px solid #2a333d; display:flex; flex-direction:column; overflow:hidden;">
+        <div style="padding:5.6px 8px 0; border-bottom:1px solid #2a333d;"><span style="display:inline-block; padding:4.8px 11.2px; border:1px solid #2a333d; border-bottom:none; border-radius:8px 8px 0 0; background:#101418; color:#d7dee5; font-size:13.6px;">Build</span></div>
+        <div style="flex:1; padding:9.6px 12px; font-size:13.6px; display:flex; flex-direction:column; gap:9.6px; overflow:hidden;">
+          <div style="display:flex; align-items:center; gap:8px;">
+            <span style="font-weight:700;">The Burnt Tabac</span>
+            <span style="border-radius:999px; padding:0.8px 8.8px; font-size:10.9px; font-weight:700; letter-spacing:0.04em; color:#e8c268; border:1px solid #e8c268;">DRAFT</span>
+            <span style="flex:1;"></span>
+            <span style="color:#8b98a5; font-size:11.5px;">glm-5.3</span>
+          </div>
+          <div>
+            <h3 style="margin:0 0 5.6px; font-size:12.5px; letter-spacing:0.03em; text-transform:uppercase; color:#8b98a5;">Description</h3>
+            <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px;">
+              <div>
+                <h4 style="margin:0 0 3.2px; font-size:11.5px; color:#5b6672; font-weight:600; text-transform:uppercase;">Current</h4>
+                <p style="margin:0; padding:6.4px 8px; background:#1c242d; border:1px solid #2a333d; border-radius:6px; line-height:1.4; font-style:italic; color:#8b98a5;">(empty)</p>
+              </div>
+              <div>
+                <h4 style="margin:0 0 3.2px; font-size:11.5px; color:#6ea8fe; font-weight:600; text-transform:uppercase;">Proposed</h4>
+                <p style="margin:0; padding:6.4px 8px; background:#1c242d; border:1px solid #3d5a80; border-radius:6px; line-height:1.4;">Smoke has cured the panelling to the colour of strong tea. The counter survived; the till did not.</p>
+              </div>
+            </div>
+          </div>
+          <div>
+            <h3 style="margin:0 0 5.6px; font-size:12.5px; letter-spacing:0.03em; text-transform:uppercase; color:#8b98a5;">Exits</h3>
+            <span style="display:block; font-weight:600; font-size:12.8px; margin-bottom:2.4px;">street</span>
+            <p style="margin:0; padding:6.4px 8px; background:#1c242d; border:1px solid #2a333d; border-radius:6px; line-height:1.4;">A gap where the door was.</p>
+          </div>
+          <p style="margin:0; font-size:12px; color:#8b98a5;">Nothing here is written until you accept it — <code style="font-family:ui-monospace,monospace;">@gen/accept</code> writes the full draft through the normal edit path.</p>
+          <div style="display:flex; justify-content:flex-end; gap:8px; margin-top:auto;">
+            <button type="button" style="border:1px solid #2a333d; border-radius:6px; padding:4.8px 12.8px; font:inherit; font-size:13.1px; background:none; color:#8b98a5; cursor:pointer;">Discard</button>
+            <button type="button" style="border:1px solid #2a333d; border-radius:6px; padding:4.8px 12.8px; font:inherit; font-size:13.1px; background:none; color:#8b98a5; cursor:pointer;">Retry…</button>
+            <button type="button" style="border:1px solid transparent; border-radius:6px; padding:4.8px 12.8px; font:inherit; font-size:13.1px; background:#3d5a80; color:#d7dee5; cursor:pointer;">Accept</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ CHANNEL VIEW + MOBILE ============ -->
+  <div style="display:flex; gap:32px; flex-wrap:wrap; margin-top:40px;">
+    <div style="display:flex; flex-direction:column; gap:10px;">
+      <div style="font-family:ui-monospace,monospace; font-size:11px; letter-spacing:0.16em; text-transform:uppercase; color:#5b6672;">ChannelView.svelte</div>
+      <div style="width:680px; height:400px; background:#101418; border:1px solid #2a333d; display:flex; flex-direction:column;">
+        <div style="display:flex; gap:4px; padding:5.6px 8px 0; border-bottom:1px solid #2a333d; background:#171d24;">
+          <button type="button" style="padding:4.8px 11.2px; border:1px solid transparent; border-bottom:none; border-radius:8px 8px 0 0; background:none; color:#8b98a5; cursor:pointer; font:inherit; font-size:13.6px;">All</button>
+          <button type="button" style="display:inline-flex; align-items:center; gap:6.4px; padding:4.8px 11.2px; border:1px solid #2a333d; border-bottom:none; border-radius:8px 8px 0 0; background:#101418; color:#d7dee5; cursor:pointer; font:inherit; font-size:13.6px;"><span style="width:8.8px; height:8.8px; border-radius:50%; background:#d1a458;"></span>Public</button>
+        </div>
+        <div style="display:flex; align-items:baseline; gap:11.2px; padding:6.4px 12px; border-bottom:1px solid #2a333d; font-size:13.6px; flex-wrap:wrap;">
+          <strong style="color:#d1a458;">Public</strong>
+          <span style="color:#8b98a5;">title: the loud one</span>
+          <button type="button" style="margin-left:auto; background:none; border:none; color:#6ea8fe; cursor:pointer; font:inherit; font-size:12.8px; text-decoration:underline dotted;">load older</button>
+        </div>
+        <div style="flex:1; overflow:hidden; padding:8px 12px; font-family:ui-monospace,monospace; font-size:13.8px;">
+          <div style="display:flex; gap:9.6px; padding:1.1px 0;"><span style="flex:none; width:46.4px; color:#5b6672; font-size:12px; line-height:1.7;">20:51</span><div style="flex:1; white-space:pre-wrap;"><span style="color:#d1a458; font-weight:600;">[Public]</span> <span style="color:#8ab8e8; font-weight:600;">Wren</span>: is the tram grid IC or just flavour</div></div>
+          <div style="display:flex; gap:9.6px; padding:1.1px 0;"><span style="flex:none; width:46.4px; color:#5b6672; font-size:12px; line-height:1.7;">20:52</span><div style="flex:1; white-space:pre-wrap;"><span style="color:#d1a458; font-weight:600;">[Public]</span> <span style="color:#8ab8e8; font-weight:600;">Bastien</span>: IC. There's a timetable on the wiki.</div></div>
+          <div style="display:flex; gap:9.6px; padding:1.1px 0;"><span style="flex:none; width:46.4px; color:#5b6672; font-size:12px; line-height:1.7;">20:52</span><div style="flex:1; white-space:pre-wrap;"><span style="color:#d1a458; font-weight:600;">[Public]</span> <span style="color:#8ab8e8; font-weight:600;">Wren</span> laughs.</div></div>
+          <div style="display:flex; gap:9.6px; padding:1.1px 0;"><span style="flex:none; width:46.4px; color:#5b6672; font-size:12px; line-height:1.7;">21:08</span><div style="flex:1; white-space:pre-wrap;"><span style="color:#d1a458; font-weight:600;">[Public]</span> <span style="color:#8ab8e8; font-weight:600;">Wren</span>: anyone up for a scene in the Elysium later</div></div>
+        </div>
+        <div style="display:flex; align-items:center; gap:8px; padding:7.2px 12px; border-top:1px solid #2a333d; background:#171d24;">
+          <span style="color:#6ea8fe; font-family:ui-monospace,monospace;">&gt;</span>
+          <input placeholder="Message Public (sent as: pub …)" style="flex:1; background:#1c242d; color:#d7dee5; border:1px solid #2a333d; border-radius:6px; padding:6.4px 9.6px; font-family:ui-monospace,monospace; font-size:13.8px; outline:none;">
+        </div>
+      </div>
+    </div>
+
+    <div style="display:flex; flex-direction:column; gap:10px;">
+      <div style="font-family:ui-monospace,monospace; font-size:11px; letter-spacing:0.16em; text-transform:uppercase; color:#5b6672;">Mobile — 390px, rails collapsed</div>
+      <div style="width:390px; height:680px; background:#101418; border:1px solid #2a333d; display:flex; flex-direction:column; font-size:15px;">
+        <div style="display:flex; align-items:center; gap:8.8px; padding:6.4px 11.2px; background:#171d24; border-bottom:1px solid #2a333d;">
+          <button type="button" style="background:none; border:1px solid #2a333d; border-radius:6px; color:#8b98a5; font-size:13.6px; padding:2.4px 8px;">☰</button>
+          <h1 style="margin:0; font-size:16px; letter-spacing:0.04em;">rustmush</h1>
+          <span style="color:#8ab8e8; font-weight:600; font-size:13.5px;">Mireille</span>
+          <span style="flex:1;"></span>
+          <span style="width:8.8px; height:8.8px; border-radius:50%; background:#63d471;"></span>
+          <button type="button" style="background:none; border:1px solid #2a333d; border-radius:6px; color:#8b98a5; font-size:13.6px; padding:2.4px 8px;">◐</button>
+          <button type="button" style="background:none; border:1px solid #2a333d; border-radius:6px; color:#8b98a5; font-size:13.6px; padding:2.4px 8px;">⊞</button>
+        </div>
+        <div style="display:flex; gap:4px; padding:5.6px 8px 0; border-bottom:1px solid #2a333d; background:#171d24; overflow:hidden;">
+          <button type="button" style="padding:4.8px 11.2px; border:1px solid #2a333d; border-bottom:none; border-radius:8px 8px 0 0; background:#101418; color:#d7dee5; font:inherit; font-size:13.6px;">All</button>
+          <button type="button" style="display:inline-flex; align-items:center; gap:6.4px; padding:4.8px 11.2px; border:1px solid transparent; background:none; color:#8b98a5; font:inherit; font-size:13.6px; white-space:nowrap;"><span style="width:8.8px; height:8.8px; border-radius:50%; background:#d1a458;"></span>Public <span style="background:#6ea8fe; color:#101418; border-radius:999px; font-size:10.9px; font-weight:700; padding:0 5.6px;">7</span></button>
+        </div>
+        <div style="flex:1; overflow:hidden; padding:8px 12px; font-family:ui-monospace,monospace; font-size:13.8px;">
+          <div style="display:flex; gap:9.6px; padding:1.1px 0;"><span style="flex:none; width:46.4px; color:#5b6672; font-size:12px; line-height:1.7;">21:04</span><div style="flex:1; min-width:0; white-space:pre-wrap;"><span style="color:#e8c268; font-weight:700;">Rue Descartes, North End(#412)</span></div></div>
+          <div style="display:flex; gap:9.6px; padding:1.1px 0;"><span style="flex:none; width:46.4px;"></span><div style="flex:1; min-width:0; white-space:pre-wrap;">Sodium lamps stutter over wet cobbles. The tabac on the corner has been shuttered since the fire, its awning still smelling faintly of scorched canvas.</div></div>
+          <div style="display:flex; gap:9.6px; padding:1.1px 0;"><span style="flex:none; width:46.4px;"></span><div style="flex:1; min-width:0; display:flex; flex-direction:column;"><div style="white-space:pre;">Obvious exits:</div><div style="white-space:pre;"><span style="color:#63d471; text-decoration:underline dotted;">south</span>  <span style="color:#63d471; text-decoration:underline dotted;">quai</span>  <span style="color:#63d471; text-decoration:underline dotted;">tabac</span></div></div></div>
+          <div style="display:flex; gap:9.6px; padding:1.1px 0;"><span style="flex:none; width:46.4px; color:#5b6672; font-size:12px; line-height:1.7;">21:06</span><div style="flex:1; min-width:0; white-space:pre-wrap;"><span style="color:#8ab8e8; font-weight:600;">Hollis</span> says, "You said the tabac. You didn't say it had burned."</div></div>
+          <div style="display:flex; gap:9.6px; padding:1.1px 0;"><span style="flex:none; width:46.4px; color:#5b6672; font-size:12px; line-height:1.7;">21:06</span><div style="flex:1; min-width:0; white-space:pre-wrap;"><span style="color:#8ab8e8; font-weight:600;">Mireille</span> glances at the shutters, unhurried.</div></div>
+          <div style="display:flex; gap:9.6px; padding:1.1px 0;"><span style="flex:none; width:46.4px; color:#5b6672; font-size:12px; line-height:1.7;">21:07</span><div style="flex:1; min-width:0; white-space:pre-wrap;"><span style="color:#c9a3e8; font-weight:600;">Ondine</span> says, "It burned in March. Everyone knows that."</div></div>
+        </div>
+        <div style="padding:2.4px 12px; font-family:ui-monospace,monospace; font-size:12.3px; color:#6ea8fe; border-top:1px solid #2a333d; background:#171d24;">[Bruised] [BP 6/10] &gt;</div>
+        <div style="display:flex; align-items:center; gap:8px; padding:7.2px 12px; border-top:1px solid #2a333d; background:#171d24;">
+          <span style="color:#6ea8fe; font-family:ui-monospace,monospace;">&gt;</span>
+          <input placeholder="say hello, or /help" style="flex:1; min-width:0; background:#1c242d; color:#d7dee5; border:1px solid #3d5a80; border-radius:6px; padding:6.4px 9.6px; font-family:ui-monospace,monospace; font-size:13.8px; outline:none;">
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ TUI ============ -->
+  <div style="display:flex; flex-direction:column; gap:10px; margin-top:40px;">
+    <div style="font-family:ui-monospace,monospace; font-size:11px; letter-spacing:0.16em; text-transform:uppercase; color:#5b6672;">mush-net-ssh/src/tui — 120×34, mail pane open (Tab). Main frame + 34-col secondary + 22-col WHO rail; input block 3 rows.</div>
+    <div style="width:1160px; background:#000; border:1px solid #2a333d; padding:8px; font-family:ui-monospace, 'Cascadia Mono', Consolas, 'SF Mono', Menlo, monospace; font-size:13px; line-height:1.35; color:#d7dae0;">
+      <div style="display:flex; gap:0; height:560px;">
+        <!-- main frame -->
+        <div style="flex:1; display:flex; flex-direction:column; min-width:0;">
+          <div style="flex:1; border:1px solid #6c7484; position:relative; padding:4px 6px; overflow:hidden; min-height:0;">
+            <span style="position:absolute; top:-9px; left:8px; background:#000; padding:0 4px; color:#d7dae0;">rustmush</span>
+            <div style="display:flex; flex-direction:column;">
+              <div style="white-space:pre; font-weight:700;">Rue Descartes, North End(#412)</div>
+              <div style="white-space:pre-wrap;">Sodium lamps stutter over wet cobbles. The tabac on the corner has been shuttered</div>
+              <div style="white-space:pre-wrap;">since the fire, its awning still smelling faintly of scorched canvas. Somewhere</div>
+              <div style="white-space:pre-wrap;">east, a tram grinds toward the river.</div>
+              <div style="white-space:pre;">Contents:</div>
+              <div style="white-space:pre;">Hollis</div>
+              <div style="white-space:pre;">Ondine</div>
+              <div style="white-space:pre;">a sodden newspaper</div>
+              <div style="white-space:pre;">Obvious exits:</div>
+              <div style="white-space:pre;"><span style="color:#42b3c2; font-weight:700;">south</span>  <span style="color:#42b3c2; font-weight:700;">quai</span>  <span style="color:#42b3c2; font-weight:700;">tabac</span></div>
+              <div style="white-space:pre-wrap;"><span style="color:#42b3c2;">Hollis</span> pulls his collar up and does not look at her.</div>
+              <div style="white-space:pre-wrap;"><span style="color:#42b3c2;">Hollis</span> says, "You said the tabac. You didn't say it had burned."</div>
+              <div style="white-space:pre-wrap;"><span style="color:#42b3c2;">Mireille</span> glances at the shutters, unhurried.</div>
+              <div style="white-space:pre-wrap;"><span style="color:#c162de;">Ondine</span> says, "It burned in March. Everyone knows that."</div>
+              <div style="white-space:pre-wrap; color:#8cc265;">Mireille rolls Perception + Alertness: 4 dice, difficulty 6 — 2 successes.</div>
+              <div style="white-space:pre-wrap;"><span style="color:#d1a458;">[Public]</span> <span style="color:#42b3c2;">Wren</span>: anyone up for a scene in the Elysium later</div>
+              <div style="white-space:pre-wrap; color:#8cc265;">MAIL: New message (14) from Bastien: Re: the Prince's summons (2 unread)</div>
+            </div>
+          </div>
+          <div style="flex:none; height:52px; border:1px solid #6c7484; border-top:none; position:relative; padding:4px 6px;">
+            <span style="position:absolute; top:-9px; left:8px; background:#000; padding:0 4px; color:#d7dae0;">input</span>
+            <div>[Bruised] [BP 6/10] &gt; pose watches the tram lights slide past<span style="background:#d7dae0; color:#000;"> </span></div>
+          </div>
+        </div>
+        <!-- secondary pane 34 cols -->
+        <div style="flex:none; width:270px; border:1px solid #6c7484; border-left:none; position:relative; padding:4px 6px; overflow:hidden;">
+          <span style="position:absolute; top:-9px; left:8px; background:#000; padding:0 4px; color:#d7dae0;">@mail</span>
+          <div style="display:flex; flex-direction:column;">
+            <div style="white-space:pre; color:#8cc265;">inbox — 4 messages</div>
+            <div style="white-space:pre;"> 1* <span style="color:#42b3c2;">Bastien: </span>Re: the Prince's s</div>
+            <div style="white-space:pre;"> 2* <span style="color:#42b3c2;">Wren: </span>Elysium next Tuesda</div>
+            <div style="white-space:pre;"> 3  <span style="color:#42b3c2;">Ondine: </span>the tabac, again</div>
+            <div style="white-space:pre;"> 4  <span style="color:#42b3c2;">Staff: </span>chargen approved</div>
+          </div>
+        </div>
+        <!-- who rail 22 cols -->
+        <div style="flex:none; width:180px; border:1px solid #6c7484; border-left:none; position:relative; padding:4px 6px; overflow:hidden;">
+          <span style="position:absolute; top:-9px; left:8px; background:#000; padding:0 4px; color:#d7dae0;">WHO</span>
+          <div style="display:flex; flex-direction:column;">
+            <div style="white-space:pre; font-weight:700;">Name            Idle</div>
+            <div style="white-space:pre;"><span style="color:#42b3c2;">Mireille      </span>   0s</div>
+            <div style="white-space:pre;"><span style="color:#42b3c2;">Hollis        </span>   4m</div>
+            <div style="white-space:pre;"><span style="color:#42b3c2;">Vaska         </span>  12m</div>
+            <div style="white-space:pre;"><span style="color:#42b3c2;">Ondine        </span>   1m</div>
+            <div style="white-space:pre;"><span style="color:#42b3c2;">Bastien       </span>  31m</div>
+            <div style="white-space:pre;"><span style="color:#42b3c2;">Wren          </span>   2s</div>
+            <div style="white-space:pre; color:#8cc265;">6 players</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ LINE MODE ============ -->
+  <div style="display:flex; flex-direction:column; gap:10px; margin-top:40px;">
+    <div style="font-family:ui-monospace,monospace; font-size:11px; letter-spacing:0.16em; text-transform:uppercase; color:#5b6672;">mush-ansi/src/render.rs — line-oriented SSH, 80 cols, classic theme</div>
+    <div style="width:700px; background:#000; border:1px solid #2a333d; padding:14px 16px; font-family:ui-monospace, 'Cascadia Mono', Consolas, 'SF Mono', Menlo, monospace; font-size:13.5px; line-height:1.45; color:#d7dae0; display:flex; flex-direction:column;">
+      <div style="white-space:pre; color:#8cc265;">rustmush 0.1 (proto 1)</div>
+      <div style="white-space:pre; color:#8cc265;">Connected as Mireille (account nyx, 2 connections).</div>
+      <div style="white-space:pre;">&gt; look</div>
+      <div style="white-space:pre; font-weight:700;">Rue Descartes, North End(#412)</div>
+      <div style="white-space:pre;">Sodium lamps stutter over wet cobbles. The tabac on the corner has been</div>
+      <div style="white-space:pre;">shuttered since the fire, its awning still smelling faintly of scorched</div>
+      <div style="white-space:pre;">canvas. Somewhere east, a tram grinds toward the river.</div>
+      <div style="white-space:pre;">Contents:</div>
+      <div style="white-space:pre;">Hollis</div>
+      <div style="white-space:pre;">Ondine</div>
+      <div style="white-space:pre;">a sodden newspaper</div>
+      <div style="white-space:pre;">Obvious exits:</div>
+      <div style="white-space:pre;"><span style="color:#42b3c2; font-weight:700;">south</span>  <span style="color:#42b3c2; font-weight:700;">quai</span>  <span style="color:#42b3c2; font-weight:700;">tabac</span></div>
+      <div style="white-space:pre;"><span style="color:#42b3c2;">Hollis</span> says, "You said the tabac. You didn't say it had burned."</div>
+      <div style="white-space:pre;"><span style="color:#42b3c2;">Mireille</span> glances at the shutters, unhurried.</div>
+      <div style="white-space:pre;"><span style="color:#c162de;">Ondine</span> says, "It burned in March. Everyone knows that."</div>
+      <div style="white-space:pre;"><span style="color:#d1a458;">[Public]</span> <span style="color:#42b3c2;">Wren</span>: anyone up for a scene in the Elysium later</div>
+      <div style="white-space:pre; color:#8cc265;">MAIL: New message (14) from Bastien: Re: the Prince's summons (2 unread)</div>
+      <div style="white-space:pre;">&gt; who</div>
+      <div style="white-space:pre; font-weight:700;">Name                Idle      Conn  Doing</div>
+      <div style="white-space:pre;">Mireille               0s        2h</div>
+      <div style="white-space:pre;">Hollis                 4m        3h  brooding in the Chantry</div>
+      <div style="white-space:pre;">Vaska                 12m        1h</div>
+      <div style="white-space:pre;">Ondine                 1m       22m</div>
+      <div style="white-space:pre;">Bastien               31m        5h</div>
+      <div style="white-space:pre;">Wren                   2s       48m</div>
+      <div style="white-space:pre; color:#8cc265;">6 players connected.</div>
+      <div style="white-space:pre;">&gt; <span style="background:#d7dae0; color:#000;"> </span></div>
+    </div>
+  </div>
+</section>
+</x-dc>
+</body>
+</html>
