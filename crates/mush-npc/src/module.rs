@@ -78,6 +78,7 @@ impl GameModule for NpcModule {
     }
 
     fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
+        reg.classify_commands(mush_core::CommandCompatibility::LegacyPostImage);
         reg.attr_namespace("agent")?;
         let panel = reg.panel_feed(THINKING_FEED)?;
         let state = NpcHostState::new(panel);

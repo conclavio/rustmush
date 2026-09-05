@@ -562,6 +562,7 @@ impl GameModule for SimulationModule {
     }
 
     fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
+        reg.classify_commands(mush_core::CommandCompatibility::LegacyPostImage);
         reg.definition_validator(
             DefinitionKind::new("schema").map_err(|error| ModError::msg(error.to_string()))?,
             data::validate_schema_definition,

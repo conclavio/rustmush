@@ -45,6 +45,7 @@ impl GameModule for SceneStandIn {
         "e4cscenes"
     }
     fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
+        reg.classify_commands(mush_core::CommandCompatibility::LegacyPostImage);
         reg.command(
             CommandSpec {
                 name: "@sealoutcome".into(),
@@ -163,6 +164,7 @@ impl GameModule for JobProducer {
         "e4cjobs"
     }
     fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
+        reg.classify_commands(mush_core::CommandCompatibility::LegacyPostImage);
         reg.job_queue(JobQueueSpec {
             name: "xp".into(),
             title: "XP spends".into(),

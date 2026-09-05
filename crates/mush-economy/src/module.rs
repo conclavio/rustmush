@@ -1145,6 +1145,7 @@ impl GameModule for EconomyModule {
     }
 
     fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
+        reg.classify_commands(mush_core::CommandCompatibility::EconomyCarveOut);
         reg.state(EconomyStore::default());
         reg.subscribe(WorldEventKind::ObjDestroyed, Arc::new(on_obj_destroyed));
         // E4c §6.1 item 2: the canon attestation observer. The economy subscribes

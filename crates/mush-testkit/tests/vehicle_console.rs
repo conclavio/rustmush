@@ -226,6 +226,7 @@ impl GameModule for ConsoleModule {
     }
 
     fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
+        reg.classify_commands(mush_core::CommandCompatibility::LegacyPostImage);
         reg.attr_namespace(NS)?;
         reg.state(ConsoleState::default());
         reg.behavior(console_spec())?;

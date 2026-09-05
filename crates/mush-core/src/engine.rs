@@ -3433,6 +3433,7 @@ mod tests {
             }
 
             fn register(&mut self, reg: &mut module::Registrar<'_>) -> Result<(), ModError> {
+                reg.classify_commands(crate::CommandCompatibility::ReadOnly);
                 let handle = reg.state_family(
                     StateFamilyDescriptor::new(
                         StateFamilyId::new("records").unwrap(),

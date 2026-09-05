@@ -1418,6 +1418,52 @@ mod tests {
         );
     }
 
+    #[test]
+    fn k8_5_production_compositions_publish_command_compatibility() {
+        for ruleset in ["wod", "shadowrun"] {
+            let onboarding = ruleset_wod::OnboardingConfig::default();
+            let wod = ruleset_wod::WodEconomyConfig::default();
+            let mut modules = server_modules_with(
+                mush_weather::WeatherConfig::default(),
+                mush_economy::EconomyConfig::default(),
+                &onboarding,
+                (ruleset == "wod").then_some(&wod),
+            );
+            modules.extend(
+                ruleset_modules(&[ruleset.to_owned()], &onboarding, &wod)
+                    .expect("one production ruleset"),
+            );
+            let composition = Engine::compose_modules(crate::world_task::base_registry(), modules)
+                .expect("production composition declares every command lane");
+
+            let registrations = composition
+                .registry()
+                .command_registrations()
+                .collect::<Vec<_>>();
+            assert!(
+                registrations.len() > 50,
+                "unexpectedly small {ruleset} command surface"
+            );
+            assert!(registrations.iter().any(|(_, owner, class)| {
+                *owner == Some("economy")
+                    && *class == mush_core::CommandCompatibility::EconomyCarveOut
+            }));
+            assert!(registrations.iter().all(|(_, owner, class)| {
+                *owner != Some("economy")
+                    || *class == mush_core::CommandCompatibility::EconomyCarveOut
+            }));
+            assert!(
+                composition
+                    .registry()
+                    .command_fallback_compatibilities()
+                    .any(|(owner, class)| {
+                        owner == Some("script")
+                            && class == mush_core::CommandCompatibility::LegacyPostImage
+                    })
+            );
+        }
+    }
+
     /// E5c-C231 (look-back fold): the `[wod.economy].reserved_rooms` →
     /// `server_modules_with` → `HousingModule::with_reserved_rooms` chain, pinned
     /// before Shadowrun copies the plumbing — housing's store is told every room the

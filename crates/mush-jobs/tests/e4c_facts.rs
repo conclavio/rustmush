@@ -30,6 +30,7 @@ impl GameModule for TestProducer {
         "wod"
     }
     fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
+        reg.classify_commands(mush_core::CommandCompatibility::LegacyPostImage);
         reg.job_queue(JobQueueSpec {
             name: "xp".into(),
             title: "XP spends".into(),

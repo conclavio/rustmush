@@ -89,6 +89,9 @@ impl GameModule for ScriptModule {
     }
 
     fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
+        // Object `$`-commands and `use` remain the explicitly declared script
+        // compatibility lane; scripts cannot register authoritative providers.
+        reg.classify_commands(mush_core::CommandCompatibility::LegacyPostImage);
         reg.state(ScriptState::new(self.cfg));
 
         reg.subscribe(WorldEventKind::AttrSet, Arc::new(on_attr_set));
@@ -104,7 +107,7 @@ impl GameModule for ScriptModule {
             reg.subscribe(WorldEventKind::Said { kind }, Arc::new(on_said));
         }
 
-        reg.command_fallback(Arc::new(ScriptCommands));
+        reg.command_fallback(Arc::new(ScriptCommands))?;
 
         reg.command(
             CommandSpec {

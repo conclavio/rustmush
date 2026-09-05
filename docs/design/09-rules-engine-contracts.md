@@ -3074,6 +3074,18 @@ Production goldens drive the real offer resolver, coordinator, authoritative sto
 installation, line view, and structured keyframe. They pin Willpower clamping/spend/depletion/
 restoration plus deterministic RNG, and Shadowrun Stun overflow/healing plus the migration fence.
 
+K8.5 is closed. The version-1 module/script compatibility contract is published in doc 09b.
+`CommandCompatibility` gives every registered command one of four auditable lane declarations:
+read-only, bounded legacy post-image, authoritative coordinator adapter, or the narrow economy
+carve-out. A registrar created for real module composition starts unclassified and refuses command
+registration until the module declares a class; the captured metadata is exposed by the frozen
+registry. Alias stages and script command fallbacks carry the same owner-stamped declaration, and
+the script module is explicitly legacy compatibility rather than an implicit mechanical ingress.
+Bare host/core registry assembly remains conservatively classified as legacy for source
+compatibility. The declaration is an audit contract for trusted compiled code, not a claim that Rust
+handlers are sandboxed; changing to a more authoritative lane requires the review and migration
+evidence specified by doc 09b. No stable third-party ABI is promised by this cut.
+
 Work:
 
 1. Run every Gate-5 cut point against each toy vertical slice, not only a synthetic bundle.

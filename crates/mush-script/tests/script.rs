@@ -153,6 +153,26 @@ impl Fixture {
     }
 }
 
+#[test]
+fn script_commands_and_dollar_fallback_are_declared_legacy_compatibility() {
+    let fixture = Fixture::new();
+    assert_eq!(
+        fixture.engine.registry.compatibility_of("use"),
+        Some(mush_core::CommandCompatibility::LegacyPostImage)
+    );
+    assert_eq!(
+        fixture
+            .engine
+            .registry
+            .command_fallback_compatibilities()
+            .collect::<Vec<_>>(),
+        vec![(
+            Some("script"),
+            mush_core::CommandCompatibility::LegacyPostImage
+        )]
+    );
+}
+
 fn all_text(events: &[(Audience, OutputEvent)]) -> Vec<String> {
     events
         .iter()

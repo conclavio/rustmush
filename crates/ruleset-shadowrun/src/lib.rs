@@ -272,6 +272,7 @@ impl GameModule for ShadowrunRuleset {
     }
 
     fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
+        reg.classify_commands(mush_core::CommandCompatibility::LegacyPostImage);
         // Seedable dice RNG + transient roll-log / chargen state.
         let state = match self.seed {
             Some(s) => Sr5State::seeded(s),

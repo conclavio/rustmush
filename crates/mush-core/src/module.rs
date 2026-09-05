@@ -1697,6 +1697,7 @@ pub struct Registrar<'a> {
     module: SmolStr,
     reg: &'a mut Registry,
     mechanics_authority: MechanicsRegistrationAuthority,
+    command_compatibility: Option<crate::cmd::CommandCompatibility>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1726,6 +1727,9 @@ impl<'a> Registrar<'a> {
             module: SmolStr::new(module),
             reg,
             mechanics_authority: MechanicsRegistrationAuthority::Legacy,
+            // The public constructor is retained for old host/test assembly.
+            // Real module composition starts unclassified below.
+            command_compatibility: Some(crate::cmd::CommandCompatibility::LegacyPostImage),
         }
     }
 
@@ -1736,6 +1740,7 @@ impl<'a> Registrar<'a> {
             module: SmolStr::new(module),
             reg,
             mechanics_authority: MechanicsRegistrationAuthority::ModuleComposition,
+            command_compatibility: None,
         }
     }
 
@@ -2353,27 +2358,60 @@ impl<'a> Registrar<'a> {
     /// Register a command. Identical to core registration except the entry
     /// is tagged with this module's identity (`ctx.module` in its handler;
     /// used by attr-namespace enforcement).
+    ///
+    /// A composed module must first call [`Registrar::classify_commands`].
+    /// This fail-closed step makes adding a command without acknowledging its
+    /// persistence lane a composition error rather than source-scanning debt.
     pub fn command(
         &mut self,
         spec: CommandSpec,
         handler: Arc<dyn CommandHandler>,
     ) -> Result<(), ModError> {
+        let compatibility = self.command_compatibility.ok_or_else(|| {
+            ModError::msg(format!(
+                "module {}: classify commands before registering {:?}",
+                self.module, spec.name
+            ))
+        })?;
         self.reg
-            .register_tagged(spec, handler, Some(self.module.clone()))?;
+            .register_tagged(spec, handler, Some(self.module.clone()), compatibility)?;
         Ok(())
+    }
+
+    /// Set the compatibility class applied to subsequently registered
+    /// commands.  A module may call this again between registration groups;
+    /// every command stores the value captured at its own registration.
+    pub fn classify_commands(&mut self, compatibility: crate::cmd::CommandCompatibility) {
+        self.command_compatibility = Some(compatibility);
     }
 
     /// Append an alias-stage hook (the comsys seam; runs in registration
     /// order during dispatch).
-    pub fn alias_stage(&mut self, stage: Arc<dyn AliasStage>) {
-        self.reg.add_alias_stage(stage);
+    pub fn alias_stage(&mut self, stage: Arc<dyn AliasStage>) -> Result<(), ModError> {
+        let compatibility = self.command_compatibility.ok_or_else(|| {
+            ModError::msg(format!(
+                "module {}: classify commands before registering an alias stage",
+                self.module
+            ))
+        })?;
+        self.reg
+            .add_tagged_alias_stage(stage, Some(self.module.clone()), compatibility);
+        Ok(())
     }
 
     /// Append a post-command-table [`CommandFallback`] (object
     /// `$`-commands — the mush-script seam; runs after built-ins/exits,
     /// before `Huh?`, in registration order).
-    pub fn command_fallback(&mut self, fallback: Arc<dyn CommandFallback>) {
-        self.reg.add_command_fallback(fallback);
+    pub fn command_fallback(&mut self, fallback: Arc<dyn CommandFallback>) -> Result<(), ModError> {
+        let compatibility = self.command_compatibility.ok_or_else(|| {
+            ModError::msg(format!(
+                "module {}: classify commands before registering a command fallback",
+                self.module
+            ))
+        })?;
+        self.reg
+            .add_tagged_command_fallback(fallback, Some(self.module.clone()), compatibility);
+        Ok(())
     }
 
     /// Append a pre-dispatch [`CommandGate`] (the onboarding gate — runs

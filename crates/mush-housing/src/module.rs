@@ -955,6 +955,7 @@ impl GameModule for HousingModule {
     }
 
     fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
+        reg.classify_commands(mush_core::CommandCompatibility::LegacyPostImage);
         reg.state(HousingStore::default());
         reg.marker_flag(NO_PROPERTY_MARKER)?;
         // ONE hook object under both points (08d §4): `may_take` *is* `may_enter` in

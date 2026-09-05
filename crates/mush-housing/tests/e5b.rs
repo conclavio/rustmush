@@ -90,6 +90,7 @@ impl GameModule for TestSeams {
         "housingtest"
     }
     fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
+        reg.classify_commands(mush_core::CommandCompatibility::LegacyPostImage);
         reg.command(
             CommandSpec {
                 name: "+plan".into(),

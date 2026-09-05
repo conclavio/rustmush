@@ -158,9 +158,9 @@ pub use clock_provider::{
     SceneClockProvider,
 };
 pub use cmd::{
-    AliasOutcome, AliasStage, ArgShape, CmdError, CommandFallback, CommandGate, CommandHandler,
-    CommandSpec, Ctx, HelpTopic, LookupErr, ParsedArgs, Registry, RegistryError, SceneClass,
-    SwitchSet, dispatch,
+    AliasOutcome, AliasStage, ArgShape, CmdError, CommandCompatibility, CommandFallback,
+    CommandGate, CommandHandler, CommandSpec, Ctx, HelpTopic, LookupErr, ParsedArgs, Registry,
+    RegistryError, SceneClass, SwitchSet, dispatch,
 };
 pub use commands::{
     event_subject, ignore_list, is_ignoring, narrative_actor, register_core_commands,
