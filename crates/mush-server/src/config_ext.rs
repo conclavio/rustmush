@@ -3,7 +3,7 @@
 //! not depend on `mush-llm` / `mush-weather` / `mush-worldgen` / `ruleset-wod`.
 
 use mush_config::config::{
-    EconomyCfg, OnboardingCfg, ShadowrunCfg, WeatherCfg, WodCfg, WorldgenCfg,
+    EconomyCfg, OnboardingCfg, ShadowrunCfg, TacsimCfg, WeatherCfg, WodCfg, WorldgenCfg,
 };
 use serde::Deserialize;
 
@@ -332,6 +332,117 @@ pub fn shadowrun_economy_config(
     })
 }
 
+/// The most bytes one TacSim pack file this host will read.
+///
+/// Mirrors `ruleset_tacsim::MAX_PACK_BYTES`, checked **before** the file is read so an
+/// enormous file is refused by name rather than pulled into memory and then rejected.
+pub const MAX_TACSIM_PACK_BYTES: u64 = 512 * 1_024;
+
+/// The layer-facing `[tacsim]` config (E7 cut 1, 10b §7 and §3.1's OPEN 1).
+///
+/// **The host reads the bytes; the ruleset owns parse, digest and validation.** This
+/// function walks `pack_paths` and `seed_paths`, reads each entry — a file, or every
+/// `*.json` in a directory, in sorted order so a boot is deterministic — and hands
+/// `ruleset_tacsim::verify_sources` `(name, text)` pairs. An unreadable, oversized,
+/// unparseable or digest-mismatched pack is a **hard boot error naming the file**,
+/// which is 10b §3.1 invariant (iv) and the only place it can be enforced: only the
+/// host can fail a boot.
+///
+/// This is deliberately the opposite arrangement to E6c's catalogues, where
+/// `ruleset-shadowrun`'s own `SrCatalogSource::pack` reads a file at
+/// `@market/catalog load` time. A catalogue is an optional staff-triggered load whose
+/// failure must fail the *pack* and never the server; a TacSim pack is a boot
+/// precondition. The two answers differ on purpose.
+///
+/// With `enabled = false` nothing is read at all: an unconfigured server does not
+/// touch the filesystem for a layer it is not running.
+///
+/// # Errors
+///
+/// A message naming the file, for an I/O failure, a file past
+/// [`MAX_TACSIM_PACK_BYTES`], a directory that cannot be listed, or anything
+/// `ruleset_tacsim::verify_sources` refuses.
+pub fn tacsim_config(cfg: &TacsimCfg) -> Result<ruleset_tacsim::TacsimConfig, String> {
+    let mut packs = Vec::new();
+    let mut seeds = Vec::new();
+    if cfg.enabled {
+        packs = read_pack_sources(&cfg.pack_paths, "[tacsim].pack_paths")?;
+        seeds = read_pack_sources(&cfg.seed_paths, "[tacsim].seed_paths")?;
+    }
+    let typed = ruleset_tacsim::TacsimConfig {
+        enabled: cfg.enabled,
+        packs,
+        seeds,
+        corridor: cfg.corridor.trim().to_string(),
+        active_domain_limit: cfg.active_domain_limit,
+        ground_pulse_ms: cfg.ground_pulse_ms,
+        space_pulse_ms: cfg.space_pulse_ms,
+        // Parsed and inert (10b §7, OPEN 4). Deliberately **not** validated: a knob
+        // that configures nothing must not be able to refuse a boot, and E6a set the
+        // same precedent with `catalog_paths`/`quote_ttl_*`. The cut that reads a
+        // field is the cut that validates it.
+        time: ruleset_tacsim::TacsimTimeConfig {
+            rate: cfg.time.rate,
+            catch_up_journeys: cfg.time.catch_up_journeys.clone(),
+            catch_up_production: cfg.time.catch_up_production.clone(),
+            catch_up_fronts: cfg.time.catch_up_fronts.clone(),
+            catch_up_domains: cfg.time.catch_up_domains.clone(),
+        },
+    };
+    // Verify here, at the host, so the boot fails with the file's name in the message.
+    // The check is pure and the module repeats it at wiring; two evaluations of a pure
+    // function over the same bytes cannot disagree.
+    ruleset_tacsim::verify_sources(&typed)?;
+    Ok(typed)
+}
+
+/// Read every configured pack path into `(name, bytes)` pairs, deterministically.
+fn read_pack_sources(
+    paths: &[String],
+    label: &str,
+) -> Result<Vec<ruleset_tacsim::PackSource>, String> {
+    let mut out: Vec<ruleset_tacsim::PackSource> = Vec::new();
+    for entry in paths {
+        let path = std::path::Path::new(entry.trim());
+        if path.is_dir() {
+            let listing = std::fs::read_dir(path)
+                .map_err(|error| format!("{label}: {} could not be listed: {error}", entry))?;
+            // Sorted, so which pack "wins" a duplicate `(id, version)` never depends
+            // on the order the filesystem happened to hand them back.
+            let mut files: Vec<std::path::PathBuf> = Vec::new();
+            for item in listing {
+                let item = item
+                    .map_err(|error| format!("{label}: {} could not be listed: {error}", entry))?;
+                let candidate = item.path();
+                if candidate.extension().is_some_and(|e| e == "json") {
+                    files.push(candidate);
+                }
+            }
+            files.sort();
+            for file in files {
+                out.push(read_one_pack(&file)?);
+            }
+        } else {
+            out.push(read_one_pack(path)?);
+        }
+    }
+    Ok(out)
+}
+
+fn read_one_pack(path: &std::path::Path) -> Result<ruleset_tacsim::PackSource, String> {
+    let name = path.display().to_string();
+    let meta = std::fs::metadata(path)
+        .map_err(|error| format!("[tacsim] {name} could not be read: {error}"))?;
+    if meta.len() > MAX_TACSIM_PACK_BYTES {
+        return Err(format!(
+            "[tacsim] {name} is larger than this server will read ({MAX_TACSIM_PACK_BYTES} bytes)"
+        ));
+    }
+    let bytes = std::fs::read_to_string(path)
+        .map_err(|error| format!("[tacsim] {name} could not be read: {error}"))?;
+    Ok(ruleset_tacsim::PackSource { name, bytes })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -367,6 +478,147 @@ mod tests {
         let month = &typed.cadences["sr.month"];
         assert_eq!(month.clock, mush_economy::DeclaredCadenceClock::RealUtc);
         assert_eq!((month.period_secs, month.catch_up), (604_800, 5));
+    }
+
+    /// **E7 cut 1, the B lens: a malformed pack FILE refuses the boot and names it.**
+    ///
+    /// This is the opposite answer to a corrupt stored `tacsim:*` document, which is
+    /// skipped loudly while the world boots (`ruleset_tacsim::store`'s table). Both are
+    /// asserted, in different crates, on purpose: a file is the operator's declared
+    /// intent and refusing to start over a typo they can fix is right; a stored document
+    /// is this world's accumulated history and refusing to start over one row of it is
+    /// not (10b §4 rule 2, §3.1 invariant (iv)).
+    #[test]
+    fn e7c1_boot_a_malformed_pack_file_refuses_the_boot_and_names_it() {
+        let dir = std::env::temp_dir().join(format!(
+            "e7c1-packs-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or_default()
+        ));
+        std::fs::create_dir_all(&dir).expect("a scratch directory");
+        let write = |name: &str, body: &str| {
+            let path = dir.join(name);
+            std::fs::write(&path, body).expect("writes");
+            path.display().to_string()
+        };
+
+        // The good case first: the built-in fixture, written out and read back, boots.
+        let core = write("tacsim_core.json", ruleset_tacsim::fixture::CORE_JSON);
+        let corridor = write(
+            "tacsim_corridor.json",
+            ruleset_tacsim::fixture::CORRIDOR_JSON,
+        );
+        let good = TacsimCfg {
+            enabled: true,
+            pack_paths: vec![core.clone()],
+            seed_paths: vec![corridor.clone()],
+            corridor: ruleset_tacsim::fixture::CORRIDOR_PACK.to_string(),
+            ..TacsimCfg::default()
+        };
+        let typed = tacsim_config(&good).expect("the fixture packs load");
+        assert_eq!(typed.packs.len(), 1);
+        assert_eq!(typed.seeds.len(), 1);
+
+        // A file that does not exist, one that is not a pack, one with an unknown key,
+        // and one whose declared digest was computed over other bytes: every message
+        // names **the file**.
+        let missing = dir.join("nope.json").display().to_string();
+        let garbage = write("garbage.json", "{ this is not json");
+        let unknown_key = write(
+            "unknown.json",
+            &ruleset_tacsim::fixture::CORE_JSON.replacen(
+                "\"entries\"",
+                "\"surprise\": 1, \"entries\"",
+                1,
+            ),
+        );
+        let bad_digest = write(
+            "bad_digest.json",
+            &ruleset_tacsim::fixture::CORE_JSON.replacen(
+                "5a287bd80b28a1644b43bcf0ee84581c0e436ad614dbd5003eb2416d5772ba12",
+                "0000000000000000000000000000000000000000000000000000000000000000",
+                1,
+            ),
+        );
+        for (path, needle) in [
+            (&missing, "could not be read"),
+            (&garbage, "not a pack"),
+            (&unknown_key, "unknown field"),
+            (&bad_digest, "not this pack's digest"),
+        ] {
+            let cfg = TacsimCfg {
+                enabled: true,
+                pack_paths: vec![path.clone()],
+                ..TacsimCfg::default()
+            };
+            let refused = tacsim_config(&cfg).expect_err(path);
+            assert!(refused.contains(path), "the file must be named: {refused}");
+            assert!(refused.contains(needle), "{path}: {refused}");
+        }
+
+        // A missing `requires`, and a `requires` version mismatch: both fail closed,
+        // both name the file that declared the dependency.
+        let seed_only = TacsimCfg {
+            enabled: true,
+            seed_paths: vec![corridor.clone()],
+            ..TacsimCfg::default()
+        };
+        let refused = tacsim_config(&seed_only).expect_err("a missing dependency");
+        assert!(refused.contains(&corridor), "{refused}");
+        assert!(refused.contains("does not load"), "{refused}");
+        let core_v2 = write(
+            "core_v2.json",
+            &ruleset_tacsim::fixture::CORE_JSON.replacen("\"version\": 1", "\"version\": 2", 1),
+        );
+        let mismatch = TacsimCfg {
+            enabled: true,
+            pack_paths: vec![core_v2.clone()],
+            seed_paths: vec![corridor.clone()],
+            ..TacsimCfg::default()
+        };
+        let refused = tacsim_config(&mismatch).expect_err("a version mismatch");
+        // The v2 file's own digest no longer matches, which is itself the right
+        // refusal — a version bump is new content and needs a new digest.
+        assert!(refused.contains(&core_v2), "{refused}");
+
+        // `enabled = false` reads nothing at all: even a path that does not exist is
+        // untouched, because an unconfigured server does not go to the filesystem for a
+        // layer it is not running.
+        let off = TacsimCfg {
+            pack_paths: vec![missing.clone()],
+            ..TacsimCfg::default()
+        };
+        let typed = tacsim_config(&off).expect("an off layer reads nothing");
+        assert!(typed.packs.is_empty() && !typed.enabled);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A directory in `pack_paths` is searched, in **sorted** order, so which pack wins
+    /// a duplicate `(id, version)` never depends on what the filesystem happened to
+    /// hand back — and a genuine duplicate is refused naming both files.
+    #[test]
+    fn e7c1_boot_a_pack_directory_is_read_in_sorted_order_and_a_duplicate_refuses() {
+        let dir = std::env::temp_dir().join(format!("e7c1-dir-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a scratch directory");
+        std::fs::write(dir.join("a.json"), ruleset_tacsim::fixture::CORE_JSON).expect("writes");
+        std::fs::write(dir.join("b.json"), ruleset_tacsim::fixture::CORE_JSON).expect("writes");
+        let cfg = TacsimCfg {
+            enabled: true,
+            pack_paths: vec![dir.display().to_string()],
+            ..TacsimCfg::default()
+        };
+        let refused = tacsim_config(&cfg).expect_err("two files declaring one version");
+        assert!(
+            refused.contains("a.json") && refused.contains("b.json"),
+            "{refused}"
+        );
+        assert!(refused.contains("already declares"), "{refused}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// SP1 (D-LBK-7): a bad stanza refuses to start — a 33rd clock, a name that is

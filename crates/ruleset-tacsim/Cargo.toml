@@ -1,0 +1,31 @@
+[package]
+name = "ruleset-tacsim"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "ruleset-tacsim (E7 cut 1): TacSim's rules-definition and campaign-seed packs, the digest that identifies them, the once-per-(pack, version) seed latch, and the Mars-Phobos-Ceres corridor fixture."
+
+# 10b §3.1 / the E7 cut 1 brief: `ruleset-tacsim -> {mush-core, mush-sim}` plus the
+# serde/tracing vocabulary every E crate already uses, and **nothing else**. No
+# economy, org, party, faction, market or tactics edge in cut 1 — D-E7-30's five fact
+# namespaces are cuts 2-9's, and cut 1 registers no `FactProvider` at all.
+# `mush-sim` is the one substantive edge and it is `RouteDef`'s: the crate owns the
+# route state machine and this ruleset provides its data (10b §3.1 correction (a);
+# `mush-tactics/src/mobility.rs`'s stated pattern). `cargo tree -p ruleset-tacsim` is
+# the test.
+[dependencies]
+mush-core.workspace = true
+mush-sim.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+smol_str.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+mush-testkit.workspace = true
+mush-proto.workspace = true
+
+[lints]
+workspace = true

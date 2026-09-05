@@ -1,0 +1,63 @@
+{
+  "manifest": {
+    "id": "tacsim.core",
+    "version": 1,
+    "kind": "rules_definition",
+    "digest": "5a287bd80b28a1644b43bcf0ee84581c0e436ad614dbd5003eb2416d5772ba12",
+    "requires": []
+  },
+  "entries": {
+    "alloy_smelt": {
+      "kind": "recipe",
+      "def": {
+        "label": "Alloy smelting",
+        "inputs": [
+          { "commodity": "metals", "units": 4 }
+        ],
+        "outputs": [
+          { "commodity": "structural_alloys", "units": 1 }
+        ]
+      }
+    },
+    "carbon_feedstock": {
+      "kind": "commodity",
+      "def": { "label": "Carbon feedstock", "in_use": false }
+    },
+    "composites": {
+      "kind": "commodity",
+      "def": { "label": "Composites", "in_use": false }
+    },
+    "electronics": {
+      "kind": "commodity",
+      "def": { "label": "Electronics", "in_use": false }
+    },
+    "industrial_parts": {
+      "kind": "commodity",
+      "def": { "label": "Industrial parts", "in_use": false }
+    },
+    "metals": {
+      "kind": "commodity",
+      "def": { "label": "Metals", "in_use": true }
+    },
+    "munitions": {
+      "kind": "commodity",
+      "def": { "label": "Munitions", "in_use": false }
+    },
+    "propellant": {
+      "kind": "commodity",
+      "def": { "label": "Propellant", "in_use": false }
+    },
+    "strategic_elements": {
+      "kind": "commodity",
+      "def": { "label": "Strategic elements", "in_use": false }
+    },
+    "structural_alloys": {
+      "kind": "commodity",
+      "def": { "label": "Structural alloys", "in_use": true }
+    },
+    "volatiles": {
+      "kind": "commodity",
+      "def": { "label": "Volatiles", "in_use": false }
+    }
+  }
+}

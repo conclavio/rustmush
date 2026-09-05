@@ -1,0 +1,38 @@
+{
+  "manifest": {
+    "id": "tacsim.corridor",
+    "version": 1,
+    "kind": "campaign_seed",
+    "digest": "32a27fbc8ddd7ba644861a8aa77967a028bfa9047fe33a3812fe37e6c6d81333",
+    "requires": [
+      { "id": "tacsim.core", "version": 1 }
+    ]
+  },
+  "entries": {
+    "ceres_extraction": {
+      "kind": "location",
+      "def": { "label": "Ceres Extraction Site", "role": "extraction" }
+    },
+    "ceres_phobos": {
+      "kind": "route",
+      "def": {
+        "from": "ceres_extraction",
+        "to": "phobos_yard",
+        "legs": [
+          { "to": "transfer_node", "base_s": 86400 },
+          { "to": "phobos_yard", "base_s": 172800 }
+        ],
+        "drive_class": "fusion_torch",
+        "propellant": 1200
+      }
+    },
+    "phobos_yard": {
+      "kind": "location",
+      "def": { "label": "Phobos Yard", "role": "yard" }
+    },
+    "transfer_node": {
+      "kind": "location",
+      "def": { "label": "Cislunar Transfer Node", "role": "transfer" }
+    }
+  }
+}

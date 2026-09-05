@@ -130,6 +130,17 @@ fn production_commands(ruleset: &str) -> BTreeSet<String> {
         modules::ruleset_modules(&enabled, &onboarding, &wod_economy, &sr_economy)
             .expect("a known ruleset composes"),
     );
+    // E7 cut 1: the TacSim layer is part of every production composition — it is not a
+    // `[rulesets]` id but a layer switched by `[tacsim].enabled` (doc 10 §20), and it
+    // composes after the character ruleset. `RULESETS` therefore does NOT gain
+    // `"tacsim"`; the layer is pushed here instead, so its verbs are enumerated in both
+    // single-ruleset compositions. Default configuration means `enabled = false`, and
+    // the verbs still register (they answer "not enabled on this server"), which is
+    // exactly what makes the surface the tripwire watches independent of the operator's
+    // switches.
+    mods.push(modules::tacsim_module(
+        config_ext::tacsim_config(&config.tacsim).expect("the default [tacsim] converts"),
+    ));
     // `build_engine`'s own step: compose and freeze every registry before any world
     // record exists. The verbs are fixed here; no world and no boot are needed.
     let composition = Engine::compose_modules(registry, mods)

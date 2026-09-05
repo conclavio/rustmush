@@ -2357,6 +2357,7 @@ dependencies = [
  "mush-worldgen",
  "rand 0.9.5",
  "ruleset-shadowrun",
+ "ruleset-tacsim",
  "ruleset-wod",
  "serde",
  "serde_json",
@@ -3347,6 +3348,21 @@ dependencies = [
  "serde_json",
  "smol_str",
  "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "ruleset-tacsim"
+version = "0.1.0"
+dependencies = [
+ "mush-core",
+ "mush-proto",
+ "mush-sim",
+ "mush-testkit",
+ "serde",
+ "serde_json",
+ "smol_str",
+ "thiserror 2.0.20",
  "tracing",
 ]
 

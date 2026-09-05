@@ -709,6 +709,12 @@ category = "baseline"
 note = "baseline pinned at b0e3b52 (server staff commands)"
 
 [[handler]]
+name = "@tacsim"
+category = "legacy-post-image"
+family = "tacsim.pack"
+note = "E7 cut 1 (10b 3.1 / 4.1's cut-1 row): the TacSim content-pack surface -- @tacsim/pack list|show|verify (reads), @tacsim/seed <pack> [dry|commit] and @tacsim/pin <subject>=<pack>@<version> (staff). Bounded whole-document catalog/workflow records (tacsim:pack:{id}@{version}, tacsim:seed:{pack}@{version}, tacsim:pin:{subject}, tacsim:meta), each behind a strict TryFrom wire that re-runs its constructor caps on load, each on a deterministic key. It takes NO part in authority or prepared mechanics: cut 1 registers no FactProvider, no canon outcome kind, no authority-guard validator, no clock provider, no schedule source and no typed state family, holds nothing and reserves nothing, and reaches no economy, org, party, faction, market or tactics entry point at all -- the crate has no edge to any of them. The seeded objects and their latch ride ONE WriteBatch (World::create marks dirty, Ctx::persist queues a ModuleOp), so a reboot sees both or neither, and a second commit is a HIT keyed on the stored latch KEY, which survives the document's own corruption."
+
+[[handler]]
 name = "@teleport"
 category = "baseline"
 note = "baseline pinned at b0e3b52 (core/engine registry)"

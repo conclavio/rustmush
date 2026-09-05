@@ -523,6 +523,30 @@ pub fn ruleset_modules(
     Ok(mods)
 }
 
+/// The **TacSim layer** (E7 cut 1, 10b §3.1), composed **after** the character
+/// ruleset.
+///
+/// It is deliberately **not** a `[rulesets].enabled` id. Doc 10 §20: *TacSim supplies
+/// physical and civil context, not ruleset metaphysics … a ruleset decides what those
+/// facts mean to its characters.* So [`ruleset_modules`] is untouched — it still knows
+/// `"wod"` and `"shadowrun"` and still refuses more than one — and this layer composes
+/// beside whichever single ruleset is enabled, switched by `[tacsim].enabled` alone.
+///
+/// **Order position matters and is pinned** (`tacsim_composes_after_the_character_ruleset`).
+/// `on_world_loaded` runs in list order, so registering last is what lets TacSim read
+/// the character ruleset's facts at boot while that ruleset reads TacSim's
+/// environmental facts through the generic seam.
+///
+/// The module is composed **unconditionally**, and `enabled` gates behaviour rather
+/// than existence — E5c deviation 1 and `[shadowrun.economy]`'s precedent: a disabled
+/// layer answers "not enabled on this server" instead of hiding a verb, which is also
+/// what keeps `@tacsim` visible to the rule-1 allowlist tripwire in a default
+/// composition.
+#[must_use]
+pub fn tacsim_module(cfg: ruleset_tacsim::TacsimConfig) -> Box<dyn GameModule> {
+    Box::new(ruleset_tacsim::TacsimRuleset::with_config(cfg))
+}
+
 /// The M7 worldgen module, backed by the shared [`LlmService`] handle.
 ///
 /// `main.rs` inserts it into the boot list **after** [`server_modules`] (so it
@@ -1531,6 +1555,9 @@ mod tests {
                 ruleset_modules(&[ruleset.to_owned()], &onboarding, &wod, &shadowrun)
                     .expect("one production ruleset"),
             );
+            // E7 cut 1: the TacSim layer is part of the production composition, so its
+            // `reg.classify_commands(..)` declaration is enforced here too.
+            modules.push(tacsim_module(ruleset_tacsim::fixture::config()));
             let composition = Engine::compose_modules(crate::world_task::base_registry(), modules)
                 .expect("production composition declares every command lane");
 
@@ -1541,6 +1568,14 @@ mod tests {
             assert!(
                 registrations.len() > 50,
                 "unexpectedly small {ruleset} command surface"
+            );
+            assert!(
+                registrations.iter().any(|(spec, owner, class)| {
+                    spec.name == "@tacsim"
+                        && *owner == Some("tacsim")
+                        && *class == mush_core::CommandCompatibility::LegacyPostImage
+                }),
+                "the TacSim layer must publish its compatibility lane"
             );
             assert!(registrations.iter().any(|(_, owner, class)| {
                 *owner == Some("economy")
@@ -1718,6 +1753,74 @@ mod tests {
         );
     }
 
+    /// E7 cut 1 (10b §3.1, doc 10 §20): **the TacSim layer composes after the one
+    /// character ruleset**, and its order position is what makes that true.
+    ///
+    /// `on_world_loaded` runs in list order, so registering last is what lets TacSim's
+    /// boot read the character ruleset's facts while the ruleset reads TacSim's
+    /// environmental facts through the generic seam. `[rulesets].enabled` is untouched
+    /// by any of this: it still selects exactly one of `wod` | `shadowrun`, and TacSim
+    /// is switched by `[tacsim].enabled` alone.
+    #[test]
+    fn e7c1_wiring_tacsim_composes_after_the_character_ruleset() {
+        use mush_testkit::TestWorld;
+        for ruleset in ["wod", "shadowrun"] {
+            let onboarding = ruleset_wod::OnboardingConfig::default();
+            let wod = ruleset_wod::WodEconomyConfig::default();
+            let shadowrun = ruleset_shadowrun::SrEconomyConfig::default();
+            let mut mods = server_modules_with(
+                mush_weather::WeatherConfig::default(),
+                mush_economy::EconomyConfig::default(),
+                &onboarding,
+                (ruleset == "wod").then_some(&wod),
+                (ruleset == "shadowrun").then_some(&shadowrun),
+            );
+            mods.extend(
+                ruleset_modules(&[ruleset.to_owned()], &onboarding, &wod, &shadowrun)
+                    .expect("one production ruleset"),
+            );
+            mods.push(tacsim_module(ruleset_tacsim::fixture::config()));
+            let tw = TestWorld::with_modules(mods);
+            let names: Vec<&str> = tw.engine().modules().iter().map(|m| m.name()).collect();
+            assert_eq!(
+                names,
+                [
+                    "comsys", "canon", "org", "faction", "scenes", "sim", "tactics", "economy",
+                    "mail", "jobs", "housing", "weather", "party", "market", "script", ruleset,
+                    "tacsim"
+                ],
+                "the TacSim layer must be last, after the character ruleset"
+            );
+        }
+    }
+
+    /// E7 cut 1: `[rulesets].enabled` is untouched — TacSim is not one of its ids, and
+    /// asking for it as a ruleset is still an unknown-ruleset error.
+    #[test]
+    fn e7c1_wiring_tacsim_is_not_a_ruleset_id() {
+        let err = match ruleset_modules(
+            &["tacsim".to_string()],
+            &ruleset_wod::OnboardingConfig::default(),
+            &ruleset_wod::WodEconomyConfig::default(),
+            &ruleset_shadowrun::SrEconomyConfig::default(),
+        ) {
+            Err(e) => e,
+            Ok(_) => panic!("tacsim is a layer, not a ruleset id"),
+        };
+        assert!(err.contains("unknown ruleset"), "{err}");
+        // And the single-ruleset guard is unchanged by cut 1.
+        let err = match ruleset_modules(
+            &["wod".to_string(), "shadowrun".to_string()],
+            &ruleset_wod::OnboardingConfig::default(),
+            &ruleset_wod::WodEconomyConfig::default(),
+            &ruleset_shadowrun::SrEconomyConfig::default(),
+        ) {
+            Err(e) => e,
+            Ok(_) => panic!("two rulesets must be rejected"),
+        };
+        assert!(err.contains("one ruleset per server"), "{err}");
+    }
+
     #[test]
     fn the_org_capability_vocabulary_covers_every_economy_capability() {
         // E3b2 §4.10: the wiring vocabulary is `mush_economy::CAPABILITIES` ∪
@@ -1819,8 +1922,13 @@ mod tests {
     fn ruleset_modules_rejects_unknown_and_duplicate() {
         // `unwrap_err` needs `Debug` on the Ok value; `dyn GameModule` has
         // none, so match the error out by hand.
+        //
+        // E7 cut 1: the unknown id used to be `"tacsim"`, which is now a real thing —
+        // a *layer* switched by `[tacsim].enabled`, deliberately not a `[rulesets]` id
+        // (doc 10 §20). Keeping it here would have read as "tacsim is not a ruleset yet",
+        // which is the opposite of the decision. `"nosuch"` names nothing and never will.
         let err = match ruleset_modules(
-            &["tacsim".to_string()],
+            &["nosuch".to_string()],
             &ruleset_wod::OnboardingConfig::default(),
             &ruleset_wod::WodEconomyConfig::default(),
             &ruleset_shadowrun::SrEconomyConfig::default(),

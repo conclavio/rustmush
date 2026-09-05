@@ -45,6 +45,15 @@
 //! | `[shadowrun.economy].player_run_offers` | `true` | whether `+run/post` accepts a personal payer |
 //! | `[shadowrun.economy].organization_run_offers` | `true` | whether `+run/post … scope=<org>` is accepted |
 //! | `[shadowrun.economy.lifestyle_costs]."<tier>"` | (SR5 defaults) | monthly cost per tier, major units |
+//! | `[tacsim].enabled` | `false` | E7 TacSim layer: content packs, the campaign-seed latch, the corridor. Independent of `[rulesets]` |
+//! | `[tacsim].pack_paths` | `[]` | rules-definition pack files or directories; read **host-side** at boot, and an unreadable/oversized/mis-digested one is a hard boot error naming the file |
+//! | `[tacsim].seed_paths` | `[]` | campaign-seed pack files or directories, read the same way |
+//! | `[tacsim].corridor` | `""` | which seed pack `@tacsim/seed` defaults to |
+//! | `[tacsim].active_domain_limit` | `8` | parsed, **inert** until E7 cut 6 (`MAX_ACTIVE_DOMAINS`) |
+//! | `[tacsim].ground_pulse_ms` | `2000` | parsed, **inert** until E7 cut 8 |
+//! | `[tacsim].space_pulse_ms` | `6000` | parsed, **inert** until E7 cut 8 |
+//! | `[tacsim.time].rate` | `0` | parsed, **inert** until E7 cuts 4/8/11 — campaign rate *policy*. It **never seeds the world timeline**: generation 1 comes from `[game]` |
+//! | `[tacsim.time].catch_up_*` | `""` | parsed, **inert** — the per-subsystem catch-up policies of cuts 4/6/8/9 |
 //! | `[llm]` | `enabled = false` | M7 LLM layer (providers, routes, budgets); into [`mush_llm::LlmConfig`] |
 //!
 //! The `[web]` table deserializes straight into
@@ -617,6 +626,82 @@ impl Default for ShadowrunEconomyCfg {
     }
 }
 
+/// `[tacsim]` — the TacSim layer's own configuration (E7 cut 1, 10b §7).
+///
+/// **Not a ruleset block.** `[rulesets].enabled` still selects exactly one character
+/// ruleset (`wod` | `shadowrun`); TacSim is a *layer* that composes beside whichever
+/// one that is (doc 10 §20), so its switch lives here rather than in `[rulesets]`.
+///
+/// The default is **`enabled = false`**: a server that has never heard of this section
+/// is bit-identical to one built before E7 existed. The verbs still register and answer
+/// "not enabled on this server" — E5c deviation 1, and `[shadowrun.economy]`'s
+/// precedent.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(default)]
+pub struct TacsimCfg {
+    /// Whether the layer does anything.
+    pub enabled: bool,
+    /// Rules-definition pack files, or directories searched for `*.json`.
+    ///
+    /// Read **host-side** (`mush_server::config_ext::tacsim_config`), so an
+    /// unreadable, oversized or digest-mismatched pack is a hard boot error naming
+    /// the file, before any module runs (10b §3.1 invariant (iv)).
+    pub pack_paths: Vec<String>,
+    /// Campaign-seed pack files or directories, read exactly the same way.
+    pub seed_paths: Vec<String>,
+    /// Which campaign-seed pack `@tacsim/seed` applies when given no argument.
+    pub corridor: String,
+    /// **Parsed, inert until E7 cut 6** — 10b §7's `MAX_ACTIVE_DOMAINS`.
+    pub active_domain_limit: u32,
+    /// **Parsed, inert until E7 cut 8** — the ground pulse period.
+    pub ground_pulse_ms: u32,
+    /// **Parsed, inert until E7 cut 8** — the space pulse period.
+    pub space_pulse_ms: u32,
+    /// `[tacsim.time]`.
+    pub time: TacsimTimeCfg,
+}
+
+impl Default for TacsimCfg {
+    fn default() -> Self {
+        TacsimCfg {
+            enabled: false,
+            pack_paths: Vec::new(),
+            seed_paths: Vec::new(),
+            corridor: String::new(),
+            active_domain_limit: 8,
+            ground_pulse_ms: 2_000,
+            space_pulse_ms: 6_000,
+            time: TacsimTimeCfg::default(),
+        }
+    }
+}
+
+/// `[tacsim.time]` — the campaign's rate and catch-up **policy** (Q8D).
+///
+/// Every field is **parsed and inert** in E7 cut 1; cuts 4, 8 and 11 read them.
+///
+/// **It never seeds the world timeline.** Generation one is seeded from
+/// `[game].ic_ratio`/`ic_epoch` by `mush_server::timeline::load_or_seed_world_timeline`
+/// — and only when the reserved namespace is empty — with persisted truth winning
+/// thereafter. This block is campaign rate *policy*, and it reaches that function
+/// never; a pinned `mush-server` test asserts exactly that (08i §3's configuration row).
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default)]
+pub struct TacsimTimeCfg {
+    /// IC seconds per real second the campaign layer intends. Doc 10 S1A's "≈ one OOC
+    /// hour per IC day" is a value here, never a constant in code. **Inert:** opening
+    /// a generation is a cut-11 verb over the kernel's own timeline.
+    pub rate: u32,
+    /// The journey catch-up policy word. **Inert until cut 6.**
+    pub catch_up_journeys: String,
+    /// The production catch-up policy word. **Inert until cut 4.**
+    pub catch_up_production: String,
+    /// The fronts catch-up policy word. **Inert until cut 9.**
+    pub catch_up_fronts: String,
+    /// The tactical-domain catch-up policy word. **Inert until cut 8.**
+    pub catch_up_domains: String,
+}
+
 /// `[worldgen]` section — the M10 batch `@gen/building` knobs.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(default)]
@@ -835,6 +920,11 @@ pub struct Config {
     /// `[shadowrun]` — the Shadowrun ruleset's own knobs (E6a, 08f §9). `enabled` is
     /// `false` off-config, so an unconfigured server keeps its pre-E6a behaviour.
     pub shadowrun: ShadowrunCfg,
+    /// `[tacsim]` — the TacSim layer's own knobs (E7 cut 1, 10b §7). `enabled` is
+    /// `false` off-config, so an unconfigured server keeps its pre-E7 behaviour. It is
+    /// deliberately **not** a `[rulesets].enabled` id: TacSim is a layer beside the one
+    /// character ruleset, not a third one (doc 10 §20).
+    pub tacsim: TacsimCfg,
     /// `[llm]` — the M7 LLM layer (providers, feature routes, budgets, kill
     /// switch). The raw section, deserialized into `mush_llm::LlmConfig` by the
     /// server / all-in-one binary (kept untyped here so `mush-config` need not
@@ -866,6 +956,7 @@ impl Default for Config {
             onboarding: OnboardingCfg::default(),
             wod: WodCfg::default(),
             shadowrun: ShadowrunCfg::default(),
+            tacsim: TacsimCfg::default(),
             llm: empty_toml_table(),
             ipc: IpcCfg::default(),
         }

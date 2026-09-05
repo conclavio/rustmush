@@ -45,7 +45,10 @@ pub use data::{
 pub use graph::{
     effective_domain, presence, project, space_domain, verify_indexes, verify_projections,
 };
-pub use route::{Journey, JourneyStatus, Leg, RouteState};
+pub use route::{
+    CadenceId, DriveProfile, DriveProfileWire, Journey, JourneyStatus, Leg, LegDef, LegDefWire,
+    MAX_LEGS, RouteDef, RouteDefError, RouteDefWire, RouteState, route_duration,
+};
 pub use transition::{Plan, SpatialError, Transition, apply, plan, run};
 
 /// Module configuration.

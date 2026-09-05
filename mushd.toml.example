@@ -104,6 +104,38 @@ enabled = ["wod"]                  # oWoD20; use ["shadowrun"] for Shadowrun 5e 
 # "+chargen/template <mortal|vampire|mage|werewolf>". A character is exactly one
 # template, and its sheet carries only that splat's sections.
 
+[tacsim]                           # (E7 cut 1) the TacSim layer: packs, seeds, the corridor
+# TacSim is a LAYER, not a ruleset id. It coexists with whichever single
+# character ruleset [rulesets].enabled selects, and composes AFTER it, because
+# it supplies physical and civil context rather than ruleset metaphysics: a
+# ruleset decides what those facts mean to its characters. Off by default, and
+# an off server is bit-identical to one built before E7 — the @tacsim verbs
+# still register and answer "TacSim is not enabled on this server."
+enabled = false
+# Content packs, read HOST-SIDE at boot. Each entry is a .json pack file or a
+# directory searched for *.json in sorted order. A file that cannot be read, is
+# larger than 512 KiB, does not parse, has an unknown key, whose declared digest
+# is not its content's, or whose `requires` is unsatisfied is a HARD BOOT ERROR
+# NAMING THE FILE — a pack is the operator's declared intent, and a typo is
+# better refused at boot than discovered at first use.
+pack_paths = []                    # rules-definition packs (immutable, digest-referenced)
+seed_paths = []                    # campaign-seed packs (applied to the world ONCE)
+corridor = ""                      # which seed pack "@tacsim/seed" applies by default
+# Parsed and INERT until later E7 cuts; listed here so the block is written once.
+active_domain_limit = 8            # cut 6's MAX_ACTIVE_DOMAINS
+ground_pulse_ms = 2000             # cut 8's ground pulse period
+space_pulse_ms = 6000              # cut 8's space pulse period
+
+[tacsim.time]                      # the campaign's rate and catch-up POLICY
+# Every key here is parsed and inert until cuts 4/8/11, and NONE of it seeds the
+# world timeline: generation one comes from [game].ic_ratio/ic_epoch, and
+# persisted truth wins thereafter. This is campaign policy, not a clock.
+rate = 0                           # IC seconds per real second the campaign intends
+catch_up_journeys = ""             # cut 6
+catch_up_production = ""           # cut 4
+catch_up_fronts = ""               # cut 9
+catch_up_domains = ""              # cut 8
+
 [onboarding]                       # (M9) the chargen_required gate + start rooms
 # When off (the default), a fresh character plays immediately, exactly as
 # before. When on, a newly created, not-yet-approved character is placed in the

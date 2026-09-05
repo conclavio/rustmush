@@ -27,7 +27,7 @@ use mush_llm::LlmService;
 use mush_net_web::{Metrics, WebConfig};
 use mush_server::config_ext::{
     economy_config_with, llm_config, onboarding_ruleset, shadowrun_cadences,
-    shadowrun_economy_config, weather_config, wod_economy_config, worldgen_config,
+    shadowrun_economy_config, tacsim_config, weather_config, wod_economy_config, worldgen_config,
 };
 use mush_session::{SessionConfig, SessionManager};
 use mush_store::{InMemoryStore, ObjectStore, RedisStore, core_migrations, run_migrations};
@@ -319,6 +319,21 @@ async fn serve(config: Config, mut quarantine_spool: QuarantineSpool) -> Result<
         tracing::info!(rulesets = ?config.rulesets.enabled, "rulesets enabled");
     }
     mods.extend(rulesets);
+    // E7 cut 1: the TacSim layer, **after** the character ruleset (doc 10 §20, 10b
+    // §3.1). It is not a `[rulesets]` id — `[tacsim].enabled` switches it, independently
+    // of which single character ruleset is loaded — and it composes last so its boot
+    // can read that ruleset's facts. `tacsim_config` reads every configured pack file
+    // here, host-side, so an unreadable, oversized or digest-mismatched pack fails the
+    // boot naming the file before any module runs (invariant (iv)).
+    let tacsim = tacsim_config(&config.tacsim)?;
+    if tacsim.enabled {
+        tracing::info!(
+            packs = tacsim.packs.len(),
+            seeds = tacsim.seeds.len(),
+            "tacsim enabled"
+        );
+    }
+    mods.push(modules::tacsim_module(tacsim));
     // Compose and freeze every mechanics registry before persisted world data
     // is loaded. This makes the C1 boot order structural instead of relying on
     // individual modules to avoid early interpretation.

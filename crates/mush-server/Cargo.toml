@@ -46,6 +46,9 @@ mush-weather.workspace = true
 ruleset-wod.workspace = true
 # The M10b second ruleset (SR5).
 ruleset-shadowrun.workspace = true
+# E7 cut 1: the TacSim LAYER. It is not a `[rulesets]` id — it composes beside the one
+# character ruleset, after it, under `[tacsim].enabled` (doc 10 §20, 10b §3.1).
+ruleset-tacsim.workspace = true
 # The M7 LLM layer + worldgen module.
 mush-llm.workspace = true
 mush-worldgen.workspace = true

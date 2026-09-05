@@ -168,6 +168,79 @@ mod tests {
         assert_eq!(first.current().ic_at(25), 1_000);
     }
 
+    /// **E7 cut 1 (10b §7, OPEN 4; 08i §3's configuration row): `[tacsim.time]` reaches
+    /// this function never.**
+    ///
+    /// Two worlds whose configuration differs only in `[tacsim.time]` — a campaign rate
+    /// policy of one IC second per real second against one of four thousand — seed the
+    /// **same** generation 1, anchored on `[game]`. The world timeline is the kernel's
+    /// and `[game]` is its only seed; `[tacsim.time]` is *policy* that cuts 4, 8 and 11
+    /// read, and cut 1 hands it to nothing at all.
+    ///
+    /// The second half is the one that would actually bite: a persisted timeline still
+    /// wins, with the existing warning, no matter what `[tacsim.time]` says.
+    #[tokio::test]
+    async fn e7c1_config_tacsim_time_never_seeds_the_world_timeline() {
+        let quiet = "[game]\nic_ratio = 4\nic_epoch = \"2020-01-01 00:00\"\n";
+        let loud = "[game]\nic_ratio = 4\nic_epoch = \"2020-01-01 00:00\"\n\n\
+                    [tacsim]\nenabled = true\n\n\
+                    [tacsim.time]\nrate = 4000\ncatch_up_journeys = \"restamp\"\n\
+                    catch_up_production = \"pause\"\ncatch_up_fronts = \"none\"\n\
+                    catch_up_domains = \"refuse\"\n";
+        let mut seeded = Vec::new();
+        for text in [quiet, loud] {
+            let config: mush_config::config::Config =
+                toml::from_str(text).expect("the config parses");
+            // `[tacsim]` converts, and produces no clock of any kind: `tacsim_config`'s
+            // return type carries pack bytes and inert policy words, and nothing else.
+            let tacsim = crate::config_ext::tacsim_config(&config.tacsim)
+                .expect("the [tacsim] block converts");
+            assert_eq!(tacsim.time.rate, config.tacsim.time.rate);
+            // Only `[game]` builds the clock this function is seeded from.
+            let clock = config.game.game_clock().expect("the [game] clock builds");
+            let store = InMemoryStore::new();
+            let timeline = load_or_seed_world_timeline(&store, clock).await.unwrap();
+            assert_eq!(timeline.epochs().len(), 1);
+            assert_eq!(timeline.current().generation, 1);
+            seeded.push(timeline);
+        }
+        assert_eq!(
+            seeded[0], seeded[1],
+            "[tacsim.time] moved generation 1; it must reach the world timeline never"
+        );
+        assert_eq!(
+            seeded[0].current().rate,
+            4,
+            "generation 1's rate is [game]'s"
+        );
+
+        // And persisted truth still wins: open a second generation, then re-load with a
+        // wildly different `[tacsim.time]` and an unchanged `[game]`.
+        let store = InMemoryStore::new();
+        let clock = GameClock {
+            ic_ratio: 4,
+            epoch_offset: 0,
+        };
+        let mut timeline = load_or_seed_world_timeline(&store, clock).await.unwrap();
+        let next = timeline.next_rate_epoch(100, 9).unwrap();
+        store
+            .write(WriteBatch {
+                serial: 1,
+                module_ops: world_timeline_persistence_ops(next)
+                    .unwrap()
+                    .into_iter()
+                    .collect(),
+                durable: true,
+                ..WriteBatch::default()
+            })
+            .await
+            .unwrap();
+        timeline.append(next).unwrap();
+        let reloaded = load_or_seed_world_timeline(&store, clock).await.unwrap();
+        assert_eq!(reloaded, timeline);
+        assert_eq!(reloaded.current().rate, 9);
+    }
+
     #[tokio::test]
     async fn persisted_rate_generation_wins_over_changed_config() {
         let store = InMemoryStore::new();

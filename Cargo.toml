@@ -147,6 +147,11 @@ mush-party = { path = "crates/mush-party" }
 # only, and the economy never depends on it (doc 08 D11, doc 10 §14).
 mush-market = { path = "crates/mush-market" }
 ruleset-shadowrun = { path = "crates/ruleset-shadowrun" }
+# E7 cut 1 (10b §3.1): TacSim's packs, seed latch and corridor fixture. It is a
+# LAYER, not a `[rulesets].enabled` id — doc 10 §20 keeps ruleset metaphysics and
+# physical/civil context apart, so it composes beside the one character ruleset,
+# after it, under `[tacsim].enabled`.
+ruleset-tacsim = { path = "crates/ruleset-tacsim" }
 mush-testkit = { path = "crates/mush-testkit" }
 mush-contract-tests = { path = "crates/mush-contract-tests" }
 # M16b: the all-in-one server library reused by both forked halves, plus the
