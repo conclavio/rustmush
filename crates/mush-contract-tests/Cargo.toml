@@ -17,3 +17,11 @@ serde_json.workspace = true
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+# The rule-1 allowlist tripwire (tests/legacy_handler_allowlist.rs) composes the
+# production command registry the way `mush-server`'s `build_engine` does.
+mush-config.workspace = true
+mush-llm.workspace = true
+mush-server.workspace = true
+toml.workspace = true

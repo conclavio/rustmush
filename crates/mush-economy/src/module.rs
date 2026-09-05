@@ -695,6 +695,10 @@ impl GameModule for EconomyModule {
             Arc::new(crate::attest::on_canon_recorded),
         );
         reg.destroy_gate(Arc::new(EconomicDestroyGate));
+        // SP1 (D-LBK-7 as decided): one composition-frozen `ClockRef::Registered`
+        // provider per `[economy.cadences]` stanza, under `cadence.<name>`. The list is
+        // validated whole first; a runtime cadence registers nothing.
+        crate::declared::register(reg, &self.config)?;
         // The ONE economy tick (D-E4-3): holds, obligations and GC on a single
         // bounded `Coarse` sweep. The core scheduler is in-RAM and re-armed from
         // scratch at boot, so there are deliberately no per-record timers — every
@@ -743,6 +747,10 @@ impl GameModule for EconomyModule {
         *ctx.w
             .module_state_mut::<EconomyStore>()
             .expect("economy store slot") = store;
+        // SP1 (D-LBK-7): adopt or create every declared cadence, now that the store is
+        // live and before any layered module (housing, the WoD layer) looks its
+        // campaign clock up by name.
+        crate::declared::reconcile(ctx, &self.config);
         Ok(())
     }
 }

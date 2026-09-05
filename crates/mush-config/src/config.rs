@@ -27,6 +27,9 @@
 //! | `[worldgen].batch_max_rooms` | `40` | M10 `@gen/building` room cap (valid range `2..=40`) |
 //! | `[economy].mint_obligation_cap_major` | `50000` | E4 per-period ceiling on a faucet-funded obligation, in major units |
 //! | `[economy.instruments."<code>"].mint_obligation_cap_major` | (the above) | per-instrument override of that ceiling |
+//! | `[economy.cadences."<name>"].clock` | `"world_ic"` | SP1 declared cadence: `world_ic` \| `real_utc` (D-LBK-7) |
+//! | `[economy.cadences."<name>"].period_secs` | (required) | the declared cadence's period, seconds on `clock`, `> 0` |
+//! | `[economy.cadences."<name>"].catch_up` | `3` | periods one advance may cover, `1..=8` |
 //! | `[wod.economy].personal_mode` | `"off"` | E5c WoD personal economy: `off` \| `abstract` \| `exact` |
 //! | `[wod.economy].housing` | `true` | whether the WoD layer creates tenancies and registers the housing title issuer |
 //! | `[wod.economy].careers` | `true` | whether careers, stances and opportunities are evaluated |
@@ -343,7 +346,44 @@ impl Default for EconomyInstrumentCfg {
     }
 }
 
-/// `[economy]` section — the E4b1 verify fold's mint bound (M1).
+/// `[economy.cadences."<name>"]` — one **declared** cadence clock (SP1, D-LBK-7 as
+/// decided in 08h §2 Q6).
+///
+/// A declared cadence is registered at composition as a kernel clock
+/// (`ClockRef::Registered { owner: economy, id: cadence.<name> }`) and adopted or
+/// created at boot. The name is the table key and must be a cadence name that is
+/// also a canonical clock id (lowercase `[a-z0-9_.]`, no empty segment, at most 32
+/// bytes); at most 32 may be declared. All of that is validated in `mush-server`'s
+/// typed conversion — a bad stanza refuses to start, never silently registers
+/// nothing. `deny_unknown_fields` for the same reason: a `catchup = 5` typo must not
+/// quietly become the default.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct EconomyCadenceCfg {
+    /// What the clock advances from: `"world_ic"` (the default) or `"real_utc"`.
+    /// A manual clock is a human's to step and cannot be declared.
+    pub clock: String,
+    /// The period in seconds on `clock`. No usable default: `0` is refused.
+    pub period_secs: i64,
+    /// How many periods one advance may cover (`1..=8`; `mush-economy`'s
+    /// `DEFAULT_CATCH_UP` when omitted).
+    pub catch_up: u32,
+}
+
+impl Default for EconomyCadenceCfg {
+    fn default() -> Self {
+        // Mirrors `mush_economy::DEFAULT_CATCH_UP` (kept as a literal so `mush-config`
+        // needs no `mush-economy` dep).
+        EconomyCadenceCfg {
+            clock: "world_ic".to_string(),
+            period_secs: 0,
+            catch_up: 3,
+        }
+    }
+}
+
+/// `[economy]` section — the E4b1 verify fold's mint bound (M1), and since SP1 the
+/// declared cadence clocks (D-LBK-7).
 ///
 /// The economy's hard invariants are not configurable. What is configurable is how
 /// large a hole a ruleset may open in the mint: E5's income table funds careers and
@@ -363,6 +403,10 @@ pub struct EconomyCfg {
     pub mint_obligation_cap_major: u64,
     /// Per-instrument overrides, keyed by instrument code (`wod.usd`).
     pub instruments: BTreeMap<String, EconomyInstrumentCfg>,
+    /// `[economy.cadences]` — the declared cadence clocks, keyed by name (SP1,
+    /// D-LBK-7). Empty off-config: a server that declares nothing registers no
+    /// clock and every cadence stays a runtime one.
+    pub cadences: BTreeMap<String, EconomyCadenceCfg>,
 }
 
 impl Default for EconomyCfg {
@@ -370,6 +414,7 @@ impl Default for EconomyCfg {
         EconomyCfg {
             mint_obligation_cap_major: 50_000,
             instruments: BTreeMap::new(),
+            cadences: BTreeMap::new(),
         }
     }
 }
@@ -881,6 +926,41 @@ mod tests {
             toml::from_str("[economy.instruments.\"wod.usd\"]\nmint_obligation_cap_major = 1\n")
                 .unwrap();
         assert_eq!(cfg.economy.mint_obligation_cap_major, 50_000);
+    }
+
+    /// SP1 (D-LBK-7): `[economy.cadences]` parses as a name-keyed table, `clock` and
+    /// `catch_up` default to `create_cadence`'s (`world_ic`, `3`), `period_secs` has
+    /// no usable default, and an unknown key in a stanza is refused rather than
+    /// ignored. Absent, the table is empty.
+    #[test]
+    fn sp1_economy_cadences_parse_with_defaults() {
+        assert!(Config::default().economy.cadences.is_empty());
+        let cfg: Config = toml::from_str(
+            "[economy.cadences.\"chronicle.period\"]\nperiod_secs = 2592000\n\n\
+             [economy.cadences.\"sr.month\"]\nclock = \"real_utc\"\nperiod_secs = 604800\n\
+             catch_up = 5\n",
+        )
+        .unwrap();
+        let chronicle = &cfg.economy.cadences["chronicle.period"];
+        assert_eq!(chronicle.clock, "world_ic");
+        assert_eq!(chronicle.period_secs, 2_592_000);
+        assert_eq!(chronicle.catch_up, 3);
+        let month = &cfg.economy.cadences["sr.month"];
+        assert_eq!(month.clock, "real_utc");
+        assert_eq!(month.period_secs, 604_800);
+        assert_eq!(month.catch_up, 5);
+        // The inline-table form is the same shape.
+        let cfg: Config = toml::from_str(
+            "[economy.cadences]\nseason = { clock = \"real_utc\", period_secs = 100 }\n",
+        )
+        .unwrap();
+        assert_eq!(cfg.economy.cadences["season"].period_secs, 100);
+        // A typo'd key is a parse error, not a silently defaulted knob.
+        let err =
+            toml::from_str::<Config>("[economy.cadences.season]\nperiod_secs = 100\ncatchup = 5\n")
+                .unwrap_err()
+                .to_string();
+        assert!(err.contains("catchup"), "{err}");
     }
 
     #[test]

@@ -1,0 +1,830 @@
+# Rule 1 -- the pinned legacy-handler allowlist (08i section 4; K answer 12, ratified
+# 2026-09-04). Read by crates/mush-contract-tests/tests/legacy_handler_allowlist.rs.
+#
+# Doc 09 section 7 rule 1, "no new mutating legacy handlers", is ratified with a NARROWER
+# exception than 08i Draft 0.1 proposed: allowed temporarily are bounded whole-document
+# workflow/catalog records with strict decoding, deterministic keys, a declared future
+# family/migration, and no participation in authority or prepared mechanics. NOT exempt:
+# reservations, contacts, leases, windows, production state, mechanical offers, or anything
+# that changes action legality. The economy carve-out (09 section 7 item 5) applies where the
+# Ledger/seal gates prevent migration, not automatically to every E6/E7 handler. K8.5 replaces
+# this file with command registration metadata (read-only / legacy-post-image /
+# authoritative); until then this file is the pin.
+#
+# This is the baseline pinned on main at b0e3b52: EVERY primary verb the production server
+# registered at that commit (core + engine + server staff commands + server_modules_with +
+# worldgen + npc + one ruleset, unioned over the wod and shadowrun compositions, since a
+# server runs one ruleset), each as `baseline`, sorted by name in byte order. Existing verbs
+# are deliberately NOT hand-classified here -- that is K8.5's registration metadata. The
+# parenthetical in each note is provenance only (which layer registered the verb at the pin).
+#
+# Every handler added after the pin MUST be added here in the same commit with a
+# non-baseline category and a note saying why it is exempt or which prepared path it rides,
+# and a `legacy-post-image` entry MUST name its future typed family:
+#
+#   [[handler]]
+#   name = "@verb"              # the primary verb exactly as registered (aliases are not entries)
+#   category = "read-only"      # read-only | legacy-post-image | authoritative | economy-carve-out
+#   family = "owner.family"     # the future typed family (required for legacy-post-image)
+#   note = "why it is exempt, or which prepared path it rides"
+#
+# The tripwire fails on: a registered command missing here (it prints the stanza to add); a
+# listed command no longer registered; a legacy-post-image entry without a family; an unknown
+# category; a non-baseline entry without a note; a duplicate or out-of-order entry; and a
+# baseline count other than the pinned one (a baseline entry may be retired with its verb,
+# lowering the pin in the same commit; none may be added).
+
+[[handler]]
+name = "+action"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (module, wod composition only)"
+
+[[handler]]
+name = "+arete"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (module, wod composition only)"
+
+[[handler]]
+name = "+art"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (module, wod composition only)"
+
+[[handler]]
+name = "+arts"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (module, wod composition only)"
+
+[[handler]]
+name = "+banality"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (module, wod composition only)"
+
+[[handler]]
+name = "+blood"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (module, wod composition only)"
+
+[[handler]]
+name = "+bond"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (module, wod composition only)"
+
+[[handler]]
+name = "+cantrip"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (module, wod composition only)"
+
+[[handler]]
+name = "+career"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (module, wod composition only)"
+
+[[handler]]
+name = "+cast"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (module, every composition)"
+
+[[handler]]
+name = "+chargen"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (module, every composition)"
+
+[[handler]]
+name = "+chronicle"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (module, every composition)"
+
+[[handler]]
+name = "+clocks"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (module, every composition)"
+
+[[handler]]
+name = "+complexforms"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (module, shadowrun composition only)"
+
+[[handler]]
+name = "+condition"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (module, shadowrun composition only)"
+
+[[handler]]
+name = "+damage"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (module, shadowrun composition only)"
+
+[[handler]]
+name = "+disc"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (module, wod composition only)"
+
+[[handler]]
+name = "+disciplines"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (module, wod composition only)"
+
+[[handler]]
+name = "+domitor"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (module, wod composition only)"
+
+[[handler]]
+name = "+faction"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (module, every composition)"
+
+[[handler]]
+name = "+factions"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (module, every composition)"
+
+[[handler]]
+name = "+frenzy"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (module, wod composition only)"
+
+[[handler]]
+name = "+generation"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (module, wod composition only)"
+
+[[handler]]
+name = "+gift"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (module, wod composition only)"
+
+[[handler]]
+name = "+gifts"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (module, wod composition only)"
+
+[[handler]]
+name = "+glamour"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (module, wod composition only)"
+
+[[handler]]
+name = "+gnosis"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (module, wod composition only)"
+
+[[handler]]
+name = "+guest"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (module, every composition)"
+
+[[handler]]
+name = "+harm"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (module, wod composition only)"
+
+[[handler]]
+name = "+heal"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (module, every composition)"
+
+[[handler]]
+name = "+health"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (module, wod composition only)"
+
+[[handler]]
+name = "+home"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (module, every composition)"
+
+[[handler]]
+name = "+humanity"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (module, wod composition only)"
+
+[[handler]]
+name = "+init"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (module, shadowrun composition only)"
+
+[[handler]]
+name = "+intel"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (module, every composition)"
+
+[[handler]]
+name = "+intercept"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (module, every composition)"
+
+[[handler]]
+name = "+job"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (module, every composition)"
+
+[[handler]]
+name = "+jobs"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (module, every composition)"
+
+[[handler]]
+name = "+karma"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (module, shadowrun composition only)"
+
+[[handler]]
+name = "+legacy"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (module, wod composition only)"
+
+[[handler]]
+name = "+magic"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (module, shadowrun composition only)"
+
+[[handler]]
+name = "+note"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (module, every composition)"
+
+[[handler]]
+name = "+notes"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (module, every composition)"
+
+[[handler]]
+name = "+obfuscate"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (module, wod composition only)"
+
+[[handler]]
+name = "+paradox"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (module, wod composition only)"
+
+[[handler]]
+name = "+powers"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (module, shadowrun composition only)"
+
+[[handler]]
+name = "+prompt"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (module, wod composition only)"
+
+[[handler]]
+name = "+quint"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (module, wod composition only)"
+
+[[handler]]
+name = "+rage"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (module, wod composition only)"
+
+[[handler]]
+name = "+rank"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (module, wod composition only)"
+
+[[handler]]
+name = "+realm"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (module, wod composition only)"
+
+[[handler]]
+name = "+realms"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (module, wod composition only)"
+
+[[handler]]
+name = "+recap"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (module, every composition)"
+
+[[handler]]
+name = "+renown"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (module, wod composition only)"
+
+[[handler]]
+name = "+request"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (module, every composition)"
+
+[[handler]]
+name = "+resonance"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (module, every composition)"
+
+[[handler]]
+name = "+resources"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (module, wod composition only)"
+
+[[handler]]
+name = "+roll"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (module, every composition)"
+
+[[handler]]
+name = "+scene"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (module, every composition)"
+
+[[handler]]
+name = "+sheet"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (module, every composition)"
+
+[[handler]]
+name = "+shift"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (module, wod composition only)"
+
+[[handler]]
+name = "+spec"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (module, every composition)"
+
+[[handler]]
+name = "+spell"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (module, shadowrun composition only)"
+
+[[handler]]
+name = "+spells"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (module, shadowrun composition only)"
+
+[[handler]]
+name = "+sphere"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (module, wod composition only)"
+
+[[handler]]
+name = "+spheres"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (module, wod composition only)"
+
+[[handler]]
+name = "+stat"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (module, every composition)"
+
+[[handler]]
+name = "+territory"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (module, every composition)"
+
+[[handler]]
+name = "+thread"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (module, shadowrun composition only)"
+
+[[handler]]
+name = "+timestop"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (module, every composition)"
+
+[[handler]]
+name = "+tribe"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (module, wod composition only)"
+
+[[handler]]
+name = "+xp"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (module, wod composition only)"
+
+[[handler]]
+name = "@account"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (module, every composition)"
+
+[[handler]]
+name = "@agent"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (module, every composition)"
+
+[[handler]]
+name = "@asset"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (module, every composition)"
+
+[[handler]]
+name = "@behavior"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (core/engine registry)"
+
+[[handler]]
+name = "@boot"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (server staff commands)"
+
+[[handler]]
+name = "@canon"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (module, every composition)"
+
+[[handler]]
+name = "@career"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (module, wod composition only)"
+
+[[handler]]
+name = "@channel"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (module, every composition)"
+
+[[handler]]
+name = "@chown"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (core/engine registry)"
+
+[[handler]]
+name = "@clock"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (module, every composition)"
+
+[[handler]]
+name = "@contract"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (module, every composition)"
+
+[[handler]]
+name = "@create"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (core/engine registry)"
+
+[[handler]]
+name = "@desc"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (core/engine registry)"
+
+[[handler]]
+name = "@destroy"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (core/engine registry)"
+
+[[handler]]
+name = "@dig"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (core/engine registry)"
+
+[[handler]]
+name = "@domain"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (module, every composition)"
+
+[[handler]]
+name = "@dump"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (server staff commands)"
+
+[[handler]]
+name = "@econ"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (module, every composition)"
+
+[[handler]]
+name = "@emit"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (core/engine registry)"
+
+[[handler]]
+name = "@faction"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (module, every composition)"
+
+[[handler]]
+name = "@find"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (core/engine registry)"
+
+[[handler]]
+name = "@front"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (module, every composition)"
+
+[[handler]]
+name = "@gen"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (module, every composition)"
+
+[[handler]]
+name = "@hold"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (module, every composition)"
+
+[[handler]]
+name = "@housing"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (module, every composition)"
+
+[[handler]]
+name = "@ignore"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (core/engine registry)"
+
+[[handler]]
+name = "@instrument"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (module, every composition)"
+
+[[handler]]
+name = "@link"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (core/engine registry)"
+
+[[handler]]
+name = "@llm"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (module, every composition)"
+
+[[handler]]
+name = "@lock"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (core/engine registry)"
+
+[[handler]]
+name = "@lore"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (module, every composition)"
+
+[[handler]]
+name = "@mail"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (module, every composition)"
+
+[[handler]]
+name = "@name"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (core/engine registry)"
+
+[[handler]]
+name = "@newchar"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (server staff commands)"
+
+[[handler]]
+name = "@newpassword"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (server staff commands)"
+
+[[handler]]
+name = "@obligation"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (module, every composition)"
+
+[[handler]]
+name = "@open"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (core/engine registry)"
+
+[[handler]]
+name = "@org"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (module, every composition)"
+
+[[handler]]
+name = "@parent"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (core/engine registry)"
+
+[[handler]]
+name = "@property"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (module, every composition)"
+
+[[handler]]
+name = "@ps"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (server staff commands)"
+
+[[handler]]
+name = "@region"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (module, every composition)"
+
+[[handler]]
+name = "@route"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (module, every composition)"
+
+[[handler]]
+name = "@script"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (module, every composition)"
+
+[[handler]]
+name = "@set"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (core/engine registry)"
+
+[[handler]]
+name = "@sheet"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (module, every composition)"
+
+[[handler]]
+name = "@shutdown"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (server staff commands)"
+
+[[handler]]
+name = "@siteban"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (server staff commands)"
+
+[[handler]]
+name = "@slowtest"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (core/engine registry)"
+
+[[handler]]
+name = "@spatial"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (module, every composition)"
+
+[[handler]]
+name = "@sshkey"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (server staff commands)"
+
+[[handler]]
+name = "@stats"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (server staff commands)"
+
+[[handler]]
+name = "@teleport"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (core/engine registry)"
+
+[[handler]]
+name = "@tenancy"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (module, every composition)"
+
+[[handler]]
+name = "@theme"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (module, every composition)"
+
+[[handler]]
+name = "@unit"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (module, every composition)"
+
+[[handler]]
+name = "@unlock"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (core/engine registry)"
+
+[[handler]]
+name = "@vault"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (module, every composition)"
+
+[[handler]]
+name = "@wait"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (core/engine registry)"
+
+[[handler]]
+name = "@wall"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (core/engine registry)"
+
+[[handler]]
+name = "@weather"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (module, every composition)"
+
+[[handler]]
+name = "@wod"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (module, wod composition only)"
+
+[[handler]]
+name = "@zone"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (core/engine registry)"
+
+[[handler]]
+name = "WHO"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (core/engine registry)"
+
+[[handler]]
+name = "addcom"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (module, every composition)"
+
+[[handler]]
+name = "clist"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (module, every composition)"
+
+[[handler]]
+name = "comlist"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (module, every composition)"
+
+[[handler]]
+name = "comtitle"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (module, every composition)"
+
+[[handler]]
+name = "delcom"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (module, every composition)"
+
+[[handler]]
+name = "drop"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (core/engine registry)"
+
+[[handler]]
+name = "egress"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (module, every composition)"
+
+[[handler]]
+name = "examine"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (core/engine registry)"
+
+[[handler]]
+name = "get"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (core/engine registry)"
+
+[[handler]]
+name = "give"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (core/engine registry)"
+
+[[handler]]
+name = "goto"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (core/engine registry)"
+
+[[handler]]
+name = "help"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (core/engine registry)"
+
+[[handler]]
+name = "home"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (core/engine registry)"
+
+[[handler]]
+name = "inventory"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (core/engine registry)"
+
+[[handler]]
+name = "look"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (core/engine registry)"
+
+[[handler]]
+name = "page"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (core/engine registry)"
+
+[[handler]]
+name = "pose"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (core/engine registry)"
+
+[[handler]]
+name = "say"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (core/engine registry)"
+
+[[handler]]
+name = "semipose"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (core/engine registry)"
+
+[[handler]]
+name = "think"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (core/engine registry)"
+
+[[handler]]
+name = "time"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (core/engine registry)"
+
+[[handler]]
+name = "use"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (module, every composition)"
+
+[[handler]]
+name = "whisper"
+category = "baseline"
+note = "baseline pinned at b0e3b52 (core/engine registry)"

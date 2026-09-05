@@ -1393,6 +1393,74 @@ mod tests {
         assert!(store.issuer().is_none());
     }
 
+    /// SP1 (D-LBK-7): a cadence declared in `[economy.cadences]` reaches the
+    /// composition-frozen clock registry through `economy_config` →
+    /// `server_modules_with` → `EconomyModule::register`, is created at boot, and
+    /// is read through `Engine::clock_now` as `Registered { economy, cadence.<name> }`.
+    /// The WoD layer, booting after the economy, finds the declared campaign clock
+    /// by name instead of minting its own manual one.
+    #[test]
+    fn sp1_a_declared_cadence_reaches_the_registry_through_server_modules_with() {
+        use mush_testkit::TestWorld;
+        let cfg: mush_config::config::Config = toml::from_str(
+            "[economy.cadences.\"chronicle.period\"]\nclock = \"real_utc\"\n\
+             period_secs = 2592000\n",
+        )
+        .expect("parses");
+        let economy = crate::config_ext::economy_config(&cfg.economy).expect("converts");
+        let onboarding = ruleset_wod::OnboardingConfig::default();
+        let wod = ruleset_wod::WodEconomyConfig::default();
+        assert_eq!(wod.cadence, "chronicle.period");
+        let mut mods = server_modules_with(
+            mush_weather::WeatherConfig::default(),
+            economy,
+            &onboarding,
+            Some(&wod),
+        );
+        mods.extend(ruleset_modules(&["wod".to_string()], &onboarding, &wod).expect("wod"));
+        let tw = TestWorld::with_modules(mods);
+        let clock = mush_core::ClockRef::Registered {
+            owner: mush_core::OwnerId::new("economy").expect("owner"),
+            id: mush_core::CanonicalId::new("cadence.chronicle.period").expect("id"),
+            generation: 1,
+        };
+        let stamp = tw
+            .engine()
+            .clock_now(&clock)
+            .expect("the declared cadence is registered and readable");
+        assert_eq!(stamp.at, 0);
+        assert_eq!(stamp.clock, clock);
+        let store = tw
+            .world()
+            .module_state::<mush_economy::EconomyStore>()
+            .expect("economy");
+        let c = mush_economy::cadence_by_name(store.snapshot(), "chronicle.period")
+            .expect("created at boot");
+        assert_eq!(
+            (c.schema, c.source, c.period),
+            (
+                mush_economy::CADENCE_SCHEMA_DECLARED,
+                mush_economy::CadenceSource::RealUtc,
+                2_592_000
+            )
+        );
+        assert_eq!(
+            store.snapshot().cadences().count(),
+            1,
+            "the WoD layer minted its own"
+        );
+        // An undeclared id has no provider.
+        let other = mush_core::ClockRef::Registered {
+            owner: mush_core::OwnerId::new("economy").expect("owner"),
+            id: mush_core::CanonicalId::new("cadence.sr.month").expect("id"),
+            generation: 1,
+        };
+        assert!(matches!(
+            tw.engine().clock_now(&other),
+            Err(mush_core::ClockReadError::ProviderMissing { .. })
+        ));
+    }
+
     #[test]
     fn server_modules_register_without_collision() {
         // The full production list (including org/economy and sim/tactics) shares one

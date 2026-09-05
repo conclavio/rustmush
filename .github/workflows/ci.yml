@@ -39,6 +39,11 @@ jobs:
         run: |
           cargo test -p mush-store --test redis_suite -- --ignored
           cargo test -p mush-server --lib live_redis_wrong_type_bundle_quarantines_repairs_and_recovers -- --ignored
+      - name: Live Redis world-timeline round trip (Linux only; 08g T6)
+        if: runner.os == 'Linux'
+        # `#[ignore]`d because it needs REDIS_URL; without one it fails (it does not
+        # skip), so it runs only here, behind the Redis service above.
+        run: cargo test -p mush-server --lib redis_round_trip_preserves_exact_generations -- --ignored
       - name: TS bindings drift check (Linux only)
         if: runner.os == 'Linux'
         run: |

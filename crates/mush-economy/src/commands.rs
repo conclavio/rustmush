@@ -1613,18 +1613,26 @@ fn source_word(src: CadenceSource, period: i64) -> String {
 }
 
 fn cadence_show(ctx: &mut Ctx<'_>, id: CadenceId) -> Result<(), CmdError> {
-    let c = ctx
+    let (c, declared) = ctx
         .w
         .module_state::<EconomyStore>()
-        .and_then(|s| s.snapshot().cadence(id).cloned())
+        .and_then(|s| {
+            let c = s.snapshot().cadence(id).cloned()?;
+            // SP1 (D-LBK-7): "declared" is the registration truth — the name is in the
+            // live `[economy.cadences]` — not the persisted schema stamp, which only
+            // records that some boot adopted it.
+            let declared = s.config.declared_cadence(&c.name).is_some();
+            Some((c, declared))
+        })
         .ok_or_else(|| CmdError::msg("No such cadence."))?;
     info(
         ctx,
         format!(
-            "Cadence #{}: {} — {}",
+            "Cadence #{}: {} — {} · {}",
             c.id,
             c.name,
-            source_word(c.source, c.period)
+            source_word(c.source, c.period),
+            if declared { "declared" } else { "runtime" }
         ),
     );
     info(
@@ -4735,6 +4743,16 @@ fn econ_ack(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 format!(
                     "Room #{room} is still under housing review: acknowledging does not lift a \
                      quarantine (@housing/quarantine show)."
+                ),
+            ),
+            // SP1 (D-LBK-7): a declared cadence's page is a decision about which
+            // side — the configuration or the live clock — is right. Acknowledging
+            // rewrites neither.
+            EscalationSubject::DeclaredCadence(cid) => info(
+                ctx,
+                format!(
+                    "Cadence #{cid} is unchanged: acknowledging does not rewrite a live clock \
+                     or the configuration that declares it (@econ/cadence show #{cid})."
                 ),
             ),
             EscalationSubject::Obligation(_) | EscalationSubject::Hold(_) => {}

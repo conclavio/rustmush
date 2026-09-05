@@ -23,16 +23,19 @@ use std::sync::{Arc, Mutex};
 
 use mush_core::module::{GameModule, ModError, Registrar};
 use mush_core::{
-    ArgShape, Audience, CmdError, CommandSpec, Ctx, GOD, LIMBO, ModuleBootData, ModuleWrite, ObjId,
-    ObjKind, World,
+    ArgShape, Audience, CanonicalId, ClockProviderFailure, ClockReadError, ClockRef, CmdError,
+    CommandSpec, Ctx, Engine, GOD, LIMBO, ModuleBootData, ModuleWrite, ObjId, ObjKind, OwnerId,
+    World,
 };
 use mush_economy::{
-    AccountId, AccountRevision, AccountStatus, Amount, CadenceId, ContractError, ContractId,
-    ContractState, CustodyError, CustodyProvider, CustodyRef, EconomicCause, EconomicClock,
-    EconomicSchedule, EconomyConfig, EconomyError, EconomyPlan, EconomySnapshot, EconomyStore,
-    Encumbrance, EscalationKind, EscalationSubject, ForgiveCause, GracePolicy, HoldId, HoldStatus,
-    IdempotencyKey, InstrumentCaps, LeaseEnd, ObligationCause, ObligationEvent, ObligationId,
-    ObligationSpec, ObligationStatus, PostOutcome, RequestedLine, SuspendReason, SuspensionKey,
+    AccountId, AccountRevision, AccountStatus, Amount, CADENCE_SCHEMA_DECLARED, CadenceId,
+    CadenceSource, Clocks, ContractError, ContractId, ContractState, CustodyError, CustodyProvider,
+    CustodyRef, DeclaredCadence, DeclaredCadenceClock, DeclaredCadenceError, EconomicCause,
+    EconomicClock, EconomicSchedule, EconomyConfig, EconomyError, EconomyPlan, EconomySnapshot,
+    EconomyStore, Encumbrance, EscalationKind, EscalationSubject, ForgiveCause, GracePolicy,
+    HoldId, HoldStatus, IdempotencyKey, InstrumentCaps, LeaseEnd, ObligationCause, ObligationEvent,
+    ObligationId, ObligationSpec, ObligationStatus, PostOutcome, RequestedLine, SuspendReason,
+    SuspensionKey,
 };
 use mush_proto::OutputEvent;
 use mush_testkit::{TestWorld, text_of};
@@ -4140,4 +4143,394 @@ fn lb_rent_after_end_end_lease_on_an_offered_lease_writes_the_state_alone() {
     );
     sweep_at(&mut tw, 100);
     assert_eq!(bal(&tw, r.pat_acct), 1_000);
+}
+
+// ======================================================================
+// ---- SP1: declared cadences ----
+// ======================================================================
+//
+// D-LBK-7 as decided (08h §2 Q6, K answer 4): a cadence named in
+// `[economy.cadences]` is registered at composition as
+// `ClockRef::Registered { owner: economy, id: cadence.<name>, generation }`; an
+// existing document of that name is adopted at boot (schema 2, parameters kept); a
+// missing one is created; a runtime cadence stays a legacy adapter and registers
+// nothing. `EconomicClock` and the sweep are untouched.
+
+fn declared(entries: &[(&str, DeclaredCadenceClock, i64)]) -> EconomyConfig {
+    EconomyConfig {
+        cadences: entries
+            .iter()
+            .map(|(name, clock, period_secs)| {
+                (
+                    SmolStr::new(name),
+                    DeclaredCadence {
+                        clock: *clock,
+                        period_secs: *period_secs,
+                        catch_up: mush_economy::DEFAULT_CATCH_UP,
+                    },
+                )
+            })
+            .collect(),
+        ..EconomyConfig::default()
+    }
+}
+fn declared_modules(cfg: EconomyConfig) -> Vec<Box<dyn GameModule>> {
+    vec![
+        Box::new(mush_org::OrgModule::new()),
+        Box::new(mush_economy::EconomyModule::with_custody(vec![]).with_config(cfg)),
+    ]
+}
+fn boot_declared(cfg: EconomyConfig) -> TestWorld {
+    TestWorld::with_modules(declared_modules(cfg))
+}
+fn registered(name: &str, generation: u64) -> ClockRef {
+    ClockRef::Registered {
+        owner: OwnerId::new("economy").expect("the economy's owner id"),
+        id: CanonicalId::new(format!("cadence.{name}")).expect("a canonical clock id"),
+        generation,
+    }
+}
+fn cadence_named(tw: &TestWorld, name: &str) -> mush_economy::CadenceClock {
+    mush_economy::cadence_by_name(snap(tw), name)
+        .cloned()
+        .unwrap_or_else(|| panic!("no cadence named {name}"))
+}
+fn declared_pages(tw: &TestWorld, id: CadenceId) -> Vec<mush_economy::Escalation> {
+    store(tw)
+        .escalations()
+        .filter(|e| e.subject == EscalationSubject::DeclaredCadence(id))
+        .cloned()
+        .collect()
+}
+
+/// A declared cadence is created at boot, stamped schema 2, and readable through
+/// the kernel registry: `Engine::clock_now` answers its `position` under its
+/// `generation`, the sweep still advances it from its own source, `revision` moves
+/// without touching the registry's generation, and any other generation is stale.
+#[test]
+fn sp1_a_declared_cadence_is_registered_at_composition_and_read_through_the_registry() {
+    let mut tw = boot_declared(declared(&[("season", DeclaredCadenceClock::RealUtc, 100)]));
+    let c = cadence_named(&tw, "season");
+    assert_eq!(
+        (
+            c.schema,
+            c.source,
+            c.period,
+            c.catch_up_cap,
+            c.position,
+            c.generation
+        ),
+        (
+            CADENCE_SCHEMA_DECLARED,
+            CadenceSource::RealUtc,
+            100,
+            mush_economy::DEFAULT_CATCH_UP,
+            0,
+            mush_economy::CADENCE_GENERATION_INITIAL
+        )
+    );
+    let stamp = tw
+        .engine()
+        .clock_now(&registered("season", 1))
+        .expect("a declared cadence is readable through the registry");
+    assert_eq!(stamp.at, 0);
+    assert_eq!(stamp.clock, registered("season", 1));
+
+    // The sweep advances it from its own source, exactly as before; the registry
+    // reads the moved position.
+    let t0 = tw.world().now();
+    sweep_at(&mut tw, t0 + 250);
+    let c = cadence_named(&tw, "season");
+    assert_eq!(c.position, 2);
+    assert_eq!(
+        tw.engine()
+            .clock_now(&registered("season", 1))
+            .expect("still readable")
+            .at,
+        2
+    );
+    // `revision` is the staleness stamp and moved; `generation` did not (08h Q6), and
+    // the registry keys on the generation alone.
+    assert_eq!((c.revision, c.generation), (2, 1));
+    let stale = tw
+        .engine()
+        .clock_now(&registered("season", 2))
+        .expect_err("generation 2 does not exist");
+    assert!(
+        matches!(
+            stale,
+            ClockReadError::Provider {
+                source: ClockProviderFailure::StaleGeneration {
+                    requested: 2,
+                    current: 1
+                },
+                ..
+            }
+        ),
+        "{stale:?}"
+    );
+    // The legacy adapter resolves the same clock, untouched.
+    assert_eq!(
+        Clocks::new(0, 0).now_on(EconomicClock::Cadence(c.id), snap(&tw), 0),
+        Some(2)
+    );
+    let seen = ok(&mut tw, GOD, &format!("@econ/cadence show {}", c.id));
+    assert!(seen.contains("declared"), "{seen}");
+    assert!(seen.contains("generation 1 · schema 2"), "{seen}");
+
+    // A reboot over its own documents adopts silently: same clock, same position,
+    // nothing paged.
+    let kv = fold_kv(&mut tw);
+    reboot(&mut tw, kv);
+    let c = cadence_named(&tw, "season");
+    assert_eq!((c.schema, c.position), (CADENCE_SCHEMA_DECLARED, 2));
+    assert_eq!(snap(&tw).cadences().count(), 1, "a second clock was minted");
+    assert!(declared_pages(&tw, c.id).is_empty());
+    assert_eq!(
+        tw.engine()
+            .clock_now(&registered("season", 1))
+            .expect("readable after the reboot")
+            .at,
+        2
+    );
+}
+
+/// An existing document with a declared name is ADOPTED: stamped schema 2, its
+/// parameters left as persisted (the configuration never rewrites a live clock), and
+/// a clock/period disagreement is paged exactly once through the ladder however many
+/// boots see it.
+#[test]
+fn sp1_adoption_stamps_schema_2_keeps_the_persisted_parameters_and_pages_a_mismatch_once() {
+    let mut first = boot();
+    ok(
+        &mut first,
+        GOD,
+        "@econ/cadence create season source=real:100",
+    );
+    let mut kv = fold_kv(&mut first);
+
+    // The declaration disagrees on both counts.
+    let mut tw = boot_declared(declared(&[("season", DeclaredCadenceClock::WorldIc, 200)]));
+    let _ = tw.take_module_ops(); // the fresh boot's own creation, not under test
+    reboot(&mut tw, kv.clone());
+    let c = cadence_named(&tw, "season");
+    assert_eq!(c.id, CadenceId(0));
+    assert_eq!(
+        (c.schema, c.source, c.period, c.catch_up_cap),
+        (
+            CADENCE_SCHEMA_DECLARED,
+            CadenceSource::RealUtc,
+            100,
+            mush_economy::DEFAULT_CATCH_UP
+        ),
+        "adoption rewrote a live clock"
+    );
+    assert_eq!(
+        snap(&tw).cadences().count(),
+        1,
+        "a second `season` was minted"
+    );
+    let pages = declared_pages(&tw, CadenceId(0));
+    assert_eq!(pages.len(), 1, "{pages:?}");
+    let page = &pages[0];
+    assert_eq!(page.kind, EscalationKind::BootReconciliation);
+    assert!(page.is_open());
+    assert!(
+        page.context.contains("economy.cadence.declared:season"),
+        "{}",
+        page.context
+    );
+    assert!(
+        page.context.contains("\"world_ic\"") && page.context.contains("\"real_utc\""),
+        "{}",
+        page.context
+    );
+    assert!(
+        page.recommended
+            .iter()
+            .any(|r| r.contains("@econ/cadence show #0")),
+        "{:?}",
+        page.recommended
+    );
+    // The registry reads the adopted document.
+    assert_eq!(
+        tw.engine()
+            .clock_now(&registered("season", 1))
+            .expect("readable")
+            .at,
+        0
+    );
+    // The adoption and the page are durable, and a second boot over them pages
+    // nothing new and mints nothing.
+    merge(&mut kv, drain(&mut tw));
+    assert_eq!(value_of(&kv, "cadence:0")["schema"], serde_json::json!(2));
+    assert_eq!(value_of(&kv, "cadence:0")["period"], serde_json::json!(100));
+    reboot(&mut tw, kv.clone());
+    assert_eq!(declared_pages(&tw, CadenceId(0)).len(), 1);
+    assert_eq!(snap(&tw).cadences().count(), 1);
+    let seen = ok(&mut tw, GOD, "@econ/cadence show 0");
+    assert!(seen.contains("declared"), "{seen}");
+    assert!(seen.contains("every 100s real"), "{seen}");
+    let seen = ok(&mut tw, GOD, "@econ/alerts");
+    assert!(seen.contains("declared cadence #0"), "{seen}");
+    // Acknowledging changes neither side.
+    let seen = ok(&mut tw, GOD, "@econ/ack 0");
+    assert!(seen.contains("does not rewrite a live clock"), "{seen}");
+    let c = cadence_named(&tw, "season");
+    assert_eq!((c.source, c.period), (CadenceSource::RealUtc, 100));
+}
+
+/// A cadence created at runtime by `@econ/cadence create` is NOT registered: the
+/// registry has no provider for it, it keeps the legacy schema, `show` says so, and
+/// the legacy adapter still resolves it.
+#[test]
+fn sp1_a_runtime_cadence_is_not_registered() {
+    let mut tw = boot_declared(declared(&[("season", DeclaredCadenceClock::RealUtc, 100)]));
+    ok(&mut tw, GOD, "@econ/cadence create ad_hoc source=real:10");
+    let c = cadence_named(&tw, "ad_hoc");
+    assert_eq!(c.schema, mush_economy::CADENCE_SCHEMA_LEGACY);
+    let missing = tw
+        .engine()
+        .clock_now(&registered("ad_hoc", 1))
+        .expect_err("a runtime cadence has no provider");
+    assert!(
+        matches!(missing, ClockReadError::ProviderMissing { .. }),
+        "{missing:?}"
+    );
+    let seen = ok(&mut tw, GOD, &format!("@econ/cadence show {}", c.id));
+    assert!(seen.contains("runtime"), "{seen}");
+    assert!(!seen.contains("declared"), "{seen}");
+    assert_eq!(
+        Clocks::new(0, 0).now_on(EconomicClock::Cadence(c.id), snap(&tw), 0),
+        Some(0)
+    );
+    // The declared one beside it is unaffected.
+    assert!(tw.engine().clock_now(&registered("season", 1)).is_ok());
+}
+
+/// `[economy.cadences]` is refused whole — at the typed config and again at
+/// composition — for a 33rd clock, a name that is not a cadence name and a canonical
+/// clock id, a non-positive period, or a catch-up outside the band.
+#[test]
+fn sp1_configuration_refuses_33_cadences_and_a_bad_name() {
+    let many: Vec<(String, DeclaredCadenceClock, i64)> = (0..33)
+        .map(|i| (format!("c{i}"), DeclaredCadenceClock::RealUtc, 100))
+        .collect();
+    let refs: Vec<(&str, DeclaredCadenceClock, i64)> =
+        many.iter().map(|(n, c, p)| (n.as_str(), *c, *p)).collect();
+    let cfg = declared(&refs);
+    assert_eq!(
+        cfg.check_declared_cadences(),
+        Err(DeclaredCadenceError::TooMany {
+            count: 33,
+            max: mush_economy::MAX_DECLARED_CADENCES
+        })
+    );
+    // Composition refuses it too, with the reason.
+    let (world, registry) = mush_testkit::boot_world();
+    let refused = Engine::with_modules(world, registry, declared_modules(cfg))
+        .err()
+        .expect("composition refused the list");
+    assert!(refused.to_string().contains("33"), "{refused}");
+    // Thirty-two is the bound, not thirty-one.
+    assert_eq!(declared(&refs[..32]).check_declared_cadences(), Ok(()));
+
+    let long = "x".repeat(33);
+    for bad in [
+        "Season",
+        "a..b",
+        ".season",
+        "season.",
+        "sea son",
+        "sea-son",
+        "",
+        long.as_str(),
+    ] {
+        let cfg = declared(&[(bad, DeclaredCadenceClock::RealUtc, 100)]);
+        assert!(
+            matches!(
+                cfg.check_declared_cadences(),
+                Err(DeclaredCadenceError::Name { .. })
+            ),
+            "{bad:?} was accepted"
+        );
+        let (world, registry) = mush_testkit::boot_world();
+        assert!(
+            Engine::with_modules(world, registry, declared_modules(cfg)).is_err(),
+            "{bad:?} composed"
+        );
+    }
+    // A dotted, 32-byte name is a name.
+    assert_eq!(
+        declared(&[("chronicle.period", DeclaredCadenceClock::WorldIc, 1)])
+            .check_declared_cadences(),
+        Ok(())
+    );
+    assert_eq!(
+        declared(&[("x".repeat(32).as_str(), DeclaredCadenceClock::WorldIc, 1)])
+            .check_declared_cadences(),
+        Ok(())
+    );
+    assert!(matches!(
+        declared(&[("season", DeclaredCadenceClock::WorldIc, 0)]).check_declared_cadences(),
+        Err(DeclaredCadenceError::Period { .. })
+    ));
+    for catch_up in [0, mush_economy::MAX_CATCH_UP_CAP + 1] {
+        let mut cfg = declared(&[("season", DeclaredCadenceClock::WorldIc, 1)]);
+        cfg.cadences.get_mut("season").expect("the stanza").catch_up = catch_up;
+        assert!(
+            matches!(
+                cfg.check_declared_cadences(),
+                Err(DeclaredCadenceError::CatchUp { .. })
+            ),
+            "catch_up {catch_up} was accepted"
+        );
+    }
+}
+
+/// An old-shape document (no `generation`, no `schema`) with a declared name loads,
+/// is adopted to schema 2 at generation 1, and — its parameters matching — pages
+/// nothing.
+#[test]
+fn sp1_an_old_shape_document_with_a_declared_name_loads_and_is_adopted() {
+    let mut first = boot();
+    ok(
+        &mut first,
+        GOD,
+        "@econ/cadence create season source=real:100",
+    );
+    ok(&mut first, GOD, "@econ/cadence create other source=manual");
+    let mut kv = fold_kv(&mut first);
+    patch(&mut kv, "cadence:0", |v| {
+        v.as_object_mut().expect("an object").remove("generation");
+        v.as_object_mut().expect("an object").remove("schema");
+    });
+    let mut tw = boot_declared(declared(&[("season", DeclaredCadenceClock::RealUtc, 100)]));
+    let _ = tw.take_module_ops();
+    reboot(&mut tw, kv);
+    let c = cadence_named(&tw, "season");
+    assert_eq!(
+        (c.id, c.generation, c.schema, c.revision),
+        (
+            CadenceId(0),
+            mush_economy::CADENCE_GENERATION_INITIAL,
+            CADENCE_SCHEMA_DECLARED,
+            1
+        )
+    );
+    assert!(declared_pages(&tw, CadenceId(0)).is_empty());
+    assert_eq!(
+        tw.engine()
+            .clock_now(&registered("season", 1))
+            .expect("readable")
+            .at,
+        0
+    );
+    // The runtime clock beside it is left exactly as it was.
+    let other = cadence_named(&tw, "other");
+    assert_eq!(other.schema, mush_economy::CADENCE_SCHEMA_LEGACY);
+    assert!(matches!(
+        tw.engine().clock_now(&registered("other", 1)),
+        Err(ClockReadError::ProviderMissing { .. })
+    ));
 }

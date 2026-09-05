@@ -262,7 +262,7 @@ async fn build_engine(
         .any(|r| r.trim().eq_ignore_ascii_case("wod"));
     let mut mods = modules::server_modules_with(
         crate::config_ext::weather_config(&config.weather),
-        crate::config_ext::economy_config(&config.economy),
+        crate::config_ext::economy_config(&config.economy)?,
         &onboarding,
         wod_selected.then_some(&wod_economy),
     );

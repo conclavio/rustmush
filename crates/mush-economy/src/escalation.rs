@@ -27,7 +27,7 @@ use mush_core::ObjId;
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 
-use crate::ids::{AccountId, ContractId, EscalationId, HoldId, ObligationId};
+use crate::ids::{AccountId, CadenceId, ContractId, EscalationId, HoldId, ObligationId};
 
 /// The largest free-text diagnosis one record carries (a bound, like every other
 /// stored string in the crate).
@@ -109,6 +109,12 @@ pub enum EscalationSubject {
     /// room two properties both hold) — see [`EscalationSubject::HousingProperty`]
     /// for why it lives here. The `u32` is the raw object id.
     HousingRoom(u32),
+    /// One **declared** cadence clock (SP1, D-LBK-7) whose persisted clock or period
+    /// disagrees with its `[economy.cadences]` stanza. Boot adopted the clock as it
+    /// is — configuration never rewrites a running clock — and this is the one page
+    /// asking a human which side is right. Keyed by the cadence id, so one clock
+    /// pages once however many boots see the mismatch.
+    DeclaredCadence(CadenceId),
     /// The whole economy — the level-3 case, and the only one that is not local.
     Economy,
 }
@@ -124,6 +130,7 @@ impl EscalationSubject {
             EscalationSubject::HousingProperty(id) => format!("housing property #{id}"),
             EscalationSubject::HousingTenancy(id) => format!("housing tenancy #{id}"),
             EscalationSubject::HousingRoom(id) => format!("housing room #{id}"),
+            EscalationSubject::DeclaredCadence(id) => format!("declared cadence #{id}"),
             EscalationSubject::Economy => "the economy".to_string(),
         }
     }

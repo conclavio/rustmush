@@ -230,10 +230,16 @@ pub enum CadenceSource {
 /// today (look-back fold, D-LBK-7): it bumps only on a re-point, and no verb
 /// re-points yet.
 pub const CADENCE_GENERATION_INITIAL: u32 = 1;
-/// The `schema` a runtime cadence carries. A **declared** cadence (named in
-/// `[economy.cadences]` and registered at composition, the convergence commit's
-/// half of D-LBK-7) is stamped `2` when it is adopted at boot.
+/// The `schema` a runtime cadence carries (`@econ/cadence create`). Such a clock is
+/// a legacy `EconomicClock::Cadence(id)` adapter and nothing registers it.
 pub const CADENCE_SCHEMA_LEGACY: u16 = 1;
+/// The `schema` a **declared** cadence carries (SP1, D-LBK-7 as decided in 08h
+/// §2 Q6): named in `[economy.cadences]`, registered at composition as
+/// `ClockRef::Registered { owner: economy, id: cadence.<name>, generation }`, and
+/// stamped `2` when the economy adopts (or creates) its document at boot. The stamp
+/// is informational — the registration truth is the live configuration — and the
+/// clock's parameters are never rewritten by it.
+pub const CADENCE_SCHEMA_DECLARED: u16 = 2;
 
 fn cadence_generation_default() -> u32 {
     CADENCE_GENERATION_INITIAL

@@ -1725,6 +1725,28 @@ pub fn create_cadence(
     period: i64,
     catch_up: Option<u8>,
 ) -> Result<CadenceId, CadenceError> {
+    create_cadence_with_schema(
+        ctx,
+        name,
+        source,
+        period,
+        catch_up,
+        crate::clock::CADENCE_SCHEMA_LEGACY,
+    )
+}
+
+/// [`create_cadence`] with an explicit record `schema` — the boot path for a
+/// **declared** cadence (SP1, D-LBK-7) stamps [`crate::clock::CADENCE_SCHEMA_DECLARED`]
+/// at creation; every runtime creator stamps the legacy schema through the public
+/// verb. Same caps, same duplicate-name rule, same anchoring.
+pub(crate) fn create_cadence_with_schema(
+    ctx: &mut Ctx<'_>,
+    name: &str,
+    source: crate::clock::CadenceSource,
+    period: i64,
+    catch_up: Option<u8>,
+    schema: u16,
+) -> Result<CadenceId, CadenceError> {
     let name = name.trim();
     if name.is_empty() || name.len() > MAX_CADENCE_NAME_BYTES {
         return Err(CadenceError::Name);
@@ -1775,7 +1797,7 @@ pub fn create_cadence(
         },
         revision: 1,
         generation: crate::clock::CADENCE_GENERATION_INITIAL,
-        schema: crate::clock::CADENCE_SCHEMA_LEGACY,
+        schema,
     };
     put_cadence(ctx, c);
     let meta = ctx

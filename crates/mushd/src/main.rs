@@ -273,7 +273,7 @@ async fn serve(config: Config, mut quarantine_spool: QuarantineSpool) -> Result<
         .any(|r| r.trim().eq_ignore_ascii_case("wod"));
     let mut mods = modules::server_modules_with(
         weather_config(&config.weather),
-        economy_config(&config.economy),
+        economy_config(&config.economy)?,
         &onboarding,
         wod_selected.then_some(&wod_economy),
     );

@@ -111,6 +111,7 @@ mod boot;
 mod commands;
 mod config;
 mod custody;
+mod declared;
 mod module;
 
 pub use amount::{Amount, MAX_SCALE};
@@ -147,10 +148,10 @@ pub use snapshot::EconomySnapshot;
 
 // E4a — clocks, holds, obligations, contracts.
 pub use clock::{
-    CADENCE_GENERATION_INITIAL, CADENCE_SCHEMA_LEGACY, CadenceClock, CadenceSource, Clocks,
-    DEFAULT_CATCH_UP, EconomicClock, EconomicDeadline, EconomicSchedule, MAX_CATCH_UP_CAP,
-    SWEEP_GAP_DOWNTIME_SECS, SWEEP_PERIOD_SECS, advance, advance_cadence, advance_cadence_manual,
-    cadence_elapsed, due_periods, reanchor,
+    CADENCE_GENERATION_INITIAL, CADENCE_SCHEMA_DECLARED, CADENCE_SCHEMA_LEGACY, CadenceClock,
+    CadenceSource, Clocks, DEFAULT_CATCH_UP, EconomicClock, EconomicDeadline, EconomicSchedule,
+    MAX_CATCH_UP_CAP, SWEEP_GAP_DOWNTIME_SECS, SWEEP_PERIOD_SECS, advance, advance_cadence,
+    advance_cadence_manual, cadence_elapsed, due_periods, reanchor,
 };
 pub use contract::{
     Acceptance, Attestation, AttestorRef, AttestorSet, CanonOutcomeKinds, ConsentSurface,
@@ -175,8 +176,13 @@ pub use obligation::{
     obligation_key, plan_sweep, release,
 };
 
-// E4b1 verify fold (M1) — the ruleset's configurable limits.
-pub use config::{DEFAULT_MINT_OBLIGATION_CAP_MAJOR, EconomyConfig, InstrumentCaps};
+// E4b1 verify fold (M1) — the ruleset's configurable limits. SP1 (D-LBK-7) — the
+// declared cadences and their composition-frozen clock provider.
+pub use config::{
+    DEFAULT_MINT_OBLIGATION_CAP_MAJOR, DeclaredCadence, DeclaredCadenceClock, DeclaredCadenceError,
+    EconomyConfig, InstrumentCaps, MAX_DECLARED_CADENCES, declared_cadence_clock_id,
+};
+pub use declared::{DeclaredCadenceProvider, cadence_by_name};
 
 // E4b1 — the ladder + the sweep.
 pub use escalation::{
