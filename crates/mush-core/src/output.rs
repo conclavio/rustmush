@@ -529,6 +529,11 @@ pub(crate) fn room_view_with_action_state(
         .and_then(|z| w.get(z))
         .map(|zo| ObjRef::new(zo.id.to_string(), zo.name.clone()));
 
+    // Structured ambience (weather, scene, the IC clock) for a client's room
+    // band; the `LookRendered` prose lines still follow the `Room` event for
+    // line mode (interface plan I1, D-I-4).
+    let ambient = crate::module::room_ambient_with_action_state(reg, w, looker, room, action_state);
+
     Some(RoomView {
         name: r.name.clone(),
         id: room.to_string(),
@@ -536,6 +541,7 @@ pub(crate) fn room_view_with_action_state(
         contents,
         exits,
         zone,
+        ambient,
     })
 }
 

@@ -430,6 +430,9 @@ pub fn text_of(event: &OutputEvent) -> String {
         OutputEvent::Reply { id, event } => format!("[reply {id}] {}", text_of(event)),
         OutputEvent::Ping { nonce } => format!("[ping {nonce}]"),
         OutputEvent::Resumed { replayed } => format!("[resumed replayed={replayed}]"),
+        OutputEvent::Composing { actor, active } => {
+            format!("[composing {} active={active}]", actor.name)
+        }
         OutputEvent::Panel { feed, .. } => format!("[panel {feed}]"),
         OutputEvent::View(view) => format!("[view {}]", view.view()),
         OutputEvent::Weather { text, .. } => text.to_plain_text(),
@@ -634,6 +637,7 @@ mod tests {
                 aliases: vec!["n".into()],
             }],
             zone: Some(ObjRef::new("#3", "Downtown")),
+            ambient: Default::default(),
         };
         let t = room_text(&rv);
         assert_eq!(
@@ -668,6 +672,7 @@ mod tests {
             contents: vec![],
             exits: vec![],
             zone: None,
+            ambient: Default::default(),
         };
         let mut b = a.clone();
         b.name = "B".into();

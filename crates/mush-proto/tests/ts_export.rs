@@ -9,7 +9,9 @@
 use std::fs;
 use std::path::Path;
 
-use mush_proto::{ClientCommand, Color, Envelope, OutputEvent, Span, WhoEntry};
+use mush_proto::{
+    ClientCommand, Color, Envelope, OutputEvent, RoomView, Span, VitalValue, VitalsFrame, WhoEntry,
+};
 use ts_rs::{Config, TS};
 
 /// `web/src/lib/proto`, located relative to this crate so the test works from
@@ -100,6 +102,9 @@ fn export_typescript_bindings() {
     // payload type; ClientCommand covers Query and ClientCaps + enums.
     Envelope::export_all(&cfg).expect("export Envelope graph");
     ClientCommand::export_all(&cfg).expect("export ClientCommand graph");
+    // The vitals frame rides inside `Panel.data` (opaque to the envelope
+    // graph), so it is exported explicitly with its Vital/VitalValue/… deps.
+    VitalsFrame::export_all(&cfg).expect("export VitalsFrame graph");
     normalize_ts_files(dir);
 
     // Barrel: web code imports from "$lib/proto" only.
@@ -147,6 +152,7 @@ fn generated_shapes_match_wire_format() {
         r#""t": "sys", "d": RichText"#,
         r#""t": "resumed""#,
         r#""t": "ping""#,
+        r#""t": "composing""#,
     ] {
         assert!(
             output_event.contains(needle),
@@ -159,10 +165,32 @@ fn generated_shapes_match_wire_format() {
         r#""t": "ack""#,
         "commit: string",
         r#""t": "pong""#,
+        r#""t": "composing""#,
     ] {
         assert!(
             client_command.contains(needle),
             "ClientCommand missing {needle}:\n{client_command}"
+        );
+    }
+
+    // RoomView.ambient: an open map typed loosely on purpose (I1, D-I-4).
+    let room_view = RoomView::export_to_string(&cfg).expect("RoomView decl");
+    assert!(
+        room_view.contains("ambient?: Record<string, unknown>"),
+        "RoomView.ambient must be an optional open record:\n{room_view}"
+    );
+
+    // Vitals: internally tagged values, a track of nullable marks (I1, D-I-2).
+    let vital_value = VitalValue::export_to_string(&cfg).expect("VitalValue decl");
+    for needle in [
+        r#""kind": "bounded""#,
+        r#""kind": "track""#,
+        r#""kind": "text""#,
+        "Array<string | null>",
+    ] {
+        assert!(
+            vital_value.contains(needle),
+            "VitalValue missing {needle}:\n{vital_value}"
         );
     }
 

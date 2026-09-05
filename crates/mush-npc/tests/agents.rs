@@ -1136,6 +1136,42 @@ async fn npc_thinking_keyframe_emitted_on_dialogue_start() {
     );
 }
 
+/// Interface cut I1 (D-I-13): the `npc.thinking` window ends with the turn —
+/// the completion emits the same room keyframe with `active: false`, whatever
+/// the outcome, so a client clears its pill instead of waiting out a timer.
+#[tokio::test]
+async fn npc_thinking_end_frame_emitted_on_completion() {
+    let mut rig = Rig::new();
+    rig.set_now(0);
+    let bar = rig.room("Bar");
+    let npc = rig.npc("Bartender", bar, &profile(NpcTier::Minor));
+    let alice = rig.player("Alice", bar, true);
+
+    rig.run(alice, "say hello?");
+    rig.set_now(2);
+    let (_, corr, _payload) = rig.one_turn().expect("a dialogue turn was deferred");
+    let outcome = serde_json::json!({ "status": "nothing", "npc": npc.0, "reason": "" });
+    let out = rig.complete(npc, corr, &outcome.to_string());
+    let (aud, data) = out
+        .events()
+        .iter()
+        .find_map(|(aud, ev)| match ev {
+            mush_proto::OutputEvent::Panel { feed, data, .. }
+                if feed.as_str() == "npc.thinking" =>
+            {
+                Some((aud.clone(), data.clone()))
+            }
+            _ => None,
+        })
+        .expect("the end frame is emitted on completion");
+    assert_eq!(data["active"], false, "{data}");
+    assert_eq!(data["npc"], npc.to_string());
+    assert!(
+        matches!(aud, mush_core::Audience::Room { room, .. } if room == bar),
+        "the room that saw the start sees the end: {aud:?}"
+    );
+}
+
 // ----------------------------------------------------------------------
 // M10d: world / semantic knowledge (per-NPC lore + shared pools + secrecy)
 // ----------------------------------------------------------------------

@@ -244,7 +244,7 @@ fn prepare(
         }
         d.set_number("willpower_temp", temp - 1);
         cmd.store_for_doc(&d)
-            .put_by(ctx.w, who, &d, who)
+            .put_in(who, &d, who, ctx)
             .map_err(|es| CmdError::msg(fmt_errs(&es)))?;
         willpower = true;
     }

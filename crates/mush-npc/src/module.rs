@@ -1042,6 +1042,12 @@ impl AsyncCompletion for NpcCompletion {
             );
             return;
         }
+        // The thinking window closed with this turn, whatever the payload
+        // decodes to: end the room's `npc.thinking` pill now rather than
+        // leaving a client to its own timer (interface plan I1, D-I-13).
+        if let Some(room) = ctx.w.get(npc).and_then(|o| o.location) {
+            emit_thinking_done(ctx, npc, room);
+        }
         let outcome: TurnOutcome = match serde_json::from_str(payload) {
             Ok(o) => o,
             Err(e) => {
@@ -2368,11 +2374,23 @@ fn record_self(ctx: &mut Ctx<'_>, npc: ObjId, line: &str) {
 }
 
 fn emit_thinking(ctx: &mut Ctx<'_>, npc: ObjId, room: ObjId) {
+    emit_thinking_frame(ctx, npc, room, true);
+}
+
+/// The end of a `npc.thinking` window: the same frame with `active: false`,
+/// so a client clears its pill on the turn's completion instead of waiting
+/// out its own timer (interface plan I1, D-I-13).
+fn emit_thinking_done(ctx: &mut Ctx<'_>, npc: ObjId, room: ObjId) {
+    emit_thinking_frame(ctx, npc, room, false);
+}
+
+fn emit_thinking_frame(ctx: &mut Ctx<'_>, npc: ObjId, room: ObjId, active: bool) {
     let panel = ctx.state::<NpcHostState>().and_then(|h| h.thinking.clone());
     if let Some(panel) = panel {
         let data = serde_json::json!({
             "npc": npc.to_string(),
             "name": display_name(ctx.w, npc),
+            "active": active,
         });
         let aud = mush_core::Audience::Room {
             room,

@@ -242,7 +242,7 @@ fn award(cmd: &Sr5Cmd, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         format!("+{n} Karma awarded by {}", name_of(ctx, ctx.actor)),
     );
     cmd.store()
-        .put_by(ctx.w, target, &doc, ctx.actor)
+        .put_in(target, &doc, ctx.actor, ctx)
         .map_err(|es| CmdError::msg(fmt_errs(&es)))?;
     ctx.out.info(
         ctx.actor,
@@ -328,7 +328,7 @@ pub(crate) fn karma_approval(
     // A raised attribute changes derived stats.
     crate::derive::apply_derived(&mut doc);
     cmd.store()
-        .put_by(ctx.w, target, &doc, ctx.actor)
+        .put_in(target, &doc, ctx.actor, ctx)
         .map_err(|es| fmt_errs(&es))?;
     Ok(())
 }

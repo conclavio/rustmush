@@ -325,6 +325,14 @@ impl GameModule for WodRuleset {
         // Template-dispatching sheet surface (+sheet/@sheet/@sheet/set + the
         // web query), then the shared command sets.
         sheet_cmds::register(reg, Arc::clone(&cmd))?;
+        // The `wod.vitals` feed, its query, and republish-on-write of both
+        // vitals and the sheet keyframe (interface plan I1, D-I-2).
+        mush_ruleset::register_vitals(
+            reg,
+            "wod",
+            &mush_ruleset::sheet_attr_name("wod"),
+            Arc::new(sheet_cmds::WodVitals::new(Arc::clone(&cmd))),
+        )?;
         roll::register(reg, Arc::clone(&cmd))?;
         action::register(reg, Arc::clone(&cmd))?;
         damage::register(reg, Arc::clone(&cmd))?;

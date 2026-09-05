@@ -232,7 +232,7 @@ fn prepare(
         }
         d.set_number(EDGE_CURRENT, temp - 1);
         cmd.store()
-            .put_by(ctx.w, who, &d, who)
+            .put_in(who, &d, who, ctx)
             .map_err(|es| CmdError::msg(fmt_errs(&es)))?;
         edge_dice = rating.clamp(0, i64::from(u8::MAX)) as u8;
         edge_note = Some(if edge_push {

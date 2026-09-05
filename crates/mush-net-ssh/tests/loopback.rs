@@ -194,7 +194,7 @@ impl SshHooks for MockHooks {
         })
     }
 
-    fn query(&self, conn: u64, name: String) -> BoxFuture<'_, ()> {
+    fn query(&self, conn: u64, name: String, _args: serde_json::Value) -> BoxFuture<'_, ()> {
         Box::pin(async move {
             let Some(tx) = self.tx_of(conn) else {
                 return;

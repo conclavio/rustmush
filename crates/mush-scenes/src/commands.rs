@@ -212,6 +212,7 @@ fn timestop_start(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             turn_line(ctx.w, &rec)
         ),
     );
+    crate::panel::publish(ctx, &rec);
     Ok(())
 }
 
@@ -279,6 +280,7 @@ fn timestop_next(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         updated.current_actor(),
         serde_json::json!({ "round": updated.round }),
     );
+    crate::panel::publish(ctx, &updated);
     Ok(())
 }
 
@@ -307,6 +309,7 @@ fn timestop_pause(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         Some(ctx.actor),
         serde_json::json!({}),
     );
+    crate::panel::publish(ctx, &updated);
     Ok(())
 }
 
@@ -339,6 +342,7 @@ fn timestop_resume(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         Some(ctx.actor),
         serde_json::json!({}),
     );
+    crate::panel::publish(ctx, &updated);
     Ok(())
 }
 
@@ -390,6 +394,8 @@ fn timestop_release(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         Some(who),
         serde_json::json!({}),
     );
+    crate::panel::publish(ctx, &updated);
+    crate::panel::publish_none(ctx, who);
     Ok(())
 }
 
@@ -423,6 +429,7 @@ fn timestop_end(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         serde_json::json!({}),
     );
     crate::emit_scene_concluded(ctx, &updated);
+    crate::panel::publish(ctx, &updated);
     Ok(())
 }
 

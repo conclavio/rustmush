@@ -213,12 +213,15 @@ pub fn render_event(
                 w.end_line();
             }
         }
-        // Routed elsewhere or intentionally silent (mirrors mush_ansi).
+        // Routed elsewhere or intentionally silent (mirrors mush_ansi). The
+        // composing hint becomes a status-strip pill once the screen model
+        // lands (interface plan I2); the scrollback ring never shows it.
         OutputEvent::Who(_)
         | OutputEvent::Panel { .. }
         | OutputEvent::Prompt(_)
         | OutputEvent::Ping { .. }
-        | OutputEvent::Resumed { .. } => {}
+        | OutputEvent::Resumed { .. }
+        | OutputEvent::Composing { .. } => {}
         OutputEvent::View(_) => {}
     }
     w.finish()

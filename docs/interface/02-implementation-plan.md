@@ -360,6 +360,69 @@ name reach a mutating path, a handler another module owns, or stamp idle?
 **Hands to I2, I3, I4:** frames every client can render without knowing the
 ruleset.
 
+**As built (2026-09-05, branch `i1-contracts`).** Everything above landed
+as specified, with these deviations, each for a reason found in the tree:
+
+1. **`SheetStore::put_in(obj, doc, by, ctx)` takes the context last**, so
+   every call site can pass `ctx.actor` as the audit owner without a borrow
+   clash (the arguments before `ctx` are evaluated before it is reborrowed).
+   The 43 command-side sites in `ruleset-wod`, `ruleset-shadowrun` and
+   `mush-ruleset::commands` migrated mechanically; the three `&mut World`
+   sites (NPC sheet bootstrap in both rulesets, the store's own helpers) stay
+   on `put_by` by design. The probe is
+   `crates/mush-contract-tests/tests/sheet_write_republish.rs`.
+2. **`Ruleset::extra_vitals` became the `VitalsSource` trait**
+   (`mush_ruleset::vitals`): a query handler runs under a `HookReadContext`
+   and an observer under a `Ctx`, and the K8.4 authoritative overlays
+   (WoD's temporary Willpower, Shadowrun's condition monitors) are applied by
+   each ruleset's own readers, so the source supplies `vitals`, `vitals_in`
+   and `sheet_keyframe` and the framework supplies the feed, the query, the
+   `AttrSet` subscription and the revision counter (`register_vitals`).
+   Both rulesets refactored their sheet query onto one `sheet_panel` builder
+   that the republish reuses (10b §4 rule 4).
+3. **Registry routing moved into the engine, not the bridges.** Instead of
+   a query-name list carried to the gateway (which has no registry), the
+   engine's `handle_query` answers a name that is a registered panel feed
+   with no same-named handler by acknowledging the subscription; the web
+   bridge forwards every unknown feed under its own name (the `llm.dashboard`
+   arm is gone, `comsys`/`who`/`mail`/`legal.actions` keep their differently
+   named queries); the SSH bridge forwards any well-formed name with the
+   caller's args (`SshHooks::query` gained `args`; the TUI's
+   `InputResult.query` stays a static name until I2).
+4. **`HookReadContext::registry()`** — the command table is registry-owned
+   and a query handler sees only the read context, so the engine attaches
+   the live registry to the context it builds for query dispatch;
+   `commands.list` answers only through it and refuses off-loop.
+   `commands.list` is also a core panel feed, so it is in the manifest.
+5. **Vitals ids are `<ruleset>.<field>`.** WoD flags `health`,
+   `willpower_temp`, `bloodpool`, `rage_temp`, `gnosis_temp` (werewolf and
+   kinfolk) and `quintessence`; `paradox` is deliberately unflagged, because
+   the generic thresholds read "low is bad" and Paradox is the opposite — an
+   inverted role or a ruleset-judged state is a later addition. Shadowrun
+   flags the two condition monitors and `edge_current`, and adds the wound
+   modifier (with its state), the three Limits and Initiative as readouts.
+6. **`npc.thinking` frames carry `active`** (`true` on start, `false` on
+   completion); no new event.
+7. **Composing is wire-only**, as planned: the web transport accepts and
+   drops the command until I4 fans it out.
+8. **Scenes**: the `scenes` feed, its query and the room glance live in
+   `crates/mush-scenes/src/panel.rs`; a released member receives a `null`
+   keyframe so their screen clears; the pose counter stays deferred (§8
+   q13).
+9. **`RoomView.ambient`** is typed `Record<string, unknown>` on the wire;
+   core adds `ic_time` after the hooks, so a module calendar may claim the
+   key first.
+
+Tests: `crates/mush-proto` (wire round-trips, the ts shapes),
+`crates/mush-core/tests/i1_contracts.rs` (command table, ambient), the
+engine's subscribe-ack and `commands.list` round-trip, `mush-ruleset`'s
+`vitals` unit tests, `crates/ruleset-wod/tests/i1_vitals.rs`,
+`crates/ruleset-shadowrun/tests/i1_vitals.rs`,
+`crates/mush-scenes/tests/i1_panel.rs`, `crates/mush-weather/tests/i1_ambient.rs`,
+the NPC end-frame test in `agents.rs`, and the `put_in` probe. The
+TypeScript bindings regenerated (`Vital*.ts`, `VitalsFrame.ts`, the new
+`RoomView.ambient`, `Composing`, `Commands`).
+
 ### 3.2 Cut I2 — The TUI screen model and parity floor
 
 **What it is.** The TUI stops being three boxes and one Tab-cycled widget

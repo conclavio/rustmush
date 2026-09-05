@@ -13,7 +13,7 @@
 
 use std::sync::Arc;
 
-use mush_core::{Attr, ObjId, World};
+use mush_core::{Attr, Ctx, ObjId, World, WorldEvent};
 
 use crate::doc::SheetDoc;
 use crate::schema::{FieldType, SheetSchema};
@@ -178,6 +178,36 @@ impl SheetStore {
             .map_err(|e| vec![SheetError::msg(format!("sheet serialize: {e}"))])?;
         w.set_attr(obj, &self.attr_name(), Attr::json(value, by))
             .map_err(|e| vec![SheetError::msg(e.to_string())])?;
+        Ok(())
+    }
+
+    /// [`SheetStore::put_by`] from inside a command or observer: the same
+    /// validated write, then a [`WorldEvent::AttrSet`] for the sheet
+    /// attribute so subscribers run — the `<ruleset>.vitals` and
+    /// `<ruleset>.sheet` republishers above all (interface plan I1). `put_by`
+    /// itself cannot emit (it has no `Ctx`), which is why every command-side
+    /// write goes through here and a probe keeps it that way.
+    ///
+    /// `ctx` comes **last** so a caller can pass `ctx.actor` as `by` (the
+    /// arguments before it are evaluated before `ctx` is reborrowed).
+    ///
+    /// # Errors
+    ///
+    /// Returns the collected [`SheetError`]s if validation fails; nothing is
+    /// written and no event fires in that case.
+    pub fn put_in(
+        &self,
+        obj: ObjId,
+        doc: &SheetDoc,
+        by: ObjId,
+        ctx: &mut Ctx<'_>,
+    ) -> Result<(), Vec<SheetError>> {
+        self.put_by(ctx.w, obj, doc, by)?;
+        ctx.emit_world_event(&WorldEvent::AttrSet {
+            obj,
+            name: self.attr_name(),
+            setter: by,
+        });
         Ok(())
     }
 

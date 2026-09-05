@@ -162,7 +162,8 @@ pub fn build_schema(ruleset: &str) -> SheetSchema {
         .field(FieldDef::dots(EDGE, "Edge", 1, 8).category("special"))
         .field(
             FieldDef::number(EDGE_CURRENT, "Edge (available)", 0, 8)
-                .with_default(serde_json::json!(1)),
+                .with_default(serde_json::json!(1))
+                .vital(mush_proto::VitalRole::Pool),
         )
         .field(
             FieldDef::number(ESSENCE, "Essence (×100)", 0, 600)
@@ -355,18 +356,24 @@ pub fn build_schema(ruleset: &str) -> SheetSchema {
             0,
             20,
         ))
-        .field(FieldDef::track(
-            CONDITION_PHYSICAL,
-            "Physical Damage",
-            TrackSize::Derived(DerivedExpr::field(PHYS_CM_MAX)),
-            condition_levels(),
-        ))
-        .field(FieldDef::track(
-            CONDITION_STUN,
-            "Stun Damage",
-            TrackSize::Derived(DerivedExpr::field(STUN_CM_MAX)),
-            condition_levels(),
-        ));
+        .field(
+            FieldDef::track(
+                CONDITION_PHYSICAL,
+                "Physical Damage",
+                TrackSize::Derived(DerivedExpr::field(PHYS_CM_MAX)),
+                condition_levels(),
+            )
+            .vital(mush_proto::VitalRole::Track),
+        )
+        .field(
+            FieldDef::track(
+                CONDITION_STUN,
+                "Stun Damage",
+                TrackSize::Derived(DerivedExpr::field(STUN_CM_MAX)),
+                condition_levels(),
+            )
+            .vital(mush_proto::VitalRole::Track),
+        );
 
     SheetSchemaBuilder::new(ruleset, SCHEMA_VERSION)
         .section(bio)

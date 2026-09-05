@@ -176,7 +176,7 @@ fn cast_cmd(cmd: &Sr5Cmd, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     if drain_taken > 0 {
         condition::apply(&mut doc, kind, drain_taken as u32);
         cmd.store()
-            .put_by(ctx.w, who, &doc, who)
+            .put_in(who, &doc, who, ctx)
             .map_err(|es| CmdError::msg(fmt_errs(&es)))?;
     }
     let _ = spell_out;
@@ -266,7 +266,7 @@ fn thread_cmd(cmd: &Sr5Cmd, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     if fade_taken > 0 {
         condition::apply(&mut doc, kind, fade_taken as u32);
         cmd.store()
-            .put_by(ctx.w, who, &doc, who)
+            .put_in(who, &doc, who, ctx)
             .map_err(|es| CmdError::msg(fmt_errs(&es)))?;
     }
     ctx.out.sys_to_actor(
@@ -310,7 +310,7 @@ fn spell_learn_cmd(cmd: &Sr5Cmd, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     list.push(serde_json::json!(name));
     doc.set("spells", serde_json::Value::Array(list));
     cmd.store()
-        .put_by(ctx.w, who, &doc, who)
+        .put_in(who, &doc, who, ctx)
         .map_err(|es| CmdError::msg(fmt_errs(&es)))?;
     ctx.out.info(who, format!("Learned the spell {name:?}."));
     Ok(())

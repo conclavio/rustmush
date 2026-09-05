@@ -611,10 +611,21 @@ fn registrar_populates_every_table() {
         reg.tick_reg("toy", "battle").map(|t| t.cadence),
         Some(TickCadence::Scene)
     ));
-    // Panel feeds, query handlers, job queues, script apis, migrations.
-    assert_eq!(
-        reg.panel_feeds(),
-        &[(SmolStr::new("toy.panel"), SmolStr::new("toy"))]
+    // Panel feeds, query handlers, job queues, script apis, migrations. Core
+    // registers its own `commands.list` feed (interface plan I1) beside the
+    // module's, so this asserts membership, not the whole table.
+    assert!(
+        reg.panel_feeds()
+            .contains(&(SmolStr::new("toy.panel"), SmolStr::new("toy"))),
+        "toy.panel registered under toy: {:?}",
+        reg.panel_feeds()
+    );
+    assert!(
+        reg.panel_feeds()
+            .iter()
+            .any(|(feed, owner)| feed == "commands.list" && owner == "core"),
+        "core's commands.list feed present: {:?}",
+        reg.panel_feeds()
     );
     let (owner, q) = reg.query_handler("toy.list").expect("query handler");
     assert_eq!(owner.as_str(), "toy");

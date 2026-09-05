@@ -442,7 +442,10 @@ impl Template for Vampire {
                 FieldDef::number("generation", "Generation", 4, 15)
                     .with_default(serde_json::json!(13)),
             )
-            .field(FieldDef::number("bloodpool", "Blood Pool", 0, 50))
+            .field(
+                FieldDef::number("bloodpool", "Blood Pool", 0, 50)
+                    .vital(mush_proto::VitalRole::Pool),
+            )
             .field(
                 FieldDef::number("humanity", "Humanity / Path", 0, 10)
                     .with_default(serde_json::json!(7)),
@@ -861,7 +864,7 @@ fn humanity_set(cmd: &WodCmd, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         .set_field(&mut doc, "humanity", serde_json::json!(n))
         .map_err(|e| CmdError::msg(e.to_string()))?;
     store
-        .put_by(ctx.w, target, &doc, ctx.actor)
+        .put_in(target, &doc, ctx.actor, ctx)
         .map_err(|es| CmdError::msg(fmt_errs(&es)))?;
     ctx.out.sys_to_actor(
         ctx.actor,
@@ -908,7 +911,7 @@ fn blood_heal(
         )
         .map_err(|e| CmdError::msg(e.to_string()))?;
     store
-        .put_by(ctx.w, ctx.actor, &doc, ctx.actor)
+        .put_in(ctx.actor, &doc, ctx.actor, ctx)
         .map_err(|es| CmdError::msg(fmt_errs(&es)))?;
     ctx.out.sys_to_actor(
         ctx.actor,
@@ -934,7 +937,7 @@ fn set_blood(
         .set_field(doc, "bloodpool", serde_json::json!(value.max(0)))
         .map_err(|e| CmdError::msg(e.to_string()))?;
     store
-        .put_by(ctx.w, ctx.actor, doc, ctx.actor)
+        .put_in(ctx.actor, doc, ctx.actor, ctx)
         .map_err(|es| CmdError::msg(fmt_errs(&es)))?;
     Ok(())
 }

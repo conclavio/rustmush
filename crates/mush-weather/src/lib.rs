@@ -195,6 +195,14 @@ impl GameModule for WeatherModule {
                 climates: Arc::clone(&self.climates),
             }),
         );
+        // The structured glance beside the prose line: `RoomView.ambient`'s
+        // `weather` key for a client's room band (interface plan I1, D-I-4).
+        reg.hook(
+            HookPoint::RoomAmbient,
+            Arc::new(WeatherLook {
+                climates: Arc::clone(&self.climates),
+            }),
+        );
         reg.hook(
             HookPoint::Connected,
             Arc::new(WeatherConnect {
@@ -499,6 +507,32 @@ impl EventHook for WeatherLook {
         vec![RichText::tag(
             "weather",
             conditions_line(&cell, def, sheltered),
+        )]
+    }
+
+    /// The same resolution as a structured glance: `{ state, icon, temp,
+    /// visibility, sheltered, line }` under the `weather` ambient key, so a
+    /// room band can show an icon and a word without parsing the prose.
+    fn room_ambient(
+        &self,
+        ctx: &HookReadContext<'_>,
+        _looker: ObjId,
+        room: ObjId,
+    ) -> Vec<(SmolStr, serde_json::Value)> {
+        let Some((cell, def, sheltered)) = resolve_room_weather(ctx.world(), &self.climates, room)
+        else {
+            return Vec::new();
+        };
+        vec![(
+            SmolStr::new_static("weather"),
+            serde_json::json!({
+                "state": cell.state,
+                "icon": cell.state,
+                "temp": cell.temp,
+                "visibility": def.visibility,
+                "sheltered": sheltered,
+                "line": conditions_line(&cell, def, sheltered),
+            }),
         )]
     }
 }

@@ -96,6 +96,10 @@ pub fn render(event: &OutputEvent, caps: &ClientCaps, theme: &AnsiTheme, out: &m
         // Web-resume acknowledgement: structured-transport only (the WS
         // handshake emits it out-of-band); SSH never sees a resume.
         OutputEvent::Resumed { .. } => {}
+        // A presence hint for screens with a status strip; a scrolling
+        // stream has nowhere to put "is typing" and nothing to say when it
+        // stops.
+        OutputEvent::Composing { .. } => {}
         OutputEvent::Hello { proto, server, .. } => {
             w.tagged("system", &format!("{server} (proto {proto})"));
             w.end_line();

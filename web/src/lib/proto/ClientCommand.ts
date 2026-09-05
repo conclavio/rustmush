@@ -24,7 +24,11 @@ last_seq: number, } } | { "t": "ack", "d": {
 /**
  * Exact token carried by the `resolution.outcome` view.
  */
-commit: string, } } | { "t": "pong", "d": {
+commit: string, } } | { "t": "composing", "d": {
+/**
+ * Whether a draft is in progress.
+ */
+active: boolean, } } | { "t": "pong", "d": {
 /**
  * The nonce from the server's ping.
  */

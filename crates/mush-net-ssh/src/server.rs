@@ -586,7 +586,9 @@ impl ConnHandler {
         session.data(channel, bytes)?;
         // Read-only refresh; the reply's `Who` event lands on the pump, which
         // repaints the rail. Does not stamp idle (design M15 D5).
-        self.hooks.query(self.conn_id, "who".to_owned()).await;
+        self.hooks
+            .query(self.conn_id, "who".to_owned(), serde_json::json!({}))
+            .await;
         Ok(())
     }
 
@@ -643,7 +645,9 @@ impl ConnHandler {
             // Opening a widget submits its read-only refresh; the reply's
             // Panel keyframe lands on the pump and repaints the pane. Like the
             // WHO rail, this does not stamp idle (design M15 D5).
-            self.hooks.query(self.conn_id, query.to_owned()).await;
+            self.hooks
+                .query(self.conn_id, query.to_owned(), serde_json::json!({}))
+                .await;
         }
         if result.redraw {
             self.fire_repaint();
@@ -1441,7 +1445,9 @@ fn spawn_output_pump(
             if let Wake::Tick = wake {
                 let is_tui = matches!(shared.lock().expect("conn state poisoned").mode, Mode::Tui);
                 if is_tui {
-                    hooks.query(conn_id, "who".to_owned()).await;
+                    hooks
+                        .query(conn_id, "who".to_owned(), serde_json::json!({}))
+                        .await;
                 }
                 continue;
             }
@@ -1503,7 +1509,9 @@ fn spawn_output_pump(
             // connection lock has dropped; the TUI de-duplicates this until a
             // valid replacement arrives.
             if let Some(query) = resync_query {
-                hooks.query(conn_id, query.to_owned()).await;
+                hooks
+                    .query(conn_id, query.to_owned(), serde_json::json!({}))
+                    .await;
             }
 
             if !bytes.is_empty() {

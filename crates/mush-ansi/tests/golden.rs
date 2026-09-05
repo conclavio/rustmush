@@ -156,6 +156,7 @@ fn room_golden_ansi16() {
             },
         ],
         zone: None,
+        ambient: Default::default(),
     });
     let expected = "\x1b[1mHall(#2)\x1b[0m\r\n\
                     A big hall.\r\n\
@@ -172,6 +173,7 @@ fn room_golden_ansi16() {
         contents: vec![],
         exits: vec![],
         zone: None,
+        ambient: Default::default(),
     });
     assert_eq!(
         rendered_str(&bare, ColorDepth::None, 0),
@@ -527,6 +529,7 @@ fn all_variant_events() -> Vec<OutputEvent> {
                 aliases: vec![],
             }],
             zone: None,
+            ambient: Default::default(),
         }),
         say("a somewhat longer line of speech to exercise the wrapper"),
         OutputEvent::Sys(RichText::tag("error", "Huh?  (Type \"help\" for help.)")),

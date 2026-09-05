@@ -1,5 +1,6 @@
 //! Server → client events: [`OutputEvent`] and its payload types.
 
+use std::collections::BTreeMap;
 use std::fmt;
 
 use serde::{Deserialize, Deserializer, Serialize};
@@ -87,6 +88,14 @@ pub struct RoomView {
     /// The zone this room belongs to, when visible.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub zone: Option<ObjRef>,
+    /// Structured ambience for a room band or status line, keyed by
+    /// contributor — `"ic_time"` (core), `"weather"`, `"scene"`, … — an
+    /// open, bounded map (interface plan I1, D-I-4). Absent on the wire when
+    /// empty; readers treat every key as optional and every value
+    /// defensively, since each is a module's own shape.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    #[cfg_attr(feature = "ts", ts(type = "Record<string, unknown>"))]
+    pub ambient: BTreeMap<SmolStr, serde_json::Value>,
 }
 
 /// One row of a WHO listing.
@@ -567,6 +576,233 @@ pub struct PromptSpec {
     pub text: Option<RichText>,
 }
 
+/// Maximum entries in one [`VitalsFrame`].
+pub const MAX_VITALS_PER_FEED: usize = 16;
+/// Maximum UTF-8 bytes in a [`Vital::detail`].
+pub const MAX_VITAL_DETAIL_BYTES: usize = 64;
+/// Maximum UTF-8 bytes in a [`Vital::id`] or [`Vital::label`].
+pub const MAX_VITAL_NAME_BYTES: usize = 48;
+
+/// How a client places and weights one vital (interface plan I1, D-I-2).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(rename_all = "snake_case")]
+pub enum VitalRole {
+    /// The one number that ends the scene: the biggest type and its own bar.
+    Dominant,
+    /// A damage or condition track, rendered as boxes.
+    Track,
+    /// A spendable pool, rendered as a bar plus digits.
+    Pool,
+    /// A short text readout (a heading, a wound modifier, a mobility mode).
+    Readout,
+}
+
+/// The urgency a vital is in, as the ruleset judges it. Clients colour by
+/// this and never recompute a threshold themselves.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(rename_all = "snake_case")]
+pub enum VitalState {
+    /// Nothing to worry about.
+    Ok,
+    /// Worth a glance.
+    Warn,
+    /// Act now.
+    Crit,
+    /// Exhausted, destroyed, or out.
+    Down,
+}
+
+/// A vital's value. Internally tagged on `kind` so a client can switch on
+/// one field.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum VitalValue {
+    /// A bounded integer (heat, blood, edge, willpower).
+    Bounded {
+        /// The current value, within `[min, max]`.
+        current: i64,
+        /// Inclusive lower bound.
+        min: i64,
+        /// Inclusive upper bound.
+        max: i64,
+    },
+    /// A track of boxes (health, a condition monitor): `None` is an empty
+    /// box, `Some(mark)` a filled one carrying the ruleset's mark token.
+    Track {
+        /// The boxes, in track order.
+        boxes: Vec<Option<SmolStr>>,
+        /// The label of the deepest filled level ("Bruised"), when the
+        /// track has levels.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        level: Option<String>,
+    },
+    /// A short text readout ("hdg 047", "P4 M6 S4").
+    Text {
+        /// The readout.
+        text: String,
+    },
+}
+
+/// One vital: a gauge, track or readout a client renders without knowing
+/// the ruleset that produced it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct Vital {
+    /// Stable id, ruleset-scoped (`"wod.health"`, `"shadowrun.stun"`).
+    pub id: SmolStr,
+    /// Short label ("health", "stun", "heat").
+    pub label: String,
+    /// Placement and weight.
+    pub role: VitalRole,
+    /// The value.
+    pub value: VitalValue,
+    /// The ruleset's urgency verdict.
+    pub state: VitalState,
+    /// A short qualifier ("shutdown 24", "−2 to every pool"), when useful.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
+
+/// A whole vitals frame for one subject: the `data` of a
+/// [`OutputEvent::Panel`] keyframe on a `<owner>.vitals` feed. Frames are
+/// always whole (never deltas); `revision` is monotonic per subject within
+/// a server process, so a client drops an older frame that arrives late and
+/// resets its watermark on every `hello` and on `Resumed { replayed: false }`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct VitalsFrame {
+    /// Whose vitals these are.
+    pub subject: ObjRef,
+    /// Monotonic per subject within a process.
+    pub revision: u64,
+    /// At most [`MAX_VITALS_PER_FEED`] entries, in display order.
+    pub vitals: Vec<Vital>,
+}
+
+/// Why a [`VitalsFrame`] refused to be built.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum VitalsFrameError {
+    /// More than [`MAX_VITALS_PER_FEED`] entries.
+    TooMany {
+        /// The offered count.
+        count: usize,
+    },
+    /// A vital with an empty id.
+    EmptyId,
+    /// An id or label over [`MAX_VITAL_NAME_BYTES`].
+    NameTooLong {
+        /// The offending vital's id.
+        id: SmolStr,
+        /// Its byte length.
+        bytes: usize,
+    },
+    /// A detail over [`MAX_VITAL_DETAIL_BYTES`].
+    DetailTooLong {
+        /// The offending vital's id.
+        id: SmolStr,
+        /// Its byte length.
+        bytes: usize,
+    },
+    /// A bounded value outside its own bounds.
+    OutOfBounds {
+        /// The offending vital's id.
+        id: SmolStr,
+    },
+}
+
+impl fmt::Display for VitalsFrameError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            VitalsFrameError::TooMany { count } => {
+                write!(f, "{count} vitals exceed the cap of {MAX_VITALS_PER_FEED}")
+            }
+            VitalsFrameError::EmptyId => f.write_str("a vital has an empty id"),
+            VitalsFrameError::NameTooLong { id, bytes } => write!(
+                f,
+                "vital {id:?} name is {bytes} bytes (cap {MAX_VITAL_NAME_BYTES})"
+            ),
+            VitalsFrameError::DetailTooLong { id, bytes } => write!(
+                f,
+                "vital {id:?} detail is {bytes} bytes (cap {MAX_VITAL_DETAIL_BYTES})"
+            ),
+            VitalsFrameError::OutOfBounds { id } => {
+                write!(f, "vital {id:?} is outside its own bounds")
+            }
+        }
+    }
+}
+
+impl std::error::Error for VitalsFrameError {}
+
+impl VitalsFrame {
+    /// Build a frame, refusing anything over the caps or a bounded value
+    /// outside its bounds — the producer's gate; a consumer still reads
+    /// defensively.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`VitalsFrameError`] naming the first offending vital.
+    pub fn new(
+        subject: ObjRef,
+        revision: u64,
+        vitals: Vec<Vital>,
+    ) -> Result<VitalsFrame, VitalsFrameError> {
+        if vitals.len() > MAX_VITALS_PER_FEED {
+            return Err(VitalsFrameError::TooMany {
+                count: vitals.len(),
+            });
+        }
+        for v in &vitals {
+            if v.id.is_empty() {
+                return Err(VitalsFrameError::EmptyId);
+            }
+            let longest = v.id.len().max(v.label.len());
+            if longest > MAX_VITAL_NAME_BYTES {
+                return Err(VitalsFrameError::NameTooLong {
+                    id: v.id.clone(),
+                    bytes: longest,
+                });
+            }
+            if let Some(d) = &v.detail
+                && d.len() > MAX_VITAL_DETAIL_BYTES
+            {
+                return Err(VitalsFrameError::DetailTooLong {
+                    id: v.id.clone(),
+                    bytes: d.len(),
+                });
+            }
+            if let VitalValue::Bounded { current, min, max } = v.value
+                && (min > max || current < min || current > max)
+            {
+                return Err(VitalsFrameError::OutOfBounds { id: v.id.clone() });
+            }
+        }
+        Ok(VitalsFrame {
+            subject,
+            revision,
+            vitals,
+        })
+    }
+
+    /// The frame as `Panel.data`.
+    #[must_use]
+    pub fn to_panel_data(&self) -> serde_json::Value {
+        serde_json::to_value(self).expect("a vitals frame serializes")
+    }
+
+    /// Parse a `Panel.data` back into a frame (a consumer's defensive read).
+    ///
+    /// # Errors
+    ///
+    /// Returns the serde error when the payload is not a vitals frame.
+    pub fn from_panel_data(data: &serde_json::Value) -> Result<VitalsFrame, serde_json::Error> {
+        serde_json::from_value(data.clone())
+    }
+}
+
 /// Everything the server can say to a client — the one semantic event
 /// vocabulary (treaty ruling 1).
 ///
@@ -656,6 +892,16 @@ pub enum OutputEvent {
         text: RichText,
         /// Icon hint for the web client, e.g. `"rain"`.
         icon: SmolStr,
+    },
+    /// Someone in the room started or stopped composing a line (interface
+    /// plan I1, D-I-11). Room-scoped, perceive-gated, rate-limited, opt-out,
+    /// never an idle stamp; a client shows a pill and expires it on its own
+    /// timer, so a lost `active: false` costs nothing.
+    Composing {
+        /// Who is typing.
+        actor: ObjRef,
+        /// `true` when a draft began, `false` when it was sent or abandoned.
+        active: bool,
     },
 
     // -- request/response correlation --

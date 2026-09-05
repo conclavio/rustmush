@@ -330,38 +330,34 @@ mod net {
 
         /// The SSH TUI's read-only query seam (milestone M15): the transport
         /// asks for a widget's data by name and the reply lands on the same
-        /// output queue as an [`OutputEvent::Reply`]. Maps the widget's name
-        /// onto a registered query handler plus its args — the mirror of the
-        /// web bridge's `Req` → `Inbound::Query` path, but the SSH transport
-        /// carries only a name, so the (fixed) args live here. Unknown names
-        /// are dropped (no world round-trip). The correlation id is unused by
-        /// the TUI — it routes replies by the inner event's type — so a fixed
-        /// id is fine.
-        fn query(&self, conn: u64, name: String) -> BoxFuture<'_, ()> {
+        /// output queue as an [`OutputEvent::Reply`] — the mirror of the web
+        /// bridge's `Req` → `Inbound::Query` path. Any well-formed name
+        /// forwards with the caller's args (interface plan I1, D-I-3): the
+        /// engine answers with that handler's keyframe, a push-only feed's
+        /// ack, or "Unknown query", and never stamps idle for a query, so a
+        /// dynamic name is safe; the shape check only keeps garbage off the
+        /// world loop. The one legacy convenience is `mail.list` with no
+        /// args, which lists the inbox. The correlation id is unused by the
+        /// TUI — it routes replies by the inner event's type — so a fixed id
+        /// is fine.
+        fn query(&self, conn: u64, name: String, args: serde_json::Value) -> BoxFuture<'_, ()> {
             Box::pin(async move {
-                let mapped = match name.as_str() {
-                    // The WHO rail's periodic + on-open refresh.
-                    "who" => Some((SmolStr::new_static("who"), serde_json::json!({}))),
-                    // The @mail widget: list the inbox (folder null).
-                    "mail.list" => Some((
-                        SmolStr::new_static("mail.list"),
-                        serde_json::json!({ "folder": null }),
-                    )),
-                    // The +intel widget: the querying actor's own intel log.
-                    "intel.list" => {
-                        Some((SmolStr::new_static("intel.list"), serde_json::json!({})))
-                    }
-                    "legal.actions" => {
-                        Some((SmolStr::new_static("legal.actions"), serde_json::json!({})))
-                    }
-                    _ => {
-                        tracing::debug!(conn, name, "unknown TUI query name dropped");
-                        None
-                    }
-                };
-                if let Some((name, args)) = mapped {
-                    self.core.query(conn, 0, name, args).await;
+                let well_formed = !name.is_empty()
+                    && name.len() <= 64
+                    && name.bytes().all(|b| {
+                        b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_' || b == b'.'
+                    });
+                if !well_formed {
+                    tracing::debug!(conn, name, "malformed TUI query name dropped");
+                    return;
                 }
+                let args_given = args.as_object().is_some_and(|o| !o.is_empty());
+                let args = if name == "mail.list" && !args_given {
+                    serde_json::json!({ "folder": null })
+                } else {
+                    args
+                };
+                self.core.query(conn, 0, SmolStr::new(name), args).await;
             })
         }
 

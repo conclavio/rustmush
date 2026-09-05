@@ -43,6 +43,7 @@ fn sample_room() -> RoomView {
             },
         ],
         zone: Some(ObjRef::new("#7", "Docks")),
+        ambient: Default::default(),
     }
 }
 
@@ -119,6 +120,14 @@ fn roundtrip_every_output_event_variant() {
             zone: "docks".into(),
             text: RichText::tag("weather", "Fog rolls in off the bay."),
             icon: "fog".into(),
+        },
+        OutputEvent::Composing {
+            actor: wizard(),
+            active: true,
+        },
+        OutputEvent::Composing {
+            actor: wizard(),
+            active: false,
         },
         OutputEvent::Prompt(PromptSpec {
             mode: InputMode::Masked,
@@ -205,6 +214,12 @@ fn roundtrip_every_client_command_variant() {
                 feed: "wod.roll".into(),
             },
         },
+        ClientCommand::Req {
+            id: 8,
+            q: Query::Commands,
+        },
+        ClientCommand::Composing { active: true },
+        ClientCommand::Composing { active: false },
         ClientCommand::Resume { last_seq: 4180 },
         ClientCommand::Ack {
             commit: ProjectedCommitToken::new("0123456789abcdef0123456789abcdef").unwrap(),
@@ -299,6 +314,7 @@ fn golden_room() {
             aliases: vec!["n".into()],
         }],
         zone: None,
+        ambient: Default::default(),
     });
     assert_eq!(
         serde_json::to_string(&ev).unwrap(),

@@ -5,11 +5,11 @@
 
 use std::sync::Arc;
 
-use mush_proto::{OutputEvent, RichText, WhoEntry};
+use mush_proto::{OutputEvent, PanelFrameKind, RichText, SmolStr, WhoEntry};
 
 use crate::cmd::{ArgShape, CmdError, CommandSpec, Ctx, Registry, RegistryError};
 use crate::flags::{Flags, Powers, Role};
-use crate::module::{QueryHandler, Registrar};
+use crate::module::{HookReadContext, QueryHandler, Registrar};
 use crate::obj::ObjId;
 use crate::perm;
 use crate::world::World;
@@ -76,6 +76,154 @@ impl QueryHandler for WhoQuery {
         _params: &serde_json::Value,
     ) -> Result<OutputEvent, RichText> {
         Ok(OutputEvent::Who(who_entries(w, actor)))
+    }
+}
+
+/// The query name and panel feed the command table answers on.
+pub const COMMANDS_FEED: &str = "commands.list";
+/// Maximum serialized bytes of one `commands.list` keyframe; the listing
+/// stops (and says so) rather than splitting (interface plan I1, D-I-5).
+pub const MAX_COMMANDS_LIST_BYTES: usize = 64 * 1024;
+/// Maximum bytes of one command's `summary` in the listing.
+pub const MAX_COMMAND_SUMMARY_BYTES: usize = 160;
+
+/// One command as the palette sees it (interface plan I1, D-I-5).
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+pub struct CommandEntry {
+    /// Primary verb.
+    pub name: String,
+    /// Alternate verbs.
+    pub aliases: Vec<String>,
+    /// Valid switches, without the slash.
+    pub switches: Vec<String>,
+    /// The usage line: the part of the help before the `  --  ` separator,
+    /// or its first line.
+    pub usage: String,
+    /// The rest of the help, whitespace-collapsed and capped at
+    /// [`MAX_COMMAND_SUMMARY_BYTES`] (an ellipsis marks a cut).
+    pub summary: String,
+    /// The registering module, when the registry records one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub module: Option<String>,
+    /// Whether `help <name>` also serves a prose topic of that name.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub topic: bool,
+}
+
+/// Split a command's help into `(usage, summary)`: at the house-style
+/// `  --  ` separator when present, else at the first line break.
+#[must_use]
+pub fn split_help(help: &str) -> (String, String) {
+    let (usage, rest) = match help.split_once("  --  ") {
+        Some((u, r)) => (u, r),
+        None => match help.split_once('\n') {
+            Some((u, r)) => (u, r),
+            None => (help, ""),
+        },
+    };
+    let usage = usage.split_whitespace().collect::<Vec<_>>().join(" ");
+    let summary = rest.split_whitespace().collect::<Vec<_>>().join(" ");
+    (usage, truncate_summary(&summary))
+}
+
+/// Cap a summary at [`MAX_COMMAND_SUMMARY_BYTES`] on a char boundary, the
+/// ellipsis (three UTF-8 bytes) included in the cap.
+fn truncate_summary(s: &str) -> String {
+    if s.len() <= MAX_COMMAND_SUMMARY_BYTES {
+        return s.to_string();
+    }
+    let mut end = MAX_COMMAND_SUMMARY_BYTES.saturating_sub('…'.len_utf8());
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}…", s[..end].trim_end())
+}
+
+/// The command table as `viewer` may use it: every registered command whose
+/// role and power gates the viewer passes (locks are per-target and are not
+/// evaluated), sorted by name, each with its usage and summary. Staff-gated
+/// verbs are absent for non-staff, not greyed. Shared by the
+/// `commands.list` query and any future terminal listing — one view, every
+/// transport.
+#[must_use]
+pub fn command_entries(reg: &Registry, w: &World, viewer: ObjId) -> Vec<CommandEntry> {
+    let role = perm::role_of(w, viewer);
+    let mut entries: Vec<CommandEntry> = reg
+        .command_registrations()
+        .filter(|(spec, _, _)| role >= spec.min_role)
+        .filter(|(spec, _, _)| spec.power.is_none_or(|p| perm::has_power(w, viewer, p)))
+        .map(|(spec, module, _)| {
+            let (usage, summary) = split_help(&spec.help);
+            CommandEntry {
+                name: spec.name.to_string(),
+                aliases: spec.aliases.iter().map(ToString::to_string).collect(),
+                switches: spec.switches.iter().map(ToString::to_string).collect(),
+                usage,
+                summary,
+                module: module.map(str::to_string),
+                topic: reg.help_topic(&spec.name).is_some(),
+            }
+        })
+        .collect();
+    entries.sort_by(|a, b| a.name.as_bytes().cmp(b.name.as_bytes()));
+    entries
+}
+
+/// The `commands.list` keyframe body: `{ commands: [...], truncated: bool }`,
+/// stopped at [`MAX_COMMANDS_LIST_BYTES`] with `truncated: true` rather than
+/// split, so the DTO is bounded whatever the composition registers.
+#[must_use]
+pub fn commands_keyframe(reg: &Registry, w: &World, viewer: ObjId) -> serde_json::Value {
+    let mut listed = Vec::new();
+    let mut bytes = 32usize; // the envelope around the array
+    let mut truncated = false;
+    for entry in command_entries(reg, w, viewer) {
+        let value = serde_json::to_value(&entry).expect("a command entry serializes");
+        let cost = serde_json::to_vec(&value).map_or(0, |v| v.len()) + 1;
+        if bytes + cost > MAX_COMMANDS_LIST_BYTES {
+            truncated = true;
+            break;
+        }
+        bytes += cost;
+        listed.push(value);
+    }
+    serde_json::json!({ "commands": listed, "truncated": truncated })
+}
+
+/// The `commands.list` query handler: the viewer-filtered command table as a
+/// `Panel` keyframe on the [`COMMANDS_FEED`] feed (web `Req { q: Commands }`
+/// and the TUI's palette both hydrate from it). The table lives in the
+/// registry, which only the engine's query dispatch attaches to the read
+/// context; the plain `query` path (no registry) refuses politely.
+struct CommandsQuery;
+
+impl QueryHandler for CommandsQuery {
+    fn query(
+        &self,
+        _w: &World,
+        _actor: ObjId,
+        _params: &serde_json::Value,
+    ) -> Result<OutputEvent, RichText> {
+        Err(RichText::tag(
+            "error",
+            "The command table is only available through the live engine.",
+        ))
+    }
+
+    fn query_with_context(
+        &self,
+        context: &HookReadContext<'_>,
+        actor: ObjId,
+        params: &serde_json::Value,
+    ) -> Result<OutputEvent, RichText> {
+        let Some(reg) = context.registry() else {
+            return self.query(context.world(), actor, params);
+        };
+        Ok(OutputEvent::Panel {
+            feed: SmolStr::new_static(COMMANDS_FEED),
+            kind: PanelFrameKind::Keyframe,
+            data: commands_keyframe(reg, context.world(), actor),
+        })
     }
 }
 
@@ -160,6 +308,13 @@ pub(super) fn register(reg: &mut Registry) -> Result<(), RegistryError> {
     // a programming error, not a runtime condition.
     Registrar::new(reg, "core")
         .query_handler("who", Arc::new(WhoQuery))
+        .expect("core query handler registration must not collide");
+    // The command table: a core panel feed (so it is in the `hello` manifest
+    // and subscribable by name) answered by the same-named query handler.
+    let mut core = Registrar::new(reg, "core");
+    core.panel_feed(COMMANDS_FEED)
+        .expect("core panel feed registration must not collide");
+    core.query_handler(COMMANDS_FEED, Arc::new(CommandsQuery))
         .expect("core query handler registration must not collide");
     reg.register(
         CommandSpec {

@@ -203,20 +203,19 @@ this client renders for exactly that fallback. No client change is needed
 once the bridge is fixed — `refreshSheet()`/the panel's poll already speak
 the real `Query::Sheet` contract described above.
 
-**Live-enough, not truly live**: the server has no push-on-mutation delta
-for sheet changes yet (`+harm`/`+xp` approval/splat pool spends never emit a
-`Panel` frame — only the initial `wod.sheet` query does, always as a
-keyframe). `GameApp` compensates two ways, neither perfect: (1) any `Sys`
-line tagged with the loaded sheet's own ruleset id (`"wod"`) debounce-
-refreshes it — covers `+harm`/`+heal`, private rolls, splat pool commands,
-XP approval, but **misses** a public (non-`/priv`) `+roll/wp`, whose
-Willpower-spend narrates to the room untagged; (2) `SheetPanel` polls every
-12s while the tab is mounted (and only then — the interval is cleared on
-unmount). Plus a manual "↻" refresh button. The real fix is a `wod.sheet`
-`Delta` frame pushed alongside `+harm`/`+xp`/splat mutations, symmetric with
-how `wod.roll` already pushes on every `+roll` — out of scope here (crosses
-into `crates/ruleset-wod`), but `SheetStore.applyDelta` is already written
-and tested for the day it lands.
+**Live since interface cut I1** (`docs/interface/02-implementation-plan.md`
+§3.1): every command-side sheet write (`+harm`, `+heal`, splat pool spends,
+XP approval, `@sheet/set`, chargen steps) now goes through
+`SheetStore::put_in`, which republishes the subject's `<ruleset>.sheet`
+keyframe **and** a `<ruleset>.vitals` frame (`$lib/proto`'s `VitalsFrame`:
+the health track, the pools, the condition monitors, plus ruleset readouts)
+to the subject alone. The client-side compensations from before — the
+ruleset-tagged `Sys` refresh heuristic in `GameApp` and `SheetPanel`'s 12s
+poll — are now redundant for the sheet and retire with the screen shell in
+cut I4, which also renders the vitals strip; `SheetStore.applyKeyframe`
+already accepts the pushed frame today. Frames are whole keyframes; a true
+`Delta` remains a later refinement and `SheetStore.applyDelta` is ready for
+it.
 
 ## Worldgen draft panel — Build tab (M7)
 

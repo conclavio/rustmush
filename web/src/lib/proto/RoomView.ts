@@ -30,4 +30,12 @@ exits: Array<ExitRef>,
 /**
  * The zone this room belongs to, when visible.
  */
-zone?: ObjRef | null, };
+zone?: ObjRef | null,
+/**
+ * Structured ambience for a room band or status line, keyed by
+ * contributor — `"ic_time"` (core), `"weather"`, `"scene"`, … — an
+ * open, bounded map (interface plan I1, D-I-4). Absent on the wire when
+ * empty; readers treat every key as optional and every value
+ * defensively, since each is a module's own shape.
+ */
+ambient?: Record<string, unknown>, };

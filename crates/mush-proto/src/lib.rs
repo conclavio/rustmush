@@ -38,8 +38,10 @@ pub use client::{ClientCommand, Query};
 pub use envelope::Envelope;
 pub use event::{
     ExitRef, InputMode, MAX_VIEW_COMMIT_BYTES, MAX_VIEW_DATA_BYTES, MAX_VIEW_ID_BYTES,
-    MAX_VIEW_WIRE_INTEGER, NarrativeKind, ObjRef, OutputEvent, PanelFrameKind, PromptSpec,
-    RoomView, ViewCursor, ViewEnvelope, ViewEnvelopeError, ViewFrameDisposition, WhoEntry,
+    MAX_VIEW_WIRE_INTEGER, MAX_VITAL_DETAIL_BYTES, MAX_VITAL_NAME_BYTES, MAX_VITALS_PER_FEED,
+    NarrativeKind, ObjRef, OutputEvent, PanelFrameKind, PromptSpec, RoomView, ViewCursor,
+    ViewEnvelope, ViewEnvelopeError, ViewFrameDisposition, Vital, VitalRole, VitalState,
+    VitalValue, VitalsFrame, VitalsFrameError, WhoEntry,
 };
 pub use receipt::{
     ActionStatusId, ActionStatusIdError, MAX_ACTION_STATUS_ID_BYTES,

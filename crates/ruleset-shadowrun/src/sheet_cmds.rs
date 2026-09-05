@@ -17,10 +17,10 @@ use mush_core::{
     ArgShape, CmdError, CommandSpec, Ctx, HookReadContext, ModError, ObjId, QueryHandler,
     Registrar, Role, World, match_object, perm,
 };
-use mush_proto::{OutputEvent, PanelFrameKind, RichText};
-use mush_ruleset::SheetDoc;
+use mush_proto::{OutputEvent, PanelFrameKind, RichText, Vital, VitalRole, VitalState, VitalValue};
 use mush_ruleset::schema::{FieldType, SheetSchema};
 use mush_ruleset::store::SHEET_ATTR_NS;
+use mush_ruleset::{SheetDoc, VitalsSource};
 use smol_str::SmolStr;
 
 use crate::Sr5Cmd;
@@ -213,7 +213,7 @@ fn sheet_set(cmd: &Sr5Cmd, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     // SR5-specific: keep Limits / Condition Monitors / Initiative consistent.
     crate::derive::apply_derived(&mut doc);
     store
-        .put_by(ctx.w, target, &doc, ctx.actor)
+        .put_in(target, &doc, ctx.actor, ctx)
         .map_err(|es| CmdError::msg(fmt_errs(&es)))?;
 
     let name = name_of(ctx, target);
@@ -270,22 +270,140 @@ impl SheetQuery {
         if let Some(condition) = condition {
             condition.apply_to_sheet(&mut doc);
         }
-        let show_staff = perm::has_role(w, actor, Role::Royalty);
-        let data = if show_staff {
-            doc.data.clone()
-        } else {
-            strip_staff_only(&self.schema, &doc.data)
-        };
-        Ok(OutputEvent::Panel {
-            feed: self.feed.clone(),
-            kind: PanelFrameKind::Keyframe,
-            data: serde_json::json!({
-                "target": target.to_string(),
-                "schema": self.schema.describe(),
-                "approved": approval_json(&doc),
-                "data": data,
-            }),
-        })
+        Ok(sheet_panel(
+            &self.schema,
+            &self.feed,
+            w,
+            actor,
+            target,
+            &doc,
+        ))
+    }
+}
+
+/// The `shadowrun.sheet` keyframe for `target` as `viewer` sees it — the one
+/// payload builder behind the query and the republish-on-write (interface
+/// plan I1; 10b §4 rule 4).
+fn sheet_panel(
+    schema: &SheetSchema,
+    feed: &SmolStr,
+    w: &World,
+    viewer: ObjId,
+    target: ObjId,
+    doc: &SheetDoc,
+) -> OutputEvent {
+    let show_staff = perm::has_role(w, viewer, Role::Royalty);
+    let data = if show_staff {
+        doc.data.clone()
+    } else {
+        strip_staff_only(schema, &doc.data)
+    };
+    OutputEvent::Panel {
+        feed: feed.clone(),
+        kind: PanelFrameKind::Keyframe,
+        data: serde_json::json!({
+            "target": target.to_string(),
+            "schema": schema.describe(),
+            "approved": approval_json(doc),
+            "data": data,
+        }),
+    }
+}
+
+/// The vitals no sheet field holds, judged by the ruleset: the wound
+/// modifier (with its state), the three Limits, and Initiative
+/// (interface plan I1: clients render, rulesets judge).
+fn extra_vitals(doc: &SheetDoc) -> Vec<Vital> {
+    let wound = crate::derive::condition_monitors(doc).wound_modifier;
+    let limits = crate::derive::limits(doc);
+    let init_base = doc.number(crate::schema::INITIATIVE_BASE).unwrap_or(0);
+    let init_dice = doc.number(crate::schema::INITIATIVE_DICE).unwrap_or(1);
+    vec![
+        Vital {
+            id: SmolStr::new_static("shadowrun.wound"),
+            label: "Wound".into(),
+            role: VitalRole::Readout,
+            value: VitalValue::Text {
+                text: format!("{wound}"),
+            },
+            state: if wound <= -3 {
+                VitalState::Crit
+            } else if wound < 0 {
+                VitalState::Warn
+            } else {
+                VitalState::Ok
+            },
+            detail: Some("to every pool".into()),
+        },
+        Vital {
+            id: SmolStr::new_static("shadowrun.limits"),
+            label: "Limits".into(),
+            role: VitalRole::Readout,
+            value: VitalValue::Text {
+                text: format!("P{} M{} S{}", limits.physical, limits.mental, limits.social),
+            },
+            state: VitalState::Ok,
+            detail: None,
+        },
+        Vital {
+            id: SmolStr::new_static("shadowrun.initiative"),
+            label: "Initiative".into(),
+            role: VitalRole::Readout,
+            value: VitalValue::Text {
+                text: format!("{init_base} + {init_dice}D6"),
+            },
+            state: VitalState::Ok,
+            detail: None,
+        },
+    ]
+}
+
+/// The Shadowrun [`VitalsSource`]: the schema's declared vitals (the two
+/// Condition Monitors, available Edge) read through the K8.4 authoritative
+/// condition overlay, plus the derived readouts, plus the sheet keyframe the
+/// republish-on-write sends (interface plan I1, D-I-2).
+pub(crate) struct SrVitals {
+    cmd: Arc<Sr5Cmd>,
+}
+
+impl SrVitals {
+    pub(crate) fn new(cmd: Arc<Sr5Cmd>) -> SrVitals {
+        SrVitals { cmd }
+    }
+
+    fn vitals_of(&self, doc: &SheetDoc) -> Vec<Vital> {
+        let store = self.cmd.store();
+        let mut vitals = mush_ruleset::from_sheet(&self.cmd.schema, doc, &store);
+        vitals.extend(extra_vitals(doc));
+        vitals
+    }
+}
+
+impl VitalsSource for SrVitals {
+    fn vitals(&self, ctx: &HookReadContext<'_>, subject: ObjId) -> Option<Vec<Vital>> {
+        let w = ctx.world();
+        let mut doc = self.cmd.store().get(w, subject)?;
+        if let Ok(Some(condition)) = ctx.action_state(&self.cmd.condition_state, &subject) {
+            condition.apply_to_sheet(&mut doc);
+        }
+        Some(self.vitals_of(&doc))
+    }
+
+    fn vitals_in(&self, ctx: &Ctx<'_>, subject: ObjId) -> Option<Vec<Vital>> {
+        let doc = self.cmd.read_ctx(ctx, subject).ok().flatten()?;
+        Some(self.vitals_of(&doc))
+    }
+
+    fn sheet_keyframe(&self, ctx: &Ctx<'_>, subject: ObjId) -> Option<OutputEvent> {
+        let doc = self.cmd.read_ctx(ctx, subject).ok().flatten()?;
+        Some(sheet_panel(
+            &self.cmd.schema,
+            &SmolStr::new_static("shadowrun.sheet"),
+            ctx.w,
+            subject,
+            subject,
+            &doc,
+        ))
     }
 }
 

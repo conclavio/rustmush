@@ -213,7 +213,7 @@ fn award(cmd: &WodCmd, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         format!("+{n} XP awarded by {}", name_of(ctx, ctx.actor)),
     );
     cmd.store_for_doc(&doc)
-        .put_by(ctx.w, target, &doc, ctx.actor)
+        .put_in(target, &doc, ctx.actor, ctx)
         .map_err(|es| CmdError::msg(fmt_errs(&es)))?;
     ctx.out.info(
         ctx.actor,
@@ -308,7 +308,7 @@ pub(crate) fn xp_approval(
     );
     dispatch
         .store_for_doc(&doc)
-        .put_by(ctx.w, target, &doc, ctx.actor)
+        .put_in(target, &doc, ctx.actor, ctx)
         .map_err(|es| fmt_errs(&es))?;
     Ok(())
 }

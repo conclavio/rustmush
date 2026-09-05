@@ -231,7 +231,10 @@ impl Template for Mage {
             )
             // Arete is Dots so `+cast`/`+roll arete` resolves it as a pool.
             .field(FieldDef::dots("arete", "Arete", 0, 10).with_default(serde_json::json!(1)))
-            .field(FieldDef::number("quintessence", "Quintessence", 0, 100))
+            .field(
+                FieldDef::number("quintessence", "Quintessence", 0, 100)
+                    .vital(mush_proto::VitalRole::Pool),
+            )
             .field(FieldDef::number("paradox", "Paradox", 0, 100));
         let b = b.section(arcane)?;
         // Spheres map (name→0..5).
@@ -453,7 +456,7 @@ pub(crate) fn apply_sphere(
         .set_map_entry(&mut doc, "spheres", sphere, serde_json::json!(rating))
         .map_err(|e| CmdError::msg(e.to_string()))?;
     store
-        .put_by(ctx.w, ctx.actor, &doc, ctx.actor)
+        .put_in(ctx.actor, &doc, ctx.actor, ctx)
         .map_err(|es| CmdError::msg(fmt_errs(&es)))?;
     let aff = if is_affinity(&doc, sphere) {
         " (affinity)"
@@ -826,7 +829,7 @@ fn resonance_cmd(cmd: &WodCmd, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     if rating == 0 {
         doc.map_remove("resonance", &lhs);
         store
-            .put_by(ctx.w, ctx.actor, &doc, ctx.actor)
+            .put_in(ctx.actor, &doc, ctx.actor, ctx)
             .map_err(|es| CmdError::msg(fmt_errs(&es)))?;
         ctx.out
             .sys_to_actor(ctx.actor, "wod", format!("Resonance {lhs:?} cleared."));
@@ -836,7 +839,7 @@ fn resonance_cmd(cmd: &WodCmd, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         .set_map_entry(&mut doc, "resonance", &lhs, serde_json::json!(rating))
         .map_err(|e| CmdError::msg(e.to_string()))?;
     store
-        .put_by(ctx.w, ctx.actor, &doc, ctx.actor)
+        .put_in(ctx.actor, &doc, ctx.actor, ctx)
         .map_err(|es| CmdError::msg(fmt_errs(&es)))?;
     ctx.out.sys_to_actor(
         ctx.actor,
@@ -862,7 +865,7 @@ fn set_quint(
         .set_field(doc, "quintessence", serde_json::json!(value.max(0)))
         .map_err(|e| CmdError::msg(e.to_string()))?;
     store
-        .put_by(ctx.w, ctx.actor, doc, ctx.actor)
+        .put_in(ctx.actor, doc, ctx.actor, ctx)
         .map_err(|es| CmdError::msg(fmt_errs(&es)))?;
     Ok(())
 }
@@ -879,7 +882,7 @@ fn set_paradox(
         .set_field(doc, "paradox", serde_json::json!(value.max(0)))
         .map_err(|e| CmdError::msg(e.to_string()))?;
     store
-        .put_by(ctx.w, ctx.actor, doc, ctx.actor)
+        .put_in(ctx.actor, doc, ctx.actor, ctx)
         .map_err(|es| CmdError::msg(fmt_errs(&es)))?;
     Ok(())
 }

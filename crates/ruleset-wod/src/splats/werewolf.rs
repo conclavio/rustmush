@@ -506,9 +506,15 @@ impl Template for Werewolf {
             .field(FieldDef::enumeration("tribe", "Tribe", tribe_ids()))
             .field(FieldDef::number("rank", "Rank", 0, 5))
             .field(FieldDef::number("rage", "Rage", 0, 10))
-            .field(FieldDef::number("rage_temp", "Rage (temporary)", 0, 10))
+            .field(
+                FieldDef::number("rage_temp", "Rage (temporary)", 0, 10)
+                    .vital(mush_proto::VitalRole::Pool),
+            )
             .field(FieldDef::number("gnosis", "Gnosis", 0, 10))
-            .field(FieldDef::number("gnosis_temp", "Gnosis (temporary)", 0, 10))
+            .field(
+                FieldDef::number("gnosis_temp", "Gnosis (temporary)", 0, 10)
+                    .vital(mush_proto::VitalRole::Pool),
+            )
             .field(
                 FieldDef::enumeration(
                     "current_form",
@@ -1022,7 +1028,7 @@ fn shift_cmd(cmd: &WodCmd, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         .set_field(&mut doc, "current_form", serde_json::json!(form))
         .map_err(|e| CmdError::msg(e.to_string()))?;
     store
-        .put_by(ctx.w, ctx.actor, &doc, ctx.actor)
+        .put_in(ctx.actor, &doc, ctx.actor, ctx)
         .map_err(|es| CmdError::msg(fmt_errs(&es)))?;
     let mut msg = format!(
         "You shift into {form} form ({}).",
@@ -1102,7 +1108,7 @@ fn set_pool(
         .set_field(doc, field, serde_json::json!(value.max(0)))
         .map_err(|e| CmdError::msg(e.to_string()))?;
     store
-        .put_by(ctx.w, ctx.actor, doc, ctx.actor)
+        .put_in(ctx.actor, doc, ctx.actor, ctx)
         .map_err(|es| CmdError::msg(fmt_errs(&es)))?;
     Ok(())
 }

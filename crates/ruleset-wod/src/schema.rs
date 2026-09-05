@@ -214,12 +214,10 @@ pub fn base_builder(ruleset: &str, template_ids: &[SmolStr]) -> SheetSchemaBuild
     // Willpower (permanent + temporary pool) and Experience.
     let advantages = SheetSection::new("advantages", "Advantages", SectionLayout::List)
         .field(FieldDef::number("willpower", "Willpower", 1, 10))
-        .field(FieldDef::number(
-            "willpower_temp",
-            "Willpower (temporary)",
-            0,
-            10,
-        ))
+        .field(
+            FieldDef::number("willpower_temp", "Willpower (temporary)", 0, 10)
+                .vital(mush_proto::VitalRole::Pool),
+        )
         .field(FieldDef::number(
             "experience",
             "Experience (current)",
@@ -281,7 +279,8 @@ pub fn base_builder(ruleset: &str, template_ids: &[SmolStr]) -> SheetSchemaBuild
 
     // Health track: fixed 7 levels.
     let health = SheetSection::new("health", "Health", SectionLayout::Tracks).field(
-        FieldDef::track(HEALTH_FIELD, "Health", TrackSize::Fixed(7), health_levels()),
+        FieldDef::track(HEALTH_FIELD, "Health", TrackSize::Fixed(7), health_levels())
+            .vital(mush_proto::VitalRole::Track),
     );
     builder.section(health).expect("health section")
 }

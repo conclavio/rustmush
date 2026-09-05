@@ -134,10 +134,12 @@ pub trait SshHooks: Send + Sync {
     /// side of the structured `Inbound::Query` path (milestone M15). The
     /// transport uses it to refresh TUI widgets (e.g. the WHO rail submits
     /// `"who"`) without typing a command, so it must not stamp idle. The
-    /// binary maps `name` to its query handler and routes the reply back
-    /// through the same output queue as an [`OutputEvent`]. The default is a
-    /// no-op, so a binary without query support simply serves no widget data.
-    fn query(&self, _conn: u64, _name: String) -> BoxFuture<'_, ()> {
+    /// binary forwards `name` and `args` to the engine's query handler of
+    /// that name and routes the reply back through the same output queue as
+    /// an [`OutputEvent`] (interface plan I1, D-I-3: any registered feed or
+    /// query name, with arguments). The default is a no-op, so a binary
+    /// without query support simply serves no widget data.
+    fn query(&self, _conn: u64, _name: String, _args: serde_json::Value) -> BoxFuture<'_, ()> {
         Box::pin(async {})
     }
 

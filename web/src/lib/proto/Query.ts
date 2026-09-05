@@ -13,7 +13,7 @@ export type Query = { "t": "mail_list", "d": {
 /**
  * Folder name; `None` means the default folder (inbox).
  */
-folder?: string | null, } } | { "t": "who" } | { "t": "sheet" } | { "t": "channel_backlog", "d": {
+folder?: string | null, } } | { "t": "who" } | { "t": "sheet" } | { "t": "commands" } | { "t": "channel_backlog", "d": {
 /**
  * Channel name.
  */

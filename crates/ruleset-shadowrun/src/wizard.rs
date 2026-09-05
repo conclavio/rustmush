@@ -418,7 +418,7 @@ impl ChargenWizard {
         doc.set(field, serde_json::Value::Array(list));
         self.cmd
             .store()
-            .put_by(ctx.w, actor, &doc, actor)
+            .put_in(actor, &doc, actor, ctx)
             .map_err(|es| {
                 CmdError::msg(
                     es.iter()

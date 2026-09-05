@@ -218,7 +218,7 @@ fn sheet_set(store: &SheetStore, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     };
 
     store
-        .put_by(ctx.w, target, &doc, ctx.actor)
+        .put_in(target, &doc, ctx.actor, ctx)
         .map_err(|es| CmdError::msg(format_errors(&es)))?;
 
     let name = ctx

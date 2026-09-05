@@ -889,7 +889,7 @@ fn banality_set(cmd: &WodCmd, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         .set_field(&mut doc, "banality", serde_json::json!(n))
         .map_err(|e| CmdError::msg(e.to_string()))?;
     store
-        .put_by(ctx.w, target, &doc, ctx.actor)
+        .put_in(target, &doc, ctx.actor, ctx)
         .map_err(|es| CmdError::msg(fmt_errs(&es)))?;
     ctx.out.sys_to_actor(
         ctx.actor,
@@ -947,7 +947,7 @@ fn set_pool(
         .set_field(doc, field, serde_json::json!(value.max(0)))
         .map_err(|e| CmdError::msg(e.to_string()))?;
     store
-        .put_by(ctx.w, ctx.actor, doc, ctx.actor)
+        .put_in(ctx.actor, doc, ctx.actor, ctx)
         .map_err(|es| CmdError::msg(fmt_errs(&es)))?;
     Ok(())
 }

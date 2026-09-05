@@ -268,6 +268,12 @@ pub enum HookPoint {
     /// banners). Fires wherever a room render is shown: `look`, movement
     /// arrival, `@teleport`.
     LookRendered,
+    /// Contribute structured ambience to a rendered room view — the
+    /// `RoomView.ambient` map a client's room band or status line reads
+    /// (interface plan I1, D-I-4). Fires wherever `LookRendered` does; each
+    /// hook returns `(key, value)` pairs, first writer wins on a key, and the
+    /// whole map is bounded ([`MAX_AMBIENT_KEYS`], [`MAX_AMBIENT_BYTES`]).
+    RoomAmbient,
     /// Read-only per-observer perception gate (the M11 projection seam):
     /// consulted wherever the output layer decides whether one observer may
     /// perceive one subject — the `look`/`examine` contents filters and the
@@ -311,6 +317,7 @@ pub enum Perceive {
 pub struct HookReadContext<'a> {
     world: &'a World,
     typed_state: crate::action_state::ModuleActionState<'a>,
+    registry: Option<&'a Registry>,
 }
 
 impl<'a> HookReadContext<'a> {
@@ -335,12 +342,27 @@ impl<'a> HookReadContext<'a> {
                 action_state,
                 Some(module),
             ),
+            registry: None,
         }
+    }
+
+    /// Attach the live registry (engine query dispatch only), so a read-only
+    /// query can project registry-owned tables such as the command list.
+    pub(crate) fn with_registry(mut self, registry: &'a Registry) -> Self {
+        self.registry = Some(registry);
+        self
     }
 
     #[must_use]
     pub const fn world(&self) -> &'a World {
         self.world
+    }
+
+    /// The live registry when the engine supplied one (query dispatch);
+    /// `None` for off-loop and hook contexts.
+    #[must_use]
+    pub const fn registry(&self) -> Option<&'a Registry> {
+        self.registry
     }
 
     #[must_use]
@@ -414,6 +436,19 @@ pub trait EventHook: Send + Sync {
         looker: ObjId,
         room: ObjId,
     ) -> Vec<RichText> {
+        Vec::new()
+    }
+
+    /// Structured ambience for a room render: `(key, value)` pairs merged
+    /// into `RoomView.ambient` under [`HookPoint::RoomAmbient`]'s rules
+    /// (first writer per key; bounded). A module contributes its own shape
+    /// under its own key (`"weather"`, `"scene"`) and never rewrites another's.
+    fn room_ambient(
+        &self,
+        ctx: &HookReadContext<'_>,
+        looker: ObjId,
+        room: ObjId,
+    ) -> Vec<(SmolStr, serde_json::Value)> {
         Vec::new()
     }
 
@@ -2931,6 +2966,79 @@ pub(crate) fn look_rendered_lines_with_action_state(
         lines.extend(h.hook.look_rendered(&ctx, looker, room));
     }
     lines
+}
+
+/// Maximum keys in one `RoomView.ambient` map (interface plan I1 §7).
+pub const MAX_AMBIENT_KEYS: usize = 8;
+/// Maximum serialized bytes of one `RoomView.ambient` map (I1 §7).
+pub const MAX_AMBIENT_BYTES: usize = 2048;
+
+/// The key core itself fills in `RoomView.ambient` when no module has: the
+/// IC clock as `{ unix, hour, minute, season, time_of_day }`.
+pub const AMBIENT_IC_TIME_KEY: &str = "ic_time";
+
+/// Collect every `RoomAmbient` hook's contributions for a room render, then
+/// core's own `ic_time`, into one bounded map (first writer wins per key; a
+/// contribution past [`MAX_AMBIENT_KEYS`] or [`MAX_AMBIENT_BYTES`] is dropped
+/// with a warning rather than truncated).
+#[must_use]
+pub fn room_ambient(
+    reg: &Registry,
+    w: &World,
+    looker: ObjId,
+    room: ObjId,
+) -> std::collections::BTreeMap<SmolStr, serde_json::Value> {
+    room_ambient_with_action_state(reg, w, looker, room, None)
+}
+
+pub(crate) fn room_ambient_with_action_state(
+    reg: &Registry,
+    w: &World,
+    looker: ObjId,
+    room: ObjId,
+    action_state: Option<&crate::action_state::ActionStateStore>,
+) -> std::collections::BTreeMap<SmolStr, serde_json::Value> {
+    let mut map = std::collections::BTreeMap::new();
+    let mut bytes = 0usize;
+    let mut offer = |key: SmolStr, value: serde_json::Value, module: &str| {
+        if map.contains_key(&key) {
+            tracing::warn!(module, %key, "room ambient: key already contributed; first writer kept");
+            return;
+        }
+        if map.len() >= MAX_AMBIENT_KEYS {
+            tracing::warn!(module, %key, "room ambient: key cap reached; contribution dropped");
+            return;
+        }
+        // Key plus value plus the JSON punctuation around them; an estimate
+        // that only ever over-counts.
+        let cost = key.len() + 4 + serde_json::to_vec(&value).map_or(0, |v| v.len());
+        if bytes + cost > MAX_AMBIENT_BYTES {
+            tracing::warn!(module, %key, cost, "room ambient: byte cap reached; contribution dropped");
+            return;
+        }
+        bytes += cost;
+        map.insert(key, value);
+    };
+    for h in reg.hooks(HookPoint::RoomAmbient) {
+        let ctx = HookReadContext::for_module(w, action_state, &h.module);
+        for (key, value) in h.hook.room_ambient(&ctx, looker, room) {
+            offer(key, value, &h.module);
+        }
+    }
+    let clock = w.game_clock();
+    let now = w.now();
+    offer(
+        SmolStr::new_static(AMBIENT_IC_TIME_KEY),
+        serde_json::json!({
+            "unix": clock.ic_unix(now),
+            "hour": clock.ic_hour(now),
+            "minute": clock.ic_minute(now),
+            "season": clock.season(now).to_string(),
+            "time_of_day": clock.time_of_day(now).to_string(),
+        }),
+        "core",
+    );
+    map
 }
 
 /// Invoke every observer subscribed to `ev`'s kind, post-mutation, each

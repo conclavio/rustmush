@@ -2875,11 +2875,27 @@ impl Engine {
                     &self.world,
                     Some(&self.action_state),
                     module,
-                );
+                )
+                .with_registry(&self.registry);
                 match handler.query_with_context(&context, actor, args) {
                     Ok(event) => event,
                     Err(err) => OutputEvent::Sys(err),
                 }
+            }
+            // A registered panel feed with no same-named query handler is a
+            // push-only feed (`wod.roll`): a subscribe to it has nothing to
+            // hydrate and simply acknowledges, so both bridges can forward
+            // any feed name unchanged (interface plan I1, D-I-3).
+            None if self
+                .registry
+                .panel_feeds()
+                .iter()
+                .any(|(feed, _)| feed.as_str() == name) =>
+            {
+                OutputEvent::Sys(RichText::tag(
+                    "system",
+                    format!("Subscribed to panel feed {name:?}."),
+                ))
             }
             None => OutputEvent::Sys(RichText::tag("error", format!("Unknown query {name:?}."))),
         };
@@ -4733,6 +4749,82 @@ mod tests {
                 "wanted {needle:?} in {event:?}"
             );
         }
+    }
+
+    /// A registered panel feed with no same-named query handler is
+    /// push-only: subscribing to it by name acknowledges instead of erring,
+    /// so the bridges can forward any manifest feed unchanged (interface
+    /// plan I1, D-I-3). An unregistered name is still "Unknown query".
+    #[test]
+    fn subscribe_to_push_only_feed_acks_by_name() {
+        let (mut engine, _) = engine_with_echo_query();
+        crate::module::Registrar::new(&mut engine.registry, "pushy")
+            .panel_feed("pushy.stream")
+            .expect("feed registers");
+        let (mut out, mut fx) = (Outbox::new(), Effects::new());
+        engine.step(
+            query("pushy.stream", serde_json::json!({})),
+            &mut out,
+            &mut fx,
+        );
+        assert_eq!(out.len(), 1);
+        let (_, ev) = &out.events()[0];
+        let OutputEvent::Reply { id: 7, event } = ev else {
+            panic!("expected Reply id 7, got {ev:?}");
+        };
+        let OutputEvent::Sys(t) = event.as_ref() else {
+            panic!("expected Sys ack, got {event:?}");
+        };
+        assert!(
+            t.to_plain_text().contains("Subscribed to panel feed"),
+            "push-only feed acks: {t:?}"
+        );
+        assert_eq!(
+            t.spans()[0].tag.as_deref(),
+            Some("system"),
+            "an ack is not an error"
+        );
+    }
+
+    /// `commands.list` reaches the registry through the read context the
+    /// engine attaches (interface plan I1, D-I-5): the reply is a keyframe on
+    /// the `commands.list` feed listing the core verbs the actor may use.
+    /// (Queries never stamp `last_input`; the `who` test below pins that for
+    /// the whole query path.)
+    #[test]
+    fn commands_list_query_answers_a_bounded_keyframe() {
+        let (mut engine, nick) = setup();
+        let (mut out, mut fx) = (Outbox::new(), Effects::new());
+        engine.step(
+            Inbound::Query {
+                conn: 42,
+                actor: nick,
+                id: 9,
+                name: SmolStr::new("commands.list"),
+                args: serde_json::json!({}),
+            },
+            &mut out,
+            &mut fx,
+        );
+        assert_eq!(out.len(), 1, "{:?}", out.events());
+        let OutputEvent::Reply { id: 9, event } = &out.events()[0].1 else {
+            panic!("expected Reply id 9, got {:?}", out.events());
+        };
+        let OutputEvent::Panel { feed, data, .. } = event.as_ref() else {
+            panic!("expected a Panel keyframe, got {event:?}");
+        };
+        assert_eq!(feed.as_str(), "commands.list");
+        let names: Vec<&str> = data["commands"]
+            .as_array()
+            .expect("commands array")
+            .iter()
+            .filter_map(|c| c["name"].as_str())
+            .collect();
+        assert!(
+            names.contains(&"WHO") && names.contains(&"help"),
+            "{names:?}"
+        );
+        assert_eq!(data["truncated"], serde_json::json!(false));
     }
 
     /// The core `"who"` handler is registered by `register_core_commands`

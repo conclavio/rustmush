@@ -28,6 +28,12 @@ pub enum Query {
     /// The viewer's character sheet (delivered as a `Panel` keyframe on the
     /// active ruleset's sheet feed).
     Sheet,
+    /// The command table as this viewer may use it (delivered as a `Panel`
+    /// keyframe on the `commands.list` feed): name, aliases, switches, a
+    /// usage line and a summary per command, filtered server-side by role
+    /// and power, bounded, deterministic. Feeds the command palette
+    /// (interface plan I1, D-I-5).
+    Commands,
     /// Historical channel messages, newest-first from `before_seq`.
     ChannelBacklog {
         /// Channel name.
@@ -79,6 +85,14 @@ pub enum ClientCommand {
         /// Exact token carried by the `resolution.outcome` view.
         #[cfg_attr(feature = "ts", ts(type = "string"))]
         commit: ProjectedCommitToken,
+    },
+    /// The player started (`true`) or stopped (`false`) composing a line.
+    /// The transport rate-limits it and the world fans it out to the room
+    /// as [`OutputEvent::Composing`](crate::OutputEvent::Composing); it never
+    /// stamps idle (interface plan I1, D-I-11).
+    Composing {
+        /// Whether a draft is in progress.
+        active: bool,
     },
     /// Keepalive response to a server
     /// [`Ping`](crate::OutputEvent::Ping).

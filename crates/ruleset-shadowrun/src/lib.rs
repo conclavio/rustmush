@@ -309,6 +309,14 @@ impl GameModule for ShadowrunRuleset {
         // `shadowrun.sheet` web query — schema-generic web payload, no web
         // change; @sheet/set recomputes derived stats).
         sheet_cmds::register(reg, Arc::clone(&cmd))?;
+        // The `shadowrun.vitals` feed, its query, and republish-on-write of
+        // both vitals and the sheet keyframe (interface plan I1, D-I-2).
+        mush_ruleset::register_vitals(
+            reg,
+            "shadowrun",
+            &mush_ruleset::sheet_attr_name("shadowrun"),
+            Arc::new(sheet_cmds::SrVitals::new(Arc::clone(&cmd))),
+        )?;
 
         roll::register(reg, Arc::clone(&cmd))?;
         condition::register(reg, Arc::clone(&cmd))?;

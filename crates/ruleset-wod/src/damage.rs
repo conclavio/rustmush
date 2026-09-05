@@ -28,7 +28,7 @@ fn harm_cmd(cmd: &WodCmd, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let marks = track.to_marks();
     doc.set_track(HEALTH_FIELD, &marks);
     cmd.store_for_doc(&doc)
-        .put_by(ctx.w, target, &doc, ctx.actor)
+        .put_in(target, &doc, ctx.actor, ctx)
         .map_err(|es| CmdError::msg(fmt_errs(&es)))?;
 
     let name = name_of(ctx, target);
@@ -61,7 +61,7 @@ fn heal_cmd(cmd: &WodCmd, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let removed = track.heal(spec.kind, spec.count);
     doc.set_track(HEALTH_FIELD, &track.to_marks());
     cmd.store_for_doc(&doc)
-        .put_by(ctx.w, target, &doc, ctx.actor)
+        .put_in(target, &doc, ctx.actor, ctx)
         .map_err(|es| CmdError::msg(fmt_errs(&es)))?;
     let name = name_of(ctx, target);
     ctx.out.sys_to_actor(

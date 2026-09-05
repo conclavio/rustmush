@@ -37,6 +37,7 @@
 
 mod commands;
 mod data;
+mod panel;
 
 use std::sync::Arc;
 
@@ -186,6 +187,12 @@ impl GameModule for ScenesModule {
         reg.subscribe(WorldEventKind::Rolled, Arc::new(on_rolled));
         // Turn-gating: a mechanical command runs only on the actor's turn.
         reg.command_gate(Arc::new(TurnGate));
+        // The `scenes` panel feed (a keyframe to every member on each
+        // lifecycle transition), its same-named query, and the room-band
+        // glance under `RoomView.ambient["scene"]` (interface plan I1).
+        let _ = reg.panel_feed(panel::FEED)?;
+        reg.query_handler(panel::FEED, Arc::new(panel::ScenesQuery))?;
+        reg.hook(HookPoint::RoomAmbient, Arc::new(panel::SceneAmbient));
         commands::register(reg)?;
         Ok(())
     }

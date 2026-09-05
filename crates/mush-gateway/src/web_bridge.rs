@@ -633,6 +633,7 @@ impl<A: AuthBackend + 'static> WebHooks for WebBridge<A> {
                         }
                     }
                 }
+                Query::Commands => (SmolStr::new_static("commands.list"), serde_json::json!({})),
                 Query::PanelSubscribe { feed } => {
                     if !self.panels.iter().any(|p| p.as_str() == feed.as_str()) {
                         self.direct_error_reply(
@@ -645,7 +646,13 @@ impl<A: AuthBackend + 'static> WebHooks for WebBridge<A> {
                     // The subscription ack IS the panel's keyframe where a
                     // state query exists; deltas then stream live. (M4 has
                     // no per-feed mute — every attached connection receives
-                    // all panel frames.)
+                    // all panel frames.) The three feeds whose query is named
+                    // differently from the feed are mapped here; every other
+                    // feed forwards under its own name, and the engine answers
+                    // with the same-named handler's keyframe or, for a
+                    // push-only feed, a plain "subscribed" ack (interface plan
+                    // I1, D-I-3) — so `llm.dashboard`, `wod.vitals`, `scenes`
+                    // and the next feed need no bridge arm.
                     match feed.as_str() {
                         "comsys" => (SmolStr::new_static("comsys.state"), serde_json::json!({})),
                         "who" => (SmolStr::new_static("who"), serde_json::json!({})),
@@ -657,27 +664,7 @@ impl<A: AuthBackend + 'static> WebHooks for WebBridge<A> {
                             SmolStr::new_static("mail.list"),
                             serde_json::json!({ "folder": null }),
                         ),
-                        // The M10c staff LLM cost dashboard: its keyframe is
-                        // the `llm.dashboard` query handler (same feed name),
-                        // which gates on Royalty and refuses non-staff itself
-                        // (the panel is advertised to every client — the
-                        // handler is the actual gate; see its doc). Without
-                        // this arm the subscribe would only ack, and the panel
-                        // would never receive its aggregates.
-                        "llm.dashboard" => {
-                            (SmolStr::new_static("llm.dashboard"), serde_json::json!({}))
-                        }
-                        _ => {
-                            self.direct_reply(
-                                conn_id,
-                                id,
-                                OutputEvent::Sys(RichText::tag(
-                                    "system",
-                                    format!("Subscribed to panel feed {feed:?}."),
-                                )),
-                            );
-                            return;
-                        }
+                        _ => (feed.clone(), serde_json::json!({})),
                     }
                 }
             };

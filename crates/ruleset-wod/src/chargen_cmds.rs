@@ -110,7 +110,7 @@ pub(crate) fn open_chargen_session(cmd: &WodCmd, ctx: &mut Ctx<'_>) -> Result<bo
     if existing.is_none() {
         let doc = SheetDoc::new_default(&cmd.default_schema());
         cmd.default_store()
-            .put_by(ctx.w, actor, &doc, actor)
+            .put_in(actor, &doc, actor, ctx)
             .map_err(|es| CmdError::msg(fmt_errs(&es)))?;
     }
     // Re-hydrate the priority assignment from the sheet (reboot-safe: a session
@@ -210,7 +210,7 @@ pub(crate) fn apply_priorities(
             .map_err(|e| CmdError::msg(e.to_string()))?;
     }
     store
-        .put_by(ctx.w, actor, &doc, actor)
+        .put_in(actor, &doc, actor, ctx)
         .map_err(|es| CmdError::msg(fmt_errs(&es)))?;
     Ok(())
 }
@@ -322,7 +322,7 @@ pub(crate) fn apply_stat(
     // Let the splat recompute any derived fields (Vampire: clan weakness).
     splat.on_field_changed(&mut doc, field);
     store
-        .put_by(ctx.w, actor, &doc, actor)
+        .put_in(actor, &doc, actor, ctx)
         .map_err(|es| CmdError::msg(fmt_errs(&es)))?;
     ctx.out.info(actor, format!("Set {audit}."));
     Ok(())
@@ -348,7 +348,7 @@ pub(crate) fn apply_template(
     let mut doc = cmd.read_or_default(ctx.w, actor);
     retemplate(&mut doc, &target_schema, &id);
     cmd.store_for_doc(&doc)
-        .put_by(ctx.w, actor, &doc, actor)
+        .put_in(actor, &doc, actor, ctx)
         .map_err(|es| CmdError::msg(fmt_errs(&es)))?;
     Ok(id)
 }
@@ -479,7 +479,7 @@ pub(crate) fn apply_spec(
         .set_map_entry(&mut doc, "specialties", &id, serde_json::Value::Array(list))
         .map_err(|e| CmdError::msg(e.to_string()))?;
     store
-        .put_by(ctx.w, actor, &doc, actor)
+        .put_in(actor, &doc, actor, ctx)
         .map_err(|es| CmdError::msg(fmt_errs(&es)))?;
     ctx.out
         .info(actor, format!("Specialty {specialty:?} added to {id}."));
@@ -617,7 +617,7 @@ pub(crate) fn submit(cmd: &WodCmd, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 
     doc.approved = ApprovalState::Pending(job);
     cmd.store_for_doc(&doc)
-        .put_by(ctx.w, actor, &doc, actor)
+        .put_in(actor, &doc, actor, ctx)
         .map_err(|es| CmdError::msg(fmt_errs(&es)))?;
     if let Some(st) = ctx.state_mut::<WodState>() {
         st.close_chargen(actor);
@@ -664,7 +664,7 @@ pub(crate) fn chargen_approval(
     };
     dispatch
         .store_for_doc(&doc)
-        .put_by(ctx.w, target, &doc, ctx.actor)
+        .put_in(target, &doc, ctx.actor, ctx)
         .map_err(|es| fmt_errs(&es))?;
     // E5c (08d §5.4): the economic artifacts, per `personal_mode` — nothing / a
     // `SpendingProfile` / an account with starting funds — plus the tenancy if the

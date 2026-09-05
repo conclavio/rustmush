@@ -14,10 +14,10 @@ use mush_core::{
     ArgShape, CmdError, CommandSpec, Ctx, HookReadContext, ModError, ObjId, QueryHandler,
     Registrar, Role, World, match_object, perm,
 };
-use mush_proto::{OutputEvent, PanelFrameKind, RichText};
-use mush_ruleset::SheetDoc;
+use mush_proto::{OutputEvent, PanelFrameKind, RichText, Vital};
 use mush_ruleset::schema::{FieldType, SheetSchema};
 use mush_ruleset::store::SHEET_ATTR_NS;
+use mush_ruleset::{SheetDoc, VitalsSource};
 use smol_str::SmolStr;
 
 use crate::WodCmd;
@@ -213,7 +213,7 @@ fn sheet_set(cmd: &WodCmd, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     // Let the splat recompute derived fields (Vampire: clan weakness).
     cmd.splat_for_doc(&doc).on_field_changed(&mut doc, field);
     store
-        .put_by(ctx.w, target, &doc, ctx.actor)
+        .put_in(target, &doc, ctx.actor, ctx)
         .map_err(|es| CmdError::msg(fmt_errs(&es)))?;
 
     let name = name_of(ctx, target);
@@ -240,7 +240,7 @@ fn staff_set_template(
     let mut doc = cmd.read_or_default_ctx(ctx, target)?;
     retemplate(&mut doc, &schema, &id);
     cmd.store_for_doc(&doc)
-        .put_by(ctx.w, target, &doc, ctx.actor)
+        .put_in(target, &doc, ctx.actor, ctx)
         .map_err(|es| CmdError::msg(fmt_errs(&es)))?;
     let name = name_of(ctx, target);
     ctx.out
@@ -296,29 +296,103 @@ impl SheetQuery {
             .read(w, target)
             .ok_or_else(|| RichText::tag("error", "That character has no sheet."))?;
         if let Some(roll_state) = roll_state {
-            let permanent = doc.number("willpower").unwrap_or(0).clamp(0, 10);
-            doc.set_number(
-                "willpower_temp",
-                roll_state.willpower_current.min(permanent),
-            );
+            overlay_roll_state(&mut doc, roll_state);
         }
-        let schema = self.dispatch.schemas.schema_for_doc(&doc);
-        let show_staff = perm::has_role(w, actor, Role::Royalty);
-        let data = if show_staff {
-            doc.data.clone()
-        } else {
-            strip_staff_only(&schema, &doc.data)
-        };
-        Ok(OutputEvent::Panel {
-            feed: self.feed.clone(),
-            kind: PanelFrameKind::Keyframe,
-            data: serde_json::json!({
-                "target": target.to_string(),
-                "schema": schema.describe(),
-                "approved": approval_json(&doc),
-                "data": data,
-            }),
-        })
+        Ok(sheet_panel(
+            &self.dispatch,
+            &self.feed,
+            w,
+            actor,
+            target,
+            &doc,
+        ))
+    }
+}
+
+/// The K8.4 authoritative temporary-Willpower overlay on a read sheet.
+fn overlay_roll_state(doc: &mut SheetDoc, roll_state: &crate::authoritative::WodRollState) {
+    let permanent = doc.number("willpower").unwrap_or(0).clamp(0, 10);
+    doc.set_number(
+        "willpower_temp",
+        roll_state.willpower_current.min(permanent),
+    );
+}
+
+/// The `wod.sheet` keyframe for `target` as `viewer` sees it — the one
+/// payload builder behind the query and the republish-on-write (interface
+/// plan I1; 10b §4 rule 4).
+fn sheet_panel(
+    dispatch: &Dispatch,
+    feed: &SmolStr,
+    w: &World,
+    viewer: ObjId,
+    target: ObjId,
+    doc: &SheetDoc,
+) -> OutputEvent {
+    let schema = dispatch.schemas.schema_for_doc(doc);
+    let show_staff = perm::has_role(w, viewer, Role::Royalty);
+    let data = if show_staff {
+        doc.data.clone()
+    } else {
+        strip_staff_only(&schema, &doc.data)
+    };
+    OutputEvent::Panel {
+        feed: feed.clone(),
+        kind: PanelFrameKind::Keyframe,
+        data: serde_json::json!({
+            "target": target.to_string(),
+            "schema": schema.describe(),
+            "approved": approval_json(doc),
+            "data": data,
+        }),
+    }
+}
+
+/// The WoD [`VitalsSource`]: the template-selected schema's declared vitals
+/// (health, temporary Willpower, the splat pools) read through the same
+/// authoritative overlay the sheet query applies, plus the sheet keyframe
+/// the republish-on-write sends (interface plan I1, D-I-2).
+pub(crate) struct WodVitals {
+    cmd: Arc<WodCmd>,
+}
+
+impl WodVitals {
+    pub(crate) fn new(cmd: Arc<WodCmd>) -> WodVitals {
+        WodVitals { cmd }
+    }
+
+    fn vitals_of(&self, doc: &SheetDoc) -> Vec<Vital> {
+        let schema = self.cmd.schema_for_doc(doc);
+        let store = self.cmd.store_for_doc(doc);
+        mush_ruleset::from_sheet(&schema, doc, &store)
+    }
+}
+
+impl VitalsSource for WodVitals {
+    fn vitals(&self, ctx: &HookReadContext<'_>, subject: ObjId) -> Option<Vec<Vital>> {
+        let w = ctx.world();
+        let mut doc = self.cmd.dispatch.read(w, subject)?;
+        if let Ok(Some(roll_state)) = ctx.action_state(&self.cmd.roll_state, &subject) {
+            overlay_roll_state(&mut doc, roll_state);
+        }
+        Some(self.vitals_of(&doc))
+    }
+
+    fn vitals_in(&self, ctx: &Ctx<'_>, subject: ObjId) -> Option<Vec<Vital>> {
+        let doc = self.cmd.read_ctx(ctx, subject).ok().flatten()?;
+        Some(self.vitals_of(&doc))
+    }
+
+    fn sheet_keyframe(&self, ctx: &Ctx<'_>, subject: ObjId) -> Option<OutputEvent> {
+        let doc = self.cmd.read_ctx(ctx, subject).ok().flatten()?;
+        Some(sheet_panel(
+            &self.cmd.dispatch,
+            &SmolStr::new_static("wod.sheet"),
+            ctx.w,
+            subject,
+            subject,
+            &doc,
+        ))
     }
 }
 

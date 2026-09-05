@@ -218,6 +218,14 @@ pub struct FieldDef {
     /// and it is hidden from non-controllers on `+sheet`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub staff_only: bool,
+    /// When set, this field is a **vital** — one of the numbers a status
+    /// strip or HUD shows — with the given placement (interface plan I1,
+    /// D-I-2). Only `Track`, `Number` and `Dots` fields can be vitals; the
+    /// generic publisher ([`crate::vitals::from_sheet`]) turns them into
+    /// wire `Vital`s without the client knowing the ruleset. Declared once
+    /// here, rendered everywhere, like the rest of the schema.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vital: Option<mush_proto::VitalRole>,
 }
 
 impl FieldDef {
@@ -320,6 +328,7 @@ impl FieldDef {
             category: None,
             default,
             staff_only: false,
+            vital: None,
         }
     }
 
@@ -327,6 +336,14 @@ impl FieldDef {
     #[must_use]
     pub fn category(mut self, category: &str) -> FieldDef {
         self.category = Some(SmolStr::new(category));
+        self
+    }
+
+    /// Builder-style: declare the field a vital with the given placement
+    /// (see [`FieldDef::vital`]).
+    #[must_use]
+    pub fn vital(mut self, role: mush_proto::VitalRole) -> FieldDef {
+        self.vital = Some(role);
         self
     }
 

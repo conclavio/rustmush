@@ -64,7 +64,7 @@ pub(crate) fn open_chargen_session(cmd: &Sr5Cmd, ctx: &mut Ctx<'_>) -> Result<bo
     if existing.is_none() {
         let doc = SheetDoc::new_default(&cmd.schema);
         cmd.store()
-            .put_by(ctx.w, actor, &doc, actor)
+            .put_in(actor, &doc, actor, ctx)
             .map_err(|es| CmdError::msg(fmt_errs(&es)))?;
     }
     let persisted = existing
@@ -148,7 +148,7 @@ pub(crate) fn apply_priorities(
             .map_err(|e| CmdError::msg(e.to_string()))?;
     }
     store
-        .put_by(ctx.w, actor, &doc, actor)
+        .put_in(actor, &doc, actor, ctx)
         .map_err(|es| CmdError::msg(fmt_errs(&es)))?;
     Ok(())
 }
@@ -251,7 +251,7 @@ pub(crate) fn apply_stat(
     // tracks + Limits stay consistent (the sheet must always validate).
     crate::derive::apply_derived(&mut doc);
     store
-        .put_by(ctx.w, actor, &doc, actor)
+        .put_in(actor, &doc, actor, ctx)
         .map_err(|es| CmdError::msg(fmt_errs(&es)))?;
     ctx.out.info(actor, format!("Set {audit}."));
     Ok(())
@@ -311,7 +311,7 @@ pub(crate) fn apply_spec(
         )
         .map_err(|e| CmdError::msg(e.to_string()))?;
     store
-        .put_by(ctx.w, actor, &doc, actor)
+        .put_in(actor, &doc, actor, ctx)
         .map_err(|es| CmdError::msg(fmt_errs(&es)))?;
     ctx.out
         .info(actor, format!("Specialization {spec:?} added to {id}."));
@@ -432,7 +432,7 @@ pub(crate) fn submit(cmd: &Sr5Cmd, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 
     doc.approved = ApprovalState::Pending(job);
     cmd.store()
-        .put_by(ctx.w, actor, &doc, actor)
+        .put_in(actor, &doc, actor, ctx)
         .map_err(|es| CmdError::msg(fmt_errs(&es)))?;
     if let Some(st) = ctx.state_mut::<Sr5State>() {
         st.close_chargen(actor);
@@ -471,7 +471,7 @@ pub(crate) fn chargen_approval(
         at: ctx.w.now(),
     };
     cmd.store()
-        .put_by(ctx.w, target, &doc, ctx.actor)
+        .put_in(target, &doc, ctx.actor, ctx)
         .map_err(|es| fmt_errs(&es))?;
     Ok(())
 }

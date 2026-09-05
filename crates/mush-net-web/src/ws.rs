@@ -411,6 +411,13 @@ async fn pump(
                             // yet (rendering is client-side); logged for later.
                             tracing::debug!(conn = conn_id, ?caps, "client caps declared (ignored)");
                         }
+                        Ok(ClientCommand::Composing { active }) => {
+                            // The wire shape lands with interface cut I1; the
+                            // rate-limited, perceive-gated room fan-out is cut
+                            // I4's. Until then the hint is accepted and dropped,
+                            // never an idle stamp and never a protocol error.
+                            tracing::trace!(conn = conn_id, active, "composing hint (not yet fanned out)");
+                        }
                         Ok(ClientCommand::Resume { .. }) => {
                             tracing::warn!(conn = conn_id, "mid-connection resume is a protocol error");
                             close(socket, close_code::PROTOCOL, "resume is connection-setup only (?resume=)").await;

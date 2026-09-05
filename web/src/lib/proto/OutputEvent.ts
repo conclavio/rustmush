@@ -101,7 +101,15 @@ text: RichText,
 /**
  * Icon hint for the web client, e.g. `"rain"`.
  */
-icon: string, } } | { "t": "reply", "d": {
+icon: string, } } | { "t": "composing", "d": {
+/**
+ * Who is typing.
+ */
+actor: ObjRef,
+/**
+ * `true` when a draft began, `false` when it was sent or abandoned.
+ */
+active: boolean, } } | { "t": "reply", "d": {
 /**
  * The `id` from the originating request.
  */

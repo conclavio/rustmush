@@ -166,7 +166,10 @@ impl Template for Kinfolk {
         let kin = SheetSection::new("kinfolk", "Kinfolk", SectionLayout::List)
             .field(FieldDef::enumeration("tribe", "Tribe", tribe_ids()))
             .field(FieldDef::number("gnosis", "Gnosis", 0, 10))
-            .field(FieldDef::number("gnosis_temp", "Gnosis (temporary)", 0, 10))
+            .field(
+                FieldDef::number("gnosis_temp", "Gnosis (temporary)", 0, 10)
+                    .vital(mush_proto::VitalRole::Pool),
+            )
             .field(
                 FieldDef::number("delirium_immune", "Delirium Immune", 0, 1)
                     .with_default(serde_json::json!(1)),
