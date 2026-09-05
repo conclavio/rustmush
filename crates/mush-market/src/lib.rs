@@ -55,6 +55,7 @@
 //! | `store.rs` | [`MarketStore`], the keys, the single write paths, the total [`load`] |
 //! | `api.rs` | the catalog, vendors, listings, makers, and the per-viewer page |
 //! | `trade.rs` | quotes, the buyer-as-issuer purchase, `+market/sell`, the settlement ear |
+//! | `boot.rs` | the boot reconcile against the economy's healed contracts, and the bounded sweep |
 //! | `module.rs` | [`MarketModule`], the three wiring-frozen tables, [`MarketObserver`] |
 //! | `commands.rs` | `+market` and `@market` |
 //!
@@ -73,6 +74,7 @@
 //! how a settlement reaches the trade tape.
 
 mod api;
+mod boot;
 mod commands;
 mod ids;
 mod module;
@@ -86,15 +88,16 @@ pub use api::{
     MarketPage, NO_SUCH_ENTRY, NO_SUCH_LISTING, NO_SUCH_QUOTE, NO_SUCH_SOURCE, NO_SUCH_VENDOR,
     PackLoad, account_instrument, budget_source, create_source, fund_from_faucet, halt_source,
     hidden_seller_orgs, is_hidden_org, is_staff, list_goods, load_pack, may_list_vendor,
-    may_view_listing, principal_account, refuse_market, register_vendor, retire_vendor, visible,
-    withdraw_listing,
+    may_view_listing, org_is_closed, org_may_trade, principal_account, refuse_market,
+    register_vendor, retire_vendor, visible, withdraw_listing,
 };
+pub use boot::{MAX_BOOT_DELIVERY_PAGES, MAX_RECONCILED_QUOTES, MAX_SWEPT_PER_FIRE};
 pub use ids::{
     ListingId, MAX_MARKET_ID_BYTES, MarketId, MarketSourceId, QuoteId, VendorId, parse_u64,
 };
 pub use module::{
     AvailabilityProvider, CatalogSource, DeliveryOrder, DeliveryProvider, MarketModule,
-    MarketObserver,
+    MarketObserver, SWEEP_PERIOD_SECS, SWEEP_TAG,
 };
 pub use projection::{
     DEPTH_BUCKETS, DEPTH_QUANTITY_STEP, DepthBucket, PROJECTION_VISIT, PROJECTION_WINDOW_SECS,
@@ -103,16 +106,17 @@ pub use projection::{
 pub use record::{
     AvailabilityOutcome, AvailabilityRule, CatalogEntry, Legality, Listing, MAX_CATALOG_CODE_BYTES,
     MAX_CATALOG_ENTRIES, MAX_CATALOG_ENTRIES_PER_PACK, MAX_ENTRY_NAME_BYTES, MAX_ENTRY_TAGS,
-    MAX_LISTINGS, MAX_LISTINGS_PER_VENDOR, MAX_OPEN_QUOTES_PER_BUYER, MAX_QUANTITY, MAX_QUOTES,
-    MAX_SOURCES, MAX_VENDORS, MarketSource, MarketVisibility, ObservedRevisions, Quote,
-    RecordError, Representation, Settlement, Supply, Vendor, VendorStatus, check_entry,
-    declared_hash,
+    MAX_LISTINGS, MAX_LISTINGS_PER_VENDOR, MAX_OPEN_QUOTES_PER_BUYER, MAX_PACK_BYTES, MAX_QUANTITY,
+    MAX_QUOTES, MAX_SOURCES, MAX_TRADE_ROWS, MAX_VENDORS, MarketSource, MarketVisibility,
+    ObservedRevisions, Quote, RecordError, Representation, Settlement, Supply, Vendor,
+    VendorStatus, check_entry, declared_hash,
 };
 pub use store::{
     MARKET_PAGE, MARKET_PAGE_MAX, MARKET_PAGE_VISIT, MAX_TRADES_PER_PAIR, META_KEY, MarketStore,
     NS, catalog_key, listing_key, load, quote_key, source_key, vendor_key,
 };
 pub use trade::{
-    DEAL_WINDOW_SECS, MAX_LAPSED_SWEEP_PER_CALL, QUOTE_TTL_LIVE, QUOTE_TTL_REMOTE, QuoteRequest,
-    QuoteWindow, STALE_QUOTE, accept, artefact_stamp, is_current, quote, sell,
+    DEAL_WINDOW_SECS, MAX_LAPSED_SWEEP_PER_CALL, MAX_OPEN_SELLS_PER_VENDOR, QUOTE_TTL_LIVE,
+    QUOTE_TTL_REMOTE, QuoteRequest, QuoteWindow, STALE_QUOTE, accept, artefact_stamp, is_current,
+    quote, sell,
 };

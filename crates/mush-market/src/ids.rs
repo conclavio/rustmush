@@ -81,6 +81,17 @@ impl MarketId {
     pub fn as_str(&self) -> &str {
         self.0.as_str()
     }
+
+    /// The lowest key a `(CatalogRef, MarketId)` range can start at.
+    ///
+    /// Deliberately **not** a venue: [`MarketId::new`] refuses an empty name, so this
+    /// value can never name a real market and exists only so a walk over the pair
+    /// index can be a `range` scoped to one catalogue rather than a walk of the whole
+    /// map (independent verify fold, D8).
+    #[must_use]
+    pub(crate) fn floor() -> MarketId {
+        MarketId(SmolStr::new_static(""))
+    }
 }
 
 impl std::fmt::Display for MarketId {

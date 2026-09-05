@@ -40,7 +40,7 @@ use mush_economy::{Amount, CatalogRef, ContractState, EconomySnapshot};
 use mush_org::PrincipalId;
 
 use crate::ids::MarketId;
-use crate::record::{MarketVisibility, Quote, Settlement};
+use crate::record::{Listing, MarketVisibility, Quote, Settlement};
 use crate::store::MarketStore;
 
 /// How many price levels the published depth carries (08f §9).
@@ -58,11 +58,17 @@ pub const PROJECTION_WINDOW_SECS: i64 = 7 * 86_400;
 /// publishes nothing at all — the safe direction.
 pub const DEPTH_QUANTITY_STEP: u64 = 10;
 
-/// The most records one projection may **visit** (D-LBK-5's rule, and the E6b
+/// The most price **levels** and **tape rows** one projection may fold (the E6b
 /// independent verify fold's R1: *filter, then take*).
 ///
-/// The walk is over the `(catalog, market)` index, so it filters before it takes and
-/// a long tail of other catalogs costs nothing.
+/// It bounds records **matched**, not records visited, and that is deliberate: the
+/// `take` sits after the filter because taking first would let a wall of hidden
+/// listings displace the public ones out of the band — hidden state moving public
+/// output, which is the one thing the gate forbids. What bounds the records the walk
+/// *touches* is the store's own [`crate::MAX_LISTINGS`] / [`crate::MAX_QUOTES`] caps,
+/// asked over the `(catalog, market)` index so a long tail of other catalogues costs
+/// nothing; [`MarketStore::projection_visits`] is the tripwire that states it out loud
+/// (independent verify fold, D8 — the constant and its doc comment disagreed).
 pub const PROJECTION_VISIT: usize = 256;
 
 /// One published price level. **Never** one seller's row.
@@ -172,15 +178,15 @@ impl MarketStore {
         let mut high = i64::MIN;
         for listing in self
             .listings_for(catalog, market)
-            .filter(|l| {
-                matches!(l.visibility, MarketVisibility::Public)
-                    && is_public_seller(&l.seller, hidden_orgs)
-                    && l.quantity > 0
-                    && !lapsed(l.expires.at, l.expires.clock, now)
-            })
+            .filter(|l| self.publishes(l, hidden_orgs, now))
             .take(PROJECTION_VISIT)
         {
-            let p = listing.price.minor();
+            // **The published price is the price the deal executes at** (independent
+            // verify fold, D4): a maker's spread moved `Quote.price` and therefore
+            // `last_trade`, while band and depth read `Listing.price` unmoved — so the
+            // safe projection published a band that need not contain its own last
+            // trade. One function, every surface.
+            let p = crate::trade::price_for(listing, Some(self)).minor();
             low = low.min(p);
             high = high.max(p);
             levels.push((p, listing.quantity));
@@ -199,10 +205,7 @@ impl MarketStore {
         for (quote, settlement) in self
             .trades_for(catalog, market)
             .filter_map(|q| q.settled.map(|s| (q, s)))
-            .filter(|(q, _)| {
-                matches!(q.visibility, MarketVisibility::Public)
-                    && is_public_seller(&q.seller, hidden_orgs)
-            })
+            .filter(|(q, _)| self.publishes_trade(q, hidden_orgs))
             .take(PROJECTION_VISIT)
         {
             if !is_settled_in_journal(quote, &settlement, snapshot) {
@@ -216,10 +219,59 @@ impl MarketStore {
                 latest = Some((settlement.at, quote.price));
             }
         }
-        out.volume = Amount::from_minor(volume);
         out.last_trade = latest.map(|(_, price)| price);
+        out.volume = Amount::from_minor(floor_volume(volume, out.last_trade));
         out
     }
+
+    /// Whether a **listing** is in the public set the projection folds.
+    ///
+    /// The single predicate `projection` and `commands::default_market` both ask
+    /// (independent verify fold, D7): the venue default used to apply two of these four
+    /// tests, so a lapsed public listing still chose the header venue while
+    /// contributing nothing to the numbers, and a good whose only listing had lapsed
+    /// read differently from a good with none.
+    pub(crate) fn publishes(&self, l: &Listing, hidden_orgs: &[mush_org::OrgId], now: i64) -> bool {
+        matches!(l.visibility, MarketVisibility::Public)
+            && is_public_seller(&l.seller, hidden_orgs)
+            && l.quantity > 0
+            && !lapsed(l.expires.at, l.expires.clock, now)
+            // A pack reload that dropped the entry leaves listings nothing can define,
+            // quote or deliver (independent verify fold, R6). `load_pack` withdraws
+            // them; this is the belt so an in-flight reload can never publish depth in
+            // an undefinable good even for a moment.
+            && self.entry_of(&l.catalog).is_some()
+    }
+
+    /// Whether a **trade-tape row** is in the public set.
+    pub(crate) fn publishes_trade(&self, q: &Quote, hidden_orgs: &[mush_org::OrgId]) -> bool {
+        matches!(q.visibility, MarketVisibility::Public)
+            && is_public_seller(&q.seller, hidden_orgs)
+            // The seller's own member buying from the seller's own shop is a real
+            // settlement and a real row in their order history, and it is **not** a
+            // price anybody else discovered (independent verify fold, M12).
+            && !q.self_dealt
+    }
+}
+
+/// Floor the published volume the same way depth's quantities are floored.
+///
+/// [`DEPTH_QUANTITY_STEP`] exists precisely so "the number published is never one
+/// seller's own", and the tape then published `volume` and `last_trade` exactly — so
+/// with a single settled row in the window, `volume / last_trade` recovered that
+/// trade's exact quantity by one division (independent verify fold, D6). Volume is
+/// floored to ten of the last trade's price, so the same 137 units publish as 130 here
+/// too, and a window too thin to reach the step publishes **zero** — the safe
+/// direction, and the one depth already takes.
+fn floor_volume(volume: i64, last_trade: Option<Amount>) -> i64 {
+    let Some(price) = last_trade.map(Amount::minor).filter(|p| *p > 0) else {
+        return 0;
+    };
+    let step = price.saturating_mul(i64::try_from(DEPTH_QUANTITY_STEP).unwrap_or(1));
+    if step <= 0 {
+        return 0;
+    }
+    volume.saturating_div(step).saturating_mul(step)
 }
 
 /// Whether the economy's own record says this trade really settled on the
@@ -237,7 +289,7 @@ fn is_settled_in_journal(q: &Quote, s: &Settlement, snapshot: &EconomySnapshot) 
 /// Whether a deadline on a wall clock has lapsed. A deadline on any other clock is
 /// left to the sweep that owns that clock and is never treated as lapsed here — the
 /// projection must not guess at a clock it does not read.
-fn lapsed(at: i64, clock: mush_economy::EconomicClock, now: i64) -> bool {
+pub(crate) fn lapsed(at: i64, clock: mush_economy::EconomicClock, now: i64) -> bool {
     matches!(clock, mush_economy::EconomicClock::RealUtc) && now >= at
 }
 
@@ -353,5 +405,34 @@ mod tests {
             ),
             &hidden
         ));
+    }
+
+    // ---- E6c independent verify fold ----
+
+    /// **D6.** One trade's exact quantity is not recoverable from `volume /
+    /// last_trade`: the published volume carries the same [`DEPTH_QUANTITY_STEP`]
+    /// control depth's quantities do, so a one-row tape publishes a multiple of ten
+    /// trades' worth or nothing at all.
+    #[test]
+    fn vf_d6_a_one_row_tape_never_publishes_its_own_quantity() {
+        let last = Amount::from_minor(30);
+        // Two units at 30: below the step, so the safe answer is to publish nothing.
+        assert_eq!(floor_volume(60, Some(last)), 0);
+        // Thirty-seven units at 30 publish as thirty, exactly as 137 units of depth
+        // publish as 130.
+        let published = floor_volume(37 * 30, Some(last));
+        assert_eq!(published, 30 * 30);
+        let step = last.minor() * i64::try_from(DEPTH_QUANTITY_STEP).expect("a small step");
+        assert_eq!(published % step, 0, "the published volume is not floored");
+        assert_ne!(published, 37 * 30, "the exact quantity was republished");
+        // No trade at all publishes nothing, and cannot divide by zero doing it.
+        assert_eq!(floor_volume(0, None), 0);
+        assert_eq!(floor_volume(999, None), 0);
+        assert_eq!(floor_volume(999, Some(Amount::ZERO)), 0);
+        // Saturating throughout: an absurd price is arithmetic, never a panic.
+        assert_eq!(
+            floor_volume(i64::MAX, Some(Amount::from_minor(i64::MAX))),
+            i64::MAX
+        );
     }
 }

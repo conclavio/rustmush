@@ -272,6 +272,86 @@ impl DeliveryProvider for SrDelivery {
             Representation::Installed => Some(deliver_augmentation(ctx, order)),
         }
     }
+
+    /// **The goods leg, asked before the money moves** (E6c independent verify fold,
+    /// M1).
+    ///
+    /// `deliver_line` needs a registered goods instrument, a seller account in it, a
+    /// buyer account in it, and enough stock under `CreditPolicy::forbid` — and all four
+    /// are absent by default, because nothing in the market registers an instrument,
+    /// opens a goods account or checks stock against `Listing.quantity` (a vendor could
+    /// list a hundred units while holding five). Before this, every one of those was
+    /// discovered at settlement, where the money had already gone. Asked here, they are
+    /// a refusal at `+market/accept` with nothing charged.
+    ///
+    /// It asks exactly the questions the delivery will ask and posts nothing, so a pass
+    /// here is not a promise: a world change between the accept and the settlement is
+    /// still reachable, and that residual is what the escalation ladder in
+    /// `mush_market::module::deliver` is for.
+    fn can_deliver(&self, ctx: &Ctx<'_>, order: &DeliveryOrder) -> Option<Result<(), String>> {
+        if order.catalog.ruleset.as_str() != "sr" {
+            return None;
+        }
+        match order.representation {
+            Representation::Asset | Representation::Lot => None,
+            Representation::Instrument | Representation::Entitlement => {
+                Some(can_deliver_line(ctx, order))
+            }
+            Representation::Installed => Some(can_deliver_augmentation(ctx, order)),
+        }
+    }
+}
+
+/// The four questions `deliver_line` will ask, asked without posting.
+fn can_deliver_line(ctx: &Ctx<'_>, order: &DeliveryOrder) -> Result<(), String> {
+    let Some(instrument) = goods_instrument(&order.catalog) else {
+        return Err("that catalogue code is not a usable instrument id".to_string());
+    };
+    let Some(from) = mush_market::principal_account(ctx, &instrument, &order.seller) else {
+        return Err(format!(
+            "the seller holds no {} account to deliver from",
+            instrument.as_str()
+        ));
+    };
+    if mush_market::principal_account(ctx, &instrument, &order.buyer).is_none() {
+        return Err(format!(
+            "the buyer holds no {} account to deliver into",
+            instrument.as_str()
+        ));
+    }
+    let wanted = i64::try_from(order.quantity).unwrap_or(i64::MAX);
+    let available = ctx
+        .w
+        .module_state::<mush_economy::EconomyStore>()
+        .and_then(|s| s.snapshot().account(from).cloned())
+        .map_or(0, |a| {
+            a.posted_balance
+                .minor()
+                .saturating_sub(a.held_amount.minor())
+        });
+    if available < wanted {
+        return Err(format!(
+            "the seller holds {available} of {} and the sale is for {wanted}",
+            instrument.as_str()
+        ));
+    }
+    Ok(())
+}
+
+/// The one question `deliver_augmentation` will ask, asked without writing.
+fn can_deliver_augmentation(ctx: &Ctx<'_>, order: &DeliveryOrder) -> Result<(), String> {
+    let PrincipalId::Object(who) = order.buyer else {
+        return Err("only a character can have ware fitted".to_string());
+    };
+    if ctx
+        .w
+        .module_state::<SrEconomyStore>()
+        .and_then(|s| s.profile(who))
+        .is_none()
+    {
+        return Err("the buyer has no Shadowrun profile to record the ware on".to_string());
+    }
+    Ok(())
 }
 
 /// The goods instrument for one catalogue reference: `<ruleset>.<code>`.

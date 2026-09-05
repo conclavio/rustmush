@@ -208,10 +208,14 @@ fn err(tw: &mut TestWorld, actor: ObjId, line: &str) -> String {
     texts(&ev)
 }
 fn snap(tw: &TestWorld) -> &EconomySnapshot {
+    econ(tw).snapshot()
+}
+/// The economy's whole store, for the two reads that are not on the snapshot: the
+/// journal's transactions and the staff escalation ladder.
+fn econ(tw: &TestWorld) -> &EconomyStore {
     tw.world()
         .module_state::<EconomyStore>()
         .expect("economy store")
-        .snapshot()
 }
 fn market(tw: &TestWorld) -> &MarketStore {
     tw.world()
@@ -245,15 +249,33 @@ fn catalog_of(code: &str) -> mush_economy::CatalogRef {
 }
 
 /// The projection of one good, as anybody sees it.
+///
+/// `hidden_orgs` is derived from **the records the projection folds** — every listing's
+/// seller and every trade row's — exactly as `api::hidden_seller_orgs` derives it. The
+/// fold's D1 is why: composing it from the vendor table instead is precisely the defect,
+/// and a rig that reproduced the defect could never have caught it.
 fn projection(tw: &TestWorld, code: &str) -> Projection {
     let snapshot = snap(tw).clone();
-    let hidden: Vec<OrgId> = market(tw)
-        .vendors()
-        .map(|v| v.org)
+    let store = market(tw);
+    let hidden: Vec<OrgId> = store
+        .live_listings()
+        .map(|l| &l.seller)
+        .chain(
+            store
+                .quotes()
+                .filter(|q| q.settled.is_some())
+                .map(|q| &q.seller),
+        )
+        .filter_map(|seller| match seller {
+            PrincipalId::Organization(org) => Some(*org),
+            PrincipalId::Object(_) | PrincipalId::System(_) => None,
+        })
+        .collect::<BTreeSet<OrgId>>()
+        .into_iter()
         .filter(|o| mush_market::is_hidden_org(tw.world(), *o))
         .collect();
     let now = tw.world().now();
-    market(tw).projection(&catalog_of(code), &venue(), &snapshot, &hidden, now)
+    store.projection(&catalog_of(code), &venue(), &snapshot, &hidden, now)
 }
 
 /// A registered vendor: an organization with an unscoped nuyen account, a vault it
@@ -316,6 +338,60 @@ fn vendor(tw: &mut TestWorld, name: &str, funds: i64) -> Shop {
     }
 }
 
+/// Register the goods instrument for a commodity or entitlement code, open the vendor's
+/// and the buyer's accounts in it, and mint the vendor `units` of stock.
+///
+/// **The independent verify fold's M1 is why every test that accepts a commodity
+/// purchase now does this.** `+market/accept` asks the frozen `DeliveryProvider` whether
+/// the goods leg could run **before** any money moves, and none of the four facts it
+/// needs — a registered instrument, a seller account in it, a buyer account in it, and
+/// enough stock — exists by default: nothing in the market registers an instrument,
+/// opens a goods account or checks stock against `Listing.quantity`. Before, the
+/// purchase settled, the money moved, `deliver` logged a line nobody is paged by, and
+/// the trade tape counted a trade that delivered nothing. §5.6 deviation 1's "reachable
+/// only by a world change between the accept and the settlement" was false: the accept
+/// proved nothing at all.
+fn goods(tw: &mut TestWorld, shop: &Shop, who: ObjId, code: &str, units: i64) {
+    let id = format!("sr.{}", code.trim_start_matches("sr:"));
+    let instrument = mush_economy::InstrumentId::new(&id).expect("a usable instrument id");
+    if snap(tw).instrument(&instrument).is_none() {
+        ok(tw, GOD, &format!("@instrument/register {id}=0"));
+        ok(tw, GOD, &format!("@account/system sr.goods={id}"));
+        ok(tw, GOD, &format!("@account/open org:#{}={id}", shop.org.0));
+    }
+    let mine = snap(tw)
+        .accounts()
+        .any(|a| a.owner == PrincipalId::Object(who) && a.instrument.as_str() == id);
+    if !mine {
+        ok(tw, GOD, &format!("@account/open #{}={id}", who.0));
+    }
+    if units > 0 {
+        let source = snap(tw)
+            .accounts()
+            .find(|a| {
+                matches!(&a.owner, PrincipalId::System(s) if s.as_str() == "sr.goods")
+                    && a.instrument.as_str() == id
+            })
+            .expect("the goods faucet")
+            .id;
+        let line = snap(tw)
+            .accounts()
+            .find(|a| a.owner == PrincipalId::Organization(shop.org) && a.instrument.as_str() == id)
+            .expect("the vendor's goods account")
+            .id;
+        ok(tw, GOD, &format!("@econ/mint {source}={line} {units}"));
+    }
+}
+
+/// The buyer's own line in one goods instrument.
+fn goods_line(tw: &TestWorld, who: ObjId, code: &str) -> Option<AccountId> {
+    let id = format!("sr.{}", code.trim_start_matches("sr:"));
+    snap(tw)
+        .accounts()
+        .find(|a| a.owner == PrincipalId::Object(who) && a.instrument.as_str() == id)
+        .map(|a| a.id)
+}
+
 fn faucet(tw: &TestWorld, name: &str) -> AccountId {
     let owner = PrincipalId::System(mush_org::SystemPrincipalId::new(name).expect("well-formed"));
     snap(tw)
@@ -350,10 +426,15 @@ fn stock(
         .expect("a new listing")
 }
 
-/// A world object nobody is carrying, for an asset listing to convey.
+/// A world object **in the stocking staffer's hands**, for an asset listing to convey.
+///
+/// The independent verify fold's M10 is why it is not a floating object any more:
+/// `@market/vendor stock … object=` mints a vendor-owned title, and it now refuses
+/// anything that is not a `Thing` the staffer is holding or one already in the vendor's
+/// own vault. A limbo object was never the shape a shop stocks from.
 fn thing(tw: &mut TestWorld, name: &str) -> ObjId {
     tw.world_mut()
-        .create(ObjKind::Thing, name, GOD, None)
+        .create(ObjKind::Thing, name, GOD, Some(GOD))
         .expect("an object")
 }
 
@@ -406,6 +487,36 @@ fn fold_all(tw: &mut TestWorld) -> Kv {
         }
     }
     kv
+}
+
+/// Fold the **next** batch of module writes into an already-folded `kv`, dropping the
+/// named documents — the shape of a crash between a journal post and the doc writes that
+/// record it.
+///
+/// The journal itself is `JsonSet` ledger chunks, so it survives; the dropped documents
+/// are exactly the ones the crash lost, and each module's boot has to recover from what
+/// is left. `dropped` is `(namespace, key)`.
+fn fold_dropping(tw: &mut TestWorld, kv: &mut Kv, dropped: &[(&str, String)]) {
+    for op in tw.take_module_ops() {
+        let ns = op.ns.clone();
+        let entry = kv.entry(ns.clone()).or_default();
+        match op.op {
+            ModuleWrite::JsonSet { key, value } => {
+                if dropped.iter().any(|(n, k)| *n == ns && *k == key.as_str()) {
+                    continue;
+                }
+                entry.retain(|(k, _)| *k != key);
+                entry.push((key, value));
+            }
+            ModuleWrite::Del { key } => {
+                if dropped.iter().any(|(n, k)| *n == ns && *k == key.as_str()) {
+                    continue;
+                }
+                entry.retain(|(k, _)| *k != key);
+            }
+            ModuleWrite::StreamAppend { .. } => {}
+        }
+    }
 }
 
 fn reboot(tw: &mut TestWorld, kv: &Kv) {
@@ -899,6 +1010,7 @@ fn e6c_b5_a_procurement_carries_its_lead_time_as_a_before_deadline() {
         l.source
     );
     let who = buyer(&mut tw, "Kaz", 1_000);
+    goods(&mut tw, &shop, who, AMMO, 100);
     ok(&mut tw, who, &format!("+market/quote #{}=2", listing.0));
     let q = only_quote(&tw, who);
     ok(&mut tw, who, &format!("+market/accept #{}", q.0));
@@ -924,6 +1036,7 @@ fn e6c_b5_a_retired_vendor_stops_quoting_and_its_live_contracts_still_settle() {
     let shop = vendor(&mut tw, "Ares", 0);
     let listing = stock(&mut tw, &shop, AMMO, 30, 10, "");
     let who = buyer(&mut tw, "Kaz", 1_000);
+    goods(&mut tw, &shop, who, AMMO, 100);
     ok(&mut tw, who, &format!("+market/quote #{}=2", listing.0));
     let q = only_quote(&tw, who);
     ok(&mut tw, who, &format!("+market/accept #{}", q.0));
@@ -1110,6 +1223,7 @@ fn e6c_b6_every_stale_reason_refuses_identically_and_charges_nothing() {
     // Somebody else buys one, which is the only thing that moves a listing's
     // revision — and it is exactly what "sold out from under it" looks like.
     let rival = buyer(&mut tw, "Rival", 10_000);
+    goods(&mut tw, &shop, rival, AMMO, 100);
     buy(&mut tw, rival, l2, 9);
     let moved = err(&mut tw, who, &format!("+market/accept #{}", q2.0));
 
@@ -1158,6 +1272,8 @@ fn e6c_b6_a_quote_reserves_nothing_and_no_interleaving_oversells() {
     let listing = stock(&mut tw, &shop, AMMO, 30, 1, "");
     let first = buyer(&mut tw, "First", 10_000);
     let second = buyer(&mut tw, "Second", 10_000);
+    goods(&mut tw, &shop, first, AMMO, 100);
+    goods(&mut tw, &shop, second, AMMO, 0);
 
     // Both hold a quote on the last unit; neither reserved anything.
     ok(&mut tw, first, &format!("+market/quote #{}=1", listing.0));
@@ -1260,6 +1376,23 @@ struct Maker {
 }
 
 fn maker(tw: &mut TestWorld, shop: &Shop, volume: i64, loss: i64, funds: i64) -> Maker {
+    maker_at(tw, shop, volume, loss, funds, 0)
+}
+
+/// The same, with a **declared spread**.
+///
+/// The fold's D4 is why the parameter exists: no shipped test exercised a nonzero
+/// spread, and `price_for` applied it to the quote while `projection` and
+/// `commands::listing_line` read the listing's own price — so the market advertised a
+/// price nobody paid and published a band that need not contain its own last trade.
+fn maker_at(
+    tw: &mut TestWorld,
+    shop: &Shop,
+    volume: i64,
+    loss: i64,
+    funds: i64,
+    spread: i64,
+) -> Maker {
     if funds > 0 {
         let f = faucet(tw, "sr.chargen");
         ok(
@@ -1272,8 +1405,8 @@ fn maker(tw: &mut TestWorld, shop: &Shop, volume: i64, loss: i64, funds: i64) ->
         tw,
         GOD,
         &format!(
-            "@market/source create #{}=#{} market={VENUE} spread=0 volume={volume} loss={loss} \
-             window=86400",
+            "@market/source create #{}=#{} market={VENUE} spread={spread} volume={volume} \
+             loss={loss} window=86400",
             shop.org.0, shop.vault.0
         ),
     );
@@ -1287,6 +1420,10 @@ fn maker(tw: &mut TestWorld, shop: &Shop, volume: i64, loss: i64, funds: i64) ->
 
 /// A maker stops quoting at **each** of its budgets, one at a time, and every budget
 /// is asked **before the quote is issued** rather than at accept.
+///
+/// Every one of the four refusals is now the **same** `STALE_QUOTE` string
+/// `+market/accept` answers with (independent verify fold, D2): naming the budget made
+/// `+market/quote` a free solvency oracle on an org wallet `@account/show` hides.
 #[test]
 fn e6c_b8_a_maker_stops_quoting_at_each_of_its_budgets() {
     // volume
@@ -1295,8 +1432,8 @@ fn e6c_b8_a_maker_stops_quoting_at_each_of_its_budgets() {
     let m = maker(&mut tw, &shop, 50, 1_000_000, 10_000);
     let listing = stock(&mut tw, &shop, AMMO, 30, 100, &format!("source={}", m.id.0));
     let who = buyer(&mut tw, "Kaz", 100_000);
-    let over = err(&mut tw, who, &format!("+market/quote #{}=5", listing.0));
-    assert!(over.contains("run out of volume"), "{over}");
+    let volume = err(&mut tw, who, &format!("+market/quote #{}=5", listing.0));
+    assert!(volume.contains("no longer stands"), "{volume}");
     assert_eq!(
         market(&tw).quotes().count(),
         0,
@@ -1310,8 +1447,7 @@ fn e6c_b8_a_maker_stops_quoting_at_each_of_its_budgets() {
     let m = maker(&mut tw, &shop, 1_000_000, 5, 10_000);
     let listing = stock(&mut tw, &shop, AMMO, 1, 100, &format!("source={}", m.id.0));
     let who = buyer(&mut tw, "Kaz", 100_000);
-    let over = err(&mut tw, who, &format!("+market/quote #{}=3", listing.0));
-    assert!(over.contains("run out of loss"), "{over}");
+    let loss = err(&mut tw, who, &format!("+market/quote #{}=3", listing.0));
 
     // cash — a maker with an empty wallet is out of the fourth budget
     let mut tw = boot();
@@ -1320,7 +1456,6 @@ fn e6c_b8_a_maker_stops_quoting_at_each_of_its_budgets() {
     let listing = stock(&mut tw, &shop, AMMO, 30, 100, &format!("source={}", m.id.0));
     let who = buyer(&mut tw, "Kaz", 100_000);
     let broke = err(&mut tw, who, &format!("+market/quote #{}=1", listing.0));
-    assert!(broke.contains("run out of cash"), "{broke}");
 
     // halted — and an outstanding quote made before the halt settles nothing
     let mut tw = boot();
@@ -1332,7 +1467,6 @@ fn e6c_b8_a_maker_stops_quoting_at_each_of_its_budgets() {
     let q = only_quote(&tw, who);
     ok(&mut tw, GOD, &format!("@market/source halt #{}", m.id.0));
     let halted_quote = err(&mut tw, who, &format!("+market/quote #{}=1", listing.0));
-    assert!(halted_quote.contains("is not quoting"), "{halted_quote}");
     let settles_nothing = err(&mut tw, who, &format!("+market/accept #{}", q.0));
     assert!(
         settles_nothing.contains("no longer stands"),
@@ -1343,6 +1477,72 @@ fn e6c_b8_a_maker_stops_quoting_at_each_of_its_budgets() {
         bal(&tw, m.cash),
         10_000,
         "a halted maker's quote moved money"
+    );
+
+    // ---- E6c independent verify fold ----
+    //
+    // **D2.** All four budget refusals are one string, and it is the accept's own.
+    assert_eq!(volume, loss, "volume and loss read differently");
+    assert_eq!(loss, broke, "loss and cash read differently");
+    assert_eq!(broke, halted_quote, "cash and halted read differently");
+    assert_eq!(
+        halted_quote, settles_nothing,
+        "+market/quote and +market/accept read differently about the same maker"
+    );
+    for refusal in [&volume, &loss, &broke, &halted_quote] {
+        assert!(
+            !refusal.contains("run out of") && !refusal.contains("cash"),
+            "a maker refusal named its budget to a stranger: {refusal}"
+        );
+    }
+}
+
+/// **D2, the disclosure half.** `+market/quote` was a free, unlimited solvency oracle on
+/// a market maker's organization wallet: it answered "run out of cash" to whoever asked,
+/// wrote no record and consumed no per-buyer slot, so a stranger could poll it and watch
+/// an org wallet cross zero — while `@account/show` on that very account answers them
+/// `No such account.` The two surfaces must never disagree about the wallet.
+#[test]
+fn vf_d2_a_stranger_cannot_read_a_makers_wallet_off_a_quote() {
+    let mut tw = boot();
+    let shop = vendor(&mut tw, "Maker", 0);
+    let m = maker(&mut tw, &shop, 1_000_000, 1_000_000, 0);
+    let listing = stock(&mut tw, &shop, AMMO, 30, 100, &format!("source={}", m.id.0));
+    let stranger = buyer(&mut tw, "Stranger", 100_000);
+
+    let broke = err(
+        &mut tw,
+        stranger,
+        &format!("+market/quote #{}=1", listing.0),
+    );
+    let hidden_account = err(&mut tw, stranger, &format!("@account/show #{}", m.cash.0));
+    assert!(
+        hidden_account.contains("No such account."),
+        "the economy stopped hiding the wallet: {hidden_account}"
+    );
+    assert!(
+        !broke.contains("cash") && !broke.contains("run out"),
+        "the quote refusal published the wallet the economy hides: {broke}"
+    );
+
+    // Fund it past the cash test and the refusal does not change either, so the poll
+    // reads the same before and after the wallet crossed zero.
+    let f = faucet(&tw, "sr.chargen");
+    ok(&mut tw, GOD, &format!("@econ/mint {f}={} 10000", m.cash.0));
+    ok(
+        &mut tw,
+        stranger,
+        &format!("+market/quote #{}=1", listing.0),
+    );
+    ok(&mut tw, GOD, &format!("@market/source halt #{}", m.id.0));
+    let halted = err(
+        &mut tw,
+        stranger,
+        &format!("+market/quote #{}=1", listing.0),
+    );
+    assert_eq!(
+        broke, halted,
+        "a funded-but-halted maker read differently from a broke one"
     );
 }
 
@@ -1360,6 +1560,7 @@ fn e6c_b8_a_makers_balance_is_exactly_capitalization_plus_sales_plus_drips() {
     // A sale.
     let listing = stock(&mut tw, &shop, AMMO, 30, 10, &format!("source={}", m.id.0));
     let who = buyer(&mut tw, "Kaz", 10_000);
+    goods(&mut tw, &shop, who, AMMO, 100);
     buy(&mut tw, who, listing, 2);
     assert_eq!(bal(&tw, m.cash), 2_060, "capitalization + one sale");
 
@@ -1421,6 +1622,7 @@ fn e6c_b2_the_world_reboots_and_the_projection_is_the_same_on_the_other_side() {
     let shop = vendor(&mut tw, "Ares", 0);
     let listing = stock(&mut tw, &shop, AMMO, 30, 10, "");
     let who = buyer(&mut tw, "Kaz", 10_000);
+    goods(&mut tw, &shop, who, AMMO, 100);
     buy(&mut tw, who, listing, 2);
     let before = projection(&tw, AMMO);
 
@@ -1575,16 +1777,18 @@ fn e6c_b9_the_catalogue_baseline_is_the_fences_and_a_purchase_can_then_be_fenced
     let mut tw = boot();
     let shop = vendor(&mut tw, "Ares", 0);
     let who = buyer(&mut tw, "Kaz", 10_000);
-    let gun = tw
-        .world_mut()
-        .create(ObjKind::Thing, "a Colt America L36", GOD, Some(who))
-        .expect("an object");
+    // The shop stocks from its own hands (M10), and the buyer takes delivery of the
+    // object once the title is theirs — the fence asks who is *holding* it.
+    let gun = thing(&mut tw, "a Colt America L36");
     let listing = stock(&mut tw, &shop, GUN, 400, 1, &format!("object=#{}", gun.0));
     buy(&mut tw, who, listing, 1);
     assert_eq!(
         snap(&tw).asset(gun).expect("the asset").title_owner,
         PrincipalId::Object(who)
     );
+    tw.world_mut()
+        .move_to(gun, who)
+        .expect("the buyer takes delivery of what they now hold title to");
 
     // A fence, over a **different** organization, with money to pay with.
     let pawn = vendor(&mut tw, "Pawn", 10_000);
@@ -1619,11 +1823,15 @@ fn e6c_b9_the_catalogue_baseline_is_the_fences_and_a_purchase_can_then_be_fenced
 fn e6c_b6_a_replayed_accept_refuses_and_moves_no_money() {
     let mut tw = boot();
     let shop = vendor(&mut tw, "Ares", 0);
+    // Ten units, because the published volume carries `DEPTH_QUANTITY_STEP`'s control
+    // now (independent verify fold, D6): a window too thin to reach ten trades' worth
+    // publishes zero, which is the safe direction and not the property under test here.
     let listing = stock(&mut tw, &shop, AMMO, 30, 10, "");
     let who = buyer(&mut tw, "Kaz", 10_000);
     let wallet = account_of(&tw, who);
+    goods(&mut tw, &shop, who, AMMO, 100);
 
-    ok(&mut tw, who, &format!("+market/quote #{}=2", listing.0));
+    ok(&mut tw, who, &format!("+market/quote #{}=10", listing.0));
     let q = only_quote(&tw, who);
     ok(&mut tw, who, &format!("+market/accept #{}", q.0));
     let after_first = bal(&tw, wallet);
@@ -1654,7 +1862,7 @@ fn e6c_b6_a_replayed_accept_refuses_and_moves_no_money() {
     );
     // The settled quote is the trade-tape row, and the projection counts it exactly
     // once however often the accept is replayed.
-    assert_eq!(projection(&tw, AMMO).volume.minor(), 60);
+    assert_eq!(projection(&tw, AMMO).volume.minor(), 300);
 }
 
 /// A **cancelled** deal puts the goods back and forgets its quote, so a
@@ -1666,6 +1874,7 @@ fn e6c_b6_a_cancelled_deal_returns_the_stock_and_forgets_its_quote() {
     let listing = stock(&mut tw, &shop, AMMO, 30, 10, "");
     let who = buyer(&mut tw, "Kaz", 10_000);
     let wallet = account_of(&tw, who);
+    goods(&mut tw, &shop, who, AMMO, 100);
     let opening = bal(&tw, wallet);
 
     ok(&mut tw, who, &format!("+market/quote #{}=4", listing.0));
@@ -1703,6 +1912,7 @@ fn e6c_b8_a_makers_window_is_consumed_by_use_and_returned_by_a_cancellation() {
     let m = maker(&mut tw, &shop, 150, 1_000_000, 10_000);
     let listing = stock(&mut tw, &shop, AMMO, 30, 100, &format!("source={}", m.id.0));
     let who = buyer(&mut tw, "Kaz", 100_000);
+    goods(&mut tw, &shop, who, AMMO, 100);
 
     buy(&mut tw, who, listing, 2);
     assert_eq!(
@@ -1725,7 +1935,7 @@ fn e6c_b8_a_makers_window_is_consumed_by_use_and_returned_by_a_cancellation() {
     );
     let over = err(&mut tw, who, &format!("+market/quote #{}=2", listing.0));
     assert!(
-        over.contains("run out of volume"),
+        over.contains("no longer stands"),
         "two sales did not exhaust the window: {over}"
     );
 
@@ -1821,5 +2031,1222 @@ fn e6c_b1_a_good_traded_only_in_hidden_listings_reads_as_one_nobody_trades() {
     assert_eq!(
         hidden_org_only,
         ok(&mut tw, GOD, &format!("+market/depth {WARE}"))
+    );
+}
+
+// ===========================================================================
+// E6c independent verify fold
+// ===========================================================================
+
+/// **D1 (HIGH).** One skipped vendor document used to open a hidden organization's
+/// listings straight into the public projection.
+///
+/// `hidden_seller_orgs` composed `hidden_orgs` from `store.vendors()` alone, and
+/// `store::load` is deliberately **total**: a corrupt `market:vendor:{id}` is skipped and
+/// the world boots, while that org's `market:listing:{id}` documents load fine — a
+/// `Listing` denormalizes its seller and its wire never consults the vendor table. So the
+/// hidden org fell out of `hidden_orgs`, `is_public_seller` answered `true`, and its price
+/// and quantity were summed into `band`/`depth` and rendered to a stranger — while
+/// `may_view_listing` still hid the same listing from `+market/list`. The two surfaces
+/// disagreed and the leaky one was the gate. The set is derived from the records the
+/// projection folds now, so the documented fail-closed actually fires.
+#[test]
+fn vf_d1_a_skipped_vendor_document_does_not_open_a_hidden_orgs_listings() {
+    let mut tw = boot();
+    let open = vendor(&mut tw, "Ammo", 0);
+    stock(&mut tw, &open, AMMO, 20, 50, "");
+    let secret = vendor(&mut tw, "Ghost", 0);
+    stock(&mut tw, &secret, AMMO, 5, 900, "");
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@org/status #{}=active hidden=yes", secret.org.0),
+    );
+    let sealed = projection(&tw, AMMO);
+    assert_eq!(
+        sealed.band.0.minor(),
+        20,
+        "the hidden shop is already in the public band"
+    );
+
+    // The hidden vendor's document will not load; its listings will.
+    let mut kv = fold_all(&mut tw);
+    patch(
+        &mut kv,
+        "market",
+        &format!("market:vendor:{}", secret.id.0),
+        |v| *v = serde_json::json!({ "nonsense": true }),
+    );
+    reboot(&mut tw, &kv);
+    assert!(
+        market(&tw).vendor(secret.id).is_none(),
+        "the corrupt vendor document loaded anyway"
+    );
+    assert!(
+        market(&tw).live_listings().any(|l| l.vendor == secret.id),
+        "the hidden shop's listings really are still there"
+    );
+    assert_eq!(
+        sealed,
+        projection(&tw, AMMO),
+        "a skipped vendor document opened a hidden organization's listings into the public \
+         projection"
+    );
+    let stranger = buyer(&mut tw, "Stranger", 100);
+    let depth = ok(&mut tw, stranger, &format!("+market/depth {AMMO}"));
+    assert!(
+        !depth.contains("900"),
+        "the hidden quantity reached depth: {depth}"
+    );
+    assert!(depth.contains("band: 20..20"), "{depth}");
+
+    // The mirror case: the listings are corrupt and the vendor survives. The public
+    // projection is the public shop's alone either way.
+    let mut tw = boot();
+    let open = vendor(&mut tw, "Ammo", 0);
+    stock(&mut tw, &open, AMMO, 20, 50, "");
+    let secret = vendor(&mut tw, "Ghost", 0);
+    let ghost_listing = stock(&mut tw, &secret, AMMO, 5, 900, "");
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@org/status #{}=active hidden=yes", secret.org.0),
+    );
+    let sealed = projection(&tw, AMMO);
+    let mut kv = fold_all(&mut tw);
+    patch(
+        &mut kv,
+        "market",
+        &format!("market:listing:{}", ghost_listing.0),
+        |v| *v = serde_json::json!({ "nonsense": true }),
+    );
+    reboot(&mut tw, &kv);
+    assert!(market(&tw).vendor(secret.id).is_some());
+    assert_eq!(sealed, projection(&tw, AMMO));
+}
+
+/// **D3 (MEDIUM).** A wall of unviewable listings made the public ones unreachable: an
+/// empty page rendered **no cursor**.
+///
+/// `api::visible` is correctly bounded on records visited and returns the last record
+/// visited, so the API pages in step — but `commands::list` printed the cursor only in
+/// the `else` after the empty case, so a viewer whose 256 newest live listings were all
+/// unviewable read "Nothing is for sale." with the cursor discarded and every older
+/// public listing unreachable from the player surface. Reachability, not truncation, is
+/// what has to be viewer-independent.
+#[test]
+fn vf_d3_a_wall_of_unviewable_listings_still_pages_to_the_public_ones() {
+    let mut tw = boot();
+    let open = vendor(&mut tw, "Ammo", 0);
+    // The public listing is the OLDEST, so it is past the wall in the newest-first walk.
+    stock(&mut tw, &open, AMMO, 20, 50, "");
+    // 260 hidden listings: five shops, each well inside the 64 the per-vendor cap allows.
+    for shop in 0..5 {
+        let ghost = vendor(&mut tw, &format!("Ghost{shop}"), 0);
+        for _ in 0..52 {
+            stock(&mut tw, &ghost, AMMO, 999, 5, "hidden");
+        }
+    }
+    assert!(market(&tw).live_listings().count() > mush_market::MARKET_PAGE_VISIT);
+
+    let stranger = buyer(&mut tw, "Stranger", 100);
+    let mut page = ok(&mut tw, stranger, "+market/list");
+    assert!(
+        page.contains("Nothing is for sale."),
+        "the fixture is not the shape the finding is about: {page}"
+    );
+    assert!(
+        page.contains("(more: +market/list after="),
+        "an empty page discarded its cursor, so every older public listing is unreachable"
+    );
+
+    // Follow it, in a bounded number of pages, to the public listing.
+    let mut pages = 1usize;
+    while pages < 16 {
+        let Some(cursor) = page
+            .split("after=")
+            .nth(1)
+            .and_then(|r| r.split(')').next())
+            .map(str::to_string)
+        else {
+            break;
+        };
+        page = ok(&mut tw, stranger, &format!("+market/list after={cursor}"));
+        pages += 1;
+        if page.contains("Regular Ammunition") {
+            break;
+        }
+    }
+    assert!(
+        page.contains("Regular Ammunition"),
+        "the public listing was unreachable behind the wall after {pages} pages: {page}"
+    );
+}
+
+/// **D4 (MEDIUM).** A maker's spread moves **every** published price alike.
+///
+/// `price_for` applied the spread to the quote and `Quote.price` became the published
+/// `last_trade`, while `projection`'s band and `commands::listing_line` read
+/// `Listing.price` un-moved — so `+market/list` advertised a price nobody pays and the
+/// safe projection published a band that need not contain its own last trade. No shipped
+/// test exercised a nonzero spread at all.
+#[test]
+fn vf_d4_a_makers_spread_moves_every_published_price_alike() {
+    let mut tw = boot();
+    let shop = vendor(&mut tw, "Maker", 0);
+    let m = maker_at(&mut tw, &shop, 1_000_000, 1_000_000, 100_000, 500);
+    let listing = stock(&mut tw, &shop, AMMO, 30, 100, &format!("source={}", m.id.0));
+    let who = buyer(&mut tw, "Kaz", 100_000);
+    goods(&mut tw, &shop, who, AMMO, 100);
+
+    // 30 at +500 permille is 45, and 45 is what every surface says.
+    let row = ok(&mut tw, who, "+market/list");
+    assert!(
+        row.contains("× 45"),
+        "the list row advertises the old price: {row}"
+    );
+    let depth = ok(&mut tw, who, &format!("+market/depth {AMMO}"));
+    assert!(
+        depth.contains("band: 45..45"),
+        "the band is pre-spread: {depth}"
+    );
+    let quoted = ok(&mut tw, who, &format!("+market/quote #{}=2", listing.0));
+    assert!(quoted.contains("2 × 45 = 90"), "{quoted}");
+
+    let q = only_quote(&tw, who);
+    ok(&mut tw, who, &format!("+market/accept #{}", q.0));
+    let now = tw.world().now();
+    sweep_at(&mut tw, now + 60);
+    let p = projection(&tw, AMMO);
+    let last = p.last_trade.expect("a settled trade").minor();
+    assert_eq!(last, 45);
+    assert!(
+        p.band.0.minor() <= last && last <= p.band.1.minor(),
+        "the published band does not contain its own last trade: {:?} vs {last}",
+        p.band
+    );
+}
+
+/// **D7 (LOW).** §5.6 B1 claims the venue default "reads exactly the set the projection
+/// folds". It read two of the projection's four listing tests, so a **lapsed** public
+/// listing still chose the header venue while contributing nothing to the numbers — and a
+/// good whose only public listing had lapsed rendered a different first line from a good
+/// with no listing at all.
+#[test]
+fn vf_d7_a_lapsed_public_listing_does_not_choose_the_venue() {
+    let mut tw = boot();
+    let open = vendor(&mut tw, "Ammo", 0);
+    stock(&mut tw, &open, AMMO, 20, 50, "");
+    let stranger = buyer(&mut tw, "Stranger", 100);
+    let untraded = ok(&mut tw, stranger, &format!("+market/depth {WARE}"));
+
+    // The same good, listed once — publicly — and then left to lapse.
+    let shop = vendor(&mut tw, "Ware", 0);
+    stock(&mut tw, &shop, WARE, 4_000, 3, "days=1");
+    let now = tw.world().now();
+    tw.set_now(now + 2 * 86_400);
+    let lapsed = ok(&mut tw, stranger, &format!("+market/depth {WARE}"));
+    assert_eq!(
+        untraded, lapsed,
+        "a lapsed public listing chose the venue, or changed the shape of the reply"
+    );
+}
+
+/// **D9 (LOW).** `@market/catalog load` took an unvalidated path as the pack name and
+/// read outside `catalog_paths`: the name went straight to `direct.join("{pack}.json")`,
+/// and `check_entry`'s byte rule runs only on the ENTRIES, after the file has been
+/// opened, read and parsed. The refusal echoed the resolved absolute path and told
+/// "exists but is not a loadable pack" apart from "no such pack".
+#[test]
+fn vf_d9_a_pack_name_that_is_a_path_is_refused_like_an_unknown_pack() {
+    let dir = pack_dir("traversal");
+    // A real pack file one directory ABOVE the configured root — the probe's target.
+    let outside = dir
+        .parent()
+        .map(|p| p.join("e6c-outside-probe.json"))
+        .expect("a parent directory");
+    std::fs::write(
+        &outside,
+        serde_json::to_string(&serde_json::json!([entry_json(
+            "outside.probe",
+            1,
+            "instrument",
+            5
+        )]))
+        .expect("json"),
+    )
+    .expect("the probe writes");
+    let mut tw = boot_at(&dir);
+
+    let unknown = err(&mut tw, GOD, "@market/catalog load nowhere.pack");
+    for name in [
+        "../e6c-outside-probe",
+        "a/b",
+        "..\\e6c-outside-probe",
+        "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    ] {
+        let refused = err(&mut tw, GOD, &format!("@market/catalog load {name}"));
+        assert_eq!(
+            refused.replace(name, "nowhere.pack"),
+            unknown,
+            "`{name}` did not read like an unknown pack"
+        );
+        assert!(
+            !refused.contains(&dir.display().to_string()),
+            "the refusal echoed a resolved path: {refused}"
+        );
+    }
+    assert!(
+        market(&tw)
+            .entry_of(&catalog_of("sr:outside.probe"))
+            .is_none(),
+        "a file outside catalog_paths was loaded"
+    );
+    let _ = std::fs::remove_file(&outside);
+}
+
+/// **R1 (HIGH).** A settlement healed by economy boot never reached `MarketObserver`.
+///
+/// `mush-economy`'s `boot::finished_transition` finishes a terminal transition whose doc
+/// write was lost by reading the contract's own deterministic idempotency key, and
+/// persists the result with a **raw document write** — no `ContractChanged` event, as
+/// `sweep.rs` says in as many words. The one re-announcement path filters on
+/// `visibility.is_public()` and a market purchase is `Parties`, and `mush-market` had no
+/// boot reconcile at all. So the goods were never handed over though the money had moved,
+/// the trade tape lost the row permanently, and the quote — `contract: Some`,
+/// `settled: None` — counted as open against its buyer's eight for ever.
+#[test]
+fn vf_r1_a_settlement_healed_at_boot_is_stamped_and_delivered_once() {
+    let mut tw = boot();
+    let shop = vendor(&mut tw, "Ares", 0);
+    let listing = stock(&mut tw, &shop, AMMO, 30, 20, "");
+    let who = buyer(&mut tw, "Kaz", 10_000);
+    goods(&mut tw, &shop, who, AMMO, 100);
+    ok(&mut tw, who, &format!("+market/quote #{}=10", listing.0));
+    let q = only_quote(&tw, who);
+    ok(&mut tw, who, &format!("+market/accept #{}", q.0));
+    let contract = market(&tw)
+        .quote(q)
+        .and_then(|q| q.contract)
+        .expect("a contract");
+    // Everything up to and including activation is durable…
+    let mut kv = fold_all(&mut tw);
+    // …then the settlement posts, and the crash loses the two documents that record it:
+    // the contract's own state, and the market's trade-tape row.
+    let now = tw.world().now();
+    sweep_at(&mut tw, now + 60);
+    assert!(matches!(
+        state(&tw, contract),
+        ContractState::Settled { .. }
+    ));
+    let line = goods_line(&tw, who, AMMO).expect("the buyer's commodity account");
+    assert_eq!(bal(&tw, line), 10, "the goods arrived the first time");
+    let settled_at = market(&tw)
+        .quote(q)
+        .and_then(|q| q.settled)
+        .expect("a stamped row")
+        .at;
+    fold_dropping(
+        &mut tw,
+        &mut kv,
+        &[
+            ("economy", mush_economy::contract_key(contract).to_string()),
+            ("market", mush_market::quote_key(q).to_string()),
+        ],
+    );
+    // A long time later, so a stamp taken from `now` rather than from the transaction
+    // would move the row right out of the projection's window.
+    tw.set_now(now + 3 * 86_400);
+    reboot(&mut tw, &kv);
+
+    assert!(
+        matches!(state(&tw, contract), ContractState::Settled { .. }),
+        "the economy did not heal its own contract: {:?}",
+        state(&tw, contract)
+    );
+    let row = market(&tw).quote(q).expect("the quote survived").clone();
+    assert!(
+        row.settled.is_some(),
+        "the market never learned the purchase settled"
+    );
+    assert_eq!(
+        row.settled.map(|s| s.at),
+        Some(settled_at),
+        "the row was stamped with the boot's clock rather than the transaction's"
+    );
+    let p = projection(&tw, AMMO);
+    assert_eq!(p.last_trade.map(|a| a.minor()), Some(30));
+    assert_eq!(p.volume.minor(), 300, "the tape lost a settled trade");
+    assert_eq!(
+        bal(&tw, line),
+        10,
+        "the boot reconcile delivered the goods a second time"
+    );
+}
+
+/// **R2 (HIGH).** The same missing pass in the other direction: a cancellation healed by
+/// economy boot never returned the stock or the maker's budget. `on_contract_changed`'s
+/// `Cancelled` arm is the only place `restore_quantity` and `charge_budgets(.., -1)` ever
+/// run, so the listing stayed permanently short by the sold quantity and the maker's
+/// window stayed spent for a deal that never happened.
+#[test]
+fn vf_r2_a_cancellation_healed_at_boot_returns_the_stock_and_the_budget() {
+    let mut tw = boot();
+    let shop = vendor(&mut tw, "Maker", 0);
+    let m = maker(&mut tw, &shop, 1_000_000, 1_000_000, 100_000);
+    let listing = stock(&mut tw, &shop, AMMO, 30, 100, &format!("source={}", m.id.0));
+    let who = buyer(&mut tw, "Kaz", 100_000);
+    goods(&mut tw, &shop, who, AMMO, 100);
+    ok(&mut tw, who, &format!("+market/quote #{}=4", listing.0));
+    let q = only_quote(&tw, who);
+    ok(&mut tw, who, &format!("+market/accept #{}", q.0));
+    let contract = market(&tw)
+        .quote(q)
+        .and_then(|q| q.contract)
+        .expect("a contract");
+    assert_eq!(market(&tw).listing(listing).expect("live").quantity, 96);
+    assert_eq!(
+        market(&tw)
+            .source(m.id)
+            .expect("the maker")
+            .volume_used
+            .minor(),
+        120
+    );
+    let mut kv = fold_all(&mut tw);
+
+    ok(&mut tw, GOD, &format!("@contract/cancel #{}", contract.0));
+    fold_dropping(
+        &mut tw,
+        &mut kv,
+        &[
+            ("economy", mush_economy::contract_key(contract).to_string()),
+            ("market", mush_market::quote_key(q).to_string()),
+            ("market", mush_market::listing_key(listing).to_string()),
+            ("market", mush_market::source_key(m.id).to_string()),
+        ],
+    );
+    reboot(&mut tw, &kv);
+
+    assert_eq!(
+        market(&tw).listing(listing).expect("still there").quantity,
+        100,
+        "the stock never came back"
+    );
+    assert_eq!(
+        market(&tw)
+            .source(m.id)
+            .expect("the maker")
+            .volume_used
+            .minor(),
+        0,
+        "the maker's window stayed spent for a deal that never happened"
+    );
+    assert!(
+        market(&tw).quote(q).is_none(),
+        "the stranded quote kept its buyer's slot"
+    );
+    // Idempotent: the same reconcile again gives nothing back a second time.
+    reboot(&mut tw, &kv);
+    assert_eq!(
+        market(&tw).listing(listing).expect("still there").quantity,
+        100,
+        "a second reconcile double-restored the stock"
+    );
+}
+
+/// **R3 (MEDIUM).** Nothing ever deleted an expired listing: `MarketStore::reindex`
+/// builds `live` from `quantity > 0` alone, `api::visible` never checked `expires`, and
+/// the market registered no tick at all — so a lapsed listing rendered as buyable while
+/// `quote` refused it, and went on counting against its vendor's 64 slots and the store's
+/// 1 024 for ever. A vendor that let 64 lapse could never list again.
+#[test]
+fn vf_r3_a_lapsed_listing_is_swept_and_its_vendor_can_list_again() {
+    let mut tw = boot();
+    let shop = vendor(&mut tw, "Ammo", 0);
+    for _ in 0..mush_market::MAX_LISTINGS_PER_VENDOR {
+        stock(&mut tw, &shop, AMMO, 20, 5, "days=1");
+    }
+    let full = err(
+        &mut tw,
+        GOD,
+        &format!("@market/vendor stock #{}={AMMO} price=20 qty=5", shop.id.0),
+    );
+    assert!(full.contains("as many listings"), "{full}");
+
+    let stranger = buyer(&mut tw, "Stranger", 100);
+    let now = tw.world().now();
+    tw.set_now(now + 2 * 86_400);
+    // Even before the sweep the page and the projection agree it is gone.
+    let page = ok(&mut tw, stranger, "+market/list");
+    assert!(page.contains("Nothing is for sale."), "{page}");
+
+    sweep_at(&mut tw, now + 2 * 86_400 + 60);
+    assert_eq!(
+        market(&tw).listings_of_vendor(shop.id),
+        0,
+        "the sweep left the lapsed listings holding the vendor's slots"
+    );
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@market/vendor stock #{}={AMMO} price=20 qty=5", shop.id.0),
+    );
+    assert_eq!(market(&tw).live_listings().count(), 1);
+}
+
+/// **R4 (MEDIUM; covers M11).** Trade-tape rows were never pruned by time and shared the
+/// global quote cap, so a busy history could refuse every new quote for ever. The window
+/// prunes them now, and the tape has a ceiling of its own below `MAX_QUOTES`.
+#[test]
+fn vf_r4_the_trade_tape_is_pruned_by_the_window_it_is_folded_over() {
+    let mut tw = boot();
+    let shop = vendor(&mut tw, "Ares", 0);
+    let listing = stock(&mut tw, &shop, AMMO, 30, 100, "days=90");
+    let who = buyer(&mut tw, "Kaz", 100_000);
+    goods(&mut tw, &shop, who, AMMO, 100);
+    buy(&mut tw, who, listing, 10);
+    assert_eq!(market(&tw).trade_rows(), 1);
+    assert_eq!(projection(&tw, AMMO).volume.minor(), 300);
+
+    // A year past the window the row counts for nothing and must not still occupy a slot.
+    let now = tw.world().now();
+    sweep_at(&mut tw, now + 365 * 86_400);
+    assert_eq!(
+        market(&tw).trade_rows(),
+        0,
+        "a row a year past the window still held a quote slot"
+    );
+    assert_eq!(market(&tw).quotes().count(), 0);
+
+    // …while an in-window row survives the same fire.
+    let fresh = stock(&mut tw, &shop, AMMO, 30, 100, "days=90");
+    buy(&mut tw, who, fresh, 10);
+    let now = tw.world().now();
+    sweep_at(&mut tw, now + 60);
+    assert_eq!(market(&tw).trade_rows(), 1, "an in-window row was swept");
+    assert_eq!(projection(&tw, AMMO).volume.minor(), 300);
+}
+
+/// **R6 (MEDIUM).** A pack reload that dropped an entry left its listings publishing band
+/// and depth for a good nothing can define, quote or deliver: `del_entry` touched no
+/// listing and `projection` never consulted the catalogue, so the public projection
+/// permanently advertised depth in a good that could not be bought.
+#[test]
+fn vf_r6_a_dropped_pack_entry_takes_its_listings_with_it() {
+    let dir = pack_dir("dropped");
+    write_pack(
+        &dir,
+        "mkt.test",
+        &serde_json::json!([entry_json("test.widget", 1, "instrument", 100)]),
+    );
+    let mut tw = boot_at(&dir);
+    ok(&mut tw, GOD, "@market/catalog load mkt.test");
+    let shop = vendor(&mut tw, "Ares", 0);
+    stock(&mut tw, &shop, WIDGET, 40, 30, "");
+    assert_ne!(
+        projection(&tw, WIDGET),
+        Projection::default(),
+        "the fixture publishes nothing to begin with"
+    );
+
+    // The pack is reloaded without the entry: it is the pack's own authority on what it
+    // holds, and the listings go with it.
+    write_pack(&dir, "mkt.test", &serde_json::json!([]));
+    let reloaded = ok(&mut tw, GOD, "@market/catalog load mkt.test");
+    assert!(reloaded.contains("1 dropped"), "{reloaded}");
+    assert_eq!(
+        projection(&tw, WIDGET),
+        Projection::default(),
+        "the projection still advertises depth in a good nothing can define"
+    );
+    let stranger = buyer(&mut tw, "Stranger", 100);
+    let page = ok(&mut tw, stranger, "+market/list");
+    assert!(page.contains("Nothing is for sale."), "{page}");
+    assert_eq!(market(&tw).live_listings().count(), 0);
+}
+
+/// **R9 (LOW).** Two latent hazards in `accept`/`on_contract_changed`.
+///
+/// (a) the quote-to-contract link was written **after** the last acceptance, so
+/// `by_quote_contract` was empty for the whole of activation: the day any path settles
+/// inline at activation, the observer would return early and the trade row and the
+/// delivery would be lost silently — R1 on the happy path with no crash. It is written as
+/// soon as `offer_contract` returns now, and the return leg keys on whether the deal
+/// actually came into force so a pre-activation cancellation gives nothing back.
+///
+/// (b) the `Settled` arm re-stamped and re-delivered unconditionally. It is idempotent
+/// now, and the stamp is the transaction's own `posted_at`.
+#[test]
+fn vf_r9_the_contract_link_is_live_through_activation_and_settling_is_idempotent() {
+    let mut tw = boot();
+    let shop = vendor(&mut tw, "Maker", 0);
+    let m = maker(&mut tw, &shop, 1_000_000, 1_000_000, 100_000);
+    let listing = stock(
+        &mut tw,
+        &shop,
+        AMMO,
+        400,
+        100,
+        &format!("source={}", m.id.0),
+    );
+    // A buyer who cannot fund the escrow: the offer is made, the buyer's own acceptance
+    // refuses, and the draft is cancelled — a transition against a quote nothing could
+    // find before the fix.
+    let broke = buyer(&mut tw, "Broke", 10);
+    goods(&mut tw, &shop, broke, AMMO, 100);
+    ok(&mut tw, broke, &format!("+market/quote #{}=1", listing.0));
+    let q = only_quote(&tw, broke);
+    err(&mut tw, broke, &format!("+market/accept #{}", q.0));
+    assert!(
+        market(&tw).quote(q).is_none(),
+        "a cancelled draft left its quote wedging the buyer's slot"
+    );
+    assert_eq!(
+        market(&tw).listing(listing).expect("live").quantity,
+        100,
+        "a deal that never came into force gave back stock that never left"
+    );
+    assert_eq!(
+        market(&tw)
+            .source(m.id)
+            .expect("the maker")
+            .volume_used
+            .minor(),
+        0,
+        "a deal that never came into force refunded budget that was never spent"
+    );
+
+    // (b) A settled row is stamped once, from the transaction, and the goods move once.
+    let who = buyer(&mut tw, "Kaz", 100_000);
+    goods(&mut tw, &shop, who, AMMO, 100);
+    let cheap = stock(&mut tw, &shop, AMMO, 30, 100, "");
+    let contract = buy(&mut tw, who, cheap, 10);
+    let row = market(&tw)
+        .quotes_of_buyer(&PrincipalId::Object(who))
+        .find(|r| r.settled.is_some())
+        .expect("a settled row")
+        .clone();
+    let stamped = row.settled.expect("a settlement").at;
+    let posted = econ(&tw)
+        .transaction(match state(&tw, contract) {
+            ContractState::Settled { transaction } => transaction,
+            other => panic!("the purchase did not settle: {other:?}"),
+        })
+        .expect("the settling transaction")
+        .posted_at;
+    assert_eq!(
+        stamped, posted,
+        "the row was stamped with `now`, not the post"
+    );
+    let line = goods_line(&tw, who, AMMO).expect("the buyer's commodity account");
+    assert_eq!(bal(&tw, line), 10);
+
+    // Re-entering the settlement path (the boot reconcile is the production route) must
+    // move neither the stamp nor the goods.
+    let kv = fold_all(&mut tw);
+    tw.set_now(posted + 4 * 86_400);
+    reboot(&mut tw, &kv);
+    assert_eq!(
+        market(&tw)
+            .quote(row.id)
+            .and_then(|r| r.settled)
+            .map(|s| s.at),
+        Some(stamped),
+        "a second Settled pass moved the row inside or outside the window"
+    );
+    assert_eq!(bal(&tw, line), 10, "the goods were delivered twice");
+}
+
+/// **M1 (HIGH).** A purchase whose goods leg cannot be delivered used to take the buyer's
+/// money anyway, and the failure paged nobody: every arm of `module::deliver` was a bare
+/// `tracing::error!`, and the quote was still written `settled: Some(..)` so the tape
+/// counted a trade that delivered nothing. Both halves: a `can_deliver` pre-check at
+/// accept, and the economy's own staff ladder at settlement.
+#[test]
+fn vf_m1_an_undeliverable_purchase_is_refused_before_any_money_moves() {
+    let mut tw = boot();
+    let shop = vendor(&mut tw, "Ares", 0);
+    let listing = stock(&mut tw, &shop, AMMO, 30, 10, "");
+    let who = buyer(&mut tw, "Kaz", 10_000);
+    let wallet = account_of(&tw, who);
+    let opening = bal(&tw, wallet);
+
+    // Nothing registers the goods instrument, opens a goods account or holds stock.
+    ok(&mut tw, who, &format!("+market/quote #{}=2", listing.0));
+    let q = only_quote(&tw, who);
+    let refused = err(&mut tw, who, &format!("+market/accept #{}", q.0));
+    assert!(refused.contains("Nothing was charged."), "{refused}");
+    assert_eq!(
+        bal(&tw, wallet),
+        opening,
+        "an undeliverable purchase charged"
+    );
+    assert_eq!(held(&tw, wallet), 0, "an undeliverable purchase escrowed");
+
+    // Over-listing stock is the same defect: ten units sold against one held.
+    goods(&mut tw, &shop, who, AMMO, 1);
+    let over = err(&mut tw, who, &format!("+market/accept #{}", q.0));
+    assert_eq!(over, refused, "an over-listed sale read differently");
+    goods(&mut tw, &shop, who, AMMO, 10);
+    ok(&mut tw, who, &format!("+market/accept #{}", q.0));
+}
+
+/// **M1, the residual.** A world change between the accept and the settlement is still
+/// reachable — the pre-check posts nothing and promises nothing — and that is exactly
+/// what the staff ladder is for. A paid-and-undelivered purchase opens a level-2 record
+/// on its contract instead of a log line nobody is paged by.
+#[test]
+fn vf_m1_a_paid_and_undelivered_purchase_pages_the_staff_ladder() {
+    let dir = pack_dir("undeliverable");
+    write_pack(
+        &dir,
+        "mkt.test",
+        &serde_json::json!([entry_json("test.widget", 1, "instrument", 100)]),
+    );
+    let mut tw = boot_at(&dir);
+    ok(&mut tw, GOD, "@market/catalog load mkt.test");
+    let shop = vendor(&mut tw, "Ares", 0);
+    let who = buyer(&mut tw, "Kaz", 100_000);
+    goods(&mut tw, &shop, who, WIDGET, 100);
+    let listing = stock(&mut tw, &shop, WIDGET, 40, 30, "");
+    ok(&mut tw, who, &format!("+market/quote #{}=2", listing.0));
+    let q = only_quote(&tw, who);
+    ok(&mut tw, who, &format!("+market/accept #{}", q.0));
+    let contract = market(&tw)
+        .quote(q)
+        .and_then(|q| q.contract)
+        .expect("a contract");
+
+    // The world changes under the live deal: the pack drops the entry, so nothing can
+    // say what was bought by the time the money lands.
+    write_pack(&dir, "mkt.test", &serde_json::json!([]));
+    ok(&mut tw, GOD, "@market/catalog load mkt.test");
+    let now = tw.world().now();
+    sweep_at(&mut tw, now + 60);
+    assert!(matches!(
+        state(&tw, contract),
+        ContractState::Settled { .. }
+    ));
+
+    let paged = econ(&tw)
+        .escalations()
+        .any(|e| e.subject == mush_economy::EscalationSubject::Contract(contract) && e.is_open());
+    assert!(
+        paged,
+        "a paid-and-undelivered purchase reached nobody: {:?}",
+        econ(&tw)
+            .escalations()
+            .map(|e| e.subject)
+            .collect::<Vec<_>>()
+    );
+}
+
+/// **M2 (HIGH).** A maker's budgets bounded quoting, not selling. A quote reserves
+/// nothing (OPEN 4), so N quotes taken out against N listings behind one maker each saw
+/// `volume_used`/`loss_used` at their pre-sale value, all passed, and all charged — both
+/// budgets exceeded without limit, because `is_current` consults only `halted`.
+#[test]
+fn vf_m2_a_makers_budgets_bound_selling_and_not_only_quoting() {
+    let mut tw = boot();
+    let shop = vendor(&mut tw, "Maker", 0);
+    // Room for exactly one sale of 60.
+    let m = maker(&mut tw, &shop, 100, 1_000_000, 100_000);
+    let a = stock(&mut tw, &shop, AMMO, 30, 100, &format!("source={}", m.id.0));
+    let b = stock(&mut tw, &shop, AMMO, 30, 100, &format!("source={}", m.id.0));
+    let who = buyer(&mut tw, "Kaz", 100_000);
+    goods(&mut tw, &shop, who, AMMO, 100);
+
+    // Two quotes against two listings behind one maker: both pass, because neither
+    // reserves anything.
+    ok(&mut tw, who, &format!("+market/quote #{}=2", a.0));
+    let qa = only_quote(&tw, who);
+    ok(&mut tw, who, &format!("+market/quote #{}=2", b.0));
+    let qb = market(&tw)
+        .quotes_of_buyer(&PrincipalId::Object(who))
+        .filter(|q| q.listing == b)
+        .map(|q| q.id)
+        .max()
+        .expect("the second quote");
+
+    ok(&mut tw, who, &format!("+market/accept #{}", qa.0));
+    let second = err(&mut tw, who, &format!("+market/accept #{}", qb.0));
+    assert!(second.contains("no longer stands"), "{second}");
+    let maker_now = market(&tw).source(m.id).expect("the maker").clone();
+    assert_eq!(maker_now.volume_used.minor(), 60);
+    assert!(
+        maker_now.volume_used.minor() <= maker_now.volume_budget.minor(),
+        "a maker sold past its declared volume budget"
+    );
+
+    // The same on the loss budget, where the money leaks rather than the volume.
+    let mut tw = boot();
+    let shop = vendor(&mut tw, "Maker", 0);
+    let m = maker(&mut tw, &shop, 1_000_000, 15, 100_000);
+    let a = stock(&mut tw, &shop, AMMO, 20, 100, &format!("source={}", m.id.0));
+    let b = stock(&mut tw, &shop, AMMO, 20, 100, &format!("source={}", m.id.0));
+    let who = buyer(&mut tw, "Kaz", 100_000);
+    goods(&mut tw, &shop, who, AMMO, 100);
+    ok(&mut tw, who, &format!("+market/quote #{}=1", a.0));
+    let qa = only_quote(&tw, who);
+    ok(&mut tw, who, &format!("+market/quote #{}=1", b.0));
+    let qb = market(&tw)
+        .quotes_of_buyer(&PrincipalId::Object(who))
+        .filter(|q| q.listing == b)
+        .map(|q| q.id)
+        .max()
+        .expect("the second quote");
+    ok(&mut tw, who, &format!("+market/accept #{}", qa.0));
+    err(&mut tw, who, &format!("+market/accept #{}", qb.0));
+    let maker_now = market(&tw).source(m.id).expect("the maker").clone();
+    assert!(
+        maker_now.loss_used.minor() <= maker_now.loss_budget.minor(),
+        "a maker lost past its declared loss budget: {} of {}",
+        maker_now.loss_used.minor(),
+        maker_now.loss_budget.minor()
+    );
+}
+
+/// **M3 (MEDIUM).** A listing that had lapsed still sold: `is_current` checked the
+/// QUOTE's expiry, the listing's revision and quantity, the entry's version, the artefact
+/// stamp, the vendor and the maker — and never the listing's own deadline, though
+/// `quote()` does. The vendor's declared window was enforced when the price was asked for
+/// and dropped at the point money moves.
+#[test]
+fn vf_m3_a_lapsed_listing_no_longer_sells() {
+    let mut tw = boot();
+    let shop = vendor(&mut tw, "Ares", 0);
+    let listing = stock(&mut tw, &shop, AMMO, 30, 10, "days=1");
+    let who = buyer(&mut tw, "Kaz", 10_000);
+    goods(&mut tw, &shop, who, AMMO, 100);
+    let wallet = account_of(&tw, who);
+    let opening = bal(&tw, wallet);
+
+    // A remote quote outlives the listing's own window by design.
+    ok(
+        &mut tw,
+        who,
+        &format!("+market/quote #{} remote=2", listing.0),
+    );
+    let q = only_quote(&tw, who);
+    let now = tw.world().now();
+    tw.set_now(now + 86_400 + 60);
+    let refused = err(&mut tw, who, &format!("+market/accept #{}", q.0));
+    assert!(
+        refused.contains("no longer stands"),
+        "the market sold goods it publicly says are not for sale: {refused}"
+    );
+    assert_eq!(bal(&tw, wallet), opening);
+    assert_eq!(held(&tw, wallet), 0);
+}
+
+/// **M4 (MEDIUM; covers R5).** DL-06 was inert against the market: no file in
+/// `mush-market/src` mentioned `OrgStatus`, so a `Suspended`, `Dissolving` or `Closed`
+/// organization kept trading and could still be registered as a vendor. That contradicted
+/// `mush-org`'s own `org_status` doc comment and left B10's only staff verb for shutting a
+/// shop down with no effect on the market.
+#[test]
+fn vf_m4_a_suspended_organization_stops_trading_and_its_live_contracts_still_settle() {
+    let mut tw = boot();
+    let shop = vendor(&mut tw, "Ares", 0);
+    let listing = stock(&mut tw, &shop, AMMO, 30, 10, "");
+    let who = buyer(&mut tw, "Kaz", 10_000);
+    goods(&mut tw, &shop, who, AMMO, 100);
+    ok(&mut tw, who, &format!("+market/quote #{}=2", listing.0));
+    let q = only_quote(&tw, who);
+    ok(&mut tw, who, &format!("+market/accept #{}", q.0));
+    let contract = market(&tw)
+        .quote(q)
+        .and_then(|q| q.contract)
+        .expect("a contract");
+
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@org/status #{}=suspended", shop.org.0),
+    );
+    // It quotes nothing, it stocks nothing, and it cannot be re-registered.
+    let quoted = err(&mut tw, who, &format!("+market/quote #{}=1", listing.0));
+    assert!(quoted.contains("no longer stands"), "{quoted}");
+    let stocked = err(
+        &mut tw,
+        GOD,
+        &format!("@market/vendor stock #{}={AMMO} price=20 qty=5", shop.id.0),
+    );
+    assert!(stocked.contains("not trading"), "{stocked}");
+    let registered = err(
+        &mut tw,
+        GOD,
+        &format!(
+            "@market/vendor create #{}=#{} name=Ares market={VENUE} buy=300",
+            shop.org.0, shop.vault.0
+        ),
+    );
+    assert!(registered.contains("No such vendor."), "{registered}");
+
+    // …and the live agreement it already made settles untouched.
+    let now = tw.world().now();
+    sweep_at(&mut tw, now + 60);
+    assert!(
+        matches!(state(&tw, contract), ContractState::Settled { .. }),
+        "suspending an organization tore up its live agreement: {:?}",
+        state(&tw, contract)
+    );
+
+    // `Closed` is terminal, so its vendor is retired at the next boot and its listings
+    // go with it.
+    ok(&mut tw, GOD, &format!("@org/status #{}=closed", shop.org.0));
+    let kv = fold_all(&mut tw);
+    reboot(&mut tw, &kv);
+    assert!(
+        !market(&tw)
+            .vendor(shop.id)
+            .is_some_and(mush_market::Vendor::is_trading),
+        "a closed organization is still a trading shop"
+    );
+    assert_eq!(market(&tw).listings_of_vendor(shop.id), 0);
+}
+
+/// **M5 (MEDIUM; covers R7).** A maker's loss budget was spent and returned at the
+/// catalogue's **live** baseline rather than the one the deal booked, so any pack reload
+/// between the two legs made the return differ from the spend: a raised baseline returned
+/// more than was spent and `.max(0)` then destroyed the loss every *other* trade in the
+/// window had booked, handing the maker a fresh full budget; a lowered one returned less
+/// and drove `loss_used` permanently upward.
+#[test]
+fn vf_m5_a_reloaded_baseline_does_not_change_what_a_cancellation_returns() {
+    for baseline_after in [10_000i64, 20i64] {
+        let dir = pack_dir(&format!("booked-{baseline_after}"));
+        write_pack(
+            &dir,
+            "mkt.test",
+            &serde_json::json!([entry_json("test.widget", 1, "instrument", 100)]),
+        );
+        let mut tw = boot_at(&dir);
+        ok(&mut tw, GOD, "@market/catalog load mkt.test");
+        let shop = vendor(&mut tw, "Maker", 0);
+        let m = maker(&mut tw, &shop, 1_000_000, 1_000_000, 100_000);
+        let listing = stock(
+            &mut tw,
+            &shop,
+            WIDGET,
+            40,
+            100,
+            &format!("source={}", m.id.0),
+        );
+        let who = buyer(&mut tw, "Kaz", 100_000);
+        goods(&mut tw, &shop, who, WIDGET, 100);
+
+        ok(&mut tw, who, &format!("+market/quote #{}=2", listing.0));
+        let q = only_quote(&tw, who);
+        ok(&mut tw, who, &format!("+market/accept #{}", q.0));
+        let spent = market(&tw)
+            .source(m.id)
+            .expect("the maker")
+            .loss_used
+            .minor();
+        assert_eq!(spent, (100 - 40) * 2, "the sale booked no loss");
+        let contract = market(&tw)
+            .quote(q)
+            .and_then(|q| q.contract)
+            .expect("a contract");
+
+        // The catalogue moves under the live deal — an ordinary versioned write that
+        // leaves every outstanding quote current.
+        write_pack(
+            &dir,
+            "mkt.test",
+            &serde_json::json!([entry_json("test.widget", 1, "instrument", baseline_after)]),
+        );
+        ok(&mut tw, GOD, "@market/catalog load mkt.test");
+        ok(&mut tw, GOD, &format!("@contract/cancel #{}", contract.0));
+        assert_eq!(
+            market(&tw)
+                .source(m.id)
+                .expect("the maker")
+                .loss_used
+                .minor(),
+            0,
+            "a baseline of {baseline_after} made the return differ from the spend"
+        );
+    }
+}
+
+/// **M6 (MEDIUM).** A catalogue entry with no baseline made a maker's loss budget inert:
+/// both loss sites resolved `None` to zero, so `loss = (0 - price).max(0) * qty` was
+/// always zero and the loss arm never tripped however far below the shelf price the
+/// spread took the quote. Doc 10 7A's "mediocre prices is a trading policy, not a
+/// substitute for funding" was unenforced for any entry that omits a reference price.
+#[test]
+fn vf_m6_a_baseline_less_entry_cannot_be_a_makers_listing() {
+    let dir = pack_dir("nobaseline");
+    let mut entry = entry_json("test.widget", 1, "instrument", 0);
+    entry["baseline"] = serde_json::Value::Null;
+    write_pack(&dir, "mkt.test", &serde_json::json!([entry]));
+    let mut tw = boot_at(&dir);
+    ok(&mut tw, GOD, "@market/catalog load mkt.test");
+    let shop = vendor(&mut tw, "Maker", 0);
+    // A zero loss budget and a spread that takes the price to a tenth: the exact shape
+    // the loss budget exists to refuse.
+    let m = maker_at(&mut tw, &shop, 1_000_000, 0, 100_000, -900);
+
+    let refused = err(
+        &mut tw,
+        GOD,
+        &format!(
+            "@market/vendor stock #{}={WIDGET} price=1000 qty=10 source={}",
+            shop.id.0, m.id.0
+        ),
+    );
+    assert!(refused.contains("reference price"), "{refused}");
+    // Stocking it from the vendor's own vault is untouched — the rule is the maker's.
+    ok(
+        &mut tw,
+        GOD,
+        &format!(
+            "@market/vendor stock #{}={WIDGET} price=1000 qty=10",
+            shop.id.0
+        ),
+    );
+}
+
+/// **M7 (LOW).** A re-spread maker honoured its old quotes: `spread` is a live pricing
+/// input `ObservedRevisions` did not stamp, so a staff correction of a mis-set spread left
+/// every outstanding quote executing at the old price for the whole quote window.
+/// Re-pricing through the listing invalidated a quote and re-pricing through the spread
+/// did not.
+#[test]
+fn vf_m7_a_re_spread_maker_does_not_honour_its_old_quotes() {
+    let mut tw = boot();
+    let shop = vendor(&mut tw, "Maker", 0);
+    let m = maker_at(&mut tw, &shop, 1_000_000, 1_000_000, 100_000, -900);
+    let listing = stock(
+        &mut tw,
+        &shop,
+        AMMO,
+        300,
+        100,
+        &format!("source={}", m.id.0),
+    );
+    let who = buyer(&mut tw, "Kaz", 100_000);
+    goods(&mut tw, &shop, who, AMMO, 100);
+    ok(&mut tw, who, &format!("+market/quote #{}=1", listing.0));
+    let q = only_quote(&tw, who);
+    assert_eq!(market(&tw).quote(q).expect("the quote").price.minor(), 30);
+
+    // Staff correct the typo'd spread. Every outstanding quote priced against it lapses.
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@market/source budget #{}=spread=0", m.id.0),
+    );
+    let refused = err(&mut tw, who, &format!("+market/accept #{}", q.0));
+    assert!(
+        refused.contains("no longer stands"),
+        "a re-spread maker still honoured a quote at the old price: {refused}"
+    );
+    assert_eq!(held(&tw, account_of(&tw, who)), 0);
+    ok(&mut tw, who, &format!("+market/quote #{}=1", listing.0));
+    let fresh = market(&tw)
+        .quotes_of_buyer(&PrincipalId::Object(who))
+        .filter(|r| r.settled.is_none())
+        .map(|r| (r.id, r.price.minor()))
+        .max()
+        .expect("a fresh quote");
+    assert_eq!(
+        fresh.1, 300,
+        "the corrected spread did not reach a new quote"
+    );
+}
+
+/// **M8 (LOW).** A listing could name **any** market maker, including another
+/// organization's: nothing looked the source up — not that it existed, not that it
+/// belonged to this vendor, not that it made a market in this venue — while the sale's
+/// money went to the vendor's own account. One shop's trading consumed another
+/// organization's declared risk budget and was gated on a wallet it does not own.
+#[test]
+fn vf_m8_a_listing_may_not_name_another_organizations_maker() {
+    let mut tw = boot();
+    let a = vendor(&mut tw, "ShopA", 0);
+    let b = vendor(&mut tw, "ShopB", 0);
+    let theirs = maker(&mut tw, &b, 1_000_000, 1_000_000, 100_000);
+
+    let refused = err(
+        &mut tw,
+        GOD,
+        &format!(
+            "@market/vendor stock #{}={AMMO} price=30 qty=10 source={}",
+            a.id.0, theirs.id.0
+        ),
+    );
+    assert!(refused.contains("another organization"), "{refused}");
+    assert_eq!(market(&tw).live_listings().count(), 0);
+
+    // A maker id nothing defines names the mistake rather than refusing every later
+    // quote with `No such listing.`
+    let unknown = err(
+        &mut tw,
+        GOD,
+        &format!(
+            "@market/vendor stock #{}={AMMO} price=30 qty=10 source=9999",
+            a.id.0
+        ),
+    );
+    assert!(unknown.contains("No such market source."), "{unknown}");
+
+    // A maker of the vendor's own organization is the one that works.
+    let mine = maker(&mut tw, &a, 1_000_000, 1_000_000, 100_000);
+    ok(
+        &mut tw,
+        GOD,
+        &format!(
+            "@market/vendor stock #{}={AMMO} price=30 qty=10 source={}",
+            a.id.0, mine.id.0
+        ),
+    );
+    assert_eq!(market(&tw).live_listings().count(), 1);
+}
+
+/// **M9 (LOW).** `+market/sell` let one player pin a vendor's cash in mutually exclusive
+/// escrows against a single object: the vendor escrows first (D-E6-9) and the seller never
+/// accepts, so the economy's duplicate-deposit lock — taken at *activation* — never
+/// arrived, and N offers all sat `Offered` with N vendor holds standing.
+#[test]
+fn vf_m9_one_object_is_one_standing_offer_to_one_vendor() {
+    let mut tw = boot();
+    let shop = vendor(&mut tw, "Pawn", 100_000);
+    let who = buyer(&mut tw, "Kaz", 10_000);
+    let gun = thing(&mut tw, "a Colt America L36");
+    let listing = stock(&mut tw, &shop, GUN, 400, 1, &format!("object=#{}", gun.0));
+    buy(&mut tw, who, listing, 1);
+    tw.world_mut()
+        .move_to(gun, who)
+        .expect("the buyer takes delivery");
+
+    ok(
+        &mut tw,
+        who,
+        &format!("+market/sell #{}=#{}", gun.0, shop.id.0),
+    );
+    let one = held(&tw, shop.account);
+    assert!(one > 0, "the vendor escrowed nothing");
+    let second = err(
+        &mut tw,
+        who,
+        &format!("+market/sell #{}=#{}", gun.0, shop.id.0),
+    );
+    assert!(second.contains("already offered"), "{second}");
+    assert_eq!(
+        held(&tw, shop.account),
+        one,
+        "one object pinned a second escrow"
+    );
+}
+
+/// **M10 (LOW).** `@market/vendor stock` minted title over **any** live object: the arm
+/// asked only `is_live_object` and `issue_title`'s own `approver_live` — the same test —
+/// so a staffer could name a character, a room or an item a player is carrying and the
+/// market silently minted a vendor-owned title stamped with any loaded catalogue code,
+/// which is also what E6b's fence prices off.
+#[test]
+fn vf_m10_stocking_does_not_mint_title_over_a_character_or_a_carried_thing() {
+    let mut tw = boot();
+    let shop = vendor(&mut tw, "Ares", 0);
+    let who = buyer(&mut tw, "Kaz", 10_000);
+    let refused = err(
+        &mut tw,
+        GOD,
+        &format!(
+            "@market/vendor stock #{}={GUN} price=400 qty=1 object=#{}",
+            shop.id.0, who.0
+        ),
+    );
+    assert!(refused.contains("@asset/title"), "{refused}");
+    assert!(
+        snap(&tw).asset(who).is_none(),
+        "the market minted a title over a player character"
+    );
+
+    // The same for a thing a player is carrying.
+    let trinket = tw
+        .world_mut()
+        .create(ObjKind::Thing, "a trinket", GOD, Some(who))
+        .expect("an object in their hands");
+    let carried = err(
+        &mut tw,
+        GOD,
+        &format!(
+            "@market/vendor stock #{}={GUN} price=400 qty=1 object=#{}",
+            shop.id.0, trinket.0
+        ),
+    );
+    assert_eq!(carried, refused);
+    assert!(snap(&tw).asset(trinket).is_none());
+
+    // What a shop really stocks from is untouched: the staffer's own hands.
+    let held_by_staff = thing(&mut tw, "a Colt America L36");
+    ok(
+        &mut tw,
+        GOD,
+        &format!(
+            "@market/vendor stock #{}={GUN} price=400 qty=1 object=#{}",
+            shop.id.0, held_by_staff.0
+        ),
+    );
+    assert!(snap(&tw).asset(held_by_staff).is_some());
+}
+
+/// **M12 (LOW).** The public tape had no self-dealing test, so a vendor's own member could
+/// print `last_trade` and `volume` at round-trip cost: the contract really settles, so the
+/// row is honest, but the price the market publishes to everyone is one the seller chose
+/// and paid themselves.
+#[test]
+fn vf_m12_a_vendors_own_member_does_not_print_the_public_tape() {
+    let mut tw = boot();
+    let shop = vendor(&mut tw, "Ares", 0);
+    let listing = stock(&mut tw, &shop, AMMO, 30, 100, "");
+    let outsider = buyer(&mut tw, "Kaz", 100_000);
+    goods(&mut tw, &shop, outsider, AMMO, 100);
+    buy(&mut tw, outsider, listing, 10);
+    let honest = projection(&tw, AMMO);
+    assert_eq!(honest.last_trade.map(|a| a.minor()), Some(30));
+
+    // A member of the selling organization buys from their own shop, high.
+    let inside = buyer(&mut tw, "Insider", 1_000_000);
+    goods(&mut tw, &shop, inside, AMMO, 100);
+    // `acts_for` an organization is "holds `economy.account.post` on its root
+    // compartment" — the same test `may_view_listing` uses for a seller's own people.
+    ok(
+        &mut tw,
+        GOD,
+        &format!(
+            "@org/grant #{}=#{} economy.account.post",
+            inside.0, shop.org.0
+        ),
+    );
+    assert!(
+        mush_economy::acts_for(tw.world(), inside, &PrincipalId::Organization(shop.org)),
+        "the fixture's insider does not act for the selling organization"
+    );
+    let dear = stock(&mut tw, &shop, AMMO, 9_000, 100, "");
+    buy(&mut tw, inside, dear, 10);
+
+    let after = projection(&tw, AMMO);
+    assert_eq!(
+        after.last_trade.map(|a| a.minor()),
+        Some(30),
+        "a self-dealt trade printed the public last trade"
+    );
+    assert_eq!(
+        after.volume.minor(),
+        honest.volume.minor(),
+        "a self-dealt trade printed the public volume"
+    );
+    // The row is still the buyer's own order history — unpublished, never deleted.
+    assert!(
+        market(&tw)
+            .quotes_of_buyer(&PrincipalId::Object(inside))
+            .any(|q| q.settled.is_some()),
+        "a self-dealt purchase lost its own record"
     );
 }

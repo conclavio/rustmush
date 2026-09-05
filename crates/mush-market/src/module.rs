@@ -16,13 +16,19 @@
 
 use std::sync::Arc;
 
-use mush_core::module::{GameModule, ModError, ModuleBootData, ModuleCtx, Registrar};
+use mush_core::module::{GameModule, ModError, ModuleBootData, ModuleCtx, Registrar, TickCadence};
 use mush_core::{Ctx, ObjId};
 use mush_economy::{CatalogRef, ContractId, EconomicEvent, EconomyObserver};
 use mush_org::PrincipalId;
 
 use crate::record::{AvailabilityOutcome, AvailabilityRule, CatalogEntry, Quote, Representation};
 use crate::store::{MarketStore, NS};
+
+/// The market sweep's tick tag.
+pub const SWEEP_TAG: &str = "market.sweep";
+
+/// How often the market sweep fires, in seconds.
+pub const SWEEP_PERIOD_SECS: u64 = 60;
 
 /// Something that can hand the market a content pack's entries (B3, B9).
 ///
@@ -81,6 +87,21 @@ pub trait DeliveryProvider: Send + Sync + std::fmt::Debug {
     /// Deliver one order, or `None` when this provider does not own that
     /// representation or that ruleset. `Some(Err(..))` says what went wrong.
     fn deliver(&self, ctx: &mut Ctx<'_>, order: &DeliveryOrder) -> Option<Result<(), String>>;
+
+    /// **Could this order be delivered right now?** — asked at `+market/accept`,
+    /// before any money moves (independent verify fold, M1).
+    ///
+    /// `None` from every provider means nothing on this server owns the question, and
+    /// the accept proceeds exactly as it did: this is a pre-check, never a second
+    /// authority, and a provider that cannot answer cheaply should keep the default.
+    /// `Some(Err(why))` refuses the purchase with the goods still undelivered and the
+    /// buyer's money still theirs — which is the whole point, because the money moves
+    /// at settlement and the goods leg is asked only afterwards.
+    ///
+    /// The default answers `None`, so every existing provider keeps working unchanged.
+    fn can_deliver(&self, _ctx: &Ctx<'_>, _order: &DeliveryOrder) -> Option<Result<(), String>> {
+        None
+    }
 }
 
 /// The market [`GameModule`].
@@ -177,6 +198,17 @@ impl GameModule for MarketModule {
             },
             ..MarketStore::default()
         });
+        // **The market has a clock of its own** (independent verify fold, R3/R4).
+        // Nothing used to remove a lapsed listing or an aged trade-tape row: a listing
+        // left `live` for ever, still holding one of its vendor's 64 slots and still
+        // rendered as buyable, and 64 traded pairs' rows filled `MAX_QUOTES` so
+        // `+market/quote` answered "The market is busy; try later." to every buyer for
+        // ever, with no new trade possible to evict anything.
+        reg.tick(
+            SWEEP_TAG,
+            TickCadence::Coarse(std::time::Duration::from_secs(SWEEP_PERIOD_SECS)),
+            Arc::new(crate::boot::sweep_tick),
+        )?;
         crate::commands::register(reg)?;
         Ok(())
     }
@@ -192,11 +224,14 @@ impl GameModule for MarketModule {
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
         let loaded = crate::store::load(&kv);
-        let Some(store) = ctx.w.module_state_mut::<MarketStore>() else {
-            return Err(ModError::msg("market: no module state"));
-        };
-        let tables = store.tables.clone();
-        *store = MarketStore { tables, ..loaded };
+        {
+            let Some(store) = ctx.w.module_state_mut::<MarketStore>() else {
+                return Err(ModError::msg("market: no module state"));
+            };
+            let tables = store.tables.clone();
+            *store = MarketStore { tables, ..loaded };
+        }
+        crate::boot::reconcile(ctx);
         Ok(())
     }
 }
@@ -264,36 +299,30 @@ pub(crate) fn resolve_availability(
 /// Hand the goods over after a settlement. `Representation::Asset` needs no provider:
 /// its title moved as an ordinary E4b2 deliverable inside the settlement itself.
 ///
-/// A refused delivery is **loud** and never silent: the money has already moved, so
-/// the failure is logged with the contract and the quote, where staff can see it and
-/// the buyer can be made whole by hand. This crate cannot pre-check it — which
-/// instrument a commodity entry settles in is the **provider's** rule, not the
-/// market's — so "loud" is the whole of the guarantee, and closing it properly waits
-/// on E7's inventory pools.
+/// A refused delivery **reaches staff through the economy's own ladder** (independent
+/// verify fold, M1): the money has already moved and the quote is written with
+/// `settled: Some(..)`, so the trade tape counts a trade that delivered nothing, and a
+/// bare `tracing::error!` left the paid-and-undelivered purchase in a log line nobody
+/// is paged by. It opens a level-2 record on the **contract**, which is the ladder's own
+/// per-subject dedupe key, with the filled-in commands a staffer runs.
 pub(crate) fn deliver(ctx: &mut Ctx<'_>, q: &Quote, contract: ContractId) {
     let Some(representation) = ctx
         .w
         .module_state::<MarketStore>()
         .and_then(|s| s.entry_of(&q.catalog).map(|e| e.representation))
     else {
-        tracing::error!(
-            contract = contract.0,
-            quote = q.id.0,
-            "market: a settled purchase names a catalogue entry that is gone; goods undelivered"
+        undelivered(
+            ctx,
+            q,
+            contract,
+            "the catalogue entry it names is gone".to_string(),
         );
         return;
     };
     if matches!(representation, Representation::Asset) {
         return;
     }
-    let order = DeliveryOrder {
-        representation,
-        catalog: q.catalog.clone(),
-        buyer: q.buyer.clone(),
-        seller: q.seller.clone(),
-        quantity: q.quantity,
-        contract,
-    };
+    let order = delivery_order(q, representation, contract);
     let providers = ctx
         .w
         .module_state::<MarketStore>()
@@ -303,21 +332,94 @@ pub(crate) fn deliver(ctx: &mut Ctx<'_>, q: &Quote, contract: ContractId) {
         match p.deliver(ctx, &order) {
             Some(Ok(())) => return,
             Some(Err(why)) => {
-                tracing::error!(
-                    contract = contract.0,
-                    quote = q.id.0,
-                    why,
-                    "market: a settled purchase could not be delivered"
-                );
+                undelivered(ctx, q, contract, why);
                 return;
             }
             None => {}
         }
     }
+    undelivered(
+        ctx,
+        q,
+        contract,
+        format!(
+            "nothing on this server delivers a '{}' purchase",
+            representation.label()
+        ),
+    );
+}
+
+/// The order one settled quote asks a provider for.
+fn delivery_order(
+    q: &Quote,
+    representation: Representation,
+    contract: ContractId,
+) -> DeliveryOrder {
+    DeliveryOrder {
+        representation,
+        catalog: q.catalog.clone(),
+        buyer: q.buyer.clone(),
+        seller: q.seller.clone(),
+        quantity: q.quantity,
+        contract,
+    }
+}
+
+/// **Ask the frozen table whether this purchase could be delivered at all**, before the
+/// money moves (independent verify fold, M1). `Some(why)` refuses the accept.
+///
+/// `Representation::Asset` is never asked: its title moves inside the settlement as an
+/// ordinary E4b2 deliverable, and the contract's own `TitleHeld` condition is the
+/// pre-check.
+pub(crate) fn cannot_deliver(
+    ctx: &Ctx<'_>,
+    q: &Quote,
+    representation: Representation,
+) -> Option<String> {
+    if matches!(representation, Representation::Asset) {
+        return None;
+    }
+    // The contract does not exist yet; the pre-check names none, and no provider may
+    // read one from a `&Ctx` anyway.
+    let order = delivery_order(q, representation, ContractId(0));
+    let providers = ctx
+        .w
+        .module_state::<MarketStore>()
+        .map(|s| s.tables.delivery.clone())
+        .unwrap_or_default();
+    for p in &providers {
+        match p.can_deliver(ctx, &order) {
+            Some(Ok(())) => return None,
+            Some(Err(why)) => return Some(why),
+            None => {}
+        }
+    }
+    None
+}
+
+/// One paid-and-undelivered purchase: loud in the log **and** on the staff ladder.
+fn undelivered(ctx: &mut Ctx<'_>, q: &Quote, contract: ContractId, why: String) {
     tracing::error!(
         contract = contract.0,
         quote = q.id.0,
-        representation = representation.label(),
-        "market: nothing on this server can deliver a settled purchase"
+        why,
+        "market: a settled purchase could not be delivered; the buyer paid and holds nothing"
+    );
+    mush_economy::open_escalation(
+        ctx,
+        mush_economy::EscalationKind::SettlementRefused,
+        mush_economy::EscalationSubject::Contract(contract),
+        format!(
+            "market quote #{} settled and its goods were not handed over ({why}). The money has \
+             moved; the buyer holds nothing.",
+            q.id
+        ),
+        vec![
+            format!("@contract/show #{contract}"),
+            format!(
+                "@market/catalog show {}:{}",
+                q.catalog.ruleset, q.catalog.code
+            ),
+        ],
     );
 }

@@ -43,8 +43,8 @@ use crate::api::{
 };
 use crate::ids::{ListingId, QuoteId};
 use crate::record::{
-    AvailabilityRule, Listing, MAX_OPEN_QUOTES_PER_BUYER, MAX_QUOTES, ObservedRevisions, Quote,
-    Representation, Settlement, Supply, Vendor, declared_hash,
+    AvailabilityRule, Listing, MAX_OPEN_QUOTES_PER_BUYER, MAX_QUOTES, MAX_TRADE_ROWS,
+    ObservedRevisions, Quote, Representation, Settlement, Supply, Vendor, declared_hash,
 };
 use crate::store::{MarketStore, del_quote, persist_meta, put_listing, put_quote};
 
@@ -58,6 +58,16 @@ pub const MAX_LAPSED_SWEEP_PER_CALL: usize = 32;
 
 /// How long a purchase contract stands before its deadline lapses.
 pub const DEAL_WINDOW_SECS: i64 = 24 * 3_600;
+
+/// The most `+market/sell` offers one seller may have standing against one vendor
+/// (independent verify fold, M9).
+///
+/// The per-buyer quote cap's shape, on the other side of the counter: the vendor
+/// escrows first, so every standing offer pins some of its available balance for
+/// [`DEAL_WINDOW_SECS`], and without a cap the ceiling was the economy's
+/// `MAX_OPEN_CONTRACTS_PER_ISSUER` — sixteen escrows against one shop, at no cost to
+/// the offerer.
+pub const MAX_OPEN_SELLS_PER_VENDOR: usize = 4;
 
 /// The **exact** words a quote that can no longer be honoured is refused with.
 ///
@@ -91,6 +101,15 @@ pub fn is_current(ctx: &Ctx<'_>, q: &Quote) -> bool {
     if listing.revision != q.observed.listing || listing.quantity < q.quantity {
         return false;
     }
+    // **The listing's own deadline** (independent verify fold, M3). `quote` checks it
+    // and `is_current` did not, so the vendor's declared window was enforced when the
+    // price was asked for and dropped at the point money moves — and a quote TTL runs
+    // to 30 days against a listing floor of 60 seconds, with nothing sweeping a lapsed
+    // listing out of the store. The projection already treats such a listing as gone,
+    // so the market was selling goods it publicly said were not for sale.
+    if crate::projection::lapsed(listing.expires.at, listing.expires.clock, now) {
+        return false;
+    }
     let Some(entry) = store.entry_of(&q.catalog) else {
         return false;
     };
@@ -107,10 +126,22 @@ pub fn is_current(ctx: &Ctx<'_>, q: &Quote) -> bool {
     if store.vendor(listing.vendor).is_none_or(|v| !v.is_trading()) {
         return false;
     }
-    if let Supply::Market { source } = listing.source
-        && store.source(source).is_none_or(|s| s.halted)
-    {
-        return false;
+    if let Supply::Market { source } = listing.source {
+        let Some(maker) = store.source(source) else {
+            return false;
+        };
+        if maker.halted {
+            return false;
+        }
+        // **A re-budget lapses the quotes it re-priced** (independent verify fold, M7).
+        // `spread` is a live pricing input `price_for` reads at quote time; nothing
+        // stamped it, so a staff correction of a mis-set spread left every outstanding
+        // quote executing at the old price for the whole window. Re-pricing through the
+        // listing invalidated a quote and re-pricing through the spread did not; now
+        // both join the single `STALE_QUOTE` family.
+        if q.observed.source != Some(maker.revision) {
+            return false;
+        }
     }
     true
 }
@@ -184,7 +215,9 @@ pub fn quote(ctx: &mut Ctx<'_>, req: &QuoteRequest) -> Result<QuoteId, MarketErr
     else {
         return Err(MarketError::NoStanding(NO_SUCH_LISTING));
     };
-    if !vendor.is_trading() {
+    // A retired vendor and an organization DL-06 has stopped both refuse the same way —
+    // one `STALE_QUOTE`, one family (independent verify fold, M4).
+    if !vendor.is_trading() || !crate::api::org_may_trade(ctx.w, vendor.org) {
         return Err(MarketError::bad(STALE_QUOTE));
     }
     let Some(entry) = ctx
@@ -207,6 +240,7 @@ pub fn quote(ctx: &mut Ctx<'_>, req: &QuoteRequest) -> Result<QuoteId, MarketErr
             .saturating_mul(i64::try_from(quantity).unwrap_or(i64::MAX)),
     );
     // ---- B8: every budget, before the quote is issued ---------------------
+    let mut observed_source: Option<u64> = None;
     if let Supply::Market { source } = listing.source {
         let Some(maker) = ctx
             .w
@@ -217,16 +251,8 @@ pub fn quote(ctx: &mut Ctx<'_>, req: &QuoteRequest) -> Result<QuoteId, MarketErr
         };
         let now = ctx.w.now();
         let maker = maker.rolled(now);
-        let baseline = entry.baseline.unwrap_or(Amount::ZERO).minor();
-        // The loss a sale at this price books against the reference price. A maker
-        // selling *above* baseline books no loss; a maker selling below books the
-        // difference, and its loss budget is what stops it selling the world cheaply.
-        let loss = Amount::from_minor(
-            baseline
-                .saturating_sub(unit.minor())
-                .max(0)
-                .saturating_mul(i64::try_from(quantity).unwrap_or(i64::MAX)),
-        );
+        observed_source = Some(maker.revision);
+        let loss = booked_loss(&entry, unit, quantity);
         if let Some(why) = maker.refuses(total, loss) {
             return Err(MarketError::bad(maker_refusal(why)));
         }
@@ -271,10 +297,16 @@ pub fn quote(ctx: &mut Ctx<'_>, req: &QuoteRequest) -> Result<QuoteId, MarketErr
             "You hold as many open quotes as the market allows; take one up or let one lapse.",
         ));
     }
+    // **Only OPEN offers count against the ceiling** (independent verify fold, R4). The
+    // check counted trade-tape rows too, and the tape had no ceiling of its own: 64
+    // traded pairs at `MAX_TRADES_PER_PAIR` filled `MAX_QUOTES`, and every buyer read
+    // "The market is busy; try later." for ever with no new trade possible to evict
+    // anything. The tape now has `MAX_TRADE_ROWS` and evicts oldest-settlement-first
+    // across pairs, so a busy history can never refuse a fresh quote.
     if ctx
         .w
         .module_state::<MarketStore>()
-        .is_some_and(|s| s.quotes().count() >= MAX_QUOTES)
+        .is_some_and(|s| s.open_quotes() >= MAX_QUOTES.saturating_sub(MAX_TRADE_ROWS))
     {
         return Err(MarketError::bad("The market is busy; try later."));
     }
@@ -329,11 +361,17 @@ pub fn quote(ctx: &mut Ctx<'_>, req: &QuoteRequest) -> Result<QuoteId, MarketErr
             },
             price: unit,
             quantity,
+            // Nothing is booked until the deal is in force; `accept` stamps what it
+            // actually spent, and the return leg subtracts exactly that (M5).
+            booked_loss: Amount::ZERO,
+            activated: false,
+            self_dealt: false,
             definition_version: entry.definition_version,
             observed: ObservedRevisions {
                 definition_version: entry.definition_version,
                 listing: listing.revision,
                 artefact: artefact_stamp(entry.representation, &listing.catalog),
+                source: observed_source,
             },
             expires: EconomicDeadline {
                 clock: EconomicClock::RealUtc,
@@ -349,14 +387,35 @@ pub fn quote(ctx: &mut Ctx<'_>, req: &QuoteRequest) -> Result<QuoteId, MarketErr
     Ok(id)
 }
 
-/// The one refusal every exhausted budget gets. It names the budget, because a
-/// maker's budgets are **declared** (doc 10 7A) and telling a buyer which one ran out
-/// discloses nothing a `@market/source show` would not.
+/// The one refusal every exhausted budget gets — the **same** [`STALE_QUOTE`] string
+/// `+market/accept` answers with (independent verify fold, D2).
+///
+/// It used to name the budget, which made `+market/quote` a free, unlimited solvency
+/// oracle on a market maker's organization wallet: a refused quote writes no record and
+/// consumes no per-buyer slot, so a stranger could poll `run out of cash` and watch an
+/// org wallet cross zero — while `@account/show` on that very account answers them
+/// `No such account.` under the economy's existence-hiding rule. It also split
+/// D-E6-13: the same fact was `STALE_QUOTE` from one verb and a named reason from the
+/// other. Staff keep the detail, on the tracing line, where a buyer is not.
 fn maker_refusal(which: &str) -> String {
-    if which == "halted" {
-        return "That market maker is not quoting.".to_string();
-    }
-    format!("That market maker has run out of {which} for this window and is not quoting.")
+    tracing::debug!(budget = which, "market: a maker refused a quote");
+    STALE_QUOTE.to_string()
+}
+
+/// What a sale of `quantity` at `unit` books against a maker's **loss** budget.
+///
+/// A maker selling *above* the catalogue's reference price books no loss; a maker
+/// selling below books the difference, and its loss budget is what stops it selling the
+/// world cheaply. The one place the arithmetic lives, so the spend leg and the quote's
+/// own check cannot compute it two ways (independent verify fold, M5).
+fn booked_loss(entry: &crate::record::CatalogEntry, unit: Amount, quantity: u64) -> Amount {
+    let baseline = entry.baseline.unwrap_or(Amount::ZERO).minor();
+    Amount::from_minor(
+        baseline
+            .saturating_sub(unit.minor())
+            .max(0)
+            .saturating_mul(i64::try_from(quantity).unwrap_or(i64::MAX)),
+    )
 }
 
 /// Whether the maker's own cash account can still back a purchase at all.
@@ -374,10 +433,18 @@ fn can_cover_inventory(ctx: &Ctx<'_>, maker: &crate::record::MarketSource) -> bo
         .unwrap_or(false)
 }
 
-/// A listing's unit price. Stock and procurement ask their own price; a maker's is
-/// the listing price moved by its declared spread, which is a **trading policy** and
-/// never a substitute for funding (doc 10 7A).
-fn price_for(l: &Listing, store: Option<&MarketStore>) -> Amount {
+/// A listing's unit price — **the one price every surface reads** (independent verify
+/// fold, D4).
+///
+/// Stock and procurement ask their own price; a maker's is the listing price moved by
+/// its declared spread, which is a **trading policy** and never a substitute for
+/// funding (doc 10 7A). The adjusted price is deliberately never written onto the
+/// `Listing` (it would drift on a re-budget), so `projection` and `commands` call this
+/// instead: before they did, `+market/list` and the published band advertised a
+/// pre-spread price nobody paid, while `last_trade` published the post-spread one the
+/// deal actually executed at — the safe projection publishing a band that need not
+/// contain its own last trade.
+pub(crate) fn price_for(l: &Listing, store: Option<&MarketStore>) -> Amount {
     let Supply::Market { source } = l.source else {
         return l.price;
     };
@@ -435,16 +502,65 @@ pub fn accept(ctx: &mut Ctx<'_>, id: QuoteId) -> Result<ContractId, MarketError>
     else {
         return Err(MarketError::NoStanding(NO_SUCH_QUOTE));
     };
-    let Some(representation) = ctx
+    let Some(entry) = ctx
         .w
         .module_state::<MarketStore>()
-        .and_then(|s| s.entry_of(&q.catalog).map(|e| e.representation))
+        .and_then(|s| s.entry_of(&q.catalog).cloned())
     else {
         return Err(MarketError::NoStanding(NO_SUCH_QUOTE));
     };
+    let representation = entry.representation;
+    // **DL-06 reaches the market** (independent verify fold, M4): a `Dissolving`
+    // organization may settle what it already agreed to and may not agree to more; a
+    // `Suspended` or `Closed` one may do neither. Fail closed, exactly as
+    // `Vendor::is_trading` does.
+    if !crate::api::org_may_trade(ctx.w, vendor.org) {
+        return Err(MarketError::bad(STALE_QUOTE));
+    }
+    // **A maker's budgets bound selling, not merely quoting** (independent verify fold,
+    // M2). A quote reserves nothing (OPEN 4), so N quotes taken out against N listings
+    // behind one maker each saw `volume_used`/`loss_used` at their pre-sale value, all
+    // passed, and all charged: both budgets were exceeded without limit, because
+    // `is_current` consults only `halted`. The value is the very one `charge_budgets`
+    // computes a few lines below, so the check costs nothing and cannot disagree.
+    let booked = booked_loss(&entry, q.price, q.quantity);
+    if let Supply::Market { source } = listing.source {
+        let now = ctx.w.now();
+        let refused = ctx
+            .w
+            .module_state::<MarketStore>()
+            .and_then(|s| s.source(source).cloned())
+            .map_or(Some("gone"), |m| m.rolled(now).refuses(q.total(), booked));
+        if let Some(why) = refused {
+            tracing::debug!(
+                budget = why,
+                quote = q.id.0,
+                "market: a maker refused a sale"
+            );
+            return Err(MarketError::bad(STALE_QUOTE));
+        }
+    }
     let Some(instrument) = crate::api::account_instrument(ctx, vendor.account) else {
         return Err(MarketError::NoStanding(NO_SUCH_QUOTE));
     };
+    // **The goods leg, before any money moves** (independent verify fold, M1). The
+    // market cannot know what a commodity entry settles in — that is the provider's
+    // rule — so it asks the frozen table the question it will be asked at settlement,
+    // and a provider that already knows it cannot deliver refuses the purchase here
+    // rather than at settlement, where the money has gone. A provider that will not
+    // answer (`None`) leaves the accept exactly as it was: this is a pre-check, never a
+    // second authority.
+    if let Some(why) = crate::module::cannot_deliver(ctx, &q, representation) {
+        tracing::info!(
+            quote = q.id.0,
+            why,
+            "market: a purchase was refused undeliverable"
+        );
+        return Err(MarketError::bad(
+            "That cannot be delivered to you right now, so the sale was not made. Nothing was \
+             charged.",
+        ));
+    }
     let Some(buyer_account) = principal_account(ctx, &instrument, &q.buyer) else {
         return Err(MarketError::bad(
             "You have no account this market can be paid from.",
@@ -459,6 +575,22 @@ pub fn accept(ctx: &mut Ctx<'_>, id: QuoteId) -> Result<ContractId, MarketError>
         ctx.w.now(),
     );
     let contract = mush_economy::offer_contract(ctx, spec).map_err(MarketError::Contract)?;
+    // **The link is written before either acceptance** (independent verify fold, R9a).
+    // It used to be written after `accept_contract_as` returned, so `by_quote_contract`
+    // was empty for the whole of activation: the day any path settles inline at
+    // activation — a `deterministic` contract whose only condition is an
+    // already-satisfied `Before` is the candidate — `quote_of_contract` would answer
+    // `None`, the observer would return early, and the trade row and the delivery would
+    // be lost silently. On every failure path below `cancel_contract` emits a
+    // `Cancelled` whose arm deletes the row, so writing early costs nothing.
+    q.contract = Some(contract);
+    q.booked_loss = booked;
+    // **The public tape is not the seller's own to print** (independent verify fold,
+    // M12), recorded here because affiliation is a fact about the world at the moment
+    // the deal was struck, not about whoever folds the projection later.
+    q.self_dealt = mush_economy::acts_for(ctx.w, ctx.actor, &q.seller);
+    q.revision = q.revision.saturating_add(1);
+    put_quote(ctx, q.clone());
     // The **buyer is the issuer** (E4b2's rule) and accepts first: that is what
     // places their consideration hold, under their own account's debit authority.
     match mush_economy::accept_contract(ctx, contract) {
@@ -496,8 +628,9 @@ pub fn accept(ctx: &mut Ctx<'_>, id: QuoteId) -> Result<ContractId, MarketError>
     // would quote for ever however much it had already sold. It is the activation
     // rather than the settlement because that is the moment the deal is in force,
     // and because a cancelled or expired deal gives it back below.
-    charge_budgets(ctx, &q, listing.catalog.clone(), 1);
-    q.contract = Some(contract);
+    charge_budgets(ctx, &q, 1);
+    // The deal is in force, and only now may a cancellation give anything back (R9).
+    q.activated = true;
     q.revision = q.revision.saturating_add(1);
     put_quote(ctx, q);
     Ok(contract)
@@ -527,7 +660,14 @@ fn commit_quantity(ctx: &mut Ctx<'_>, listing: &Listing, quantity: u64) {
 /// `volume_used` takes the whole trade, `loss_used` takes what the sale books against
 /// the catalogue's own reference price (a sale **above** baseline books nothing). Both
 /// saturate at zero on the way back, so a return can never mint budget.
-fn charge_budgets(ctx: &mut Ctx<'_>, q: &Quote, catalog: mush_economy::CatalogRef, sign: i64) {
+///
+/// **Both legs read the same denormalized number** (independent verify fold, M5). The
+/// loss used to be recomputed from the catalogue's *live* `baseline` on the spend and
+/// again on the return, while only `price` and `quantity` were on the quote — so any
+/// pack reload in between made the return differ from the spend in whichever direction
+/// the baseline moved. `Quote.booked_loss` is what the deal booked, and it is what the
+/// deal gives back.
+fn charge_budgets(ctx: &mut Ctx<'_>, q: &Quote, sign: i64) {
     let Some(source) = q.source else {
         return;
     };
@@ -538,17 +678,8 @@ fn charge_budgets(ctx: &mut Ctx<'_>, q: &Quote, catalog: mush_economy::CatalogRe
     else {
         return;
     };
-    let baseline = ctx
-        .w
-        .module_state::<MarketStore>()
-        .and_then(|s| s.entry_of(&catalog).and_then(|e| e.baseline))
-        .map_or(0, |b| b.minor());
-    let qty = i64::try_from(q.quantity).unwrap_or(i64::MAX);
     let total = q.total().minor();
-    let loss = baseline
-        .saturating_sub(q.price.minor())
-        .max(0)
-        .saturating_mul(qty);
+    let loss = q.booked_loss.minor().max(0);
     let now = ctx.w.now();
     let rolled = maker.rolled(now);
     let next = crate::record::MarketSource {
@@ -783,6 +914,27 @@ pub fn sell(
             "You need an account before a vendor can pay you.",
         ));
     };
+    // **One object is one standing offer, and one seller holds a bounded number against
+    // one shop** (independent verify fold, M9). The vendor escrows first (D-E6-9) and
+    // the seller never accepts, so N offers on the same object all sat `Offered` with N
+    // vendor holds standing: the economy's own duplicate-deposit lock is taken at
+    // *activation*, which never arrived. At `buy_permille` of a high baseline that
+    // froze a large share of a vendor's available balance for the whole deal window at
+    // no cost to the offerer, and "a vendor that has run out simply cannot accept"
+    // (M19, D-E6-15) then reads as insolvency to every honest buyer. It is the
+    // per-buyer quote cap's shape, asked of the seller's own standing offers.
+    let standing = standing_sells(ctx, seller, object, &vendor);
+    if standing.duplicate {
+        return Err(MarketError::bad(
+            "You have already offered that to this vendor; the offer still stands.",
+        ));
+    }
+    if standing.open >= MAX_OPEN_SELLS_PER_VENDOR {
+        return Err(MarketError::bad(
+            "You have as many offers standing with that vendor as it takes at once; let one \
+             complete or cancel it.",
+        ));
+    }
     let now = ctx.w.now();
     let spec = ContractSpec {
         name: SmolStr::new(format!("market sale #{}", object.0)),
@@ -840,6 +992,48 @@ pub fn sell(
     Ok(contract)
 }
 
+/// What one seller already has standing against one vendor.
+struct StandingSells {
+    /// Whether one of them already names this very object.
+    duplicate: bool,
+    /// How many there are.
+    open: usize,
+}
+
+/// Count one seller's non-terminal `+market/sell` offers against one vendor, and say
+/// whether any of them already names `object` (independent verify fold, M9).
+///
+/// A `+market/sell` contract self-identifies with no market record at all: the seller
+/// is its issuer and its one condition is a `DepositInto` naming that vendor's vault.
+/// Bounded by the economy's own contract population, which its
+/// `MAX_OPEN_CONTRACTS_PER_ISSUER` and `MAX_LIVE_CONTRACTS_PER_PARTY` caps already walk
+/// the same way.
+fn standing_sells(ctx: &Ctx<'_>, seller: ObjId, object: ObjId, vendor: &Vendor) -> StandingSells {
+    let issuer = PrincipalId::Object(seller);
+    let mut out = StandingSells {
+        duplicate: false,
+        open: 0,
+    };
+    let Some(store) = ctx.w.module_state::<EconomyStore>() else {
+        return out;
+    };
+    for c in store
+        .snapshot()
+        .contracts()
+        .filter(|c| !c.state.is_terminal() && c.issuer == issuer)
+    {
+        for condition in &c.consent.conditions {
+            if let TypedCondition::DepositInto { object: o, vault } = condition
+                && *vault == vendor.vault
+            {
+                out.open = out.open.saturating_add(1);
+                out.duplicate = out.duplicate || *o == object;
+            }
+        }
+    }
+    out
+}
+
 // ---- the settlement ear -----------------------------------------------------
 
 /// What one contract transition does to the market.
@@ -869,6 +1063,15 @@ pub(crate) fn on_contract_changed(
     };
     match kind {
         K::Settled => {
+            // **Idempotent** (independent verify fold, R9b): a second `Settled`
+            // emission used to re-stamp the row — moving it inside or outside the
+            // seven-day window — and hand the goods over a second time. It was
+            // protected only by `put_contract` emitting on a state *change* and by
+            // `republish_settlements`' `is_public()` filter, i.e. by a market purchase
+            // being `Parties`, and not by the code that does it.
+            if q.settled.is_some() {
+                return;
+            }
             // The trade-tape row's **authority** is the economy's own contract state,
             // read here and re-read by every projection: the row records the
             // transaction the settlement landed on, and a projection counts it only
@@ -880,28 +1083,56 @@ pub(crate) fn on_contract_changed(
             let Some(ContractState::Settled { transaction }) = settled else {
                 return;
             };
-            let now = ctx.w.now();
-            put_quote(
-                ctx,
-                Quote {
-                    settled: Some(Settlement {
-                        transaction,
-                        at: now,
-                    }),
-                    revision: q.revision.saturating_add(1),
-                    ..q.clone()
-                },
-            );
+            stamp_settlement(ctx, &q, transaction);
             crate::module::deliver(ctx, &q, contract);
         }
         K::Cancelled | K::Expired => {
             // The goods come back, the maker's window gets its budget back, and the
             // quote is forgotten: a closed record is deleted, so a quote/cancel loop
             // mints no permanent documents.
-            restore_quantity(ctx, &q);
-            charge_budgets(ctx, &q, q.catalog.clone(), -1);
-            del_quote(ctx, quote_id);
+            release_quote(ctx, &q);
         }
         K::Draft | K::Offered | K::Active | K::ReadyToSettle | K::Disputed => {}
     }
+}
+
+/// Stamp the trade-tape row on a quote whose contract really settled.
+///
+/// `Settlement.at` is the **transaction's own `posted_at`**, never `now` (independent
+/// verify fold, R9b): a settlement healed at boot and stamped here would otherwise
+/// carry the boot's clock, which moves the row inside the projection's window and makes
+/// the published tape a function of when the server restarted.
+pub(crate) fn stamp_settlement(
+    ctx: &mut Ctx<'_>,
+    q: &Quote,
+    transaction: mush_economy::TransactionId,
+) {
+    let at = ctx
+        .w
+        .module_state::<EconomyStore>()
+        .and_then(|s| s.transaction(transaction).map(|t| t.posted_at))
+        .unwrap_or_else(|| ctx.w.now());
+    put_quote(
+        ctx,
+        Quote {
+            settled: Some(Settlement { transaction, at }),
+            revision: q.revision.saturating_add(1),
+            ..q.clone()
+        },
+    );
+}
+
+/// Undo one quote's activation: the goods return, the maker's window gets its budget
+/// back, and the row is forgotten.
+///
+/// `del_quote` is the guard that makes it **idempotent** (independent verify fold, R2):
+/// a boot reconcile that runs twice cannot double-restore, because the second pass has
+/// no quote to key on. A quote whose deal never came into force gives nothing back,
+/// because nothing was taken (R9).
+pub(crate) fn release_quote(ctx: &mut Ctx<'_>, q: &Quote) {
+    if q.activated {
+        restore_quantity(ctx, q);
+        charge_budgets(ctx, q, -1);
+    }
+    del_quote(ctx, q.id);
 }

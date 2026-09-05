@@ -28,8 +28,8 @@ use smol_str::SmolStr;
 
 use crate::ids::{ListingId, MarketId, MarketSourceId, QuoteId, VendorId};
 use crate::record::{
-    CatalogEntry, Listing, MAX_CATALOG_ENTRIES, MAX_LISTINGS, MAX_QUOTES, MAX_SOURCES, MAX_VENDORS,
-    MarketSource, Quote, Vendor,
+    CatalogEntry, Listing, MAX_CATALOG_ENTRIES, MAX_LISTINGS, MAX_LISTINGS_PER_VENDOR, MAX_QUOTES,
+    MAX_SOURCES, MAX_TRADE_ROWS, MAX_VENDORS, MarketSource, Quote, Vendor,
 };
 
 /// The module namespace.
@@ -184,6 +184,33 @@ impl MarketStore {
             .get(&(catalog.clone(), market.clone()))
             .into_iter()
             .flat_map(|set| set.iter().filter_map(|id| self.listings.get(id)))
+    }
+
+    /// Every venue this catalogue has **listings** in, in venue order — a `range` over
+    /// the pair index scoped to the one catalogue (independent verify fold, D8).
+    ///
+    /// The whole point is that it is not a walk of `listings`: a good with one listing
+    /// costs one record however many other catalogues the store holds.
+    pub(crate) fn markets_of_catalog<'a>(
+        &'a self,
+        catalog: &'a CatalogRef,
+    ) -> impl Iterator<Item = &'a MarketId> {
+        self.by_pair
+            .range((catalog.clone(), MarketId::floor())..)
+            .take_while(move |((c, _), _)| c == catalog)
+            .map(|((_, m), _)| m)
+    }
+
+    /// Every venue this catalogue has **trade-tape rows** in, in venue order — the
+    /// same range over the tape index.
+    pub(crate) fn markets_of_trades<'a>(
+        &'a self,
+        catalog: &'a CatalogRef,
+    ) -> impl Iterator<Item = &'a MarketId> {
+        self.trades
+            .range((catalog.clone(), MarketId::floor())..)
+            .take_while(move |((c, _), _)| c == catalog)
+            .map(|((_, m), _)| m)
     }
 
     // ---- quotes -----------------------------------------------------------
@@ -359,15 +386,80 @@ impl MarketStore {
             && probe.by_org == self.by_org
     }
 
-    /// The trade-tape rows of a pair that are past [`MAX_TRADES_PER_PAIR`], oldest
-    /// first — what a fresh trade evicts.
+    /// The trade-tape rows of a pair that are past [`MAX_TRADES_PER_PAIR`], **oldest
+    /// settlement first** — what a fresh trade evicts.
+    ///
+    /// Ordered by `Settlement.at`, not by `QuoteId` (independent verify fold, R10):
+    /// a quote issued early and settled late used to evict rows that had settled
+    /// before it, so "the window of the last 32 trades" the projection folds could drop
+    /// the most recent settlement. The id is the tiebreaker, so the order is total and
+    /// the eviction is deterministic across a reboot.
     #[must_use]
     pub(crate) fn overflow_trades(&self, catalog: &CatalogRef, market: &MarketId) -> Vec<QuoteId> {
         let Some(set) = self.trades.get(&(catalog.clone(), market.clone())) else {
             return Vec::new();
         };
         let over = set.len().saturating_sub(MAX_TRADES_PER_PAIR);
-        set.iter().copied().take(over).collect()
+        if over == 0 {
+            return Vec::new();
+        }
+        let mut rows: Vec<(i64, QuoteId)> = set
+            .iter()
+            .filter_map(|id| {
+                self.quotes
+                    .get(id)
+                    .map(|q| (q.settled.map_or(0, |s| s.at), *id))
+            })
+            .collect();
+        rows.sort_unstable();
+        rows.into_iter().take(over).map(|(_, id)| id).collect()
+    }
+
+    /// How many settled trade-tape rows the store holds, across every pair — what
+    /// [`MAX_TRADE_ROWS`] bounds and what [`MAX_QUOTES`] no longer has to.
+    #[must_use]
+    pub fn trade_rows(&self) -> usize {
+        self.quotes.values().filter(|q| q.is_trade()).count()
+    }
+
+    /// How many **open** offers the store holds — the count `trade::quote` checks
+    /// against [`MAX_QUOTES`], so a full tape can never refuse a new quote
+    /// (independent verify fold, R4).
+    #[must_use]
+    pub fn open_quotes(&self) -> usize {
+        self.quotes.values().filter(|q| !q.is_trade()).count()
+    }
+
+    /// The trade-tape rows past [`MAX_TRADE_ROWS`] **across every pair**, oldest
+    /// settlement first.
+    #[must_use]
+    pub(crate) fn overflow_tape(&self) -> Vec<QuoteId> {
+        let mut rows: Vec<(i64, QuoteId)> = self
+            .quotes
+            .values()
+            .filter_map(|q| q.settled.map(|s| (s.at, q.id)))
+            .collect();
+        let over = rows.len().saturating_sub(MAX_TRADE_ROWS);
+        if over == 0 {
+            return Vec::new();
+        }
+        rows.sort_unstable();
+        rows.into_iter().take(over).map(|(_, id)| id).collect()
+    }
+
+    /// How many records one projection of this pair would **visit**.
+    ///
+    /// The honest statement of the bound, and deliberately **not** a field on
+    /// [`crate::Projection`]: the count is a function of hidden state (a hidden listing
+    /// is visited and then dropped), so publishing it inside the value the gate
+    /// compares byte for byte would itself be the leak. The projection's `take` bounds
+    /// the levels it *matches*; what bounds the records it *touches* is the store's own
+    /// [`MAX_LISTINGS`] / [`MAX_QUOTES`] caps, and this is the tripwire that says so.
+    #[must_use]
+    pub fn projection_visits(&self, catalog: &CatalogRef, market: &MarketId) -> usize {
+        self.listings_for(catalog, market)
+            .count()
+            .saturating_add(self.trades_for(catalog, market).count())
     }
 }
 
@@ -442,10 +534,18 @@ pub(crate) fn put_quote(ctx: &mut Ctx<'_>, q: Quote) {
         },
     );
     if trade {
+        // Two ceilings, not one (independent verify fold, R4): the pair's own window,
+        // and the tape's global one — because the per-pair trim only ever fires for the
+        // pair a new trade landed in, so without the second a store could fill with
+        // rows no future trade would ever evict.
         let evict = ctx
             .w
             .module_state::<MarketStore>()
-            .map(|s| s.overflow_trades(&catalog, &market))
+            .map(|s| {
+                let mut ids = s.overflow_trades(&catalog, &market);
+                ids.extend(s.overflow_tape());
+                ids
+            })
             .unwrap_or_default();
         for id in evict {
             del_quote(ctx, id);
@@ -647,7 +747,57 @@ pub fn load(kv: &[(SmolStr, serde_json::Value)]) -> MarketStore {
         .max(floor(store.sources.keys().map(|i| i.0)))
         .max(seen[3]);
     store.reindex();
+    trim_on_load(&mut store);
     store
+}
+
+/// Re-run the **per-vendor** and **per-pair** caps on load, not merely on write
+/// (independent verify fold, R8 and R10).
+///
+/// `load_one` enforces only the whole-store ceilings, so a store carrying more than
+/// [`MAX_LISTINGS_PER_VENDOR`] listings for one vendor — an operator lowering the
+/// constant, a hand-repaired document, a future migration — used to come back live and
+/// keep publishing under a shop `retire_vendor` had already emptied; and a lost `Del`
+/// from a tape eviction left a pair above [`MAX_TRADES_PER_PAIR`] until the next trade
+/// in that very pair happened to trim it. Both are skipped **loudly** here, in the same
+/// direction every other load loss takes: the money is the economy's and survives, and
+/// the surplus record is one a vendor re-creates.
+fn trim_on_load(store: &mut MarketStore) {
+    let over_vendor: Vec<ListingId> = store
+        .by_vendor
+        .values()
+        .flat_map(|ids| {
+            ids.iter()
+                .rev()
+                .take(ids.len().saturating_sub(MAX_LISTINGS_PER_VENDOR))
+        })
+        .copied()
+        .collect();
+    for id in over_vendor {
+        tracing::warn!(
+            listing = id.0,
+            "market: past the per-vendor listing cap on load; skipped"
+        );
+        store.listings.remove(&id);
+    }
+    let pairs: Vec<(CatalogRef, MarketId)> = store.trades.keys().cloned().collect();
+    for (catalog, market) in pairs {
+        for id in store.overflow_trades(&catalog, &market) {
+            tracing::warn!(
+                quote = id.0,
+                "market: past the per-pair trade-tape cap on load; skipped"
+            );
+            store.quotes.remove(&id);
+        }
+    }
+    for id in store.overflow_tape() {
+        tracing::warn!(
+            quote = id.0,
+            "market: past the whole-tape cap on load; skipped"
+        );
+        store.quotes.remove(&id);
+    }
+    store.reindex();
 }
 
 fn read_u64(value: &serde_json::Value, field: &str) -> u64 {
@@ -831,5 +981,109 @@ mod tests {
         assert!(store.indexes_agree());
         assert_eq!(store.live.len(), 2);
         assert_eq!(store.listings_of_vendor(VendorId(1)), 2);
+    }
+
+    // ---- E6c independent verify fold ----
+
+    /// One settled trade-tape row's document, settling at `at`.
+    fn trade_doc(id: u64, at: i64) -> serde_json::Value {
+        serde_json::json!({
+            "id": id, "listing": 1, "buyer": { "Object": 5 },
+            "seller": { "Organization": 1 },
+            "catalog": { "ruleset": "sr", "code": "ammo" }, "market": "seattle",
+            "price": 10, "quantity": 1,
+            "observed": { "definition_version": 1, "listing": 1, "artefact": null },
+            "expires": { "clock": "RealUtc", "at": 10_000 },
+            "contract": 7, "settled": { "transaction": 3, "at": at }, "revision": 1
+        })
+    }
+
+    /// **R10.** The trade ring is a window of the last thirty-two **settlements**, not
+    /// of the thirty-two lowest quote ids — a quote issued early and settled late used
+    /// to evict rows that had settled before it — and the per-pair trim is re-run on
+    /// **load**, so a lost `Del` from an eviction self-heals at boot instead of waiting
+    /// for the next trade in that very pair.
+    #[test]
+    fn vf_r10_the_trade_ring_evicts_the_oldest_settlement_and_is_re_trimmed_on_load() {
+        // The HIGHEST quote id settled FIRST, so id order and settlement order disagree
+        // about every row.
+        let kv: Vec<(SmolStr, serde_json::Value)> = (1..=MAX_TRADES_PER_PAIR as u64 + 1)
+            .map(|id| {
+                (
+                    SmolStr::new(format!("market:quote:{id}")),
+                    trade_doc(id, 1_000 - i64::try_from(id).unwrap_or(0)),
+                )
+            })
+            .collect();
+        let store = load(&kv);
+        assert_eq!(
+            store.quotes.len(),
+            MAX_TRADES_PER_PAIR,
+            "the per-pair cap was not re-run on load"
+        );
+        let evicted = QuoteId(MAX_TRADES_PER_PAIR as u64 + 1);
+        assert!(
+            store.quote(evicted).is_none(),
+            "the ring evicted by quote id rather than by settlement time"
+        );
+        assert!(store.quote(QuoteId(1)).is_some(), "the newest row was lost");
+        assert!(store.indexes_agree());
+    }
+
+    /// **R8.** The **per-vendor** cap is re-run on load, not merely on write: a store
+    /// carrying more than `MAX_LISTINGS_PER_VENDOR` listings for one vendor used to come
+    /// back whole, and `retire_vendor` — which took only the first 64 — left the surplus
+    /// live, publishing band and depth under a shop that no longer exists.
+    #[test]
+    fn vf_r8_the_per_vendor_listing_cap_is_re_run_on_load() {
+        let kv: Vec<(SmolStr, serde_json::Value)> = (1..=MAX_LISTINGS_PER_VENDOR as u64 + 8)
+            .map(|id| {
+                (
+                    SmolStr::new(format!("market:listing:{id}")),
+                    listing_doc(id),
+                )
+            })
+            .collect();
+        let store = load(&kv);
+        assert_eq!(
+            store.listings_of_vendor(VendorId(1)),
+            MAX_LISTINGS_PER_VENDOR,
+            "the per-vendor cap was enforced on write only"
+        );
+        assert!(store.indexes_agree());
+        // The allocator floor still comes from every parsed key, loaded or not, so a
+        // skipped surplus can never be re-minted over.
+        assert_eq!(store.next_listing, MAX_LISTINGS_PER_VENDOR as u64 + 9);
+    }
+
+    /// **R4.** The tape has a ceiling of its own and it is **below** `MAX_QUOTES`, so a
+    /// store full of history always leaves room for open offers: before, 64 traded pairs
+    /// at `MAX_TRADES_PER_PAIR` filled the whole quote family and `+market/quote`
+    /// answered "The market is busy" to every buyer for ever, with no new trade possible
+    /// to evict anything.
+    #[test]
+    fn vf_r4_the_trade_tape_has_its_own_ceiling_below_the_quote_cap() {
+        // (`MAX_TRADE_ROWS < MAX_QUOTES` is a `const` assertion in `record.rs`.)
+        // One row per pair, so `MAX_TRADES_PER_PAIR` never fires and only the global
+        // ceiling can trim: the exact shape that used to be unevictable.
+        let kv: Vec<(SmolStr, serde_json::Value)> = (1..=MAX_TRADE_ROWS as u64 + 4)
+            .map(|id| {
+                let mut doc = trade_doc(id, 1_000 + i64::try_from(id).unwrap_or(0));
+                doc["catalog"]["code"] = serde_json::json!(format!("ammo.{id}"));
+                (SmolStr::new(format!("market:quote:{id}")), doc)
+            })
+            .collect();
+        let store = load(&kv);
+        assert_eq!(store.trade_rows(), MAX_TRADE_ROWS);
+        assert_eq!(
+            store.open_quotes(),
+            0,
+            "the tape and the open offers are counted apart"
+        );
+        // Oldest settlement first: ids 1..=4 settled earliest and are the four gone.
+        for id in 1..=4u64 {
+            assert!(store.quote(QuoteId(id)).is_none(), "row {id} survived");
+        }
+        assert!(store.indexes_agree());
     }
 }

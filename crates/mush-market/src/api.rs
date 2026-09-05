@@ -134,18 +134,47 @@ pub fn account_instrument(ctx: &Ctx<'_>, account: AccountId) -> Option<Instrumen
 
 /// The **hidden** selling organizations, for the projection's public test.
 ///
-/// Complete and bounded by construction: every listing and every trade row is a
-/// registered vendor's, vendors are capped at [`MAX_VENDORS`], and a listing whose
-/// seller is not a vendor cannot be created. So this walk sees every organization
-/// that could ever appear in the projection's inputs, and it is at most 64 records
-/// long whatever the org registry holds.
+/// **Derived from the records the projection actually folds** — every listing's seller
+/// and every trade row's seller — and not from the vendor table (independent verify
+/// fold, D1).
+///
+/// It used to compose the set from `store.vendors()` alone, and the vendor table is not
+/// the same set. `store::load` is deliberately **total**: a corrupt `market:vendor:{id}`
+/// is skipped and the world boots, while that org's `market:listing:{id}` documents
+/// load fine — a `Listing` denormalizes `seller: PrincipalId::Organization(org)` and its
+/// wire never consults the vendor table. One skipped vendor document therefore dropped
+/// its organization out of `hidden_orgs`, `is_public_seller` answered `true`, and a
+/// hidden shop's price and quantity were summed into `band`/`depth` and rendered to a
+/// stranger by `+market/depth` — while `may_view_listing` → `list_org` still hid the
+/// very same listing from `+market/list`. The documented fail-closed in
+/// [`is_hidden_org`] never fired because nothing asked it. Any vendor-row loss did it:
+/// a `load_one` cap skip, a `Del` that outran its listings. Asking the records
+/// themselves means every organization that *can* appear is asked, so the fail-closed
+/// fires; the walk is bounded by `MAX_LISTINGS` + `MAX_QUOTES`, which are already the
+/// load caps.
 #[must_use]
 pub fn hidden_seller_orgs(ctx: &Ctx<'_>) -> Vec<OrgId> {
     let Some(store) = ctx.w.module_state::<MarketStore>() else {
         return Vec::new();
     };
-    let orgs: Vec<OrgId> = store.vendors().map(|v| v.org).take(MAX_VENDORS).collect();
-    orgs.into_iter()
+    let sellers: std::collections::BTreeSet<OrgId> = store
+        .listings
+        .values()
+        .map(|l| &l.seller)
+        .chain(
+            store
+                .quotes
+                .values()
+                .filter(|q| q.is_trade())
+                .map(|q| &q.seller),
+        )
+        .filter_map(|seller| match seller {
+            PrincipalId::Organization(org) => Some(*org),
+            PrincipalId::Object(_) | PrincipalId::System(_) => None,
+        })
+        .collect();
+    sellers
+        .into_iter()
         .filter(|org| is_hidden_org(ctx.w, *org))
         .collect()
 }
@@ -158,6 +187,36 @@ pub fn is_hidden_org(w: &World, org: OrgId) -> bool {
     w.module_state::<mush_org::OrgStore>()
         .and_then(|st| st.state().org(org).map(|o| o.hidden))
         .unwrap_or(true)
+}
+
+/// Whether an organization may **agree to new trade** — register as a vendor, publish a
+/// listing, be quoted, sell (independent verify fold, M4).
+///
+/// DL-06's `OrgStatus` reached nothing in the market: no file in this crate mentioned
+/// `Suspended`, `Dissolving` or `Closed`, so a closed organization went on quoting,
+/// settling and re-registering, and `@org/status` — B10's only staff verb for shutting a
+/// shop down — had no effect here at all. The economy's own gates do not catch it,
+/// because `scope_coherent` and `credit_allowed` bite on a *scoped* account and a
+/// vendor's wallet is the org's own unscoped one.
+///
+/// `Dissolving` **may settle what it already agreed to** and may agree to nothing more,
+/// which is what "a close workflow is in progress" means; live contracts are the
+/// economy's and are never touched from here. Fails **closed**, the same direction
+/// [`is_hidden_org`] fails and `Vendor::is_trading` already answers.
+#[must_use]
+pub fn org_may_trade(w: &World, org: OrgId) -> bool {
+    w.module_state::<mush_org::OrgStore>()
+        .and_then(|st| st.state().org(org).map(|o| o.status))
+        .is_some_and(|s| matches!(s, mush_org::OrgStatus::Active))
+}
+
+/// Whether an organization has reached the **terminal** `Closed` status — the one that
+/// never re-opens, and therefore the one a boot reconcile may retire a vendor for.
+#[must_use]
+pub fn org_is_closed(w: &World, org: OrgId) -> bool {
+    w.module_state::<mush_org::OrgStore>()
+        .and_then(|st| st.state().org(org).map(|o| o.status))
+        .is_some_and(|s| matches!(s, mush_org::OrgStatus::Closed))
 }
 
 // ---- B3: the catalog and its content packs ---------------------------------
@@ -278,6 +337,40 @@ pub fn load_pack(
         if !seen.contains(&p.catalog.code) {
             out.dropped = out.dropped.saturating_add(1);
             del_entry(ctx, &p.pack, &p.catalog.code);
+            // **A dropped entry takes its listings with it** (independent verify fold,
+            // R6). `del_entry` touched no listing, and `projection` folds
+            // `listings_for` without ever consulting the catalogue — so the orphaned
+            // listings kept contributing band, depth and the seller's inventory count
+            // for ever and `visible` kept rendering them, while `quote` refused
+            // `NO_SUCH_LISTING`, `is_current` answered false and `deliver` logged "a
+            // settled purchase names a catalogue entry that is gone". With nothing
+            // sweeping them either (R3), the public projection permanently advertised
+            // depth in a good that could not be bought. The vendor re-lists when the
+            // entry comes back, which is the same trade `del_listing` already makes
+            // everywhere else.
+            let orphans: Vec<ListingId> = ctx
+                .w
+                .module_state::<MarketStore>()
+                .map(|s| {
+                    s.listings
+                        .values()
+                        .filter(|l| l.catalog == p.catalog)
+                        .map(|l| l.id)
+                        .take(MAX_LISTINGS)
+                        .collect()
+                })
+                .unwrap_or_default();
+            if !orphans.is_empty() {
+                tracing::warn!(
+                    pack = %p.pack,
+                    code = %p.catalog.code,
+                    listings = orphans.len(),
+                    "market: a pack reload dropped an entry; its listings were withdrawn"
+                );
+            }
+            for id in orphans {
+                del_listing(ctx, id);
+            }
         }
     }
     Ok(out)
@@ -306,6 +399,14 @@ pub fn register_vendor(
     buy_permille: u32,
 ) -> Result<VendorId, MarketError> {
     let principal = PrincipalId::Organization(org);
+    // DL-06 reaches the market (independent verify fold, M4). `mush-org`'s own
+    // `org_status` doc comment already promised this — "a suspended or dissolving
+    // organization stops being registrable as a trading vendor (E6c B5/B10)" — and
+    // nothing implemented it. Existence-hiding, because whether an organization exists
+    // at all is not this refusal's to disclose.
+    if !org_may_trade(ctx.w, org) {
+        return Err(MarketError::NoStanding(NO_SUCH_VENDOR));
+    }
     let account = principal_account(ctx, instrument, &principal)
         .ok_or(MarketError::NoStanding(NO_SUCH_VENDOR))?;
     // The vault must exist, be active, and belong to the same organization: a vendor
@@ -406,6 +507,13 @@ pub fn retire_vendor(ctx: &mut Ctx<'_>, id: VendorId) -> Result<usize, MarketErr
     else {
         return Err(MarketError::NoStanding(NO_SUCH_VENDOR));
     };
+    // **Every** listing, not the first 64 (independent verify fold, R8): `.take(
+    // MAX_LISTINGS_PER_VENDOR)` was true of a store the cap had always held, and a
+    // store carrying more — an operator lowering the constant, a hand-repaired
+    // document, a future migration — retired the shop and left the surplus live,
+    // publishing band and depth under a vendor that no longer exists (`projection`
+    // never asks about the vendor, so nothing else would have caught it). Bounded by
+    // `MAX_LISTINGS`, which is the whole store.
     let listings: Vec<ListingId> = ctx
         .w
         .module_state::<MarketStore>()
@@ -415,7 +523,7 @@ pub fn retire_vendor(ctx: &mut Ctx<'_>, id: VendorId) -> Result<usize, MarketErr
                 .into_iter()
                 .flatten()
                 .copied()
-                .take(MAX_LISTINGS_PER_VENDOR)
+                .take(MAX_LISTINGS)
                 .collect()
         })
         .unwrap_or_default();
@@ -529,6 +637,13 @@ pub fn list_goods(ctx: &mut Ctx<'_>, spec: ListingSpec) -> Result<ListingId, Mar
             "That vendor has retired and is not trading.",
         ));
     }
+    // DL-06 again (M4): a suspended, dissolving or closed organization publishes no new
+    // offer. Its live contracts settle through E4 untouched.
+    if !org_may_trade(ctx.w, vendor.org) {
+        return Err(MarketError::bad(
+            "That vendor's organization is not trading.",
+        ));
+    }
     let Some(entry) = ctx
         .w
         .module_state::<MarketStore>()
@@ -536,6 +651,51 @@ pub fn list_goods(ctx: &mut Ctx<'_>, spec: ListingSpec) -> Result<ListingId, Mar
     else {
         return Err(MarketError::NoStanding(NO_SUCH_ENTRY));
     };
+    // **A listing may not name somebody else's market maker** (independent verify fold,
+    // M8). The `stock` arm built `Supply::Market { source }` straight from the typed
+    // number and nothing looked it up: not that it existed, not that it belonged to this
+    // vendor's organization, not that it made a market in this venue. Every downstream
+    // consumer then read the wrong maker — `price_for` took its spread, `quote` charged
+    // `refuses` and the cash test against *its* wallet, `charge_budgets` spent and
+    // returned *its* window — while the sale's money went to `vendor.account`: one shop
+    // consuming another organization's declared risk budget, gated on a wallet it does
+    // not own. A typo'd id was worse still, refusing every quote with `NO_SUCH_LISTING`
+    // rather than naming the mistake.
+    if let Supply::Market { source } = spec.source {
+        let maker = ctx
+            .w
+            .module_state::<MarketStore>()
+            .and_then(|s| s.source(source).cloned());
+        match maker {
+            None => return Err(MarketError::NoStanding(NO_SUCH_SOURCE)),
+            Some(m) if m.principal != vendor.org => {
+                return Err(MarketError::bad(
+                    "That market maker belongs to another organization.",
+                ));
+            }
+            Some(m) if m.market != vendor.market => {
+                return Err(MarketError::bad(
+                    "That market maker does not make a market in this vendor's venue.",
+                ));
+            }
+            Some(_) => {}
+        }
+        // **A maker prices off a reference price, by construction** (independent verify
+        // fold, M6). `CatalogEntry.baseline` is `Option`, and both loss sites resolved
+        // `None` to zero — so `loss = (0 - price).max(0) * qty` was always zero and the
+        // loss budget never tripped however far below the shelf price the spread took
+        // the quote (down to -1000, i.e. a tenth). Only the volume budget, which shrinks
+        // as the price does, was left, so doc 10 7A's "mediocre prices is a trading
+        // policy, not a substitute for funding" was unenforced for any entry that omits
+        // one.
+        if entry.baseline.is_none_or(|b| b.minor() <= 0) {
+            return Err(MarketError::bad(format!(
+                "'{}' carries no reference price, and a market maker prices against one. Give the \
+                 catalogue entry a baseline, or stock it from the vendor's own vault.",
+                entry.name
+            )));
+        }
+    }
     // OPEN 1: `Representation::Lot` is catalog **policy** in E6c and no `Lot` record
     // exists. 10b §3.2 (Q2D) puts the lot in `mush-inventory` as the single source of
     // quantity truth with a different field list, E7 cut 2 owns it, and defining a
@@ -587,6 +747,22 @@ pub fn list_goods(ctx: &mut Ctx<'_>, spec: ListingSpec) -> Result<ListingId, Mar
                 // again. `issue_title` refuses an issuer the composition did not
                 // freeze, so a server that named none simply cannot stock assets.
                 None => {
+                    // **Minting title is not a side effect of publishing a listing**
+                    // (independent verify fold, M10). This arm asked only
+                    // `is_live_object` and `issue_title`'s own `approver_live` — the
+                    // same test — so `@market/vendor stock <v>=<code> object=<a player
+                    // character>` silently minted a vendor-owned title over that
+                    // character, stamped with any loaded catalogue code, which is also
+                    // what E6b's fence prices off. E6b's fence required the seller to be
+                    // **holding** the object; this path had dropped that. Staff-only, so
+                    // a footgun rather than a privilege breach — but a silent one, taken
+                    // as a side effect of something else.
+                    if !titleable(ctx, o, &vendor) {
+                        return Err(MarketError::bad(
+                            "A vendor stocks a thing it is holding, or one in its own vault. Title \
+                             anything else deliberately, with @asset/title.",
+                        ));
+                    }
                     let Some(issuer) = crate::module::title_issuer(ctx) else {
                         return Err(MarketError::bad(
                             "This server registers no market title issuer, so it cannot stock                              titled goods.",
@@ -662,6 +838,29 @@ pub fn list_goods(ctx: &mut Ctx<'_>, spec: ListingSpec) -> Result<ListingId, Mar
     );
     persist_meta(ctx);
     Ok(id)
+}
+
+/// Whether an object is one a vendor may have title **minted** over as a side effect of
+/// stocking it (independent verify fold, M10).
+///
+/// E6b's fence rule, one layer up: it must be an ordinary `Thing` — never a character,
+/// a room or an exit — and it must be where a shop's stock is, which is the vendor's own
+/// vault backing object or the hands of the staffer publishing the listing. Anything
+/// else is titled deliberately, with `@asset/title`, where the act is what it says it
+/// is.
+fn titleable(ctx: &Ctx<'_>, object: ObjId, vendor: &Vendor) -> bool {
+    let Some(obj) = ctx.w.get(object) else {
+        return false;
+    };
+    if !matches!(obj.kind, mush_core::ObjKind::Thing) {
+        return false;
+    }
+    let backing = ctx
+        .w
+        .module_state::<EconomyStore>()
+        .and_then(|s| s.snapshot().vault(vendor.vault).map(|v| v.backing.clone()))
+        .and_then(|b| b.object());
+    obj.location == Some(ctx.actor) || (backing.is_some() && obj.location == backing)
 }
 
 /// Take a listing down.
@@ -756,6 +955,7 @@ pub fn visible(
     let Some(store) = w.module_state::<MarketStore>() else {
         return MarketPage::default();
     };
+    let now = w.now();
     let page = page.clamp(1, MARKET_PAGE_MAX);
     let mut out = MarketPage::default();
     let mut last: Option<ListingId> = None;
@@ -776,7 +976,15 @@ pub fn visible(
         }
         out.visited = out.visited.saturating_add(1);
         last = Some(l.id);
-        let matches = filter.is_none_or(|f| f.matches(store, l));
+        // **The page and the projection agree about what is gone** (independent verify
+        // fold, R3 and R6). `MarketStore::reindex` builds `live` from `quantity > 0`
+        // alone, so a lapsed listing stayed in it and the page rendered it as buyable
+        // while `quote` refused it; and a pack reload that dropped an entry left
+        // listings nothing can define, quote or deliver. The sweep deletes both, and
+        // this is what makes the render honest between two fires.
+        let closed = crate::projection::lapsed(l.expires.at, l.expires.clock, now)
+            || store.entry_of(&l.catalog).is_none();
+        let matches = !closed && filter.is_none_or(|f| f.matches(store, l));
         if matches && may_view_listing(w, viewer, l) {
             out.ids.push(l.id);
         }

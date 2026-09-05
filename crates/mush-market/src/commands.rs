@@ -195,9 +195,18 @@ fn list(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             out.push(listing_line(ctx, &l));
         }
     }
+    // **The cursor is unconditional on the walk, never on the match** (independent
+    // verify fold, D3). `api::visible` is correctly bounded on records *visited* and
+    // returns the last record visited, so the API pages in step for every viewer — but
+    // the render only printed the cursor in the `else` after the empty case, so a viewer
+    // whose 256 newest live listings were all unviewable got "Nothing is for sale." with
+    // the cursor **discarded** and every older public listing unreachable from the
+    // player surface. Five vendors at `MAX_LISTINGS_PER_VENDOR` build that wall, so
+    // hidden state denied public state.
     if out.is_empty() {
         out.push("Nothing is for sale.".to_string());
-    } else if let Some(next) = page.next {
+    }
+    if let Some(next) = page.next {
         out.push(format!("(more: +market/list after={next})"));
     }
     lines(ctx, out);
@@ -215,11 +224,15 @@ fn listing_line(ctx: &Ctx<'_>, l: &crate::record::Listing) -> String {
         .module_state::<MarketStore>()
         .and_then(|s| s.vendor(l.vendor).map(|v| v.name.to_string()))
         .unwrap_or_default();
+    // **The row advertises the price the deal executes at** (independent verify fold,
+    // D4): a maker's spread moved `Quote.price`, and this line read `Listing.price`
+    // unmoved, so `+market/list` advertised a price nobody pays.
+    let price = crate::trade::price_for(l, ctx.w.module_state::<MarketStore>());
     format!(
         "#{} {name} — {} × {} [{}]{}{}",
         l.id,
         l.quantity,
-        l.price.minor(),
+        price.minor(),
         l.market,
         if shop.is_empty() {
             String::new()
@@ -292,20 +305,21 @@ fn depth(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         return Err(refuse(ctx, NO_SUCH_ENTRY));
     };
     let now = ctx.w.now();
-    let Some(snapshot) = ctx
-        .w
-        .module_state::<mush_economy::EconomyStore>()
-        .map(|s| s.snapshot().clone())
-    else {
+    // **No deep copy of the whole economy on a player verb** (independent verify fold,
+    // D5). This held the only whole-snapshot clone in the tree, and `EconomySnapshot` is
+    // some twenty owned maps — instruments, accounts and their indexes, idempotency,
+    // assets, vaults, approvals, holds, cadences, obligations, contracts — with no `Arc`
+    // and no copy-on-write, so `+market/depth` copied the whole world's economy on every
+    // call by any player, on the single-writer world task, with no rate limit: 200 calls
+    // went 2.8 ms → 31.3 ms after 300 extra *accounts*, with the market state unchanged.
+    // The clone bought nothing either: both module states are shared reborrows of the
+    // same `&World`, so they can simply be held at once.
+    let economy = ctx.w.module_state::<mush_economy::EconomyStore>();
+    let store = ctx.w.module_state::<MarketStore>();
+    let (Some(economy), Some(store)) = (economy, store) else {
         return Err(refuse(ctx, NO_SUCH_ENTRY));
     };
-    let Some(p) = ctx
-        .w
-        .module_state::<MarketStore>()
-        .map(|s| s.projection(&catalog, &market, &snapshot, &hidden, now))
-    else {
-        return Err(refuse(ctx, NO_SUCH_ENTRY));
-    };
+    let p = store.projection(&catalog, &market, economy.snapshot(), &hidden, now);
     let mut out = vec![
         format!("{}:{} in {market}", catalog.ruleset, catalog.code),
         format!(
@@ -338,32 +352,43 @@ fn depth(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 
 /// The venue a good trades in, when the caller named none.
 ///
-/// Reads exactly the set the projection itself folds — **public** listings of
-/// non-hidden sellers, and settled public trades — never the viewer, and never a
-/// record the projection would have ignored. A hidden listing must not be able to
-/// choose the venue any more than it can move a number in it.
+/// Reads **exactly** the set the projection itself folds, through the projection's own
+/// two predicates — never the viewer, and never a record the projection would have
+/// ignored. A hidden listing must not be able to choose the venue any more than it can
+/// move a number in it.
+///
+/// Two independent fixes (independent verify fold, D7 and D8):
+///
+/// - it applied two of the projection's four listing tests, so a **lapsed** public
+///   listing still chose the header venue while contributing nothing to the numbers,
+///   and a good whose only public listing had lapsed rendered a different first line
+///   from a good with no listing at all. It calls `MarketStore::publishes` now, so the
+///   two cannot drift again;
+/// - it walked `store.listings` and then `store.quotes` — the **whole maps**, up to
+///   1 024 + 2 048 records per call — rather than the pair index the projection uses.
+///   Both walks are `range` scans scoped to the one catalogue now.
 fn default_market(
     ctx: &Ctx<'_>,
     catalog: &CatalogRef,
     hidden: &[mush_org::OrgId],
 ) -> Option<MarketId> {
     let store = ctx.w.module_state::<MarketStore>()?;
-    let public = |visibility: MarketVisibility, seller: &mush_org::PrincipalId| {
-        matches!(visibility, MarketVisibility::Public)
-            && crate::projection::is_public_seller(seller, hidden)
-    };
-    store
-        .listings
-        .values()
-        .find(|l| l.catalog == *catalog && public(l.visibility, &l.seller))
-        .map(|l| l.market.clone())
-        .or_else(|| {
-            store
-                .quotes
-                .values()
-                .find(|q| q.catalog == *catalog && q.is_trade() && public(q.visibility, &q.seller))
-                .map(|q| q.market.clone())
-        })
+    let now = ctx.w.now();
+    let venues: Vec<MarketId> = store.markets_of_catalog(catalog).cloned().collect();
+    for market in venues {
+        if store
+            .listings_for(catalog, &market)
+            .any(|l| store.publishes(l, hidden, now))
+        {
+            return Some(market);
+        }
+    }
+    let traded: Vec<MarketId> = store.markets_of_trades(catalog).cloned().collect();
+    traded.into_iter().find(|market| {
+        store
+            .trades_for(catalog, market)
+            .any(|q| store.publishes_trade(q, hidden))
+    })
 }
 
 fn quote(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
@@ -567,6 +592,22 @@ fn admin_catalog(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             let Some(pack) = rest.first().copied() else {
                 return Err(CmdError::msg("Usage: @market/catalog load <pack>"));
             };
+            // **The pack name is validated before it becomes a filename** (independent
+            // verify fold, D9). It went from `words` straight to
+            // `SrCatalogSource::pack`, which does `direct.join(format!("{pack}.json"))`,
+            // and `check_entry`'s byte rule runs only on the **entries** — after the
+            // file has been opened, read and parsed. So `@market/catalog load
+            // ../e6c-outside-probe` opened a file outside the configured root from the
+            // world task, and the refusal echoed the resolved absolute path and told
+            // "exists but is not a loadable pack" apart from "no such pack". It is the
+            // rule `check_entry` already applies to `e.pack`, applied one step earlier,
+            // and it renders the **same** refusal a missing pack gets so it is not an
+            // existence oracle either.
+            if !is_pack_name(pack) {
+                return Err(CmdError::msg(format!(
+                    "No content source on this server defines pack '{pack}'."
+                )));
+            }
             match crate::module::pack_entries(ctx, pack) {
                 None => Err(CmdError::msg(format!(
                     "No content source on this server defines pack '{pack}'."
@@ -1017,6 +1058,20 @@ fn admin_source(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         }
         _ => Err(CmdError::msg("Usage: @market/source create|budget|halt …")),
     }
+}
+
+/// Whether a word is a usable pack **name** — the one `check_entry` already applies to
+/// `CatalogEntry.pack`, asked before the name reaches a filesystem join (D9).
+///
+/// Non-empty, at most `record::MAX_PACK_BYTES` long, and `[A-Za-z0-9._-]` throughout —
+/// which excludes `/`, `\` and every traversal by construction rather than by
+/// enumerating them.
+fn is_pack_name(pack: &str) -> bool {
+    !pack.is_empty()
+        && pack.len() <= crate::record::MAX_PACK_BYTES
+        && pack
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_'))
 }
 
 /// `key=value` options out of the right-hand side — the shape every E-series verb

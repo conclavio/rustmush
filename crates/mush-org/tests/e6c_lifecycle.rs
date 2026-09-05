@@ -242,6 +242,60 @@ fn e6c_b10_put_role_upserts_where_create_role_refuses() {
     );
 }
 
+// ---- E6c independent verify fold ----
+
+/// **M4.** `Organization.status` is the whole of what a market-facing reader needs, and
+/// `SetOrgStatus` moves **only** it.
+///
+/// E6c's independent verify fold found DL-06 inert against the market: no file in
+/// `mush-market/src` mentioned `OrgStatus`, so a `Suspended`, `Dissolving` or `Closed`
+/// organization kept trading and could still be registered as a vendor — contradicting
+/// this very command's doc comment ("a suspended or dissolving organization stops being
+/// registrable as a trading vendor (E6c B5/B10)") and leaving B10's one staff verb for
+/// shutting a shop down with no effect at all. `mush-market` reads
+/// `org_may_trade` = `status == Active` now, so the org side owes it three things: each
+/// non-`Active` status is reachable, each bumps the revision every staleness guard reads,
+/// and none of them disturbs a scope, a role or the `hidden` flag the projection's own
+/// gate keys on.
+///
+/// The end-to-end half — a suspended organization quoting nothing, stocking nothing and
+/// re-registering as nothing, while its live contracts settle untouched — is
+/// `ruleset-shadowrun/tests/e6c.rs`'s
+/// `vf_m4_a_suspended_organization_stops_trading_and_its_live_contracts_still_settle`,
+/// because `mush-org` has no market edge and must not grow one.
+#[test]
+fn vf_m4_every_non_active_status_is_reachable_and_moves_nothing_else() {
+    for want in [
+        OrgStatus::Suspended,
+        OrgStatus::Dissolving,
+        OrgStatus::Closed,
+    ] {
+        let state = base();
+        let before = state.org(OrgId(1)).expect("the org").clone();
+        let next = OrgMutationPlan::of(vec![OrgMutationOp::SetOrgStatus {
+            org: OrgId(1),
+            status: Some(want),
+            hidden: None,
+        }])
+        .apply(&state)
+        .expect("the status moves");
+        let after = next.org(OrgId(1)).expect("the org");
+        assert_eq!(after.status, want, "the market's one input did not move");
+        assert!(
+            after.revision > before.revision,
+            "{want:?} did not bump the revision every staleness guard reads"
+        );
+        assert_eq!(
+            after.hidden, before.hidden,
+            "the lifecycle moved the projection's own hidden flag"
+        );
+        assert_eq!(after.name, before.name);
+        assert_eq!(after.root_scope, before.root_scope);
+        assert_eq!(next.scopes_in(OrgId(1)).count(), 1, "a scope moved with it");
+        assert_eq!(next.roles_in(OrgId(1)).count(), 0, "a role moved with it");
+    }
+}
+
 /// A membership naming a role `PutRole` replaced still resolves — the upsert keeps
 /// the id, which is what makes it a correction rather than a new role.
 #[test]

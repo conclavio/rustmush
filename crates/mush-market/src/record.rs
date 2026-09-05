@@ -44,6 +44,22 @@ pub const MAX_LISTINGS_PER_VENDOR: usize = 64;
 pub const MAX_LISTINGS: usize = 1_024;
 /// The most quotes the whole store holds — open offers and trade-tape rows alike.
 pub const MAX_QUOTES: usize = 2_048;
+/// The most **settled trade-tape rows** the whole store holds, across every pair.
+///
+/// The tape's own global ceiling (independent verify fold, R4). A settled quote *is*
+/// the tape row (§5.6 deviation 3), and it used to count against [`MAX_QUOTES`] with no
+/// ceiling of its own: `MAX_TRADES_PER_PAIR` 32 trimmed a pair only when a **new** trade
+/// landed in that same pair, so 2 048 / 32 = 64 traded pairs filled the store — three
+/// venues of `sr.core`'s 27 codes — and `+market/quote` then answered "The market is
+/// busy; try later." to every buyer for ever, with no new trade possible to evict
+/// anything. Half of `MAX_QUOTES`, so a full tape always leaves room for the open
+/// offers; past it the globally oldest **settlement** is evicted.
+pub const MAX_TRADE_ROWS: usize = 1_024;
+
+/// The tape's ceiling is **below** the quote family's, so a store full of history always
+/// leaves room for open offers. Checked at compile time, because it is the whole of R4's
+/// fix and a later edit that inverted it would restore the defect silently.
+const _: () = assert!(MAX_TRADE_ROWS < MAX_QUOTES);
 /// The most **open** quotes one buyer may hold at a time.
 pub const MAX_OPEN_QUOTES_PER_BUYER: usize = 8;
 /// The most registered vendors one server holds.
@@ -596,6 +612,17 @@ pub struct ObservedRevisions {
     /// A stable hash of the declared catalogue code the quote conveys, when the
     /// listing conveys a titled artefact at all.
     pub artefact: Option<u64>,
+    /// The **market maker's** own revision at pricing time, for a `Supply::Market`
+    /// listing and `None` otherwise (independent verify fold, M7).
+    ///
+    /// `spread` is a live pricing input: `price_for` reads it at quote time and
+    /// `@market/source budget` moves it. Without this stamp a re-spread maker went on
+    /// honouring quotes at the old price for the whole quote window, so re-pricing
+    /// through the listing lapsed a quote and re-pricing through the spread did not.
+    /// It is a **declared** number bumped only by a declared staff act, so it is no
+    /// more an oracle than the listing's own revision is.
+    #[serde(default)]
+    pub source: Option<u64>,
 }
 
 /// A stable, declaration-only hash — the same FNV-1a E6b's fence uses, so the two
@@ -663,6 +690,39 @@ pub struct Quote {
     pub price: Amount,
     /// How many units.
     pub quantity: u64,
+    /// **What the deal actually booked against the maker's loss budget** at
+    /// activation (independent verify fold, M5), and `Amount::ZERO` while the quote is
+    /// still an open offer.
+    ///
+    /// Denormalized for the same reason `price` and `quantity` are: `charge_budgets`
+    /// used to recompute the loss from the catalogue's *live* baseline on both legs,
+    /// so any pack reload between the spend and the return made the return differ from
+    /// the spend — a raised baseline returned more than was spent (and `.max(0)` then
+    /// destroyed every other deal's booked loss), a lowered one returned less and drove
+    /// `loss_used` permanently upward. The return subtracts exactly this, so return
+    /// equals spend by construction rather than by the catalogue holding still.
+    #[serde(default)]
+    pub booked_loss: Amount,
+    /// Whether the deal actually **came into force** — the listing's quantity was
+    /// committed and the maker's window charged (independent verify fold, R9).
+    ///
+    /// The contract link is written as soon as `offer_contract` returns, before either
+    /// acceptance, so no transition can fire against a quote nothing can find. That
+    /// makes a pre-activation `Cancelled` reachable, and the return leg must not give
+    /// back stock that never left or budget that was never spent — so it keys on this
+    /// rather than on the link.
+    #[serde(default)]
+    pub activated: bool,
+    /// Whether the buyer **acts for the selling organization** — recorded at
+    /// activation (independent verify fold, M12).
+    ///
+    /// A member of the vendor's own organization can buy from their own shop: the
+    /// contract really settles, so the row is honest, but the price it prints as
+    /// `last_trade` is one the seller chose and paid themselves. Such a row is a real
+    /// trade and stays in the buyer's own order history; it contributes **nothing** to
+    /// the public tape.
+    #[serde(default)]
+    pub self_dealt: bool,
     /// The catalog entry version priced against.
     pub definition_version: u32,
     /// Every declared stamp the price was bound to.
@@ -714,6 +774,12 @@ struct QuoteWire {
     price: Amount,
     #[serde(default)]
     quantity: u64,
+    #[serde(default = "zero")]
+    booked_loss: Amount,
+    #[serde(default)]
+    activated: bool,
+    #[serde(default)]
+    self_dealt: bool,
     #[serde(default = "one")]
     definition_version: u32,
     observed: ObservedRevisions,
@@ -754,6 +820,12 @@ impl TryFrom<QuoteWire> for Quote {
         if w.settled.is_some() && w.contract.is_none() {
             return Err(RecordError("a settled quote names no contract"));
         }
+        // The booked loss is what a cancellation gives back, so a negative one would
+        // *mint* budget on the return leg — the one direction `charge_budgets`'
+        // saturation cannot recover from.
+        if w.booked_loss.minor() < 0 {
+            return Err(RecordError("a quote's booked loss is negative"));
+        }
         Ok(Quote {
             id: QuoteId(w.id),
             listing: ListingId(w.listing),
@@ -765,6 +837,9 @@ impl TryFrom<QuoteWire> for Quote {
             source: w.source,
             price: w.price,
             quantity: w.quantity,
+            booked_loss: w.booked_loss,
+            activated: w.activated,
+            self_dealt: w.self_dealt,
             definition_version: w.definition_version,
             observed: w.observed,
             expires: w.expires,
