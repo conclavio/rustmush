@@ -2170,13 +2170,17 @@ impl<'a> Registrar<'a> {
     /// directly and seeds the lease post-image into the registered action's
     /// transaction; the action provider cannot start async work or choose a
     /// different record.
-    pub fn decision_source(
+    pub fn decision_source<A>(
         &mut self,
         lease_action: crate::mechanics::DefinitionRef,
         families: crate::decision::DecisionCaptureFamilies,
         wake_adapter: crate::mechanics::CanonicalId,
         lease_duration: i64,
-    ) -> Result<(), ModError> {
+        fallback_adapter: A,
+    ) -> Result<(), ModError>
+    where
+        A: crate::decision_source::DecisionFallbackAdapter + 'static,
+    {
         self.require_mechanics_registration_authority()?;
         if self.reg.decision_sources.is_some() {
             return Err(ModError::msg(format!(
@@ -2192,7 +2196,14 @@ impl<'a> Registrar<'a> {
         })?;
         self.reg
             .decision_source_builder
-            .register(owner, lease_action, families, wake_adapter, lease_duration)
+            .register(
+                owner,
+                lease_action,
+                families,
+                wake_adapter,
+                lease_duration,
+                std::sync::Arc::new(fallback_adapter),
+            )
             .map_err(|e| {
                 ModError::msg(format!(
                     "module {}: decision source registration: {e}",

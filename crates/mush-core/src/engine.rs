@@ -794,6 +794,43 @@ impl Engine {
             .response_ingress(self, keys, fence, response)
     }
 
+    /// Run the source's composition-branded deterministic fallback selector
+    /// against only the exact persisted projected prompt.
+    pub fn select_decision_fallback(
+        &self,
+        candidate: &crate::decision_source::DecisionFallbackCandidate,
+    ) -> Result<
+        crate::decision::DecisionResponse,
+        crate::decision_source::DecisionFallbackSelectionError,
+    > {
+        let keys = self
+            .decision_keys
+            .as_ref()
+            .ok_or(crate::decision_source::DecisionFallbackSelectionError::StaleCandidate)?;
+        self.registry
+            .decision_sources()
+            .ok_or(crate::decision_source::DecisionFallbackSelectionError::StaleCandidate)?
+            .select_fallback(self, keys, candidate)
+    }
+
+    /// Construct the ordinary semantic action ingress selected by one exact
+    /// durable fallback candidate.
+    pub fn decision_fallback_ingress(
+        &self,
+        candidate: &crate::decision_source::DecisionFallbackCandidate,
+        response: &crate::decision::DecisionResponse,
+    ) -> Result<crate::action::IngressEnvelope, crate::decision_source::DecisionResponseIngressError>
+    {
+        let keys = self
+            .decision_keys
+            .as_ref()
+            .ok_or(crate::decision_source::DecisionResponseIngressError::RegistryUnavailable)?;
+        self.registry
+            .decision_sources()
+            .ok_or(crate::decision_source::DecisionResponseIngressError::RegistryUnavailable)?
+            .fallback_ingress(self, keys, candidate, response)
+    }
+
     /// Regenerate and resolve the exact prompt-time offer selected by an
     /// authenticated completion, restoring its private revision witnesses.
     pub fn resolve_decision_response(
@@ -815,19 +852,142 @@ impl Engine {
             .resolve_response(self, keys, fence, response, ingress)
     }
 
+    pub fn resolve_decision_fallback(
+        &self,
+        candidate: &crate::decision_source::DecisionFallbackCandidate,
+        response: &crate::decision::DecisionResponse,
+        ingress: &crate::action::IngressEnvelope,
+    ) -> Result<
+        crate::decision_source::DecisionResponseResolution,
+        crate::decision_source::DecisionResponseResolveError,
+    > {
+        let keys = self
+            .decision_keys
+            .as_ref()
+            .ok_or(crate::decision_source::DecisionResponseIngressError::RegistryUnavailable)?;
+        self.registry
+            .decision_sources()
+            .ok_or(crate::decision_source::DecisionResponseIngressError::RegistryUnavailable)?
+            .resolve_fallback(self, keys, candidate, response, ingress)
+    }
+
     /// Construct stable owner-local ingress for binding an already durable
     /// selected ordinary action to its exact pending decision.
     pub fn decision_resolving_ingress(
         &self,
         fence: &crate::decision::DecisionCompletionFence,
         binding: &crate::decision::DecisionActionBinding,
+        outcome: crate::decision::DecisionTerminalOutcome,
         idempotency_epoch: u64,
     ) -> Result<crate::action::IngressEnvelope, crate::decision_source::DecisionResolvingIngressError>
     {
         self.registry
             .decision_sources()
             .ok_or(crate::decision_source::DecisionResolvingIngressError::RegistryUnavailable)?
-            .resolving_ingress(self, fence, binding, idempotency_epoch)
+            .resolving_ingress(self, fence, binding, outcome, idempotency_epoch)
+    }
+
+    /// Construct stable owner-local ingress for committing one typed provider
+    /// attempt result without including diagnostic text in its identity.
+    pub fn decision_attempt_ingress(
+        &self,
+        fence: &crate::decision::DecisionCompletionFence,
+        kind: crate::decision::DecisionAttemptFailureKind,
+        max_attempts: u8,
+        idempotency_epoch: u64,
+    ) -> Result<crate::action::IngressEnvelope, crate::decision_source::DecisionAttemptIngressError>
+    {
+        self.registry
+            .decision_sources()
+            .ok_or(crate::decision_source::DecisionAttemptIngressError::RegistryUnavailable)?
+            .attempt_failure_ingress(self, fence, kind, max_attempts, idempotency_epoch)
+    }
+
+    pub fn plan_decision_attempt_failure(
+        &self,
+        fence: &crate::decision::DecisionCompletionFence,
+        kind: crate::decision::DecisionAttemptFailureKind,
+        max_attempts: u8,
+        ingress: &crate::action::IngressEnvelope,
+    ) -> Result<
+        crate::decision_source::DecisionAttemptPlan,
+        crate::decision_source::DecisionAttemptPlanError,
+    > {
+        self.registry
+            .decision_sources()
+            .ok_or(crate::decision_source::DecisionAttemptPlanError::RegistryUnavailable)?
+            .plan_attempt_failure(self, fence, kind, max_attempts, ingress)
+    }
+
+    pub fn decision_fallback_trigger_for_dispatch(
+        &self,
+        candidate: &crate::decision_source::DecisionDispatchCandidate,
+    ) -> Result<
+        crate::decision_source::DecisionFallbackTriggerCandidate,
+        crate::decision_source::DecisionFallbackTriggerError,
+    > {
+        self.registry
+            .decision_sources()
+            .ok_or(crate::decision_source::DecisionFallbackTriggerError::RegistryUnavailable)?
+            .fallback_trigger_for_dispatch(self, candidate)
+    }
+
+    pub fn decision_fallback_trigger_ingress(
+        &self,
+        candidate: &crate::decision_source::DecisionFallbackTriggerCandidate,
+        idempotency_epoch: u64,
+    ) -> Result<crate::action::IngressEnvelope, crate::decision_source::DecisionFallbackTriggerError>
+    {
+        self.registry
+            .decision_sources()
+            .ok_or(crate::decision_source::DecisionFallbackTriggerError::RegistryUnavailable)?
+            .fallback_trigger_ingress(self, candidate, idempotency_epoch)
+    }
+
+    pub fn plan_decision_fallback_trigger(
+        &self,
+        candidate: &crate::decision_source::DecisionFallbackTriggerCandidate,
+        ingress: &crate::action::IngressEnvelope,
+    ) -> Result<
+        crate::decision_source::DecisionFallbackTriggerPlan,
+        crate::decision_source::DecisionFallbackTriggerPlanError,
+    > {
+        self.registry
+            .decision_sources()
+            .ok_or(crate::decision_source::DecisionFallbackTriggerPlanError::RegistryUnavailable)?
+            .plan_fallback_trigger(self, candidate, ingress)
+    }
+
+    pub fn decision_cancellation_ingress(
+        &self,
+        controller: &crate::decision::DecisionControllerId,
+        decision: crate::decision::DecisionId,
+        revision: u64,
+        idempotency_epoch: u64,
+    ) -> Result<
+        crate::action::IngressEnvelope,
+        crate::decision_source::DecisionCancellationIngressError,
+    > {
+        self.registry
+            .decision_sources()
+            .ok_or(crate::decision_source::DecisionCancellationIngressError::RegistryUnavailable)?
+            .cancellation_ingress(self, controller, decision, revision, idempotency_epoch)
+    }
+
+    pub fn plan_decision_cancellation(
+        &self,
+        controller: &crate::decision::DecisionControllerId,
+        decision: crate::decision::DecisionId,
+        revision: u64,
+        ingress: &crate::action::IngressEnvelope,
+    ) -> Result<
+        crate::decision_source::DecisionCancellationPlan,
+        crate::decision_source::DecisionCancellationPlanError,
+    > {
+        self.registry
+            .decision_sources()
+            .ok_or(crate::decision_source::DecisionCancellationPlanError::RegistryUnavailable)?
+            .plan_cancellation(self, controller, decision, revision, ingress)
     }
 
     /// Re-read and plan an exact owner-local Leased-to-Resolving transition
@@ -836,6 +996,7 @@ impl Engine {
         &self,
         fence: &crate::decision::DecisionCompletionFence,
         binding: &crate::decision::DecisionActionBinding,
+        outcome: crate::decision::DecisionTerminalOutcome,
         ingress: &crate::action::IngressEnvelope,
     ) -> Result<
         crate::decision_source::DecisionResolvingPlan,
@@ -844,7 +1005,7 @@ impl Engine {
         self.registry
             .decision_sources()
             .ok_or(crate::decision_source::DecisionResolvingPlanError::RegistryUnavailable)?
-            .plan_resolving(self, fence, binding, ingress)
+            .plan_resolving(self, fence, binding, outcome, ingress)
     }
 
     /// Construct stable owner-local ingress for terminalizing one exact
@@ -1658,6 +1819,141 @@ impl Engine {
                     .seed_terminal(fence, transition, txn)
                     .map_err(|source| {
                         crate::action::ActionProviderPrepareError::DecisionTerminal(Box::new(
+                            source,
+                        ))
+                    })
+            },
+        )
+    }
+
+    /// Prepare the registered controller-owner action while the kernel seeds
+    /// an exact provider-attempt result into the same transaction.
+    pub fn prepare_registered_decision_attempt_action(
+        &mut self,
+        fence: &crate::decision::DecisionCompletionFence,
+        action: &crate::mechanics::DefinitionRef,
+        invocation: &crate::action::ActionInvocation,
+        transition: crate::decision::DecisionAttemptTransition,
+        commit_token: crate::action::CommitToken,
+    ) -> Result<
+        (
+            PreparedTxn,
+            crate::action::PreparedAuthoritativeAction,
+            Option<crate::decision::DecisionCompletionFence>,
+        ),
+        crate::action::ActionProviderPrepareError,
+    > {
+        let providers = self
+            .registry
+            .action_providers()
+            .ok_or(crate::action::ActionProviderPrepareError::RegistryUnavailable)?;
+        let decisions = self
+            .registry
+            .decision_sources()
+            .ok_or(crate::action::ActionProviderPrepareError::RegistryUnavailable)?;
+        let mut fallback_fence = None;
+        let (prepared, output) = providers.prepare_authoritative_invocation_seeded(
+            action,
+            invocation,
+            commit_token,
+            &mut self.action_state,
+            self.resolution_keys.as_ref(),
+            |txn| {
+                fallback_fence = decisions
+                    .seed_attempt_failure(fence, transition, txn)
+                    .map_err(|source| {
+                        crate::action::ActionProviderPrepareError::DecisionAttempt(Box::new(source))
+                    })?;
+                Ok(())
+            },
+        )?;
+        Ok((prepared, output, fallback_fence))
+    }
+
+    /// Prepare the owner action while atomically transferring exact decision
+    /// custody to deterministic fallback.
+    pub fn prepare_registered_decision_fallback_trigger_action(
+        &mut self,
+        candidate: &crate::decision_source::DecisionFallbackTriggerCandidate,
+        action: &crate::mechanics::DefinitionRef,
+        invocation: &crate::action::ActionInvocation,
+        transition: crate::decision::DecisionFallbackTransition,
+        commit_token: crate::action::CommitToken,
+    ) -> Result<
+        (
+            PreparedTxn,
+            crate::action::PreparedAuthoritativeAction,
+            crate::decision::DecisionCompletionFence,
+        ),
+        crate::action::ActionProviderPrepareError,
+    > {
+        let providers = self
+            .registry
+            .action_providers()
+            .ok_or(crate::action::ActionProviderPrepareError::RegistryUnavailable)?;
+        let decisions = self
+            .registry
+            .decision_sources()
+            .ok_or(crate::action::ActionProviderPrepareError::RegistryUnavailable)?;
+        let mut fallback_fence = None;
+        let (prepared, output) = providers.prepare_authoritative_invocation_seeded(
+            action,
+            invocation,
+            commit_token,
+            &mut self.action_state,
+            self.resolution_keys.as_ref(),
+            |txn| {
+                fallback_fence = Some(
+                    decisions
+                        .seed_fallback_trigger(candidate, transition, txn)
+                        .map_err(|source| {
+                            crate::action::ActionProviderPrepareError::DecisionFallbackTrigger(
+                                Box::new(source),
+                            )
+                        })?,
+                );
+                Ok(())
+            },
+        )?;
+        Ok((
+            prepared,
+            output,
+            fallback_fence.expect("seed callback records fallback fence"),
+        ))
+    }
+
+    /// Prepare the owner action while atomically installing the exact
+    /// Terminal(cancelled) post-image.
+    pub fn prepare_registered_decision_cancellation_action(
+        &mut self,
+        controller: &crate::decision::DecisionControllerId,
+        action: &crate::mechanics::DefinitionRef,
+        invocation: &crate::action::ActionInvocation,
+        transition: crate::decision::DecisionCancellationTransition,
+        commit_token: crate::action::CommitToken,
+    ) -> Result<
+        (PreparedTxn, crate::action::PreparedAuthoritativeAction),
+        crate::action::ActionProviderPrepareError,
+    > {
+        let providers = self
+            .registry
+            .action_providers()
+            .ok_or(crate::action::ActionProviderPrepareError::RegistryUnavailable)?;
+        let decisions = self
+            .registry
+            .decision_sources()
+            .ok_or(crate::action::ActionProviderPrepareError::RegistryUnavailable)?;
+        providers.prepare_authoritative_invocation_seeded(
+            action,
+            invocation,
+            commit_token,
+            &mut self.action_state,
+            self.resolution_keys.as_ref(),
+            |txn| {
+                decisions
+                    .seed_cancellation(controller, transition, txn)
+                    .map_err(|source| {
+                        crate::action::ActionProviderPrepareError::DecisionCancellation(Box::new(
                             source,
                         ))
                     })

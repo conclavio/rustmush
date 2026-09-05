@@ -50,6 +50,7 @@ pub const MAX_DECISION_TOTAL_BYTES: usize = 64 * 1024 * 1024;
 pub const MAX_DECISION_MAILBOX_IDS: usize = 128;
 pub const MAX_DECISION_PROVIDER_WORKERS: usize = 32;
 pub const MAX_DECISION_ATTEMPTS: u8 = 8;
+pub const DEFAULT_DECISION_ATTEMPTS: u8 = 3;
 pub const MAX_DECISION_RECOVERY_PAGE: usize = 128;
 pub const MAX_DECISION_SECRET_VERSIONS: usize = 8;
 pub const MAX_DECISION_BRIDGE_DEFINITIONS: usize = MAX_ACTION_REVISIONS;
@@ -856,6 +857,127 @@ pub struct DecisionResolvingTransition {
     post_image: PendingDecision,
 }
 
+/// Typed provider failure category persisted as lifecycle input. Text details
+/// remain bounded diagnostics and never select retry/fallback policy.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DecisionAttemptFailureKind {
+    Unavailable,
+    Malformed,
+    Permanent,
+}
+
+/// Deterministic reason an asynchronous choice ceded to its declared fallback.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DecisionFallbackReason {
+    Deadline,
+    ProviderUnavailable,
+    ProviderExhausted,
+    MalformedExhausted,
+    PermanentFailure,
+}
+
+/// Exact provider-attempt post-image. A fallback fence is returned only when
+/// this commit moves the decision into deterministic fallback custody.
+#[must_use = "the provider-attempt post-image must enter the authoritative coordinator"]
+#[derive(Clone, Debug)]
+pub struct DecisionAttemptTransition {
+    post_image: PendingDecision,
+    fallback_fence: Option<DecisionCompletionFence>,
+}
+
+impl DecisionAttemptTransition {
+    #[must_use]
+    pub const fn post_image(&self) -> &PendingDecision {
+        &self.post_image
+    }
+
+    #[must_use]
+    pub const fn fallback_fence(&self) -> Option<&DecisionCompletionFence> {
+        self.fallback_fence.as_ref()
+    }
+
+    pub fn stage(
+        self,
+        txn: &mut ActionTxn<'_>,
+        families: &DecisionCaptureFamilies,
+    ) -> Result<Option<DecisionCompletionFence>, DecisionError> {
+        if txn.owner() != families.owner() || txn.owner() != &self.post_image.controller.owner {
+            return Err(DecisionError::CaptureOwnerMismatch);
+        }
+        let decision = self.post_image.id;
+        txn.replace(&families.pending, &decision, self.post_image)
+            .map_err(|error| DecisionError::State(error.to_string()))?;
+        Ok(self.fallback_fence)
+    }
+}
+
+/// Exact Ready/Leased-to-FallbackReady post-image for deadlines or a missing
+/// provider. No fallback adapter is invoked before this state commits.
+#[must_use = "the fallback-ready post-image must enter the authoritative coordinator"]
+#[derive(Clone, Debug)]
+pub struct DecisionFallbackTransition {
+    post_image: PendingDecision,
+    fence: DecisionCompletionFence,
+}
+
+/// Exact cancellable-to-Terminal(cancelled) post-image. The selected action
+/// binding is necessarily absent because Resolving and Terminal records are
+/// not cancellable.
+#[must_use = "the cancellation post-image must enter the authoritative coordinator"]
+#[derive(Clone, Debug)]
+pub struct DecisionCancellationTransition {
+    post_image: PendingDecision,
+}
+
+impl DecisionCancellationTransition {
+    #[must_use]
+    pub const fn post_image(&self) -> &PendingDecision {
+        &self.post_image
+    }
+
+    pub fn stage(
+        self,
+        txn: &mut ActionTxn<'_>,
+        families: &DecisionCaptureFamilies,
+    ) -> Result<(), DecisionError> {
+        if txn.owner() != families.owner() || txn.owner() != &self.post_image.controller.owner {
+            return Err(DecisionError::CaptureOwnerMismatch);
+        }
+        let decision = self.post_image.id;
+        txn.replace(&families.pending, &decision, self.post_image)
+            .map_err(|error| DecisionError::State(error.to_string()))?;
+        Ok(())
+    }
+}
+
+impl DecisionFallbackTransition {
+    #[must_use]
+    pub const fn post_image(&self) -> &PendingDecision {
+        &self.post_image
+    }
+
+    #[must_use]
+    pub const fn fence(&self) -> &DecisionCompletionFence {
+        &self.fence
+    }
+
+    pub fn stage(
+        self,
+        txn: &mut ActionTxn<'_>,
+        families: &DecisionCaptureFamilies,
+    ) -> Result<DecisionCompletionFence, DecisionError> {
+        if txn.owner() != families.owner() || txn.owner() != &self.post_image.controller.owner {
+            return Err(DecisionError::CaptureOwnerMismatch);
+        }
+        let decision = self.post_image.id;
+        txn.replace(&families.pending, &decision, self.post_image)
+            .map_err(|error| DecisionError::State(error.to_string()))?;
+        Ok(self.fence)
+    }
+}
+
 /// Exact Resolving-to-Terminal post-image recorded only after recovery has
 /// established that the bound ordinary action finalized.
 #[must_use = "the terminal post-image must enter the authoritative coordinator"]
@@ -956,6 +1078,12 @@ pub enum PendingDecisionStatus {
         attempt: u8,
         lease_until: ClockStamp,
         action_binding: DecisionActionBinding,
+        outcome: DecisionTerminalOutcome,
+    },
+    FallbackReady {
+        attempt: u8,
+        lease_until: ClockStamp,
+        reason: DecisionFallbackReason,
     },
     Terminal {
         outcome: DecisionTerminalOutcome,
@@ -977,6 +1105,11 @@ impl PendingDecisionStatus {
                 lease_until,
             }
             | Self::Resolving {
+                attempt,
+                lease_until,
+                ..
+            }
+            | Self::FallbackReady {
                 attempt,
                 lease_until,
                 ..
@@ -1167,29 +1300,182 @@ impl PendingDecision {
         expected_attempt: u8,
         expected_lease_until: &ClockStamp,
         binding: DecisionActionBinding,
+        outcome: DecisionTerminalOutcome,
     ) -> Result<(), DecisionError> {
         if self.revision != expected_revision {
             return Err(DecisionError::StaleRevision);
         }
-        let PendingDecisionStatus::Leased {
-            attempt,
-            ref lease_until,
-        } = self.status
-        else {
-            return Err(DecisionError::InvalidTransition);
+        let (attempt, lease_until) = match &self.status {
+            PendingDecisionStatus::Leased {
+                attempt,
+                lease_until,
+            } if outcome == DecisionTerminalOutcome::Executed => (*attempt, lease_until.clone()),
+            PendingDecisionStatus::FallbackReady {
+                attempt,
+                lease_until,
+                ..
+            } if outcome == DecisionTerminalOutcome::Fallback => (*attempt, lease_until.clone()),
+            _ => return Err(DecisionError::InvalidTransition),
         };
         if attempt != expected_attempt {
             return Err(DecisionError::StaleAttempt);
         }
-        if lease_until != expected_lease_until {
+        if &lease_until != expected_lease_until {
             return Err(DecisionError::StaleLease);
         }
         self.status = PendingDecisionStatus::Resolving {
             attempt,
-            lease_until: lease_until.clone(),
+            lease_until,
             action_binding: binding,
+            outcome,
         };
         Ok(())
+    }
+
+    /// Plan a committed provider-attempt result. Retryable failures advance
+    /// the attempt counter; the configured final attempt and permanent
+    /// failures transfer custody to deterministic fallback.
+    pub fn plan_attempt_failure(
+        &self,
+        fence: &DecisionCompletionFence,
+        kind: DecisionAttemptFailureKind,
+        max_attempts: u8,
+    ) -> Result<DecisionAttemptTransition, DecisionError> {
+        if !(1..=MAX_DECISION_ATTEMPTS).contains(&max_attempts) {
+            return Err(DecisionError::Attempt {
+                attempt: max_attempts,
+            });
+        }
+        if &self.controller != fence.controller()
+            || self.id != fence.decision()
+            || self.revision != fence.revision()
+        {
+            return Err(DecisionError::InvalidTransition);
+        }
+        let PendingDecisionStatus::Leased {
+            attempt,
+            lease_until,
+        } = &self.status
+        else {
+            return Err(DecisionError::InvalidTransition);
+        };
+        if *attempt != fence.attempt() {
+            return Err(DecisionError::StaleAttempt);
+        }
+        if lease_until != fence.lease_until() {
+            return Err(DecisionError::StaleLease);
+        }
+        let mut post_image = self.clone();
+        if kind == DecisionAttemptFailureKind::Malformed {
+            post_image.malformed_attempts = post_image
+                .malformed_attempts
+                .checked_add(1)
+                .ok_or(DecisionError::Overflow)?;
+        }
+        let fallback_reason = if kind == DecisionAttemptFailureKind::Permanent {
+            Some(DecisionFallbackReason::PermanentFailure)
+        } else if *attempt >= max_attempts {
+            Some(match kind {
+                DecisionAttemptFailureKind::Malformed => DecisionFallbackReason::MalformedExhausted,
+                DecisionAttemptFailureKind::Unavailable => {
+                    DecisionFallbackReason::ProviderExhausted
+                }
+                DecisionAttemptFailureKind::Permanent => unreachable!(),
+            })
+        } else {
+            None
+        };
+        let fallback_fence = if let Some(reason) = fallback_reason {
+            post_image.status = PendingDecisionStatus::FallbackReady {
+                attempt: *attempt,
+                lease_until: lease_until.clone(),
+                reason,
+            };
+            Some(fence.clone())
+        } else {
+            let next = attempt.checked_add(1).ok_or(DecisionError::Overflow)?;
+            post_image.status = PendingDecisionStatus::Ready { attempt: next };
+            None
+        };
+        post_image.validate()?;
+        Ok(DecisionAttemptTransition {
+            post_image,
+            fallback_fence,
+        })
+    }
+
+    /// Plan deterministic fallback custody from Ready or an exact live/expired
+    /// lease. A Ready record uses its persisted deadline as the synthetic
+    /// completion fence, keeping lifecycle identity stable as observation time
+    /// advances between preflight and preparation.
+    pub fn plan_fallback_ready(
+        &self,
+        expected_revision: u64,
+        now: &ClockStamp,
+        reason: DecisionFallbackReason,
+    ) -> Result<DecisionFallbackTransition, DecisionError> {
+        if self.revision != expected_revision {
+            return Err(DecisionError::StaleRevision);
+        }
+        self.deadline
+            .checked_cmp(now)
+            .map_err(|_| DecisionError::LeaseDeadlineMismatch)?;
+        let (attempt, lease_until) = match &self.status {
+            PendingDecisionStatus::Ready { attempt } => (
+                *attempt,
+                ClockStamp {
+                    clock: self.deadline.clock.clone(),
+                    at: self.deadline.at,
+                },
+            ),
+            PendingDecisionStatus::Leased {
+                attempt,
+                lease_until,
+            } => (*attempt, lease_until.clone()),
+            _ => return Err(DecisionError::InvalidTransition),
+        };
+        let fence = DecisionCompletionFence::new(
+            self.controller.clone(),
+            self.id,
+            self.revision,
+            attempt,
+            lease_until.clone(),
+        )?;
+        let mut post_image = self.clone();
+        post_image.status = PendingDecisionStatus::FallbackReady {
+            attempt,
+            lease_until,
+            reason,
+        };
+        post_image.validate()?;
+        Ok(DecisionFallbackTransition { post_image, fence })
+    }
+
+    /// Plan an exact cancellation. Cancellation may win from any state in
+    /// which no selected ordinary action has durable custody; once Resolving
+    /// begins, the action result owns terminalization.
+    pub fn plan_cancellation(
+        &self,
+        controller: &DecisionControllerId,
+        decision: DecisionId,
+        expected_revision: u64,
+    ) -> Result<DecisionCancellationTransition, DecisionError> {
+        if &self.controller != controller
+            || self.id != decision
+            || self.revision != expected_revision
+            || !matches!(
+                self.status,
+                PendingDecisionStatus::Ready { .. }
+                    | PendingDecisionStatus::Leased { .. }
+                    | PendingDecisionStatus::FallbackReady { .. }
+            )
+        {
+            return Err(DecisionError::InvalidTransition);
+        }
+        let mut post_image = self.clone();
+        post_image.finish(expected_revision, DecisionTerminalOutcome::Cancelled, None)?;
+        post_image.validate()?;
+        Ok(DecisionCancellationTransition { post_image })
     }
 
     /// Plan the exact owner-local lifecycle post-image after the selected
@@ -1199,6 +1485,7 @@ impl PendingDecision {
         &self,
         fence: &DecisionCompletionFence,
         binding: DecisionActionBinding,
+        outcome: DecisionTerminalOutcome,
     ) -> Result<DecisionResolvingTransition, DecisionError> {
         if &self.controller != fence.controller() || self.id != fence.decision() {
             return Err(DecisionError::InvalidTransition);
@@ -1209,6 +1496,7 @@ impl PendingDecision {
             fence.attempt(),
             fence.lease_until(),
             binding,
+            outcome,
         )?;
         Ok(DecisionResolvingTransition { post_image })
     }
@@ -1233,6 +1521,7 @@ impl PendingDecision {
             attempt,
             lease_until,
             action_binding,
+            outcome: resolving_outcome,
         } = &self.status
         else {
             return Err(DecisionError::InvalidTransition);
@@ -1244,6 +1533,9 @@ impl PendingDecision {
             return Err(DecisionError::StaleLease);
         }
         if action_binding != binding {
+            return Err(DecisionError::InvalidTransition);
+        }
+        if *resolving_outcome != outcome {
             return Err(DecisionError::InvalidTransition);
         }
         let mut post_image = self.clone();
@@ -2107,17 +2399,161 @@ mod tests {
         };
         assert_eq!(
             pending
-                .begin_resolving(1, 2, &deadline(14), binding.clone())
+                .begin_resolving(
+                    1,
+                    2,
+                    &deadline(14),
+                    binding.clone(),
+                    DecisionTerminalOutcome::Executed,
+                )
                 .unwrap_err(),
             DecisionError::StaleLease
         );
         pending
-            .begin_resolving(1, 2, &deadline(15), binding)
+            .begin_resolving(
+                1,
+                2,
+                &deadline(15),
+                binding,
+                DecisionTerminalOutcome::Executed,
+            )
             .unwrap();
         assert!(matches!(
             pending.status,
             PendingDecisionStatus::Resolving { attempt: 2, .. }
         ));
+    }
+
+    #[test]
+    fn provider_failures_commit_bounded_retry_then_fallback_custody() {
+        let (_, mut pending, _) = pair();
+        pending.lease(1, deadline(12)).unwrap();
+        let first = DecisionCompletionFence::new(
+            pending.controller.clone(),
+            pending.id,
+            pending.revision,
+            1,
+            deadline(12),
+        )
+        .unwrap();
+        let retry = pending
+            .plan_attempt_failure(&first, DecisionAttemptFailureKind::Malformed, 2)
+            .unwrap();
+        assert!(retry.fallback_fence().is_none());
+        assert_eq!(retry.post_image().malformed_attempts, 1);
+        assert!(matches!(
+            retry.post_image().status,
+            PendingDecisionStatus::Ready { attempt: 2 }
+        ));
+
+        pending = retry.post_image().clone();
+        pending.lease(1, deadline(14)).unwrap();
+        let second = DecisionCompletionFence::new(
+            pending.controller.clone(),
+            pending.id,
+            pending.revision,
+            2,
+            deadline(14),
+        )
+        .unwrap();
+        let fallback = pending
+            .plan_attempt_failure(&second, DecisionAttemptFailureKind::Malformed, 2)
+            .unwrap();
+        assert_eq!(fallback.fallback_fence(), Some(&second));
+        assert_eq!(fallback.post_image().malformed_attempts, 2);
+        assert!(matches!(
+            fallback.post_image().status,
+            PendingDecisionStatus::FallbackReady {
+                attempt: 2,
+                reason: DecisionFallbackReason::MalformedExhausted,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn deadline_fallback_gets_an_exact_fence_and_only_fallback_can_resolve_it() {
+        let (_, pending, _) = pair();
+        let transition = pending
+            .plan_fallback_ready(1, &deadline(20), DecisionFallbackReason::Deadline)
+            .unwrap();
+        assert_eq!(transition.fence().attempt(), 1);
+        assert_eq!(transition.fence().lease_until(), &deadline(20));
+        let mut fallback = transition.post_image().clone();
+        let binding = DecisionActionBinding {
+            request: RequestUid::from_bytes([7; 16]),
+            request_hash: CanonicalHash::from_bytes([6; 32]),
+        };
+        assert_eq!(
+            fallback
+                .begin_resolving(
+                    1,
+                    1,
+                    &deadline(20),
+                    binding.clone(),
+                    DecisionTerminalOutcome::Executed,
+                )
+                .unwrap_err(),
+            DecisionError::InvalidTransition
+        );
+        fallback
+            .begin_resolving(
+                1,
+                1,
+                &deadline(20),
+                binding,
+                DecisionTerminalOutcome::Fallback,
+            )
+            .unwrap();
+        assert!(matches!(
+            fallback.status,
+            PendingDecisionStatus::Resolving {
+                outcome: DecisionTerminalOutcome::Fallback,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn cancellation_is_exact_and_cannot_take_over_resolving_custody() {
+        let (_, pending, _) = pair();
+        let cancelled = pending
+            .plan_cancellation(&pending.controller, pending.id, pending.revision)
+            .unwrap();
+        assert!(matches!(
+            cancelled.post_image().status,
+            PendingDecisionStatus::Terminal {
+                outcome: DecisionTerminalOutcome::Cancelled,
+                action_binding: None,
+            }
+        ));
+        assert_eq!(
+            pending
+                .plan_cancellation(&pending.controller, pending.id, 2)
+                .unwrap_err(),
+            DecisionError::InvalidTransition
+        );
+
+        let mut resolving = pending.clone();
+        resolving.lease(1, deadline(12)).unwrap();
+        resolving
+            .begin_resolving(
+                1,
+                1,
+                &deadline(12),
+                DecisionActionBinding {
+                    request: RequestUid::from_bytes([3; 16]),
+                    request_hash: CanonicalHash::from_bytes([4; 32]),
+                },
+                DecisionTerminalOutcome::Executed,
+            )
+            .unwrap();
+        assert_eq!(
+            resolving
+                .plan_cancellation(&resolving.controller, resolving.id, resolving.revision)
+                .unwrap_err(),
+            DecisionError::InvalidTransition
+        );
     }
 
     #[test]

@@ -105,6 +105,21 @@ pub struct StagedDecisionResponse {
     pub binding: mush_core::DecisionActionBinding,
 }
 
+/// Exact provider-attempt action plus optional fallback custody released only
+/// after this action commits.
+#[derive(Debug)]
+pub struct StagedDecisionAttempt {
+    pub staged: StagedAuthoritativeAction,
+    pub fallback_fence: Option<mush_core::DecisionCompletionFence>,
+}
+
+/// Exact fallback-custody action plus the fence released only after commit.
+#[derive(Debug)]
+pub struct StagedDecisionFallbackTrigger {
+    pub staged: StagedAuthoritativeAction,
+    pub fallback_fence: mush_core::DecisionCompletionFence,
+}
+
 /// Stateless coordinator; all mutable truth remains in the engine and store.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ActionCoordinator;
@@ -335,17 +350,54 @@ impl ActionCoordinator {
             .map_err(|source| ActionCoordinatorError::DecisionResponseIngress(Box::new(source)))
     }
 
+    /// Select and canonicalize one deterministic projected-only fallback.
+    pub fn decision_fallback_ingress(
+        engine: &Engine,
+        candidate: &mush_core::DecisionFallbackCandidate,
+    ) -> Result<(mush_core::DecisionResponse, IngressEnvelope), ActionCoordinatorError> {
+        let response = engine
+            .select_decision_fallback(candidate)
+            .map_err(|source| ActionCoordinatorError::DecisionFallbackSelect(Box::new(source)))?;
+        let ingress = engine
+            .decision_fallback_ingress(candidate, &response)
+            .map_err(|source| ActionCoordinatorError::DecisionResponseIngress(Box::new(source)))?;
+        Ok((response, ingress))
+    }
+
     /// Construct canonical owner-local ingress for recording an already
     /// durable selected-action binding on its exact pending decision.
     pub fn decision_resolving_ingress(
         engine: &Engine,
         fence: &mush_core::DecisionCompletionFence,
         binding: &mush_core::DecisionActionBinding,
+        outcome: mush_core::DecisionTerminalOutcome,
         idempotency_epoch: u64,
     ) -> Result<IngressEnvelope, ActionCoordinatorError> {
         engine
-            .decision_resolving_ingress(fence, binding, idempotency_epoch)
+            .decision_resolving_ingress(fence, binding, outcome, idempotency_epoch)
             .map_err(|source| ActionCoordinatorError::DecisionResolvingIngress(Box::new(source)))
+    }
+
+    pub fn decision_attempt_ingress(
+        engine: &Engine,
+        fence: &mush_core::DecisionCompletionFence,
+        kind: mush_core::DecisionAttemptFailureKind,
+        max_attempts: u8,
+        idempotency_epoch: u64,
+    ) -> Result<IngressEnvelope, ActionCoordinatorError> {
+        engine
+            .decision_attempt_ingress(fence, kind, max_attempts, idempotency_epoch)
+            .map_err(|source| ActionCoordinatorError::DecisionAttemptIngress(Box::new(source)))
+    }
+
+    pub fn decision_fallback_trigger_ingress(
+        engine: &Engine,
+        candidate: &mush_core::DecisionFallbackTriggerCandidate,
+        idempotency_epoch: u64,
+    ) -> Result<IngressEnvelope, ActionCoordinatorError> {
+        engine
+            .decision_fallback_trigger_ingress(candidate, idempotency_epoch)
+            .map_err(|source| ActionCoordinatorError::DecisionFallbackTrigger(Box::new(source)))
     }
 
     /// Construct canonical owner-local ingress for terminalizing one exact
@@ -614,6 +666,38 @@ impl ActionCoordinator {
         })
     }
 
+    pub fn decision_cancellation_ingress(
+        engine: &Engine,
+        controller: &mush_core::DecisionControllerId,
+        decision: mush_core::DecisionId,
+        revision: u64,
+        idempotency_epoch: u64,
+    ) -> Result<IngressEnvelope, ActionCoordinatorError> {
+        engine
+            .decision_cancellation_ingress(controller, decision, revision, idempotency_epoch)
+            .map_err(|source| ActionCoordinatorError::DecisionCancellationIngress(Box::new(source)))
+    }
+
+    /// Resolve a deterministic fallback through the same ordinary action
+    /// coordinator used by async and human selections.
+    pub fn prepare_and_stage_decision_fallback(
+        permit: Box<ActionPermit>,
+        engine: &mut Engine,
+        candidate: &mush_core::DecisionFallbackCandidate,
+        response: &mush_core::DecisionResponse,
+    ) -> Result<StagedDecisionResponse, ActionCoordinatorError> {
+        let resolution = engine
+            .resolve_decision_fallback(candidate, response, permit.ingress())
+            .map_err(|source| ActionCoordinatorError::DecisionResponseResolve(Box::new(source)))?;
+        let binding = resolution.binding().clone();
+        let staged = Self::prepare_and_stage_resolved(permit, engine, resolution.into_resolved())?;
+        Ok(StagedDecisionResponse {
+            staged,
+            fence: candidate.fence().clone(),
+            binding,
+        })
+    }
+
     /// Record the exact selected-action binding through the controller
     /// owner's registered action. The post-image and lifecycle action share
     /// one authoritative bundle.
@@ -622,9 +706,10 @@ impl ActionCoordinator {
         engine: &mut Engine,
         fence: &mush_core::DecisionCompletionFence,
         binding: &mush_core::DecisionActionBinding,
+        outcome: mush_core::DecisionTerminalOutcome,
     ) -> Result<StagedAuthoritativeAction, ActionCoordinatorError> {
         let plan = engine
-            .plan_decision_resolving(fence, binding, permit.ingress())
+            .plan_decision_resolving(fence, binding, outcome, permit.ingress())
             .map_err(|source| ActionCoordinatorError::DecisionResolvingPlan(Box::new(source)))?;
         let (action, invocation, guards, transition) = plan.into_parts();
         validate_invocation_identity(permit.ingress(), &invocation)?;
@@ -680,6 +765,150 @@ impl ActionCoordinator {
         let (prepared, output) = engine
             .prepare_registered_decision_terminal_action(
                 fence,
+                &action,
+                &invocation,
+                transition,
+                token,
+            )
+            .map_err(ActionCoordinatorError::Provider)?;
+        let bundle = match assemble_bundle(
+            permit.ingress(),
+            &action,
+            &invocation,
+            token,
+            &prepared,
+            output,
+        ) {
+            Ok(bundle) => bundle,
+            Err(error) => {
+                engine.abort_prepared_transaction(prepared);
+                return Err(error);
+            }
+        };
+        let staged = StagedAuthoritativeAction {
+            token: bundle.token(),
+            bundle_hash: bundle.bundle_hash(),
+        };
+        engine
+            .stage_authoritative_action(prepared, guards, bundle)
+            .map_err(ActionCoordinatorError::Stage)?;
+        Ok(staged)
+    }
+
+    pub fn prepare_and_stage_decision_attempt(
+        permit: Box<ActionPermit>,
+        engine: &mut Engine,
+        fence: &mush_core::DecisionCompletionFence,
+        kind: mush_core::DecisionAttemptFailureKind,
+        max_attempts: u8,
+    ) -> Result<StagedDecisionAttempt, ActionCoordinatorError> {
+        let plan = engine
+            .plan_decision_attempt_failure(fence, kind, max_attempts, permit.ingress())
+            .map_err(|source| ActionCoordinatorError::DecisionAttemptPlan(Box::new(source)))?;
+        let (action, invocation, guards, transition) = plan.into_parts();
+        validate_invocation_identity(permit.ingress(), &invocation)?;
+        let token = deterministic_commit_token(permit.ingress())?;
+        let (prepared, output, fallback_fence) = engine
+            .prepare_registered_decision_attempt_action(
+                fence,
+                &action,
+                &invocation,
+                transition,
+                token,
+            )
+            .map_err(ActionCoordinatorError::Provider)?;
+        let bundle = match assemble_bundle(
+            permit.ingress(),
+            &action,
+            &invocation,
+            token,
+            &prepared,
+            output,
+        ) {
+            Ok(bundle) => bundle,
+            Err(error) => {
+                engine.abort_prepared_transaction(prepared);
+                return Err(error);
+            }
+        };
+        let staged = StagedAuthoritativeAction {
+            token: bundle.token(),
+            bundle_hash: bundle.bundle_hash(),
+        };
+        engine
+            .stage_authoritative_action(prepared, guards, bundle)
+            .map_err(ActionCoordinatorError::Stage)?;
+        Ok(StagedDecisionAttempt {
+            staged,
+            fallback_fence,
+        })
+    }
+
+    pub fn prepare_and_stage_decision_fallback_trigger(
+        permit: Box<ActionPermit>,
+        engine: &mut Engine,
+        candidate: &mush_core::DecisionFallbackTriggerCandidate,
+    ) -> Result<StagedDecisionFallbackTrigger, ActionCoordinatorError> {
+        let plan = engine
+            .plan_decision_fallback_trigger(candidate, permit.ingress())
+            .map_err(|source| {
+                ActionCoordinatorError::DecisionFallbackTriggerPlan(Box::new(source))
+            })?;
+        let (action, invocation, guards, transition) = plan.into_parts();
+        validate_invocation_identity(permit.ingress(), &invocation)?;
+        let token = deterministic_commit_token(permit.ingress())?;
+        let (prepared, output, fallback_fence) = engine
+            .prepare_registered_decision_fallback_trigger_action(
+                candidate,
+                &action,
+                &invocation,
+                transition,
+                token,
+            )
+            .map_err(ActionCoordinatorError::Provider)?;
+        let bundle = match assemble_bundle(
+            permit.ingress(),
+            &action,
+            &invocation,
+            token,
+            &prepared,
+            output,
+        ) {
+            Ok(bundle) => bundle,
+            Err(error) => {
+                engine.abort_prepared_transaction(prepared);
+                return Err(error);
+            }
+        };
+        let staged = StagedAuthoritativeAction {
+            token: bundle.token(),
+            bundle_hash: bundle.bundle_hash(),
+        };
+        engine
+            .stage_authoritative_action(prepared, guards, bundle)
+            .map_err(ActionCoordinatorError::Stage)?;
+        Ok(StagedDecisionFallbackTrigger {
+            staged,
+            fallback_fence,
+        })
+    }
+
+    pub fn prepare_and_stage_decision_cancellation(
+        permit: Box<ActionPermit>,
+        engine: &mut Engine,
+        controller: &mush_core::DecisionControllerId,
+        decision: mush_core::DecisionId,
+        revision: u64,
+    ) -> Result<StagedAuthoritativeAction, ActionCoordinatorError> {
+        let plan = engine
+            .plan_decision_cancellation(controller, decision, revision, permit.ingress())
+            .map_err(|source| ActionCoordinatorError::DecisionCancellationPlan(Box::new(source)))?;
+        let (action, invocation, guards, transition) = plan.into_parts();
+        validate_invocation_identity(permit.ingress(), &invocation)?;
+        let token = deterministic_commit_token(permit.ingress())?;
+        let (prepared, output) = engine
+            .prepare_registered_decision_cancellation_action(
+                controller,
                 &action,
                 &invocation,
                 transition,
@@ -847,6 +1076,8 @@ pub enum ActionCoordinatorError {
     DecisionResponseIngress(#[source] Box<mush_core::DecisionResponseIngressError>),
     #[error("decision response resolution failed: {0}")]
     DecisionResponseResolve(#[source] Box<mush_core::DecisionResponseResolveError>),
+    #[error("decision fallback selection failed: {0}")]
+    DecisionFallbackSelect(#[source] Box<mush_core::DecisionFallbackSelectionError>),
     #[error("decision resolving ingress is invalid: {0}")]
     DecisionResolvingIngress(#[source] Box<mush_core::DecisionResolvingIngressError>),
     #[error("decision resolving planning failed: {0}")]
@@ -855,6 +1086,18 @@ pub enum ActionCoordinatorError {
     DecisionTerminalIngress(#[source] Box<mush_core::DecisionTerminalIngressError>),
     #[error("decision terminal planning failed: {0}")]
     DecisionTerminalPlan(#[source] Box<mush_core::DecisionTerminalPlanError>),
+    #[error("decision attempt ingress is invalid: {0}")]
+    DecisionAttemptIngress(#[source] Box<mush_core::DecisionAttemptIngressError>),
+    #[error("decision attempt planning failed: {0}")]
+    DecisionAttemptPlan(#[source] Box<mush_core::DecisionAttemptPlanError>),
+    #[error("decision fallback trigger is invalid: {0}")]
+    DecisionFallbackTrigger(#[source] Box<mush_core::DecisionFallbackTriggerError>),
+    #[error("decision fallback trigger planning failed: {0}")]
+    DecisionFallbackTriggerPlan(#[source] Box<mush_core::DecisionFallbackTriggerPlanError>),
+    #[error("decision cancellation ingress is invalid: {0}")]
+    DecisionCancellationIngress(#[source] Box<mush_core::DecisionCancellationIngressError>),
+    #[error("decision cancellation planning failed: {0}")]
+    DecisionCancellationPlan(#[source] Box<mush_core::DecisionCancellationPlanError>),
     #[error("semantic invocation identity does not match its preflight ingress")]
     IngressInvocationMismatch,
     #[error("action provider preparation failed: {0}")]

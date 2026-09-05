@@ -2826,6 +2826,20 @@ fallback using no LLM/provider call and submit it with the same action idempoten
 fallback races therefore have one durable winner. Late, duplicate, and out-of-order responses join
 the identical winner or receive a projected terminal/stale result; they never run a second action.
 
+Implementation status: K7.3 is closed. Provider failures are committed as typed, retry-stable
+owner-local lifecycle actions with a three-attempt deployment default and an eight-attempt kernel
+maximum; permanent failure transfers custody immediately. Deadline discovery and missing-provider
+admission both use the same exact `Ready/Leased -> FallbackReady` action, whose identity binds only
+persisted state rather than moving observation time. The deterministic selector is
+composition-branded, synchronous, projected-prompt-only, and must name an exact composed fallback
+definition; its selection then enters the identical ordinary action ingress and idempotency key as
+an async response. Exact cancellation accepts only the named controller/decision/revision before
+`Resolving`, installs `Terminal(cancelled)` without an action binding, and exposes no success until
+that post-image commits. Composed tests prove deadline-before-provider, bounded malformed and
+unavailable-provider exhaustion, missing-provider transfer, fallback execution, and cancellation
+token invalidation at acknowledgement. Campaign/transport authority to request cancellation stays
+outside this kernel primitive and remains part of the production K7 migration.
+
 **K7.4 — recovery and bounds.** On boot, discover pending records by bounded canonical family scan,
 validate the prompt/schedule/idempotency linkage, reconcile any action already pending or
 finalized, and re-enqueue `Ready` or expired-lease decisions from their exact prompt records.

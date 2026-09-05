@@ -5187,6 +5187,14 @@ pub enum ActionProviderPrepareError {
     DecisionLifecycle(#[source] Box<crate::decision_source::DecisionResolvingPlanError>),
     #[error("delayed-decision terminal transition was not admissible: {0}")]
     DecisionTerminal(#[source] Box<crate::decision_source::DecisionTerminalPlanError>),
+    #[error("delayed-decision provider attempt was not admissible: {0}")]
+    DecisionAttempt(#[source] Box<crate::decision_source::DecisionAttemptPlanError>),
+    #[error("delayed-decision fallback transfer was not admissible: {0}")]
+    DecisionFallbackTrigger(
+        #[source] Box<crate::decision_source::DecisionFallbackTriggerPlanError>,
+    ),
+    #[error("delayed-decision cancellation was not admissible: {0}")]
+    DecisionCancellation(#[source] Box<crate::decision_source::DecisionCancellationPlanError>),
 }
 
 /// Exact action-provider dispatch failure.
