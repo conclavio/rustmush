@@ -530,6 +530,8 @@ pub struct Engine {
     /// short-lived [`PrepareCtx`](crate::resolution::PrepareCtx) capabilities
     /// cross into providers; the ring and root bytes never do.
     resolution_keys: Option<crate::resolution::ResolutionKeyRing>,
+    /// Process-local HMAC key ring for durable delayed-decision prompts.
+    decision_keys: Option<crate::decision::DecisionKeyRing>,
     /// At most one prepared action awaiting transfer to the driver.
     staged_action: Option<StagedAction>,
     /// Module persistence ops drained from handlers, awaiting
@@ -573,6 +575,7 @@ impl Engine {
             action_state,
             offer_keys: None,
             resolution_keys: None,
+            decision_keys: None,
             staged_action: None,
             module_ops: Vec::new(),
             scene_ticks: HashMap::new(),
@@ -597,6 +600,11 @@ impl Engine {
     /// on rerunning the provider with this mutable current version.
     pub fn set_resolution_keys(&mut self, keys: crate::resolution::ResolutionKeyRing) {
         self.resolution_keys = Some(keys);
+    }
+
+    /// Install or atomically replace the delayed-decision token key ring.
+    pub fn set_decision_keys(&mut self, keys: crate::decision::DecisionKeyRing) {
+        self.decision_keys = Some(keys);
     }
 
     /// Root-secret versions still referenced by open or durably closed
@@ -712,6 +720,60 @@ impl Engine {
             .schedule_sources()
             .ok_or(crate::schedule_source::ScheduleSourceScanError::RegistryUnavailable)?
             .scan(self, cause, cursor, limit)
+    }
+
+    /// Discover one bounded canonical page of ready or expired-lease delayed
+    /// decisions. Prompt linkage is authenticated before a candidate leaves
+    /// the engine.
+    pub fn discover_decision_dispatches(
+        &self,
+        cursor: Option<&crate::decision_source::DecisionSourceCursor>,
+        limit: usize,
+    ) -> Result<
+        crate::decision_source::DecisionSourcePage,
+        crate::decision_source::DecisionSourceScanError,
+    > {
+        let keys = self
+            .decision_keys
+            .as_ref()
+            .ok_or(crate::decision_source::DecisionSourceScanError::RegistryUnavailable)?;
+        self.registry
+            .decision_sources()
+            .ok_or(crate::decision_source::DecisionSourceScanError::RegistryUnavailable)?
+            .scan(self, keys, cursor, limit)
+    }
+
+    /// Construct stable internal ingress for one discovered lease attempt.
+    pub fn decision_lease_ingress(
+        &self,
+        candidate: &crate::decision_source::DecisionDispatchCandidate,
+        idempotency_epoch: u64,
+    ) -> Result<crate::action::IngressEnvelope, crate::decision_source::DecisionLeaseIngressError>
+    {
+        self.registry
+            .decision_sources()
+            .ok_or(crate::decision_source::DecisionSourceCandidateError::RegistryMismatch)?
+            .ingress_for_candidate(candidate, idempotency_epoch)
+    }
+
+    /// Re-read and plan one exact decision lease after store preflight.
+    pub fn plan_decision_dispatch(
+        &self,
+        candidate: &crate::decision_source::DecisionDispatchCandidate,
+        ingress: &crate::action::IngressEnvelope,
+        lease_duration: i64,
+    ) -> Result<
+        crate::decision_source::DecisionDispatchPlan,
+        crate::decision_source::DecisionSourcePlanError,
+    > {
+        let keys = self
+            .decision_keys
+            .as_ref()
+            .ok_or(crate::decision_source::DecisionSourcePlanError::RegistryUnavailable)?;
+        self.registry
+            .decision_sources()
+            .ok_or(crate::decision_source::DecisionSourcePlanError::RegistryUnavailable)?
+            .plan_candidate(self, keys, candidate, ingress, lease_duration)
     }
 
     /// Ask the source's trusted read-only adapter to build domain addressing,
@@ -1349,6 +1411,56 @@ impl Engine {
                 })
             },
         )
+    }
+
+    /// Prepare the registered owner action while the kernel seeds one exact
+    /// delayed-decision lease into the same transaction. The returned worker
+    /// lease remains caller custody and must not be spawned before the action's
+    /// exact authoritative receipt is acknowledged and installed.
+    pub fn prepare_registered_decision_lease_action(
+        &mut self,
+        candidate: &crate::decision_source::DecisionDispatchCandidate,
+        action: &crate::mechanics::DefinitionRef,
+        invocation: &crate::action::ActionInvocation,
+        transition: crate::decision::DecisionLeaseTransition,
+        commit_token: crate::action::CommitToken,
+    ) -> Result<
+        (
+            PreparedTxn,
+            crate::action::PreparedAuthoritativeAction,
+            crate::decision::DecisionWorkerLease,
+        ),
+        crate::action::ActionProviderPrepareError,
+    > {
+        let providers = self
+            .registry
+            .action_providers()
+            .ok_or(crate::action::ActionProviderPrepareError::RegistryUnavailable)?;
+        let decisions = self
+            .registry
+            .decision_sources()
+            .ok_or(crate::action::ActionProviderPrepareError::RegistryUnavailable)?;
+        let mut worker = None;
+        let (prepared, output) = providers.prepare_authoritative_invocation_seeded(
+            action,
+            invocation,
+            commit_token,
+            &mut self.action_state,
+            self.resolution_keys.as_ref(),
+            |txn| {
+                worker = Some(decisions.seed_lease(candidate, transition, txn).map_err(
+                    |source| {
+                        crate::action::ActionProviderPrepareError::DecisionLease(Box::new(source))
+                    },
+                )?);
+                Ok(())
+            },
+        )?;
+        Ok((
+            prepared,
+            output,
+            worker.expect("successful decision lease seed returns worker custody"),
+        ))
     }
 
     /// Release a prepared transaction that could not be assembled into a

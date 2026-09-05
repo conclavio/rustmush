@@ -501,6 +501,8 @@ pub struct Registry {
         crate::resource_provider::ResourceEffectProviderRegistryBuilder,
     /// K4 declarative durable schedule sources, mutable only while modules register.
     pub(crate) schedule_source_builder: crate::schedule_source::ScheduleSourceRegistryBuilder,
+    /// K7 declarative delayed-decision sources, mutable only while modules register.
+    pub(crate) decision_source_builder: crate::decision_source::DecisionSourceRegistryBuilder,
     /// Process-lifetime, one-way readiness for the bounded composed owner roster.
     pub(crate) mechanics_owner_readiness: Option<crate::mechanics::MechanicalOwnerReadiness>,
     /// Frozen before any persisted rules-bearing record is loaded.
@@ -524,6 +526,8 @@ pub struct Registry {
         Option<crate::resource_provider::ResourceEffectProviderRegistry>,
     /// Frozen owner-stamped durable schedule-source registry.
     pub(crate) schedule_sources: Option<crate::schedule_source::ScheduleSourceRegistry>,
+    /// Frozen owner-stamped delayed-decision source registry.
+    pub(crate) decision_sources: Option<crate::decision_source::DecisionSourceRegistry>,
 }
 
 impl Registry {

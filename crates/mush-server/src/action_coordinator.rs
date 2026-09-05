@@ -88,6 +88,14 @@ pub struct StagedAuthoritativeAction {
     pub bundle_hash: CanonicalHash,
 }
 
+/// Exact durable action identity plus provider-worker custody. The worker
+/// lease may be released only after this exact action commits.
+#[derive(Debug)]
+pub struct StagedDecisionLease {
+    pub staged: StagedAuthoritativeAction,
+    pub worker: mush_core::DecisionWorkerLease,
+}
+
 /// Stateless coordinator; all mutable truth remains in the engine and store.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ActionCoordinator;
@@ -295,6 +303,17 @@ impl ActionCoordinator {
         })
     }
 
+    /// Construct canonical coordinator ingress for one decision lease attempt.
+    pub fn decision_lease_ingress(
+        engine: &Engine,
+        candidate: &mush_core::DecisionDispatchCandidate,
+        idempotency_epoch: u64,
+    ) -> Result<IngressEnvelope, ActionCoordinatorError> {
+        engine
+            .decision_lease_ingress(candidate, idempotency_epoch)
+            .map_err(|source| ActionCoordinatorError::DecisionLeaseIngress(Box::new(source)))
+    }
+
     /// Authorized semantic `action/status` lookup. Finalized outcomes are
     /// returned only to an event-time eligible witness.
     pub async fn semantic_status(
@@ -478,6 +497,54 @@ impl ActionCoordinator {
             .map_err(ActionCoordinatorError::Stage)?;
         Ok(StagedAuthoritativeAction { token, bundle_hash })
     }
+
+    /// Prepare one operational delayed-decision lease through its registered
+    /// owner action. The exact lease post-image and action outcome share one
+    /// bundle; worker custody is returned but not spawned here.
+    pub fn prepare_and_stage_decision_lease(
+        permit: Box<ActionPermit>,
+        engine: &mut Engine,
+        candidate: &mush_core::DecisionDispatchCandidate,
+        lease_duration: i64,
+    ) -> Result<StagedDecisionLease, ActionCoordinatorError> {
+        let plan = engine
+            .plan_decision_dispatch(candidate, permit.ingress(), lease_duration)
+            .map_err(|source| ActionCoordinatorError::DecisionLeasePlan(Box::new(source)))?;
+        let (action, invocation, guards, transition) = plan.into_parts();
+        validate_invocation_identity(permit.ingress(), &invocation)?;
+        let token = deterministic_commit_token(permit.ingress())?;
+        let (prepared, output, worker) = engine
+            .prepare_registered_decision_lease_action(
+                candidate,
+                &action,
+                &invocation,
+                transition,
+                token,
+            )
+            .map_err(ActionCoordinatorError::Provider)?;
+        let bundle = match assemble_bundle(
+            permit.ingress(),
+            &action,
+            &invocation,
+            token,
+            &prepared,
+            output,
+        ) {
+            Ok(bundle) => bundle,
+            Err(error) => {
+                engine.abort_prepared_transaction(prepared);
+                return Err(error);
+            }
+        };
+        let staged = StagedAuthoritativeAction {
+            token: bundle.token(),
+            bundle_hash: bundle.bundle_hash(),
+        };
+        engine
+            .stage_authoritative_action(prepared, guards, bundle)
+            .map_err(ActionCoordinatorError::Stage)?;
+        Ok(StagedDecisionLease { staged, worker })
+    }
 }
 
 /// Failure at the authenticated durable-result projection boundary.
@@ -608,6 +675,10 @@ pub enum ActionCoordinatorError {
     ScheduleIngress(#[source] Box<mush_core::ScheduleActionIngressError>),
     #[error("scheduled action planning failed: {0}")]
     SchedulePlan(#[source] Box<mush_core::ScheduleActionPlanError>),
+    #[error("decision lease ingress is invalid: {0}")]
+    DecisionLeaseIngress(#[source] Box<mush_core::DecisionLeaseIngressError>),
+    #[error("decision lease planning failed: {0}")]
+    DecisionLeasePlan(#[source] Box<mush_core::DecisionSourcePlanError>),
     #[error("semantic invocation identity does not match its preflight ingress")]
     IngressInvocationMismatch,
     #[error("action provider preparation failed: {0}")]

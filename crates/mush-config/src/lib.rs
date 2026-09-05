@@ -17,9 +17,11 @@
 //!   for K5 legal-action offers.
 //! - [`resolution_keys`] — an independent durable key family for K4
 //!   authoritative resolution RNG.
+//! - [`decision_keys`] — durable HMAC keys for K7 delayed-decision prompts.
 
 pub mod accounts;
 pub mod config;
+pub mod decision_keys;
 mod durable_keys;
 pub mod ipguard;
 pub mod logging;

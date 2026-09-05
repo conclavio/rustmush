@@ -232,6 +232,11 @@ impl DecisionKeyRing {
     }
 
     #[must_use]
+    pub const fn current_version(&self) -> u32 {
+        self.current.version
+    }
+
+    #[must_use]
     pub fn sign(
         &self,
         id: DecisionId,
@@ -565,6 +570,21 @@ impl DecisionCaptureFamilies {
     #[must_use]
     pub fn owner(&self) -> &OwnerId {
         self.pending.owner()
+    }
+
+    #[must_use]
+    pub(crate) const fn pending(&self) -> &StateFamilyHandle<DecisionId, PendingDecision> {
+        &self.pending
+    }
+
+    #[must_use]
+    pub(crate) const fn prompts(&self) -> &StateFamilyHandle<DecisionId, DecisionPromptRecord> {
+        &self.prompts
+    }
+
+    #[must_use]
+    pub(crate) const fn deadlines(&self) -> &StateFamilyHandle<ScheduleId, DurableSchedule> {
+        &self.deadlines
     }
 }
 

@@ -59,6 +59,7 @@ pub mod commands;
 pub mod contact;
 pub mod control;
 pub mod decision;
+pub mod decision_source;
 pub mod durable_schedule;
 pub mod engine;
 pub mod flags;
@@ -189,6 +190,13 @@ pub use decision::{
     PendingDecisionStateCodec, PendingDecisionStatus, PendingOfferWitness, PendingTargetWitness,
     ProjectedDecisionContext, decision_prompt_state_family_descriptor,
     pending_decision_state_family_descriptor,
+};
+pub use decision_source::{
+    DecisionDispatchCandidate, DecisionDispatchPlan, DecisionLeaseIngressError,
+    DecisionSourceCandidateError, DecisionSourceCursor, DecisionSourcePage,
+    DecisionSourcePlanError, DecisionSourceRegistry, DecisionSourceRegistryBuilder,
+    DecisionSourceRegistryError, DecisionSourceScanError, MAX_DECISION_SOURCES,
+    decision_lease_ingress,
 };
 pub use durable_schedule::{
     DurableSchedule, DurableScheduleDraft, DurableScheduleError, DurableScheduleStateCodec,

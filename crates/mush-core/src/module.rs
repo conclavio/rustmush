@@ -1206,6 +1206,7 @@ impl Registry {
             || self.clock_providers.is_some()
             || self.resource_effect_providers.is_some()
             || self.schedule_sources.is_some()
+            || self.decision_sources.is_some()
             || self.mechanics_owner_readiness.is_some()
         {
             return Err(ModError::msg("mechanics registries were already frozen"));
@@ -1243,6 +1244,14 @@ impl Registry {
                 owner_readiness.clone(),
             )
             .map_err(|e| ModError::msg(format!("schedule source registry: {e}")))?;
+        let decision_sources = std::mem::take(&mut self.decision_source_builder)
+            .freeze_for_composition(
+                module_owners,
+                &action_providers,
+                &state_families,
+                owner_readiness.clone(),
+            )
+            .map_err(|e| ModError::msg(format!("decision source registry: {e}")))?;
         let revision_validators = std::mem::take(&mut self.revision_validator_builder)
             .freeze_for_owners_with_readiness(module_owners, owner_readiness.clone())
             .map_err(|e| ModError::msg(format!("revision validator registry: {e}")))?;
@@ -1263,6 +1272,7 @@ impl Registry {
         self.clock_providers = Some(clock_providers);
         self.resource_effect_providers = Some(resource_effect_providers);
         self.schedule_sources = Some(schedule_sources);
+        self.decision_sources = Some(decision_sources);
         self.definition_migrations = Some(definition_migrations);
         Ok(())
     }
@@ -1376,6 +1386,12 @@ impl Registry {
         self.schedule_sources.as_ref()
     }
 
+    /// Immutable delayed-decision sources after module composition.
+    #[must_use]
+    pub fn decision_sources(&self) -> Option<&crate::decision_source::DecisionSourceRegistry> {
+        self.decision_sources.as_ref()
+    }
+
     /// Start a server-owned guard bundle bound to this exact frozen module
     /// composition. A bare or not-yet-composed registry fails closed.
     pub fn server_guard_set_builder(
@@ -1421,8 +1437,9 @@ impl Registry {
         let clock_providers = self.clock_providers.as_ref()?;
         let resource_effect_providers = self.resource_effect_providers.as_ref()?;
         let schedule_sources = self.schedule_sources.as_ref()?;
+        let decision_sources = self.decision_sources.as_ref()?;
         crate::mechanics::DefinitionDigest::for_canonical_value(
-            "mechanics_registry.v7",
+            "mechanics_registry.v8",
             &serde_json::json!({
                 "definitions": definitions.fingerprint().to_hex(),
                 "bridges": bridges.fingerprint().to_hex(),
@@ -1434,6 +1451,7 @@ impl Registry {
                 "clock_providers": clock_providers.fingerprint().to_hex(),
                 "resource_effect_providers": resource_effect_providers.fingerprint().to_hex(),
                 "schedule_sources": schedule_sources.fingerprint().to_hex(),
+                "decision_sources": decision_sources.fingerprint().to_hex(),
             }),
         )
         .ok()
@@ -2140,6 +2158,43 @@ impl<'a> Registrar<'a> {
             .map_err(|e| {
                 ModError::msg(format!(
                     "module {}: schedule source registration: {e}",
+                    self.module
+                ))
+            })
+    }
+
+    /// Declare this module's authoritative delayed-decision families and the
+    /// exact action used to durably record each provider lease.
+    ///
+    /// One source is permitted per owner. The kernel scans these families
+    /// directly and seeds the lease post-image into the registered action's
+    /// transaction; the action provider cannot start async work or choose a
+    /// different record.
+    pub fn decision_source(
+        &mut self,
+        lease_action: crate::mechanics::DefinitionRef,
+        families: crate::decision::DecisionCaptureFamilies,
+        wake_adapter: crate::mechanics::CanonicalId,
+    ) -> Result<(), ModError> {
+        self.require_mechanics_registration_authority()?;
+        if self.reg.decision_sources.is_some() {
+            return Err(ModError::msg(format!(
+                "module {}: decision-source registry is already frozen",
+                self.module
+            )));
+        }
+        let owner = crate::mechanics::OwnerId::new(self.module.as_str()).map_err(|e| {
+            ModError::msg(format!(
+                "module {} has no canonical mechanics owner id: {e}",
+                self.module
+            ))
+        })?;
+        self.reg
+            .decision_source_builder
+            .register(owner, lease_action, families, wake_adapter)
+            .map_err(|e| {
+                ModError::msg(format!(
+                    "module {}: decision source registration: {e}",
                     self.module
                 ))
             })

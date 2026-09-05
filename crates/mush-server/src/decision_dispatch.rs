@@ -94,6 +94,11 @@ impl DecisionProviderRegistry {
     fn get(&self, owner: &OwnerId) -> Option<Arc<dyn DecisionProviderAdapter>> {
         self.adapters.get(owner).cloned()
     }
+
+    #[must_use]
+    pub fn contains_owner(&self, owner: &OwnerId) -> bool {
+        self.adapters.contains_key(owner)
+    }
 }
 
 #[derive(Clone, Debug, Eq, thiserror::Error, PartialEq)]

@@ -35,6 +35,7 @@ use std::time::Duration;
 
 use mush_config::accounts::import_accounts_json;
 use mush_config::config::{Config, StoreBackend, StoreReceiptPolicy};
+use mush_config::decision_keys::DurableDecisionKeyStore;
 use mush_config::ipguard::IpGuard;
 use mush_config::metrics::Metrics;
 use mush_config::offer_keys::DurableOfferKeyStore;
@@ -213,6 +214,14 @@ async fn build_engine(
         key_dir = %config.resolution_key_dir().display(),
         "durable authoritative resolution keys loaded"
     );
+    let decision_keys = DurableDecisionKeyStore::new(config.decision_key_dir())
+        .load_or_create()
+        .map_err(|error| format!("decision key provisioning failed: {error}"))?;
+    tracing::info!(
+        current_version = decision_keys.current_version(),
+        key_dir = %config.decision_key_dir().display(),
+        "durable delayed-decision keys loaded"
+    );
     let authoritative = store.authoritative_store().ok_or_else(|| {
         "configured store does not implement K3 exact-token durability; refusing writable boot"
             .to_owned()
@@ -316,6 +325,7 @@ async fn build_engine(
     let mut engine = Engine::from_composition(world, composition);
     engine.set_offer_keys(offer_keys);
     engine.set_resolution_keys(resolution_keys);
+    engine.set_decision_keys(decision_keys);
     modules::boot_modules(&mut engine, &**store).await?;
     Ok((engine, staff))
 }

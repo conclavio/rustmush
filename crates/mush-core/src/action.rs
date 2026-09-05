@@ -5181,6 +5181,8 @@ pub enum ActionProviderPrepareError {
     State(#[from] ActionStateError),
     #[error("durable schedule advance was not admissible: {0}")]
     Schedule(#[source] Box<crate::schedule_source::ScheduleAdvanceAdmissionError>),
+    #[error("delayed-decision lease was not admissible: {0}")]
+    DecisionLease(#[source] Box<crate::decision_source::DecisionSourcePlanError>),
 }
 
 /// Exact action-provider dispatch failure.
