@@ -1131,6 +1131,129 @@ impl Engine {
         providers.project_legal_actions(self, query, keys)
     }
 
+    /// Capture the private prompt-time witnesses for one exact projected
+    /// delayed-decision offer. Providers name coordinates, while the kernel
+    /// supplies current generations and proves every cross-owner bridge.
+    fn capture_decision_offer_witness(
+        &self,
+        action: &crate::mechanics::DefinitionRef,
+        query: &crate::offer::LegalActionQuery,
+        offer: &crate::offer::ProjectedLegalAction,
+    ) -> Result<
+        (crate::decision::PendingOfferWitness, i32),
+        crate::decision::DecisionWitnessCaptureError,
+    > {
+        let providers = self
+            .registry
+            .action_providers()
+            .ok_or(crate::decision::DecisionWitnessCaptureError::ProviderRegistryUnavailable)?;
+        let definitions = self
+            .registry
+            .definitions()
+            .ok_or(crate::decision::DecisionWitnessCaptureError::MechanicsRegistryUnavailable)?;
+        let bridges = self
+            .registry
+            .bridges()
+            .ok_or(crate::decision::DecisionWitnessCaptureError::MechanicsRegistryUnavailable)?;
+        let revisions = self
+            .registry
+            .revision_validators()
+            .ok_or(crate::decision::DecisionWitnessCaptureError::RevisionRegistryUnavailable)?;
+        let (keys, bridge_definitions, rank) = providers.delayed_decision_witness_keys(
+            action,
+            query,
+            offer,
+            self,
+            definitions,
+            bridges,
+        )?;
+        let context = crate::action::RevisionValidatorContext::new(&self.world, &self.action_state);
+        let stamp = |key: crate::action::RevisionKey| -> Result<
+            crate::action::RevisionStamp,
+            crate::decision::DecisionWitnessCaptureError,
+        > {
+            let generation = revisions
+                .current_generation(&context, &key)?
+                .ok_or_else(|| {
+                    crate::decision::DecisionWitnessCaptureError::MissingRevision(Box::new(
+                        key.clone(),
+                    ))
+                })?;
+            Ok(crate::action::RevisionStamp { key, generation })
+        };
+        let common_revisions = keys
+            .common
+            .into_iter()
+            .map(&stamp)
+            .collect::<Result<Vec<_>, _>>()?;
+        let target_revisions = keys
+            .targets
+            .into_iter()
+            .map(|target| {
+                let revisions = target
+                    .revisions
+                    .into_iter()
+                    .map(&stamp)
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(crate::decision::PendingTargetWitness {
+                    perceived: target.perceived,
+                    revisions,
+                })
+            })
+            .collect::<Result<Vec<_>, crate::decision::DecisionWitnessCaptureError>>()?;
+        Ok((
+            crate::decision::PendingOfferWitness {
+                offer: offer.offer(),
+                common_revisions,
+                target_revisions,
+                bridge_definitions,
+            },
+            rank,
+        ))
+    }
+
+    /// Project, witness, rank, and bound one delayed-decision action set in a
+    /// single immutable-world pass. Ranking sees projected data only; exact
+    /// definition and offer identities provide deterministic tie-breaks.
+    pub fn project_decision_offers(
+        &self,
+        query: &crate::offer::LegalActionQuery,
+    ) -> Result<
+        crate::decision::DecisionOfferProjection,
+        crate::decision::DecisionWitnessCaptureError,
+    > {
+        let projected = self.project_legal_actions(query)?;
+        let mut ranked = Vec::with_capacity(projected.len());
+        for internal in projected.internal() {
+            let (witness, rank) = self.capture_decision_offer_witness(
+                internal.action(),
+                query,
+                internal.projected(),
+            )?;
+            ranked.push((
+                rank,
+                internal.action().clone(),
+                internal.projected().clone(),
+                witness,
+            ));
+        }
+        ranked.sort_by(|left, right| {
+            right
+                .0
+                .cmp(&left.0)
+                .then_with(|| left.1.cmp(&right.1))
+                .then_with(|| left.2.offer().cmp(&right.2.offer()))
+        });
+        ranked.truncate(crate::decision::MAX_DECISION_OFFERS);
+        let (actions, offered): (Vec<_>, Vec<_>) = ranked
+            .into_iter()
+            .map(|(_, _, action, witness)| (action, witness))
+            .unzip();
+        Ok(crate::decision::DecisionOfferProjection::new(
+            actions, offered,
+        ))
+    }
+
     /// Resolve an untrusted perceived reference into the private truth query
     /// consumed by action providers.
     ///
@@ -2144,33 +2267,7 @@ impl Engine {
         let Some(staged) = self.staged_action.as_ref() else {
             return Ok(None);
         };
-        let revalidation = (|| {
-            let revisions = self.registry.revision_validators().ok_or(
-                StagedActionAdmissionError::RegistryUnavailable {
-                    component: "revision-validator",
-                },
-            )?;
-            let authority = self.registry.authority_guard_validators().ok_or(
-                StagedActionAdmissionError::RegistryUnavailable {
-                    component: "authority-validator",
-                },
-            )?;
-            let definitions = self.registry.definitions().ok_or(
-                StagedActionAdmissionError::RegistryUnavailable {
-                    component: "definition",
-                },
-            )?;
-            staged
-                .guards
-                .revalidate_with_action_state(
-                    &self.world,
-                    &self.action_state,
-                    revisions,
-                    authority,
-                    definitions,
-                )
-                .map_err(StagedActionAdmissionError::Revalidation)
-        })();
+        let revalidation = self.revalidate_guards(&staged.guards);
         match revalidation {
             Ok(result) if result.is_current() => Ok(self.staged_action.take()),
             Ok(result) => {
@@ -2182,6 +2279,40 @@ impl Engine {
                 Err(error)
             }
         }
+    }
+
+    /// Pure pre-preparation guard check used when a retained asynchronous
+    /// action may already be stale on arrival. The driver still repeats this
+    /// check at staged-action transfer to close the final synchronous race.
+    pub fn revalidate_guards(
+        &self,
+        guards: &GuardSet,
+    ) -> Result<GuardRevalidation, StagedActionAdmissionError> {
+        let revisions = self.registry.revision_validators().ok_or(
+            StagedActionAdmissionError::RegistryUnavailable {
+                component: "revision-validator",
+            },
+        )?;
+        let authority = self.registry.authority_guard_validators().ok_or(
+            StagedActionAdmissionError::RegistryUnavailable {
+                component: "authority-validator",
+            },
+        )?;
+        let definitions =
+            self.registry
+                .definitions()
+                .ok_or(StagedActionAdmissionError::RegistryUnavailable {
+                    component: "definition",
+                })?;
+        guards
+            .revalidate_with_action_state(
+                &self.world,
+                &self.action_state,
+                revisions,
+                authority,
+                definitions,
+            )
+            .map_err(StagedActionAdmissionError::Revalidation)
     }
 
     fn abort_staged_action(&mut self) {

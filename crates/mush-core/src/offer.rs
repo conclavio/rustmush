@@ -907,6 +907,10 @@ impl ProjectedLegalActionSink {
             .collect()
     }
 
+    pub(crate) fn internal(&self) -> impl ExactSizeIterator<Item = &InternalOffer> {
+        self.offers.values()
+    }
+
     /// Resolve one opaque submission without distinguishing unknown, expired,
     /// changed, or wrong-viewer offers to the caller.
     pub(crate) fn resolve(

@@ -491,6 +491,11 @@ impl DecisionResponseResolution {
     }
 
     #[must_use]
+    pub const fn resolved(&self) -> &crate::offer::ResolvedAuthoritativeOffer {
+        &self.resolved
+    }
+
+    #[must_use]
     pub fn into_resolved(self) -> crate::offer::ResolvedAuthoritativeOffer {
         self.resolved
     }
@@ -1527,7 +1532,7 @@ impl DecisionSourceRegistry {
             .ok_or(DecisionResponseResolveError::RegistryUnavailable)?;
         let guards = guards
             .with_definition_guards(offered.bridge_definitions.clone(), definitions)?
-            .with_revision_stamps(prompt_stamps)?;
+            .with_prompt_revision_stamps(prompt_stamps)?;
         let binding = DecisionActionBinding {
             request: resolved.invocation().request(),
             request_hash: resolved.invocation().request_hash(),
@@ -1610,7 +1615,7 @@ impl DecisionSourceRegistry {
             .ok_or(DecisionResponseResolveError::RegistryUnavailable)?;
         let guards = guards
             .with_definition_guards(offered.bridge_definitions.clone(), definitions)?
-            .with_revision_stamps(prompt_stamps)?;
+            .with_prompt_revision_stamps(prompt_stamps)?;
         let binding = DecisionActionBinding {
             request: resolved.invocation().request(),
             request_hash: resolved.invocation().request_hash(),

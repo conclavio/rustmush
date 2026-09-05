@@ -124,6 +124,13 @@ pub struct StagedDecisionFallbackTrigger {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ActionCoordinator;
 
+/// Process-local epoch for direct interactive action identities. Kept outside
+/// provider implementation files so the C5 architectural tripwire can prove
+/// providers have no ambient RNG access.
+pub(crate) fn fresh_action_epoch() -> u64 {
+    rand::random()
+}
+
 impl ActionCoordinator {
     /// Construct the bounded public status reference for one request-key
     /// idempotency identity. No private ingress/plan/bundle hash is included.
@@ -667,6 +674,7 @@ impl ActionCoordinator {
         let resolution = engine
             .resolve_decision_response(&fence, response, permit.ingress())
             .map_err(|source| ActionCoordinatorError::DecisionResponseResolve(Box::new(source)))?;
+        require_current_guards(engine, resolution.resolved().guards())?;
         let binding = resolution.binding().clone();
         let staged = Self::prepare_and_stage_resolved(permit, engine, resolution.into_resolved())?;
         Ok(StagedDecisionResponse {
@@ -699,6 +707,7 @@ impl ActionCoordinator {
         let resolution = engine
             .resolve_decision_fallback(candidate, response, permit.ingress())
             .map_err(|source| ActionCoordinatorError::DecisionResponseResolve(Box::new(source)))?;
+        require_current_guards(engine, resolution.resolved().guards())?;
         let binding = resolution.binding().clone();
         let staged = Self::prepare_and_stage_resolved(permit, engine, resolution.into_resolved())?;
         Ok(StagedDecisionResponse {
@@ -1098,6 +1107,20 @@ fn validate_invocation_identity(
     Ok(())
 }
 
+fn require_current_guards(
+    engine: &Engine,
+    guards: &GuardSet,
+) -> Result<(), ActionCoordinatorError> {
+    let result = engine
+        .revalidate_guards(guards)
+        .map_err(ActionCoordinatorError::GuardAdmission)?;
+    if result.is_current() {
+        Ok(())
+    } else {
+        Err(ActionCoordinatorError::StaleGuards)
+    }
+}
+
 fn deterministic_commit_token(
     ingress: &IngressEnvelope,
 ) -> Result<CommitToken, CanonicalHashError> {
@@ -1118,6 +1141,10 @@ fn deterministic_commit_token(
 
 #[derive(Debug, thiserror::Error)]
 pub enum ActionCoordinatorError {
+    #[error("authoritative guard pre-admission failed: {0}")]
+    GuardAdmission(#[source] mush_core::StagedActionAdmissionError),
+    #[error("authoritative guards were stale before provider preparation")]
+    StaleGuards,
     #[error("scheduled advance and action have different owners")]
     ScheduledOwnerMismatch,
     #[error("scheduled action ingress is invalid: {0}")]

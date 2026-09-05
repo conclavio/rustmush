@@ -1621,7 +1621,7 @@ fn spawn_persist_with_gateway_mode(
         .map_or_else(ReceiptProjectionTable::empty, |providers| {
             providers.receipt_projection_table()
         });
-    let action_epoch = rand::random();
+    let action_epoch = crate::action_coordinator::fresh_action_epoch();
     let direct_actions = Arc::new(DirectActionIngress {
         store: Arc::clone(&deps.store),
         routes,
@@ -7152,12 +7152,13 @@ mod tests {
     use super::*;
     use std::collections::BTreeSet;
     use std::sync::Mutex;
-    use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+    use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering as AtomicOrdering};
 
     use mush_core::{
         ActionError, ActionErrorCode, ActionInvocation, ActionInvocationDraft, ActionOfferId,
         ActionPresentation, ActionProvider, ActionStateBootRecord, ArgShape, AsyncCompletion,
-        AuthoritativeActionOutput, AuthoritativeBundle, AuthoritativeBundleDraft, CanonicalHash,
+        AuthoritativeActionOutput, AuthoritativeBundle, AuthoritativeBundleDraft, AuthorityGuard,
+        AuthorityGuardContext, AuthorityGuardKind, AuthorityGuardValidator, CanonicalHash,
         CanonicalId, ClockRef, ClockStamp, CmdError, CommandSpec,
         CommitToken as DurableCommitToken, ContextOutcome, Ctx, DecisionAdmissionIndex,
         DecisionCaptureFamilies, DecisionCapturePlan, DecisionCause, DecisionControllerId,
@@ -7181,6 +7182,15 @@ mod tests {
     };
     use mush_proto::{InputMode, PromptSpec};
     use mush_store::{AuthoritativeOutboxAttemptResult, AuthoritativeStore};
+    use mush_tactics::{TacticalUnit, UnitSpec};
+
+    use mush_contract_tests::tactical_gate::{
+        TacticalGateState, disable_tactical_gate_weapon, exhaust_tactical_gate_ammo,
+        install_tactical_gate_contact, install_tactical_gate_fire_window,
+        install_tactical_gate_placement, install_tactical_gate_unit,
+        install_tactical_gate_weapons_lease, move_tactical_gate_placement,
+        publish_tactical_gate_weapons_station, tactical_gate_world_with_modules,
+    };
 
     use crate::decision_dispatch::{
         DecisionProviderAdapter, DecisionProviderFailure, DecisionProviderFailureKind,
@@ -7296,6 +7306,7 @@ mod tests {
     #[derive(Clone)]
     struct DecisionHarnessFamilies {
         pending: PendingDecisionHandle,
+        prompts: StateFamilyHandle<DecisionId, DecisionPromptRecord>,
         terminal_receipts: DecisionTerminalReceiptHandle,
         selections: DecisionSelectionHandle,
     }
@@ -7305,12 +7316,14 @@ mod tests {
         families: DecisionHarnessFamilies,
         capture_action: DefinitionRef,
         lease_action: DefinitionRef,
+        capability_generation: Arc<AtomicU64>,
     }
 
     struct DecisionHarnessModule {
         registration: Arc<Mutex<Option<DecisionHarnessRegistration>>>,
         capture_plan: Arc<Mutex<Option<DecisionCapturePlan>>>,
         lease_duration: i64,
+        capability_generation: Arc<AtomicU64>,
     }
 
     struct DecisionCaptureProvider {
@@ -7322,6 +7335,31 @@ mod tests {
     struct DecisionLeaseProvider {
         action: DefinitionRef,
         selections: DecisionSelectionHandle,
+        capability_generation: Arc<AtomicU64>,
+    }
+
+    struct DecisionCapabilityValidator {
+        generation: Arc<AtomicU64>,
+    }
+
+    impl AuthorityGuardValidator for DecisionCapabilityValidator {
+        fn is_current(
+            &self,
+            _context: &AuthorityGuardContext<'_>,
+            guard: &AuthorityGuard,
+        ) -> Result<bool, ActionError> {
+            Ok(matches!(
+                guard,
+                AuthorityGuard::Capability {
+                    provider,
+                    capability,
+                    generation,
+                    ..
+                } if provider.as_str() == DECISION_HARNESS_OWNER
+                    && capability.as_str() == "choose"
+                    && *generation == self.generation.load(AtomicOrdering::SeqCst)
+            ))
+        }
     }
 
     struct DecisionHarnessFallback {
@@ -7425,7 +7463,7 @@ mod tests {
         fn project_offer(
             &self,
             action: &DefinitionRef,
-            _query: &mush_core::LegalActionQuery,
+            query: &mush_core::LegalActionQuery,
             engine: &Engine,
         ) -> Result<Option<ProviderOfferDraft>, ActionError> {
             let definitions = engine
@@ -7438,6 +7476,14 @@ mod tests {
                 .map_err(|error| harness_action_error(error.to_string()))?;
             guards
                 .add_definition(action.clone(), definitions)
+                .map_err(|error| harness_action_error(error.to_string()))?;
+            guards
+                .add(AuthorityGuard::Capability {
+                    provider: OwnerId::new(DECISION_HARNESS_OWNER).expect("static harness owner"),
+                    actor: query.actor(),
+                    capability: CanonicalId::new("choose").expect("static capability"),
+                    generation: self.capability_generation.load(AtomicOrdering::SeqCst),
+                })
                 .map_err(|error| harness_action_error(error.to_string()))?;
             Ok(Some(ProviderOfferDraft {
                 fixed_parameters: serde_json::json!({}),
@@ -7576,6 +7622,12 @@ mod tests {
                 terminal_receipts.clone(),
             )
             .map_err(|error| mush_core::ModError::msg(error.to_string()))?;
+            reg.authority_guard_validator(
+                AuthorityGuardKind::Capability,
+                DecisionCapabilityValidator {
+                    generation: Arc::clone(&self.capability_generation),
+                },
+            )?;
             reg.action_provider(
                 capture_action.clone(),
                 DecisionCaptureProvider {
@@ -7589,6 +7641,7 @@ mod tests {
                 DecisionLeaseProvider {
                     action: lease_action.clone(),
                     selections: selections.clone(),
+                    capability_generation: Arc::clone(&self.capability_generation),
                 },
             )?;
             reg.decision_source(
@@ -7609,11 +7662,13 @@ mod tests {
                 Some(DecisionHarnessRegistration {
                     families: DecisionHarnessFamilies {
                         pending,
+                        prompts,
                         terminal_receipts,
                         selections,
                     },
                     capture_action,
                     lease_action,
+                    capability_generation: Arc::clone(&self.capability_generation),
                 });
             Ok(())
         }
@@ -7660,6 +7715,77 @@ mod tests {
         calls: Arc<AtomicUsize>,
         called: Arc<tokio::sync::Notify>,
         kind: DecisionProviderFailureKind,
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    enum ProjectedPolicyKind {
+        Deterministic,
+        DecisionTree,
+        MockLlm,
+    }
+
+    struct ProjectedPolicyProvider {
+        owner: OwnerId,
+        kind: ProjectedPolicyKind,
+    }
+
+    impl DecisionProviderAdapter for ProjectedPolicyProvider {
+        fn owner(&self) -> &OwnerId {
+            &self.owner
+        }
+
+        fn decide(
+            &self,
+            lease: DecisionWorkerLease,
+        ) -> futures::future::BoxFuture<'static, Result<DecisionResponse, DecisionProviderFailure>>
+        {
+            let kind = self.kind;
+            Box::pin(async move {
+                let action = match kind {
+                    ProjectedPolicyKind::Deterministic => lease.prompt().actions.first().cloned(),
+                    ProjectedPolicyKind::DecisionTree => {
+                        tokio::task::yield_now().await;
+                        lease
+                            .prompt()
+                            .actions
+                            .iter()
+                            .find(|action| action.presentation().verb == "choose")
+                            .cloned()
+                    }
+                    ProjectedPolicyKind::MockLlm => {
+                        tokio::time::sleep(Duration::from_millis(25)).await;
+                        let wire =
+                            serde_json::to_vec(&lease.prompt().actions).map_err(|error| {
+                                DecisionProviderFailure::new(
+                                    DecisionProviderFailureKind::Malformed,
+                                    error.to_string(),
+                                )
+                            })?;
+                        serde_json::from_slice::<Vec<ProjectedLegalAction>>(&wire)
+                            .map_err(|error| {
+                                DecisionProviderFailure::new(
+                                    DecisionProviderFailureKind::Malformed,
+                                    error.to_string(),
+                                )
+                            })?
+                            .into_iter()
+                            .find(|action| action.presentation().verb == "choose")
+                    }
+                }
+                .ok_or_else(|| {
+                    DecisionProviderFailure::new(
+                        DecisionProviderFailureKind::Permanent,
+                        "projected policy found no admissible action",
+                    )
+                })?;
+                Ok(DecisionResponse {
+                    token: lease.prompt().token,
+                    offer: action.offer(),
+                    targets: Vec::new(),
+                    parameters: serde_json::json!({}),
+                })
+            })
+        }
     }
 
     impl DecisionProviderAdapter for FailingDecisionProvider {
@@ -7720,10 +7846,12 @@ mod tests {
     ) {
         let registration = Arc::new(Mutex::new(None));
         let capture_plan = Arc::new(Mutex::new(None));
+        let capability_generation = Arc::new(AtomicU64::new(1));
         let module = DecisionHarnessModule {
             registration: Arc::clone(&registration),
             capture_plan: Arc::clone(&capture_plan),
             lease_duration,
+            capability_generation,
         };
         let mut world = mush_testkit::TestWorld::with_modules(vec![Box::new(module)]);
         let keys = DecisionKeyRing::new(
@@ -7746,6 +7874,48 @@ mod tests {
             .clone()
             .expect("decision harness registration");
         (world.into_engine(), registered, capture_plan, keys)
+    }
+
+    struct TacticalDecisionHarness {
+        engine: Engine,
+        registration: DecisionHarnessRegistration,
+        tactical_state: TacticalGateState,
+        unit_spec: UnitSpec,
+        capture_plan: Arc<Mutex<Option<DecisionCapturePlan>>>,
+        keys: DecisionKeyRing,
+    }
+
+    fn tactical_decision_harness(lease_duration: i64) -> TacticalDecisionHarness {
+        let registration = Arc::new(Mutex::new(None));
+        let capture_plan = Arc::new(Mutex::new(None));
+        let capability_generation = Arc::new(AtomicU64::new(1));
+        let module = DecisionHarnessModule {
+            registration: Arc::clone(&registration),
+            capture_plan: Arc::clone(&capture_plan),
+            lease_duration,
+            capability_generation,
+        };
+        let (mut engine, tactical_state, _tactical_definitions, unit_spec) =
+            tactical_gate_world_with_modules(vec![Box::new(module)]);
+        let keys = DecisionKeyRing::new(
+            DecisionSecret::new(1, [0x5a; 32]).expect("test decision secret"),
+            [],
+        )
+        .expect("test decision key ring");
+        engine.set_decision_keys(keys.clone());
+        let registered = registration
+            .lock()
+            .expect("decision registration mutex poisoned")
+            .clone()
+            .expect("decision harness registration");
+        TacticalDecisionHarness {
+            engine,
+            registration: registered,
+            tactical_state,
+            unit_spec,
+            capture_plan,
+            keys,
+        }
     }
 
     fn projected_decision_action(engine: &Engine) -> ProjectedLegalAction {
@@ -7862,6 +8032,169 @@ mod tests {
             .lock()
             .expect("decision capture-plan mutex poisoned") = Some(plan);
         pending
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn arm_tactical_decision_capture(
+        keys: &DecisionKeyRing,
+        registration: &DecisionHarnessRegistration,
+        capture_plan: &Mutex<Option<DecisionCapturePlan>>,
+        actor: mush_core::ObjId,
+        projected: ProjectedLegalAction,
+        witness: PendingOfferWitness,
+        salt: u8,
+        deadline: i64,
+    ) -> PendingDecision {
+        let owner = OwnerId::new(DECISION_HARNESS_OWNER).expect("static harness owner");
+        let principal = PrincipalId::Object { id: actor };
+        let controller = DecisionControllerId {
+            owner: owner.clone(),
+            key: CanonicalId::new("tactical_controller").expect("static controller id"),
+        };
+        let cause = DecisionCause {
+            kind: CanonicalId::new("tactical_turn").expect("static cause kind"),
+            instance: IdempotencyKeyText::parse_canonical(format!("tactical-turn-{salt}"))
+                .expect("test cause instance"),
+            replaceable_key: None,
+        };
+        let action_idempotency = ScopedIdempotencyKey::new(
+            IdempotencyScope {
+                principal: principal.clone(),
+                owner: OwnerId::new(mush_contract_tests::tactical_gate::TACTICAL_GATE_OWNER)
+                    .expect("static tactics owner"),
+                namespace: CanonicalId::new(mush_contract_tests::tactical_gate::FIRE_ACTION_ID)
+                    .expect("static fire namespace"),
+            },
+            1,
+            IdempotencyKey::Deterministic(CanonicalHash::from_bytes([salt; 32])),
+        );
+        let id = DecisionId::derive(&controller, &cause, &action_idempotency)
+            .expect("decision identity");
+        let placeholder = DecisionToken {
+            id,
+            revision: 1,
+            prompt_digest: CanonicalHash::from_bytes([1; 32]),
+            key_version: 1,
+            tag: CanonicalHash::from_bytes([1; 32]),
+        };
+        let mut prompt = DecisionPrompt {
+            token: placeholder,
+            actions: vec![projected],
+            context: ProjectedDecisionContext::new(
+                CanonicalId::new("tactical_context.v1").expect("static context id"),
+                serde_json::json!({ "turn": salt }),
+            )
+            .expect("decision context"),
+        };
+        let prompt_digest = prompt.digest().expect("decision prompt digest");
+        prompt.token = keys.sign(id, 1, prompt_digest);
+        let prompt = DecisionPromptRecord::new(prompt).expect("decision prompt record");
+        let pending = PendingDecision {
+            id,
+            revision: 1,
+            controller,
+            principal: principal.clone(),
+            actor,
+            truth_subject: SubjectKey::Object { id: actor },
+            viewer_scope: ProjectionScopeId::derive(&principal, 1)
+                .expect("decision projection scope"),
+            cause,
+            offered: vec![witness],
+            prompt_digest,
+            token_key_version: 1,
+            deadline: ClockStamp {
+                clock: ClockRef::Utc,
+                at: deadline,
+            },
+            fallback: FallbackPolicyRef(registration.lease_action.clone()),
+            action_idempotency,
+            malformed_attempts: 0,
+            attempt_audit: Vec::new(),
+            status: PendingDecisionStatus::Ready { attempt: 1 },
+        };
+        let admission = DecisionAdmissionIndex::default()
+            .admit(&pending, &prompt, keys)
+            .expect("decision admission");
+        let plan = DecisionCapturePlan::new(
+            &owner,
+            pending.clone(),
+            prompt,
+            admission,
+            keys,
+            CanonicalId::new(DECISION_WAKE_ADAPTER).expect("static wake adapter"),
+            0,
+        )
+        .expect("decision capture plan");
+        *capture_plan
+            .lock()
+            .expect("decision capture-plan mutex poisoned") = Some(plan);
+        pending
+    }
+
+    fn lease_captured_decision(
+        engine: &mut Engine,
+        registration: &DecisionHarnessRegistration,
+        pending: &PendingDecision,
+        keys: &DecisionKeyRing,
+    ) -> (
+        mush_core::DecisionCompletionFence,
+        DecisionResponse,
+        DecisionWorkerLease,
+    ) {
+        let prompt = engine
+            .action_state()
+            .get(&registration.families.prompts, &pending.id)
+            .expect("decision prompt read")
+            .expect("decision prompt")
+            .clone();
+        let current = engine
+            .action_state()
+            .get(&registration.families.pending, &pending.id)
+            .expect("pending decision read")
+            .expect("pending decision")
+            .clone();
+        let now = ClockStamp {
+            clock: ClockRef::Utc,
+            at: pending.deadline.at - 30,
+        };
+        let wake = mush_core::DecisionWake {
+            id: pending.id,
+            revision: pending.revision,
+            prompt_digest: pending.prompt_digest,
+        };
+        let transition = current
+            .plan_worker_lease(&prompt, &wake, keys, &now, 20)
+            .expect("decision lease plan");
+        let (leased, worker) = transition.into_parts();
+        let mut transaction = engine
+            .action_transaction(&registration.families.pending)
+            .expect("decision lease transaction");
+        transaction
+            .replace(&registration.families.pending, &pending.id, leased.clone())
+            .expect("decision lease post-image");
+        let (_, installation) = transaction
+            .prepare()
+            .expect("decision lease prepare")
+            .into_parts();
+        engine.install_prepared_action(installation);
+        let fence = mush_core::DecisionCompletionFence::new(
+            worker.controller().clone(),
+            worker.decision(),
+            worker.revision(),
+            worker.attempt(),
+            worker.lease_until().clone(),
+        )
+        .expect("decision completion fence");
+        let response = DecisionResponse {
+            token: prompt.prompt.token,
+            offer: prompt.prompt.actions[0].offer(),
+            targets: match prompt.prompt.actions[0].targets() {
+                ProjectedTargetSchema::Choices { choices, .. } => vec![choices[0].clone()],
+                ProjectedTargetSchema::None => Vec::new(),
+            },
+            parameters: serde_json::json!({}),
+        };
+        (fence, response, worker)
     }
 
     async fn commit_armed_capture(
@@ -9182,7 +9515,7 @@ mod tests {
         let selected = ActionCoordinator::prepare_and_stage_decision_response(
             permit,
             &mut engine,
-            fence,
+            fence.clone(),
             &response,
         )
         .expect("decision response offer resolution");
@@ -9235,6 +9568,10 @@ mod tests {
         let second_ingress =
             ActionCoordinator::decision_response_ingress(&engine, &second_fence, &response)
                 .expect("second-attempt response ingress");
+        assert!(matches!(
+            ActionCoordinator::decision_response_ingress(&engine, &fence, &response),
+            Err(crate::action_coordinator::ActionCoordinatorError::DecisionResponseIngress(_))
+        ));
         assert_eq!(second_ingress.request(), first_ingress.request());
         assert_eq!(
             second_ingress.ingress_hash(),
@@ -9242,6 +9579,7 @@ mod tests {
             "operational retry fences must not change semantic action identity"
         );
 
+        let duplicate_ingress = second_ingress.clone();
         let ActionPreflight::Vacant(permit) = ActionCoordinator::preflight(&store, second_ingress)
             .await
             .expect("second response preflight")
@@ -9273,6 +9611,12 @@ mod tests {
             .await
             .expect("selected action reconcile");
         engine.install_prepared_action(installation);
+        assert!(matches!(
+            ActionCoordinator::preflight(&store, duplicate_ingress)
+                .await
+                .expect("duplicate response preflight"),
+            ActionPreflight::Finalized(_)
+        ));
 
         assert!(
             matches!(
@@ -9375,6 +9719,641 @@ mod tests {
                 ..
             } if action_binding == &binding
         ));
+    }
+
+    #[tokio::test]
+    async fn delayed_response_rejects_revoked_capability_before_provider_preparation() {
+        let (mut engine, registration, capture_plan, keys) = decision_harness(30);
+        let pending = arm_decision_capture(
+            &engine,
+            &keys,
+            &registration,
+            &capture_plan,
+            0x5c,
+            unix_now_s() + 60,
+        );
+        let store = InMemoryStore::new();
+        commit_armed_capture(&mut engine, &store, &registration, 0x6c).await;
+        let (fence, response, _worker) =
+            lease_captured_decision(&mut engine, &registration, &pending, &keys);
+        registration
+            .capability_generation
+            .store(2, AtomicOrdering::SeqCst);
+        let ingress = ActionCoordinator::decision_response_ingress(&engine, &fence, &response)
+            .expect("live lease still authenticates before capability resolution");
+        let ActionPreflight::Vacant(permit) = ActionCoordinator::preflight(&store, ingress)
+            .await
+            .expect("capability stale preflight")
+        else {
+            panic!("capability stale action idempotency must remain vacant")
+        };
+        assert!(
+            ActionCoordinator::prepare_and_stage_decision_response(
+                permit,
+                &mut engine,
+                fence,
+                &response,
+            )
+            .is_err()
+        );
+        assert!(engine.take_staged_action().unwrap().is_none());
+        assert!(!engine.action_state().has_prepared());
+        assert!(
+            engine
+                .action_state()
+                .get(
+                    &registration.families.selections,
+                    &CanonicalId::new("selected").unwrap(),
+                )
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn provider_latency_cannot_change_delayed_action_identity_or_authority() {
+        let (mut engine, registration, capture_plan, keys) = decision_harness(30);
+        let pending = arm_decision_capture(
+            &engine,
+            &keys,
+            &registration,
+            &capture_plan,
+            0x5d,
+            unix_now_s() + 60,
+        );
+        let store = InMemoryStore::new();
+        commit_armed_capture(&mut engine, &store, &registration, 0x6d).await;
+        let (fence, expected_response, worker) =
+            lease_captured_decision(&mut engine, &registration, &pending, &keys);
+        let owner = OwnerId::new(DECISION_HARNESS_OWNER).expect("static harness owner");
+        let mut bundles = Vec::new();
+
+        for kind in [
+            ProjectedPolicyKind::Deterministic,
+            ProjectedPolicyKind::DecisionTree,
+            ProjectedPolicyKind::MockLlm,
+        ] {
+            let adapter = ProjectedPolicyProvider {
+                owner: owner.clone(),
+                kind,
+            };
+            let response = adapter
+                .decide(worker.clone())
+                .await
+                .unwrap_or_else(|error| panic!("{kind:?} provider failed: {error:?}"));
+            assert_eq!(response, expected_response, "{kind:?} changed selection");
+            let ingress = ActionCoordinator::decision_response_ingress(&engine, &fence, &response)
+                .unwrap_or_else(|error| panic!("{kind:?} ingress failed: {error}"));
+            let ActionPreflight::Vacant(permit) = ActionCoordinator::preflight(&store, ingress)
+                .await
+                .expect("provider-policy preflight")
+            else {
+                panic!("{kind:?} did not retain vacant action authority")
+            };
+            ActionCoordinator::prepare_and_stage_decision_response(
+                permit,
+                &mut engine,
+                fence.clone(),
+                &response,
+            )
+            .unwrap_or_else(|error| panic!("{kind:?} action preparation failed: {error}"));
+            let staged = engine
+                .take_staged_action()
+                .expect("provider-policy admission")
+                .expect("provider-policy staged action");
+            let (persistence, installation) = staged.into_parts();
+            let StagedActionPersistence::Authoritative(bundle) = persistence else {
+                panic!("{kind:?} used legacy persistence")
+            };
+            bundles.push(serde_json::to_value(&*bundle).expect("canonical bundle JSON"));
+            engine.abort_prepared_action(installation);
+        }
+
+        assert!(bundles.windows(2).all(|pair| pair[0] == pair[1]));
+        assert_eq!(
+            engine
+                .action_state()
+                .get(
+                    &registration.families.selections,
+                    &CanonicalId::new("selected").unwrap(),
+                )
+                .unwrap(),
+            None,
+            "aborted latency variants must not install provider state"
+        );
+    }
+
+    #[tokio::test]
+    async fn provider_and_fallback_race_selects_one_exact_action_result() {
+        let (mut engine, registration, capture_plan, keys) = decision_harness(30);
+        let pending = arm_decision_capture(
+            &engine,
+            &keys,
+            &registration,
+            &capture_plan,
+            0x5e,
+            unix_now_s() + 60,
+        );
+        let store = InMemoryStore::new();
+        commit_armed_capture(&mut engine, &store, &registration, 0x6e).await;
+        let (fence, provider_response, _worker) =
+            lease_captured_decision(&mut engine, &registration, &pending, &keys);
+        let provider_ingress =
+            ActionCoordinator::decision_response_ingress(&engine, &fence, &provider_response)
+                .expect("provider contender ingress");
+
+        let leased = engine
+            .action_state()
+            .get(&registration.families.pending, &pending.id)
+            .unwrap()
+            .unwrap()
+            .clone();
+        let fallback = leased
+            .plan_fallback_ready(
+                leased.revision,
+                fence.lease_until(),
+                mush_core::DecisionFallbackReason::ProviderUnavailable,
+            )
+            .expect("fallback race transition")
+            .post_image()
+            .clone();
+        let mut txn = engine
+            .action_transaction(&registration.families.pending)
+            .expect("fallback race transaction");
+        txn.replace(&registration.families.pending, &pending.id, fallback)
+            .expect("fallback race post-image");
+        let (_, installation) = txn.prepare().unwrap().into_parts();
+        engine.install_prepared_action(installation);
+
+        let page = engine
+            .discover_decision_dispatches(None, 8)
+            .expect("fallback discovery");
+        let candidate = page
+            .fallbacks()
+            .first()
+            .expect("fallback candidate")
+            .clone();
+        let fallback_response = engine
+            .select_decision_fallback(&candidate)
+            .expect("deterministic fallback selection");
+        let fallback_ingress = engine
+            .decision_fallback_ingress(&candidate, &fallback_response)
+            .expect("fallback contender ingress");
+        assert_eq!(fallback_response, provider_response);
+        assert_eq!(fallback_ingress, provider_ingress);
+
+        let ActionPreflight::Vacant(permit) =
+            ActionCoordinator::preflight(&store, fallback_ingress)
+                .await
+                .unwrap()
+        else {
+            panic!("fallback contender must initially be vacant")
+        };
+        ActionCoordinator::prepare_and_stage_decision_fallback(
+            permit,
+            &mut engine,
+            &candidate,
+            &fallback_response,
+        )
+        .expect("fallback contender preparation");
+        let staged = engine
+            .take_staged_action()
+            .expect("fallback action admission")
+            .expect("fallback action staged");
+        let (persistence, installation) = staged.into_parts();
+        let StagedActionPersistence::Authoritative(bundle) = persistence else {
+            panic!("fallback action used legacy persistence")
+        };
+        store
+            .reserve_authoritative_intent((*bundle).clone())
+            .await
+            .expect("fallback intent");
+        store
+            .reconcile_authoritative(bundle.token(), bundle.bundle_hash())
+            .await
+            .expect("fallback reconcile");
+        engine.install_prepared_action(installation);
+
+        assert!(matches!(
+            ActionCoordinator::preflight(&store, provider_ingress)
+                .await
+                .expect("late provider preflight"),
+            ActionPreflight::Finalized(_)
+        ));
+        assert_eq!(
+            engine
+                .action_state()
+                .get(
+                    &registration.families.selections,
+                    &CanonicalId::new("selected").unwrap(),
+                )
+                .unwrap()
+                .expect("one selected action")
+                .count,
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn delayed_tactical_gate4_stale_matrix_preserves_unselected_target_movement() {
+        #[derive(Clone, Copy)]
+        enum Change {
+            SelectedPlacement,
+            UnselectedPlacement,
+            StationGrant,
+            ControlLease,
+            SourceComponent,
+            SourceResource,
+            Contact,
+            Window,
+            DefinitionOwner,
+            BridgeOwner,
+        }
+
+        impl Change {
+            const fn remains_admissible(self) -> bool {
+                matches!(self, Self::UnselectedPlacement)
+            }
+        }
+
+        async fn run(change: Change, salt: u8) {
+            let TacticalDecisionHarness {
+                mut engine,
+                registration,
+                tactical_state,
+                unit_spec,
+                capture_plan,
+                keys,
+            } = tactical_decision_harness(30);
+            let source = GOD;
+            let selected_target = mush_core::ObjId(971);
+            let unselected_target = mush_core::ObjId(972);
+            for object in [source, selected_target, unselected_target] {
+                install_tactical_gate_unit(
+                    &mut engine,
+                    &tactical_state,
+                    TacticalUnit::from_spec(&unit_spec, object).expect("valid tactical unit"),
+                );
+            }
+            install_tactical_gate_placement(&mut engine, &tactical_state, source, 0, 0);
+            install_tactical_gate_placement(&mut engine, &tactical_state, selected_target, 1, 0);
+            install_tactical_gate_placement(&mut engine, &tactical_state, unselected_target, 2, 0);
+            install_tactical_gate_weapons_lease(
+                &mut engine,
+                &tactical_state,
+                source,
+                PrincipalId::Object { id: source },
+            );
+            publish_tactical_gate_weapons_station(&mut engine, source, source, 1);
+            install_tactical_gate_contact(
+                &mut engine,
+                &tactical_state,
+                mush_core::ContactId::from_bytes([0x11; 16]),
+                selected_target,
+                PrincipalId::Object { id: source },
+            );
+            install_tactical_gate_contact(
+                &mut engine,
+                &tactical_state,
+                mush_core::ContactId::from_bytes([0x22; 16]),
+                unselected_target,
+                PrincipalId::Object { id: source },
+            );
+            install_tactical_gate_fire_window(&mut engine, &tactical_state);
+
+            assert_eq!(engine.world.command_subjects_of(source).len(), 1);
+            assert_eq!(
+                engine
+                    .action_state()
+                    .scan_family(&tactical_state.contacts, None, 8)
+                    .expect("contact scan")
+                    .entries()
+                    .len(),
+                2
+            );
+            assert!(
+                engine
+                    .action_state()
+                    .get(&tactical_state.units, &source)
+                    .unwrap()
+                    .is_some()
+            );
+            assert_eq!(
+                engine
+                    .clock_now(&mush_contract_tests::tactical_gate::tactical_gate_clock())
+                    .expect("tactical clock")
+                    .at,
+                7
+            );
+
+            let principal = PrincipalId::Object { id: source };
+            let query = engine
+                .legal_action_query(principal, source, PerceivedRef::SelfActor)
+                .expect("tactical decision query");
+            let projection = engine
+                .project_decision_offers(&query)
+                .expect("tactical decision projection");
+            let fire_index = projection
+                .actions()
+                .iter()
+                .position(|offer| offer.presentation().verb == "fire")
+                .unwrap_or_else(|| panic!("fire offer missing from {projection:?}"));
+            let projected = projection.actions()[fire_index].clone();
+            let witness = projection.offered()[fire_index].clone();
+            assert_eq!(witness.offer, projected.offer());
+            let _ = engine.world.take_dirty();
+            let _ = engine.take_module_ops();
+            let pending = arm_tactical_decision_capture(
+                &keys,
+                &registration,
+                &capture_plan,
+                source,
+                projected,
+                witness,
+                salt,
+                unix_now_s() + 60,
+            );
+            let store = InMemoryStore::new();
+            commit_armed_capture(&mut engine, &store, &registration, salt.wrapping_add(0x10)).await;
+            let (fence, response, _worker) =
+                lease_captured_decision(&mut engine, &registration, &pending, &keys);
+            let (chosen_contact, chosen_target) = match response.targets.as_slice() {
+                [PerceivedRef::Contact { id, .. }]
+                    if id == &mush_core::ContactId::from_bytes([0x11; 16]) =>
+                {
+                    (*id, selected_target)
+                }
+                [PerceivedRef::Contact { id, .. }]
+                    if id == &mush_core::ContactId::from_bytes([0x22; 16]) =>
+                {
+                    (*id, unselected_target)
+                }
+                _ => panic!("unexpected tactical response target"),
+            };
+            let other_target = if chosen_target == selected_target {
+                unselected_target
+            } else {
+                selected_target
+            };
+            let source_before_change = engine
+                .action_state()
+                .canonical(&tactical_state.units, &source)
+                .expect("source canonical state")
+                .expect("source state")
+                .as_slice()
+                .to_vec();
+            let selected_before_change = engine
+                .action_state()
+                .canonical(&tactical_state.units, &chosen_target)
+                .expect("target canonical state")
+                .expect("target state")
+                .as_slice()
+                .to_vec();
+
+            match change {
+                Change::SelectedPlacement | Change::UnselectedPlacement => {
+                    move_tactical_gate_placement(
+                        &mut engine,
+                        &tactical_state,
+                        if matches!(change, Change::SelectedPlacement) {
+                            chosen_target
+                        } else {
+                            other_target
+                        },
+                        4,
+                        0,
+                    );
+                }
+                Change::StationGrant => {
+                    assert_eq!(
+                        engine.world.retract_command_subjects(
+                            mush_contract_tests::tactical_gate::TACTICAL_GATE_OWNER,
+                            Some(source),
+                        ),
+                        1
+                    );
+                    let _ = engine.world.take_dirty();
+                }
+                Change::ControlLease => {
+                    let channel = mush_core::ChannelId::new("weapons").unwrap();
+                    let key = mush_core::ControlLeaseKey::new(source, channel);
+                    let lease = engine
+                        .action_state()
+                        .get(&tactical_state.control_leases, &key)
+                        .unwrap()
+                        .unwrap()
+                        .clone();
+                    let request = RequestUid::from_bytes([salt.wrapping_add(2); 16]);
+                    let requested = lease
+                        .checked_request_handoff(
+                            lease.revision(),
+                            mush_core::ControlHandoffDraft {
+                                request,
+                                requested_by: PrincipalId::Object { id: source },
+                                next_holder: None,
+                                requested_at:
+                                    mush_contract_tests::tactical_gate::tactical_gate_tick(7),
+                                boundary: mush_contract_tests::tactical_gate::tactical_gate_tick(8),
+                                reason: CanonicalId::new("gate4_revoke").unwrap(),
+                            },
+                        )
+                        .unwrap();
+                    let revoked = requested
+                        .checked_apply_handoff(
+                            requested.revision(),
+                            request,
+                            mush_contract_tests::tactical_gate::tactical_gate_tick(8),
+                        )
+                        .unwrap();
+                    let mut txn = engine
+                        .action_transaction(&tactical_state.control_leases)
+                        .expect("lease-revoke transaction");
+                    txn.replace(&tactical_state.control_leases, &key, revoked)
+                        .expect("lease-revoke post-image");
+                    let (_, installation) = txn.prepare().unwrap().into_parts();
+                    engine.install_prepared_action(installation);
+                }
+                Change::SourceComponent => {
+                    disable_tactical_gate_weapon(&mut engine, &tactical_state, source);
+                }
+                Change::SourceResource => {
+                    exhaust_tactical_gate_ammo(&mut engine, &tactical_state, source);
+                }
+                Change::Contact => {
+                    let contact = engine
+                        .action_state()
+                        .get(&tactical_state.contacts, &chosen_contact)
+                        .unwrap()
+                        .unwrap()
+                        .clone();
+                    let lost = contact
+                        .checked_mark_lost(
+                            contact.revision(),
+                            mush_contract_tests::tactical_gate::tactical_gate_tick(7),
+                            CanonicalId::new("gate4_occluded").unwrap(),
+                        )
+                        .unwrap();
+                    let mut txn = engine
+                        .action_transaction(&tactical_state.contacts)
+                        .expect("contact-loss transaction");
+                    txn.replace(&tactical_state.contacts, &chosen_contact, lost)
+                        .expect("contact-loss post-image");
+                    let (_, installation) = txn.prepare().unwrap().into_parts();
+                    engine.install_prepared_action(installation);
+                }
+                Change::Window => {
+                    let id = mush_contract_tests::tactical_gate::tactical_gate_window_id();
+                    let window = engine
+                        .action_state()
+                        .get(&tactical_state.windows, &id)
+                        .unwrap()
+                        .unwrap()
+                        .clone();
+                    let closed = window
+                        .checked_close_due(
+                            window.revision(),
+                            RequestUid::from_bytes([salt.wrapping_add(1); 16]),
+                            &mush_contract_tests::tactical_gate::tactical_gate_tick(10),
+                        )
+                        .unwrap()
+                        .into_record();
+                    let mut txn = engine
+                        .action_transaction(&tactical_state.windows)
+                        .expect("window-close transaction");
+                    txn.replace(&tactical_state.windows, &id, closed)
+                        .expect("window-close post-image");
+                    let (_, installation) = txn.prepare().unwrap().into_parts();
+                    engine.install_prepared_action(installation);
+                }
+                Change::BridgeOwner => {
+                    engine
+                        .registry
+                        .freeze_mechanics_owner(
+                            &OwnerId::new(
+                                mush_contract_tests::tactical_gate::TACTICAL_PLACEMENT_OWNER,
+                            )
+                            .unwrap(),
+                            mush_core::IncidentId(u64::from(salt)),
+                            mush_core::RecoveryReason::IntegrityViolation {
+                                code: CanonicalId::new("gate4_bridge_freeze").unwrap(),
+                            },
+                        )
+                        .expect("bridge owner freeze");
+                }
+                Change::DefinitionOwner => {
+                    engine
+                        .registry
+                        .freeze_mechanics_owner(
+                            &OwnerId::new(mush_contract_tests::tactical_gate::TACTICAL_GATE_OWNER)
+                                .unwrap(),
+                            mush_core::IncidentId(u64::from(salt)),
+                            mush_core::RecoveryReason::IntegrityViolation {
+                                code: CanonicalId::new("gate4_definition_freeze").unwrap(),
+                            },
+                        )
+                        .expect("definition owner freeze");
+                }
+            }
+            let (source_before, selected_before) = if matches!(change, Change::DefinitionOwner) {
+                (source_before_change, selected_before_change)
+            } else {
+                (
+                    engine
+                        .action_state()
+                        .canonical(&tactical_state.units, &source)
+                        .expect("source canonical state after stale change")
+                        .expect("source state after stale change")
+                        .as_slice()
+                        .to_vec(),
+                    engine
+                        .action_state()
+                        .canonical(&tactical_state.units, &chosen_target)
+                        .expect("target canonical state after stale change")
+                        .expect("target state after stale change")
+                        .as_slice()
+                        .to_vec(),
+                )
+            };
+            let ingress = ActionCoordinator::decision_response_ingress(&engine, &fence, &response)
+                .expect("exact live decision response ingress");
+            let ActionPreflight::Vacant(permit) = ActionCoordinator::preflight(&store, ingress)
+                .await
+                .expect("tactical decision preflight")
+            else {
+                panic!("tactical decision idempotency must be vacant")
+            };
+            let result = ActionCoordinator::prepare_and_stage_decision_response(
+                permit,
+                &mut engine,
+                fence,
+                &response,
+            );
+
+            if matches!(change, Change::SelectedPlacement) {
+                assert!(matches!(
+                    &result,
+                    Err(crate::action_coordinator::ActionCoordinatorError::StaleGuards)
+                ));
+            }
+
+            if !matches!(change, Change::DefinitionOwner) {
+                assert_eq!(
+                    engine
+                        .action_state()
+                        .canonical(&tactical_state.units, &source)
+                        .unwrap()
+                        .unwrap()
+                        .as_slice(),
+                    source_before
+                );
+                assert_eq!(
+                    engine
+                        .action_state()
+                        .canonical(&tactical_state.units, &chosen_target)
+                        .unwrap()
+                        .unwrap()
+                        .as_slice(),
+                    selected_before
+                );
+            }
+            if !change.remains_admissible() {
+                assert!(
+                    result.is_err(),
+                    "stale delayed action must fail before prepare"
+                );
+                assert!(engine.take_staged_action().unwrap().is_none());
+                assert!(!engine.action_state().has_prepared());
+            } else {
+                result.expect("unselected movement must remain admissible");
+                let staged = engine
+                    .take_staged_action()
+                    .expect("selected action admission")
+                    .expect("selected action staged");
+                let (persistence, installation) = staged.into_parts();
+                let StagedActionPersistence::Authoritative(bundle) = persistence else {
+                    panic!("delayed tactical action used legacy persistence")
+                };
+                assert!(bundle.resolution().is_some(), "RNG evidence is durable");
+                assert_eq!(bundle.semantic_events().len(), 1);
+                assert!(bundle.durable_outbox().is_empty());
+                engine.abort_prepared_action(installation);
+            }
+        }
+
+        for (change, salt) in [
+            (Change::SelectedPlacement, 0x61),
+            (Change::UnselectedPlacement, 0x62),
+            (Change::StationGrant, 0x63),
+            (Change::ControlLease, 0x64),
+            (Change::SourceComponent, 0x65),
+            (Change::SourceResource, 0x66),
+            (Change::Contact, 0x67),
+            (Change::Window, 0x68),
+            (Change::DefinitionOwner, 0x69),
+            (Change::BridgeOwner, 0x6a),
+        ] {
+            run(change, salt).await;
+        }
     }
 
     #[tokio::test]

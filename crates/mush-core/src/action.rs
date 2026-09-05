@@ -2182,6 +2182,48 @@ impl GuardSet {
         Ok(guards)
     }
 
+    /// Restore private prompt-time revisions onto a freshly regenerated
+    /// delayed action. A coordinate may also be named by ordinary selected-
+    /// target resolution; in that case the older prompt generation replaces
+    /// the newly observed value so final revalidation detects intervening
+    /// movement. Duplicates within the prompt snapshot remain corruption.
+    pub(crate) fn with_prompt_revision_stamps(
+        self,
+        stamps: Vec<RevisionStamp>,
+    ) -> Result<Self, GuardSetBuildError> {
+        if stamps.is_empty() {
+            return Ok(self);
+        }
+        let mut prompt = BTreeMap::new();
+        for stamp in stamps {
+            if prompt.insert(stamp.key.clone(), stamp.generation).is_some() {
+                return Err(GuardSetBuildError::Revision(RevisionSetError::Duplicate {
+                    key: Box::new(stamp.key),
+                }));
+            }
+        }
+        let mut merged = self.revisions.0;
+        for (key, generation) in prompt {
+            merged.insert(key, generation);
+        }
+        if merged.len() > MAX_ACTION_REVISIONS {
+            return Err(GuardSetBuildError::Revision(RevisionSetError::TooMany {
+                max: MAX_ACTION_REVISIONS,
+            }));
+        }
+        let guards = Self {
+            revisions: RevisionSet(merged),
+            authority: self.authority,
+            owner_readiness: self.owner_readiness,
+        };
+        canonical_json_bytes_with_limit(&guards.canonical_value(), MAX_GUARD_SET_BYTES).map_err(
+            |_| GuardSetBuildError::EncodedTooLarge {
+                max: MAX_GUARD_SET_BYTES,
+            },
+        )?;
+        Ok(guards)
+    }
+
     /// Bind exact bridge definitions selected by the frozen cross-owner route.
     /// Existing provider-supplied definition guards are retained without
     /// duplication, while every newly selected definition is revalidated
@@ -3780,13 +3822,14 @@ pub trait ActionProvider: Send + Sync {
     /// Name provider-owned prompt-time revision coordinates for one projected
     /// delayed-decision offer. The provider supplies keys only; the kernel
     /// reads current generations, proves cross-owner bridges, canonicalizes
-    /// ordering, and enforces the delayed-decision bounds. The default keeps
-    /// existing providers source-compatible and declares no extra witnesses.
+    /// ordering, and enforces the delayed-decision bounds. Providers that do
+    /// not override this hook declare no extra witnesses.
     fn delayed_decision_witness_keys(
         &self,
         _action: &DefinitionRef,
         _query: &crate::offer::LegalActionQuery,
         _offer: &crate::offer::ProjectedLegalAction,
+        _engine: &crate::engine::Engine,
     ) -> Result<crate::decision::DecisionWitnessKeys, ActionError> {
         Ok(crate::decision::DecisionWitnessKeys::default())
     }
@@ -4594,6 +4637,7 @@ impl ActionProviderRegistry {
         action: &DefinitionRef,
         query: &crate::offer::LegalActionQuery,
         offer: &crate::offer::ProjectedLegalAction,
+        engine: &crate::engine::Engine,
         definitions: &DefinitionRegistry,
         bridges: &BridgeRegistry,
     ) -> Result<
@@ -4607,7 +4651,7 @@ impl ActionProviderRegistry {
         let entry = self.get_exact(action)?;
         let mut witnesses = entry
             .provider()
-            .delayed_decision_witness_keys(action, query, offer)
+            .delayed_decision_witness_keys(action, query, offer, engine)
             .map_err(|source| ActionProviderDispatchError::Provider {
                 action: Box::new(action.clone()),
                 source: Box::new(source),

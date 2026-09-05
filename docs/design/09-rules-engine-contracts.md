@@ -2925,6 +2925,26 @@ Exit criteria:
 - provider latency changes neither initiative ordering nor authority;
 - provider outage cannot prevent deterministic fallback control.
 
+Implementation status: K7.5 is closed. The kernel now projects, witnesses, ranks, and truncates a
+delayed-decision offer set in one immutable-world pass; the lower-level witness materializer is not
+public, so an action identity cannot be paired accidentally with another projected offer. Prompt-
+time selected-target revisions deliberately supersede overlapping current revisions when the final
+guard set is reconstructed, while duplicate prompt coordinates still fail as corrupt. The server
+revalidates that complete guard set before invoking provider preparation, drawing resolution RNG,
+or constructing semantic events, and retains the ordinary transfer-time check for a synchronous
+race after preparation.
+
+The composed Gate-4 fixture covers capability revocation plus station grant, control lease, source
+component, source resource, selected placement, contact, window generation, exact definition
+owner, and cross-owner bridge failure. Every stale variant rejects with no staged/prepared action
+and byte-identical tactical unit state; moving only an unselected target remains admissible and
+produces the same authoritative RNG/event bundle as ordinary resolved ingress. Deterministic,
+decision-tree, and latency-varying mock-LLM adapters given the same persisted prompt select byte-
+identical authoritative bundles. Exact provider/fallback contenders produce one selection, and a
+late provider joins the finalized fallback result. The K7.1-K7.4 restart, lost-wake, cancellation,
+deadline, duplicate/out-of-order response, bounded retry, and provider-outage fixtures complete the
+remaining matrix dimensions without exposing private witnesses to the worker response.
+
 ### K8. Full restart matrix and production migrations
 
 **Contracts:** all; **passes Gate 5 using Gates 1-4 actions**.

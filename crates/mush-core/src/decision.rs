@@ -14,8 +14,9 @@ use sha2::Sha256;
 use thiserror::Error;
 
 use crate::action::{
-    ActionOfferId, CanonicalHash, IdempotencyKeyText, MAX_ACTION_REVISIONS, MAX_ACTION_TARGETS,
-    PerceivedRef, PrincipalId, RequestUid, RevisionStamp, ScopedIdempotencyKey, SubjectKey,
+    ActionOfferId, ActionProviderDispatchError, CanonicalHash, IdempotencyKeyText,
+    MAX_ACTION_REVISIONS, MAX_ACTION_TARGETS, PerceivedRef, PrincipalId, RequestUid,
+    RevisionObservationError, RevisionStamp, ScopedIdempotencyKey, SubjectKey,
 };
 use crate::clock::ClockStamp;
 use crate::durable_schedule::{
@@ -310,6 +311,70 @@ pub struct PendingOfferWitness {
 pub struct DecisionWitnessKeys {
     pub common: Vec<crate::action::RevisionKey>,
     pub targets: Vec<DecisionTargetWitnessKeys>,
+}
+
+/// One bounded delayed-decision projection pass. Public actions and their
+/// private prompt-time witnesses are index-aligned after kernel ranking.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DecisionOfferProjection {
+    actions: Vec<ProjectedLegalAction>,
+    offered: Vec<PendingOfferWitness>,
+}
+
+impl DecisionOfferProjection {
+    pub(crate) fn new(
+        actions: Vec<ProjectedLegalAction>,
+        offered: Vec<PendingOfferWitness>,
+    ) -> Self {
+        debug_assert_eq!(actions.len(), offered.len());
+        debug_assert!(actions.len() <= MAX_DECISION_OFFERS);
+        Self { actions, offered }
+    }
+
+    #[must_use]
+    pub fn actions(&self) -> &[ProjectedLegalAction] {
+        &self.actions
+    }
+
+    #[must_use]
+    pub fn offered(&self) -> &[PendingOfferWitness] {
+        &self.offered
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.actions.is_empty()
+    }
+
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.actions.len()
+    }
+
+    #[must_use]
+    pub fn into_parts(self) -> (Vec<ProjectedLegalAction>, Vec<PendingOfferWitness>) {
+        (self.actions, self.offered)
+    }
+}
+
+/// Failure while the kernel turns provider-named delayed-decision coordinates
+/// into private, prompt-time revision witnesses.
+#[derive(Debug, Error)]
+pub enum DecisionWitnessCaptureError {
+    #[error("legal-action projection failed: {0}")]
+    Projection(#[from] crate::offer::LegalActionProjectionError),
+    #[error("action-provider registry is unavailable")]
+    ProviderRegistryUnavailable,
+    #[error("definition or bridge registry is unavailable")]
+    MechanicsRegistryUnavailable,
+    #[error("revision-validator registry is unavailable")]
+    RevisionRegistryUnavailable,
+    #[error("provider refused delayed-decision witness capture: {0}")]
+    Provider(#[from] ActionProviderDispatchError),
+    #[error("revision witness could not be observed: {0}")]
+    Revision(#[from] RevisionObservationError),
+    #[error("revision witness {0:?} does not currently exist")]
+    MissingRevision(Box<crate::action::RevisionKey>),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
