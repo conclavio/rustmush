@@ -3006,6 +3006,19 @@ that wake to terminal delivery before checkpoint. Every lifecycle shape passes t
 retry and compaction matrix. K8.2 can therefore add process termination without first inventing a
 second delayed-decision fixture.
 
+K8.2's first split-process slice is also closed. Debug-only, externally armed, one-shot process
+cuts now stop the real server writer at four authoritative boundaries while the production gateway
+supervisor, SSH listener, and client connection remain alive. The Redis-gated journey proves the
+gateway replays exactly one still-unowned request after a cut between intent retention and
+ownership publication; after ownership publication it replays no input and the client instead
+recovers the terminal result through authenticated `action/status`. Cuts after durable
+finalization/before checkpoint and after checkpoint/before the final client acknowledgement cover
+the remaining server-side acknowledgement gaps. Every replacement server crosses the ordinary
+boot recovery barrier, the action remains queryable, and the exact tactical post-image is present
+at revision one rather than being executed twice. The remaining K8.2 process work is the Ledger
+rollover and quarantine-spool interruption matrix named below; structured-client acknowledgement
+and line/keyframe recovery remain K8.3.
+
 Work:
 
 1. Run every Gate-5 cut point against each toy vertical slice, not only a synthetic bundle.

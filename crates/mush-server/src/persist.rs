@@ -1078,11 +1078,14 @@ async fn commit_authoritative_with_retry(
             }
         }
     };
+    crate::process_fault::terminate_at("after_intent_before_ownership").await;
     publish_ownership(&mut ownership, Ok(intent));
+    crate::process_fault::terminate_at("after_ownership_before_materialization").await;
 
     loop {
         match authoritative.reconcile_authoritative(token, hash).await {
             Ok(receipt) if receipt.token() == token && receipt.bundle_hash() == hash => {
+                crate::process_fault::terminate_at("after_finalize_before_checkpoint").await;
                 return checkpoint_finalized_with_retry(
                     authoritative,
                     &bundle,
@@ -1255,6 +1258,7 @@ async fn checkpoint_finalized_with_retry(
                     && checkpoint.receipt.bundle_hash() == hash =>
             {
                 mark_authoritative_recovered(healthy, signals, token);
+                crate::process_fault::terminate_at("after_checkpoint_before_final_ack").await;
                 return Ok(checkpoint.receipt);
             }
             Ok(_) => {

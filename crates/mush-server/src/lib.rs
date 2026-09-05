@@ -69,6 +69,7 @@ pub mod gateway_sink;
 pub mod help;
 pub mod modules;
 pub mod persist;
+mod process_fault;
 pub mod quarantine;
 pub mod retained;
 pub mod staff;
