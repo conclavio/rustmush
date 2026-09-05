@@ -9,24 +9,24 @@
  * panels can populate without spamming scrollback (mail list on login,
  * channel backlog on tab open, …).
  */
-export type Query = { "t": "mail_list", "d": { 
+export type Query = { "t": "mail_list", "d": {
 /**
  * Folder name; `None` means the default folder (inbox).
  */
-folder?: string | null, } } | { "t": "who" } | { "t": "sheet" } | { "t": "channel_backlog", "d": { 
+folder?: string | null, } } | { "t": "who" } | { "t": "sheet" } | { "t": "channel_backlog", "d": {
 /**
  * Channel name.
  */
-channel: string, 
+channel: string,
 /**
  * Return messages with `seq` strictly below this; `None` means
  * start from the newest.
  */
-before_seq?: number | null, 
+before_seq?: number | null,
 /**
  * Maximum number of messages to return.
  */
-limit: number, } } | { "t": "panel_subscribe", "d": { 
+limit: number, } } | { "t": "panel_subscribe", "d": {
 /**
  * Panel feed id, e.g. `"wod.roll"`.
  */

@@ -8,11 +8,11 @@ import type { RichText } from "./RichText";
  * Modules may set a rich prompt (dice pools, compose mode, chargen steps);
  * `text: None` keeps the client's default prompt.
  */
-export type PromptSpec = { 
+export type PromptSpec = {
 /**
  * The input mode to switch to.
  */
-mode: InputMode, 
+mode: InputMode,
 /**
  * Prompt text to display, or `None` for the client default.
  */

@@ -3086,6 +3086,15 @@ compatibility. The declaration is an audit contract for trusted compiled code, n
 handlers are sandboxed; changing to a more authoritative lane requires the review and migration
 evidence specified by doc 09b. No stable third-party ABI is promised by this cut.
 
+K8.6 is closed in repository CI. Five separately named jobs expose the kernel contract suite, the
+live-Redis and real-process crash matrix, definition/wire goldens, the direct-randomness source
+policy, and the truth-serialization policy. The ordinary cross-platform workspace job remains the
+broad regression net but no longer supplies Redis implicitly; every live-backend proof is owned by
+the Linux Redis-fault job and therefore cannot pass merely by taking a missing-`REDIS_URL` skip.
+Private resolved invocation/offer wrappers have a compile-time negative serde assertion, while the
+truth job also drives the line, structured IPC, TUI, LLM, receipt, and tactical-keyframe redaction
+goldens. Production command compatibility composition is part of the named contract job.
+
 Work:
 
 1. Run every Gate-5 cut point against each toy vertical slice, not only a synthetic bundle.

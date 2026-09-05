@@ -3,27 +3,27 @@
 /**
  * One row of a WHO listing.
  */
-export type WhoEntry = { 
+export type WhoEntry = {
 /**
  * Character name.
  */
-name: string, 
+name: string,
 /**
  * Short alias, when the character has one.
  */
-alias?: string | null, 
+alias?: string | null,
 /**
  * Seconds since the player's last input.
  */
-idle_s: number, 
+idle_s: number,
 /**
  * Seconds connected.
  */
-conn_s: number, 
+conn_s: number,
 /**
  * Location name, when the viewer is allowed to see it.
  */
-location?: string | null, 
+location?: string | null,
 /**
  * The player's `@doing` string, when set.
  */

@@ -21,71 +21,71 @@ import type { JsonValue } from "./serde_json/JsonValue";
  * Clients MUST ignore events whose `t` they do not recognize (additive
  * evolution).
  */
-export type OutputEvent = { "t": "room", "d": RoomView } | { "t": "narrative", "d": { 
+export type OutputEvent = { "t": "room", "d": RoomView } | { "t": "narrative", "d": {
 /**
  * How the line was produced (formats the render).
  */
-kind: NarrativeKind, 
+kind: NarrativeKind,
 /**
  * The acting object, when the line is attributed.
  */
-actor?: ObjRef | null, 
+actor?: ObjRef | null,
 /**
  * The line itself.
  */
-text: RichText, } } | { "t": "sys", "d": RichText } | { "t": "channel", "d": { 
+text: RichText, } } | { "t": "sys", "d": RichText } | { "t": "channel", "d": {
 /**
  * Channel name, e.g. `"pub"`.
  */
-channel: string, 
+channel: string,
 /**
  * Per-channel message sequence number (monotonic).
  */
-seq: number, 
+seq: number,
 /**
  * The speaker.
  */
-actor: ObjRef, 
+actor: ObjRef,
 /**
  * Comsys title, when the speaker has one set.
  */
-title?: string | null, 
+title?: string | null,
 /**
  * Say/pose/emit flavor of the message.
  */
-kind: NarrativeKind, 
+kind: NarrativeKind,
 /**
  * The message text.
  */
-text: RichText, 
+text: RichText,
 /**
  * Server timestamp, Unix milliseconds.
  */
-ts: number, } } | { "t": "mail_notice", "d": { 
+ts: number, } } | { "t": "mail_notice", "d": {
 /**
  * The sender.
  */
-from: ObjRef, 
+from: ObjRef,
 /**
  * Message subject.
  */
-subject: string, 
+subject: string,
 /**
  * Mail message id.
  */
-id: number, 
+id: number,
 /**
  * The recipient's unread count after this message.
  */
-unread: number, } } | { "t": "who", "d": Array<WhoEntry> } | { "t": "panel", "d": { 
+unread: number, } } | { "t": "who", "d": Array<WhoEntry> } | { "t": "panel", "d": {
 /**
  * Panel feed id, e.g. `"wod.roll"`, `"tactics.map"`.
  */
-feed: string, 
+feed: string,
 /**
  * Snapshot vs. incremental frame.
  */
-kind: PanelFrameKind, 
+kind: PanelFrameKind,
 /**
  * Module-defined payload; opaque to this crate.
  */
@@ -93,60 +93,60 @@ data: JsonValue, } } | { "t": "view", "d": ViewEnvelope } | { "t": "weather", "d
 /**
  * Zone identifier.
  */
-zone: string, 
+zone: string,
 /**
  * The weather flavor line.
  */
-text: RichText, 
+text: RichText,
 /**
  * Icon hint for the web client, e.g. `"rain"`.
  */
-icon: string, } } | { "t": "reply", "d": { 
+icon: string, } } | { "t": "reply", "d": {
 /**
  * The `id` from the originating request.
  */
-id: number, 
+id: number,
 /**
  * The payload (e.g. a `Who` listing or a `Panel` keyframe).
  */
-event: OutputEvent, } } | { "t": "resumed", "d": { 
+event: OutputEvent, } } | { "t": "resumed", "d": {
 /**
  * Whether the gap could be replayed from the resume buffer.
  */
-replayed: boolean, } } | { "t": "prompt", "d": PromptSpec } | { "t": "ping", "d": { 
+replayed: boolean, } } | { "t": "prompt", "d": PromptSpec } | { "t": "ping", "d": {
 /**
  * Nonce to echo back in the `Pong`.
  */
-nonce: number, } } | { "t": "hello", "d": { 
+nonce: number, } } | { "t": "hello", "d": {
 /**
  * Protocol version ([`PROTO_VERSION`](crate::PROTO_VERSION)).
  */
-proto: number, 
+proto: number,
 /**
  * Server software and version, e.g. `"rustmush 0.1"`.
  */
-server: string, 
+server: string,
 /**
  * Feature identifiers the server supports, e.g. `"mail"`,
  * `"channels"`, `"wod"`.
  */
-features: Array<string>, 
+features: Array<string>,
 /**
  * Panel feed ids the server can publish.
  */
-panels: Array<string>, } } | { "t": "session_info", "d": { 
+panels: Array<string>, } } | { "t": "session_info", "d": {
 /**
  * The attached character.
  */
-character: ObjRef, 
+character: ObjRef,
 /**
  * Account name.
  */
-account: string, 
+account: string,
 /**
  * Number of live connections attached to this session.
  */
-connections: number, } } | { "t": "disconnect", "d": { 
+connections: number, } } | { "t": "disconnect", "d": {
 /**
  * Human-readable reason.
  */

@@ -85,6 +85,7 @@ wiremock = "0.6"
 # property-based ("fuzz-style") testing — dev-dep only, cross-platform, runs
 # under `cargo test`. Hostile-input parser suites (M9 hardening) live behind it.
 proptest = "1"
+static_assertions = "1"
 # .env loading for dev (mushd reads secrets from real env vars in prod; in dev
 # it loads C:/.../.env at boot). dotenvy is the actively-maintained successor to
 # the unmaintained `dotenv` crate; pure Rust, no C deps. Its safe `dotenv()`

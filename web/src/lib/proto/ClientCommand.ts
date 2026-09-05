@@ -8,15 +8,15 @@ import type { Query } from "./Query";
  * Adjacently tagged on the wire, same scheme as
  * [`OutputEvent`](crate::OutputEvent): `{"t": "line", "d": "look"}`.
  */
-export type ClientCommand = { "t": "line", "d": string } | { "t": "req", "d": { 
+export type ClientCommand = { "t": "line", "d": string } | { "t": "req", "d": {
 /**
  * Client-chosen correlation id, echoed with the response.
  */
-id: number, 
+id: number,
 /**
  * What to fetch.
  */
-q: Query, } } | { "t": "resume", "d": { 
+q: Query, } } | { "t": "resume", "d": {
 /**
  * The last envelope sequence number the client received.
  */
