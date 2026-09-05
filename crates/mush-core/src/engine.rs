@@ -743,6 +743,26 @@ impl Engine {
             .scan(self, keys, cursor, limit)
     }
 
+    /// Resolve one durable outbox wake directly against its authoritative
+    /// pending/prompt/deadline records. A stale terminal wake is a no-op.
+    pub fn decision_dispatch_for_wake(
+        &self,
+        owner: &crate::mechanics::OwnerId,
+        wake: &crate::decision::DecisionWake,
+    ) -> Result<
+        Option<crate::decision_source::DecisionDispatchCandidate>,
+        crate::decision_source::DecisionSourceScanError,
+    > {
+        let keys = self
+            .decision_keys
+            .as_ref()
+            .ok_or(crate::decision_source::DecisionSourceScanError::RegistryUnavailable)?;
+        self.registry
+            .decision_sources()
+            .ok_or(crate::decision_source::DecisionSourceScanError::RegistryUnavailable)?
+            .candidate_for_wake(self, keys, owner, wake)
+    }
+
     /// Construct stable internal ingress for one discovered lease attempt.
     pub fn decision_lease_ingress(
         &self,
@@ -761,7 +781,6 @@ impl Engine {
         &self,
         candidate: &crate::decision_source::DecisionDispatchCandidate,
         ingress: &crate::action::IngressEnvelope,
-        lease_duration: i64,
     ) -> Result<
         crate::decision_source::DecisionDispatchPlan,
         crate::decision_source::DecisionSourcePlanError,
@@ -773,7 +792,7 @@ impl Engine {
         self.registry
             .decision_sources()
             .ok_or(crate::decision_source::DecisionSourcePlanError::RegistryUnavailable)?
-            .plan_candidate(self, keys, candidate, ingress, lease_duration)
+            .plan_candidate(self, keys, candidate, ingress)
     }
 
     /// Ask the source's trusted read-only adapter to build domain addressing,

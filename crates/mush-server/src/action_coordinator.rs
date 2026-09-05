@@ -505,10 +505,9 @@ impl ActionCoordinator {
         permit: Box<ActionPermit>,
         engine: &mut Engine,
         candidate: &mush_core::DecisionDispatchCandidate,
-        lease_duration: i64,
     ) -> Result<StagedDecisionLease, ActionCoordinatorError> {
         let plan = engine
-            .plan_decision_dispatch(candidate, permit.ingress(), lease_duration)
+            .plan_decision_dispatch(candidate, permit.ingress())
             .map_err(|source| ActionCoordinatorError::DecisionLeasePlan(Box::new(source)))?;
         let (action, invocation, guards, transition) = plan.into_parts();
         validate_invocation_identity(permit.ingress(), &invocation)?;

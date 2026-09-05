@@ -195,8 +195,8 @@ pub use decision_source::{
     DecisionDispatchCandidate, DecisionDispatchPlan, DecisionLeaseIngressError,
     DecisionSourceCandidateError, DecisionSourceCursor, DecisionSourcePage,
     DecisionSourcePlanError, DecisionSourceRegistry, DecisionSourceRegistryBuilder,
-    DecisionSourceRegistryError, DecisionSourceScanError, MAX_DECISION_SOURCES,
-    decision_lease_ingress,
+    DecisionSourceRegistryError, DecisionSourceScanError, MAX_DECISION_LEASE_DURATION,
+    MAX_DECISION_SOURCES, decision_lease_ingress,
 };
 pub use durable_schedule::{
     DurableSchedule, DurableScheduleDraft, DurableScheduleError, DurableScheduleStateCodec,

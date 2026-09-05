@@ -98,9 +98,15 @@ use tokio::task::JoinHandle;
 
 use crate::action_coordinator::{
     ActionCoordinator, ActionPermit, ActionPreflight, StagedAuthoritativeAction,
+    StagedDecisionLease,
+};
+use crate::decision_dispatch::{
+    DecisionDispatchReservation, DecisionDispatcher, DecisionProviderRegistry,
+    DecisionWorkerCompletion, MAX_DECISION_COMPLETIONS,
 };
 use crate::durable_outbox::{
-    DurableOutboxPolicy, DurableOutboxRegistry, run_authoritative_outbox_worker,
+    DecisionWakeDispatch, DecisionWakeOutboxAdapter, DurableOutboxPolicy, DurableOutboxRegistry,
+    decision_wake_mailbox, run_authoritative_outbox_worker,
 };
 use crate::gateway_sink::GatewaySink;
 use crate::persist::{
@@ -1497,6 +1503,60 @@ pub fn spawn_persist_with_gateway(
     )
 }
 
+struct DecisionRuntime {
+    dispatcher: Arc<DecisionDispatcher>,
+    wakes: mpsc::Receiver<DecisionWakeDispatch>,
+    completions: mpsc::Receiver<DecisionWorkerCompletion>,
+}
+
+/// Spawn with explicit owner-routed delayed-decision providers. This validates
+/// every composed source before any worker or outbox task starts and installs
+/// its no-I/O wake adapter into the durable delivery registry.
+pub fn spawn_persist_with_gateway_and_decisions(
+    engine: Engine,
+    deps: ServerDeps,
+    mut durable_outbox: DurableOutboxRegistry,
+    providers: DecisionProviderRegistry,
+    worker_limit: usize,
+    make_gateway: impl FnOnce(mpsc::WeakSender<WorldMsg>) -> Gateway,
+) -> Result<PersistHandles, String> {
+    let sources = engine
+        .registry
+        .decision_sources()
+        .ok_or_else(|| "decision-source registry is unavailable".to_owned())?;
+    let (wake_tx, wakes) =
+        decision_wake_mailbox(mush_core::MAX_DECISION_MAILBOX_IDS).map_err(str::to_owned)?;
+    for (owner, adapter) in sources.wake_adapters() {
+        if !providers.contains_owner(&owner) {
+            return Err(format!(
+                "decision source {owner} has no registered async provider"
+            ));
+        }
+        durable_outbox
+            .register(Arc::new(DecisionWakeOutboxAdapter::new(
+                owner,
+                adapter,
+                wake_tx.clone(),
+            )))
+            .map_err(|error| error.to_string())?;
+    }
+    let (completion_tx, completions) = mpsc::channel(MAX_DECISION_COMPLETIONS);
+    let dispatcher = DecisionDispatcher::new(Arc::new(providers), worker_limit, completion_tx)
+        .map_err(|error| error.to_string())?;
+    Ok(spawn_persist_with_gateway_mode(
+        engine,
+        deps,
+        Arc::new(durable_outbox),
+        Some(DecisionRuntime {
+            dispatcher: Arc::new(dispatcher),
+            wakes,
+            completions,
+        }),
+        None,
+        make_gateway,
+    ))
+}
+
 /// Spawn with an explicit frozen durable-delivery registry. Work for a missing
 /// adapter remains pending and is surfaced as an operational error.
 pub fn spawn_persist_with_gateway_and_outbox(
@@ -1505,16 +1565,23 @@ pub fn spawn_persist_with_gateway_and_outbox(
     durable_outbox: Arc<DurableOutboxRegistry>,
     make_gateway: impl FnOnce(mpsc::WeakSender<WorldMsg>) -> Gateway,
 ) -> PersistHandles {
-    spawn_persist_with_gateway_mode(engine, deps, durable_outbox, None, make_gateway)
+    assert!(
+        engine
+            .registry
+            .decision_sources()
+            .is_none_or(mush_core::DecisionSourceRegistry::is_empty),
+        "composed decision sources require spawn_persist_with_gateway_and_decisions"
+    );
+    spawn_persist_with_gateway_mode(engine, deps, durable_outbox, None, None, make_gateway)
 }
 
-/// Shared spawn implementation. Production always supplies `None`; unit tests
-/// can start the real loop in a hard mode to exercise the execution gate rather
-/// than merely asserting its classification table.
+/// Shared spawn implementation. Unit tests can start the real loop in a hard
+/// mode; delayed-decision production wiring supplies the optional runtime.
 fn spawn_persist_with_gateway_mode(
     engine: Engine,
     deps: ServerDeps,
     durable_outbox: Arc<DurableOutboxRegistry>,
+    decision_runtime: Option<DecisionRuntime>,
     initial_mode: Option<WorldMode>,
     make_gateway: impl FnOnce(mpsc::WeakSender<WorldMsg>) -> Gateway,
 ) -> PersistHandles {
@@ -1619,6 +1686,7 @@ fn spawn_persist_with_gateway_mode(
         shutdown_rx,
         action_epoch,
         persistence_integrity.clone(),
+        decision_runtime,
         initial_mode,
         outbox_lifetime,
     ));
@@ -1639,9 +1707,158 @@ enum Wake {
     CommitReceipt(PendingReceiptEvent),
     Timer,
     DurableSchedules,
+    DecisionNotification(DecisionWakeDispatch),
+    DecisionResult(Box<DecisionWorkerCompletion>),
+    DurableDecisions,
     Shutdown,
     ShutdownDeadline,
     Closed,
+}
+
+struct DurableDecisionDriver {
+    cursor: Option<mush_core::DecisionSourceCursor>,
+    retry: Option<mush_core::DecisionDispatchCandidate>,
+    idempotency_epoch: u64,
+    dispatcher: Arc<DecisionDispatcher>,
+}
+
+impl DurableDecisionDriver {
+    const fn new(idempotency_epoch: u64, dispatcher: Arc<DecisionDispatcher>) -> Self {
+        Self {
+            cursor: None,
+            retry: None,
+            idempotency_epoch,
+            dispatcher,
+        }
+    }
+
+    async fn drive_one(
+        &mut self,
+        engine: &mut Engine,
+        store: &dyn AuthoritativeStore,
+        wake: Option<&DecisionWakeDispatch>,
+    ) -> Result<DurableDecisionDrive, String> {
+        if engine.has_legacy_persistence_work() {
+            return Ok(DurableDecisionDrive::DeferredByLegacyPredecessor);
+        }
+        if self.retry.is_none() {
+            self.retry = if let Some(wake) = wake {
+                engine
+                    .decision_dispatch_for_wake(wake.owner(), &wake.wake())
+                    .map_err(|error| error.to_string())?
+            } else {
+                let page = engine
+                    .discover_decision_dispatches(self.cursor.as_ref(), 1)
+                    .map_err(|error| error.to_string())?;
+                self.cursor = page.next_cursor().cloned();
+                page.candidates().first().cloned()
+            };
+        }
+        let Some(candidate) = self.retry.as_ref() else {
+            return Ok(DurableDecisionDrive::Idle);
+        };
+        let reservation = match self.dispatcher.try_reserve(candidate.controller()) {
+            Ok(reservation) => reservation,
+            Err(crate::decision_dispatch::DecisionDispatchReserveError::Busy) => {
+                return Ok(DurableDecisionDrive::Transient(
+                    "bounded decision workers are busy".to_owned(),
+                ));
+            }
+            Err(error) => return Err(error.to_string()),
+        };
+
+        for _ in 0..3 {
+            let ingress = ActionCoordinator::decision_lease_ingress(
+                engine,
+                candidate,
+                self.idempotency_epoch,
+            )
+            .map_err(|error| error.to_string())?;
+            let preflight = ActionCoordinator::preflight(store, ingress)
+                .await
+                .map_err(|error| error.to_string())?;
+            match preflight {
+                ActionPreflight::Retired {
+                    minimum_accepted_epoch,
+                } => {
+                    self.idempotency_epoch = self.idempotency_epoch.max(minimum_accepted_epoch);
+                }
+                ActionPreflight::Vacant(permit) => {
+                    let staged = match ActionCoordinator::prepare_and_stage_decision_lease(
+                        permit, engine, candidate,
+                    ) {
+                        Ok(staged) => staged,
+                        Err(error) if decision_lease_stale(&error) => {
+                            self.retry = None;
+                            return Ok(DurableDecisionDrive::DiscardedStale(error.to_string()));
+                        }
+                        Err(error) => return Err(error.to_string()),
+                    };
+                    self.retry = None;
+                    return Ok(DurableDecisionDrive::Staged(Box::new(
+                        StagedDecisionDispatch {
+                            staged,
+                            reservation,
+                        },
+                    )));
+                }
+                ActionPreflight::Pending { .. } => {
+                    return Err(
+                        "decision lease rediscovered an unresolved intent after writable boot"
+                            .to_owned(),
+                    );
+                }
+                ActionPreflight::Finalized(_) => {
+                    return Err(
+                        "decision remained dispatchable after its lease action finalized"
+                            .to_owned(),
+                    );
+                }
+                ActionPreflight::Quarantined(_) => {
+                    return Err("decision lease action is quarantined".to_owned());
+                }
+                ActionPreflight::Conflict => {
+                    return Err("decision lease idempotency identity conflicts".to_owned());
+                }
+            }
+        }
+        Ok(DurableDecisionDrive::Transient(
+            "decision lease retirement watermark changed repeatedly".to_owned(),
+        ))
+    }
+}
+
+struct StagedDecisionDispatch {
+    staged: StagedDecisionLease,
+    reservation: DecisionDispatchReservation,
+}
+
+enum DurableDecisionDrive {
+    Idle,
+    DeferredByLegacyPredecessor,
+    DiscardedStale(String),
+    Transient(String),
+    Staged(Box<StagedDecisionDispatch>),
+}
+
+fn decision_lease_stale(error: &crate::action_coordinator::ActionCoordinatorError) -> bool {
+    matches!(
+        error,
+        crate::action_coordinator::ActionCoordinatorError::DecisionLeasePlan(source)
+            if matches!(
+                source.as_ref(),
+                mush_core::DecisionSourcePlanError::StaleCandidate
+                    | mush_core::DecisionSourcePlanError::MissingDecision
+                    | mush_core::DecisionSourcePlanError::MissingPrompt
+                    | mush_core::DecisionSourcePlanError::Decision(
+                        mush_core::DecisionError::StaleRevision
+                            | mush_core::DecisionError::StaleAttempt
+                            | mush_core::DecisionError::StaleLease
+                            | mush_core::DecisionError::InvalidTransition
+                            | mush_core::DecisionError::DeadlineReached
+                    )
+            )
+    )
 }
 
 struct DurableScheduleDriver {
@@ -1832,6 +2049,12 @@ struct ActionCompletion {
     finished:
         Option<oneshot::Sender<Result<StagedAuthoritativeAction, AuthoritativeCommitFailure>>>,
     ownership_valid: bool,
+    post_commit_decision: Option<DecisionPostCommit>,
+}
+
+struct DecisionPostCommit {
+    reservation: DecisionDispatchReservation,
+    worker: mush_core::DecisionWorkerLease,
 }
 
 /// One authoritative batch whose presentation and external work remain held
@@ -2054,6 +2277,7 @@ async fn run(
     mut shutdown: watch::Receiver<bool>,
     action_epoch: u64,
     persistence_integrity: PersistenceIntegrityLatch,
+    decision_runtime: Option<DecisionRuntime>,
     initial_mode: Option<WorldMode>,
     _outbox_lifetime: watch::Sender<bool>,
 ) {
@@ -2068,6 +2292,22 @@ async fn run(
     let mut durable_schedule_tick = tokio::time::interval(DURABLE_SCHEDULE_POLL_INTERVAL);
     durable_schedule_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut durable_schedule_transient_alarmed = false;
+    let (mut durable_decisions, mut decision_wakes, mut decision_completions) =
+        if let Some(runtime) = decision_runtime {
+            (
+                Some(DurableDecisionDriver::new(
+                    action_epoch,
+                    Arc::clone(&runtime.dispatcher),
+                )),
+                Some(runtime.wakes),
+                Some(runtime.completions),
+            )
+        } else {
+            (None, None, None)
+        };
+    let mut durable_decision_tick = tokio::time::interval(Duration::from_millis(250));
+    durable_decision_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut durable_decision_transient_alarmed = false;
     // The server -> gateway delivery seam (M16a/M16b): every resolved
     // `(SendTarget, OutputEvent)` pair is handed to this transport. In the
     // all-in-one binary it maps onto the shared `SessionManager`; in the forked
@@ -2180,6 +2420,9 @@ async fn run(
             // re-emit wake drain before admitting an exact-token action.
             && retained.is_empty()
             && admission_for(admission_mode, IngressClass::Timer) == Admission::Allow;
+        let durable_decision_armed = durable_decisions.is_some()
+            && retained.is_empty()
+            && admission_for(admission_mode, IngressClass::Timer) == Admission::Allow;
         let ready_deferred = if pending_commit.is_none() {
             deferred_world_msg.take()
         } else {
@@ -2209,6 +2452,25 @@ async fn run(
             } => Wake::CommitReceipt(receipt),
             () = sleep_until_unix_ms(next_due), if sched_armed => Wake::Timer,
             _ = durable_schedule_tick.tick(), if durable_schedule_armed => Wake::DurableSchedules,
+            wake = async {
+                match decision_wakes.as_mut() {
+                    Some(wakes) => wakes.recv().await,
+                    None => std::future::pending().await,
+                }
+            }, if durable_decision_armed => match wake {
+                Some(wake) => Wake::DecisionNotification(wake),
+                None => Wake::DurableDecisions,
+            },
+            completion = async {
+                match decision_completions.as_mut() {
+                    Some(completions) => completions.recv().await,
+                    None => std::future::pending().await,
+                }
+            }, if durable_decisions.is_some() => match completion {
+                Some(completion) => Wake::DecisionResult(Box::new(completion)),
+                None => Wake::DurableDecisions,
+            },
+            _ = durable_decision_tick.tick(), if durable_decision_armed => Wake::DurableDecisions,
             () = tokio::time::sleep(REEMIT_INTERVAL), if reemit_pending => Wake::Timer,
             changed = shutdown.changed(), if !shutdown_requested => {
                 if changed.is_ok() && *shutdown.borrow_and_update() {
@@ -2461,6 +2723,7 @@ async fn run(
                                         owned: Some(owned),
                                         finished: Some(finished),
                                         ownership_valid: false,
+                                        post_commit_decision: None,
                                     });
                                 }
                                 Err(detail) => {
@@ -2653,6 +2916,7 @@ async fn run(
                             owned: None,
                             finished: None,
                             ownership_valid: false,
+                            post_commit_decision: None,
                         });
                     }
                     Err(detail) => {
@@ -2665,6 +2929,92 @@ async fn run(
                         );
                     }
                 }
+                StepOutcome::Continue
+            }
+            wake @ (Wake::DecisionNotification(_) | Wake::DurableDecisions) => {
+                let Some(store) = deps.store.authoritative_store() else {
+                    apply_integrity_freeze(
+                        &engine.world,
+                        &gateway,
+                        &mut health,
+                        &persistence_integrity,
+                        "delayed-decision driver has no authoritative store capability",
+                    );
+                    continue;
+                };
+                let wake = match &wake {
+                    Wake::DecisionNotification(wake) => Some(wake),
+                    Wake::DurableDecisions => None,
+                    _ => unreachable!(),
+                };
+                let Some(driver) = durable_decisions.as_mut() else {
+                    continue;
+                };
+                match driver.drive_one(&mut engine, store, wake).await {
+                    Ok(
+                        DurableDecisionDrive::Idle
+                        | DurableDecisionDrive::DeferredByLegacyPredecessor,
+                    ) => {
+                        durable_decision_transient_alarmed = false;
+                    }
+                    Ok(DurableDecisionDrive::DiscardedStale(detail)) => {
+                        durable_decision_transient_alarmed = false;
+                        tracing::debug!(
+                            error = %detail,
+                            "discarded stale delayed-decision candidate"
+                        );
+                    }
+                    Ok(DurableDecisionDrive::Transient(detail)) => {
+                        if !durable_decision_transient_alarmed {
+                            tracing::warn!(
+                                error = %detail,
+                                "delayed-decision dispatch is temporarily unavailable"
+                            );
+                            durable_decision_transient_alarmed = true;
+                        }
+                    }
+                    Ok(DurableDecisionDrive::Staged(staged_dispatch)) => {
+                        let StagedDecisionDispatch {
+                            staged,
+                            reservation,
+                        } = *staged_dispatch;
+                        durable_decision_transient_alarmed = false;
+                        let StagedDecisionLease { staged, worker } = staged;
+                        action_completion = Some(ActionCompletion {
+                            staged,
+                            owned: None,
+                            finished: None,
+                            ownership_valid: false,
+                            post_commit_decision: Some(DecisionPostCommit {
+                                reservation,
+                                worker,
+                            }),
+                        });
+                    }
+                    Err(detail) => {
+                        apply_integrity_freeze(
+                            &engine.world,
+                            &gateway,
+                            &mut health,
+                            &persistence_integrity,
+                            &format!("delayed-decision drive failed: {detail}"),
+                        );
+                    }
+                }
+                StepOutcome::Continue
+            }
+            Wake::DecisionResult(completion) => {
+                // K7.2 consumes this exact fence through authenticated response
+                // ingress. Until that slice is enabled, dropping the volatile
+                // result cannot lose the obligation: the durable lease expires
+                // and bounded recovery reoffers it.
+                tracing::warn!(
+                    owner = %completion.controller().owner,
+                    decision = ?completion.decision(),
+                    revision = completion.revision(),
+                    attempt = completion.attempt(),
+                    "decision completion reached the K7.1 boundary before K7.2 response ingress"
+                );
                 StepOutcome::Continue
             }
             Wake::Shutdown => {
@@ -5461,6 +5811,21 @@ fn complete_pending_commit(
             engine.abort_prepared_action(installation);
         }
     }
+    if let Some(post_commit) = action
+        .as_mut()
+        .and_then(|completion| completion.post_commit_decision.take())
+        && outcome == DeliveryOutcome::Committed
+        && !health.mode.integrity_frozen()
+        && let Err(error) = post_commit.reservation.spawn(post_commit.worker)
+    {
+        apply_integrity_freeze(
+            &engine.world,
+            gateway,
+            health,
+            persistence_integrity,
+            &format!("committed decision lease could not release worker custody: {error}"),
+        );
+    }
     if let Some(completion) = action.as_mut()
         && let Some(finished) = completion.finished.take()
     {
@@ -7313,6 +7678,7 @@ mod tests {
                 quarantine_spool: crate::quarantine::QuarantineSpool::in_memory(),
             },
             Arc::new(DurableOutboxRegistry::new()),
+            None,
             Some(mode),
             move |_| -> Gateway { sink },
         );
@@ -8227,6 +8593,7 @@ mod tests {
             shutdown_rx,
             1,
             PersistenceIntegrityLatch::new(),
+            None,
             None,
             watch::channel(false).0,
         ));

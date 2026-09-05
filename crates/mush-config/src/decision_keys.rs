@@ -57,9 +57,6 @@ impl DurableDecisionKeyStore {
         self.inner.load_or_create()
     }
 
-    pub fn rotate(&self) -> Result<DecisionKeyRing, DecisionKeyStoreError> {
-        self.inner.rotate()
-    }
 }
 
 #[cfg(test)]
@@ -83,8 +80,8 @@ mod tests {
 
         let offers = crate::offer_keys::DurableOfferKeyStore::new(&directory);
         offers.load_or_create().unwrap();
-        assert_eq!(store.rotate().unwrap().current_version(), 2);
-        assert_eq!(offers.load_or_create().unwrap().current_version(), 1);
+        assert_eq!(offers.rotate().unwrap().current_version(), 2);
+        assert_eq!(store.load_or_create().unwrap().current_version(), 1);
         let _ = std::fs::remove_dir_all(directory);
     }
 }

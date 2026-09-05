@@ -2774,9 +2774,14 @@ Implementation status: the strict private/prompt codecs, HMAC token ring, prompt
 provider witness/rank defaults, bridge-gated witness canonicalization, all per-record hard bounds,
 pre-staging global/controller/actor/byte admission, explicit-cause coalescing, atomic capture plan,
 one-shot deadline cursor, bounded no-I/O wake adapter, exact lease transition, and permit-before-
-commit async worker boundary are implemented and tested on the K7 convergence branch. Remaining
-K7.1 work is production decision-source registration, world-task commit/ack wiring, and bounded
-boot/periodic rediscovery; those are deliberately not claimed complete by the type-level slices.
+commit async worker boundary are implemented and tested on the K7 convergence branch. A
+composition-frozen, one-source-per-owner registry now binds the pending/prompt/deadline families,
+exact lease action, wake adapter, and owner-selected bounded lease interval. Production startup
+validates every source/provider/adapter route, exact wakes and a periodic canonical scan rediscover
+work, and the world task retains the worker reservation through the lease action's exact receipt,
+installing the post-image before spawn. The remaining K7.1 proof is an end-to-end composed source
+fixture covering commit, abort, wake loss, expired-lease restart, and worker saturation; K7.2 owns
+completion consumption, so production ruleset migration remains disabled until that ingress lands.
 
 **K7.2 — untrusted response ingress.** The async worker owns only the projected prompt and returns
 the bounded parsed `DecisionResponse`; raw model prose or reasoning never enters authoritative

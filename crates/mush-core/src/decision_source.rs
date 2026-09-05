@@ -32,6 +32,8 @@ use crate::mechanics::{
 
 /// Maximum composed owners that may publish delayed-decision families.
 pub const MAX_DECISION_SOURCES: usize = 256;
+/// Largest owner-selected lease interval in units of the decision clock.
+pub const MAX_DECISION_LEASE_DURATION: i64 = 3_600;
 
 #[derive(Clone)]
 struct DecisionSourceEntry {
@@ -39,6 +41,7 @@ struct DecisionSourceEntry {
     lease_action: DefinitionRef,
     families: DecisionCaptureFamilies,
     wake_adapter: CanonicalId,
+    lease_duration: i64,
 }
 
 impl std::fmt::Debug for DecisionSourceEntry {
@@ -71,6 +74,7 @@ impl DecisionSourceRegistryBuilder {
         lease_action: DefinitionRef,
         families: DecisionCaptureFamilies,
         wake_adapter: CanonicalId,
+        lease_duration: i64,
     ) -> Result<(), DecisionSourceRegistryError> {
         if self.entries.len() >= MAX_DECISION_SOURCES {
             return Err(DecisionSourceRegistryError::SourceLimit {
@@ -83,6 +87,12 @@ impl DecisionSourceRegistryBuilder {
         if lease_action.key().kind.as_str() != "action" {
             return Err(DecisionSourceRegistryError::ActionKind);
         }
+        if !(1..=MAX_DECISION_LEASE_DURATION).contains(&lease_duration) {
+            return Err(DecisionSourceRegistryError::LeaseDuration {
+                actual: lease_duration,
+                max: MAX_DECISION_LEASE_DURATION,
+            });
+        }
         if self.entries.contains_key(&owner) {
             return Err(DecisionSourceRegistryError::Duplicate { owner });
         }
@@ -93,6 +103,7 @@ impl DecisionSourceRegistryBuilder {
                 lease_action,
                 families,
                 wake_adapter,
+                lease_duration,
             },
         );
         Ok(())
@@ -139,6 +150,7 @@ impl DecisionSourceRegistryBuilder {
                             "prompts": entry.families.prompts().descriptor().canonical_value(),
                             "deadlines": entry.families.deadlines().descriptor().canonical_value(),
                             "wake_adapter": entry.wake_adapter,
+                            "lease_duration": entry.lease_duration,
                         })
                     })
                     .collect(),
@@ -352,22 +364,7 @@ impl DecisionSourceRegistry {
                         decision: pending.id,
                         source: Box::new(source),
                     })?;
-                if now.at >= pending.deadline.at {
-                    continue;
-                }
-                let attempt = match &pending.status {
-                    PendingDecisionStatus::Ready { attempt } => Some(*attempt),
-                    PendingDecisionStatus::Leased {
-                        attempt,
-                        lease_until,
-                    } if lease_until.checked_cmp(&now).is_ok()
-                        && now.at >= lease_until.at
-                        && *attempt < MAX_DECISION_ATTEMPTS =>
-                    {
-                        Some(*attempt + 1)
-                    }
-                    _ => None,
-                };
+                let attempt = eligible_attempt(pending, &now);
                 if let Some(attempt) = attempt {
                     candidates.push(DecisionDispatchCandidate {
                         registry_fingerprint: self.fingerprint,
@@ -399,13 +396,65 @@ impl DecisionSourceRegistry {
         })
     }
 
+    pub(crate) fn candidate_for_wake(
+        &self,
+        engine: &crate::engine::Engine,
+        keys: &DecisionKeyRing,
+        owner: &OwnerId,
+        wake: &DecisionWake,
+    ) -> Result<Option<DecisionDispatchCandidate>, DecisionSourceScanError> {
+        let Some(entry) = self.entries.get(owner) else {
+            return Ok(None);
+        };
+        self.owner_readiness.require_ready(owner)?;
+        let Some(pending) = engine
+            .action_state()
+            .get(entry.families.pending(), &wake.id)?
+        else {
+            return Ok(None);
+        };
+        if pending.controller.owner != *owner {
+            return Err(DecisionSourceScanError::RecordIdentity {
+                owner: owner.clone(),
+                encoded_key: SmolStr::new(pending.id.canonical_hash().to_hex()),
+            });
+        }
+        pending.validate_wake(wake)?;
+        let prompt = engine
+            .action_state()
+            .get(entry.families.prompts(), &pending.id)?
+            .ok_or_else(|| DecisionSourceScanError::MissingPrompt {
+                owner: owner.clone(),
+                decision: pending.id,
+            })?;
+        pending.validate_prompt_pair(prompt, keys)?;
+        validate_deadline_link(engine, entry, pending)?;
+        let now = engine
+            .clock_now(&pending.deadline.clock)
+            .map_err(|source| DecisionSourceScanError::Clock {
+                owner: owner.clone(),
+                decision: pending.id,
+                source: Box::new(source),
+            })?;
+        let Some(attempt) = eligible_attempt(pending, &now) else {
+            return Ok(None);
+        };
+        Ok(Some(DecisionDispatchCandidate {
+            registry_fingerprint: self.fingerprint,
+            owner: owner.clone(),
+            encoded_key: SmolStr::new(pending.id.canonical_hash().to_hex()),
+            wake: *wake,
+            controller: pending.controller.clone(),
+            attempt,
+        }))
+    }
+
     pub(crate) fn plan_candidate(
         &self,
         engine: &crate::engine::Engine,
         keys: &DecisionKeyRing,
         candidate: &DecisionDispatchCandidate,
         ingress: &IngressEnvelope,
-        lease_duration: i64,
     ) -> Result<DecisionDispatchPlan, DecisionSourcePlanError> {
         let entry = self.entry_for_candidate(candidate)?;
         let expected = decision_lease_ingress(
@@ -434,7 +483,7 @@ impl DecisionSourceRegistry {
             ready.retry_expired_lease(ready.revision, &now)?;
         }
         let transition =
-            ready.plan_worker_lease(prompt, &candidate.wake, keys, &now, lease_duration)?;
+            ready.plan_worker_lease(prompt, &candidate.wake, keys, &now, entry.lease_duration)?;
         let PendingDecisionStatus::Leased { attempt, .. } = transition.post_image().status else {
             return Err(DecisionSourcePlanError::StaleCandidate);
         };
@@ -520,6 +569,28 @@ impl DecisionSourceRegistry {
         }
         self.owner_readiness.require_ready(&entry.owner)?;
         Ok(entry)
+    }
+}
+
+fn eligible_attempt(
+    pending: &crate::decision::PendingDecision,
+    now: &crate::clock::ClockStamp,
+) -> Option<u8> {
+    if now.at >= pending.deadline.at {
+        return None;
+    }
+    match &pending.status {
+        PendingDecisionStatus::Ready { attempt } => Some(*attempt),
+        PendingDecisionStatus::Leased {
+            attempt,
+            lease_until,
+        } if lease_until.checked_cmp(now).is_ok()
+            && now.at >= lease_until.at
+            && *attempt < MAX_DECISION_ATTEMPTS =>
+        {
+            Some(*attempt + 1)
+        }
+        _ => None,
     }
 }
 
@@ -623,6 +694,8 @@ pub enum DecisionSourceRegistryError {
     OwnerMismatch,
     #[error("decision source lease definition is not an action")]
     ActionKind,
+    #[error("decision lease duration {actual} must be in 1..={max} clock units")]
+    LeaseDuration { actual: i64, max: i64 },
     #[error("decision source is registered more than once for owner {owner}")]
     Duplicate { owner: OwnerId },
     #[error("decision source names an uncomposed owner {owner}")]

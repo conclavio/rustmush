@@ -2175,6 +2175,7 @@ impl<'a> Registrar<'a> {
         lease_action: crate::mechanics::DefinitionRef,
         families: crate::decision::DecisionCaptureFamilies,
         wake_adapter: crate::mechanics::CanonicalId,
+        lease_duration: i64,
     ) -> Result<(), ModError> {
         self.require_mechanics_registration_authority()?;
         if self.reg.decision_sources.is_some() {
@@ -2191,7 +2192,7 @@ impl<'a> Registrar<'a> {
         })?;
         self.reg
             .decision_source_builder
-            .register(owner, lease_action, families, wake_adapter)
+            .register(owner, lease_action, families, wake_adapter, lease_duration)
             .map_err(|e| {
                 ModError::msg(format!(
                     "module {}: decision source registration: {e}",
