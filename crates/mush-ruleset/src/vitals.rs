@@ -47,13 +47,93 @@ pub fn vitals_feed(ruleset: &str) -> SmolStr {
 
 /// Per-subject vitals revisions (a module state slot, RAM only). Reset at
 /// boot by construction, which is why clients reset their watermark on
-/// `hello`.
+/// `hello`. The `<ruleset>.sheet` feed reuses this same counter (interface
+/// plan I13), so a sheet delta and the vitals frame carry the identical
+/// per-subject revision after one write.
 #[derive(Clone, Debug, Default)]
 pub struct VitalsRevisions(pub HashMap<ObjId, u64>);
 
+/// Per-subject sheet schema fingerprints (interface plan I13): a change forces
+/// the next republish to a fresh keyframe instead of a delta. A module state
+/// slot beside [`VitalsRevisions`], RAM only and reset at boot — 8 bytes per
+/// subject, never a data snapshot.
+#[derive(Clone, Debug, Default)]
+pub struct SheetSchemaFps(pub HashMap<ObjId, u64>);
+
+/// The materialized `<ruleset>.sheet` payload a viewer sees — the shared input
+/// to both the on-subscribe keyframe and the republish delta (interface plan
+/// I13). A ruleset's [`VitalsSource`] produces this; this crate owns the wire
+/// shaping so the keyframe/delta discipline and the fingerprint live in one
+/// place. Built with the same staff filter and overlay the query applies.
+pub struct SheetView {
+    /// The subject (`target` on the wire).
+    pub target: ObjId,
+    /// The whole schema description ([`SheetSchema::describe`]); sent only on a
+    /// keyframe.
+    pub schema: serde_json::Value,
+    /// The approval block.
+    pub approved: serde_json::Value,
+    /// The staff-filtered field data.
+    pub data: serde_json::Value,
+    /// Whether staff-only fields are visible to the viewer. Folded into the
+    /// fingerprint so a staff-visibility flip also forces a keyframe (the
+    /// old-client key-drop fix): a full-data delta that silently drops a
+    /// now-hidden field would otherwise leave it stale on a shallow-merge
+    /// client.
+    pub show_staff: bool,
+}
+
+impl SheetView {
+    /// A 64-bit fingerprint over the exact wire schema bytes plus the viewer's
+    /// staff-visibility bit: any change to either flips it and forces a
+    /// keyframe (interface plan I13). `describe()` is already computed for the
+    /// keyframe, so this is cheap.
+    #[must_use]
+    pub fn fingerprint(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        self.schema.to_string().hash(&mut h);
+        self.show_staff.hash(&mut h);
+        h.finish()
+    }
+
+    fn base(&self, revision: u64) -> serde_json::Value {
+        serde_json::json!({
+            "target": self.target.to_string(),
+            "approved": self.approved.clone(),
+            "data": self.data.clone(),
+            "revision": revision,
+        })
+    }
+
+    /// The full keyframe (carries `schema` + `revision`).
+    #[must_use]
+    pub fn keyframe(&self, feed: &SmolStr, revision: u64) -> OutputEvent {
+        let mut data = self.base(revision);
+        data["schema"] = self.schema.clone();
+        OutputEvent::Panel {
+            feed: feed.clone(),
+            kind: PanelFrameKind::Keyframe,
+            data,
+        }
+    }
+
+    /// The incremental delta (omits `schema`, carries `base_revision`).
+    #[must_use]
+    pub fn delta(&self, feed: &SmolStr, revision: u64) -> OutputEvent {
+        let mut data = self.base(revision);
+        data["base_revision"] = serde_json::json!(revision.saturating_sub(1));
+        OutputEvent::Panel {
+            feed: feed.clone(),
+            kind: PanelFrameKind::Delta,
+            data,
+        }
+    }
+}
+
 /// What a ruleset supplies to the vitals publisher: its own reads of a
 /// subject's sheet (with whatever authoritative overlay it keeps), in the two
-/// contexts the publisher runs in, plus the sheet keyframe it republishes.
+/// contexts the publisher runs in, plus the sheet it republishes.
 pub trait VitalsSource: Send + Sync {
     /// The subject's vitals for a read-only query. `None` when the subject
     /// has no sheet.
@@ -63,10 +143,11 @@ pub trait VitalsSource: Send + Sync {
     /// subject has no sheet.
     fn vitals_in(&self, ctx: &Ctx<'_>, subject: ObjId) -> Option<Vec<Vital>>;
 
-    /// The subject's own sheet keyframe (the `<ruleset>.sheet` payload as
-    /// the subject sees it), republished to them after a sheet write. `None`
-    /// skips the republish.
-    fn sheet_keyframe(&self, ctx: &Ctx<'_>, subject: ObjId) -> Option<OutputEvent>;
+    /// The subject's own sheet as they see it (staff-filtered, overlay
+    /// applied), for the republish-on-write. `None` skips the sheet republish.
+    /// This crate turns it into a keyframe or a delta (interface plan I13,
+    /// replacing the former prebuilt-keyframe return).
+    fn sheet_view(&self, ctx: &Ctx<'_>, subject: ObjId) -> Option<SheetView>;
 }
 
 /// The vitals a sheet declares, in schema order: every field with a
@@ -224,6 +305,7 @@ pub fn register_vitals(
     let feed_name = vitals_feed(ruleset);
     let feed = reg.panel_feed(&feed_name)?;
     reg.state(VitalsRevisions::default());
+    reg.state(SheetSchemaFps::default());
     reg.query_handler(
         &feed_name,
         Arc::new(VitalsQuery {
@@ -236,6 +318,7 @@ pub fn register_vitals(
         WorldEventKind::AttrSet,
         Arc::new(VitalsRepublish {
             feed,
+            sheet_feed: SmolStr::new(format!("{ruleset}.sheet")),
             sheet_attr: sheet_attr.to_string(),
             source,
         }),
@@ -305,10 +388,13 @@ impl QueryHandler for VitalsQuery {
 }
 
 /// The `AttrSet` observer: a write to the ruleset's sheet attribute bumps the
-/// subject's revision and republishes their vitals frame and sheet keyframe
-/// to them alone.
+/// subject's revision and republishes their vitals frame and sheet frame to
+/// them alone. The sheet frame is a delta unless the schema fingerprint
+/// changed (a template swap) or this is the first write after boot, in which
+/// case it is a fresh keyframe (interface plan I13).
 struct VitalsRepublish {
     feed: PanelFeedHandle,
+    sheet_feed: SmolStr,
     sheet_attr: String,
     source: Arc<dyn VitalsSource>,
 }
@@ -336,7 +422,22 @@ impl WorldObserver for VitalsRepublish {
             self.feed
                 .keyframe_to(ctx, Audience::Actor(subject), frame.to_panel_data());
         }
-        if let Some(event) = self.source.sheet_keyframe(ctx, subject) {
+        if let Some(view) = self.source.sheet_view(ctx, subject) {
+            let fp = view.fingerprint();
+            let prior = ctx
+                .state::<SheetSchemaFps>()
+                .and_then(|m| m.0.get(&subject).copied());
+            // Force a keyframe on a schema/staff-visibility change, on the first
+            // write after boot (no prior fp), or at revision 0 (no revision
+            // counter registered) — never emit a delta the client cannot base.
+            let event = if revision == 0 || prior != Some(fp) {
+                view.keyframe(&self.sheet_feed, revision)
+            } else {
+                view.delta(&self.sheet_feed, revision)
+            };
+            if let Some(m) = ctx.state_mut::<SheetSchemaFps>() {
+                m.0.insert(subject, fp);
+            }
             ctx.out.to_actor(subject, event);
         }
     }
@@ -478,5 +579,65 @@ mod tests {
                 .all(|v| v.detail.as_ref().unwrap().len() <= MAX_VITAL_DETAIL_BYTES)
         );
         assert_eq!(f.revision, 3);
+    }
+
+    fn view(schema: serde_json::Value, show_staff: bool) -> SheetView {
+        SheetView {
+            target: ObjId(1),
+            schema,
+            approved: serde_json::json!({ "state": "unapproved" }),
+            data: serde_json::json!({ "strength": 3 }),
+            show_staff,
+        }
+    }
+
+    #[test]
+    fn sheet_view_fingerprint_flips_on_schema_or_staff_visibility() {
+        let base = view(serde_json::json!({ "v": 1, "fields": ["a"] }), false).fingerprint();
+        // Same inputs → same fingerprint (a stable, no-op republish stays a delta).
+        assert_eq!(
+            base,
+            view(serde_json::json!({ "v": 1, "fields": ["a"] }), false).fingerprint()
+        );
+        // Any wire-schema change flips it (a template swap, a field/label edit).
+        assert_ne!(
+            base,
+            view(serde_json::json!({ "v": 2, "fields": ["a"] }), false).fingerprint()
+        );
+        assert_ne!(
+            base,
+            view(serde_json::json!({ "v": 1, "fields": ["a", "b"] }), false).fingerprint()
+        );
+        // A staff-visibility flip flips it (the M2 old-client key-drop fix).
+        assert_ne!(
+            base,
+            view(serde_json::json!({ "v": 1, "fields": ["a"] }), true).fingerprint()
+        );
+    }
+
+    #[test]
+    fn keyframe_carries_schema_and_revision_delta_omits_schema_and_bases_on_prev() {
+        let feed = SmolStr::new_static("wod.sheet");
+        let v = view(serde_json::json!({ "s": 1 }), false);
+
+        let OutputEvent::Panel { kind, data, .. } = v.keyframe(&feed, 5) else {
+            panic!("keyframe is a Panel");
+        };
+        assert_eq!(kind, PanelFrameKind::Keyframe);
+        assert!(data.get("schema").is_some(), "keyframe carries the schema");
+        assert_eq!(data.get("revision").and_then(|x| x.as_u64()), Some(5));
+        assert!(data.get("base_revision").is_none());
+
+        let OutputEvent::Panel { kind, data, .. } = v.delta(&feed, 6) else {
+            panic!("delta is a Panel");
+        };
+        assert_eq!(kind, PanelFrameKind::Delta);
+        assert!(
+            data.get("schema").is_none(),
+            "a delta omits the static schema"
+        );
+        assert_eq!(data.get("revision").and_then(|x| x.as_u64()), Some(6));
+        assert_eq!(data.get("base_revision").and_then(|x| x.as_u64()), Some(5));
+        assert!(data.get("data").is_some(), "a delta carries the full data");
     }
 }

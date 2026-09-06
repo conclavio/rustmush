@@ -72,7 +72,10 @@ pub use schema::{
 };
 pub use store::{MigrateFn, SHEET_ATTR_NS, SheetStore, sheet_attr_name};
 pub use validate::{SheetError, validate};
-pub use vitals::{VitalsRevisions, VitalsSource, from_sheet, register_vitals, vitals_feed};
+pub use vitals::{
+    SheetSchemaFps, SheetView, VitalsRevisions, VitalsSource, from_sheet, register_vitals,
+    vitals_feed,
+};
 
 /// A ruleset identifier — the interned short id (`"wod"`, `"tacsim"`), also
 /// the module name and the `sheet:<id>` storage suffix.

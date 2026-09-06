@@ -164,6 +164,13 @@ impl PanelStore {
         now: i64,
     ) -> PanelOutcome {
         if !within_bounds(data) {
+            // An over-bounds keyframe must still clear a pending resync, or a
+            // >1 MiB frame would silence recovery for the rest of the session
+            // (interface plan I13 bounds hardening) — a later, smaller frame
+            // can then re-seed.
+            if kind == PanelFrameKind::Keyframe {
+                self.resync_pending.remove(feed);
+            }
             return PanelOutcome::Ignored;
         }
         if feed.ends_with(".roll") {
@@ -179,6 +186,9 @@ impl PanelStore {
             PanelFrameKind::Keyframe => {
                 self.resync_pending.remove(feed);
                 self.store(feed, data.clone(), now)
+            }
+            PanelFrameKind::Delta if feed.ends_with(".sheet") => {
+                self.apply_sheet_delta(feed, data, now)
             }
             PanelFrameKind::Delta => match feed.as_str() {
                 "comsys" => {
@@ -205,6 +215,40 @@ impl PanelStore {
                 }
                 _ => self.resync(feed),
             },
+        }
+    }
+
+    /// Apply a `<ruleset>.sheet` delta (interface plan I13): the delta carries
+    /// the whole staff-filtered `data` plus `revision`/`base_revision`. It
+    /// applies only when `base_revision` matches the held server `revision`
+    /// (read from the held frame's own data, NOT the local `PanelState`
+    /// counter); a stale delta is ignored and a gap self-heals with a keyframe
+    /// re-request. The merge replaces `data`/`approved`/`revision` and leaves
+    /// the omitted `schema` from the held keyframe intact.
+    fn apply_sheet_delta(&mut self, feed: &SmolStr, data: &Value, now: i64) -> PanelOutcome {
+        let Some(base_frame) = self.feeds.get(feed).map(|p| p.data.clone()) else {
+            // No held keyframe to base the delta on: fail closed, rehydrate.
+            return self.resync(feed);
+        };
+        let cur = base_frame
+            .get("revision")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        let rev = data.get("revision").and_then(Value::as_u64);
+        let base = data.get("base_revision").and_then(Value::as_u64);
+        match (rev, base) {
+            (Some(rev), _) if rev <= cur => PanelOutcome::Ignored,
+            (Some(_), Some(base)) if base == cur => match (base_frame, data) {
+                (Value::Object(mut merged), Value::Object(patch)) => {
+                    for (k, v) in patch {
+                        merged.insert(k.clone(), v.clone());
+                    }
+                    self.store(feed, Value::Object(merged), now)
+                }
+                _ => self.resync(feed),
+            },
+            // A gap (base != cur), or a malformed frame: rehydrate, once.
+            _ => self.resync(feed),
         }
     }
 
@@ -481,5 +525,84 @@ mod tests {
         assert_eq!(st.apply_view(&replacement, 0), PanelOutcome::Stored);
         let stale = ViewEnvelope::keyframe("legal.actions", 1, 7, 2, data).unwrap();
         assert_eq!(st.apply_view(&stale, 0), PanelOutcome::Ignored);
+    }
+
+    #[test]
+    fn a_sheet_delta_applies_on_a_matching_base_ignores_stale_and_self_heals_on_a_gap() {
+        let mut st = PanelStore::new();
+        let f = SmolStr::new("wod.sheet");
+        // Seed a keyframe (revision 5, with schema).
+        st.apply_panel(
+            &f,
+            PanelFrameKind::Keyframe,
+            &serde_json::json!({ "schema": { "s": 1 }, "data": { "strength": 3 }, "revision": 5 }),
+            0,
+        );
+
+        // A matching delta (base 5 → rev 6): data replaced, omitted schema kept.
+        assert_eq!(
+            st.apply_panel(
+                &f,
+                PanelFrameKind::Delta,
+                &serde_json::json!({ "data": { "strength": 4 }, "revision": 6, "base_revision": 5 }),
+                1,
+            ),
+            PanelOutcome::Stored
+        );
+        let held = st.get("wod.sheet").unwrap();
+        assert_eq!(
+            held.get("data").unwrap(),
+            &serde_json::json!({ "strength": 4 })
+        );
+        assert_eq!(held.get("revision").and_then(Value::as_u64), Some(6));
+        assert!(
+            held.get("schema").is_some(),
+            "the omitted schema is preserved"
+        );
+
+        // A stale delta (rev <= held) is ignored, data untouched.
+        assert_eq!(
+            st.apply_panel(
+                &f,
+                PanelFrameKind::Delta,
+                &serde_json::json!({ "data": { "strength": 9 }, "revision": 6, "base_revision": 5 }),
+                2,
+            ),
+            PanelOutcome::Ignored
+        );
+        assert_eq!(
+            st.get("wod.sheet").unwrap().get("data").unwrap(),
+            &serde_json::json!({ "strength": 4 })
+        );
+
+        // A gap (base 8 != held 6) self-heals with exactly one resync; data intact.
+        assert_eq!(
+            st.apply_panel(
+                &f,
+                PanelFrameKind::Delta,
+                &serde_json::json!({ "data": { "strength": 1 }, "revision": 9, "base_revision": 8 }),
+                3,
+            ),
+            PanelOutcome::NeedsResync(f.clone())
+        );
+        assert_eq!(
+            st.get("wod.sheet").unwrap().get("data").unwrap(),
+            &serde_json::json!({ "strength": 4 })
+        );
+    }
+
+    #[test]
+    fn a_sheet_delta_before_any_keyframe_asks_for_a_resync() {
+        let mut st = PanelStore::new();
+        let f = SmolStr::new("wod.sheet");
+        assert_eq!(
+            st.apply_panel(
+                &f,
+                PanelFrameKind::Delta,
+                &serde_json::json!({ "data": { "a": 1 }, "revision": 2, "base_revision": 1 }),
+                0,
+            ),
+            PanelOutcome::NeedsResync(f.clone())
+        );
     }
 }

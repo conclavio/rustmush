@@ -291,6 +291,12 @@ impl QueryHandler for SheetQuery {
         } else {
             strip_staff_only(self.store.schema(), &doc.data)
         };
+        // Carry the per-subject revision so a client seeds its watermark
+        // (interface plan I13); 0 when no vitals module registered it.
+        let revision = w
+            .module_state::<crate::VitalsRevisions>()
+            .and_then(|r| r.0.get(&target).copied())
+            .unwrap_or(0);
         Ok(OutputEvent::Panel {
             feed: self.feed.clone(),
             kind: PanelFrameKind::Keyframe,
@@ -299,6 +305,7 @@ impl QueryHandler for SheetQuery {
                 "schema": self.store.schema().describe(),
                 "approved": approval_json(&doc),
                 "data": data,
+                "revision": revision,
             }),
         })
     }

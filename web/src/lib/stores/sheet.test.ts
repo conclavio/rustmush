@@ -1,4 +1,5 @@
-// SheetStore: keyframe hydration, delta merge, unavailable fallback, clear.
+// SheetStore: keyframe hydration, the I13 delta revision watermark + self-heal,
+// unavailable fallback, clear.
 
 import { describe, expect, it } from "vitest";
 
@@ -6,6 +7,7 @@ import { SheetStore } from "./sheet.svelte";
 
 const keyframe = {
   target: "#7",
+  revision: 5,
   schema: {
     ruleset: "wod",
     version: 1,
@@ -52,21 +54,52 @@ describe("SheetStore", () => {
     expect(s.data.strength).toBe(3); // unchanged
   });
 
-  it("applyDelta shallow-merges data and refreshes approval", () => {
+  it("applyKeyframe seeds the revision watermark", () => {
     const s = new SheetStore();
     s.applyKeyframe(keyframe);
-    s.applyDelta({ data: { strength: 4 }, approved: { state: "approved", approved: true } });
-    expect(s.data.strength).toBe(4);
-    expect(s.approval?.approved).toBe(true);
-    // Untouched fields survive the merge.
-    expect(s.target).toBe("#7");
+    expect(s.revision).toBe(5);
   });
 
-  it("applyDelta on garbage is a no-op", () => {
+  it("applyDelta applies on a matching base_revision: replaces data, advances revision", () => {
     const s = new SheetStore();
+    s.applyKeyframe(keyframe); // revision 5
+    const r = s.applyDelta({
+      revision: 6,
+      base_revision: 5,
+      data: { strength: 4 },
+      approved: { state: "approved", approved: true },
+    });
+    expect(r).toBe("applied");
+    expect(s.data.strength).toBe(4);
+    expect(s.approval?.approved).toBe(true);
+    expect(s.revision).toBe(6);
+  });
+
+  it("applyDelta reports 'resync' on a base gap and leaves data + revision intact", () => {
+    const s = new SheetStore();
+    s.applyKeyframe(keyframe); // revision 5
+    const r = s.applyDelta({ revision: 8, base_revision: 7, data: { strength: 9 } });
+    expect(r).toBe("resync");
+    expect(s.data.strength).toBe(3);
+    expect(s.revision).toBe(5);
+  });
+
+  it("applyDelta reports 'stale' on an old or duplicate revision", () => {
+    const s = new SheetStore();
+    s.applyKeyframe(keyframe); // revision 5
+    expect(s.applyDelta({ revision: 5, base_revision: 4, data: { strength: 4 } })).toBe("stale");
+    expect(s.applyDelta({ revision: 3, base_revision: 2, data: { strength: 4 } })).toBe("stale");
+    expect(s.data.strength).toBe(3);
+  });
+
+  it("applyDelta before any keyframe is 'stale'; a malformed frame is 'resync'", () => {
+    const s = new SheetStore();
+    // Not loaded yet — the pending hydration keyframe will seed it.
+    expect(s.applyDelta({ revision: 1, base_revision: 0, data: {} })).toBe("stale");
     s.applyKeyframe(keyframe);
-    s.applyDelta(null);
-    s.applyDelta("nope");
+    expect(s.applyDelta(null)).toBe("resync");
+    expect(s.applyDelta("nope")).toBe("resync");
+    expect(s.applyDelta({ data: { strength: 4 } })).toBe("resync"); // no revision/base
     expect(s.data.strength).toBe(3);
   });
 
@@ -87,6 +120,7 @@ describe("SheetStore", () => {
     expect(s.approval).toBeNull();
     expect(s.target).toBeNull();
     expect(s.loaded).toBe(false);
+    expect(s.revision).toBe(0);
     expect(s.unavailable).toBe(false);
   });
 });

@@ -577,13 +577,15 @@ export class GameApp {
     } else if (d.feed === "mail" && d.kind === "keyframe") {
       this.mail.applyList(d.data);
     } else if (d.feed === this.session.sheetFeed) {
-      // The `<ruleset>.sheet` feed: full state today (the query handler
-      // always emits Keyframe — see sheet_cmds.rs's SheetQuery); applyDelta
-      // is exercised once the server gains a push-on-mutation delta.
+      // The `<ruleset>.sheet` feed (interface plan I13): a keyframe replaces
+      // whole state and seeds the revision watermark; a delta applies only on
+      // a matching base_revision, else self-heals with a fresh keyframe (rule
+      // 3), storm-guarded so one gap fires one refresh.
       if (d.kind === "keyframe") {
         this.sheet.applyKeyframe(d.data);
-      } else {
-        this.sheet.applyDelta(d.data);
+      } else if (this.sheet.applyDelta(d.data) === "resync" && !this.sheet.resyncPending) {
+        this.sheet.resyncPending = true;
+        this.refreshSheet();
       }
     } else if (d.feed === this.session.rollFeed) {
       // The roller's own roll also lands inline as a dice card (I5); the

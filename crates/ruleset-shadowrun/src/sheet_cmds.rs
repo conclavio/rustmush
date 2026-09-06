@@ -17,10 +17,10 @@ use mush_core::{
     ArgShape, CmdError, CommandSpec, Ctx, HookReadContext, ModError, ObjId, QueryHandler,
     Registrar, Role, World, match_object, perm,
 };
-use mush_proto::{OutputEvent, PanelFrameKind, RichText, Vital, VitalRole, VitalState, VitalValue};
+use mush_proto::{OutputEvent, RichText, Vital, VitalRole, VitalState, VitalValue};
 use mush_ruleset::schema::{FieldType, SheetSchema};
 use mush_ruleset::store::SHEET_ATTR_NS;
-use mush_ruleset::{SheetDoc, VitalsSource};
+use mush_ruleset::{SheetDoc, SheetView, VitalsRevisions, VitalsSource};
 use smol_str::SmolStr;
 
 use crate::Sr5Cmd;
@@ -270,43 +270,39 @@ impl SheetQuery {
         if let Some(condition) = condition {
             condition.apply_to_sheet(&mut doc);
         }
-        Ok(sheet_panel(
-            &self.schema,
-            &self.feed,
-            w,
-            actor,
-            target,
-            &doc,
-        ))
+        // The on-subscribe frame is always a keyframe, stamped with the same
+        // per-subject revision the republish reads (interface plan I13).
+        let revision = w
+            .module_state::<VitalsRevisions>()
+            .and_then(|r| r.0.get(&target).copied())
+            .unwrap_or(0);
+        Ok(build_sheet_view(&self.schema, w, actor, target, &doc).keyframe(&self.feed, revision))
     }
 }
 
-/// The `shadowrun.sheet` keyframe for `target` as `viewer` sees it — the one
-/// payload builder behind the query and the republish-on-write (interface
-/// plan I1; 10b §4 rule 4).
-fn sheet_panel(
+/// The `shadowrun.sheet` payload for `target` as `viewer` sees it — the one
+/// builder behind the query keyframe and the republish frame (interface plan
+/// I1/I13; 10b §4 rule 4). This crate turns the [`SheetView`] into a keyframe
+/// or a delta.
+fn build_sheet_view(
     schema: &SheetSchema,
-    feed: &SmolStr,
     w: &World,
     viewer: ObjId,
     target: ObjId,
     doc: &SheetDoc,
-) -> OutputEvent {
+) -> SheetView {
     let show_staff = perm::has_role(w, viewer, Role::Royalty);
     let data = if show_staff {
         doc.data.clone()
     } else {
         strip_staff_only(schema, &doc.data)
     };
-    OutputEvent::Panel {
-        feed: feed.clone(),
-        kind: PanelFrameKind::Keyframe,
-        data: serde_json::json!({
-            "target": target.to_string(),
-            "schema": schema.describe(),
-            "approved": approval_json(doc),
-            "data": data,
-        }),
+    SheetView {
+        target,
+        schema: schema.describe(),
+        approved: approval_json(doc),
+        data,
+        show_staff,
     }
 }
 
@@ -394,11 +390,10 @@ impl VitalsSource for SrVitals {
         Some(self.vitals_of(&doc))
     }
 
-    fn sheet_keyframe(&self, ctx: &Ctx<'_>, subject: ObjId) -> Option<OutputEvent> {
+    fn sheet_view(&self, ctx: &Ctx<'_>, subject: ObjId) -> Option<SheetView> {
         let doc = self.cmd.read_ctx(ctx, subject).ok().flatten()?;
-        Some(sheet_panel(
+        Some(build_sheet_view(
             &self.cmd.schema,
-            &SmolStr::new_static("shadowrun.sheet"),
             ctx.w,
             subject,
             subject,
