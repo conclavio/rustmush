@@ -402,6 +402,22 @@ pub trait AgentGrounding: Send + Sync {
         Err(AbilityError::Unknown(name.to_string()))
     }
 
+    /// H2c: the projected legal action `name` with `input` maps to for `npc`,
+    /// if the grounding's ruleset offers one (see
+    /// [`Ruleset::projected_ability`](mush_ruleset::Ruleset::projected_ability)).
+    /// The default maps nothing, so every ability stays on
+    /// [`Self::invoke_ability`].
+    fn projected_ability(
+        &self,
+        w: &World,
+        npc: ObjId,
+        name: &str,
+        input: &serde_json::Value,
+    ) -> Option<mush_ruleset::ProjectedAbility> {
+        let _ = (w, npc, name, input);
+        None
+    }
+
     /// Give `npc` a fresh ruleset character sheet of `template` (so its
     /// abilities — `wod_roll` — have real traits to read), created by `by`
     /// through the ruleset's normal validated sheet path. Backs the

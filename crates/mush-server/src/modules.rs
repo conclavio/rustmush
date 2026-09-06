@@ -737,6 +737,16 @@ impl<R: Ruleset + Send + Sync + 'static> mush_npc::AgentGrounding for RulesetAge
         self.ruleset.invoke_ability(w, out, npc, name, input)
     }
 
+    fn projected_ability(
+        &self,
+        w: &mush_core::World,
+        npc: mush_core::ObjId,
+        name: &str,
+        input: &serde_json::Value,
+    ) -> Option<mush_ruleset::ProjectedAbility> {
+        self.ruleset.projected_ability(w, npc, name, input)
+    }
+
     fn init_sheet(
         &self,
         w: &mut mush_core::World,

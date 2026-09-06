@@ -31,6 +31,14 @@ pub(crate) const SET_ACTION_ID: &str = "willpower_set";
 pub(crate) const RESOURCE_OUTCOME_ID: &str = "willpower_resource_result";
 pub(crate) const STATE_FAMILY: &str = "roll_state";
 
+/// H2c: the registered action handles an NPC grounding needs from a `&World`
+/// (`WodRuleset::projected_ability`), published as module state.
+#[derive(Clone, Debug)]
+pub struct WodActionHandles {
+    /// `willpower_roll`.
+    pub willpower_roll: DefinitionRef,
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct WodRollState {
@@ -975,6 +983,11 @@ pub(crate) fn register(
     )?;
     let action = reg.definition(action_descriptor)?;
     let set_action = reg.definition(set_action_descriptor)?;
+    // H2c: the NPC grounding maps a Willpower-backed `wod_roll` onto this
+    // action from a `&World`, so the definition handle is published as state.
+    reg.state(WodActionHandles {
+        willpower_roll: action.clone(),
+    });
     reg.action_provider(
         action.clone(),
         WillpowerRollProvider {

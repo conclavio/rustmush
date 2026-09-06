@@ -46,7 +46,7 @@ const ROLL_FEED: &str = "wod.roll";
 
 /// The hard bound on the `modifier` argument: an agent may nudge its pool by a
 /// small situational amount, never inflate it.
-const MODIFIER_BOUND: i32 = 3;
+pub(crate) const MODIFIER_BOUND: i32 = 3;
 
 // ======================================================================
 // Ability manifest + invocation
@@ -120,23 +120,23 @@ pub(crate) fn invoke(
 
 /// The `wod_roll` argument shape (the stable contract with `mush-npc`).
 #[derive(Debug, Deserialize)]
-struct WodRollInput {
+pub(crate) struct WodRollInput {
     /// The trait pool expression (`"strength+brawl"`); `pool` accepted as an
     /// alias for lenient model output.
     #[serde(alias = "pool")]
-    pool_expr: String,
+    pub(crate) pool_expr: String,
     /// Target number (default 6, clamped to 3..=9).
     #[serde(default)]
-    difficulty: Option<u8>,
+    pub(crate) difficulty: Option<u8>,
     /// Request a specialty (only honored if one is recorded).
     #[serde(default)]
-    specialty: bool,
+    pub(crate) specialty: bool,
     /// Request a Willpower spend (only honored if a temporary point exists).
     #[serde(default)]
-    willpower: bool,
+    pub(crate) willpower: bool,
     /// A small situational modifier, clamped to ±[`MODIFIER_BOUND`].
     #[serde(default)]
-    modifier: i32,
+    pub(crate) modifier: i32,
 }
 
 #[allow(clippy::too_many_lines)]

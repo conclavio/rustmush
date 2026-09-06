@@ -139,10 +139,12 @@ pub use memory::{
     MAX_MEMORY_SUMMARY_CHARS, MemoryBuffer, MemoryEvent, MemoryRecall, MemoryRecord,
     MemoryRecordError, MemoryUpdate, record_key,
 };
+pub use module::ability_submit_key;
 pub use module::{
     MAX_TURN_DESCRIPTION_BYTES, MAX_TURN_EXITS, MAX_TURN_NAME_BYTES, MAX_TURN_PERSONA_BYTES,
     MAX_TURN_PRESENT, NpcModule, scene_turn_context,
 };
+pub use mush_ruleset::ProjectedAbility;
 pub use profile::{
     AgentProfile, AgentProfileValidationError, KnowledgeBounds, MAX_AGENT_PROFILE_BYTES,
     MAX_PROFILE_BACKGROUND_BYTES, MAX_PROFILE_FALLBACK_BYTES, MAX_PROFILE_FALLBACK_LINES,

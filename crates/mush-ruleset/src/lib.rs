@@ -52,7 +52,7 @@ pub mod store;
 pub mod validate;
 pub mod vitals;
 
-use mush_core::{GameModule, ObjId, Outbox, World};
+use mush_core::{DefinitionRef, GameModule, ObjId, Outbox, World};
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 
@@ -178,6 +178,27 @@ pub trait Ruleset: GameModule {
         Err(AbilityError::Unknown(name.to_string()))
     }
 
+    /// H2c: the projected legal action an NPC ability maps to, if it has one.
+    ///
+    /// Under K7.0's rule the LLM's choice already happened off-loop on the
+    /// dialogue lane; the mapping from `(name, input)` to a registered action
+    /// and its parameters is deterministic, so the completion enters the
+    /// action coordinator directly with no pending decision. An ability with
+    /// no projected offer returns `None` and stays on the legacy
+    /// [`Self::invoke_ability`] path — the **residual**, pinned by
+    /// `crates/mush-contract-tests/tests/npc_ability_residual.rs` so it can only
+    /// shrink. The default maps nothing.
+    fn projected_ability(
+        &self,
+        w: &World,
+        npc: ObjId,
+        name: &str,
+        input: &serde_json::Value,
+    ) -> Option<ProjectedAbility> {
+        let _ = (w, npc, name, input);
+        None
+    }
+
     /// Give `npc` a fresh character sheet of `template` through this ruleset's
     /// validated sheet-write path, so an NPC agent has real traits for its
     /// abilities to read. Backs the `@agent/sheet` staff command via the
@@ -214,6 +235,17 @@ pub struct AgentCapabilityProfile {
     pub tags: Vec<SmolStr>,
     /// The tool manifest exposed to the LLM (placeholder shape until M8).
     pub tools: Vec<AgentToolSpec>,
+}
+
+/// H2c: an NPC ability resolved to a registered action the coordinator
+/// executes — the definition the actor's own projection must offer, and the
+/// parameters in that offer's schema.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ProjectedAbility {
+    /// The registered action definition.
+    pub action: DefinitionRef,
+    /// Its parameters, in the projected offer's schema.
+    pub parameters: serde_json::Value,
 }
 
 /// One LLM tool the NPC may call (placeholder for the M8 provider layer).

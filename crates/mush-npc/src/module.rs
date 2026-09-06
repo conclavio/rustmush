@@ -1287,7 +1287,7 @@ impl AsyncCompletion for NpcCompletion {
             }
             TurnOutcome::Ok { actions, .. } => {
                 for aa in actions {
-                    apply_action(self.grounding.as_ref(), ctx, npc, room, &aa);
+                    apply_action(self.grounding.as_ref(), ctx, npc, room, &aa, correlation);
                 }
             }
         }
@@ -1295,12 +1295,40 @@ impl AsyncCompletion for NpcCompletion {
 }
 
 /// Apply one typed action, re-validated in the world task.
+/// H2c: the deterministic idempotency discriminator of one NPC ability
+/// submission — the NPC, the turn's correlation and the ability name — so a
+/// duplicated completion is a HIT of the first, never a second roll.
+#[must_use]
+pub fn ability_submit_key(
+    npc: ObjId,
+    correlation: u64,
+    name: &str,
+) -> mush_core::IdempotencyKeyText {
+    let mut ability: String = name
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .take(32)
+        .collect();
+    if ability.is_empty() {
+        ability.push_str("ability");
+    }
+    mush_core::IdempotencyKeyText::parse_canonical(format!("npc-{}-{correlation}-{ability}", npc.0))
+        .expect("a bounded lowercase key")
+}
+
 fn apply_action(
     grounding: &dyn AgentGrounding,
     ctx: &mut Ctx<'_>,
     npc: ObjId,
     room: ObjId,
     aa: &AppliedAction,
+    correlation: u64,
 ) {
     match &aa.action {
         NpcAction::Say { text } => say_as_npc(ctx, npc, room, NarrativeKind::Say, text),
@@ -1331,6 +1359,28 @@ fn apply_action(
             }
         }
         NpcAction::UseAbility { name, input } => {
+            // H2c: an ability with a projected legal action is an **immediate
+            // deterministic controller** (K7.0): the model's choice already
+            // happened off-loop, the mapping is deterministic, so it enters
+            // the action coordinator as this NPC's own submission — the
+            // ruleset's typed state, resolution and receipt, never a bespoke
+            // mutation. Everything else is the residual, below.
+            if let Some(projected) = grounding.projected_ability(ctx.w, npc, name, input) {
+                let key = ability_submit_key(npc, correlation, name);
+                ctx.submit_authoritative(
+                    projected.action,
+                    mush_core::PerceivedRef::SelfActor,
+                    Vec::new(),
+                    projected.parameters,
+                    key,
+                );
+                record_self(
+                    ctx,
+                    npc,
+                    &format!("(used {name} as an authoritative action)"),
+                );
+                return;
+            }
             // Executed on the world loop by the ruleset: it reads the NPC's own
             // sheet, rolls on the shared RNG + roll log, and emits the result
             // to the room itself. The model only requested it.

@@ -29,6 +29,7 @@
 pub mod action;
 pub mod agent;
 mod authoritative;
+pub use authoritative::WodActionHandles;
 pub mod chargen;
 pub mod chargen_cmds;
 pub mod config;
@@ -519,6 +520,37 @@ impl GameModule for WodRuleset {
 }
 
 impl Ruleset for WodRuleset {
+    /// H2c: a Willpower-backed `wod_roll` is the coordinator's `willpower_roll`
+    /// (`pool` ← `pool_expr`; `difficulty`, `specialty`, `modifier` as given
+    /// within the ability's own bounds; `ignore_wounds` false). Every other
+    /// ability maps to nothing and stays on the legacy path.
+    fn projected_ability(
+        &self,
+        w: &World,
+        _npc: ObjId,
+        name: &str,
+        input: &serde_json::Value,
+    ) -> Option<mush_ruleset::ProjectedAbility> {
+        if name != agent::WOD_ROLL_ABILITY {
+            return None;
+        }
+        let args: agent::WodRollInput = serde_json::from_value(input.clone()).ok()?;
+        if !args.willpower {
+            return None;
+        }
+        let handles = w.module_state::<authoritative::WodActionHandles>()?;
+        Some(mush_ruleset::ProjectedAbility {
+            action: handles.willpower_roll.clone(),
+            parameters: serde_json::json!({
+                "pool": args.pool_expr,
+                "difficulty": u32::from(args.difficulty.unwrap_or(6).clamp(3, 9)),
+                "specialty": args.specialty,
+                "modifier": args.modifier.clamp(-agent::MODIFIER_BOUND, agent::MODIFIER_BOUND),
+                "ignore_wounds": false,
+            }),
+        })
+    }
+
     fn display_name(&self) -> &str {
         "World of Darkness 20th Anniversary"
     }

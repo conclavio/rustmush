@@ -200,6 +200,18 @@ Tests: `crates/mush-server/tests/h2b_scene_turns.rs` (5: one request per NPC tur
 
 **Verify lens.** **M (mutation)** — can any NPC ability with a projected offer still mutate outside the coordinator, or run twice?
 
+**As built (2026-09-05, H2c).** `Ruleset::projected_ability` (default `None`) and `ProjectedAbility { action, parameters }` in `mush-ruleset`; the same hook on `AgentGrounding`, delegated by the server's `RulesetAgent`; WoD's mapping of a Willpower-backed `wod_roll` to `willpower_roll`; the `UseAbility` arm's coordinator branch through `Ctx::submit_authoritative` with `ability_submit_key(npc, correlation, name)`; the residual probe. Deviations:
+
+1. **The registered action handle reaches the grounding as module state.** The grounding adapter holds its own `WodRuleset` instance, not the composed module, so it cannot keep the `willpower_roll` `DefinitionRef` it never registered; `authoritative::register` publishes `WodActionHandles { willpower_roll }` and `projected_ability(w, …)` reads it from the `&World`.
+2. **The legacy ability already refused Willpower rolls** ("Willpower-backed NPC rolls must select the authoritative legal action"), so before H2c a model that asked for one got a refusal and no roll; now it gets the coordinator's roll. The residual is therefore `wod_roll` *without* Willpower and Shadowrun's `sr_roll`, exactly as the plan expected, pinned as `["shadowrun:sr_roll", "wod:wod_roll"]`.
+3. **The parameters are the offer's five** (`pool` ← `pool_expr`, `difficulty` clamped 3..=9 as the ability clamps it, `specialty`, `modifier` within ±`MODIFIER_BOUND`, `ignore_wounds` false); the offer's fixed parameters (the sheet and the Willpower seed) are the projection's, filled for the NPC exactly as for a player.
+4. **The key is `npc-<id>-<correlation>-<ability>`** (the ability lower-cased, non-alphanumerics dashed, 32 bytes at most), so a duplicated completion is one submission.
+5. **No `PowerUsed` on the coordinator path.** A Willpower roll is not a power use; the receipt is the coordinator's own projection.
+
+**Verify (2026-09-05, lens M).** *M* — an ability with a projected offer never reaches `invoke_ability`: the arm returns after submitting, and the test shows no roll narration and an unspent temporary Willpower until the coordinator spends it; the plain roll's mutation is the residual by name, pinned so it can only shrink; a jailbroken name maps to nothing and is refused as before; the same completion twice carries one key, so the coordinator answers the second with the first's receipt. No finding.
+
+Tests: `crates/mush-server/tests/h2c_ability_coordinator.rs` (4), `crates/mush-contract-tests/tests/npc_ability_residual.rs` (the pinned residual across both production groundings).
+
 **Hands to:** E7 cut 8/10 — `LlmDecisionProvider` (owner-parameterised), `Ctx::capture_decision`, the production decision spawn (cut 10's K7 gate opens), and a production record for D-E7-38's "fallback reuses the decision's record" to reuse; K — the capture-ingress gap (§9) and one question (§8 q4).
 
 ### 3.3 Cut H3 — lane instrumentation and the scale harness
@@ -377,6 +389,7 @@ The review re-opened every symbol the draft leaned on that had not been opened w
 
 ## 11. Changelog
 
+- **H2c as built — 2026-09-05.** §3.2 H2c gained the as-built and verify blocks (no finding under M); the residual is pinned. Programme H is complete: H1, H3, H4, H2a, H2b, H2c.
 - **H2b as built — 2026-09-05.** §3.2 H2b gained the as-built and verify blocks (no finding under S); the turn context has its own, smaller bounds.
 - **H2a as built — 2026-09-05.** §3.2 H2a gained the as-built and verify blocks; T1 (ordinal target tokens) folded before the first run.
 - **H4 as built — 2026-09-05.** §3.4 gained the as-built and verify blocks. Lens C found the dispatch serial inside the hashed plan (C1); `plan_hash` now canonicalizes it away.
