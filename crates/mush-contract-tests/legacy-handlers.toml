@@ -711,9 +711,9 @@ note = "baseline pinned at b0e3b52 (core/engine registry)"
 
 [[handler]]
 name = "@prop"
-category = "legacy-post-image"
+category = "authoritative"
 family = "propagation.envelope"
-note = "E7 cut 7 (10b 3.7, 3.8 handoff). /envelopes reads (byte-identical for an unviewable and a nonexistent subject); /pass (staff) single-steps the coarse delivery pass over propagation.envelope and then arms the detection pass through mush-tactics' OWN sensor ingress -- one Ctx::submit_authoritative of the tactics-owned sensor_arm action, never a contact write; /phantom (staff) mints a propagation.phantom whose SubjectKey::Scoped resolves to no unit through any projection. Also writes propagation.provenance, a side projection with NO lifecycle authority (10b 3.7 OPEN 2, flagged for K review). None of the three takes part in authority or prepared mechanics."
+note = "E7 cut 7 (10b 3.7, 3.8 handoff). /envelopes reads (byte-identical for an unviewable and a nonexistent subject); /pass (staff) single-steps the coarse delivery pass over propagation.envelope and then arms the detection pass through mush-tactics' OWN sensor ingress -- one Ctx::submit_authoritative of the tactics-owned sensor_arm action, never a contact write; /phantom (staff) mints a propagation.phantom whose SubjectKey::Scoped resolves to no unit through any projection. Also writes propagation.provenance, a side projection with NO lifecycle authority (10b 3.7 OPEN 2, flagged for K review). None of the three takes part in authority or prepared mechanics. E7 cut 7 independent verify fold B8: the CATEGORY is authoritative because /pass stages the tactics-owned sensor_arm through Ctx::submit_authoritative -- the ceiling rule the tree states for @station -- while the documents it writes stay exempt; the stanza count, its position and PINNED_BASELINE are unchanged. /held (staff) lists documents the boot could not decode, with the decode error."
 
 [[handler]]
 name = "@property"

@@ -58,20 +58,22 @@ pub use commands::{
 };
 pub use context::{
     ADJACENT_RANGE, DeliveryOutcome, DetectionOutcome, Geometry, Interference, JAMMING_BLOCKS_AT,
-    MAX_CONTEXT_RECORDS, Medium, PropagationContext, place_of, resolve_delivery, resolve_detection,
+    MAX_CONTEXT_RECORDS, Medium, PropagationContext, domain_of_place, place_of, resolve_delivery,
+    resolve_detection,
 };
 pub use pass::{
-    CONTACT_TTL_SECS, DEFAULT_SIGNATURE, DeliveryReport, MAX_ENVELOPES_PER_PASS,
-    MAX_OBSERVERS_PER_PASS, MAX_SUBJECTS_PER_OBSERVER, REFRESH_AFTER_SECS, active_order,
-    delivery_pass, detection_pass, observers,
+    CLOCK_GENERATION_REASON, CONTACT_TTL_SECS, DEFAULT_SIGNATURE, DeliveryReport, DetectionReport,
+    MAX_ARM_DOCUMENT_BYTES, MAX_DETECTION_VISITS, MAX_ENVELOPES_PER_PASS, MAX_OBSERVERS_PER_PASS,
+    MAX_REAP_PER_PASS, MAX_SUBJECTS_PER_OBSERVER, REFRESH_AFTER_SECS, Reaped, active_order,
+    active_order_from, delivery_pass, detection_pass, observers, observers_from, standing_orders,
 };
 pub use policy::PropagationSensorPolicy;
 pub use record::{
     ALLOCATOR_KEY, ContactProvenance, ENVELOPE_TTL_DAYS, ENVELOPE_TTL_SECS, Envelope,
     EnvelopeState, FalseCause, HopRef, MAX_ENVELOPE_HOPS, MAX_ENVELOPE_PAYLOAD_BYTES,
-    MAX_ENVELOPES, MAX_PHANTOM_ID_BYTES, MAX_PHANTOMS, MAX_PROVENANCE, MAX_SIGHTINGS,
-    PHANTOM_CLASS, Phantom, PropagationStore, Provenance, RecordError, Sighting, envelope_key,
-    owner, phantom_key, provenance_key, sighting_key,
+    MAX_ENVELOPES, MAX_HELD_DOCUMENTS, MAX_PHANTOM_ID_BYTES, MAX_PHANTOMS, MAX_PROVENANCE,
+    MAX_SIGHTINGS, PHANTOM_CLASS, Phantom, PropagationStore, Provenance, RecordError, Sighting,
+    envelope_key, owner, phantom_key, provenance_key, sighting_key,
 };
 
 /// The module id and persistence namespace.
@@ -134,6 +136,7 @@ impl GameModule for PropagationModule {
         data.normalize();
         let mut store = record::PropagationStore::default();
         let mut held = 0_usize;
+        let mut dropped = 0_usize;
         for (key, value) in data.kv {
             let decoded = if key.starts_with("envelope:") {
                 serde_json::from_value::<record::Envelope>(value.clone())
@@ -164,21 +167,35 @@ impl GameModule for PropagationModule {
             if let Some(error) = failed {
                 // **Skipped loudly, and HELD — never deleted** (cut 6's R3: a
                 // document that will not decode is the only copy of the fact it
-                // carries, and a boot that deletes it destroys it).
+                // carries, and a boot that deletes it destroys it). The RAM copy
+                // is bounded (fold B7); past the cap the document is still in
+                // the store, it is simply not mirrored, and the count is paged.
                 held = held.saturating_add(1);
                 tracing::warn!(
                     key = %key,
                     error = %error,
                     "propagation: a record would not load; it is held, not deleted"
                 );
-                store.hold(key, value);
+                if !store.hold(key.clone(), value) {
+                    dropped = dropped.saturating_add(1);
+                }
+                debug_assert!(dropped <= held);
             }
         }
         store.reconcile_allocators();
         if held > 0 {
+            // **Paged, not logged** (E4c V6): `@prop/held` is the verb that can
+            // actually show them, and it names the key and the decode error.
+            store.page(format!(
+                "propagation: boot held {held} unreadable record(s) ({} past the RAM cap of {}); \
+                 run @prop/held to inspect them.",
+                dropped,
+                record::MAX_HELD_DOCUMENTS
+            ));
             tracing::warn!(
                 held,
-                "propagation: boot held unreadable records; run @prop/envelopes to inspect"
+                dropped,
+                "propagation: boot held unreadable records; run @prop/held to inspect"
             );
         }
         if let Some(slot) = ctx.w.module_state_mut::<record::PropagationStore>() {
@@ -199,11 +216,45 @@ fn delivery_tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<SceneId>) {
     let Some(state) = ctx.w.module_state::<mush_sim::SpatialState>().cloned() else {
         return;
     };
+    let ledger = ctx
+        .w
+        .module_state::<mush_core::ContactLedgerState>()
+        .cloned()
+        .unwrap_or_default();
     let Some(mut book) = ctx.w.module_state::<record::PropagationStore>().cloned() else {
         return;
     };
-    let report = pass::delivery_pass(&mut book, &state, ctx.w, &at);
-    if report.is_empty() && report.anomalies.is_empty() {
+    // **Re-anchor propagation's OWN records first** (fold D5(a)(ii)). A world
+    // rate change opens a new `WorldIc` generation whose IC scalar is continuous
+    // with the old one; without this an `Envelope::age` answered 0 for ever and
+    // a `Phantom` never expired, so no envelope aged out and no holder of a
+    // false contact ever received its `Loss`.
+    let reanchored = reanchor(&mut book, &at);
+    let report = pass::delivery_pass(&mut book, &state, ctx.w, &ledger, &at, None);
+    // The report is NEVER dropped: the bound, the anomalies and the compaction
+    // are paged into the store's own notice queue, which `@prop/pass` and
+    // `@prop/held` drain (fold B3).
+    if report.bound_hit {
+        book.page(format!(
+            "The delivery tick stopped at its bound of {} envelopes and resumes at #{}.",
+            pass::MAX_ENVELOPES_PER_PASS,
+            report.resume.unwrap_or(0)
+        ));
+    }
+    for anomaly in &report.anomalies {
+        book.page(anomaly.clone());
+        tracing::warn!(detail = %anomaly, "propagation: delivery pass anomaly");
+    }
+    if reanchored > 0 {
+        book.page(format!(
+            "A world time-rate change re-anchored {reanchored} propagation record(s); contacts \
+             stranded on the older generation are retired by the next detection pass."
+        ));
+    }
+    if report.is_empty() && report.anomalies.is_empty() && reanchored == 0 {
+        if let Some(slot) = ctx.w.module_state_mut::<record::PropagationStore>() {
+            *slot = book;
+        }
         return;
     }
     let touched = report.touched();
@@ -211,10 +262,24 @@ fn delivery_tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<SceneId>) {
         .iter()
         .filter_map(|id| book.envelope(*id).cloned())
         .collect();
+    let rewritten: Vec<record::Envelope> = if reanchored > 0 {
+        book.envelopes()
+            .filter(|envelope| !touched.contains(&envelope.id()))
+            .cloned()
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let phantoms: Vec<record::Phantom> = if reanchored > 0 {
+        book.phantoms().cloned().collect()
+    } else {
+        Vec::new()
+    };
+    let reaped = report.reaped.clone();
     if let Some(slot) = ctx.w.module_state_mut::<record::PropagationStore>() {
         *slot = book;
     }
-    for envelope in envelopes {
+    for envelope in envelopes.into_iter().chain(rewritten) {
         let Ok(value) = serde_json::to_value(&envelope) else {
             tracing::error!(
                 envelope = envelope.id(),
@@ -230,7 +295,75 @@ fn delivery_tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<SceneId>) {
             },
         });
     }
-    for anomaly in report.anomalies {
-        tracing::warn!(detail = %anomaly, "propagation: delivery pass anomaly");
+    for phantom in phantoms {
+        let Ok(value) = serde_json::to_value(&phantom) else {
+            continue;
+        };
+        ctx.persist(ModuleOp {
+            ns: SmolStr::new_static(NS),
+            op: ModuleWrite::JsonSet {
+                key: record::phantom_key(phantom.id()),
+                value,
+            },
+        });
     }
+    // The compaction half: a drop is a `ModuleWrite::Del`, beside the post-images.
+    for id in reaped.envelopes {
+        ctx.persist(ModuleOp {
+            ns: SmolStr::new_static(NS),
+            op: ModuleWrite::Del {
+                key: record::envelope_key(id),
+            },
+        });
+    }
+    for contact in reaped.provenance {
+        ctx.persist(ModuleOp {
+            ns: SmolStr::new_static(NS),
+            op: ModuleWrite::Del {
+                key: record::provenance_key(contact),
+            },
+        });
+    }
+    for id in reaped.phantoms {
+        ctx.persist(ModuleOp {
+            ns: SmolStr::new_static(NS),
+            op: ModuleWrite::Del {
+                key: record::phantom_key(&id),
+            },
+        });
+    }
+}
+
+/// Move propagation's own records onto the current clock generation, keeping
+/// their IC scalars, and answer how many moved (fold D5).
+///
+/// `ContactState` is **not** re-anchored here and cannot be: it is K's record
+/// behind an owner-fenced family. The stranded contacts are retired by
+/// `detection_pass`'s `clock_generation` `Loss` instead, which the kernel now
+/// admits because loss is terminal.
+fn reanchor(book: &mut record::PropagationStore, at: &mush_core::ClockStamp) -> usize {
+    let stale_envelopes: Vec<record::Envelope> = book
+        .envelopes()
+        .filter(|envelope| envelope.issued().clock != at.clock)
+        .take(pass::MAX_REAP_PER_PASS)
+        .map(|envelope| envelope.reanchored(&at.clock))
+        .collect();
+    let stale_phantoms: Vec<record::Phantom> = book
+        .phantoms()
+        .filter(|phantom| phantom.created().clock != at.clock)
+        .take(pass::MAX_REAP_PER_PASS)
+        .map(|phantom| phantom.reanchored(&at.clock))
+        .collect();
+    let mut moved = 0_usize;
+    for envelope in stale_envelopes {
+        if book.put_envelope(envelope).is_ok() {
+            moved = moved.saturating_add(1);
+        }
+    }
+    for phantom in stale_phantoms {
+        if book.put_phantom(phantom).is_ok() {
+            moved = moved.saturating_add(1);
+        }
+    }
+    moved
 }

@@ -19,10 +19,14 @@
 //! oracle for whether something is out there (the K lens).
 
 use mush_core::{ClockStamp, ObjId, World};
-use mush_sim::{SpatialState, graph};
+use mush_sim::{DomainId, SpaceAnchor, SpatialState, graph};
 use serde::{Deserialize, Serialize};
 
 /// The most placement records one context build may visit (D-LBK-5).
+///
+/// Applied in [`domain_of_place`] and [`Medium::of_place`] — the two scans a
+/// build makes over the domain and space maps. It was declared and unused until
+/// the independent verify fold (B15a); it is now the bound on the walk D1 added.
 pub const MAX_CONTEXT_RECORDS: usize = 64;
 
 /// The abstract range unit. Cut 7's geometry is the placement graph's, not a
@@ -69,11 +73,18 @@ impl Medium {
 
     /// Which medium a place is. An interior space (cut 6's `sim.interior`
     /// anchors) is enclosed; a domain host is open; anything else is a surface.
+    ///
+    /// Bounded by [`MAX_CONTEXT_RECORDS`] records visited (D-LBK-5).
     #[must_use]
     pub fn of_place(state: &SpatialState, place: ObjId) -> Self {
         if state.spaces.contains_key(&place) {
             Self::Interior
-        } else if state.domains.values().any(|domain| domain.host == place) {
+        } else if state
+            .domains
+            .values()
+            .take(MAX_CONTEXT_RECORDS)
+            .any(|domain| domain.host == place)
+        {
             Self::Vacuum
         } else {
             Self::Surface
@@ -119,9 +130,27 @@ pub struct PropagationContext {
 }
 
 impl PropagationContext {
-    /// Build the context between two objects, or `None` when either has no
-    /// projected place at all (an unplaced thing is neither observable nor
-    /// addressable, and saying so costs the same work as saying anything else).
+    /// Build the context between two objects, or `None` when the placement
+    /// graph does not connect them at all.
+    ///
+    /// `None` means **neither observable nor addressable**, and it is returned
+    /// for three cases, all of which cost the same work as a hit:
+    ///
+    /// 1. Either end has no projected place (an unplaced thing, or one whose
+    ///    only projection is a projection room — see [`place_of`]).
+    /// 2. The two places are in **different domains** (E7 cut 7 independent
+    ///    verify fold, D1(a)). Before the fold, `build` read no link, exit,
+    ///    domain boundary or metric, so "a different place" meant *every other
+    ///    place in the world*: with one `DEFAULT_SIGNATURE` against a Vacuum
+    ///    threshold of 3, every placed object outside an interior space detected
+    ///    every other one, in any domain, and `detection_pass` armed a real
+    ///    `Observe` on each. A pair the graph cannot connect is simply not a
+    ///    context.
+    /// 3. Either end's domain cannot be resolved at all (an unanchored interior
+    ///    space, a place in no domain): fail closed.
+    ///
+    /// [`Geometry::range`] stays the **sole** consumer-visible distance term, so
+    /// a real metric can still replace it without a consumer changing.
     #[must_use]
     pub fn build(
         state: &SpatialState,
@@ -133,16 +162,28 @@ impl PropagationContext {
         let near_place = place_of(state, world, near)?;
         let far_place = place_of(state, world, far)?;
         let same = near_place == far_place;
+        let domain = domain_of_place(state, world, near_place);
+        if !same {
+            // Domain adjacency, bounded by MAX_CONTEXT_RECORDS inside the walk.
+            // Two places are adjacent when they are in one domain — which is
+            // also what makes a domain host and its presentation room adjacent,
+            // since both resolve to the same `DomainId`.
+            let far_domain = domain_of_place(state, world, far_place);
+            match (domain, far_domain) {
+                (Some(near_domain), Some(far_domain)) if near_domain == far_domain => {}
+                _ => return None,
+            }
+        }
         let medium = Medium::of_place(state, near_place);
-        // Occlusion: the far end is inside a closed space the near end is not
-        // inside. Read from the placement graph, never from a second topology.
-        let occluded = !same && matches!(Medium::of_place(state, far_place), Medium::Interior);
+        // Occlusion: a closed space stands between the two ends. **Both
+        // directions** (E7 cut 7 independent verify fold, K9): before the fold
+        // only the far end was read, so a sensor sealed inside a hull looking
+        // out was not occluded and only the fixed signature constant kept the
+        // miss — a structural gate, not an arithmetic one.
+        let occluded = !same
+            && (matches!(Medium::of_place(state, far_place), Medium::Interior)
+                || matches!(medium, Medium::Interior));
         let range = if same { 0 } else { ADJACENT_RANGE };
-        let domain = state
-            .domains
-            .iter()
-            .find(|(_, domain)| domain.host == near_place)
-            .map(|(id, _)| *id);
         Some(Self {
             domain,
             geometry: Geometry {
@@ -183,9 +224,61 @@ impl PropagationContext {
 /// propagation addresses and observes the whole world, not only the units cut 5
 /// and cut 6 placed. `None` means it is nowhere at all, and a thing that is
 /// nowhere is neither observable nor addressable.
+///
+/// **A projection room is not a place** (E7 cut 7 independent verify fold,
+/// D2(a)). Cut 6 projects a quarantined root into `SpatialState::recovery_room`
+/// and an under-way carrier root into `SpatialState::in_transit_room`, and both
+/// default to the same nowhere-room — so every wreck and every carrier in
+/// passage on every unrelated journey sat at range 0 with all the others and
+/// mutually detected. Neither room is somewhere a thing can be seen from or
+/// addressed at; the accepted consequence is that an envelope to a ship under
+/// way **waits** (store-and-forward) rather than being delivered.
 #[must_use]
 pub fn place_of(state: &SpatialState, world: &World, obj: ObjId) -> Option<ObjId> {
-    graph::project(state, world, obj).or_else(|| world.get(obj).and_then(|object| object.location))
+    let place = match graph::project(state, world, obj) {
+        Some(place) => place,
+        None => world.get(obj).and_then(|object| object.location)?,
+    };
+    (place != state.recovery_room && place != state.in_transit_room).then_some(place)
+}
+
+/// Which live domain a **place** belongs to, or `None` when it belongs to none.
+///
+/// A domain host and its presentation room both answer that domain's id, so
+/// [`PropagationContext::build`]'s "same domain" test covers the presentation
+/// relation without a second clause. An interior space answers through its
+/// anchor: a fixed interior is in the domain it was anchored to, and a moving
+/// one (a hull riding a carrier) is in whichever domain its carrier is in, so a
+/// hull and the ships around it are adjacent exactly while the carrier is.
+///
+/// Bounded by [`MAX_CONTEXT_RECORDS`] records visited, in both the domain scan
+/// and the anchor walk (D-LBK-5).
+#[must_use]
+pub fn domain_of_place(state: &SpatialState, world: &World, place: ObjId) -> Option<DomainId> {
+    let mut current = place;
+    for _ in 0..MAX_CONTEXT_RECORDS {
+        if let Some((id, _)) = state
+            .domains
+            .iter()
+            .take(MAX_CONTEXT_RECORDS)
+            .find(|(_, domain)| domain.host == current || domain.presentation_location == current)
+        {
+            return Some(*id);
+        }
+        let space = state.spaces.get(&current)?;
+        match &space.anchor {
+            SpaceAnchor::FixedDomain { domain, .. } => return Some(*domain),
+            SpaceAnchor::MovingObject { host } => {
+                let next = place_of(state, world, *host)?;
+                if next == current {
+                    return None;
+                }
+                current = next;
+            }
+            SpaceAnchor::Unanchored => return None,
+        }
+    }
+    None
 }
 
 /// What detection decided. Both arms carry the same fields, so a caller cannot

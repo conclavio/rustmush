@@ -43,6 +43,15 @@ pub const MAX_PROVENANCE: usize = 4_096;
 pub const MAX_SIGHTINGS: usize = 4_096;
 /// The most bytes a phantom id may carry.
 pub const MAX_PHANTOM_ID_BYTES: usize = 48;
+/// The most undecodable documents the boot holds in RAM (the fold's B7).
+///
+/// The four censuses bound the **books**; without this one a store carrying a
+/// hundred thousand unreadable envelope documents booted with all of them held
+/// verbatim, so the caps bounded nothing about the process. Past it the boot
+/// **counts and pages** rather than retaining.
+pub const MAX_HELD_DOCUMENTS: usize = 64;
+/// The most lines the tick may queue for the next staff reader.
+pub const MAX_PAGED_NOTICES: usize = 32;
 /// The `SubjectKey::Scoped` class every phantom is minted under. The same
 /// constant `mush_tactics::PHANTOM_CLASS` names, asserted equal by a pin.
 pub const PHANTOM_CLASS: &str = "phantom";
@@ -78,6 +87,14 @@ pub struct Phantom {
     /// Which platforms were credited with the false contact. Bounded by K's own
     /// `MAX_CONTACT_AUDIENCE`, cited not redefined.
     holders: Vec<PrincipalId>,
+    /// The allocator ordinal this phantom was minted under.
+    ///
+    /// Recorded on the record itself (fold B11) because the id is now a digest:
+    /// a lost or older-schema allocator document would otherwise reset the
+    /// ordinal to 0 while the `phantom:*` documents hydrate normally, and the
+    /// next mint would re-issue a live phantom's identity. `#[serde(default)]`,
+    /// so a pre-fold document still loads.
+    ordinal: u64,
 }
 
 #[derive(Deserialize)]
@@ -88,6 +105,8 @@ struct PhantomWire {
     created: ClockStamp,
     expires: ClockStamp,
     holders: Vec<PrincipalId>,
+    #[serde(default)]
+    ordinal: u64,
 }
 
 impl<'de> Deserialize<'de> for Phantom {
@@ -103,6 +122,7 @@ impl<'de> Deserialize<'de> for Phantom {
             wire.expires,
             wire.holders,
         )
+        .map(|phantom| phantom.with_ordinal(wire.ordinal))
         .map_err(serde::de::Error::custom)
     }
 }
@@ -146,7 +166,73 @@ impl Phantom {
             created,
             expires,
             holders,
+            ordinal: 0,
         })
+    }
+
+    /// The same phantom, carrying the allocator ordinal it was minted under.
+    #[must_use]
+    pub fn with_ordinal(mut self, ordinal: u64) -> Self {
+        self.ordinal = ordinal;
+        self
+    }
+
+    /// The allocator ordinal, or 0 for a pre-fold document.
+    #[must_use]
+    pub const fn ordinal(&self) -> u64 {
+        self.ordinal
+    }
+
+    /// Mint the opaque id for a phantom.
+    ///
+    /// **A digest, not a dbref** (fold K13). The id was
+    /// `<observer dbref>/<ordinal>`, and it appears verbatim in the document
+    /// key, in the sighting book and in `ContactLedgerRow.phantom` — so anyone
+    /// who could read a phantom id learned which platform it was minted for, and
+    /// the phantom namespace was not independent of the real object space, which
+    /// is the property the no-launder argument leans on.
+    ///
+    /// # Errors
+    /// [`RecordError::PhantomId`] when the digest will not key.
+    pub fn mint_id(
+        observer: ObjId,
+        ordinal: u64,
+        created: &ClockStamp,
+    ) -> Result<IdempotencyKeyText, RecordError> {
+        let digest = mush_core::CanonicalHash::for_canonical_value(
+            "propagation.phantom_id.v1",
+            1,
+            &serde_json::json!({
+                "observer": observer.0,
+                "ordinal": ordinal,
+                "created": created,
+            }),
+            1024,
+        )
+        .map_err(|_| RecordError::PhantomId {
+            max: MAX_PHANTOM_ID_BYTES,
+        })?;
+        IdempotencyKeyText::parse_canonical(format!("ph{}", &digest.to_hex()[..32])).map_err(|_| {
+            RecordError::PhantomId {
+                max: MAX_PHANTOM_ID_BYTES,
+            }
+        })
+    }
+
+    /// Re-anchor this phantom's stamps onto `clock`, keeping their IC scalars.
+    ///
+    /// Fold D5(a)(ii), `mush_sim::journey::reanchor`'s shape and argument: the
+    /// IC scalar is continuous across a `WorldIc` generation boundary by
+    /// construction, so moving the identity and keeping the scalar is exact.
+    /// Without it a rate change froze every phantom: `is_expired` answered
+    /// `false` for ever, no holder got its `Loss`, and the false contact became
+    /// permanent knowledge.
+    #[must_use]
+    pub fn reanchored(&self, clock: &mush_core::ClockRef) -> Self {
+        let mut next = self.clone();
+        next.created.clock = clock.clone();
+        next.expires.clock = clock.clone();
+        next
     }
 
     /// The opaque id.
@@ -495,14 +581,38 @@ impl Envelope {
         self.shares
     }
     /// Its age at `at`, in IC seconds. Incomparable clocks answer 0 rather than
-    /// producing a nonsense age.
+    /// producing a nonsense age; use [`Self::checked_age`] where the difference
+    /// matters, because 0 renders as **fresher than the truth**.
     #[must_use]
     pub fn age(&self, at: &ClockStamp) -> i64 {
-        if at.clock == self.issued.clock {
-            at.at.saturating_sub(self.issued.at).max(0)
-        } else {
-            0
+        self.checked_age(at).unwrap_or(0)
+    }
+
+    /// Its age at `at`, or `None` when the two stamps are incomparable.
+    ///
+    /// Fold D5(a)(i): a render must never present an incomparable stamp as
+    /// fresher than the truth, so the one view that shows an age asks this and
+    /// prints `stale` for `None`.
+    #[must_use]
+    pub fn checked_age(&self, at: &ClockStamp) -> Option<i64> {
+        (at.clock == self.issued.clock).then(|| at.at.saturating_sub(self.issued.at).max(0))
+    }
+
+    /// Re-anchor every stamp onto `clock`, keeping the IC scalars (fold D5).
+    ///
+    /// The scalars are continuous across a `WorldIc` generation boundary by
+    /// construction, so this is exact; without it an envelope's `age` answered 0
+    /// for ever after a rate change, it never reached `ENVELOPE_TTL_SECS`, and
+    /// the whole delivery book stopped ageing out.
+    #[must_use]
+    pub fn reanchored(&self, clock: &mush_core::ClockRef) -> Self {
+        let mut next = self.clone();
+        next.issued.clock = clock.clone();
+        next.advanced.clock = clock.clone();
+        for hop in &mut next.path {
+            hop.at.clock = clock.clone();
         }
+        next
     }
 
     /// Take one relay hop.
@@ -665,34 +775,159 @@ impl ContactProvenance {
 /// The detection pass's idempotency key: without it, every pass would arm a
 /// fresh `Observe` for a subject that is already a contact, and two passes over
 /// one unchanged world would not produce the same set.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Sighting {
     /// The observing platform.
-    pub observer: ObjId,
+    observer: ObjId,
     /// The observed platform, or `None` for a phantom sighting.
-    pub subject: Option<ObjId>,
+    subject: Option<ObjId>,
     /// The phantom, when the sighting is false.
-    pub phantom: Option<IdempotencyKeyText>,
+    phantom: Option<IdempotencyKeyText>,
     /// When it was first armed.
-    pub first: ClockStamp,
+    first: ClockStamp,
     /// When it was last armed.
-    pub last: ClockStamp,
+    last: ClockStamp,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SightingWire {
+    observer: ObjId,
+    subject: Option<ObjId>,
+    phantom: Option<IdempotencyKeyText>,
+    first: ClockStamp,
+    last: ClockStamp,
+}
+
+impl<'de> Deserialize<'de> for Sighting {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let wire = SightingWire::deserialize(deserializer)?;
+        Self::new(
+            wire.observer,
+            wire.subject,
+            wire.phantom,
+            wire.first,
+            wire.last,
+        )
+        .map_err(serde::de::Error::custom)
+    }
 }
 
 impl Sighting {
+    /// The one constructor; the wire re-runs it (§4 rule 1, fold B10).
+    ///
+    /// Before the fold `Sighting` was the one exempt record with public fields,
+    /// a derived `Deserialize` and no constructor at all: a document with
+    /// `subject: null, phantom: null` loaded and folded every such row for one
+    /// observer onto a single key, and `first`/`last` were checked neither for
+    /// monotonicity nor for one clock generation.
+    ///
+    /// # Errors
+    /// [`RecordError`] when the sighting names neither a subject nor a phantom,
+    /// or when `last` precedes `first` or sits on another clock generation.
+    pub fn new(
+        observer: ObjId,
+        subject: Option<ObjId>,
+        phantom: Option<IdempotencyKeyText>,
+        first: ClockStamp,
+        last: ClockStamp,
+    ) -> Result<Self, RecordError> {
+        if subject.is_none() && phantom.is_none() {
+            return Err(RecordError::SubjectlessSighting);
+        }
+        if last.clock != first.clock || last.at < first.at {
+            return Err(RecordError::SightingRegressed);
+        }
+        Ok(Self {
+            observer,
+            subject,
+            phantom,
+            first,
+            last,
+        })
+    }
+
+    /// The observing platform.
+    #[must_use]
+    pub const fn observer(&self) -> ObjId {
+        self.observer
+    }
+    /// The observed platform, when the sighting is of a real one.
+    #[must_use]
+    pub const fn subject(&self) -> Option<ObjId> {
+        self.subject
+    }
+    /// The phantom, when the sighting is false.
+    #[must_use]
+    pub const fn phantom(&self) -> Option<&IdempotencyKeyText> {
+        self.phantom.as_ref()
+    }
+    /// When it was first armed.
+    #[must_use]
+    pub const fn first(&self) -> &ClockStamp {
+        &self.first
+    }
+    /// When it was last armed.
+    #[must_use]
+    pub const fn last(&self) -> &ClockStamp {
+        &self.last
+    }
+
+    /// The same sighting, re-stamped as seen again at `at` (fold D4(c)).
+    ///
+    /// # Errors
+    /// [`RecordError::SightingRegressed`] when `at` precedes `first` or sits on
+    /// another clock generation.
+    pub fn seen_again(&self, at: &ClockStamp) -> Result<Self, RecordError> {
+        Self::new(
+            self.observer,
+            self.subject,
+            self.phantom.clone(),
+            self.first.clone(),
+            at.clone(),
+        )
+    }
+
+    /// How stale this sighting is at `at`, or `None` when incomparable — which
+    /// the ageing pass treats as "retire it", so a rate change cannot freeze the
+    /// book (fold D5).
+    #[must_use]
+    pub fn staleness(&self, at: &ClockStamp) -> Option<i64> {
+        (at.clock == self.last.clock).then(|| at.at.saturating_sub(self.last.at).max(0))
+    }
+
     /// The document/book key for one sighting.
+    ///
+    /// **A domain-separated digest, not the pair in plaintext** (fold K13). The
+    /// key used to be `<observer>/o<subject>`, persisted as
+    /// `sighting:<observer>/o<subject>` — the one place outside the owner-fenced
+    /// contact family where a real observer→subject truth mapping was written
+    /// down, readable from a key listing or a backup by anyone with read access
+    /// to the namespace.
     #[must_use]
     pub fn key_of(
         observer: ObjId,
         subject: Option<ObjId>,
         phantom: Option<&IdempotencyKeyText>,
     ) -> String {
-        match (subject, phantom) {
-            (Some(subject), _) => format!("{}/o{}", observer.0, subject.0),
-            (None, Some(phantom)) => format!("{}/f{}", observer.0, phantom.as_str()),
-            (None, None) => format!("{}/none", observer.0),
-        }
+        let value = serde_json::json!({
+            "observer": observer.0,
+            "subject": subject.map(|id| id.0),
+            "phantom": phantom.map(IdempotencyKeyText::as_str),
+        });
+        mush_core::CanonicalHash::for_canonical_value("propagation.sighting.v1", 1, &value, 1024)
+            .map_or_else(
+                |_| {
+                    // Unreachable for a three-field document; a deterministic,
+                    // non-identifying fallback rather than a panic in a pass.
+                    format!("x{:016x}", fold_digest(observer, subject, phantom))
+                },
+                |digest| digest.to_hex()[..32].to_owned(),
+            )
     }
 
     /// This sighting's key.
@@ -700,6 +935,34 @@ impl Sighting {
     pub fn key(&self) -> String {
         Self::key_of(self.observer, self.subject, self.phantom.as_ref())
     }
+}
+
+/// A tiny deterministic FNV-1a fallback for [`Sighting::key_of`]'s error arm.
+/// It carries no readable dbref either.
+fn fold_digest(
+    observer: ObjId,
+    subject: Option<ObjId>,
+    phantom: Option<&IdempotencyKeyText>,
+) -> u64 {
+    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+    let mut eat = |byte: u8| {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    };
+    for byte in observer.0.to_le_bytes() {
+        eat(byte);
+    }
+    for byte in subject.map_or(0_u32, |id| id.0).to_le_bytes() {
+        eat(byte);
+    }
+    for byte in phantom
+        .map(IdempotencyKeyText::as_str)
+        .unwrap_or("")
+        .bytes()
+    {
+        eat(byte);
+    }
+    hash
 }
 
 /// A record that will not construct or will not load.
@@ -725,6 +988,12 @@ pub enum RecordError {
     HopsRegressed,
     #[error("a reported contact's age cannot be negative")]
     AgeRegressed,
+    #[error("a sighting must name a subject or a phantom")]
+    SubjectlessSighting,
+    #[error("a sighting's stamps moved backwards or changed clock generation")]
+    SightingRegressed,
+    #[error("that phantom id already names a different phantom")]
+    PhantomIdReused,
     #[error("that book is full: {actual} records against a bound of {max}")]
     Census { actual: usize, max: usize },
 }
@@ -776,6 +1045,25 @@ pub struct PropagationStore {
     sightings: BTreeMap<String, Sighting>,
     next_envelope: u64,
     next_phantom: u64,
+    /// Where the next delivery pass resumes (fold B3).
+    ///
+    /// Without it the pass restarted at the lowest envelope id on every run, so
+    /// a permanently jammed head starved every envelope behind it — never
+    /// relayed, never delivered, and never even aged out, because the TTL check
+    /// lives inside the loop body — while the page line said "run @prop/pass
+    /// again to continue", which was false.
+    next_envelope_scan: u64,
+    /// Where the next detection pass resumes: `(observer, subject)`.
+    ///
+    /// Fold K7(a): the roster truncation and the per-observer subject cap were
+    /// both deterministic and stateless, so the same low-`ObjId` 32 were
+    /// examined on every pass for ever and the 33rd placed object was never a
+    /// subject. The rotation is what makes the bound a page rather than a wall.
+    next_detection_scan: Option<(ObjId, ObjId)>,
+    /// How many documents the boot dropped past [`MAX_HELD_DOCUMENTS`].
+    held_overflow: usize,
+    /// Lines the tick and the boot page to the next staff reader.
+    notices: Vec<String>,
     /// Declared interference by place (staff, or a later electronic-warfare
     /// result). **Delivery-affecting only**: R4's jammed unit still takes
     /// orders, and `resolve_detection` never reads this term.
@@ -813,6 +1101,22 @@ impl PropagationStore {
         Ok(())
     }
 
+    /// Drop one envelope (terminal and past its TTL — the fold's D7 reaper).
+    pub fn drop_envelope(&mut self, id: u64) -> Option<Envelope> {
+        self.envelopes.remove(&id)
+    }
+
+    /// Where the next delivery pass resumes.
+    #[must_use]
+    pub const fn envelope_scan_cursor(&self) -> u64 {
+        self.next_envelope_scan
+    }
+
+    /// Record where the delivery pass stopped, so the next one starts there.
+    pub const fn set_envelope_scan_cursor(&mut self, cursor: u64) {
+        self.next_envelope_scan = cursor;
+    }
+
     /// The next envelope id, or `None` when the allocator is exhausted.
     pub fn alloc_envelope(&mut self) -> Option<u64> {
         self.next_envelope = self.next_envelope.checked_add(1)?;
@@ -839,13 +1143,28 @@ impl PropagationStore {
     /// Insert or replace one phantom.
     ///
     /// # Errors
-    /// [`RecordError::Census`] at [`MAX_PHANTOMS`] for a NEW id.
+    /// [`RecordError::Census`] at [`MAX_PHANTOMS`] for a NEW id, or
+    /// [`RecordError::PhantomIdReused`] when the incoming id already names a
+    /// **different** phantom (fold B11): replacing one silently destroyed the
+    /// live phantom's cause, expiry and holder set, so its holders never
+    /// received the expiry `Loss` and their false contacts became permanent.
     pub fn put_phantom(&mut self, phantom: Phantom) -> Result<(), RecordError> {
-        if !self.phantoms.contains_key(&phantom.id) && self.phantoms.len() >= MAX_PHANTOMS {
-            return Err(RecordError::Census {
-                actual: self.phantoms.len(),
-                max: MAX_PHANTOMS,
-            });
+        match self.phantoms.get(&phantom.id) {
+            // The IC scalar, not the clock identity: a re-anchor (fold D5) moves
+            // the generation and keeps the scalar, and must not read as a
+            // different phantom.
+            Some(existing) if existing.created().at != phantom.created().at => {
+                return Err(RecordError::PhantomIdReused);
+            }
+            Some(_) => {}
+            None => {
+                if self.phantoms.len() >= MAX_PHANTOMS {
+                    return Err(RecordError::Census {
+                        actual: self.phantoms.len(),
+                        max: MAX_PHANTOMS,
+                    });
+                }
+            }
         }
         self.phantoms.insert(phantom.id.clone(), phantom);
         Ok(())
@@ -882,6 +1201,16 @@ impl PropagationStore {
         Ok(())
     }
 
+    /// Drop one provenance row (its contact is gone from the ledger).
+    pub fn drop_provenance(&mut self, contact: mush_core::ContactId) -> Option<ContactProvenance> {
+        self.provenance.remove(&contact)
+    }
+
+    /// Drop one sighting (older than `CONTACT_TTL`, or un-ageable).
+    pub fn drop_sighting(&mut self, key: &str) -> Option<Sighting> {
+        self.sightings.remove(key)
+    }
+
     /// One sighting.
     #[must_use]
     pub fn sighting(&self, key: &str) -> Option<&Sighting> {
@@ -915,15 +1244,83 @@ impl PropagationStore {
         &self.held
     }
 
-    /// Hold one undecodable document.
-    pub fn hold(&mut self, key: SmolStr, value: serde_json::Value) {
+    /// Hold one undecodable document, up to [`MAX_HELD_DOCUMENTS`].
+    ///
+    /// Returns `true` when the document was retained. Past the cap the boot
+    /// **counts and pages** rather than retaining (fold B7); the document itself
+    /// is untouched in the store, so nothing is destroyed either way.
+    pub fn hold(&mut self, key: SmolStr, value: serde_json::Value) -> bool {
+        if !self.held.contains_key(&key) && self.held.len() >= MAX_HELD_DOCUMENTS {
+            self.held_overflow = self.held_overflow.saturating_add(1);
+            return false;
+        }
         self.held.insert(key, value);
+        true
+    }
+
+    /// How many undecodable documents were past the held cap.
+    #[must_use]
+    pub const fn held_overflow(&self) -> usize {
+        self.held_overflow
+    }
+
+    /// Record that the boot dropped `count` documents past the held cap.
+    pub fn record_held_overflow(&mut self, count: usize) {
+        self.held_overflow = self.held_overflow.saturating_add(count);
+    }
+
+    /// Page one line to the next staff reader.
+    ///
+    /// Fold B3/B7: the Coarse tick has no actor to talk to, so before the fold
+    /// its bound, its anomalies and its boot-held count went to `tracing::warn!`
+    /// and nobody was ever told. `mush-propagation`'s edge set is
+    /// `{mush-core, mush-sim}`, which does not include the economy escalation
+    /// crate, so the page lands here — a bounded durable queue `@prop/pass` and
+    /// `@prop/held` both drain — rather than in a log.
+    pub fn page(&mut self, line: impl Into<String>) {
+        if self.notices.len() >= MAX_PAGED_NOTICES {
+            self.notices.remove(0);
+        }
+        self.notices.push(line.into());
+    }
+
+    /// Everything paged since the last drain.
+    #[must_use]
+    pub fn notices(&self) -> &[String] {
+        &self.notices
+    }
+
+    /// Drain the paged lines.
+    pub fn take_notices(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.notices)
     }
 
     /// The declared jamming level at a place.
     #[must_use]
     pub fn jamming_at(&self, place: ObjId) -> u32 {
         self.jamming.get(&place).copied().unwrap_or(0)
+    }
+
+    /// A snapshot of the declared interference, for one pass to read.
+    ///
+    /// Fold B16: the delivery pass used to deep-clone the WHOLE store — up to
+    /// three books of 4_096 records each plus the unbounded held map — solely so
+    /// `context_between` could read a jamming level. This clone is O(jammed
+    /// places), and there are usually none.
+    #[must_use]
+    pub fn jamming_map(&self) -> BTreeMap<ObjId, u32> {
+        self.jamming.clone()
+    }
+
+    /// Where the next detection pass resumes.
+    #[must_use]
+    pub const fn detection_cursor(&self) -> Option<(ObjId, ObjId)> {
+        self.next_detection_scan
+    }
+
+    /// Record where the detection pass stopped; `None` restarts the rotation.
+    pub const fn set_detection_cursor(&mut self, cursor: Option<(ObjId, ObjId)>) {
+        self.next_detection_scan = cursor;
     }
 
     /// Declare (or clear, at 0) the jamming level at a place.
@@ -941,6 +1338,11 @@ impl PropagationStore {
         serde_json::json!({
             "next_envelope": self.next_envelope,
             "next_phantom": self.next_phantom,
+            "next_envelope_scan": self.next_envelope_scan,
+            "next_detection_scan": self.next_detection_scan
+                .map(|(observer, subject)| serde_json::json!({
+                    "observer": observer.0, "subject": subject.0
+                })),
             "jamming": self.jamming.iter().map(|(place, level)| serde_json::json!({
                 "place": place.0, "level": level
             })).collect::<Vec<_>>(),
@@ -959,6 +1361,20 @@ impl PropagationStore {
             .and_then(serde_json::Value::as_u64)
             .unwrap_or(0)
             .max(self.next_phantom);
+        self.next_envelope_scan = value
+            .get("next_envelope_scan")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0)
+            .max(self.next_envelope_scan);
+        if let Some(cursor) = value.get("next_detection_scan").filter(|v| v.is_object())
+            && let (Some(observer), Some(subject)) = (
+                cursor.get("observer").and_then(serde_json::Value::as_u64),
+                cursor.get("subject").and_then(serde_json::Value::as_u64),
+            )
+            && let (Ok(observer), Ok(subject)) = (u32::try_from(observer), u32::try_from(subject))
+        {
+            self.next_detection_scan = Some((ObjId(observer), ObjId(subject)));
+        }
         if let Some(rows) = value.get("jamming").and_then(serde_json::Value::as_array) {
             for row in rows.iter().take(MAX_SIGHTINGS) {
                 let (Some(place), Some(level)) = (
@@ -977,9 +1393,17 @@ impl PropagationStore {
 
     /// Raise the allocators past whatever hydrated, so a restart never re-uses
     /// an id even if the allocator document itself was lost.
+    ///
+    /// **Both allocators** (fold B11). Before the fold only the envelope
+    /// allocator was raised, so a missing, truncated or older-schema allocator
+    /// document reset the phantom ordinal to 0 while the `phantom:*` documents
+    /// hydrated normally, and the next mint re-issued a live phantom's identity.
     pub fn reconcile_allocators(&mut self) {
         if let Some(highest) = self.envelopes.keys().next_back() {
             self.next_envelope = self.next_envelope.max(*highest);
+        }
+        if let Some(highest) = self.phantoms.values().map(Phantom::ordinal).max() {
+            self.next_phantom = self.next_phantom.max(highest);
         }
     }
 }

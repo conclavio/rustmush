@@ -334,6 +334,44 @@ impl ObservationIntent {
             .map_err(|error| ObservationIntentError::Key(error.to_string()))
     }
 
+    /// Build the canonical key for a transition on an **existing** contact:
+    /// `<kind>/<observer>/c<contact>` — **with no tick**.
+    ///
+    /// E7 cut 7 independent verify fold, D3(a). The identity of a
+    /// `Refresh`/`Loss`/`Reacquire`/`Share`/`Unshare` is the *work*, which is
+    /// `(kind, observer, contact)`; the tick lives in the intent's own
+    /// [`Self::at`]. With the tick in the key, the same still-due transition one
+    /// IC second later hashed to a **different** `ScheduleId`, so the ingress
+    /// took its insert branch and stacked a second durable cursor beside the
+    /// stuck one instead of replacing it. `Observe` keeps the tick, because its
+    /// identity is the pair plus the sighting book's own record of it.
+    ///
+    /// The full contact hex is used, not a prefix: a 32-bit prefix collision
+    /// between two contacts one observer holds silently dropped a transition.
+    ///
+    /// # Errors
+    /// [`ObservationIntentError::Key`] past [`crate::action::MAX_IDEMPOTENCY_KEY_BYTES`],
+    /// or when `kind` is [`ObservationKind::Observe`], which has no contact yet.
+    pub fn key_for_state(
+        kind: ObservationKind,
+        observer: &ObserverRef,
+        contact: ContactId,
+    ) -> Result<IdempotencyKeyText, ObservationIntentError> {
+        if kind == ObservationKind::Observe {
+            return Err(ObservationIntentError::Key(
+                "an observe intent has no contact to key over".to_owned(),
+            ));
+        }
+        let text = format!(
+            "{}/{}/c{}",
+            kind.as_str(),
+            observer.key_fragment(),
+            contact.to_hex()
+        );
+        IdempotencyKeyText::parse_canonical(text)
+            .map_err(|error| ObservationIntentError::Key(error.to_string()))
+    }
+
     /// Who observes.
     #[must_use]
     pub const fn observer(&self) -> &ObserverRef {
@@ -501,18 +539,41 @@ impl ContactLedgerState {
     ///
     /// Rows are sorted canonically, so two rebuilds over one unchanged family
     /// produce byte-identical output and a policy reading it is deterministic.
-    /// Past [`MAX_CONTACT_LEDGER_ROWS`] the extra rows are **dropped and
-    /// flagged**, never silently folded in: `is_paging` is the tell a caller
-    /// pages on.
+    ///
+    /// **The window is fair per holder** (E7 cut 7 independent verify fold, O6).
+    /// A flat `truncate` to [`MAX_CONTACT_LEDGER_ROWS`] over rows sorted by
+    /// holder let ONE holder's volume starve every holder sorting after it: a
+    /// contact past the cut was invisible in its own holder's `+contacts`, never
+    /// refreshed and never lost, because the pass and the render both read this
+    /// projection. No holder may therefore occupy more than
+    /// [`MAX_CONTACTS_PER_OBSERVER`] rows — which is all any holder can see
+    /// anyway — and only then does the global cap apply. Anything dropped sets
+    /// [`Self::is_paging`], which the publisher pages on.
     pub fn install(&mut self, mut rows: Vec<ContactLedgerRow>, at: ClockStamp) {
         rows.sort_by(|left, right| {
             left.holder
                 .cmp(&right.holder)
                 .then_with(|| left.contact.cmp(&right.contact))
         });
-        self.paging = rows.len() > MAX_CONTACT_LEDGER_ROWS;
-        rows.truncate(MAX_CONTACT_LEDGER_ROWS);
-        self.rows = rows;
+        let mut kept: Vec<ContactLedgerRow> =
+            Vec::with_capacity(rows.len().min(MAX_CONTACT_LEDGER_ROWS));
+        let mut dropped = 0_usize;
+        let mut run_holder: Option<PrincipalId> = None;
+        let mut run = 0_usize;
+        for row in rows {
+            if run_holder.as_ref() != Some(&row.holder) {
+                run_holder = Some(row.holder.clone());
+                run = 0;
+            }
+            if run >= MAX_CONTACTS_PER_OBSERVER || kept.len() >= MAX_CONTACT_LEDGER_ROWS {
+                dropped = dropped.saturating_add(1);
+                continue;
+            }
+            run = run.saturating_add(1);
+            kept.push(row);
+        }
+        self.paging = dropped > 0;
+        self.rows = kept;
         self.at = Some(at);
     }
 

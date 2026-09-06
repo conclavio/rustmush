@@ -43,6 +43,15 @@ impl SensorPolicy for PropagationSensorPolicy {
         // policy is a READ seam, so it works on a scratch copy and the durable
         // sighting book is written only by the command/tick path that arms.
         let mut scratch = store.clone();
-        detection_pass(&mut scratch, state, world, &ledger, at)
+        detection_pass(
+            &mut scratch,
+            state,
+            world,
+            &ledger,
+            at,
+            None,
+            mush_core::MAX_OBSERVATIONS_PER_PASS,
+        )
+        .intents
     }
 }

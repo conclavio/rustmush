@@ -2164,18 +2164,23 @@ mod tests {
                     "the sim lane {name} must publish {class:?}"
                 );
             }
-            // E7 cut 7: FOUR lanes in TWO registration groups, each with its own
-            // `reg.classify_commands(..)` before its first `reg.command`.
+            // E7 cut 7: FIVE verbs in THREE registration groups, each with its
+            // own `reg.classify_commands(..)` before its first `reg.command`.
             // `+contacts`/`+contact` are pure reads over the leak-safe ledger;
-            // `+order` and `@prop` write propagation's own exempt documents, and
-            // `+orders` takes the CEILING class of its switches because `/ack`
-            // writes the acknowledgement envelope.
+            // `+order` writes propagation's own exempt documents, and `+orders`
+            // takes the CEILING class of its switches because `/ack` writes the
+            // acknowledgement envelope. `@prop` takes the ceiling of ITS
+            // switches too, and `/pass` stages the tactics-owned `sensor_arm`
+            // through `Ctx::submit_authoritative` — an ingress adapter for the
+            // authoritative action coordinator, which is `Authoritative`'s own
+            // definition and exactly the criterion cut 5 used for `@station`
+            // (E7 cut 7 independent verify fold, B8).
             for (name, class) in [
                 ("+contacts", mush_core::CommandCompatibility::ReadOnly),
                 ("+contact", mush_core::CommandCompatibility::ReadOnly),
                 ("+order", mush_core::CommandCompatibility::LegacyPostImage),
                 ("+orders", mush_core::CommandCompatibility::LegacyPostImage),
-                ("@prop", mush_core::CommandCompatibility::LegacyPostImage),
+                ("@prop", mush_core::CommandCompatibility::Authoritative),
             ] {
                 assert!(
                     registrations.iter().any(|(spec, owner, published)| {

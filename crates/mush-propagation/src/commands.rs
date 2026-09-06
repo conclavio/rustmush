@@ -26,7 +26,7 @@ use mush_core::{
 use smol_str::SmolStr;
 
 use crate::NS;
-use crate::pass::{DeliveryReport, active_order, delivery_pass};
+use crate::pass::{DeliveryReport, delivery_pass};
 use crate::record::{
     ALLOCATOR_KEY, ContactProvenance, Envelope, EnvelopeState, FalseCause, Phantom,
     PropagationStore, Provenance, envelope_key, phantom_key, provenance_key, sighting_key,
@@ -78,54 +78,86 @@ fn rhs(ctx: &Ctx<'_>, usage: &str) -> Result<String, CmdError> {
 /// `PerceivedRef` for, the age of the observation, and the provenance side
 /// projection. It does **not** render a subject, an object id or a name: a real
 /// unit and a phantom are byte-identical apart from the id itself.
+///
+/// **An incomparable stamp renders `stale`, never `0s`** (fold D5(a)(i)). Before
+/// the fold a world time-rate change made every live contact render as observed
+/// this second — *fresher than the truth*, on the one player-facing view the
+/// whole leak argument rests on.
+///
+/// **A reported provenance names no dbref** (fold K15). `viewer_source` is the
+/// opaque contact id the viewer itself holds on the reporting platform, or
+/// `None`; the `ObjId` stays in the record for audit and never in the line.
 #[must_use]
 pub fn render_contact(
     row: &ContactLedgerRow,
     provenance: Option<&ContactProvenance>,
     at: &ClockStamp,
+    viewer_source: Option<ContactId>,
 ) -> String {
     let age = if row.observed_at.clock == at.clock {
-        at.at.saturating_sub(row.observed_at.at).max(0)
+        format!("{}s", at.at.saturating_sub(row.observed_at.at).max(0))
     } else {
-        0
+        "stale".to_owned()
     };
     let state = if row.active { "held" } else { "lost" };
     let source = match provenance.map(ContactProvenance::provenance) {
-        Some(Provenance::Reported { source, age, via }) => {
-            format!("reported by #{} {age}s old via {via}", source.0)
-        }
+        Some(Provenance::Reported { age, via, .. }) => match viewer_source {
+            Some(contact) => format!(
+                "reported by {} {age}s old via {via}",
+                &contact.to_hex()[..12]
+            ),
+            None => format!("reported, {age}s old"),
+        },
         Some(Provenance::Local) => "local".to_owned(),
         None => "unattributed".to_owned(),
     };
     let band = provenance.map_or("-", |row| row.band().as_str());
     format!(
-        "{}  gen {} rev {}  {state}  {age}s  {band}  {source}",
+        "{}  gen {} rev {}  {state}  {age}  {band}  {source}",
         &row.contact.to_hex()[..12],
         row.generation,
         row.revision
     )
 }
 
-/// The one envelope view. Renders state, revision, hop count and age; the
-/// payload is rendered **only to the issuer and the recipient**, because an
-/// order's text is the order.
+/// The one envelope view. Renders state, revision, hop count, age **and the
+/// party it came from**; the payload is rendered **only to the issuer and the
+/// recipient**, because an order's text is the order.
+///
+/// `attribution` is the issuer as the viewer may see them, through the same fog
+/// gate `+order` uses — `None` renders "an unidentified sender" rather than a
+/// name or a dbref. Before the fold neither this view nor the standing-order
+/// line named an issuer at all, so a recipient could not attribute an order to
+/// anybody (fold K8).
 #[must_use]
-pub fn render_envelope(envelope: &Envelope, at: &ClockStamp, party: bool) -> String {
+pub fn render_envelope(
+    envelope: &Envelope,
+    at: &ClockStamp,
+    party: bool,
+    attribution: Option<&str>,
+) -> String {
     let body = if party {
         format!("  \"{}\"", envelope.payload())
     } else {
         String::new()
     };
+    let age = envelope
+        .checked_age(at)
+        .map_or_else(|| "stale".to_owned(), |age| format!("{age}s"));
     format!(
-        "#{} rev {} {:?} hops {}/{} age {}s{body}",
+        "#{} rev {} {:?} hops {}/{} age {} from {}{body}",
         envelope.id(),
         envelope.revision(),
         envelope.state(),
         envelope.path().len(),
         crate::record::MAX_ENVELOPE_HOPS,
-        envelope.age(at)
+        age,
+        attribution.unwrap_or(UNIDENTIFIED_SENDER)
     )
 }
+
+/// What an unattributable issuer renders as. Never a name, never a dbref.
+pub const UNIDENTIFIED_SENDER: &str = "an unidentified sender";
 
 /// Every principal whose picture this actor may read.
 ///
@@ -151,16 +183,41 @@ fn viewable_holders(ctx: &Ctx<'_>, actor: ObjId) -> Vec<PrincipalId> {
     holders
 }
 
+/// This actor's rows, **[`mush_core::MAX_CONTACTS_PER_OBSERVER`] per holder**.
+///
+/// Fold O6: the cap used to be taken across the COMBINED holder set, so an
+/// actor stationed on three platforms saw 128 rows in total rather than 128 per
+/// observer, and the first holder's volume hid every later one's picture. The
+/// per-observer accessor the projection already carries is what answers now.
 fn holder_rows<'a>(
     ledger: &'a ContactLedgerState,
     holders: &[PrincipalId],
 ) -> Vec<&'a ContactLedgerRow> {
-    ledger
-        .rows()
-        .iter()
-        .filter(|row| holders.contains(&row.holder))
-        .take(mush_core::MAX_CONTACTS_PER_OBSERVER)
-        .collect()
+    let mut rows: Vec<&ContactLedgerRow> = Vec::new();
+    for holder in holders {
+        let PrincipalId::Object { id } = holder else {
+            continue;
+        };
+        rows.extend(ledger.for_observer(&mush_core::ObserverRef::Platform { id: *id }));
+    }
+    rows
+}
+
+/// The opaque contact the viewer itself holds on `source`, if any — the fog-safe
+/// way to name a reporting platform (fold K15).
+fn viewer_contact_on(
+    ledger: &ContactLedgerState,
+    holders: &[PrincipalId],
+    source: ObjId,
+) -> Option<ContactId> {
+    let _ = source;
+    // Propagation cannot resolve a platform back to the viewer's contact on it:
+    // the leak-safe ledger deliberately carries no object id, which is the very
+    // property that makes it leak-safe. Until cut 8's relay pass supplies the
+    // reporting platform's own contact id alongside the provenance row, the
+    // honest answer is "unattributed", which is what `None` renders.
+    let _ = (ledger, holders);
+    None
 }
 
 /// `+contacts` — the contacts this actor's own platform holds.
@@ -177,7 +234,16 @@ fn cmd_contacts(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let rows = holder_rows(ledger, &holders);
     let lines: Vec<String> = rows
         .iter()
-        .map(|row| render_contact(row, store.provenance_of(row.contact), &at))
+        .map(|row| {
+            let provenance = store.provenance_of(row.contact);
+            let source = match provenance.map(ContactProvenance::provenance) {
+                Some(Provenance::Reported { source, .. }) => {
+                    viewer_contact_on(ledger, &holders, *source)
+                }
+                _ => None,
+            };
+            render_contact(row, provenance, &at, source)
+        })
         .collect();
     if lines.is_empty() {
         info(ctx, "You hold no contacts.");
@@ -205,12 +271,54 @@ fn cmd_contact(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let found = holder_rows(ledger, &holders)
         .into_iter()
         .find(|row| row.contact.to_hex().starts_with(&wanted) && !wanted.is_empty())
-        .map(|row| render_contact(row, store.provenance_of(row.contact), &at));
+        .map(|row| {
+            let provenance = store.provenance_of(row.contact);
+            let source = match provenance.map(ContactProvenance::provenance) {
+                Some(Provenance::Reported { source, .. }) => {
+                    viewer_contact_on(ledger, &holders, *source)
+                }
+                _ => None,
+            };
+            render_contact(row, provenance, &at, source)
+        });
     match found {
         Some(line) => info(ctx, line),
         None => info(ctx, NO_SUCH_CONTACT),
     }
     Ok(())
+}
+
+/// Whether `actor` may address `recipient` at all (fold D6(a)).
+///
+/// One of: staff; a unit the actor holds a control station on (cut 5's
+/// `assignments_by_actor`, re-used through [`viewable_holders`]); or an object
+/// standing in the same place the actor does, read from the placement graph the
+/// rest of the crate reads.
+///
+/// Cut 7 records **no authority relation**: an order is a message, and who a
+/// unit *obeys* is cut 9's command relation, one predicate away from here.
+fn may_address(ctx: &Ctx<'_>, actor: ObjId, recipient: ObjId) -> bool {
+    if actor == recipient || is_admin(ctx) {
+        return true;
+    }
+    if viewable_holders(ctx, actor).contains(&PrincipalId::Object { id: recipient }) {
+        return true;
+    }
+    let Some(state) = ctx.w.module_state::<mush_sim::SpatialState>() else {
+        return false;
+    };
+    match (
+        crate::context::place_of(state, ctx.w, actor),
+        crate::context::place_of(state, ctx.w, recipient),
+    ) {
+        (Some(here), Some(there)) => here == there,
+        _ => false,
+    }
+}
+
+/// How an issuer renders to a viewer, through the same gate `+order` uses.
+fn attribution(ctx: &Ctx<'_>, viewer: ObjId, issuer: ObjId) -> Option<String> {
+    may_address(ctx, viewer, issuer).then(|| display_name(ctx.w, issuer))
 }
 
 fn next_revision(store: &PropagationStore, issuer: ObjId, recipient: ObjId) -> u32 {
@@ -269,7 +377,18 @@ fn persist_allocator(ctx: &mut Ctx<'_>) {
 /// creates a `Queued` envelope, and only delivery makes it active (T15).
 fn cmd_order(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let report_switch = ctx.switches.has("report");
-    let recipient = match_object(ctx.w, ctx.actor, ctx.args.lhs())?;
+    // **The recipient must be one the actor can actually address** (fold D6/K5).
+    // `match_object`'s `#N` branch is `w.get(id).is_some()` with no locality,
+    // visibility or contact gate, and the success line echoed the display name —
+    // so `+order #412=go` answered "Queued revision 1 to Black Prince…" for any
+    // object in the world and a match error for one that did not exist: an
+    // existence-and-identity oracle over the whole dbref space, on a tactical
+    // verb. Both arms now render the SAME line, byte for byte.
+    let resolved = match_object(ctx.w, ctx.actor, ctx.args.lhs()).ok();
+    let Some(recipient) = resolved.filter(|id| may_address(ctx, ctx.actor, *id)) else {
+        info(ctx, NO_SUCH_CONTACT);
+        return Ok(());
+    };
     if recipient == ctx.actor {
         return Err(CmdError::msg("You cannot send yourself an order."));
     }
@@ -336,11 +455,24 @@ fn cmd_orders(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     };
     let at = now(ctx);
     let actor = ctx.actor;
+    // **Bounded and paged** (fold B14): a long-lived pair used to render its
+    // entire history in one command's output, with the only ceiling being
+    // `MAX_ENVELOPES` and no compaction behind it.
+    let mut traffic: Vec<&Envelope> = store
+        .envelopes()
+        .filter(|envelope| envelope.issuer() == actor || envelope.recipient() == actor)
+        .collect();
+    let total = traffic.len();
+    traffic.sort_unstable_by_key(|envelope| std::cmp::Reverse(envelope.id()));
+    traffic.truncate(MAX_ORDERS_LISTED);
+    traffic.sort_unstable_by_key(|envelope| envelope.id());
+    let standing: Vec<(u32, String, ObjId)> = crate::pass::standing_orders(store, actor)
+        .into_iter()
+        .map(|order| (order.revision(), order.payload().to_owned(), order.issuer()))
+        .collect();
     let mut lines: Vec<String> = Vec::new();
-    for envelope in store.envelopes() {
-        if envelope.issuer() != actor && envelope.recipient() != actor {
-            continue;
-        }
+    for envelope in traffic {
+        let source = attribution(ctx, actor, envelope.issuer());
         let direction = if envelope.issuer() == actor {
             "->"
         } else {
@@ -348,14 +480,22 @@ fn cmd_orders(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         };
         lines.push(format!(
             "{direction} {}",
-            render_envelope(envelope, &at, true)
+            render_envelope(envelope, &at, true, source.as_deref())
         ));
     }
-    if let Some(order) = active_order(store, actor) {
+    if total > MAX_ORDERS_LISTED {
         lines.push(format!(
-            "Standing order: revision {} — \"{}\"",
-            order.revision(),
-            order.payload()
+            "{} older record(s) not shown; run +orders again after they compact.",
+            total.saturating_sub(MAX_ORDERS_LISTED)
+        ));
+    }
+    // Every standing order, **with its source** — one per issuer, because
+    // supersession is per issuer and cut 7 ranks no issuer above another.
+    for (revision, payload, issuer) in standing {
+        let source = attribution(ctx, actor, issuer);
+        lines.push(format!(
+            "Standing order: revision {revision} — \"{payload}\"  (from {})",
+            source.as_deref().unwrap_or(UNIDENTIFIED_SENDER)
         ));
     }
     if lines.is_empty() {
@@ -367,6 +507,9 @@ fn cmd_orders(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     }
     Ok(())
 }
+
+/// The most envelopes `+orders` and `@prop/envelopes` render in one page.
+pub const MAX_ORDERS_LISTED: usize = 32;
 
 fn order_ack(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let wanted: u64 = ctx
@@ -439,11 +582,13 @@ fn cmd_prop(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         prop_phantom(ctx)
     } else if ctx.switches.has("jam") {
         prop_jam(ctx)
+    } else if ctx.switches.has("held") {
+        prop_held(ctx)
     } else if ctx.switches.has("envelopes") || ctx.switches.is_empty() {
         prop_envelopes(ctx)
     } else {
         Err(CmdError::msg(
-            "Usage: @prop/envelopes <subject> | @prop/pass | @prop/phantom <observer>=<cause> |              @prop/jam <place>=<level>",
+            "Usage: @prop/envelopes <subject> | @prop/pass | @prop/phantom <observer>=<cause> |              @prop/jam <place>=<level> | @prop/held",
         ))
     }
 }
@@ -464,19 +609,101 @@ fn prop_envelopes(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         info(ctx, NO_SUCH_ENVELOPE);
         return Ok(());
     };
-    let lines: Vec<String> = store
+    let mut matching: Vec<&Envelope> = store
         .envelopes()
         .filter(|envelope| envelope.issuer() == subject || envelope.recipient() == subject)
-        .map(|envelope| render_envelope(envelope, &at, staff || subject == actor))
+        .collect();
+    let total = matching.len();
+    matching.sort_unstable_by_key(|envelope| std::cmp::Reverse(envelope.id()));
+    matching.truncate(MAX_ORDERS_LISTED);
+    matching.sort_unstable_by_key(|envelope| envelope.id());
+    let party = staff || subject == actor;
+    let mut lines: Vec<String> = matching
+        .into_iter()
+        .map(|envelope| {
+            let source = attribution(ctx, actor, envelope.issuer());
+            render_envelope(envelope, &at, party, source.as_deref())
+        })
         .collect();
     if lines.is_empty() {
         info(ctx, NO_SUCH_ENVELOPE);
         return Ok(());
     }
+    if total > MAX_ORDERS_LISTED {
+        lines.push(format!(
+            "{} older record(s) not shown.",
+            total.saturating_sub(MAX_ORDERS_LISTED)
+        ));
+    }
     for line in lines {
         info(ctx, line);
     }
     Ok(())
+}
+
+/// `@prop/held` — the verb that can actually show a held document (fold B7).
+///
+/// The boot notice used to name `@prop/envelopes`, which reads `store.envelopes()`
+/// — a held document is in no iterator any verb consulted, so nobody could see
+/// which subject's traffic was missing.
+fn prop_held(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    if !is_admin(ctx) {
+        return Err(CmdError::msg("Permission denied."));
+    }
+    let Some(store) = store(ctx) else {
+        info(ctx, UNAVAILABLE);
+        return Ok(());
+    };
+    let mut lines: Vec<String> = store
+        .held()
+        .iter()
+        .map(|(key, value)| {
+            let kind = key.split(':').next().unwrap_or("unknown");
+            format!(
+                "{key}  [{kind}]  {}",
+                decode_error_of(key, value).unwrap_or_else(|| "over the census bound".to_owned())
+            )
+        })
+        .collect();
+    let overflow = store.held_overflow();
+    if lines.is_empty() && overflow == 0 {
+        info(ctx, "Nothing is held.");
+        return Ok(());
+    }
+    if overflow > 0 {
+        lines.push(format!(
+            "{overflow} further unreadable document(s) were past the RAM cap of {} and are still \
+             in the store, unmirrored.",
+            crate::record::MAX_HELD_DOCUMENTS
+        ));
+    }
+    for line in lines {
+        info(ctx, line);
+    }
+    Ok(())
+}
+
+/// Re-run the decode of a held document so the verb can name the actual error.
+fn decode_error_of(key: &str, value: &serde_json::Value) -> Option<String> {
+    if key.starts_with("envelope:") {
+        serde_json::from_value::<Envelope>(value.clone())
+            .err()
+            .map(|e| e.to_string())
+    } else if key.starts_with("phantom:") {
+        serde_json::from_value::<Phantom>(value.clone())
+            .err()
+            .map(|e| e.to_string())
+    } else if key.starts_with("provenance:") {
+        serde_json::from_value::<ContactProvenance>(value.clone())
+            .err()
+            .map(|e| e.to_string())
+    } else if key.starts_with("sighting:") {
+        serde_json::from_value::<crate::record::Sighting>(value.clone())
+            .err()
+            .map(|e| e.to_string())
+    } else {
+        None
+    }
 }
 
 /// `@prop/pass` — single-step the coarse pass (staff).
@@ -500,11 +727,30 @@ fn prop_pass(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         info(ctx, UNAVAILABLE);
         return Ok(());
     };
-    let report = delivery_pass(&mut book, &state, ctx.w, &at);
-    let intents = crate::pass::detection_pass(&mut book, &state, ctx.w, &ledger_snapshot, &at);
-    // Persist the delivery post-images and the sighting book the pass advanced.
+    let report = delivery_pass(&mut book, &state, ctx.w, &ledger_snapshot, &at, None);
+    // The pass is given the caller's OWN arm bound, so it books exactly what it
+    // emits and the page it reports is true (fold D4(a)).
+    let detection = crate::pass::detection_pass(
+        &mut book,
+        &state,
+        ctx.w,
+        &ledger_snapshot,
+        &at,
+        None,
+        mush_tactics_max_intents_per_arm(),
+    );
+    // Persist the delivery post-images and only the sighting rows the pass
+    // actually touched (fold B12: the whole book was re-written on every call,
+    // up to 4_096 persistence ops per invocation even when nothing changed).
     let touched = report.touched();
-    let sightings: Vec<crate::record::Sighting> = book.sightings().cloned().collect();
+    let written: Vec<crate::record::Sighting> = detection
+        .sightings
+        .iter()
+        .filter_map(|key| book.sighting(key).cloned())
+        .collect();
+    let dropped_sightings = detection.dropped_sightings.clone();
+    let reaped = report.reaped.clone();
+    let notices = book.take_notices();
     if let Some(slot) = ctx.w.module_state_mut::<PropagationStore>() {
         *slot = book;
     }
@@ -515,7 +761,7 @@ fn prop_pass(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     for envelope in &envelopes {
         persist_envelope(ctx, envelope);
     }
-    for sighting in &sightings {
+    for sighting in &written {
         if let Ok(value) = serde_json::to_value(sighting) {
             ctx.persist(ModuleOp {
                 ns: SmolStr::new_static(NS),
@@ -526,8 +772,45 @@ fn prop_pass(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             });
         }
     }
+    for key in dropped_sightings.iter().chain(&reaped.sightings) {
+        ctx.persist(ModuleOp {
+            ns: SmolStr::new_static(NS),
+            op: ModuleWrite::Del {
+                key: sighting_key(key),
+            },
+        });
+    }
+    for id in &reaped.envelopes {
+        ctx.persist(ModuleOp {
+            ns: SmolStr::new_static(NS),
+            op: ModuleWrite::Del {
+                key: envelope_key(*id),
+            },
+        });
+    }
+    for contact in &reaped.provenance {
+        ctx.persist(ModuleOp {
+            ns: SmolStr::new_static(NS),
+            op: ModuleWrite::Del {
+                key: provenance_key(*contact),
+            },
+        });
+    }
+    for id in &reaped.phantoms {
+        ctx.persist(ModuleOp {
+            ns: SmolStr::new_static(NS),
+            op: ModuleWrite::Del {
+                key: phantom_key(id),
+            },
+        });
+    }
+    persist_allocator(ctx);
+    // Anything the TICK paged since the last staff read (fold B3/B7).
+    for notice in notices {
+        info(ctx, notice);
+    }
     report_pass(ctx, &report);
-    arm_intents(ctx, intents);
+    arm_intents(ctx, detection);
     Ok(())
 }
 
@@ -546,14 +829,30 @@ fn report_pass(ctx: &mut Ctx<'_>, report: &DeliveryReport) {
             report.visited
         ),
     );
-    if report.bound_hit {
-        // The bound is PAGED, not logged (E4c V6): the line names the command
-        // that finishes the work.
+    if !report.reaped.is_empty() {
         info(
             ctx,
             format!(
-                "The pass stopped at its bound of {} envelopes; run @prop/pass again to continue.",
-                crate::pass::MAX_ENVELOPES_PER_PASS
+                "Compacted {} finished record(s): {} envelope(s), {} provenance row(s), {} \
+                 phantom(s).",
+                report.reaped.len(),
+                report.reaped.envelopes.len(),
+                report.reaped.provenance.len(),
+                report.reaped.phantoms.len()
+            ),
+        );
+    }
+    if report.bound_hit {
+        // The bound is PAGED, not logged (E4c V6), and the page is now TRUE:
+        // the scan cursor is durable, so running again resumes at the envelope
+        // the line names rather than repeating the same work (fold B3).
+        info(
+            ctx,
+            format!(
+                "The pass stopped at its bound of {} envelopes and resumes at #{}; run @prop/pass \
+                 again to continue.",
+                crate::pass::MAX_ENVELOPES_PER_PASS,
+                report.resume.unwrap_or(0)
             ),
         );
     }
@@ -565,13 +864,33 @@ fn report_pass(ctx: &mut Ctx<'_>, report: &DeliveryReport) {
 /// Arm the tactics-owned ingress. **One submission per command** — calling
 /// `submit_authoritative` twice is a refusal by design (E7c2 fold C4), so a pass
 /// with more due work than one arm carries says so and staff run it again.
-fn arm_intents(ctx: &mut Ctx<'_>, intents: Vec<mush_core::ObservationIntent>) {
+fn arm_intents(ctx: &mut Ctx<'_>, detection: crate::pass::DetectionReport) {
+    for refusal in &detection.refused {
+        info(ctx, refusal.clone());
+    }
+    if detection.stranded > 0 {
+        info(
+            ctx,
+            format!(
+                "{} contact(s) were stranded on an older world time generation and are being \
+                 retired; their holders will see them go lost.",
+                detection.stranded
+            ),
+        );
+    }
+    let resume_line = detection.resume.map(|(observer, subject)| {
+        format!(
+            " — the pass stopped at its bound and resumes at observer #{}, subject #{}; run \
+             @prop/pass again",
+            observer.0, subject.0
+        )
+    });
+    let intents = detection.intents;
     if intents.is_empty() {
         info(ctx, "Detection pass: nothing due.");
         return;
     }
     let armed = intents.len().min(mush_tactics_max_intents_per_arm());
-    let remaining = intents.len().saturating_sub(armed);
     let batch: Vec<mush_core::ObservationIntent> = intents.into_iter().take(armed).collect();
     let Some(action) = sensor_arm_action(ctx) else {
         info(
@@ -602,13 +921,8 @@ fn arm_intents(ctx: &mut Ctx<'_>, intents: Vec<mush_core::ObservationIntent>) {
     info(
         ctx,
         format!(
-            "Detection pass: {armed} observation(s) armed through the tactics ingress\
-             {}.",
-            if remaining > 0 {
-                format!(", {remaining} still due — run @prop/pass again")
-            } else {
-                String::new()
-            }
+            "Detection pass: {armed} observation(s) armed through the tactics ingress{}.",
+            resume_line.unwrap_or_default()
         ),
     );
 }
@@ -710,7 +1024,11 @@ fn prop_phantom(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let Some(ordinal) = slot.alloc_phantom() else {
         return Err(CmdError::msg("The phantom allocator is exhausted."));
     };
-    let id = IdempotencyKeyText::parse_canonical(format!("{}/{ordinal:x}", observer.0))
+    // A digest of `(observer, ordinal, created)`, never the observer's dbref
+    // (fold K13): a phantom id appears in its document key, in the sighting book
+    // and in `ContactLedgerRow.phantom`, so a readable one told anybody who
+    // could see it which platform the false contact was minted for.
+    let id = Phantom::mint_id(observer, ordinal, &at)
         .map_err(|error| CmdError::msg(error.to_string()))?;
     let phantom = Phantom::new(
         id.clone(),
@@ -719,7 +1037,8 @@ fn prop_phantom(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         expires,
         vec![PrincipalId::Object { id: observer }],
     )
-    .map_err(|error| CmdError::msg(error.to_string()))?;
+    .map_err(|error| CmdError::msg(error.to_string()))?
+    .with_ordinal(ordinal);
     slot.put_phantom(phantom.clone())
         .map_err(|error| CmdError::msg(error.to_string()))?;
     let value = serde_json::to_value(&phantom).map_err(|error| CmdError::msg(error.to_string()))?;
@@ -829,11 +1148,17 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
         },
         Arc::new(cmd_order),
     )?;
+    // Group 3 — `@prop` takes the CEILING class of its switches, and `/pass`
+    // stages the tactics-owned `sensor_arm` through `Ctx::submit_authoritative`:
+    // it is an ingress adapter for the authoritative action coordinator, which
+    // is `Authoritative`'s own definition. The precedent is explicit for
+    // `@station` in `mush-sim` (fold B8).
+    reg.classify_commands(mush_core::CommandCompatibility::Authoritative);
     reg.command(
         CommandSpec {
             name: "@prop".into(),
             shape: ArgShape::EqPair,
-            switches: ["envelopes", "pass", "phantom", "jam"]
+            switches: ["envelopes", "pass", "phantom", "jam", "held"]
                 .iter()
                 .copied()
                 .map(SmolStr::new)
@@ -842,7 +1167,8 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
                    @prop/pass  --  (staff) Single-step the coarse delivery pass and arm the \
                    detection pass through the tactics sensor ingress.\n\
                    @prop/phantom <observer>=artefact|decoy|spoof[,<ttl>]  --  (staff) Mint a \
-                   false contact's scoped subject."
+                   false contact's scoped subject.\n\
+                   @prop/held  --  (staff) Documents the boot could not decode, with the error."
                 .into(),
             ..CommandSpec::default()
         },

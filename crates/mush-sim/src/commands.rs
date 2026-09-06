@@ -2308,23 +2308,48 @@ fn build_route(
     let id = CanonicalId::new(id_token)
         .map_err(|e| CmdError::msg(format!("`{id_token}` is not a usable route id: {e}")))?;
     let mut tokens = tokens.peekable();
-    if tokens.peek().is_none()
-        && let Some(authored) = ctx
-            .w
-            .module_state::<crate::route::RouteCatalogState>()
-            .and_then(|catalog| catalog.resolve(ctx.w, &id))
+    // **The catalog is consulted on the ID FIRST** (E7 cut 7 independent verify
+    // fold, O5). Before the fold the authored arm was gated on
+    // `tokens.peek().is_none()`, so ONE extra place token skipped it entirely —
+    // including its `from != origin` refusal — and fell into the manual parser,
+    // which minted `RouteDef::new(id, …, STAFF_DRIVE_CLASS, 0)` **carrying the
+    // authored id** from wherever the carrier happened to be, with none of the
+    // authored propellant, alignment band or drive class. The persisted journey
+    // then recorded an authored route it had not flown.
+    if let Some(authored) = ctx
+        .w
+        .module_state::<crate::route::RouteCatalogState>()
+        .and_then(|catalog| catalog.resolve(ctx.w, &id))
     {
+        if tokens.peek().is_some() {
+            return Err(CmdError::msg(format!(
+                "Route `{id_token}` is authored; drop the place list."
+            )));
+        }
         let (from, to) = authored.endpoints();
         if from != origin {
-            return Err(CmdError::msg(format!(
-                "Route `{id_token}` sets out from {}; {} is at {}.",
-                display_name(ctx.w, from),
-                display_name(ctx.w, origin),
-                display_name(ctx.w, origin)
-            )));
+            // §4 rule 4 (fold O12): a crew member may read a journey, so the
+            // informative form is staff-only — otherwise `/plan` is an oracle
+            // over which route ids exist and where each begins.
+            return Err(CmdError::msg(if is_admin(ctx.w, ctx.actor) {
+                format!(
+                    "Route `{id_token}` sets out from {}; {} is at {}.",
+                    display_name(ctx.w, from),
+                    display_name(ctx.w, origin),
+                    display_name(ctx.w, origin)
+                )
+            } else {
+                ROUTE_NOT_FROM_HERE.to_owned()
+            }));
         }
         let parent = arrival_parent(ctx, to)?;
         return Ok((authored, parent));
+    }
+    // A bare id the catalog cannot answer for. For staff that is a usage error;
+    // for anyone else it is the SAME line an authored route from elsewhere
+    // yields, so the two are indistinguishable (fold O12).
+    if tokens.peek().is_none() && !is_admin(ctx.w, ctx.actor) {
+        return Err(CmdError::msg(ROUTE_NOT_FROM_HERE));
     }
     let mut legs: Vec<LegDef> = Vec::new();
     let mut last: Option<ObjId> = None;
@@ -2369,6 +2394,11 @@ fn build_route(
 const fn mush_sim_max_route_id_bytes() -> usize {
     crate::route::MAX_ROUTE_ID_BYTES
 }
+
+/// The one line a non-staff actor gets for an authored route that does not set
+/// out from here — byte-identical to what an unknown id yields, so a crew route
+/// probe learns nothing (§4 rule 4, fold O12).
+pub const ROUTE_NOT_FROM_HERE: &str = "That route does not set out from here.";
 
 /// **The carrier-root invariant and the seal, surfaced early.**
 /// `move_carrier_subtree` refuses a root that would come to rest inside its own

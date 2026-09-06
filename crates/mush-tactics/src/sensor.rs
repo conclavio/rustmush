@@ -292,7 +292,7 @@ pub(crate) fn arm_outcome_descriptor() -> Result<DefinitionDescriptor, ModError>
         "outcome",
         SENSOR_ARMED_OUTCOME_ID,
         json!({
-            "fields": { "armed": "usize", "replaced": "usize" },
+            "fields": { "armed": "usize", "replaced": "usize", "reaped": "usize" },
             "contains_truth_subject": false
         }),
     )?
@@ -439,7 +439,14 @@ impl ActionProvider for SensorArmProvider {
                 )
             })?;
         Ok(Some(ProviderOfferDraft {
-            fixed_parameters: json!({}),
+            // The staff gate above ran for THIS actor; stamping it into the
+            // offer's fixed parameters is what lets `prepare_authoritative`
+            // re-check it structurally rather than trusting the composition
+            // (fold O2/K16). Fixed parameters are merged by the coordinator and
+            // cannot be supplied by a submitter, and a scheduled path builds its
+            // parameters directly — so an arm that did not come through a
+            // projected offer simply has no `armed_by` and is refused.
+            fixed_parameters: json!({ "armed_by": query.actor() }),
             parameters: ProjectedParameterSchema::new(vec![mush_core::ProjectedParameter {
                 id: CanonicalId::new("intents")
                     .map_err(|_| Self::err(ActionErrorCode::Integrity, "sensor parameter id"))?,
@@ -489,10 +496,26 @@ impl ActionProvider for SensorArmProvider {
         txn: &mut ActionTxn<'_>,
     ) -> Result<AuthoritativeActionOutput, ActionError> {
         self.validate_invocation(invocation)?;
+        // **The fence is structural, not compositional** (fold K16). Before the
+        // fold the ONLY gate in front of the whole ingress was
+        // `sensor_arm_is_permitted` inside `project_offer`, and
+        // `prepare_authoritative` re-checked no principal at all — so any future
+        // ingress that staged this action without re-projecting the offer walked
+        // straight past it. `armed_by` is a fixed offer parameter, so its
+        // presence and its agreement with the acting object prove the offer was
+        // projected for this actor and the staff gate ran.
+        let armed_by = invocation.parameters().get("armed_by").cloned();
+        if armed_by != Some(json!(invocation.actor())) {
+            return Err(Self::err(
+                ActionErrorCode::Unauthorized,
+                "a sensor arm must come through a projected offer for the acting object",
+            ));
+        }
         let intents = Self::intents(invocation)?;
         let owner = self.families.jobs.owner().clone();
         let mut armed = 0_usize;
         let mut replaced = 0_usize;
+        let mut reaped = 0_usize;
         for intent in intents {
             let kind = intent.kind();
             let schedules = self.families.schedules_for(kind);
@@ -534,14 +557,30 @@ impl ActionProvider for SensorArmProvider {
             // stuck arm instead of paging a person (08c §4.6). The identity is
             // the intent's own deterministic key, so a genuine duplicate is a HIT
             // that changes nothing.
-            if prior.is_some() {
+            // A cursor that has already FIRED is reaped, not replaced in place:
+            // the record is spent, and `handoff.rs`'s apply/cancel remove theirs
+            // for exactly this reason (fold D3(a), second half). Re-arming is
+            // still the recovery path for a cursor that is merely stuck.
+            let spent = prior
+                .as_ref()
+                .is_some_and(|schedule| schedule.state() == ScheduleState::Completed);
+            if spent {
+                txn.remove(schedules, &id)
+                    .map_err(|error| Self::state_error(&error))?;
+                if prior_job {
+                    txn.remove(&self.families.jobs, &id)
+                        .map_err(|error| Self::state_error(&error))?;
+                }
+                reaped = reaped.saturating_add(1);
+            }
+            if prior.is_some() && !spent {
                 replaced = replaced.saturating_add(1);
                 txn.replace(schedules, &id, schedule)
             } else {
                 txn.insert(schedules, &id, schedule)
             }
             .map_err(|error| Self::state_error(&error))?;
-            if prior_job {
+            if prior_job && !spent {
                 txn.replace(&self.families.jobs, &id, job)
             } else {
                 txn.insert(&self.families.jobs, &id, job)
@@ -551,7 +590,7 @@ impl ActionProvider for SensorArmProvider {
         }
         let outcome = RulesValue::new(
             self.outcome.clone(),
-            json!({ "armed": armed, "replaced": replaced }),
+            json!({ "armed": armed, "replaced": replaced, "reaped": reaped }),
         )
         .map_err(|_| Self::err(ActionErrorCode::Integrity, "sensor outcome is invalid"))?;
         Ok(AuthoritativeActionOutput::new(outcome)
@@ -577,6 +616,11 @@ impl SensorScheduleAdapter {
     fn integrity(message: &'static str) -> ActionError {
         ActionError::new(ActionErrorCode::Integrity, false, message)
             .expect("static sensor integrity error is bounded")
+    }
+
+    fn unauthorized(message: &'static str) -> ActionError {
+        ActionError::new(ActionErrorCode::Unauthorized, false, message)
+            .expect("static sensor authority error is bounded")
     }
 
     /// The live re-derivation: the policy's own answer for this armed key, when
@@ -637,14 +681,43 @@ impl ScheduleActionAdapter for SensorScheduleAdapter {
         // A transition on a contact that no longer exists cannot succeed; refuse
         // here rather than letting the provider refuse after the cursor was
         // seeded — same shape as `handoff.rs`'s pre-check.
-        if let Some(contact) = intent.op().contact()
-            && engine
+        //
+        // **And a transition on a contact this observer does not hold is
+        // refused here too** (fold O2). The contact is already loaded for the
+        // existence check; before the fold the audience was never read, so a
+        // mis-wired or hand-supplied intent could Loss another platform's
+        // contact or Share it to an arbitrary holder.
+        if let Some(contact) = intent.op().contact() {
+            let Some(state) = engine
                 .action_state()
                 .get(&self.contacts, &contact)
                 .map_err(|_| Self::integrity("contact authority state is unavailable"))?
-                .is_none()
-        {
-            return Err(Self::stale("that contact no longer exists"));
+            else {
+                return Err(Self::stale("that contact no longer exists"));
+            };
+            let observer = intent.observer().principal();
+            if state.audience().binary_search(&observer).is_err() {
+                return Err(Self::unauthorized(
+                    "that contact is not this observer's to change",
+                ));
+            }
+            // An `Unshare` may only remove a principal the contact is shared
+            // with; a `Share`'s target must not already hold it. Both are
+            // `ContactState`'s own rules, refused before the cursor completes
+            // rather than after.
+            match intent.op() {
+                mush_core::ObservationOp::Unshare { from, .. }
+                    if state.audience().binary_search(&from.principal()).is_err() =>
+                {
+                    return Err(Self::stale("that contact is not shared with that holder"));
+                }
+                mush_core::ObservationOp::Share { to, .. }
+                    if state.audience().binary_search(&to.principal()).is_ok() =>
+                {
+                    return Err(Self::stale("that holder already holds that contact"));
+                }
+                _ => {}
+            }
         }
         let definitions = engine
             .registry
@@ -793,6 +866,7 @@ pub(crate) fn ledger_tick(
         // ledger: keep the last complete projection and try again next fire.
         return;
     };
+    let mut overflowed = false;
     for entry in page.entries() {
         let state = entry.value();
         let phantom = match state.truth_subject() {
@@ -817,21 +891,36 @@ pub(crate) fn ledger_tick(
             });
         }
         if staging.rows.len() > mush_core::MAX_CONTACT_LEDGER_ROWS.saturating_mul(2) {
-            // Refuse to grow without bound while paging: the projection's own
-            // installer flags the overflow, and a further page would only cost
-            // memory to be dropped.
-            staging.cursor = None;
+            // Refuse to grow without bound while paging. **The break must
+            // actually stop the scan** (fold O6/B15d): before the fold the
+            // `match page.next_after()` below overwrote `staging.cursor` two
+            // lines later, so the guard bounded nothing — it only discarded the
+            // rest of that page silently.
+            overflowed = true;
             break;
         }
     }
     match page.next_after() {
-        Some(cursor) => staging.cursor = Some(cursor.to_string()),
-        None => {
+        Some(cursor) if !overflowed => staging.cursor = Some(cursor.to_string()),
+        _ => {
             let at = ctx.w.world_ic_now();
             let rows = std::mem::take(&mut staging.rows);
             staging.cursor = None;
-            if let Some(state) = ctx.w.module_state_mut::<mush_core::ContactLedgerState>() {
-                state.install(rows, at);
+            let paging =
+                if let Some(state) = ctx.w.module_state_mut::<mush_core::ContactLedgerState>() {
+                    state.install(rows, at);
+                    state.is_paging() || overflowed
+                } else {
+                    false
+                };
+            if paging {
+                // `is_paging` had no reader anywhere in the tree; a projection
+                // that could not carry every holder's rows said so to nobody.
+                tracing::warn!(
+                    max = mush_core::MAX_CONTACT_LEDGER_ROWS,
+                    "tactics: the contact ledger is paging; some holders' rows were dropped this \
+                     rebuild"
+                );
             }
         }
     }

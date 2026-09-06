@@ -3002,3 +3002,110 @@ fn vf_r9b_the_arrival_event_names_where_it_came_from() {
         "the departure and the arrival must each name both ends exactly once"
     );
 }
+
+// ---- E7 cut 7 independent verify fold ----
+
+/// A catalog holding one authored route, for the fold's own cases.
+struct FoldCatalog(std::sync::Arc<std::sync::Mutex<Option<mush_sim::RouteDef>>>);
+impl mush_sim::RouteCatalog for FoldCatalog {
+    fn resolve(
+        &self,
+        _world: &mush_core::World,
+        id: &mush_core::CanonicalId,
+    ) -> Option<mush_sim::RouteDef> {
+        self.0.lock().ok()?.clone().filter(|route| route.id() == id)
+    }
+}
+
+/// A world whose catalog authors `mars_corridor` **from Phobos**, while the
+/// carrier is standing in Field.
+fn authored_elsewhere() -> (TestWorld, Fx) {
+    let cell: std::sync::Arc<std::sync::Mutex<Option<mush_sim::RouteDef>>> =
+        std::sync::Arc::new(std::sync::Mutex::new(None));
+    let mut tw = TestWorld::with_modules(vec![
+        Box::new(
+            SimulationModule::new().with_route_catalog(std::sync::Arc::new(FoldCatalog(
+                std::sync::Arc::clone(&cell),
+            ))),
+        ),
+        Box::new(ScenesModule::new()),
+    ]);
+    tw.set_now(1_000);
+    let fx = build(&mut tw);
+    *cell.lock().unwrap() = Some(
+        mush_sim::RouteDef::new(
+            mush_core::CanonicalId::new("mars_corridor").unwrap(),
+            (fx.phobos, fx.field),
+            vec![mush_sim::LegDef::new(fx.field, 1).unwrap()],
+            Some(mush_sim::CadenceId(7)),
+            mush_core::CanonicalId::new("fusion_torch").unwrap(),
+            900,
+        )
+        .unwrap(),
+    );
+    (tw, fx)
+}
+
+/// **O5.** One extra place token cannot bypass the authored route.
+///
+/// Before the fold the catalog was consulted only when no place tokens
+/// followed, so a trailing token skipped the authored arm entirely — including
+/// its `from != origin` refusal — and fell into the manual parser, which minted
+/// a `RouteDef` carrying the **authored id** from the wrong origin with zero
+/// propellant, no alignment band and the manual drive class.
+#[test]
+fn vf_o5_one_extra_token_cannot_bypass_the_authored_route() {
+    let (mut tw, fx) = authored_elsewhere();
+    // The bare form refuses, because the route sets out from somewhere else.
+    let refusal = err(
+        &mut tw,
+        &format!("@journey/depart #{}=mars_corridor", fx.carrier.0),
+    );
+    assert!(refusal.contains("sets out from"), "{refusal}");
+    // …and so does the form with one extra place token, which used to succeed.
+    let bypass = err(
+        &mut tw,
+        &format!(
+            "@journey/depart #{}=mars_corridor #{}:1",
+            fx.carrier.0, fx.phobos.0
+        ),
+    );
+    assert!(
+        bypass.contains("is authored; drop the place list"),
+        "an authored id may not degrade to an unconstrained manual route: {bypass}"
+    );
+    // No journey was created under an id the carrier never flew.
+    assert!(
+        tw.world()
+            .module_state::<mush_sim::JourneyBook>()
+            .is_none_or(|book| !book.under_way(fx.carrier)),
+        "the carrier did not depart on a bypassed authored route"
+    );
+}
+
+/// **O12.** A crew route probe refuses identically for a real authored id and a
+/// nonsense one, while staff still get the informative line (§4 rule 4).
+#[test]
+fn vf_o12_a_crew_route_probe_refuses_identically_for_a_real_and_a_nonsense_id() {
+    let (mut tw, fx) = authored_elsewhere();
+    let real = texts(&tw.run(
+        fx.pilot,
+        &format!("@journey/plan #{}=mars_corridor", fx.carrier.0),
+    ));
+    let nonsense = texts(&tw.run(
+        fx.pilot,
+        &format!("@journey/plan #{}=not_a_real_route_at_all", fx.carrier.0),
+    ));
+    assert_eq!(
+        real, nonsense,
+        "a crew member must not learn which route ids exist or where they begin"
+    );
+    assert!(real.contains(mush_sim::ROUTE_NOT_FROM_HERE), "{real}");
+    assert!(!real.contains("Phobos"), "and it names no place: {real}");
+    // Staff still get the informative form.
+    let staff = err(
+        &mut tw,
+        &format!("@journey/plan #{}=mars_corridor", fx.carrier.0),
+    );
+    assert!(staff.contains("sets out from"), "{staff}");
+}

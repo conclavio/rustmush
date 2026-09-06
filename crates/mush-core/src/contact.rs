@@ -239,7 +239,7 @@ impl ContactState {
     ) -> Result<Self, ContactStateError> {
         self.require_revision(expected_revision)?;
         self.require_active()?;
-        require_not_before(&lost_at, &self.observed_at)?;
+        require_not_before_for_loss(&lost_at, &self.observed_at)?;
         Self {
             generation: self.next_generation()?,
             revision: self.next_revision()?,
@@ -301,7 +301,7 @@ impl ContactState {
             return Err(ContactStateError::NonCanonicalAudience);
         }
         if let ContactLifecycle::Lost { lost_at, .. } = &self.lifecycle {
-            require_not_before(lost_at, &self.observed_at)?;
+            require_not_before_for_loss(lost_at, &self.observed_at)?;
         }
         canonical_json_bytes_with_limit(&json!(self), MAX_CONTACT_BYTES)
             .map_err(ContactStateError::Encoding)?;
@@ -344,11 +344,27 @@ impl ContactState {
     }
 }
 
-fn require_not_before(actual: &ClockStamp, floor: &ClockStamp) -> Result<(), ContactStateError> {
-    if actual.checked_cmp(floor)? == Ordering::Less {
-        return Err(ContactStateError::ObservationRegressed);
+/// The same floor check, **tolerant of an incomparable clock identity**, for the
+/// one transition that is terminal.
+///
+/// E7 cut 7 independent verify fold, D5(ii). `World::append_world_timeline_epoch`
+/// opens a new `ClockRef::WorldIc { generation }` and anchors it to the exact IC
+/// scalar the old generation produced, so the two stamps are continuous by
+/// construction and only their *identity* differs. A refresh still needs a
+/// comparable stamp — it claims the observation is newer — but **retiring stale
+/// knowledge must always be possible**: `Lost` is terminal, nothing downstream
+/// orders itself against `lost_at`, and refusing it strands every live contact
+/// forever the first time an operator changes the world rate. A regression on
+/// one comparable generation is still refused.
+fn require_not_before_for_loss(
+    actual: &ClockStamp,
+    floor: &ClockStamp,
+) -> Result<(), ContactStateError> {
+    match actual.checked_cmp(floor) {
+        Ok(Ordering::Less) => Err(ContactStateError::ObservationRegressed),
+        Ok(Ordering::Equal | Ordering::Greater) => Ok(()),
+        Err(_) => Ok(()),
     }
-    Ok(())
 }
 
 /// Invalid private contact state or checked lifecycle transition.
@@ -645,6 +661,47 @@ mod tests {
         let witness = provider.witness(&context, &request).unwrap().unwrap();
         assert_eq!(witness.truth_subject(), Some(state.truth_subject()));
         assert!(provider.is_current(&context, witness.guard()).unwrap());
+    }
+
+    // ---- E7 cut 7 independent verify fold ----
+
+    /// **D5(ii), the kernel half.** A world-time rate change opens a new clock
+    /// generation whose IC scalar is continuous with the old one. A contact
+    /// stamped before the change must still be **retirable** — `Loss` is
+    /// terminal and orders nothing — while a `Refresh` across the boundary
+    /// stays refused, because a refresh claims the observation is newer and
+    /// that claim needs a comparable stamp. Without the first half, a rate
+    /// change freezes every live contact for ever.
+    #[test]
+    fn vf_k3_kernel_a_pre_change_contact_can_be_lost_but_never_refreshed() {
+        let before = contact(); // observed on generation 4
+        // A refresh across the generation boundary is still refused.
+        assert!(matches!(
+            before.checked_refresh(1, stamp(20, 5)),
+            Err(ContactStateError::Clock(_))
+        ));
+        // A loss across it commits, and the post-image re-validates.
+        let lost = before
+            .checked_mark_lost(
+                1,
+                stamp(20, 5),
+                CanonicalId::new("clock_generation").unwrap(),
+            )
+            .expect("retiring stale knowledge is always possible");
+        assert!(!lost.is_active());
+        assert_eq!(lost.generation(), 2);
+        lost.validate()
+            .expect("a cross-generation Lost re-validates");
+        // Round-trips through the wire, which re-runs `validate`.
+        let value = serde_json::to_value(&lost).unwrap();
+        assert_eq!(serde_json::from_value::<ContactState>(value).unwrap(), lost);
+        // And a genuine regression on ONE comparable generation is still refused.
+        assert_eq!(
+            before
+                .checked_mark_lost(1, stamp(9, 4), CanonicalId::new("stale").unwrap())
+                .unwrap_err(),
+            ContactStateError::ObservationRegressed
+        );
     }
 
     #[test]
