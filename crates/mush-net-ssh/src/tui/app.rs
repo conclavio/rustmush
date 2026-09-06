@@ -613,8 +613,12 @@ impl TuiApp {
                 self.manifest.character = Some(sanitize(&character.name));
             }
             OutputEvent::Resumed { .. } => {
-                // The mode resets on a resume (D-I-17).
+                // The mode resets on a resume (D-I-17). A pending request is
+                // gone server-side after a full re-attach (I10 is RAM-only),
+                // and its id may be reminted, so drop the overlay too.
                 self.leave_input(true);
+                self.request = None;
+                self.answering = None;
                 return queries;
             }
             _ => {}

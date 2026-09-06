@@ -18,7 +18,7 @@
 //! minted as a [`decision`](crate::decision) instead. The open never stamps
 //! idle, and neither does the answer.
 
-use mush_proto::{RequestKind, RequestOption, RespondChoice, RichText};
+use mush_proto::{MAX_REQUEST_TEXT_BYTES, RequestKind, RequestOption, RespondChoice, RichText};
 use smol_str::SmolStr;
 
 use crate::ObjId;
@@ -49,6 +49,28 @@ pub trait RequestCompletion: Send + Sync {
     /// `open_request`; `outcome` is the subject's choice or the deadline
     /// default. Persistence goes through [`Ctx::persist`](crate::cmd::Ctx::persist).
     fn on_respond(&self, ctx: &mut Ctx<'_>, payload: &str, outcome: RequestOutcome);
+}
+
+/// Whether `choice` is a well-formed answer to a request of `kind` with
+/// `options` (interface plan I10 verify): the structured answer path enforces
+/// the same shape the line-mode path builds, so a client cannot answer a
+/// Confirm with free text, pick a `Choose` id that was never offered, or send
+/// an over-long free-text answer. `Cancel` is always valid.
+#[must_use]
+pub(crate) fn valid_choice(
+    kind: RequestKind,
+    options: &[RequestOption],
+    choice: &RespondChoice,
+) -> bool {
+    match (kind, choice) {
+        (_, RespondChoice::Cancel) => true,
+        (RequestKind::Confirm, RespondChoice::Confirm(_)) => true,
+        (RequestKind::Choice, RespondChoice::Choose(id)) => options.iter().any(|o| &o.id == id),
+        (RequestKind::Target | RequestKind::Text, RespondChoice::Text(t)) => {
+            t.len() <= MAX_REQUEST_TEXT_BYTES
+        }
+        _ => false,
+    }
 }
 
 /// One outstanding request (engine-internal, RAM only).

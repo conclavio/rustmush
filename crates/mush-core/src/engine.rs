@@ -3062,6 +3062,13 @@ impl Engine {
         if pending.subject != actor {
             return;
         }
+        // Enforce the same shape the line-mode path builds (verify): a
+        // structured answer of the wrong kind, an unoffered `Choose` id, or an
+        // over-long free-text answer is dropped, leaving the request pending so
+        // the deadline default fires — never routed to the module.
+        if !crate::request::valid_choice(pending.kind, &pending.options, &choice) {
+            return;
+        }
         let pending = self
             .pending_requests
             .remove(&id)
@@ -3103,7 +3110,18 @@ impl Engine {
     /// line falls through to normal command dispatch.
     fn line_respond(&self, actor: ObjId, line: &str) -> Option<(u64, mush_proto::RespondChoice)> {
         use mush_proto::{RequestKind, RespondChoice};
-        let rest = line.trim().strip_prefix("respond")?.trim();
+        // A captured input-context line (mail compose, chargen) is never a
+        // request answer — let it reach its context (verify).
+        if self.world.input_depth(actor) > 0 {
+            return None;
+        }
+        // `respond` is a whitespace-delimited verb, not a bare prefix, so
+        // "responds"/"respondents" are ordinary commands (verify).
+        let mut parts = line.trim().splitn(2, char::is_whitespace);
+        if parts.next() != Some("respond") {
+            return None;
+        }
+        let rest = parts.next().unwrap_or("").trim();
         if rest.is_empty() {
             return None;
         }
@@ -5015,6 +5033,95 @@ mod tests {
         assert!(
             texts(&out).iter().any(|t| t == "answered p1: razor"),
             "{:?}",
+            texts(&out)
+        );
+
+        // Verify: a structured answer of the wrong kind or an unoffered option
+        // is dropped (the request stays pending); a valid offered choice still
+        // resolves it, and a `responds...` line is an ordinary command.
+        let (mut out, mut fx) = (Outbox::new(), Effects::new());
+        engine.step(
+            Inbound::Cmd {
+                conn: 1,
+                actor: GOD,
+                line: "@ask".into(),
+            },
+            &mut out,
+            &mut fx,
+        ); // id 5, a Choice
+        let (mut out, mut fx) = (Outbox::new(), Effects::new());
+        engine.step(
+            Inbound::Respond {
+                conn: 1,
+                actor: GOD,
+                id: 5,
+                choice: RespondChoice::Choose("never-offered".into()),
+            },
+            &mut out,
+            &mut fx,
+        );
+        assert!(
+            !texts(&out).iter().any(|t| t.starts_with("answered")),
+            "an unoffered option is rejected: {:?}",
+            texts(&out)
+        );
+        let (mut out, mut fx) = (Outbox::new(), Effects::new());
+        engine.step(
+            Inbound::Respond {
+                conn: 1,
+                actor: GOD,
+                id: 5,
+                choice: RespondChoice::Confirm(true),
+            },
+            &mut out,
+            &mut fx,
+        );
+        assert!(
+            !texts(&out).iter().any(|t| t.starts_with("answered")),
+            "the wrong kind is rejected: {:?}",
+            texts(&out)
+        );
+        let (mut out, mut fx) = (Outbox::new(), Effects::new());
+        engine.step(
+            Inbound::Respond {
+                conn: 1,
+                actor: GOD,
+                id: 5,
+                choice: RespondChoice::Choose("razor".into()),
+            },
+            &mut out,
+            &mut fx,
+        );
+        assert!(
+            texts(&out).iter().any(|t| t == "answered p1: razor"),
+            "a valid offered choice still resolves: {:?}",
+            texts(&out)
+        );
+        // `responds` (not the bare verb) is a normal command, never a request
+        // answer: open a fresh request, then a `responds...` line leaves it up.
+        let (mut out, mut fx) = (Outbox::new(), Effects::new());
+        engine.step(
+            Inbound::Cmd {
+                conn: 1,
+                actor: GOD,
+                line: "@ask".into(),
+            },
+            &mut out,
+            &mut fx,
+        ); // id 6
+        let (mut out, mut fx) = (Outbox::new(), Effects::new());
+        engine.step(
+            Inbound::Cmd {
+                conn: 1,
+                actor: GOD,
+                line: "responds later".into(),
+            },
+            &mut out,
+            &mut fx,
+        );
+        assert!(
+            !texts(&out).iter().any(|t| t.starts_with("answered")),
+            "'responds' is not a respond: {:?}",
             texts(&out)
         );
     }

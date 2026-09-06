@@ -3481,6 +3481,14 @@ impl Ctx<'_> {
             tracing::warn!("open_request with no module identity; dropped");
             return;
         };
+        // Bound the prompt defensively (verify): a module is trusted code, but
+        // a runaway prompt must never reach the wire. Over budget -> a short
+        // plain replacement.
+        let prompt = if prompt.to_plain_text().len() > mush_proto::MAX_REQUEST_PROMPT_BYTES {
+            mush_proto::RichText::tag("system", "(prompt too long)")
+        } else {
+            prompt
+        };
         self.out
             .defer(Deferred::OpenRequest(crate::request::OpenRequest {
                 subject,

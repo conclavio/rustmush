@@ -1239,13 +1239,51 @@ the web client.**
   and never holds a runnable token. Perceive/DARK gating and rate-limiting
   belong to the producer (part 2).
 
-**Remaining — part 2 (the engine lifecycle and the other clients).** The
-engine request registry that opens a `Request`, correlates the `Respond` by
-id, applies the timeout default, and enforces perceive/DARK gating and
-rate-limiting (a `hooks.respond` seam through both bridges); the TUI overlay
-and the line-mode prompt plus a `respond` command; a first real producer (a
-targeting or confirm flow). The L/B/S verify runs then, against a live
-producer.
+**As built — part 2 (2026-09-05, branch `interface-i10`, commits
+`d81f826`/`98610df`/`772edfe`/`068032a`).** The engine lifecycle and all
+three clients, grounded on a six-agent map of the engine's deferred-
+interaction machinery. Owner decisions: **ephemeral / RAM-only** (D-I-22)
+and **all three clients now**.
+
+- **The registry is net-new but reuses proven discipline.** No per-id
+  request map existed, so a RAM `pending_requests` map lives on the engine
+  (bounded per subject, `MAX_OPEN_REQUESTS_PER_SUBJECT` = 32); the deadline
+  rides the existing `Scheduler` (`ScheduledKind::RequestTimeout`), and the
+  resume reuses the `AsyncCompletion` re-entry discipline — a data-only
+  `{ module, payload }` continuation routed to a registered
+  `RequestCompletion` and re-validated (treaty ruling 3), since `Deferred`
+  stays `Clone + PartialEq`. `crates/mush-core/src/request.rs` holds the
+  types; `Ctx::open_request` is the producer (perceive/DARK is the
+  producer's concern), `Inbound::Respond` / `handle_respond` the answer
+  (validate responder == subject, drop forged/stale/dup, cancel the timer,
+  never idle-stamp), the `fire_due` arm the deadline default.
+- **Web:** `WebHooks::respond` wired in `ws.rs`, implemented through a shared
+  `Core::respond` (both bridges) that shares the input flood bucket and never
+  idle-stamps; the part-1 modal now answers end to end.
+- **SSH/TUI:** a request overlay (`TuiRequest`, `draw_request`) answered
+  structurally — `y`/`n`, a digit, or the box for a target/text — producing
+  `InputResult.responds`, plumbed through `SshHooks::respond` and the SSH
+  bridge to `WireInbound::Respond`.
+- **Line mode:** `mush-ansi` renders the ask and how to answer; the engine
+  interprets a line-mode `respond <arg>` in the `Cmd` arm before dispatch
+  (no idle stamp), against the actor's oldest pending request's kind
+  (`PendingRequest` carries the kind and options for this), falling through
+  to normal dispatch on an unreadable arg.
+- **Admission:** `Respond` classifies as `AsyncApply` in the server (a
+  mutating re-entry admitted only where a write is, refused in every
+  restricted mode so the deadline default fires instead), dropped silently
+  on refusal like `Composing`.
+- **Tests:** `open_request_round_trips_answer_and_deadline_default` (open,
+  answer, duplicate-ignored, deadline-default, forged/non-subject ignored,
+  and the line-mode `respond` cases), `request_overlay_answers_across_kinds`
+  (the TUI), the wire round-trip from part 1. mush-core/mush-ipc/mush-ansi/
+  mush-net-ssh/mush-gateway green.
+
+**Remaining for I10.** A first real producer (a targeting or confirm flow on
+a live command) — deferred so guarding an existing command lands with care,
+not at the tail of this cut; the API and all three clients are proven by the
+tests above. A focused L/B/S adversarial verify of the lifecycle ran on the
+committed code (see the changelog).
 
 ### 3.11 Cut I11 — The unified notification surface
 
@@ -1523,6 +1561,18 @@ Six standing rules:
   refuses it. Rationale: mode confusion and replay are the failure modes of an
   interactive prompt, and choice-only keeps the worst case "a stale choice
   ignored" rather than "a held token fired twice".
+- **D-I-22 ★** A server-initiated request (I10) is **ephemeral / RAM-only**
+  (owner 2026-09-05): a RAM `pending_requests` map on the engine, the deadline
+  on the existing `Scheduler`, the resume through the `AsyncCompletion` re-entry
+  discipline. A request outstanding at a restart is simply lost — the wire
+  framing is advisory and best-effort, and the deadline default governs from
+  then on. A request that must carry durable weight (an async choice resolving
+  an authoritative action) is minted as a [`decision`](../../crates/mush-core/src/decision.rs)
+  instead, so the two systems stay **layered, not merged** (the six-agent map
+  of 2026-09-05 found the decision engine's provider/lease/HMAC machinery a
+  large impedance mismatch for an advisory confirm). Rationale: match the
+  wire's own "advisory, best-effort" framing; the light path stays light and
+  never contends with the NPC/LLM decision workers.
 
 ---
 
@@ -1640,6 +1690,20 @@ modal ruling (D-I-17, D-I-18) rather than by its default.**
 
 ## 10. Changelog
 
+- **Draft 0.6 — 2026-09-05.** I10 part 2 built and folded (§3.10 as-built,
+  D-I-22 ★ ephemeral/RAM-only): the engine request lifecycle and all three
+  clients (web modal, SSH/TUI overlay, line-mode `respond`), grounded on a
+  six-agent map of the engine's deferred-interaction machinery. A three-lens
+  adversarial verify (leak/auth, bounds/DoS, staleness/races) confirmed the
+  authorization, id-reuse, deadline-race, cap and re-validation properties and
+  found four fixable issues, all folded: the structured answer path now
+  validates the choice against the request's kind and offered options
+  (`valid_choice`, matching the line-mode path); `line_respond` skips a
+  captured input-context line and matches `respond` as a whitespace-delimited
+  verb; the free-text answer and the prompt are bounded engine-side; and both
+  clients drop a pending request on a full re-attach (the RAM-only registry is
+  gone). The first real producer is deferred (guarding a live command lands
+  with care); the API and all three clients are proven by tests.
 - **Draft 0.5 — 2026-09-05.** As-built notes for the second wave as it
   builds: I9 (§3.9, generic view renderer — the `.view` convention, both
   renderers, auto-registered web screens, the one-free-digit constraint) and

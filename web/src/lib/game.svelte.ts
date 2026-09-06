@@ -196,6 +196,11 @@ export class GameApp {
         this.scrollback.pushText("ev-sys ev-local", "— Reconnected (some history skipped) —");
         this.composer?.blur();
         this.screens.paletteOpen = false;
+        // The server's request registry is RAM-only (I10, D-I-22), so a full
+        // re-attach means any pending request is gone server-side and its id
+        // may be reminted for something else — drop it so a stale answer is
+        // never sent.
+        this.requests.clear();
         // Channel tabs have the same seam: their cached backlog may now be
         // missing the same messages, but `backlogFetched` would otherwise
         // block ever re-requesting it. Clear it (applyBacklog dedups by seq,
