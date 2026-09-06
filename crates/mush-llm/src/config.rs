@@ -13,13 +13,27 @@ use serde::{Deserialize, Serialize};
 use crate::budget::BudgetLimit;
 use crate::types::{Effort, ReasoningConfig};
 
+/// The default number of delayed-decision provider workers (H2a). Equal to
+/// `mush_server::decision_dispatch::DEFAULT_DECISION_PROVIDER_WORKERS`, pinned
+/// there by a test; this crate cannot name that constant.
+pub const DEFAULT_DECISION_WORKERS: usize = 8;
+
+const fn default_decision_workers() -> usize {
+    DEFAULT_DECISION_WORKERS
+}
+
 /// The whole `[llm]` config block.
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default)]
 pub struct LlmConfig {
     /// Global kill switch. `false` disables every LLM feature (the M7 default
     /// in `mushd.toml.example`).
     pub enabled: bool,
+    /// H2a: how many delayed-decision provider workers the world task runs
+    /// (`[llm].decision_workers`; default 8). Boot refuses `0` and anything
+    /// above the kernel's `MAX_DECISION_PROVIDER_WORKERS` (32).
+    #[serde(default = "default_decision_workers")]
+    pub decision_workers: usize,
     /// Provider endpoints, keyed by provider id (`"anthropic"`, `"openrouter"`).
     pub providers: HashMap<String, ProviderConfig>,
     /// Feature routes, keyed by route name (`"worldgen_room"`, …).
@@ -32,6 +46,21 @@ pub struct LlmConfig {
     pub retry: RetryConfig,
     /// Per-provider circuit breaker.
     pub circuit_breaker: CircuitBreakerConfig,
+}
+
+impl Default for LlmConfig {
+    fn default() -> Self {
+        LlmConfig {
+            enabled: false,
+            decision_workers: DEFAULT_DECISION_WORKERS,
+            providers: HashMap::new(),
+            routes: HashMap::new(),
+            budgets: BudgetConfig::default(),
+            concurrency: ConcurrencyConfig::default(),
+            retry: RetryConfig::default(),
+            circuit_breaker: CircuitBreakerConfig::default(),
+        }
+    }
 }
 
 /// One provider endpoint.
@@ -235,6 +264,24 @@ pub fn resolve_key(env_name: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::ConcurrencyConfig;
+
+    /// H2a: `decision_workers` defaults to 8 whether the block is absent,
+    /// empty, or built by `Default`, and parses when set (the dispatcher, not
+    /// the parser, bounds it).
+    #[test]
+    fn h2a_decision_workers_defaults_to_eight_and_parses() {
+        assert_eq!(
+            super::LlmConfig::default().decision_workers,
+            super::DEFAULT_DECISION_WORKERS
+        );
+        let empty: super::LlmConfig =
+            serde_json::from_value(serde_json::json!({})).expect("an empty [llm] block parses");
+        assert_eq!(empty.decision_workers, 8);
+        let set: super::LlmConfig =
+            serde_json::from_value(serde_json::json!({ "enabled": false, "decision_workers": 33 }))
+                .expect("parses");
+        assert_eq!(set.decision_workers, 33);
+    }
 
     #[test]
     fn legacy_concurrency_config_gets_bounded_queue_defaults() {

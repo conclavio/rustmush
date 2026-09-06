@@ -154,6 +154,9 @@ catch_up_domains = ""              # cut 8
 # disabled." Flip to true once at least one provider below has its API key in
 # the environment (see keys note under [llm.providers]).
 enabled = false
+# (H2a) How many delayed-decision provider workers the world task runs for
+# NPC decisions. 1..=32; the default is 8. Independent of [llm.concurrency].
+decision_workers = 8
 
 # --- Providers -------------------------------------------------------------
 # Two wire protocols. Routing is by the MODEL-ID PREFIX on each route below,
@@ -246,6 +249,14 @@ model = "deepseek/deepseek-v4-flash-0731"   # same cheap model as [ambience]
 max_tokens = 768
 timeout_s = 30
 reasoning = "off"                  # deepseek: reasoning off -> clean short output
+
+[llm.routes.npc_decision]          # (H2a) one durable NPC decision: one tool call
+model = "z-ai/glm-5.3-flash"       # the model picks exactly one projected action
+max_tokens = 512
+timeout_s = 30
+reasoning = "low"
+# Without this route every NPC decision falls back to its idle action after
+# its deadline (the same degrade shape as dialogue with [llm].enabled = false).
 
 [llm.routes.npc_summarize]         # NPC memory fold (cheap, background)
 model = "z-ai/glm-5.3-flash"

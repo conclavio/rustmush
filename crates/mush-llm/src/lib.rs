@@ -56,8 +56,8 @@ pub mod mock;
 pub use audit::{AuditRecord, AuditSink, DaySlice, FeatureTotals, Outcome};
 pub use budget::{BudgetLedger, BudgetLimit, Counters, ScopeLimits};
 pub use config::{
-    BudgetConfig, CircuitBreakerConfig, ConcurrencyConfig, LlmConfig, ProviderConfig, ProviderKind,
-    RetryConfig, RouteConfig,
+    BudgetConfig, CircuitBreakerConfig, ConcurrencyConfig, DEFAULT_DECISION_WORKERS, LlmConfig,
+    ProviderConfig, ProviderKind, RetryConfig, RouteConfig,
 };
 pub use dashboard::{BudgetStatus, DashboardSnapshot, RecentCall, SpendRow};
 pub use provider::{

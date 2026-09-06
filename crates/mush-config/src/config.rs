@@ -671,6 +671,25 @@ pub struct TacsimCfg {
     pub time: TacsimTimeCfg,
 }
 
+/// `[npc]` — the NPC agent layer's world-task knobs (H2a/H2b). A new
+/// section: nothing here existed before H2, and every field defaults, so an
+/// unconfigured server keeps its pre-H2 behaviour.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct NpcCfg {
+    /// H2b: how long an NPC's scene turn may wait for its durable decision
+    /// before the idle fallback fires, seconds (default 120).
+    pub scene_turn_deadline_secs: u32,
+}
+
+impl Default for NpcCfg {
+    fn default() -> Self {
+        NpcCfg {
+            scene_turn_deadline_secs: 120,
+        }
+    }
+}
+
 impl Default for TacsimCfg {
     fn default() -> Self {
         TacsimCfg {
@@ -937,6 +956,9 @@ pub struct Config {
     /// deliberately **not** a `[rulesets].enabled` id: TacSim is a layer beside the one
     /// character ruleset, not a third one (doc 10 §20).
     pub tacsim: TacsimCfg,
+    /// `[npc]` — the NPC agent layer's world-task knobs (H2). Defaults whole.
+    #[serde(default)]
+    pub npc: NpcCfg,
     /// `[llm]` — the M7 LLM layer (providers, feature routes, budgets, kill
     /// switch). The raw section, deserialized into `mush_llm::LlmConfig` by the
     /// server / all-in-one binary (kept untyped here so `mush-config` need not
@@ -969,6 +991,7 @@ impl Default for Config {
             wod: WodCfg::default(),
             shadowrun: ShadowrunCfg::default(),
             tacsim: TacsimCfg::default(),
+            npc: NpcCfg::default(),
             llm: empty_toml_table(),
             ipc: IpcCfg::default(),
         }
@@ -1099,6 +1122,27 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// H2a: `[npc]` is a whole-default section, and a misspelt key is a boot
+    /// error like every other typed section.
+    #[test]
+    fn h2a_npc_section_defaults_whole_and_refuses_unknown_keys() {
+        let absent: Config = toml::from_str("").expect("an empty config parses");
+        assert_eq!(absent.npc.scene_turn_deadline_secs, 120);
+        let set: Config = toml::from_str(
+            "[npc]
+scene_turn_deadline_secs = 30
+",
+        )
+        .expect("parses");
+        assert_eq!(set.npc.scene_turn_deadline_secs, 30);
+        let refused = toml::from_str::<Config>(
+            "[npc]
+scene_turn_dedline_secs = 30
+",
+        );
+        assert!(refused.is_err(), "an unknown [npc] key must refuse");
+    }
 
     #[test]
     fn defaults_when_missing() {

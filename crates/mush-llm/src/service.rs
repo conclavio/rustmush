@@ -47,6 +47,9 @@ pub enum LlmFeature {
     NpcDialogue(NpcTier),
     /// NPC memory summarization.
     NpcSummarize,
+    /// H2a: one durable NPC decision — the provider chooses exactly one
+    /// projected offer by tool call (route `npc_decision`).
+    NpcDecision,
     /// Single-room worldgen draft.
     WorldgenRoom,
     /// Whole-building worldgen brief.
@@ -73,6 +76,7 @@ impl LlmFeature {
             LlmFeature::NpcDialogue(NpcTier::Minor) => "npc_dialogue_minor",
             LlmFeature::NpcDialogue(NpcTier::Extra) => "npc_dialogue_extra",
             LlmFeature::NpcSummarize => "npc_summarize",
+            LlmFeature::NpcDecision => "npc_decision",
             LlmFeature::WorldgenRoom => "worldgen_room",
             LlmFeature::WorldgenBrief => "worldgen_brief",
             LlmFeature::Ambience => "ambience",

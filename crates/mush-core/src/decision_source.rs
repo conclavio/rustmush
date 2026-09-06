@@ -361,9 +361,54 @@ pub struct DecisionSourcePage {
     admission_index: DecisionAdmissionIndex,
     records_scanned: usize,
     next_cursor: Option<DecisionSourceCursor>,
+    status_census: DecisionStatusCensus,
+}
+
+/// How many records on one scanned page sit in each pending state (H2a: the
+/// live indicator's source). Counts only; no identity.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct DecisionStatusCensus {
+    pub ready: usize,
+    pub leased: usize,
+    pub resolving: usize,
+    pub fallback_ready: usize,
+    pub terminal: usize,
+}
+
+impl DecisionStatusCensus {
+    /// Every non-terminal record.
+    #[must_use]
+    pub const fn nonterminal(&self) -> usize {
+        self.ready + self.leased + self.resolving + self.fallback_ready
+    }
+
+    /// Fold another page's census into this one.
+    pub fn merge(&mut self, other: Self) {
+        self.ready = self.ready.saturating_add(other.ready);
+        self.leased = self.leased.saturating_add(other.leased);
+        self.resolving = self.resolving.saturating_add(other.resolving);
+        self.fallback_ready = self.fallback_ready.saturating_add(other.fallback_ready);
+        self.terminal = self.terminal.saturating_add(other.terminal);
+    }
+
+    fn observe(&mut self, status: &PendingDecisionStatus) {
+        match status {
+            PendingDecisionStatus::Ready { .. } => self.ready += 1,
+            PendingDecisionStatus::Leased { .. } => self.leased += 1,
+            PendingDecisionStatus::Resolving { .. } => self.resolving += 1,
+            PendingDecisionStatus::FallbackReady { .. } => self.fallback_ready += 1,
+            PendingDecisionStatus::Terminal { .. } => self.terminal += 1,
+        }
+    }
 }
 
 impl DecisionSourcePage {
+    /// The pending-state census of the records this page scanned (H2a).
+    #[must_use]
+    pub const fn status_census(&self) -> DecisionStatusCensus {
+        self.status_census
+    }
+
     #[must_use]
     pub fn candidates(&self) -> &[DecisionDispatchCandidate] {
         &self.candidates
@@ -1877,6 +1922,7 @@ impl DecisionSourceRegistry {
         let mut fallbacks = Vec::new();
         let mut compactions = Vec::new();
         let mut admission_index = DecisionAdmissionIndex::default();
+        let mut status_census = DecisionStatusCensus::default();
         let mut records_scanned = 0;
         let mut last_scanned = None;
         for (owner, entry) in &self.entries {
@@ -1936,6 +1982,7 @@ impl DecisionSourceRegistry {
                     .observe_existing(pending, prompt, keys)
                     .map_err(|error| Self::owned_decision_fault(owner, error))?;
                 validate_deadline_link(engine, entry, pending)?;
+                status_census.observe(&pending.status);
                 let now = engine
                     .clock_now(&pending.deadline.clock)
                     .map_err(|source| DecisionSourceScanError::Clock {
@@ -2030,6 +2077,7 @@ impl DecisionSourceRegistry {
                     admission_index,
                     records_scanned,
                     next_cursor: last_scanned,
+                    status_census,
                 });
             }
         }
@@ -2042,6 +2090,7 @@ impl DecisionSourceRegistry {
             admission_index,
             records_scanned,
             next_cursor: None,
+            status_census,
         })
     }
 

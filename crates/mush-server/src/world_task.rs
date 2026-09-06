@@ -1566,6 +1566,107 @@ pub fn spawn_persist_with_gateway_and_decisions(
     ))
 }
 
+/// H2a: the production spawn. A composition with no decision source spawns
+/// exactly as [`spawn_persist_with_gateway`] does; one with composed sources
+/// registers one [`crate::decision_llm::LlmDecisionProvider`] per source owner
+/// — today `npc`, on [`mush_llm::LlmFeature::NpcDecision`] — over `llm` (an
+/// absent service or route answers `Unavailable`, so every decision reaches
+/// the owner's fallback: D-H-5) and spawns through
+/// [`spawn_persist_with_gateway_and_decisions`], which audits every durable
+/// decision record before the world task exists (K7.4).
+///
+/// # Errors
+/// A composed source owner with no production provider; a `decision_workers`
+/// outside `1..=MAX_DECISION_PROVIDER_WORKERS`; a malformed durable decision
+/// record (the owner is frozen at boot).
+pub fn spawn_persist_with_gateway_production(
+    engine: Engine,
+    deps: ServerDeps,
+    llm: Option<Arc<LlmService>>,
+    decision_workers: usize,
+    make_gateway: impl FnOnce(mpsc::WeakSender<WorldMsg>) -> Gateway,
+) -> Result<PersistHandles, String> {
+    let composed = engine
+        .registry
+        .decision_sources()
+        .is_some_and(|sources| !sources.is_empty());
+    if !composed {
+        return Ok(spawn_persist_with_gateway(engine, deps, make_gateway));
+    }
+    if !engine.has_decision_keys() {
+        // A composition with sources but no key ring (a test rig built
+        // without `build_engine`) cannot audit or sign a decision: the
+        // sources stay inert and the plain runtime starts. Production always
+        // sets its keys before this point.
+        tracing::warn!(
+            "decision sources are composed but no decision key ring is set; the decision runtime is not started"
+        );
+        return Ok(spawn_persist_with_gateway_mode(
+            engine,
+            deps,
+            Arc::new(DurableOutboxRegistry::new()),
+            None,
+            None,
+            make_gateway,
+        ));
+    }
+    let providers = production_decision_providers(&engine, llm)?;
+    spawn_persist_with_gateway_and_decisions(
+        engine,
+        deps,
+        DurableOutboxRegistry::new(),
+        providers,
+        decision_workers,
+        make_gateway,
+    )
+}
+
+/// One production provider per composed decision source owner (D-H-4: the
+/// adapter is owner-parameterised, so a later owner registers a second
+/// instance, not a second implementation).
+fn production_decision_providers(
+    engine: &Engine,
+    llm: Option<Arc<LlmService>>,
+) -> Result<DecisionProviderRegistry, String> {
+    let mut providers = DecisionProviderRegistry::new();
+    let owners = engine
+        .registry
+        .decision_sources()
+        .map(mush_core::DecisionSourceRegistry::wake_adapters)
+        .unwrap_or_default();
+    for (owner, _) in owners {
+        let feature = match owner.as_str() {
+            "npc" => mush_llm::LlmFeature::NpcDecision,
+            other => {
+                return Err(format!(
+                    "decision source {other} has no production provider"
+                ));
+            }
+        };
+        match &llm {
+            Some(llm) if llm.caps_for(feature).is_some() => {}
+            Some(_) => tracing::warn!(
+                %owner,
+                route = feature.route_key(),
+                "no [llm.routes.{}] route: every {owner} decision will fall back to its idle action",
+                feature.route_key()
+            ),
+            None => tracing::warn!(
+                %owner,
+                "no LLM service: every {owner} decision will fall back to its idle action"
+            ),
+        }
+        providers
+            .register(Arc::new(crate::decision_llm::LlmDecisionProvider::new(
+                owner,
+                llm.clone(),
+                feature,
+            )))
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(providers)
+}
+
 /// Exhaustively validate all durable decision bundles and aggregate
 /// admission ceilings before the world task—and therefore writable ingress—
 /// exists. Pages stay bounded while the compact accounting index enforces the
@@ -2491,6 +2592,64 @@ fn command_offer_submission(
 ///
 /// Shaped on [`DurableScheduleDriver`] deliberately: **at most one per step**,
 /// deferred while legacy persistence work is pending (a prepared action may
+/// H2a (D-H-6): turn one queued decision capture into the owner's
+/// capture-action submission. The kernel builds the complete plan (offers,
+/// witnesses, signed prompt, admission, deadline); the plan is armed in the
+/// owner's registered sink; a synthesized [`AuthoritativeSubmit`] for the
+/// owner's capture action is queued in the same one-per-backend slot every
+/// command submit uses, and `CommandSubmitDriver::drive_one` carries it
+/// through `resolve_and_stage_offer` on this same iteration. Every refusal
+/// leaves no durable intent and disarms the sink.
+fn drive_decision_capture(
+    engine: &mut Engine,
+    capture: mush_core::QueuedDecisionCapture,
+    idempotency_epoch: u64,
+    out: &mut Outbox,
+) {
+    let actor = capture.draft.actor;
+    let owner = capture.owner.clone();
+    let Some((capture_action, sink)) = engine.registry.decision_capture_sink(owner.as_str()) else {
+        tracing::warn!(%owner, %actor, "decision capture refused: the owner registered no capture sink");
+        out.best_effort_error(
+            actor,
+            "That decision could not be captured. Nothing changed.",
+        );
+        return;
+    };
+    let plan = match engine.build_decision_capture(&owner, &capture.draft, idempotency_epoch) {
+        Ok(plan) => plan,
+        Err(error) => {
+            tracing::info!(%owner, %actor, error = %error, "decision capture refused before any durable intent");
+            out.best_effort_error(
+                actor,
+                "That decision could not be captured. Nothing changed.",
+            );
+            return;
+        }
+    };
+    if sink.arm(plan).is_some() {
+        tracing::warn!(%owner, %actor, "a previously armed decision capture plan was never staged; replaced");
+    }
+    let submit = Box::new(mush_core::AuthoritativeSubmit {
+        actor,
+        action: capture_action,
+        subject: capture.draft.subject.clone(),
+        targets: Vec::new(),
+        parameters: serde_json::json!({}),
+        key: capture.draft.key.clone(),
+    });
+    if engine.queue_authoritative_submit(submit).is_err() {
+        // One unresolved authoritative intent per backend (D-E7-39): the
+        // slot is taken, so nothing is staged and the sink is cleared.
+        let _ = sink.take();
+        tracing::info!(%owner, %actor, "decision capture deferred: an authoritative submission already holds the slot");
+        out.best_effort_error(
+            actor,
+            "An earlier action is still committing; the decision was not captured.",
+        );
+    }
+}
+
 /// never ride alongside it), and epoch retirement recovered by raising the
 /// watermark and retrying a bounded number of times.
 struct CommandSubmitDriver {
@@ -3245,7 +3404,8 @@ async fn run(
         // also what makes the ready-future arm below terminate: every drive
         // either consumes the submission or leaves it queued behind a condition
         // the foot-of-loop flush clears.
-        let command_submit_armed = engine.has_authoritative_submit()
+        let command_submit_armed = (engine.has_authoritative_submit()
+            || engine.has_decision_capture())
             && pending_commit.is_none()
             && retained.is_empty()
             && !engine.has_legacy_persistence_work()
@@ -3775,6 +3935,20 @@ async fn run(
                     );
                     continue;
                 };
+                // H2a (D-H-6): a module's decision capture becomes the owner's
+                // capture-action submission — built by the kernel, armed in the
+                // owner's sink, then driven through the ONE five-step function
+                // below like any command submit.
+                if !engine.has_legacy_persistence_work()
+                    && let Some(capture) = engine.take_decision_capture()
+                {
+                    drive_decision_capture(
+                        &mut engine,
+                        capture,
+                        command_submits.idempotency_epoch,
+                        &mut out,
+                    );
+                }
                 match command_submits.drive_one(&mut engine, store).await {
                     Ok(
                         CommandSubmitDrive::Idle | CommandSubmitDrive::DeferredByLegacyPredecessor,
@@ -5837,14 +6011,48 @@ fn object_counts(w: &World) -> ObjectCounts {
 /// NPC agent runtime counts read from the module state slot: `active` = NPCs
 /// with a live runtime (stimulated at least once this boot), `thinking` = NPCs
 /// with an in-flight LLM turn. `(0, 0)` when the NPC module is not loaded.
-fn npc_counts(engine: &Engine) -> (i64, i64) {
-    match engine.world.module_state::<mush_npc::NpcHostState>() {
-        Some(h) => {
-            let active = h.runtimes.len() as i64;
-            let thinking = h.runtimes.values().filter(|rt| rt.in_flight).count() as i64;
-            (active, thinking)
-        }
+/// The NPC indicator (H2a): `active` is every NPC with a live runtime;
+/// `thinking` is every dialogue turn in flight **plus** every non-terminal
+/// durable decision (either kind of thinking); the census splits the
+/// decisions by state for `mush_npc_decisions{state}`.
+fn npc_counts(engine: &Engine) -> (i64, i64, mush_core::DecisionStatusCensus) {
+    let (active, in_flight) = match engine.world.module_state::<mush_npc::NpcHostState>() {
+        Some(h) => (
+            h.runtimes.len() as i64,
+            h.runtimes.values().filter(|rt| rt.in_flight).count() as i64,
+        ),
         None => (0, 0),
+    };
+    let census = decision_census(engine);
+    let thinking =
+        in_flight.saturating_add(i64::try_from(census.nonterminal()).unwrap_or(i64::MAX));
+    (active, thinking, census)
+}
+
+/// Every composed decision source's pending-state census, page by page. A
+/// scan fault (a malformed record) reports zero rather than freezing a
+/// metrics sample; the boot audit is what refuses such a record.
+fn decision_census(engine: &Engine) -> mush_core::DecisionStatusCensus {
+    let mut census = mush_core::DecisionStatusCensus::default();
+    if !engine
+        .registry
+        .decision_sources()
+        .is_some_and(|sources| !sources.is_empty())
+    {
+        return census;
+    }
+    let mut cursor = None;
+    loop {
+        let Ok(page) = engine
+            .discover_decision_dispatches(cursor.as_ref(), mush_core::MAX_DECISION_RECOVERY_PAGE)
+        else {
+            return mush_core::DecisionStatusCensus::default();
+        };
+        census.merge(page.status_census());
+        cursor = page.next_cursor().cloned();
+        if cursor.is_none() {
+            return census;
+        }
     }
 }
 
@@ -5909,7 +6117,7 @@ fn maybe_publish_sample(
     *last_sample = Some(now);
 
     let counts = object_counts(&engine.world);
-    let (npc_active, npc_thinking) = npc_counts(engine);
+    let (npc_active, npc_thinking, decisions) = npc_counts(engine);
     // The session/connection gauges are gateway-owned: the in-process sink reads
     // the shared manager, the socket sink reports `(0, 0)` (the gateway process
     // publishes them post-fork). Advisory gauges, not world state.
@@ -5927,6 +6135,10 @@ fn maybe_publish_sample(
         integrity_frozen: health.mode.integrity_frozen(),
         npc_active,
         npc_thinking,
+        npc_decisions_ready: i64::try_from(decisions.ready).unwrap_or(i64::MAX),
+        npc_decisions_leased: i64::try_from(decisions.leased).unwrap_or(i64::MAX),
+        npc_decisions_resolving: i64::try_from(decisions.resolving + decisions.fallback_ready)
+            .unwrap_or(i64::MAX),
     });
     if let Some(s) = llm_sample(llm) {
         metrics.publish_llm(true, s.globally_disabled, s.features, s.today);
@@ -5950,6 +6162,8 @@ pub struct StatsExtra {
     pub npc_active: i64,
     /// NPCs with an in-flight LLM turn.
     pub npc_thinking: i64,
+    /// H2a: durable NPC decisions by state — ready, leased, resolving.
+    pub npc_decisions: [i64; 3],
     /// Approximate p99 loop lag (ms) from the histogram.
     pub lag_p99: u64,
     /// The authoritative lane (H3): whether the single pending-intent slot is
@@ -6029,6 +6243,11 @@ fn stats_extra(metrics: &Metrics, llm: Option<&Arc<LlmService>>) -> StatsExtra {
         write_queue_depth: snap.store_write_queue_depth,
         npc_active: snap.npc_active,
         npc_thinking: snap.npc_thinking,
+        npc_decisions: [
+            snap.npc_decisions_ready,
+            snap.npc_decisions_leased,
+            snap.npc_decisions_resolving,
+        ],
         lag_p99: snap.loop_lag_p99_ms(),
         auth_slot_held: snap.auth_slot_held,
         auth_hold_last_ms: snap.auth_hold_last_ms,
@@ -6120,6 +6339,10 @@ pub fn render_stats(
     text.push_str(&format!(
         "\nNPC agents: {} active, {} thinking",
         extra.npc_active, extra.npc_thinking
+    ));
+    text.push_str(&format!(
+        "\nNPC decisions: {} ready, {} leased, {} resolving",
+        extra.npc_decisions[0], extra.npc_decisions[1], extra.npc_decisions[2]
     ));
     text.push_str(&format!(
         "\nIPC boundary: {} frames shed, {} write timeouts, {} to_gw overflows; high-water to_server {}, to_gw {}",
@@ -7702,7 +7925,8 @@ mod tests {
     };
 
     use crate::decision_dispatch::{
-        DecisionProviderAdapter, DecisionProviderFailure, DecisionProviderFailureKind,
+        DEFAULT_DECISION_PROVIDER_WORKERS, DecisionProviderAdapter, DecisionProviderFailure,
+        DecisionProviderFailureKind,
     };
 
     struct BlackholeGateway;
@@ -14912,5 +15136,329 @@ mod tests {
             staged, 1,
             "prepare_and_stage_resolved must be reached through exactly one function"
         );
+    }
+
+    // ---- H2a: the production decision composition ----------------------
+
+    /// A provider that always picks the prompt's `idle` offer, as a model
+    /// would by calling the idle tool.
+    struct IdleChoosingProvider {
+        owner: OwnerId,
+        calls: Arc<AtomicUsize>,
+    }
+
+    impl DecisionProviderAdapter for IdleChoosingProvider {
+        fn owner(&self) -> &OwnerId {
+            &self.owner
+        }
+
+        fn decide(
+            &self,
+            lease: DecisionWorkerLease,
+        ) -> futures::future::BoxFuture<'static, Result<DecisionResponse, DecisionProviderFailure>>
+        {
+            self.calls.fetch_add(1, AtomicOrdering::SeqCst);
+            let prompt = lease.prompt().clone();
+            Box::pin(async move {
+                let idle = prompt
+                    .actions
+                    .iter()
+                    .find(|a| a.presentation().verb == mush_npc::IDLE_VERB)
+                    .ok_or_else(|| {
+                        DecisionProviderFailure::new(
+                            DecisionProviderFailureKind::Malformed,
+                            "no idle offer",
+                        )
+                    })?;
+                Ok(DecisionResponse {
+                    token: prompt.token,
+                    offer: idle.offer(),
+                    targets: Vec::new(),
+                    parameters: serde_json::json!({}),
+                })
+            })
+        }
+    }
+
+    /// A world composed with the real `npc` module, keyed, with one NPC agent
+    /// and one decision request queued for the tick — the capture already
+    /// taken by the engine, ready for the loop.
+    fn npc_decision_world(deadline_secs: i64, lease_secs: i64) -> (Engine, mush_core::ObjId) {
+        let mut tw = mush_testkit::TestWorld::with_modules(vec![Box::new(
+            mush_npc::NpcModule::new().with_decision_lease_secs(lease_secs),
+        )]);
+        tw.engine_mut().set_decision_keys(
+            DecisionKeyRing::new(DecisionSecret::new(1, [0x5a; 32]).unwrap(), []).unwrap(),
+        );
+        tw.engine_mut().set_offer_keys(
+            OfferKeyRing::new(OfferSecret::new(1, [0x6b; 32]).unwrap(), []).unwrap(),
+        );
+        let events = tw.run(GOD, "@agent/create Bob");
+        let text: String = events
+            .iter()
+            .map(|(_, e)| mush_testkit::text_of(e))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let at = text.find("(#").expect("the create line names the id");
+        let digits: String = text[at + 2..]
+            .chars()
+            .take_while(char::is_ascii_digit)
+            .collect();
+        let npc = mush_core::ObjId(digits.parse().unwrap());
+        // The NPC object stays dirty: the world task persists it on its
+        // first iteration, before it drives the capture, so a second boot
+        // from the store alone still has the agent to project offers for.
+        tw.world_mut()
+            .module_state_mut::<mush_npc::NpcHostState>()
+            .unwrap()
+            .request_decision(mush_npc::NpcDecisionRequest {
+                npc,
+                cause_kind: CanonicalId::new("npc.test_turn").unwrap(),
+                instance: IdempotencyKeyText::parse_canonical("turn-1").unwrap(),
+                replaceable_key: None,
+                context: serde_json::json!({ "room": "Limbo" }),
+                deadline_secs,
+                key: IdempotencyKeyText::parse_canonical("turn-1").unwrap(),
+            });
+        let _ = tw.fire_due(5_000);
+        assert!(
+            tw.engine().has_decision_capture(),
+            "the tick issued no capture"
+        );
+        (tw.into_engine(), npc)
+    }
+
+    fn receipt_key(npc: mush_core::ObjId) -> String {
+        format!("action-state/v1/npc_turn_receipts/npc_{}", npc.0)
+    }
+
+    async fn wait_for_receipt(
+        store: &Arc<dyn ObjectStore>,
+        npc: mush_core::ObjId,
+        secs: u64,
+    ) -> serde_json::Value {
+        tokio::time::timeout(Duration::from_secs(secs), async {
+            loop {
+                if let Some(value) = store
+                    .module_json_get("npc", &receipt_key(npc))
+                    .await
+                    .expect("receipt read")
+                {
+                    break value;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("the decision did not execute its action")
+    }
+
+    /// The whole production lifecycle through the production ingress: a
+    /// queued request, the tick's capture, the loop builds, arms and submits
+    /// `npc_decide`, the wake, the lease, the provider, the response, the
+    /// coordinator executes `npc_idle`, and its turn receipt lands.
+    #[tokio::test]
+    async fn h2a_a_captured_npc_decision_runs_to_its_executed_action() {
+        let (engine, npc) = npc_decision_world(60, 60);
+        let deps = ServerDeps::in_memory();
+        let store = Arc::clone(&deps.store);
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mut providers = DecisionProviderRegistry::new();
+        providers
+            .register(Arc::new(IdleChoosingProvider {
+                owner: OwnerId::new("npc").unwrap(),
+                calls: Arc::clone(&calls),
+            }))
+            .unwrap();
+        let handles = spawn_persist_with_gateway_and_decisions(
+            engine,
+            deps,
+            DurableOutboxRegistry::new(),
+            providers,
+            1,
+            |_| Arc::new(BlackholeGateway),
+        )
+        .expect("decision runtime startup");
+        let receipt = wait_for_receipt(&store, npc, 5).await;
+        assert_eq!(receipt["value"]["outcome"], "idle");
+        assert_eq!(receipt["value"]["npc"], npc.0);
+        assert_eq!(calls.load(AtomicOrdering::SeqCst), 1, "one lease, one call");
+        // The pending record reached terminal: nothing is left to dispatch.
+        let listed = store
+            .module_json_list("npc")
+            .await
+            .expect("npc namespace listing");
+        assert!(
+            listed
+                .iter()
+                .any(|(key, value)| key.contains("npc_pending_decisions")
+                    && value["value"]["status"]["state"] == "terminal"
+                    && value["value"]["status"]["outcome"] == "executed"),
+            "no terminal executed decision: {:?}",
+            listed.iter().map(|(k, _)| k).collect::<Vec<_>>()
+        );
+        stop_test_server(handles).await;
+    }
+
+    /// With no LLM service the production adapter answers `Unavailable`
+    /// every time, and the deadline hands the decision to `npc_idle`.
+    #[tokio::test]
+    async fn h2a_an_unavailable_provider_falls_back_to_idle_at_the_deadline() {
+        let (engine, npc) = npc_decision_world(1, 60);
+        let deps = ServerDeps::in_memory();
+        let store = Arc::clone(&deps.store);
+        let providers = production_decision_providers(&engine, None).unwrap();
+        let handles = spawn_persist_with_gateway_and_decisions(
+            engine,
+            deps,
+            DurableOutboxRegistry::new(),
+            providers,
+            1,
+            |_| Arc::new(BlackholeGateway),
+        )
+        .expect("decision runtime startup");
+        let receipt = wait_for_receipt(&store, npc, 20).await;
+        assert_eq!(receipt["value"]["outcome"], "idle");
+        let listed = store.module_json_list("npc").await.unwrap();
+        assert!(
+            listed
+                .iter()
+                .any(|(key, value)| key.contains("npc_pending_decisions")
+                    && value["value"]["status"]["state"] == "terminal"
+                    && value["value"]["status"]["fallback_reason"].is_string()),
+            "the terminal record does not name its fallback"
+        );
+        stop_test_server(handles).await;
+    }
+
+    /// A restart between the capture and the lease resumes from the pending
+    /// family (K7.4): the second boot finds the record and finishes it.
+    #[tokio::test]
+    async fn h2a_a_restart_between_capture_and_lease_resumes_the_decision() {
+        // A one-second lease, as the kernel's own restart test uses: the first
+        // boot's abandoned lease must expire for the second to re-lease.
+        let (engine, npc) = npc_decision_world(60, 1);
+        let deps = ServerDeps::in_memory();
+        let store = Arc::clone(&deps.store);
+        // First boot: the capture commits; the provider can never answer.
+        let providers = production_decision_providers(&engine, None).unwrap();
+        let first = spawn_persist_with_gateway_and_decisions(
+            engine,
+            deps,
+            DurableOutboxRegistry::new(),
+            providers,
+            1,
+            |_| Arc::new(BlackholeGateway),
+        )
+        .unwrap();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let listed = store.module_json_list("npc").await.unwrap();
+                if listed
+                    .iter()
+                    .any(|(key, _)| key.contains("npc_pending_decisions"))
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("the capture did not commit");
+        stop_test_server(first).await;
+        assert!(
+            store
+                .module_json_get("npc", &receipt_key(npc))
+                .await
+                .unwrap()
+                .is_none(),
+            "nothing executed before the restart"
+        );
+
+        // Second boot from the store alone, with a provider that answers.
+        let world = crate::persist::load_or_seed_world(&*store).await.unwrap();
+        let mut engine = Engine::with_modules(
+            world,
+            mush_core::Registry::new(),
+            vec![Box::new(
+                mush_npc::NpcModule::new().with_decision_lease_secs(1),
+            )],
+        )
+        .unwrap();
+        engine.set_decision_keys(
+            DecisionKeyRing::new(DecisionSecret::new(1, [0x5a; 32]).unwrap(), []).unwrap(),
+        );
+        engine.set_offer_keys(
+            OfferKeyRing::new(OfferSecret::new(1, [0x6b; 32]).unwrap(), []).unwrap(),
+        );
+        crate::modules::boot_modules(&mut engine, &*store)
+            .await
+            .unwrap();
+        assert_eq!(
+            decision_census(&engine).nonterminal(),
+            1,
+            "the pending decision came back on boot"
+        );
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mut providers = DecisionProviderRegistry::new();
+        providers
+            .register(Arc::new(IdleChoosingProvider {
+                owner: OwnerId::new("npc").unwrap(),
+                calls: Arc::clone(&calls),
+            }))
+            .unwrap();
+        let second = spawn_persist_with_gateway_and_decisions(
+            engine,
+            decision_test_deps(Arc::clone(&store)),
+            DurableOutboxRegistry::new(),
+            providers,
+            1,
+            |_| Arc::new(BlackholeGateway),
+        )
+        .unwrap();
+        let receipt = wait_for_receipt(&store, npc, 10).await;
+        assert_eq!(receipt["value"]["outcome"], "idle");
+        assert_eq!(calls.load(AtomicOrdering::SeqCst), 1);
+        stop_test_server(second).await;
+    }
+
+    /// The production spawn: a keyed composition starts the decision runtime
+    /// over the LLM adapter; an unkeyed one starts the plain runtime; a
+    /// worker limit past the ceiling refuses.
+    #[tokio::test]
+    async fn h2a_the_production_spawn_composes_the_npc_adapter() {
+        let (engine, _) = npc_decision_world(60, 60);
+        let providers = production_decision_providers(&engine, None).unwrap();
+        assert!(providers.contains_owner(&OwnerId::new("npc").unwrap()));
+        let handles = spawn_persist_with_gateway_production(
+            engine,
+            ServerDeps::in_memory(),
+            None,
+            DEFAULT_DECISION_PROVIDER_WORKERS,
+            |_| Arc::new(BlackholeGateway),
+        )
+        .expect("production spawn");
+        stop_test_server(handles).await;
+
+        let tw = mush_testkit::TestWorld::with_modules(vec![Box::new(mush_npc::NpcModule::new())]);
+        let handles = spawn_persist_with_gateway_production(
+            tw.into_engine(),
+            ServerDeps::in_memory(),
+            None,
+            DEFAULT_DECISION_PROVIDER_WORKERS,
+            |_| Arc::new(BlackholeGateway),
+        )
+        .expect("an unkeyed composition still spawns");
+        stop_test_server(handles).await;
+
+        let (engine, _) = npc_decision_world(60, 60);
+        let refused = spawn_persist_with_gateway_production(
+            engine,
+            ServerDeps::in_memory(),
+            None,
+            mush_core::MAX_DECISION_PROVIDER_WORKERS + 1,
+            |_| Arc::new(BlackholeGateway),
+        );
+        assert!(refused.is_err(), "33 workers must refuse");
     }
 }

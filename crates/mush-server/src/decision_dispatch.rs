@@ -15,7 +15,8 @@ use mush_core::{
 };
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc};
 
-pub const DEFAULT_DECISION_PROVIDER_WORKERS: usize = 8;
+pub const DEFAULT_DECISION_PROVIDER_WORKERS: usize = mush_llm::DEFAULT_DECISION_WORKERS;
+const _: () = assert!(DEFAULT_DECISION_PROVIDER_WORKERS <= MAX_DECISION_PROVIDER_WORKERS);
 pub const MAX_DECISION_COMPLETIONS: usize = 128;
 const MAX_DECISION_PROVIDER_ERROR_BYTES: usize = 512;
 
@@ -305,6 +306,15 @@ fn bounded_detail(input: &str) -> String {
 mod tests {
     use super::*;
     use mush_core::CanonicalId;
+
+    /// H2a: the two crates' default worker counts are one number.
+    #[test]
+    fn h2a_default_decision_workers_matches_the_llm_config_default() {
+        assert_eq!(
+            DEFAULT_DECISION_PROVIDER_WORKERS,
+            mush_llm::DEFAULT_DECISION_WORKERS
+        );
+    }
 
     struct NeverCalled {
         owner: OwnerId,

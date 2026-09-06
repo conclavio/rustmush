@@ -48,6 +48,8 @@ use crate::stimulus::{SpeechKind, Stimulus};
 /// dialogue-only worlds and tests).
 pub struct NpcModule {
     grounding: Arc<dyn AgentGrounding>,
+    /// H2a: how long one provider lease on an NPC decision lasts, seconds.
+    decision_lease_secs: i64,
 }
 
 impl NpcModule {
@@ -56,13 +58,26 @@ impl NpcModule {
     pub fn new() -> NpcModule {
         NpcModule {
             grounding: Arc::new(NoGrounding),
+            decision_lease_secs: crate::decision::NPC_DECISION_LEASE_SECS,
         }
+    }
+
+    /// H2a: override the provider lease duration on NPC decisions (the
+    /// restart tests use one second; production keeps
+    /// [`NPC_DECISION_LEASE_SECS`](crate::decision::NPC_DECISION_LEASE_SECS)).
+    #[must_use]
+    pub fn with_decision_lease_secs(mut self, secs: i64) -> NpcModule {
+        self.decision_lease_secs = secs.max(1);
+        self
     }
 
     /// A module grounded by `grounding` (the driver's ruleset adapter).
     #[must_use]
     pub fn with_grounding(grounding: Arc<dyn AgentGrounding>) -> NpcModule {
-        NpcModule { grounding }
+        NpcModule {
+            grounding,
+            decision_lease_secs: crate::decision::NPC_DECISION_LEASE_SECS,
+        }
     }
 }
 
@@ -219,6 +234,10 @@ impl GameModule for NpcModule {
         // keyframe it answers with.
         reg.panel_feed("intel")?;
         reg.query_handler("intel.list", Arc::new(crate::query::IntelListQuery))?;
+
+        // H2a: the `npc` decision source — families, definitions, providers,
+        // the capture sink and the idle fallback (`crate::decision`).
+        crate::decision::register(reg, self.decision_lease_secs)?;
         Ok(())
     }
 
@@ -880,6 +899,15 @@ struct NpcTick {
 
 impl mush_core::module::TickHandler for NpcTick {
     fn tick(&self, ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<mush_core::module::SceneId>) {
+        // H2a: one durable-decision capture per tick step, oldest request
+        // first. Two captures in one step would void both.
+        let request = ctx
+            .w
+            .module_state_mut::<NpcHostState>()
+            .and_then(|h| h.decision_requests.pop_front());
+        if let Some(request) = request {
+            issue_capture(ctx, request);
+        }
         let now = now_ms(ctx.w);
         let pending = match ctx.state::<NpcHostState>() {
             Some(h) => h.pending(),
@@ -888,6 +916,55 @@ impl mush_core::module::TickHandler for NpcTick {
         for npc in pending {
             self.maybe_fire(ctx, npc, now);
         }
+    }
+}
+
+/// H2a: turn one queued request into the kernel's capture selector. The NPC
+/// must still be an enabled agent; the fallback is always `npc_idle`; the
+/// actor is the NPC, never the tick's `ctx.actor`.
+fn issue_capture(ctx: &mut Ctx<'_>, request: crate::decision::NpcDecisionRequest) {
+    let Some(handles) = ctx.state::<crate::decision::NpcDecisionHandles>().cloned() else {
+        tracing::warn!("npc: a decision was requested but the source is not registered");
+        return;
+    };
+    let is_agent = ctx
+        .w
+        .get(request.npc)
+        .is_some_and(|o| o.kind == ObjKind::Npc)
+        && read_profile(ctx.w, request.npc).is_some_and(|p| p.enabled);
+    if !is_agent {
+        tracing::info!(npc = %request.npc, "npc: dropped a decision request for a non-agent");
+        return;
+    }
+    let (Ok(schema), Ok(controller_key)) = (
+        mush_core::CanonicalId::new(crate::decision::NPC_CONTEXT_SCHEMA),
+        mush_core::CanonicalId::new(crate::decision::NPC_CONTROLLER_KEY),
+    ) else {
+        return;
+    };
+    let context = match mush_core::ProjectedDecisionContext::new(schema, request.context) {
+        Ok(context) => context,
+        Err(error) => {
+            tracing::warn!(npc = %request.npc, error = %error, "npc: decision context refused");
+            return;
+        }
+    };
+    let draft = mush_core::DecisionCaptureDraft {
+        actor: request.npc,
+        subject: mush_core::PerceivedRef::SelfActor,
+        controller_key,
+        cause: mush_core::DecisionCause {
+            kind: request.cause_kind,
+            instance: request.instance,
+            replaceable_key: request.replaceable_key,
+        },
+        context,
+        deadline_secs: request.deadline_secs,
+        fallback: mush_core::FallbackPolicyRef(handles.idle.clone()),
+        key: request.key,
+    };
+    if let Err(error) = ctx.capture_decision(draft) {
+        tracing::warn!(npc = %request.npc, error = %error, "npc: decision capture not queued");
     }
 }
 
@@ -2597,7 +2674,7 @@ fn drop_mailbox(ctx: &mut Ctx<'_>, npc: ObjId) {
     }
 }
 
-fn read_profile(w: &World, npc: ObjId) -> Option<AgentProfile> {
+pub(crate) fn read_profile(w: &World, npc: ObjId) -> Option<AgentProfile> {
     read_profile_raw(w, npc)
 }
 

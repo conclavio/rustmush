@@ -6,6 +6,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
+use std::sync::{Arc, Mutex};
 
 use hmac::{Hmac, KeyInit, Mac};
 use serde::{Deserialize, Serialize};
@@ -14,9 +15,9 @@ use sha2::Sha256;
 use thiserror::Error;
 
 use crate::action::{
-    ActionOfferId, ActionProviderDispatchError, CanonicalHash, IdempotencyKeyText,
-    MAX_ACTION_REVISIONS, MAX_ACTION_TARGETS, PerceivedRef, PrincipalId, RequestUid,
-    RevisionObservationError, RevisionStamp, ScopedIdempotencyKey, SubjectKey,
+    ActionOfferId, ActionProviderDispatchError, CanonicalHash, CanonicalHashError,
+    IdempotencyKeyText, MAX_ACTION_REVISIONS, MAX_ACTION_TARGETS, PerceivedRef, PrincipalId,
+    RequestUid, RevisionObservationError, RevisionStamp, ScopedIdempotencyKey, SubjectKey,
 };
 use crate::clock::ClockStamp;
 use crate::durable_schedule::{
@@ -110,6 +111,100 @@ pub struct DecisionCause {
 #[derive(Clone, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(transparent)]
 pub struct FallbackPolicyRef(pub DefinitionRef);
+
+/// What a module asks the kernel to capture as a durable decision (H2a,
+/// D-H-6): a **selector, not an offer**. The module names the actor, the
+/// subject, its controller, the cause, a public-safe context, the deadline and
+/// the fallback definition; the driving loop regenerates the offers and their
+/// witnesses through [`crate::Engine::build_decision_capture`], so a module can
+/// never smuggle an offer set, a witness or a revision.
+///
+/// `actor` is explicit, never the calling `Ctx`'s actor: an observer runs with
+/// the event's trigger as `ctx.actor` and a tick with `#1`.
+///
+/// `key` is the eventual chosen action's idempotency discriminator and must be
+/// unique per decision the module wants executed (a scene turn keys on
+/// `(scene, round, actor)`); two captures sharing a `key` share one action
+/// idempotency, so the second chosen action is a HIT of the first.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DecisionCaptureDraft {
+    /// The object the decision is for (the NPC).
+    pub actor: ObjId,
+    /// The subject the offers are projected against.
+    pub subject: PerceivedRef,
+    /// The owner-local controller key (`DecisionControllerId::key`).
+    pub controller_key: CanonicalId,
+    /// Why this decision exists; identical causes coalesce (K7.1).
+    pub cause: DecisionCause,
+    /// The public-safe context the provider will see.
+    pub context: ProjectedDecisionContext,
+    /// Seconds from the world's now until the deadline fallback fires.
+    pub deadline_secs: i64,
+    /// The definition the fallback selects; it must be among the projected
+    /// offers or the capture is refused.
+    pub fallback: FallbackPolicyRef,
+    /// The chosen action's idempotency discriminator (see the type doc).
+    pub key: IdempotencyKeyText,
+}
+
+/// The per-owner slot a built [`DecisionCapturePlan`] waits in between the
+/// driving loop building it and the owner's capture action provider staging it
+/// inside its own `prepare_authoritative` (H2a). The K7 harness's test mutex,
+/// as a kernel contract: one slot per owner, registered with
+/// [`crate::Registrar::decision_capture_sink`], armed by the loop, drained by
+/// the provider on the very next submission.
+#[derive(Clone, Debug, Default)]
+pub struct DecisionCaptureSink(Arc<Mutex<Option<DecisionCapturePlan>>>);
+
+impl DecisionCaptureSink {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Arm the slot with a built plan, returning the plan that was displaced
+    /// (a plan nobody staged — the submission it belonged to was refused).
+    pub fn arm(&self, plan: DecisionCapturePlan) -> Option<DecisionCapturePlan> {
+        self.0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .replace(plan)
+    }
+
+    /// Take the armed plan, leaving the slot empty.
+    pub fn take(&self) -> Option<DecisionCapturePlan> {
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).take()
+    }
+
+    /// Whether a plan is waiting.
+    #[must_use]
+    pub fn is_armed(&self) -> bool {
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).is_some()
+    }
+}
+
+/// Why [`crate::Engine::build_decision_capture`] refused a capture draft.
+#[derive(Debug, Error)]
+pub enum DecisionCaptureError {
+    #[error("the engine holds no decision key ring")]
+    Keys,
+    #[error("owner {0} registered no decision source")]
+    NoSource(OwnerId),
+    #[error("the actor projects no offers for that subject")]
+    NoOffers,
+    #[error("the fallback definition {0} is not among the actor's projected offers")]
+    FallbackNotOffered(DefinitionRef),
+    #[error("subject: {0}")]
+    Subject(#[from] crate::offer::LegalActionSubjectError),
+    #[error("projection: {0}")]
+    Projection(#[from] DecisionWitnessCaptureError),
+    #[error("scan: {0}")]
+    Scan(#[from] crate::decision_source::DecisionSourceScanError),
+    #[error("decision: {0}")]
+    Decision(#[from] DecisionError),
+    #[error("canonical: {0}")]
+    Canonical(#[from] CanonicalHashError),
+}
 
 /// Public-safe, ruleset-shaped projected decision context.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]

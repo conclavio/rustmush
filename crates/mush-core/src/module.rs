@@ -988,6 +988,15 @@ pub trait StoreReadCompletion: Send + Sync {
     fn on_read(&self, ctx: &mut Ctx<'_>, correlation: u64, result: StoreReadResult);
 }
 
+/// Why [`Ctx::capture_decision`] could not even queue a capture (H2a).
+#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum DecisionCaptureRequestError {
+    #[error("capture_decision needs a module context")]
+    NoModule,
+    #[error("the module's name is not a canonical mechanics owner: {0}")]
+    Owner(String),
+}
+
 /// Why [`Ctx::read_store`] refused to queue a read. Every variant is decided
 /// before anything is deferred, so a refused read leaves no trace.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
@@ -1380,6 +1389,15 @@ pub struct ModuleTables {
     request_completions: HashMap<SmolStr, Arc<dyn crate::request::RequestCompletion>>,
     /// module name → its store-read completion handler (the H1 read seam).
     store_read_completions: HashMap<SmolStr, Arc<dyn StoreReadCompletion>>,
+    /// module name → its capture action and decision capture sink (the H2a
+    /// capture seam).
+    decision_capture_sinks: HashMap<
+        SmolStr,
+        (
+            crate::mechanics::DefinitionRef,
+            crate::decision::DecisionCaptureSink,
+        ),
+    >,
     state_inits: Vec<StateInit>,
 }
 
@@ -1849,6 +1867,20 @@ impl Registry {
     #[must_use]
     pub fn store_read_completion(&self, module: &str) -> Option<Arc<dyn StoreReadCompletion>> {
         self.mods.store_read_completions.get(module).map(Arc::clone)
+    }
+
+    /// The decision capture sink `module` (a mechanics owner) registered, if
+    /// any (H2a). The driving loop arms it with a built plan; the owner's
+    /// capture action provider drains it while preparing that plan's bundle.
+    #[must_use]
+    pub fn decision_capture_sink(
+        &self,
+        module: &str,
+    ) -> Option<(
+        crate::mechanics::DefinitionRef,
+        crate::decision::DecisionCaptureSink,
+    )> {
+        self.mods.decision_capture_sinks.get(module).cloned()
     }
 
     /// Drain the collected state-slot inits (the engine installs them on
@@ -3085,6 +3117,36 @@ impl<'a> Registrar<'a> {
             .insert(self.module.clone(), handler);
         Ok(())
     }
+
+    /// Register this module's one decision capture sink (H2a): the slot the
+    /// driving loop arms with a built [`crate::decision::DecisionCapturePlan`]
+    /// and the module's capture action provider drains inside its own
+    /// `prepare_authoritative`. One per module; a second registration is a
+    /// conflict.
+    pub fn decision_capture_sink(
+        &mut self,
+        capture_action: crate::mechanics::DefinitionRef,
+        sink: crate::decision::DecisionCaptureSink,
+    ) -> Result<(), ModError> {
+        if self
+            .reg
+            .tables_mut()
+            .decision_capture_sinks
+            .contains_key(&self.module)
+        {
+            return Err(ModError::Conflict {
+                module: self.module.clone(),
+                what: "decision capture sink",
+                name: self.module.clone(),
+                owner: self.module.clone(),
+            });
+        }
+        self.reg
+            .tables_mut()
+            .decision_capture_sinks
+            .insert(self.module.clone(), (capture_action, sink));
+        Ok(())
+    }
 }
 
 // ----------------------------------------------------------------------
@@ -3765,6 +3827,35 @@ impl Ctx<'_> {
     }
 
     // ---- E7c2: B1 — the `Authoritative` ingress adapter seam ----
+    /// H2a (D-H-6): ask the driving loop to capture one durable decision for
+    /// `draft.actor` under this module's decision source. A selector, never an
+    /// offer: the loop projects the actor's offers, witnesses them, signs the
+    /// prompt and admits the record ([`crate::Engine::build_decision_capture`]),
+    /// arms this module's registered capture sink, and submits the module's
+    /// capture action through the one authoritative ingress. One capture per
+    /// step; a second voids both.
+    ///
+    /// # Errors
+    /// [`DecisionCaptureRequestError::NoModule`] outside a module handler;
+    /// [`DecisionCaptureRequestError::Owner`] when the module's name is not a
+    /// canonical mechanics owner.
+    pub fn capture_decision(
+        &mut self,
+        draft: crate::decision::DecisionCaptureDraft,
+    ) -> Result<(), DecisionCaptureRequestError> {
+        let module = self
+            .module
+            .as_ref()
+            .ok_or(DecisionCaptureRequestError::NoModule)?;
+        let owner = crate::mechanics::OwnerId::new(module.as_str())
+            .map_err(|error| DecisionCaptureRequestError::Owner(error.to_string()))?;
+        self.out.defer(Deferred::DecisionCapture {
+            owner,
+            draft: Box::new(draft),
+        });
+        Ok(())
+    }
+
     /// Submit one registered authoritative action for this command's actor.
     ///
     /// This is the `Ctx`-level action submit 08j §5 (iii) and 08i §2 row 5

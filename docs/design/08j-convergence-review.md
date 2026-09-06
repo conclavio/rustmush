@@ -189,7 +189,7 @@ path `validate_response_fence` → `resolve_response` → `ActionCoordinator::de
 `WorldSnapshotExtra::npc_thinking` → `mush_npc_thinking`), and `apply_action`'s `UseAbility` arm still
 calls `grounding.invoke_ability` + `announce_power_use` outside `ActionCoordinator`. 09 §K7.1 keeps
 production ruleset migration disabled; 08i §3 still books "K7.2 deletes `NpcAction::UseAbility`".
-**Owner: K.** No E action; do not cite typed pending/prompt families as the live NPC indicator source.
+**Owner: K.** No E action; do not cite typed pending/prompt families as the live NPC indicator source. **Retired by H2a (2026-09-05):** the `npc` decision source is composed in production (`crates/mush-npc/src/decision.rs`), `npc_counts` reads the typed pending family's census beside `rt.in_flight`, `mush_npc_thinking` counts both kinds of thinking, and `mush_npc_decisions{state}` splits the durable ones. `UseAbility`'s coordinator move is H2c.
 
 ### S11–S17 — accuracy, coverage and scope
 | # | Gap | Fix | Owner |

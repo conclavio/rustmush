@@ -243,6 +243,16 @@ pub enum Deferred {
     /// — collected via [`Engine::take_module_ops`] into the per-command
     /// write batch.
     Persist(ModuleOp),
+    /// H2a: a module asks the driving loop to capture a durable decision for
+    /// `draft.actor` under `owner`'s decision source
+    /// ([`Ctx::capture_decision`](crate::cmd::Ctx::capture_decision)). One per
+    /// step: a second voids both, as an authoritative submit fan-out does.
+    DecisionCapture {
+        /// The capturing module's mechanics owner.
+        owner: crate::mechanics::OwnerId,
+        /// The selector.
+        draft: Box<crate::decision::DecisionCaptureDraft>,
+    },
     /// Start (or re-arm with a new period) a per-scene module tick
     /// ([`Ctx::scene_tick_start`](crate::cmd::Ctx::scene_tick_start)).
     SceneTickStart {
@@ -326,6 +336,16 @@ pub struct AuthoritativeSubmit {
     pub parameters: serde_json::Value,
     /// The command's deterministic idempotency discriminator.
     pub key: crate::action::IdempotencyKeyText,
+}
+
+/// H2a: one decision capture the driving loop must build and submit — the
+/// owner whose source it lands in and the module's selector.
+#[derive(Clone, Debug)]
+pub struct QueuedDecisionCapture {
+    /// The capturing module's mechanics owner.
+    pub owner: crate::mechanics::OwnerId,
+    /// The selector.
+    pub draft: Box<crate::decision::DecisionCaptureDraft>,
 }
 
 /// The queue of [`Effect`]s one loop iteration produced. The driving loop
@@ -694,6 +714,11 @@ pub struct Engine {
     /// Outstanding requests per subject, capped by
     /// [`MAX_OPEN_REQUESTS_PER_SUBJECT`](crate::request::MAX_OPEN_REQUESTS_PER_SUBJECT).
     open_requests_per_subject: HashMap<ObjId, u32>,
+    /// H2a: decision captures awaiting the driving loop, **at most one per
+    /// actor** (the per-actor rule E7c2 fold B7 / owner decision D3 applied to
+    /// captures: one NPC's pending capture never denies another's), drained
+    /// one per step and bounded by [`AUTHORITATIVE_SUBMIT_QUEUE_MAX`].
+    decision_captures: BTreeMap<ObjId, QueuedDecisionCapture>,
 }
 
 /// How many actors may hold a queued authoritative submission at once. Small,
@@ -734,6 +759,7 @@ impl Engine {
             pending_requests: HashMap::new(),
             next_request_id: 1,
             open_requests_per_subject: HashMap::new(),
+            decision_captures: BTreeMap::new(),
         }
     }
 
@@ -752,6 +778,13 @@ impl Engine {
     }
 
     /// Install or atomically replace the delayed-decision token key ring.
+    /// H2a: whether a decision key ring is set — the production spawn starts
+    /// the decision runtime only over a keyed engine.
+    #[must_use]
+    pub const fn has_decision_keys(&self) -> bool {
+        self.decision_keys.is_some()
+    }
+
     pub fn set_decision_keys(&mut self, keys: crate::decision::DecisionKeyRing) {
         self.decision_keys = Some(keys);
     }
@@ -1372,6 +1405,157 @@ impl Engine {
         crate::decision::DecisionWitnessCaptureError,
     > {
         let projected = self.project_legal_actions(query)?;
+        self.decision_offers_from(query, &projected)
+    }
+
+    /// H2a (D-H-6): build the complete capture plan for a module's selector.
+    ///
+    /// The kernel regenerates everything the module may not choose: it
+    /// projects **the actor's own** offers for the subject, refuses unless the
+    /// owner's fallback definition is among them, captures the witnesses,
+    /// signs the prompt with the private key ring, admits the record against
+    /// every durable non-terminal decision (per-actor, per-controller, global
+    /// and byte ceilings), and stamps the deadline on the UTC clock. The
+    /// returned plan is what the owner's capture provider stages, unchanged.
+    ///
+    /// `idempotency_epoch` is the driving loop's current action epoch — the
+    /// same one command submissions carry.
+    pub fn build_decision_capture(
+        &self,
+        owner: &crate::mechanics::OwnerId,
+        draft: &crate::decision::DecisionCaptureDraft,
+        idempotency_epoch: u64,
+    ) -> Result<crate::decision::DecisionCapturePlan, crate::decision::DecisionCaptureError> {
+        use crate::decision::DecisionCaptureError;
+
+        let keys = self
+            .decision_keys
+            .as_ref()
+            .ok_or(DecisionCaptureError::Keys)?;
+        let wake_adapter = self
+            .registry
+            .decision_sources()
+            .ok_or_else(|| DecisionCaptureError::NoSource(owner.clone()))?
+            .wake_adapters()
+            .into_iter()
+            .find(|(source_owner, _)| source_owner == owner)
+            .map(|(_, adapter)| adapter)
+            .ok_or_else(|| DecisionCaptureError::NoSource(owner.clone()))?;
+        let principal = crate::action::PrincipalId::Object { id: draft.actor };
+        let query =
+            self.legal_action_query(principal.clone(), draft.actor, draft.subject.clone())?;
+        let projected = self.project_legal_actions(&query).map_err(|error| {
+            DecisionCaptureError::Projection(
+                crate::decision::DecisionWitnessCaptureError::Projection(error),
+            )
+        })?;
+        if !projected
+            .internal()
+            .any(|internal| internal.action() == &draft.fallback.0)
+        {
+            return Err(DecisionCaptureError::FallbackNotOffered(
+                draft.fallback.0.clone(),
+            ));
+        }
+        let offers = self.decision_offers_from(&query, &projected)?;
+        if offers.is_empty() {
+            return Err(DecisionCaptureError::NoOffers);
+        }
+        let (actions, offered) = offers.into_parts();
+
+        let controller = crate::decision::DecisionControllerId {
+            owner: owner.clone(),
+            key: draft.controller_key.clone(),
+        };
+        let action_idempotency = crate::action::ScopedIdempotencyKey::new(
+            crate::action::IdempotencyScope {
+                principal: principal.clone(),
+                owner: owner.clone(),
+                namespace: crate::mechanics::CanonicalId::new("decision").map_err(|error| {
+                    crate::decision::DecisionError::Canonical(error.to_string())
+                })?,
+            },
+            idempotency_epoch,
+            crate::action::IdempotencyKey::Caller(draft.key.clone()),
+        );
+        let id =
+            crate::decision::DecisionId::derive(&controller, &draft.cause, &action_idempotency)?;
+        let mut prompt = crate::decision::DecisionPrompt {
+            token: crate::decision::DecisionToken {
+                id,
+                revision: 1,
+                prompt_digest: crate::action::CanonicalHash::from_bytes([0; 32]),
+                key_version: keys.current_version(),
+                tag: crate::action::CanonicalHash::from_bytes([0; 32]),
+            },
+            actions,
+            context: draft.context.clone(),
+        };
+        let prompt_digest = prompt.digest()?;
+        prompt.token = keys.sign(id, 1, prompt_digest);
+        let prompt = crate::decision::DecisionPromptRecord::new(prompt)?;
+        let deadline = crate::clock::ClockStamp {
+            clock: crate::clock::ClockRef::Utc,
+            at: self.world.now().saturating_add(draft.deadline_secs.max(1)),
+        };
+        let pending = crate::decision::PendingDecision {
+            id,
+            revision: 1,
+            controller,
+            principal,
+            actor: draft.actor,
+            truth_subject: query.truth_subject().clone(),
+            viewer_scope: query.viewer_scope(),
+            cause: draft.cause.clone(),
+            offered,
+            prompt_digest,
+            token_key_version: keys.current_version(),
+            deadline,
+            fallback: draft.fallback.clone(),
+            action_idempotency,
+            malformed_attempts: 0,
+            attempt_audit: Vec::new(),
+            status: crate::decision::PendingDecisionStatus::Ready { attempt: 1 },
+        };
+
+        // Admission against every durable non-terminal decision, page by
+        // page, exactly as the boot audit accounts them.
+        let mut admission = crate::decision::DecisionAdmissionIndex::default();
+        let mut cursor = None;
+        loop {
+            let page = self.discover_decision_dispatches(
+                cursor.as_ref(),
+                crate::decision::MAX_DECISION_RECOVERY_PAGE,
+            )?;
+            admission.merge_existing(page.admission_index().clone())?;
+            cursor = page.next_cursor().cloned();
+            if cursor.is_none() {
+                break;
+            }
+        }
+        let admission = admission.admit(&pending, &prompt, keys)?;
+        Ok(crate::decision::DecisionCapturePlan::new(
+            owner,
+            pending,
+            prompt,
+            admission,
+            keys,
+            wake_adapter,
+            0,
+        )?)
+    }
+
+    /// Rank, witness and bound one legal-action projection into the offer set
+    /// a delayed decision carries (the body of [`Self::project_decision_offers`],
+    /// shared with [`Self::build_decision_capture`]).
+    fn decision_offers_from(
+        &self,
+        query: &crate::offer::LegalActionQuery,
+        projected: &crate::offer::ProjectedLegalActionSink,
+    ) -> Result<
+        crate::decision::DecisionOfferProjection,
+        crate::decision::DecisionWitnessCaptureError,
+    > {
         let mut ranked = Vec::with_capacity(projected.len());
         for internal in projected.internal() {
             let (witness, rank) = self.capture_decision_offer_witness(
@@ -3326,6 +3510,9 @@ impl Engine {
         // first of THIS drain, and only ever that actor's (fold C4).
         let mut queued_this_drain: BTreeSet<ObjId> = BTreeSet::new();
         let mut fanned_out: BTreeSet<ObjId> = BTreeSet::new();
+        // H2a: the same per-actor fan-out rule for decision captures.
+        let mut captured_this_drain: BTreeSet<ObjId> = BTreeSet::new();
+        let mut capture_fanned_out: BTreeSet<ObjId> = BTreeSet::new();
         for d in out.take_deferred() {
             match d {
                 Deferred::Effect(e) => fx.push(e),
@@ -3376,6 +3563,44 @@ impl Engine {
                     if let Some(info) = self.scene_ticks.remove(&(module, tag, scene)) {
                         self.sched.cancel(info.timer);
                     }
+                }
+                Deferred::DecisionCapture { owner, draft } => {
+                    // H2a, under E7c2 fold B7 / D3: per actor, exactly as the
+                    // submit arm below. A step that captures twice for one
+                    // actor captures nothing for that actor; an actor whose
+                    // earlier capture is still waiting is told, and nobody
+                    // else's capture is touched.
+                    let actor = draft.actor;
+                    if capture_fanned_out.contains(&actor) {
+                        continue;
+                    }
+                    if captured_this_drain.contains(&actor) {
+                        self.decision_captures.remove(&actor);
+                        captured_this_drain.remove(&actor);
+                        capture_fanned_out.insert(actor);
+                        out.best_effort_error(
+                            actor,
+                            "That step tried to capture more than one decision; nothing was captured.",
+                        );
+                        continue;
+                    }
+                    if self.decision_captures.contains_key(&actor) {
+                        out.best_effort_error(
+                            actor,
+                            "An earlier decision for that actor is still being captured; try again in a moment.",
+                        );
+                        continue;
+                    }
+                    if self.decision_captures.len() >= AUTHORITATIVE_SUBMIT_QUEUE_MAX {
+                        out.best_effort_error(
+                            actor,
+                            "Too many decisions are being captured right now; try again in a moment.",
+                        );
+                        continue;
+                    }
+                    self.decision_captures
+                        .insert(actor, QueuedDecisionCapture { owner, draft });
+                    captured_this_drain.insert(actor);
                 }
                 Deferred::AuthoritativeSubmit(request) => {
                     let actor = request.actor;
@@ -3518,6 +3743,38 @@ impl Engine {
     /// driven, so a freeze can tell them rather than leaving the queue mute.
     pub fn queued_authoritative_actors(&self) -> impl Iterator<Item = ObjId> + '_ {
         self.authoritative_submits.keys().copied()
+    }
+
+    /// H2a: queue one authoritative submission the driving loop itself
+    /// synthesized (the capture action after its plan was armed). It joins the
+    /// same per-actor queue command submits use (E7c2 fold B7): an actor with
+    /// a submission already queued, or a full queue, is back-pressure, not a
+    /// buffer.
+    pub fn queue_authoritative_submit(
+        &mut self,
+        submit: Box<AuthoritativeSubmit>,
+    ) -> Result<(), Box<AuthoritativeSubmit>> {
+        let actor = submit.actor;
+        if self.authoritative_submits.contains_key(&actor)
+            || self.authoritative_submits.len() >= AUTHORITATIVE_SUBMIT_QUEUE_MAX
+        {
+            return Err(submit);
+        }
+        self.authoritative_submits.insert(actor, submit);
+        Ok(())
+    }
+
+    /// H2a: whether any decision capture is waiting for the driving loop.
+    #[must_use]
+    pub fn has_decision_capture(&self) -> bool {
+        !self.decision_captures.is_empty()
+    }
+
+    /// H2a: take one waiting decision capture (the lowest actor first).
+    pub fn take_decision_capture(&mut self) -> Option<QueuedDecisionCapture> {
+        self.decision_captures
+            .pop_first()
+            .map(|(_, capture)| capture)
     }
 
     /// Take the durable-ack output gate the last step requested (if any):
@@ -3703,6 +3960,86 @@ mod tests {
             &mut fx,
         );
         (engine, nick)
+    }
+
+    /// H2a: one decision capture per step waits for the driving loop; a step
+    /// that asks for two gets neither; a capture behind an unresolved one is
+    /// refused rather than buffered (the submit slot's rules, applied).
+    #[test]
+    fn h2a_one_capture_per_step_waits_and_two_void_both() {
+        let (mut engine, nick) = setup();
+        let owner = crate::mechanics::OwnerId::new("npc").unwrap();
+        let mut definitions = crate::mechanics::DefinitionRegistryBuilder::new();
+        let idle = definitions
+            .register(
+                owner.clone(),
+                crate::mechanics::DefinitionDescriptor::new(
+                    crate::mechanics::DefinitionKind::new("action").unwrap(),
+                    crate::mechanics::DefinitionId::new("npc_idle").unwrap(),
+                    1,
+                    serde_json::json!({}),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let draft = |n: u8| crate::decision::DecisionCaptureDraft {
+            actor: nick,
+            subject: crate::action::PerceivedRef::SelfActor,
+            controller_key: crate::mechanics::CanonicalId::new("npc").unwrap(),
+            cause: crate::decision::DecisionCause {
+                kind: crate::mechanics::CanonicalId::new("npc.test").unwrap(),
+                instance: crate::action::IdempotencyKeyText::parse_canonical(format!("t-{n}"))
+                    .unwrap(),
+                replaceable_key: None,
+            },
+            context: crate::decision::ProjectedDecisionContext::new(
+                crate::mechanics::CanonicalId::new("npc.turn.v1").unwrap(),
+                serde_json::json!({}),
+            )
+            .unwrap(),
+            deadline_secs: 10,
+            fallback: crate::decision::FallbackPolicyRef(idle.clone()),
+            key: crate::action::IdempotencyKeyText::parse_canonical(format!("t-{n}")).unwrap(),
+        };
+        let capture = |n: u8| Deferred::DecisionCapture {
+            owner: owner.clone(),
+            draft: Box::new(draft(n)),
+        };
+        let mut fx = Effects::new();
+
+        // One: waits for the loop.
+        let mut out = Outbox::new();
+        out.defer(capture(1));
+        engine.drain_deferred(&mut out, &mut fx);
+        assert!(engine.has_decision_capture());
+        let queued = engine.take_decision_capture().unwrap();
+        assert_eq!(queued.owner, owner);
+        assert_eq!(queued.draft.actor, nick);
+        assert!(!engine.has_decision_capture());
+
+        // Two in one step: neither.
+        let mut out = Outbox::new();
+        out.defer(capture(1));
+        out.defer(capture(2));
+        engine.drain_deferred(&mut out, &mut fx);
+        assert!(
+            !engine.has_decision_capture(),
+            "a fan-out captured something"
+        );
+
+        // One behind an unresolved one: refused, the first stays.
+        let mut out = Outbox::new();
+        out.defer(capture(1));
+        engine.drain_deferred(&mut out, &mut fx);
+        let mut out = Outbox::new();
+        out.defer(capture(2));
+        engine.drain_deferred(&mut out, &mut fx);
+        let kept = engine.take_decision_capture().unwrap();
+        assert_eq!(
+            kept.draft.key,
+            crate::action::IdempotencyKeyText::parse_canonical("t-1").unwrap(),
+            "the later capture displaced the earlier one"
+        );
     }
 
     fn texts(out: &Outbox) -> Vec<String> {

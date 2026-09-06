@@ -399,7 +399,7 @@ async fn serve(config: Config, mut quarantine_spool: QuarantineSpool) -> Result<
     }
 
     // The single-writer world task + its store writer.
-    let handles = world_task::spawn_persist(
+    let handles = world_task::spawn_persist_with_decision_workers(
         engine,
         Arc::clone(&sessions),
         ServerDeps {
@@ -412,7 +412,8 @@ async fn serve(config: Config, mut quarantine_spool: QuarantineSpool) -> Result<
             // data dir for confirmed-poison ledger seals.
             quarantine_spool,
         },
-    );
+        llm_cfg.decision_workers,
+    )?;
     let persistence_integrity = handles.persistence_integrity.clone();
     let world = handles.handle;
     let mut world_join = handles.world_join;

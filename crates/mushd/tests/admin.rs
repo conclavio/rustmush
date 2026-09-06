@@ -500,6 +500,8 @@ fn render_stats_reports_counts_lag_and_store_health() {
         auth_last_bundle_bytes: 2_048,
         auth_last_replay_writes: 3,
         auth_commits: [12, 1, 0, 0],
+        // H2a: the durable NPC decision census.
+        npc_decisions: [2, 1, 0],
     };
     // Booted 1h 1m 1s ago.
     let text = render_stats(&engine, &health, now - 3_661, now, &extra);
@@ -519,6 +521,11 @@ fn render_stats_reports_counts_lag_and_store_health() {
         "{text}"
     );
     assert!(text.contains("NPC agents: 4 active, 1 thinking"), "{text}");
+    // H2a: the decision census line.
+    assert!(
+        text.contains("NPC decisions: 2 ready, 1 leased, 0 resolving"),
+        "{text}"
+    );
     // H3: the authoritative lane, aggregates only.
     assert!(
         text.contains(
@@ -566,6 +573,10 @@ fn render_stats_reports_counts_lag_and_store_health() {
     let text = render_stats(&engine, &ro, now, now, &StatsExtra::default());
     assert!(text.contains("READ-ONLY"), "{text}");
     assert!(text.contains("no writes yet this boot"), "{text}");
+    assert!(
+        text.contains("NPC decisions: 0 ready, 0 leased, 0 resolving"),
+        "{text}"
+    );
     // H3: the lane line renders with zero commits.
     assert!(
         text.contains(

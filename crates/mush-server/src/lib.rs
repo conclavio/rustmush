@@ -61,6 +61,7 @@ pub mod action_coordinator;
 pub mod config_ext;
 // E4c: the economy -> canon evidence bridge (08c §6.1 item 3).
 pub mod decision_dispatch;
+pub mod decision_llm;
 pub mod durable_outbox;
 pub mod econ_alerts;
 pub mod econ_canon;
@@ -199,7 +200,7 @@ async fn build_engine(
     config: &Config,
     store: &Arc<dyn ObjectStore>,
     _validated_spool: &QuarantineSpool,
-) -> Result<(Engine, Arc<StaffQueue>), String> {
+) -> Result<(Engine, Arc<StaffQueue>, Arc<LlmService>), String> {
     let offer_keys = DurableOfferKeyStore::new(config.offer_key_dir())
         .load_or_create()
         .map_err(|error| format!("offer key provisioning failed: {error}"))?;
@@ -329,7 +330,7 @@ async fn build_engine(
     engine.set_resolution_keys(resolution_keys);
     engine.set_decision_keys(decision_keys);
     modules::boot_modules(&mut engine, &**store).await?;
-    Ok((engine, staff))
+    Ok((engine, staff, llm))
 }
 
 /// Run the server: boot the world, then bind the IPC socket and serve one
@@ -398,7 +399,7 @@ pub async fn serve_with_quarantine_spool(
         Some(s) => s,
         None => open_store(&config).await?,
     };
-    let (engine, staff) = build_engine(&config, &store, &quarantine_spool).await?;
+    let (engine, staff, llm) = build_engine(&config, &store, &quarantine_spool).await?;
     let offer_routes = Arc::new(
         engine
             .registry
@@ -463,11 +464,21 @@ pub async fn serve_with_quarantine_spool(
     // dropped `Reply` would hang its `ServiceReq` oneshot (I1).
     let reply_sink = sink.clone();
     let ingress_store = Arc::clone(&store);
-    let handles = world_task::spawn_persist_with_gateway(engine, deps, move |_weak_inbound| {
-        // The forked server never polices (it owns no connection buffers), so it
-        // ignores the loop's inbound weak sender and just serializes to the boundary.
-        Arc::new(sink)
-    });
+    // H2a: the production decision composition. The provider registry is
+    // built over the same LLM service the modules were composed with; the
+    // worker limit is `[llm].decision_workers`.
+    let decision_workers = crate::config_ext::llm_config(&config.llm)?.decision_workers;
+    let handles = world_task::spawn_persist_with_gateway_production(
+        engine,
+        deps,
+        Some(Arc::clone(&llm)),
+        decision_workers,
+        move |_weak_inbound| {
+            // The forked server never polices (it owns no connection buffers), so it
+            // ignores the loop's inbound weak sender and just serializes to the boundary.
+            Arc::new(sink)
+        },
+    )?;
     let world = handles.handle;
     let world_join = handles.world_join;
     let store_writer_join = handles.writer_join;

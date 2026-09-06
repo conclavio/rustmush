@@ -12,7 +12,7 @@
 //! The tick polls [`NpcHostState`] each cadence; a ready NPC's batch is drained
 //! and fired as one off-loop turn.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::time::Duration;
 
 use mush_core::{ObjId, PanelFeedHandle};
@@ -134,9 +134,24 @@ pub struct NpcHostState {
     pub thinking: Option<PanelFeedHandle>,
     /// Tuning.
     pub config: NpcConfig,
+    /// H2a: decisions waiting for the agent tick to capture them, oldest
+    /// first. The tick issues **one per step** (a step that captures twice
+    /// captures nothing), so this is a queue, not a set.
+    pub decision_requests: VecDeque<crate::decision::NpcDecisionRequest>,
 }
 
 impl NpcHostState {
+    /// H2a: queue one durable-decision request for the tick to capture.
+    /// Returns `false` (and keeps nothing) when the queue is full
+    /// (`MAX_DECISION_REQUESTS`).
+    pub fn request_decision(&mut self, request: crate::decision::NpcDecisionRequest) -> bool {
+        if self.decision_requests.len() >= crate::decision::MAX_DECISION_REQUESTS {
+            return false;
+        }
+        self.decision_requests.push_back(request);
+        true
+    }
+
     /// A fresh host around the reserved panel handle.
     #[must_use]
     pub fn new(thinking: PanelFeedHandle) -> NpcHostState {
@@ -147,6 +162,7 @@ impl NpcHostState {
             intel: IntelStore::default(),
             thinking: Some(thinking),
             config: NpcConfig::default(),
+            decision_requests: VecDeque::new(),
         }
     }
 
@@ -160,6 +176,7 @@ impl NpcHostState {
             intel: IntelStore::default(),
             thinking: None,
             config: NpcConfig::default(),
+            decision_requests: VecDeque::new(),
         }
     }
 

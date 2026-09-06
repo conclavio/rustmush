@@ -89,8 +89,34 @@ pub mod world_task {
         sessions: Arc<SessionManager>,
         deps: ServerDeps,
     ) -> PersistHandles {
-        spawn_persist_with_gateway(engine, deps, move |weak_inbound| {
-            Arc::new(InProcessSink::new(sessions, weak_inbound))
-        })
+        spawn_persist_with_decision_workers(
+            engine,
+            sessions,
+            deps,
+            mush_server::decision_dispatch::DEFAULT_DECISION_PROVIDER_WORKERS,
+        )
+        .unwrap_or_else(|error| panic!("world task spawn: {error}"))
+    }
+
+    /// H2a: [`spawn_persist`] with an explicit `[llm].decision_workers`. The
+    /// all-in-one binary calls this; a composition with decision sources
+    /// spawns through the production decision runtime over `deps.llm`.
+    ///
+    /// # Errors
+    /// See [`spawn_persist_with_gateway_production`].
+    pub fn spawn_persist_with_decision_workers(
+        engine: Engine,
+        sessions: Arc<SessionManager>,
+        deps: ServerDeps,
+        decision_workers: usize,
+    ) -> Result<PersistHandles, String> {
+        let llm = deps.llm.clone();
+        spawn_persist_with_gateway_production(
+            engine,
+            deps,
+            llm,
+            decision_workers,
+            move |weak_inbound| Arc::new(InProcessSink::new(sessions, weak_inbound)),
+        )
     }
 }

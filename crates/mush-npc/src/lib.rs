@@ -98,6 +98,7 @@
 //!   scheduled; the tick fires only on real stimuli / pending summaries.
 
 mod action;
+pub mod decision;
 mod intel;
 mod knowledge;
 mod memory;
@@ -112,6 +113,11 @@ mod turn;
 
 pub use action::{
     MAX_ACTIONS, MAX_ROUND_TRIPS, NpcAction, SAY_CAP, action_tools, parse_actions, sanitize_line,
+};
+pub use decision::{
+    DECIDE_VERB, IDLE_VERB, MAX_DECISION_REQUESTS, NPC_CONTEXT_SCHEMA, NPC_CONTROLLER_KEY,
+    NPC_DECISION_LEASE_SECS, NPC_WAKE_ADAPTER, NpcDecisionHandles, NpcDecisionRequest, TurnReceipt,
+    receipt_key, select_idle,
 };
 pub use intel::{
     INTEL_CAP, IntelKind, IntelRecord, IntelStore, IntelValidationError, MAX_INTEL_DETAIL_BYTES,

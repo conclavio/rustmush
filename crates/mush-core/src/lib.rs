@@ -178,7 +178,8 @@ pub use control::{
 pub use decision::{
     DEFAULT_DECISION_ATTEMPTS, DecisionActionBinding, DecisionAdmission, DecisionAdmissionIndex,
     DecisionAttemptAudit, DecisionAttemptFailureKind, DecisionAttemptTransition,
-    DecisionCancellationTransition, DecisionCaptureFamilies, DecisionCapturePlan, DecisionCause,
+    DecisionCancellationTransition, DecisionCaptureDraft, DecisionCaptureError,
+    DecisionCaptureFamilies, DecisionCapturePlan, DecisionCaptureSink, DecisionCause,
     DecisionCompactionTransition, DecisionCompletionFence, DecisionControllerId, DecisionError,
     DecisionFallbackReason, DecisionFallbackTransition, DecisionId, DecisionKeyRing,
     DecisionLeaseTransition, DecisionOfferProjection, DecisionPrompt, DecisionPromptRecord,
@@ -209,11 +210,11 @@ pub use decision_source::{
     DecisionResponseIngressError, DecisionResponseResolution, DecisionResponseResolveError,
     DecisionSourceCandidateError, DecisionSourceCursor, DecisionSourcePage,
     DecisionSourcePlanError, DecisionSourceRegistry, DecisionSourceRegistryBuilder,
-    DecisionSourceRegistryError, DecisionSourceScanError, DecisionTerminalIngressError,
-    DecisionTerminalPlan, DecisionTerminalPlanError, MAX_DECISION_LEASE_DURATION,
-    MAX_DECISION_SOURCES, decision_attempt_ingress, decision_cancellation_ingress,
-    decision_compaction_ingress, decision_fallback_trigger_ingress, decision_lease_ingress,
-    decision_resolving_ingress, decision_terminal_ingress,
+    DecisionSourceRegistryError, DecisionSourceScanError, DecisionStatusCensus,
+    DecisionTerminalIngressError, DecisionTerminalPlan, DecisionTerminalPlanError,
+    MAX_DECISION_LEASE_DURATION, MAX_DECISION_SOURCES, decision_attempt_ingress,
+    decision_cancellation_ingress, decision_compaction_ingress, decision_fallback_trigger_ingress,
+    decision_lease_ingress, decision_resolving_ingress, decision_terminal_ingress,
 };
 pub use durable_schedule::{
     DurableSchedule, DurableScheduleDraft, DurableScheduleError, DurableScheduleStateCodec,
@@ -223,9 +224,9 @@ pub use durable_schedule::{
 };
 pub use engine::{
     AUTHORITATIVE_SUBMIT_QUEUE_MAX, AuthoritativeSubmit, ControlMsg, Deferred, DisconnectKind,
-    Effect, Effects, Engine, Inbound, ModuleComposition, StagePreparedActionError, StagedAction,
-    StagedActionAdmissionError, StagedActionPersistence, StepOutcome, WorldCommand,
-    register_engine_commands,
+    Effect, Effects, Engine, Inbound, ModuleComposition, QueuedDecisionCapture,
+    StagePreparedActionError, StagedAction, StagedActionAdmissionError, StagedActionPersistence,
+    StepOutcome, WorldCommand, register_engine_commands,
 };
 pub use flags::{Flags, Powers, Role};
 pub use ledger::{

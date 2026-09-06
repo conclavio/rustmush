@@ -185,6 +185,9 @@ pub struct Metrics {
     // -- NPC agents (published each sample) --
     npc_active: AtomicI64,
     npc_thinking: AtomicI64,
+    npc_decisions_ready: AtomicI64,
+    npc_decisions_leased: AtomicI64,
+    npc_decisions_resolving: AtomicI64,
 
     // -- IPC boundary bounding (M18; event-driven, always live) --
     /// Input frames (`Cmd`/`Query`) shed gateway->server when `to_server` is
@@ -345,6 +348,12 @@ impl Metrics {
             .store(w.integrity_frozen, Ordering::Relaxed);
         self.npc_active.store(w.npc_active, Ordering::Relaxed);
         self.npc_thinking.store(w.npc_thinking, Ordering::Relaxed);
+        self.npc_decisions_ready
+            .store(w.npc_decisions_ready, Ordering::Relaxed);
+        self.npc_decisions_leased
+            .store(w.npc_decisions_leased, Ordering::Relaxed);
+        self.npc_decisions_resolving
+            .store(w.npc_decisions_resolving, Ordering::Relaxed);
     }
 
     /// Publish the store write-queue depth (world task on each flush) and the
@@ -666,6 +675,9 @@ impl Metrics {
                 .load(Ordering::Relaxed),
             npc_active: self.npc_active.load(Ordering::Relaxed),
             npc_thinking: self.npc_thinking.load(Ordering::Relaxed),
+            npc_decisions_ready: self.npc_decisions_ready.load(Ordering::Relaxed),
+            npc_decisions_leased: self.npc_decisions_leased.load(Ordering::Relaxed),
+            npc_decisions_resolving: self.npc_decisions_resolving.load(Ordering::Relaxed),
             ipc_frames_shed_total: self.ipc_frames_shed_total.load(Ordering::Relaxed),
             ipc_write_timeouts_total: self.ipc_write_timeouts_total.load(Ordering::Relaxed),
             ipc_to_gw_overflow_total: self.ipc_to_gw_overflow_total.load(Ordering::Relaxed),
@@ -729,6 +741,13 @@ pub struct WorldSample {
     pub npc_active: i64,
     /// NPCs with an in-flight LLM turn.
     pub npc_thinking: i64,
+    /// H2a: durable NPC decisions in `Ready`.
+    pub npc_decisions_ready: i64,
+    /// H2a: durable NPC decisions in `Leased`.
+    pub npc_decisions_leased: i64,
+    /// H2a: durable NPC decisions in `Resolving` (a fallback awaiting its
+    /// action counts here too).
+    pub npc_decisions_resolving: i64,
 }
 
 /// A rendered-ready copy of every metric.
@@ -831,6 +850,13 @@ pub struct MetricsSnapshot {
     pub npc_active: i64,
     /// NPCs with an in-flight turn.
     pub npc_thinking: i64,
+    /// H2a: durable NPC decisions in `Ready`.
+    pub npc_decisions_ready: i64,
+    /// H2a: durable NPC decisions in `Leased`.
+    pub npc_decisions_leased: i64,
+    /// H2a: durable NPC decisions in `Resolving` (a fallback awaiting its
+    /// action counts here too).
+    pub npc_decisions_resolving: i64,
     /// Input frames shed gateway->server since boot (M18).
     pub ipc_frames_shed_total: u64,
     /// IPC write timeouts on a wedged peer since boot (M18).
@@ -1156,6 +1182,20 @@ impl MetricsSnapshot {
             "gauge",
             "NPC agents with an in-flight LLM turn.",
             &[(&[], self.npc_thinking as f64)],
+        );
+        metric(
+            &mut o,
+            "mush_npc_decisions",
+            "gauge",
+            "Durable NPC decisions by pending state (H2a).",
+            &[
+                (&[("state", "ready")], self.npc_decisions_ready as f64),
+                (&[("state", "leased")], self.npc_decisions_leased as f64),
+                (
+                    &[("state", "resolving")],
+                    self.npc_decisions_resolving as f64,
+                ),
+            ],
         );
 
         // LLM aggregates (keyed only by feature route + provider — never
@@ -1581,6 +1621,53 @@ mod tests {
         }
     }
 
+    /// H2a: the decision census renders as one gauge family by state, and
+    /// `@stats`'s numbers come from the same snapshot.
+    #[test]
+    fn h2a_npc_decisions_gauge_renders_by_state() {
+        let m = Metrics::new();
+        m.publish_world(WorldSample {
+            sessions_current: 0,
+            connections_current: 0,
+            scheduler_queue_depth: 0,
+            rooms: 1,
+            exits: 0,
+            things: 0,
+            players: 1,
+            npcs: 1,
+            store_read_only: false,
+            integrity_frozen: false,
+            npc_active: 1,
+            npc_thinking: 3,
+            npc_decisions_ready: 1,
+            npc_decisions_leased: 2,
+            npc_decisions_resolving: 0,
+        });
+        let s = m.snapshot();
+        assert_eq!(
+            (
+                s.npc_decisions_ready,
+                s.npc_decisions_leased,
+                s.npc_decisions_resolving
+            ),
+            (1, 2, 0)
+        );
+        let text = s.to_prometheus(1);
+        for needle in [
+            "# TYPE mush_npc_decisions gauge",
+            "mush_npc_decisions{state=\"ready\"} 1",
+            "mush_npc_decisions{state=\"leased\"} 2",
+            "mush_npc_decisions{state=\"resolving\"} 0",
+            "mush_npc_thinking 3",
+        ] {
+            assert!(
+                text.contains(needle),
+                "missing {needle:?} in:
+{text}"
+            );
+        }
+    }
+
     #[test]
     fn connection_counters_balance() {
         let m = Metrics::new();
@@ -1783,6 +1870,9 @@ mod tests {
             integrity_frozen: false,
             npc_active: 1,
             npc_thinking: 0,
+            npc_decisions_ready: 0,
+            npc_decisions_leased: 0,
+            npc_decisions_resolving: 0,
         });
         m.publish_llm(
             true,

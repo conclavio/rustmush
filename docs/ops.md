@@ -821,6 +821,34 @@ world task. In-game reference: `help npc`. Staff surface: `@agent/*` (Builder+),
 - `@llm/disable` is the **global** kill switch (worldgen included); `@llm/enable`
   lifts it. `[llm].enabled = false` is the boot-time equivalent.
 
+### Durable decisions (H2a): the `npc` decision source
+
+Beside the volatile dialogue turn, an NPC can hold a **durable decision**: a
+kernel-recorded prompt (its projected legal actions and a public-safe context)
+that an LLM worker leases, answers with exactly one tool call, and that the
+action coordinator then executes as that NPC's own action — or, at the
+deadline, the `npc_idle` no-op. The records live in the `npc` module's
+`action-state/v1/npc_*` families and survive a restart: a decision captured
+before a crash is re-discovered, re-leased and finished after it (K7.4).
+
+- **Route.** `[llm.routes.npc_decision]` (`mushd.toml.example`). Without it —
+  or with `[llm].enabled = false`, or no `[llm]` at all — the provider is still
+  composed and answers *unavailable*, so every decision reaches `npc_idle` at
+  its deadline; boot logs one warning naming the missing route.
+- **Workers.** `[llm].decision_workers` (default 8, at most 32; boot refuses
+  0 or more).
+- **Boot audit.** Every production boot audits every durable decision record
+  before the world task exists. **A malformed pending record freezes the `npc`
+  owner at boot** (the kernel's contract): fix or remove the record
+  (`action-state/v1/npc_pending_decisions/…`) and restart.
+- **Indicator.** `mush_npc_thinking` counts dialogue turns in flight **plus**
+  non-terminal decisions; `mush_npc_decisions{state="ready|leased|resolving"}`
+  splits the decisions; `@stats` prints both lines.
+- **What the model sees.** The fixed frame, the projected offers as tools
+  (parameters typed and bounded from the offer schema; targets as opaque
+  ordinal tokens), and the context fenced as untrusted data. Never a witness,
+  a revision, an object id or the decision token.
+
 ### Injection posture (players WILL try to jailbreak NPCs)
 
 The **action allowlist is the security boundary — not the prompt.** Even a fully
