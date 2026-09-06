@@ -601,13 +601,27 @@ impl ScheduleSourceRegistry {
                         encoded_key: SmolStr::new(scanned.encoded_key()),
                     });
                 }
-                let now = engine.clock_now(schedule.clock()).map_err(|source| {
-                    ScheduleSourceScanError::Clock {
-                        source_key: key.clone(),
-                        schedule: schedule.id(),
-                        source: Box::new(source),
+                let now = match engine.clock_now(schedule.clock()) {
+                    Ok(now) => now,
+                    // E7c4 R2/D4 (independent verify fold): a schedule pinned to a
+                    // now-stale generation cannot be evaluated on the current one.
+                    // SKIP it (leaving it paused until it is restamped) rather than
+                    // failing this whole shared discovery — one stale schedule used
+                    // to return `Err`, which the durable-schedule driver classified
+                    // non-retryable and turned into `apply_integrity_freeze`, an
+                    // unrecoverable world freeze the moment any timeline generation
+                    // advanced. Every other source's candidates still surface, and
+                    // the paused entry's recovery is its owner's restamp
+                    // (`@wo/restamp` for production).
+                    Err(ClockReadError::StaleGeneration { .. }) => continue,
+                    Err(source) => {
+                        return Err(ScheduleSourceScanError::Clock {
+                            source_key: key.clone(),
+                            schedule: schedule.id(),
+                            source: Box::new(source),
+                        });
                     }
-                })?;
+                };
                 if let ScheduleEvaluation::Advance(advance) = schedule
                     .plan_due(schedule.revision(), &now, cause)
                     .map_err(|source| ScheduleSourceScanError::Schedule {

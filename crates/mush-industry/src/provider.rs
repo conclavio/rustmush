@@ -261,6 +261,17 @@ fn error(code: ActionErrorCode, message: impl Into<String>) -> ActionError {
     ActionError::new(code, false, message).expect("bounded industry action error")
 }
 
+/// The deterministic `ScheduleId` one work order's production schedule lives at
+/// (`production.{order:016x}` under `mush-industry`'s owner). Factored so the
+/// terminal transitions can tear the same schedule down that `open_schedule`
+/// created (R1, independent verify fold).
+fn production_schedule_id(order: WorkOrderId) -> Result<ScheduleId, ActionError> {
+    let local = CanonicalId::new(format!("production.{:016x}", order.0))
+        .map_err(|_| error(ActionErrorCode::Integrity, WO_REFUSED))?;
+    ScheduleId::derive(&crate::record::owner(), &local)
+        .map_err(|_| error(ActionErrorCode::Integrity, WO_REFUSED))
+}
+
 /// **One message, whatever the reason.** Depletion, a missing licence, a
 /// suspended claim and a body the actor may not know exists all answer the same
 /// sentence to a non-staff principal (08c §6.2's D1 shape, §4 rule 4): two
@@ -1109,7 +1120,7 @@ impl ActionProvider for IndustryProvider {
                 self.wo_deliver(txn, invocation, &parameters, &now, actor, &mut data)?
             }
             IndustryVerb::WoCancel => self.wo_cancel(txn, &parameters, actor, &mut data)?,
-            IndustryVerb::WoRestamp => self.wo_restamp(txn, &parameters, actor, &mut data)?,
+            IndustryVerb::WoRestamp => self.wo_restamp(txn, &parameters, &now, actor, &mut data)?,
         };
         data.insert("summary".to_owned(), json!(summary));
         let outcome = RulesValue::new(self.outcome.clone(), json!(data)).map_err(|_| {
@@ -1682,10 +1693,7 @@ impl IndustryProvider {
         actor: ObjId,
         total_units: u64,
     ) -> Result<ProductionSchedule, ActionError> {
-        let local = CanonicalId::new(format!("production.{:016x}", order.id().0))
-            .map_err(|_| error(ActionErrorCode::Integrity, WO_REFUSED))?;
-        let schedule_id = ScheduleId::derive(&crate::record::owner(), &local)
-            .map_err(|_| error(ActionErrorCode::Integrity, WO_REFUSED))?;
+        let schedule_id = production_schedule_id(order.id())?;
         // Occupancy: a prior schedule at this id may be reused only if it is
         // Completed and no live job stands (handoff.rs's rule).
         let prior = txn
@@ -1773,6 +1781,13 @@ impl IndustryProvider {
             next = next
                 .with_state(WorkOrderState::AwaitingDelivery)
                 .map_err(|source| error(ActionErrorCode::Integrity, source.to_string()))?;
+            // R1: production is finished — the order leaves `Running`, so no more
+            // occurrences are wanted. Tear the schedule and job down in this same
+            // bundle, or the next cadence tick refuses (state != Running) and
+            // freezes the world.
+            self.families
+                .tear_down_production(txn, production_schedule_id(id)?)
+                .map_err(|source| refuse(&source))?;
         }
         self.families
             .put_work_order(txn, order.revision(), next)
@@ -1909,8 +1924,21 @@ impl IndustryProvider {
         }
         let marker = WorkOrderMarker::new(FACT_WORKORDER_COMPLETED, id, actor, now.at)
             .map_err(|source| error(ActionErrorCode::Integrity, source.to_string()))?;
-        txn.insert(&self.families.wo_applied, &marker_key, marker)
-            .map_err(|error| refuse(&IndustryError::from(error)))?;
+        // R3 (independent verify fold): the completion marker rides a per-facility
+        // FIFO so `industry.wo_applied` stays bounded and the fact mirror never
+        // truncates (an unbounded family blacked out EVERY industry fact past the
+        // cap). The refuse-an-existing-marker guard above and the request-derived
+        // lot id remain the durable replay guards.
+        self.families
+            .record_wo_completion(txn, order.facility(), marker_key, marker)
+            .map_err(|source| refuse(&source))?;
+        // R1: the schedule was already torn down when production completed
+        // (`wo_advance` → AwaitingDelivery); this is idempotent belt-and-suspenders
+        // for a deliver that raced straight from `Running`, so nothing survives to
+        // tick against a terminal order.
+        self.families
+            .tear_down_production(txn, production_schedule_id(id)?)
+            .map_err(|source| refuse(&source))?;
         let next = order
             .with_state(WorkOrderState::Completed { commit })
             .map_err(|source| error(ActionErrorCode::Integrity, source.to_string()))?;
@@ -1981,6 +2009,12 @@ impl IndustryProvider {
                     .map_err(|source| refuse(&source))?;
             }
         }
+        // R1: cancelling from any non-terminal state ends the production schedule
+        // and its job in the same bundle, so no post-cancel tick raises
+        // `ProviderRejected`.
+        self.families
+            .tear_down_production(txn, production_schedule_id(id)?)
+            .map_err(|source| refuse(&source))?;
         let next = order
             .with_state(WorkOrderState::Cancelled)
             .map_err(|source| error(ActionErrorCode::Integrity, source.to_string()))?;
@@ -1991,20 +2025,90 @@ impl IndustryProvider {
         Ok(format!("Cancelled {id}."))
     }
 
-    /// B6 — restamp is campaign authority and refuses without a registered
-    /// policy. Cut 4 ships the pause default and the registration seam only (§9
-    /// q8), so there is no policy yet: it always refuses, naming the seam.
+    /// B6 / R2 (independent verify fold) — restamp reconciles a paused production
+    /// schedule to the **current** `WorldIc` generation, the default policy a
+    /// generation change needs to recover. A generation bump leaves the schedule
+    /// pinned to a now-stale generation; the shared scan SKIPS it (it no longer
+    /// freezes the world), so it is paused until this rebuilds it at `now`'s clock
+    /// and resumes an interrupted order. Requester-gated, like every other
+    /// work-order transition.
     fn wo_restamp(
         &self,
-        _txn: &mut ActionTxn<'_>,
-        _parameters: &serde_json::Map<String, Value>,
-        _actor: ObjId,
-        _data: &mut BTreeMap<String, Value>,
+        txn: &mut ActionTxn<'_>,
+        parameters: &serde_json::Map<String, Value>,
+        now: &ClockStamp,
+        actor: ObjId,
+        data: &mut BTreeMap<String, Value>,
     ) -> Result<String, ActionError> {
-        Err(error(
-            ActionErrorCode::ProviderRejected,
-            "no restamp policy is registered; the campaign layer (cut 9) registers one",
-        ))
+        let id = work_order_field(parameters, "order")?;
+        let order = self
+            .families
+            .work_order(txn, id)
+            .map_err(|source| refuse(&source))?
+            .ok_or_else(|| error(ActionErrorCode::ProviderRejected, WO_REFUSED))?;
+        self.require_requester(&order, actor)?;
+        // Meaningful only for a live order still bound to a schedule.
+        if order.schedule().is_none() {
+            return Err(error(ActionErrorCode::ProviderRejected, WO_REFUSED));
+        }
+        match order.state() {
+            WorkOrderState::Running | WorkOrderState::Interrupted { .. } => {}
+            _ => return Err(error(ActionErrorCode::ProviderRejected, WO_REFUSED)),
+        }
+        let schedule_id = production_schedule_id(id)?;
+        let prior = txn
+            .get(&self.families.schedules, &schedule_id)
+            .map_err(|_| error(ActionErrorCode::Integrity, WO_REFUSED))?
+            .cloned();
+        // Nothing to reconcile if a live schedule already runs on the current
+        // generation and the order is not interrupted.
+        if let Some(prior) = prior.as_ref()
+            && prior.clock() == &now.clock
+            && *order.state() == WorkOrderState::Running
+        {
+            return Err(error(ActionErrorCode::ProviderRejected, WO_REFUSED));
+        }
+        let next_due = ClockStamp {
+            clock: now.clock.clone(),
+            at: now
+                .at
+                .checked_add(PRODUCTION_CADENCE_SECS)
+                .ok_or_else(|| error(ActionErrorCode::BoundsExceeded, WO_REFUSED))?,
+        };
+        let generation = prior
+            .as_ref()
+            .map_or(1, |p| p.generation().saturating_add(1));
+        let next_ordinal = prior.as_ref().map_or(0, DurableSchedule::next_ordinal);
+        let restamped = DurableSchedule::new(DurableScheduleDraft {
+            id: schedule_id,
+            owner: crate::record::owner(),
+            clock: now.clock.clone(),
+            next_due,
+            cadence: Some(PRODUCTION_CADENCE_SECS),
+            generation,
+            next_ordinal,
+            restart: ScheduleRestartPolicy::Resume,
+            catch_up_order: ScheduleCatchUpOrder::OldestFirst,
+            max_catch_up: PRODUCTION_MAX_CATCH_UP,
+        })
+        .map_err(|source| error(ActionErrorCode::Integrity, source.to_string()))?;
+        if prior.is_some() {
+            txn.replace(&self.families.schedules, &schedule_id, restamped)
+        } else {
+            txn.insert(&self.families.schedules, &schedule_id, restamped)
+        }
+        .map_err(|_| error(ActionErrorCode::Integrity, WO_REFUSED))?;
+        // Resume an interrupted order to Running.
+        if *order.state() != WorkOrderState::Running {
+            let next = order
+                .with_state(WorkOrderState::Running)
+                .map_err(|source| error(ActionErrorCode::Integrity, source.to_string()))?;
+            self.families
+                .put_work_order(txn, order.revision(), next)
+                .map_err(|source| refuse(&source))?;
+        }
+        data.insert("order".to_owned(), json!(id.to_string()));
+        Ok(format!("Restamped {id} to the current generation."))
     }
 
     fn require_requester(&self, order: &WorkOrder, actor: ObjId) -> Result<(), ActionError> {
@@ -2148,7 +2252,11 @@ fn exact_validator(
 ///
 /// # Errors
 /// [`ModError`] if any definition or provider registration is refused.
-pub fn register(reg: &mut Registrar<'_>, families: &IndustryFamilies) -> Result<(), ModError> {
+pub fn register(
+    reg: &mut Registrar<'_>,
+    families: &IndustryFamilies,
+    recipes: Option<std::sync::Arc<dyn crate::workorder::RecipeAuthority>>,
+) -> Result<(), ModError> {
     let outcome_descriptor = descriptor(
         "outcome",
         OUTCOME_ID,
@@ -2206,6 +2314,8 @@ pub fn register(reg: &mut Registrar<'_>, families: &IndustryFamilies) -> Result<
         ProductionScheduleAdapter {
             schedules: families.schedules.clone(),
             jobs: families.jobs.clone(),
+            work_orders: families.work_orders.clone(),
+            recipes,
         },
     )?;
     Ok(())
@@ -2219,6 +2329,8 @@ pub fn register(reg: &mut Registrar<'_>, families: &IndustryFamilies) -> Result<
 struct ProductionScheduleAdapter {
     schedules: StateFamilyHandle<ScheduleId, DurableSchedule>,
     jobs: StateFamilyHandle<ScheduleId, ProductionJob>,
+    work_orders: StateFamilyHandle<WorkOrderId, WorkOrder>,
+    recipes: Option<std::sync::Arc<dyn crate::workorder::RecipeAuthority>>,
 }
 
 impl ScheduleActionAdapter for ProductionScheduleAdapter {
@@ -2256,6 +2368,37 @@ impl ScheduleActionAdapter for ProductionScheduleAdapter {
             .get(&self.jobs, &advance.schedule())
             .map_err(|_| error(ActionErrorCode::Integrity, "production job is unavailable"))?
             .ok_or_else(|| error(ActionErrorCode::Integrity, "production job is missing"))?;
+        // R1 (belt-and-suspenders for a historical orphan the teardown never
+        // reached) + C1 (the recipe authority is world-available here, at `plan`,
+        // where `prepare` is not): the order this schedule drives must be live and
+        // `Running`, and its pinned recipe digest must still match the authority's
+        // published one. A terminal/missing order or a drifted recipe is `Stale`,
+        // which the driver DISCARDS rather than freezing on — so a re-pinned recipe
+        // never mints and a stale schedule never raises `ProviderRejected`.
+        let order = engine
+            .action_state()
+            .get(&self.work_orders, &job.order())
+            .map_err(|_| error(ActionErrorCode::Integrity, "work order is unavailable"))?;
+        let Some(order) = order else {
+            return Err(error(
+                ActionErrorCode::Stale,
+                "production schedule outlived its work order",
+            ));
+        };
+        if *order.state() != WorkOrderState::Running {
+            return Err(error(
+                ActionErrorCode::Stale,
+                "production schedule's work order is no longer running",
+            ));
+        }
+        if let Some(recipes) = self.recipes.as_ref()
+            && recipes.digest_of(&engine.world, order.recipe()) != Some(order.recipe().digest())
+        {
+            return Err(error(
+                ActionErrorCode::Stale,
+                "production recipe has drifted from the authority; the order will not advance",
+            ));
+        }
         let occurrences = u64::try_from(advance.occurrences().len())
             .map_err(|_| error(ActionErrorCode::BoundsExceeded, "too many occurrences"))?;
         let units = occurrences

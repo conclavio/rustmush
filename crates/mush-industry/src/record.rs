@@ -1723,4 +1723,11 @@ pub enum IndustryRecordError {
         /// The cap.
         max: usize,
     },
+    /// A recipe that produces output while consuming **no** input — minting matter
+    /// from nothing, which is staff-only (deposits) and never a work order (C1,
+    /// independent verify fold). It is a floor, not a substitute for authority
+    /// binding: it does not stop an authorized insider inflating a real recipe's
+    /// output lines, which only a kernel prepare-seam closes.
+    #[error("a work-order recipe that mints output must consume at least one input")]
+    RecipeMintsFromNothing,
 }

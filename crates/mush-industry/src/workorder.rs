@@ -52,6 +52,12 @@ pub const MAX_WORK_ORDER_OUTPUTS: usize = 16;
 pub const MAX_RESERVATIONS_PER_ORDER: usize = 12;
 /// §7: recipe capabilities a work order may pin.
 pub const MAX_WORK_ORDER_REQUIRES: usize = 16;
+/// E7c4 C2/D2 (m2, independent verify fold): non-terminal work orders one
+/// requester may hold at once. Terminal orders are never pruned (the family grows
+/// one record per draft for ever), so without this cap a single actor could grow
+/// `industry.workorder` without bound with cheap drafts, and hold a competitor's
+/// finite facility capacity indefinitely. Bounds the requester, not the family.
+pub const MAX_WORK_ORDERS_PER_REQUESTER: usize = 16;
 /// Largest order quantity — inside cut 2's `MAX_POOL_QUANTITY` when multiplied
 /// through a recipe line.
 pub const MAX_WORK_ORDER_QUANTITY: u32 = 1_000_000;
@@ -344,6 +350,14 @@ impl PinnedRecipe {
             return Err(IndustryRecordError::QuantityCap {
                 max: MAX_WORK_ORDER_QUANTITY,
             });
+        }
+        // C1 (independent verify fold): a recipe that mints output while consuming
+        // no input is minting matter from nothing — the one thing no player may do
+        // (`provider.rs`'s deposit-open reason). Refused here, so a forged
+        // zero-input/inflated-output pinned cannot even be constructed, drafted, or
+        // decoded off the wire.
+        if inputs.is_empty() {
+            return Err(IndustryRecordError::RecipeMintsFromNothing);
         }
         if requires.len() > MAX_WORK_ORDER_REQUIRES {
             return Err(IndustryRecordError::ReservationCap {

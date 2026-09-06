@@ -86,6 +86,35 @@ pub enum Quarantine {
     SurveyLost,
 }
 
+/// Why one facility is quarantined (R4, independent verify fold), and the
+/// reconciliation a staffer runs. A quarantined facility's availability reads 0
+/// and every submit against it refuses — the fail-closed direction §3.4's
+/// document table calls the only one forbidden to reverse.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum FacilityQuarantine {
+    /// A live (`Running`/`Interrupted`/`AwaitingDelivery`/`Ready`) work order
+    /// holds a slot at this facility, but its authoritative capacity book
+    /// (`industry.facility_slots` **and** `industry.facility_book`) is **wholly
+    /// absent** — the "missing is not corrupt" shape the kernel does not refuse at
+    /// boot. Reading `maximum_slots` here would let availability RISE with a live
+    /// reservation gone; instead the facility reads 0 and refuses until reconciled.
+    CapacityLost,
+}
+
+impl FacilityQuarantine {
+    /// The one line a staff surface prints.
+    #[must_use]
+    pub const fn runbook(self) -> &'static str {
+        match self {
+            Self::CapacityLost => {
+                "a live work order holds a slot here but this facility's capacity book is gone; \
+                 availability reads 0 and every submit refuses. Restore the capacity records or \
+                 cancel the stranded orders, then re-run the sweep"
+            }
+        }
+    }
+}
+
 impl Quarantine {
     /// The one line a staff surface prints, with the order filled in. Staff
     /// intervention is the last resort: this names a decision, never a chore
@@ -117,6 +146,9 @@ impl Quarantine {
 pub struct IndustryStore {
     /// Deposits whose cross-family state disagreed, and why.
     quarantined: BTreeMap<OreDepositId, Quarantine>,
+    /// E7c4 R4: facilities whose live work orders reference a capacity book that
+    /// is wholly absent — the fail-open both-absent shape, fenced fail-closed.
+    facility_quarantined: BTreeMap<ObjId, FacilityQuarantine>,
     /// The one conventional document: per-deposit disclosure.
     surveys: BTreeMap<OreDepositId, SurveyDoc>,
     /// E7c4 B1: the facility definition documents (`industry:facility:<obj>`),
@@ -179,6 +211,28 @@ impl IndustryStore {
     #[must_use]
     pub fn quarantined(&self) -> Vec<(OreDepositId, Quarantine)> {
         self.quarantined
+            .iter()
+            .map(|(id, why)| (*id, *why))
+            .collect()
+    }
+
+    /// Whether one facility is quarantined (R4): its capacity book is gone while a
+    /// live work order still holds a slot there.
+    #[must_use]
+    pub fn is_facility_quarantined(&self, object: ObjId) -> bool {
+        self.facility_quarantined.contains_key(&object)
+    }
+
+    /// Why one facility is quarantined.
+    #[must_use]
+    pub fn facility_quarantine(&self, object: ObjId) -> Option<FacilityQuarantine> {
+        self.facility_quarantined.get(&object).copied()
+    }
+
+    /// Every quarantined facility, in canonical order.
+    #[must_use]
+    pub fn facilities_quarantined(&self) -> Vec<(ObjId, FacilityQuarantine)> {
+        self.facility_quarantined
             .iter()
             .map(|(id, why)| (*id, *why))
             .collect()
@@ -523,6 +577,79 @@ pub fn reconcile(ctx: &mut mush_core::ModuleCtx<'_>, families: &crate::IndustryF
         }
     }
 
+    // ---- E7c4 R4: the work-order → capacity cross-family check ----
+    // The kernel refuses a boot on a *corrupt* authoritative record, but "missing
+    // is not corrupt": if a facility's capacity book (`industry.facility_slots`
+    // AND `industry.facility_book`) is wholly absent while a live work order still
+    // holds a slot there, `available_slots` would read `maximum_slots` — the one
+    // fail-open direction §3.4 forbids. Quarantine such a facility so its
+    // availability reads 0 and every submit refuses (its reservations stand — the
+    // slot the vanished book held is not released). A corrupt (not absent)
+    // authoritative work order still refuses the whole boot by design.
+    let mut facility_quarantined: BTreeMap<ObjId, FacilityQuarantine> = BTreeMap::new();
+    let mut cursor: Option<String> = None;
+    let mut pages = 0;
+    loop {
+        if pages >= crate::record::MAX_LIST_PAGES {
+            complete = false;
+            break;
+        }
+        pages += 1;
+        let page = match ctx.scan_action_state(
+            &families.work_orders,
+            cursor.as_deref(),
+            crate::record::INDUSTRY_PAGE,
+        ) {
+            Ok(page) => page,
+            Err(_) => {
+                complete = false;
+                break;
+            }
+        };
+        let mut rows: Vec<crate::workorder::WorkOrder> = Vec::new();
+        for entry in page.entries() {
+            rows.push(entry.value().clone());
+        }
+        let next = page.next_after().map(ToString::to_string);
+        for order in rows {
+            if !order.state().holds_resources() {
+                continue;
+            }
+            let facility = order.facility();
+            if facility_quarantined.contains_key(&facility) {
+                continue;
+            }
+            let Ok(key) = crate::facility::facility_capacity_key(facility) else {
+                continue;
+            };
+            let book_present = ctx
+                .action_state(&families.facility_books, &key)
+                .ok()
+                .flatten()
+                .is_some();
+            let scalar_present = ctx
+                .action_state(&families.facility_slots, &key)
+                .ok()
+                .flatten()
+                .is_some();
+            if !book_present && !scalar_present {
+                facility_quarantined.insert(facility, FacilityQuarantine::CapacityLost);
+            }
+        }
+        match next {
+            Some(next) => cursor = Some(next),
+            None => break,
+        }
+    }
+    for (facility, why) in &facility_quarantined {
+        tracing::error!(
+            target: "industry",
+            facility = facility.0,
+            runbook = why.runbook(),
+            "industry: a facility is quarantined — a live work order's capacity book is gone"
+        );
+    }
+
     let Some(store) = ctx.w.module_state_mut::<IndustryStore>() else {
         return;
     };
@@ -544,6 +671,7 @@ pub fn reconcile(ctx: &mut mush_core::ModuleCtx<'_>, families: &crate::IndustryF
         );
     }
     store.quarantined = quarantined;
+    store.facility_quarantined = facility_quarantined;
     store.applied = applied;
     store.wo_applied = wo_applied;
     store.complete = complete;

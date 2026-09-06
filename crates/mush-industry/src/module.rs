@@ -516,6 +516,36 @@ impl GameModule for IndustryModule {
                 serde_json::to_value(value).map_err(|e| e.to_string())
             },
         )?;
+        // ---- E7c4 R3 (independent verify fold) — the work-order completion ring ----
+        // The sibling of `industry_marker_ring`, keyed per facility, so
+        // `industry.wo_applied` is bounded exactly as the extraction family is.
+        let wo_marker_ring = reg.state_family::<ObjId, crate::record::MarkerRing, _, _, _, _>(
+            StateFamilyDescriptor::new(
+                family_id("industry_wo_marker_ring")?,
+                canonical("obj_id.decimal.v1")?,
+                canonical("industry.wo_marker_ring.v1")?,
+                1,
+                canonical("industry.wo_marker_ring.decode_json.v1")?,
+                canonical("industry.wo_marker_ring.bounds.v1")?,
+                canonical("industry.wo_marker_ring.json.v1")?,
+            )
+            .map_err(|error| ModError::msg(error.to_string()))?,
+            |key: &ObjId| Ok(format!("{:010}", key.0)),
+            |value: &Value| serde_json::from_value(value.clone()).map_err(|e| e.to_string()),
+            |value: &crate::record::MarkerRing| {
+                if value.len() > crate::record::MAX_RETAINED_MARKERS_PER_DEPOSIT {
+                    Err(
+                        "a marker ring retains at most MAX_RETAINED_MARKERS_PER_DEPOSIT keys"
+                            .to_owned(),
+                    )
+                } else {
+                    Ok(())
+                }
+            },
+            |value: &crate::record::MarkerRing| {
+                serde_json::to_value(value).map_err(|e| e.to_string())
+            },
+        )?;
 
         // Cut 2's handles, taken from the composition root's cell. Cut 3 never
         // re-registers an inventory family and never mints a handle: the
@@ -549,6 +579,7 @@ impl GameModule for IndustryModule {
             jobs,
             wo_applied,
             marker_ring,
+            wo_marker_ring,
         };
 
         // ---- E7c4: B1 — the tree's SECOND `Reservation` validator, under
@@ -562,7 +593,7 @@ impl GameModule for IndustryModule {
         )?;
 
         // ---- E7c3: B6 — the prepared path ----
-        crate::provider::register(reg, &families)?;
+        crate::provider::register(reg, &families, self.recipes.clone())?;
 
         let mut store = IndustryStore::default();
         store.set_licence(self.licence.clone());

@@ -44,7 +44,10 @@ use crate::record::{
     OreDepositId, SurveyBands, SurveyDoc,
 };
 use crate::store::IndustryStore;
-use crate::workorder::{RecipeAuthority, WorkOrder, WorkOrderId, quote_duration, quote_price};
+use crate::workorder::{
+    MAX_WORK_ORDERS_PER_REQUESTER, RecipeAuthority, WorkOrder, WorkOrderId, quote_duration,
+    quote_price,
+};
 
 /// The one line an unknown, unreadable or unsurveyed ore body renders.
 ///
@@ -838,6 +841,15 @@ fn facility_available(
     object: ObjId,
     maximum_slots: u32,
 ) -> u64 {
+    // R4 (independent verify fold): a quarantined facility reads 0 — a live order
+    // holds a slot whose capacity book is gone, so availability must not rise.
+    if ctx
+        .w
+        .module_state::<IndustryStore>()
+        .is_some_and(|store| store.is_facility_quarantined(object))
+    {
+        return 0;
+    }
     let Ok(key) = facility_capacity_key(object) else {
         return u64::from(maximum_slots);
     };
@@ -926,16 +938,31 @@ fn cmd_facility(ctx: &mut Ctx<'_>, families: &IndustryFamilies) -> Result<(), Cm
         );
         return Ok(());
     }
-    // list
+    // list — the store view is byte-ordered by object id (a `BTreeMap`), so it
+    // pages with an `after` cursor and an honest `(more:)` line rather than a
+    // silent `.take(MAX_LIST_ROWS)` (B3, independent verify fold): past 64
+    // facilities the remainder was dropped with no signal. `@facility/list [=<after>]`.
+    let after: Option<u32> = ctx
+        .args
+        .rhs()
+        .and_then(|rhs| rhs.trim().trim_start_matches('#').parse::<u32>().ok());
     let facilities: Vec<FacilityRecord> = ctx
         .w
         .module_state::<IndustryStore>()
-        .map(|store| store.facilities().into_iter().cloned().collect())
+        .map(|store| {
+            store
+                .facilities()
+                .into_iter()
+                .filter(|facility| after.is_none_or(|after| facility.object().0 > after))
+                .cloned()
+                .collect()
+        })
         .unwrap_or_default();
     if facilities.is_empty() {
         ctx.out.info(ctx.actor, "(no facilities)");
         return Ok(());
     }
+    let mut more: Option<u32> = None;
     for facility in facilities.iter().take(MAX_LIST_ROWS) {
         let available =
             facility_available(ctx, families, facility.object(), facility.maximum_slots());
@@ -947,6 +974,15 @@ fn cmd_facility(ctx: &mut Ctx<'_>, families: &IndustryFamilies) -> Result<(), Cm
                 facility.maximum_slots()
             ),
         );
+    }
+    if facilities.len() > MAX_LIST_ROWS {
+        more = facilities
+            .get(MAX_LIST_ROWS - 1)
+            .map(|last| last.object().0);
+    }
+    if let Some(cursor) = more {
+        ctx.out
+            .info(ctx.actor, format!("(more: @facility/list ={cursor})"));
     }
     Ok(())
 }
@@ -1008,8 +1044,36 @@ fn cmd_wo(
         else {
             return Err(CmdError::msg(NO_SUCH_FACILITY));
         };
+        // C2/D2 (independent verify fold): only staff, the facility's owner, or an
+        // org/role the actor `acts_for` may draft here — the facility record's own
+        // "org/role scope" language, and cut 3's `extraction_authorized` shape. A
+        // stranger gets NO_SUCH_FACILITY byte-for-byte: a facility they may not run
+        // reveals neither its existence nor its capabilities (the fog rule). This
+        // closes the durable-DoS where any actor held a competitor's finite slots.
+        if !crate::store::is_staff(ctx.w, ctx.actor)
+            && !mush_economy::acts_for(ctx.w, ctx.actor, facility_rec.owner())
+        {
+            return Err(CmdError::msg(NO_SUCH_FACILITY));
+        }
+        // R4: a facility whose capacity book was lost is quarantined; refuse until
+        // reconciled rather than letting a fresh order overbook a phantom slot.
+        if ctx
+            .w
+            .module_state::<IndustryStore>()
+            .is_some_and(|store| store.is_facility_quarantined(facility))
+        {
+            return Err(CmdError::msg("That facility is unavailable."));
+        }
         if !facility_rec.offers(pinned.requires()) {
             return Err(CmdError::msg("That facility cannot run that recipe."));
+        }
+        // C2/D2 (m2): a per-requester cap. Terminal orders are never pruned, so
+        // without this a single actor could grow the family (and hold a rival's
+        // slots) without bound with cheap drafts.
+        if active_work_orders(ctx, families, ctx.actor) >= MAX_WORK_ORDERS_PER_REQUESTER {
+            return Err(CmdError::msg(
+                "you already hold the maximum number of open work orders",
+            ));
         }
         let pinned_json = serde_json::to_string(&pinned)
             .map_err(|_| CmdError::msg("that recipe could not be pinned"))?;
@@ -1038,14 +1102,31 @@ fn cmd_wo(
         // stale and refuses (fail-closed). The reservations themselves happen in
         // the provider's atomic bundle.
         if let Some(order) = wo_by_id(ctx, families, &order_arg) {
-            let facility_ok = ctx
+            // C2/D2: re-check facility authorization at submit — the drafter's
+            // authority may have lapsed since draft (`acts_for` is re-evaluated),
+            // and the direct-offer path never ran the draft command's gate.
+            let facility_rec = ctx
                 .w
                 .module_state::<IndustryStore>()
-                .and_then(|store| store.facility(order.facility()).cloned())
-                .is_some_and(|facility| {
-                    facility.capacity_revision() == order.capacity_revision()
-                        && facility.policy_revision() == order.policy_revision()
-                });
+                .and_then(|store| store.facility(order.facility()).cloned());
+            let authorized = facility_rec.as_ref().is_some_and(|facility| {
+                crate::store::is_staff(ctx.w, ctx.actor)
+                    || mush_economy::acts_for(ctx.w, ctx.actor, facility.owner())
+            });
+            if !authorized {
+                return Err(CmdError::msg(NO_SUCH_FACILITY));
+            }
+            if ctx
+                .w
+                .module_state::<IndustryStore>()
+                .is_some_and(|store| store.is_facility_quarantined(order.facility()))
+            {
+                return Err(CmdError::msg("That facility is unavailable."));
+            }
+            let facility_ok = facility_rec.is_some_and(|facility| {
+                facility.capacity_revision() == order.capacity_revision()
+                    && facility.policy_revision() == order.policy_revision()
+            });
             if !facility_ok {
                 return Err(CmdError::msg(
                     "that work order is stale — its facility changed; redraft it.",
@@ -1101,7 +1182,7 @@ fn cmd_wo(
             ctx.out.info(ctx.actor, NO_SUCH_WORK_ORDER);
             return Ok(());
         };
-        if !wo_viewable(&order, ctx.actor) {
+        if !wo_viewable(ctx, &order) {
             ctx.out.info(ctx.actor, NO_SUCH_WORK_ORDER);
             return Ok(());
         }
@@ -1121,7 +1202,7 @@ fn cmd_wo(
             ctx.out.info(ctx.actor, NO_SUCH_WORK_ORDER);
             return Ok(());
         };
-        if !wo_viewable(&order, ctx.actor) {
+        if !wo_viewable(ctx, &order) {
             // Byte-identical to the nonexistent-id line (the P lens): a projected
             // order carries no hidden org, account or endpoint fact.
             ctx.out.info(ctx.actor, NO_SUCH_WORK_ORDER);
@@ -1139,10 +1220,24 @@ fn cmd_wo(
         );
         return Ok(());
     }
-    // list — the actor's own orders, bounded on records visited.
-    let mut cursor: Option<String> = None;
+    if ctx.switches.has("set") {
+        // B5 (independent verify fold): `@wo/set` was a declared switch with no
+        // handler, so it silently ran the list. Per-field mutation is a later
+        // cut's; a declared switch must never mean "list", so it errors explicitly.
+        return Err(CmdError::msg(
+            "@wo/set is not available in this cut (per-field work-order mutation is later cut's).",
+        ));
+    }
+    // list — the actor's own orders, bounded on records visited, with an honest
+    // continuation cursor (B2, independent verify fold). Without it, a viewer
+    // whose own orders sort beyond `MAX_LIST_PAGES × INDUSTRY_PAGE` saw
+    // `(no work orders)` with no way to page on — exactly the displacement bug
+    // `@deposit/list` already fixes with an `after` cursor.
+    let after = ctx.args.rhs().map(|rhs| rhs.trim().to_owned());
+    let mut cursor: Option<String> = after.filter(|value| !value.is_empty());
     let mut pages = 0;
     let mut rows = 0;
+    let mut more: Option<String> = None;
     loop {
         if pages >= MAX_LIST_PAGES || rows >= MAX_LIST_ROWS {
             break;
@@ -1159,13 +1254,19 @@ fn cmd_wo(
         }
         let next = page.next_after().map(ToString::to_string);
         for order in batch {
-            if wo_viewable(&order, ctx.actor) && rows < MAX_LIST_ROWS {
+            if wo_viewable(ctx, &order) && rows < MAX_LIST_ROWS {
                 rows += 1;
                 ctx.out
                     .info(ctx.actor, format!("{}: {:?}", order.id(), order.state()));
             }
         }
         match next {
+            // The page budget or the row budget tripped with records still to
+            // visit: hand back a cursor so the viewer can page to their own rows.
+            Some(next) if rows >= MAX_LIST_ROWS || pages >= MAX_LIST_PAGES => {
+                more = Some(next);
+                break;
+            }
             Some(next) => cursor = Some(next),
             None => break,
         }
@@ -1173,7 +1274,45 @@ fn cmd_wo(
     if rows == 0 {
         ctx.out.info(ctx.actor, "(no work orders)");
     }
+    if let Some(cursor) = more {
+        ctx.out
+            .info(ctx.actor, format!("(more: @wo/list ={cursor})"));
+    }
     Ok(())
+}
+
+/// Count one requester's non-terminal work orders, bounded on records visited
+/// (D-LBK-5), and stopping as soon as the cap is reached (C2/D2 m2). Never a
+/// completeness claim: a truncated walk simply under-counts, which fails closed
+/// for the cap (it refuses sooner, never later).
+fn active_work_orders(ctx: &Ctx<'_>, families: &IndustryFamilies, actor: ObjId) -> usize {
+    let principal = PrincipalId::Object(actor);
+    let mut cursor: Option<String> = None;
+    let mut pages = 0;
+    let mut count = 0;
+    loop {
+        if pages >= MAX_LIST_PAGES || count >= MAX_WORK_ORDERS_PER_REQUESTER {
+            break;
+        }
+        pages += 1;
+        let Ok(page) =
+            ctx.scan_action_state(&families.work_orders, cursor.as_deref(), INDUSTRY_PAGE)
+        else {
+            break;
+        };
+        let next = page.next_after().map(ToString::to_string);
+        for entry in page.entries() {
+            let order = entry.value();
+            if order.requester() == &principal && !order.state().is_terminal() {
+                count += 1;
+            }
+        }
+        match next {
+            Some(next) => cursor = Some(next),
+            None => break,
+        }
+    }
+    count
 }
 
 fn wo_by_id(ctx: &Ctx<'_>, families: &IndustryFamilies, raw: &str) -> Option<WorkOrder> {
@@ -1185,11 +1324,16 @@ fn wo_by_id(ctx: &Ctx<'_>, families: &IndustryFamilies, raw: &str) -> Option<Wor
 }
 
 /// Whether the viewer may see this order — its requester, its beneficiary, or
-/// staff. One internal view, so an unviewable order and a nonexistent one render
-/// identically.
-fn wo_viewable(order: &WorkOrder, actor: ObjId) -> bool {
-    let principal = PrincipalId::Object(actor);
-    order.requester() == &principal || order.beneficiary() == &principal
+/// **staff** (B4, independent verify fold: the doc-comment claimed "or staff" but
+/// `is_staff` was consulted nowhere, so staff could inspect no work order and
+/// could not diagnose a stuck one). One internal view, so an unviewable order and
+/// a nonexistent one still render the byte-identical `NO_SUCH_WORK_ORDER` for a
+/// genuine non-viewer.
+fn wo_viewable(ctx: &Ctx<'_>, order: &WorkOrder) -> bool {
+    let principal = PrincipalId::Object(ctx.actor);
+    order.requester() == &principal
+        || order.beneficiary() == &principal
+        || crate::store::is_staff(ctx.w, ctx.actor)
 }
 
 /// Register the lanes (cut 3's five plus cut 4's `@facility` and `@wo`).

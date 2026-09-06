@@ -112,6 +112,17 @@ pub struct IndustryFamilies {
     /// 4). Pruning cannot break replay: the run's monotone `next_cycle` refuses a
     /// replayed old cycle first.
     pub marker_ring: StateFamilyHandle<OreDepositId, crate::record::MarkerRing>,
+    /// `industry.wo_marker_ring` — the sibling of `marker_ring` for the work-order
+    /// completion family (R3, independent verify fold). Cut 4's own
+    /// `industry.wo_applied` shipped with **no** ring and was never pruned, so past
+    /// `MAX_APPLIED_MARKERS` lifetime completions the RAM mirror truncated and
+    /// EVERY industry fact went dark for ever. Keyed **per facility** (a work order
+    /// completes exactly once, so the retention key is the facility of its recent
+    /// completions), it bounds `industry.wo_applied` the same way and cannot break
+    /// replay: the request-derived lot id and the refuse-an-existing-marker guard
+    /// remain the durable replay guards, so the ring may retire an old marker the
+    /// delivery path will never read again.
+    pub wo_marker_ring: StateFamilyHandle<ObjId, crate::record::MarkerRing>,
 }
 
 /// The canonical token one claim subject is censused under.
@@ -649,6 +660,68 @@ impl IndustryFamilies {
             return Err(IndustryError::StaleRevision);
         }
         txn.replace(&self.work_orders, &order.id(), order)?;
+        Ok(())
+    }
+
+    /// Tear the production schedule and its job down (R1, independent verify
+    /// fold): a repeating cadence schedule never auto-completes, so a terminal or
+    /// awaiting-delivery order must remove both halves in the same bundle, or the
+    /// next cadence tick discovers a candidate `wo_advance` refuses with a
+    /// non-retryable `ProviderRejected` — which the driver classifies as a hard
+    /// error and freezes the whole world. Idempotent: a second teardown finds
+    /// nothing and removes nothing (the `handoff.rs` cancel-path shape).
+    ///
+    /// # Errors
+    /// [`IndustryError`] on a family read/remove failure.
+    pub fn tear_down_production(
+        &self,
+        txn: &mut ActionTxn<'_>,
+        schedule_id: mush_core::ScheduleId,
+    ) -> Result<(), IndustryError> {
+        if txn.get(&self.jobs, &schedule_id)?.is_some() {
+            txn.remove(&self.jobs, &schedule_id)?;
+        }
+        if txn.get(&self.schedules, &schedule_id)?.is_some() {
+            txn.remove(&self.schedules, &schedule_id)?;
+        }
+        Ok(())
+    }
+
+    /// Record one work-order completion marker, keeping `industry.wo_applied`
+    /// **bounded per facility** (R3, independent verify fold): the marker rides the
+    /// terminal bundle, and an evicted (oldest) marker for the same facility is
+    /// deleted, exactly as [`run_cycle`](Self::run_cycle) does for the extraction
+    /// family. This cannot break replay idempotency: `wo_deliver` refuses an
+    /// existing marker and the request-derived lot id is the durable replay guard,
+    /// so the ring may retire an old marker the delivery path will never read again.
+    ///
+    /// # Errors
+    /// [`IndustryError`] on any family write failure; the caller has already
+    /// refused a duplicate marker.
+    pub fn record_wo_completion(
+        &self,
+        txn: &mut ActionTxn<'_>,
+        facility: ObjId,
+        marker_key: SmolStr,
+        marker: crate::workorder::WorkOrderMarker,
+    ) -> Result<(), IndustryError> {
+        txn.insert(&self.wo_applied, &marker_key, marker)?;
+        let ring = txn
+            .get(&self.wo_marker_ring, &facility)?
+            .cloned()
+            .unwrap_or_else(crate::record::MarkerRing::empty);
+        let ring_existed = txn.get(&self.wo_marker_ring, &facility)?.is_some();
+        let (ring, evicted) = ring.push(marker_key);
+        if let Some(old) = evicted
+            && txn.get(&self.wo_applied, &old)?.is_some()
+        {
+            txn.remove(&self.wo_applied, &old)?;
+        }
+        if ring_existed {
+            txn.replace(&self.wo_marker_ring, &facility, ring)?;
+        } else {
+            txn.insert(&self.wo_marker_ring, &facility, ring)?;
+        }
         Ok(())
     }
 

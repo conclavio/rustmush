@@ -14842,6 +14842,129 @@ mod tests {
         }
     }
 
+    // ---- E7c4 independent verify fold: R1 (the terminal-schedule freeze) ----
+
+    /// Before the fold, a completed/cancelled work order left its repeating
+    /// production `DurableSchedule` live; the next cadence tick discovered a
+    /// candidate, `wo_advance` refused it with a **non-retryable**
+    /// `ProviderRejected`, and the durable-schedule driver turned that into
+    /// `apply_integrity_freeze` — a whole-world freeze that a reboot re-triggered.
+    /// The terminal transition now tears the schedule down, and the adapter's
+    /// `plan` refuses a terminal order's surviving schedule as **Stale** — which
+    /// the driver DISCARDS. This asserts the classification the freeze fired on no
+    /// longer arises: planning a terminal order's orphan schedule is a Stale plan
+    /// refusal, not a hard prepare error.
+    #[test]
+    fn vf_r1_a_terminal_schedule_does_not_freeze_the_world() {
+        let (mut world, families) = extract_world();
+        let engine = world.engine_mut();
+        let order = mush_industry::WorkOrderId(0x1234);
+        let owner = mush_core::OwnerId::new("industry").unwrap();
+        let local = CanonicalId::new(format!("production.{:016x}", order.0)).unwrap();
+        let sid = mush_core::ScheduleId::derive(&owner, &local).unwrap();
+        let ic = engine.world.world_ic_now();
+        let sch = mush_core::DurableSchedule::new(mush_core::DurableScheduleDraft {
+            id: sid,
+            owner: owner.clone(),
+            clock: ic.clock.clone(),
+            next_due: mush_core::ClockStamp {
+                clock: ic.clock.clone(),
+                at: ic.at.saturating_sub(1),
+            },
+            cadence: Some(mush_industry::workorder::PRODUCTION_CADENCE_SECS),
+            generation: 1,
+            next_ordinal: 0,
+            restart: mush_core::ScheduleRestartPolicy::Resume,
+            catch_up_order: mush_core::ScheduleCatchUpOrder::OldestFirst,
+            max_catch_up: mush_industry::workorder::PRODUCTION_MAX_CATCH_UP,
+        })
+        .unwrap();
+        let job = mush_industry::ProductionJob::new(
+            sid,
+            order,
+            GOD,
+            mush_industry::workorder::PRODUCTION_UNITS_PER_OCCURRENCE,
+            1,
+        )
+        .unwrap();
+        let recipe = mush_industry::RecipeRef::new(
+            CanonicalId::new("tacsim.core").unwrap(),
+            1,
+            CanonicalId::new("alloy_smelt").unwrap(),
+            mush_core::DefinitionDigest::from_bytes([0x11; 32]),
+        )
+        .unwrap();
+        let pinned = mush_industry::PinnedRecipe::new(
+            vec![mush_industry::RecipeLine::new(CanonicalId::new("metals").unwrap(), 4).unwrap()],
+            vec![
+                mush_industry::RecipeLine::new(CanonicalId::new("structural_alloys").unwrap(), 1)
+                    .unwrap(),
+            ],
+            std::collections::BTreeSet::new(),
+            3,
+        )
+        .unwrap();
+        // A terminal (Completed) order whose schedule survived — the historical
+        // orphan the terminal-bundle teardown never reached.
+        let done = mush_industry::WorkOrder::draft(
+            order,
+            mush_org::PrincipalId::Object(GOD),
+            mush_org::PrincipalId::Object(GOD),
+            ObjId(7),
+            2,
+            1,
+            1,
+            recipe,
+            pinned,
+            1,
+            mush_economy::AccountId(1),
+            Some(mush_inventory::EndpointRef(mush_economy::VaultId(500))),
+            mush_industry::DeliveryTarget::Endpoint {
+                endpoint: mush_inventory::EndpointRef(mush_economy::VaultId(600)),
+            },
+            mush_economy::EconomicVisibility::Parties,
+        )
+        .unwrap()
+        .with_state(mush_industry::WorkOrderState::Completed {
+            commit: mush_core::CommitToken::from_bytes([9; 16]),
+        })
+        .unwrap();
+        apply_industry(engine, &families, |txn| {
+            families.open_work_order(txn, done)?;
+            txn.insert(&families.schedules, &sid, sch)
+                .map_err(mush_industry::IndustryError::from)?;
+            txn.insert(&families.jobs, &sid, job)
+                .map_err(mush_industry::IndustryError::from)?;
+            Ok(())
+        })
+        .unwrap();
+        // Discovery still finds the due schedule (discover reads only the cursor)…
+        let page = engine
+            .discover_scheduled_actions(mush_core::ScheduleDriveCause::Live, None, 32)
+            .expect("discovery does not freeze");
+        assert!(
+            !page.candidates().is_empty(),
+            "the orphan schedule is still discovered"
+        );
+        // …but planning it refuses as Stale (the adapter sees the terminal order),
+        // which `scheduled_prepare_stale` classifies as DiscardedStale — the world
+        // is not frozen.
+        let candidate = page.candidates()[0].clone();
+        let ingress =
+            mush_core::scheduled_action_ingress(candidate.action(), candidate.advance(), 0)
+                .expect("ingress");
+        match engine.plan_scheduled_action(&candidate, &ingress) {
+            Err(mush_core::ScheduleActionPlanError::Adapter { source, .. }) => {
+                assert_eq!(
+                    source.code(),
+                    mush_core::ActionErrorCode::Stale,
+                    "a terminal order's schedule plans as Stale (discarded), never a freeze"
+                );
+            }
+            other => panic!("expected a Stale plan refusal, got {other:?}"),
+        }
+    }
+
     /// E7c2 fold C4: the fan-out arm voided the ENGINE-wide slot, so a
     /// legitimate submission queued in an earlier step — possibly a different
     /// actor's — was silently destroyed and its owner was told nothing.
