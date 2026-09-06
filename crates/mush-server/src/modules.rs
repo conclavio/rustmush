@@ -1697,6 +1697,19 @@ mod tests {
                     "the industry lane {name} must publish {class:?}"
                 );
             }
+            // E7 cut 5: `@station` is one CommandSpec, so it takes the CEILING
+            // class of its switches — `/handoff` and `/cancel` ride cut 2's
+            // authoritative control-lease ingress, so the sim lane publishes
+            // `Authoritative` (`/show` reads and `/fallback` writes the exempt
+            // `sim.station_fallback` record under the same lane).
+            assert!(
+                registrations.iter().any(|(spec, owner, class)| {
+                    spec.name == "@station"
+                        && *owner == Some("sim")
+                        && *class == mush_core::CommandCompatibility::Authoritative
+                }),
+                "the sim @station lane must publish `Authoritative`"
+            );
             assert!(registrations.iter().any(|(_, owner, class)| {
                 *owner == Some("economy")
                     && *class == mush_core::CommandCompatibility::EconomyCarveOut

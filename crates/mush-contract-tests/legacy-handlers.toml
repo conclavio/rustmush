@@ -754,6 +754,12 @@ category = "baseline"
 note = "baseline pinned at b0e3b52 (server staff commands)"
 
 [[handler]]
+name = "@station"
+category = "legacy-post-image"
+family = "sim.station_fallback"
+note = "E7 cut 5 (10b 3.5, H lens, OPEN 2 resolved as candidate (iii)). One CommandSpec, ceiling class Authoritative (@inv/@wo precedent): @station/handoff and /cancel ride cut 2's Ctx::submit_authoritative seam onto the MIGRATED K6 control_handoff_request/cancel actions (crate::handoff), which drive ControlLeaseState::checked_* -- cut 5 never re-implements the lease state machine and takes no part in authority beyond the offer's own guard. Those actions declare required_channels = [] so project_legal_actions never drops the offer on the ControlLease witness loop (the first seat-taking request on a VACANT lease could not otherwise ride the command path); the requester's control-generation is pinned as a FIXED parameter and re-checked at apply by HandoffScheduleAdapter::plan via World::channel_grant_is_current, so a focus change between request and apply invalidates the in-flight request. Apply is require_scheduler, kernel-driven, never offered. /show is ReadOnly. The one LEGACY-POST-IMAGE write this command owns is @station/fallback (staff): a bounded whole-document sim.station_fallback record (station_fallback:<unit>:<station>) declaring a station's deterministic fallback controller, mirrored into a world-owned RAM slot the immediate controller reads on a clean switch -- exempt under 4.1's closing rule (pure declared policy; it takes no part in authority or prepared mechanics, and the controller enters through the authoritative seam with no PendingDecision). No RNG. Cut 5 is the first production ControlLeaseState creator."
+
+[[handler]]
 name = "@stats"
 category = "baseline"
 note = "baseline pinned at b0e3b52 (server staff commands)"

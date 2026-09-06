@@ -19,6 +19,7 @@ pub mod graph;
 mod handoff;
 pub mod links;
 pub mod route;
+pub mod station;
 pub mod transition;
 
 use std::sync::Arc;
@@ -51,6 +52,7 @@ pub use route::{
     CadenceId, DriveProfile, DriveProfileWire, Journey, JourneyStatus, Leg, LegDef, LegDefWire,
     MAX_LEGS, RouteDef, RouteDefError, RouteDefWire, RouteState, route_duration,
 };
+pub use station::{StationFallback, StationFallbacks};
 pub use transition::{Plan, SpatialError, Transition, apply, plan, run};
 
 /// Module configuration.
@@ -633,6 +635,10 @@ impl GameModule for SimulationModule {
         // persisted, never an `Outbox` write, never hydrated at boot. Boot
         // starts empty and a reconnecting player re-claims (D-E7-34).
         reg.state(focus::FocusState::default());
+        // E7c5 B6: the RAM mirror of the declared station fallbacks the immediate
+        // controller reads on a clean switch. Persisted as `sim.station_fallback`
+        // docs; boot re-hydration of the slot is a follow-up (§3.5 as-built).
+        reg.state(station::StationFallbacks::default());
         reg.behavior(domain_spec())?;
         reg.behavior(interior_spec())?;
         reg.behavior(participant_spec())?;

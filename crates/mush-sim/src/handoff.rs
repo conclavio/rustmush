@@ -8,21 +8,24 @@
 use std::collections::BTreeMap;
 
 use mush_core::{
-    ActionError, ActionErrorCode, ActionInvocation, ActionProvider, ActionStateError, ActionTxn,
-    AuthoritativeActionOutput, CanonicalHash, CanonicalId, ChannelId, ClockStamp,
-    ControlHandoffDraft, ControlLeaseError, ControlLeaseKey, ControlLeaseState,
+    ActionError, ActionErrorCode, ActionInvocation, ActionPresentation, ActionProvider,
+    ActionStateError, ActionTxn, AuthoritativeActionOutput, CanonicalHash, CanonicalId, ChannelId,
+    ClockStamp, ControlHandoffDraft, ControlLeaseError, ControlLeaseKey, ControlLeaseState,
     DefinitionDescriptor, DefinitionId, DefinitionKind, DefinitionRef, DefinitionValidationContext,
     DurableSchedule, DurableScheduleDraft, DurableScheduleError, DurableScheduleStateCodec, Engine,
-    ModError, OwnerId, PerceivedRef, PrincipalId, Registrar, RequestUid, RevisionSet, RulesValue,
-    ScheduleActionAdapter, ScheduleActionDraft, ScheduleAdvance, ScheduleCatchUpOrder,
-    ScheduleEvaluation, ScheduleId, ScheduleRestartPolicy, ScheduleState, StateFamilyDescriptor,
-    StateFamilyHandle, StateFamilyId, canonical_json_bytes_with_limit,
-    durable_schedule_state_family_descriptor,
+    LegalActionQuery, ModError, ObjId, OwnerId, PerceivedRef, PrincipalId, Registrar, RequestUid,
+    RevisionSet, RulesValue, ScheduleActionAdapter, ScheduleActionDraft, ScheduleAdvance,
+    ScheduleCatchUpOrder, ScheduleEvaluation, ScheduleId, ScheduleRestartPolicy, ScheduleState,
+    StateFamilyDescriptor, StateFamilyHandle, StateFamilyId, SubjectKey,
+    canonical_json_bytes_with_limit, durable_schedule_state_family_descriptor,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use smol_str::SmolStr;
 
 use crate::NS;
+use crate::data::{SpatialState, StationId};
+use crate::focus::FocusState;
 
 const REQUEST_ACTION_ID: &str = "control_handoff_request";
 const CANCEL_ACTION_ID: &str = "control_handoff_cancel";
@@ -42,6 +45,9 @@ struct HandoffJob {
     request: RequestUid,
     pending_revision: u64,
     boundary: ClockStamp,
+    // E7c5 B5: the requester's station-grant witness (absent for a pure K6 handoff).
+    #[serde(default)]
+    witness: Option<GrantWitness>,
 }
 
 impl HandoffJob {
@@ -51,6 +57,7 @@ impl HandoffJob {
         request: RequestUid,
         pending_revision: u64,
         boundary: ClockStamp,
+        witness: Option<GrantWitness>,
     ) -> Result<Self, String> {
         let schedule = handoff_schedule_id(&owner, &lease)?;
         let job = Self {
@@ -60,6 +67,7 @@ impl HandoffJob {
             request,
             pending_revision,
             boundary,
+            witness,
         };
         job.validate()?;
         Ok(job)
@@ -87,6 +95,38 @@ fn handoff_schedule_id(owner: &OwnerId, lease: &ControlLeaseKey) -> Result<Sched
     let local_id =
         CanonicalId::parse_canonical(local_hash.to_hex()).map_err(|error| error.to_string())?;
     ScheduleId::derive(owner, &local_id).map_err(|error| error.to_string())
+}
+
+/// The single control channel a station grants, or `None` when the station is
+/// absent or grants a set that is not exactly one channel. Cut 5 leases are
+/// per-channel; a multi-channel station is not offered through the command path.
+fn station_channel(spatial: &SpatialState, unit: ObjId, station: &StationId) -> Option<ChannelId> {
+    let spec = spatial.stations.get(&unit)?.stations.get(station)?;
+    if spec.channels.len() != 1 {
+        return None;
+    }
+    spec.channels.iter().next().cloned()
+}
+
+/// The declared fallback controller for a station (B6's `sim.station_fallback`),
+/// or `None` when none is declared. Read from the world-owned RAM mirror.
+fn declared_fallback(engine: &Engine, unit: ObjId, station: &StationId) -> Option<ObjId> {
+    engine
+        .world
+        .module_state::<crate::station::StationFallbacks>()
+        .and_then(|fallbacks| fallbacks.holder(unit, station))
+}
+
+/// The requester's current control-generation on `station` of `unit` (the exact
+/// grant epoch `World::channel_grant_is_current` compares), or `None` when the
+/// requester holds no such grant.
+fn requester_grant_epoch(engine: &Engine, actor: ObjId, unit: ObjId, station: &str) -> Option<u64> {
+    engine
+        .world
+        .command_subjects_of(actor)
+        .iter()
+        .find(|grant| grant.subject == unit && grant.station.as_str() == station)
+        .map(|grant| grant.epoch)
 }
 
 #[derive(Clone)]
@@ -119,6 +159,28 @@ struct RequestParameters {
     boundary: ClockStamp,
     reason: CanonicalId,
     expected_revision: u64,
+    // E7c5 B5 (candidate (iii)): the station-focus grant witness the offer pins as
+    // FIXED parameters. The epoch is the requester's control-generation on the named
+    // station; `HandoffScheduleAdapter::plan` re-checks it against
+    // `World::channel_grant_is_current` at apply, so a focus change between request
+    // and apply (which bumps the unit's control generation — B4) invalidates the
+    // in-flight request. Absent for a pure K6 handoff that rides no station grant.
+    #[serde(default)]
+    station: Option<SmolStr>,
+    #[serde(default)]
+    grant_epoch: Option<u64>,
+}
+
+/// The requester's station-grant witness, carried on the durable job so the
+/// scheduled apply re-checks that the grant that authorized the request is still
+/// current. `subject`/`channel`/`owner` come from the lease key and the leases
+/// owner; only `(actor, station, epoch)` are witness-specific.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct GrantWitness {
+    actor: ObjId,
+    station: SmolStr,
+    epoch: u64,
 }
 
 #[derive(Deserialize)]
@@ -303,12 +365,21 @@ impl HandoffProvider {
                 },
             )
             .map_err(|error| Self::transition_error(&error))?;
+        let witness = match (parameters.station.clone(), parameters.grant_epoch) {
+            (Some(station), Some(epoch)) => Some(GrantWitness {
+                actor: invocation.actor(),
+                station,
+                epoch,
+            }),
+            _ => None,
+        };
         let job = HandoffJob::new(
             self.families.leases.owner().clone(),
             key.clone(),
             invocation.request(),
             next.revision(),
             parameters.boundary.clone(),
+            witness,
         )
         .map_err(|_| Self::integrity("control-handoff job identity is invalid"))?;
         let schedule = DurableSchedule::new(DurableScheduleDraft {
@@ -488,11 +559,172 @@ impl HandoffProvider {
                 .with_eligible_witnesses(witnesses),
         )
     }
+
+    /// E7c5 B5 (candidate (iii)): project the request/cancel ingress for one
+    /// crew member's focused station. The offer declares **`required_channels =
+    /// []`** — so the kernel's `project_legal_actions` never runs the
+    /// `ControlLease` witness loop and drops it, which is what lets a FIRST
+    /// seat-taking request on a vacant lease ride the command path. The authority
+    /// split lives here (the action's own guard): a focused billet-holder may
+    /// establish a vacant station's lease; a non-holder cannot relieve one; the
+    /// control-generation epoch is pinned as a FIXED parameter and re-checked at
+    /// apply. Staff and relief-to-another-holder are the direct/kernel path in cut
+    /// 5 (see the module note). Apply is scheduler-driven and never offered.
+    fn project_station_offer(
+        &self,
+        action: &DefinitionRef,
+        query: &LegalActionQuery,
+        engine: &Engine,
+    ) -> Result<Option<mush_core::ProviderOfferDraft>, ActionError> {
+        let request = match self.operation {
+            HandoffOperation::Request => true,
+            HandoffOperation::Cancel => false,
+            HandoffOperation::Apply => return Ok(None),
+        };
+        let SubjectKey::Object { id: unit } = query.truth_subject() else {
+            return Ok(None);
+        };
+        let unit = *unit;
+        let actor = query.actor();
+        let Some(focus) = engine
+            .world
+            .module_state::<FocusState>()
+            .and_then(|state| state.focus_of_actor(actor))
+            .filter(|focus| focus.unit == unit)
+        else {
+            return Ok(None);
+        };
+        let station = focus.station.clone();
+        let Some(spatial) = engine.world.module_state::<SpatialState>() else {
+            return Ok(None);
+        };
+        let Some(channel) = station_channel(spatial, unit, &station) else {
+            return Ok(None);
+        };
+        let Some(epoch) = requester_grant_epoch(engine, actor, unit, station.as_str()) else {
+            return Ok(None);
+        };
+        let key = ControlLeaseKey::new(unit, channel.clone());
+        let lease = engine
+            .action_state()
+            .get(&self.families.leases, &key)
+            .map_err(|error| Self::state_error(&error))?;
+        let revision = lease.map_or(0, ControlLeaseState::revision);
+        let actor_principal = PrincipalId::Object { id: actor };
+        let now = engine.world.world_ic_now();
+        let fixed = if request {
+            // The authority split, by lease state (the create/relief split of the
+            // OWNER DECISION):
+            //   * VACANT  -> CREATE: a focused billet-holder establishes the lease
+            //     for themselves (cut 5's first-production-creator path).
+            //   * HELD by self -> RELIEF to the declared fallback controller (if one
+            //     is declared and differs from self); this is the held-relief case
+            //     candidate (iii) must also project, and the immediate controller's
+            //     path.
+            //   * HELD by another -> a non-holder cannot relieve; no offer.
+            let next_holder = match lease.and_then(ControlLeaseState::holder) {
+                None => actor_principal.clone(),
+                Some(holder) if *holder == actor_principal => {
+                    let Some(fallback) = declared_fallback(engine, unit, &station) else {
+                        return Ok(None);
+                    };
+                    let next = PrincipalId::Object { id: fallback };
+                    if next == actor_principal {
+                        return Ok(None);
+                    }
+                    next
+                }
+                Some(_) => return Ok(None),
+            };
+            json!({
+                "channel": channel,
+                "next_holder": next_holder,
+                "requested_at": now,
+                "boundary": now,
+                "reason": "focus.station_seat",
+                "expected_revision": revision,
+                "station": station.as_str(),
+                "grant_epoch": epoch,
+            })
+        } else {
+            // Cancel is offered only while the actor's own request is still pending.
+            let Some(pending) = lease.and_then(ControlLeaseState::pending) else {
+                return Ok(None);
+            };
+            if pending.requested_by() != &actor_principal {
+                return Ok(None);
+            }
+            json!({
+                "channel": channel,
+                "handoff": pending.request(),
+                "expected_revision": revision,
+            })
+        };
+        self.offer_draft(action, engine, fixed).map(Some)
+    }
+
+    /// Build the request/cancel offer: `required_channels = []`, no free
+    /// parameters (the command supplies none — the offer pins every coordinate),
+    /// the mandatory definition guard, and a bounded presentation.
+    fn offer_draft(
+        &self,
+        action: &DefinitionRef,
+        engine: &Engine,
+        fixed_parameters: Value,
+    ) -> Result<mush_core::ProviderOfferDraft, ActionError> {
+        let definitions = engine
+            .registry
+            .definitions()
+            .ok_or_else(|| Self::integrity("control-handoff definition registry is unavailable"))?;
+        let mut guards = engine
+            .registry
+            .server_guard_set_builder(RevisionSet::default())
+            .map_err(|_| Self::integrity("control-handoff guard registry is unavailable"))?;
+        guards
+            .add_definition(action.clone(), definitions)
+            .map_err(|_| Self::integrity("control-handoff definition guard is unavailable"))?;
+        let (verb, label, help) = match self.operation {
+            HandoffOperation::Request => (
+                "station_handoff",
+                "Establish station control",
+                "Take the control lease for your focused station.",
+            ),
+            HandoffOperation::Cancel => (
+                "station_handoff_cancel",
+                "Cancel a pending station handoff",
+                "Withdraw your still-pending station control handoff.",
+            ),
+            HandoffOperation::Apply => {
+                return Err(Self::invalid("control-handoff apply is never offered"));
+            }
+        };
+        Ok(mush_core::ProviderOfferDraft {
+            fixed_parameters,
+            parameters: mush_core::ProjectedParameterSchema::empty(),
+            targets: mush_core::ProjectedTargetSchema::None,
+            required_channels: Vec::new(),
+            expires: None,
+            presentation: ActionPresentation::new(verb, label, help)
+                .map_err(|_| Self::integrity("control-handoff presentation is invalid"))?,
+            guards: guards
+                .finish()
+                .map_err(|_| Self::integrity("control-handoff offer guards are invalid"))?,
+        })
+    }
 }
 
 impl ActionProvider for HandoffProvider {
     fn validate_invocation(&self, invocation: &ActionInvocation) -> Result<(), ActionError> {
         self.validate(invocation)
+    }
+
+    fn project_offer(
+        &self,
+        action: &DefinitionRef,
+        query: &LegalActionQuery,
+        engine: &Engine,
+    ) -> Result<Option<mush_core::ProviderOfferDraft>, ActionError> {
+        self.project_station_offer(action, query, engine)
     }
 
     fn prepare_invocation(
@@ -569,6 +801,27 @@ impl ScheduleActionAdapter for HandoffScheduleAdapter {
         {
             return Err(HandoffProvider::integrity(
                 "active control-handoff schedule and job disagree",
+            ));
+        }
+        // E7c5 B5 (candidate (iii)): the epoch binding is enforced HERE, at apply.
+        // The request pinned the requester's control-generation on the named station
+        // as a fixed parameter; re-check it against the kernel's existing
+        // `World::channel_grant_is_current`. A focus change between request and apply
+        // bumps the unit's control generation (B4's `apply_control_generation`), so
+        // the witness is stale and the in-flight handoff is refused rather than
+        // applied under authority that has since moved.
+        if let Some(witness) = &job.witness
+            && !engine.world.channel_grant_is_current(
+                witness.actor,
+                job.lease.subject(),
+                job.owner.as_str(),
+                witness.station.as_str(),
+                witness.epoch,
+                job.lease.channel(),
+            )
+        {
+            return Err(HandoffProvider::stale(
+                "control-handoff requester's station grant is no longer current",
             ));
         }
         let definitions = engine.registry.definitions().ok_or_else(|| {
@@ -713,6 +966,27 @@ fn exact_definition_validator(
         }
         Ok(())
     }
+}
+
+/// The registered station-handoff request action, for cut 5's `@station`
+/// command ingress (which selects it through `Ctx::submit_authoritative`).
+pub(crate) fn request_action_ref(registry: &mush_core::Registry) -> Option<DefinitionRef> {
+    action_ref(registry, REQUEST_ACTION_ID)
+}
+
+/// The registered station-handoff cancel action.
+pub(crate) fn cancel_action_ref(registry: &mush_core::Registry) -> Option<DefinitionRef> {
+    action_ref(registry, CANCEL_ACTION_ID)
+}
+
+fn action_ref(registry: &mush_core::Registry, id: &str) -> Option<DefinitionRef> {
+    let definitions = registry.definitions()?;
+    let owner = OwnerId::new(NS).ok()?;
+    let kind = DefinitionKind::new("action").ok()?;
+    let id = DefinitionId::new(id).ok()?;
+    definitions
+        .current(&mush_core::DefinitionKey { owner, kind, id })
+        .cloned()
 }
 
 pub(crate) fn register(

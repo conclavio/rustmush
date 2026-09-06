@@ -15,11 +15,17 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 use mush_core::{
-    AccountId, AccountIdentity, ChannelId, GOD, LIMBO, ModuleBootData, ModuleWrite, ObjId, ObjKind,
+    AccountId, AccountIdentity, ActionInvocation, ActionInvocationDraft, ActionOfferId,
+    CanonicalHash, CanonicalId, ChannelId, CommitToken, ControlLeaseState, DefinitionId,
+    DefinitionKey, DefinitionKind, DefinitionRef, GOD, IdempotencyKey, IdempotencyScope, LIMBO,
+    ModuleBootData, ModuleOp, ModuleWrite, ObjId, ObjKind, OfferKeyRing, OfferSecret, OwnerId,
+    PerceivedRef, PrincipalId, RequestUid, ScheduleDriveCause, ScopedIdempotencyKey,
+    scheduled_action_ingress,
 };
 use mush_proto::OutputEvent;
 use mush_sim::{AccountOracle, FocusState, ReachProof, SimulationModule};
 use mush_testkit::{TestWorld, text_of};
+use serde_json::{Value, json};
 use smol_str::SmolStr;
 
 const NS: &str = "sim";
@@ -570,4 +576,525 @@ fn e7c5_reboot_reproduces_cgen_without_focus() {
         tw2.world().module_state::<FocusState>().unwrap().is_empty(),
         "no actor holds a focus after a restart"
     );
+}
+
+// ---- cut 5 B5/B6 ----
+//
+// The H (handoff) lens: can a station's control lease be empty, doubly-held, or
+// held past a revocation across a boundary? Candidate (iii) resolves OPEN 2 — the
+// migrated `control_handoff_request` action declares `required_channels = []`, so
+// its offer always projects (never dropped by the kernel's `ControlLease` witness
+// loop); the authority split lives in the offer, and the requester's
+// control-generation is pinned as a FIXED parameter and re-checked at apply. The
+// deep request/apply mechanics are driven here at the engine level (as the
+// world-task's `CommandSubmitDriver` would), because `TestWorld::run` queues an
+// authoritative submit but does not itself resolve it.
+
+const REQUEST_ACTION: &str = "control_handoff_request";
+const APPLY_ACTION: &str = "control_handoff_apply";
+
+fn action_ref(tw: &TestWorld, id: &str) -> DefinitionRef {
+    tw.registry()
+        .definitions()
+        .expect("frozen definitions")
+        .current(&DefinitionKey {
+            owner: OwnerId::new(NS).unwrap(),
+            kind: DefinitionKind::new("action").unwrap(),
+            id: DefinitionId::new(id).unwrap(),
+        })
+        .expect("handoff action is registered")
+        .clone()
+}
+
+fn utc(at: i64) -> Value {
+    json!({ "clock": { "kind": "utc" }, "at": at })
+}
+
+/// Arm a test offer key ring so `project_legal_actions` can sign offers (the
+/// world-task supplies one in production; a bare `TestWorld` does not).
+fn arm_offer_keys(tw: &mut TestWorld) {
+    tw.engine_mut()
+        .set_offer_keys(OfferKeyRing::new(OfferSecret::new(2, [2; 32]).unwrap(), []).unwrap());
+}
+
+/// Build one request invocation for `actor` on `unit` with the station-grant
+/// witness cut 5 pins as fixed parameters.
+#[allow(clippy::too_many_arguments)]
+fn request_invocation(
+    action: &DefinitionRef,
+    req: u8,
+    actor: ObjId,
+    unit: ObjId,
+    channel: &str,
+    next: ObjId,
+    expected_revision: u64,
+    station: &str,
+    grant_epoch: u64,
+    boundary_at: i64,
+) -> ActionInvocation {
+    invocation(
+        action,
+        req,
+        actor,
+        unit,
+        json!({
+            "channel": channel,
+            "next_holder": PrincipalId::Object { id: next },
+            "requested_at": utc(boundary_at - 1),
+            "boundary": utc(boundary_at),
+            "reason": "focus.station_seat",
+            "expected_revision": expected_revision,
+            "station": station,
+            "grant_epoch": grant_epoch,
+        }),
+    )
+}
+
+fn invocation(
+    action: &DefinitionRef,
+    req: u8,
+    actor: ObjId,
+    unit: ObjId,
+    parameters: Value,
+) -> ActionInvocation {
+    let principal = PrincipalId::Object { id: actor };
+    ActionInvocation::new(ActionInvocationDraft {
+        request: RequestUid::from_bytes([req; 16]),
+        principal: principal.clone(),
+        actor,
+        offered_action: ActionOfferId(CanonicalHash::from_bytes([9; 32])),
+        subject: PerceivedRef::KnownObject {
+            id: unit,
+            revision: 0,
+        },
+        targets: Vec::new(),
+        parameters,
+        idempotency: ScopedIdempotencyKey::new(
+            IdempotencyScope {
+                principal,
+                owner: action.key().owner.clone(),
+                namespace: CanonicalId::new(action.key().id.as_str()).unwrap(),
+            },
+            1,
+            IdempotencyKey::Request(RequestUid::from_bytes([req; 16])),
+        ),
+    })
+    .unwrap()
+}
+
+/// Prepare and install one authoritative request; return the transaction ops so
+/// the lease post-image can be read.
+fn install_request(
+    tw: &mut TestWorld,
+    action: &DefinitionRef,
+    inv: &ActionInvocation,
+    token: u8,
+) -> Vec<ModuleOp> {
+    let (prepared, _) = tw
+        .engine_mut()
+        .prepare_registered_authoritative_action(action, inv, CommitToken::from_bytes([token; 16]))
+        .expect("request stages");
+    let (ops, installation) = prepared.into_parts();
+    tw.engine_mut().install_prepared_action(installation);
+    ops
+}
+
+/// Discover and apply the one due scheduled handoff at `at`, returning its ops.
+fn apply_due(tw: &mut TestWorld, at: i64, token: u8) -> Vec<ModuleOp> {
+    tw.world_mut().set_now(at);
+    let page = tw
+        .engine_mut()
+        .discover_scheduled_actions(ScheduleDriveCause::Live, None, 32)
+        .unwrap();
+    let candidate = page.candidates()[0].clone();
+    assert_eq!(candidate.action(), &action_ref(tw, APPLY_ACTION));
+    let ingress = scheduled_action_ingress(candidate.action(), candidate.advance(), 1).unwrap();
+    let plan = tw
+        .engine_mut()
+        .plan_scheduled_action(&candidate, &ingress)
+        .expect("the scheduled apply plans");
+    let (_, scheduled_inv, _) = plan.into_parts();
+    let (prepared, _) = tw
+        .engine_mut()
+        .prepare_registered_scheduled_authoritative_action(
+            &candidate,
+            &scheduled_inv,
+            CommitToken::from_bytes([token; 16]),
+        )
+        .unwrap();
+    let (ops, installation) = prepared.into_parts();
+    tw.engine_mut().install_prepared_action(installation);
+    ops
+}
+
+/// Discover the due handoff at `at` and assert it is now STALE (a focus change
+/// bumped the requester's control-generation between request and apply).
+fn apply_is_stale(tw: &mut TestWorld, at: i64) {
+    tw.world_mut().set_now(at);
+    let page = tw
+        .engine_mut()
+        .discover_scheduled_actions(ScheduleDriveCause::Live, None, 32)
+        .unwrap();
+    let candidate = page.candidates()[0].clone();
+    let ingress = scheduled_action_ingress(candidate.action(), candidate.advance(), 1).unwrap();
+    let error = tw
+        .engine_mut()
+        .plan_scheduled_action(&candidate, &ingress)
+        .expect_err("a focus change must stale the in-flight apply");
+    assert!(
+        matches!(
+            &error,
+            mush_core::ScheduleActionPlanError::Adapter { source, .. }
+                if source.code() == mush_core::ActionErrorCode::Stale
+        ),
+        "expected a stale apply, got {error:?}"
+    );
+}
+
+fn lease_post_image(ops: &[ModuleOp]) -> ControlLeaseState {
+    let value = ops
+        .iter()
+        .find_map(|op| match &op.op {
+            ModuleWrite::JsonSet { key, value } if key.contains("/control_leases/") => {
+                value.get("value").cloned()
+            }
+            _ => None,
+        })
+        .expect("the transaction carries a control-lease post-image");
+    serde_json::from_value(value).expect("a valid control-lease post-image")
+}
+
+fn grant_epoch_of(tw: &TestWorld, actor: ObjId, unit: ObjId, station: &str) -> u64 {
+    grant_epoch(tw, actor, unit, station).expect("the actor holds a station grant")
+}
+
+// A billeted actor establishes their vacant station's control lease and holds it:
+// cut 5 is the FIRST production `ControlLeaseState` creator (contradiction (vi)).
+#[test]
+fn e7c5_h_billeted_actor_creates_a_vacant_stations_lease_and_holds_it() {
+    let (mut tw, fx, _, _) = scene();
+    ok(&mut tw, fx.pilot, &format!("+focus #{}/pilot", fx.atlas.0));
+    let epoch = grant_epoch_of(&tw, fx.pilot, fx.atlas, "pilot");
+    let request = action_ref(&tw, REQUEST_ACTION);
+    let inv = request_invocation(
+        &request, 1, fx.pilot, fx.atlas, "movement", fx.pilot, 0, "pilot", epoch, 100,
+    );
+    let ops = install_request(&mut tw, &request, &inv, 1);
+    let pending = lease_post_image(&ops);
+    assert_eq!(pending.revision(), 1);
+    assert_eq!(pending.epoch(), 0);
+    assert!(
+        pending.holder().is_none(),
+        "the lease is vacant until the boundary"
+    );
+    assert!(pending.pending().is_some());
+
+    let applied = lease_post_image(&apply_due(&mut tw, 100, 2));
+    assert_eq!(
+        applied.holder(),
+        Some(&PrincipalId::Object { id: fx.pilot })
+    );
+    assert_eq!(
+        applied.epoch(),
+        1,
+        "the lease epoch advances exactly on apply"
+    );
+    assert!(applied.pending().is_none());
+}
+
+// An unbilleted, non-staff actor cannot even form the subject query for the unit
+// (no station grant), so the handoff can never be requested — the OWNER
+// DECISION's "never let an unbilleted, non-staff actor create a lease".
+#[test]
+fn e7c5_h_unbilleted_nonstaff_is_refused_at_request() {
+    let (mut tw, fx, _, _) = scene();
+    let ghost = tw.spawn_player("Ghost");
+    tw.world_mut().move_to(ghost, fx.field).unwrap();
+    let subject = PerceivedRef::KnownObject {
+        id: fx.atlas,
+        revision: 0,
+    };
+    assert!(
+        tw.engine()
+            .legal_action_query(PrincipalId::Object { id: ghost }, ghost, subject)
+            .is_err(),
+        "an unbilleted actor holds no grant on the unit and cannot query it"
+    );
+}
+
+// The current holder relieves the lease to a billeted next holder at the boundary.
+#[test]
+fn e7c5_h_current_holder_relieves_to_a_billeted_next_holder() {
+    let (mut tw, fx, _, _) = scene();
+    ok(&mut tw, fx.pilot, &format!("+focus #{}/pilot", fx.atlas.0));
+    let epoch = grant_epoch_of(&tw, fx.pilot, fx.atlas, "pilot");
+    let request = action_ref(&tw, REQUEST_ACTION);
+    // Pilot establishes the lease.
+    let inv = request_invocation(
+        &request, 1, fx.pilot, fx.atlas, "movement", fx.pilot, 0, "pilot", epoch, 100,
+    );
+    install_request(&mut tw, &request, &inv, 1);
+    let held = lease_post_image(&apply_due(&mut tw, 100, 2));
+    assert_eq!(held.holder(), Some(&PrincipalId::Object { id: fx.pilot }));
+
+    // The current holder relieves to Gunner (a billeted crew member).
+    let relief = request_invocation(
+        &request,
+        3,
+        fx.pilot,
+        fx.atlas,
+        "movement",
+        fx.gunner,
+        held.revision(),
+        "pilot",
+        epoch,
+        200,
+    );
+    install_request(&mut tw, &request, &relief, 3);
+    let relieved = lease_post_image(&apply_due(&mut tw, 200, 4));
+    assert_eq!(
+        relieved.holder(),
+        Some(&PrincipalId::Object { id: fx.gunner })
+    );
+    assert_eq!(relieved.epoch(), 2, "relief advances the lease epoch again");
+}
+
+// A non-holder (here a billet-holder who does not hold the lease) is not offered
+// a relief: the authority split refuses it at projection.
+#[test]
+fn e7c5_h_a_non_holder_cannot_relieve() {
+    let (mut tw, fx, _, _) = scene();
+    // Pilot establishes and holds the lease.
+    ok(&mut tw, fx.pilot, &format!("+focus #{}/pilot", fx.atlas.0));
+    let epoch = grant_epoch_of(&tw, fx.pilot, fx.atlas, "pilot");
+    let request = action_ref(&tw, REQUEST_ACTION);
+    let inv = request_invocation(
+        &request, 1, fx.pilot, fx.atlas, "movement", fx.pilot, 0, "pilot", epoch, 100,
+    );
+    install_request(&mut tw, &request, &inv, 1);
+    apply_due(&mut tw, 100, 2);
+    // Reassign the seat to Gunner and let Gunner focus it: Gunner now holds the
+    // billet but NOT the lease (still Pilot's). Gunner is offered no handoff.
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@spatial/unassign #{}=pilot", fx.atlas.0),
+    );
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@spatial/assign #{}=pilot,#{}", fx.atlas.0, fx.gunner.0),
+    );
+    ok(&mut tw, fx.gunner, &format!("+focus #{}/pilot", fx.atlas.0));
+    arm_offer_keys(&mut tw);
+    let subject = PerceivedRef::KnownObject {
+        id: fx.atlas,
+        revision: grant_epoch_of(&tw, fx.gunner, fx.atlas, "pilot"),
+    };
+    let query = tw
+        .engine()
+        .legal_action_query(PrincipalId::Object { id: fx.gunner }, fx.gunner, subject)
+        .expect("the billet-holder can query the unit");
+    let offers = tw.engine().project_legal_actions(&query).unwrap();
+    assert!(
+        offers.projected_for_action(&request).is_none(),
+        "a non-holder is offered no handoff on a lease held by another"
+    );
+}
+
+// The epoch binding (candidate (iii)): a focus change between request and apply
+// bumps the requester's control generation, so the in-flight apply is STALE.
+#[test]
+fn e7c5_h_focus_change_between_request_and_apply_invalidates_it() {
+    let (mut tw, fx, _, _) = scene();
+    ok(&mut tw, fx.pilot, &format!("+focus #{}/pilot", fx.atlas.0));
+    let epoch = grant_epoch_of(&tw, fx.pilot, fx.atlas, "pilot");
+    let request = action_ref(&tw, REQUEST_ACTION);
+    let inv = request_invocation(
+        &request, 1, fx.pilot, fx.atlas, "movement", fx.pilot, 0, "pilot", epoch, 500,
+    );
+    install_request(&mut tw, &request, &inv, 1);
+    // Pilot changes focus (here, releases it) — B4 bumps the unit's control
+    // generation and republishes the grant, so the pinned witness epoch is stale.
+    ok(&mut tw, fx.pilot, "+focus/release");
+    assert!(
+        grant_epoch(&tw, fx.pilot, fx.atlas, "pilot") != Some(epoch),
+        "the focus change bumped the requester's grant epoch"
+    );
+    apply_is_stale(&mut tw, 500);
+}
+
+// Apply advances the lease epoch, so the OLD holder's captured control-lease
+// authority no longer matches and the new holder's does — the witness at apply.
+#[test]
+fn e7c5_h_apply_bumps_the_lease_epoch_so_the_old_holders_intent_fails() {
+    let (mut tw, fx, _, _) = scene();
+    ok(&mut tw, fx.pilot, &format!("+focus #{}/pilot", fx.atlas.0));
+    let epoch = grant_epoch_of(&tw, fx.pilot, fx.atlas, "pilot");
+    let request = action_ref(&tw, REQUEST_ACTION);
+    let inv = request_invocation(
+        &request, 1, fx.pilot, fx.atlas, "movement", fx.pilot, 0, "pilot", epoch, 100,
+    );
+    install_request(&mut tw, &request, &inv, 1);
+    let held = lease_post_image(&apply_due(&mut tw, 100, 2));
+    let owner = OwnerId::new(NS).unwrap();
+    let old_guard = held
+        .authority_guard(owner.clone())
+        .expect("the held lease has a guard");
+    assert!(held.matches_guard(&owner, &old_guard));
+
+    let relief = request_invocation(
+        &request,
+        3,
+        fx.pilot,
+        fx.atlas,
+        "movement",
+        fx.gunner,
+        held.revision(),
+        "pilot",
+        epoch,
+        200,
+    );
+    install_request(&mut tw, &request, &relief, 3);
+    let relieved = lease_post_image(&apply_due(&mut tw, 200, 4));
+    assert!(
+        !relieved.matches_guard(&owner, &old_guard),
+        "the old holder's captured authority no longer matches after apply"
+    );
+    let new_guard = relieved
+        .authority_guard(owner.clone())
+        .expect("the new holder has a guard");
+    assert!(
+        relieved.matches_guard(&owner, &new_guard),
+        "the new holder's authority is current"
+    );
+}
+
+// `@station/handoff` is offerable (candidate (iii): the offer is never dropped by
+// the kernel's ControlLease witness loop) for BOTH the vacant-create case and the
+// held-relief case.
+#[test]
+fn e7c5_h_handoff_is_offerable_for_vacant_create_and_held_relief() {
+    let (mut tw, fx, _, _) = scene();
+    ok(&mut tw, fx.pilot, &format!("+focus #{}/pilot", fx.atlas.0));
+    arm_offer_keys(&mut tw);
+    let request = action_ref(&tw, REQUEST_ACTION);
+    let subject = |tw: &TestWorld| PerceivedRef::KnownObject {
+        id: fx.atlas,
+        revision: grant_epoch_of(tw, fx.pilot, fx.atlas, "pilot"),
+    };
+    // Vacant: the create offer projects for the focused billet-holder.
+    let query = tw
+        .engine()
+        .legal_action_query(PrincipalId::Object { id: fx.pilot }, fx.pilot, subject(&tw))
+        .unwrap();
+    let offers = tw.engine().project_legal_actions(&query).unwrap();
+    assert!(
+        offers.projected_for_action(&request).is_some(),
+        "the vacant-create handoff projects (required_channels = [])"
+    );
+
+    // Establish the lease, then declare a fallback: the held lease now projects a
+    // relief to the declared controller.
+    let epoch = grant_epoch_of(&tw, fx.pilot, fx.atlas, "pilot");
+    let inv = request_invocation(
+        &request, 1, fx.pilot, fx.atlas, "movement", fx.pilot, 0, "pilot", epoch, 100,
+    );
+    install_request(&mut tw, &request, &inv, 1);
+    apply_due(&mut tw, 100, 2);
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@station/fallback #{}/pilot=#{}", fx.atlas.0, fx.gunner.0),
+    );
+    let query = tw
+        .engine()
+        .legal_action_query(PrincipalId::Object { id: fx.pilot }, fx.pilot, subject(&tw))
+        .unwrap();
+    let offers = tw.engine().project_legal_actions(&query).unwrap();
+    assert!(
+        offers.projected_for_action(&request).is_some(),
+        "the held-relief handoff to the declared fallback also projects"
+    );
+}
+
+// B6: on a clean switch the released station's declared fallback fires
+// immediately — a direct authoritative submit with NO PendingDecision (the K7.0
+// immediate-controller seam).
+#[test]
+fn e7c5_h_fallback_controller_submits_with_no_pending_decision() {
+    let (mut tw, fx, _, _) = scene();
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@station/fallback #{}/pilot=#{}", fx.atlas.0, fx.gunner.0),
+    );
+    ok(&mut tw, fx.pilot, &format!("+focus #{}/pilot", fx.atlas.0));
+    assert!(!tw.engine().has_authoritative_submit(), "no submit yet");
+    // A clean release fires the fallback controller.
+    ok(&mut tw, fx.pilot, "+focus/release");
+    assert!(
+        tw.engine().has_authoritative_submit_for(fx.pilot),
+        "the released station's fallback submitted through the authoritative seam"
+    );
+    // No PendingDecision is captured (fire_station_fallback never captures a
+    // decision) — the immediate deterministic controller under K7.0's rule.
+}
+
+// K7 pin: cut 5 registers no decision source and no LLM path, so the fallback's
+// immediate controller submits under a DETERMINISTIC self-derived idempotency key
+// with no PendingDecision. The competing-LLM-decision contract — "a fallback
+// competing with an existing LLM decision reuses that decision's record and
+// idempotency key" — is inherently K7 territory (there is no decision to reuse).
+// This pins the current key so K7's change of it is a deliberate, visible edit.
+//
+// (The plan's "#[ignore] K7 pin" form (§4.0c C) is realized as a PASSING pin
+// instead: the landed `ci_gated_test_inventory` census requires every `#[ignore]`
+// test to be owned by a CI job that runs it, which a genuinely unrunnable K7 pin
+// cannot be — so it asserts the true cut-5 state rather than skipping. Deviation
+// recorded in §3.5's as-built.)
+#[test]
+fn e7c5_h_fallback_key_is_deterministic_not_an_llm_decision_k7() {
+    let (mut tw, fx, _, _) = scene();
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@station/fallback #{}/pilot=#{}", fx.atlas.0, fx.gunner.0),
+    );
+    ok(&mut tw, fx.pilot, &format!("+focus #{}/pilot", fx.atlas.0));
+    ok(&mut tw, fx.pilot, "+focus/release");
+    let submit = tw
+        .engine_mut()
+        .take_authoritative_submit()
+        .expect("the clean switch fired the fallback controller");
+    assert_eq!(submit.actor, fx.pilot);
+    // A self-derived deterministic key over (unit, station, holder) — NOT an LLM
+    // decision's captured action-idempotency. With a K7 decision source, the
+    // controller must reuse the pending decision's key here instead.
+    assert_eq!(
+        submit.key.as_str(),
+        format!("station.fallback.{}.pilot.{}", fx.atlas.0, fx.gunner.0)
+    );
+}
+
+// Existence hiding: an unknown unit and a station that does not exist on a unit
+// are refused with the SAME line, so probing reveals nothing about which units or
+// stations exist. (`resolve_visible_unit` also routes an unperceivable unit to
+// this same line; the sim test rig registers no concealment hook to exercise it,
+// so the byte-identical station-existence path stands in.)
+#[test]
+fn e7c5_h_station_existence_hiding_unknown_vs_unviewable() {
+    let (mut tw, fx, _, _) = scene();
+    let unknown_unit = err(&mut tw, fx.pilot, "@station/handoff #999999/pilot");
+    let unknown_station = err(
+        &mut tw,
+        fx.pilot,
+        &format!("@station/handoff #{}/ghostseat", fx.atlas.0),
+    );
+    assert_eq!(
+        unknown_unit, unknown_station,
+        "an unknown unit and an unknown station refuse byte-identically"
+    );
+    assert!(unknown_unit.contains("No such station."), "{unknown_unit}");
+    let _ = fx.other;
 }

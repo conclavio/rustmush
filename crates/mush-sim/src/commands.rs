@@ -25,7 +25,7 @@ use mush_core::{
 };
 use smol_str::SmolStr;
 
-fn is_admin(w: &mush_core::World, who: ObjId) -> bool {
+pub(crate) fn is_admin(w: &mush_core::World, who: ObjId) -> bool {
     perm::has_power(w, who, Powers::SIM_ADMIN) || perm::has_role(w, who, Role::Royalty)
 }
 
@@ -37,12 +37,12 @@ fn require_admin(ctx: &Ctx<'_>) -> Result<(), CmdError> {
     }
 }
 
-fn info(ctx: &mut Ctx<'_>, msg: impl Into<String>) {
+pub(crate) fn info(ctx: &mut Ctx<'_>, msg: impl Into<String>) {
     let actor = ctx.actor;
     ctx.out.sys_to_actor(actor, "sim", msg.into());
 }
 
-fn st<'a>(ctx: &'a Ctx<'_>) -> &'a SpatialState {
+pub(crate) fn st<'a>(ctx: &'a Ctx<'_>) -> &'a SpatialState {
     ctx.w
         .module_state::<SpatialState>()
         .expect("sim state slot installed at registration")
@@ -97,7 +97,7 @@ fn apply_control_bump(ctx: &mut Ctx<'_>, unit: ObjId, next: Option<u64>) {
     }
 }
 
-fn rhs_required(ctx: &Ctx<'_>, usage: &str) -> Result<String, CmdError> {
+pub(crate) fn rhs_required(ctx: &Ctx<'_>, usage: &str) -> Result<String, CmdError> {
     ctx.args
         .rhs()
         .map(str::trim)
@@ -1584,9 +1584,16 @@ fn focus_release(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let account = account_oracle(ctx)
         .account_of(ctx.actor)
         .ok_or_else(|| CmdError::msg("Your account is not mapped; there is nothing to release."))?;
-    let Some(unit) = focus_state(ctx).focus_of_account(account).map(|f| f.unit) else {
+    let Some((unit, station)) = focus_state(ctx)
+        .focus_of_account(account)
+        .map(|f| (f.unit, f.station.clone()))
+    else {
         return Err(CmdError::msg("You hold no foreground focus."));
     };
+    // B6 / invariant 6: a clean release fires the released station's declared
+    // fallback immediately (the K7.0 immediate-controller seam), before the focus
+    // is relinquished. A handler error below discards this deferred submit too.
+    crate::station::fire_station_fallback(ctx, unit, &station);
     let generation = prepare_focus_bump(ctx, unit)?;
     let released = ctx
         .w
@@ -2236,5 +2243,34 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
         },
         Arc::new(cmd_focus),
     )?;
+    // E7c5 (B5/B6/B8): `@station` is one CommandSpec, so it takes the CEILING
+    // class of its switches — `/handoff` and `/cancel` ride cut 2's authoritative
+    // ingress, so the command publishes `Authoritative` (as `@inv`/`@wo` do).
+    // `/show` is read-only and `/fallback` writes the exempt `sim.station_fallback`
+    // record; both live under the one authoritative lane. `LegacyPostImage` is
+    // restored afterwards so any later mush-sim registration keeps the default.
+    reg.classify_commands(CommandCompatibility::Authoritative);
+    reg.command(
+        CommandSpec {
+            name: "@station".into(),
+            shape: ArgShape::EqPair,
+            switches: ["handoff", "cancel", "show", "fallback"]
+                .iter()
+                .copied()
+                .map(SmolStr::new)
+                .collect(),
+            help: "@station  --  Station control leases (K6).\n\
+                   @station/handoff <unit>/<station>   Take the control lease for the station \
+                   you are driving (the first request establishes a vacant lease).\n\
+                   @station/cancel <unit>/<station>    Withdraw your still-pending handoff.\n\
+                   @station/show [<unit>/<station>]    Show the station you are driving.\n\
+                   @station/fallback <unit>/<station>=<who>   (staff) Declare its fallback \
+                   controller."
+                .into(),
+            ..CommandSpec::default()
+        },
+        Arc::new(crate::station::cmd_station),
+    )?;
+    reg.classify_commands(CommandCompatibility::LegacyPostImage);
     Ok(())
 }
