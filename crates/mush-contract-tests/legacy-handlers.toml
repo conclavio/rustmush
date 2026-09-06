@@ -146,6 +146,12 @@ family = "sr:fence"
 note = "E6b: the Shadowrun fence -- vendor registration, quotes and consignment. Bounded whole-document records (sr:fence:{id}, sr:quote:{id}) with strict TryFrom decoding, deterministic contract keys and no authority of their own: every money act rides the economy's offer_contract/accept_contract seams under an E4 authority, and the quote is a projection refused deterministically when stale."
 
 [[handler]]
+name = "+focus"
+category = "legacy-post-image"
+family = "sim.control_gen"
+note = "E7 cut 5: take/release foreground control of one billet. Focus itself is world-owned ephemeral memory (D-E7-34) -- no document, no key, no state family. The ONLY write +focus/+focus/release make is the PRE-EXISTING per-unit control generation (cgen:<unit>, sim.control_gen), bumped so a stale channelled intent fails World::channel_grant_is_current; that write is not a new migration target. It takes no part in authority or prepared mechanics; a lease transfer is @station's authoritative control_handoff_request."
+
+[[handler]]
 name = "+frenzy"
 category = "baseline"
 note = "baseline pinned at b0e3b52 (module, wod composition only)"
@@ -406,6 +412,11 @@ category = "baseline"
 note = "baseline pinned at b0e3b52 (module, every composition)"
 
 [[handler]]
+name = "+stations"
+category = "read-only"
+note = "E7 cut 5: list the actor's own control billets, with reach and which one is foreground. Reads HostStations/HostAssignments and the world-owned focus map; writes nothing, discloses nothing about a unit's location the viewer may not perceive, bounded on records visited (MAX_BILLETS_LISTED)."
+
+[[handler]]
 name = "+territory"
 category = "baseline"
 note = "baseline pinned at b0e3b52 (module, every composition)"
@@ -578,6 +589,11 @@ note = "baseline pinned at b0e3b52 (module, every composition)"
 name = "@housing"
 category = "baseline"
 note = "baseline pinned at b0e3b52 (module, every composition)"
+
+[[handler]]
+name = "@identity"
+category = "read-only"
+note = "E7 cut 5: @identity/audit <a>=<b> -- the staff account-distinctness oracle (OPEN 1: a new primary verb, since @account is mush-economy's money command). Reads mush_core::AccountIdentity and answers same/different; never prints an identity (R7); writes nothing."
 
 [[handler]]
 name = "@ignore"

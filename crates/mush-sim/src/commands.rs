@@ -14,13 +14,14 @@ use crate::data::{
     persist_assignments, persist_control_gen, persist_del, persist_domain, persist_meta,
     persist_mounts, persist_space, persist_stations, space_key,
 };
+use crate::focus::{AccountOracle, ActiveFocus, FocusState, MAX_BILLETS_LISTED, ReachProof};
 use crate::graph::{effective_domain, presence, project, verify_indexes, verify_projections};
 use crate::links::{refresh_actor_links, refresh_unit_actors};
 use crate::route::{self, Journey, JourneyStatus, Leg, RouteState};
 use crate::transition::{Transition, run};
 use mush_core::{
-    ArgShape, ChannelId, CmdError, CommandSpec, Ctx, Flags, ModError, ObjId, ObjKind, Powers,
-    Registrar, Role, match_object, perm,
+    ArgShape, ChannelId, CmdError, CommandCompatibility, CommandSpec, Ctx, Flags, ModError, ObjId,
+    ObjKind, Powers, Registrar, Role, match_object, perm,
 };
 use smol_str::SmolStr;
 
@@ -1418,6 +1419,315 @@ fn spatial_authority(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 }
 
 // ----------------------------------------------------------------------
+// E7c5: focus, billets, identity (cut 5)
+// ----------------------------------------------------------------------
+
+fn focus_state<'a>(ctx: &'a Ctx<'_>) -> &'a FocusState {
+    ctx.w
+        .module_state::<FocusState>()
+        .expect("focus state slot installed at registration")
+}
+
+fn account_oracle<'a>(ctx: &'a Ctx<'_>) -> &'a AccountOracle {
+    ctx.w
+        .module_state::<AccountOracle>()
+        .expect("account oracle slot installed at registration")
+}
+
+/// The `(unit, station)` an actor currently drives in the foreground, if any —
+/// the single predicate the command path consults (B3). A billet **is**
+/// `assignments.seats[station].actor == actor` plus `stations.stations[station]`;
+/// this reports which one is focused.
+#[must_use]
+pub(crate) fn focused_station(ctx: &Ctx<'_>, actor: ObjId) -> Option<(ObjId, StationId)> {
+    focus_state(ctx)
+        .focus_of_actor(actor)
+        .map(|f| (f.unit, f.station.clone()))
+}
+
+/// Whether `actor` holds the seat `station` on `unit` (a billet), and the unit
+/// actually defines that station. No focus implied — billet is eligibility.
+fn holds_billet(ctx: &Ctx<'_>, actor: ObjId, unit: ObjId, station: &StationId) -> bool {
+    let s = st(ctx);
+    s.stations
+        .get(&unit)
+        .is_some_and(|hs| hs.stations.contains_key(station))
+        && s.assignments
+            .get(&unit)
+            .and_then(|ha| ha.seats.get(station))
+            .is_some_and(|seat| seat.actor == actor)
+}
+
+/// The console room a station is operated from: its backing cockpit `space` if
+/// authored, else the unit's own projected location. `None` when neither exists
+/// (reach then fails closed).
+fn console_room(ctx: &Ctx<'_>, unit: ObjId, station: &StationId) -> Option<ObjId> {
+    let s = st(ctx);
+    let space = s
+        .stations
+        .get(&unit)
+        .and_then(|hs| hs.stations.get(station))
+        .and_then(|spec| spec.space);
+    space.or_else(|| ctx.w.get(unit).and_then(|o| o.location))
+}
+
+/// Preflight one control-epoch bump for a unit (fails closed on exhaustion,
+/// **before** any mutation — invariant: a claim whose bump fails leaves no
+/// focus).
+fn prepare_focus_bump(ctx: &Ctx<'_>, unit: ObjId) -> Result<u64, CmdError> {
+    st(ctx).next_control_generation(unit).map_err(counter_err)
+}
+
+/// Commit a preflighted bump and republish the actor's links — **bump then
+/// republish**, in that order (contradiction (v)), so the republished grant
+/// carries the new epoch and every stale intent fails `channel_grant_is_current`.
+fn apply_focus_bump_and_refresh(ctx: &mut Ctx<'_>, unit: ObjId, next: u64, actor: ObjId) {
+    st_mut(ctx).apply_control_generation(unit, next);
+    persist_control_gen(ctx.out, unit, next);
+    refresh_actor_links(ctx.w, actor);
+}
+
+fn cmd_focus(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    if ctx.switches.has("release") {
+        focus_release(ctx)
+    } else if ctx.args.raw().trim().is_empty() {
+        focus_show(ctx)
+    } else {
+        focus_acquire(ctx)
+    }
+}
+
+/// `+focus <unit>/<station>` — take foreground control of one billet, atomically
+/// relinquishing the account's prior focus (invariant 1).
+fn focus_acquire(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    let raw = ctx.args.raw().trim().to_string();
+    let (unit_ref, station_ref) = raw
+        .split_once('/')
+        .ok_or_else(|| CmdError::msg("Usage: +focus <unit>/<station>"))?;
+    let unit = match_object(ctx.w, ctx.actor, unit_ref.trim())?;
+    let station = StationId::new(station_ref)
+        .ok_or_else(|| CmdError::msg("Usage: +focus <unit>/<station>"))?;
+    // The immutable account. `None` = unknown = refuse (never a default).
+    let account = account_oracle(ctx).account_of(ctx.actor).ok_or_else(|| {
+        CmdError::msg(
+            "Your account is not mapped yet; focus is unavailable until you reconnect (staff: relink the character).",
+        )
+    })?;
+    // Ownership alone never satisfies control (invariant 5): a billet is required.
+    if !holds_billet(ctx, ctx.actor, unit, &station) {
+        return Err(CmdError::msg(format!(
+            "You hold no billet `{station}` on {}.",
+            display_name(ctx.w, unit)
+        )));
+    }
+    // Reach: a console must be co-located (cut 5's stub; cut 7 tightens it).
+    let room = console_room(ctx, unit, &station).ok_or_else(|| {
+        CmdError::msg("That station has no console you can reach (it is nowhere placed).")
+    })?;
+    let reach = ReachProof::Console { room };
+    if !reach.is_reachable(ctx.w, ctx.actor) {
+        return Err(CmdError::msg(format!(
+            "You are not at {}'s console; move there first.",
+            display_name(ctx.w, unit)
+        )));
+    }
+    // Preflight every bump BEFORE touching focus. The prior focus (if any, on a
+    // different unit) is released; both witness bumps are checked here so an
+    // exhausted epoch refuses with zero mutation and no focus is left behind.
+    let prior_unit = focus_state(ctx).focus_of_account(account).map(|f| f.unit);
+    let new_gen = prepare_focus_bump(ctx, unit)?;
+    let prior_gen = match prior_unit {
+        Some(prior) if prior != unit => Some((prior, prepare_focus_bump(ctx, prior)?)),
+        _ => None,
+    };
+    let acquired_at = ctx.w.world_ic_now();
+    // Apply — no fallible work past here. Bump the acquired unit, install the
+    // focus (relinquishing the prior atomically), then refresh witnesses; a
+    // grant on the released unit is republished under its new epoch too.
+    apply_focus_bump_and_refresh(ctx, unit, new_gen, ctx.actor);
+    let focus = ActiveFocus {
+        account,
+        actor: ctx.actor,
+        unit,
+        station: station.clone(),
+        acquired_at,
+        epoch: new_gen,
+        reach,
+    };
+    let released = ctx
+        .w
+        .module_state_mut::<FocusState>()
+        .expect("focus state slot installed at registration")
+        .claim(focus);
+    if let Some((prior, prior_generation)) = prior_gen {
+        apply_focus_bump_and_refresh(ctx, prior, prior_generation, ctx.actor);
+    }
+    for prior in released {
+        // A different actor of the same account that was displaced: re-derive
+        // its links so its (now non-foreground) grants carry the fresh epoch.
+        if prior.actor != ctx.actor {
+            refresh_actor_links(ctx.w, prior.actor);
+        }
+    }
+    info(
+        ctx,
+        format!(
+            "You take foreground control of `{station}` on {}.",
+            display_name(ctx.w, unit)
+        ),
+    );
+    Ok(())
+}
+
+/// `+focus/release` — relinquish the account's foreground focus.
+fn focus_release(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    let account = account_oracle(ctx)
+        .account_of(ctx.actor)
+        .ok_or_else(|| CmdError::msg("Your account is not mapped; there is nothing to release."))?;
+    let Some(unit) = focus_state(ctx).focus_of_account(account).map(|f| f.unit) else {
+        return Err(CmdError::msg("You hold no foreground focus."));
+    };
+    let generation = prepare_focus_bump(ctx, unit)?;
+    let released = ctx
+        .w
+        .module_state_mut::<FocusState>()
+        .expect("focus state slot installed at registration")
+        .relinquish(account);
+    // Bump then republish: the released billet still projects its grant (a
+    // delayed intent is revalidated and refused), now under the new epoch.
+    apply_focus_bump_and_refresh(ctx, unit, generation, ctx.actor);
+    if let Some(focus) = released
+        && focus.actor != ctx.actor
+    {
+        refresh_actor_links(ctx.w, focus.actor);
+    }
+    info(ctx, "You relinquish foreground control.");
+    Ok(())
+}
+
+/// `+focus` (no arg) — show the account's current focus.
+fn focus_show(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    let Some(account) = account_oracle(ctx).account_of(ctx.actor) else {
+        info(ctx, "Your account is not mapped; you hold no focus.");
+        return Ok(());
+    };
+    let line = focus_state(ctx).focus_of_account(account).map(|f| {
+        format!(
+            "You control `{}` on {} (epoch {}).",
+            f.station,
+            display_name(ctx.w, f.unit),
+            f.epoch
+        )
+    });
+    match line {
+        Some(l) => info(ctx, l),
+        None => info(ctx, "You hold no foreground focus."),
+    }
+    Ok(())
+}
+
+/// `+stations` — the actor's own billets, with reach and focusability, bounded
+/// on records **visited** (D-LBK-5) and disclosing nothing about a unit's
+/// location the viewer may not perceive.
+fn cmd_stations(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    let actor = ctx.actor;
+    let focused = focused_station(ctx, actor);
+    let mut lines: Vec<String> = Vec::new();
+    let mut visited = 0usize;
+    let mut truncated = false;
+    {
+        let s = st(ctx);
+        let units: Vec<ObjId> = s
+            .derived
+            .assignments_by_actor
+            .get(&actor)
+            .map(|us| us.iter().copied().collect())
+            .unwrap_or_default();
+        'outer: for unit in units {
+            let Some(ha) = s.assignments.get(&unit) else {
+                continue;
+            };
+            for (station, seat) in &ha.seats {
+                if seat.actor != actor {
+                    continue;
+                }
+                if visited >= MAX_BILLETS_LISTED {
+                    truncated = true;
+                    break 'outer;
+                }
+                visited += 1;
+                let role = s
+                    .stations
+                    .get(&unit)
+                    .and_then(|hs| hs.stations.get(station))
+                    .map_or_else(|| "?".to_string(), |spec| spec.role.to_string());
+                let mark = if focused.as_ref() == Some(&(unit, station.clone())) {
+                    " [FOCUSED]"
+                } else {
+                    ""
+                };
+                // Name the unit (the crew member knows their own billet) but
+                // never its location.
+                lines.push(format!(
+                    "  {} — `{station}` ({role}){mark}",
+                    display_name(ctx.w, unit)
+                ));
+            }
+        }
+    }
+    if lines.is_empty() {
+        info(ctx, "You hold no billets.");
+    } else {
+        info(ctx, "Your billets:");
+        for l in lines {
+            info(ctx, l);
+        }
+        if truncated {
+            info(
+                ctx,
+                format!("(only the first {MAX_BILLETS_LISTED} billets are shown.)"),
+            );
+        }
+    }
+    Ok(())
+}
+
+/// `@identity/audit <a>=<b>` — staff: do two characters share an account?
+/// Answers same/different and **never an id** (R7); refuses on the unknown.
+fn cmd_identity(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    if !ctx.switches.has("audit") {
+        return Err(CmdError::msg("Usage: @identity/audit <a>=<b>"));
+    }
+    require_admin(ctx)?;
+    let a = match_object(ctx.w, ctx.actor, ctx.args.lhs())?;
+    let b = match_object(
+        ctx.w,
+        ctx.actor,
+        &rhs_required(ctx, "@identity/audit <a>=<b>")?,
+    )?;
+    let verdict = account_oracle(ctx).same_account(a, b);
+    let msg = match verdict {
+        Some(true) => format!(
+            "{} and {} are the SAME account.",
+            display_name(ctx.w, a),
+            display_name(ctx.w, b)
+        ),
+        Some(false) => format!(
+            "{} and {} are DIFFERENT accounts.",
+            display_name(ctx.w, a),
+            display_name(ctx.w, b)
+        ),
+        None => format!(
+            "Cannot determine: {} or {} is not mapped to an account.",
+            display_name(ctx.w, a),
+            display_name(ctx.w, b)
+        ),
+    };
+    info(ctx, msg);
+    Ok(())
+}
+
+// ----------------------------------------------------------------------
 // egress / detach (cut 2) -- Place with a computed parent
 // ----------------------------------------------------------------------
 
@@ -1883,6 +2193,48 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
             ..CommandSpec::default()
         },
         Arc::new(intercept_cmd),
+    )?;
+
+    // E7c5 (B8): focus / billets / identity. K8.5 requires a classification
+    // before each `reg.command`; every command stores the class captured at its
+    // own registration. `+stations` and `@identity/audit` are ReadOnly; `+focus`
+    // is LegacyPostImage (it persists only `cgen`). `LegacyPostImage` is restored
+    // afterwards so any later mush-sim registration keeps the module default.
+    reg.classify_commands(CommandCompatibility::ReadOnly);
+    reg.command(
+        CommandSpec {
+            name: "+stations".into(),
+            shape: ArgShape::Raw,
+            help: "+stations  --  Your control billets, with reach and which one you drive.".into(),
+            ..CommandSpec::default()
+        },
+        Arc::new(cmd_stations),
+    )?;
+    reg.command(
+        CommandSpec {
+            name: "@identity".into(),
+            shape: ArgShape::EqPair,
+            switches: ["audit"].iter().copied().map(SmolStr::new).collect(),
+            help: "@identity/audit <a>=<b>  --  (staff) Do two characters share one account? \
+                   Answers same/different and never an identity."
+                .into(),
+            ..CommandSpec::default()
+        },
+        Arc::new(cmd_identity),
+    )?;
+    reg.classify_commands(CommandCompatibility::LegacyPostImage);
+    reg.command(
+        CommandSpec {
+            name: "+focus".into(),
+            shape: ArgShape::Raw,
+            switches: ["release"].iter().copied().map(SmolStr::new).collect(),
+            help: "+focus <unit>/<station>  --  Take foreground control of one of your billets \
+                   (atomically releasing your previous focus).\n\
+                   +focus/release  --  Give up foreground control.   +focus (no arg): show it."
+                .into(),
+            ..CommandSpec::default()
+        },
+        Arc::new(cmd_focus),
     )?;
     Ok(())
 }

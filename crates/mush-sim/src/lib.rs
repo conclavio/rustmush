@@ -43,7 +43,7 @@ pub use data::{
     SpatialState, StationAssignment, StationId, StationSpec, UnplacedInfo, cgen_key,
     passive_definition_ref, passive_rules_value,
 };
-pub use focus::AccountOracle;
+pub use focus::{AccountOracle, ActiveFocus, FocusState, MAX_BILLETS_LISTED, ReachProof};
 pub use graph::{
     effective_domain, presence, project, space_domain, verify_indexes, verify_projections,
 };
@@ -629,6 +629,10 @@ impl GameModule for SimulationModule {
             Some(oracle) => focus::AccountOracle::new(oracle),
             None => focus::AccountOracle::unwired(),
         });
+        // E7c5 B2: the world-owned ephemeral focus map — an in-RAM slot, never
+        // persisted, never an `Outbox` write, never hydrated at boot. Boot
+        // starts empty and a reconnecting player re-claims (D-E7-34).
+        reg.state(focus::FocusState::default());
         reg.behavior(domain_spec())?;
         reg.behavior(interior_spec())?;
         reg.behavior(participant_spec())?;
