@@ -30,6 +30,8 @@ critique pass. They are the *reference* design; where they conflict with each ot
 | [10a-tacsim-e7-owner-questions.md](10a-tacsim-e7-owner-questions.md) | E7 owner survey (Draft 0.2, answered): 22 decisions, the eleven-cut structure, handbacks to E5/E6 |
 | [10b-e7-implementation-plan.md](10b-e7-implementation-plan.md) | E7 implementation plan (Draft 0.2, defaults accepted): the authoritative eleven-cut plan over the landed K4a/K5a primitives |
 | [11-h-implementation-plan.md](11-h-implementation-plan.md) | H implementation plan (Draft 0.2, reviewed): four cuts of low-level work beside E7 and I — the module store-read seam (H1), the K7 production NPC cutover (H2a–c), authoritative-lane instrumentation and the scale harness (H3), the kernel-edge debt sweep (H4) |
+| [12-economy-checkpoint-review.md](12-economy-checkpoint-review.md) | The economy checkpoint review (C17): where a cold replay's time goes, the checkpoint designed, the owner's decisions (D-12-1..6), and the cuts as built — J1 parse once, J2 the bounded RAM tail, J5 the ledger archive tier, J3 the checkpoint, J4 the narrow fetch |
+| [13-idempotency-window.md](13-idempotency-window.md) | The idempotency window (D-12-6): every key on disk forever, a bounded window in RAM, a scalable Bloom filter gating the off-loop lookup with a transient refusal on the rare positive; cuts W1 (mechanism) and W2 (window) |
 
 `06-object-behaviors-spatial-domains.md` and its later companion proposals are
 implementation-informed drafts produced by dedicated design conversations deferred in `PLAN.md`.

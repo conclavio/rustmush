@@ -896,7 +896,8 @@ The review's default for the rare positive is a **transient refusal** ("try agai
 the off-loop read warms the RAM index with the answer, so no `post` caller grows a re-entry path
 and the retry posts synchronously; the one sub-point left open is whether that visible retry is
 acceptable on interactive money commands or whether the rare positive should re-enter instead,
-the §5.8 letter. Two notes for the design page: on Redis the "forever" key documents live in
+the §5.8 letter. *Decided 2026-09-06: the transient refusal (owner: "the transient try again
+shortly is probably okay"). The design is doc 13; its cuts are W1 and W2.* Two notes for the design page: on Redis the "forever" key documents live in
 Redis RAM (~150 bytes a key), so the window moves that cost to the store rather than to disk —
 a key-indexed disk tier is a separate question, not J5's chunk archive; and the boot's contract
 heal reads keys older than any window, so it reads them through the same gate. The cut gets its
