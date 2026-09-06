@@ -15755,13 +15755,19 @@ mod tests {
             "nothing executed before the restart"
         );
 
-        // Second boot from the store alone, with a provider that answers.
+        // Second boot from the store alone, with a provider that answers. Its
+        // OWN lease is long: the abandoned lease expires on the first boot's
+        // one-second terms whatever this boot would grant, and a one-second
+        // lease here let a starved box (the workspace gate beside other
+        // builds) expire the re-lease before the answer was applied and call
+        // the provider a second time — the exactly-once assertion below is
+        // about the restart, not about the box's scheduling.
         let world = crate::persist::load_or_seed_world(&*store).await.unwrap();
         let mut engine = Engine::with_modules(
             world,
             mush_core::Registry::new(),
             vec![Box::new(
-                mush_npc::NpcModule::new().with_decision_lease_secs(1),
+                mush_npc::NpcModule::new().with_decision_lease_secs(60),
             )],
         )
         .unwrap();
