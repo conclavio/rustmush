@@ -54,6 +54,31 @@ pub const MAX_OUTCOME_NAME_BYTES: usize = 64;
 /// gives it no reason to run ahead of it.
 pub const MAX_IC_FLOOR_LEAD_SECS: i64 = 365 * 86_400;
 
+/// Why [`SceneRecord::raise_ic_floor_on_arrival`] (E7 cut 6, 10b §3.6 OPEN 3)
+/// refused. Every arm names a fail-closed condition E6b's floor rule (08f R4)
+/// forbids; none is silently swallowed, so the arrival caller can page the
+/// anomaly with the offending numbers rather than losing it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ArrivalFloorRefusal {
+    /// The arrival stamp is negative or more than [`MAX_IC_FLOOR_LEAD_SECS`]
+    /// ahead of the world's own IC clock.
+    AheadOfWorld {
+        /// The refused stamp.
+        at: i64,
+        /// The world's IC clock at the raise.
+        world_now: i64,
+    },
+    /// The scene's outcome is already sealed; its IC time is canon.
+    AlreadySealed,
+    /// The stamp is at or below the current floor (a floor only moves forward).
+    NotForward {
+        /// The refused stamp.
+        at: i64,
+        /// The current floor it did not clear.
+        floor: i64,
+    },
+}
+
 /// The cap on how many subjects one sealed outcome names. The economy's
 /// party-intersection gate walks them, and canon stores them, so the set is
 /// bounded at the producer.
@@ -419,6 +444,52 @@ impl SceneRecord {
         }
         self.ic_floor = at;
         Ok(at)
+    }
+
+    /// Raise the IC floor for a **journey arrival** (E7 cut 6, B4 / 10b §3.6
+    /// OPEN 3) — the single public seam a `mush-sim` arrival calls so the whole
+    /// of E6b's floor rule (08f R4) lives in one place instead of being
+    /// re-derived across a crate edge:
+    ///
+    /// - **monotonic**: it only moves forward ([`SceneRecord::raise_ic_floor`]);
+    /// - **bounded**: at most [`MAX_IC_FLOOR_LEAD_SECS`] ahead of the world's own
+    ///   IC clock (`world_now`), so a pasted or overflowed arrival stamp cannot
+    ///   strand every future record of this scene in the far future;
+    /// - **refused after the seal**: an already-sealed outcome's `ic_time` is
+    ///   canon and immutable;
+    /// - and it **never touches [`SceneRecord::clock_generation`]** — the
+    ///   generation lasts the record's lifetime (08i §9 answer 9), which the
+    ///   `debug_assert` and the arrival case of E6b's monotonicity test pin.
+    ///
+    /// The check order matches `@scene/icfloor` (`mush-scenes/src/commands.rs`,
+    /// `scene_icfloor`): bound, then seal, then the monotonic raise, so the two
+    /// callers refuse the same input identically. A journey arrival **cannot be
+    /// delayed** by a scene (Q6A/S6A): the caller commits the arrival first and
+    /// this raise is the last, non-fatal step — a refusal here is a paged
+    /// anomaly, never a hold on the journey.
+    pub fn raise_ic_floor_on_arrival(
+        &mut self,
+        at: i64,
+        world_now: i64,
+    ) -> Result<i64, ArrivalFloorRefusal> {
+        if at < 0 || at > world_now.saturating_add(MAX_IC_FLOOR_LEAD_SECS) {
+            return Err(ArrivalFloorRefusal::AheadOfWorld { at, world_now });
+        }
+        if self.outcome.is_some() {
+            return Err(ArrivalFloorRefusal::AlreadySealed);
+        }
+        let generation = self.clock_generation;
+        let raised = self
+            .raise_ic_floor(at)
+            .map_err(|_| ArrivalFloorRefusal::NotForward {
+                at,
+                floor: self.ic_floor,
+            })?;
+        debug_assert_eq!(
+            generation, self.clock_generation,
+            "an arrival IC-floor raise must never bump the scene clock generation"
+        );
+        Ok(raised)
     }
 
     /// Remove `obj` from the scene (participant or observer), keeping the turn
@@ -811,6 +882,103 @@ mod tests {
             s.scene_ic_time(),
             500 + 2 * i64::from(DEFAULT_ROUND_SECONDS)
         );
+    }
+
+    // ---- E7c6: B4 — the arrival IC-floor-raise seam (10b §3.6 OPEN 3) ----
+
+    #[test]
+    fn e7c6_b4_arrival_floor_is_monotonic_and_keeps_generation_1() {
+        // The arrival case added to E6b's start->advance->pause/restart->advance
+        // monotonicity discipline: an arrival raise moves the floor forward,
+        // clamps `scene_ic_time` up to it, and never bumps `clock_generation`.
+        let mut s = scene(vec![2, 3]);
+        let world_now = 10_000;
+        assert_eq!(s.scene_ic_time(), 500);
+        assert_eq!(s.raise_ic_floor_on_arrival(4_000, world_now), Ok(4_000));
+        assert_eq!(s.ic_floor, 4_000);
+        assert_eq!(
+            s.scene_ic_time(),
+            4_000,
+            "the clock is clamped up to the floor"
+        );
+        assert_eq!(
+            s.clock_generation, 1,
+            "an arrival raise never bumps the generation"
+        );
+        // A later arrival still moves forward.
+        assert_eq!(s.raise_ic_floor_on_arrival(5_500, world_now), Ok(5_500));
+        assert_eq!(s.clock_generation, 1);
+    }
+
+    #[test]
+    fn e7c6_b4_arrival_floor_only_moves_forward() {
+        let mut s = scene(vec![2, 3]);
+        s.raise_ic_floor_on_arrival(4_000, 10_000).unwrap();
+        // At or below the current floor is refused (not silently ignored).
+        assert_eq!(
+            s.raise_ic_floor_on_arrival(4_000, 10_000),
+            Err(ArrivalFloorRefusal::NotForward {
+                at: 4_000,
+                floor: 4_000
+            })
+        );
+        assert_eq!(
+            s.raise_ic_floor_on_arrival(3_000, 10_000),
+            Err(ArrivalFloorRefusal::NotForward {
+                at: 3_000,
+                floor: 4_000
+            })
+        );
+        assert_eq!(
+            s.ic_floor, 4_000,
+            "a refused raise leaves the floor unchanged"
+        );
+    }
+
+    #[test]
+    fn e7c6_b4_arrival_floor_is_bounded_ahead_of_the_world() {
+        let mut s = scene(vec![2, 3]);
+        let world_now = 10_000;
+        // A stamp more than one IC year ahead of the world is refused.
+        let too_far = world_now + MAX_IC_FLOOR_LEAD_SECS + 1;
+        assert_eq!(
+            s.raise_ic_floor_on_arrival(too_far, world_now),
+            Err(ArrivalFloorRefusal::AheadOfWorld {
+                at: too_far,
+                world_now
+            })
+        );
+        // A negative stamp is refused the same way.
+        assert!(matches!(
+            s.raise_ic_floor_on_arrival(-1, world_now),
+            Err(ArrivalFloorRefusal::AheadOfWorld { .. })
+        ));
+        // Exactly at the bound is allowed.
+        let at_bound = world_now + MAX_IC_FLOOR_LEAD_SECS;
+        assert_eq!(
+            s.raise_ic_floor_on_arrival(at_bound, world_now),
+            Ok(at_bound)
+        );
+        assert_eq!(s.ic_floor, at_bound);
+    }
+
+    #[test]
+    fn e7c6_b4_arrival_floor_is_refused_after_the_seal() {
+        let mut s = scene(vec![2, 3]);
+        s.sealer = Some(ObjId(1));
+        s.outcome = SceneOutcome::new(
+            SmolStr::new("success"),
+            vec![ObjId(2)],
+            String::new(),
+            ObjId(1),
+            9_000,
+        );
+        assert!(s.outcome.is_some());
+        assert_eq!(
+            s.raise_ic_floor_on_arrival(4_000, 10_000),
+            Err(ArrivalFloorRefusal::AlreadySealed)
+        );
+        assert_eq!(s.ic_floor, 0, "a sealed scene's floor is immutable");
     }
 
     #[test]
