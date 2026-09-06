@@ -209,6 +209,7 @@ async fn seeded_gateway_store() -> Arc<dyn ObjectStore> {
     let store: Arc<dyn ObjectStore> = Arc::new(InMemoryStore::new());
     store
         .create_account(AccountRec {
+            id: None,
             name: "boss".to_owned(),
             argon2_hash: hash_password(GM_PASSWORD).unwrap(),
             created: 0,

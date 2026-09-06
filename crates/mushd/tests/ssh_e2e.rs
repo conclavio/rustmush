@@ -56,6 +56,7 @@ async fn boot_server(dir: &std::path::Path) -> SocketAddr {
     let store: Arc<dyn ObjectStore> = Arc::new(InMemoryStore::new());
     store
         .create_account(AccountRec {
+            id: None,
             name: "boss".to_string(),
             argon2_hash: hash_password(GM_PASSWORD).unwrap(),
             created: 0,
@@ -161,6 +162,7 @@ async fn boot_duo_server(dir: &std::path::Path, seed_key: bool, with_staff: bool
 
     store
         .create_account(AccountRec {
+            id: None,
             name: "duo".to_string(),
             argon2_hash: hash_password(GM_PASSWORD).unwrap(),
             created: 0,

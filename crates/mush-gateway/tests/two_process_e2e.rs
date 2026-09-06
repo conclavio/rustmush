@@ -175,6 +175,7 @@ async fn two_process_connect_play_boot_disconnect() {
     let gw_store: Arc<dyn ObjectStore> = Arc::new(InMemoryStore::new());
     gw_store
         .create_account(AccountRec {
+            id: None,
             name: "boss".to_string(),
             argon2_hash: hash_password(GM_PASSWORD).unwrap(),
             created: 0,
@@ -340,6 +341,7 @@ async fn two_process_multiconnect_linkdead_and_newpassword() {
     let gw_store: Arc<dyn ObjectStore> = Arc::new(InMemoryStore::new());
     gw_store
         .create_account(AccountRec {
+            id: None,
             name: "boss".to_string(),
             argon2_hash: hash_password(GM_PASSWORD).unwrap(),
             created: 0,

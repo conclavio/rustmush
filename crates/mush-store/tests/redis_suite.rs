@@ -225,6 +225,12 @@ redis_gated!(account_password_update, store, {
 redis_gated!(account_ssh_keys_update, store, {
     suite::account_ssh_keys_update(&store).await;
 });
+redis_gated!(account_id_round_trips_and_is_immutable, store, {
+    suite::account_id_round_trips_and_is_immutable(&store).await;
+});
+redis_gated!(account_id_backfill_is_idempotent, store, {
+    suite::account_id_backfill_is_idempotent(&store).await;
+});
 redis_gated!(ban_expiry, store, {
     suite::ban_expiry(&store).await;
 });
@@ -1316,6 +1322,7 @@ redis_gated!(link_character_rejects_non_array_characters, store, {
 
     store
         .create_account(AccountRec {
+            id: None,
             name: "Mangled".into(),
             argon2_hash: "h".into(),
             created: 1,

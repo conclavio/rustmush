@@ -57,6 +57,7 @@ use tokio::sync::oneshot;
 use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore};
 
 pub mod accounts;
+pub mod accounts_identity;
 pub mod action_coordinator;
 pub mod config_ext;
 // E4c: the economy -> canon evidence bridge (08c §6.1 item 3).
@@ -255,6 +256,15 @@ async fn build_engine(
     if imported > 0 {
         tracing::info!(imported, "M1 accounts.json imported");
     }
+    // E7c5 B1: build the account-distinctness oracle from the store, once,
+    // before composition (the store is in scope and async here). A legacy
+    // account with no stored id is minted on the fly (deterministic); a
+    // character claimed by two accounts is left unmapped and paged.
+    let account_identity = crate::accounts_identity::hydrate(&**store).await?;
+    tracing::info!(
+        mapped_characters = account_identity.len(),
+        "M-E7c5 account oracle hydrated"
+    );
     let staff = Arc::new(StaffQueue::new());
     let mut registry = world_task::base_registry();
     register_server_commands_with_cap(&mut registry, &staff, config.game.max_characters as usize)
@@ -330,6 +340,13 @@ async fn build_engine(
     engine.set_offer_keys(offer_keys);
     engine.set_resolution_keys(resolution_keys);
     engine.set_decision_keys(decision_keys);
+    // E7c5 B1: upgrade the sim's account oracle (installed unwired at register)
+    // with the boot-hydrated map, so cut 5's `+focus` consults it synchronously
+    // inside a world command. If the sim did not compose the slot the oracle
+    // stays absent and every consumer fails closed.
+    if let Some(slot) = engine.world.module_state_mut::<mush_sim::AccountOracle>() {
+        *slot = mush_sim::AccountOracle::new(std::sync::Arc::new(account_identity));
+    }
     modules::boot_modules(&mut engine, &**store).await?;
     Ok((engine, staff, llm))
 }

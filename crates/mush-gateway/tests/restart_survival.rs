@@ -205,6 +205,7 @@ async fn seeded_gw_store() -> Arc<dyn ObjectStore> {
     let gw_store: Arc<dyn ObjectStore> = Arc::new(InMemoryStore::new());
     gw_store
         .create_account(AccountRec {
+            id: None,
             name: "boss".to_string(),
             argon2_hash: hash_password(GM_PASSWORD).unwrap(),
             created: 0,
@@ -359,6 +360,7 @@ async fn server_restart_keeps_connections_and_world() {
     let gw_store: Arc<dyn ObjectStore> = Arc::new(InMemoryStore::new());
     gw_store
         .create_account(AccountRec {
+            id: None,
             name: "boss".to_string(),
             argon2_hash: hash_password(GM_PASSWORD).unwrap(),
             created: 0,

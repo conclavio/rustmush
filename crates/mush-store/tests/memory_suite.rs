@@ -40,6 +40,16 @@ async fn account_ssh_keys_update() {
 }
 
 #[tokio::test]
+async fn account_id_round_trips_and_is_immutable() {
+    suite::account_id_round_trips_and_is_immutable(&InMemoryStore::new()).await;
+}
+
+#[tokio::test]
+async fn account_id_backfill_is_idempotent() {
+    suite::account_id_backfill_is_idempotent(&InMemoryStore::new()).await;
+}
+
+#[tokio::test]
 async fn ban_expiry() {
     suite::ban_expiry(&InMemoryStore::new()).await;
 }

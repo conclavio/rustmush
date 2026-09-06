@@ -321,10 +321,15 @@ impl AuthBackend for Accounts {
             let password = password.to_string();
             run_blocking(move || hash_password(&password)).await??
         };
+        let created = unix_now_s();
         let rec = AccountRec {
+            // Mint the immutable id at creation from `(lowercased name,
+            // created)` so a new account is mappable without a reboot; a mint
+            // failure falls back to `None`, which the boot back-fill repairs.
+            id: mush_core::AccountId::mint(account, created).ok(),
             name: account.to_string(),
             argon2_hash: hash,
-            created: unix_now_s(),
+            created,
             characters: Vec::new(),
             ssh_keys: Vec::new(),
         };
@@ -395,6 +400,7 @@ mod pubkey_tests {
         let store: Arc<dyn ObjectStore> = Arc::new(InMemoryStore::new());
         store
             .create_account(AccountRec {
+                id: None,
                 name: "Nick".into(),
                 argon2_hash: "x".into(),
                 created: unix_now_s(),

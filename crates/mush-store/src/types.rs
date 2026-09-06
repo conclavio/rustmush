@@ -1111,6 +1111,15 @@ pub struct SshKeyRec {
 /// log line can never leak PHC strings.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AccountRec {
+    /// The immutable, opaque account identity (E7 cut 5 B1). `None` on a
+    /// pre-id document (`#[serde(default)]`); a one-shot boot back-fill in
+    /// `mush-server` mints it from `(lowercased name, created)` and is
+    /// idempotent. It is never re-derived from the current name, so it is
+    /// stable across a rename. The account-distinctness oracle
+    /// (`mush_core::AccountIdentity`) answers `None` for an account whose id
+    /// is still unminted, and every calling policy fails closed.
+    #[serde(default)]
+    pub id: Option<mush_core::AccountId>,
     /// Display-case account name. The storage key is the lowercase form;
     /// lookups are case-insensitive.
     pub name: String,
@@ -1129,6 +1138,7 @@ pub struct AccountRec {
 impl std::fmt::Debug for AccountRec {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AccountRec")
+            .field("id", &self.id)
             .field("name", &self.name)
             .field("argon2_hash", &"<redacted>")
             .field("created", &self.created)
@@ -1381,7 +1391,9 @@ mod tests {
 
     #[test]
     fn account_rec_debug_redacts_hash() {
+        let id = mush_core::AccountId::mint("Nick", 1).expect("mint");
         let rec = AccountRec {
+            id: Some(id),
             name: "Nick".into(),
             argon2_hash: "$argon2id$v=19$m=19456,t=2,p=1$secret".into(),
             created: 1,
@@ -1396,6 +1408,11 @@ mod tests {
         assert!(!debug.contains("argon2id"), "hash leaked: {debug}");
         assert!(debug.contains("<redacted>"));
         assert!(debug.contains("Nick"));
+        // The account id is redacted too — its hex must never appear.
+        assert!(
+            !debug.contains(&id.canonical_hash().to_hex()[..8]),
+            "account id leaked: {debug}"
+        );
         // ssh_keys are public data — printed, not redacted.
         assert!(
             debug.contains("SHA256:pub"),

@@ -315,6 +315,7 @@ pub async fn boot_module_server(dir: &Path, server_name: &str, boss_password: &s
     let store: Arc<dyn mush_store::ObjectStore> = Arc::new(mush_store::InMemoryStore::new());
     store
         .create_account(mush_store::AccountRec {
+            id: None,
             name: "boss".to_string(),
             argon2_hash: mushd::accounts::hash_password(boss_password).unwrap(),
             created: 0,
@@ -403,6 +404,7 @@ pub async fn boot_worldgen_server(
     let store: Arc<dyn mush_store::ObjectStore> = Arc::new(mush_store::InMemoryStore::new());
     store
         .create_account(mush_store::AccountRec {
+            id: None,
             name: "boss".to_string(),
             argon2_hash: mushd::accounts::hash_password(boss_password).unwrap(),
             created: 0,

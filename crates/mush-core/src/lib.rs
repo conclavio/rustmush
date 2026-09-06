@@ -46,6 +46,7 @@
 //! - [`sched`] — the pure min-heap [`Scheduler`] behind `@wait` and module
 //!   ticks.
 
+pub mod account;
 pub mod action;
 pub mod action_state;
 pub mod action_window;
@@ -80,6 +81,7 @@ pub mod sched;
 pub mod schedule_source;
 pub mod world;
 
+pub use account::{AccountId, AccountIdentity};
 pub use action::{
     ActionAttemptMetadata, ActionAttemptMetadataError, ActionError, ActionErrorBuildError,
     ActionErrorCode, ActionInvocation, ActionInvocationDraft, ActionLifecycle, ActionMetadataError,

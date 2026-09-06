@@ -14,6 +14,7 @@ pub mod boot;
 pub mod commands;
 pub mod custody;
 pub mod data;
+pub mod focus;
 pub mod graph;
 mod handoff;
 pub mod links;
@@ -25,7 +26,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use mush_core::{
-    AuthorityGuardKind, BehaviorId, BehaviorSpec, ControlLeaseGuardValidator,
+    AccountIdentity, AuthorityGuardKind, BehaviorId, BehaviorSpec, ControlLeaseGuardValidator,
     ControlLeaseStateCodec, Ctx, DefinitionKind, DestroyGate, DestroyPolicy, DetachGate, EventHook,
     GameModule, HookPoint, HookReadContext, ModError, ModuleBootData, ModuleCtx, ObjId, ObjKind,
     Registrar, Registry, Role, StateFamilyId, TickCadence, World, WorldEvent, WorldEventKind,
@@ -42,6 +43,7 @@ pub use data::{
     SpatialState, StationAssignment, StationId, StationSpec, UnplacedInfo, cgen_key,
     passive_definition_ref, passive_rules_value,
 };
+pub use focus::AccountOracle;
 pub use graph::{
     effective_domain, presence, project, space_domain, verify_indexes, verify_projections,
 };
@@ -68,9 +70,25 @@ impl Default for SimConfig {
 
 /// The spatial simulation module (design §3.2). Phase C adds domain drivers
 /// through a builder on this struct.
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub struct SimulationModule {
     config: SimConfig,
+    /// The account-distinctness oracle (E7 cut 5 B1), installed at the
+    /// composition root through [`SimulationModule::with_accounts`] — the
+    /// `EconomyModule::with_facts` / `IndustryModule::with_recipes` shape. It is
+    /// carried into world state at `register` as a [`focus::AccountOracle`] so
+    /// command handlers reach it synchronously; `None` leaves the oracle
+    /// unwired and every consumer fails closed.
+    accounts: Option<Arc<dyn AccountIdentity>>,
+}
+
+impl std::fmt::Debug for SimulationModule {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SimulationModule")
+            .field("config", &self.config)
+            .field("accounts", &self.accounts.is_some())
+            .finish()
+    }
 }
 
 impl SimulationModule {
@@ -83,7 +101,20 @@ impl SimulationModule {
     /// With explicit configuration.
     #[must_use]
     pub fn with_config(config: SimConfig) -> SimulationModule {
-        SimulationModule { config }
+        SimulationModule {
+            config,
+            accounts: None,
+        }
+    }
+
+    /// Install the account-distinctness oracle (E7 cut 5 B1, OPEN 4). Called at
+    /// `server_modules_with` with an `Arc<dyn AccountIdentity>` the server built
+    /// from a boot-hydrated character → account-id map; the world consults it
+    /// synchronously inside a command. Mirrors `EconomyModule::with_facts`.
+    #[must_use]
+    pub fn with_accounts(mut self, accounts: Arc<dyn AccountIdentity>) -> SimulationModule {
+        self.accounts = Some(accounts);
+        self
     }
 }
 
@@ -591,6 +622,13 @@ impl GameModule for SimulationModule {
         handoff::register(reg, control_leases)?;
         reg.state(SpatialState::new(self.config.recovery_room));
         reg.state(route::RouteState::default());
+        // E7c5 B1: carry the composition-installed account oracle into world
+        // state so command handlers consult it synchronously; unwired = fail
+        // closed.
+        reg.state(match self.accounts.clone() {
+            Some(oracle) => focus::AccountOracle::new(oracle),
+            None => focus::AccountOracle::unwired(),
+        });
         reg.behavior(domain_spec())?;
         reg.behavior(interior_spec())?;
         reg.behavior(participant_spec())?;

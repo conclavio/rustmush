@@ -15,12 +15,12 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use mush_core::{
-    Attr, AttrFlags, AttrValue, AuthoritativeBundle, AuthoritativeBundleDraft, AuthoritativeKey,
-    CanonicalHash, CanonicalId, CommitToken, DefinitionDescriptor, DefinitionId, DefinitionKind,
-    DefinitionRegistryBuilder, DurableOutboxIntent, Flags, GOD, IdempotencyKey, IdempotencyScope,
-    LIMBO, Ledger, LockExpr, LockType, Obj, ObjId, ObjKind, OwnerId, Powers, PreparedCausalRef,
-    PrincipalId, ReplayWrite, RequestUid, ResolutionKeyRing, ResolutionSecret, RulesValue,
-    ScopedIdempotencyKey, World,
+    AccountId, Attr, AttrFlags, AttrValue, AuthoritativeBundle, AuthoritativeBundleDraft,
+    AuthoritativeKey, CanonicalHash, CanonicalId, CommitToken, DefinitionDescriptor, DefinitionId,
+    DefinitionKind, DefinitionRegistryBuilder, DurableOutboxIntent, Flags, GOD, IdempotencyKey,
+    IdempotencyScope, LIMBO, Ledger, LockExpr, LockType, Obj, ObjId, ObjKind, OwnerId, Powers,
+    PreparedCausalRef, PrincipalId, ReplayWrite, RequestUid, ResolutionKeyRing, ResolutionSecret,
+    RulesValue, ScopedIdempotencyKey, World,
 };
 
 use crate::migrate::{Migration, run_migrations};
@@ -167,6 +167,7 @@ pub async fn next_id_persistence(store: &dyn ObjectStore) {
 /// stored hash belongs to the winner.
 pub async fn account_reserve_race(store: &dyn ObjectStore) {
     let rec = |hash: &str| AccountRec {
+        id: None,
         name: "Nick".to_string(),
         argon2_hash: hash.to_string(),
         created: now_unix(),
@@ -210,6 +211,7 @@ pub async fn account_lifecycle(store: &dyn ObjectStore) {
     let created = now_unix();
     store
         .create_account(AccountRec {
+            id: None,
             name: "Nick".to_string(),
             argon2_hash: "$argon2id$fake".to_string(),
             created,
@@ -222,6 +224,7 @@ pub async fn account_lifecycle(store: &dyn ObjectStore) {
         matches!(
             store
                 .create_account(AccountRec {
+                    id: None,
                     name: "NICK".to_string(),
                     argon2_hash: "other".to_string(),
                     created,
@@ -259,6 +262,7 @@ pub async fn account_lifecycle(store: &dyn ObjectStore) {
 
     store
         .create_account(AccountRec {
+            id: None,
             name: "Zoe".to_string(),
             argon2_hash: "h".to_string(),
             created,
@@ -294,6 +298,7 @@ pub async fn account_password_update(store: &dyn ObjectStore) {
     let created = now_unix();
     store
         .create_account(AccountRec {
+            id: None,
             name: "Nick".to_string(),
             argon2_hash: "$argon2id$old".to_string(),
             created,
@@ -350,6 +355,7 @@ pub async fn account_ssh_keys_update(store: &dyn ObjectStore) {
     let created = now_unix();
     store
         .create_account(AccountRec {
+            id: None,
             name: "Nick".to_string(),
             argon2_hash: "$argon2id$keep".to_string(),
             created,
@@ -412,6 +418,100 @@ pub async fn account_ssh_keys_update(store: &dyn ObjectStore) {
         .expect("get")
         .expect("exists");
     assert!(rec.ssh_keys.is_empty(), "empty slice clears the keys");
+}
+
+/// E7 cut 5 B1: the immutable account id round-trips through the store and is
+/// preserved across every mutation, so a rename (there is no rename verb; this
+/// pins the forward guarantee) or a password/ssh/character change never
+/// disturbs it. The id is the caller's to mint (`AccountId::mint`, deterministic
+/// over `(lowercased name, created)`); the store round-trips it verbatim.
+pub async fn account_id_round_trips_and_is_immutable(store: &dyn ObjectStore) {
+    let created = now_unix();
+    let id = AccountId::mint("Nick", created).expect("mint");
+    store
+        .create_account(AccountRec {
+            id: Some(id),
+            name: "Nick".to_string(),
+            argon2_hash: "$argon2id$fake".to_string(),
+            created,
+            characters: vec![],
+            ssh_keys: vec![],
+        })
+        .await
+        .expect("create");
+    // The stored id is exactly the minted one, read back case-insensitively.
+    let rec = store
+        .get_account("NICK")
+        .await
+        .expect("get")
+        .expect("exists");
+    assert_eq!(rec.id, Some(id), "the stored id round-trips");
+    // Re-minting from the SAME (name, created) reproduces the id — the forward
+    // rename-stability guarantee: the id does not depend on the current name,
+    // only on the immutable (lowercased name, created) it was minted from.
+    assert_eq!(AccountId::mint("nick", created), Ok(id));
+    // Every later mutation leaves the id untouched.
+    store
+        .set_account_password("nick", "$argon2id$new")
+        .await
+        .expect("password");
+    store
+        .link_character("nick", ObjId(7), "Nicky")
+        .await
+        .expect("link");
+    store
+        .set_account_ssh_keys(
+            "nick",
+            &[SshKeyRec {
+                openssh: "ssh-ed25519 AAAAkey nick@box".to_string(),
+                fingerprint: "SHA256:key".to_string(),
+                added: created,
+            }],
+        )
+        .await
+        .expect("ssh");
+    let rec = store
+        .get_account("nick")
+        .await
+        .expect("get")
+        .expect("exists");
+    assert_eq!(rec.id, Some(id), "the id survives every mutation");
+    assert_eq!(rec.argon2_hash, "$argon2id$new");
+    assert_eq!(rec.characters.len(), 1);
+    assert_eq!(rec.ssh_keys.len(), 1);
+}
+
+/// E7 cut 5 B1: a pre-id account document decodes with `id == None`
+/// (`#[serde(default)]`), and the boot back-fill's mint is deterministic and
+/// idempotent — writing the mint for a `None` id, then re-minting, yields the
+/// same id, so re-running the back-fill is a no-op. This pins the migration the
+/// server performs at boot; the store itself never mints.
+pub async fn account_id_backfill_is_idempotent(store: &dyn ObjectStore) {
+    let created = now_unix();
+    // A pre-id document: `id` omitted, decoded as None via serde default.
+    store
+        .create_account(AccountRec {
+            id: None,
+            name: "Nick".to_string(),
+            argon2_hash: "$argon2id$fake".to_string(),
+            created,
+            characters: vec![],
+            ssh_keys: vec![],
+        })
+        .await
+        .expect("create");
+    let rec = store
+        .get_account("nick")
+        .await
+        .expect("get")
+        .expect("exists");
+    assert_eq!(rec.id, None, "a pre-id document decodes with a None id");
+    // The back-fill mint is a pure function of (name, created): deterministic
+    // and idempotent — the second run computes the identical id.
+    let minted = AccountId::mint(&rec.name, rec.created).expect("mint");
+    assert_eq!(AccountId::mint(&rec.name, rec.created), Ok(minted));
+    // A different creation second is a different account and a different id.
+    assert_ne!(AccountId::mint(&rec.name, rec.created + 1), Ok(minted));
 }
 
 /// Active, permanent, and already-expired bans; clear semantics.

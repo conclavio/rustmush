@@ -124,6 +124,9 @@ pub async fn import_accounts_json(
     for rec in file.accounts {
         let name = rec.name.clone();
         let account = AccountRec {
+            // Imported with no id; the boot back-fill mints it (same boot,
+            // after this import) from `(lowercased name, created)`.
+            id: None,
             name: rec.name,
             argon2_hash: rec.hash,
             created: now,
@@ -356,6 +359,7 @@ mod tests {
         // "dupe" already lives in the store: import must keep the store copy.
         store
             .create_account(AccountRec {
+                id: None,
                 name: "Dupe".into(),
                 argon2_hash: "store-copy".into(),
                 created: 1,
