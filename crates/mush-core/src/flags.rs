@@ -80,6 +80,21 @@ bitflags::bitflags! {
     }
 }
 
+bitflags::bitflags! {
+    /// Explicitly granted privileges — the opposite of [`Powers`] in one way
+    /// that matters: **no role implies a privilege**. Wizard+ passes every
+    /// power check (`perm::has_power`); a privilege is held only by an object
+    /// whose bits carry it, God included, so the grant is always a deliberate,
+    /// auditable act (`@privilege/grant`, the `mush-privileges` module). Use a
+    /// privilege for a capability staff should not have merely by rank —
+    /// reading a player's linked Discord identity is the first (D-D-14).
+    #[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Hash)]
+    pub struct Privileges: u32 {
+        /// May read a player's linked Discord identity (`@discord/show`).
+        const DISCORD_IDENTITY = 1 << 0;
+    }
+}
+
 /// Serialize bitflags as their raw bits (compact, tolerant of bits that
 /// future versions add or retire — unknown bits are retained round-trip).
 macro_rules! impl_bits_serde {
@@ -100,6 +115,7 @@ pub(crate) use impl_bits_serde;
 
 impl_bits_serde!(Flags, u64);
 impl_bits_serde!(Powers, u32);
+impl_bits_serde!(Privileges, u32);
 
 /// Staff hierarchy derived from identity and flags — never stored.
 ///
@@ -216,5 +232,22 @@ mod tests {
         let p = Powers::BOOT | Powers::BUILDER_LLM;
         let back: Powers = serde_json::from_str(&serde_json::to_string(&p).unwrap()).unwrap();
         assert_eq!(back, p);
+    }
+
+    #[test]
+    fn privileges_serde_and_names_round_trip() {
+        let p = Privileges::DISCORD_IDENTITY;
+        let json = serde_json::to_string(&p).unwrap();
+        let back: Privileges = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, p);
+        // An empty set is the documented default of a document that predates
+        // the field.
+        let none: Privileges = serde_json::from_str("0").unwrap();
+        assert!(none.is_empty());
+        assert_eq!(
+            Privileges::from_name("DISCORD_IDENTITY"),
+            Some(Privileges::DISCORD_IDENTITY)
+        );
+        assert_eq!(Privileges::from_name("WIZARD"), None);
     }
 }

@@ -22,6 +22,7 @@
 pub mod accounts;
 pub mod config;
 pub mod decision_keys;
+pub mod discord;
 mod durable_keys;
 pub mod ipguard;
 pub mod logging;

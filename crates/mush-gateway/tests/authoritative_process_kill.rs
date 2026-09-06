@@ -218,6 +218,7 @@ async fn seeded_gateway_store() -> Arc<dyn ObjectStore> {
                 name: "God".to_owned(),
             }],
             ssh_keys: Vec::new(),
+            discord: None,
         })
         .await
         .unwrap();

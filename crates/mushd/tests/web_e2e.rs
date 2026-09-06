@@ -150,6 +150,7 @@ async fn boot_inner(
                 name: "God".to_string(),
             }],
             ssh_keys: vec![],
+            discord: None,
         })
         .await
         .unwrap();

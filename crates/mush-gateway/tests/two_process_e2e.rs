@@ -184,6 +184,7 @@ async fn two_process_connect_play_boot_disconnect() {
                 name: "God".to_string(),
             }],
             ssh_keys: vec![],
+            discord: None,
         })
         .await
         .unwrap();
@@ -350,6 +351,7 @@ async fn two_process_multiconnect_linkdead_and_newpassword() {
                 name: "God".to_string(),
             }],
             ssh_keys: vec![],
+            discord: None,
         })
         .await
         .unwrap();

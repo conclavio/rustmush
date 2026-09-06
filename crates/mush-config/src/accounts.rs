@@ -139,6 +139,7 @@ pub async fn import_accounts_json(
                 })
                 .collect(),
             ssh_keys: Vec::new(),
+            discord: None,
         };
         match store.create_account(account).await {
             Ok(()) => imported += 1,
@@ -365,6 +366,7 @@ mod tests {
                 created: 1,
                 characters: vec![],
                 ssh_keys: vec![],
+                discord: None,
             })
             .await
             .unwrap();

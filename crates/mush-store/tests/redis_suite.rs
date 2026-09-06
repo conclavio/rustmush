@@ -225,6 +225,9 @@ redis_gated!(account_password_update, store, {
 redis_gated!(account_ssh_keys_update, store, {
     suite::account_ssh_keys_update(&store).await;
 });
+redis_gated!(account_discord_link, store, {
+    suite::account_discord_link(&store).await;
+});
 redis_gated!(account_id_round_trips_and_is_immutable, store, {
     suite::account_id_round_trips_and_is_immutable(&store).await;
 });
@@ -1334,6 +1337,7 @@ redis_gated!(link_character_rejects_non_array_characters, store, {
             created: 1,
             characters: vec![],
             ssh_keys: vec![],
+            discord: None,
         })
         .await
         .expect("create account");

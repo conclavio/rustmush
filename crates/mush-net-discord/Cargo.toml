@@ -1,0 +1,26 @@
+[package]
+name = "mush-net-discord"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "The Discord transport (D1): config, the DiscordApi seam over twilight with an in-memory fake, the bot's DM slash commands"
+
+[dependencies]
+mush-config.workspace = true
+twilight-http.workspace = true
+twilight-gateway.workspace = true
+twilight-model.workspace = true
+twilight-util.workspace = true
+tokio.workspace = true
+futures.workspace = true
+tracing.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+toml.workspace = true
+
+[lints]
+workspace = true

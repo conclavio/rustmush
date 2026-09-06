@@ -11,7 +11,7 @@
 //! Granular Rhost-style [`Powers`] refine the picture: [`has_power`] is
 //! automatically satisfied for Wizard+ so staff never need explicit grants.
 
-use crate::flags::{Flags, Powers, Role};
+use crate::flags::{Flags, Powers, Privileges, Role};
 use crate::lock::{LockType, MAX_LOCK_DEPTH, eval_lock};
 use crate::obj::ObjId;
 use crate::world::World;
@@ -36,6 +36,15 @@ pub fn has_power(w: &World, who: ObjId, power: Powers) -> bool {
         return true;
     }
     w.get(who).is_some_and(|o| o.powers.contains(power))
+}
+
+/// Whether `who` holds the given privilege. Unlike [`has_power`] there is
+/// **no role short-circuit**: a privilege is an explicit, audited grant, and
+/// God and Wizards are refused exactly like anyone else until one is made
+/// (D-D-14). Never route a privilege check through `has_power`.
+#[must_use]
+pub fn has_privilege(w: &World, who: ObjId, privilege: Privileges) -> bool {
+    w.get(who).is_some_and(|o| o.privileges.contains(privilege))
 }
 
 /// The classic "does `who` control `what`" check: God ∨ Wizard ∨ self ∨
@@ -180,6 +189,22 @@ mod tests {
         assert!(can_examine(&w, nick, rock));
         // ...but not modify.
         assert!(!can_modify(&w, nick, rock));
+    }
+
+    #[test]
+    fn privilege_checks_have_no_role_short_circuit() {
+        let (mut w, nick, _bob, _ball, _rock) = setup();
+        // Neither God nor a mortal holds a privilege by default (D-D-14).
+        assert!(!has_privilege(&w, GOD, Privileges::DISCORD_IDENTITY));
+        assert!(!has_privilege(&w, nick, Privileges::DISCORD_IDENTITY));
+        // A Wizard flag changes nothing: only the explicit bit does.
+        w.set_flag(nick, Flags::WIZARD, true).unwrap();
+        assert!(has_power(&w, nick, Powers::BOOT));
+        assert!(!has_privilege(&w, nick, Privileges::DISCORD_IDENTITY));
+        w.get_mut(nick).unwrap().privileges = Privileges::DISCORD_IDENTITY;
+        assert!(has_privilege(&w, nick, Privileges::DISCORD_IDENTITY));
+        // An unknown object holds nothing.
+        assert!(!has_privilege(&w, ObjId(99), Privileges::DISCORD_IDENTITY));
     }
 
     #[test]

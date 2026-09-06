@@ -167,6 +167,13 @@ fn examine_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             }
         ),
     );
+    // A privilege is a deliberate grant, never implied by rank, so `examine`
+    // shows it (the grant is not private; what it unlocks may be).
+    if !o.privileges.is_empty() {
+        let names: Vec<&str> = o.privileges.iter_names().map(|(n, _)| n).collect();
+        ctx.out
+            .info(ctx.actor, format!("Privileges: {}", names.join(" ")));
+    }
     ctx.out.info(
         ctx.actor,
         format!(

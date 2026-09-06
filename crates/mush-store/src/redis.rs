@@ -105,7 +105,8 @@ use crate::types::{
     AuthoritativeEpochRetirement, AuthoritativeIntentPage, AuthoritativeOutboxAttemptResult,
     AuthoritativeOutboxRecord, AuthoritativeQuarantineReceipt, AuthoritativeReceipt,
     AuthoritativeRetentionUsage, AuthoritativeScanCursor, BanRec, BoundIdempotencyStatus,
-    BundleStatus, CharacterRef, IdempotencyStatus, IntentReceipt, MAX_AUTHORITATIVE_DISCOVERY_PAGE,
+    BundleStatus, CharacterRef, DiscordBanRec, DiscordCodeRecord, DiscordLinkRec,
+    IdempotencyStatus, IntentReceipt, MAX_AUTHORITATIVE_DISCOVERY_PAGE,
     MAX_PENDING_AUTHORITATIVE_OUTBOX, MAX_RETAINED_AUTHORITATIVE_BYTES,
     MAX_RETAINED_AUTHORITATIVE_INTENTS, ModuleWrite, PendingAuthoritativeIntent, SshKeyRec,
     StoreError, TokenRecord, WorldSnapshot, WriteBatch, WriteReceipt, validate_module_key,
@@ -120,6 +121,13 @@ pub const ACCOUNT_PREFIX: &str = "account:";
 pub const BAN_PREFIX: &str = "ban:";
 /// Prefix of web-session token keys (`token:{sha256-hex}`).
 pub const TOKEN_PREFIX: &str = "token:";
+/// Prefix of the Discord reverse index (`discord:user:{snowflake}` → lowercase
+/// account name) — the link's uniqueness lock (D1).
+pub const DISCORD_USER_PREFIX: &str = "discord:user:";
+/// Prefix of pending Discord link codes (`discord:code:{sha256-hex}`, native TTL).
+pub const DISCORD_CODE_PREFIX: &str = "discord:code:";
+/// Prefix of Discord-scoped bans (`discord:ban:{snowflake}`).
+pub const DISCORD_BAN_PREFIX: &str = "discord:ban:";
 /// Prefix of module-state keys (`mod:{ns}:{key}`).
 pub const MOD_PREFIX: &str = "mod:";
 /// Id-allocator resume point.
@@ -191,6 +199,18 @@ fn ban_key(ip: &str) -> String {
 
 fn token_key(hash: &str) -> String {
     format!("{TOKEN_PREFIX}{hash}")
+}
+
+fn discord_user_key(user_id: u64) -> String {
+    format!("{DISCORD_USER_PREFIX}{user_id}")
+}
+
+fn discord_code_key(hash: &str) -> String {
+    format!("{DISCORD_CODE_PREFIX}{hash}")
+}
+
+fn discord_ban_key(user_id: u64) -> String {
+    format!("{DISCORD_BAN_PREFIX}{user_id}")
 }
 
 /// `mod:{ns}:{key}`. Callers validate `ns`/`key` first (see
@@ -1041,6 +1061,7 @@ impl RedisStore {
             "account:*",
             "ban:*",
             "token:*",
+            "discord:*",
             "meta:*",
             "mod:*",
             "auth:*",
@@ -2604,6 +2625,89 @@ impl ObjectStore for RedisStore {
         })
     }
 
+    fn set_account_discord<'a>(
+        &'a self,
+        account: &'a str,
+        link: Option<&'a DiscordLinkRec>,
+    ) -> BoxFuture<'a, Result<bool, StoreError>> {
+        Box::pin(async move {
+            let key = account_key(account);
+            // Same shape as set_account_ssh_keys: the path may not exist on a
+            // doc that predates the field, so confirm the doc and set without
+            // XX. `None` writes JSON null, which reads back as unlinked.
+            let exists: i64 = self.client.exists(key.as_str()).await?;
+            if exists == 0 {
+                return Ok(false);
+            }
+            let value = serde_json::to_string(&link)?;
+            let _: Option<String> = self
+                .client
+                .json_set(key.as_str(), "$.discord", value, None)
+                .await?;
+            Ok(true)
+        })
+    }
+
+    fn discord_user_reserve<'a>(
+        &'a self,
+        user_id: u64,
+        account: &'a str,
+    ) -> BoxFuture<'a, Result<bool, StoreError>> {
+        Box::pin(async move {
+            let key = discord_user_key(user_id);
+            let account_lc = account.to_lowercase();
+            // SET NX: exactly one claimant wins under a race; the holder may
+            // re-reserve (the reply is nil, then the GET matches).
+            let set: Option<String> = self
+                .client
+                .set(
+                    key.as_str(),
+                    account_lc.as_str(),
+                    None,
+                    Some(SetOptions::NX),
+                    false,
+                )
+                .await?;
+            if set.is_some() {
+                return Ok(true);
+            }
+            let holder: Option<String> = self.client.get(key.as_str()).await?;
+            Ok(holder.as_deref() == Some(account_lc.as_str()))
+        })
+    }
+
+    fn discord_user_release(&self, user_id: u64) -> BoxFuture<'_, Result<bool, StoreError>> {
+        Box::pin(async move {
+            let removed: i64 = self.client.del(discord_user_key(user_id)).await?;
+            Ok(removed > 0)
+        })
+    }
+
+    fn account_by_discord_user(
+        &self,
+        user_id: u64,
+    ) -> BoxFuture<'_, Result<Option<AccountRec>, StoreError>> {
+        Box::pin(async move {
+            let name: Option<String> = self.client.get(discord_user_key(user_id)).await?;
+            let Some(name) = name else {
+                return Ok(None);
+            };
+            match json_doc(&self.client, &account_key(&name)).await? {
+                Some(doc) => {
+                    let rec: AccountRec = serde_json::from_value(doc)?;
+                    // A reverse entry whose account carries no (or another
+                    // user's) link is a stale reservation, not a link.
+                    Ok(rec
+                        .discord
+                        .as_ref()
+                        .is_some_and(|l| l.user_id == user_id)
+                        .then_some(rec))
+                }
+                None => Ok(None),
+            }
+        })
+    }
+
     fn set_ban<'a>(
         &'a self,
         ip: &'a str,
@@ -2754,6 +2858,76 @@ impl ObjectStore for RedisStore {
                 }
             }
             Ok(live)
+        })
+    }
+
+    fn discord_code_put(
+        &self,
+        hash: String,
+        rec: DiscordCodeRecord,
+    ) -> BoxFuture<'_, Result<(), StoreError>> {
+        Box::pin(async move {
+            validate_token_hash(&hash)?;
+            let key = discord_code_key(&hash);
+            if rec.expires <= now_unix() {
+                // Already lapsed: equivalent to the key expiring instantly.
+                let _: i64 = self.client.del(key).await?;
+                return Ok(());
+            }
+            let doc = serde_json::to_string(&rec)?;
+            let _: () = self
+                .client
+                .set(key, doc, Some(Expiration::EXAT(rec.expires)), None, false)
+                .await?;
+            Ok(())
+        })
+    }
+
+    fn discord_code_take<'a>(
+        &'a self,
+        hash: &'a str,
+    ) -> BoxFuture<'a, Result<Option<DiscordCodeRecord>, StoreError>> {
+        Box::pin(async move {
+            validate_token_hash(hash)?;
+            // GETDEL: fetch and delete in one server-side step, so two
+            // concurrent redeems can never both succeed. Expiry is the
+            // native TTL — an expired code is simply absent.
+            let doc: Option<String> = self.client.getdel(discord_code_key(hash)).await?;
+            match doc {
+                Some(doc) => Ok(Some(serde_json::from_str(&doc)?)),
+                None => Ok(None),
+            }
+        })
+    }
+
+    fn discord_ban_put(&self, rec: DiscordBanRec) -> BoxFuture<'_, Result<(), StoreError>> {
+        Box::pin(async move {
+            let doc = serde_json::to_string(&rec)?;
+            let _: () = self
+                .client
+                .set(discord_ban_key(rec.user_id), doc, None, None, false)
+                .await?;
+            Ok(())
+        })
+    }
+
+    fn discord_ban_get(
+        &self,
+        user_id: u64,
+    ) -> BoxFuture<'_, Result<Option<DiscordBanRec>, StoreError>> {
+        Box::pin(async move {
+            let doc: Option<String> = self.client.get(discord_ban_key(user_id)).await?;
+            match doc {
+                Some(doc) => Ok(Some(serde_json::from_str(&doc)?)),
+                None => Ok(None),
+            }
+        })
+    }
+
+    fn discord_ban_del(&self, user_id: u64) -> BoxFuture<'_, Result<bool, StoreError>> {
+        Box::pin(async move {
+            let removed: i64 = self.client.del(discord_ban_key(user_id)).await?;
+            Ok(removed > 0)
         })
     }
 

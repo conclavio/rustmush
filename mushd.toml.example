@@ -68,6 +68,24 @@ listen = "127.0.0.1:8080"          # (M4) bind a public address or reverse-proxy
 # Note: `features` / `panels` are filled from the module registry at boot —
 # do not set them here.
 
+[discord]                          # (D1) the Discord bot (mush-net-discord); off unless enabled
+enabled = false
+# token_env = "DISCORD_BOT_TOKEN"  # the env var holding the bot token — NEVER the token itself
+# application_id = 0              # the bot's application id (required when enabled)
+# guild_id = 0                    # the one guild it serves (slash commands register there)
+# link_attempts_per_10m = 5       # failed /link attempts one Discord user may make per 10 min
+# auto_follow_default = false     # what a new link's auto-follow starts as (D2)
+# dm_coalesce_ms = 1500           # (D2) DM batching window
+# dm_max_chars = 1900             # (D2) longest DM message
+# dm_queue_lines = 2000           # (D2) coalescer buffer before the oldest narrative is dropped
+# follow_idle_detach_s = 21600    # (D2) detach a follow after this idle (never while in a scene)
+# staff_channel_id = 0            # (D5) the #staff channel; 0 disables
+# [[discord.relay]]               # (D4) one per mirrored comsys channel
+# channel = "Public"
+# discord_channel_id = 0
+# direction = "both"              # both | to_discord | to_game
+# webhook = true                  # post game lines under the character's name
+
 [game]
 # Onboarding / chargen gating (chargen_required + start rooms) lives in its own
 # [onboarding] section below — set it there, NOT here.

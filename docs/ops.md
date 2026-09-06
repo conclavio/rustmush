@@ -1064,6 +1064,42 @@ Two operational tradeoffs of the file appender are **deliberate**:
   prunes `<data_dir>/logs/`. Add external rotation — e.g. `logrotate`, or a cron
   sweep like `find <data_dir>/logs -name 'mushd.log.*' -mtime +14 -delete`.
 
+## Discord bot (D1): `[discord]`
+
+The Discord transport (`mush-net-discord`, plan `docs/interface/04-discord-implementation-plan.md`)
+runs **inside the gateway process** (`mushd` all-in-one, or `mush-gateway` in the split deploy)
+beside the SSH and web listeners. It is off unless `[discord].enabled = true`, and every failure
+to start — an invalid table, a missing id, an unset token, a fatal Gateway close — is loud in the
+log and **non-fatal**: SSH and web players keep playing while you fix it (the web listener's
+rule).
+
+Setup, once, in the Discord developer portal:
+
+1. Create an application; note its **Application ID** (`[discord].application_id`).
+2. Under *Bot*, create the bot user and copy its **token** into the environment variable
+   `[discord].token_env` names (`DISCORD_BOT_TOKEN` by default) — in `.env` for dev, the unit's
+   environment in prod. The token is **never** put in `mushd.toml` and never logged
+   (`DiscordConfig` holds only the variable's name).
+3. Intents: D1 needs none. D2 (DM follow) needs *Direct Messages*; D4 (the channel relay) needs
+   the privileged **Message Content** intent — a portal toggle while the app is under Discord's
+   review threshold (10 000 unique users at the time of writing), a review above it.
+4. Invite the bot to **one** guild (`[discord].guild_id`) with the `bot` and
+   `applications.commands` scopes. Slash commands (`/link`, `/unlink`, `/whoami`) are registered to
+   that guild at start-up, so they appear immediately.
+5. Egress: the gateway process now makes **outbound** connections — HTTPS to `discord.com` and a
+   websocket to Discord's gateway — where before it made none. Allow them.
+
+What the bot stores and logs: the Discord user's numeric id (never the handle), the link time
+and the player's preferences, in the account record and the `discord:*` keys below; link codes
+only as SHA-256 with a 10-minute TTL; **no message content** above `trace`, and no identity in any
+log line — the privileges audit (`@privilege/audit`) is the record of who looked at whose identity
+and why, and it never contains one.
+
+The staff surface (`help admin`, `help discord`): `@discord/show <player>` is gated by the
+`DISCORD_IDENTITY` **privilege**, which no rank implies — grant it with
+`@privilege/grant <player>=DISCORD_IDENTITY=<reason>` (Wizards) and every use is recorded;
+`@discord/unlink|ban|unban <player>` are Wizard commands and are recorded too.
+
 ## Key layout reference
 
 All keys live in one Redis logical database (db 0 by default). From
@@ -1077,10 +1113,14 @@ All keys live in one Redis logical database (db 0 by default). From
 | `account:{lowername}` | JSON doc | account record (argon2 hash, characters) |
 | `ban:{ip}` | string JSON | one siteban, native `EXAT` TTL |
 | `token:{sha256hex}` | string JSON | one web session token record, native `EXAT` TTL (7-day sliding). The key is the SHA-256 of the token — raw tokens are never stored or logged |
+| `discord:user:{snowflake}` | string | the Discord reverse index: lowercase account name — the link's uniqueness lock (`account:*` carries the link itself under `$.discord`) |
+| `discord:code:{sha256hex}` | string JSON | one pending `@discord/link` code, native `EXAT` TTL (10 min), consumed by `GETDEL`; the key is the SHA-256 of the code — raw codes are never stored or logged |
+| `discord:ban:{snowflake}` | string JSON | one Discord-scoped ban (`@discord/ban`), keyed by the Discord user so it survives an unlink |
 | `idx:objs` | FT index | RediSearch index over `obj:*` (staff tooling; non-fatal if absent) |
 | `mod:{ns}:{key}` | JSON doc | one game-module document (comsys channels/memberships, mail messages/boxes/folders, jobs/notes, weather `cell:{zone}` cells, module `meta`/`next_id` counters) |
 | `mod:{ns}:schema` | JSON doc | that module namespace's schema version (see Migrations) |
 | `mod:{ns}:hist:{id}` | stream | persisted channel history (`XADD MAXLEN ~`), and any other module ring history |
+| `mod:privileges:log:audit:{n}` | JSON doc | one sealed or open chunk of the privileges audit ledger (`@privilege/audit`, `/archive`) |
 
 Do not hand-edit `obj:*`/`meta:*` **or `mod:*`** while the server runs — the
 RAM world (and each module's in-RAM state, rebuilt from `mod:*` only at

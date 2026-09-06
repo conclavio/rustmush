@@ -36,7 +36,7 @@ pub use mush_config::{config, ipguard, logging, unix_now_ms, unix_now_s};
 pub use mush_server::{help, modules, persist, quarantine, staff};
 
 // --- gateway half (mush-gateway) ---
-pub use mush_gateway::{bridge_common, ssh_bridge, web_bridge};
+pub use mush_gateway::{bridge_common, discord_bridge, ssh_bridge, web_bridge};
 
 /// The account layer: the gateway's [`Accounts`](mush_gateway::accounts::Accounts)
 /// auth backend merged with the transport-agnostic helpers from

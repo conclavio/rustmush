@@ -544,6 +544,14 @@ async fn serve(config: Config, mut quarantine_spool: QuarantineSpool) -> Result<
         }
     });
 
+    // The Discord bot (D1): same session manager, same store; off unless
+    // `[discord].enabled`, and loud but non-fatal when it cannot start.
+    let discord = mushd::discord_bridge::spawn_bot(
+        &config,
+        Arc::clone(&sessions),
+        Arc::clone(&store) as Arc<dyn ObjectStore>,
+    );
+
     tracing::info!(ssh = %listener.addr(), web = %web_listen, "up; press Ctrl-C to shut down");
     tokio::select! {
         _ = tokio::signal::ctrl_c() => {
@@ -580,6 +588,7 @@ async fn serve(config: Config, mut quarantine_spool: QuarantineSpool) -> Result<
     {
         tracing::warn!("web server did not stop in time; continuing shutdown");
     }
+    discord.stop().await;
     // Shutdown order (PLAN gap closures): the world task has stopped
     // mutating; its dropped job sender lets the writer drain every pending
     // batch. Only a cleanly drained writer with no integrity breach may be

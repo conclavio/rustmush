@@ -35,7 +35,8 @@ use crate::types::{
     AuthoritativeEpochRetirement, AuthoritativeIntentPage, AuthoritativeOutboxAttemptResult,
     AuthoritativeOutboxRecord, AuthoritativeQuarantineReceipt, AuthoritativeReceipt,
     AuthoritativeRetentionUsage, AuthoritativeScanCursor, BanRec, BoundIdempotencyStatus,
-    BundleStatus, CharacterRef, IdempotencyStatus, IntentReceipt, MAX_AUTHORITATIVE_DISCOVERY_PAGE,
+    BundleStatus, CharacterRef, DiscordBanRec, DiscordCodeRecord, DiscordLinkRec,
+    IdempotencyStatus, IntentReceipt, MAX_AUTHORITATIVE_DISCOVERY_PAGE,
     MAX_PENDING_AUTHORITATIVE_OUTBOX, MAX_RETAINED_AUTHORITATIVE_BYTES,
     MAX_RETAINED_AUTHORITATIVE_INTENTS, ModuleWrite, PendingAuthoritativeIntent, SshKeyRec,
     StoreError, TokenRecord, WorldSnapshot, WriteBatch, WriteReceipt, validate_module_key,
@@ -66,6 +67,14 @@ struct Inner {
     /// Redis). Expired entries are pruned lazily at read time against the
     /// system clock, mirroring Redis TTL — like `bans`.
     tokens: HashMap<String, String>,
+    /// Discord user id → lowercase account name (`discord:user:{id}` in
+    /// Redis): the link's uniqueness lock (D1).
+    discord_users: HashMap<u64, String>,
+    /// link-code hash → serialized `DiscordCodeRecord` (`discord:code:{hash}`),
+    /// pruned lazily against the system clock like `tokens`.
+    discord_codes: HashMap<String, String>,
+    /// Discord user id → serialized `DiscordBanRec` (`discord:ban:{id}`).
+    discord_bans: HashMap<u64, String>,
     /// `(ns, key)` → serialized module JSON doc (`mod:{ns}:{key}` in
     /// Redis). The tuple key makes namespace isolation structural — no
     /// prefix matching to get wrong.
@@ -2015,6 +2024,75 @@ impl ObjectStore for InMemoryStore {
         })
     }
 
+    fn set_account_discord<'a>(
+        &'a self,
+        account: &'a str,
+        link: Option<&'a DiscordLinkRec>,
+    ) -> BoxFuture<'a, Result<bool, StoreError>> {
+        Box::pin(async move {
+            let key = account.to_lowercase();
+            let mut inner = self.lock()?;
+            let Some(doc) = inner.accounts.get(&key) else {
+                return Ok(false);
+            };
+            // Round-trip like ssh_keys: a doc that predates `discord` is
+            // written back with the field.
+            let mut rec: AccountRec = serde_json::from_str(doc)?;
+            rec.discord = link.cloned();
+            let doc = serde_json::to_string(&rec)?;
+            inner.accounts.insert(key, doc);
+            Ok(true)
+        })
+    }
+
+    fn discord_user_reserve<'a>(
+        &'a self,
+        user_id: u64,
+        account: &'a str,
+    ) -> BoxFuture<'a, Result<bool, StoreError>> {
+        Box::pin(async move {
+            let account_lc = account.to_lowercase();
+            let mut inner = self.lock()?;
+            match inner.discord_users.get(&user_id) {
+                Some(holder) => Ok(*holder == account_lc),
+                None => {
+                    inner.discord_users.insert(user_id, account_lc);
+                    Ok(true)
+                }
+            }
+        })
+    }
+
+    fn discord_user_release(&self, user_id: u64) -> BoxFuture<'_, Result<bool, StoreError>> {
+        Box::pin(async move {
+            let mut inner = self.lock()?;
+            Ok(inner.discord_users.remove(&user_id).is_some())
+        })
+    }
+
+    fn account_by_discord_user(
+        &self,
+        user_id: u64,
+    ) -> BoxFuture<'_, Result<Option<AccountRec>, StoreError>> {
+        Box::pin(async move {
+            let inner = self.lock()?;
+            let Some(name) = inner.discord_users.get(&user_id) else {
+                return Ok(None);
+            };
+            let Some(doc) = inner.accounts.get(name) else {
+                return Ok(None);
+            };
+            let rec: AccountRec = serde_json::from_str(doc)?;
+            // A reverse entry whose account carries no (or another user's)
+            // link is a stale reservation, not a link.
+            Ok(rec
+                .discord
+                .as_ref()
+                .is_some_and(|l| l.user_id == user_id)
+                .then_some(rec))
+        })
+    }
+
     fn set_ban<'a>(
         &'a self,
         ip: &'a str,
@@ -2186,6 +2264,74 @@ impl ObjectStore for InMemoryStore {
                 inner.tokens.remove(&hash);
             }
             Ok(live)
+        })
+    }
+
+    fn discord_code_put(
+        &self,
+        hash: String,
+        rec: DiscordCodeRecord,
+    ) -> BoxFuture<'_, Result<(), StoreError>> {
+        Box::pin(async move {
+            validate_token_hash(&hash)?;
+            let doc = serde_json::to_string(&rec)?;
+            let mut inner = self.lock()?;
+            if rec.expires <= now_unix() {
+                // Mirrors Redis: a key set with EXAT in the past is gone.
+                inner.discord_codes.remove(&hash);
+                return Ok(());
+            }
+            inner.discord_codes.insert(hash, doc);
+            Ok(())
+        })
+    }
+
+    fn discord_code_take<'a>(
+        &'a self,
+        hash: &'a str,
+    ) -> BoxFuture<'a, Result<Option<DiscordCodeRecord>, StoreError>> {
+        Box::pin(async move {
+            validate_token_hash(hash)?;
+            let mut inner = self.lock()?;
+            // Removed on the way out whether live or not: a code is consumed
+            // by the attempt (Redis: GETDEL).
+            let Some(doc) = inner.discord_codes.remove(hash) else {
+                return Ok(None);
+            };
+            let rec: DiscordCodeRecord = serde_json::from_str(&doc)?;
+            if rec.expires <= now_unix() {
+                return Ok(None);
+            }
+            Ok(Some(rec))
+        })
+    }
+
+    fn discord_ban_put(&self, rec: DiscordBanRec) -> BoxFuture<'_, Result<(), StoreError>> {
+        Box::pin(async move {
+            let doc = serde_json::to_string(&rec)?;
+            let mut inner = self.lock()?;
+            inner.discord_bans.insert(rec.user_id, doc);
+            Ok(())
+        })
+    }
+
+    fn discord_ban_get(
+        &self,
+        user_id: u64,
+    ) -> BoxFuture<'_, Result<Option<DiscordBanRec>, StoreError>> {
+        Box::pin(async move {
+            let inner = self.lock()?;
+            match inner.discord_bans.get(&user_id) {
+                Some(doc) => Ok(Some(serde_json::from_str(doc)?)),
+                None => Ok(None),
+            }
+        })
+    }
+
+    fn discord_ban_del(&self, user_id: u64) -> BoxFuture<'_, Result<bool, StoreError>> {
+        Box::pin(async move {
+            let mut inner = self.lock()?;
+            Ok(inner.discord_bans.remove(&user_id).is_some())
         })
     }
 

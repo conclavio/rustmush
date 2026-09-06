@@ -214,6 +214,7 @@ async fn seeded_gw_store() -> Arc<dyn ObjectStore> {
                 name: "God".to_string(),
             }],
             ssh_keys: vec![],
+            discord: None,
         })
         .await
         .unwrap();
@@ -369,6 +370,7 @@ async fn server_restart_keeps_connections_and_world() {
                 name: "God".to_string(),
             }],
             ssh_keys: vec![],
+            discord: None,
         })
         .await
         .unwrap();

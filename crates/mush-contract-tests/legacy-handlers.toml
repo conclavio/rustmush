@@ -529,6 +529,12 @@ category = "baseline"
 note = "baseline pinned at b0e3b52 (core/engine registry)"
 
 [[handler]]
+name = "@discord"
+category = "legacy-post-image"
+family = "discord.link"
+note = "D1 (docs/interface/04 §3.1): the Discord identity family. Whole-document account link, one-shot link codes and Discord-scoped bans in the store, executed off-loop like @sshkey; the privileged /show and the staff mutations append to the privileges audit ledger at command time."
+
+[[handler]]
 name = "@domain"
 category = "baseline"
 note = "baseline pinned at b0e3b52 (module, every composition)"
@@ -686,6 +692,12 @@ note = "baseline pinned at b0e3b52 (module, every composition)"
 name = "@parent"
 category = "baseline"
 note = "baseline pinned at b0e3b52 (core/engine registry)"
+
+[[handler]]
+name = "@privilege"
+category = "legacy-post-image"
+family = "privileges.grant"
+note = "D1 (docs/interface/04 §3.1): explicit-only privilege grants/revocations on the object snapshot plus the chunked audit ledger append in the same batch; the audit archive rides the H1 store-read seam."
 
 [[handler]]
 name = "@property"

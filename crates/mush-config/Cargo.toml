@@ -19,6 +19,8 @@ tracing-subscriber.workspace = true
 tracing-appender.workspace = true
 argon2.workspace = true
 rand.workspace = true
+# D1: the Discord link code is stored as its SHA-256 (the web-token rule).
+sha2.workspace = true
 tokio.workspace = true
 dashmap.workspace = true
 

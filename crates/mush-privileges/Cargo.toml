@@ -1,0 +1,20 @@
+[package]
+name = "mush-privileges"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Explicit-only privileges: the @privilege grant family and its durable audit ledger"
+
+[dependencies]
+mush-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+smol_str.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+mush-testkit.workspace = true
+
+[lints]
+workspace = true

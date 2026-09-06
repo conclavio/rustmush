@@ -324,6 +324,7 @@ pub async fn boot_module_server(dir: &Path, server_name: &str, boss_password: &s
                 name: "God".to_string(),
             }],
             ssh_keys: vec![],
+            discord: None,
         })
         .await
         .unwrap();
@@ -413,6 +414,7 @@ pub async fn boot_worldgen_server(
                 name: "God".to_string(),
             }],
             ssh_keys: vec![],
+            discord: None,
         })
         .await
         .unwrap();

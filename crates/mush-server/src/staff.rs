@@ -19,8 +19,11 @@ use std::net::IpAddr;
 use std::sync::{Arc, Mutex};
 
 use mush_core::{
-    ArgShape, CmdError, CommandSpec, Ctx, ObjId, ObjKind, Powers, Registry, RegistryError, Role,
-    perm,
+    ArgShape, CmdError, CommandSpec, Ctx, ObjId, ObjKind, Powers, Privileges, Registry,
+    RegistryError, Role, perm,
+};
+use mush_privileges::{
+    AuditAction, MAX_REASON_BYTES, PrivilegeAction, audit as privilege_audit, contains_identity,
 };
 use mush_proto::{OutputEvent, RichText};
 use ssh_key::{HashAlg, PublicKey};
@@ -134,6 +137,69 @@ pub enum StaffOpKind {
         /// before the new Player is created.
         max_characters: usize,
     },
+    /// `@discord` (bare) — the CALLER's own link status (self-service, D1).
+    /// Never renders the identity.
+    DiscordStatus {
+        /// The requesting character (account resolved store-side).
+        actor: ObjId,
+    },
+    /// `@discord/link` — mint a one-shot link code for the CALLER's account.
+    /// The code is generated off-loop and delivered to the caller alone; it
+    /// never rides the queue or a log (D-D-3).
+    DiscordLinkMint {
+        /// The requesting character (account resolved store-side).
+        actor: ObjId,
+    },
+    /// `@discord/unlink` — clear the CALLER's own link.
+    DiscordUnlinkSelf {
+        /// The requesting character (account resolved store-side).
+        actor: ObjId,
+    },
+    /// `@discord/set relay=<character>|autofollow=on|off` — a self-service
+    /// link preference on the CALLER's account.
+    DiscordSet {
+        /// The requesting character (account resolved store-side).
+        actor: ObjId,
+        /// What to change.
+        setting: DiscordSetting,
+    },
+    /// `@discord/show <player>` — render the target account's link to the
+    /// requester alone. The command handler gates it on
+    /// `Privileges::DISCORD_IDENTITY` and records the `use` (or the `denied`)
+    /// in the privileges audit **before** queuing this (D-D-14).
+    DiscordShow {
+        /// The requesting character.
+        actor: ObjId,
+        /// The character whose account is shown.
+        target: ObjId,
+    },
+    /// `@discord/unlink <player>` (Wizard) — clear another account's link;
+    /// audited at command time.
+    DiscordUnlink {
+        /// The requesting wizard.
+        actor: ObjId,
+        /// The character whose account is unlinked.
+        target: ObjId,
+    },
+    /// `@discord/ban <player>=<reason>` (Wizard) — refuse the target's linked
+    /// Discord user (link, follow, relay), keyed by the snowflake so it
+    /// survives an unlink; audited at command time.
+    DiscordBan {
+        /// The requesting wizard (the ban record names their account).
+        actor: ObjId,
+        /// The character whose linked Discord user is banned.
+        target: ObjId,
+        /// Staff-entered reason (validated at command time).
+        reason: String,
+    },
+    /// `@discord/unban <player>` or `@discord/unban <snowflake>` (Wizard);
+    /// audited at command time.
+    DiscordUnban {
+        /// The requesting wizard.
+        actor: ObjId,
+        /// Who to unban.
+        target: DiscordBanTarget,
+    },
     /// `@ps` — render the scheduler (pending `@wait`s, module ticks,
     /// counts) to the requesting wizard.
     Ps,
@@ -153,6 +219,36 @@ impl StaffOpKind {
             self,
             StaffOpKind::Boot { .. } | StaffOpKind::Ps | StaffOpKind::Stats
         )
+    }
+}
+
+/// One self-service Discord link preference (`@discord/set`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DiscordSetting {
+    /// The character that speaks in relayed channels when none is attached;
+    /// `None` restores the default (the most recently connected character).
+    RelayCharacter(Option<ObjId>),
+    /// Attach a Discord follow when the last terminal connection drops.
+    AutoFollow(bool),
+}
+
+/// Who `@discord/unban` lifts a ban from. A raw snowflake is accepted only
+/// because a banned user may have unlinked (the ban is keyed by the
+/// snowflake so it survives that); `Debug` redacts it, as everywhere.
+#[derive(Clone, PartialEq, Eq)]
+pub enum DiscordBanTarget {
+    /// A character — the ban on its account's linked Discord user.
+    Player(ObjId),
+    /// A Discord user id typed by staff.
+    User(u64),
+}
+
+impl fmt::Debug for DiscordBanTarget {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            DiscordBanTarget::Player(id) => write!(f, "Player({id})"),
+            DiscordBanTarget::User(_) => f.write_str("User(<redacted>)"),
+        }
     }
 }
 
@@ -503,6 +599,245 @@ fn newchar_cmd(
     Ok(())
 }
 
+/// Whether `raw` is a bare Discord snowflake (17–20 ASCII digits).
+fn parse_snowflake(raw: &str) -> Option<u64> {
+    let s = raw.trim();
+    ((17..=20).contains(&s.len()) && s.bytes().all(|b| b.is_ascii_digit()))
+        .then(|| s.parse::<u64>().ok())
+        .flatten()
+}
+
+/// Validate a staff-entered reason for the privileges audit: required,
+/// bounded, never an identity (D-D-14).
+fn checked_audit_reason(raw: &str, usage: &str) -> Result<String, CmdError> {
+    let reason = raw.trim();
+    if reason.is_empty() {
+        return Err(CmdError::msg(format!("A reason is required. {usage}")));
+    }
+    if reason.len() > MAX_REASON_BYTES {
+        return Err(CmdError::msg(format!(
+            "That reason is too long ({} bytes; the limit is {MAX_REASON_BYTES}).",
+            reason.len()
+        )));
+    }
+    if contains_identity(reason) {
+        return Err(CmdError::msg(
+            "A reason may not contain an identifier; the audit log never records one.",
+        ));
+    }
+    Ok(reason.to_string())
+}
+
+/// Append one privileges-audit entry from a `@discord` staff action, failing
+/// closed: if the audit cannot be recorded, the action is not queued.
+fn discord_audit(
+    ctx: &mut Ctx<'_>,
+    action: AuditAction,
+    subject: Option<ObjId>,
+    reason: Option<String>,
+    detail: serde_json::Value,
+) -> Result<(), CmdError> {
+    privilege_audit(
+        ctx,
+        PrivilegeAction {
+            action,
+            privilege: Some(Privileges::DISCORD_IDENTITY),
+            subject,
+            reason,
+            detail,
+        },
+    )
+    .map_err(|e| {
+        CmdError::msg(format!(
+            "The audit could not be recorded ({e}); nothing was done."
+        ))
+    })
+}
+
+/// `@discord` — the Discord identity family (D1). Self-service forms act on
+/// the CALLER's own account, resolved store-side (invariant N1); the staff
+/// forms are Wizard-gated in the handler (the spec is `Role::Player` so the
+/// self-service forms dispatch), and `@discord/show` is gated by the
+/// **privilege**, not the role: a refusal is recorded as `denied`, a permitted
+/// look as `use`, both before the op is queued (D-D-14).
+fn discord_cmd(queue: &StaffQueue, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    const USAGE: &str = "Usage: @discord, @discord/link, @discord/unlink, \
+                         @discord/set relay=<character>|none, @discord/set autofollow=on|off; \
+                         staff: @discord/show <player>, @discord/unlink <player>[=<reason>], \
+                         @discord/ban <player>=<reason>, @discord/unban <player>[=<reason>].";
+    let actor = ctx.actor;
+    let lhs = ctx.args.lhs().trim().to_string();
+    let rhs = ctx.args.rhs().unwrap_or("").trim().to_string();
+    let is_wizard = perm::has_role(ctx.w, actor, Role::Wizard);
+
+    if ctx.switches.has("show") {
+        if lhs.is_empty() {
+            return Err(CmdError::msg("Usage: @discord/show <player>."));
+        }
+        let target = resolve_actor(ctx.w, &lhs)?;
+        if !perm::has_privilege(ctx.w, actor, Privileges::DISCORD_IDENTITY) {
+            // Recorded, then refused — on the Ok path so the entry persists
+            // (an Err would truncate the deferred write).
+            let _ = discord_audit(
+                ctx,
+                AuditAction::Denied,
+                Some(target),
+                None,
+                serde_json::json!({ "command": "@discord/show" }),
+            );
+            ctx.out.error(actor, "Permission denied.");
+            return Ok(());
+        }
+        discord_audit(
+            ctx,
+            AuditAction::Use,
+            Some(target),
+            None,
+            serde_json::json!({ "command": "@discord/show" }),
+        )?;
+        queue.push(StaffOp {
+            actor,
+            kind: StaffOpKind::DiscordShow { actor, target },
+        });
+        return Ok(());
+    }
+    if ctx.switches.has("link") {
+        queue.push(StaffOp {
+            actor,
+            kind: StaffOpKind::DiscordLinkMint { actor },
+        });
+        return Ok(());
+    }
+    if ctx.switches.has("unlink") {
+        if lhs.is_empty() {
+            queue.push(StaffOp {
+                actor,
+                kind: StaffOpKind::DiscordUnlinkSelf { actor },
+            });
+            return Ok(());
+        }
+        if !is_wizard {
+            return Err(CmdError::msg("Permission denied."));
+        }
+        let target = resolve_actor(ctx.w, &lhs)?;
+        let reason = if rhs.is_empty() {
+            None
+        } else {
+            Some(checked_audit_reason(&rhs, USAGE)?)
+        };
+        discord_audit(
+            ctx,
+            AuditAction::Unlink,
+            Some(target),
+            reason,
+            serde_json::json!({ "command": "@discord/unlink" }),
+        )?;
+        queue.push(StaffOp {
+            actor,
+            kind: StaffOpKind::DiscordUnlink { actor, target },
+        });
+        return Ok(());
+    }
+    if ctx.switches.has("ban") {
+        if !is_wizard {
+            return Err(CmdError::msg("Permission denied."));
+        }
+        if lhs.is_empty() {
+            return Err(CmdError::msg("Usage: @discord/ban <player>=<reason>."));
+        }
+        let target = resolve_actor(ctx.w, &lhs)?;
+        let reason = checked_audit_reason(&rhs, "Usage: @discord/ban <player>=<reason>.")?;
+        discord_audit(
+            ctx,
+            AuditAction::Ban,
+            Some(target),
+            Some(reason.clone()),
+            serde_json::json!({ "command": "@discord/ban" }),
+        )?;
+        queue.push(StaffOp {
+            actor,
+            kind: StaffOpKind::DiscordBan {
+                actor,
+                target,
+                reason,
+            },
+        });
+        return Ok(());
+    }
+    if ctx.switches.has("unban") {
+        if !is_wizard {
+            return Err(CmdError::msg("Permission denied."));
+        }
+        if lhs.is_empty() {
+            return Err(CmdError::msg(
+                "Usage: @discord/unban <player>[=<reason>] (or a Discord user id, for a user who has unlinked).",
+            ));
+        }
+        let reason = if rhs.is_empty() {
+            None
+        } else {
+            Some(checked_audit_reason(&rhs, USAGE)?)
+        };
+        let (target, subject) = match parse_snowflake(&lhs) {
+            Some(id) => (DiscordBanTarget::User(id), None),
+            None => {
+                let t = resolve_actor(ctx.w, &lhs)?;
+                (DiscordBanTarget::Player(t), Some(t))
+            }
+        };
+        discord_audit(
+            ctx,
+            AuditAction::Unban,
+            subject,
+            reason,
+            serde_json::json!({ "command": "@discord/unban", "by": if subject.is_some() { "player" } else { "user" } }),
+        )?;
+        queue.push(StaffOp {
+            actor,
+            kind: StaffOpKind::DiscordUnban { actor, target },
+        });
+        return Ok(());
+    }
+    if ctx.switches.has("set") {
+        let key = lhs.to_ascii_lowercase();
+        let setting = match key.as_str() {
+            "relay" => {
+                if rhs.is_empty() {
+                    return Err(CmdError::msg(
+                        "Usage: @discord/set relay=<one of your characters>, or relay=none.",
+                    ));
+                }
+                if rhs.eq_ignore_ascii_case("none") {
+                    DiscordSetting::RelayCharacter(None)
+                } else {
+                    // The executor confirms the character is on the caller's
+                    // own account; here it only has to exist.
+                    DiscordSetting::RelayCharacter(Some(resolve_actor(ctx.w, &rhs)?))
+                }
+            }
+            "autofollow" => match rhs.to_ascii_lowercase().as_str() {
+                "on" | "yes" | "true" => DiscordSetting::AutoFollow(true),
+                "off" | "no" | "false" => DiscordSetting::AutoFollow(false),
+                _ => return Err(CmdError::msg("Usage: @discord/set autofollow=on|off.")),
+            },
+            _ => return Err(CmdError::msg(USAGE)),
+        };
+        queue.push(StaffOp {
+            actor,
+            kind: StaffOpKind::DiscordSet { actor, setting },
+        });
+        return Ok(());
+    }
+    if !lhs.is_empty() {
+        return Err(CmdError::msg(USAGE));
+    }
+    queue.push(StaffOp {
+        actor,
+        kind: StaffOpKind::DiscordStatus { actor },
+    });
+    Ok(())
+}
+
 fn ps_cmd(queue: &StaffQueue, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     queue.push(StaffOp {
         actor: ctx.actor,
@@ -704,6 +1039,38 @@ pub fn register_server_commands_with_cap(
             ..CommandSpec::default()
         },
         Arc::new(move |ctx: &mut Ctx<'_>| newchar_cmd(&q, cap, ctx)),
+    )?;
+    let q = Arc::clone(queue);
+    reg.register(
+        CommandSpec {
+            name: "@discord".into(),
+            switches: vec![
+                "link".into(),
+                "unlink".into(),
+                "set".into(),
+                "show".into(),
+                "ban".into(),
+                "unban".into(),
+            ],
+            shape: ArgShape::EqPair,
+            // Self-service forms for any player; the staff forms are gated in
+            // the handler (Wizard), and /show by the DISCORD_IDENTITY privilege.
+            min_role: Role::Player,
+            help: "@discord  --  Your account's Discord link: linked or not, auto-follow, \
+                   relay character (see `help discord`). @discord/link mints a one-time \
+                   code — DM the game's bot `/link <code>` within 10 minutes to bind your \
+                   Discord user to this account; @discord/unlink removes the link. \
+                   @discord/set relay=<character>|none picks which of your characters \
+                   speaks in relayed channels when none is attached; @discord/set \
+                   autofollow=on|off attaches a Discord follow when your last terminal \
+                   connection drops. Staff: @discord/show <player> (needs the \
+                   DISCORD_IDENTITY privilege — every look is recorded), @discord/unlink \
+                   <player>[=<reason>], @discord/ban <player>=<reason>, @discord/unban \
+                   <player>[=<reason>] (Wizards; every action is recorded)."
+                .into(),
+            ..CommandSpec::default()
+        },
+        Arc::new(move |ctx: &mut Ctx<'_>| discord_cmd(&q, ctx)),
     )?;
     let q = Arc::clone(queue);
     reg.register(
@@ -997,6 +1364,211 @@ mod tests {
                 _ => None,
             })
             .collect()
+    }
+
+    /// Like [`engine_with_staff`] with the privileges module loaded, so the
+    /// `@discord` audit appends have somewhere to go.
+    fn engine_with_staff_and_privileges() -> (Engine, Arc<StaffQueue>) {
+        let mut world = World::new_minimal();
+        world.set_now(1_000);
+        let mut reg = Registry::new();
+        register_core_commands(&mut reg).unwrap();
+        let queue = Arc::new(StaffQueue::new());
+        register_server_commands(&mut reg, &queue).unwrap();
+        let engine = Engine::with_modules(
+            world,
+            reg,
+            vec![Box::new(mush_privileges::PrivilegesModule::new())],
+        )
+        .unwrap();
+        (engine, queue)
+    }
+
+    fn audit_actions(engine: &Engine) -> Vec<mush_privileges::AuditAction> {
+        engine
+            .world
+            .module_state::<mush_privileges::PrivilegesState>()
+            .expect("privileges loaded")
+            .recent()
+            .iter()
+            .map(|e| e.action)
+            .collect()
+    }
+
+    #[test]
+    fn discord_show_is_gated_by_the_privilege_not_the_role_and_audited() {
+        use mush_privileges::AuditAction;
+        let (mut engine, queue) = engine_with_staff_and_privileges();
+        let nick = engine
+            .world
+            .create(ObjKind::Player, "Nick", GOD, Some(LIMBO))
+            .unwrap();
+        // God — Wizard and better — without the bit: refused, recorded as a
+        // denial, nothing queued (D-D-14).
+        let out = run(&mut engine, GOD, "@discord/show Nick");
+        assert!(
+            sys_texts(&out).iter().any(|t| t.contains("Permission denied")),
+            "{:?}",
+            sys_texts(&out)
+        );
+        assert!(queue.drain().is_empty());
+        assert_eq!(audit_actions(&engine), vec![AuditAction::Denied]);
+        // With the bit: queued, recorded as a use, no echo (the executor answers).
+        engine.world.get_mut(GOD).unwrap().privileges = Privileges::DISCORD_IDENTITY;
+        let out = run(&mut engine, GOD, "@discord/show Nick");
+        assert!(sys_texts(&out).is_empty(), "{:?}", sys_texts(&out));
+        let ops = queue.drain();
+        assert_eq!(ops.len(), 1);
+        assert_eq!(
+            ops[0].kind,
+            StaffOpKind::DiscordShow {
+                actor: GOD,
+                target: nick
+            }
+        );
+        assert_eq!(
+            audit_actions(&engine),
+            vec![AuditAction::Denied, AuditAction::Use]
+        );
+        // The privilege is the gate: a mortal holding it may look too.
+        engine.world.get_mut(nick).unwrap().privileges = Privileges::DISCORD_IDENTITY;
+        let out = run(&mut engine, nick, "@discord/show Nick");
+        assert!(sys_texts(&out).is_empty(), "{:?}", sys_texts(&out));
+        assert_eq!(queue.drain().len(), 1);
+    }
+
+    #[test]
+    fn discord_staff_forms_require_wizard_and_reasons_and_audit() {
+        use mush_privileges::AuditAction;
+        let (mut engine, queue) = engine_with_staff_and_privileges();
+        let nick = engine
+            .world
+            .create(ObjKind::Player, "Nick", GOD, Some(LIMBO))
+            .unwrap();
+        // A mortal may not ban.
+        let out = run(&mut engine, nick, "@discord/ban Nick=spam");
+        assert!(
+            sys_texts(&out).iter().any(|t| t.contains("Permission denied")),
+            "{:?}",
+            sys_texts(&out)
+        );
+        assert!(queue.drain().is_empty());
+        // A wizard needs a reason, and never an identity in it.
+        let out = run(&mut engine, GOD, "@discord/ban Nick");
+        assert!(sys_texts(&out).iter().any(|t| t.contains("A reason is required")));
+        let out = run(&mut engine, GOD, "@discord/ban Nick=user 123456789012345678 spams");
+        assert!(
+            sys_texts(&out)
+                .iter()
+                .any(|t| t.contains("may not contain an identifier"))
+        );
+        assert!(queue.drain().is_empty());
+        assert!(audit_actions(&engine).is_empty(), "nothing refused is recorded");
+        // Ban, unban by snowflake, unlink: each queued and audited.
+        let out = run(&mut engine, GOD, "@discord/ban Nick=relay spam");
+        assert!(sys_texts(&out).is_empty(), "{:?}", sys_texts(&out));
+        let ops = queue.drain();
+        assert_eq!(
+            ops[0].kind,
+            StaffOpKind::DiscordBan {
+                actor: GOD,
+                target: nick,
+                reason: "relay spam".into()
+            }
+        );
+        run(&mut engine, GOD, "@discord/unban 123456789012345678");
+        let ops = queue.drain();
+        assert_eq!(
+            ops[0].kind,
+            StaffOpKind::DiscordUnban {
+                actor: GOD,
+                target: DiscordBanTarget::User(123_456_789_012_345_678)
+            }
+        );
+        run(&mut engine, GOD, "@discord/unlink Nick=moving accounts");
+        let ops = queue.drain();
+        assert_eq!(
+            ops[0].kind,
+            StaffOpKind::DiscordUnlink {
+                actor: GOD,
+                target: nick
+            }
+        );
+        assert_eq!(
+            audit_actions(&engine),
+            vec![AuditAction::Ban, AuditAction::Unban, AuditAction::Unlink]
+        );
+        // A user-targeted unban never prints the snowflake through Debug.
+        let debug = format!("{:?}", DiscordBanTarget::User(123_456_789_012_345_678));
+        assert!(!debug.contains("1234567890"), "{debug}");
+    }
+
+    #[test]
+    fn discord_self_service_forms_queue_their_ops_unaudited() {
+        let (mut engine, queue) = engine_with_staff_and_privileges();
+        let nick = engine
+            .world
+            .create(ObjKind::Player, "Nick", GOD, Some(LIMBO))
+            .unwrap();
+        let cases = [
+            ("@discord", StaffOpKind::DiscordStatus { actor: nick }),
+            ("@discord/link", StaffOpKind::DiscordLinkMint { actor: nick }),
+            ("@discord/unlink", StaffOpKind::DiscordUnlinkSelf { actor: nick }),
+            (
+                "@discord/set autofollow=on",
+                StaffOpKind::DiscordSet {
+                    actor: nick,
+                    setting: DiscordSetting::AutoFollow(true),
+                },
+            ),
+            (
+                "@discord/set relay=none",
+                StaffOpKind::DiscordSet {
+                    actor: nick,
+                    setting: DiscordSetting::RelayCharacter(None),
+                },
+            ),
+            (
+                "@discord/set relay=Nick",
+                StaffOpKind::DiscordSet {
+                    actor: nick,
+                    setting: DiscordSetting::RelayCharacter(Some(nick)),
+                },
+            ),
+        ];
+        for (line, kind) in cases {
+            let out = run(&mut engine, nick, line);
+            assert!(sys_texts(&out).is_empty(), "{line}: {:?}", sys_texts(&out));
+            let ops = queue.drain();
+            assert_eq!(ops.len(), 1, "{line}");
+            assert_eq!(ops[0].kind, kind, "{line}");
+        }
+        let out = run(&mut engine, nick, "@discord/set autofollow=maybe");
+        assert!(sys_texts(&out).iter().any(|t| t.contains("Usage")));
+        assert!(queue.drain().is_empty());
+        assert!(
+            audit_actions(&engine).is_empty(),
+            "self-service on one's own account is not a privilege event"
+        );
+    }
+
+    #[test]
+    fn discord_show_fails_closed_when_the_privileges_module_is_absent() {
+        let (mut engine, queue) = engine_with_staff();
+        engine
+            .world
+            .create(ObjKind::Player, "Nick", GOD, Some(LIMBO))
+            .unwrap();
+        engine.world.get_mut(GOD).unwrap().privileges = Privileges::DISCORD_IDENTITY;
+        let out = run(&mut engine, GOD, "@discord/show Nick");
+        assert!(
+            sys_texts(&out)
+                .iter()
+                .any(|t| t.contains("audit could not be recorded")),
+            "{:?}",
+            sys_texts(&out)
+        );
+        assert!(queue.drain().is_empty(), "no audit, no look");
     }
 
     #[test]

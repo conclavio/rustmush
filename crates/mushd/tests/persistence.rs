@@ -1755,6 +1755,66 @@ impl ObjectStore for FlakyStore {
         self.inner.set_account_ssh_keys(account, keys)
     }
 
+    fn set_account_discord<'a>(
+        &'a self,
+        account: &'a str,
+        link: Option<&'a mush_store::DiscordLinkRec>,
+    ) -> BoxFuture<'a, Result<bool, StoreError>> {
+        self.inner.set_account_discord(account, link)
+    }
+
+    fn discord_user_reserve<'a>(
+        &'a self,
+        user_id: u64,
+        account: &'a str,
+    ) -> BoxFuture<'a, Result<bool, StoreError>> {
+        self.inner.discord_user_reserve(user_id, account)
+    }
+
+    fn discord_user_release(&self, user_id: u64) -> BoxFuture<'_, Result<bool, StoreError>> {
+        self.inner.discord_user_release(user_id)
+    }
+
+    fn account_by_discord_user(
+        &self,
+        user_id: u64,
+    ) -> BoxFuture<'_, Result<Option<mush_store::AccountRec>, StoreError>> {
+        self.inner.account_by_discord_user(user_id)
+    }
+
+    fn discord_code_put(
+        &self,
+        hash: String,
+        rec: mush_store::DiscordCodeRecord,
+    ) -> BoxFuture<'_, Result<(), StoreError>> {
+        self.inner.discord_code_put(hash, rec)
+    }
+
+    fn discord_code_take<'a>(
+        &'a self,
+        hash: &'a str,
+    ) -> BoxFuture<'a, Result<Option<mush_store::DiscordCodeRecord>, StoreError>> {
+        self.inner.discord_code_take(hash)
+    }
+
+    fn discord_ban_put(
+        &self,
+        rec: mush_store::DiscordBanRec,
+    ) -> BoxFuture<'_, Result<(), StoreError>> {
+        self.inner.discord_ban_put(rec)
+    }
+
+    fn discord_ban_get(
+        &self,
+        user_id: u64,
+    ) -> BoxFuture<'_, Result<Option<mush_store::DiscordBanRec>, StoreError>> {
+        self.inner.discord_ban_get(user_id)
+    }
+
+    fn discord_ban_del(&self, user_id: u64) -> BoxFuture<'_, Result<bool, StoreError>> {
+        self.inner.discord_ban_del(user_id)
+    }
+
     fn set_ban<'a>(
         &'a self,
         ip: &'a str,

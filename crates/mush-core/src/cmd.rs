@@ -42,7 +42,7 @@ use crate::behavior::{
     DetachGate, resolve_behavior_command_with_action_state,
 };
 use crate::commands::movement;
-use crate::flags::{Powers, Role};
+use crate::flags::{Powers, Privileges, Role};
 use crate::lock::{LockExpr, MAX_LOCK_DEPTH, eval_lock};
 use crate::matchit::MatchErr;
 use crate::module::{ContextOutcome, ModuleTables, restored_prompt};
@@ -133,6 +133,10 @@ pub struct CommandSpec {
     pub min_role: Role,
     /// Additional power requirement (Wizard+ implicitly passes).
     pub power: Option<Powers>,
+    /// Explicit-privilege requirement: **no role passes it** — the actor's
+    /// object must carry the bit (`perm::has_privilege`, D-D-14). Checked
+    /// after `power`, refused with the same "Permission denied.".
+    pub privilege: Option<Privileges>,
     /// Optional lock gate (treaty ruling 4), evaluated against the actor
     /// before the handler runs; failing it is "Permission denied.".
     pub lock: Option<LockExpr>,
@@ -153,6 +157,7 @@ impl Default for CommandSpec {
             shape: ArgShape::Raw,
             min_role: Role::Player,
             power: None,
+            privilege: None,
             lock: None,
             help: String::new(),
             scene_class: SceneClass::Free,
@@ -1316,6 +1321,12 @@ fn gate_spec(
     }
     if let Some(p) = spec.power
         && !perm::has_power(w, actor, p)
+    {
+        out.error(actor, "Permission denied.");
+        return None;
+    }
+    if let Some(p) = spec.privilege
+        && !perm::has_privilege(w, actor, p)
     {
         out.error(actor, "Permission denied.");
         return None;

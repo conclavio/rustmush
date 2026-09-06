@@ -15,7 +15,7 @@ use smol_str::SmolStr;
 
 use crate::attr::AttrMap;
 use crate::behavior::{BehaviorBinding, BehaviorId};
-use crate::flags::{Flags, Powers, Role};
+use crate::flags::{Flags, Powers, Privileges, Role};
 use crate::lock::{LockExpr, LockType};
 
 /// Classic dbref. Monotonic, never recycled.
@@ -141,6 +141,12 @@ pub struct Obj {
     /// grants matter mostly for non-staff. Defaults to empty.
     #[serde(default)]
     pub powers: Powers,
+    /// Explicitly granted privileges (`@privilege/grant`). No role implies
+    /// one — see `mush_core::perm::has_privilege` — so this is the only
+    /// place a privilege can come from. Defaults to empty; additive on the
+    /// persisted document.
+    #[serde(default)]
+    pub privileges: Privileges,
     /// Module-defined marker flags, e.g. `"wod:kindred"`.
     pub markers: BTreeSet<SmolStr>,
     /// Lock expressions by lock type.
@@ -180,6 +186,7 @@ impl Obj {
             exits: Vec::new(),
             flags: Flags::empty(),
             powers: Powers::empty(),
+            privileges: Privileges::empty(),
             markers: BTreeSet::new(),
             locks: BTreeMap::new(),
             attrs: AttrMap::new(),

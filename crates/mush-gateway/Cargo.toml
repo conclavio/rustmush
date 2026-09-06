@@ -30,6 +30,8 @@ mush-ansi.workspace = true
 mush-session.workspace = true
 mush-net-ssh.workspace = true
 mush-net-web.workspace = true
+# D1: the Discord transport; the bridge here implements its hooks.
+mush-net-discord.workspace = true
 # Public-key auth (M19): parse offered/stored OpenSSH public keys and compare
 # by key material for `verify_pubkey`. russh re-exports the `ssh-key` types.
 russh.workspace = true

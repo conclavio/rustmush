@@ -150,6 +150,8 @@ pub fn server_modules_with(
     vec![
         Box::new(mush_comsys::ComsysModule::new()),
         Box::new(mush_canon::CanonModule::new()),
+        // D1: explicit-only privileges and their audit ledger (`@privilege`).
+        Box::new(mush_privileges::PrivilegesModule::new()),
         // E1: organization identity + scoped authorization (the economy's
         // ownership/permission substrate). E1c wires the faction-standing predicate
         // provider so an org AccessPolicy can gate on live faction membership /

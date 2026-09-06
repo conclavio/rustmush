@@ -65,6 +65,7 @@ async fn boot_server(dir: &std::path::Path) -> SocketAddr {
                 name: "God".to_string(),
             }],
             ssh_keys: vec![],
+            discord: None,
         })
         .await
         .unwrap();
@@ -177,6 +178,7 @@ async fn boot_duo_server(dir: &std::path::Path, seed_key: bool, with_staff: bool
                 },
             ],
             ssh_keys: vec![],
+            discord: None,
         })
         .await
         .unwrap();

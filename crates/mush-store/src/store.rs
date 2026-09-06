@@ -42,9 +42,10 @@ use crate::types::{
     AccountRec, AuthoritativeCheckpointReceipt, AuthoritativeDiscardReceipt,
     AuthoritativeEpochRetirement, AuthoritativeIntentPage, AuthoritativeOutboxAttemptResult,
     AuthoritativeOutboxRecord, AuthoritativeReceipt, AuthoritativeRetentionUsage,
-    AuthoritativeScanCursor, BanRec, BoundIdempotencyStatus, BundleStatus, IdempotencyStatus,
-    IntentReceipt, PendingAuthoritativeIntent, SshKeyRec, StoreError, TokenRecord, WorldSnapshot,
-    WriteBatch, WriteReceipt,
+    AuthoritativeScanCursor, BanRec, BoundIdempotencyStatus, BundleStatus, DiscordBanRec,
+    DiscordCodeRecord, DiscordLinkRec, IdempotencyStatus, IntentReceipt,
+    PendingAuthoritativeIntent, SshKeyRec, StoreError, TokenRecord, WorldSnapshot, WriteBatch,
+    WriteReceipt,
 };
 
 /// Exact-intent persistence used by the K3 action coordinator.
@@ -402,6 +403,72 @@ pub trait ObjectStore: Send + Sync {
         account: &'a str,
         keys: &'a [SshKeyRec],
     ) -> BoxFuture<'a, Result<bool, StoreError>>;
+
+    // ------------------------------------------------------------------
+    // Discord identity (D1, D-D-2): the link on the account doc, the reverse
+    // index that is the uniqueness lock, one-shot link codes, and the
+    // Discord-scoped ban list. Each call is individually atomic; the link
+    // flow is `discord_user_reserve` → `set_account_discord`, releasing the
+    // reservation if the second step fails, and a reverse entry whose account
+    // carries no link is treated as stale by readers.
+    // ------------------------------------------------------------------
+
+    /// Set (or, with `None`, clear) an account's Discord link. Atomic per
+    /// call; returns whether the account existed — `Ok(false)` for an unknown
+    /// name, never an error. Additive like `ssh_keys`: a doc that predates
+    /// the field is written correctly.
+    fn set_account_discord<'a>(
+        &'a self,
+        account: &'a str,
+        link: Option<&'a DiscordLinkRec>,
+    ) -> BoxFuture<'a, Result<bool, StoreError>>;
+
+    /// Claim the reverse index entry `discord:user:{id} → account` if it is
+    /// free (or already this account's). Returns `Ok(false)` when another
+    /// account holds it — the "already linked elsewhere" refusal.
+    fn discord_user_reserve<'a>(
+        &'a self,
+        user_id: u64,
+        account: &'a str,
+    ) -> BoxFuture<'a, Result<bool, StoreError>>;
+
+    /// Drop the reverse index entry (unlink). Returns whether one existed.
+    fn discord_user_release(&self, user_id: u64) -> BoxFuture<'_, Result<bool, StoreError>>;
+
+    /// The account a Discord user is linked to, through the reverse index.
+    /// `Ok(None)` when unlinked, or when the index points at an account that
+    /// is missing or carries no link (a stale reservation).
+    fn account_by_discord_user(
+        &self,
+        user_id: u64,
+    ) -> BoxFuture<'_, Result<Option<AccountRec>, StoreError>>;
+
+    /// Store a pending link code under its hash (last write wins). An
+    /// `expires` at or before now is equivalent to not storing it.
+    fn discord_code_put(
+        &self,
+        hash: String,
+        rec: DiscordCodeRecord,
+    ) -> BoxFuture<'_, Result<(), StoreError>>;
+
+    /// Consume a live link code: fetch **and delete** it in one step, so a
+    /// code redeems at most once. `Ok(None)` when absent or expired.
+    fn discord_code_take<'a>(
+        &'a self,
+        hash: &'a str,
+    ) -> BoxFuture<'a, Result<Option<DiscordCodeRecord>, StoreError>>;
+
+    /// Set (or replace) the Discord-scoped ban on a user.
+    fn discord_ban_put(&self, rec: DiscordBanRec) -> BoxFuture<'_, Result<(), StoreError>>;
+
+    /// The ban on a Discord user, if any.
+    fn discord_ban_get(
+        &self,
+        user_id: u64,
+    ) -> BoxFuture<'_, Result<Option<DiscordBanRec>, StoreError>>;
+
+    /// Lift the ban on a Discord user. Returns whether one was removed.
+    fn discord_ban_del(&self, user_id: u64) -> BoxFuture<'_, Result<bool, StoreError>>;
 
     // ------------------------------------------------------------------
     // Sitebans (persisted; IpGuard tempbans stay in-memory)

@@ -332,6 +332,7 @@ impl AuthBackend for Accounts {
             created,
             characters: Vec::new(),
             ssh_keys: Vec::new(),
+            discord: None,
         };
         match self.store.create_account(rec).await {
             Ok(()) => {}
@@ -406,6 +407,7 @@ mod pubkey_tests {
                 created: unix_now_s(),
                 characters: Vec::new(),
                 ssh_keys: Vec::new(),
+                discord: None,
             })
             .await
             .unwrap();

@@ -156,6 +156,7 @@ mod tests {
                 })
                 .collect(),
             ssh_keys: vec![],
+            discord: None,
         }
     }
 

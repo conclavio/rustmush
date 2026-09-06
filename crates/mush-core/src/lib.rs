@@ -230,7 +230,7 @@ pub use engine::{
     StagePreparedActionError, StagedAction, StagedActionAdmissionError, StagedActionPersistence,
     StepOutcome, WorldCommand, register_engine_commands,
 };
-pub use flags::{Flags, Powers, Role};
+pub use flags::{Flags, Powers, Privileges, Role};
 pub use ledger::{
     BreachKind, ContiguityBreach, DEFAULT_ARCHIVE_PAGE_CHUNKS, Ledger, LedgerAppendError,
     LedgerApplyError, LedgerChunk, LedgerChunkOf, LedgerDoc, LedgerEntry, LedgerEntryOf,

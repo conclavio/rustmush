@@ -27,8 +27,9 @@ use crate::migrate::{Migration, run_migrations};
 use crate::store::{AuthoritativeStore, ObjectStore};
 use crate::types::{
     AccountRec, AuthoritativeOutboxAttemptResult, AuthoritativeRetentionUsage,
-    AuthoritativeScanCursor, BoundIdempotencyStatus, BundleStatus, IdempotencyStatus, ModuleOp,
-    ModuleWrite, SshKeyRec, StoreError, TokenRecord, WriteBatch,
+    AuthoritativeScanCursor, BoundIdempotencyStatus, BundleStatus, DiscordBanRec,
+    DiscordCodeRecord, DiscordLinkRec, IdempotencyStatus, ModuleOp, ModuleWrite, SshKeyRec,
+    StoreError, TokenRecord, WriteBatch,
 };
 
 fn now_unix() -> i64 {
@@ -173,6 +174,7 @@ pub async fn account_reserve_race(store: &dyn ObjectStore) {
         created: now_unix(),
         characters: vec![],
         ssh_keys: vec![],
+        discord: None,
     };
     let (a, b) = futures::join!(
         store.create_account(rec("hash-a")),
@@ -217,6 +219,7 @@ pub async fn account_lifecycle(store: &dyn ObjectStore) {
             created,
             characters: vec![],
             ssh_keys: vec![],
+            discord: None,
         })
         .await
         .expect("create");
@@ -230,6 +233,7 @@ pub async fn account_lifecycle(store: &dyn ObjectStore) {
                     created,
                     characters: vec![],
                     ssh_keys: vec![],
+                    discord: None,
                 })
                 .await,
             Err(StoreError::AccountExists)
@@ -268,6 +272,7 @@ pub async fn account_lifecycle(store: &dyn ObjectStore) {
             created,
             characters: vec![],
             ssh_keys: vec![],
+            discord: None,
         })
         .await
         .expect("second account");
@@ -304,6 +309,7 @@ pub async fn account_password_update(store: &dyn ObjectStore) {
             created,
             characters: vec![],
             ssh_keys: vec![],
+            discord: None,
         })
         .await
         .expect("create");
@@ -361,6 +367,7 @@ pub async fn account_ssh_keys_update(store: &dyn ObjectStore) {
             created,
             characters: vec![],
             ssh_keys: vec![],
+            discord: None,
         })
         .await
         .expect("create");
@@ -420,6 +427,233 @@ pub async fn account_ssh_keys_update(store: &dyn ObjectStore) {
     assert!(rec.ssh_keys.is_empty(), "empty slice clears the keys");
 }
 
+/// D1 (D-D-2, D-D-3, D-D-14): the Discord link round-trips on the account doc
+/// and is additive; the reverse index is the uniqueness lock (a second account
+/// cannot reserve a claimed user, the holder may re-reserve, a release frees
+/// it); `account_by_discord_user` treats a reservation with no link as stale;
+/// a link code is taken exactly once and never after expiry; bans put/get/del;
+/// and no `Debug` ever prints the snowflake.
+pub async fn account_discord_link(store: &dyn ObjectStore) {
+    let created = now_unix();
+    let mk = |name: &str| AccountRec {
+        id: None,
+        name: name.to_string(),
+        argon2_hash: "$argon2id$keep".to_string(),
+        created,
+        characters: vec![],
+        ssh_keys: vec![],
+        discord: None,
+    };
+    assert!(
+        !store
+            .set_account_discord("nobody", None)
+            .await
+            .expect("unknown account is not an error"),
+        "unknown account must report false"
+    );
+    store.create_account(mk("Nick")).await.expect("create");
+    store.create_account(mk("Zoe")).await.expect("create");
+    let user = 123_456_789_012_345_678_u64;
+
+    // Reserve first: the index is the lock.
+    assert!(
+        store
+            .discord_user_reserve(user, "NICK")
+            .await
+            .expect("reserve")
+    );
+    assert!(
+        store
+            .account_by_discord_user(user)
+            .await
+            .expect("lookup")
+            .is_none(),
+        "a reservation with no link is stale, not a link"
+    );
+    assert!(
+        !store
+            .discord_user_reserve(user, "zoe")
+            .await
+            .expect("reserve"),
+        "a claimed user is refused to another account"
+    );
+    assert!(
+        store
+            .discord_user_reserve(user, "nick")
+            .await
+            .expect("re-reserve"),
+        "the holder may re-reserve"
+    );
+
+    // Link.
+    let link = DiscordLinkRec {
+        user_id: user,
+        linked_at: created,
+        relay_character: Some(ObjId(7)),
+        auto_follow: true,
+        dm_channel: None,
+    };
+    assert!(
+        store
+            .set_account_discord("nick", Some(&link))
+            .await
+            .expect("link")
+    );
+    let rec = store
+        .get_account("nick")
+        .await
+        .expect("get")
+        .expect("exists");
+    assert_eq!(rec.discord.as_ref(), Some(&link), "link round-trips");
+    assert_eq!(rec.argon2_hash, "$argon2id$keep", "hash untouched");
+    let by = store
+        .account_by_discord_user(user)
+        .await
+        .expect("lookup")
+        .expect("linked");
+    assert_eq!(by.name, "Nick");
+    // No Debug prints the snowflake (D-D-14).
+    let id = user.to_string();
+    let debug = format!("{rec:?}");
+    assert!(
+        !debug.contains(&id),
+        "AccountRec Debug leaks the id: {debug}"
+    );
+    assert!(
+        debug.contains("<linked>"),
+        "AccountRec Debug says linked: {debug}"
+    );
+    assert!(
+        !format!("{link:?}").contains(&id),
+        "DiscordLinkRec Debug leaks the id"
+    );
+
+    // Unlink: clear the doc, release the index; then it is free again.
+    assert!(
+        store
+            .set_account_discord("nick", None)
+            .await
+            .expect("unlink")
+    );
+    assert!(
+        store
+            .get_account("nick")
+            .await
+            .expect("get")
+            .expect("exists")
+            .discord
+            .is_none()
+    );
+    assert!(store.discord_user_release(user).await.expect("release"));
+    assert!(
+        !store
+            .discord_user_release(user)
+            .await
+            .expect("release twice")
+    );
+    assert!(
+        store
+            .account_by_discord_user(user)
+            .await
+            .expect("lookup")
+            .is_none()
+    );
+    assert!(
+        store
+            .discord_user_reserve(user, "zoe")
+            .await
+            .expect("reserve"),
+        "released: free for another account"
+    );
+    assert!(store.discord_user_release(user).await.expect("release"));
+
+    // Link codes: once, never after expiry, empty hash refused.
+    let now = now_unix();
+    assert!(matches!(
+        store
+            .discord_code_put(
+                String::new(),
+                DiscordCodeRecord {
+                    account: "nick".into(),
+                    expires: now + 600,
+                },
+            )
+            .await,
+        Err(StoreError::Invalid(_))
+    ));
+    store
+        .discord_code_put(
+            "c0de01".into(),
+            DiscordCodeRecord {
+                account: "Nick".into(),
+                expires: now + 600,
+            },
+        )
+        .await
+        .expect("put");
+    let taken = store
+        .discord_code_take("c0de01")
+        .await
+        .expect("take")
+        .expect("live");
+    assert_eq!(taken.account, "Nick");
+    assert!(
+        store
+            .discord_code_take("c0de01")
+            .await
+            .expect("take twice")
+            .is_none(),
+        "a code redeems once"
+    );
+    store
+        .discord_code_put(
+            "dead01".into(),
+            DiscordCodeRecord {
+                account: "Nick".into(),
+                expires: now - 10,
+            },
+        )
+        .await
+        .expect("put expired");
+    assert!(
+        store
+            .discord_code_take("dead01")
+            .await
+            .expect("take expired")
+            .is_none()
+    );
+    assert!(
+        store
+            .discord_code_take("nope")
+            .await
+            .expect("take missing")
+            .is_none()
+    );
+
+    // Bans: keyed by the snowflake, survive an unlink, redacted in Debug.
+    assert!(store.discord_ban_get(user).await.expect("get").is_none());
+    let ban = DiscordBanRec {
+        user_id: user,
+        by_account: "zoe".into(),
+        reason: "relay spam".into(),
+        at: now,
+    };
+    store.discord_ban_put(ban.clone()).await.expect("ban");
+    let got = store
+        .discord_ban_get(user)
+        .await
+        .expect("get")
+        .expect("banned");
+    assert_eq!(got, ban);
+    assert!(
+        !format!("{got:?}").contains(&id),
+        "DiscordBanRec Debug leaks the id"
+    );
+    assert!(store.discord_ban_del(user).await.expect("del"));
+    assert!(!store.discord_ban_del(user).await.expect("del twice"));
+    assert!(store.discord_ban_get(user).await.expect("get").is_none());
+}
+
 /// E7 cut 5 B1: the immutable account id round-trips through the store and is
 /// preserved across every mutation, so a rename (there is no rename verb; this
 /// pins the forward guarantee) or a password/ssh/character change never
@@ -436,6 +670,7 @@ pub async fn account_id_round_trips_and_is_immutable(store: &dyn ObjectStore) {
             created,
             characters: vec![],
             ssh_keys: vec![],
+            discord: None,
         })
         .await
         .expect("create");
@@ -497,6 +732,7 @@ pub async fn account_id_backfill_is_idempotent(store: &dyn ObjectStore) {
             created,
             characters: vec![],
             ssh_keys: vec![],
+            discord: None,
         })
         .await
         .expect("create");

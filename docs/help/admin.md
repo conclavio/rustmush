@@ -53,9 +53,29 @@ live per-scene ruleset state (e.g. combat heat) — re-open the scene after
 reconnect. Everything you had already saved — rooms, your sheet, sent mail,
 jobs — is intact. Operators: see docs/ops.md "Hot-restart (split) deployment".
 
-Powers (grantable to non-staff by Wizards, via @set): BOOT, EXAMINE_ALL,
-TEL_ANYWHERE, TEL_ANYTHING, CHOWN_ANY, COMSYS_ADMIN, BUILDER_LLM,
-SEE_HIDDEN. Wizards hold every power implicitly.
+Powers: BOOT, EXAMINE_ALL, TEL_ANYWHERE, TEL_ANYTHING, CHOWN_ANY,
+COMSYS_ADMIN, BUILDER_LLM, SEE_HIDDEN, FACTION_ADMIN, SIM_ADMIN. Wizards
+hold every power implicitly. (There is no in-game command to grant a power
+to a non-staff object yet.)
+
+Privileges are the opposite of powers in one way: NO rank implies one — not
+Wizards, not God. A privilege exists only as an explicit grant, and the
+grant, the revocation, every permitted use and every refused attempt are
+recorded in a durable audit that never records what was seen.
+
+  @privilege/grant <player>=<privilege>=<reason>
+                    Grant a privilege (Wizards). The reason is required.
+  @privilege/revoke <player>=<privilege>=<reason>
+  @privilege/list [<player>]
+                    Every holder, or one player's privileges.
+  @privilege/audit [<player>]
+                    The recent audit, newest first; with a player, only the
+                    entries where they acted or were the subject.
+  @privilege/archive [<page>]
+                    Older audit history, a page at a time (0 = newest).
+
+Privileges: DISCORD_IDENTITY — read a player's linked Discord identity with
+@discord/show (see "help discord").
 
 If the store goes down the game enters read-only mode automatically:
 mutating commands pause with an alert to Wizards, and lift on recovery.

@@ -982,6 +982,13 @@ pub struct Config {
     /// `features`/`panels` are filled from the module registry at boot.
     #[serde(default = "empty_toml_table")]
     pub web: toml::Value,
+    /// `[discord]` — the raw section, deserialized into
+    /// `mush_net_discord::DiscordConfig` by the gateway / all-in-one binary that
+    /// starts the Discord bot (kept untyped here so `mush-config` need not depend
+    /// on `mush-net-discord`). Off by default (`enabled = false`); the bot token
+    /// is named by env var (`token_env`), never inlined.
+    #[serde(default = "empty_toml_table")]
+    pub discord: toml::Value,
     /// `[game]`.
     pub game: GameCfg,
     /// `[rulesets]` — which ruleset module(s) load (M6).
@@ -1035,6 +1042,7 @@ impl Default for Config {
             resolution: ResolutionCfg::default(),
             ssh: SshCfg::default(),
             web: empty_toml_table(),
+            discord: empty_toml_table(),
             game: GameCfg::default(),
             rulesets: RulesetsCfg::default(),
             weather: WeatherCfg::default(),

@@ -64,6 +64,7 @@ pub mod accounts;
 pub mod bridge_common;
 pub mod composing;
 pub mod delivery;
+pub mod discord_bridge;
 pub mod ssh_bridge;
 pub mod web_bridge;
 
@@ -2207,6 +2208,10 @@ pub async fn serve(config: Config, opts: GatewayOptions) -> Result<(), String> {
         }
     };
 
+    // The Discord bot (D1): the same session manager (in-game notices) and the
+    // same store (the link records). Loud but non-fatal, like the web listener.
+    let discord = discord_bridge::spawn_bot(&config, Arc::clone(&sessions), Arc::clone(&store));
+
     // The restart trigger (D1b): a channel the supervisor drains and a
     // `SIGHUP` handler / the test fills. Handed back through `restart_ready`.
     let (restart_tx, restart_rx) = mpsc::channel::<()>(1);
@@ -2232,6 +2237,7 @@ pub async fn serve(config: Config, opts: GatewayOptions) -> Result<(), String> {
             tracing::info!("gateway shutting down");
             listener.stop_accepting();
             stop_web(web_stop, web_join).await;
+            discord.stop().await;
             sup.abort();
         }
         None => {
@@ -2245,6 +2251,7 @@ pub async fn serve(config: Config, opts: GatewayOptions) -> Result<(), String> {
             tracing::info!("gateway shutting down");
             listener.stop_accepting();
             stop_web(web_stop, web_join).await;
+            discord.stop().await;
         }
     }
     Ok(())

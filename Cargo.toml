@@ -129,6 +129,18 @@ mush-faction = { path = "crates/mush-faction" }
 mush-scenes = { path = "crates/mush-scenes" }
 mush-sim = { path = "crates/mush-sim" }
 mush-canon = { path = "crates/mush-canon" }
+# D1 (docs/interface/04 §3.1): explicit-only privileges — the `@privilege` grant family and
+# the durable audit ledger of grants, revocations and uses. `mush-privileges -> {core}` only.
+mush-privileges = { path = "crates/mush-privileges" }
+# D1: the Discord transport (03 Q13 spike, D-D-12). Defaults OFF on every twilight crate so
+# gateway compression is zlib (`flate2` → pure-Rust `zlib-rs`) and never `zstd-sys`, TLS is
+# rustls through this workspace's `ring` provider by feature unification (never aws-lc-sys),
+# and the pins are exact because twilight's 0.x line breaks yearly. Re-verify at each cut.
+twilight-http = { version = "=0.17.1", default-features = false, features = ["rustls-native-roots", "decompression"] }
+twilight-gateway = { version = "=0.17.1", default-features = false, features = ["rustls-native-roots", "twilight-http", "zlib"] }
+twilight-model = "=0.17.1"
+twilight-util = { version = "=0.17.0", features = ["builder"] }
+mush-net-discord = { path = "crates/mush-net-discord" }
 mush-mail = { path = "crates/mush-mail" }
 mush-weather = { path = "crates/mush-weather" }
 ruleset-wod = { path = "crates/ruleset-wod" }

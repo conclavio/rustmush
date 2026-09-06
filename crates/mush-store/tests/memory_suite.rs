@@ -40,6 +40,11 @@ async fn account_ssh_keys_update() {
 }
 
 #[tokio::test]
+async fn account_discord_link() {
+    suite::account_discord_link(&InMemoryStore::new()).await;
+}
+
+#[tokio::test]
 async fn account_id_round_trips_and_is_immutable() {
     suite::account_id_round_trips_and_is_immutable(&InMemoryStore::new()).await;
 }

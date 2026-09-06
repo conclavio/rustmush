@@ -1101,6 +1101,47 @@ pub struct SshKeyRec {
     pub added: i64,
 }
 
+/// The verified Discord identity bound to an account (`@discord/link`,
+/// D-D-2). At most one per account and one account per Discord user; the
+/// uniqueness lock is the store's reverse index
+/// ([`crate::ObjectStore::discord_user_reserve`]).
+///
+/// `user_id` is Discord's immutable **snowflake** — never the changeable
+/// handle — and it is staff-only data (`@discord/show`, behind
+/// `Privileges::DISCORD_IDENTITY`): `Debug` redacts it and `dm_channel`, so a
+/// stray `{:?}` can never put an identity in a log.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DiscordLinkRec {
+    /// The Discord user's snowflake.
+    pub user_id: u64,
+    /// Unix seconds when the link was made.
+    pub linked_at: i64,
+    /// The character that speaks in relayed channels when none is attached
+    /// (D-D-5). `None` falls back to the account's single or most recently
+    /// connected character.
+    #[serde(default)]
+    pub relay_character: Option<ObjId>,
+    /// Attach a Discord follow when the last terminal/web connection drops
+    /// (D-D-4).
+    #[serde(default)]
+    pub auto_follow: bool,
+    /// The DM channel the bot opened with this user, once known.
+    #[serde(default)]
+    pub dm_channel: Option<u64>,
+}
+
+impl std::fmt::Debug for DiscordLinkRec {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DiscordLinkRec")
+            .field("user_id", &"<redacted>")
+            .field("linked_at", &self.linked_at)
+            .field("relay_character", &self.relay_character)
+            .field("auto_follow", &self.auto_follow)
+            .field("dm_channel", &self.dm_channel.map(|_| "<redacted>"))
+            .finish()
+    }
+}
+
 /// One account document (`account:{lowername}` in Redis).
 ///
 /// The store holds the argon2id PHC hash opaquely; hashing and verification
@@ -1133,6 +1174,10 @@ pub struct AccountRec {
     /// SSH public keys authorized to log in to this account.
     #[serde(default)]
     pub ssh_keys: Vec<SshKeyRec>,
+    /// The verified Discord identity, when linked (D1). Additive: accounts
+    /// whose stored doc predates the field deserialize as unlinked.
+    #[serde(default)]
+    pub discord: Option<DiscordLinkRec>,
 }
 
 impl std::fmt::Debug for AccountRec {
@@ -1144,6 +1189,8 @@ impl std::fmt::Debug for AccountRec {
             .field("created", &self.created)
             .field("characters", &self.characters)
             .field("ssh_keys", &self.ssh_keys)
+            // Linked or not — never the identity (D-D-14).
+            .field("discord", &self.discord.as_ref().map(|_| "<linked>"))
             .finish()
     }
 }
@@ -1165,6 +1212,46 @@ pub struct TokenRecord {
     /// Unix seconds when the token lapses. A record with
     /// `expires <= now` is treated as gone everywhere.
     pub expires: i64,
+}
+
+/// One pending Discord link code (`discord:code:{hash}` in Redis, expiring
+/// via native `EXAT` TTL; D-D-3).
+///
+/// The key is the **SHA-256 hex digest of the code** the player was shown
+/// in game; the raw code is never persisted. A record is consumed exactly
+/// once ([`crate::ObjectStore::discord_code_take`]).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DiscordCodeRecord {
+    /// Canonical account name the code links.
+    pub account: String,
+    /// Unix seconds when the code lapses; `expires <= now` is gone.
+    pub expires: i64,
+}
+
+/// One Discord-scoped refusal (`discord:ban:{user_id}` in Redis; `@discord/ban`).
+/// Keyed by the snowflake so it survives an unlink. `Debug` redacts the
+/// identity.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DiscordBanRec {
+    /// The banned Discord user's snowflake.
+    pub user_id: u64,
+    /// Canonical account name of the staffer who set it.
+    pub by_account: String,
+    /// Staff-entered reason.
+    pub reason: String,
+    /// Unix seconds when it was set.
+    pub at: i64,
+}
+
+impl std::fmt::Debug for DiscordBanRec {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DiscordBanRec")
+            .field("user_id", &"<redacted>")
+            .field("by_account", &self.by_account)
+            .field("reason", &self.reason)
+            .field("at", &self.at)
+            .finish()
+    }
 }
 
 /// Validate a token hash key: non-empty. (The callers store SHA-256 hex —
@@ -1410,11 +1497,29 @@ mod tests {
                 fingerprint: "SHA256:pub".into(),
                 added: 2,
             }],
+            discord: Some(DiscordLinkRec {
+                user_id: 987_654_321_098_765_432,
+                linked_at: 3,
+                relay_character: None,
+                auto_follow: false,
+                dm_channel: Some(111_222_333_444_555_666),
+            }),
         };
         let debug = format!("{rec:?}");
         assert!(!debug.contains("argon2id"), "hash leaked: {debug}");
         assert!(debug.contains("<redacted>"));
         assert!(debug.contains("Nick"));
+        // The Discord identity is staff-only data: linked yes/no, never the
+        // snowflake or the DM channel (D-D-14).
+        assert!(
+            !debug.contains("987654321098765432"),
+            "snowflake leaked: {debug}"
+        );
+        assert!(
+            !debug.contains("111222333444555666"),
+            "dm channel leaked: {debug}"
+        );
+        assert!(debug.contains("<linked>"), "linked marker missing: {debug}");
         // The account id is redacted too — its hex must never appear.
         assert!(
             !debug.contains(&id.canonical_hash().to_hex()[..8]),

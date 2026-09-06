@@ -157,6 +157,10 @@ pub fn command_entries(reg: &Registry, w: &World, viewer: ObjId) -> Vec<CommandE
         .command_registrations()
         .filter(|(spec, _, _)| role >= spec.min_role)
         .filter(|(spec, _, _)| spec.power.is_none_or(|p| perm::has_power(w, viewer, p)))
+        .filter(|(spec, _, _)| {
+            spec.privilege
+                .is_none_or(|p| perm::has_privilege(w, viewer, p))
+        })
         .map(|(spec, module, _)| {
             let (usage, summary) = split_help(&spec.help);
             CommandEntry {

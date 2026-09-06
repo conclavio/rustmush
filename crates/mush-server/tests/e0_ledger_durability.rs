@@ -125,6 +125,57 @@ impl ObjectStore for FaultStore {
     ) -> BoxFuture<'a, Result<bool, StoreError>> {
         unimplemented!("fault store: unused")
     }
+    fn set_account_discord<'a>(
+        &'a self,
+        _: &'a str,
+        _: Option<&'a mush_store::DiscordLinkRec>,
+    ) -> BoxFuture<'a, Result<bool, StoreError>> {
+        unimplemented!("fault store: unused")
+    }
+    fn discord_user_reserve<'a>(
+        &'a self,
+        _: u64,
+        _: &'a str,
+    ) -> BoxFuture<'a, Result<bool, StoreError>> {
+        unimplemented!("fault store: unused")
+    }
+    fn discord_user_release(&self, _: u64) -> BoxFuture<'_, Result<bool, StoreError>> {
+        unimplemented!("fault store: unused")
+    }
+    fn account_by_discord_user(
+        &self,
+        _: u64,
+    ) -> BoxFuture<'_, Result<Option<mush_store::AccountRec>, StoreError>> {
+        unimplemented!("fault store: unused")
+    }
+    fn discord_code_put(
+        &self,
+        _: String,
+        _: mush_store::DiscordCodeRecord,
+    ) -> BoxFuture<'_, Result<(), StoreError>> {
+        unimplemented!("fault store: unused")
+    }
+    fn discord_code_take<'a>(
+        &'a self,
+        _: &'a str,
+    ) -> BoxFuture<'a, Result<Option<mush_store::DiscordCodeRecord>, StoreError>> {
+        unimplemented!("fault store: unused")
+    }
+    fn discord_ban_put(
+        &self,
+        _: mush_store::DiscordBanRec,
+    ) -> BoxFuture<'_, Result<(), StoreError>> {
+        unimplemented!("fault store: unused")
+    }
+    fn discord_ban_get(
+        &self,
+        _: u64,
+    ) -> BoxFuture<'_, Result<Option<mush_store::DiscordBanRec>, StoreError>> {
+        unimplemented!("fault store: unused")
+    }
+    fn discord_ban_del(&self, _: u64) -> BoxFuture<'_, Result<bool, StoreError>> {
+        unimplemented!("fault store: unused")
+    }
     fn set_ban<'a>(
         &'a self,
         _: &'a str,

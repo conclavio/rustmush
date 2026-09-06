@@ -76,6 +76,7 @@ async fn boot_server(dir: &Path) -> SocketAddr {
                 name: "God".to_string(),
             }],
             ssh_keys: vec![],
+            discord: None,
         })
         .await
         .unwrap();

@@ -88,7 +88,8 @@ use mush_llm::LlmService;
 use mush_proto::{ActionStatusId, OutputEvent, ProjectedActionStatus, RichText};
 use mush_store::{
     AccountRec, AuthoritativeReceipt, AuthoritativeStore, BoundIdempotencyStatus, BundleStatus,
-    InMemoryStore, IntentReceipt, ObjectStore, SshKeyRec, WriteBatch,
+    DiscordBanRec, DiscordCodeRecord, InMemoryStore, IntentReceipt, ObjectStore, SshKeyRec,
+    WriteBatch,
 };
 use sha2::{Digest, Sha256};
 use smol_str::SmolStr;
@@ -887,6 +888,8 @@ fn classify_staff_op(kind: &StaffOpKind) -> IngressClass {
     match kind {
         StaffOpKind::ListBans
         | StaffOpKind::ListSshKeys { .. }
+        | StaffOpKind::DiscordStatus { .. }
+        | StaffOpKind::DiscordShow { .. }
         | StaffOpKind::Ps
         | StaffOpKind::Stats => IngressClass::StaffStatus,
         StaffOpKind::Shutdown => IngressClass::Shutdown,
@@ -897,7 +900,13 @@ fn classify_staff_op(kind: &StaffOpKind) -> IngressClass {
         | StaffOpKind::NewPassword { .. }
         | StaffOpKind::AddSshKey { .. }
         | StaffOpKind::DelSshKey { .. }
-        | StaffOpKind::NewChar { .. } => IngressClass::StaffMutation,
+        | StaffOpKind::NewChar { .. }
+        | StaffOpKind::DiscordLinkMint { .. }
+        | StaffOpKind::DiscordUnlinkSelf { .. }
+        | StaffOpKind::DiscordSet { .. }
+        | StaffOpKind::DiscordUnlink { .. }
+        | StaffOpKind::DiscordBan { .. }
+        | StaffOpKind::DiscordUnban { .. } => IngressClass::StaffMutation,
     }
 }
 
@@ -6584,6 +6593,32 @@ async fn run_staff_ops(
                     send_sys(gateway, actor, "@newchar failed: staff executor gone.");
                 }
             }
+            // The Discord identity family (D1): the operational trace carries
+            // the actor and the target character only — never a code, never
+            // an identity (the privileges audit is the record of the act).
+            StaffOpKind::DiscordStatus { .. }
+            | StaffOpKind::DiscordLinkMint { .. }
+            | StaffOpKind::DiscordUnlinkSelf { .. }
+            | StaffOpKind::DiscordSet { .. } => {
+                tracing::info!(%actor, kind = ?op.kind, "@discord self-service op requested");
+                if staff_ops.send(op).await.is_err() {
+                    send_sys(gateway, actor, "@discord failed: staff executor gone.");
+                }
+            }
+            StaffOpKind::DiscordShow { target, .. }
+            | StaffOpKind::DiscordUnlink { target, .. }
+            | StaffOpKind::DiscordBan { target, .. } => {
+                tracing::info!(%actor, %target, kind = ?op.kind, "@discord staff op requested");
+                if staff_ops.send(op).await.is_err() {
+                    send_sys(gateway, actor, "@discord failed: staff executor gone.");
+                }
+            }
+            StaffOpKind::DiscordUnban { .. } => {
+                tracing::info!(%actor, "@discord/unban requested");
+                if staff_ops.send(op).await.is_err() {
+                    send_sys(gateway, actor, "@discord failed: staff executor gone.");
+                }
+            }
             StaffOpKind::Dump => {
                 tracing::info!(%actor, "@dump requested");
                 let writer = writer.clone();
@@ -7077,6 +7112,29 @@ async fn staff_ops_loop(
                 name,
                 max_characters,
             } => run_newchar(&*store, &world, subject, &name, max_characters).await,
+            StaffOpKind::DiscordStatus { actor: subject } => {
+                run_discord_status(&*store, subject).await
+            }
+            StaffOpKind::DiscordLinkMint { actor: subject } => {
+                run_discord_link_mint(&*store, subject).await
+            }
+            StaffOpKind::DiscordUnlinkSelf { actor: subject } => {
+                run_discord_unlink(&*store, subject, false).await
+            }
+            StaffOpKind::DiscordSet {
+                actor: subject,
+                setting,
+            } => run_discord_set(&*store, subject, setting).await,
+            StaffOpKind::DiscordShow { target, .. } => run_discord_show(&*store, target).await,
+            StaffOpKind::DiscordUnlink { target, .. } => {
+                run_discord_unlink(&*store, target, true).await
+            }
+            StaffOpKind::DiscordBan {
+                actor: by,
+                target,
+                reason,
+            } => run_discord_ban(&*store, by, target, &reason).await,
+            StaffOpKind::DiscordUnban { target, .. } => run_discord_unban(&*store, target).await,
             // Dump/Shutdown and the local ops never enter this queue (see
             // run_staff_ops / run_local_staff_ops).
             StaffOpKind::Dump
@@ -7088,6 +7146,284 @@ async fn staff_ops_loop(
         send_sys(&gateway, actor, &text);
     }
     tracing::debug!("staff op executor drained and exiting");
+}
+
+// ---------------------------------------------------------------------------
+// The Discord identity family (D1): store-side executors. Every reply below
+// goes to the requesting actor alone; the only reply that renders an identity
+// is `run_discord_show`, whose caller was privilege-gated and audited.
+// ---------------------------------------------------------------------------
+
+/// The display name of a character on an account record, or its dbref.
+fn account_char_name(account: &AccountRec, id: ObjId) -> String {
+    account
+        .characters
+        .iter()
+        .find(|c| c.id == id)
+        .map_or_else(|| id.to_string(), |c| c.name.clone())
+}
+
+/// `@discord` — the caller's own link status, identity-free.
+async fn run_discord_status(store: &dyn ObjectStore, subject: ObjId) -> String {
+    let account = match account_of_actor(store, subject).await {
+        Ok(Some(a)) => a,
+        Ok(None) => return "@discord: your character is not linked to an account.".to_string(),
+        Err(e) => return format!("@discord failed: {e}"),
+    };
+    match &account.discord {
+        None => "@discord: your account has no Discord link. `@discord/link` mints a code to \
+                 bind one (see `help discord`)."
+            .to_string(),
+        Some(link) => {
+            let relay = link.relay_character.map_or_else(
+                || "your most recently connected character".to_string(),
+                |c| account_char_name(&account, c),
+            );
+            let banned = match store.discord_ban_get(link.user_id).await {
+                Ok(Some(_)) => "  BANNED: your Discord user may not link, follow, or relay.",
+                _ => "",
+            };
+            format!(
+                "@discord: linked since unix {}; auto-follow {}; relay character: {relay}.{banned}",
+                link.linked_at,
+                if link.auto_follow { "on" } else { "off" },
+            )
+        }
+    }
+}
+
+/// `@discord/link` — mint a one-shot code, store its hash with a TTL, and hand
+/// the code to the caller alone. The code never enters a log.
+async fn run_discord_link_mint(store: &dyn ObjectStore, subject: ObjId) -> String {
+    use mush_config::discord::{
+        LINK_CODE_TTL_S, generate_link_code, link_code_hash, normalize_link_code,
+    };
+    let account = match account_of_actor(store, subject).await {
+        Ok(Some(a)) => a,
+        Ok(None) => return "@discord: your character is not linked to an account.".to_string(),
+        Err(e) => return format!("@discord/link failed: {e}"),
+    };
+    if account.discord.is_some() {
+        return "@discord/link: your account is already linked to a Discord user; \
+                `@discord/unlink` first."
+            .to_string();
+    }
+    let code = generate_link_code();
+    let normalized = normalize_link_code(&code).expect("a minted code is well-formed");
+    let hash = link_code_hash(&normalized);
+    let expires = unix_now_s().saturating_add(LINK_CODE_TTL_S);
+    match store
+        .discord_code_put(
+            hash,
+            DiscordCodeRecord {
+                account: account.name.clone(),
+                expires,
+            },
+        )
+        .await
+    {
+        Ok(()) => {
+            tracing::info!(account = %account.name, "@discord/link code minted");
+            format!(
+                "@discord/link: your code is {code}. In Discord, send the game's bot a direct \
+                 message: /link {code} — within {} minutes. The code works once; never share it.",
+                LINK_CODE_TTL_S / 60
+            )
+        }
+        Err(e) => format!("@discord/link failed: {e}"),
+    }
+}
+
+/// `@discord/unlink` (self) and `@discord/unlink <player>` (staff): clear the
+/// link and release the reverse index.
+async fn run_discord_unlink(store: &dyn ObjectStore, target: ObjId, by_staff: bool) -> String {
+    let whose = if by_staff {
+        "that account"
+    } else {
+        "your account"
+    };
+    let account = match account_of_actor(store, target).await {
+        Ok(Some(a)) => a,
+        Ok(None) => {
+            return format!("@discord/unlink: {target} is not linked to an account.");
+        }
+        Err(e) => return format!("@discord/unlink failed: {e}"),
+    };
+    let Some(link) = account.discord.as_ref() else {
+        return format!("@discord/unlink: {whose} has no Discord link.");
+    };
+    match store.set_account_discord(&account.name, None).await {
+        Ok(true) => {}
+        Ok(false) => {
+            return format!(
+                "@discord/unlink failed: account {} vanished mid-update.",
+                account.name
+            );
+        }
+        Err(e) => return format!("@discord/unlink failed: {e}"),
+    }
+    if let Err(e) = store.discord_user_release(link.user_id).await {
+        // The doc is unlinked; the index is what stops a re-link elsewhere.
+        return format!(
+            "@discord/unlink: {whose} is unlinked, but releasing the index failed: {e}"
+        );
+    }
+    tracing::info!(account = %account.name, by_staff, "@discord/unlink applied");
+    format!("@discord/unlink: {whose} is no longer linked to Discord.")
+}
+
+/// `@discord/set` — a self-service preference on the caller's own link.
+async fn run_discord_set(
+    store: &dyn ObjectStore,
+    subject: ObjId,
+    setting: crate::staff::DiscordSetting,
+) -> String {
+    use crate::staff::DiscordSetting;
+    let account = match account_of_actor(store, subject).await {
+        Ok(Some(a)) => a,
+        Ok(None) => return "@discord: your character is not linked to an account.".to_string(),
+        Err(e) => return format!("@discord/set failed: {e}"),
+    };
+    let Some(mut link) = account.discord.clone() else {
+        return "@discord/set: your account has no Discord link yet (`@discord/link`).".to_string();
+    };
+    let what = match setting {
+        DiscordSetting::RelayCharacter(Some(c)) => {
+            // Only the caller's own characters may speak for the caller.
+            if !account.characters.iter().any(|ch| ch.id == c) {
+                return "@discord/set: the relay character must be one of your own characters."
+                    .to_string();
+            }
+            link.relay_character = Some(c);
+            format!("relay character set to {}", account_char_name(&account, c))
+        }
+        DiscordSetting::RelayCharacter(None) => {
+            link.relay_character = None;
+            "relay character reset to your most recently connected character".to_string()
+        }
+        DiscordSetting::AutoFollow(on) => {
+            link.auto_follow = on;
+            format!("auto-follow {}", if on { "on" } else { "off" })
+        }
+    };
+    match store.set_account_discord(&account.name, Some(&link)).await {
+        Ok(true) => format!("@discord/set: {what}."),
+        Ok(false) => format!(
+            "@discord/set failed: account {} vanished mid-update.",
+            account.name
+        ),
+        Err(e) => format!("@discord/set failed: {e}"),
+    }
+}
+
+/// `@discord/show <player>` — the one surface that renders the identity. The
+/// caller held `DISCORD_IDENTITY` and the `use` is already in the audit.
+async fn run_discord_show(store: &dyn ObjectStore, target: ObjId) -> String {
+    let account = match account_of_actor(store, target).await {
+        Ok(Some(a)) => a,
+        Ok(None) => return format!("@discord/show: {target} is not linked to an account."),
+        Err(e) => return format!("@discord/show failed: {e}"),
+    };
+    let who = account_char_name(&account, target);
+    let Some(link) = account.discord.as_ref() else {
+        return format!(
+            "@discord/show: {who} (account {}) has no Discord link.",
+            account.name
+        );
+    };
+    let relay = link.relay_character.map_or_else(
+        || "most recent".to_string(),
+        |c| account_char_name(&account, c),
+    );
+    let ban = match store.discord_ban_get(link.user_id).await {
+        Ok(Some(b)) => format!(
+            "  BANNED by {} at unix {}: {}",
+            b.by_account, b.at, b.reason
+        ),
+        Ok(None) => String::new(),
+        Err(e) => format!("  (ban lookup failed: {e})"),
+    };
+    format!(
+        "@discord/show: {who} (account {}): Discord user {}, linked unix {}, auto-follow {}, \
+         relay character {relay}.{ban}",
+        account.name,
+        link.user_id,
+        link.linked_at,
+        if link.auto_follow { "on" } else { "off" },
+    )
+}
+
+/// `@discord/ban <player>=<reason>` — ban the target's linked Discord user by
+/// snowflake (the link stays so `@discord/unban <player>` can find it; the
+/// bridge refuses link, follow and relay while the ban stands).
+async fn run_discord_ban(
+    store: &dyn ObjectStore,
+    by: ObjId,
+    target: ObjId,
+    reason: &str,
+) -> String {
+    let account = match account_of_actor(store, target).await {
+        Ok(Some(a)) => a,
+        Ok(None) => return format!("@discord/ban: {target} is not linked to an account."),
+        Err(e) => return format!("@discord/ban failed: {e}"),
+    };
+    let who = account_char_name(&account, target);
+    let Some(link) = account.discord.as_ref() else {
+        return format!("@discord/ban: {who} has no linked Discord user to ban.");
+    };
+    let by_account = match account_of_actor(store, by).await {
+        Ok(Some(a)) => a.name,
+        _ => by.to_string(),
+    };
+    match store
+        .discord_ban_put(DiscordBanRec {
+            user_id: link.user_id,
+            by_account,
+            reason: reason.to_string(),
+            at: unix_now_s(),
+        })
+        .await
+    {
+        Ok(()) => {
+            tracing::info!(account = %account.name, "@discord/ban applied");
+            format!(
+                "@discord/ban: {who}'s Discord user is banned — they can no longer link, \
+                 follow, or relay. `@discord/unban {who}` lifts it."
+            )
+        }
+        Err(e) => format!("@discord/ban failed: {e}"),
+    }
+}
+
+/// `@discord/unban <player>|<snowflake>`.
+async fn run_discord_unban(
+    store: &dyn ObjectStore,
+    target: crate::staff::DiscordBanTarget,
+) -> String {
+    use crate::staff::DiscordBanTarget;
+    let (user_id, who) = match target {
+        DiscordBanTarget::User(id) => (id, "that Discord user".to_string()),
+        DiscordBanTarget::Player(t) => {
+            let account = match account_of_actor(store, t).await {
+                Ok(Some(a)) => a,
+                Ok(None) => return format!("@discord/unban: {t} is not linked to an account."),
+                Err(e) => return format!("@discord/unban failed: {e}"),
+            };
+            let who = account_char_name(&account, t);
+            let Some(link) = account.discord.as_ref() else {
+                return format!(
+                    "@discord/unban: {who} has no linked Discord user; if they unlinked while \
+                     banned, unban by Discord user id."
+                );
+            };
+            (link.user_id, format!("{who}'s Discord user"))
+        }
+    };
+    match store.discord_ban_del(user_id).await {
+        Ok(true) => format!("@discord/unban: {who} is no longer banned."),
+        Ok(false) => format!("@discord/unban: {who} was not banned."),
+        Err(e) => format!("@discord/unban failed: {e}"),
+    }
 }
 
 /// Send one system line to an actor as a [`ToGateway::Deliver`](mush_ipc::ToGateway)
