@@ -7,7 +7,10 @@
 //! resolves actors → live connections (treaty ruling 2). In tests the outbox
 //! is simply inspected.
 
-use mush_proto::{ExitRef, ObjRef, OutputEvent, RichText, RoomView, Span};
+use mush_proto::{
+    ExitRef, MAX_NOTICE_TEXT_BYTES, NoticeAction, NoticeSeverity, ObjRef, OutputEvent, RichText,
+    RoomView, SmolStr, Span,
+};
 
 use crate::cmd::Registry;
 use crate::engine::Deferred;
@@ -216,6 +219,101 @@ impl Outbox {
     /// (`"error"`, `"system"`, …).
     pub fn sys_to_actor(&mut self, actor: ObjId, tag: &str, msg: impl Into<String>) {
         self.to_actor(actor, OutputEvent::Sys(RichText::tag(tag, msg)));
+    }
+
+    /// Queue a [`OutputEvent::Notice`] to one actor — the unified notification
+    /// surface (interface plan I11): the web toast/tray, the TUI status count,
+    /// the line-mode inline notice. The server owns `severity` (rule 5);
+    /// `category` groups it (`"page"`, `"mention"`, `"alert"`, …); `action`
+    /// is an optional `(label, prefill)` the client offers as a one-tap
+    /// Prefill (D-I-18), never a bare mutation. The text is bounded to
+    /// [`MAX_NOTICE_TEXT_BYTES`] on a char boundary; the id comes from a
+    /// process-monotonic counter (RAM-only — clients clear on rehydrate, so a
+    /// restart may remint); `now_ms` is the wall clock in Unix milliseconds
+    /// (`World::now()` is seconds — callers multiply, as comsys does).
+    /// Delivered like the line it accompanies (same class as `to_actor`), so
+    /// a notice never outruns or outlives what it announces.
+    pub fn notice_to_actor(
+        &mut self,
+        actor: ObjId,
+        now_ms: i64,
+        severity: NoticeSeverity,
+        category: &'static str,
+        text: impl Into<String>,
+        action: Option<(&str, &str)>,
+    ) {
+        static NEXT_NOTICE_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let id = NEXT_NOTICE_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+        let text = Self::bound_notice_text(text.into());
+        self.to_actor(
+            actor,
+            OutputEvent::Notice {
+                id,
+                severity,
+                category: SmolStr::new_static(category),
+                text: RichText::plain(&text),
+                action: action.map(|(label, prefill)| NoticeAction {
+                    label: label.to_string(),
+                    prefill: prefill.to_string(),
+                }),
+                ts: now_ms,
+            },
+        );
+    }
+
+    /// [`notice_to_actor`](Self::notice_to_actor) at `Info` severity.
+    pub fn notice_info_to_actor(
+        &mut self,
+        actor: ObjId,
+        now_ms: i64,
+        category: &'static str,
+        text: impl Into<String>,
+        action: Option<(&str, &str)>,
+    ) {
+        self.notice_to_actor(actor, now_ms, NoticeSeverity::Info, category, text, action);
+    }
+
+    /// [`notice_to_actor`](Self::notice_to_actor) at `Warn` severity.
+    pub fn notice_warn_to_actor(
+        &mut self,
+        actor: ObjId,
+        now_ms: i64,
+        category: &'static str,
+        text: impl Into<String>,
+        action: Option<(&str, &str)>,
+    ) {
+        self.notice_to_actor(actor, now_ms, NoticeSeverity::Warn, category, text, action);
+    }
+
+    /// [`notice_to_actor`](Self::notice_to_actor) at `Urgent` severity.
+    pub fn notice_urgent_to_actor(
+        &mut self,
+        actor: ObjId,
+        now_ms: i64,
+        category: &'static str,
+        text: impl Into<String>,
+        action: Option<(&str, &str)>,
+    ) {
+        self.notice_to_actor(
+            actor,
+            now_ms,
+            NoticeSeverity::Urgent,
+            category,
+            text,
+            action,
+        );
+    }
+
+    /// Cut a notice's text to [`MAX_NOTICE_TEXT_BYTES`] on a char boundary.
+    fn bound_notice_text(mut text: String) -> String {
+        if text.len() > MAX_NOTICE_TEXT_BYTES {
+            let mut cut = MAX_NOTICE_TEXT_BYTES;
+            while !text.is_char_boundary(cut) {
+                cut -= 1;
+            }
+            text.truncate(cut);
+        }
+        text
     }
 
     /// Queue an error line (`Sys` tagged `"error"`) to one actor.

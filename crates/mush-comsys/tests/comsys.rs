@@ -1638,3 +1638,47 @@ fn ic_flag_sets_lists_and_reports() {
         "usage names the flag: {out:?}"
     );
 }
+
+// ---- Interface plan I11: the channel-mention producer ---------------------
+
+/// The `mention` notices in `out`, as `(to, text, prefill)`.
+fn mention_notices(out: &Outbox) -> Vec<(ObjId, String, Option<String>)> {
+    out.events()
+        .iter()
+        .filter_map(|(aud, e)| match (aud, e) {
+            (
+                Audience::Actor(a),
+                OutputEvent::Notice {
+                    category,
+                    text,
+                    action,
+                    ..
+                },
+            ) if category.as_str() == "mention" => Some((
+                *a,
+                text.to_plain_text(),
+                action.as_ref().map(|x| x.prefill.clone()),
+            )),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn a_channel_line_naming_a_member_lands_a_mention_notice_on_them_alone() {
+    let (mut engine, nick, ann) = setup();
+    // Ann is named as a whole word, case-insensitively: she alone is notified,
+    // with her own alias for the channel ready as the reply.
+    let out = run(&mut engine, nick, "pub hey ANN, look at this");
+    let got = mention_notices(&out);
+    assert_eq!(got.len(), 1, "{got:?}");
+    let (to, text, prefill) = &got[0];
+    assert_eq!(*to, ann);
+    assert_eq!(text, "Nick on pub: hey ANN, look at this");
+    assert_eq!(prefill.as_deref(), Some("pub "));
+    // A line naming nobody notifies nobody; a speaker naming themselves is
+    // never their own mention; a substring ("Annex") is not a whole-word name.
+    assert!(mention_notices(&run(&mut engine, nick, "pub nothing to see")).is_empty());
+    assert!(mention_notices(&run(&mut engine, nick, "pub Nick was here")).is_empty());
+    assert!(mention_notices(&run(&mut engine, nick, "pub the Annex is closed")).is_empty());
+}

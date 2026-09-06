@@ -148,6 +148,13 @@ fn tell(ctx: &mut Ctx<'_>, orgs: &[PrincipalId], subject: &Subject, line: &str) 
         // D6: the queue records whose business the line was, so a queued copy is
         // re-gated against live standing at the reader's next connect.
         mush_economy::deliver_notice_for(ctx, holder, &org, line);
+        // Interface plan I11: a holder who is live right now also gets the
+        // line on the notification surface; an offline holder's queued copy
+        // is summarised there at their next connect instead (notice.rs), so
+        // nobody is told twice.
+        if ctx.w.has_live_conns(holder) {
+            ctx.notice_info(holder, "inbox", line, None);
+        }
     }
 }
 

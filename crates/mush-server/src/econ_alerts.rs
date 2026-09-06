@@ -146,6 +146,19 @@ impl EconomyObserver for StaffAlerts {
             for line in &lines {
                 ctx.out.sys_to_actor(wizard, "economy", line.clone());
             }
+            // Interface plan I11: one notice per wizard per record on the
+            // notification surface, opening the alert with the command ready.
+            // The scrollback lines above stay the full text; the notice is the
+            // headline (the server owns severity — an escalation reaching staff
+            // is urgent, rule 5).
+            if let Some(head) = lines.first() {
+                ctx.notice_urgent(
+                    wizard,
+                    "alert",
+                    head.clone(),
+                    Some(("Open", &format!("@econ/alerts #{id}"))),
+                );
+            }
         }
     }
 }

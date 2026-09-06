@@ -4002,6 +4002,74 @@ impl Ctx<'_> {
         Ok(correlation)
     }
 
+    /// Queue a notice to one actor on the unified notification surface
+    /// (interface plan I11) — see [`Outbox::notice_to_actor`](crate::output::Outbox::notice_to_actor).
+    /// Stamps the world clock for the wire's `ts` (`World::now()` is seconds;
+    /// the wire wants milliseconds).
+    pub fn notice(
+        &mut self,
+        actor: ObjId,
+        severity: mush_proto::NoticeSeverity,
+        category: &'static str,
+        text: impl Into<String>,
+        action: Option<(&str, &str)>,
+    ) {
+        let now_ms = self.w.now().saturating_mul(1000);
+        self.out
+            .notice_to_actor(actor, now_ms, severity, category, text, action);
+    }
+
+    /// [`notice`](Self::notice) at `Info` severity.
+    pub fn notice_info(
+        &mut self,
+        actor: ObjId,
+        category: &'static str,
+        text: impl Into<String>,
+        action: Option<(&str, &str)>,
+    ) {
+        self.notice(
+            actor,
+            mush_proto::NoticeSeverity::Info,
+            category,
+            text,
+            action,
+        );
+    }
+
+    /// [`notice`](Self::notice) at `Warn` severity.
+    pub fn notice_warn(
+        &mut self,
+        actor: ObjId,
+        category: &'static str,
+        text: impl Into<String>,
+        action: Option<(&str, &str)>,
+    ) {
+        self.notice(
+            actor,
+            mush_proto::NoticeSeverity::Warn,
+            category,
+            text,
+            action,
+        );
+    }
+
+    /// [`notice`](Self::notice) at `Urgent` severity.
+    pub fn notice_urgent(
+        &mut self,
+        actor: ObjId,
+        category: &'static str,
+        text: impl Into<String>,
+        action: Option<(&str, &str)>,
+    ) {
+        self.notice(
+            actor,
+            mush_proto::NoticeSeverity::Urgent,
+            category,
+            text,
+            action,
+        );
+    }
+
     /// Mark the acting player as the preferred recipient for a durable-write
     /// failure diagnostic. The server already receipt-gates every dirty step's
     /// commit-bound output and all external effects; this marker preserves the

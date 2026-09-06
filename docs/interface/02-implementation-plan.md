@@ -1338,13 +1338,27 @@ lands.
   the scrollback already *is* the terminal's persistent history and digits are
   full (the constraint I8 shares); the status-line count is the indicator the
   spec asked for.
-- **The one live producer.** `MailNotice` flows into the surface through a
-  client-side shim (`fromMail` on the web; the TUI/line renderers still show
-  their own mail line), so real mail notifications populate the surface today
-  with no server change. The typed server producers — pages, channel mentions,
-  and the E6a escalation/inbox/alert records — are the remaining work, held
-  back like I10's first real producer to avoid editing E7's in-flight crates;
-  each is an additive `Ctx` emit behind the settled wire, no client change.
+- **Producers.** `MailNotice` flows into the surface through a client-side
+  shim (`fromMail` on the web; the TUI/line renderers still show their own
+  mail line). The typed server producers landed on 2026-09-06 behind the
+  settled wire with no client change, on a new seam —
+  `Outbox::notice_to_actor(actor, now_ms, severity, category, text, action)`
+  (+ `notice_{info,warn,urgent}_to_actor`) and the `Ctx::notice{,_info,_warn,
+  _urgent}` conveniences that stamp `World::now()` — which bounds the text to
+  `MAX_NOTICE_TEXT_BYTES` on a char boundary and mints the id from a
+  process-monotonic counter (RAM-only; clients clear on rehydrate). Emit
+  sites, each under the same gate as the line it accompanies: **pages**
+  (`speech.rs page_cmd`, `"page"`, Info, `Reply` → `page <sender>=`; never
+  for an ignored sender); **channel mentions** (`comsys/speak.rs` deliver
+  loop — a whole-word, case-insensitive name match, never the speaker,
+  `"mention"`, Info, `Reply` → the recipient's own alias); **staff alerts**
+  (`econ_alerts.rs StaffAlerts` — one per wizard per record, `"alert"`,
+  Urgent, `Open` → `@econ/alerts #id`); **org inbox** (`econ_inbox.rs tell` —
+  `"inbox"`, Info, to a holder with a live connection; an offline holder's
+  queued copy is instead summarised at their next connect); and the **economy
+  connect-time queue** (`notice.rs` — one `"economy"` Info summary per
+  delivery, the per-note lines staying in the scrollback). A queued economy
+  note carries only text, so it offers no action.
 - **Tests.** Web: `notifications.test.ts` (7) — parse, dedup, the toast/tray
   split, the mail shim's disjoint id namespace. Rust: the wire round-trip, and
   two TUI tests (the scrollback render with its category and action hint; the
@@ -1936,6 +1950,18 @@ modal ruling (D-I-17, D-I-18) rather than by its default.**
 
 ## 10. Changelog
 
+- **Draft 1.1 — 2026-09-06.** I11's typed server producers **built** (§3.11
+  as-built updated): a new notice seam — `Outbox::notice_to_actor` (+ the
+  severity-named twins) and the `Ctx::notice{,_info,_warn,_urgent}`
+  conveniences, bounding text on a char boundary, minting process-monotonic
+  ids, stamping `World::now()` — and five emit sites, each under the same gate
+  as the line it accompanies: pages, channel mentions, staff alerts, the org
+  inbox, the economy connect-time queue. Tests: the seam (bound / ids /
+  action), the page producer (target gets a reply-ready notice, never the
+  sender, never via an ignored sender), the mention producer (whole-word,
+  case-insensitive, never the speaker). Also this date: the I12/I13
+  implementation-verify fold (§3.12/§3.13 notes) and the help/README
+  discipline fold.
 - **Draft 1.0 — 2026-09-05.** I12 and I13 **built** on the approved designs
   (§3.12/§3.13 as-built). I12 (`17d524d`): resume-ring-backed narrative backlog,
   server + web (TUI/line deferred). I13 (`89c8a9e`): full-data versioned sheet

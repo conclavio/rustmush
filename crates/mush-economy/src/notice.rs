@@ -253,6 +253,18 @@ pub(crate) fn render_pending(ctx: &mut Ctx<'_>, who: ObjId) {
             if n == 1 { "" } else { "s" }
         ),
     );
+    // Interface plan I11: one summary on the notification surface — the
+    // per-note lines stay in the scrollback below, so a long queue is one
+    // toast, not a burst. A queued note carries only text, so no action.
+    ctx.notice_info(
+        who,
+        "economy",
+        format!(
+            "{n} economy notice{} while you were away.",
+            if n == 1 { "" } else { "s" }
+        ),
+        None,
+    );
     for note in &list {
         ctx.out.sys_to_actor(who, "economy", note.text.to_string());
     }

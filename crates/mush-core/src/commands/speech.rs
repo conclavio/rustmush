@@ -183,6 +183,17 @@ fn page_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             text: RichText::plain(&msg),
         };
         ctx.out.to_actor(target, ev);
+        // Interface plan I11: a page also lands on the notification surface
+        // (the toast/tray, the TUI status count) with the reply ready to
+        // type — the affordance that matters when the target is on another
+        // screen. Same gate as the line itself: never for an ignored sender.
+        let sender = display_name(ctx.w, ctx.actor);
+        ctx.notice_info(
+            target,
+            "page",
+            format!("{sender} pages: {msg}"),
+            Some(("Reply", &format!("page {sender}="))),
+        );
     }
     let who = display_name(ctx.w, target);
     ctx.out

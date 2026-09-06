@@ -186,6 +186,27 @@ pub(crate) fn channel_speak(
     };
     for &p in &deliver {
         out.push(Audience::Actor(p), ev.clone());
+        // Interface plan I11: a line that names a recipient (a whole word,
+        // case-insensitive, never the speaker) also lands on their
+        // notification surface, with their own alias for the channel ready
+        // as the reply. Same audience as the line itself — the deliver set
+        // already applied live-conns, gag, see-lock and @ignore.
+        if p != actor {
+            let name = obj_ref(w, p).name;
+            let named = text
+                .split(|c: char| !c.is_alphanumeric())
+                .any(|word| !word.is_empty() && word.eq_ignore_ascii_case(&name));
+            if named && let Some(m) = st.members.get(&(p, chan)) {
+                let alias = m.alias.clone();
+                out.notice_info_to_actor(
+                    p,
+                    now_ms,
+                    "mention",
+                    format!("{} on {alias}: {text}", actor_ref.name),
+                    Some(("Reply", &format!("{alias} "))),
+                );
+            }
+        }
     }
     let msg = ChanMsg {
         seq,

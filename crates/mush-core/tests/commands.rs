@@ -1517,3 +1517,108 @@ fn help_serves_topics_with_command_precedence() {
     let out = g.run(ann, "help nonesuch");
     assert_error_contains(&out, ann, "No help available");
 }
+
+// ---- Interface plan I11: the notice seam + the page producer ---------------
+
+#[test]
+fn notice_seam_bounds_text_on_a_char_boundary_mints_monotonic_ids_and_maps_the_action() {
+    let mut out = mush_core::Outbox::new();
+    // Two bytes per char: twice the cap, so the cut must land on a boundary.
+    let long = "é".repeat(mush_proto::MAX_NOTICE_TEXT_BYTES);
+    out.notice_to_actor(
+        GOD,
+        1234,
+        mush_proto::NoticeSeverity::Warn,
+        "alert",
+        long,
+        Some(("Open", "@econ/alerts #7")),
+    );
+    out.notice_info_to_actor(GOD, 1235, "page", "short", None);
+    let notices: Vec<_> = out
+        .events()
+        .iter()
+        .filter_map(|(a, e)| match e {
+            OutputEvent::Notice {
+                id,
+                severity,
+                category,
+                text,
+                action,
+                ts,
+            } if *a == Audience::Actor(GOD) => Some((
+                *id,
+                severity.clone(),
+                category.to_string(),
+                text.to_plain_text(),
+                action.clone(),
+                *ts,
+            )),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(notices.len(), 2);
+    let (id0, sev0, cat0, text0, act0, ts0) = &notices[0];
+    assert_eq!(*sev0, mush_proto::NoticeSeverity::Warn);
+    assert_eq!(cat0, "alert");
+    assert!(
+        text0.len() <= mush_proto::MAX_NOTICE_TEXT_BYTES,
+        "bounded: {} bytes",
+        text0.len()
+    );
+    assert!(
+        !text0.is_empty() && text0.chars().all(|c| c == 'é'),
+        "cut on a char boundary, never mid-char"
+    );
+    assert_eq!(
+        act0.as_ref()
+            .map(|a| (a.label.as_str(), a.prefill.as_str())),
+        Some(("Open", "@econ/alerts #7"))
+    );
+    assert_eq!(*ts0, 1234);
+    let (id1, sev1, cat1, text1, act1, _) = &notices[1];
+    assert!(id1 > id0, "ids are monotonic");
+    assert_eq!(*sev1, mush_proto::NoticeSeverity::Info);
+    assert_eq!(cat1, "page");
+    assert_eq!(text1, "short");
+    assert!(act1.is_none());
+}
+
+#[test]
+fn a_page_lands_a_reply_ready_notice_on_the_target_never_the_sender_nor_via_an_ignored_sender() {
+    let mut g = Game::new();
+    let (ann, bob) = (g.ann, g.bob);
+    let out = g.run(ann, "page Bob=hi there");
+    let notice = out.events().iter().find_map(|(a, e)| match e {
+        OutputEvent::Notice {
+            category,
+            text,
+            action,
+            ..
+        } if *a == Audience::Actor(bob) && category.as_str() == "page" => {
+            Some((text.to_plain_text(), action.clone()))
+        }
+        _ => None,
+    });
+    let (text, action) = notice.expect("a page lands a notice on the target");
+    assert!(text.contains("pages: hi there"), "{text}");
+    assert_eq!(
+        action.as_ref().map(|a| a.prefill.as_str()),
+        Some("page Ann="),
+        "the reply is ready to type"
+    );
+    assert!(
+        !out.events()
+            .iter()
+            .any(|(a, e)| *a == Audience::Actor(ann) && matches!(e, OutputEvent::Notice { .. })),
+        "nothing on the sender's surface"
+    );
+    // An ignored sender's page is dropped silently — no line, no notice.
+    g.run(bob, "@ignore Ann");
+    let out = g.run(ann, "page Bob=still there?");
+    assert!(
+        !out.events()
+            .iter()
+            .any(|(a, e)| *a == Audience::Actor(bob) && matches!(e, OutputEvent::Notice { .. })),
+        "an ignored sender's page never notifies"
+    );
+}
