@@ -185,6 +185,10 @@ fn cmd_domain(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         domain_demote(ctx)
     } else if ctx.switches.has("summary") {
         domain_summary(ctx)
+    } else if ctx.switches.has("tick") {
+        domain_tick(ctx)
+    } else if ctx.switches.has("replay") {
+        domain_replay(ctx)
     } else {
         domain_list(ctx)
     }
@@ -3114,6 +3118,129 @@ fn domain_summary(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     Ok(())
 }
 
+// ----------------------------------------------------------------------
+// ---- E7c8: B6 — @domain/tick|replay (switches on cut 6's baseline @domain) ----
+// ----------------------------------------------------------------------
+
+/// `@domain/tick <id|host>` (staff) — single-step the applying authority.
+///
+/// It runs exactly the maintenance pass the `sim.domain_pulse` Coarse tick runs
+/// — applying a live `DomainActivation` request, arming the durable cursor, or
+/// standing a no-longer-eligible domain down — for **one** domain, and reports
+/// what it decided. It writes one `sim` domain document and, at most once,
+/// submits this module's own `domain_pulse_arm` action; it **never touches the
+/// composition-frozen `ClockProviderRegistry`**.
+///
+/// `@domain/tick` on a `Passive` domain with no live activation request
+/// **refuses**: promotion is `@domain/promote`'s, and this is its apply half.
+fn domain_tick(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    let id = resolve_domain(ctx, ctx.args.lhs())?;
+    let pulsing = st(ctx)
+        .domains
+        .get(&id)
+        .is_some_and(|record| record.clock.is_pulsing());
+    if !pulsing && !ab(ctx).is_promoted(id) {
+        return Err(CmdError::msg(format!(
+            "Domain #{id} is passive and has no live activation request; @domain/promote it first."
+        )));
+    }
+    let plan = crate::tick::run_maintenance(ctx, Some(id));
+    for refusal in &plan.refused {
+        info(ctx, refusal.clone());
+    }
+    if plan.applied.contains(&id) {
+        info(
+            ctx,
+            format!(
+                "Domain #{id} now pulses; its durable tick cursor is being armed. The clock \
+                 provider registry is unchanged — it was frozen at composition."
+            ),
+        );
+    } else if plan.armed.contains(&id) {
+        info(
+            ctx,
+            format!(
+                "Domain #{id} already pulses; its tick cursor is armed (a duplicate arm is a HIT)."
+            ),
+        );
+    } else if plan.stood_down.contains(&id) {
+        info(
+            ctx,
+            format!(
+                "Domain #{id} is no longer eligible and was stood down to Passive; its state is untouched."
+            ),
+        );
+    } else if plan.refused.is_empty() {
+        info(ctx, format!("Domain #{id}: nothing to do this pass."));
+    }
+    Ok(())
+}
+
+/// `@domain/replay <id|host>=<from>-<to>` (staff) — read back the retained
+/// deterministic commits.
+///
+/// A **read**: it prints each retained tick's state hash, accepted count and
+/// recorded draw count out of the `domain_tick_commits` family, which is how a
+/// person checks that a replay reproduced the stored hash. It resolves nothing
+/// and writes nothing.
+fn domain_replay(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    const NONE: &str = "No retained ticks in that range.";
+    let Some(id) = resolve_domain_opt(ctx, ctx.args.lhs()) else {
+        info(ctx, NONE);
+        return Ok(());
+    };
+    let (from, to) = parse_tick_range(ctx.args.rhs().unwrap_or_default()).ok_or_else(|| {
+        CmdError::msg("Usage: @domain/replay <id|host>=<from>-<to> (tick numbers).")
+    })?;
+    let Some(handles) = ctx.w.module_state::<crate::tick::TickHandles>().cloned() else {
+        info(ctx, NONE);
+        return Ok(());
+    };
+    let mut lines = Vec::new();
+    // Bounded on records **visited** (D-LBK-5): the retention ring is
+    // `MAX_RETAINED_TICK_COMMITS`, so the walk can never exceed it.
+    for step in 0..crate::tick::MAX_RETAINED_TICK_COMMITS {
+        let Some(want) = from.checked_add(step as i64) else {
+            break;
+        };
+        if want > to {
+            break;
+        }
+        let key = crate::tick::TickCommitKey {
+            domain: id,
+            tick: want,
+        };
+        if let Ok(Some(commit)) = ctx.action_state(&handles.commits, &key) {
+            lines.push(format!(
+                "  tick {:>6}  state {}  {} accepted, {} delta(s), {} draw(s), {} fact(s)",
+                commit.tick(),
+                commit.state_hash().to_hex(),
+                commit.accepted().len(),
+                commit.deltas().len(),
+                commit.draws().len(),
+                commit.facts().len()
+            ));
+        }
+    }
+    if lines.is_empty() {
+        info(ctx, NONE);
+        return Ok(());
+    }
+    info(ctx, format!("Domain #{id} — retained ticks {from}..={to}:"));
+    for line in lines {
+        info(ctx, line);
+    }
+    Ok(())
+}
+
+fn parse_tick_range(raw: &str) -> Option<(i64, i64)> {
+    let raw = raw.trim();
+    let (from, to) = raw.split_once('-')?;
+    let from: i64 = from.trim().parse().ok()?;
+    let to: i64 = to.trim().parse().ok()?;
+    (from <= to).then_some((from, to))
+}
+
 /// Register `@domain`, `@spatial`, `@journey` and cut 5's focus surface.
 pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
     reg.command(
@@ -3122,7 +3249,7 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
             shape: ArgShape::EqPair,
             switches: [
                 "create", "status", "pause", "resume", "retire", "present", "promote", "demote",
-                "summary",
+                "summary", "tick", "replay",
             ]
             .iter()
             .copied()
@@ -3137,7 +3264,12 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
                    player|contact|interception|operation). Writes a REQUEST; the pulse itself is \
                    a later cut's, and the clock registry is never touched.\n\
                    @domain/demote <id|host>   Write the durable summary, then stand down.\n\
-                   @domain/summary <id|host>   Read the last tactical window."
+                   @domain/summary <id|host>   Read the last tactical window.\n\
+                   @domain/tick <id|host>   Single-step the applying authority: apply a live \
+                   activation request, arm the durable tick cursor, or stand a no-longer-eligible \
+                   domain down. Never touches the frozen clock provider registry.\n\
+                   @domain/replay <id|host>=<from>-<to>   Read back the retained deterministic \
+                   tick commits and their state hashes."
                 .into(),
             ..CommandSpec::default()
         },
@@ -3315,6 +3447,12 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
         },
         Arc::new(crate::station::cmd_station),
     )?;
+    // E7c8 B6: the eight tactical verbs join the SAME authoritative group —
+    // every one of them stages `tactical_intent` through cut 2's seam, which is
+    // the ceiling class `@station` and `@prop` already set. K8.5's rule is
+    // "classify before the first `reg.command` of the group", and this is inside
+    // the group `@station` opened.
+    crate::combat::register(reg)?;
     reg.classify_commands(CommandCompatibility::LegacyPostImage);
     Ok(())
 }

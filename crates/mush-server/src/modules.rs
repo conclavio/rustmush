@@ -2153,9 +2153,27 @@ mod tests {
             // nothing caught a composition-order change that re-classified it.
             // A ROW in this loop, not a new stanza: `PINNED_BASELINE` is
             // untouched.
+            //
+            // E7 cut 8 (B6): the eight tactical verbs join `@station`'s
+            // authoritative group — every one stages `tactical_intent` through
+            // cut 2's seam, which is the ceiling criterion cut 5 set and cut 7
+            // reused for `@prop`. `@domain` keeps its cut-6 class: `/tick` and
+            // `/replay` write only the exempt `sim.domain` document and read the
+            // commit family; the durable cursor is armed by the `sim.domain_pulse`
+            // Coarse tick, never by the command, so no baseline entry moves and
+            // `PINNED_BASELINE` stays 158.
             for (name, class) in [
                 ("@station", mush_core::CommandCompatibility::Authoritative),
                 ("@journey", mush_core::CommandCompatibility::LegacyPostImage),
+                ("@domain", mush_core::CommandCompatibility::LegacyPostImage),
+                ("+fire", mush_core::CommandCompatibility::Authoritative),
+                ("+launch", mush_core::CommandCompatibility::Authoritative),
+                ("+heading", mush_core::CommandCompatibility::Authoritative),
+                ("+thrust", mush_core::CommandCompatibility::Authoritative),
+                ("+posture", mush_core::CommandCompatibility::Authoritative),
+                ("+dc", mush_core::CommandCompatibility::Authoritative),
+                ("+dock", mush_core::CommandCompatibility::Authoritative),
+                ("+eject", mush_core::CommandCompatibility::Authoritative),
             ] {
                 assert!(
                     registrations.iter().any(|(spec, owner, published)| {

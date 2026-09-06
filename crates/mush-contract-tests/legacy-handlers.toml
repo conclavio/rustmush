@@ -125,6 +125,11 @@ category = "baseline"
 note = "baseline pinned at b0e3b52 (module, shadowrun composition only)"
 
 [[handler]]
+name = "+dc"
+category = "authoritative"
+note = "E7 cut 8 (10b 3.8, Q12A, D-E7-16): a SELECTOR onto the tactical ingress, not a mechanic. It resolves the actor's focused station (cut 5), builds one TacticalIntentDoc and stages mush-sim's own tactical_intent action through cut 2's Ctx::submit_authoritative seam -- exactly one submission per command, under a key deterministic over (unit, station, tick, kind), so a repeat this tick is a HIT and a different order on the same channel REPLACES the window slot (S2A latest-order-wins). It writes NO document of its own: the intent joins K's durable ActionWindowRecord (sim/tick_windows, capacity MAX_WINDOW_CAPACITY 256, one slot per (actor, truth_subject)) and is resolved by the kernel-fired domaintick schedule source into ONE deterministic DomainTickCommit per domain per tick with recorded RNG through PrepareCtx::start_resolution. Category authoritative, the ceiling class @station and @prop set. No economy path is reachable from the tick (T2, D-E7-17). A bounded discrete intent naming a section; it is also the declared deterministic fallback every offensive kind reduces to (C30A under K7.0's rule, no PendingDecision)."
+
+[[handler]]
 name = "+disc"
 category = "baseline"
 note = "baseline pinned at b0e3b52 (module, wod composition only)"
@@ -135,9 +140,19 @@ category = "baseline"
 note = "baseline pinned at b0e3b52 (module, wod composition only)"
 
 [[handler]]
+name = "+dock"
+category = "authoritative"
+note = "E7 cut 8 (10b 3.8, Q12A, D-E7-16): a SELECTOR onto the tactical ingress, not a mechanic. It resolves the actor's focused station (cut 5), builds one TacticalIntentDoc and stages mush-sim's own tactical_intent action through cut 2's Ctx::submit_authoritative seam -- exactly one submission per command, under a key deterministic over (unit, station, tick, kind), so a repeat this tick is a HIT and a different order on the same channel REPLACES the window slot (S2A latest-order-wins). It writes NO document of its own: the intent joins K's durable ActionWindowRecord (sim/tick_windows, capacity MAX_WINDOW_CAPACITY 256, one slot per (actor, truth_subject)) and is resolved by the kernel-fired domaintick schedule source into ONE deterministic DomainTickCommit per domain per tick with recorded RNG through PrepareCtx::start_resolution. Category authoritative, the ceiling class @station and @prop set. No economy path is reachable from the tick (T2, D-E7-17). Names an opaque ContactId; the same byte-identical refusal as +fire."
+
+[[handler]]
 name = "+domitor"
 category = "baseline"
 note = "baseline pinned at b0e3b52 (module, wod composition only)"
+
+[[handler]]
+name = "+eject"
+category = "authoritative"
+note = "E7 cut 8 (10b 3.8, Q12A, D-E7-16): a SELECTOR onto the tactical ingress, not a mechanic. It resolves the actor's focused station (cut 5), builds one TacticalIntentDoc and stages mush-sim's own tactical_intent action through cut 2's Ctx::submit_authoritative seam -- exactly one submission per command, under a key deterministic over (unit, station, tick, kind), so a repeat this tick is a HIT and a different order on the same channel REPLACES the window slot (S2A latest-order-wins). It writes NO document of its own: the intent joins K's durable ActionWindowRecord (sim/tick_windows, capacity MAX_WINDOW_CAPACITY 256, one slot per (actor, truth_subject)) and is resolved by the kernel-fired domaintick schedule source into ONE deterministic DomainTickCommit per domain per tick with recorded RNG through PrepareCtx::start_resolution. Category authoritative, the ceiling class @station and @prop set. No economy path is reachable from the tick (T2, D-E7-17). A bounded discrete intent with no target."
 
 [[handler]]
 name = "+faction"
@@ -154,6 +169,11 @@ name = "+fence"
 category = "legacy-post-image"
 family = "sr:fence"
 note = "E6b: the Shadowrun fence -- vendor registration, quotes and consignment. Bounded whole-document records (sr:fence:{id}, sr:quote:{id}) with strict TryFrom decoding, deterministic contract keys and no authority of their own: every money act rides the economy's offer_contract/accept_contract seams under an E4 authority, and the quote is a projection refused deterministically when stale."
+
+[[handler]]
+name = "+fire"
+category = "authoritative"
+note = "E7 cut 8 (10b 3.8, Q12A, D-E7-16): a SELECTOR onto the tactical ingress, not a mechanic. It resolves the actor's focused station (cut 5), builds one TacticalIntentDoc and stages mush-sim's own tactical_intent action through cut 2's Ctx::submit_authoritative seam -- exactly one submission per command, under a key deterministic over (unit, station, tick, kind), so a repeat this tick is a HIT and a different order on the same channel REPLACES the window slot (S2A latest-order-wins). It writes NO document of its own: the intent joins K's durable ActionWindowRecord (sim/tick_windows, capacity MAX_WINDOW_CAPACITY 256, one slot per (actor, truth_subject)) and is resolved by the kernel-fired domaintick schedule source into ONE deterministic DomainTickCommit per domain per tick with recorded RNG through PrepareCtx::start_resolution. Category authoritative, the ceiling class @station and @prop set. No economy path is reachable from the tick (T2, D-E7-17). Names an OPAQUE ContactId out of the leak-safe ContactLedgerState; a contact the actor does not hold and one that never existed refuse BYTE-IDENTICALLY (rule 4)."
 
 [[handler]]
 name = "+focus"
@@ -200,6 +220,11 @@ note = "baseline pinned at b0e3b52 (module, every composition)"
 name = "+harm"
 category = "baseline"
 note = "baseline pinned at b0e3b52 (module, wod composition only)"
+
+[[handler]]
+name = "+heading"
+category = "authoritative"
+note = "E7 cut 8 (10b 3.8, Q12A, D-E7-16): a SELECTOR onto the tactical ingress, not a mechanic. It resolves the actor's focused station (cut 5), builds one TacticalIntentDoc and stages mush-sim's own tactical_intent action through cut 2's Ctx::submit_authoritative seam -- exactly one submission per command, under a key deterministic over (unit, station, tick, kind), so a repeat this tick is a HIT and a different order on the same channel REPLACES the window slot (S2A latest-order-wins). It writes NO document of its own: the intent joins K's durable ActionWindowRecord (sim/tick_windows, capacity MAX_WINDOW_CAPACITY 256, one slot per (actor, truth_subject)) and is resolved by the kernel-fired domaintick schedule source into ONE deterministic DomainTickCommit per domain per tick with recorded RNG through PrepareCtx::start_resolution. Category authoritative, the ceiling class @station and @prop set. No economy path is reachable from the tick (T2, D-E7-17). A continuous order: it persists until changed as a sim.standing_order post-image written by the tick's own bundle, never by this verb."
 
 [[handler]]
 name = "+heal"
@@ -250,6 +275,11 @@ note = "baseline pinned at b0e3b52 (module, every composition)"
 name = "+karma"
 category = "baseline"
 note = "baseline pinned at b0e3b52 (module, shadowrun composition only)"
+
+[[handler]]
+name = "+launch"
+category = "authoritative"
+note = "E7 cut 8 (10b 3.8, Q12A, D-E7-16): a SELECTOR onto the tactical ingress, not a mechanic. It resolves the actor's focused station (cut 5), builds one TacticalIntentDoc and stages mush-sim's own tactical_intent action through cut 2's Ctx::submit_authoritative seam -- exactly one submission per command, under a key deterministic over (unit, station, tick, kind), so a repeat this tick is a HIT and a different order on the same channel REPLACES the window slot (S2A latest-order-wins). It writes NO document of its own: the intent joins K's durable ActionWindowRecord (sim/tick_windows, capacity MAX_WINDOW_CAPACITY 256, one slot per (actor, truth_subject)) and is resolved by the kernel-fired domaintick schedule source into ONE deterministic DomainTickCommit per domain per tick with recorded RNG through PrepareCtx::start_resolution. Category authoritative, the ceiling class @station and @prop set. No economy path is reachable from the tick (T2, D-E7-17). Names a bay and an opaque ContactId; the same byte-identical refusal as +fire for a contact the actor does not hold."
 
 [[handler]]
 name = "+legacy"
@@ -315,6 +345,11 @@ name = "+party"
 category = "legacy-post-image"
 family = "party:party"
 note = "E6a (08f 3.1/3.2/3.4, D-E6-5): the bare verb is a viewer-gated read; the mutating switches write one bounded whole-document party:{id} with a strict TryFrom wire that re-runs every constructor invariant. The party is NOT an economic principal -- mush-party depends on mush-core alone, owns no money or title, and takes no part in authority or prepared mechanics."
+
+[[handler]]
+name = "+posture"
+category = "authoritative"
+note = "E7 cut 8 (10b 3.8, Q12A, D-E7-16): a SELECTOR onto the tactical ingress, not a mechanic. It resolves the actor's focused station (cut 5), builds one TacticalIntentDoc and stages mush-sim's own tactical_intent action through cut 2's Ctx::submit_authoritative seam -- exactly one submission per command, under a key deterministic over (unit, station, tick, kind), so a repeat this tick is a HIT and a different order on the same channel REPLACES the window slot (S2A latest-order-wins). It writes NO document of its own: the intent joins K's durable ActionWindowRecord (sim/tick_windows, capacity MAX_WINDOW_CAPACITY 256, one slot per (actor, truth_subject)) and is resolved by the kernel-fired domaintick schedule source into ONE deterministic DomainTickCommit per domain per tick with recorded RNG through PrepareCtx::start_resolution. Category authoritative, the ceiling class @station and @prop set. No economy path is reachable from the tick (T2, D-E7-17). A continuous emission-control order: it persists until changed as a sim.standing_order post-image written by the tick's own bundle, never by this verb."
 
 [[handler]]
 name = "+powers"
@@ -447,6 +482,11 @@ note = "baseline pinned at b0e3b52 (module, every composition)"
 name = "+thread"
 category = "baseline"
 note = "baseline pinned at b0e3b52 (module, shadowrun composition only)"
+
+[[handler]]
+name = "+thrust"
+category = "authoritative"
+note = "E7 cut 8 (10b 3.8, Q12A, D-E7-16): a SELECTOR onto the tactical ingress, not a mechanic. It resolves the actor's focused station (cut 5), builds one TacticalIntentDoc and stages mush-sim's own tactical_intent action through cut 2's Ctx::submit_authoritative seam -- exactly one submission per command, under a key deterministic over (unit, station, tick, kind), so a repeat this tick is a HIT and a different order on the same channel REPLACES the window slot (S2A latest-order-wins). It writes NO document of its own: the intent joins K's durable ActionWindowRecord (sim/tick_windows, capacity MAX_WINDOW_CAPACITY 256, one slot per (actor, truth_subject)) and is resolved by the kernel-fired domaintick schedule source into ONE deterministic DomainTickCommit per domain per tick with recorded RNG through PrepareCtx::start_resolution. Category authoritative, the ceiling class @station and @prop set. No economy path is reachable from the tick (T2, D-E7-17). A continuous order: it persists until changed as a sim.standing_order post-image written by the tick's own bundle, never by this verb."
 
 [[handler]]
 name = "+timestop"

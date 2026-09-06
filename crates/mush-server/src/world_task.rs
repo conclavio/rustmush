@@ -1506,9 +1506,35 @@ pub fn spawn_persist_with_gateway(
     spawn_persist_with_gateway_and_outbox(
         engine,
         deps,
-        Arc::new(DurableOutboxRegistry::new()),
+        Arc::new(production_durable_outbox()),
         make_gateway,
     )
+}
+
+/// The production durable-outbox registry.
+///
+/// E7 cut 8 (10b §3.8 OPEN 4): `durable_outbox.rs` had the trait and no
+/// production implementation, and every spawn path wired an **empty** registry.
+/// The tactical pulse's typed boundary facts (T2, D-E7-17) are the first thing
+/// that has to cross it, so the tactics adapter is registered here, on the one
+/// path every spawn shares.
+///
+/// A registration that will not build is logged and skipped rather than
+/// panicking a boot: an unroutable outbox item is retained by the store and
+/// retried when the adapter appears, which is strictly better than refusing to
+/// start.
+#[must_use]
+pub fn production_durable_outbox() -> DurableOutboxRegistry {
+    let mut registry = DurableOutboxRegistry::new();
+    match crate::tactics_outbox::TacticsBoundaryOutbox::new() {
+        Some(outbox) => {
+            if let Err(error) = registry.register(Arc::new(outbox)) {
+                tracing::error!(%error, "the tactics boundary outbox adapter was not registered");
+            }
+        }
+        None => tracing::error!("the tactics boundary outbox adapter could not be constructed"),
+    }
+    registry
 }
 
 struct DecisionRuntime {
@@ -1604,7 +1630,7 @@ pub fn spawn_persist_with_gateway_production(
         return Ok(spawn_persist_with_gateway_mode(
             engine,
             deps,
-            Arc::new(DurableOutboxRegistry::new()),
+            Arc::new(production_durable_outbox()),
             None,
             None,
             make_gateway,
@@ -1614,7 +1640,7 @@ pub fn spawn_persist_with_gateway_production(
     spawn_persist_with_gateway_and_decisions(
         engine,
         deps,
-        DurableOutboxRegistry::new(),
+        production_durable_outbox(),
         providers,
         decision_workers,
         make_gateway,

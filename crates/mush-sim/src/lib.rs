@@ -11,6 +11,7 @@
 //! transitions, stations, and domain ticking are later cuts.
 
 pub mod boot;
+pub mod combat;
 pub mod commands;
 pub mod custody;
 pub mod data;
@@ -22,6 +23,7 @@ pub mod journey;
 pub mod links;
 pub mod route;
 pub mod station;
+pub mod tick;
 pub mod transition;
 
 use std::sync::Arc;
@@ -101,6 +103,10 @@ pub struct SimulationModule {
     /// cut 7). `None` leaves `@journey/plan|depart <route id>` on the manual
     /// fixture-route fallback, which is exactly what it did before.
     routes: Option<Arc<dyn route::RouteCatalog>>,
+    /// E7c8 B1: the live pulse cadence (§7's `GROUND_PULSE_MS`/`SPACE_PULSE_MS`
+    /// by default). Carried into world state at `register`, where the
+    /// composition root may upgrade it from `[tacsim]`.
+    pulse: tick::PulseConfig,
 }
 
 impl std::fmt::Debug for SimulationModule {
@@ -127,7 +133,17 @@ impl SimulationModule {
             config,
             accounts: None,
             routes: None,
+            pulse: tick::PulseConfig::default(),
         }
+    }
+
+    /// Install the pulse cadence from `[tacsim].ground_pulse_ms` /
+    /// `space_pulse_ms` (E7c8 B1) — the `with_accounts`/`with_route_catalog`
+    /// shape. Unwired leaves §7's constants, which is what cut 7 did.
+    #[must_use]
+    pub fn with_pulse(mut self, pulse: tick::PulseConfig) -> SimulationModule {
+        self.pulse = pulse;
+        self
     }
 
     /// Install the account-distinctness oracle (E7 cut 5 B1, OPEN 4). Called at
@@ -669,7 +685,14 @@ impl GameModule for SimulationModule {
             AuthorityGuardKind::ControlLease,
             ControlLeaseGuardValidator::new(control_leases.clone()),
         )?;
-        handoff::register(reg, control_leases)?;
+        // ---- E7c8: B1/B3/B4 — the minimal deterministic pulse driver ----
+        // `handoff.rs` owns this module's ONE `"action"`/`"outcome"` definition
+        // validator, so the pulse contributes its four descriptors there and
+        // registers its families, its one `DomainClockProvider`, its two action
+        // providers and its one `domaintick` schedule source here.
+        let tick_definitions =
+            handoff::register(reg, control_leases, tick::definition_descriptors()?)?;
+        tick::register(reg, tick_definitions)?;
         reg.state(SpatialState::new(self.config.recovery_room));
         reg.state(route::RouteState::default());
         // E7c5 B1: carry the composition-installed account oracle into world
@@ -700,6 +723,10 @@ impl GameModule for SimulationModule {
         // hydrated at boot.
         reg.state(journey::JourneyBook::default());
         reg.state(domain::ActivationBook::default());
+        // E7c8 B1: the live pulse cadence. Defaults to §7's constants; the
+        // composition root upgrades it from `[tacsim].ground_pulse_ms` /
+        // `space_pulse_ms` after composition (cut 5's `AccountOracle` device).
+        reg.state(self.pulse);
         reg.behavior(domain_spec())?;
         reg.behavior(interior_spec())?;
         reg.behavior(participant_spec())?;
@@ -722,6 +749,17 @@ impl GameModule for SimulationModule {
             journey::TICK_TAG,
             TickCadence::Coarse(Duration::from_secs(journey::TICK_SECS)),
             Arc::new(journey::tick),
+        )?;
+        // E7c8 B1/B6: the world-side applying authority. A `schedule_source`-fired
+        // action has no `&World`, no `Ctx` and no `Outbox` (10b §4.0d), so the
+        // half of the pulse that reads cut 6's activation book, writes the `sim`
+        // domain document and arms the durable cursor is a Coarse tick — the same
+        // split RESOLUTION A gave cuts 6 and 7. The DETERMINISTIC half is the
+        // prepared authoritative commit the `domaintick` source fires.
+        reg.tick(
+            tick::PULSE_TICK_TAG,
+            TickCadence::Coarse(Duration::from_secs(tick::PULSE_TICK_SECS)),
+            Arc::new(tick::maintenance_tick),
         )?;
         commands::register(reg)?;
         Ok(())

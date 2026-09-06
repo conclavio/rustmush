@@ -49,6 +49,7 @@ mod contact;
 pub mod mobility;
 pub mod module;
 pub mod sensor;
+pub mod status;
 pub mod unit;
 
 pub use contact::{

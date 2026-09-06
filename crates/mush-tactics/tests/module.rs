@@ -1616,3 +1616,163 @@ fn exact_reference_constructor_remains_owner_kind_version_and_digest_bound() {
     .unwrap();
     assert_eq!(rebuilt, reference);
 }
+
+// ---- E7c8: B2 — `unit.status` is a PROJECTION, never a document ----
+
+/// Publish a station grant for `viewer` on `unit`, the way `mush-sim`'s
+/// `links::refresh_actor_links` does. This test crate has no `mush-sim` edge, so
+/// the grant is published directly through `World` — which is the point: the
+/// projection reads K5a's grant, not any simulation type.
+fn grant_station(world: &mut TestWorld, viewer: ObjId, unit: ObjId) {
+    world
+        .world_mut()
+        .publish_command_subject(mush_core::CommandSubjectLink {
+            actor: viewer,
+            subject: unit,
+            owner: SmolStr::new("sim"),
+            station: SmolStr::new("gunnery"),
+            relation: SmolStr::new("gunner"),
+            priority: 10,
+            channels: Default::default(),
+            epoch: 1,
+        });
+}
+
+/// **`unit.status` is a projection, not a document.** Composing it from the
+/// stores and composing it from a `TacticalUnit` value that was **never
+/// persisted** produce byte-identical results — which is only possible because
+/// nothing stores a status anywhere.
+#[test]
+fn e7c8_b2_unit_status_is_byte_identical_from_the_store_and_from_a_never_persisted_fixture() {
+    let mut tw = boot();
+    let viewer = tw
+        .world_mut()
+        .create(ObjKind::Player, "Gunner", GOD, None)
+        .unwrap();
+    let unit = make_unit(&mut tw);
+    grant_station(&mut tw, viewer, unit);
+
+    let from_store = mush_tactics::status::unit_status(tw.world(), viewer, unit);
+    let fixture = tw
+        .world()
+        .module_state::<UnitStore>()
+        .and_then(|store| store.units.get(&unit).cloned())
+        .expect("a live unit");
+    let from_fixture = mush_tactics::status::unit_status_of(tw.world(), viewer, &fixture);
+    assert_eq!(from_store, from_fixture);
+    assert_eq!(from_store.render(), from_fixture.render());
+    assert!(from_store.authorized);
+    assert!(from_store.sections > 0, "a real unit has sections");
+
+    // And the composition WROTE nothing: no `tactics` document, of any key.
+    let ops: Vec<_> = tw
+        .take_module_ops()
+        .into_iter()
+        .filter(|op| op.ns == "tactics")
+        .collect();
+    let _ = mush_tactics::status::unit_status(tw.world(), viewer, unit);
+    let after: Vec<_> = tw
+        .take_module_ops()
+        .into_iter()
+        .filter(|op| op.ns == "tactics")
+        .collect();
+    assert!(
+        after.is_empty(),
+        "composing a status wrote {} document(s); it is a projection",
+        after.len()
+    );
+    let _ = ops;
+}
+
+/// **What a viewer may not learn.** A viewer with no station on the unit, a
+/// viewer with a station on an object that is not a unit, and a viewer asking
+/// about an object that does not exist all receive the **byte-identical**
+/// rendering — the status never confirms that a unit is there (§4 rule 4).
+#[test]
+fn e7c8_b2_unstationed_not_a_unit_and_nonexistent_all_render_identically() {
+    let mut tw = boot();
+    let viewer = tw
+        .world_mut()
+        .create(ObjKind::Player, "Gunner", GOD, None)
+        .unwrap();
+    let unit = make_unit(&mut tw);
+    let husk = tw
+        .world_mut()
+        .create(ObjKind::Thing, "Crate", GOD, None)
+        .unwrap();
+
+    // (a) stationed nowhere, asking about a real unit.
+    let unstationed = mush_tactics::status::unit_status(tw.world(), viewer, unit);
+    // (b) stationed on an object that carries no unit record.
+    grant_station(&mut tw, viewer, husk);
+    let not_a_unit = mush_tactics::status::unit_status(tw.world(), viewer, husk);
+    // (c) asking about an object that does not exist at all.
+    let nonexistent = mush_tactics::status::unit_status(tw.world(), viewer, ObjId(9_999));
+
+    assert_eq!(unstationed, not_a_unit);
+    assert_eq!(not_a_unit, nonexistent);
+    assert_eq!(unstationed.render(), nonexistent.render());
+    assert!(!unstationed.authorized);
+    assert_eq!(unstationed, mush_tactics::status::UnitStatus::unknown());
+
+    // The stationed viewer of the REAL unit does see it — so the identity above
+    // is a fog property, not a broken read.
+    grant_station(&mut tw, viewer, unit);
+    let seen = mush_tactics::status::unit_status(tw.world(), viewer, unit);
+    assert!(seen.authorized);
+    assert_ne!(seen.render(), unstationed.render());
+}
+
+/// One station's contact picture never leaks through another's status line: the
+/// contact count is the **viewer's own** ledger rows, so two viewers of the same
+/// unit see their own counts.
+#[test]
+fn e7c8_b2_the_contact_count_is_the_viewers_own_never_the_units() {
+    let mut tw = boot();
+    let one = tw
+        .world_mut()
+        .create(ObjKind::Player, "Alpha", GOD, None)
+        .unwrap();
+    let two = tw
+        .world_mut()
+        .create(ObjKind::Player, "Bravo", GOD, None)
+        .unwrap();
+    let unit = make_unit(&mut tw);
+    grant_station(&mut tw, one, unit);
+    grant_station(&mut tw, two, unit);
+
+    let mut ledger = mush_core::ContactLedgerState::default();
+    ledger.install(
+        vec![mush_core::ContactLedgerRow {
+            holder: mush_core::PrincipalId::Object { id: one },
+            contact: mush_core::ContactId::from_bytes([7_u8; 16]),
+            generation: 1,
+            revision: 1,
+            active: true,
+            observed_at: mush_core::ClockStamp {
+                clock: mush_core::ClockRef::WorldIc { generation: 1 },
+                at: 5,
+            },
+            phantom: None,
+        }],
+        mush_core::ClockStamp {
+            clock: mush_core::ClockRef::WorldIc { generation: 1 },
+            at: 5,
+        },
+    );
+    if let Some(slot) = tw
+        .world_mut()
+        .module_state_mut::<mush_core::ContactLedgerState>()
+    {
+        *slot = ledger;
+    }
+
+    let alpha = mush_tactics::status::unit_status(tw.world(), one, unit);
+    let bravo = mush_tactics::status::unit_status(tw.world(), two, unit);
+    assert_eq!(alpha.contacts, 1);
+    assert_eq!(bravo.contacts, 0, "one holder's picture leaked to another");
+    // Everything else about the same unit is identical for both viewers.
+    assert_eq!(alpha.revision, bravo.revision);
+    assert_eq!(alpha.sections, bravo.sections);
+    assert_eq!(alpha.components, bravo.components);
+}

@@ -428,9 +428,18 @@ fn e7c7_a4_the_six_sensor_sources_are_registered_beside_handoff_and_production()
         .registry()
         .schedule_sources()
         .expect("the composition froze the source registry");
-    // This two-module world carries `control_handoff` plus the six sensor
-    // sources; `production` is `mush-industry`'s and is pinned in `mush-server`.
-    assert_eq!(sources.len(), 7, "control_handoff + six sensor sources");
+    // This world carries `mush-sim`'s `control_handoff` and E7 cut 8's
+    // `domaintick`, plus the six sensor sources; `production` is
+    // `mush-industry`'s and is pinned in `mush-server`.
+    //
+    // **The count moved 7 → 8 with E7 cut 8**, which registers exactly one new
+    // source (`domaintick`, `mush-sim`) — the pin is what makes that visible
+    // rather than silent, so it is raised deliberately here.
+    assert_eq!(
+        sources.len(),
+        8,
+        "control_handoff + domaintick + six sensor sources"
+    );
     let mut ids: Vec<&str> = mush_core::ObservationKind::all()
         .iter()
         .map(|kind| mush_tactics::sensor_source_id(*kind))
@@ -439,7 +448,10 @@ fn e7c7_a4_the_six_sensor_sources_are_registered_beside_handoff_and_production()
     ids.dedup();
     assert_eq!(ids.len(), 6);
     for id in ids {
-        assert!(!matches!(id, "control_handoff" | "production" | "npc"));
+        assert!(!matches!(
+            id,
+            "control_handoff" | "production" | "npc" | "domaintick"
+        ));
     }
 }
 
