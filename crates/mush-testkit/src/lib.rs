@@ -438,6 +438,12 @@ pub fn text_of(event: &OutputEvent) -> String {
         } => {
             format!("[request {id} {kind:?} {}]", prompt.to_plain_text())
         }
+        OutputEvent::Notice {
+            category,
+            severity,
+            text,
+            ..
+        } => format!("[notice {category} {severity:?} {}]", text.to_plain_text()),
         OutputEvent::Panel { feed, .. } => format!("[panel {feed}]"),
         OutputEvent::View(view) => format!("[view {}]", view.view()),
         OutputEvent::Weather { text, .. } => text.to_plain_text(),

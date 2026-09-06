@@ -10,6 +10,8 @@ export type * from "./Envelope";
 export type * from "./ExitRef";
 export type * from "./InputMode";
 export type * from "./NarrativeKind";
+export type * from "./NoticeAction";
+export type * from "./NoticeSeverity";
 export type * from "./ObjRef";
 export type * from "./OutputEvent";
 export type * from "./PanelFrameKind";

@@ -672,3 +672,37 @@ fn request_and_respond_roundtrip() {
         assert_eq!(serde_json::from_value::<ClientCommand>(j).unwrap(), cmd);
     }
 }
+
+#[test]
+fn notice_roundtrip() {
+    use mush_proto::{NoticeAction, NoticeSeverity, OutputEvent, RichText};
+    let n = OutputEvent::Notice {
+        id: 3,
+        severity: NoticeSeverity::Urgent,
+        category: "page".into(),
+        text: RichText::plain("Razor pages: meet me"),
+        action: Some(NoticeAction {
+            label: "Reply".into(),
+            prefill: "page Razor=".into(),
+        }),
+        ts: 1_700_000_000_000,
+    };
+    let j = serde_json::to_value(&n).unwrap();
+    assert_eq!(j["t"], "notice");
+    assert_eq!(j["d"]["severity"], "urgent");
+    assert_eq!(j["d"]["action"]["prefill"], "page Razor=");
+    assert_eq!(serde_json::from_value::<OutputEvent>(j).unwrap(), n);
+
+    // action is omitted on the wire when None.
+    let n2 = OutputEvent::Notice {
+        id: 4,
+        severity: NoticeSeverity::Info,
+        category: "mail".into(),
+        text: RichText::plain("new mail"),
+        action: None,
+        ts: 1,
+    };
+    let j2 = serde_json::to_value(&n2).unwrap();
+    assert!(j2["d"].get("action").is_none(), "action skipped when None");
+    assert_eq!(serde_json::from_value::<OutputEvent>(j2).unwrap(), n2);
+}

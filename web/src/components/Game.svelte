@@ -15,6 +15,7 @@
   import ChannelTabs from "./ChannelTabs.svelte";
   import ChannelView from "./ChannelView.svelte";
   import GenericViewScreen from "./GenericViewScreen.svelte";
+  import NotificationTray from "./NotificationTray.svelte";
   import RequestModal from "./RequestModal.svelte";
   import LlmPanel from "./LlmPanel.svelte";
   import MailPanel from "./MailPanel.svelte";
@@ -126,6 +127,7 @@
       <span class="dot" aria-hidden="true"></span>
       {statusLabel}
     </span>
+    <NotificationTray {app} />
     <button
       type="button"
       class="railbtn"

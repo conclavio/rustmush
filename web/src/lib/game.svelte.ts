@@ -32,6 +32,7 @@ import { CommandsStore } from "./stores/commands.svelte";
 import { LegalActionsStore } from "./stores/actions.svelte";
 import { GenericViewStore, isViewFeed } from "./stores/genericview.svelte";
 import { RequestStore } from "./stores/requests.svelte";
+import { NotificationStore } from "./stores/notifications.svelte";
 import { LlmDashboardStore } from "./stores/llm.svelte";
 import { MailStore } from "./stores/mail.svelte";
 import { PresenceStore } from "./stores/presence.svelte";
@@ -153,6 +154,7 @@ export class GameApp {
   presence = new PresenceStore();
   genericViews = new GenericViewStore();
   requests = new RequestStore();
+  notifications = new NotificationStore();
 
   screen = $state<Screen>("login");
   /** The latest `scenes` keyframe (the scene screen's glance rides in
@@ -330,6 +332,7 @@ export class GameApp {
     this.vitals.clear();
     this.genericViews.clear();
     this.requests.clear();
+    this.notifications.clear();
     this.presence.clear();
     this.sceneFrame = null;
     this.paletteEntries = [];
@@ -394,15 +397,19 @@ export class GameApp {
     });
     c.on("mail_notice", (env) => {
       this.mail.notice(env.d.unread);
-      this.scrollback.pushText(
-        "ev-sys",
-        `MAIL: New message from ${env.d.from.name}: ${env.d.subject} (${env.d.unread} unread)`,
-        env.ts,
-      );
-      this.toast(`New mail from ${env.d.from.name}: ${env.d.subject}`);
+      // The unified notification surface (I11) shows the arrival — the tray is
+      // its home. The old scrollback line and ad-hoc toast are retired; the
+      // MailNotice event still carries the unread count for the mail badge (a
+      // client-side shim until mail emits a Notice server-side).
+      this.notifications.fromMail(env.d.from.name, env.d.subject, env.d.id, env.ts);
       if (this.mail.loaded) {
         this.#req({ kind: "mail.list" }, { t: "mail_list", d: { folder: this.mail.folder } });
       }
+    });
+    c.on("notice", (env) => {
+      // A unified notification (I11): mail, a page, a mention, an escalation,
+      // a job update — one surface. Never idle-stamps (it is delivered).
+      this.notifications.push(env.d, env.ts);
     });
     c.on("weather", (env) => {
       this.scrollback.push("ev-weather", [renderRich(env.d.text)], env.ts);

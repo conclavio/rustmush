@@ -7,8 +7,8 @@
 //! **CRLF only** — never a bare `\n` (SSH raw mode).
 
 use mush_proto::{
-    ClientCaps, NarrativeKind, ObjRef, OutputEvent, ProjectedActionReceipt, RequestKind, RichText,
-    RoomView, Span, Style, WhoEntry,
+    ClientCaps, NarrativeKind, NoticeSeverity, ObjRef, OutputEvent, ProjectedActionReceipt,
+    RequestKind, RichText, RoomView, Span, Style, WhoEntry,
 };
 
 use crate::color::sgr;
@@ -65,6 +65,26 @@ pub fn render(event: &OutputEvent, caps: &ClientCaps, theme: &AnsiTheme, out: &m
                     from.name
                 ),
             );
+            w.end_line();
+        }
+        // A unified notification (interface plan I11): line mode renders it
+        // inline; the tray is a screen thing. The tag colours by severity.
+        OutputEvent::Notice {
+            severity,
+            category,
+            text,
+            action,
+            ..
+        } => {
+            let tag = match severity {
+                NoticeSeverity::Urgent => "error",
+                NoticeSeverity::Warn | NoticeSeverity::Info => "system",
+            };
+            w.tagged(tag, &format!("[{category}] "));
+            w.rich(text);
+            if let Some(a) = action {
+                w.plain(&format!("  ({})", a.prefill));
+            }
             w.end_line();
         }
         OutputEvent::Who(entries) => render_who(&mut w, entries),

@@ -871,6 +871,35 @@ pub enum RespondChoice {
     Cancel,
 }
 
+/// The most UTF-8 bytes in a notification's text (interface plan I11).
+pub const MAX_NOTICE_TEXT_BYTES: usize = 512;
+
+/// A notification's severity (interface plan I11): the clients sort and colour
+/// by it. `Urgent` is a page or a staff alert; `Warn` an escalation; `Info`
+/// mail, a mention, a job update.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(rename_all = "snake_case")]
+pub enum NoticeSeverity {
+    /// Routine — mail, a mention, a job update.
+    Info,
+    /// Something wants attention soon — an escalation.
+    Warn,
+    /// Now — a page, a staff alert.
+    Urgent,
+}
+
+/// A notification's optional one-tap action (interface plan I11): a line the
+/// client offers to prefill (D-I-18 — never a bare mutation).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct NoticeAction {
+    /// The button label, e.g. "Open".
+    pub label: String,
+    /// The line to prefill when tapped, e.g. "@mail 3".
+    pub prefill: String,
+}
+
 /// Clients MUST ignore events whose `t` they do not recognize (additive
 /// evolution).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -924,6 +953,26 @@ pub enum OutputEvent {
         id: u64,
         /// The recipient's unread count after this message.
         unread: u32,
+    },
+    /// A unified notification (interface plan I11): mail, a page, a mention,
+    /// an escalation, a job update — one typed notice every client renders the
+    /// same, with a severity, a category, and an optional one-tap action.
+    /// Delivered, never polled; never an idle stamp (D-I-11). `MailNotice`
+    /// keeps its own tag as a compatibility shim while clients cut over.
+    Notice {
+        /// Server-chosen id, for de-duplication and dismissal.
+        id: u64,
+        /// How loudly to surface it.
+        severity: NoticeSeverity,
+        /// A grouping key, e.g. `"mail"`, `"page"`, `"escalation"`.
+        category: SmolStr,
+        /// The notice text (`MAX_NOTICE_TEXT_BYTES`).
+        text: RichText,
+        /// An optional one-tap action.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        action: Option<NoticeAction>,
+        /// Server timestamp, Unix milliseconds.
+        ts: i64,
     },
     /// A WHO listing (in response to `WHO` or a who-panel refresh).
     Who(Vec<WhoEntry>),

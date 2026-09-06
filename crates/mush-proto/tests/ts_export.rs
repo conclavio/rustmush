@@ -154,6 +154,7 @@ fn generated_shapes_match_wire_format() {
         r#""t": "ping""#,
         r#""t": "composing""#,
         r#""t": "request""#,
+        r#""t": "notice""#,
     ] {
         assert!(
             output_event.contains(needle),

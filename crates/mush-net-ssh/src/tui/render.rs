@@ -370,6 +370,9 @@ pub fn render_event(
         // the TUI overlay and line-mode prompt are I10 part 2, until when a
         // TUI user falls back to the server's default (D-I-21).
         | OutputEvent::Request { .. }
+        // A unified notification (I11): the notices pane and status line show
+        // it (stored in apply_event); the scrollback has nowhere for it.
+        | OutputEvent::Notice { .. }
         | OutputEvent::View(_) => {}
     }
     w.finish()
