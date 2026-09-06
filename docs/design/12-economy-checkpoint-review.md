@@ -599,7 +599,8 @@ without omission returns the same documents for the kept keys, both backends). S
 plus the Redis suite time.
 
 J1 is the first cut. The order after the owner's decisions (§9) is J2 → J5 (§10.6, the
-archive tier) → J3 → J4; J2 and J5 can each be taken alone.
+archive tier) → J3 → J4; J2 and J5 can each be taken alone. *J1, J2 and J5 are built (§7's
+as-built blocks); J3 and J4 remain.*
 
 ## 8. Open questions for the owner
 
@@ -754,6 +755,59 @@ segment_chunks = 256
 task), the two-phase pass (copy and verify every new sealed chunk; then purge if above the
 mark), the config; `mush-config`: `[store.archive]`; ops: the backup note and the metrics
 (`mush_ledger_archive_chunks_total`, `mush_ledger_resident_bytes`, last pass outcome).
+
+> **J5 as built — 2026-09-06.**
+>
+> 1. **The archive** (`mush_store::LedgerArchive`, `crates/mush-store/src/archive.rs`): segments
+>    of up to `segment_chunks` sealed chunks under `<data_dir>/<dir>/<ns>/<log>/`, each chunk a
+>    gzip member at a recorded offset, a `.idx.json` per segment (offset, length, raw length,
+>    SHA-256, archived-at, purged), written temp → fsync → rename, segment before index; an
+>    orphan segment or a stray temp file is swept at open; `store_chunks` reads every copy back
+>    and compares its hash before the index admits it; `read_chunk` treats a member that no
+>    longer inflates or hashes as **absent** and says so at `error`. **J5-D1:** the compression
+>    is gzip (`flate2`, already in the tree) rather than the zstd §10.4 named — one member per
+>    chunk, the same shape, no new native dependency.
+> 2. **The tier is inside the backends**, not a wrapper: `ObjectStore` gained `module_keys`
+>    (what is resident), `module_doc_text` (text, primary first, then the archive for a `log:`
+>    key), `module_purge_archived` (ledger chunks only, refused for anything else) and
+>    `ledger_archive`; `RedisStore::with_archive` / `InMemoryStore::with_archive` attach it;
+>    `module_json_get` falls through for a `log:` miss and `module_docs` merges every archived
+>    chunk the primary lacks (a chunk in both is served from the primary and compared —
+>    `merge_archived`). Boot, H1's cold reads, scenes and canon are unchanged.
+> 3. **The pass** (`mush_server::archive::run_pass`): list every namespace's resident keys; for
+>    each `log:` key the archive lacks, read its text and copy it if it is a sealed, index-matched,
+>    non-empty, contiguous chunk (an open tail is counted and left alone); then, only above the
+>    high watermark of resident ledger bytes, purge chunks the archive holds, unpurged and copied
+>    at or before `now − retain_hours`, oldest copies first, down to the low watermark and at most
+>    `max_purge_per_pass`; a copy or verify error ends the pass before the purge; a purge call
+>    that fails ends the purge and is reported. **J5-D2:** the retention floor is measured from
+>    when the archive copied a chunk — the ledger is payload-agnostic and carries no entry
+>    timestamp — which is at or after the seal, so it is at least the 48 h the direction asked.
+>    `spawn_archive_job` runs the pass once a UTC day inside `[store.archive] window`, beside the
+>    store writer, and publishes the five gauges; `mushd` opens the archive under the data dir,
+>    attaches it before the store is shared, and schedules the job over every composed module's
+>    namespace.
+>
+> **Verify (lenses H, V, T, W, O, S).** H: after a purge, `module_docs` merges both tiers and
+> the merged ledger is contiguous; a damaged archived chunk is absent and the merged ledger is a
+> breach (`the_primary_wins_and_damage_is_a_breach`). V: a chunk in both tiers with different
+> bytes is served from the primary. T: an index dropped after its segment (the crash between
+> the two writes) is swept at open and the chunk copied again next pass. W: the window parses,
+> may cross midnight, and gates by UTC minute and day. O: the open tail is never copied and never
+> purged; a second pass copies nothing; below the high watermark nothing is purged; above it
+> nothing younger than the floor is; the purge is bounded per pass and stops at the low
+> watermark. S: `module_keys`, `module_doc_text` and `module_purge_archived` behave the same on
+> both backends (`suite::module_keys_text_and_purge`, memory + Redis-gated). Findings folded:
+> **J5-F1** — the archive's read-back treated a gzip member that failed to inflate as an I/O
+> error rather than damage, so a bit-flipped segment errored where the design says "absent";
+> `read_chunk` now inflates lossily and the damaged-segment test asserts absence. **J5-F2** — two
+> pass tests assumed a copy and its purge happen on different nights; with a zero retention floor
+> a chunk is eligible the pass it is copied in, which is the design (the floor is the only
+> separation), and the tests now say so.
+>
+> **Measured (M):** the 100 000-entry synthetic journal (56.4 MB in 3 560 chunks of ~16.6 KB)
+> gzips at level 6 to **3.3 MB, 17×** (958 bytes a chunk) — mints are repetitive; a settlement-heavy
+> journal will compress less, and §10.4's 6–8× stays the planning figure.
 *Lenses:* **H** (a hole: a chunk in neither tier fails boot exactly as today; a chunk in the
 archive only boots and pages), **V** (verify: a tampered segment reads as absent; a chunk
 present in both tiers with different hashes is reported and the primary wins), **T** (torn

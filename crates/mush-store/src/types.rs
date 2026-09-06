@@ -1221,6 +1221,10 @@ pub enum StoreError {
     /// The store has been [`crate::ObjectStore::close`]d.
     #[error("store is closed")]
     Closed,
+    /// The ledger archive tier (J5) failed: an I/O error, or a copy that did
+    /// not read back as written.
+    #[error("ledger archive: {0}")]
+    Archive(String),
     /// One commit token was already bound to different immutable bytes.
     #[error("authoritative commit token is already bound to a different bundle")]
     AuthoritativeTokenConflict,
@@ -1362,6 +1366,9 @@ impl StoreError {
             | StoreError::Serde(_)
             | StoreError::Migration(_)
             | StoreError::Closed
+            // The archive's failures are deterministic too: a disk that is
+            // full or damaged does not heal by retrying the same write.
+            | StoreError::Archive(_)
             | StoreError::AuthoritativeTokenConflict
             | StoreError::AuthoritativeIdempotencyConflict
             | StoreError::AuthoritativeIntentMissing

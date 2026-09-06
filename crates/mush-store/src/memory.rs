@@ -46,6 +46,8 @@ use crate::types::{
 #[derive(Debug, Default)]
 pub struct InMemoryStore {
     inner: Mutex<Inner>,
+    /// The ledger archive tier, when attached (J5).
+    archive: Option<std::sync::Arc<crate::archive::LedgerArchive>>,
 }
 
 #[derive(Debug, Default)]
@@ -165,6 +167,14 @@ impl InMemoryStore {
     #[must_use]
     pub fn new() -> InMemoryStore {
         InMemoryStore::default()
+    }
+
+    /// Attach the ledger archive tier (J5): `log:` keys the primary lacks are
+    /// served from it, and listings merge it in.
+    #[must_use]
+    pub fn with_archive(mut self, archive: std::sync::Arc<crate::archive::LedgerArchive>) -> Self {
+        self.archive = Some(archive);
+        self
     }
 
     /// Lock the state, failing if the store is closed.
@@ -2185,11 +2195,8 @@ impl ObjectStore for InMemoryStore {
         key: &'a str,
     ) -> BoxFuture<'a, Result<Option<serde_json::Value>, StoreError>> {
         Box::pin(async move {
-            validate_module_ns(ns)?;
-            validate_module_key(key)?;
-            let inner = self.lock()?;
-            match inner.module_kv.get(&(ns.to_string(), key.to_string())) {
-                Some(doc) => Ok(Some(serde_json::from_str(doc)?)),
+            match self.module_doc_text(ns, key).await? {
+                Some(text) => Ok(Some(serde_json::from_str(&text)?)),
                 None => Ok(None),
             }
         })
@@ -2199,39 +2206,91 @@ impl ObjectStore for InMemoryStore {
         &'a self,
         ns: &'a str,
     ) -> BoxFuture<'a, Result<Vec<(String, serde_json::Value)>, StoreError>> {
-        Box::pin(async move {
-            validate_module_ns(ns)?;
-            let inner = self.lock()?;
-            let mut out = Vec::new();
-            for ((doc_ns, key), doc) in &inner.module_kv {
-                if doc_ns != ns {
-                    continue;
-                }
-                let value = serde_json::from_str(doc)?;
-                out.push((key.clone(), value));
-            }
-            Ok(out)
-        })
+        Box::pin(async move { self.module_docs(ns).await?.into_json_list() })
     }
 
     fn module_docs<'a>(&'a self, ns: &'a str) -> BoxFuture<'a, Result<ModuleDocs, StoreError>> {
         Box::pin(async move {
             validate_module_ns(ns)?;
-            let inner = self.lock()?;
             let mut out = ModuleDocs::default();
-            for ((doc_ns, key), doc) in &inner.module_kv {
-                if doc_ns != ns {
-                    continue;
-                }
-                // J1: the store holds text; a ledger chunk is handed over as is.
-                if key.starts_with(mush_core::ledger::LOG_PREFIX) {
-                    out.ledger.push((key.clone(), doc.clone()));
-                } else {
-                    out.docs.push((key.clone(), serde_json::from_str(doc)?));
+            {
+                let inner = self.lock()?;
+                for ((doc_ns, key), doc) in &inner.module_kv {
+                    if doc_ns != ns {
+                        continue;
+                    }
+                    // J1: the store holds text; a ledger chunk is handed over as is.
+                    if key.starts_with(mush_core::ledger::LOG_PREFIX) {
+                        out.ledger.push((key.clone(), doc.clone()));
+                    } else {
+                        out.docs.push((key.clone(), serde_json::from_str(doc)?));
+                    }
                 }
             }
+            // J5: what the primary has been purged of comes from the archive.
+            crate::archive::merge_archived(self.ledger_archive(), ns, &mut out.ledger)?;
             Ok(out)
         })
+    }
+
+    fn module_keys<'a>(&'a self, ns: &'a str) -> BoxFuture<'a, Result<Vec<String>, StoreError>> {
+        Box::pin(async move {
+            validate_module_ns(ns)?;
+            let inner = self.lock()?;
+            Ok(inner
+                .module_kv
+                .keys()
+                .filter(|(doc_ns, _)| doc_ns == ns)
+                .map(|(_, key)| key.clone())
+                .collect())
+        })
+    }
+
+    fn module_doc_text<'a>(
+        &'a self,
+        ns: &'a str,
+        key: &'a str,
+    ) -> BoxFuture<'a, Result<Option<String>, StoreError>> {
+        Box::pin(async move {
+            validate_module_ns(ns)?;
+            validate_module_key(key)?;
+            let primary = {
+                let inner = self.lock()?;
+                inner
+                    .module_kv
+                    .get(&(ns.to_string(), key.to_string()))
+                    .cloned()
+            };
+            crate::archive::tiered_text(self.ledger_archive(), ns, key, primary)
+        })
+    }
+
+    fn module_purge_archived<'a>(
+        &'a self,
+        ns: &'a str,
+        keys: Vec<String>,
+    ) -> BoxFuture<'a, Result<usize, StoreError>> {
+        Box::pin(async move {
+            validate_module_ns(ns)?;
+            let mut inner = self.lock()?;
+            let mut removed = 0usize;
+            for key in keys {
+                validate_module_key(&key)?;
+                if !key.starts_with(mush_core::ledger::LOG_PREFIX) {
+                    return Err(StoreError::Invalid(format!(
+                        "only ledger chunks may be purged, not {key:?}"
+                    )));
+                }
+                if inner.module_kv.remove(&(ns.to_string(), key)).is_some() {
+                    removed += 1;
+                }
+            }
+            Ok(removed)
+        })
+    }
+
+    fn ledger_archive(&self) -> Option<&crate::archive::LedgerArchive> {
+        self.archive.as_deref()
     }
 
     fn stream_range<'a>(

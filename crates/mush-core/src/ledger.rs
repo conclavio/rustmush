@@ -1065,7 +1065,11 @@ pub fn read_cold_range(
 /// Parse `log:{log_id}:{chunk}` into `(log_id, chunk)`. The chunk is the final
 /// `:`-segment; the log id is everything between the prefix and it (so a log id
 /// may itself contain `:`). Returns `None` for any non-chunk key.
-fn parse_chunk_key(key: &str) -> Option<(SmolStr, u64)> {
+/// The `(log id, chunk index)` a `log:{id}:{chunk}` key names, or `None` for
+/// any other key — including a `log:` key whose chunk is not spelled
+/// canonically (`01` is not chunk 1: one durable identity has one spelling).
+#[must_use]
+pub fn parse_chunk_key(key: &str) -> Option<(SmolStr, u64)> {
     let rest = key.strip_prefix(LOG_PREFIX)?;
     let (log_id, chunk_text) = rest.rsplit_once(':')?;
     if log_id.is_empty() || log_id.len() > MAX_LEDGER_LOG_ID_BYTES {

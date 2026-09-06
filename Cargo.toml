@@ -53,6 +53,7 @@ getrandom = "0.4"
 # web session tokens are stored as SHA-256 hashes (design 02 §6.2); 0.11.0
 # already in-tree transitively.
 sha2 = "0.11"
+flate2 = "1"
 hmac = "0.13"
 axum = { version = "0.8", features = ["ws"] }
 tower-http = { version = "0.6", features = ["fs", "trace", "compression-gzip", "set-header"] }

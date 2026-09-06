@@ -1141,6 +1141,72 @@ pub async fn module_docs_splits_the_ledger_family(store: &dyn ObjectStore) {
     );
 }
 
+/// J5: the archive seam — `module_keys` lists what is resident,
+/// `module_doc_text` hands a document over as text, and
+/// `module_purge_archived` removes ledger chunks and nothing else.
+pub async fn module_keys_text_and_purge(store: &dyn ObjectStore) {
+    let chunk = serde_json::json!({
+        "chunk": 0, "sealed": true, "entries": [{ "seq": 0, "value": 1 }]
+    });
+    write_module_ops(
+        store,
+        1,
+        vec![
+            json_set("a", "k1", serde_json::json!({ "v": 1 })),
+            json_set("a", "log:j:0", chunk.clone()),
+            json_set("ab", "log:j:0", chunk.clone()),
+        ],
+    )
+    .await;
+    let mut keys = store.module_keys("a").await.expect("keys");
+    keys.sort();
+    assert_eq!(keys, vec!["k1".to_string(), "log:j:0".to_string()]);
+    let text = store
+        .module_doc_text("a", "log:j:0")
+        .await
+        .expect("text")
+        .expect("present");
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&text).expect("json"),
+        chunk
+    );
+    assert_eq!(
+        store.module_doc_text("a", "missing").await.expect("text"),
+        None
+    );
+    assert!(
+        store
+            .module_purge_archived("a", vec!["k1".to_string()])
+            .await
+            .is_err(),
+        "only ledger chunks may be purged"
+    );
+    assert_eq!(
+        store
+            .module_purge_archived("a", vec!["log:j:0".to_string(), "log:j:9".to_string()])
+            .await
+            .expect("purge"),
+        1
+    );
+    assert_eq!(
+        store.module_doc_text("a", "log:j:0").await.expect("text"),
+        None
+    );
+    assert_eq!(
+        store.module_json_get("a", "k1").await.expect("get"),
+        Some(serde_json::json!({ "v": 1 })),
+        "the ordinary document is untouched"
+    );
+    assert!(
+        store
+            .module_doc_text("ab", "log:j:0")
+            .await
+            .expect("text")
+            .is_some(),
+        "the other namespace is untouched"
+    );
+}
+
 pub async fn module_stream_ordering(store: &dyn ObjectStore) {
     // Appends spread over several batches: ids must stay monotonic.
     write_module_ops(

@@ -23,6 +23,7 @@
 //! `tests/redis_suite.rs` wrappers. Linux CI supplies `REDIS_URL` and runs
 //! those wrappers explicitly, so absent Redis coverage is visible.
 
+pub mod archive;
 pub mod memory;
 pub mod migrate;
 pub mod redis;
@@ -31,6 +32,7 @@ pub mod store;
 pub mod suite;
 pub mod types;
 
+pub use archive::{ArchiveStats, ChunkLoc, DEFAULT_SEGMENT_CHUNKS, LedgerArchive};
 pub use memory::InMemoryStore;
 #[doc(hidden)]
 pub use memory::{AuthoritativeFaultMode, AuthoritativeFaultStore};

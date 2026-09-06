@@ -236,8 +236,8 @@ pub use ledger::{
     LedgerApplyError, LedgerChunk, LedgerChunkOf, LedgerDoc, LedgerEntry, LedgerEntryOf,
     LedgerHistory, LedgerReadError, LedgerRestoreError, LedgerRestoreReport,
     MAX_LEDGER_LOG_ID_BYTES, MAX_RESTORE_BREACH_DETAILS, PreparedLedgerAppend, archive_page_range,
-    chunk_key, inspect_ledger, is_log_key, is_sealed_chunk, parse_chunk, read_cold_range,
-    recent_sealed, scan_contiguity, typed_entries,
+    chunk_key, inspect_ledger, is_log_key, is_sealed_chunk, parse_chunk, parse_chunk_key,
+    read_cold_range, recent_sealed, scan_contiguity, typed_entries,
 };
 pub use lock::{LockExpr, LockParseError, LockType, eval_lock, glob_match, parse_lock};
 pub use matchit::{MatchErr, match_object};

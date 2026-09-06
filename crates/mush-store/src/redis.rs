@@ -546,6 +546,8 @@ async fn json_doc_text(client: &Client, key: &str) -> Result<Option<String>, Sto
 /// See the [module docs](self).
 pub struct RedisStore {
     client: Client,
+    /// The ledger archive tier, when attached (J5).
+    archive: Option<std::sync::Arc<crate::archive::LedgerArchive>>,
 }
 
 impl RedisStore {
@@ -572,7 +574,18 @@ impl RedisStore {
         let builder = RedisStore::configured_builder(url)?;
         let client = builder.build()?;
         client.init().await?;
-        Ok(RedisStore { client })
+        Ok(RedisStore {
+            client,
+            archive: None,
+        })
+    }
+
+    /// Attach the ledger archive tier (J5): `log:` keys the primary lacks are
+    /// served from it, and listings merge it in.
+    #[must_use]
+    pub fn with_archive(mut self, archive: std::sync::Arc<crate::archive::LedgerArchive>) -> Self {
+        self.archive = Some(archive);
+        self
     }
 
     /// The client [`Builder`] [`connect`](RedisStore::connect) uses: RESP3,
@@ -600,7 +613,10 @@ impl RedisStore {
     /// Wrap an already-connected client (tests, pooling experiments).
     #[must_use]
     pub fn from_client(client: Client) -> RedisStore {
-        RedisStore { client }
+        RedisStore {
+            client,
+            archive: None,
+        }
     }
 
     /// The underlying `fred` client, for subsystems that need raw commands
@@ -2749,8 +2765,70 @@ impl ObjectStore for RedisStore {
         Box::pin(async move {
             validate_module_ns(ns)?;
             validate_module_key(key)?;
-            json_doc(&self.client, &module_key(ns, key)).await
+            let primary = json_doc(&self.client, &module_key(ns, key)).await?;
+            if primary.is_some() || self.archive.is_none() || !key.starts_with(LOG_PREFIX) {
+                return Ok(primary);
+            }
+            // J5: a `log:` key the primary lacks may be in the archive.
+            match crate::archive::tiered_text(self.ledger_archive(), ns, key, None)? {
+                Some(text) => Ok(Some(serde_json::from_str(&text)?)),
+                None => Ok(None),
+            }
         })
+    }
+
+    fn module_keys<'a>(&'a self, ns: &'a str) -> BoxFuture<'a, Result<Vec<String>, StoreError>> {
+        Box::pin(async move {
+            validate_module_ns(ns)?;
+            let prefix = format!("{MOD_PREFIX}{ns}:");
+            let keys = self.scan_keys(&module_scan_pattern(ns)).await?;
+            Ok(keys
+                .iter()
+                .filter_map(|full| full.strip_prefix(&prefix).map(ToOwned::to_owned))
+                .collect())
+        })
+    }
+
+    fn module_doc_text<'a>(
+        &'a self,
+        ns: &'a str,
+        key: &'a str,
+    ) -> BoxFuture<'a, Result<Option<String>, StoreError>> {
+        Box::pin(async move {
+            validate_module_ns(ns)?;
+            validate_module_key(key)?;
+            let primary = json_doc_text(&self.client, &module_key(ns, key)).await?;
+            crate::archive::tiered_text(self.ledger_archive(), ns, key, primary)
+        })
+    }
+
+    fn module_purge_archived<'a>(
+        &'a self,
+        ns: &'a str,
+        keys: Vec<String>,
+    ) -> BoxFuture<'a, Result<usize, StoreError>> {
+        Box::pin(async move {
+            validate_module_ns(ns)?;
+            let mut full: Vec<String> = Vec::with_capacity(keys.len());
+            for key in &keys {
+                validate_module_key(key)?;
+                if !key.starts_with(LOG_PREFIX) {
+                    return Err(StoreError::Invalid(format!(
+                        "only ledger chunks may be purged, not {key:?}"
+                    )));
+                }
+                full.push(module_key(ns, key));
+            }
+            if full.is_empty() {
+                return Ok(0);
+            }
+            let removed: u64 = self.client.del(full).await?;
+            Ok(usize::try_from(removed).unwrap_or(usize::MAX))
+        })
+    }
+
+    fn ledger_archive(&self) -> Option<&crate::archive::LedgerArchive> {
+        self.archive.as_deref()
     }
 
     fn module_json_list<'a>(
@@ -2804,6 +2882,8 @@ impl ObjectStore for RedisStore {
                         .push((key.to_string(), serde_json::from_str(&text)?));
                 }
             }
+            // J5: what the primary has been purged of comes from the archive.
+            crate::archive::merge_archived(self.ledger_archive(), ns, &mut out.ledger)?;
             Ok(out)
         })
     }

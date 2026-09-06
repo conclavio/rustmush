@@ -207,6 +207,52 @@ pub struct StoreCfg {
     /// `"applied"` (default) or `"host_power_loss"`. The stronger policy
     /// refuses boot unless Redis reports AOF + `appendfsync always`.
     pub receipt_policy: String,
+    /// `[store.archive]` — the ledger archive tier (J5, doc 12 §10).
+    pub archive: ArchiveCfg,
+}
+
+/// `[store.archive]` — the ledger archive tier (J5, doc 12 §10): a nightly
+/// pass inside a UTC maintenance window copies every sealed ledger chunk to
+/// compressed disk under `[server].data_dir`, reads it back and verifies it,
+/// and — above a high watermark of ledger bytes resident in the store, and only
+/// for chunks archived at least `retain_hours` ago — purges the store of them
+/// down to a low watermark. Reads fall through to the archive, so a boot still
+/// replays the whole journal. Off by default.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(default)]
+pub struct ArchiveCfg {
+    /// Whether the tier is attached and the pass runs.
+    pub enabled: bool,
+    /// The archive directory, under `[server].data_dir`.
+    pub dir: String,
+    /// The daily window, `HH:MM-HH:MM` in UTC; the pass and the purge run only
+    /// inside it, once a day.
+    pub window: String,
+    /// Never purge a chunk the archive copied less than this many hours ago.
+    pub retain_hours: u64,
+    /// Ledger bytes resident in the store (MB) that start a purge.
+    pub high_watermark_mb: u64,
+    /// The level a purge stops at (MB).
+    pub low_watermark_mb: u64,
+    /// Chunks per archive segment file.
+    pub segment_chunks: usize,
+    /// The most chunks one pass may purge.
+    pub max_purge_per_pass: usize,
+}
+
+impl Default for ArchiveCfg {
+    fn default() -> Self {
+        ArchiveCfg {
+            enabled: false,
+            dir: "archive".to_string(),
+            window: "03:00-04:00".to_string(),
+            retain_hours: 48,
+            high_watermark_mb: 512,
+            low_watermark_mb: 256,
+            segment_chunks: 256,
+            max_purge_per_pass: 4_096,
+        }
+    }
 }
 
 impl Default for StoreCfg {
@@ -215,6 +261,7 @@ impl Default for StoreCfg {
             store: "redis".to_string(),
             redis_url: "redis://127.0.0.1:6379".to_string(),
             receipt_policy: "applied".to_string(),
+            archive: ArchiveCfg::default(),
         }
     }
 }
@@ -1560,5 +1607,31 @@ scene_turn_dedline_secs = 30
             cfg.ssh_listen(),
             Err(ConfigError::BadListen { .. })
         ));
+    }
+
+    /// J5: `[store.archive]` parses with its defaults and its knobs.
+    #[test]
+    fn store_archive_parses_with_defaults() {
+        let absent: Config = toml::from_str("").expect("an empty config parses");
+        assert!(!absent.store.archive.enabled);
+        assert_eq!(absent.store.archive.dir, "archive");
+        assert_eq!(absent.store.archive.window, "03:00-04:00");
+        assert_eq!(absent.store.archive.retain_hours, 48);
+        assert_eq!(
+            (
+                absent.store.archive.high_watermark_mb,
+                absent.store.archive.low_watermark_mb
+            ),
+            (512, 256)
+        );
+        let set: Config = toml::from_str(
+            "[store.archive]\nenabled = true\nwindow = \"23:30-00:30\"\nretain_hours = 72\nhigh_watermark_mb = 64\nlow_watermark_mb = 32\nsegment_chunks = 16\n",
+        )
+        .expect("parses");
+        assert!(set.store.archive.enabled);
+        assert_eq!(set.store.archive.window, "23:30-00:30");
+        assert_eq!(set.store.archive.retain_hours, 72);
+        assert_eq!(set.store.archive.segment_chunks, 16);
+        assert_eq!(set.store.archive.max_purge_per_pass, 4_096, "default kept");
     }
 }

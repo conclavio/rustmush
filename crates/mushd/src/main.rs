@@ -30,7 +30,9 @@ use mush_server::config_ext::{
     shadowrun_economy_config, tacsim_config, weather_config, wod_economy_config, worldgen_config,
 };
 use mush_session::{SessionConfig, SessionManager};
-use mush_store::{InMemoryStore, ObjectStore, RedisStore, core_migrations, run_migrations};
+use mush_store::{
+    InMemoryStore, LedgerArchive, ObjectStore, RedisStore, core_migrations, run_migrations,
+};
 use serde::Deserialize;
 
 use mushd::accounts::{Accounts, import_accounts_json};
@@ -137,8 +139,29 @@ fn main() -> ExitCode {
 
 /// Open the configured store backend, failing fast with an operator-facing
 /// error when Redis is unreachable (PLAN: never run without persistence).
-async fn open_store(config: &Config) -> Result<Arc<dyn ObjectStore>, String> {
-    match config.store_backend().map_err(|e| e.to_string())? {
+/// With `[store.archive].enabled`, the ledger archive tier (J5) is opened
+/// under the data dir and attached, so `log:` reads fall through to it; the
+/// archive is returned beside the store for the nightly pass to write.
+async fn open_store(
+    config: &Config,
+) -> Result<(Arc<dyn ObjectStore>, Option<Arc<LedgerArchive>>), String> {
+    let archive = if config.store.archive.enabled {
+        let root = config.server.data_dir.join(&config.store.archive.dir);
+        let archive = LedgerArchive::open(&root)
+            .map_err(|e| format!("opening the ledger archive at {}: {e}", root.display()))?;
+        let stats = archive.stats();
+        tracing::info!(
+            root = %root.display(),
+            chunks = stats.chunks,
+            purged = stats.purged,
+            compressed_mb = stats.compressed_bytes / (1024 * 1024),
+            "ledger archive tier attached"
+        );
+        Some(Arc::new(archive))
+    } else {
+        None
+    };
+    let store: Arc<dyn ObjectStore> = match config.store_backend().map_err(|e| e.to_string())? {
         StoreBackend::Redis => {
             let url = &config.store.redis_url;
             tracing::info!(%url, "connecting to Redis");
@@ -150,13 +173,20 @@ async fn open_store(config: &Config) -> Result<Arc<dyn ObjectStore>, String> {
                      for a throwaway world."
                 )
             })?;
-            Ok(Arc::new(store))
+            match &archive {
+                Some(archive) => Arc::new(store.with_archive(Arc::clone(archive))),
+                None => Arc::new(store),
+            }
         }
         StoreBackend::Memory => {
             tracing::warn!("[store].store = \"memory\": nothing will survive a restart");
-            Ok(Arc::new(InMemoryStore::new()))
+            match &archive {
+                Some(archive) => Arc::new(InMemoryStore::new().with_archive(Arc::clone(archive))),
+                None => Arc::new(InMemoryStore::new()),
+            }
         }
-    }
+    };
+    Ok((store, archive))
 }
 
 async fn serve(config: Config, mut quarantine_spool: QuarantineSpool) -> Result<(), String> {
@@ -199,7 +229,7 @@ async fn serve(config: Config, mut quarantine_spool: QuarantineSpool) -> Result<
 
     // Store: connect (fail fast), migrate, one-time accounts.json import,
     // then load or seed the world — all before anything serves.
-    let store = open_store(&config).await?;
+    let (store, ledger_archive) = open_store(&config).await?;
     let authoritative = store.authoritative_store().ok_or_else(|| {
         "configured store does not implement K3 exact-token durability; refusing writable boot"
             .to_owned()
@@ -354,6 +384,12 @@ async fn serve(config: Config, mut quarantine_spool: QuarantineSpool) -> Result<
     engine.set_offer_keys(offer_keys);
     engine.set_resolution_keys(resolution_keys);
     modules::boot_modules(&mut engine, &*store).await?;
+    // J5: the namespaces the nightly archive pass walks — every composed module's.
+    let archive_namespaces: Vec<String> = engine
+        .modules()
+        .iter()
+        .map(|m| m.name().to_string())
+        .collect();
 
     // The web hello manifest, collected while the registry is still in
     // hand: every module-registered panel feed plus the engine-side "who",
@@ -419,6 +455,37 @@ async fn serve(config: Config, mut quarantine_spool: QuarantineSpool) -> Result<
     let mut world_join = handles.world_join;
     let writer_join = handles.writer_join;
     let outbox_join = handles.outbox_join;
+
+    // J5: the ledger archive pass, once a UTC day inside its window, beside
+    // the store writer and never on the world task.
+    if let Some(archive) = ledger_archive {
+        let cfg = &config.store.archive;
+        let (window_start_min, window_end_min) =
+            mush_server::archive::ArchiveConfig::parse_window(&cfg.window)?;
+        let job = mush_server::archive::ArchiveConfig {
+            window_start_min,
+            window_end_min,
+            retain_hours: cfg.retain_hours,
+            high_watermark_bytes: cfg.high_watermark_mb.saturating_mul(1024 * 1024),
+            low_watermark_bytes: cfg.low_watermark_mb.saturating_mul(1024 * 1024),
+            segment_chunks: cfg.segment_chunks,
+            max_purge_per_pass: cfg.max_purge_per_pass,
+            namespaces: archive_namespaces,
+        };
+        tracing::info!(
+            window = %cfg.window,
+            retain_hours = cfg.retain_hours,
+            high_watermark_mb = cfg.high_watermark_mb,
+            low_watermark_mb = cfg.low_watermark_mb,
+            "ledger archive pass scheduled"
+        );
+        let _archive_job = mush_server::archive::spawn_archive_job(
+            Arc::clone(&store),
+            archive,
+            job,
+            Arc::clone(&metrics),
+        );
+    }
 
     // Store-backed auth + the SSH hooks bridge.
     let accounts = Arc::new(Accounts::new(

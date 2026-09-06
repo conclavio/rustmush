@@ -194,6 +194,12 @@ pub struct Metrics {
     economy_replay_us_per_entry: AtomicI64,
     economy_replay_ms: AtomicI64,
     economy_fetch_ms: AtomicI64,
+    // J5 (doc 12 section 10): the ledger archive tier.
+    ledger_archive_chunks: AtomicI64,
+    ledger_archive_purged_chunks: AtomicI64,
+    ledger_resident_bytes: AtomicI64,
+    ledger_archive_last_pass_unix: AtomicI64,
+    ledger_archive_last_pass_ok: AtomicI64,
 
     // -- IPC boundary bounding (M18; event-driven, always live) --
     /// Input frames (`Cmd`/`Query`) shed gateway->server when `to_server` is
@@ -370,6 +376,21 @@ impl Metrics {
             .store(w.economy_replay_ms, Ordering::Relaxed);
         self.economy_fetch_ms
             .store(w.economy_fetch_ms, Ordering::Relaxed);
+    }
+
+    /// Publish what the ledger archive pass did (J5, doc 12 section 10): the
+    /// archive job, after every pass and once at start.
+    pub fn publish_ledger_archive(&self, s: LedgerArchiveSample) {
+        self.ledger_archive_chunks
+            .store(s.chunks, Ordering::Relaxed);
+        self.ledger_archive_purged_chunks
+            .store(s.purged_chunks, Ordering::Relaxed);
+        self.ledger_resident_bytes
+            .store(s.resident_bytes, Ordering::Relaxed);
+        self.ledger_archive_last_pass_unix
+            .store(s.last_pass_unix, Ordering::Relaxed);
+        self.ledger_archive_last_pass_ok
+            .store(i64::from(s.last_pass_ok), Ordering::Relaxed);
     }
 
     /// Publish the store write-queue depth (world task on each flush) and the
@@ -699,6 +720,13 @@ impl Metrics {
             economy_replay_us_per_entry: self.economy_replay_us_per_entry.load(Ordering::Relaxed),
             economy_replay_ms: self.economy_replay_ms.load(Ordering::Relaxed),
             economy_fetch_ms: self.economy_fetch_ms.load(Ordering::Relaxed),
+            ledger_archive_chunks: self.ledger_archive_chunks.load(Ordering::Relaxed),
+            ledger_archive_purged_chunks: self.ledger_archive_purged_chunks.load(Ordering::Relaxed),
+            ledger_resident_bytes: self.ledger_resident_bytes.load(Ordering::Relaxed),
+            ledger_archive_last_pass_unix: self
+                .ledger_archive_last_pass_unix
+                .load(Ordering::Relaxed),
+            ledger_archive_last_pass_ok: self.ledger_archive_last_pass_ok.load(Ordering::Relaxed),
             ipc_frames_shed_total: self.ipc_frames_shed_total.load(Ordering::Relaxed),
             ipc_write_timeouts_total: self.ipc_write_timeouts_total.load(Ordering::Relaxed),
             ipc_to_gw_overflow_total: self.ipc_to_gw_overflow_total.load(Ordering::Relaxed),
@@ -780,6 +808,21 @@ pub struct WorldSample {
     pub economy_replay_ms: i64,
     /// J1 (D-12-3): the last boot's economy namespace fetch, milliseconds.
     pub economy_fetch_ms: i64,
+}
+
+/// What the ledger archive pass publishes (J5, doc 12 section 10).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct LedgerArchiveSample {
+    /// Chunks the archive holds.
+    pub chunks: i64,
+    /// Of those, chunks the primary has been purged of.
+    pub purged_chunks: i64,
+    /// Ledger bytes resident in the primary after the last pass (-1 before one).
+    pub resident_bytes: i64,
+    /// When the last pass ran (unix seconds; 0 before one).
+    pub last_pass_unix: i64,
+    /// Whether the last pass finished without a warning.
+    pub last_pass_ok: bool,
 }
 
 /// A rendered-ready copy of every metric.
@@ -900,6 +943,16 @@ pub struct MetricsSnapshot {
     pub economy_replay_ms: i64,
     /// J1 (D-12-3): the last boot's economy namespace fetch, milliseconds.
     pub economy_fetch_ms: i64,
+    /// J5: chunks the ledger archive holds.
+    pub ledger_archive_chunks: i64,
+    /// J5: of those, chunks the primary has been purged of.
+    pub ledger_archive_purged_chunks: i64,
+    /// J5: ledger bytes resident in the primary after the last pass (-1 before one).
+    pub ledger_resident_bytes: i64,
+    /// J5: when the last archive pass ran (unix seconds; 0 before one).
+    pub ledger_archive_last_pass_unix: i64,
+    /// J5: whether the last pass finished without a warning (0/1).
+    pub ledger_archive_last_pass_ok: i64,
     /// Input frames shed gateway->server since boot (M18).
     pub ipc_frames_shed_total: u64,
     /// IPC write timeouts on a wedged peer since boot (M18).
@@ -1276,6 +1329,43 @@ impl MetricsSnapshot {
             "gauge",
             "The last boot's economy namespace fetch, milliseconds.",
             &[(&[], self.economy_fetch_ms as f64)],
+        );
+
+        // The ledger archive tier (J5, doc 12 section 10).
+        metric(
+            &mut o,
+            "mush_ledger_archive_chunks",
+            "gauge",
+            "Sealed ledger chunks the archive tier holds.",
+            &[(&[], self.ledger_archive_chunks as f64)],
+        );
+        metric(
+            &mut o,
+            "mush_ledger_archive_purged_chunks",
+            "gauge",
+            "Archived chunks the primary store has been purged of.",
+            &[(&[], self.ledger_archive_purged_chunks as f64)],
+        );
+        metric(
+            &mut o,
+            "mush_ledger_resident_bytes",
+            "gauge",
+            "Ledger bytes resident in the primary store after the last archive pass (-1 before one).",
+            &[(&[], self.ledger_resident_bytes as f64)],
+        );
+        metric(
+            &mut o,
+            "mush_ledger_archive_last_pass_unixtime",
+            "gauge",
+            "When the last archive pass ran (0 before one).",
+            &[(&[], self.ledger_archive_last_pass_unix as f64)],
+        );
+        metric(
+            &mut o,
+            "mush_ledger_archive_last_pass_ok",
+            "gauge",
+            "Whether the last archive pass finished without a warning.",
+            &[(&[], self.ledger_archive_last_pass_ok as f64)],
         );
 
         // LLM aggregates (keyed only by feature route + provider — never
@@ -2048,6 +2138,29 @@ mod tests {
             "mush_economy_replay_us_per_entry 22",
             "mush_economy_replay_ms 2200",
             "mush_economy_fetch_ms 480",
+        ] {
+            assert!(text.contains(needle), "missing {needle:?} in:\n{text}");
+        }
+    }
+
+    /// J5 (doc 12 section 10): the ledger archive gauges render.
+    #[test]
+    fn ledger_archive_gauges_render() {
+        let m = Metrics::new();
+        m.publish_ledger_archive(LedgerArchiveSample {
+            chunks: 3_560,
+            purged_chunks: 3_000,
+            resident_bytes: 9_000_000,
+            last_pass_unix: 1_700_000_000,
+            last_pass_ok: true,
+        });
+        let text = m.snapshot().to_prometheus(1);
+        for needle in [
+            "mush_ledger_archive_chunks 3560",
+            "mush_ledger_archive_purged_chunks 3000",
+            "mush_ledger_resident_bytes 9000000",
+            "mush_ledger_archive_last_pass_unixtime 1700000000",
+            "mush_ledger_archive_last_pass_ok 1",
         ] {
             assert!(text.contains(needle), "missing {needle:?} in:\n{text}");
         }

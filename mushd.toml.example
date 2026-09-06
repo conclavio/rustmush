@@ -20,6 +20,16 @@ store = "redis"                    # (M2) "redis" (authoritative) or "memory" (n
 redis_url = "redis://127.0.0.1:6379"   # (M2)
 receipt_policy = "applied"         # "applied" or strict AOF-fsync "host_power_loss"
 
+[store.archive]                    # (J5) the ledger archive tier: sealed log chunks to compressed disk
+# enabled = false                  # attach the tier and run the nightly pass
+# dir = "archive"                  # under [server].data_dir; back it up with the store — it is money
+# window = "03:00-04:00"           # UTC; the copy, the verify and the purge run inside it, once a day
+# retain_hours = 48                # never purge a chunk the archive copied less than this long ago
+# high_watermark_mb = 512          # ledger bytes resident in the store that start a purge …
+# low_watermark_mb = 256           # … and where it stops (oldest copies first, bounded per pass)
+# segment_chunks = 256             # chunks per archive segment file
+# max_purge_per_pass = 4096        # the most chunks one pass purges
+
 [offers]                           # (K5) opaque legal-action offer signing
 # key_dir = "./data/offer-keys"    # defaults to <server.data_dir>/offer-keys
 # The server creates a private version-1 key on first boot. Rotation publishes

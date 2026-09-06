@@ -1013,6 +1013,29 @@ economy sweep, never on a post. A rebuilt approval window (`@account/approval
 … window=`) folds from the tail and logs a `warn` when the tail starts after
 the window floor (doc 12 J2-D1).
 
+**The ledger archive tier** (J5, doc 12 §10) is off by default. With
+`[store.archive] enabled = true`, a pass runs once a UTC day inside `window`
+(`03:00-04:00`): it copies every **sealed** ledger chunk of every module
+namespace the store holds and the archive does not to
+`<data_dir>/<dir>/<ns>/<log>/{first}-{last}.seg` (one gzip member per chunk,
+a sibling `.idx.json` per segment), reads each back and verifies its SHA-256
+before the index admits it, and then — only if ledger bytes resident in the
+store exceed `high_watermark_mb`, and only for chunks the archive copied at
+least `retain_hours` ago — purges the store of them, oldest copies first,
+down to `low_watermark_mb`, at most `max_purge_per_pass` a night. The open
+tail is never copied or purged. Reads fall through at the store, so a boot
+still replays the whole journal, `@econ/history`, scene archives and canon
+read purged chunks without knowing, and a chunk in neither tier is the same
+contiguity breach it always was: a fail-closed boot. A chunk whose archived
+bytes no longer hash to the index is treated as absent and said at `error`.
+**The archive directory is money: back it up with the store.** `/metrics`
+carries `mush_ledger_archive_chunks`, `mush_ledger_archive_purged_chunks`,
+`mush_ledger_resident_bytes`, `mush_ledger_archive_last_pass_unixtime` and
+`mush_ledger_archive_last_pass_ok`; alert on a pass that is not `ok`, on the
+last-pass time going stale past a day, and on resident bytes climbing while
+purges happen (the floor is holding everything back). Nothing purges on a
+failed pass.
+
 **Structured logging** is configured under `[log]`:
 
 ```toml

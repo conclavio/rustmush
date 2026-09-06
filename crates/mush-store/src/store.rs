@@ -536,6 +536,69 @@ pub trait ObjectStore: Send + Sync {
         Box::pin(async move { Ok(ModuleDocs::split(self.module_json_list(ns).await?)) })
     }
 
+    // ------------------------------------------------------------------
+    // The ledger archive tier (J5, doc 12 §10)
+    // ------------------------------------------------------------------
+
+    /// Every document key **resident in the primary** for a module namespace,
+    /// without the `mod:{ns}:` prefix (streams skipped, order unspecified).
+    /// The archive pass walks this to find sealed chunks it has not copied
+    /// and to size what is resident; archived-only chunks are not listed.
+    /// The default derives it from [`ObjectStore::module_json_list`].
+    fn module_keys<'a>(&'a self, ns: &'a str) -> BoxFuture<'a, Result<Vec<String>, StoreError>> {
+        Box::pin(async move {
+            Ok(self
+                .module_json_list(ns)
+                .await?
+                .into_iter()
+                .map(|(key, _)| key)
+                .collect())
+        })
+    }
+
+    /// One module document as **raw JSON text**, the primary first and — for
+    /// a `log:` key the primary lacks — the ledger archive, if one is attached
+    /// ([`ObjectStore::ledger_archive`]). `Ok(None)` when neither holds it or
+    /// the archive's copy is damaged. The default re-encodes
+    /// [`ObjectStore::module_json_get`] compactly.
+    fn module_doc_text<'a>(
+        &'a self,
+        ns: &'a str,
+        key: &'a str,
+    ) -> BoxFuture<'a, Result<Option<String>, StoreError>> {
+        Box::pin(async move {
+            let primary = self
+                .module_json_get(ns, key)
+                .await?
+                .map(|value| serde_json::to_string(&value).expect("a Value always serializes"));
+            crate::archive::tiered_text(self.ledger_archive(), ns, key, primary)
+        })
+    }
+
+    /// Delete module documents the archive pass has **verified in the archive**
+    /// — sealed ledger chunks only; nothing else is ever purged. Returns how
+    /// many were present. The default refuses: a backend that cannot purge
+    /// says so rather than pretending.
+    fn module_purge_archived<'a>(
+        &'a self,
+        ns: &'a str,
+        keys: Vec<String>,
+    ) -> BoxFuture<'a, Result<usize, StoreError>> {
+        let _ = (ns, keys);
+        Box::pin(async move {
+            Err(StoreError::Invalid(
+                "this store cannot purge archived ledger chunks".to_owned(),
+            ))
+        })
+    }
+
+    /// The ledger archive attached to this store, if any: the secondary tier
+    /// [`ObjectStore::module_json_get`], [`ObjectStore::module_docs`] and
+    /// [`ObjectStore::module_doc_text`] fall through to for `log:` keys.
+    fn ledger_archive(&self) -> Option<&crate::archive::LedgerArchive> {
+        None
+    }
+
     /// The newest `count_latest` entries of a module stream, returned
     /// **oldest-first** (`XREVRANGE mod:{ns}:{key} + - COUNT n`, then
     /// re-reversed). Each entry is `(id, value)` where `id` is the store's
