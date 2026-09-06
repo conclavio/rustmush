@@ -856,7 +856,10 @@ tail. A derived tail may be rebuilt and must never become authority.
 > journal before the fold), so "parse once" is recommended before any checkpoint, and the checkpoint
 > as designed there is coupled to a bounded RAM transaction index and a narrower boot fetch; the
 > cold-paging half is its §10, the ledger archive tier (sealed chunks to compressed disk, a tiered
-> store read, the journal's authority spanning both tiers).
+> store read, the journal's authority spanning both tiers). **J1 landed 2026-09-06** (doc 12 §7):
+> ledger chunks reach boot as text, one inspection serves the contiguity check, the restore and
+> the typed pass, and the replay measures ~3 µs per entry — 313 ms at 100 000 entries, 652 ms at
+> 200 000 — so the 5 s line is ~1.5 million entries and the million-entry line is the binding one.
 
 ---
 

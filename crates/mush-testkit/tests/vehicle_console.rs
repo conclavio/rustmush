@@ -553,6 +553,7 @@ fn a_pilot_link_operates_a_remote_console_and_survives_reboot() {
         ModuleBootData {
             kv,
             streams: HashMap::new(),
+            ..Default::default()
         },
     )]));
     assert!(

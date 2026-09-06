@@ -6029,6 +6029,44 @@ fn npc_counts(engine: &Engine) -> (i64, i64, mush_core::DecisionStatusCensus) {
     (active, thinking, census)
 }
 
+/// J1 (doc 12 D-12-1, D-12-3): the economy journal's size, its growth since
+/// boot, and what the last cold replay cost — the numbers the checkpoint
+/// decision keys on. Zero throughout when the economy module is not composed.
+#[derive(Clone, Copy, Debug, Default)]
+struct EconomyJournalSample {
+    entries: i64,
+    per_hour: i64,
+    replay_us_per_entry: i64,
+    replay_ms: i64,
+    fetch_ms: i64,
+}
+
+fn economy_journal(engine: &Engine) -> EconomyJournalSample {
+    let Some(store) = engine.world.module_state::<mush_economy::EconomyStore>() else {
+        return EconomyJournalSample::default();
+    };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX));
+    let uptime = now.saturating_sub(store.last_boot()).max(1);
+    let posts = i64::try_from(store.posts_since_boot()).unwrap_or(i64::MAX);
+    let per_hour = posts.saturating_mul(3_600) / uptime;
+    let replay = store.boot_replay();
+    let replay_ms = replay.map_or(0, |r| i64::try_from(r.elapsed_ms).unwrap_or(i64::MAX));
+    let fetch_ms = replay.map_or(0, |r| i64::try_from(r.fetch_ms).unwrap_or(i64::MAX));
+    let replay_us_per_entry = replay.filter(|r| r.entries > 0).map_or(0, |r| {
+        let entries = u64::try_from(r.entries).unwrap_or(u64::MAX);
+        i64::try_from(r.elapsed_ms.saturating_mul(1_000) / entries).unwrap_or(i64::MAX)
+    });
+    EconomyJournalSample {
+        entries: i64::try_from(store.journal_len()).unwrap_or(i64::MAX),
+        per_hour,
+        replay_us_per_entry,
+        replay_ms,
+        fetch_ms,
+    }
+}
+
 /// Every composed decision source's pending-state census, page by page. A
 /// scan fault (a malformed record) reports zero rather than freezing a
 /// metrics sample; the boot audit is what refuses such a record.
@@ -6118,6 +6156,7 @@ fn maybe_publish_sample(
 
     let counts = object_counts(&engine.world);
     let (npc_active, npc_thinking, decisions) = npc_counts(engine);
+    let economy = economy_journal(engine);
     // The session/connection gauges are gateway-owned: the in-process sink reads
     // the shared manager, the socket sink reports `(0, 0)` (the gateway process
     // publishes them post-fork). Advisory gauges, not world state.
@@ -6139,6 +6178,11 @@ fn maybe_publish_sample(
         npc_decisions_leased: i64::try_from(decisions.leased).unwrap_or(i64::MAX),
         npc_decisions_resolving: i64::try_from(decisions.resolving + decisions.fallback_ready)
             .unwrap_or(i64::MAX),
+        economy_journal_entries: economy.entries,
+        economy_journal_per_hour: economy.per_hour,
+        economy_replay_us_per_entry: economy.replay_us_per_entry,
+        economy_replay_ms: economy.replay_ms,
+        economy_fetch_ms: economy.fetch_ms,
     });
     if let Some(s) = llm_sample(llm) {
         metrics.publish_llm(true, s.globally_disabled, s.features, s.today);
@@ -6194,6 +6238,10 @@ pub struct StatsExtra {
     pub ipc_hw_to_gw: u64,
     /// Today's LLM spend, when a service is wired.
     pub llm: Option<LlmStatsLine>,
+    /// J1 (doc 12 D-12-1): the economy journal — entries held, posted per hour
+    /// since boot, the last replay's µs per entry, the last replay ms, the
+    /// last fetch ms.
+    pub economy_journal: [i64; 5],
 }
 
 /// Today's LLM spend for the `@stats` LLM line.
@@ -6267,6 +6315,13 @@ fn stats_extra(metrics: &Metrics, llm: Option<&Arc<LlmService>>) -> StatsExtra {
         ipc_hw_to_server: snap.ipc_queue_high_water_to_server,
         ipc_hw_to_gw: snap.ipc_queue_high_water_to_gw,
         llm: llm_line,
+        economy_journal: [
+            snap.economy_journal_entries,
+            snap.economy_journal_per_hour,
+            snap.economy_replay_us_per_entry,
+            snap.economy_replay_ms,
+            snap.economy_fetch_ms,
+        ],
     }
 }
 
@@ -6335,6 +6390,31 @@ pub fn render_stats(
         extra.auth_commits[1],
         extra.auth_commits[2],
         extra.auth_commits[3],
+    ));
+    // J1 (doc 12 D-12-1): the economy journal, what its replay cost, and the
+    // projection the checkpoint decision keys on — the entry line derived from
+    // the measured per-entry cost, and how far off it is at the current rate.
+    let [entries, per_hour, us_per_entry, replay_ms, fetch_ms] = extra.economy_journal;
+    let line_secs = i64::try_from(mush_economy::CHECKPOINT_REVIEW_SECS).unwrap_or(i64::MAX);
+    let line_entries = if us_per_entry > 0 {
+        line_secs.saturating_mul(1_000_000) / us_per_entry
+    } else {
+        0
+    };
+    let projection = if us_per_entry == 0 {
+        "no replay measured".to_owned()
+    } else if line_entries <= entries {
+        "past the line".to_owned()
+    } else if per_hour > 0 {
+        format!(
+            "~{} days away at this rate",
+            (line_entries - entries) / per_hour.saturating_mul(24)
+        )
+    } else {
+        "no posts since boot".to_owned()
+    };
+    text.push_str(&format!(
+        "\nEconomy journal: {entries} entries, {per_hour}/h since boot; last replay {replay_ms}ms ({us_per_entry}us/entry; fetch {fetch_ms}ms); the {line_secs}s line is ~{line_entries} entries: {projection}"
     ));
     text.push_str(&format!(
         "\nNPC agents: {} active, {} thinking",

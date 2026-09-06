@@ -412,6 +412,7 @@ fn vf_r5_a_boot_opened_page_reaches_a_wizard_who_connects_after_boot() {
         ModuleBootData {
             kv,
             streams: std::collections::HashMap::new(),
+            ..Default::default()
         },
     )]));
     let opened = store(&tw)

@@ -12,7 +12,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use mush_core::{DefinitionRef, Flags, ModError, ModuleBootData, ModuleCtx, ObjId, RulesValue};
-use smol_str::SmolStr;
 
 use crate::data::{
     DomainRecord, DomainStatus, HeldPlacement, HostAssignments, HostMounts, HostStations,
@@ -279,12 +278,11 @@ pub(crate) fn load_boot(
     let mut placements: BTreeMap<ObjId, PlacementRecord> = BTreeMap::new();
     let mut raw_assignments: Vec<HostAssignments> = Vec::new();
     let mut station_fallbacks: Vec<StationFallback> = Vec::new();
-    let mut log_docs: Vec<(SmolStr, serde_json::Value)> = Vec::new();
+    // J1: the recovery ledger's chunks arrive as text in `data.ledger`.
+    let log_docs = data.ledger;
 
     for (key, value) in data.kv {
-        if key.starts_with(mush_core::ledger::LOG_PREFIX) {
-            log_docs.push((key, value));
-        } else if key == META_KEY {
+        if key == META_KEY {
             // A present-but-corrupt meta doc fails the boot: silently guessing
             // the allocator could reissue a live domain id.
             meta_next = Some(

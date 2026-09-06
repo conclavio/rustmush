@@ -566,6 +566,7 @@ mod tests {
                 (SmolStr::new("mystery"), json!("ignored")),
             ],
             streams: std::collections::HashMap::new(),
+            ..Default::default()
         };
         let st = rebuild(&data).unwrap();
         assert_eq!(st.message(7), Some(&msg));
@@ -580,11 +581,13 @@ mod tests {
         let data = ModuleBootData {
             kv: vec![(msg_key(1), json!({"not": "a message"}))],
             streams: std::collections::HashMap::new(),
+            ..Default::default()
         };
         assert!(rebuild(&data).is_err());
         let data = ModuleBootData {
             kv: vec![(SmolStr::new(NEXT_ID_KEY), json!("nan"))],
             streams: std::collections::HashMap::new(),
+            ..Default::default()
         };
         assert!(rebuild(&data).is_err());
     }
@@ -603,6 +606,7 @@ mod tests {
         let data = ModuleBootData {
             kv: vec![(msg_key(1), serde_json::to_value(oversized).unwrap())],
             streams: std::collections::HashMap::new(),
+            ..Default::default()
         };
         assert!(rebuild(&data).is_err());
 
@@ -618,6 +622,7 @@ mod tests {
         let data = ModuleBootData {
             kv: vec![(msg_key(u64::MAX), serde_json::to_value(exhausted).unwrap())],
             streams: std::collections::HashMap::new(),
+            ..Default::default()
         };
         assert!(rebuild(&data).is_err());
 

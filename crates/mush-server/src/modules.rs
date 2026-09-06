@@ -768,13 +768,17 @@ async fn load_one_namespace(
     store: &dyn ObjectStore,
     ns: &str,
 ) -> Result<(ModuleBootData, Vec<ActionStateBootRecord>), String> {
+    // J1 / doc 12 D-12-3: the fetch is timed and handed to the module beside
+    // its data — the part of a boot the replay timer never saw.
+    let started = std::time::Instant::now();
     let documents = store
-        .module_json_list(ns)
+        .module_docs(ns)
         .await
         .map_err(|e| format!("listing module namespace {ns:?}: {e}"))?;
+    let fetch_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
     let mut kv = Vec::new();
     let mut action_state = Vec::new();
-    for (key, value) in documents {
+    for (key, value) in documents.docs {
         if key == SCHEMA_KEY {
             continue;
         }
@@ -784,10 +788,17 @@ async fn load_one_namespace(
             kv.push((SmolStr::new(key), value));
         }
     }
+    let ledger = documents
+        .ledger
+        .into_iter()
+        .map(|(key, text)| (SmolStr::new(key), text))
+        .collect();
     Ok((
         ModuleBootData {
             kv,
+            ledger,
             streams: HashMap::new(),
+            fetch_ms,
         },
         action_state,
     ))
@@ -1524,6 +1535,50 @@ mod tests {
         let kv = &boot[&SmolStr::new("toy")].kv;
         assert_eq!(kv.len(), 1);
         assert_eq!(kv[0].0, "doc:1");
+    }
+
+    /// J1: ledger chunks reach boot data as text, apart from the ordinary
+    /// documents, and the namespace fetch is timed.
+    #[tokio::test]
+    async fn j1_ledger_chunks_reach_boot_data_as_text() {
+        let store = InMemoryStore::new();
+        let chunk = serde_json::json!({
+            "chunk": 0, "sealed": false, "entries": [{ "seq": 0, "value": { "n": 1 } }]
+        });
+        write_ops(
+            &store,
+            vec![
+                stamp("toy", 2),
+                ModuleOp {
+                    ns: "toy".into(),
+                    op: ModuleWrite::JsonSet {
+                        key: "doc:1".into(),
+                        value: serde_json::json!({ "b": 1 }),
+                    },
+                },
+                ModuleOp {
+                    ns: "toy".into(),
+                    op: ModuleWrite::JsonSet {
+                        key: "log:s:0".into(),
+                        value: chunk.clone(),
+                    },
+                },
+            ],
+        )
+        .await
+        .unwrap();
+        let modules: Vec<Box<dyn GameModule>> = vec![Box::new(ToyMod { loaded: Vec::new() })];
+        let boot = load_module_boot(&store, &modules).await.unwrap();
+        let data = &boot[&SmolStr::new("toy")];
+        assert_eq!(data.kv.len(), 1);
+        assert_eq!(data.kv[0].0, "doc:1");
+        assert_eq!(data.ledger.len(), 1);
+        assert_eq!(data.ledger[0].0, "log:s:0");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&data.ledger[0].1).unwrap(),
+            chunk
+        );
+        assert!(data.fetch_ms < 60_000, "a timed fetch: {}", data.fetch_ms);
     }
 
     #[tokio::test]

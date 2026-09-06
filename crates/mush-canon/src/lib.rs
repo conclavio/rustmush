@@ -74,7 +74,7 @@ impl GameModule for CanonModule {
     ) -> Result<(), ModError> {
         let mut ledger = mush_core::Ledger::new();
         ledger
-            .restore_from_kv(&data.kv)
+            .restore_from_kv(&data.ledger)
             .map_err(|error| ModError::msg(format!("canon ledger restore failed: {error}")))?;
         let mut next_from_meta: Option<u64> = None;
         for (key, value) in &data.kv {
@@ -115,7 +115,7 @@ impl GameModule for CanonModule {
         // deadline. Bounded at `SEALED_TAIL_CHUNKS`, decoded once per boot, never
         // appended to afterwards.
         let sealed_tail: Vec<CanonEvent> =
-            mush_core::recent_sealed(&data.kv, LOG, data::SEALED_TAIL_CHUNKS)
+            mush_core::recent_sealed(&data.ledger, LOG, data::SEALED_TAIL_CHUNKS)
                 .into_iter()
                 .filter_map(|e| serde_json::from_value::<CanonEvent>(e.value).ok())
                 .collect();

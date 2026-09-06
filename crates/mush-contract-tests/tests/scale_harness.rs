@@ -40,7 +40,7 @@ use mush_core::{
     ModuleWrite, Obj, ObjId, ObjKind, OwnerId, PreparedCausalRef, PrincipalId, ReplayWrite,
     RequestUid, RulesValue, ScopedIdempotencyKey, canonical_json_bytes,
 };
-use mush_core::{Ledger, LedgerChunk, LedgerEntry, scan_contiguity};
+use mush_core::{Ledger, LedgerChunk, LedgerDoc, LedgerEntry, typed_entries};
 use mush_economy::{
     CHECKPOINT_REVIEW_ENTRIES, CHECKPOINT_REVIEW_SECS, EconomicTransaction, EconomyStore,
     ReplayStats,
@@ -186,14 +186,23 @@ fn seed_journal(entries: usize, accounts: usize) -> Vec<(SmolStr, Value)> {
     kv.into_iter().collect()
 }
 
-/// Boot a fresh economy from `kv` alone and read what the replay cost.
+/// Boot a fresh economy from `kv` alone (ledger chunks may ride in it as
+/// values — the engine moves them to text, as it does for every rig) and read
+/// what the replay cost.
 fn replay_journal(kv: Vec<(SmolStr, Value)>) -> ReplayStats {
+    replay_split(kv, Vec::new())
+}
+
+/// [`replay_journal`] with the ledger chunks already in the text form the
+/// production loader hands over (J1).
+fn replay_split(kv: Vec<(SmolStr, Value)>, ledger: Vec<LedgerDoc>) -> ReplayStats {
     let mut tw = econ_world();
     tw.modules_loaded(HashMap::from([(
         SmolStr::new(ECON_NS),
         ModuleBootData {
             kv,
-            streams: HashMap::new(),
+            ledger,
+            ..Default::default()
         },
     )]));
     tw.world()
@@ -209,9 +218,10 @@ fn replay_journal(kv: Vec<(SmolStr, Value)>) -> ReplayStats {
 /// whose journal entry is the template every entry clones, packed into chunks
 /// at the ledger's own 16 KiB seal — so a cold replay at `entries` costs
 /// milliseconds to seed instead of minutes through the engine. Returns the
-/// namespace as a cold store would hold it, the chunk count, and the journal's
-/// JSON byte size.
-fn synth_journal(entries: usize, accounts: usize) -> (Vec<(SmolStr, Value)>, usize, usize) {
+/// namespace as the production loader hands it over — ordinary docs as values,
+/// ledger chunks as text (J1) — plus the chunk count and the journal's JSON
+/// byte size.
+fn synth_journal(entries: usize, accounts: usize) -> SyntheticJournal {
     let accounts = accounts.max(1);
     let mut tw = econ_world();
     let mut kv = HashMap::new();
@@ -277,88 +287,86 @@ fn synth_journal(entries: usize, accounts: usize) -> (Vec<(SmolStr, Value)>, usi
         chunks.push(open);
     }
     let count = chunks.len();
-    for c in chunks {
-        kv.insert(
-            SmolStr::new(format!("log:journal:{}", c.chunk)),
-            serde_json::to_value(&c).expect("chunk encodes"),
-        );
+    let ledger: Vec<LedgerDoc> = chunks
+        .into_iter()
+        .map(|c| {
+            (
+                SmolStr::new(format!("log:journal:{}", c.chunk)),
+                serde_json::to_string(&c).expect("chunk encodes"),
+            )
+        })
+        .collect();
+    SyntheticJournal {
+        kv: kv.into_iter().collect(),
+        ledger,
+        chunks: count,
+        bytes: total_bytes,
     }
-    (kv.into_iter().collect(), count, total_bytes)
 }
 
-/// The cold replay's phases (doc 12 §1), each timed in isolation on the same
-/// kv by calling exactly what `load_boot` calls, in milliseconds.
+/// What [`synth_journal`] produces.
+struct SyntheticJournal {
+    kv: Vec<(SmolStr, Value)>,
+    ledger: Vec<LedgerDoc>,
+    chunks: usize,
+    bytes: usize,
+}
+
+/// The cold replay's phases (doc 12 §1, as rebuilt by J1), each timed in
+/// isolation on the same documents by calling exactly what `load_boot` calls,
+/// in milliseconds.
 struct ReplayPhases {
-    /// The text→`Value` parse the store does before the C17 timer starts.
-    fetch_parse: u64,
-    /// `scan_contiguity` (the first `inspect_history`).
-    scan: u64,
-    /// `Ledger::restore_from_kv` (the second).
+    /// `Ledger::inspect`: the one pass that decodes every chunk's facts from
+    /// its text (the contiguity check, the seal rule, the tail).
+    inspect: u64,
+    /// `Ledger::restore_from_history` from that inspection.
     restore: u64,
-    /// `load_boot`'s own chunk parse (the third).
-    chunk_parse: u64,
-    /// Typing every entry as an `EconomicTransaction`, then the seq sort.
-    tx_parse: u64,
+    /// The typed pass: every chunk's entries decoded straight to
+    /// `EconomicTransaction`, in the inspection's order.
+    typed: u64,
 }
 
-fn replay_phases(kv: &[(SmolStr, Value)]) -> ReplayPhases {
-    let texts: Vec<String> = kv
-        .iter()
-        .map(|(_, v)| serde_json::to_string(v).expect("doc encodes"))
-        .collect();
+fn replay_phases(ledger: &[LedgerDoc]) -> ReplayPhases {
+    let mut journal = Ledger::new();
     let started = Instant::now();
-    let parsed: Vec<Value> = texts
-        .iter()
-        .map(|s| serde_json::from_str(s).expect("doc parses"))
-        .collect();
-    let fetch_parse = ms(started.elapsed());
-    drop(parsed);
-
-    let started = Instant::now();
-    let breaches = scan_contiguity(kv);
-    let scan = ms(started.elapsed());
+    let history = journal.inspect(ledger);
+    let inspect = ms(started.elapsed());
     assert!(
-        breaches.is_empty(),
-        "the synthetic journal is contiguous: {breaches:?}"
+        history.is_clean(),
+        "the synthetic journal is contiguous: {:?}",
+        history.breaches()
     );
 
     let started = Instant::now();
-    let mut ledger = Ledger::new();
-    ledger
-        .restore_from_kv(kv)
+    journal
+        .restore_from_history(&history)
         .expect("the synthetic journal restores");
     let restore = ms(started.elapsed());
 
     let started = Instant::now();
-    let chunks: Vec<LedgerChunk> = kv
-        .iter()
-        .filter(|(k, _)| k.starts_with("log:journal:"))
-        .map(|(_, v)| serde_json::from_value(v.clone()).expect("chunk parses"))
-        .collect();
-    let chunk_parse = ms(started.elapsed());
-
-    let started = Instant::now();
-    let mut txs: Vec<(u64, EconomicTransaction)> = chunks
-        .into_iter()
-        .flat_map(|c| c.entries)
-        .map(|e| (e.seq, serde_json::from_value(e.value).expect("entry types")))
-        .collect();
+    let mut txs: Vec<(u64, EconomicTransaction)> = Vec::with_capacity(history.entries());
+    for (_, position) in history.chunk_docs(mush_economy::JOURNAL_LOG) {
+        txs.extend(
+            typed_entries::<EconomicTransaction>(&ledger[position].1).expect("entries type"),
+        );
+    }
     txs.sort_by_key(|(seq, _)| *seq);
-    let tx_parse = ms(started.elapsed());
+    let typed = ms(started.elapsed());
+    assert_eq!(txs.len(), history.entries());
 
     ReplayPhases {
-        fetch_parse,
-        scan,
+        inspect,
         restore,
-        chunk_parse,
-        tx_parse,
+        typed,
     }
 }
 
 /// Doc 12 §2: where the cold replay's time goes, phase by phase, at each
 /// scale in `SCALE_PROFILE_SCALES` (comma-separated entry counts; default
-/// `25000,50000,100000`). `boot_total_ms` is the C17 timer; the phases sum to
-/// most of it (F1) and `fetch_parse_ms` sits outside it (F3).
+/// `25000,50000,100000`). `boot_total_ms` is the C17 timer; the three phases
+/// are what J1 left of the serde work (doc 12 §7 J1 as built), and
+/// `us_per_entry` and `entries_at_5s` are the numbers §4 derives the entry
+/// line from.
 #[test]
 #[ignore = "scale harness: run by the CI `scale` job (workflow_dispatch / weekly)"]
 fn scale_cold_journal_replay_phases() {
@@ -369,25 +377,30 @@ fn scale_cold_journal_replay_phases() {
         .unwrap_or_else(|| vec![25_000, 50_000, 100_000]);
     let accounts = env_usize("SCALE_ACCOUNTS", 100);
     println!(
-        "scale_cold_journal_replay_phases: entries | chunks | json_kb | fetch_parse_ms | \
-         scan_ms | restore_ms | chunk_parse_ms | tx_parse_ms | boot_total_ms"
+        "scale_cold_journal_replay_phases: entries | chunks | json_kb | inspect_ms | \
+         restore_ms | typed_ms | boot_total_ms | us_per_entry | entries_at_5s"
     );
     for n in scales {
-        let (kv, chunks, bytes) = synth_journal(n, accounts);
-        let phases = replay_phases(&kv);
-        let stats = replay_journal(kv);
+        let journal = synth_journal(n, accounts);
+        let phases = replay_phases(&journal.ledger);
+        let stats = replay_split(journal.kv, journal.ledger);
         assert_eq!(
             stats.entries, n,
             "every synthetic entry is one journal transaction"
         );
+        let us_per_entry =
+            stats.elapsed_ms.saturating_mul(1_000) / u64::try_from(n.max(1)).unwrap();
+        let entries_at_line = CHECKPOINT_REVIEW_SECS
+            .saturating_mul(1_000_000)
+            .checked_div(us_per_entry)
+            .unwrap_or(0);
         println!(
-            "{n} | {chunks} | {} | {} | {} | {} | {} | {} | {}",
-            bytes / 1024,
-            phases.fetch_parse,
-            phases.scan,
+            "{n} | {} | {} | {} | {} | {} | {} | {us_per_entry} | {entries_at_line}",
+            journal.chunks,
+            journal.bytes / 1024,
+            phases.inspect,
             phases.restore,
-            phases.chunk_parse,
-            phases.tx_parse,
+            phases.typed,
             stats.elapsed_ms
         );
     }
@@ -942,12 +955,13 @@ fn h3_journal_seeder_yields_its_stated_count() {
 
 #[test]
 fn h3_synthetic_journal_seeder_yields_its_stated_count_and_replays_clean() {
-    let (kv, chunks, bytes) = synth_journal(10, 3);
-    assert!(chunks >= 1 && bytes > 0);
-    // The phases run on the same kv the boot then consumes.
-    let _ = replay_phases(&kv);
-    let stats = replay_journal(kv);
+    let journal = synth_journal(10, 3);
+    assert!(journal.chunks >= 1 && journal.bytes > 0);
+    // The phases run on the same documents the boot then consumes.
+    let _ = replay_phases(&journal.ledger);
+    let stats = replay_split(journal.kv, journal.ledger);
     assert_eq!(stats.entries, 10);
+    assert_eq!(stats.fetch_ms, 0, "a rig measures no fetch");
 }
 
 #[tokio::test(flavor = "multi_thread")]

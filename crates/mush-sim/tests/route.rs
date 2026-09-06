@@ -291,6 +291,7 @@ fn a_route_survives_a_reboot_and_continues() {
         mush_core::ModuleBootData {
             kv,
             streams: std::collections::HashMap::new(),
+            ..Default::default()
         },
     )]));
     assert_eq!(
@@ -341,6 +342,7 @@ fn boot_data(
         mush_core::ModuleBootData {
             kv,
             streams: std::collections::HashMap::new(),
+            ..Default::default()
         },
     )])
 }

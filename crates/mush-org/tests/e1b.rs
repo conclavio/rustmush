@@ -89,6 +89,7 @@ fn reboot(kv: Vec<(SmolStr, serde_json::Value)>, players: &[&str]) -> TestWorld 
         ModuleBootData {
             kv,
             streams: HashMap::new(),
+            ..Default::default()
         },
     )]));
     tw
@@ -114,6 +115,7 @@ fn try_boot(tw: &mut TestWorld, kv: Vec<(SmolStr, serde_json::Value)>) -> Result
                 ModuleBootData {
                     kv,
                     streams: HashMap::new(),
+                    ..Default::default()
                 },
             )]),
             &mut out,
@@ -258,6 +260,7 @@ fn boot_skips_and_deletes_a_corrupt_leaf() {
             ModuleBootData {
                 kv,
                 streams: HashMap::new(),
+                ..Default::default()
             },
         )]));
         t
@@ -830,6 +833,7 @@ fn no_vocabulary_accepts_everything_and_show_flags_a_stray_grant() {
         ModuleBootData {
             kv,
             streams: HashMap::new(),
+            ..Default::default()
         },
     )]));
     let (org, _) = only_org(&tw2);

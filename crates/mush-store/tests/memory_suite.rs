@@ -140,6 +140,11 @@ async fn module_kv_round_trip() {
 }
 
 #[tokio::test]
+async fn module_docs_splits_the_ledger_family() {
+    suite::module_docs_splits_the_ledger_family(&InMemoryStore::new()).await;
+}
+
+#[tokio::test]
 async fn module_stream_ordering() {
     suite::module_stream_ordering(&InMemoryStore::new()).await;
 }

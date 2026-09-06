@@ -343,6 +343,7 @@ fn reboot(tw: &mut TestWorld, kv: Kv) {
                 ModuleBootData {
                     kv,
                     streams: HashMap::new(),
+                    ..Default::default()
                 },
             )
         })

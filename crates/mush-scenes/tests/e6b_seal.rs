@@ -153,6 +153,7 @@ fn reboot(r: &mut Rig) {
         mush_core::ModuleBootData {
             kv,
             streams: HashMap::new(),
+            ..Default::default()
         },
     );
     let (mut out, mut fx) = (Outbox::new(), Effects::new());
@@ -835,6 +836,7 @@ fn vf2_r6_a_corrupt_persisted_outcome_does_not_brick_the_boot() {
         mush_core::ModuleBootData {
             kv,
             streams: HashMap::new(),
+            ..Default::default()
         },
     );
     let (mut out, mut fx) = (Outbox::new(), Effects::new());

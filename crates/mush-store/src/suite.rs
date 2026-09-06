@@ -1094,6 +1094,53 @@ pub async fn module_kv_round_trip(store: &dyn ObjectStore) {
 /// increasing across batches, `count_latest` picking the newest entries,
 /// and the `MAXLEN ~` cap (approximate: at least `maxlen` survive, and
 /// whatever survives is exactly a suffix of what was appended).
+/// J1: `module_docs` splits a namespace into decoded ordinary documents and
+/// ledger chunks as text, agrees with `module_json_list` on the whole, and
+/// keeps the namespace boundary.
+pub async fn module_docs_splits_the_ledger_family(store: &dyn ObjectStore) {
+    let chunk = serde_json::json!({
+        "chunk": 0, "sealed": false, "entries": [{ "seq": 0, "value": { "n": 1 } }]
+    });
+    write_module_ops(
+        store,
+        1,
+        vec![
+            json_set("a", "k1", serde_json::json!({ "v": 1 })),
+            json_set("a", "log:j:0", chunk.clone()),
+            json_set("ab", "log:j:0", serde_json::json!({ "other": "namespace" })),
+        ],
+    )
+    .await;
+
+    let docs = store.module_docs("a").await.expect("split listing");
+    assert_eq!(
+        docs.docs,
+        vec![("k1".to_string(), serde_json::json!({ "v": 1 }))]
+    );
+    assert_eq!(
+        docs.ledger.len(),
+        1,
+        "the other namespace's chunk is not ours"
+    );
+    assert_eq!(docs.ledger[0].0, "log:j:0");
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&docs.ledger[0].1).expect("chunk text is JSON"),
+        chunk,
+        "the text is the stored document"
+    );
+
+    let mut flat = store.module_json_list("a").await.expect("flat listing");
+    flat.sort_by(|x, y| x.0.cmp(&y.0));
+    let mut from_split = docs.into_json_list().expect("split decodes");
+    from_split.sort_by(|x, y| x.0.cmp(&y.0));
+    assert_eq!(flat, from_split, "the two listings agree on the whole");
+
+    assert_eq!(
+        store.module_docs("zz").await.expect("unknown namespace"),
+        crate::ModuleDocs::default()
+    );
+}
+
 pub async fn module_stream_ordering(store: &dyn ObjectStore) {
     // Appends spread over several batches: ids must stay monotonic.
     write_module_ops(

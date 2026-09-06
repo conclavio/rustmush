@@ -50,7 +50,7 @@ impl GameModule for ToyModule {
     ) -> Result<(), ModError> {
         let mut ledger = Ledger::new();
         ledger
-            .restore_from_kv(&boot.kv)
+            .restore_from_kv(&boot.ledger)
             .map_err(|error| ModError::msg(format!("toy ledger restore failed: {error}")))?;
         if let Some(st) = ctx.state_mut::<ToyState>() {
             st.ledger = ledger;
@@ -171,6 +171,7 @@ fn ledger_tail_rehydrates_on_reboot() {
     let boot = ModuleBootData {
         kv: kv.into_iter().collect(),
         streams: HashMap::new(),
+        ..Default::default()
     };
 
     let mut tw2 = TestWorld::with_modules(vec![Box::new(ToyModule)]);

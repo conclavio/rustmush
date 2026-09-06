@@ -49,8 +49,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use mush_core::module::{ModError, ModuleBootData, ModuleCtx};
-use mush_core::{Flags, Ledger, LedgerChunk, ObjId, World, scan_contiguity};
+use mush_core::module::{ModError, ModuleCtx};
+use mush_core::{Flags, Ledger, ModuleBootData, ObjId, World, typed_entries};
 use mush_org::PrincipalId;
 use smol_str::SmolStr;
 
@@ -83,14 +83,25 @@ pub(crate) fn load_boot(
     providers: &CustodyTable,
     outcomes: &crate::contract::CanonOutcomeKinds,
 ) -> Result<EconomyStore, ModError> {
+    let ModuleBootData {
+        kv,
+        ledger: mut ledger_docs,
+        ..
+    } = data;
+    // J1 (doc 12): ONE inspection of the journal's chunk documents serves the
+    // contiguity decision, the ledger restore and the typed pass below; each
+    // chunk is decoded from its text once, and the text is dropped as it goes.
     // Unreplayable journal → fail the boot (never destructively "recover" money).
-    if !scan_contiguity(&data.kv).is_empty() {
-        return Err(ModError::msg(
-            "economy: journal contiguity breach; refusing to boot on a hole",
-        ));
-    }
     let mut journal = Ledger::new();
-    journal.restore_from_kv(&data.kv).map_err(|error| {
+    let history = journal.inspect(&ledger_docs);
+    if !history.is_clean() {
+        return Err(ModError::msg(format!(
+            "economy: journal contiguity breach; refusing to boot on a hole ({} breach(es); first {:?})",
+            history.total_breaches(),
+            history.breaches().first()
+        )));
+    }
+    journal.restore_from_history(&history).map_err(|error| {
         ModError::msg(format!(
             "economy: authoritative journal restore refused: {error}"
         ))
@@ -112,7 +123,6 @@ pub(crate) fn load_boot(
     let mut stored_escalations: BTreeMap<EscalationId, Escalation> = BTreeMap::new();
     let mut stored_contracts: BTreeMap<ContractId, EconomicContract> = BTreeMap::new();
     let mut stored_notices: BTreeMap<ObjId, Vec<crate::notice::PendingNotice>> = BTreeMap::new();
-    let mut chunks: Vec<LedgerChunk> = Vec::new();
     let mut meta: Option<serde_json::Value> = None;
     // Every `approval:{id}` key seen, readable or not (the allocator floor).
     let mut max_approval_key: Option<u64> = None;
@@ -126,13 +136,9 @@ pub(crate) fn load_boot(
     let mut max_escalation_key: Option<u64> = None;
     let mut max_contract_key: Option<u64> = None;
 
-    for (key, value) in &data.kv {
+    for (key, value) in &kv {
         if key == META_KEY {
             meta = Some(value.clone());
-        } else if key.starts_with("log:journal:") {
-            let chunk = serde_json::from_value::<LedgerChunk>(value.clone())
-                .map_err(|e| ModError::msg(format!("economy: bad journal chunk {key:?}: {e}")))?;
-            chunks.push(chunk);
         } else if let Some(id) = key.strip_prefix("instrument:") {
             let def = serde_json::from_value::<InstrumentDef>(value.clone())
                 .map_err(|e| ModError::msg(format!("economy: bad instrument doc {key:?}: {e}")))?;
@@ -359,18 +365,24 @@ pub(crate) fn load_boot(
         }
     }
 
-    // Order the full journal by sequence (chunks may arrive unordered).
-    let mut entries: Vec<(u64, EconomicTransaction)> = Vec::new();
-    for chunk in chunks {
-        for e in chunk.entries {
-            let tx = serde_json::from_value::<EconomicTransaction>(e.value).map_err(|err| {
-                ModError::msg(format!("economy: bad journal entry seq {}: {err}", e.seq))
-            })?;
-            entries.push((e.seq, tx));
-        }
+    // The typed pass: every chunk of the journal, in the order the inspection
+    // fixed, decoded straight from its text into transactions — no `Value`
+    // tree in between — and its text released as soon as it is typed.
+    let mut entries: Vec<(u64, EconomicTransaction)> =
+        Vec::with_capacity(history.entries_of(crate::module::JOURNAL_LOG));
+    for (chunk, position) in history.chunk_docs(crate::module::JOURNAL_LOG) {
+        let text = std::mem::take(&mut ledger_docs[position].1);
+        let typed = typed_entries::<EconomicTransaction>(&text)
+            .map_err(|err| ModError::msg(format!("economy: bad journal chunk {chunk}: {err}")))?;
+        entries.extend(typed);
     }
+    drop(ledger_docs);
+    drop(history);
+    // The inspection proved the sequence gap-free and chunk-ordered; the sort
+    // is the cheap guarantee that the fold below never depends on that proof.
     entries.sort_by_key(|(seq, _)| *seq);
     let journal_max: Option<u64> = entries.last().map(|(seq, _)| *seq);
+    let journal_empty = entries.is_empty();
 
     // Replay: fold deltas into a running per-account balance; derive the idempotency
     // index, reversed set, and txid index; capture each account's balance at its own
@@ -412,7 +424,8 @@ pub(crate) fn load_boot(
     }
     let mut max_txid: u64 = 0;
 
-    for (seq, tx) in &entries {
+    for (seq, tx) in entries {
+        let seq = &seq;
         let mut touched_here: BTreeSet<AccountId> = BTreeSet::new();
         for line in &tx.lines {
             // A journal line referencing an account with no doc is corruption — the
@@ -537,9 +550,10 @@ pub(crate) fn load_boot(
         // The account rules are not in the snapshot yet (the stored docs land below),
         // so replay folds every debit and the membership filter runs once at the end
         // — D4's "only windowed accounts are tracked", reached the other way round.
-        let _ = crate::module::note_window_debits(&mut debit_window, tx);
+        let _ = crate::module::note_window_debits(&mut debit_window, &tx);
         max_txid = max_txid.max(tx.id.0);
-        transactions.insert(tx.id, tx.clone());
+        // Retained by move: the typed record is the one the fold just read.
+        transactions.insert(tx.id, tx);
     }
 
     // Directional self-heal + drift/ahead detection per account.
@@ -1406,11 +1420,8 @@ pub(crate) fn load_boot(
     // max so a stale meta never re-mints a live id.
     let next_account = meta_u64(&meta, "next_account_id")
         .max(next_after(snapshot.accounts().map(|a| a.id.0).max()));
-    let next_transaction = meta_u64(&meta, "next_transaction_id").max(if entries.is_empty() {
-        0
-    } else {
-        max_txid + 1
-    });
+    let next_transaction =
+        meta_u64(&meta, "next_transaction_id").max(if journal_empty { 0 } else { max_txid + 1 });
     let next_vault = meta_u64(&meta, "next_vault_id")
         .max(next_after(max_custody_vault))
         .max(next_after(snapshot.vaults().map(|v| v.id.0).max()));

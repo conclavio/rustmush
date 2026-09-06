@@ -158,6 +158,7 @@ fn reboot(tw: &mut TestWorld, kv: Vec<(SmolStr, serde_json::Value)>) {
         ModuleBootData {
             kv,
             streams: HashMap::new(),
+            ..Default::default()
         },
     )]));
 }
@@ -2111,6 +2112,7 @@ fn reboot_all(tw: &mut TestWorld, kv: &Kv2) {
                 ModuleBootData {
                     kv: rows.clone(),
                     streams: HashMap::new(),
+                    ..Default::default()
                 },
             )
         })

@@ -178,10 +178,47 @@ pub struct ModuleOp {
 /// to [`GameModule::on_world_loaded`]. `mush-core` only defines the shape.
 #[derive(Clone, Debug, Default)]
 pub struct ModuleBootData {
-    /// Every `mod:{ns}:{key}` JSON document: `(key, value)` pairs.
+    /// Every `mod:{ns}:{key}` JSON document that is **not** a ledger chunk:
+    /// `(key, value)` pairs.
     pub kv: Vec<(SmolStr, serde_json::Value)>,
+    /// Every ledger chunk document (`log:{id}:{chunk}`) as raw JSON text
+    /// (J1, doc 12 F9): the store hands these over unparsed, so a journal's
+    /// boot footprint is its byte size, and the one inspection
+    /// ([`crate::inspect_ledger`]) every consumer shares decodes each chunk
+    /// exactly once. A `log:` key that arrives in `kv` instead (a test rig, an
+    /// older loader) is moved here by [`ModuleBootData::normalize`] before the
+    /// module sees it.
+    pub ledger: Vec<crate::LedgerDoc>,
     /// Named stream tails, oldest-first: stream key → `(entry id, value)`.
     pub streams: HashMap<SmolStr, Vec<(String, serde_json::Value)>>,
+    /// How long the store fetch of this namespace took, in milliseconds
+    /// (doc 12 D-12-3: the part of a boot the replay timer never saw). Zero
+    /// when nobody measured it (a test rig).
+    pub fetch_ms: u64,
+}
+
+impl ModuleBootData {
+    /// Move any ledger chunk documents that arrived in `kv` into `ledger` as
+    /// text, so a module boots from one shape whichever way its data came.
+    /// Idempotent; a no-op when `kv` holds no `log:` key.
+    pub fn normalize(&mut self) {
+        // Every `log:`-prefixed key, well-formed or not: a malformed chunk key
+        // is the inspection's `MalformedKey` breach to report, not a stray doc.
+        let is_ledger = |key: &str| key.starts_with(crate::ledger::LOG_PREFIX);
+        if !self.kv.iter().any(|(key, _)| is_ledger(key)) {
+            return;
+        }
+        let kv = std::mem::take(&mut self.kv);
+        for (key, value) in kv {
+            if is_ledger(&key) {
+                let text =
+                    serde_json::to_string(&value).expect("a serde_json::Value always serializes");
+                self.ledger.push((key, text));
+            } else {
+                self.kv.push((key, value));
+            }
+        }
+    }
 }
 
 // ----------------------------------------------------------------------

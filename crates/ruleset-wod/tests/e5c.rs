@@ -1584,6 +1584,7 @@ fn reboot_fresh(tw: &TestWorld, kv: Kv, cfg: WodEconomyConfig) -> Engine {
                 ModuleBootData {
                     kv,
                     streams: HashMap::new(),
+                    ..Default::default()
                 },
             )
         })

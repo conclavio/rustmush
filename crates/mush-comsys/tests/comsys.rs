@@ -930,6 +930,7 @@ fn reboot_from_store(store: &InMemoryStore) -> Engine {
     let boot_data = ModuleBootData {
         kv: kv.into_iter().map(|(k, v)| (SmolStr::new(k), v)).collect(),
         streams,
+        ..Default::default()
     };
     let mut world = World::new_minimal();
     world.set_now(1_000);
@@ -1079,6 +1080,7 @@ fn boot_drops_orphaned_membership_docs() {
             (SmolStr::new("meta"), serde_json::json!({"next_chan_id": 1})),
         ],
         streams: HashMap::new(),
+        ..Default::default()
     };
     let mut world = World::new_minimal();
     world.set_now(1_000);
@@ -1167,6 +1169,7 @@ fn corrupt_channel_doc_fails_boot_and_preserves_memberships() {
             (SmolStr::new("meta"), serde_json::json!({"next_chan_id": 1})),
         ],
         streams: HashMap::new(),
+        ..Default::default()
     };
     let mut world = World::new_minimal();
     world
@@ -1246,6 +1249,7 @@ fn unsafe_persisted_history_cap_fails_before_stream_request_and_at_module_boot()
                     ModuleBootData {
                         kv: vec![(SmolStr::new("chan:7"), value)],
                         streams: HashMap::new(),
+                        ..Default::default()
                     },
                 )]),
                 &mut out,

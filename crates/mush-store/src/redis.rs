@@ -80,6 +80,7 @@
 
 use futures::TryStreamExt;
 use futures::future::BoxFuture;
+use mush_core::ledger::LOG_PREFIX;
 use mush_core::{
     AuthoritativeBundle, CanonicalHash, CommitToken, IdempotencyScope, MAX_DURABLE_OUTBOX_INTENTS,
     Obj, ObjId, ReplayWrite, ScopedIdempotencyKey,
@@ -98,7 +99,7 @@ use fred::types::redisearch::{
 };
 use fred::types::{Key, RespVersion, Value};
 
-use crate::store::{AuthoritativeStore, ObjectStore};
+use crate::store::{AuthoritativeStore, ModuleDocs, ObjectStore};
 use crate::types::{
     AccountRec, AuthoritativeCheckpointReceipt, AuthoritativeDiscardReceipt,
     AuthoritativeEpochRetirement, AuthoritativeIntentPage, AuthoritativeOutboxAttemptResult,
@@ -527,6 +528,19 @@ async fn json_doc(client: &Client, key: &str) -> Result<Option<serde_json::Value
         return Ok(None);
     }
     Ok(Some(matches.swap_remove(0)))
+}
+
+/// [`json_doc`] without the decode: the document's **text**, unwrapped from
+/// the path-match array by a borrowing scan (`RawValue`), so a ledger chunk
+/// reaches boot as the bytes the store holds (J1). `Ok(None)` when the key is
+/// gone.
+async fn json_doc_text(client: &Client, key: &str) -> Result<Option<String>, StoreError> {
+    let raw: Option<String> = client
+        .json_get::<Option<String>, _, &str, &str, &str, _>(key, None, None, None, "$")
+        .await?;
+    let Some(raw) = raw else { return Ok(None) };
+    let matches: Vec<&serde_json::value::RawValue> = serde_json::from_str(&raw)?;
+    Ok(matches.first().map(|doc| doc.get().to_owned()))
 }
 
 /// See the [module docs](self).
@@ -2743,11 +2757,15 @@ impl ObjectStore for RedisStore {
         &'a self,
         ns: &'a str,
     ) -> BoxFuture<'a, Result<Vec<(String, serde_json::Value)>, StoreError>> {
+        Box::pin(async move { self.module_docs(ns).await?.into_json_list() })
+    }
+
+    fn module_docs<'a>(&'a self, ns: &'a str) -> BoxFuture<'a, Result<ModuleDocs, StoreError>> {
         Box::pin(async move {
             validate_module_ns(ns)?;
             let prefix = format!("{MOD_PREFIX}{ns}:");
             let keys = self.scan_keys(&module_scan_pattern(ns)).await?;
-            let mut out = Vec::with_capacity(keys.len());
+            let mut out = ModuleDocs::default();
             for full_key in &keys {
                 // The namespace mixes JSON docs and streams under one
                 // prefix. JSON.GET on either a legitimate stream *or* a
@@ -2756,8 +2774,8 @@ impl ObjectStore for RedisStore {
                 // stream_range. Positively identify the Redis type before
                 // skipping it; otherwise corrupt authoritative state could
                 // silently disappear during boot.
-                let doc = match json_doc(&self.client, full_key).await {
-                    Ok(doc) => doc,
+                let text = match json_doc_text(&self.client, full_key).await {
+                    Ok(text) => text,
                     Err(StoreError::Redis(e)) if is_wrong_type_err(&e) => {
                         let redis_type: String = self.client.r#type(full_key.as_str()).await?;
                         match classify_non_json_module_key(full_key, &redis_type)? {
@@ -2773,11 +2791,18 @@ impl ObjectStore for RedisStore {
                     }
                     Err(e) => return Err(e),
                 };
-                let Some(doc) = doc else { continue }; // gone between SCAN and GET
+                let Some(text) = text else { continue }; // gone between SCAN and GET
                 let Some(key) = full_key.strip_prefix(&prefix) else {
                     continue; // unreachable under the SCAN pattern
                 };
-                out.push((key.to_string(), doc));
+                // J1: a ledger chunk stays text; everything else decodes here,
+                // and an undecodable ordinary document is the error it always was.
+                if key.starts_with(LOG_PREFIX) {
+                    out.ledger.push((key.to_string(), text));
+                } else {
+                    out.docs
+                        .push((key.to_string(), serde_json::from_str(&text)?));
+                }
             }
             Ok(out)
         })

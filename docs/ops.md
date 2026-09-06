@@ -990,6 +990,19 @@ harness reports the economy's cold journal replay phase by phase
 default `25000,50000,100000`) over a journal it synthesizes in milliseconds;
 `docs/design/12-economy-checkpoint-review.md` reads those numbers.
 
+**The economy journal** (J1, doc 12 D-12-1/D-12-3) is sampled with the other
+world-owned gauges: `mush_economy_journal_entries` (transactions the journal
+holds), `mush_economy_journal_per_hour` (posted per hour since the economy
+booted — the growth rate the checkpoint decision keys on),
+`mush_economy_replay_us_per_entry`, `mush_economy_replay_ms` (the last cold
+replay, the C17 timer) and `mush_economy_fetch_ms` (the last boot's namespace
+fetch, which that timer never saw). `@stats` renders them as one line —
+`Economy journal: N entries, R/h since boot; last replay E ms (U us/entry;
+fetch F ms); the 5s line is ~L entries: D` — where `L` is the entry line
+derived from the measured per-entry cost and `D` the projected days to it at
+the current rate. Watch the rate: at the design rate in doc 12 §9 the line is
+weeks away, and the RAM lines in D-12-4 bind first.
+
 **Structured logging** is configured under `[log]`:
 
 ```toml

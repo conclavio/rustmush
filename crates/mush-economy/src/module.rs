@@ -40,9 +40,15 @@ use crate::record::{Account, EconomicTransaction, Vault};
 use crate::snapshot::EconomySnapshot;
 
 /// The cold-replay wall time past which the durability checkpoint becomes the next
-/// cut's first item (08g §12.1 item 5, C17). Boot warns when it is crossed.
+/// cut's first item (08g §12.1 item 5, C17). Boot warns when it is crossed. The
+/// replay itself, with the store local (doc 12 D-12-3); the fetch is logged beside
+/// it, never inside it.
 pub const CHECKPOINT_REVIEW_SECS: u64 = 5;
 /// The replayed-entry count past which the same review is due (08g §12.1 item 5).
+/// Doc 12 §4 derives the entry line from the measured per-entry cost: after J1
+/// (parse once, ~3 µs per entry) the 5 s line is ~1.5 million entries, and this
+/// stays at the more conservative million — the first time the two lines agree.
+/// The RAM lines of doc 12 D-12-4 bind before either.
 pub const CHECKPOINT_REVIEW_ENTRIES: usize = 1_000_000;
 
 /// The module id and persistence namespace.
@@ -61,14 +67,23 @@ pub const JOURNAL_LOG: &str = "journal";
 pub struct ReplayStats {
     /// Journal transactions replayed.
     pub entries: usize,
-    /// Wall time the replay took, milliseconds.
+    /// Wall time the replay took, milliseconds — the C17 timer: from the boot
+    /// data being in hand to the store being rebuilt.
     pub elapsed_ms: u64,
+    /// Wall time the store fetch of the namespace took before that, in
+    /// milliseconds (doc 12 D-12-3: logged beside the replay, not inside it;
+    /// zero when the loader did not measure — a test rig).
+    pub fetch_ms: u64,
 }
 
 #[derive(Clone, Debug, Default)]
 pub struct EconomyStore {
     /// The last boot's cold replay cost (H3); `None` until `on_world_loaded`.
     pub(crate) boot_replay: Option<ReplayStats>,
+    /// Journal transactions posted since this boot (doc 12 D-12-1): with
+    /// [`EconomyStore::last_boot`] it is the journal's live growth rate, the
+    /// number the checkpoint decision keys on.
+    pub(crate) posts_since_boot: u64,
     pub(crate) snapshot: EconomySnapshot,
     /// The double-entry journal (append-only; open tail in RAM, cold chunks paged
     /// from `data.kv` at boot).
@@ -349,6 +364,7 @@ impl EconomyStore {
     pub(crate) fn from_parts(p: BootParts) -> EconomyStore {
         EconomyStore {
             boot_replay: None,
+            posts_since_boot: 0,
             snapshot: p.snapshot,
             journal: p.journal,
             transactions: p.transactions,
@@ -428,6 +444,19 @@ impl EconomyStore {
     #[must_use]
     pub fn boot_replay(&self) -> Option<ReplayStats> {
         self.boot_replay
+    }
+
+    /// Journal transactions posted since this boot (doc 12 D-12-1).
+    #[must_use]
+    pub const fn posts_since_boot(&self) -> u64 {
+        self.posts_since_boot
+    }
+
+    /// How many transactions the journal holds (its length, replayed plus
+    /// posted).
+    #[must_use]
+    pub fn journal_len(&self) -> u64 {
+        self.journal.next_seq(JOURNAL_LOG)
     }
 
     /// Mint the next account id, or `None` at the ceiling (E4b1 verify fold, B2).
@@ -736,6 +765,7 @@ impl EconomyStore {
     /// allocator floor may never come from the surviving docs (GC deletes terminal
     /// ones), so it is maintained here and at boot from the journal alone.
     pub(crate) fn index_transaction(&mut self, tx: EconomicTransaction) {
+        self.posts_since_boot = self.posts_since_boot.saturating_add(1);
         // E6a step 1 (D-E6-21): the rolling-window tail, the same fold boot replays.
         // D4: only an account whose live rule carries a window is tracked at all —
         // every other one is dropped again immediately, so the index is O(windowed
@@ -1215,6 +1245,7 @@ impl GameModule for EconomyModule {
         ctx: &mut ModuleCtx<'_>,
         data: ModuleBootData,
     ) -> Result<(), ModError> {
+        let fetch_ms = data.fetch_ms;
         let started = std::time::Instant::now();
         let mut store = boot::load_boot(ctx, data, &self.providers, &self.canon_outcome_kinds)?;
         // C17 (08g §12.1 item 5): the cold replay is the whole boot cost until a
@@ -1226,12 +1257,19 @@ impl GameModule for EconomyModule {
         store.boot_replay = Some(ReplayStats {
             entries,
             elapsed_ms,
+            fetch_ms,
         });
-        tracing::info!(entries, elapsed_ms, "economy: journal replayed at boot");
+        tracing::info!(
+            entries,
+            elapsed_ms,
+            fetch_ms,
+            "economy: journal replayed at boot"
+        );
         if elapsed.as_secs() > CHECKPOINT_REVIEW_SECS || entries > CHECKPOINT_REVIEW_ENTRIES {
             tracing::warn!(
                 entries,
                 elapsed_ms,
+                fetch_ms,
                 "economy: the cold journal replay crossed the checkpoint-review threshold \
                  ({CHECKPOINT_REVIEW_SECS} s or {CHECKPOINT_REVIEW_ENTRIES} entries): per 08g \
                  §12.1 item 5 the durability checkpoint becomes the next cut's first item"

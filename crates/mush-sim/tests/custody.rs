@@ -198,6 +198,7 @@ fn fold_all(tw: &mut TestWorld) -> HashMap<SmolStr, ModuleBootData> {
                 ModuleBootData {
                     kv,
                     streams: HashMap::new(),
+                    ..Default::default()
                 },
             )
         })

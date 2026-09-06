@@ -186,6 +186,7 @@ async fn roundtrip(ops: Vec<ModuleOp>) -> HashMap<SmolStr, ModuleBootData> {
     let boot = ModuleBootData {
         kv: kv.into_iter().map(|(k, v)| (SmolStr::new(k), v)).collect(),
         streams: HashMap::new(),
+        ..Default::default()
     };
     HashMap::from([(SmolStr::new("wod"), boot)])
 }

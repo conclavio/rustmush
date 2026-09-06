@@ -74,6 +74,7 @@ fn reboot(kv: Vec<(SmolStr, serde_json::Value)>) -> TestWorld {
         ModuleBootData {
             kv,
             streams: HashMap::new(),
+            ..Default::default()
         },
     )]));
     tw
@@ -88,6 +89,7 @@ fn try_boot(tw: &mut TestWorld, kv: Vec<(SmolStr, serde_json::Value)>) -> Result
                 ModuleBootData {
                     kv,
                     streams: HashMap::new(),
+                    ..Default::default()
                 },
             )]),
             &mut out,
@@ -413,4 +415,38 @@ fn h4_e2d24_two_commands_in_one_boot_carry_distinct_serials() {
         .collect();
     assert_eq!(serials.len(), 2, "two command-caused posts: {serials:?}");
     assert_ne!(serials[0], serials[1], "one boot, one serial each");
+}
+
+/// J1 (doc 12 §7): the journal arriving as text — the production loader's
+/// form — boots to exactly the state it boots to from values (every pre-J1
+/// rig's form, still moved to text by the engine), and the replay stats say
+/// what they replayed.
+#[test]
+fn j1_boot_from_ledger_text_equals_boot_from_values() {
+    let mut tw = boot();
+    setup_mint(&mut tw, 500);
+    let kv = fold_kv(&mut tw);
+    assert!(kv.iter().any(|(k, _)| k.starts_with("log:journal:")));
+
+    let from_values = reboot(kv.clone());
+    let mut data = ModuleBootData {
+        kv,
+        ..Default::default()
+    };
+    data.normalize();
+    assert!(!data.ledger.is_empty());
+    assert!(data.kv.iter().all(|(k, _)| !k.starts_with("log:")));
+    let mut from_text = boot();
+    from_text.modules_loaded(HashMap::from([(SmolStr::new(NS), data)]));
+
+    assert_eq!(bal(&from_values, 0), bal(&from_text, 0));
+    assert_eq!(bal(&from_values, 1), bal(&from_text, 1));
+    assert_eq!(bal(&from_text, 1), 500);
+    let (a, b) = (store(&from_values), store(&from_text));
+    assert_eq!(a.transactions().count(), b.transactions().count());
+    assert_eq!(a.journal_len(), b.journal_len());
+    let (ra, rb) = (a.boot_replay().unwrap(), b.boot_replay().unwrap());
+    assert_eq!((ra.entries, ra.fetch_ms), (rb.entries, rb.fetch_ms));
+    assert_eq!(ra.entries, 1);
+    assert_eq!(b.posts_since_boot(), 0, "a replay is not a post");
 }

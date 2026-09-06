@@ -376,6 +376,9 @@ entries at the 5 s line each stage implies:
 | after J3 (checkpoint, full fetch) | ~9 µs (fetch parse 5.5 + parts ~3) + tail | ~500 000 | the fetch round trips dominate on a remote store |
 | after J4 (narrow fetch) | ~3 µs (parts) + tail | ~1 200 000–1 600 000 | bounded by the idempotency index (F5); Q5 moves it |
 
+> *Superseded for the J1 rows by the measurement in §7's J1 as-built block (2026-09-06): after
+> J1 the replay is ~3.3 µs per entry and the 5 s line is ~1.5 million entries.*
+
 With G entries a day, the line is `entries at 5 s ÷ G` days away. At a few thousand entries a day
 J1 alone buys years; at fifty thousand a day the checkpoint is due within months of J1 and J2–J4
 should be planned now. The owner has the G (Q1).
@@ -415,6 +418,79 @@ is re-derived from the measured per-entry cost so the two lines agree (§4). *Le
 `ledger.rs` breach tests run unchanged), **R** (restore semantics: sealed-tail-becomes-empty-open
 and the unsealed-tail byte count are byte-identical to today), **M** (the harness numbers
 before/after, same box, same profile). No persisted format changes. Size: one to two days.
+
+> **J1 as built — 2026-09-06.**
+>
+> 1. **The ledger's boot form is text.** `ModuleBootData` gained `ledger: Vec<LedgerDoc>`
+>    (`(key, raw JSON text)` for every `log:`-prefixed key) beside `kv`, and `fetch_ms`; the
+>    store gained `ObjectStore::module_docs` (a split listing with a default derived from
+>    `module_json_list`; Redis fetches ledger text through `RawValue` without a decode, the
+>    memory store hands over the text it holds), and `load_one_namespace` times the fetch. A
+>    rig that still puts `log:` values in `kv` is served by `ModuleBootData::normalize`, which
+>    the engine runs before every `on_world_loaded` — no test rig changed shape.
+> 2. **One inspection.** `inspect_ledger(docs, target) -> LedgerHistory` decodes each chunk's
+>    facts (index, seal, sequence numbers) from its text with the payloads skipped
+>    (`IgnoredAny`), walks the contiguity rules unchanged, and decodes only each log's
+>    **unsealed tail** in full. `Ledger::inspect`, `restore_from_history`,
+>    `restore_logs_from_history(keep)` and the text forms of `scan_contiguity`,
+>    `restore_from_kv`, `restore_from_kv_lossy` and `recent_sealed` sit on it; `typed_entries::<T>`
+>    is the consumer's one typed decode from text (`LedgerChunkOf<T>`, strict). `EntryTooLarge`
+>    is no longer produced on the read side — a chunk under the cap bounds its entries — and the
+>    chunk cap is judged on the stored text's length. The seal rule for an open tail is applied by
+>    the **restoring** ledger's target whatever target the inspection was made under, so a scan
+>    made with `None` and a restore under a target agree with the old two-pass behaviour exactly.
+> 3. **The economy types once and retains by move.** `load_boot` inspects, restores from the
+>    inspection, walks `chunk_docs("journal")` decoding each chunk straight to
+>    `EconomicTransaction` and dropping its text, and the fold moves each record into the
+>    retained map instead of cloning it. Scenes validate every log and restore live tails from
+>    the same inspection; canon, org, sim and the toy module switched to the text form.
+> 4. **The numbers the decision keys on.** `EconomyStore::posts_since_boot` and `journal_len`;
+>    `ReplayStats.fetch_ms`; the world sample carries `mush_economy_journal_entries`,
+>    `mush_economy_journal_per_hour`, `mush_economy_replay_us_per_entry`, `mush_economy_replay_ms`,
+>    `mush_economy_fetch_ms`; `@stats` renders the `Economy journal:` line with the entry line
+>    derived from the measured cost and the projected days to it. The harness's phase test
+>    reports `inspect | restore | typed | boot_total | us_per_entry | entries_at_5s`.
+>
+> **Measured (M), release profile, the same box and seeder as §2:**
+>
+> | entries | chunks | journal JSON | inspect | restore | typed | **boot_total** | µs / entry | entries at 5 s |
+> |---:|---:|---:|---:|---:|---:|---:|---:|---:|
+> | 25 000 | 881 | 14.0 MB | 13 | 0 | 39 | **74** | 3.0 | ~1 700 000 |
+> | 50 000 | 1 774 | 28.0 MB | 30 | 0 | 77 | **156** | 3.1 | ~1 600 000 |
+> | 100 000 | 3 560 | 56.1 MB | 63 | 0 | 148 | **313** | 3.1 | ~1 600 000 |
+> | 200 000 | 7 131 | 112.7 MB | 105 | 0 | 282 | **652** | 3.3 | ~1 500 000 |
+>
+> Against §2's 4 405–5 210 ms at 100 000 entries (H3's engine-seeded run: 6 998 ms) that is
+> **14–22× faster**, linear through 200 000, and it puts the 5 s line at **~1.5 million
+> entries** — not the ~140 000–230 000 §6 and §9 estimated for J1. The estimate assumed the
+> typed decode would still cost what it cost from a `Value` (4 µs per entry) and that the fetch
+> side's text→`Value` parse (5.5 µs) would stay; in fact both were the same expense — building
+> and walking `Value` trees — and going from text straight to typed records removed it
+> everywhere. Of the 3.3 µs per entry now: inspection ≈ 0.5 (payloads skipped), typed decode
+> ≈ 1.4, the fold, the reconciliation and retention ≈ 1.3. The restore is one chunk.
+>
+> **The lines after J1.** `CHECKPOINT_REVIEW_SECS` stays 5 s. The derived entry line is
+> ~1.5 million; `CHECKPOINT_REVIEW_ENTRIES` **stays at 1 000 000** as the more conservative of
+> the two, now consistent with the time line for the first time (a million entries replay in
+> ~3.3 s). At the §9 design rate (250 a minute) the million is ~2.8 days of journal and the 5 s
+> line ~4 days — but D-12-4's RAM lines bind first and unchanged (retained transactions at
+> ~1.7 million; the boot transient is now text plus typed, ~1.2 KB per entry, 1 GB near
+> 800 000 entries), which is why J2 is next. §6's and §9's "after J1" rows are superseded by
+> this table; their "after J3/J4" rows stand, since the checkpoint's payoff was always the
+> idempotency index and the fetch, not the decode.
+>
+> **Verify (lenses E, R, M).** E: every `BreachKind` but `EntryTooLarge` is produced by the new
+> inspection and the existing breach tests run unchanged over the text form; new tests cover the
+> shared inspection's order and counts, the strict typed decode, the chunk cap on text, and
+> `recent_sealed` over text. R: the one-shot restore and the restore-from-history are equal
+> (`Ledger: PartialEq`), the seal rule follows the restoring ledger, a filtered restore keeps only
+> the selected logs and still refuses on a breach elsewhere; the economy boots to the same state
+> from text as from values (`e2b::j1_boot_from_ledger_text_equals_boot_from_values`); the store
+> suites prove `module_docs` and `module_json_list` agree on both backends. M: the table above.
+> Findings folded: **J1-F1** the literal sweep that added `..Default::default()` to every
+> `ModuleBootData { kv, streams }` rig also rewrote one fn returning `ModuleBootData` and missed two
+> literals with nested braces — caught by clippy over all targets, fixed by brace matching;
+> **J1-F2** clippy's `manual_checked_div` on the harness's entry-line derivation.
 
 **J2 — the bounded transaction tail.** `EconomyStore.transactions` becomes a tail bounded by
 window and count (§5.1); the reverse map and `created_count` are folded at boot and maintained by
@@ -490,6 +566,10 @@ the measured per-entry cost. Time to each line, at three rates:
 | after J3 (checkpoint) | ~500k | 3 h | 33 h | 14 days |
 | after J4 (narrow fetch), index O(entries) | 1.2M–1.6M | 8–11 h | 3–4 days | 33–44 days |
 | after J4 with §5.8's window | no entry line (O(records + window)) | — | — | — |
+
+*The "after J1" rows above were estimates; J1 as built (§7, 2026-09-06) measured ~3.3 µs per
+entry, a 5 s line of ~1.5 million entries — 10 hours at the edge, 4 days at the design rate,
+40 days at 25 a minute — and leaves D-12-4's RAM lines as the binding ones.*
 
 **D-12-2 — Healing a lagging document older than the checkpoint without a drift verdict is
 acceptable**, with §5.3's write-time check as the condition. §5.5 stands as designed.

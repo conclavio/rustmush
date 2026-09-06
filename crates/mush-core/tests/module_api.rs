@@ -2688,6 +2688,7 @@ fn on_world_loaded_receives_boot_data_and_may_persist() {
                     ("2-0".to_string(), json!("second")),
                 ],
             )]),
+            ..Default::default()
         },
     );
     let (mut out, mut fx) = (Outbox::new(), Effects::new());
@@ -2755,4 +2756,40 @@ fn module_op_serde_round_trips() {
         let back: ModuleOp = serde_json::from_str(&s).unwrap();
         assert_eq!(back, op);
     }
+}
+
+// ----------------------------------------------------------------------
+// J1: ledger chunks reach a module as text, whichever way they came
+// ----------------------------------------------------------------------
+
+/// A rig that puts `log:` documents in `kv` (as every pre-J1 rig did) finds
+/// them moved to `ledger`, serialized; a malformed `log:` key moves too (it is
+/// the inspection's breach to report, not a stray document); and the move is
+/// idempotent.
+#[test]
+fn j1_boot_data_normalizes_ledger_keys_to_text() {
+    let chunk = json!({ "chunk": 0, "sealed": false, "entries": [{ "seq": 0, "value": 7 }] });
+    let mut data = ModuleBootData {
+        kv: vec![
+            (SmolStr::new("cfg"), json!({ "a": 1 })),
+            (SmolStr::new("log:s:0"), chunk.clone()),
+            (SmolStr::new("log:not-a-chunk"), json!(1)),
+        ],
+        ..Default::default()
+    };
+    data.normalize();
+    assert_eq!(data.kv, vec![(SmolStr::new("cfg"), json!({ "a": 1 }))]);
+    assert_eq!(data.ledger.len(), 2);
+    assert_eq!(data.ledger[0].0, "log:s:0");
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&data.ledger[0].1).unwrap(),
+        chunk
+    );
+    assert_eq!(
+        data.ledger[1],
+        (SmolStr::new("log:not-a-chunk"), "1".to_string())
+    );
+    data.normalize();
+    assert_eq!(data.ledger.len(), 2, "idempotent");
+    assert_eq!(data.fetch_ms, 0, "a rig measures no fetch");
 }

@@ -151,6 +151,68 @@ pub struct LedgerChunk {
     pub entries: Vec<LedgerEntry>,
 }
 
+/// One persisted ledger chunk document **as the store holds it**: its
+/// namespace-relative key (`log:{id}:{chunk}`) and the raw JSON text. Boot hands
+/// ledger chunks to modules in this form and never as a parsed
+/// `serde_json::Value` (J1, doc 12 F9): a chunk's boot footprint is its byte
+/// size, not a `Value` tree several times larger, and the one inspection every
+/// consumer shares parses each chunk exactly once.
+pub type LedgerDoc = (SmolStr, String);
+
+/// A chunk document whose entry payloads are decoded straight into `T` — the
+/// consumer's own record type — from the raw text, with no `Value` in between
+/// (J1). Strict like [`LedgerChunk`]: an unknown field anywhere is a decode
+/// error, so the shape a chunk is validated by is the shape it is consumed by.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LedgerChunkOf<T> {
+    /// Chunk index within the log, 0-based.
+    pub chunk: u64,
+    /// A sealed chunk is at capacity and will never be rewritten.
+    pub sealed: bool,
+    /// The entries in this chunk, in append order.
+    pub entries: Vec<LedgerEntryOf<T>>,
+}
+
+/// One entry of a [`LedgerChunkOf`]: the sequence number and the typed payload.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LedgerEntryOf<T> {
+    /// Position in the log, 0-based, strictly increasing, gap-free.
+    pub seq: u64,
+    /// The consumer's payload, typed.
+    pub value: T,
+}
+
+/// Decode one chunk document's entries straight to `(seq, T)` pairs, in
+/// append order. The caller has validated the chunk through
+/// [`inspect_ledger`] (or [`Ledger::inspect`]) already; this is the typed pass a
+/// consumer makes over the chunks the inspection ordered for it
+/// ([`LedgerHistory::chunk_docs`]).
+///
+/// # Errors
+/// The document is not a chunk of `T` entries (a payload of another shape, or
+/// a field the strict forms do not know).
+pub fn typed_entries<T: serde::de::DeserializeOwned>(
+    text: &str,
+) -> Result<Vec<(u64, T)>, serde_json::Error> {
+    let chunk: LedgerChunkOf<T> = serde_json::from_str(text)?;
+    Ok(chunk
+        .entries
+        .into_iter()
+        .map(|entry| (entry.seq, entry.value))
+        .collect())
+}
+
+/// Decode one chunk document as the opaque [`LedgerChunk`] (payloads as
+/// `Value`), from its raw text.
+///
+/// # Errors
+/// The text is not a well-formed chunk document.
+pub fn parse_chunk(text: &str) -> Result<LedgerChunk, serde_json::Error> {
+    serde_json::from_str(text)
+}
+
 /// The in-RAM open tail of one log.
 #[derive(Clone, Debug, PartialEq)]
 struct LogTail {
@@ -525,10 +587,19 @@ impl Ledger {
         self.logs.get(log_id).map_or(0, |t| t.open_chunk)
     }
 
+    /// Inspect `docs` under this ledger's chunk target (the open-tail rule),
+    /// so one inspection serves the caller's contiguity decision, the restore
+    /// ([`Ledger::restore_from_history`]) and its own typed pass over the chunks
+    /// ([`LedgerHistory::chunk_docs`]) — the journal is parsed once at boot (J1).
+    #[must_use]
+    pub fn inspect(&self, docs: &[LedgerDoc]) -> LedgerHistory {
+        inspect_ledger(docs, Some(self.chunk_target_bytes))
+    }
+
     /// Restore the open tail of every log from authoritative boot documents.
     ///
-    /// Scans `(key, value)` pairs for `log:{id}:{chunk}` chunk docs, groups by
-    /// log id, and rebuilds each log's tail from its **highest** chunk:
+    /// Scans `(key, text)` chunk docs (`log:{id}:{chunk}`), groups by log id,
+    /// and rebuilds each log's tail from its **highest** chunk:
     ///
     /// - a sealed tail chunk ⇒ the open chunk is the next index (empty), and
     ///   `next_seq` resumes past the sealed chunk's last entry;
@@ -539,28 +610,84 @@ impl Ledger {
     /// document, duplicate/missing chunk, index mismatch, unsealed interior,
     /// sequence discontinuity, unsafe size, or arithmetic overflow refuses the
     /// entire restore. The ledger is unchanged on refusal.
+    ///
+    /// This is [`Ledger::inspect`] followed by [`Ledger::restore_from_history`];
+    /// a caller that also needs the breaches or the chunk order makes the
+    /// inspection itself and calls the second half.
+    ///
+    /// # Errors
+    /// Any breach the inspection found; see [`LedgerRestoreError`].
     pub fn restore_from_kv(
         &mut self,
-        kv: &[(SmolStr, serde_json::Value)],
+        docs: &[LedgerDoc],
     ) -> Result<LedgerRestoreReport, LedgerRestoreError> {
-        let inspection = inspect_history(kv, Some(self.chunk_target_bytes));
-        if !inspection.breaches.is_empty() {
-            return Err(bounded_restore_error(inspection.breaches));
-        }
+        let history = self.inspect(docs);
+        self.restore_from_history(&history)
+    }
 
+    /// Restore every log's open tail from an inspection already made.
+    ///
+    /// # Errors
+    /// The inspection found breaches; the ledger is unchanged.
+    pub fn restore_from_history(
+        &mut self,
+        history: &LedgerHistory,
+    ) -> Result<LedgerRestoreReport, LedgerRestoreError> {
+        self.restore_logs_from_history(history, |_| true)
+    }
+
+    /// [`Ledger::restore_from_history`] for the logs `keep` selects — a scenes
+    /// boot validates every scene's history but restores only live scenes'
+    /// tails. Breaches anywhere in the inspection still refuse the whole
+    /// restore: a corrupt closed log is an integrity breach, not dead RAM.
+    ///
+    /// # Errors
+    /// The inspection found breaches; the ledger is unchanged.
+    pub fn restore_logs_from_history(
+        &mut self,
+        history: &LedgerHistory,
+        keep: impl Fn(&str) -> bool,
+    ) -> Result<LedgerRestoreReport, LedgerRestoreError> {
+        if !history.breaches.is_empty() {
+            return Err(bounded_restore_error(&history.breaches));
+        }
+        // The seal rule for the tails this restore keeps, whichever target the
+        // inspection was made under: an unsealed tail already at or over this
+        // ledger's target cannot be appended to, so it refuses like any breach.
+        let mut over_target = BoundedBreaches::default();
+        for (log_id, (_, open_bytes)) in &history.tails {
+            if keep(log_id) && *open_bytes >= self.chunk_target_bytes {
+                let chunk = history
+                    .by_log
+                    .get(log_id)
+                    .and_then(|chunks| chunks.keys().next_back().copied())
+                    .unwrap_or(0);
+                over_target.push(ContiguityBreach {
+                    log_id: log_id.clone(),
+                    kind: BreachKind::UnsealedAtOrOverTarget { chunk },
+                });
+            }
+        }
+        if !over_target.is_empty() {
+            return Err(bounded_restore_error(&over_target));
+        }
         let mut restored = BTreeMap::new();
-        for (log_id, chunks) in &inspection.by_log {
-            let (&tail_index, tail_doc) = chunks
+        let mut chunks_kept = 0usize;
+        let mut entries_kept = 0usize;
+        for (log_id, chunks) in &history.by_log {
+            if !keep(log_id) {
+                continue;
+            }
+            let (&tail_index, tail) = chunks
                 .last_key_value()
                 .expect("a grouped ledger log has at least one chunk");
-            let next_seq = tail_doc
-                .entries
+            let next_seq = tail
+                .seqs
                 .last()
                 .expect("empty chunks are rejected by inspection")
-                .seq
                 .checked_add(1)
                 .expect("sequence overflow is rejected by inspection");
-            let tail = if tail_doc.sealed {
+            let tail = if tail.sealed {
                 LogTail {
                     open_chunk: tail_index
                         .checked_add(1)
@@ -570,28 +697,26 @@ impl Ledger {
                     open_bytes: 0,
                 }
             } else {
-                let mut open_bytes = 0usize;
-                for entry in &tail_doc.entries {
-                    let encoded = encoded_len_bounded(entry, MAX_SAFE_CHUNK_BYTES)
-                        .expect("entry encoding and limits are checked by inspection");
-                    open_bytes = open_bytes
-                        .checked_add(encoded)
-                        .expect("byte overflow is rejected by inspection");
-                }
+                let (parsed, open_bytes) = history
+                    .tails
+                    .get(log_id)
+                    .expect("an unsealed tail is parsed by a clean inspection");
                 LogTail {
                     open_chunk: tail_index,
-                    open_entries: tail_doc.entries.clone(),
+                    open_entries: parsed.entries.clone(),
                     next_seq,
-                    open_bytes,
+                    open_bytes: *open_bytes,
                 }
             };
+            chunks_kept = chunks_kept.saturating_add(chunks.len());
+            entries_kept =
+                entries_kept.saturating_add(chunks.values().map(|c| c.seqs.len()).sum::<usize>());
             restored.insert(log_id.clone(), tail);
         }
-
         let report = LedgerRestoreReport {
-            logs: inspection.by_log.len(),
-            chunks: inspection.chunks,
-            entries: inspection.entries,
+            logs: restored.len(),
+            chunks: chunks_kept,
+            entries: entries_kept,
         };
         // This is the only mutation point. The supplied authoritative snapshot
         // replaces, rather than merges with, any old RAM state; absent logs
@@ -600,17 +725,13 @@ impl Ledger {
         Ok(report)
     }
 
-    /// Best-effort compatibility restore for explicitly non-authoritative
-    /// logs. Integrity breaches are logged and malformed pieces skipped.
-    ///
-    /// Do not use this for scene, canon, economy, ownership, or any other log
-    /// whose contents influence authoritative state.
-    pub fn restore_from_kv_lossy(
-        &mut self,
-        kv: &[(SmolStr, serde_json::Value)],
-    ) -> LedgerRestoreReport {
-        let inspection = inspect_history(kv, Some(self.chunk_target_bytes));
-        for breach in inspection.breaches.iter() {
+    /// Restore whatever tails can be restored, **logging** every breach instead
+    /// of refusing — the recovery path for a log whose history is known to be
+    /// damaged and whose owner has decided to continue. Never use it on a
+    /// money-bearing log.
+    pub fn restore_from_kv_lossy(&mut self, docs: &[LedgerDoc]) -> LedgerRestoreReport {
+        let history = self.inspect(docs);
+        for breach in history.breaches.iter() {
             tracing::error!(
                 log_id = %breach.log_id,
                 kind = ?breach.kind,
@@ -619,18 +740,14 @@ impl Ledger {
         }
 
         let mut restored_logs = 0usize;
-        for (log_id, chunks) in inspection.by_log {
-            let Some((tail_index, tail_doc)) = chunks.last_key_value() else {
+        for (log_id, chunks) in &history.by_log {
+            let Some((tail_index, tail)) = chunks.last_key_value() else {
                 continue;
             };
-            let Some(next_seq) = tail_doc
-                .entries
-                .last()
-                .and_then(|entry| entry.seq.checked_add(1))
-            else {
+            let Some(next_seq) = tail.seqs.last().and_then(|seq| seq.checked_add(1)) else {
                 continue;
             };
-            let tail = if tail_doc.sealed {
+            let tail = if tail.sealed {
                 let Some(open_chunk) = tail_index.checked_add(1) else {
                     continue;
                 };
@@ -641,36 +758,23 @@ impl Ledger {
                     open_bytes: 0,
                 }
             } else {
-                let mut open_bytes = 0usize;
-                let mut valid = true;
-                for entry in &tail_doc.entries {
-                    let Ok(encoded) = encoded_len_bounded(entry, MAX_SAFE_CHUNK_BYTES) else {
-                        valid = false;
-                        break;
-                    };
-                    let Some(total) = open_bytes.checked_add(encoded) else {
-                        valid = false;
-                        break;
-                    };
-                    open_bytes = total;
-                }
-                if !valid {
+                let Some((parsed, open_bytes)) = history.tails.get(log_id) else {
                     continue;
-                }
+                };
                 LogTail {
                     open_chunk: *tail_index,
-                    open_entries: tail_doc.entries.clone(),
+                    open_entries: parsed.entries.clone(),
                     next_seq,
-                    open_bytes,
+                    open_bytes: *open_bytes,
                 }
             };
-            self.logs.insert(log_id, tail);
+            self.logs.insert(log_id.clone(), tail);
             restored_logs = restored_logs.saturating_add(1);
         }
         LedgerRestoreReport {
             logs: restored_logs,
-            chunks: inspection.chunks,
-            entries: inspection.entries,
+            chunks: history.chunks,
+            entries: history.entries,
         }
     }
 }
@@ -704,29 +808,43 @@ pub fn is_log_key(key: &str) -> bool {
 /// way [`is_sealed_chunk`] does — a malformed or oversized document contributes
 /// nothing — and it is `n` chunks, never "all the history you have".
 #[must_use]
-pub fn recent_sealed(
-    kv: &[(SmolStr, serde_json::Value)],
-    log_id: &str,
-    n: usize,
-) -> Vec<LedgerEntry> {
+pub fn recent_sealed(docs: &[LedgerDoc], log_id: &str, n: usize) -> Vec<LedgerEntry> {
     if n == 0 {
         return Vec::new();
     }
     let mut chunks: BTreeMap<u64, Vec<LedgerEntry>> = BTreeMap::new();
-    for (key, value) in kv {
+    for (key, text) in docs {
         let Some((id, seq)) = parse_chunk_key(key) else {
             continue;
         };
-        if id != log_id || !is_sealed_chunk(key, value) {
+        if id != log_id {
             continue;
         }
-        let Ok(chunk) = serde_json::from_value::<LedgerChunk>(value.clone()) else {
+        let Some(chunk) = sealed_chunk_of_text(key, text) else {
             continue;
         };
         chunks.insert(seq, chunk.entries);
     }
     let skip = chunks.len().saturating_sub(n);
     chunks.into_values().skip(skip).flatten().collect()
+}
+
+/// [`is_sealed_chunk`] over a chunk's raw text, returning the decoded chunk
+/// when it is a valid sealed one.
+fn sealed_chunk_of_text(key: &str, text: &str) -> Option<LedgerChunk> {
+    let (_, key_chunk) = parse_chunk_key(key)?;
+    if text.len() > MAX_SAFE_CHUNK_BYTES {
+        return None;
+    }
+    let chunk = parse_chunk(text).ok()?;
+    let valid = chunk.sealed
+        && chunk.chunk == key_chunk
+        && !chunk.entries.is_empty()
+        && chunk
+            .entries
+            .windows(2)
+            .all(|pair| pair[0].seq.checked_add(1) == Some(pair[1].seq));
+    valid.then_some(chunk)
 }
 
 /// Whether a persisted module write `(key, value)` is a **valid sealed** ledger
@@ -1103,14 +1221,111 @@ pub enum BreachKind {
     },
 }
 
-struct HistoryInspection {
-    by_log: BTreeMap<SmolStr, BTreeMap<u64, LedgerChunk>>,
+/// What one inspection of a module's ledger chunk documents found: every
+/// log's chunks in index order, the breaches, and — for each log whose tail
+/// chunk is unsealed — that tail decoded, ready for the restore. Built once
+/// per boot by [`inspect_ledger`] / [`Ledger::inspect`] and shared by the
+/// contiguity decision, [`Ledger::restore_from_history`] and the consumer's
+/// typed pass ([`LedgerHistory::chunk_docs`]), so the journal is parsed once
+/// (J1). The chunk texts themselves stay with the caller; the history keeps
+/// each chunk's position in the slice it inspected.
+#[derive(Debug)]
+pub struct LedgerHistory {
+    by_log: BTreeMap<SmolStr, BTreeMap<u64, ChunkFacts>>,
+    /// Each log's **unsealed** tail chunk, decoded, with its entries' encoded
+    /// byte total (the seal rule's counter).
+    tails: BTreeMap<SmolStr, (LedgerChunk, usize)>,
     breaches: BoundedBreaches,
     chunks: usize,
     entries: usize,
 }
 
-#[derive(Default)]
+/// One chunk as the inspection recorded it: where its text is, whether it is
+/// sealed, and its entries' sequence numbers.
+#[derive(Debug)]
+struct ChunkFacts {
+    /// Position in the inspected slice.
+    doc: usize,
+    sealed: bool,
+    seqs: Vec<u64>,
+}
+
+impl LedgerHistory {
+    /// The breaches found, capped at [`MAX_RESTORE_BREACH_DETAILS`] details.
+    #[must_use]
+    pub fn breaches(&self) -> &[ContiguityBreach] {
+        &self.breaches.details
+    }
+
+    /// How many breaches were found in total (the details may be capped).
+    #[must_use]
+    pub const fn total_breaches(&self) -> usize {
+        self.breaches.total
+    }
+
+    /// No breach at all: every log is a gap-free, correctly sealed history.
+    #[must_use]
+    pub const fn is_clean(&self) -> bool {
+        self.breaches.total == 0
+    }
+
+    /// Valid chunks found, over every log.
+    #[must_use]
+    pub const fn chunks(&self) -> usize {
+        self.chunks
+    }
+
+    /// Valid entries found, over every log.
+    #[must_use]
+    pub const fn entries(&self) -> usize {
+        self.entries
+    }
+
+    /// The log ids seen, in order.
+    pub fn logs(&self) -> impl Iterator<Item = &SmolStr> {
+        self.by_log.keys()
+    }
+
+    /// `log_id`'s chunks in index order as `(chunk index, position in the
+    /// inspected slice)`: the order a consumer's typed pass walks the texts
+    /// in. Empty for an unknown log.
+    pub fn chunk_docs(&self, log_id: &str) -> impl Iterator<Item = (u64, usize)> + '_ {
+        self.by_log
+            .get(log_id)
+            .into_iter()
+            .flat_map(|chunks| chunks.iter().map(|(&index, facts)| (index, facts.doc)))
+    }
+
+    /// How many entries `log_id` holds over all its chunks.
+    #[must_use]
+    pub fn entries_of(&self, log_id: &str) -> usize {
+        self.by_log.get(log_id).map_or(0, |chunks| {
+            chunks.values().map(|facts| facts.seqs.len()).sum()
+        })
+    }
+}
+
+/// The strict decode a chunk is *inspected* by: the sequence numbers are read,
+/// every payload is scanned and discarded (`IgnoredAny` allocates nothing),
+/// and an unknown field anywhere is a malformed chunk — the same shape rule as
+/// [`LedgerChunk`] at a fraction of the cost.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ChunkFactsDoc {
+    chunk: u64,
+    sealed: bool,
+    entries: Vec<EntryFactsDoc>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct EntryFactsDoc {
+    seq: u64,
+    #[allow(dead_code)]
+    value: serde::de::IgnoredAny,
+}
+
+#[derive(Debug, Default)]
 struct BoundedBreaches {
     details: Vec<ContiguityBreach>,
     total: usize,
@@ -1140,16 +1355,26 @@ fn malformed_key_log_id(key: &str) -> SmolStr {
         .map_or_else(|| SmolStr::new_static("<malformed>"), SmolStr::new)
 }
 
-fn inspect_history(
-    kv: &[(SmolStr, serde_json::Value)],
-    chunk_target: Option<usize>,
-) -> HistoryInspection {
-    let mut by_log: BTreeMap<SmolStr, BTreeMap<u64, LedgerChunk>> = BTreeMap::new();
+/// Inspect a module's ledger chunk documents once: group them by log, decode
+/// each chunk's facts (index, seal, sequence numbers) from its raw text, and
+/// walk every log for gaps, seals and sequence contiguity. With
+/// `chunk_target`, an unsealed tail whose entries already reach the seal
+/// threshold is a breach too (the restore's rule). Every breach kind
+/// [`BreachKind`] lists is produced here, except `EntryTooLarge`: a chunk
+/// under [`MAX_SAFE_CHUNK_BYTES`] bounds every entry it holds, so that check
+/// (the append path's) has nothing left to find on the read side.
+///
+/// The work is bounded by the number of persisted chunks and entries — never
+/// by the raw chunk *index* — and the per-entry cost is a scan, not a `Value`
+/// tree: each payload is skipped, not built.
+#[must_use]
+pub fn inspect_ledger(docs: &[LedgerDoc], chunk_target: Option<usize>) -> LedgerHistory {
+    let mut by_log: BTreeMap<SmolStr, BTreeMap<u64, ChunkFacts>> = BTreeMap::new();
     let mut breaches = BoundedBreaches::default();
     let mut valid_chunks = 0usize;
     let mut valid_entries = 0usize;
 
-    for (key, value) in kv {
+    for (position, (key, text)) in docs.iter().enumerate() {
         let Some((log_id, chunk_seq)) = parse_chunk_key(key) else {
             if key.starts_with(LOG_PREFIX) {
                 breaches.push(ContiguityBreach {
@@ -1160,25 +1385,15 @@ fn inspect_history(
             continue;
         };
 
-        match encoded_len_bounded(value, MAX_SAFE_CHUNK_BYTES) {
-            Ok(_) => {}
-            Err(BoundedEncodeError::Limit { .. }) => {
-                breaches.push(ContiguityBreach {
-                    log_id,
-                    kind: BreachKind::ChunkTooLarge { chunk: chunk_seq },
-                });
-                continue;
-            }
-            Err(BoundedEncodeError::Encoding) => {
-                breaches.push(ContiguityBreach {
-                    log_id,
-                    kind: BreachKind::MalformedChunk { at: chunk_seq },
-                });
-                continue;
-            }
+        if text.len() > MAX_SAFE_CHUNK_BYTES {
+            breaches.push(ContiguityBreach {
+                log_id,
+                kind: BreachKind::ChunkTooLarge { chunk: chunk_seq },
+            });
+            continue;
         }
 
-        match serde_json::from_value::<LedgerChunk>(value.clone()) {
+        match serde_json::from_str::<ChunkFactsDoc>(text) {
             Ok(doc) if doc.chunk == chunk_seq => {
                 if doc.entries.is_empty() {
                     breaches.push(ContiguityBreach {
@@ -1186,19 +1401,13 @@ fn inspect_history(
                         kind: BreachKind::EmptyChunk { index: chunk_seq },
                     });
                 }
-                for (entry_index, entry) in doc.entries.iter().enumerate() {
-                    if encoded_len_bounded(entry, MAX_SAFE_CHUNK_BYTES).is_err() {
-                        breaches.push(ContiguityBreach {
-                            log_id: log_id.clone(),
-                            kind: BreachKind::EntryTooLarge {
-                                chunk: chunk_seq,
-                                entry: entry_index,
-                            },
-                        });
-                    }
-                }
+                let facts = ChunkFacts {
+                    doc: position,
+                    sealed: doc.sealed,
+                    seqs: doc.entries.iter().map(|entry| entry.seq).collect(),
+                };
                 let chunks = by_log.entry(log_id.clone()).or_default();
-                if chunks.insert(chunk_seq, doc).is_some() {
+                if chunks.insert(chunk_seq, facts).is_some() {
                     breaches.push(ContiguityBreach {
                         log_id,
                         kind: BreachKind::DuplicateChunk { index: chunk_seq },
@@ -1221,6 +1430,7 @@ fn inspect_history(
         }
     }
 
+    let mut tails: BTreeMap<SmolStr, (LedgerChunk, usize)> = BTreeMap::new();
     for (log_id, chunks) in &by_log {
         let Some(&max) = chunks.keys().next_back() else {
             continue;
@@ -1249,25 +1459,25 @@ fn inspect_history(
         }
 
         let mut expected_seq = 0u64;
-        for (&idx, doc) in chunks {
-            if idx < max && !doc.sealed {
+        for (&idx, facts) in chunks {
+            if idx < max && !facts.sealed {
                 breaches.push(ContiguityBreach {
                     log_id: log_id.clone(),
                     kind: BreachKind::UnsealedNonTail { index: idx },
                 });
             }
-            for entry in &doc.entries {
+            for &seq in &facts.seqs {
                 valid_entries = valid_entries.saturating_add(1);
-                if entry.seq != expected_seq {
+                if seq != expected_seq {
                     breaches.push(ContiguityBreach {
                         log_id: log_id.clone(),
                         kind: BreachKind::SeqGap {
                             expected: expected_seq,
-                            found: entry.seq,
+                            found: seq,
                             chunk: idx,
                         },
                     });
-                    expected_seq = entry.seq;
+                    expected_seq = seq;
                 }
                 match expected_seq.checked_add(1) {
                     Some(next) => expected_seq = next,
@@ -1282,17 +1492,27 @@ fn inspect_history(
             }
         }
 
-        if chunks.get(&max).is_some_and(|tail| tail.sealed) && max == u64::MAX {
+        let tail = chunks.get(&max).expect("max is a key of chunks");
+        if tail.sealed && max == u64::MAX {
             breaches.push(ContiguityBreach {
                 log_id: log_id.clone(),
                 kind: BreachKind::ArithmeticOverflow { chunk: max },
             });
         }
-        if let (Some(target), Some(tail)) = (chunk_target, chunks.get(&max))
-            && !tail.sealed
-        {
+        if !tail.sealed {
+            // The one chunk the restore keeps in RAM: decode it fully, once,
+            // and count its entries' encoded bytes for the seal rule.
+            let text = &docs[tail.doc].1;
+            let Ok(parsed) = parse_chunk(text) else {
+                breaches.push(ContiguityBreach {
+                    log_id: log_id.clone(),
+                    kind: BreachKind::MalformedChunk { at: max },
+                });
+                continue;
+            };
             let mut open_bytes = 0usize;
-            for entry in &tail.entries {
+            let mut overflowed = false;
+            for entry in &parsed.entries {
                 let Ok(bytes) = encoded_len_bounded(entry, MAX_SAFE_CHUNK_BYTES) else {
                     continue;
                 };
@@ -1301,34 +1521,42 @@ fn inspect_history(
                         log_id: log_id.clone(),
                         kind: BreachKind::ArithmeticOverflow { chunk: max },
                     });
+                    overflowed = true;
                     break;
                 };
                 open_bytes = total;
             }
-            if open_bytes >= target {
+            if overflowed {
+                continue;
+            }
+            if let Some(target) = chunk_target
+                && open_bytes >= target
+            {
                 breaches.push(ContiguityBreach {
                     log_id: log_id.clone(),
                     kind: BreachKind::UnsealedAtOrOverTarget { chunk: max },
                 });
             }
+            tails.insert(log_id.clone(), (parsed, open_bytes));
         }
     }
 
-    HistoryInspection {
+    LedgerHistory {
         by_log,
+        tails,
         breaches,
         chunks: valid_chunks,
         entries: valid_entries,
     }
 }
 
-fn bounded_restore_error(breaches: BoundedBreaches) -> LedgerRestoreError {
+fn bounded_restore_error(breaches: &BoundedBreaches) -> LedgerRestoreError {
     let total_breaches = breaches.total;
     let details_truncated = total_breaches > breaches.details.len();
     LedgerRestoreError {
         total_breaches,
         details_truncated,
-        breaches: breaches.details,
+        breaches: breaches.details.clone(),
     }
 }
 
@@ -1352,13 +1580,20 @@ fn bounded_restore_error(breaches: BoundedBreaches) -> LedgerRestoreError {
 /// Returned details are capped at [`MAX_RESTORE_BREACH_DETAILS`]. Checked
 /// restore additionally reports the total and whether details were truncated.
 #[must_use]
-pub fn scan_contiguity(kv: &[(SmolStr, serde_json::Value)]) -> Vec<ContiguityBreach> {
-    inspect_history(kv, None).breaches.details
+pub fn scan_contiguity(docs: &[LedgerDoc]) -> Vec<ContiguityBreach> {
+    inspect_ledger(docs, None).breaches.details
 }
 
 #[cfg(test)]
 #[allow(deprecated)] // legacy wrapper behavior remains covered during migration
 mod tests {
+    /// The persisted `(key, value)` docs a test builds, in the raw-text form
+    /// boot hands the ledger (J1).
+    fn as_docs(kv: &[(SmolStr, serde_json::Value)]) -> Vec<LedgerDoc> {
+        kv.iter()
+            .map(|(k, v)| (k.clone(), serde_json::to_string(v).unwrap()))
+            .collect()
+    }
     use super::*;
 
     /// Decode a chunk op's persisted doc for assertions.
@@ -1441,7 +1676,7 @@ mod tests {
         // Seed it to the same seq by restoring the sealed history first.
         let sealed: Vec<(SmolStr, serde_json::Value)> =
             docs.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
-        open.restore_from_kv(&sealed).unwrap();
+        open.restore_from_kv(&as_docs(&sealed)).unwrap();
         let (_, op) = open.append("s", serde_json::json!({ "n": 3 }));
         let (k, c) = chunk_of(&op);
         assert!(!c.sealed);
@@ -1612,7 +1847,7 @@ mod tests {
         // Simulate a reboot: hand the persisted tail chunk to a fresh ledger.
         let mut rebooted = Ledger::new();
         rebooted
-            .restore_from_kv(&[(key, serde_json::to_value(&doc).unwrap())])
+            .restore_from_kv(&as_docs(&[(key, serde_json::to_value(&doc).unwrap())]))
             .unwrap();
         assert_eq!(rebooted.next_seq("s"), 2, "resumes past the loaded entries");
         assert_eq!(
@@ -1637,10 +1872,10 @@ mod tests {
         let (k1, doc1) = chunk_of(&op1);
         let mut rebooted = Ledger::new();
         rebooted
-            .restore_from_kv(&[
+            .restore_from_kv(&as_docs(&[
                 (k0, serde_json::to_value(&doc0).unwrap()),
                 (k1, serde_json::to_value(&doc1).unwrap()),
-            ])
+            ]))
             .unwrap();
         // Tail chunk 1 is sealed ⇒ open chunk is 2, empty, seq resumes at 2.
         assert_eq!(rebooted.open_chunk("s"), 2);
@@ -1686,7 +1921,7 @@ mod tests {
             (SmolStr::new("meta"), serde_json::json!({"unrelated": true})),
         ];
         let mut led = Ledger::new();
-        led.restore_from_kv(&kv).unwrap();
+        led.restore_from_kv(&as_docs(&kv)).unwrap();
         // Tail is the unsealed chunk 2; only its one entry is in RAM.
         assert_eq!(led.open_chunk("s"), 2);
         assert_eq!(led.next_seq("s"), 3);
@@ -1819,7 +2054,7 @@ mod tests {
             (SmolStr::new("meta"), serde_json::json!({"unrelated": true})),
         ];
         assert!(
-            scan_contiguity(&kv).is_empty(),
+            scan_contiguity(&as_docs(&kv)).is_empty(),
             "a gap-free, seq-continuous log has no breach"
         );
     }
@@ -1829,7 +2064,7 @@ mod tests {
         // Chunk 1 never persisted (a dropped seal), but chunk 2 exists — the
         // exact loss the byte-scan closes and this scan surfaces at boot.
         let kv = vec![kv_chunk("s", 0, true, 0, 3), kv_chunk("s", 2, false, 5, 1)];
-        let breaches = scan_contiguity(&kv);
+        let breaches = scan_contiguity(&as_docs(&kv));
         assert!(
             breaches
                 .iter()
@@ -1860,7 +2095,7 @@ mod tests {
                 .unwrap(),
             ),
         ];
-        let breaches = scan_contiguity(&kv);
+        let breaches = scan_contiguity(&as_docs(&kv));
         // Exactly one missing-chunk breach (the first gap index), not ~4e9.
         let missing: Vec<_> = breaches
             .iter()
@@ -1895,7 +2130,7 @@ mod tests {
             (chunk_key("s", 0), serde_json::json!({"not": "a chunk"})),
             (chunk_key("s", 1), mismatched),
         ];
-        let breaches = scan_contiguity(&kv);
+        let breaches = scan_contiguity(&as_docs(&kv));
         assert!(
             breaches
                 .iter()
@@ -1920,7 +2155,7 @@ mod tests {
             kv_chunk("s", 0, false, 0, 3), // interior but NOT sealed
             kv_chunk("s", 1, false, 3, 1),
         ];
-        let breaches = scan_contiguity(&kv);
+        let breaches = scan_contiguity(&as_docs(&kv));
         assert!(
             breaches
                 .iter()
@@ -1934,7 +2169,7 @@ mod tests {
         // Chunk 1 starts at seq 9, not 3 — a discontinuity within a contiguous
         // chunk run (e.g. a corrupted/edited chunk).
         let kv = vec![kv_chunk("s", 0, true, 0, 3), kv_chunk("s", 1, false, 9, 1)];
-        let breaches = scan_contiguity(&kv);
+        let breaches = scan_contiguity(&as_docs(&kv));
         assert!(
             breaches.iter().any(|b| matches!(
                 b.kind,
@@ -1953,14 +2188,14 @@ mod tests {
         // A holed authoritative log must fail closed and leave even a
         // pre-populated destination byte-identical.
         let kv = vec![kv_chunk("s", 0, true, 0, 3), kv_chunk("s", 2, false, 5, 1)];
-        assert!(!scan_contiguity(&kv).is_empty());
+        assert!(!scan_contiguity(&as_docs(&kv)).is_empty());
         let mut led = Ledger::new();
         let plan = led
             .prepare_append("existing", serde_json::json!(1))
             .unwrap();
         led.apply_prepared(plan).unwrap();
         let before = led.clone();
-        let error = led.restore_from_kv(&kv).unwrap_err();
+        let error = led.restore_from_kv(&as_docs(&kv)).unwrap_err();
         assert!(error.total_breaches() > 0);
         assert_eq!(led, before);
     }
@@ -1969,7 +2204,7 @@ mod tests {
     fn explicitly_lossy_restore_can_rebuild_a_holed_non_authoritative_tail() {
         let kv = vec![kv_chunk("s", 0, true, 0, 3), kv_chunk("s", 2, false, 5, 1)];
         let mut led = Ledger::new();
-        let report = led.restore_from_kv_lossy(&kv);
+        let report = led.restore_from_kv_lossy(&as_docs(&kv));
         assert_eq!(report.logs, 1);
         assert_eq!(led.open_chunk("s"), 2);
         assert_eq!(led.next_seq("s"), 6);
@@ -2120,7 +2355,7 @@ mod tests {
                 .unwrap();
             led.apply_prepared(prepared).unwrap();
             let before = led.clone();
-            let error = led.restore_from_kv(&kv).unwrap_err();
+            let error = led.restore_from_kv(&as_docs(&kv)).unwrap_err();
             assert!(
                 error
                     .breaches()
@@ -2157,7 +2392,7 @@ mod tests {
         );
         let mut led = Ledger::new();
         let error = led
-            .restore_from_kv(&[valid, duplicate, noncanonical, unknown_field])
+            .restore_from_kv(&as_docs(&[valid, duplicate, noncanonical, unknown_field]))
             .unwrap_err();
         assert!(
             error
@@ -2191,10 +2426,187 @@ mod tests {
             })
             .collect();
         let mut led = Ledger::new();
-        let error = led.restore_from_kv(&kv).unwrap_err();
+        let error = led.restore_from_kv(&as_docs(&kv)).unwrap_err();
         assert_eq!(error.total_breaches(), MAX_RESTORE_BREACH_DETAILS + 20);
         assert_eq!(error.breaches().len(), MAX_RESTORE_BREACH_DETAILS);
         assert!(error.details_truncated());
         assert_eq!(led, Ledger::new());
+    }
+
+    // ---- J1: one inspection, one typed pass (doc 12 §7 J1; lenses E and R) ----
+
+    /// One inspection serves the contiguity decision, the restore and the
+    /// consumer's typed pass, and the chunk order it hands out is the log's
+    /// order, whatever order the documents arrived in.
+    #[test]
+    fn j1_one_inspection_serves_scan_restore_and_the_typed_pass() {
+        let kv = vec![
+            kv_chunk("s", 2, false, 6, 2),
+            kv_chunk("s", 0, true, 0, 3),
+            kv_chunk("s", 1, true, 3, 3),
+        ];
+        let docs = as_docs(&kv);
+        let led = Ledger::new();
+        let history = led.inspect(&docs);
+        assert!(history.is_clean(), "{:?}", history.breaches());
+        assert_eq!((history.chunks(), history.entries()), (3, 8));
+        assert_eq!(history.entries_of("s"), 8);
+        assert_eq!(history.entries_of("nope"), 0);
+        assert_eq!(
+            history.logs().cloned().collect::<Vec<_>>(),
+            vec![SmolStr::new("s")]
+        );
+        let order: Vec<(u64, SmolStr)> = history
+            .chunk_docs("s")
+            .map(|(chunk, position)| (chunk, docs[position].0.clone()))
+            .collect();
+        assert_eq!(
+            order,
+            vec![
+                (0, chunk_key("s", 0)),
+                (1, chunk_key("s", 1)),
+                (2, chunk_key("s", 2))
+            ]
+        );
+        // The typed pass decodes straight from the text, in that order.
+        let mut typed: Vec<(u64, u64)> = Vec::new();
+        for (_, position) in history.chunk_docs("s") {
+            typed.extend(typed_entries::<u64>(&docs[position].1).unwrap());
+        }
+        assert_eq!(
+            typed.iter().map(|(seq, _)| *seq).collect::<Vec<_>>(),
+            (0..8).collect::<Vec<_>>()
+        );
+        assert!(
+            typed.iter().all(|(seq, value)| seq == value),
+            "kv_chunk payloads are their own seqs"
+        );
+        // The restore from the shared inspection is the one-shot restore.
+        let mut from_history = Ledger::new();
+        let report = from_history.restore_from_history(&history).unwrap();
+        let mut one_shot = Ledger::new();
+        let report2 = one_shot.restore_from_kv(&docs).unwrap();
+        assert_eq!(from_history, one_shot);
+        assert_eq!((report.logs, report.chunks, report.entries), (1, 3, 8));
+        assert_eq!((report2.logs, report2.chunks, report2.entries), (1, 3, 8));
+        assert_eq!(from_history.next_seq("s"), 8);
+        assert_eq!(from_history.open_chunk("s"), 2);
+        assert_eq!(from_history.open_entries("s").len(), 2);
+    }
+
+    /// The typed pass is as strict as the opaque form: an unknown field
+    /// anywhere, or a payload of another shape, is a decode error.
+    #[test]
+    fn j1_typed_entries_are_strict() {
+        let (_, doc) = kv_chunk("s", 0, true, 0, 2);
+        let text = serde_json::to_string(&doc).unwrap();
+        assert_eq!(typed_entries::<u64>(&text).unwrap(), vec![(0, 0), (1, 1)]);
+        assert!(
+            typed_entries::<String>(&text).is_err(),
+            "a number payload is not a string"
+        );
+        let mut loose = doc.clone();
+        loose["entries"][0]["extra"] = serde_json::json!(true);
+        assert!(typed_entries::<u64>(&serde_json::to_string(&loose).unwrap()).is_err());
+        let mut loose = doc;
+        loose["surprise"] = serde_json::json!(1);
+        assert!(typed_entries::<u64>(&serde_json::to_string(&loose).unwrap()).is_err());
+        assert!(parse_chunk("{not-json").is_err());
+    }
+
+    /// The seal rule follows the ledger that restores, not the inspection: an
+    /// inspection made without a target (a pure contiguity scan) still refuses
+    /// to restore an open tail at or over the restoring ledger's target, and
+    /// refusal leaves the ledger untouched.
+    #[test]
+    fn j1_restore_applies_the_seal_rule_of_the_restoring_ledger() {
+        let kv = vec![kv_chunk("s", 0, true, 0, 2), kv_chunk("s", 1, false, 2, 3)];
+        let docs = as_docs(&kv);
+        let history = inspect_ledger(&docs, None);
+        assert!(history.is_clean(), "{:?}", history.breaches());
+        let mut tiny = Ledger::with_chunk_target(1);
+        let error = tiny.restore_from_history(&history).unwrap_err();
+        assert!(
+            error
+                .breaches()
+                .iter()
+                .any(|b| matches!(b.kind, BreachKind::UnsealedAtOrOverTarget { chunk: 1 })),
+            "{error:?}"
+        );
+        assert_eq!(tiny, Ledger::with_chunk_target(1), "refused: unchanged");
+        let mut roomy = Ledger::with_chunk_target(1 << 20);
+        roomy.restore_from_history(&history).unwrap();
+        assert_eq!(roomy.open_entries("s").len(), 3);
+        // And an inspection made under the target reports it as a breach itself.
+        let under_target = inspect_ledger(&docs, Some(1));
+        assert!(!under_target.is_clean());
+        assert_eq!(under_target.total_breaches(), 1);
+    }
+
+    /// A filtered restore validates every log but keeps only the selected
+    /// tails, reports what it kept, and a breach in a log it does NOT keep
+    /// still refuses the whole restore.
+    #[test]
+    fn j1_filtered_restore_keeps_only_the_selected_logs() {
+        let kv = vec![
+            kv_chunk("live", 0, false, 0, 2),
+            kv_chunk("closed", 0, true, 0, 4),
+            kv_chunk("closed", 1, false, 4, 1),
+        ];
+        let history = inspect_ledger(&as_docs(&kv), None);
+        assert!(history.is_clean());
+        let mut led = Ledger::new();
+        let report = led
+            .restore_logs_from_history(&history, |log| log == "live")
+            .unwrap();
+        assert_eq!((report.logs, report.chunks, report.entries), (1, 1, 2));
+        assert_eq!(led.next_seq("live"), 2);
+        assert_eq!(led.next_seq("closed"), 0, "not restored");
+        let mut broken = kv;
+        broken.push(kv_chunk("closed", 3, false, 9, 1)); // chunk 2 never persisted
+        let history = inspect_ledger(&as_docs(&broken), None);
+        assert!(!history.is_clean());
+        let mut led2 = Ledger::new();
+        assert!(
+            led2.restore_logs_from_history(&history, |log| log == "live")
+                .is_err()
+        );
+        assert_eq!(led2, Ledger::new());
+    }
+
+    /// `EntryTooLarge` is the append path's: on the read side a chunk under the
+    /// cap bounds every entry it holds, and the chunk cap is judged on the
+    /// stored text, with no serialization.
+    #[test]
+    fn j1_the_chunk_cap_is_judged_on_the_stored_text() {
+        let big = "x".repeat(MAX_SAFE_CHUNK_BYTES);
+        let doc = serde_json::json!({
+            "chunk": 0, "sealed": true, "entries": [{ "seq": 0, "value": big }]
+        });
+        let breaches = scan_contiguity(&as_docs(&[(chunk_key("s", 0), doc)]));
+        assert!(
+            breaches
+                .iter()
+                .any(|b| matches!(b.kind, BreachKind::ChunkTooLarge { chunk: 0 })),
+            "{breaches:?}"
+        );
+    }
+
+    /// `recent_sealed` over text: the last `n` sealed chunks, oldest first,
+    /// skipping the open tail and any document that is not a valid sealed chunk.
+    #[test]
+    fn j1_recent_sealed_reads_text() {
+        let kv = vec![
+            kv_chunk("s", 0, true, 0, 2),
+            kv_chunk("s", 1, true, 2, 2),
+            kv_chunk("s", 2, true, 4, 2),
+            kv_chunk("s", 3, false, 6, 1),
+            (chunk_key("s", 9), serde_json::json!("not a chunk")),
+        ];
+        let docs = as_docs(&kv);
+        let seqs: Vec<u64> = recent_sealed(&docs, "s", 2).iter().map(|e| e.seq).collect();
+        assert_eq!(seqs, vec![2, 3, 4, 5]);
+        assert!(recent_sealed(&docs, "s", 0).is_empty());
+        assert!(recent_sealed(&docs, "other", 2).is_empty());
     }
 }

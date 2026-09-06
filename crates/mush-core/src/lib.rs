@@ -233,10 +233,11 @@ pub use engine::{
 pub use flags::{Flags, Powers, Role};
 pub use ledger::{
     BreachKind, ContiguityBreach, DEFAULT_ARCHIVE_PAGE_CHUNKS, Ledger, LedgerAppendError,
-    LedgerApplyError, LedgerChunk, LedgerEntry, LedgerReadError, LedgerRestoreError,
-    LedgerRestoreReport, MAX_LEDGER_LOG_ID_BYTES, MAX_RESTORE_BREACH_DETAILS, PreparedLedgerAppend,
-    archive_page_range, chunk_key, is_log_key, is_sealed_chunk, read_cold_range, recent_sealed,
-    scan_contiguity,
+    LedgerApplyError, LedgerChunk, LedgerChunkOf, LedgerDoc, LedgerEntry, LedgerEntryOf,
+    LedgerHistory, LedgerReadError, LedgerRestoreError, LedgerRestoreReport,
+    MAX_LEDGER_LOG_ID_BYTES, MAX_RESTORE_BREACH_DETAILS, PreparedLedgerAppend, archive_page_range,
+    chunk_key, inspect_ledger, is_log_key, is_sealed_chunk, parse_chunk, read_cold_range,
+    recent_sealed, scan_contiguity, typed_entries,
 };
 pub use lock::{LockExpr, LockParseError, LockType, eval_lock, glob_match, parse_lock};
 pub use matchit::{MatchErr, match_object};

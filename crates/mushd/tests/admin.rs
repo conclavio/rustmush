@@ -502,6 +502,8 @@ fn render_stats_reports_counts_lag_and_store_health() {
         auth_commits: [12, 1, 0, 0],
         // H2a: the durable NPC decision census.
         npc_decisions: [2, 1, 0],
+        // J1 (doc 12 D-12-1): the economy journal and its last replay.
+        economy_journal: [100_000, 15_000, 22, 2_200, 480],
     };
     // Booted 1h 1m 1s ago.
     let text = render_stats(&engine, &health, now - 3_661, now, &extra);
@@ -530,6 +532,15 @@ fn render_stats_reports_counts_lag_and_store_health() {
     assert!(
         text.contains(
             "Authoritative lane: slot free; hold last 4ms, p99 9ms, max 31ms; last bundle 2048 bytes / 3 writes; commits 12 finalized, 1 refused, 0 integrity, 0 quarantined"
+        ),
+        "{text}"
+    );
+    // J1 (doc 12 D-12-1): the journal line — the entry line derived from the
+    // measured cost (5 s / 22 us = 227 272 entries) and the projection at the
+    // current rate ((227 272 - 100 000) / (15 000 * 24) = 0 days: today).
+    assert!(
+        text.contains(
+            "Economy journal: 100000 entries, 15000/h since boot; last replay 2200ms (22us/entry; fetch 480ms); the 5s line is ~227272 entries: ~0 days away at this rate"
         ),
         "{text}"
     );

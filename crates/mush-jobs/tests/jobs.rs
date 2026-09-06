@@ -315,6 +315,7 @@ impl FakeKv {
             ModuleBootData {
                 kv: self.0.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
                 streams: HashMap::new(),
+                ..Default::default()
             },
         )])
     }
@@ -918,6 +919,7 @@ fn id_sequencing_from_meta_or_job_docs() {
         ModuleBootData {
             kv: vec![(SmolStr::new("meta"), json!({"next_id": 7}))],
             streams: HashMap::new(),
+            ..Default::default()
         },
     )]);
     let mut env = setup_with(boot);
@@ -934,6 +936,7 @@ fn id_sequencing_from_meta_or_job_docs() {
         ModuleBootData {
             kv: vec![(SmolStr::new("job:4"), job)],
             streams: HashMap::new(),
+            ..Default::default()
         },
     )]);
     let mut env = setup_with(boot);
@@ -978,6 +981,7 @@ fn boot_tolerates_corrupt_and_unknown_documents() {
         ModuleBootData {
             kv,
             streams: HashMap::new(),
+            ..Default::default()
         },
     )]);
     let (mut out, mut fx) = (Outbox::new(), Effects::new());

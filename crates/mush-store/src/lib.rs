@@ -38,7 +38,7 @@ pub use migrate::{
     CURRENT_SCHEMA_VERSION, Migration, MigrationFn, core_migrations, run_migrations,
 };
 pub use redis::RedisStore;
-pub use store::{AuthoritativeStore, ObjectStore};
+pub use store::{AuthoritativeStore, ModuleDocs, ObjectStore};
 pub use types::{
     AccountRec, AuthoritativeCheckpointReceipt, AuthoritativeDiscardReceipt,
     AuthoritativeEpochRetirement, AuthoritativeIntentPage, AuthoritativeOutboxAttemptResult,

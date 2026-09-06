@@ -289,6 +289,9 @@ redis_gated!(authoritative_contract_retention_generation, store, {
 redis_gated!(module_kv_round_trip, store, {
     suite::module_kv_round_trip(&store).await;
 });
+redis_gated!(module_docs_splits_the_ledger_family, store, {
+    suite::module_docs_splits_the_ledger_family(&store).await;
+});
 redis_gated!(module_stream_ordering, store, {
     suite::module_stream_ordering(&store).await;
 });

@@ -2269,6 +2269,7 @@ fn vf_b2_a_re_survey_across_a_reboot_is_a_hit() {
         ModuleBootData {
             kv: vec![(mush_industry::store::survey_key(body.id()), value)],
             streams: std::collections::HashMap::new(),
+            ..Default::default()
         },
     );
     world.modules_loaded(boot_data);

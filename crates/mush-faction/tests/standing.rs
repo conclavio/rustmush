@@ -185,6 +185,7 @@ fn org_policy_gates_on_live_faction_standing_end_to_end() {
             ModuleBootData {
                 kv: faction_kv,
                 streams: HashMap::new(),
+                ..Default::default()
             },
         ),
         (
@@ -192,6 +193,7 @@ fn org_policy_gates_on_live_faction_standing_end_to_end() {
             ModuleBootData {
                 kv: org_kv,
                 streams: HashMap::new(),
+                ..Default::default()
             },
         ),
     ]));

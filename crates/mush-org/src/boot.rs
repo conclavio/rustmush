@@ -48,7 +48,7 @@ pub(crate) fn load_boot(
     // The audit ledger rehydrates its open tail directly from the log chunks.
     let mut audit = Ledger::new();
     audit
-        .restore_from_kv(&data.kv)
+        .restore_from_kv(&data.ledger)
         .map_err(|error| ModError::msg(format!("org: audit ledger restore refused: {error}")))?;
 
     let mut orgs: BTreeMap<OrgId, Organization> = BTreeMap::new();

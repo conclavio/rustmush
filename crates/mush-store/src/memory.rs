@@ -29,7 +29,7 @@ use mush_core::{
     ScopedIdempotencyKey,
 };
 
-use crate::store::{AuthoritativeStore, ObjectStore};
+use crate::store::{AuthoritativeStore, ModuleDocs, ObjectStore};
 use crate::types::{
     AccountRec, AuthoritativeCheckpointReceipt, AuthoritativeDiscardReceipt,
     AuthoritativeEpochRetirement, AuthoritativeIntentPage, AuthoritativeOutboxAttemptResult,
@@ -2214,6 +2214,26 @@ impl ObjectStore for InMemoryStore {
         })
     }
 
+    fn module_docs<'a>(&'a self, ns: &'a str) -> BoxFuture<'a, Result<ModuleDocs, StoreError>> {
+        Box::pin(async move {
+            validate_module_ns(ns)?;
+            let inner = self.lock()?;
+            let mut out = ModuleDocs::default();
+            for ((doc_ns, key), doc) in &inner.module_kv {
+                if doc_ns != ns {
+                    continue;
+                }
+                // J1: the store holds text; a ledger chunk is handed over as is.
+                if key.starts_with(mush_core::ledger::LOG_PREFIX) {
+                    out.ledger.push((key.clone(), doc.clone()));
+                } else {
+                    out.docs.push((key.clone(), serde_json::from_str(doc)?));
+                }
+            }
+            Ok(out)
+        })
+    }
+
     fn stream_range<'a>(
         &'a self,
         ns: &'a str,
@@ -3605,6 +3625,60 @@ mod tests {
             .module_json_get("m", "broken")
             .await
             .expect_err("corrupt module JSON must also fail an exact read");
+        assert!(matches!(error, StoreError::Serde(_)), "{error:?}");
+    }
+
+    /// J1: the split listing hands a ledger chunk over as the text the store
+    /// holds — undecoded, so a corrupt chunk is the ledger inspection's to
+    /// report — while an ordinary document still decodes (and a corrupt one
+    /// still errors), and the flat listing is unchanged.
+    #[tokio::test]
+    async fn module_docs_hands_ledger_text_over_undecoded() {
+        let store = InMemoryStore::new();
+        let chunk = r#"{"chunk":0,"sealed":false,"entries":[{"seq":0,"value":7}]}"#;
+        {
+            let mut inner = store.lock().expect("store lock");
+            inner
+                .module_kv
+                .insert(("m".into(), "doc".into()), r#"{"v":1}"#.into());
+            inner
+                .module_kv
+                .insert(("m".into(), "log:s:0".into()), chunk.into());
+            inner
+                .module_kv
+                .insert(("m".into(), "log:s:broken".into()), "{not-json".into());
+        }
+        let docs = store.module_docs("m").await.expect("split listing");
+        assert_eq!(
+            docs.docs,
+            vec![("doc".to_string(), serde_json::json!({ "v": 1 }))]
+        );
+        let mut ledger = docs.ledger.clone();
+        ledger.sort();
+        assert_eq!(
+            ledger,
+            vec![
+                ("log:s:0".to_string(), chunk.to_string()),
+                ("log:s:broken".to_string(), "{not-json".to_string()),
+            ]
+        );
+        let error = store
+            .module_json_list("m")
+            .await
+            .expect_err("a decoded listing still refuses the corrupt chunk");
+        assert!(matches!(error, StoreError::Serde(_)), "{error:?}");
+        assert!(matches!(docs.into_json_list(), Err(StoreError::Serde(_))));
+
+        {
+            let mut inner = store.lock().expect("store lock");
+            inner
+                .module_kv
+                .insert(("m".into(), "doc".into()), "{not-json".into());
+        }
+        let error = store
+            .module_docs("m")
+            .await
+            .expect_err("a corrupt ordinary document never disappears from boot discovery");
         assert!(matches!(error, StoreError::Serde(_)), "{error:?}");
     }
 }

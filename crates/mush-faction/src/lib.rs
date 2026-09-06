@@ -134,6 +134,7 @@ impl GameModule for FactionModule {
             ModuleBootData {
                 kv: fac_kv,
                 streams: data.streams,
+                ..Default::default()
             },
         )?;
         // The server loads `OrgModule` before this module (post-E3 owner decision),

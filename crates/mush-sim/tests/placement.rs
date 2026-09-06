@@ -187,6 +187,7 @@ fn reboot_with(kv: Vec<(SmolStr, serde_json::Value)>) -> (TestWorld, Fx) {
         ModuleBootData {
             kv,
             streams: HashMap::new(),
+            ..Default::default()
         },
     )]));
     (tw2, fx)
@@ -962,6 +963,7 @@ fn boot_quarantines_dangling_placements_and_reconciles_drift() {
         ModuleBootData {
             kv,
             streams: HashMap::new(),
+            ..Default::default()
         },
     )]));
     let st = state(&tw2);
@@ -996,6 +998,7 @@ fn boot_quarantines_dangling_placements_and_reconciles_drift() {
         ModuleBootData {
             kv,
             streams: HashMap::new(),
+            ..Default::default()
         },
     )]));
     assert!(!state(&tw3).is_quarantined(fx3.mech));
@@ -1020,6 +1023,7 @@ fn corrupt_container_doc_fails_the_boot() {
                 serde_json::json!({"garbage": true}),
             )],
             streams: HashMap::new(),
+            ..Default::default()
         },
     )]));
 }
@@ -1296,6 +1300,7 @@ fn store_round_trip_through_in_memory_store() {
     let boot_data = ModuleBootData {
         kv: kv.into_iter().map(|(k, v)| (SmolStr::new(k), v)).collect(),
         streams: HashMap::new(),
+        ..Default::default()
     };
     let mut tw2 = boot();
     let fx2 = fixture(&mut tw2);

@@ -669,6 +669,7 @@ fn persistence_round_trip_rebuilds_state() {
         ModuleBootData {
             kv: kv.into_iter().collect(),
             streams: HashMap::new(),
+            ..Default::default()
         },
     )]);
     let (mut out, mut fx) = (Outbox::new(), Effects::new());
@@ -709,6 +710,7 @@ fn config_quota_loads_from_boot_data() {
         ModuleBootData {
             kv: vec![(SmolStr::new("config"), serde_json::json!({"quota": 7}))],
             streams: HashMap::new(),
+            ..Default::default()
         },
     )]);
     let (mut out, mut fx) = (Outbox::new(), Effects::new());

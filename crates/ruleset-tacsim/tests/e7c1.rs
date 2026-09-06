@@ -111,6 +111,7 @@ fn boot_data(kv: &Kv) -> HashMap<SmolStr, ModuleBootData> {
                 ModuleBootData {
                     kv: entries.clone(),
                     streams: HashMap::new(),
+                    ..Default::default()
                 },
             )
         })

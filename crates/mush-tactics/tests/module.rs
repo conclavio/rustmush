@@ -388,6 +388,7 @@ fn load_tactics(world: &mut TestWorld, kv: Vec<(SmolStr, Value)>) {
         ModuleBootData {
             kv,
             streams: HashMap::new(),
+            ..Default::default()
         },
     )]));
 }
@@ -1540,6 +1541,7 @@ fn boot_scrubs_a_pointer_to_a_missing_object_without_the_event() {
         ModuleBootData {
             kv,
             streams: HashMap::new(),
+            ..Default::default()
         },
     )]));
     assert_eq!(
@@ -1588,6 +1590,7 @@ fn a_live_asset_pointer_survives_boot_and_unrelated_destruction() {
         ModuleBootData {
             kv,
             streams: HashMap::new(),
+            ..Default::default()
         },
     )]));
     assert_eq!(

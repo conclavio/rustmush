@@ -169,6 +169,7 @@ fn reboot(tw: &mut TestWorld, kv: Vec<(SmolStr, serde_json::Value)>) {
         ModuleBootData {
             kv,
             streams: HashMap::new(),
+            ..Default::default()
         },
     )]));
 }

@@ -570,6 +570,7 @@ fn e7c5_reboot_reproduces_cgen_without_focus() {
         ModuleBootData {
             kv,
             streams: HashMap::new(),
+            ..Default::default()
         },
     )]));
     assert!(
@@ -1534,6 +1535,7 @@ fn vf_d2_station_fallbacks_hydrate_at_boot() {
         ModuleBootData {
             kv,
             streams: HashMap::new(),
+            ..Default::default()
         },
     )]));
     let restored = tw2

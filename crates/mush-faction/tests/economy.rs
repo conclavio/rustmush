@@ -135,6 +135,7 @@ fn reboot(kv: Kv) -> TestWorld {
                 ModuleBootData {
                     kv,
                     streams: HashMap::new(),
+                    ..Default::default()
                 },
             )
         })

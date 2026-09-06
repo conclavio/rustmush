@@ -242,6 +242,7 @@ fn reboot_with(kv: Vec<(SmolStr, serde_json::Value)>) -> (TestWorld, Fx) {
         ModuleBootData {
             kv,
             streams: HashMap::new(),
+            ..Default::default()
         },
     )]));
     (tw2, fx)
@@ -773,6 +774,7 @@ fn boot_fails_on_stations_key_host_mismatch() {
                 serde_json::json!({ "host": 6, "stations": {} }),
             )],
             streams: HashMap::new(),
+            ..Default::default()
         },
     )]));
 }

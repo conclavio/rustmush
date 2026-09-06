@@ -528,6 +528,7 @@ fn reboot(tw: &mut TestWorld, kv: &Kv) {
                 ModuleBootData {
                     kv: entries.clone(),
                     streams: HashMap::new(),
+                    ..Default::default()
                 },
             )
         })

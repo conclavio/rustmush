@@ -574,6 +574,7 @@ impl From<ModuleBootDataShim> for mush_core::ModuleBootData {
         mush_core::ModuleBootData {
             kv: s.kv,
             streams: HashMap::new(),
+            ..Default::default()
         }
     }
 }

@@ -9,7 +9,7 @@ description = "Redis 8 persistence: ObjectStore trait, RedisJSON docs, write-thr
 [dependencies]
 mush-core.workspace = true
 serde.workspace = true
-serde_json.workspace = true
+serde_json = { workspace = true, features = ["raw_value"] }
 thiserror.workspace = true
 tracing.workspace = true
 fred.workspace = true

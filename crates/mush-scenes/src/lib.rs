@@ -49,7 +49,6 @@ use mush_core::output::display_name;
 use mush_core::{
     ClockProviderContext, ClockProviderFailure, CommandGate, Ctx, Migration, ModuleOp, ObjId,
     ObjKind, Registry, Role, SceneClass, SceneClockProvider, World, is_log_key, perm,
-    scan_contiguity,
 };
 use mush_proto::{NarrativeKind, OutputEvent, RichText};
 use smol_str::SmolStr;
@@ -908,47 +907,28 @@ fn load_boot(ctx: &mut ModuleCtx<'_>, data: ModuleBootData) -> Result<(), ModErr
         .unwrap_or_else(|| scenes.keys().last().map_or(0, |id| id.0 + 1))
         .max(scenes.keys().last().map_or(0, |id| id.0 + 1));
 
-    // Validate every authoritative scene-history document before selecting the
-    // live tails retained in RAM. Closed/missing-scene logs remain immutable on
-    // disk, but corruption there is still an integrity breach and may not be
-    // hidden by the memory optimization below.
-    let all_log_kv: Vec<(SmolStr, serde_json::Value)> = data
-        .kv
-        .iter()
-        .filter(|(key, _)| key.starts_with("log:"))
-        .cloned()
-        .collect();
-    let breaches = scan_contiguity(&all_log_kv);
-    if !breaches.is_empty() {
+    // Validate every authoritative scene-history document (a Closed scene's log
+    // is immutable history on disk that nothing in RAM appends to or reads, but
+    // corruption there is still an integrity breach and may not be hidden by the
+    // memory optimization below), then rehydrate the event-log open tail only
+    // for scenes that still hold members — restoring a Closed scene's tail would
+    // be permanent dead RAM that grows with every finished scene. J1: one
+    // inspection serves both, and no chunk is decoded twice.
+    let history = mush_core::inspect_ledger(&data.ledger, None);
+    if !history.is_clean() {
         return Err(ModError::msg(format!(
-            "scene ledger history validation failed: {breaches:?}"
+            "scene ledger history validation failed: {:?}",
+            history.breaches()
         )));
     }
-
-    // Rehydrate the event-log open tail — but only for scenes that still hold
-    // members. A Closed scene's log is immutable history on disk that nothing
-    // in RAM appends to or reads (`active_scene_of` excludes closed scenes), so
-    // restoring its tail would be permanent dead RAM that grows with every
-    // finished scene. (The deferred boot store-read seam makes even this
-    // request-driven; for now, filter closed scenes out.)
     let live_uids: std::collections::BTreeSet<String> = scenes
         .values()
         .filter(|s| s.status.holds_members())
         .map(|s| s.id.0.to_string())
         .collect();
-    let live_log_kv: Vec<(SmolStr, serde_json::Value)> = data
-        .kv
-        .iter()
-        .filter(|(k, _)| {
-            k.strip_prefix("log:")
-                .and_then(|rest| rest.split(':').next())
-                .is_some_and(|id| live_uids.contains(id))
-        })
-        .cloned()
-        .collect();
     let mut events = mush_core::Ledger::new();
     events
-        .restore_from_kv(&live_log_kv)
+        .restore_logs_from_history(&history, |log_id| live_uids.contains(log_id))
         .map_err(|error| ModError::msg(format!("scene ledger restore failed: {error}")))?;
     // The gate is wiring, not boot data: it is installed at registration and must
     // survive `on_world_loaded` replacing the state slot wholesale.

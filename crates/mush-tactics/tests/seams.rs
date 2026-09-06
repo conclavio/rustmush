@@ -331,6 +331,7 @@ fn boot_purges_stale_scene_documents() {
                 (SmolStr::new("config"), serde_json::json!({"keep": true})),
             ],
             streams: HashMap::new(),
+            ..Default::default()
         },
     )]);
     tw.modules_loaded(boot);

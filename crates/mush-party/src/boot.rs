@@ -141,6 +141,7 @@ mod tests {
         ModuleBootData {
             kv,
             streams: HashMap::new(),
+            ..Default::default()
         }
     }
 

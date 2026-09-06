@@ -531,6 +531,7 @@ fn reboot_from_store(store: &InMemoryStore) -> Engine {
     let boot_data = ModuleBootData {
         kv: kv.into_iter().map(|(k, v)| (SmolStr::new(k), v)).collect(),
         streams: HashMap::new(),
+        ..Default::default()
     };
     let mut world = World::new_minimal();
     world.set_now(1_000);

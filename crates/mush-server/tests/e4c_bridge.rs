@@ -558,6 +558,7 @@ fn reboot(tw: &mut TestWorld, kv: &Kv) {
                 mush_core::module::ModuleBootData {
                     kv: rows.clone(),
                     streams: std::collections::HashMap::new(),
+                    ..Default::default()
                 },
             )
         })

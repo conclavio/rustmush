@@ -757,6 +757,7 @@ async fn draft_persists_across_reboot() {
         mush_core::ModuleBootData {
             kv: vec![(key, value)],
             streams: std::collections::HashMap::new(),
+            ..Default::default()
         },
     );
     tw2.modules_loaded(boot);
@@ -1609,6 +1610,7 @@ async fn building_batch_persists_across_reboot() {
         mush_core::ModuleBootData {
             kv,
             streams: std::collections::HashMap::new(),
+            ..Default::default()
         },
     );
     tw2.modules_loaded(boot);

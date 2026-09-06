@@ -2043,7 +2043,9 @@ impl Engine {
         let mut modules = std::mem::take(&mut self.modules);
         let mut result = Ok(());
         for m in &mut modules {
-            let data = boot.remove(m.name()).unwrap_or_default();
+            let mut data = boot.remove(m.name()).unwrap_or_default();
+            // J1: ledger chunks reach every module as text, however they came.
+            data.normalize();
             let module_name = SmolStr::new(m.name());
             let typed_state = crate::action_state::ModuleActionState::for_module(
                 Some(&self.action_state),

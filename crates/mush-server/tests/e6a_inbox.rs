@@ -162,6 +162,7 @@ fn reboot_all(tw: &mut TestWorld, all: HashMap<SmolStr, Vec<(SmolStr, serde_json
                     ModuleBootData {
                         kv,
                         streams: HashMap::new(),
+                        ..Default::default()
                     },
                 )
             })

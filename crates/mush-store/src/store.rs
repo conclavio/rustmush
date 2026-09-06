@@ -260,6 +260,50 @@ pub trait AuthoritativeStore: ObjectStore {
     ) -> BoxFuture<'_, Result<bool, StoreError>>;
 }
 
+/// A module namespace's documents as boot consumes them (J1): see
+/// [`ObjectStore::module_docs`].
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ModuleDocs {
+    /// Every document that is not a ledger chunk, decoded; keys are
+    /// namespace-relative.
+    pub docs: Vec<(String, serde_json::Value)>,
+    /// Every ledger chunk document (`log:{id}:{chunk}`, and any other
+    /// `log:`-prefixed key — a malformed one is the inspection's to report)
+    /// as raw JSON text.
+    pub ledger: Vec<(String, String)>,
+}
+
+impl ModuleDocs {
+    /// Split a decoded listing: ledger chunks are re-encoded to compact text.
+    #[must_use]
+    pub fn split(listed: Vec<(String, serde_json::Value)>) -> ModuleDocs {
+        let mut out = ModuleDocs::default();
+        for (key, value) in listed {
+            if key.starts_with(mush_core::ledger::LOG_PREFIX) {
+                let text =
+                    serde_json::to_string(&value).expect("a serde_json::Value always serializes");
+                out.ledger.push((key, text));
+            } else {
+                out.docs.push((key, value));
+            }
+        }
+        out
+    }
+
+    /// The flat decoded listing [`ObjectStore::module_json_list`] promises,
+    /// from a split one.
+    ///
+    /// # Errors
+    /// A ledger document that is not JSON at all.
+    pub fn into_json_list(self) -> Result<Vec<(String, serde_json::Value)>, StoreError> {
+        let mut out = self.docs;
+        for (key, text) in self.ledger {
+            out.push((key, serde_json::from_str(&text)?));
+        }
+        Ok(out)
+    }
+}
+
 /// Persistent storage for the world, accounts, sitebans, and store metadata.
 ///
 /// Implementations: [`crate::RedisStore`] (authoritative, Redis 8) and
@@ -474,6 +518,23 @@ pub trait ObjectStore: Send + Sync {
         &'a self,
         ns: &'a str,
     ) -> BoxFuture<'a, Result<Vec<(String, serde_json::Value)>, StoreError>>;
+
+    /// Every document in a module namespace, **split for boot** (J1): the
+    /// ordinary JSON documents decoded, and every ledger chunk document
+    /// (`log:`-prefixed keys) as its raw JSON text — never a `Value` — so a
+    /// journal's boot footprint is its byte size and the one inspection every
+    /// consumer shares decodes each chunk exactly once (doc 12 F9). The same
+    /// listing rules as [`ObjectStore::module_json_list`]: keys without the
+    /// `mod:{ns}:` prefix, streams skipped, order unspecified, an undecodable
+    /// ordinary document an error. A ledger document is not decoded here at
+    /// all; the ledger's inspection is what judges it.
+    ///
+    /// The default derives the split from `module_json_list` (chunks are
+    /// re-encoded, compact); a backend that holds documents as text overrides
+    /// it to hand the text over as is.
+    fn module_docs<'a>(&'a self, ns: &'a str) -> BoxFuture<'a, Result<ModuleDocs, StoreError>> {
+        Box::pin(async move { Ok(ModuleDocs::split(self.module_json_list(ns).await?)) })
+    }
 
     /// The newest `count_latest` entries of a module stream, returned
     /// **oldest-first** (`XREVRANGE mod:{ns}:{key} + - COUNT n`, then

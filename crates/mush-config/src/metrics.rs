@@ -188,6 +188,12 @@ pub struct Metrics {
     npc_decisions_ready: AtomicI64,
     npc_decisions_leased: AtomicI64,
     npc_decisions_resolving: AtomicI64,
+    // J1 (doc 12 D-12-1 / D-12-3): the economy journal and its last replay.
+    economy_journal_entries: AtomicI64,
+    economy_journal_per_hour: AtomicI64,
+    economy_replay_us_per_entry: AtomicI64,
+    economy_replay_ms: AtomicI64,
+    economy_fetch_ms: AtomicI64,
 
     // -- IPC boundary bounding (M18; event-driven, always live) --
     /// Input frames (`Cmd`/`Query`) shed gateway->server when `to_server` is
@@ -354,6 +360,16 @@ impl Metrics {
             .store(w.npc_decisions_leased, Ordering::Relaxed);
         self.npc_decisions_resolving
             .store(w.npc_decisions_resolving, Ordering::Relaxed);
+        self.economy_journal_entries
+            .store(w.economy_journal_entries, Ordering::Relaxed);
+        self.economy_journal_per_hour
+            .store(w.economy_journal_per_hour, Ordering::Relaxed);
+        self.economy_replay_us_per_entry
+            .store(w.economy_replay_us_per_entry, Ordering::Relaxed);
+        self.economy_replay_ms
+            .store(w.economy_replay_ms, Ordering::Relaxed);
+        self.economy_fetch_ms
+            .store(w.economy_fetch_ms, Ordering::Relaxed);
     }
 
     /// Publish the store write-queue depth (world task on each flush) and the
@@ -678,6 +694,11 @@ impl Metrics {
             npc_decisions_ready: self.npc_decisions_ready.load(Ordering::Relaxed),
             npc_decisions_leased: self.npc_decisions_leased.load(Ordering::Relaxed),
             npc_decisions_resolving: self.npc_decisions_resolving.load(Ordering::Relaxed),
+            economy_journal_entries: self.economy_journal_entries.load(Ordering::Relaxed),
+            economy_journal_per_hour: self.economy_journal_per_hour.load(Ordering::Relaxed),
+            economy_replay_us_per_entry: self.economy_replay_us_per_entry.load(Ordering::Relaxed),
+            economy_replay_ms: self.economy_replay_ms.load(Ordering::Relaxed),
+            economy_fetch_ms: self.economy_fetch_ms.load(Ordering::Relaxed),
             ipc_frames_shed_total: self.ipc_frames_shed_total.load(Ordering::Relaxed),
             ipc_write_timeouts_total: self.ipc_write_timeouts_total.load(Ordering::Relaxed),
             ipc_to_gw_overflow_total: self.ipc_to_gw_overflow_total.load(Ordering::Relaxed),
@@ -748,6 +769,17 @@ pub struct WorldSample {
     /// H2a: durable NPC decisions in `Resolving` (a fallback awaiting its
     /// action counts here too).
     pub npc_decisions_resolving: i64,
+    /// J1 (doc 12 D-12-1): journal transactions the economy holds.
+    pub economy_journal_entries: i64,
+    /// J1: journal transactions posted per hour since the economy booted —
+    /// the growth rate the checkpoint decision keys on.
+    pub economy_journal_per_hour: i64,
+    /// J1: the last cold replay's cost per entry, microseconds.
+    pub economy_replay_us_per_entry: i64,
+    /// J1: the last cold replay, milliseconds (the C17 timer).
+    pub economy_replay_ms: i64,
+    /// J1 (D-12-3): the last boot's economy namespace fetch, milliseconds.
+    pub economy_fetch_ms: i64,
 }
 
 /// A rendered-ready copy of every metric.
@@ -857,6 +889,17 @@ pub struct MetricsSnapshot {
     /// H2a: durable NPC decisions in `Resolving` (a fallback awaiting its
     /// action counts here too).
     pub npc_decisions_resolving: i64,
+    /// J1 (doc 12 D-12-1): journal transactions the economy holds.
+    pub economy_journal_entries: i64,
+    /// J1: journal transactions posted per hour since the economy booted —
+    /// the growth rate the checkpoint decision keys on.
+    pub economy_journal_per_hour: i64,
+    /// J1: the last cold replay's cost per entry, microseconds.
+    pub economy_replay_us_per_entry: i64,
+    /// J1: the last cold replay, milliseconds (the C17 timer).
+    pub economy_replay_ms: i64,
+    /// J1 (D-12-3): the last boot's economy namespace fetch, milliseconds.
+    pub economy_fetch_ms: i64,
     /// Input frames shed gateway->server since boot (M18).
     pub ipc_frames_shed_total: u64,
     /// IPC write timeouts on a wedged peer since boot (M18).
@@ -1196,6 +1239,43 @@ impl MetricsSnapshot {
                     self.npc_decisions_resolving as f64,
                 ),
             ],
+        );
+
+        // The economy journal (J1, doc 12 D-12-1 / D-12-3).
+        metric(
+            &mut o,
+            "mush_economy_journal_entries",
+            "gauge",
+            "Journal transactions the economy holds.",
+            &[(&[], self.economy_journal_entries as f64)],
+        );
+        metric(
+            &mut o,
+            "mush_economy_journal_per_hour",
+            "gauge",
+            "Journal transactions posted per hour since the economy booted.",
+            &[(&[], self.economy_journal_per_hour as f64)],
+        );
+        metric(
+            &mut o,
+            "mush_economy_replay_us_per_entry",
+            "gauge",
+            "The last cold journal replay's cost per entry, microseconds.",
+            &[(&[], self.economy_replay_us_per_entry as f64)],
+        );
+        metric(
+            &mut o,
+            "mush_economy_replay_ms",
+            "gauge",
+            "The last cold journal replay, milliseconds.",
+            &[(&[], self.economy_replay_ms as f64)],
+        );
+        metric(
+            &mut o,
+            "mush_economy_fetch_ms",
+            "gauge",
+            "The last boot's economy namespace fetch, milliseconds.",
+            &[(&[], self.economy_fetch_ms as f64)],
         );
 
         // LLM aggregates (keyed only by feature route + provider — never
@@ -1642,6 +1722,7 @@ mod tests {
             npc_decisions_ready: 1,
             npc_decisions_leased: 2,
             npc_decisions_resolving: 0,
+            ..WorldSample::default()
         });
         let s = m.snapshot();
         assert_eq!(
@@ -1873,6 +1954,7 @@ mod tests {
             npc_decisions_ready: 0,
             npc_decisions_leased: 0,
             npc_decisions_resolving: 0,
+            ..WorldSample::default()
         });
         m.publish_llm(
             true,
@@ -1941,6 +2023,33 @@ mod tests {
                 !text.contains(forbidden),
                 "metrics text must not contain {forbidden:?}"
             );
+        }
+    }
+
+    /// J1 (doc 12 D-12-1 / D-12-3): the economy journal gauges render.
+    #[test]
+    fn economy_journal_gauges_render() {
+        let m = Metrics::new();
+        m.publish_world(WorldSample {
+            economy_journal_entries: 100_000,
+            economy_journal_per_hour: 15_000,
+            economy_replay_us_per_entry: 22,
+            economy_replay_ms: 2_200,
+            economy_fetch_ms: 480,
+            ..WorldSample::default()
+        });
+        let s = m.snapshot();
+        assert_eq!(s.economy_journal_entries, 100_000);
+        let text = s.to_prometheus(1);
+        for needle in [
+            "# TYPE mush_economy_journal_entries gauge",
+            "mush_economy_journal_entries 100000",
+            "mush_economy_journal_per_hour 15000",
+            "mush_economy_replay_us_per_entry 22",
+            "mush_economy_replay_ms 2200",
+            "mush_economy_fetch_ms 480",
+        ] {
+            assert!(text.contains(needle), "missing {needle:?} in:\n{text}");
         }
     }
 }

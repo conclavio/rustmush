@@ -618,6 +618,7 @@ async fn flavor_pool_survives_reboot() {
         mush_core::ModuleBootData {
             kv: kv.into_iter().map(|(k, v)| (SmolStr::new(k), v)).collect(),
             streams: HashMap::new(),
+            ..Default::default()
         },
     )]);
     tw2.modules_loaded(boot);
