@@ -1454,6 +1454,26 @@ verify (leak ×2, staleness/bounds); the design **holds**. **Approach R
   primitive; 1 bridge handler + 2 one-line routing arms; the web prepend; TUI
   optional.
 
+**As built (2026-09-05) — server + web (`17d524d`).** As designed. Proto
+`Query::NarrativeBacklog { before_seq?, limit }` (gen-ts regenerated).
+`mush-session`: `backlog_matching(sess, before_seq, limit, keep) ->
+NarrativeBacklog { lines, more, evicted }` beside `replay_since`;
+`check_query_flood` (strict, no exempt bypass); the `debug_assert`
+`NARRATIVE_RING_INVARIANT` tripwire on `send_to_session`/`send_event_to_session`/
+`broadcast_all`. `mush-gateway`: `narrative_backlog_reply` on the shared
+`Core`, answered locally at `web_bridge.rs request()` (a `Query::NarrativeBacklog`
+arm before the generic flood check) and `bridge_common.rs query()` (a
+`"narrative.backlog"` name arm), conn-scoped. Web: `scrollback.svelte.ts` gains
+`seq` per block, `prependOlder` (descending ids, dedup, cap-safe),
+`oldestNarrativeSeq`, `moreBacklog`/`fetchingBacklog`; `game.svelte.ts`
+`loadOlderNarrative` + the `narrative` feed reply renderer; `Scrollback.svelte`
+fetches at scroll-to-top with scroll-anchor preservation + a "Load older
+history" button. Tests: `mush-session` `backlog_matching` (newest-first / filter
+/ paging / evicted); web `scrollback.test` `prependOlder`. **Deviation:** the
+TUI + line-mode narrative surfaces are deferred (the bridge already answers
+`narrative.backlog` for the TUI, and both clients' local buffers — 1000 / the
+terminal — exceed the 512 ring), documented like I11's producers.
+
 ### 3.13 Cut I13 — Live panel deltas (retire the sheet poll)
 
 **What it is.** `PanelFrameKind::Delta` exists in the contract but few
@@ -1547,6 +1567,30 @@ which applies the Condition-Monitor / temp-Willpower overlay. **Approach B
 - **Effort:** medium — `mush-ruleset/vitals.rs` (trait + fp slot + republish),
   both rulesets' `sheet_cmds.rs`, the generic path, web `sheet.svelte.ts` +
   `game.svelte.ts`, TUI `panels.rs`; no proto/gen-ts/allowlist.
+
+**As built (2026-09-05) (`89c8a9e`).** As designed, with a cleaner trait split.
+`mush-ruleset`: a `SheetView { target, schema, approved, data, show_staff }`
+owns the wire shaping (`fingerprint` = hash of `schema.describe()` + the
+`show_staff` bit; `keyframe`/`delta` builders), so the keyframe/delta discipline
+lives in one place; `VitalsSource::sheet_keyframe` became `sheet_view` (the two
+ruleset impls produce the view, the crate shapes it). A `SheetSchemaFps` state
+slot beside `VitalsRevisions`; `VitalsRepublish` emits a delta unless the fp
+changed, the first write after boot, or revision 0. The on-subscribe
+`SheetQuery` stamps the revision (`module_state` read) in wod, shadowrun, and
+the generic path; the republish reads through the overlay-applying `read_ctx`
+(overlay preserved). Web `SheetStore.applyDelta` is a stale/resync/applied
+watermark that full-replaces `data`; `game.svelte.ts` resyncs on a gap with a
+storm guard. TUI: a `.sheet` Delta arm keyed on the server `revision` from the
+held frame (not `PanelState.revision`), plus the over-bounds-keyframe
+resync-clear hardening. Tests: wod `i1_vitals` (delta-on-prior-revision,
+schema-omitted, query keyframe carries revision), `vitals` unit (fingerprint
+flips; keyframe/delta shapes), TUI `panels` (`.sheet` apply/stale/gap/no-base),
+web `sheet.test` (watermark + self-heal). The "high" republish-drops-overlay
+verify claim was **refuted** (the overlay rides `read_ctx`). **Deviation:** the
+absolute-1 MiB sheet-doc server-side cap is deferred (a pre-existing, not
+reachable-today condition — today's sheets render well under the cap); the TUI
+no-wedge hardening is in place, and it is noted as a residual to fold if a
+ruleset approaches the cap.
 
 ---
 
@@ -1863,6 +1907,13 @@ modal ruling (D-I-17, D-I-18) rather than by its default.**
 
 ## 10. Changelog
 
+- **Draft 1.0 — 2026-09-05.** I12 and I13 **built** on the approved designs
+  (§3.12/§3.13 as-built). I12 (`17d524d`): resume-ring-backed narrative backlog,
+  server + web (TUI/line deferred). I13 (`89c8a9e`): full-data versioned sheet
+  delta + a `SheetView`/fingerprint refactor, all three producers + both
+  clients. Every folded verify fix landed; the one "high" I13 claim
+  (republish drops the overlay) was refuted in code. Workspace clippy/fmt clean,
+  gen-ts regenerated, web 292, the touched crates green.
 - **Draft 0.9 — 2026-09-05.** Owner approved the §3.12/§3.13 recommendations;
   all five design forks decided in place (I12: shared-512 ring, hardcode caps,
   defer line-mode `+backlog`; I13: full-data delta B, server fingerprint slot).
