@@ -45,6 +45,19 @@ pub enum Query {
         /// Maximum number of messages to return.
         limit: u32,
     },
+    /// Historical room-narrative lines the viewer already saw, newest-first
+    /// from `before_seq` (interface plan I12). Answered at the gateway from
+    /// the viewer's own resume ring — every line was already perceive/@ignore
+    /// gated at delivery — and returned as a `Panel` delta on the `narrative`
+    /// label, wrapped in a [`Reply`](crate::OutputEvent::Reply).
+    NarrativeBacklog {
+        /// Return lines with the per-session envelope `seq` strictly below
+        /// this; `None` means start from the newest.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        before_seq: Option<u64>,
+        /// Maximum number of lines to return (server-clamped).
+        limit: u32,
+    },
     /// Subscribe to a panel feed; the server responds with a keyframe and
     /// then streams deltas.
     PanelSubscribe {

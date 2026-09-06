@@ -37,6 +37,10 @@ export interface SbBlock {
   groupable: boolean;
   /** The roller's dice card (a `.roll` frame for the viewer's own roll). */
   roll: RollEntry | null;
+  /** The per-session envelope `seq` for a narrative block (interface plan
+   * I12: the backlog cursor + the de-dup key against a paged reply). `null`
+   * for room/sys/roll/client-local blocks that carry no seq. */
+  seq: number | null;
 }
 
 /** What `push` may say about a block beyond its lines. */
@@ -44,7 +48,13 @@ export interface SbMeta {
   speaker?: SbSpeaker | null;
   body?: RLine[] | null;
   groupable?: boolean;
+  /** The narrative envelope `seq` (interface plan I12). */
+  seq?: number;
 }
+
+/** A pre-rendered older block from a narrative backlog page (interface plan
+ * I12), prepended at the ring head. */
+export type SbOlderBlock = Omit<SbBlock, "id" | "roll">;
 
 /** Consecutive blocks by one speaker within this window merge under one
  * name header (interface plan I5, plan §7). */
@@ -99,8 +109,18 @@ export class ScrollbackStore {
   pinned = $state(true);
   /** Blocks pushed while unpinned (drives the "N new lines" pill). */
   unseen = $state(0);
+  /** Whether the server may hold older narrative below what is here
+   * (interface plan I12). `true` until a backlog page reports `more: false`
+   * — drives the "load older history" affordance. */
+  moreBacklog = $state(true);
+  /** A backlog page is in flight (one at a time). */
+  fetchingBacklog = $state(false);
 
   #nextId = 1;
+  /** Descending render keys for prepended older blocks (0, -1, -2 …), a
+   * namespace disjoint from the ascending live ids so `#each` keys never
+   * collide (interface plan I12). */
+  #prevId = 0;
   readonly #cap: number;
 
   constructor(cap = SCROLLBACK_CAP) {
@@ -129,6 +149,7 @@ export class ScrollbackStore {
       body: meta.body ?? null,
       groupable: meta.groupable === true && (meta.speaker ?? null) !== null,
       roll: null,
+      seq: meta.seq ?? null,
     });
   }
 
@@ -143,7 +164,51 @@ export class ScrollbackStore {
       body: null,
       groupable: false,
       roll: entry,
+      seq: null,
     });
+  }
+
+  /** The oldest narrative `seq` held — the `before_seq` cursor for the next
+   * backlog page (interface plan I12). `null` when no narrative is held yet
+   * (the first page starts from the newest). */
+  get oldestNarrativeSeq(): number | null {
+    let min: number | null = null;
+    for (const b of this.entries) {
+      if (b.seq !== null && (min === null || b.seq < min)) {
+        min = b.seq;
+      }
+    }
+    return min;
+  }
+
+  /** Prepend a narrative backlog page at the ring head, oldest-first, deduped
+   * by `seq` against what is already held (interface plan I12). `more` is the
+   * server's "another page exists below this" flag. Older blocks take
+   * descending ids so `#each` keys stay unique and they sort ahead of the
+   * live tail. Returns the number of blocks actually added (0 when the page
+   * was entirely a re-delivery). */
+  prependOlder(older: SbOlderBlock[], more: boolean): number {
+    this.moreBacklog = more;
+    this.fetchingBacklog = false;
+    const held = new Set<number>();
+    for (const b of this.entries) {
+      if (b.seq !== null) {
+        held.add(b.seq);
+      }
+    }
+    // Oldest-first at the head; skip any seq already present.
+    const fresh = older.filter((b) => b.seq === null || !held.has(b.seq));
+    if (fresh.length === 0) {
+      return 0;
+    }
+    const room = Math.max(0, this.#cap - this.entries.length);
+    // Keep the NEWEST of the older batch when capped (never drop the live tail).
+    const kept = fresh.length > room ? fresh.slice(fresh.length - room) : fresh;
+    const blocks: SbBlock[] = kept.map((b) => ({ ...b, id: this.#prevId--, roll: null }));
+    this.entries.unshift(...blocks);
+    // Keep the just-revealed history on screen.
+    this.windowSize = Math.min(this.entries.length, this.windowSize + kept.length);
+    return kept.length;
   }
 
   /** The visible window as speaker groups. */
@@ -183,5 +248,7 @@ export class ScrollbackStore {
     this.entries = [];
     this.windowSize = WINDOW_STEP;
     this.unseen = 0;
+    this.moreBacklog = true;
+    this.fetchingBacklog = false;
   }
 }

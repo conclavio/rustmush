@@ -176,6 +176,20 @@ pub enum ReplayError {
     UnknownSession,
 }
 
+/// A page of [`SessionManager::backlog_matching`] — a bounded, newest-first
+/// slice of a session's resume ring (interface plan I12).
+#[derive(Clone, Debug, Default)]
+pub struct NarrativeBacklog {
+    /// The matched envelopes, newest-first, at most the requested `limit`.
+    pub lines: Vec<Arc<Envelope>>,
+    /// A further match exists below this page (the client may page again).
+    pub more: bool,
+    /// Older history may have rolled off the ring (conservative — the ring
+    /// has evicted at least one envelope and this page reached its oldest
+    /// retained match).
+    pub evicted: bool,
+}
+
 /// One row of [`SessionManager::who`].
 #[derive(Clone, Debug)]
 pub struct SessionMeta {
@@ -241,6 +255,15 @@ struct ConnEntry {
     sess: SessId,
     bucket: Mutex<FloodBucket>,
 }
+
+/// The invariant the interface plan I12 narrative backlog leans on: a
+/// `Narrative` reaches the resume ring only through the M11-gated resolved-Char
+/// fan-out (`send_to_char` / `send_event_to_char`), never a session- or
+/// broadcast-scoped writer (whose producers all emit `Sys`). Enforced by
+/// `debug_assert` on those writers so the leak proof's hand-audit becomes a
+/// tripwire, mirroring the SP1 rule-1 allowlist precedent.
+const NARRATIVE_RING_INVARIANT: &str = "Narrative must reach the resume ring only via the M11-gated Char fan-out, \
+     never a session/broadcast writer (interface plan I12 leak invariant)";
 
 /// The session registry. Fully `Send + Sync`; every method is non-blocking
 /// and none requires a tokio runtime (delivery uses `mpsc::Sender::try_send`
@@ -568,6 +591,10 @@ impl SessionManager {
 
     /// Fan an event out to every connection of one session.
     pub fn send_to_session(&self, sess: SessId, ev: Arc<OutputEvent>) -> SendReport {
+        debug_assert!(
+            !matches!(*ev, OutputEvent::Narrative { .. }),
+            "{NARRATIVE_RING_INVARIANT}"
+        );
         self.deliver_to_session(sess, &ev)
     }
 
@@ -582,6 +609,10 @@ impl SessionManager {
     /// Owned-event convenience over
     /// [`send_to_session`](Self::send_to_session).
     pub fn send_event_to_session(&self, sess: SessId, event: OutputEvent) -> SendReport {
+        debug_assert!(
+            !matches!(event, OutputEvent::Narrative { .. }),
+            "{NARRATIVE_RING_INVARIANT}"
+        );
         self.deliver_to_session(sess, &Arc::new(event))
     }
 
@@ -854,6 +885,10 @@ impl SessionManager {
     /// Send to every attached connection (`@wall`, shutdown notices).
     /// Stamped + ring-recorded per session like any session-scoped send.
     pub fn broadcast_all(&self, ev: Arc<OutputEvent>) -> SendReport {
+        debug_assert!(
+            !matches!(*ev, OutputEvent::Narrative { .. }),
+            "{NARRATIVE_RING_INVARIANT}"
+        );
         // Collect ids first: `deliver_to_session` takes the same shards
         // `iter()` would hold.
         let sessions: Vec<SessId> = self.sessions.iter().map(|s| *s.key()).collect();
@@ -904,6 +939,56 @@ impl SessionManager {
             .collect())
     }
 
+    /// A bounded, newest-first slice of this session's own resume ring,
+    /// filtered by `keep` (interface plan I12 — the narrative backlog reuses
+    /// the per-viewer, already-gated resume ring: every ring envelope arrived
+    /// as a `SendTarget::Char` the world had already run through
+    /// exclude/@ignore/perceive, so no re-gating is needed). Read-only: never
+    /// touches `last_seq`/`evicted_seq`.
+    ///
+    /// Pages by the per-session envelope seq: entries with `seq < before_seq`
+    /// (or all, when `None`), matching `keep`, newest-first, at most `limit`.
+    /// `more` is set when a further match exists below the returned page;
+    /// `evicted` is a conservative "older history may have rolled off" flag
+    /// (true when the ring has evicted anything and this page reached the
+    /// oldest retained match) — monotonic `evicted_seq`, so never a false
+    /// negative. An unknown/reaped session yields `Err(UnknownSession)`; the
+    /// caller answers it as an empty backlog (re-hydration safe).
+    pub fn backlog_matching(
+        &self,
+        sess: SessId,
+        before_seq: Option<u64>,
+        limit: usize,
+        keep: impl Fn(&OutputEvent) -> bool,
+    ) -> Result<NarrativeBacklog, ReplayError> {
+        let s = self
+            .sessions
+            .get(&sess)
+            .ok_or(ReplayError::UnknownSession)?;
+        let mut lines: Vec<Arc<Envelope>> = Vec::new();
+        for (seq, env) in s.ring.iter().rev() {
+            if before_seq.is_some_and(|b| *seq >= b) {
+                continue;
+            }
+            if keep(&env.event) {
+                if lines.len() == limit {
+                    // A further match exists below this page.
+                    return Ok(NarrativeBacklog {
+                        lines,
+                        more: true,
+                        evicted: false,
+                    });
+                }
+                lines.push(Arc::clone(env));
+            }
+        }
+        Ok(NarrativeBacklog {
+            lines,
+            more: false,
+            evicted: s.evicted_seq > 0,
+        })
+    }
+
     /// Highest envelope seq stamped for a session so far (0 = none) — what
     /// a fresh structured connect reports as its resume baseline.
     pub fn last_seq(&self, sess: SessId) -> Option<u64> {
@@ -945,6 +1030,24 @@ impl SessionManager {
         }
         match self.conns.get(&conn) {
             Some(e) => e.bucket.lock().expect("flood bucket poisoned").check(now),
+            None => FloodVerdict::Ok,
+        }
+    }
+
+    /// Like [`check_input`](Self::check_input) but **does not honour
+    /// flood-exempt**: a flood-exempt character (mail compose, chargen) still
+    /// has its bucket charged. Used by locally-answered gateway queries
+    /// (interface plan I12 narrative backlog) that have no world-side
+    /// backpressure — the exempt exists to protect composed input *lines*, not
+    /// background panel pulls, so a mail-composing connection must not be able
+    /// to fire unthrottled ring scans.
+    pub fn check_query_flood(&self, conn: ConnId) -> FloodVerdict {
+        match self.conns.get(&conn) {
+            Some(e) => e
+                .bucket
+                .lock()
+                .expect("flood bucket poisoned")
+                .check(Instant::now()),
             None => FloodVerdict::Ok,
         }
     }

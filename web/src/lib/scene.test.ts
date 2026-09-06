@@ -83,6 +83,7 @@ const block = (
   body: speaker ? [[{ text: "x", cls: "", css: "", cmd: null }]] : null,
   groupable,
   roll: null,
+  seq: null,
 });
 
 const nick = { id: "#5", name: "Nick" };

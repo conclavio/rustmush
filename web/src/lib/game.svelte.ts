@@ -10,7 +10,17 @@
 
 import { login as apiLogin, logout as apiLogout, register as apiRegister } from "./auth";
 import type { CharSummary, LoginOk } from "./auth";
-import type { ClientCaps, OutputEvent, Query, RespondChoice, RoomView, ViewEnvelope } from "./proto";
+import type {
+  ClientCaps,
+  NarrativeKind,
+  ObjRef,
+  OutputEvent,
+  Query,
+  RespondChoice,
+  RichText,
+  RoomView,
+  ViewEnvelope,
+} from "./proto";
 import {
   channelLine,
   fmtDuration,
@@ -38,7 +48,7 @@ import { MailStore } from "./stores/mail.svelte";
 import { PresenceStore } from "./stores/presence.svelte";
 import { RollsStore } from "./stores/rolls.svelte";
 import { ScreensStore, type GateInput } from "./stores/screens.svelte";
-import { ScrollbackStore } from "./stores/scrollback.svelte";
+import { ScrollbackStore, type SbOlderBlock } from "./stores/scrollback.svelte";
 import { SessionStore } from "./stores/session.svelte";
 import { SheetStore } from "./stores/sheet.svelte";
 import { VitalsStore } from "./stores/vitals.svelte";
@@ -73,6 +83,7 @@ type PendingReq =
   | { kind: "comsys.state" }
   | { kind: "mail.list" }
   | { kind: "backlog"; channel: string }
+  | { kind: "narrative_backlog" }
   | { kind: "sheet" }
   | { kind: "legal.actions" }
   | { kind: "llm_dashboard" }
@@ -375,6 +386,7 @@ export class GameApp {
           speaker: actor ? { id: actor.id, name: actor.name } : null,
           body: groupable ? [narrativeBody(env.d.kind, env.d.text)] : null,
           groupable,
+          seq: env.seq,
         },
       );
     });
@@ -518,6 +530,12 @@ export class GameApp {
         if (pending?.kind === "sheet") {
           this.sheet.markUnavailable();
         }
+        if (pending?.kind === "narrative_backlog") {
+          // A throttle/refusal reply: clear the in-flight flag so a later
+          // scroll-to-top can retry; no scrollback clutter.
+          this.scrollback.fetchingBacklog = false;
+          return;
+        }
         if (pending?.kind === "legal.actions") {
           this.actions.clear();
           return;
@@ -542,7 +560,12 @@ export class GameApp {
     d: { feed: string; kind: string; data: unknown },
     pending: PendingReq | null,
   ): void {
-    if (d.feed === "comsys") {
+    if (d.feed === "narrative") {
+      // A narrative backlog page (interface plan I12): older room lines this
+      // viewer already saw, from the server's per-viewer resume ring. Render
+      // and prepend, deduped by seq against the live scrollback.
+      this.#applyNarrativeBacklog(d.data);
+    } else if (d.feed === "comsys") {
       if (d.kind === "keyframe") {
         this.channels.applyState(d.data);
       } else {
@@ -590,6 +613,64 @@ export class GameApp {
       }
     }
     // Unknown feeds (future modules): ignored — additive evolution.
+  }
+
+  /** Fetch the next older narrative backlog page (interface plan I12) — the
+   * scroll-to-top affordance calls this. One page in flight at a time; stops
+   * once the server reports no more history below the buffer. */
+  loadOlderNarrative(): void {
+    if (this.scrollback.fetchingBacklog || !this.scrollback.moreBacklog) {
+      return;
+    }
+    this.scrollback.fetchingBacklog = true;
+    this.#req(
+      { kind: "narrative_backlog" },
+      {
+        t: "narrative_backlog",
+        d: { before_seq: this.scrollback.oldestNarrativeSeq, limit: 200 },
+      },
+    );
+  }
+
+  #applyNarrativeBacklog(data: unknown): void {
+    this.scrollback.fetchingBacklog = false;
+    const bl = (data as { backlog?: { more?: boolean; lines?: unknown[] } })?.backlog;
+    if (!bl || !Array.isArray(bl.lines)) {
+      this.scrollback.moreBacklog = false;
+      return;
+    }
+    // The wire is newest-first; `prependOlder` wants oldest-first at the head.
+    const older = bl.lines
+      .slice()
+      .reverse()
+      .map((l) => this.#renderBacklogLine(l))
+      .filter((b): b is SbOlderBlock => b !== null);
+    this.scrollback.prependOlder(older, bl.more === true);
+  }
+
+  #renderBacklogLine(raw: unknown): SbOlderBlock | null {
+    const l = raw as {
+      seq?: number;
+      ts?: number;
+      kind?: NarrativeKind;
+      actor?: ObjRef | null;
+      text?: RichText;
+    };
+    if (typeof l?.seq !== "number" || l.kind === undefined || !Array.isArray(l.text)) {
+      return null;
+    }
+    const actor = l.actor ?? null;
+    const roll = l.kind === "emit" && isRollNarration(l.text);
+    const groupable = actor !== null && groupsBySpeaker(l.kind);
+    return {
+      seq: l.seq,
+      ts: typeof l.ts === "number" ? l.ts : Date.now(),
+      cls: narrativeClasses(l.kind, roll),
+      lines: [narrativeLine(l.kind, actor, l.text)],
+      speaker: actor ? { id: actor.id, name: actor.name } : null,
+      body: groupable ? [narrativeBody(l.kind, l.text)] : null,
+      groupable,
+    };
   }
 
   #routeView(view: ViewEnvelope, pending: PendingReq | null): void {

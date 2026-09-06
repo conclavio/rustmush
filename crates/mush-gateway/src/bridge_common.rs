@@ -35,8 +35,9 @@ use mush_ipc::{
 // both agree on one bound (MEDIUM finding).
 use mush_net_ssh::MAX_LINE_CHARS;
 use mush_proto::{
-    ActionStatusId, MAX_VIEW_WIRE_INTEGER, ObjRef, OutputEvent, ProjectedActionReceipt,
-    ProjectedActionStatus, ProjectedCommitToken, RespondChoice, RichText, ViewEnvelope,
+    ActionStatusId, MAX_VIEW_WIRE_INTEGER, ObjRef, OutputEvent, PanelFrameKind,
+    ProjectedActionReceipt, ProjectedActionStatus, ProjectedCommitToken, RespondChoice, RichText,
+    ViewEnvelope,
 };
 use mush_session::{
     ConnId, ConnectionHandle, DetachOutcome, DetachReason, FloodVerdict, SendToConn, SessId,
@@ -56,6 +57,11 @@ use crate::delivery::{char_key, char_key_obj, send_event_to_conn};
 const DELIVERY_BARRIER_ATTEMPTS: usize = 3;
 const DELIVERY_BARRIER_TIMEOUT: Duration = Duration::from_secs(5);
 const DELIVERY_BARRIER_RETRY_DELAY: Duration = Duration::from_millis(25);
+
+/// Hard cap on one narrative-backlog reply (interface plan I12), mirroring the
+/// comsys `MAX_BACKLOG_LIMIT`. The ring itself is only `resume_ring` deep, so a
+/// single pull can never exceed it.
+const MAX_NARRATIVE_BACKLOG: usize = 200;
 
 fn render_legal_action_list(offers: &[ProjectedLegalAction]) -> String {
     let mut text = String::from("Available actions:");
@@ -709,6 +715,65 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
         );
     }
 
+    /// Answer a [`Query::NarrativeBacklog`] locally (interface plan I12) from
+    /// the caller's own resume ring — the ring is a per-viewer, already
+    /// perceive/@ignore-gated backlog, so the reply carries only lines this
+    /// viewer already saw. Read-only and conn-scoped (never re-enters the
+    /// ring). The flood bucket is charged strictly (ignoring flood-exempt),
+    /// since a locally-answered query has no world-side backpressure.
+    pub(crate) fn narrative_backlog_reply(
+        &self,
+        conn: ConnId,
+        id: u64,
+        before_seq: Option<u64>,
+        limit: u32,
+    ) {
+        let Some(sess) = self.sessions.session_of_conn(conn) else {
+            return;
+        };
+        let limit = (limit as usize).clamp(1, MAX_NARRATIVE_BACKLOG);
+        let bl = self
+            .sessions
+            .backlog_matching(sess, before_seq, limit, |ev| {
+                matches!(ev, OutputEvent::Narrative { .. })
+            })
+            .unwrap_or_default();
+        let lines: Vec<serde_json::Value> = bl
+            .lines
+            .iter()
+            .filter_map(|env| match &env.event {
+                OutputEvent::Narrative { kind, actor, text } => Some(serde_json::json!({
+                    "seq": env.seq,
+                    "ts": env.ts,
+                    "kind": kind,
+                    "actor": actor,
+                    "text": text,
+                })),
+                _ => None,
+            })
+            .collect();
+        let data = serde_json::json!({
+            "backlog": {
+                "before_seq": before_seq,
+                "more": bl.more,
+                "evicted": bl.evicted,
+                "lines": lines,
+            }
+        });
+        send_event_to_conn(
+            &self.sessions,
+            conn,
+            OutputEvent::Reply {
+                id,
+                event: Box::new(OutputEvent::Panel {
+                    feed: SmolStr::new_static("narrative"),
+                    kind: PanelFrameKind::Delta,
+                    data,
+                }),
+            },
+        );
+    }
+
     /// Check account credentials. A blocked address is denied outright.
     /// (The backend runs the argon2id verify on the blocking pool.)
     pub async fn auth_account(&self, account: &str, password: &str, addr: IpAddr) -> AuthResult {
@@ -1005,6 +1070,24 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
     /// data (invariant T3).
     pub async fn query(&self, conn: u64, id: u64, name: SmolStr, args: serde_json::Value) {
         let conn_id = ConnId(conn);
+        // Interface plan I12: the narrative backlog is answered LOCALLY from the
+        // resume ring (the world cannot read the gateway ring), gated by a
+        // STRICT flood check that ignores flood-exempt — a locally-answered
+        // query has no world-side backpressure. Dispatched before the generic,
+        // exempt-honouring `check_input`.
+        if name == "narrative.backlog" {
+            if self.sessions.check_query_flood(conn_id) == FloodVerdict::Throttled {
+                return;
+            }
+            let before_seq = args.get("before_seq").and_then(serde_json::Value::as_u64);
+            let limit = args
+                .get("limit")
+                .and_then(serde_json::Value::as_u64)
+                .and_then(|l| u32::try_from(l).ok())
+                .unwrap_or(0);
+            self.narrative_backlog_reply(conn_id, id, before_seq, limit);
+            return;
+        }
         if self.sessions.check_input(conn_id) == FloodVerdict::Throttled {
             return;
         }

@@ -9,7 +9,8 @@ use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::Instant;
 
 use mush_proto::{
-    ClientCaps, ClientKind, ColorDepth, Envelope, OutputEvent, ProjectedCommitToken, RichText,
+    ClientCaps, ClientKind, ColorDepth, Envelope, NarrativeKind, OutputEvent, ProjectedCommitToken,
+    RichText,
 };
 use mush_session::{
     AttachOutcome, CharKey, ConnId, ConnectionHandle, DetachReason, ReplayError, SendToConn,
@@ -465,4 +466,75 @@ fn semantic_receipts_are_bounded_acknowledged_and_redelivered() {
     assert!(mgr.acknowledge_receipt(ConnId(2), &token('3')));
     assert!(mgr.acknowledge_receipt(ConnId(2), &token('4')));
     assert_eq!(mgr.unacknowledged_receipt_count(sess), Some(0));
+}
+
+// ---- I12 narrative backlog (backlog_matching) -------------------------------
+
+fn narr(text: &str) -> OutputEvent {
+    OutputEvent::Narrative {
+        kind: NarrativeKind::Say,
+        actor: None,
+        text: RichText::plain(text),
+    }
+}
+
+#[test]
+fn backlog_matching_is_newest_first_narrative_only_and_pages_by_before_seq() {
+    let mgr = manager_with_ticking_clock(SessionConfig::default());
+    let (web, _rx) = web_conn(1, 32);
+    let (sess, _) = mgr.attach(web, CharKey(1), "a".into());
+
+    // Interleave Sys and Narrative: seqs 1..=5 = s1, n1, s2, n2, n3.
+    mgr.send_event_to_char(CharKey(1), sys("s1")); // seq 1
+    mgr.send_event_to_char(CharKey(1), narr("n1")); // seq 2
+    mgr.send_event_to_char(CharKey(1), sys("s2")); // seq 3
+    mgr.send_event_to_char(CharKey(1), narr("n2")); // seq 4
+    mgr.send_event_to_char(CharKey(1), narr("n3")); // seq 5
+
+    let keep = |ev: &OutputEvent| matches!(ev, OutputEvent::Narrative { .. });
+
+    // Whole backlog: narrative only, newest-first; Sys excluded.
+    let bl = mgr.backlog_matching(sess, None, 10, keep).expect("session");
+    let seqs: Vec<u64> = bl.lines.iter().map(|e| e.seq).collect();
+    assert_eq!(seqs, [5, 4, 2], "narrative seqs newest-first, Sys skipped");
+    assert!(!bl.more && !bl.evicted);
+
+    // Limit trips `more`.
+    let bl = mgr.backlog_matching(sess, None, 2, keep).expect("session");
+    assert_eq!(bl.lines.iter().map(|e| e.seq).collect::<Vec<_>>(), [5, 4]);
+    assert!(bl.more, "a further narrative match exists below the page");
+
+    // Paging with a strict-below cursor.
+    let bl = mgr
+        .backlog_matching(sess, Some(4), 10, keep)
+        .expect("session");
+    assert_eq!(
+        bl.lines.iter().map(|e| e.seq).collect::<Vec<_>>(),
+        [2],
+        "before_seq=4 excludes seq 4 (strict <) and returns the older n1"
+    );
+    assert!(!bl.more);
+}
+
+#[test]
+fn backlog_matching_reports_evicted_once_the_ring_rolls() {
+    let mgr = manager_with_ticking_clock(SessionConfig {
+        resume_ring: 3,
+        ..SessionConfig::default()
+    });
+    let (web, _rx) = web_conn(1, 32);
+    let (sess, _) = mgr.attach(web, CharKey(1), "a".into());
+
+    // Five narratives into a 3-deep ring: seqs 1,2 evicted, ring holds 3,4,5.
+    for i in 1..=5 {
+        mgr.send_event_to_char(CharKey(1), narr(&format!("n{i}")));
+    }
+    let keep = |ev: &OutputEvent| matches!(ev, OutputEvent::Narrative { .. });
+    let bl = mgr.backlog_matching(sess, None, 10, keep).expect("session");
+    assert_eq!(
+        bl.lines.iter().map(|e| e.seq).collect::<Vec<_>>(),
+        [5, 4, 3]
+    );
+    assert!(!bl.more, "no further match — older seqs were evicted");
+    assert!(bl.evicted, "the ring rolled, so older history may be gone");
 }

@@ -26,6 +26,15 @@ before_seq?: number | null,
 /**
  * Maximum number of messages to return.
  */
+limit: number, } } | { "t": "narrative_backlog", "d": {
+/**
+ * Return lines with the per-session envelope `seq` strictly below
+ * this; `None` means start from the newest.
+ */
+before_seq?: number | null,
+/**
+ * Maximum number of lines to return (server-clamped).
+ */
 limit: number, } } | { "t": "panel_subscribe", "d": {
 /**
  * Panel feed id, e.g. `"wod.roll"`.

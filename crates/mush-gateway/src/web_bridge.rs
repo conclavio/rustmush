@@ -584,6 +584,21 @@ impl<A: AuthBackend + 'static> WebHooks for WebBridge<A> {
     fn request(&self, conn: u64, id: u64, q: Query) -> BoxFuture<'_, ()> {
         Box::pin(async move {
             let conn_id = ConnId(conn);
+            // Interface plan I12: the narrative backlog is answered LOCALLY from
+            // the caller's resume ring (the world cannot read the gateway ring),
+            // gated by a STRICT flood check that ignores flood-exempt — a
+            // locally-answered query has no world-side backpressure. Dispatched
+            // before the generic, exempt-honouring `check_input`. On a failed
+            // match `q` is untouched and flows to the world-routed match below.
+            if let Query::NarrativeBacklog { before_seq, limit } = q {
+                if self.core.sessions.check_query_flood(conn_id) == FloodVerdict::Throttled {
+                    self.direct_error_reply(conn_id, id, "You're doing that too fast.");
+                    return;
+                }
+                self.core
+                    .narrative_backlog_reply(conn_id, id, before_seq, limit);
+                return;
+            }
             // Requests share the per-connection input flood bucket with
             // lines (a panel cannot spam the world task past the throttle)
             // but do NOT stamp idle time — a background refresh is not the
@@ -673,6 +688,11 @@ impl<A: AuthBackend + 'static> WebHooks for WebBridge<A> {
                         ),
                         _ => (feed.clone(), serde_json::json!({})),
                     }
+                }
+                // Answered locally above (before the flood check), so it never
+                // reaches this world-routing match.
+                Query::NarrativeBacklog { .. } => {
+                    unreachable!("narrative backlog is answered locally")
                 }
             };
             match self

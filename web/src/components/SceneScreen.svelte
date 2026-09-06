@@ -30,7 +30,7 @@
 
 <div class="scene">
   <RoomBand {app} {onCmd} />
-  <Scrollback sb={app.scrollback} {onCmd} />
+  <Scrollback sb={app.scrollback} {onCmd} onLoadOlder={() => app.loadOlderNarrative()} />
   {#if app.vitals.loaded}
     <VitalsStrip {app} />
   {:else if promptText}

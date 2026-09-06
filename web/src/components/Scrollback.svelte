@@ -12,12 +12,37 @@
   import RichLine from "./RichLine.svelte";
   import RollCard from "./RollCard.svelte";
 
-  let { sb, onCmd }: { sb: ScrollbackStore; onCmd: (cmd: string) => void } = $props();
+  let {
+    sb,
+    onCmd,
+    onLoadOlder,
+  }: {
+    sb: ScrollbackStore;
+    onCmd: (cmd: string) => void;
+    // Fetch the next older narrative backlog page (interface plan I12).
+    onLoadOlder?: () => void;
+  } = $props();
 
   let viewport: HTMLDivElement | undefined = $state();
 
   /** Pinned = within this many px of the bottom. */
   const PIN_SLOP = 48;
+  /** Within this many px of the top triggers a backlog fetch. */
+  const TOP_SLOP = 24;
+  /** Distance-from-bottom to restore after a prepend (invariant under
+   * prepending content above, so the view does not jump). `null` when no
+   * fetch is pending its anchor restore. */
+  let anchorFromBottom: number | null = null;
+
+  /** Ask for older history and remember the scroll anchor so the prepended
+   * page does not shove the view down. */
+  function loadOlder(): void {
+    if (!onLoadOlder || sb.fetchingBacklog || !sb.moreBacklog || !viewport) {
+      return;
+    }
+    anchorFromBottom = viewport.scrollHeight - viewport.scrollTop;
+    onLoadOlder();
+  }
 
   function onScroll(): void {
     if (!viewport) {
@@ -25,6 +50,10 @@
     }
     const dist = viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight;
     sb.setPinned(dist < PIN_SLOP);
+    // At the top of the local buffer, pull older lines from the server ring.
+    if (viewport.scrollTop <= TOP_SLOP && sb.hiddenCount === 0) {
+      loadOlder();
+    }
   }
 
   function jumpToBottom(): void {
@@ -34,13 +63,22 @@
     sb.setPinned(true);
   }
 
-  // Autoscroll on new content while pinned.
+  // Autoscroll on new content while pinned; otherwise restore the scroll
+  // anchor after a backlog prepend so the reader stays on the same line.
   $effect(() => {
     void sb.entries.length; // track
     if (sb.pinned) {
       void tick().then(() => {
         if (viewport) {
           viewport.scrollTop = viewport.scrollHeight;
+        }
+      });
+    } else if (anchorFromBottom !== null) {
+      const keep = anchorFromBottom;
+      anchorFromBottom = null;
+      void tick().then(() => {
+        if (viewport) {
+          viewport.scrollTop = viewport.scrollHeight - keep;
         }
       });
     }
@@ -52,6 +90,10 @@
     {#if sb.hiddenCount > 0}
       <button type="button" class="older" onclick={() => sb.showOlder()}>
         Show older ({sb.hiddenCount} more)
+      </button>
+    {:else if onLoadOlder && sb.moreBacklog}
+      <button type="button" class="older" onclick={loadOlder} disabled={sb.fetchingBacklog}>
+        {sb.fetchingBacklog ? "Loading older history…" : "Load older history"}
       </button>
     {/if}
     {#each sb.visibleGroups as group (group.id)}
