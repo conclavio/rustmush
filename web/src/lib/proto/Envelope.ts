@@ -4,6 +4,8 @@ import type { ObjRef } from "./ObjRef";
 import type { OutputEvent } from "./OutputEvent";
 import type { PanelFrameKind } from "./PanelFrameKind";
 import type { PromptSpec } from "./PromptSpec";
+import type { RequestKind } from "./RequestKind";
+import type { RequestOption } from "./RequestOption";
 import type { RichText } from "./RichText";
 import type { RoomView } from "./RoomView";
 import type { ViewEnvelope } from "./ViewEnvelope";
@@ -120,7 +122,29 @@ actor: ObjRef,
 /**
  * `true` when a draft began, `false` when it was sent or abandoned.
  */
-active: boolean, } } | { "t": "reply", "d": {
+active: boolean, } } | { "t": "request", "d": {
+/**
+ * Server-chosen correlation id, echoed in the response.
+ */
+id: number,
+/**
+ * What the request asks for.
+ */
+kind: RequestKind,
+/**
+ * The prompt shown to the viewer (`MAX_REQUEST_PROMPT_BYTES`).
+ */
+prompt: RichText,
+/**
+ * The options for a [`RequestKind::Choice`] (`MAX_REQUEST_OPTIONS`);
+ * empty for the other kinds.
+ */
+options?: Array<RequestOption>,
+/**
+ * When the request expires, Unix milliseconds; `None` leaves the
+ * timeout to the server's default.
+ */
+deadline_ms?: number | null, } } | { "t": "reply", "d": {
 /**
  * The `id` from the originating request.
  */

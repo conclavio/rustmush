@@ -110,6 +110,11 @@ pub fn render(event: &OutputEvent, caps: &ClientCaps, theme: &AnsiTheme, out: &m
         // stream has nowhere to put "is typing" and nothing to say when it
         // stops.
         OutputEvent::Composing { .. } => {}
+        // A server-initiated request (interface plan I10): the modal clients
+        // render it; a line-only client cannot answer, so it shows nothing
+        // and the server applies its default on the deadline (D-I-21). The
+        // line-mode prompt and the `respond` command are I10 part 2.
+        OutputEvent::Request { .. } => {}
         OutputEvent::Hello { proto, server, .. } => {
             w.tagged("system", &format!("{server} (proto {proto})"));
             w.end_line();

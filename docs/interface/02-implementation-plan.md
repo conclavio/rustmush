@@ -1213,6 +1213,40 @@ composing and idle unaffected (rule 5).
 late or replayed response fire twice, or a request authorize more than the
 one interaction it opened?
 
+**As built (2026-09-05, branch `interface-i10`) — part 1 of 2: the wire and
+the web client.**
+
+- **Wire** (additive, ts-exported, gen-ts in the commit): `OutputEvent::
+  Request { id, kind, prompt, options, deadline_ms? }` with `RequestKind`
+  (`confirm` | `choice` | `target` | `text`) and `RequestOption { id, label }`,
+  and `ClientCommand::Respond { id, choice }` with `RespondChoice`
+  (`confirm(bool)` | `choose(id)` | `text(string)` | `cancel`). Caps
+  `MAX_REQUEST_OPTIONS` (32) and the prompt/text byte bounds. A round-trip
+  test in `wire.rs`; ts_export needles for `request` and `respond`.
+- **Web client:** `RequestStore` (parse, the pending queue front-to-back, a
+  duplicate id replaces, remove on answer, `expireDue`), `RequestModal.svelte`
+  (the four kinds as a centred dialog, a bottom sheet on a phone; an option
+  answers by id, Cancel sends `cancel`, the deadline drops it locally so the
+  server applies its default), wired into `GameApp` (`c.on("request")`,
+  `respond(id, choice)` sends `Respond`, cleared on logout). Tests in
+  `requests.test.ts`.
+- **The additive-variant tax:** an ignore or seam arm in `mush-ansi` (line
+  mode renders nothing — a line-only client falls back to the server
+  default), `mush-testkit::text_of`, the TUI `render_event`, and the web WS
+  handler (a stray `Respond` is logged and ignored; nothing produces a
+  Request yet).
+- **D-I-21 (choice-only) holds:** the client reports only a `RespondChoice`
+  and never holds a runnable token. Perceive/DARK gating and rate-limiting
+  belong to the producer (part 2).
+
+**Remaining — part 2 (the engine lifecycle and the other clients).** The
+engine request registry that opens a `Request`, correlates the `Respond` by
+id, applies the timeout default, and enforces perceive/DARK gating and
+rate-limiting (a `hooks.respond` seam through both bridges); the TUI overlay
+and the line-mode prompt plus a `respond` command; a first real producer (a
+targeting or confirm flow). The L/B/S verify runs then, against a live
+producer.
+
 ### 3.11 Cut I11 — The unified notification surface
 
 **What it is.** E6a already produces org-inbox, staff-alert and escalation
@@ -1606,6 +1640,11 @@ modal ruling (D-I-17, D-I-18) rather than by its default.**
 
 ## 10. Changelog
 
+- **Draft 0.5 — 2026-09-05.** As-built notes for the second wave as it
+  builds: I9 (§3.9, generic view renderer — the `.view` convention, both
+  renderers, auto-registered web screens, the one-free-digit constraint) and
+  I10 part 1 (§3.10, the `Request`/`Respond` wire and the web modal; the
+  engine lifecycle and the TUI/line-mode are part 2).
 - **Draft 0.4 — 2026-09-05.** Second wave of engine-level enablers added on
   the owner's brief, after I5–I7 landed (main `135e065`): I9 generic
   semantic-view renderer, I10 server-initiated interaction, I11 unified

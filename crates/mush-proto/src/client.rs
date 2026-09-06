@@ -94,6 +94,17 @@ pub enum ClientCommand {
         /// Whether a draft is in progress.
         active: bool,
     },
+    /// A client's answer to a server
+    /// [`Request`](crate::OutputEvent::Request) (interface plan I10),
+    /// correlated by `id`. The client reports only the choice; the server
+    /// owns the effect (D-I-21). A stale, forged or duplicate `id` is
+    /// ignored by the server.
+    Respond {
+        /// The `id` from the originating request.
+        id: u64,
+        /// The viewer's choice.
+        choice: crate::RespondChoice,
+    },
     /// Keepalive response to a server
     /// [`Ping`](crate::OutputEvent::Ping).
     Pong {

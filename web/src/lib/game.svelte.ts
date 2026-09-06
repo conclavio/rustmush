@@ -10,7 +10,7 @@
 
 import { login as apiLogin, logout as apiLogout, register as apiRegister } from "./auth";
 import type { CharSummary, LoginOk } from "./auth";
-import type { ClientCaps, OutputEvent, Query, RoomView, ViewEnvelope } from "./proto";
+import type { ClientCaps, OutputEvent, Query, RespondChoice, RoomView, ViewEnvelope } from "./proto";
 import {
   channelLine,
   fmtDuration,
@@ -31,6 +31,7 @@ import { ChannelsStore } from "./stores/channels.svelte";
 import { CommandsStore } from "./stores/commands.svelte";
 import { LegalActionsStore } from "./stores/actions.svelte";
 import { GenericViewStore, isViewFeed } from "./stores/genericview.svelte";
+import { RequestStore } from "./stores/requests.svelte";
 import { LlmDashboardStore } from "./stores/llm.svelte";
 import { MailStore } from "./stores/mail.svelte";
 import { PresenceStore } from "./stores/presence.svelte";
@@ -151,6 +152,7 @@ export class GameApp {
   vitals = new VitalsStore();
   presence = new PresenceStore();
   genericViews = new GenericViewStore();
+  requests = new RequestStore();
 
   screen = $state<Screen>("login");
   /** The latest `scenes` keyframe (the scene screen's glance rides in
@@ -322,6 +324,7 @@ export class GameApp {
     this.commands.clear();
     this.vitals.clear();
     this.genericViews.clear();
+    this.requests.clear();
     this.presence.clear();
     this.sceneFrame = null;
     this.paletteEntries = [];
@@ -410,6 +413,11 @@ export class GameApp {
       this.session.character = env.d.character;
       this.session.account = env.d.account;
       this.session.connections = env.d.connections;
+    });
+    c.on("request", (env) => {
+      // A server-initiated interaction (I10): hold it; RequestModal shows the
+      // oldest and the answer goes back by id.
+      this.requests.push(env.d);
     });
     c.on("prompt", (env) => {
       this.session.prompt = env.d;
@@ -753,6 +761,13 @@ export class GameApp {
   /** Send a composing hint (D-I-11); dropped silently when offline. */
   sendComposing(active: boolean): void {
     this.client.send({ t: "composing", d: { active } });
+  }
+
+  /** Answer a server-initiated request (I10, D-I-21): report the choice by
+   * id and drop it locally. The server owns the effect. */
+  respond(id: number, choice: RespondChoice): void {
+    this.client.send({ t: "respond", d: { id, choice } });
+    this.requests.remove(id);
   }
 
   /** Open the palette behind the composer's caret. */

@@ -37,11 +37,12 @@ pub use caps::{ClientCaps, ClientKind, ColorDepth};
 pub use client::{ClientCommand, Query};
 pub use envelope::Envelope;
 pub use event::{
-    ExitRef, InputMode, MAX_VIEW_COMMIT_BYTES, MAX_VIEW_DATA_BYTES, MAX_VIEW_ID_BYTES,
-    MAX_VIEW_WIRE_INTEGER, MAX_VITAL_DETAIL_BYTES, MAX_VITAL_NAME_BYTES, MAX_VITALS_PER_FEED,
-    NarrativeKind, ObjRef, OutputEvent, PanelFrameKind, PromptSpec, RoomView, ViewCursor,
-    ViewEnvelope, ViewEnvelopeError, ViewFrameDisposition, Vital, VitalRole, VitalState,
-    VitalValue, VitalsFrame, VitalsFrameError, WhoEntry,
+    ExitRef, InputMode, MAX_REQUEST_OPTIONS, MAX_REQUEST_PROMPT_BYTES, MAX_REQUEST_TEXT_BYTES,
+    MAX_VIEW_COMMIT_BYTES, MAX_VIEW_DATA_BYTES, MAX_VIEW_ID_BYTES, MAX_VIEW_WIRE_INTEGER,
+    MAX_VITAL_DETAIL_BYTES, MAX_VITAL_NAME_BYTES, MAX_VITALS_PER_FEED, NarrativeKind, ObjRef,
+    OutputEvent, PanelFrameKind, PromptSpec, RequestKind, RequestOption, RespondChoice, RoomView,
+    ViewCursor, ViewEnvelope, ViewEnvelopeError, ViewFrameDisposition, Vital, VitalRole,
+    VitalState, VitalValue, VitalsFrame, VitalsFrameError, WhoEntry,
 };
 pub use receipt::{
     ActionStatusId, ActionStatusIdError, MAX_ACTION_STATUS_ID_BYTES,

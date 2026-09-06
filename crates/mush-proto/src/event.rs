@@ -819,6 +819,58 @@ impl VitalsFrame {
 /// panel-oriented events (`Channel`, `Who`, `Panel`, …) to native panels
 /// *and/or* scrollback. One event, two renders — the core never emits twice.
 ///
+/// The most options a [`RequestKind::Choice`] request may carry.
+pub const MAX_REQUEST_OPTIONS: usize = 32;
+/// The most UTF-8 bytes in a request prompt.
+pub const MAX_REQUEST_PROMPT_BYTES: usize = 2048;
+/// The most UTF-8 bytes in a free-text response.
+pub const MAX_REQUEST_TEXT_BYTES: usize = 2048;
+
+/// What a server-initiated [`OutputEvent::Request`] asks the client for
+/// (interface plan I10). The server owns the effect; the client only reports
+/// the choice (D-I-21, choice-only).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(rename_all = "snake_case")]
+pub enum RequestKind {
+    /// A yes/no confirmation.
+    Confirm,
+    /// One of the request's `options`.
+    Choice,
+    /// A target: an object name or dbref the viewer may perceive.
+    Target,
+    /// Free text.
+    Text,
+}
+
+/// One selectable option in a [`RequestKind::Choice`] request.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct RequestOption {
+    /// The stable id the client returns in [`RespondChoice::Choose`].
+    pub id: SmolStr,
+    /// The label shown to the viewer.
+    pub label: String,
+}
+
+/// A client's answer to an [`OutputEvent::Request`] (interface plan I10),
+/// carried by [`ClientCommand::Respond`](crate::ClientCommand::Respond).
+/// The client reports only the choice; the server that opened the request
+/// owns whatever it does with it (D-I-21).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(tag = "t", content = "d", rename_all = "snake_case")]
+pub enum RespondChoice {
+    /// Answer to a [`RequestKind::Confirm`].
+    Confirm(bool),
+    /// The chosen option's id ([`RequestKind::Choice`]).
+    Choose(SmolStr),
+    /// A [`RequestKind::Target`] spec or [`RequestKind::Text`] body.
+    Text(String),
+    /// The viewer declined; the server applies its own default.
+    Cancel,
+}
+
 /// Clients MUST ignore events whose `t` they do not recognize (additive
 /// evolution).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -913,6 +965,29 @@ pub enum OutputEvent {
     },
 
     // -- request/response correlation --
+    /// A server-initiated interaction (interface plan I10, D-I-21): the
+    /// server poses a bounded choice and the client answers with
+    /// [`ClientCommand::Respond`](crate::ClientCommand::Respond) carrying the
+    /// same `id`. Advisory: it never blocks the line parser; it expires at
+    /// `deadline_ms` and the server applies a default, so a line-only or
+    /// disconnected client is never stuck. Perceive- and DARK-gated at the
+    /// producer; never an idle stamp.
+    Request {
+        /// Server-chosen correlation id, echoed in the response.
+        id: u64,
+        /// What the request asks for.
+        kind: RequestKind,
+        /// The prompt shown to the viewer (`MAX_REQUEST_PROMPT_BYTES`).
+        prompt: RichText,
+        /// The options for a [`RequestKind::Choice`] (`MAX_REQUEST_OPTIONS`);
+        /// empty for the other kinds.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        options: Vec<RequestOption>,
+        /// When the request expires, Unix milliseconds; `None` leaves the
+        /// timeout to the server's default.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        deadline_ms: Option<u64>,
+    },
     /// The correlated response to a [`ClientCommand::Req`]: wraps the
     /// payload event and echoes the request's `id`, so a `MailList` reply
     /// or a `ChannelBacklog` batch is distinguishable from live events.

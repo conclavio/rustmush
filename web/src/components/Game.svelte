@@ -15,6 +15,7 @@
   import ChannelTabs from "./ChannelTabs.svelte";
   import ChannelView from "./ChannelView.svelte";
   import GenericViewScreen from "./GenericViewScreen.svelte";
+  import RequestModal from "./RequestModal.svelte";
   import LlmPanel from "./LlmPanel.svelte";
   import MailPanel from "./MailPanel.svelte";
   import RollsPanel from "./RollsPanel.svelte";
@@ -203,6 +204,8 @@
       </footer>
     </section>
   </div>
+
+  <RequestModal {app} />
 
   {#if app.screens.helpOpen}
     <div class="backdrop" role="presentation" onclick={() => (app.screens.helpOpen = false)}>

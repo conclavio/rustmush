@@ -153,6 +153,7 @@ fn generated_shapes_match_wire_format() {
         r#""t": "resumed""#,
         r#""t": "ping""#,
         r#""t": "composing""#,
+        r#""t": "request""#,
     ] {
         assert!(
             output_event.contains(needle),
@@ -166,6 +167,7 @@ fn generated_shapes_match_wire_format() {
         "commit: string",
         r#""t": "pong""#,
         r#""t": "composing""#,
+        r#""t": "respond""#,
     ] {
         assert!(
             client_command.contains(needle),

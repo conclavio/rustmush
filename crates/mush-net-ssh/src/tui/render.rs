@@ -366,6 +366,10 @@ pub fn render_event(
         | OutputEvent::Ping { .. }
         | OutputEvent::Resumed { .. }
         | OutputEvent::Composing { .. }
+        // A server-initiated request (I10): the modal web client answers it;
+        // the TUI overlay and line-mode prompt are I10 part 2, until when a
+        // TUI user falls back to the server's default (D-I-21).
+        | OutputEvent::Request { .. }
         | OutputEvent::View(_) => {}
     }
     w.finish()

@@ -611,3 +611,64 @@ fn styled_span_full_roundtrip() {
     assert!(json["style"].get("bold").is_none());
     assert_eq!(json["style"]["underline"], json!(true));
 }
+
+#[test]
+fn request_and_respond_roundtrip() {
+    use mush_proto::{
+        ClientCommand, OutputEvent, RequestKind, RequestOption, RespondChoice, RichText,
+    };
+
+    // A Choice request with options and a deadline.
+    let req = OutputEvent::Request {
+        id: 7,
+        kind: RequestKind::Choice,
+        prompt: RichText::plain("Aim at whom?"),
+        options: vec![
+            RequestOption {
+                id: "razor".into(),
+                label: "Razor".into(),
+            },
+            RequestOption {
+                id: "mara".into(),
+                label: "Mara".into(),
+            },
+        ],
+        deadline_ms: Some(30_000),
+    };
+    let json = serde_json::to_value(&req).unwrap();
+    assert_eq!(json["t"], "request");
+    assert_eq!(json["d"]["kind"], "choice");
+    assert_eq!(json["d"]["options"][0]["id"], "razor");
+    let back: OutputEvent = serde_json::from_value(json).unwrap();
+    assert_eq!(back, req);
+
+    // A Confirm request omits options and deadline on the wire.
+    let confirm = OutputEvent::Request {
+        id: 8,
+        kind: RequestKind::Confirm,
+        prompt: RichText::plain("Spend Willpower?"),
+        options: vec![],
+        deadline_ms: None,
+    };
+    let cj = serde_json::to_value(&confirm).unwrap();
+    assert!(cj["d"].get("options").is_none(), "empty options skipped");
+    assert!(cj["d"].get("deadline_ms").is_none(), "no deadline skipped");
+    assert_eq!(serde_json::from_value::<OutputEvent>(cj).unwrap(), confirm);
+
+    // The four response shapes.
+    for (choice, tag) in [
+        (RespondChoice::Confirm(true), "confirm"),
+        (RespondChoice::Choose("razor".into()), "choose"),
+        (RespondChoice::Text("north gate".into()), "text"),
+        (RespondChoice::Cancel, "cancel"),
+    ] {
+        let cmd = ClientCommand::Respond {
+            id: 7,
+            choice: choice.clone(),
+        };
+        let j = serde_json::to_value(&cmd).unwrap();
+        assert_eq!(j["t"], "respond");
+        assert_eq!(j["d"]["choice"]["t"], tag);
+        assert_eq!(serde_json::from_value::<ClientCommand>(j).unwrap(), cmd);
+    }
+}
