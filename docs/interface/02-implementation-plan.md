@@ -1131,6 +1131,47 @@ Form renders and degrades.
 field a bespoke one hid? **B (bounds)** — schema and record caps. **C
 (coordination)** — does the rendered `legal.actions` still match `+actions`?
 
+**As built (2026-09-05, branch `interface-i9`).** As specified,
+presentation-only:
+
+- The schema is a **payload convention, not a proto type**: `genericview.ts`
+  (parse, `cellText`, `rowActionLine`, the caps) and the TUI's
+  `render_view_rows` walk `{ schema: { id, version, shape, columns, fields,
+  actionKey }, rows | record }` — the sheet's precedent — so nothing touches
+  `ViewEnvelope` or the authoritative payload, and no `mush-proto` change or
+  gen-ts is needed.
+- **Renderers:** `web/src/components/GenericView.svelte` (a table for a list,
+  a key/value list for detail/form; a row click prefills the composer) and
+  `render_view_rows` (a list header plus selectable rows carrying the
+  `actionKey` prefill; detail/form as label/value rows).
+- **The `.view` feed convention** joins `.sheet`/`.roll`/`.vitals`:
+  `GenericViewStore` holds one parsed view per feed, `#routePanel` routes a
+  `.view` frame to it, `hydrationQueries` subscribes them on hello, and
+  `ScreensStore.registerViewScreen` auto-registers a web screen (label from
+  the feed, gated on the feed present) on the next free digit. `Game.svelte`
+  renders `GenericViewScreen` for any screen carrying a `viewFeed`. So a
+  module ships a `<name>.view` feed and gets a web screen with no bespoke
+  code.
+- **Digit scarcity (a constraint, not a fork).** Only digit 6 is free on the
+  web (the built-ins hold 1-5 and 7-9), so exactly one auto view screen fits
+  today; a second is refused with a reason. The TUI's screens are static, so
+  `render_view_rows` is available to any `PaneContent::View` there rather
+  than auto-registered. A fuller digit or overflow policy (shared with I8's
+  want of 8 and 9) is a later question; §9's `keys` legend hand-back is its
+  eventual home.
+- **D-I-18 holds:** a row action is always a Prefill; the generic renderer
+  carries no Run allowlist. `legal.actions` and its authoritative `Ack` path
+  are untouched — the equivalence is proven by adapting the actions
+  presentation into a generic list and matching the label and `+act` line,
+  not by rewiring the store.
+- **Verify (P/B/C) folded as tests**, no separate probe agent (the cut is
+  client-only, pure render): web `genericview.test.ts` (parse, caps, helpers,
+  the actions render-equivalence, the offer-token projection),
+  `stores/genericview.test.ts`, the `registerViewScreen` cases; TUI
+  `view_rows_render_list_and_detail_shapes` and
+  `view_rows_reproduce_actions_and_never_leak_undeclared_fields`
+  (`assert_projection_text_clean`).
+
 ### 3.10 Cut I10 — Server-initiated interaction
 
 **What it is.** The one primitive the wire lacks. Today the server can

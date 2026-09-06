@@ -14,6 +14,7 @@
   import ActionsPanel from "./ActionsPanel.svelte";
   import ChannelTabs from "./ChannelTabs.svelte";
   import ChannelView from "./ChannelView.svelte";
+  import GenericViewScreen from "./GenericViewScreen.svelte";
   import LlmPanel from "./LlmPanel.svelte";
   import MailPanel from "./MailPanel.svelte";
   import RollsPanel from "./RollsPanel.svelte";
@@ -167,6 +168,8 @@
           <WorldgenPanel {app} />
         {:else if active.id === "llm"}
           <LlmPanel {app} />
+        {:else if active.viewFeed}
+          <GenericViewScreen {app} feed={active.viewFeed} />
         {:else}
           <p class="muted pad">{active.label}: this screen has no view yet.</p>
         {/if}

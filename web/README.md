@@ -68,6 +68,8 @@ src/
 │   ├── RichLine.svelte       # span renderer (tag class, style, CommandLink)
 │   ├── InputBar.svelte       # the channel tab's input: Enter submits, ↑/↓ history (200), masked mode
 │   ├── ChannelTabs.svelte    # the channel list, IC and OOC apart: color chips + unread badges (I7)
+│   ├── GenericView.svelte    # list/detail/form over a view schema, ruleset-blind (I9)
+│   ├── GenericViewScreen.svelte # a screen backed by a `.view` feed (I9)
 │   ├── RollBuilder.svelte    # trait pickers from the schema's categories -> one `+roll` line (I6)
 │   ├── VitalsBoard.svelte    # every `.vitals` frame as widgets + recent rolls (I6)
 │   ├── widgets/              # Gauge, TrackBoxes, KeyValue, Table — ruleset-blind (I6, probed)
@@ -156,6 +158,21 @@ Channels carry an `ic` flag (`@channel/set <c>=ic`, reported by
 `comsys.state`): the channels screen lists IC and OOC channels apart
 (`ChannelTabs.svelte`, `channelsWhere`), the channel view's head names the
 half, and an IC channel's line on the scene screen reads as prose.
+
+## Generic view screens (interface cut I9)
+
+A module that publishes a schema-bearing keyframe on a `<name>.view` feed
+gets a screen with no bespoke code. `$lib/genericview.ts` is the payload
+convention (`{ schema: { shape: list | detail | form, columns, fields,
+actionKey }, rows | record }`) — a convention walked at render time like the
+sheet schema, not a proto type, so it adds no wire and never touches the
+authoritative `ViewEnvelope` payload. `GenericView.svelte` renders it (a
+table, or a key/value list); `GenericViewStore` holds one per feed;
+`ScreensStore.registerViewScreen` auto-registers the screen on the next free
+hotkey digit (only 6 is free today — a fuller digit policy is a later
+question). A row's action is always a Prefill (D-I-18): a click opens the
+composer with the line ready. The SSH TUI walks the identical convention in
+`render_view_rows`.
 
 ## Ruleset screens on existing data (interface cut I6)
 

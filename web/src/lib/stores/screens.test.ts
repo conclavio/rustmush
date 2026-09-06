@@ -100,3 +100,33 @@ describe("ScreensStore", () => {
     expect(s.exits.size).toBe(0);
   });
 });
+
+describe("registerViewScreen (interface plan I9)", () => {
+  it("registers a .view screen on a free digit, gated on the feed, idempotently", () => {
+    const s = new ScreensStore();
+    const withView: GateInput = { panels: [...full.panels, "jobs.view"], features: full.features };
+    expect(s.registerViewScreen("jobs.view")).toBeNull();
+    const def = s.available(withView).find((d) => d.id === "view:jobs.view");
+    expect(def).toBeDefined();
+    expect(def?.digit).toBe(6); // the one free web digit
+    expect(def?.label).toBe("jobs");
+    expect(def?.viewFeed).toBe("jobs.view");
+    // Absent from the manifest, absent from the list.
+    expect(s.available(full).some((d) => d.id === "view:jobs.view")).toBe(false);
+    // Switch to it by its digit.
+    expect(s.switchDigit(6, withView)).toBe(true);
+    expect(s.active).toBe("view:jobs.view");
+    // Idempotent: a second call adds nothing.
+    expect(s.registerViewScreen("jobs.view")).toBeNull();
+    expect(s.available(withView).filter((d) => d.id === "view:jobs.view")).toHaveLength(1);
+  });
+
+  it("refuses a second view screen: 6 is the only free web digit", () => {
+    // The built-ins hold 1-5 and 7-9; a first view screen takes 6, and a
+    // second has no free digit (a real constraint — a fuller policy is a
+    // later question, tracked in the plan's I9 as-built).
+    const s = new ScreensStore();
+    expect(s.registerViewScreen("jobs.view")).toBeNull();
+    expect(s.registerViewScreen("staff.view")).toContain("no free hotkey digit");
+  });
+});

@@ -1744,6 +1744,41 @@ mod tests {
         );
     }
 
+    /// I9 (verify C, P): the generic renderer reproduces the information a
+    /// legal-actions list carries — the label shown and the `+act <verb>`
+    /// line each row runs — so an actions-shaped feed needs no bespoke
+    /// renderer; and a row field the schema does not name (an opaque offer
+    /// token) never reaches the render.
+    #[test]
+    fn view_rows_reproduce_actions_and_never_leak_undeclared_fields() {
+        let theme = AnsiTheme::default();
+        let store = PanelStore::new();
+        let ctx = RenderCtx {
+            theme: &theme,
+            depth: ColorDepth::TrueColor,
+            utf8: true,
+            store: &store,
+            selected_channel: None,
+        };
+        let view = serde_json::json!({
+            "schema": { "id": "actions", "version": 1, "shape": "list",
+                "columns": [ { "key": "label", "label": "Action" } ], "actionKey": "act" },
+            "rows": [ { "label": "Brace", "act": "+act brace", "_offer": "secret-token" },
+                      { "label": "Aim", "act": "+act aim", "_offer": "another-secret" } ]
+        });
+        let rows = render_view_rows(&view, &ctx);
+        assert_eq!(rows.rows.len(), 3, "a header plus two rows");
+        assert_eq!(rows.rows[1].prefill.as_deref(), Some("+act brace"));
+        assert!(line_text(&rows.rows[1].line).contains("Brace"));
+        assert_eq!(rows.rows[2].prefill.as_deref(), Some("+act aim"));
+        let all: String = rows.rows.iter().map(|r| line_text(&r.line)).collect();
+        mush_contract_tests::assert_projection_text_clean(
+            "I9 generic view",
+            &all,
+            &["secret-token", "another-secret", "_offer"],
+        );
+    }
+
     /// I6: the vitals pane's widgets — a gauge with digits, boxes grouped
     /// in threes with the level and the detail, a readout, the condition
     /// mark per state — in ASCII and UTF-8; swapped bounds and empty boxes

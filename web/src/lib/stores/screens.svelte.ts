@@ -38,6 +38,9 @@ export interface ScreenDef {
   exitsAreKeys: boolean;
   /** Whether the server's manifest allows the screen. */
   gate: (input: GateInput) => boolean;
+  /** A `.view` feed this screen renders generically (interface plan I9);
+   * `undefined` for a built-in or bespoke screen. */
+  viewFeed?: string;
 }
 
 /** Verbs a bare key may send (D-I-18): every one reads state only. */
@@ -202,6 +205,46 @@ export class ScreensStore {
   inputFocused = $state(false);
   paletteOpen = $state(false);
   helpOpen = $state(false);
+
+  /** The lowest hotkey digit 1-9 not used by a built-in or a registered
+   * feed screen; `null` when all nine are taken (interface plan I9). */
+  freeDigit(): number | null {
+    const used = new Set<number>([
+      ...BUILTIN_SCREENS.map((s) => s.digit),
+      ...this.feedScreens.map((f) => f.def.digit),
+    ]);
+    for (let d = 1; d <= 9; d++) {
+      if (!used.has(d)) {
+        return d;
+      }
+    }
+    return null;
+  }
+
+  /** Register a generic-view screen for a `.view` feed (interface plan I9),
+   * idempotently, taking the next free digit. Returns `null` on success, a
+   * reason when refused (already present, no free digit, or the probe). No
+   * bespoke code: the schema in the feed drives the render. */
+  registerViewScreen(feed: string): string | null {
+    if (this.feedScreens.some((f) => f.def.viewFeed === feed)) {
+      return null;
+    }
+    const digit = this.freeDigit();
+    if (digit === null) {
+      return "no free hotkey digit for a view screen";
+    }
+    const label = feed.replace(/\.view$/, "").slice(0, 10);
+    const def: ScreenDef = {
+      id: `view:${feed}`,
+      digit,
+      label,
+      keys: [{ key: "r", label: "refresh", action: { kind: "local", action: "refresh" } }],
+      exitsAreKeys: false,
+      gate: (g) => g.panels.includes(feed),
+      viewFeed: feed,
+    };
+    return this.registerFeedScreen({ suffix: feed, def });
+  }
 
   /** Register a ruleset screen (I6, I8); refused when it fails the probe. */
   registerFeedScreen(fs: FeedScreen): string | null {

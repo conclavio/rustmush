@@ -126,3 +126,44 @@ describe("rowActionLine (D-I-18: a row action is a Prefill line)", () => {
     expect(rowActionLine({ a: "1", _open: "x" }, noAction)).toBeNull();
   });
 });
+
+// Render-equivalence and projection (interface plan I9, verify C and P): the
+// generic list carries the same information a legal-actions feed does — the
+// label shown and the Prefill line each row runs — so an actions-shaped feed
+// needs no bespoke renderer; and a row field the schema does not name (an
+// opaque offer token) is structurally unreachable, so it can never leak.
+describe("generic view reproduces an actions list without leaking offers", () => {
+  const actions = [
+    { offer: "secret-token", presentation: { verb: "brace", label: "Brace", help: "Hold." } },
+    { offer: "another-secret", presentation: { verb: "aim", label: "Aim", help: "Steady." } },
+  ];
+  // The adapter a future actions-shaped `.view` producer would use: label as
+  // a column, the `+act <verb>` line as the action; the offer token is never
+  // placed on a row.
+  const view = parseGenericView({
+    schema: {
+      id: "actions",
+      version: 1,
+      shape: "list",
+      columns: [{ key: "label", label: "Action" }],
+      actionKey: "act",
+    },
+    rows: actions.map((a) => ({ label: a.presentation.label, act: `+act ${a.presentation.verb}` })),
+  })!;
+
+  it("shows each label and runs the +act line", () => {
+    expect(view.rows.map((r) => cellText(r, "label"))).toEqual(["Brace", "Aim"]);
+    expect(view.rows.map((r) => rowActionLine(r, view.schema))).toEqual([
+      "+act brace",
+      "+act aim",
+    ]);
+  });
+
+  it("only ever reads declared columns, so an offer token cannot render", () => {
+    const rendered = view.rows
+      .flatMap((r) => view.schema.columns.map((c) => cellText(r, c.key)))
+      .join(" ");
+    expect(rendered).not.toContain("secret");
+    expect(rendered).not.toContain("offer");
+  });
+});

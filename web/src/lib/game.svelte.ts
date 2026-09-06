@@ -30,6 +30,7 @@ import { storageDel, storageGet, storageGetJson, storageSet, storageSetJson } fr
 import { ChannelsStore } from "./stores/channels.svelte";
 import { CommandsStore } from "./stores/commands.svelte";
 import { LegalActionsStore } from "./stores/actions.svelte";
+import { GenericViewStore, isViewFeed } from "./stores/genericview.svelte";
 import { LlmDashboardStore } from "./stores/llm.svelte";
 import { MailStore } from "./stores/mail.svelte";
 import { PresenceStore } from "./stores/presence.svelte";
@@ -75,6 +76,7 @@ type PendingReq =
   | { kind: "llm_dashboard" }
   | { kind: "commands" }
   | { kind: "vitals"; feed: string }
+  | { kind: "view"; feed: string }
   | { kind: "scenes" };
 
 const HELP_LINES = [
@@ -123,6 +125,8 @@ export function hydrationQueries(
   for (const feed of session.panels) {
     if (feed.endsWith(".vitals")) {
       out.push({ pending: { kind: "vitals", feed }, q: { t: "panel_subscribe", d: { feed } } });
+    } else if (feed.endsWith(".view")) {
+      out.push({ pending: { kind: "view", feed }, q: { t: "panel_subscribe", d: { feed } } });
     }
   }
   if (session.hasPanel("scenes")) {
@@ -146,6 +150,7 @@ export class GameApp {
   commands = new CommandsStore();
   vitals = new VitalsStore();
   presence = new PresenceStore();
+  genericViews = new GenericViewStore();
 
   screen = $state<Screen>("login");
   /** The latest `scenes` keyframe (the scene screen's glance rides in
@@ -316,6 +321,7 @@ export class GameApp {
     this.screens.clear();
     this.commands.clear();
     this.vitals.clear();
+    this.genericViews.clear();
     this.presence.clear();
     this.sceneFrame = null;
     this.paletteEntries = [];
@@ -555,6 +561,13 @@ export class GameApp {
       this.sceneFrame = d.data;
     } else if (d.feed === "npc.thinking") {
       this.presence.applyThinking(d.data, Date.now());
+    } else if (isViewFeed(d.feed)) {
+      // A `<name>.view` generic view (I9): hold it and make sure a screen
+      // exists for it — a module ships a view and gets a screen with no
+      // bespoke code.
+      if (this.genericViews.apply(d.feed, d.data)) {
+        this.screens.registerViewScreen(d.feed);
+      }
     }
     // Unknown feeds (future modules): ignored — additive evolution.
   }
