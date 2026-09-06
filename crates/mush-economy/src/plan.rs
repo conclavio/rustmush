@@ -185,6 +185,21 @@ pub enum AssetOp {
         /// The new reference, or `None` to clear it.
         catalog: Option<crate::record::CatalogRef>,
     },
+    /// **Abandon** the asset (E7 cut 3; doc 10 T3, §15; 08f §1.1's "in E7 with
+    /// the mechanical recipe written out").
+    ///
+    /// A **direct attributed asset action** that need not masquerade as a
+    /// bilateral contract, next to the claim seizure that needs the same
+    /// unilateral title effect. It moves `lifecycle` to
+    /// [`AssetLifecycle::Abandoned`](crate::record::AssetLifecycle::Abandoned),
+    /// **retains `title_owner`** as the last owner so provenance survives
+    /// (T3), and **touches custody not at all**. The salvage claim that turns
+    /// possession into title stays an ordinary E4b2 contract with a `Before`
+    /// contest deadline and a named adjudicator; cut 3 writes none.
+    Abandon {
+        /// The titled object.
+        object: ObjId,
+    },
 }
 
 impl AssetOp {
@@ -201,7 +216,8 @@ impl AssetOp {
             | AssetOp::SetMaintenance { object, .. }
             | AssetOp::WriteOff { object, .. }
             | AssetOp::ReportStolen { object, .. }
-            | AssetOp::SetCatalog { object, .. } => *object,
+            | AssetOp::SetCatalog { object, .. }
+            | AssetOp::Abandon { object } => *object,
         }
     }
     /// The canonical op ordinal — the second key of the plan-hash total order, and
@@ -225,6 +241,12 @@ impl AssetOp {
             AssetOp::WriteOff { .. } => 7,
             AssetOp::ReportStolen { .. } => 8,
             AssetOp::SetCatalog { .. } => 9,
+            // E7 cut 3 takes the next free value, 10, and renumbers nothing:
+            // the ordinal is the second key of the plan-hash total order, and
+            // the two hard-coded digest pins prove nothing moved. It sorts
+            // **after** `WriteOff` because both are terminal statements about
+            // the title and neither may precede the other in one plan.
+            AssetOp::Abandon { .. } => 10,
         }
     }
     /// Whether this op changes who holds title (`Title` / `TransferTitle` /
@@ -233,7 +255,10 @@ impl AssetOp {
     pub fn is_title_changing(&self) -> bool {
         matches!(
             self,
-            AssetOp::Title { .. } | AssetOp::TransferTitle { .. } | AssetOp::WriteOff { .. }
+            AssetOp::Title { .. }
+                | AssetOp::TransferTitle { .. }
+                | AssetOp::WriteOff { .. }
+                | AssetOp::Abandon { .. }
         )
     }
 }

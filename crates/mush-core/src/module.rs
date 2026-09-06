@@ -1955,6 +1955,57 @@ impl<'a> Registrar<'a> {
             })
     }
 
+    /// Delegate this module's typed state families to one other composed
+    /// owner, so a provider registered by that owner may read and write them
+    /// **inside its own bundle**.
+    ///
+    /// Declared by the **owning** module only: the registrar stamps the caller
+    /// as the family owner, so no module can help itself to another's state.
+    /// A delegation is never implicit, never transitive and never symmetric,
+    /// at most [`MAX_STATE_FAMILY_DELEGATES`](crate::action_state::MAX_STATE_FAMILY_DELEGATES)
+    /// grantees per owner, and it enters the state-family fingerprint — two
+    /// deployments differing only in a delegation are not the same deployment.
+    ///
+    /// It exists for the one shape the tree could not otherwise express: a
+    /// single authoritative bundle whose post-images belong to two owners
+    /// (E7 cut 3's extraction debits `mush-inventory`'s deposit pool and
+    /// advances `mush-industry`'s run in one commit). The persisted namespace
+    /// of every write stays the **family owner's**.
+    ///
+    /// # Errors
+    /// [`ModError`] if the registry is frozen, the grantee is not a canonical
+    /// owner id, the grantee is this module, or the delegate cap is reached.
+    pub fn delegate_state_families(&mut self, grantee: &str) -> Result<(), ModError> {
+        self.require_mechanics_registration_authority()?;
+        if self.reg.state_families.is_some() {
+            return Err(ModError::msg(format!(
+                "module {}: state-family registry is already frozen",
+                self.module
+            )));
+        }
+        let owner = crate::mechanics::OwnerId::new(self.module.as_str()).map_err(|e| {
+            ModError::msg(format!(
+                "module {} has no canonical mechanics owner id: {e}",
+                self.module
+            ))
+        })?;
+        let grantee = crate::mechanics::OwnerId::new(grantee).map_err(|e| {
+            ModError::msg(format!(
+                "module {}: state-family delegate is not a canonical owner id: {e}",
+                self.module
+            ))
+        })?;
+        self.reg
+            .state_family_builder
+            .delegate(owner, grantee)
+            .map_err(|e| {
+                ModError::msg(format!(
+                    "module {}: state-family delegation: {e}",
+                    self.module
+                ))
+            })
+    }
+
     /// Register a synchronous provider for one exact module-owned clock.
     ///
     /// The registrar stamps the provider owner. At read time the kernel

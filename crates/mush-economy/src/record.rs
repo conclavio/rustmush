@@ -784,6 +784,24 @@ pub enum AssetLifecycle {
     Active,
     /// Written off (destroyed/lost/scrapped). Terminal in E3.
     WrittenOff,
+    /// **Abandoned** by its owner (E7 cut 3; doc 10 T3, §15; 08f §1.1's "in E7
+    /// with the mechanical recipe written out").
+    ///
+    /// A **third, non-terminal** state, and deliberately not a null owner:
+    /// `title_owner` is a non-optional `PrincipalId` with no `none` arm, so
+    /// 10b §3.3's "a unilateral `AssetEffect` setting `title_owner` to none" is
+    /// unbuildable as drafted. The owner is **retained as the last owner** so
+    /// provenance survives — T3: *"captured units keep title and provenance
+    /// until legally transferred, abandoned or written off"* — and **custody is
+    /// unchanged**, because abandoning a thing is not moving it.
+    ///
+    /// An abandoned asset **authorizes nobody and takes no asset op but its
+    /// title**: `apply_asset_op`'s live-asset gate admits `TransferTitle` (the
+    /// salvage claim that turns possession into title, which stays an ordinary
+    /// E4b2 contract with a `Before` deadline and a named adjudicator) and
+    /// refuses everything else. It is not `WrittenOff`: the thing still exists,
+    /// which is why the destroy gate still holds it.
+    Abandoned,
 }
 
 /// An opaque ruleset catalog reference — the pre-registry precursor of doc 08
@@ -1040,6 +1058,10 @@ pub struct AssetEffect {
 /// What an [`AssetEffect`] did.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AssetEffectKind {
+    /// The asset was **abandoned** by its owner (E7 cut 3): lifecycle moves to
+    /// [`AssetLifecycle::Abandoned`], `title_owner` is retained as the last
+    /// owner, and custody is untouched.
+    Abandoned,
     /// A title record was created.
     Created,
     /// Title moved to another principal.

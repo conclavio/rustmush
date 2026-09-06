@@ -37,17 +37,65 @@ pub const SWEEP_PERIOD_SECS: u64 = 60;
 #[derive(Clone, Debug)]
 pub struct InventoryHandles(pub InventoryFamilies);
 
+/// A composition-root cell this module fills with its family handles during
+/// its own `register`.
+///
+/// Module state is installed *after* every module has registered, so a module
+/// composed later cannot read [`InventoryHandles`] while it is registering —
+/// and cut 3's provider needs the handles at registration time. The cell is the
+/// composition root's own wire between two modules whose order it already
+/// fixes: inventory registers before industry, so the cell is filled by the
+/// time industry looks. It carries a **capability**, not authority: writing an
+/// inventory family still needs the delegation
+/// ([`InventoryModule::with_quantity_delegates`]).
+pub type InventoryHandleCell = Arc<std::sync::OnceLock<InventoryFamilies>>;
+
 /// The neutral quantity authority (Q13A/Q2D, D-E7-3).
 #[derive(Debug, Default)]
 pub struct InventoryModule {
     families: Option<InventoryFamilies>,
+    delegates: Vec<SmolStr>,
+    cell: Option<InventoryHandleCell>,
 }
 
 impl InventoryModule {
     /// A fresh module.
     #[must_use]
     pub const fn new() -> Self {
-        Self { families: None }
+        Self {
+            families: None,
+            delegates: Vec::new(),
+            cell: None,
+        }
+    }
+
+    /// Publish this crate's family handles into a composition-root cell.
+    #[must_use]
+    pub fn with_handle_cell(mut self, cell: InventoryHandleCell) -> Self {
+        self.cell = Some(cell);
+        self
+    }
+
+    /// Name the composed owners this crate delegates its typed families to
+    /// (E7c2's cut-3 handoff: *"the cross-owner write — an `ActionTxn` is
+    /// owner-stamped, so a `mush-industry` provider cannot write `inventory`'s
+    /// families directly — cut 3 owns that bridge"*).
+    ///
+    /// The delegation is **this crate's own statement**, made at composition by
+    /// the composition root that knows both crates, exactly as
+    /// `EconomyModule::with_title_issuers` names its issuers. A grantee still
+    /// touches quantity only through the exported verbs on
+    /// [`InventoryFamilies`], which are the only place the arithmetic and
+    /// `ReservationBook::checked_apply_resource` live: what the delegation
+    /// widens is the **bundle**, never the gate.
+    #[must_use]
+    pub fn with_quantity_delegates<I, S>(mut self, delegates: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<SmolStr>,
+    {
+        self.delegates = delegates.into_iter().map(Into::into).collect();
+        self
     }
 }
 
@@ -65,6 +113,10 @@ impl GameModule for InventoryModule {
     }
 
     fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
+        // ---- E7c3 B1: the cross-owner write bridge cut 2 handed to cut 3 ----
+        for grantee in &self.delegates {
+            reg.delegate_state_families(grantee.as_str())?;
+        }
         // ---- E7c2: B2 — the pool pair (OPEN 2) ----
         // Two families under one `OwnerId`, written in ONE bundle and never
         // separately. `inventory.pool` is K's own `BoundedScalar` (its
@@ -300,6 +352,9 @@ impl GameModule for InventoryModule {
 
         // ---- E7c2: B7 — commands ----
         crate::commands::register(reg, &families)?;
+        if let Some(cell) = &self.cell {
+            let _ = cell.set(families.clone());
+        }
         self.families = Some(families);
         Ok(())
     }

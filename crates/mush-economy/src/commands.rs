@@ -152,7 +152,7 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
             shape: ArgShape::EqPair,
             switches: [
                 "title", "transfer", "assign", "unassign", "maintenance", "lien", "release",
-                "writeoff", "unfreeze", "show", "list", "stolen", "catalog",
+                "writeoff", "unfreeze", "show", "list", "stolen", "catalog", "abandon",
             ]
             .iter()
             .copied()
@@ -2937,6 +2937,8 @@ fn cmd_asset(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         asset_stolen(ctx)
     } else if ctx.switches.has("catalog") {
         asset_catalog(ctx)
+    } else if ctx.switches.has("abandon") {
+        asset_abandon(ctx)
     } else if ctx.switches.has("writeoff") {
         asset_writeoff(ctx)
     } else if ctx.switches.has("unfreeze") {
@@ -2947,7 +2949,7 @@ fn cmd_asset(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         asset_list(ctx)
     } else {
         Err(CmdError::msg(
-            "Usage: @asset/title|transfer|assign|unassign|maintenance|lien|release|catalog|writeoff|unfreeze|show|list",
+            "Usage: @asset/title|transfer|assign|unassign|maintenance|lien|release|catalog|abandon|writeoff|unfreeze|show|list",
         ))
     }
 }
@@ -3218,6 +3220,24 @@ fn asset_release(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     );
     let outcome = api::post(ctx, &plan);
     finish_asset(ctx, object, outcome, "Claim released")
+}
+
+/// `@asset/abandon <obj>` (E7 cut 3; doc 10 T3, §15).
+///
+/// A **switch on the existing `@asset` spec**, so `CommandSpec::name` is
+/// unchanged, the rule-1 allowlist needs no stanza for it and `PINNED_BASELINE`
+/// is untouched. It rides the `EconomyCarveOut` lane the whole `@asset` surface
+/// already declares.
+///
+/// Title is **retained** as the last owner (provenance survives, T3) and
+/// **custody is unchanged**; the asset then authorizes nobody and takes no
+/// asset op but its title. A re-run is a HIT: the idempotency key is
+/// `asset.abandon/{obj}` and a second post resolves through the stored record.
+fn asset_abandon(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    let object = asset_target(ctx, ctx.args.lhs())?;
+    let plan = ops_plan(ctx, vec![AssetOp::Abandon { object }], Vec::new());
+    let outcome = api::post(ctx, &plan);
+    finish_asset(ctx, object, outcome, "Abandoned")
 }
 
 fn asset_writeoff(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {

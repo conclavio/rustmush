@@ -1,0 +1,49 @@
+[package]
+name = "mush-industry"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "mush-industry (E7 cut 3): ore deposits as inventory endpoints, deterministic yield curves, band-only surveys, claims as records with titled objects, and extraction on the prepared path."
+
+# 10b §3.3 / doc 10 §14: `mush-industry -> {mush-core, mush-economy,
+# mush-inventory, mush-proto}` plus the serde vocabulary every E crate already
+# uses, and **nothing else**. No sim edge (a place is an `ObjId`), no market, no
+# faction, no org, no tacsim, no party. The crate owns the state machine;
+# the *ruleset* authors ore families and band tables through cut 1's packs
+# (`crates/mush-tactics/src/mobility.rs`'s stated pattern).
+# `cargo tree -p mush-industry` is the test.
+[dependencies]
+mush-core.workspace = true
+# E3/E4 custody, title and entitlement: `Vault`, `CustodyRef::Registered`,
+# `CustodyProvider`, `issue_title`, `InstrumentKind::Entitlement`. Cut 3 adds no
+# second custody model, no second title record and no second encumbrance.
+mush-economy.workspace = true
+# Unavoidable and not optional: every economy seam cut 3 calls — `issue_title`,
+# `EconomySnapshot::accounts_of`, `Encumbrance`, `Vault.owner` — is typed in
+# `mush_org::{PrincipalId, OrgScopeId, SystemPrincipalId}`, which `mush-economy`
+# does not re-export. `mush-market -> {core, org, economy}` is the precedent.
+mush-org.workspace = true
+# D-E7-3: the single source of quantity truth. A deposit's remaining reserve is
+# cut 2's pool at the deposit's own endpoint, and cut 3 keeps no private stock
+# number.
+mush-inventory.workspace = true
+# `ActionProvider::project_receipt` returns a `mush_proto::ProjectedActionResult`,
+# so the wire vocabulary is a real edge, not a dev one (cut 2 carries it for the
+# same reason, and so does `ruleset-wod`).
+mush-proto.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+smol_str.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+mush-testkit.workspace = true
+mush-store.workspace = true
+serde_json.workspace = true
+smol_str.workspace = true
+tokio.workspace = true
+
+[lints]
+workspace = true

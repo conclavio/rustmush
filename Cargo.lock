@@ -2107,6 +2107,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "mush-industry"
+version = "0.1.0"
+dependencies = [
+ "mush-core",
+ "mush-economy",
+ "mush-inventory",
+ "mush-org",
+ "mush-proto",
+ "mush-store",
+ "mush-testkit",
+ "serde",
+ "serde_json",
+ "smol_str",
+ "thiserror 2.0.20",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "mush-inventory"
 version = "0.1.0"
 dependencies = [
@@ -2354,6 +2373,7 @@ dependencies = [
  "mush-economy",
  "mush-faction",
  "mush-housing",
+ "mush-industry",
  "mush-inventory",
  "mush-ipc",
  "mush-jobs",

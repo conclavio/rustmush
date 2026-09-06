@@ -823,7 +823,8 @@ fn e7c1_fixture_the_corridor_exists_after_commit_and_nowhere_else() {
         .pack(&cid(fixture::CORRIDOR_PACK), 1)
         .expect("loaded")
         .clone();
-    assert_eq!(corridor.pack.entries().len(), 4);
+    // E7 cut 3 added one `PackEntry::Deposit` at `ceres_extraction`.
+    assert_eq!(corridor.pack.entries().len(), 5);
     assert!(
         core.pack.entries().len() + corridor.pack.entries().len() <= fixture::MAX_FIXTURE_ENTRIES
     );

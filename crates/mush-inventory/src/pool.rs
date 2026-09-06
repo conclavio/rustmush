@@ -982,6 +982,55 @@ impl InventoryFamilies {
         Ok((created, moved))
     }
 
+    /// Mint one lot of matter that entered the inventory **here** —
+    /// `Lineage::Origin { source }`.
+    ///
+    /// This is the one verb that *creates* quantity rather than moving it, and
+    /// it exists because a producer had nowhere else to put its output:
+    /// `crystallize` needs a tranche (matter poured out of an existing lot) and
+    /// `credit` makes pool, not a lot. E7 cut 3's extraction cycle calls it, and
+    /// **conservation is the caller's bundle, not this call's**: the cycle
+    /// `consume`s the deposit endpoint's hold in the same `ActionTxn`, so the
+    /// unit minted here is exactly the unit that left the ground. `source` is
+    /// the domain journal entry that produced it, so the origin is attributable
+    /// rather than asserted.
+    ///
+    /// It deliberately writes **no pool**: crediting the destination and then
+    /// debiting it again inside one transaction is a `DuplicateMutation`, and
+    /// the intermediate balance never existed anyway.
+    ///
+    /// # Errors
+    /// [`InventoryError`] for a zero or oversized quantity, a lot id already in
+    /// use, or an endpoint at [`MAX_LOTS_PER_ENDPOINT`](crate::record::MAX_LOTS_PER_ENDPOINT).
+    /// **Nothing is written on an error.**
+    #[allow(clippy::too_many_arguments)]
+    pub fn mint_origin(
+        &self,
+        txn: &mut ActionTxn<'_>,
+        endpoint: EndpointRef,
+        commodity: &CanonicalId,
+        amount: u64,
+        grade: Grade,
+        source: mush_economy::ExternalRef,
+        child: LotId,
+    ) -> Result<Lot, InventoryError> {
+        if txn.get(&self.lots, &child)?.is_some() {
+            return Err(InventoryError::AlreadyExists);
+        }
+        let created = Lot::new(
+            child,
+            endpoint,
+            commodity.clone(),
+            amount,
+            grade,
+            Lineage::Origin { source },
+            0,
+        )?;
+        self.move_lots(txn, endpoint, 1)?;
+        txn.insert(&self.lots, &child, created.clone())?;
+        Ok(created)
+    }
+
     /// One exact generation of the endpoint's root for one commodity.
     ///
     /// **Verifies what it loaded** (E7c2 fold C10): `tranche_key` truncates a
@@ -1158,6 +1207,10 @@ pub enum InventoryError {
     /// No such lot.
     #[error("no such lot")]
     NoLot,
+    /// A request-derived lot id is already in use — the replay guard on the one
+    /// verb that creates matter (E7c3's `mint_origin`).
+    #[error("that lot already exists")]
+    AlreadyExists,
     /// The endpoint has no lineage root to mint from.
     #[error("nothing has been dissolved into that pool")]
     NoTranche,

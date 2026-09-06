@@ -123,7 +123,17 @@ pub fn server_modules_with(
     if shadowrun.is_some_and(|s| s.enabled) {
         issuers.push(market_title_issuer());
     }
+    // E7 cut 3: the claim's titled object is minted through
+    // `mush_economy::issue_title` under this crate's own system principal, which
+    // must be named in BOTH this list and `IndustryModule`'s own
+    // `industry_title_issuer()` or the verb refuses loudly. It is unconditional:
+    // `mush-industry` composes on every ruleset.
+    issuers.push(mush_industry::industry_title_issuer());
     let issuer = housing_on.then(housing_title_issuer);
+    // E7 cut 3 B1: the composition root's own wire between two modules whose
+    // order it already fixes. `mush-inventory` fills it while registering;
+    // `mush-industry`, composed after it, takes the handles out.
+    let inventory_handles: mush_inventory::InventoryHandleCell = Arc::default();
     // `[onboarding]`'s two start rooms plus Limbo (E5b fold H4), extended by whatever
     // the ruleset knows is never somebody's living room (E5b's handoff to E5c).
     let reserved: Vec<mush_core::ObjId> = [
@@ -196,9 +206,17 @@ pub fn server_modules_with(
         // reconciliation and vault-backing validation see real state, and a
         // `Some(false)` can be trusted as the drift it claims to be.
         Box::new(
-            mush_economy::EconomyModule::with_custody(vec![Arc::new(
-                mush_sim::InteriorCustodyProvider,
-            )])
+            // E7 cut 3: `mush-industry` registers a `CustodyProvider` for its own
+            // `CustodyRef::Registered { provider: "industry", .. }` backings, on
+            // E3's rules unchanged (exactly one claiming provider,
+            // validate-then-mutate). It needs no module ordering of its own:
+            // a registered backing has no world object, so `backing_valid`
+            // answers without reading any state and cannot boot `Frozen` the way
+            // an interior would.
+            mush_economy::EconomyModule::with_custody(vec![
+                Arc::new(mush_sim::InteriorCustodyProvider),
+                Arc::new(mush_industry::IndustryCustodyProvider),
+            ])
             .with_config(economy)
             // E4c (08c §6.1): three more wiring-frozen tables, none of which
             // changes the module ORDER above. The fact table answers a contract's
@@ -210,9 +228,13 @@ pub fn server_modules_with(
             // One provider per crate — `with_facts` PANICS on a duplicate
             // namespace — and both inventory facts are answered from the
             // committed bundle's own applied marker, never from a status.
+            // E7 cut 3 (D-E7-30, §10): `industry.*` joins them. One provider
+            // per crate; `industry.workorder.completed` is **cut 4's arm on
+            // this same provider**, never a second registration.
             .with_facts(vec![
                 Arc::new(mush_jobs::JobsFactProvider),
                 Arc::new(mush_inventory::InventoryFactProvider),
+                Arc::new(mush_industry::IndustryFactProvider),
             ])
             // E5b: housing's exact-mode mirror joins the canon bridge. It hears the
             // obligation and contract transitions a lease is made of; abstract mode
@@ -263,7 +285,27 @@ pub fn server_modules_with(
         // market's own advertised counter and becomes no `Pool` claim.
         // `mush-inventory -> {core, economy}` only; nothing industry-, market- or
         // TacSim-shaped is inside it.
-        Box::new(mush_inventory::InventoryModule::new()),
+        Box::new(
+            mush_inventory::InventoryModule::new()
+                // E7 cut 3 B1: the cross-owner write bridge cut 2's own handoff
+                // named as cut 3's. `mush-inventory` delegates its typed
+                // families to `"industry"` so an extraction cycle debits the
+                // deposit's pool, mints the operator's lot and advances the run
+                // in **one** bundle. The delegation widens the bundle, never the
+                // gate: every quantity mutation still rides
+                // `InventoryFamilies`' exported verbs and
+                // `ReservationBook::checked_apply_resource`.
+                .with_quantity_delegates(["industry"])
+                .with_handle_cell(Arc::clone(&inventory_handles)),
+        ),
+        // E7 cut 3 (10b §3.3, D-E7-3, doc 10 §14): the neutral industry
+        // authority. It composes **immediately after `mush-inventory`** — whose
+        // handles and delegation it needs — and **before `mush-market`**, which
+        // it does not touch at all: a `Representation::Lot` listing is still
+        // refused at creation and lifting that refusal is cut 11's.
+        Box::new(
+            mush_industry::IndustryModule::new().with_inventory(Arc::clone(&inventory_handles)),
+        ),
         Box::new(mush_mail::MailModule),
         Box::new(mush_jobs::JobsModule::new()),
         // E5: housing boots after `{org, sim, tactics, economy, jobs}` (08a decision
@@ -1604,6 +1646,26 @@ mod tests {
                 }),
                 "the inventory lane must publish `Authoritative`"
             );
+            // E7 cut 3: five lanes in THREE registration groups, each with its
+            // own `reg.classify_commands(..)` before its first `reg.command`.
+            // `@deposit` is `Authoritative` rather than `ReadOnly` because a
+            // body's reserve IS cut 2's pool and a pool can only be credited
+            // inside an authoritative bundle — conservative over-declaration,
+            // and the two read switches simply never submit.
+            for (name, class) in [
+                ("@deposit", mush_core::CommandCompatibility::Authoritative),
+                ("@claim", mush_core::CommandCompatibility::Authoritative),
+                ("@extract", mush_core::CommandCompatibility::Authoritative),
+                ("@survey", mush_core::CommandCompatibility::LegacyPostImage),
+                ("@licence", mush_core::CommandCompatibility::ReadOnly),
+            ] {
+                assert!(
+                    registrations.iter().any(|(spec, owner, published)| {
+                        spec.name == name && *owner == Some("industry") && *published == class
+                    }),
+                    "the industry lane {name} must publish {class:?}"
+                );
+            }
             assert!(registrations.iter().any(|(_, owner, class)| {
                 *owner == Some("economy")
                     && *class == mush_core::CommandCompatibility::EconomyCarveOut
@@ -1622,6 +1684,82 @@ mod tests {
                     })
             );
         }
+    }
+
+    /// E7 cut 3: the claim's titled object is minted by
+    /// `mush_economy::issue_title` under `industry.claims`, which `issue_title`
+    /// refuses unless it is on the economy's own issuer list. The two names
+    /// have to agree, so a typo is a loud refusal at the verb rather than a
+    /// silent capability — this pins that they do.
+    #[test]
+    fn e7c3_wiring_the_industry_title_issuer_is_registered_with_the_economy() {
+        use mush_testkit::TestWorld;
+        let onboarding = ruleset_wod::OnboardingConfig::default();
+        let tw = TestWorld::with_modules(server_modules_with(
+            mush_weather::WeatherConfig::default(),
+            mush_economy::EconomyConfig::default(),
+            &onboarding,
+            None,
+            None,
+        ));
+        // The economy composed at all, and the industry store came with it —
+        // which is the composition this test is really about.
+        assert!(
+            tw.world()
+                .module_state::<mush_industry::IndustryStore>()
+                .is_some(),
+            "mush-industry composes on every ruleset"
+        );
+        assert_eq!(
+            mush_industry::industry_title_issuer().as_str(),
+            "industry.claims"
+        );
+        // And the composition root passed exactly that principal to
+        // `with_title_issuers`: a `@claim/file` that reached `issue_title` with
+        // an unregistered issuer would answer `Unauthorized`, so the pin is the
+        // source line itself.
+        let source = include_str!("modules.rs");
+        assert!(
+            source.contains("issuers.push(mush_industry::industry_title_issuer());"),
+            "the industry issuer must be on the economy's list"
+        );
+    }
+
+    /// E7 cut 3 B1: the cross-owner write bridge. `mush-inventory` delegates
+    /// its typed families to `"industry"` at composition, which is what lets one
+    /// extraction bundle carry both owners' post-images. It is never implicit:
+    /// no other owner is a grantee, and the delegation is not symmetric.
+    #[test]
+    fn e7c3_wiring_the_quantity_delegation_is_declared_and_narrow() {
+        use mush_testkit::TestWorld;
+        let onboarding = ruleset_wod::OnboardingConfig::default();
+        let tw = TestWorld::with_modules(server_modules_with(
+            mush_weather::WeatherConfig::default(),
+            mush_economy::EconomyConfig::default(),
+            &onboarding,
+            None,
+            None,
+        ));
+        let families = tw
+            .engine()
+            .registry
+            .state_families()
+            .expect("the composed state-family registry");
+        let inventory = mush_core::OwnerId::new("inventory").expect("owner");
+        let industry = mush_core::OwnerId::new("industry").expect("owner");
+        assert!(
+            families.delegates(&inventory, &industry),
+            "inventory delegates its families to industry"
+        );
+        assert!(
+            !families.delegates(&industry, &inventory),
+            "and the delegation is NOT symmetric"
+        );
+        assert_eq!(
+            families.delegations(),
+            vec![(inventory, industry)],
+            "exactly one delegation in the whole production composition"
+        );
     }
 
     /// E5c-C231 (look-back fold): the `[wod.economy].reserved_rooms` →
@@ -1786,6 +1924,10 @@ mod tests {
                 // vault status) and before the market (whose listing quantity is
                 // its own advertised counter, never a `Pool` claim).
                 "inventory",
+                // E7 cut 3: immediately after `mush-inventory`, whose handles
+                // and family delegation it needs, and before `mush-market`,
+                // which it does not touch.
+                "industry",
                 "mail",
                 "jobs",
                 "housing",
@@ -1838,6 +1980,10 @@ mod tests {
                     "tactics",
                     "economy",
                     "inventory",
+                    // E7 cut 3: immediately after `mush-inventory`, whose handles
+                    // and family delegation it needs, and before `mush-market`,
+                    // which it does not touch.
+                    "industry",
                     "mail",
                     "jobs",
                     "housing",
@@ -2049,6 +2195,10 @@ mod tests {
                 "tactics",
                 "economy",
                 "inventory",
+                // E7 cut 3: immediately after `mush-inventory`, whose handles
+                // and family delegation it needs, and before `mush-market`,
+                // which it does not touch.
+                "industry",
                 "mail",
                 "jobs",
                 "housing",
@@ -2182,6 +2332,10 @@ mod tests {
                 "tactics",
                 "economy",
                 "inventory",
+                // E7 cut 3: immediately after `mush-inventory`, whose handles
+                // and family delegation it needs, and before `mush-market`,
+                // which it does not touch.
+                "industry",
                 "mail",
                 "jobs",
                 "housing",

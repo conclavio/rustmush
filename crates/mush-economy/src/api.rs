@@ -473,6 +473,22 @@ impl AuthEval for WorldAuth<'_> {
             // [`issue_title`]'s registered system principal declares the catalogue
             // in that same `Title` op.
             AssetOp::SetCatalog { .. } => staff,
+            // E7 cut 3: abandonment is the **owner's own** unilateral act, so
+            // it takes exactly the bar the catch-all below would give it —
+            // stated explicitly because a title-destroying verb should never
+            // rest on a default. Staff, the title owner, or
+            // `asset.title.transfer` on the asset's live compartment.
+            AssetOp::Abandon { .. } => {
+                let Some(asset) = asset else { return false };
+                staff
+                    || asset.title_owner == *actor
+                    || self.scoped_capability(
+                        asset.scope,
+                        &asset.title_owner,
+                        "asset.title.transfer",
+                        *a,
+                    )
+            }
             _ => {
                 let Some(asset) = asset else { return false };
                 if staff || asset.title_owner == *actor {

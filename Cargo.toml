@@ -151,6 +151,13 @@ mush-market = { path = "crates/mush-market" }
 # only; industry, market, contracts and simulation CONSUME it and none keeps a
 # private stock number (Q13A/Q2D, D-E7-3).
 mush-inventory = { path = "crates/mush-inventory" }
+# E7 cut 3 (10b §3.3): the neutral industry authority — ore deposits, surveys,
+# claims and extraction, with facilities, recipes, capacity and production to
+# follow in cut 4 (doc 10 §14). `mush-industry -> {core, economy, inventory,
+# proto}` only: no sim, market, faction, org, tacsim or party edge, and no ore
+# family, band table, route or corridor fact — the *ruleset* authors the data
+# through cut 1's packs and the crate owns the state machine.
+mush-industry = { path = "crates/mush-industry" }
 ruleset-shadowrun = { path = "crates/ruleset-shadowrun" }
 # E7 cut 1 (10b §3.1): TacSim's packs, seed latch and corridor fixture. It is a
 # LAYER, not a `[rulesets].enabled` id — doc 10 §20 keeps ruleset metaphysics and

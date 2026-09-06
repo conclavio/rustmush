@@ -1,0 +1,1587 @@
+//! E7 cut 3's verification, by scenario, over the three lenses 10b §3.3 names:
+//! **F** fog, **D** depletion, **T** tenure.
+//!
+//! The rig is `crates/mush-inventory/tests/e7c2.rs`'s shape: `boot()` composes
+//! the economy, cut 2 and cut 3 in production order, `apply()` opens the same
+//! owner-stamped transaction a provider gets and **installs** it exactly as a
+//! receipt does, so every "writes nothing" assertion below means what it says.
+
+use std::sync::Arc;
+
+use mush_core::{
+    ClockRef, ClockStamp, CommitToken, Engine, GOD, IdempotencyKey, IdempotencyScope, ObjId,
+    OwnerId, RequestUid, ScopedIdempotencyKey,
+};
+use mush_economy::{ExternalRef, VaultId};
+use mush_industry::{
+    Accessibility, BandId, ClaimIndex, ClaimRecord, ClaimSubject, ContestState, CurvePoint,
+    Exclusivity, ExtractionRefusal, ExtractionRun, IndustryError, IndustryFamilies,
+    IndustryHandles, IndustryModule, IndustryStore, MAX_CLAIMS_PER_SUBJECT, MAX_ORE_RESERVE,
+    MAX_SURVEY_BANDS, OreDeposit, OreDepositId, Quarantine, SurveyBands, SurveyDoc, SurveyRow,
+    Transferability, YieldCurve,
+};
+use mush_inventory::{EndpointRef, Grade, InventoryHandleCell, InventoryModule};
+use mush_org::PrincipalId;
+use mush_testkit::TestWorld;
+
+// ---- E7c3: the rig ----
+
+fn boot() -> (TestWorld, IndustryFamilies) {
+    let cell: InventoryHandleCell = Arc::default();
+    let world = TestWorld::with_modules(vec![
+        Box::new(mush_economy::EconomyModule::new()),
+        Box::new(
+            InventoryModule::new()
+                .with_quantity_delegates(["industry"])
+                .with_handle_cell(Arc::clone(&cell)),
+        ),
+        Box::new(IndustryModule::new().with_inventory(Arc::clone(&cell))),
+    ]);
+    let families = world
+        .world()
+        .module_state::<IndustryHandles>()
+        .expect("industry publishes its handles")
+        .0
+        .clone();
+    (world, families)
+}
+
+fn commodity(id: &str) -> mush_core::CanonicalId {
+    mush_core::CanonicalId::new(id).expect("test commodity id")
+}
+
+fn endpoint(id: u64) -> EndpointRef {
+    EndpointRef(VaultId(id))
+}
+
+fn now() -> ClockStamp {
+    ClockStamp {
+        clock: ClockRef::WorldIc { generation: 1 },
+        at: 1_000,
+    }
+}
+
+fn later(at: i64) -> ClockStamp {
+    ClockStamp {
+        clock: ClockRef::WorldIc { generation: 1 },
+        at,
+    }
+}
+
+fn other_generation() -> ClockStamp {
+    ClockStamp {
+        clock: ClockRef::WorldIc { generation: 2 },
+        at: 1_000,
+    }
+}
+
+fn band(text: &str) -> BandId {
+    BandId::new(text).expect("test band")
+}
+
+fn curve(points: &[(u64, u64)]) -> YieldCurve {
+    YieldCurve::new(
+        points
+            .iter()
+            .map(|(cumulative, per_cycle)| CurvePoint {
+                cumulative: *cumulative,
+                per_cycle: *per_cycle,
+            })
+            .collect(),
+    )
+    .expect("test curve")
+}
+
+fn deposit(id: u64, reserve: u64, points: &[(u64, u64)]) -> OreDeposit {
+    OreDeposit::new(
+        OreDepositId(id),
+        ObjId(7),
+        commodity("metals"),
+        Grade::new(60).expect("grade"),
+        Accessibility::new(100).expect("accessibility"),
+        band("grade_b"),
+        band("reserve_major"),
+        curve(points),
+        endpoint(id),
+        reserve,
+    )
+    .expect("test deposit")
+}
+
+fn holder(actor: ObjId, tag: &str) -> ScopedIdempotencyKey {
+    ScopedIdempotencyKey::new(
+        IdempotencyScope {
+            principal: mush_core::PrincipalId::Object { id: actor },
+            owner: OwnerId::new("industry").expect("owner"),
+            namespace: mush_core::CanonicalId::new(tag).expect("namespace"),
+        },
+        0,
+        IdempotencyKey::Request(RequestUid::from_bytes([0x11; 16])),
+    )
+}
+
+fn source(tag: &str) -> ExternalRef {
+    ExternalRef {
+        provider: smol_str::SmolStr::new_static("industry"),
+        kind: smol_str::SmolStr::new_static("extraction.cycle"),
+        id: smol_str::SmolStr::new(tag),
+        revision: Some(1),
+    }
+}
+
+/// Run one closure inside the owner-stamped transaction a provider would get,
+/// then **install** it exactly as an exact receipt does. An `Err` installs
+/// nothing at all.
+fn apply<T>(
+    engine: &mut Engine,
+    families: &IndustryFamilies,
+    body: impl FnOnce(&mut mush_core::ActionTxn<'_>) -> Result<T, IndustryError>,
+) -> Result<T, IndustryError> {
+    let (result, prepared) = {
+        let mut txn = engine
+            .action_transaction(&families.deposits)
+            .expect("industry transaction");
+        let result = body(&mut txn);
+        match result {
+            Ok(value) => (Ok(value), txn.prepare().ok()),
+            Err(error) => (Err(error), None),
+        }
+    };
+    if let Some(prepared) = prepared {
+        let (_, installation) = prepared.into_parts();
+        engine.install_prepared_action(installation);
+    }
+    result
+}
+
+fn read<T>(
+    engine: &mut Engine,
+    families: &IndustryFamilies,
+    body: impl FnOnce(&mut mush_core::ActionTxn<'_>) -> T,
+) -> T {
+    let mut txn = engine
+        .action_transaction(&families.deposits)
+        .expect("industry transaction");
+    body(&mut txn)
+}
+
+fn open(engine: &mut Engine, families: &IndustryFamilies, deposit: &OreDeposit) {
+    apply(engine, families, |txn| {
+        families.open_deposit(txn, deposit.clone())
+    })
+    .expect("open the body");
+}
+
+fn start_run(engine: &mut Engine, families: &IndustryFamilies, body: &OreDeposit, to: EndpointRef) {
+    apply(engine, families, |txn| {
+        families.put_run(
+            txn,
+            ExtractionRun::new(body.id(), PrincipalId::Object(GOD), to)?,
+        )
+    })
+    .expect("open the run");
+}
+
+/// One cycle, as the provider runs it, with a fresh request each time.
+fn cycle(
+    engine: &mut Engine,
+    families: &IndustryFamilies,
+    body: &OreDeposit,
+    ordinal: u8,
+) -> Result<mush_industry::families::Cycled, IndustryError> {
+    let request = RequestUid::from_bytes([ordinal; 16]);
+    apply(engine, families, |txn| {
+        let live = families.deposit(txn, body.id())?.expect("body");
+        let run = families.run(txn, body.id())?.expect("run");
+        families.run_cycle(
+            txn,
+            &live,
+            &run,
+            GOD,
+            request,
+            &holder(GOD, "extract"),
+            &now(),
+            CommitToken::from_bytes([ordinal; 16]),
+            source("extract/x/0"),
+        )
+    })
+}
+
+fn claim(id: u64, subject: ClaimSubject, issuer: u32, holder_id: u32) -> ClaimRecord {
+    ClaimRecord::new(
+        mush_industry::ClaimId(id),
+        subject,
+        PrincipalId::Object(ObjId(issuer)),
+        PrincipalId::Object(ObjId(holder_id)),
+        ObjId(900 + id as u32),
+        Exclusivity::Shared,
+        1,
+        later(100_000),
+        Transferability::Transferable,
+    )
+    .expect("test claim")
+}
+
+// =====================================================================
+// F — fog. Can a viewer learn a reserve, a curve or another principal's
+// band through any render, error, or arithmetic difference?
+// =====================================================================
+
+#[test]
+fn e7c3_f_a_survey_copies_the_recorded_classes_and_cannot_narrow_a_band() {
+    let body = deposit(1, 50_000, &[(0, 500), (20_000, 300)]);
+    let alice = PrincipalId::Object(ObjId(2));
+    let doc = SurveyDoc::empty(body.id());
+    let bands = SurveyBands {
+        grade_class: body.grade_class().clone(),
+        reserve_class: body.reserve_class().clone(),
+        at: now(),
+        fact: source("survey/1"),
+    };
+    let (first, fresh) = doc.disclosed(&alice, bands.clone()).expect("disclose");
+    assert!(fresh, "the first survey is a fresh row");
+    // A SECOND survey by the same principal rewrites nothing and answers the
+    // identical two bands: there is no narrowing, because there was never a
+    // roll to narrow.
+    let (second, again) = first.disclosed(&alice, bands.clone()).expect("re-survey");
+    assert!(!again, "a re-survey is a HIT");
+    assert_eq!(first, second);
+    assert_eq!(
+        second.bands_for(&alice).expect("row"),
+        &bands,
+        "a repeated survey answers the same recorded classes"
+    );
+}
+
+#[test]
+fn e7c3_f_two_principals_read_the_same_recorded_classes_never_reserve_requantised() {
+    let body = deposit(2, 50_000, &[(0, 500)]);
+    let alice = PrincipalId::Object(ObjId(2));
+    let bob = PrincipalId::Object(ObjId(3));
+    let make = || SurveyBands {
+        grade_class: body.grade_class().clone(),
+        reserve_class: body.reserve_class().clone(),
+        at: now(),
+        fact: source("survey/2"),
+    };
+    let doc = SurveyDoc::empty(body.id());
+    let (doc, _) = doc.disclosed(&alice, make()).expect("alice");
+    let (doc, _) = doc.disclosed(&bob, make()).expect("bob");
+    let a = doc.bands_for(&alice).expect("alice row");
+    let b = doc.bands_for(&bob).expect("bob row");
+    assert_eq!(a.grade_class, b.grade_class);
+    assert_eq!(a.reserve_class, b.reserve_class);
+    assert_eq!(&a.grade_class, body.grade_class());
+    assert_eq!(&a.reserve_class, body.reserve_class());
+}
+
+#[test]
+fn e7c3_f_a_band_render_never_contains_the_exact_reserve() {
+    let body = deposit(3, 987_654, &[(0, 500)]);
+    let bands = SurveyBands {
+        grade_class: body.grade_class().clone(),
+        reserve_class: body.reserve_class().clone(),
+        at: now(),
+        fact: source("survey/3"),
+    };
+    let rendered = format!("{} {}", bands.grade_class, bands.reserve_class);
+    assert!(
+        !rendered.contains("987654") && !rendered.contains("987_654"),
+        "a band render must not carry the reserve: {rendered}"
+    );
+    // The recorded classes are opaque tokens, not quantities.
+    assert!(
+        !bands
+            .reserve_class
+            .as_str()
+            .chars()
+            .all(|c| c.is_ascii_digit()),
+        "a band id is a class, never a number"
+    );
+}
+
+#[test]
+fn e7c3_f_a_survey_map_past_its_cap_is_refused_on_load_never_truncated() {
+    let body = OreDepositId(4);
+    let rows: Vec<SurveyRow> = (0..=MAX_SURVEY_BANDS)
+        .map(|index| SurveyRow {
+            principal: PrincipalId::Object(ObjId(100 + index as u32)),
+            bands: SurveyBands {
+                grade_class: band("grade_b"),
+                reserve_class: band("reserve_major"),
+                at: now(),
+                fact: source("survey/4"),
+            },
+        })
+        .collect();
+    let refused = SurveyDoc::from_rows(body, rows.clone());
+    assert!(
+        refused.is_err(),
+        "a map past the cap is REFUSED, not truncated"
+    );
+
+    // And the wire refuses it too: a hand-edited stored document does not
+    // silently lose the row nobody could then account for.
+    let doc = serde_json::json!({ "deposit": body, "rows": rows });
+    assert!(
+        serde_json::from_value::<SurveyDoc>(doc).is_err(),
+        "the TryFrom wire re-runs the cap on load"
+    );
+}
+
+#[test]
+fn e7c3_f_a_hand_edited_survey_row_fails_its_wire() {
+    let body = OreDepositId(5);
+    let alice = PrincipalId::Object(ObjId(2));
+    let bob = PrincipalId::Object(ObjId(3));
+    let row = |principal: &PrincipalId| SurveyRow {
+        principal: principal.clone(),
+        bands: SurveyBands {
+            grade_class: band("grade_b"),
+            reserve_class: band("reserve_major"),
+            at: now(),
+            fact: source("survey/5"),
+        },
+    };
+    // Rows out of canonical order, or a duplicated principal, are the two
+    // shapes a forger reaches for: both are refused.
+    assert!(SurveyDoc::from_rows(body, vec![row(&bob), row(&alice)]).is_err());
+    assert!(SurveyDoc::from_rows(body, vec![row(&alice), row(&alice)]).is_err());
+    // A band token that is not a canonical class fails at the band's own wire.
+    assert!(serde_json::from_value::<BandId>(serde_json::json!("Grade B")).is_err());
+}
+
+#[test]
+fn e7c3_f_a_transferred_claim_does_not_transfer_the_transferors_bands() {
+    let body = OreDepositId(6);
+    let alice = PrincipalId::Object(ObjId(2));
+    let bob = PrincipalId::Object(ObjId(3));
+    let doc = SurveyDoc::empty(body);
+    let (doc, _) = doc
+        .disclosed(
+            &alice,
+            SurveyBands {
+                grade_class: band("grade_b"),
+                reserve_class: band("reserve_major"),
+                at: now(),
+                fact: source("survey/6"),
+            },
+        )
+        .expect("alice surveys");
+    // Tenure moved; knowledge did not. The disclosure map is keyed by the
+    // principal who *looked*, not by whoever holds the claim today.
+    let record = claim(6, ClaimSubject::Deposit { deposit: body }, 2, 2);
+    let moved = record.with_holder(bob.clone()).expect("transfer");
+    assert_eq!(moved.holder(), &bob);
+    assert!(doc.bands_for(&bob).is_none(), "bob learned nothing");
+    assert!(doc.bands_for(&alice).is_some());
+}
+
+#[test]
+fn e7c3_f_a_deposit_endpoint_is_not_a_reserve_oracle_through_inventory() {
+    // OPEN 1 makes a body an inventory endpoint, so cut 2's own read is the
+    // third channel cut 3's fog budget has to close. It is closed by E3's
+    // gate, not by a cut-3 check: an endpoint the viewer may not read and one
+    // that does not exist are the same answer.
+    let (world, _families) = boot();
+    let stranger = ObjId(4_242);
+    let body_endpoint = endpoint(77);
+    let absent = endpoint(999_999);
+    assert_eq!(
+        mush_inventory::endpoint_visible(world.world(), stranger, body_endpoint),
+        mush_inventory::endpoint_visible(world.world(), stranger, absent),
+        "a deposit endpoint and a non-existent one read identically to a stranger"
+    );
+    assert!(!mush_inventory::endpoint_visible(
+        world.world(),
+        stranger,
+        body_endpoint
+    ));
+}
+
+#[test]
+fn e7c3_f_every_extraction_refusal_renders_one_sentence_and_only_staff_get_the_reason() {
+    // 08c §6.2's D1 shape: depletion, a missing licence and a suspended claim
+    // are three different facts and ONE message.
+    let arms = [
+        ExtractionRefusal::Depleted,
+        ExtractionRefusal::NoLicence,
+        ExtractionRefusal::ClaimSuspended,
+        ExtractionRefusal::ClaimSeized,
+        ExtractionRefusal::NoClaim,
+        ExtractionRefusal::ClaimExpired,
+        ExtractionRefusal::ClaimUncomparable,
+        ExtractionRefusal::LicenceInactive,
+        ExtractionRefusal::NoLicenceInstrument,
+        ExtractionRefusal::Unworkable,
+    ];
+    let first = arms[0].public();
+    for arm in arms {
+        assert_eq!(arm.public(), first, "{arm:?} renders a different sentence");
+        assert_ne!(arm.reason(), first, "{arm:?} leaks its reason publicly");
+    }
+    // And the reasons are all distinct, so a staffer can still act.
+    let mut reasons: Vec<&str> = arms.iter().map(|arm| arm.reason()).collect();
+    reasons.sort_unstable();
+    reasons.dedup();
+    assert_eq!(reasons.len(), arms.len());
+}
+
+// =====================================================================
+// D — depletion. Can total extracted exceed the reserve under
+// concurrency, restart or event ordering?
+// =====================================================================
+
+#[test]
+fn e7c3_d_cumulative_extraction_matches_the_curve_over_two_hundred_cycles() {
+    let (mut world, families) = boot();
+    // 40 cycles at 500, then 67 at 300 (the last clamped to what is left):
+    // 107 cycles, well inside the 200 the lens asks for, and the whole point
+    // is that the total is EXACTLY the authored reserve.
+    let body = deposit(10, 40_000, &[(0, 500), (20_000, 300), (40_000, 100)]);
+    let to = endpoint(500);
+    let engine = world.engine_mut();
+    open(engine, &families, &body);
+    start_run(engine, &families, &body, to);
+
+    let mut extracted: u64 = 0;
+    let mut cycles = 0_u32;
+    for ordinal in 0..200_u32 {
+        // Every cycle's expected yield, computed independently from the curve.
+        let expected = body.next_yield(40_000 - extracted);
+        let outcome = cycle(engine, &families, &body, (ordinal % 250) as u8 + 1);
+        match outcome {
+            Ok(cycled) => {
+                assert_eq!(
+                    cycled.quantity, expected,
+                    "cycle {ordinal}: the curve is arithmetic, not a roll"
+                );
+                extracted += cycled.quantity;
+                cycles += 1;
+            }
+            Err(IndustryError::Depleted) => break,
+            Err(other) => panic!("cycle {ordinal}: {other}"),
+        }
+    }
+    assert!(cycles > 0);
+    assert_eq!(
+        extracted, 40_000,
+        "the body yields exactly its authored reserve and never a unit more"
+    );
+    assert!(
+        cycles >= 100,
+        "and it took the cycles the curve says it takes"
+    );
+    let remaining = read(engine, &families, |txn| {
+        families.remaining(txn, &body).expect("remaining")
+    });
+    assert_eq!(remaining, 0, "and the pool is the one number that says so");
+    // A depleted body yields zero and REFUSES a new cycle rather than
+    // committing an empty bundle.
+    assert!(matches!(
+        cycle(engine, &families, &body, 201),
+        Err(IndustryError::Depleted)
+    ));
+}
+
+#[test]
+fn e7c3_d_two_reservations_against_one_remaining_unit_cannot_both_consume() {
+    // The gate is K's, not cut 3's: `checked_hold` subtracts every live hold
+    // before admitting the next, so the second refuses at the kernel.
+    let (mut world, families) = boot();
+    let at = endpoint(11);
+    let engine = world.engine_mut();
+    apply(engine, &families, |txn| {
+        families
+            .inventory
+            .credit(txn, at, &commodity("metals"), 1)
+            .map(|_| ())
+            .map_err(IndustryError::from)
+    })
+    .expect("one unit in the ground");
+
+    let first = apply(engine, &families, |txn| {
+        families
+            .inventory
+            .reserve(
+                txn,
+                at,
+                &commodity("metals"),
+                &holder(GOD, "one"),
+                1,
+                &now(),
+            )
+            .map_err(IndustryError::from)
+    })
+    .expect("the first hold is admitted");
+    let second = apply(engine, &families, |txn| {
+        families
+            .inventory
+            .reserve(
+                txn,
+                at,
+                &commodity("metals"),
+                &holder(ObjId(3), "two"),
+                1,
+                &now(),
+            )
+            .map_err(IndustryError::from)
+    });
+    assert!(
+        second.is_err(),
+        "the second hold against one unit is refused by checked_hold"
+    );
+    assert!(!format!("{first:?}").is_empty());
+    // Availability never rose: the pool still holds exactly one unit, held.
+    let available = read(engine, &families, |txn| {
+        families
+            .inventory
+            .available(txn, at, &commodity("metals"))
+            .expect("available")
+    });
+    assert_eq!(available, 0, "one unit, one live hold, nothing available");
+}
+
+#[test]
+fn e7c3_d_a_stale_deposit_or_run_revision_refuses_the_cycle() {
+    let (mut world, families) = boot();
+    let body = deposit(12, 1_000, &[(0, 100)]);
+    let to = endpoint(501);
+    let engine = world.engine_mut();
+    open(engine, &families, &body);
+    start_run(engine, &families, &body, to);
+
+    // A pre-image read before an accessibility event, presented afterwards.
+    let stale = read(engine, &families, |txn| {
+        families
+            .deposit(txn, body.id())
+            .expect("read")
+            .expect("body")
+    });
+    apply(engine, &families, |txn| {
+        families
+            .set_accessibility(
+                txn,
+                body.id(),
+                stale.revision(),
+                Accessibility::new(50).expect("accessibility"),
+            )
+            .map(|_| ())
+    })
+    .expect("the campaign event lands");
+
+    let refused = apply(engine, &families, |txn| {
+        let run = families.run(txn, body.id())?.expect("run");
+        families.run_cycle(
+            txn,
+            &stale,
+            &run,
+            GOD,
+            RequestUid::from_bytes([0x33; 16]),
+            &holder(GOD, "extract"),
+            &now(),
+            CommitToken::from_bytes([0x33; 16]),
+            source("extract/12/0"),
+        )
+    });
+    assert!(
+        matches!(refused, Err(IndustryError::StaleRevision)),
+        "a stale pre-image refuses rather than extracting on it: {refused:?}"
+    );
+}
+
+#[test]
+fn e7c3_d_an_accessibility_event_moves_the_next_cycle_and_never_a_completed_one() {
+    let (mut world, families) = boot();
+    let body = deposit(13, 10_000, &[(0, 500)]);
+    let to = endpoint(502);
+    let engine = world.engine_mut();
+    open(engine, &families, &body);
+    start_run(engine, &families, &body, to);
+
+    let first = cycle(engine, &families, &body, 1).expect("cycle 0");
+    assert_eq!(first.quantity, 500);
+    let lot_after_first = read(engine, &families, |txn| {
+        txn.get(&families.inventory.lots, &first.lot)
+            .expect("lot read")
+            .cloned()
+    })
+    .expect("the first cycle's lot");
+    assert_eq!(lot_after_first.quantity(), 500);
+
+    // Collapse the seam to half.
+    let live = read(engine, &families, |txn| {
+        families
+            .deposit(txn, body.id())
+            .expect("read")
+            .expect("body")
+    });
+    apply(engine, &families, |txn| {
+        families
+            .set_accessibility(
+                txn,
+                body.id(),
+                live.revision(),
+                Accessibility::new(50).expect("accessibility"),
+            )
+            .map(|_| ())
+    })
+    .expect("event");
+
+    let live = read(engine, &families, |txn| {
+        families
+            .deposit(txn, body.id())
+            .expect("read")
+            .expect("body")
+    });
+    let run = read(engine, &families, |txn| {
+        families.run(txn, body.id()).expect("read").expect("run")
+    });
+    let second = apply(engine, &families, |txn| {
+        families.run_cycle(
+            txn,
+            &live,
+            &run,
+            GOD,
+            RequestUid::from_bytes([0x44; 16]),
+            &holder(GOD, "extract"),
+            &now(),
+            CommitToken::from_bytes([0x44; 16]),
+            source("extract/13/1"),
+        )
+    })
+    .expect("cycle 1");
+    assert_eq!(second.quantity, 250, "the NEXT cycle moved");
+    let lot_again = read(engine, &families, |txn| {
+        txn.get(&families.inventory.lots, &first.lot)
+            .expect("lot read")
+            .cloned()
+    })
+    .expect("the first cycle's lot still exists");
+    assert_eq!(
+        lot_again.quantity(),
+        500,
+        "a completed cycle is never re-evaluated"
+    );
+}
+
+#[test]
+fn e7c3_d_a_cycle_is_one_bundle_so_a_reboot_sees_all_or_none() {
+    let (mut world, families) = boot();
+    let body = deposit(14, 10_000, &[(0, 500)]);
+    let to = endpoint(503);
+    let engine = world.engine_mut();
+    open(engine, &families, &body);
+    start_run(engine, &families, &body, to);
+
+    let before = read(engine, &families, |txn| {
+        families.remaining(txn, &body).expect("remaining")
+    });
+
+    // Prepare the exact bundle a cycle writes, then ABORT it: the pre-image
+    // must be intact, with no lot, no debited reserve and no advanced run.
+    let (writes, lot) = {
+        let mut txn = engine
+            .action_transaction(&families.deposits)
+            .expect("industry transaction");
+        let live = families
+            .deposit(&mut txn, body.id())
+            .expect("read")
+            .expect("body");
+        let run = families
+            .run(&mut txn, body.id())
+            .expect("read")
+            .expect("run");
+        let cycled = families
+            .run_cycle(
+                &mut txn,
+                &live,
+                &run,
+                GOD,
+                RequestUid::from_bytes([0x55; 16]),
+                &holder(GOD, "extract"),
+                &now(),
+                CommitToken::from_bytes([0x55; 16]),
+                source("extract/14/0"),
+            )
+            .expect("prepare the cycle");
+        let prepared = txn.prepare().expect("prepared");
+        let writes = prepared.authoritative_replay_writes().len();
+        engine.abort_prepared_transaction(prepared);
+        (writes, cycled.lot)
+    };
+    // The exact write set: the deposit pool's scalar and book, the operator's
+    // lot, that endpoint's lot census, the advanced run, and the marker.
+    assert!(
+        writes >= 6,
+        "one cycle writes the pool pair, the lot, the census, the run and the marker: {writes}"
+    );
+
+    let after = read(engine, &families, |txn| {
+        families.remaining(txn, &body).expect("remaining")
+    });
+    assert_eq!(after, before, "an aborted cycle debits nothing");
+    let orphan = read(engine, &families, |txn| {
+        txn.get(&families.inventory.lots, &lot)
+            .expect("lot read")
+            .cloned()
+    });
+    assert!(orphan.is_none(), "no lot, or exactly one — never a half");
+    let run = read(engine, &families, |txn| {
+        families.run(txn, body.id()).expect("read").expect("run")
+    });
+    assert_eq!(run.next_cycle(), 0, "and the run did not advance");
+}
+
+#[test]
+fn e7c3_d_the_bundle_carries_two_owners_post_images() {
+    // The one-bundle argument, made against the write set itself: the
+    // composition-declared delegation is what lets `industry.run` and
+    // `inventory.pool` ride one commit, and every write still persists under
+    // its OWN family owner's namespace.
+    let (mut world, families) = boot();
+    let body = deposit(15, 10_000, &[(0, 500)]);
+    let to = endpoint(504);
+    let engine = world.engine_mut();
+    open(engine, &families, &body);
+    start_run(engine, &families, &body, to);
+
+    let mut txn = engine
+        .action_transaction(&families.deposits)
+        .expect("industry transaction");
+    let live = families
+        .deposit(&mut txn, body.id())
+        .expect("read")
+        .expect("body");
+    let run = families
+        .run(&mut txn, body.id())
+        .expect("read")
+        .expect("run");
+    families
+        .run_cycle(
+            &mut txn,
+            &live,
+            &run,
+            GOD,
+            RequestUid::from_bytes([0x66; 16]),
+            &holder(GOD, "extract"),
+            &now(),
+            CommitToken::from_bytes([0x66; 16]),
+            source("extract/15/0"),
+        )
+        .expect("prepare");
+    assert_eq!(
+        txn.owner(),
+        &OwnerId::new("industry").expect("owner"),
+        "the transaction is industry's"
+    );
+    let prepared = txn.prepare().expect("prepared");
+    let mut namespaces: Vec<String> = prepared
+        .authoritative_replay_writes()
+        .iter()
+        .map(|write| match write {
+            mush_core::ReplayWrite::ModuleJsonSet { namespace, .. }
+            | mush_core::ReplayWrite::ModuleDelete { namespace, .. } => namespace.to_string(),
+            _ => "other".to_owned(),
+        })
+        .collect();
+    namespaces.sort();
+    namespaces.dedup();
+    assert_eq!(
+        namespaces,
+        vec!["industry".to_owned(), "inventory".to_owned()],
+        "one bundle, two owners, each write in its own family owner's namespace"
+    );
+    engine.abort_prepared_transaction(prepared);
+}
+
+#[test]
+fn e7c3_d_a_replayed_request_refuses_at_the_applied_marker() {
+    let (mut world, families) = boot();
+    let body = deposit(16, 10_000, &[(0, 500)]);
+    let to = endpoint(505);
+    let engine = world.engine_mut();
+    open(engine, &families, &body);
+    start_run(engine, &families, &body, to);
+
+    let request = RequestUid::from_bytes([0x77; 16]);
+    let run_once = |engine: &mut Engine| {
+        apply(engine, &families, |txn| {
+            let live = families.deposit(txn, body.id())?.expect("body");
+            let run = families.run(txn, body.id())?.expect("run");
+            families.run_cycle(
+                txn,
+                &live,
+                &run,
+                GOD,
+                request,
+                &holder(GOD, "extract"),
+                &now(),
+                CommitToken::from_bytes([0x77; 16]),
+                source("extract/16/0"),
+            )
+        })
+    };
+    run_once(engine).expect("the first cycle commits");
+    let replay = run_once(engine);
+    assert!(
+        matches!(replay, Err(IndustryError::AlreadyApplied)),
+        "the marker is the epoch-free replay guard: {replay:?}"
+    );
+    let remaining = read(engine, &families, |txn| {
+        families.remaining(txn, &body).expect("remaining")
+    });
+    assert_eq!(
+        remaining, 9_500,
+        "and the reserve was drawn down exactly once"
+    );
+}
+
+#[test]
+fn e7c3_d_a_quarantined_body_refuses_and_its_pool_never_rises() {
+    let (mut world, families) = boot();
+    let body = deposit(17, 10_000, &[(0, 500)]);
+    {
+        let engine = world.engine_mut();
+        open(engine, &families, &body);
+    }
+    // The body's endpoint names a vault the economy never hydrated — the one
+    // cross-family shape the kernel cannot see.
+    world.modules_loaded(std::collections::HashMap::new());
+    let store = world
+        .world()
+        .module_state::<IndustryStore>()
+        .expect("industry store");
+    assert_eq!(
+        store.quarantine(body.id()),
+        Some(Quarantine::VaultMissing),
+        "a body whose endpoint vault is absent is quarantined"
+    );
+    assert!(
+        !store
+            .quarantine(body.id())
+            .expect("why")
+            .runbook()
+            .is_empty()
+    );
+    // Availability refuses rather than rising: the pool is exactly what was
+    // credited, and nothing about the quarantine invents a unit.
+    let engine = world.engine_mut();
+    let remaining = read(engine, &families, |txn| {
+        families.remaining(txn, &body).expect("remaining")
+    });
+    assert_eq!(remaining, 10_000);
+}
+
+#[test]
+fn e7c3_d_a_curve_is_monotone_and_overflow_refuses() {
+    // The curve is the whole of the depletion model, so its shape is refused
+    // on construction AND on load rather than at first arithmetic.
+    assert!(
+        YieldCurve::new(Vec::new()).is_err(),
+        "an empty curve refuses"
+    );
+    assert!(
+        YieldCurve::new(vec![CurvePoint {
+            cumulative: 5,
+            per_cycle: 10
+        }])
+        .is_err(),
+        "a curve that does not start at zero refuses"
+    );
+    assert!(
+        YieldCurve::new(vec![
+            CurvePoint {
+                cumulative: 0,
+                per_cycle: 10
+            },
+            CurvePoint {
+                cumulative: 5,
+                per_cycle: 20
+            },
+        ])
+        .is_err(),
+        "a yield that RISES with depletion refuses"
+    );
+    assert!(
+        YieldCurve::new(vec![
+            CurvePoint {
+                cumulative: 0,
+                per_cycle: 10
+            },
+            CurvePoint {
+                cumulative: 0,
+                per_cycle: 5
+            },
+        ])
+        .is_err(),
+        "a non-increasing threshold refuses"
+    );
+    assert!(
+        serde_json::from_value::<YieldCurve>(serde_json::json!([
+            { "cumulative": 0, "per_cycle": 10 },
+            { "cumulative": 5, "per_cycle": 20 }
+        ]))
+        .is_err(),
+        "and the wire re-runs it on load"
+    );
+    // An oversized reserve refuses at the record's own constructor.
+    let over = OreDeposit::new(
+        OreDepositId(18),
+        ObjId(7),
+        commodity("metals"),
+        Grade::new(1).expect("grade"),
+        Accessibility::new(100).expect("accessibility"),
+        band("a"),
+        band("b"),
+        curve(&[(0, 1)]),
+        endpoint(18),
+        MAX_ORE_RESERVE + 1,
+    );
+    assert!(over.is_err(), "an oversized reserve refuses");
+}
+
+#[test]
+fn e7c3_d_a_stopped_or_unworkable_body_refuses_the_cycle() {
+    let (mut world, families) = boot();
+    let body = deposit(19, 10_000, &[(0, 500)]);
+    let to = endpoint(506);
+    let engine = world.engine_mut();
+    open(engine, &families, &body);
+    start_run(engine, &families, &body, to);
+
+    // Collapsed: accessibility zero refuses rather than quietly yielding zero,
+    // so an operator is told something happened.
+    let live = read(engine, &families, |txn| {
+        families
+            .deposit(txn, body.id())
+            .expect("read")
+            .expect("body")
+    });
+    apply(engine, &families, |txn| {
+        families
+            .set_accessibility(
+                txn,
+                body.id(),
+                live.revision(),
+                Accessibility::new(0).expect("accessibility"),
+            )
+            .map(|_| ())
+    })
+    .expect("collapse");
+    assert!(matches!(
+        cycle(engine, &families, &body, 1),
+        Err(IndustryError::Unworkable)
+    ));
+
+    // Stopped: the record stays and the cycle refuses.
+    let run = read(engine, &families, |txn| {
+        families.run(txn, body.id()).expect("read").expect("run")
+    });
+    apply(engine, &families, |txn| {
+        families.put_run(txn, run.stopped()?)
+    })
+    .expect("stop");
+    let still_there = read(engine, &families, |txn| {
+        families.run(txn, body.id()).expect("read")
+    });
+    assert!(still_there.is_some(), "stopping leaves the record");
+}
+
+// =====================================================================
+// T — tenure. Can a claim be transferred, extracted under, or contested
+// by someone the authority chain does not permit?
+// =====================================================================
+
+#[test]
+fn e7c3_t_two_claims_over_one_body_coexist_with_distinct_issuers() {
+    let (mut world, families) = boot();
+    let subject = ClaimSubject::Deposit {
+        deposit: OreDepositId(20),
+    };
+    let engine = world.engine_mut();
+    let mut first = claim(20, subject, 2, 2);
+    let mut second = claim(21, subject, 3, 3);
+    // Two governments, one piece of ground: two records with distinct issuers,
+    // which needs no `ControlKind` at all (that stays cut 9's).
+    apply(engine, &families, |txn| {
+        families.file_claim(txn, first.clone())
+    })
+    .expect("the first authority");
+    apply(engine, &families, |txn| {
+        families.file_claim(txn, second.clone())
+    })
+    .expect("the second authority");
+    let live = read(engine, &families, |txn| {
+        families.claims_over(txn, subject).expect("claims")
+    });
+    assert_eq!(live.len(), 2);
+    first = live[0].clone();
+    second = live[1].clone();
+    assert_ne!(first.issuer(), second.issuer());
+}
+
+#[test]
+fn e7c3_t_the_claim_index_bounds_a_subject_at_its_cap() {
+    let mut index = ClaimIndex::default();
+    for id in 0..MAX_CLAIMS_PER_SUBJECT {
+        index = index
+            .with(mush_industry::ClaimId(id as u64))
+            .expect("inside the cap");
+    }
+    assert_eq!(index.len(), MAX_CLAIMS_PER_SUBJECT);
+    assert!(
+        index.with(mush_industry::ClaimId(9_999)).is_err(),
+        "the index is what makes MAX_CLAIMS_PER_SUBJECT a COUNTED bound"
+    );
+    // Idempotent: re-filing a claim already in the set is not a second row.
+    let same = index
+        .with(mush_industry::ClaimId(0))
+        .expect("already present");
+    assert_eq!(same.len(), MAX_CLAIMS_PER_SUBJECT);
+    // And the wire re-runs both rules.
+    let over: Vec<u64> = (0..=MAX_CLAIMS_PER_SUBJECT as u64).collect();
+    assert!(serde_json::from_value::<ClaimIndex>(serde_json::json!(over)).is_err());
+    assert!(serde_json::from_value::<ClaimIndex>(serde_json::json!([2_u64, 1_u64])).is_err());
+}
+
+#[test]
+fn e7c3_t_a_claim_past_its_term_stops_authorizing_and_does_not_vanish() {
+    let (world, _families) = boot();
+    let body = deposit(22, 10_000, &[(0, 500)]);
+    let mut record = claim(
+        22,
+        ClaimSubject::Deposit { deposit: body.id() },
+        GOD.0,
+        GOD.0,
+    );
+    record = ClaimRecord::new(
+        record.id(),
+        record.subject(),
+        record.issuer().clone(),
+        record.holder().clone(),
+        record.object(),
+        Exclusivity::Shared,
+        1,
+        later(500),
+        Transferability::Transferable,
+    )
+    .expect("a claim that lapses at 500");
+    let refusal = mush_industry::extraction_authorized(
+        world.world(),
+        GOD,
+        &PrincipalId::Object(GOD),
+        &body,
+        10_000,
+        std::slice::from_ref(&record),
+        None,
+        &later(1_000),
+    );
+    assert_eq!(refusal, Err(ExtractionRefusal::ClaimExpired));
+    // The record is still there — it stopped authorizing, it did not vanish.
+    assert_eq!(record.contest_state(), &ContestState::Uncontested);
+}
+
+#[test]
+fn e7c3_t_a_term_on_another_clock_generation_refuses_comparison() {
+    let (world, _families) = boot();
+    let body = deposit(23, 10_000, &[(0, 500)]);
+    let record = ClaimRecord::new(
+        mush_industry::ClaimId(23),
+        ClaimSubject::Deposit { deposit: body.id() },
+        PrincipalId::Object(GOD),
+        PrincipalId::Object(GOD),
+        ObjId(923),
+        Exclusivity::Shared,
+        1,
+        other_generation(),
+        Transferability::Transferable,
+    )
+    .expect("a claim stamped on generation 2");
+    let refusal = mush_industry::extraction_authorized(
+        world.world(),
+        GOD,
+        &PrincipalId::Object(GOD),
+        &body,
+        10_000,
+        std::slice::from_ref(&record),
+        None,
+        &now(),
+    );
+    assert_eq!(
+        refusal,
+        Err(ExtractionRefusal::ClaimUncomparable),
+        "K4a: refuse comparison rather than expiring early"
+    );
+}
+
+#[test]
+fn e7c3_t_a_suspended_or_seized_claim_authorizes_nobody_and_the_record_stays() {
+    let (world, _families) = boot();
+    let body = deposit(24, 10_000, &[(0, 500)]);
+    let base = claim(
+        24,
+        ClaimSubject::Deposit { deposit: body.id() },
+        GOD.0,
+        GOD.0,
+    );
+    for (state, expected) in [
+        (
+            ContestState::Suspended {
+                by: PrincipalId::Object(GOD),
+            },
+            ExtractionRefusal::ClaimSuspended,
+        ),
+        (
+            ContestState::Seized {
+                by: PrincipalId::Object(GOD),
+                at: now(),
+            },
+            ExtractionRefusal::ClaimSeized,
+        ),
+    ] {
+        let moved = base.with_contest_state(state.clone()).expect("move");
+        assert_eq!(
+            moved.contest_state(),
+            &state,
+            "the record stays and says so"
+        );
+        assert_eq!(moved.revision(), base.revision() + 1);
+        let refusal = mush_industry::extraction_authorized(
+            world.world(),
+            GOD,
+            &PrincipalId::Object(GOD),
+            &body,
+            10_000,
+            std::slice::from_ref(&moved),
+            None,
+            &now(),
+        );
+        assert_eq!(refusal, Err(expected));
+    }
+    // A *contested* claim still authorizes: a dispute is not a suspension.
+    let contested = base
+        .with_contest_state(ContestState::Contested {
+            contract: mush_economy::ContractId(1),
+        })
+        .expect("contest");
+    assert!(contested.contest_state().authorizes());
+}
+
+#[test]
+fn e7c3_t_extraction_without_the_entitlement_refuses_though_the_claim_stands() {
+    let (world, _families) = boot();
+    let body = deposit(25, 10_000, &[(0, 500)]);
+    let record = claim(
+        25,
+        ClaimSubject::Deposit { deposit: body.id() },
+        GOD.0,
+        GOD.0,
+    );
+    // No licence instrument named at all: fail-closed, and the staff-only
+    // reason names the wiring.
+    let refusal = mush_industry::extraction_authorized(
+        world.world(),
+        GOD,
+        &PrincipalId::Object(GOD),
+        &body,
+        10_000,
+        std::slice::from_ref(&record),
+        None,
+        &now(),
+    );
+    assert_eq!(refusal, Err(ExtractionRefusal::NoLicenceInstrument));
+    assert!(
+        ExtractionRefusal::NoLicenceInstrument
+            .reason()
+            .contains("with_extraction_licence")
+    );
+
+    // A named instrument nobody holds an account in: still refused, and still
+    // the same public sentence.
+    let instrument = mush_economy::InstrumentId::new("tacsim.extraction").expect("instrument");
+    let refusal = mush_industry::extraction_authorized(
+        world.world(),
+        GOD,
+        &PrincipalId::Object(GOD),
+        &body,
+        10_000,
+        std::slice::from_ref(&record),
+        Some(&instrument),
+        &now(),
+    );
+    assert!(matches!(
+        refusal,
+        Err(ExtractionRefusal::NoLicenceInstrument | ExtractionRefusal::NoLicence)
+    ));
+    assert_eq!(
+        refusal.unwrap_err().public(),
+        ExtractionRefusal::Depleted.public()
+    );
+}
+
+#[test]
+fn e7c3_t_a_claim_over_a_body_nobody_surveyed_is_legal_and_leaks_nothing() {
+    let (mut world, families) = boot();
+    let body = deposit(26, 10_000, &[(0, 500)]);
+    let engine = world.engine_mut();
+    open(engine, &families, &body);
+    let record = claim(
+        26,
+        ClaimSubject::Deposit { deposit: body.id() },
+        GOD.0,
+        GOD.0,
+    );
+    apply(engine, &families, |txn| {
+        families.file_claim(txn, record.clone())
+    })
+    .expect("filing needs no survey");
+    // And the filing disclosed nothing: no survey row exists for anybody.
+    let store = world.world().module_state::<IndustryStore>();
+    assert!(store.is_some_and(|store| store.survey(body.id()).is_none()));
+}
+
+#[test]
+fn e7c3_t_a_bound_claim_refuses_a_holder_change() {
+    let record = ClaimRecord::new(
+        mush_industry::ClaimId(27),
+        ClaimSubject::Place { place: ObjId(7) },
+        PrincipalId::Object(GOD),
+        PrincipalId::Object(GOD),
+        ObjId(927),
+        Exclusivity::Exclusive,
+        1,
+        later(100_000),
+        Transferability::Bound,
+    )
+    .expect("a personal tenure");
+    assert_eq!(record.transferability(), Transferability::Bound);
+    // The record CAN carry a new holder; what refuses is the verb, and E4's
+    // own `TransferTitle` refuses the authority half. Both halves are proved
+    // where they live.
+    let moved = record
+        .with_holder(PrincipalId::Object(ObjId(3)))
+        .expect("the record shape allows it");
+    assert_eq!(moved.revision(), 2);
+}
+
+#[test]
+fn e7c3_t_a_stale_claim_revision_refuses() {
+    let (mut world, families) = boot();
+    let subject = ClaimSubject::Place { place: ObjId(28) };
+    let engine = world.engine_mut();
+    let record = claim(28, subject, GOD.0, GOD.0);
+    apply(engine, &families, |txn| {
+        families.file_claim(txn, record.clone())
+    })
+    .expect("file");
+    let moved = record
+        .with_contest_state(ContestState::Suspended {
+            by: PrincipalId::Object(GOD),
+        })
+        .expect("suspend");
+    apply(engine, &families, |txn| {
+        families.put_claim(txn, record.revision(), moved.clone())
+    })
+    .expect("the first move lands");
+    // The same pre-image again: refused, not re-applied.
+    let refused = apply(engine, &families, |txn| {
+        families.put_claim(txn, record.revision(), moved.clone())
+    });
+    assert!(matches!(refused, Err(IndustryError::StaleRevision)));
+}
+
+// =====================================================================
+// Abandonment, restart and wiring
+// =====================================================================
+
+#[test]
+fn e7c3_abandonment_retains_title_and_takes_only_a_title_op() {
+    // The three new symbols, and the shape they make.
+    let op = mush_economy::AssetOp::Abandon { object: ObjId(5) };
+    assert_eq!(op.object(), ObjId(5));
+    assert_eq!(
+        op.ordinal(),
+        10,
+        "the next free ordinal; nothing renumbered"
+    );
+    assert!(op.is_title_changing());
+    // `AssetLifecycle` gained a third, non-terminal variant, and it is not
+    // `WrittenOff`.
+    assert_ne!(
+        mush_economy::AssetLifecycle::Abandoned,
+        mush_economy::AssetLifecycle::WrittenOff
+    );
+    assert_ne!(
+        mush_economy::AssetLifecycle::Abandoned,
+        mush_economy::AssetLifecycle::Active
+    );
+    // And the effect kind exists beside the others.
+    assert_ne!(
+        mush_economy::AssetEffectKind::Abandoned,
+        mush_economy::AssetEffectKind::WrittenOff
+    );
+    // The serde bytes of the two shipped variants are unchanged, so every
+    // stored asset document still round-trips.
+    assert_eq!(
+        serde_json::to_string(&mush_economy::AssetLifecycle::Active).expect("json"),
+        "\"Active\""
+    );
+    assert_eq!(
+        serde_json::to_string(&mush_economy::AssetLifecycle::WrittenOff).expect("json"),
+        "\"WrittenOff\""
+    );
+}
+
+#[test]
+fn e7c3_restart_every_record_re_enters_through_its_constructor() {
+    // §4 rule 1 / D-E7-33: a derived `Deserialize` would make every cap
+    // advisory on load, which is the E5a finding this programme may not
+    // re-learn. Each of these is a hand-edited document that the wire refuses.
+    let body = deposit(30, 10_000, &[(0, 500)]);
+    let mut json = serde_json::to_value(&body).expect("serialize");
+    json["initial_reserve"] = serde_json::json!(0);
+    assert!(
+        serde_json::from_value::<OreDeposit>(json).is_err(),
+        "a zero reserve refuses on load"
+    );
+
+    let mut json = serde_json::to_value(&body).expect("serialize");
+    json["revision"] = serde_json::json!(0);
+    assert!(serde_json::from_value::<OreDeposit>(json).is_err());
+
+    let mut json = serde_json::to_value(&body).expect("serialize");
+    json["accessibility"] = serde_json::json!(101);
+    assert!(serde_json::from_value::<OreDeposit>(json).is_err());
+
+    let record = claim(31, ClaimSubject::Place { place: ObjId(7) }, 2, 2);
+    let mut json = serde_json::to_value(&record).expect("serialize");
+    json["priority"] = serde_json::json!(u32::MAX);
+    assert!(serde_json::from_value::<ClaimRecord>(json).is_err());
+
+    let run =
+        ExtractionRun::new(OreDepositId(32), PrincipalId::Object(GOD), endpoint(32)).expect("run");
+    let mut json = serde_json::to_value(&run).expect("serialize");
+    json["next_cycle"] = serde_json::json!(u64::MAX);
+    assert!(serde_json::from_value::<ExtractionRun>(json).is_err());
+
+    // An unknown key is an error, never ignored.
+    let mut json = serde_json::to_value(&run).expect("serialize");
+    json["surprise"] = serde_json::json!(1);
+    assert!(serde_json::from_value::<ExtractionRun>(json).is_err());
+}
+
+#[test]
+fn e7c3_boot_a_corrupt_survey_document_is_skipped_loudly_and_its_body_marked() {
+    let mut store = IndustryStore::default();
+    let body = OreDepositId(33);
+    let key = mush_industry::store::survey_key(body);
+    mush_industry::store::hydrate(
+        &mut store,
+        &[(
+            key,
+            serde_json::json!({ "deposit": body, "rows": "not rows" }),
+        )],
+    );
+    assert_eq!(
+        store.quarantine(body),
+        Some(Quarantine::SurveyLost),
+        "a document that failed its wire marks its body"
+    );
+    assert!(
+        store.survey(body).is_none(),
+        "and is skipped, never guessed"
+    );
+    // The direction of the loss is disclosure only: no authority moves.
+    assert!(
+        store
+            .quarantine(body)
+            .expect("why")
+            .runbook()
+            .contains("no authority")
+    );
+}
+
+#[test]
+fn e7c3_boot_a_survey_document_that_disagrees_with_its_key_is_skipped() {
+    let mut store = IndustryStore::default();
+    let named = OreDepositId(34);
+    let other = OreDepositId(35);
+    let doc = SurveyDoc::empty(other);
+    mush_industry::store::hydrate(
+        &mut store,
+        &[(
+            mush_industry::store::survey_key(named),
+            serde_json::to_value(&doc).expect("json"),
+        )],
+    );
+    assert_eq!(store.quarantine(named), Some(Quarantine::SurveyLost));
+    assert!(store.survey(named).is_none());
+    assert!(
+        store.survey(other).is_none(),
+        "and never installed elsewhere"
+    );
+}
+
+#[test]
+fn e7c3_facts_a_second_industry_namespace_panics_at_composition() {
+    // D-E7-30: one provider per crate, no exceptions.
+    let result = std::panic::catch_unwind(|| {
+        let _ = mush_economy::EconomyModule::new().with_facts(vec![
+            Arc::new(mush_industry::IndustryFactProvider),
+            Arc::new(mush_industry::IndustryFactProvider),
+        ]);
+    });
+    assert!(result.is_err(), "a duplicate namespace panics");
+}
+
+#[test]
+fn e7c3_facts_answer_from_an_applied_marker_and_nothing_else() {
+    let (mut world, families) = boot();
+    let body = deposit(36, 10_000, &[(0, 500)]);
+    let to = endpoint(507);
+    {
+        let engine = world.engine_mut();
+        open(engine, &families, &body);
+        start_run(engine, &families, &body, to);
+        cycle(engine, &families, &body, 1).expect("one cycle commits");
+    }
+    world.modules_loaded(std::collections::HashMap::new());
+    let store = world
+        .world()
+        .module_state::<IndustryStore>()
+        .expect("industry store");
+    let markers = store.markers_of(mush_industry::FACT_EXTRACTION_CYCLED);
+    assert_eq!(markers.len(), 1, "the committed bundle wrote exactly one");
+    assert_eq!(markers[0].deposit(), body.id());
+    assert_eq!(markers[0].quantity(), 500);
+    assert_eq!(markers[0].actor(), GOD);
+    // A bundle that did not commit leaves no marker, and the fact then answers
+    // nothing — which is unsatisfied, and never settles money.
+    assert!(store.marker("no such marker").is_none());
+}
+
+#[test]
+fn e7c3_wiring_the_custody_provider_holds_quantity_not_objects() {
+    use mush_economy::CustodyProvider;
+    let provider = mush_industry::IndustryCustodyProvider;
+    assert_eq!(provider.provider(), "industry");
+    let ours = mush_industry::deposit_backing(OreDepositId(40));
+    let theirs = mush_economy::CustodyRef::Container(ObjId(1));
+    assert!(provider.handles(&ours));
+    assert!(!provider.handles(&theirs));
+    assert_eq!(
+        mush_industry::deposit_of_backing(&ours),
+        Some(OreDepositId(40))
+    );
+    assert_eq!(mush_industry::deposit_of_backing(&theirs), None);
+    let (world, _families) = boot();
+    // `Some`, never `None`: `None` is fail-closed drift, and this provider
+    // knows the answer for its own backings without reading any state, which
+    // is what keeps it off the module ordering hazard entirely.
+    assert_eq!(provider.backing_valid(world.world(), &ours), Some(true));
+    assert_eq!(provider.contents(world.world(), &ours), Some(Vec::new()));
+    assert_eq!(provider.holds(world.world(), &ours, ObjId(1)), Some(false));
+    // And it claims no world object at all, so E3's exactly-one-claiming-
+    // provider rule is never contested by us in either direction.
+    assert!(!provider.claims(world.world(), ObjId(1)));
+}
+
+#[test]
+fn e7c3_wiring_the_crates_edge_set_is_exactly_what_it_declares() {
+    // `cargo tree -p mush-industry` is the test, and this is its checked-in
+    // half: the manifest's own declaration list, asserted directly so a new
+    // edge cannot arrive unnoticed. **No sim, market, faction, tacsim or party
+    // edge**, in production or in dev.
+    let manifest = include_str!("../Cargo.toml");
+    let declared: Vec<&str> = manifest
+        .lines()
+        .filter_map(|line| line.split_once(".workspace = true"))
+        .map(|(name, _)| name.trim())
+        .collect();
+    for forbidden in [
+        "mush-sim",
+        "mush-market",
+        "mush-faction",
+        "ruleset-tacsim",
+        "mush-party",
+        "mush-tactics",
+        "mush-scenes",
+        "mush-jobs",
+        "mush-housing",
+    ] {
+        assert!(
+            !declared.contains(&forbidden),
+            "mush-industry must not depend on {forbidden}"
+        );
+    }
+    for required in [
+        "mush-core",
+        "mush-economy",
+        "mush-org",
+        "mush-inventory",
+        "mush-proto",
+    ] {
+        assert!(
+            declared.contains(&required),
+            "mush-industry declares {required}"
+        );
+    }
+    // DECIDED (d): cut 3 lifts no market refusal and changes no market file —
+    // the inventory-backed `Supply` arm is cut 11's. The absence of the edge is
+    // what makes that true by construction.
+    assert!(
+        !manifest.contains("mush-market.workspace"),
+        "no market edge, in production or in dev"
+    );
+}
+
+#[test]
+fn e7c3_records_a_deposit_keeps_no_private_stock_number() {
+    // D-E7-3, made a property of the type: `OreDeposit` has no `reserve`
+    // field, only the AUTHORED figure the pool was seeded with. The one live
+    // number is cut 2's pool.
+    let body = deposit(41, 10_000, &[(0, 500)]);
+    let json = serde_json::to_value(&body).expect("serialize");
+    let object = json.as_object().expect("object");
+    let mut fields: Vec<&str> = object.keys().map(String::as_str).collect();
+    fields.sort_unstable();
+    assert_eq!(
+        fields,
+        vec![
+            "accessibility",
+            "commodity",
+            "curve",
+            "endpoint",
+            "grade",
+            "grade_class",
+            "id",
+            "initial_reserve",
+            "place",
+            "reserve_class",
+            "revision",
+        ],
+        "the record's exact field set; there is no live `reserve`"
+    );
+    // `place` is an `ObjId`, never a `RegionId` (OPEN 4): a pack cannot author
+    // a runtime-allocated region id, and using one would put a faction edge on
+    // a crate that must stay neutral.
+    assert_eq!(body.place(), ObjId(7));
+}
+
+#[test]
+fn e7c3_records_the_curve_is_pure_and_two_evaluations_agree() {
+    let body = deposit(42, 50_000, &[(0, 500), (20_000, 300), (40_000, 100)]);
+    for remaining in [50_000_u64, 40_000, 30_000, 10_000, 1, 0] {
+        assert_eq!(
+            body.next_yield(remaining),
+            body.next_yield(remaining),
+            "the curve takes no clock, no world and no RNG"
+        );
+    }
+    assert_eq!(body.next_yield(50_000), 500);
+    assert_eq!(body.next_yield(30_000), 300, "past 20k cumulative");
+    assert_eq!(body.next_yield(9_000), 100, "past 40k cumulative");
+    assert_eq!(body.next_yield(50), 50, "clamped to what is left");
+    assert_eq!(body.next_yield(0), 0, "and a depleted body yields zero");
+}

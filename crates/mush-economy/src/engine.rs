@@ -1016,7 +1016,18 @@ fn resolve_asset_ops(
                         a.clone()
                     }
                 };
-                if post.lifecycle != AssetLifecycle::Active {
+                // E7 cut 3: an **abandoned** asset authorizes nobody and
+                // takes no asset op but its title. `TransferTitle` stays open
+                // because that is exactly the salvage claim that turns
+                // possession into title (an ordinary E4b2 contract with a
+                // `Before` deadline and a named adjudicator); everything else
+                // — assign, encumber, maintenance, write-off, re-catalogue —
+                // is refused, and the refusal is the same `AssetNotActive` a
+                // written-off asset answers, so the two are indistinguishable
+                // to anyone who could not already see the record.
+                let title_only = matches!(post.lifecycle, AssetLifecycle::Abandoned)
+                    && matches!(op, AssetOp::TransferTitle { .. });
+                if post.lifecycle != AssetLifecycle::Active && !title_only {
                     return Err(EconomyError::AssetNotActive(object));
                 }
                 if !env.auth.authorize_asset(actor, Some(&post), op) {
@@ -1160,6 +1171,21 @@ fn apply_asset_op(
             }
             post.maintenance_account = *account;
             Ok(AssetEffectKind::MaintenanceSet)
+        }
+        AssetOp::Abandon { object } => {
+            // Invariant 12 again, for the same reason as `WriteOff`:
+            // abandoning an encumbered asset would strand the claim, and a
+            // lender's collateral is not something an owner may walk away
+            // from unilaterally.
+            if !post.encumbrances.is_empty() {
+                return Err(EconomyError::Encumbered(*object));
+            }
+            // `title_owner` is RETAINED — provenance survives (T3) — and
+            // custody is untouched, because abandoning a thing is not moving
+            // it. There is no null owner to set: `PrincipalId` has no such
+            // arm, which is why 10b §3.3's drafted effect was unbuildable.
+            post.lifecycle = AssetLifecycle::Abandoned;
+            Ok(AssetEffectKind::Abandoned)
         }
         AssetOp::WriteOff { object, .. } => {
             // Invariant 12 again: writing off an encumbered asset would strand the

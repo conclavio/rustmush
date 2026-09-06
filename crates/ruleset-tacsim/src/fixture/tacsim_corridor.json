@@ -3,7 +3,7 @@
     "id": "tacsim.corridor",
     "version": 1,
     "kind": "campaign_seed",
-    "digest": "32a27fbc8ddd7ba644861a8aa77967a028bfa9047fe33a3812fe37e6c6d81333",
+    "digest": "e0aa83077ad17b5fb79537670c9221e5fb846a08688b50ebdb59663afcb3f7c9",
     "requires": [
       { "id": "tacsim.core", "version": 1 }
     ]
@@ -12,6 +12,24 @@
     "ceres_extraction": {
       "kind": "location",
       "def": { "label": "Ceres Extraction Site", "role": "extraction" }
+    },
+    "ceres_iron": {
+      "kind": "deposit",
+      "def": {
+        "label": "Ceres Iron Seam",
+        "place": "ceres_extraction",
+        "commodity": "metals",
+        "grade": 60,
+        "accessibility": 100,
+        "grade_class": "grade_b",
+        "reserve_class": "reserve_major",
+        "reserve": 50000,
+        "curve": [
+          { "cumulative": 0, "per_cycle": 500 },
+          { "cumulative": 20000, "per_cycle": 300 },
+          { "cumulative": 40000, "per_cycle": 100 }
+        ]
+      }
     },
     "ceres_phobos": {
       "kind": "route",

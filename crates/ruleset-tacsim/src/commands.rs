@@ -327,6 +327,14 @@ fn pack_show(ctx: &mut Ctx<'_>, arg: &str, cursor: &str) -> Result<(), CmdError>
                 def.outputs.len()
             ),
             PackEntry::Location(def) => format!("{} [{}]", def.label, def.role),
+            // E7 cut 3: the authored **bands** and never the authored reserve.
+            // `@tacsim/pack show` is a staff-adjacent catalogue read, but the
+            // reserve is exactly the number cut 3's whole fog budget was spent
+            // closing, and a pack listing must not be the way around it.
+            PackEntry::Deposit(def) => format!(
+                "{} at {} — {} (grade band {}, reserve band {})",
+                def.label, def.place, def.commodity, def.grade_class, def.reserve_class
+            ),
             PackEntry::Route(route) => format!(
                 "{} → {}, {} legs, drive {}",
                 route.from,

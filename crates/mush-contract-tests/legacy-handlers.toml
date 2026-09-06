@@ -476,6 +476,12 @@ category = "baseline"
 note = "baseline pinned at b0e3b52 (core/engine registry)"
 
 [[handler]]
+name = "@claim"
+category = "authoritative"
+family = "industry.claim"
+note = "E7 cut 3 (10b 3.3 / 4.1's cut-3 row as amended): tenure over an ore body or a place -- @claim/file|show|transfer|pledge|release|contest|suspend|seize. ONE CommandSpec, so it takes the ceiling class of its eight switches. The record half rides B1's ingress adapter seam (Ctx::submit_authoritative -> Deferred::AuthoritativeSubmit -> ActionCoordinator::command_ingress + preflight -> resolve_and_stage_offer -> prepare_and_stage_resolved), staging one AuthoritativeBundle whose typed post-images are industry.claim and industry.claim_index under mush-industry's own OwnerId. 4.1's cut-3 row called ClaimRecord exempt/legacy-post-image; 4.1's OWN closing rule overrides it -- a claim gates extraction legality and the extraction provider re-reads it at prepare time under a checked revision -- so it is authoritative and this stanza says so. The transferable half is E4's, reused verbatim and never re-implemented: the claim's titled world object is minted by mush_economy::issue_title under the registered system principal industry.claims, transfer is AssetOp::TransferTitle (which refuses with Encumbered while ANY encumbrance stands, so a PLEDGED claim cannot be transferred by E4's rule and cut 3 writes no second check), pledge is Encumbrance::Collateral and dispute is Encumbrance::Disputed. Cut 3 defines no encumbrance model, no second title record and no second transfer path. Seizure of a pledged claim REFUSES and pages level 2 with the command filled in, because it would silently destroy a lender's collateral; a contest whose adjudicator contract is itself Disputed suspends the claim rather than resolving it. Every term comparison is ClockStamp::checked_cmp, so a stamp on another clock generation refuses comparison rather than expiring early."
+
+[[handler]]
 name = "@clock"
 category = "baseline"
 note = "baseline pinned at b0e3b52 (module, every composition)"
@@ -489,6 +495,12 @@ note = "baseline pinned at b0e3b52 (module, every composition)"
 name = "@create"
 category = "baseline"
 note = "baseline pinned at b0e3b52 (core/engine registry)"
+
+[[handler]]
+name = "@deposit"
+category = "authoritative"
+family = "industry.deposit"
+note = "E7 cut 3 (10b 3.3): the ore body -- @deposit/open|access (staff mutations) and @deposit/list|show (reads, paged on records VISITED at INDUSTRY_PAGE with an honest after=<cursor> continuation). ONE CommandSpec, so it takes the ceiling class of its four switches, and the two reads simply never submit -- the same argument cut 2 made for @inv's four read switches. It is Authoritative rather than ReadOnly for a mechanical reason recorded in 10b 3.3's As built: a body's remaining reserve IS cut 2's Pool at the body's own endpoint (OPEN 1, D-E7-3), and a pool can only be credited inside an authoritative bundle, so OPENING a body is an authoritative act. industry.deposit is likewise authoritative rather than 4.1's drafted exempt: accessibility decides whether a cycle is legal at all and the curve decides its yield, which 4.1's own closing rule ('not exempt, ever: ... anything that changes action legality') settles, and a conventional document could not serve the provider's prepare-time re-read at all. Disclosure (rule 4): @deposit/show on an unknown id and on a known but unsurveyed one are BYTE-IDENTICAL, and an unsurveyed body is not listed; only staff read the authored reserve, the accessibility, the grade or the curve. The crate is neutral -- it holds no ore family definition, no band table, no route and no corridor fact; the ruleset authors those through cut 1's packs."
 
 [[handler]]
 name = "@desc"
@@ -524,6 +536,12 @@ note = "baseline pinned at b0e3b52 (module, every composition)"
 name = "@emit"
 category = "baseline"
 note = "baseline pinned at b0e3b52 (core/engine registry)"
+
+[[handler]]
+name = "@extract"
+category = "authoritative"
+family = "industry.run"
+note = "E7 cut 3 (10b 3.3, D lens): extraction -- @extract/start|cycle|stop, every switch on B1's ingress adapter seam. ONE cycle is ONE bundle: a hold on the deposit endpoint's pool (InventoryFamilies::reserve), that hold consumed (one atomic debit), one Lot minted with Lineage::Origin { source } at the operator's endpoint, the run's advanced post-image, and the applied marker industry.extraction.cycled is answered from -- all in one ActionTxn, so a crash mid-cycle produces NO LOT OR EXACTLY ONE and never a debited reserve with no lot. Cut 3 writes NO depletion arithmetic of its own: every quantity mutation is cut 2's owner-exported verb over ReservationBook::checked_apply_resource, and checked_hold subtracts every live hold before admitting the next, so two reservations against one remaining unit are refused BY THE KERNEL. Yield is arithmetic, not a roll: YieldCurve::at is a bounded walk over a monotone table with checked integer arithmetic in a fixed order, so two evaluations always agree and a replay is a HIT; an accessibility event moves the NEXT cycle and never a completed one. The bundle carries two owners' post-images -- industry.run beside inventory.pool/book/lot -- through the composition-declared state-family delegation mush-inventory publishes for 'industry' (Registrar::delegate_state_families), which is the cross-owner write E7 cut 2's own handoff named as cut 3's; the persisted namespace of every write stays the family owner's. The retryable key shape is extract/{deposit}/{cycle}. Cut 3 registers NO schedule source (cut 4 attaches the schedule) and NO second AuthorityGuardKind::Reservation validator (it holds against cut 2's book under cut 2's validator; cut 4's capacity book registers mush-industry's). Refusals are indistinguishable: depletion, a missing licence, a suspended claim and a body the actor may not know exists answer ONE sentence, and only staff get the reason."
 
 [[handler]]
 name = "@faction"
@@ -569,6 +587,11 @@ note = "baseline pinned at b0e3b52 (module, every composition)"
 name = "@inv"
 category = "authoritative"
 note = "E7 cut 2 (10b 3.2 / 4.1's two cut-2 rows): the neutral quantity authority's whole surface -- @inv/show|lots|lot|reservations (reads, paged on records VISITED at INV_PAGE) and @inv/move|split|merge|dissolve|crystallize (mutations). It is ONE CommandSpec and therefore ONE registration, so it takes the ceiling class of its nine switches, and it is the FIRST CommandCompatibility::Authoritative registration on the tree. The prepared path it rides is B1's ingress adapter seam: Ctx::submit_authoritative -> Deferred::AuthoritativeSubmit -> CommandSubmitDriver::drive_one -> ActionCoordinator::command_ingress + preflight -> resolve_and_stage_offer -> ActionCoordinator::prepare_and_stage_resolved, staging one AuthoritativeBundle whose typed post-images are mush-inventory's own state families under its own OwnerId (inventory_pools, inventory_books on K's reservation_book_state_family_descriptor, inventory_lots, inventory_tranches, inventory_applied). The handler itself mutates NOTHING and confirms nothing: every quantity mutation goes through ReservationBook::checked_apply_resource or checked_consume, the pool scalar and the book are written together in that one bundle, and the actor's confirmation is commit-bound so it can never outrun the durable ack. It registers the tree's first AuthorityGuardKind::Reservation validator under mush-inventory's own OwnerId and one FactProvider namespace (inventory.*), answered from the committed bundle's own applied marker and never from a status. No conventional document at all -- no legacy-post-image family, so no future family to name. E7 cut 2 independent verify fold: the surface gains one STAFF switch, @inv/quarantine, which is the operator surface for the half of the boot quarantine that can only be marked BY KEY (a pool scalar that survived without its book names no endpoint), and it prints the reconciliation order rather than parking state on wait-for-staff; and the four reads gain a continuation ARGUMENT, after=<cursor>, because the listings used to visit exactly one page of a global family and filter afterwards, so a viewer's own stock was displaced by unrelated endpoints and reported as empty. One primary verb, one registration, one stanza, no family: cut 2 still owns no conventional document. The lot verbs now read the authorised endpoint the offer's Choice minted (split/merge/dissolve refuse a lot at any other endpoint with the missing-lot refusal, byte for byte); the read gate delegates to mush_economy::may_view_vault and the take gate to mush_economy::may_take_from_vault, which is E3's own vault-withdraw standing, so cut 2 keeps no vault-authority predicate of its own; the request-keyed applied marker is now the epoch-independent replay guard and refuses rather than being rewritten; and store::reconcile no longer runs on the command path (08i answer 15: typed reads in ticks and boot reconciliation)."
+
+[[handler]]
+name = "@licence"
+category = "read-only"
+note = "E7 cut 3 (10b 3.3, Q1A/Q14A, D-E7-7): @licence/show reads the acting principal's own InstrumentKind::Entitlement account through mush_economy's snapshot (the mush-market principal_account derivation, re-derived rather than reached for because cut 3 adds no market edge) and writes NOTHING -- no document, no typed family, no submission. It therefore declares no future family: there is nothing to migrate. A licence is NOT tenure and the two are never conflated: a claim past its term stops authorizing and does not vanish, while an expired or suspended licence refuses at transaction time though the claim stands. A non-staff principal may read their own standing and nobody else's."
 
 [[handler]]
 name = "@link"
@@ -712,6 +735,12 @@ note = "baseline pinned at b0e3b52 (server staff commands)"
 name = "@stats"
 category = "baseline"
 note = "baseline pinned at b0e3b52 (server staff commands)"
+
+[[handler]]
+name = "@survey"
+category = "legacy-post-image"
+family = "industry.survey"
+note = "E7 cut 3 (10b 3.3, F lens, D-E7-6/Q1A): @survey <body> writes the one conventional document this cut owns -- industry:survey:{deposit}, a bounded per-principal disclosure map behind a strict TryFrom wire that re-runs its constructor caps on load and is REFUSED past MAX_SURVEY_BANDS (8) rather than truncated, because a silently dropped row is a principal who was told something the record then denies. It is exempt under 4.1's closing rule for a precise reason: it is PURE DISCLOSURE. Filing a claim does not require a survey and NO legality check reads a band, so the record takes no part in authority or prepared mechanics. It is deterministic and takes NO RNG: a survey copies the body's RECORDED grade_class/reserve_class verbatim, never reserve re-quantised per viewer, so repeated surveys cannot narrow a band, two principals' bands are the same two BandIds, and a replay is a HIT that rewrites nothing. There is no rand::, rand_chacha, thread_rng, SeedableRng or OsRng anywhere in mush-industry, so provider_rng_policy is green by construction; if a later cut ever wants survey QUALITY to vary, the only lawful source is PrepareCtx::start_resolution on the prepared path and that would move this verb to authoritative. A corrupt document is skipped LOUDLY and its body marked, and the direction of that loss is disclosure only: nobody's authority moves."
 
 [[handler]]
 name = "@tacsim"

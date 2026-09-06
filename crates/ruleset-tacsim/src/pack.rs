@@ -378,6 +378,16 @@ pub enum PackEntry {
     Route(RouteEntry),
     /// One place a campaign-seed pack instantiates.
     Location(LocationDef),
+    /// One ore body a campaign-seed pack authors at a place (E7 cut 3).
+    ///
+    /// The pack carries the **authored numbers** — commodity, grade,
+    /// accessibility, the two disclosure bands and the depletion curve — and
+    /// nothing else: `mush-industry` owns the state machine and never reads a
+    /// pack, and instantiating a body is `@deposit/open`'s authoritative act
+    /// because a body's reserve is `mush-inventory`'s pool and a pool can only
+    /// be credited inside a bundle. This entry is what a later cut's seed
+    /// hands that verb.
+    Deposit(DepositDef),
 }
 
 impl PackEntry {
@@ -389,6 +399,7 @@ impl PackEntry {
             PackEntry::Recipe(_) => "recipe",
             PackEntry::Route(_) => "route",
             PackEntry::Location(_) => "location",
+            PackEntry::Deposit(_) => "deposit",
         }
     }
 
@@ -451,6 +462,51 @@ impl PackEntry {
                             });
                         }
                     }
+                }
+            }
+            PackEntry::Deposit(def) => {
+                if too_long(&def.label) {
+                    return Err(PackError::LabelTooLong {
+                        max: MAX_LABEL_BYTES,
+                    });
+                }
+                if def.grade > 100 || def.accessibility > 100 {
+                    return Err(PackError::DepositBandOutOfRange);
+                }
+                if def.grade_class.is_empty()
+                    || def.grade_class.len() > MAX_LABEL_BYTES
+                    || def.reserve_class.is_empty()
+                    || def.reserve_class.len() > MAX_LABEL_BYTES
+                {
+                    return Err(PackError::DepositBandOutOfRange);
+                }
+                if def.reserve == 0 || def.reserve > MAX_DEPOSIT_RESERVE {
+                    return Err(PackError::DepositReserveOutOfRange {
+                        actual: def.reserve,
+                        max: MAX_DEPOSIT_RESERVE,
+                    });
+                }
+                // Magnitudes AND shape (P3): the curve is the authored table
+                // cut 3 computes every cycle's yield from, so a non-monotone
+                // one is refused ON LOAD rather than at first arithmetic.
+                if def.curve.is_empty() || def.curve.len() > MAX_DEPOSIT_CURVE_POINTS {
+                    return Err(PackError::DepositCurveInvalid);
+                }
+                if def.curve[0].cumulative != 0 {
+                    return Err(PackError::DepositCurveInvalid);
+                }
+                let mut previous: Option<DepositCurvePoint> = None;
+                for point in &def.curve {
+                    if point.per_cycle > MAX_DEPOSIT_YIELD {
+                        return Err(PackError::DepositCurveInvalid);
+                    }
+                    if let Some(previous) = previous
+                        && (point.cumulative <= previous.cumulative
+                            || point.per_cycle > previous.per_cycle)
+                    {
+                        return Err(PackError::DepositCurveInvalid);
+                    }
+                    previous = Some(*point);
                 }
             }
             PackEntry::Route(entry) => {
@@ -527,6 +583,60 @@ pub struct LocationDef {
     pub label: String,
     /// What kind of place it is — prose for cut 1, a real classification later.
     pub role: CanonicalId,
+}
+
+/// The largest authored ore reserve a pack may declare. Matches
+/// `mush_industry::MAX_ORE_RESERVE` by value and is stated here rather than
+/// imported, because `ruleset-tacsim` has no `mush-industry` edge: the pack is
+/// data, and the crate that consumes it re-checks every bound on its own
+/// constructor.
+pub const MAX_DEPOSIT_RESERVE: u64 = 1_000_000_000;
+/// The largest per-cycle yield a curve point may declare.
+pub const MAX_DEPOSIT_YIELD: u64 = 1_000_000;
+/// The largest curve a pack may author.
+pub const MAX_DEPOSIT_CURVE_POINTS: usize = 16;
+
+/// One point of an authored depletion curve: cumulative extraction, and the
+/// per-cycle yield at or above it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DepositCurvePoint {
+    /// Cumulative extraction at or above which this step applies.
+    pub cumulative: u64,
+    /// Yield per cycle in that band, before accessibility.
+    pub per_cycle: u64,
+}
+
+/// An ore body a campaign-seed pack authors (E7 cut 3, 10b §3.3, D-E7-6).
+///
+/// `place` is the **pack-local id** of a `Location` in this same pack, exactly
+/// as a route's endpoints are: a pack is authored long before any object
+/// exists. `grade_class`/`reserve_class` are the **recorded disclosure bands** a
+/// survey copies verbatim — knowledge, not truth — and the reserve itself never
+/// leaves this file for a player: a survey reveals bands, never the reserve
+/// (Q1A, D-E7-6).
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DepositDef {
+    /// The human-facing name.
+    pub label: String,
+    /// The pack-local id of the place it sits at.
+    pub place: CanonicalId,
+    /// What comes out of it.
+    pub commodity: CanonicalId,
+    /// The quality of what comes out, `0..=100`.
+    pub grade: u8,
+    /// How workable it is, as a percentage of the curve's yield.
+    pub accessibility: u8,
+    /// The recorded grade band a survey discloses.
+    pub grade_class: String,
+    /// The recorded reserve band a survey discloses.
+    pub reserve_class: String,
+    /// The authored reserve. **Never disclosed to a surveyor.**
+    pub reserve: u64,
+    /// The depletion curve: strictly increasing thresholds starting at zero,
+    /// with yields that never rise as the body depletes.
+    pub curve: Vec<DepositCurvePoint>,
 }
 
 /// One leg of a pack-authored route: symbolic destination plus unladen time.
@@ -691,7 +801,7 @@ impl RulesPack {
                 (manifest.kind, entry),
                 (
                     PackKind::RulesDefinition,
-                    PackEntry::Location(_) | PackEntry::Route(_)
+                    PackEntry::Location(_) | PackEntry::Route(_) | PackEntry::Deposit(_)
                 ) | (
                     PackKind::CampaignSeed,
                     PackEntry::Commodity(_) | PackEntry::Recipe(_)
@@ -708,6 +818,18 @@ impl RulesPack {
         // A route's symbolic endpoints have to name places this same pack declares:
         // resolving across packs would make a route's meaning depend on load order.
         for (id, entry) in &entries {
+            // E7 cut 3: a body's place is symbolic for the same reason a route's
+            // endpoints are, and it is checked the same way — resolving across
+            // packs would make a body's location depend on load order.
+            if let PackEntry::Deposit(def) = entry {
+                let declared = matches!(entries.get(&def.place), Some(PackEntry::Location(_)));
+                if !declared {
+                    return Err(PackError::UnknownRouteEndpoint {
+                        route: id.to_string(),
+                        place: def.place.to_string(),
+                    });
+                }
+            }
             if let PackEntry::Route(route) = entry {
                 let mut named: Vec<&CanonicalId> = vec![&route.from, &route.to];
                 named.extend(route.legs.iter().map(|leg| &leg.to));
@@ -1077,6 +1199,25 @@ pub enum PackError {
         /// The repeated id.
         id: String,
     },
+    /// An ore body whose grade, accessibility or disclosure band is out of
+    /// range (E7 cut 3).
+    #[error("an ore body's grade and accessibility are 0..=100 and its bands are 1..=120 bytes")]
+    DepositBandOutOfRange,
+    /// An ore body whose authored reserve is zero or oversized.
+    #[error("an ore body declares a reserve of {actual}; the range is 1..={max}")]
+    DepositReserveOutOfRange {
+        /// What was declared.
+        actual: u64,
+        /// [`MAX_DEPOSIT_RESERVE`].
+        max: u64,
+    },
+    /// An ore body whose depletion curve is empty, oversized, does not start at
+    /// zero, or is not monotone.
+    #[error(
+        "an ore body's curve is 1..=16 points starting at cumulative 0, with strictly \
+         increasing thresholds and never-rising yields"
+    )]
+    DepositCurveInvalid,
     /// A route with no legs.
     #[error("a route needs at least one leg")]
     EmptyRoute,

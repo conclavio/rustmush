@@ -55,7 +55,9 @@ pub mod store;
 
 pub use facts::InventoryFactProvider;
 pub use guard::ReservationGuardValidator;
-pub use module::{InventoryHandles, InventoryModule, SWEEP_PERIOD_SECS, SWEEP_TAG};
+pub use module::{
+    InventoryHandleCell, InventoryHandles, InventoryModule, SWEEP_PERIOD_SECS, SWEEP_TAG,
+};
 pub use pool::{
     InventoryError, InventoryFamilies, Moved, derive_lot_id, derive_tranche_id, pool_key,
     pool_resource, reservation_deadline, reservation_id_from_text, reservation_id_text,

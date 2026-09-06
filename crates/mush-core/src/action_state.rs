@@ -34,6 +34,17 @@ use crate::module::{MAX_MODULE_KEY_BYTES, ModuleOp, ModuleWrite};
 pub const MAX_STATE_FAMILIES: usize = 4_096;
 /// Maximum state families declared by one owner.
 pub const MAX_STATE_FAMILIES_PER_OWNER: usize = 1_024;
+/// Maximum other owners one owner may delegate its typed families to.
+///
+/// E7c3 B1: the delegation is the narrow bridge E7 cut 2 handed to cut 3 —
+/// "an `ActionTxn` is owner-stamped, so a `mush-industry` provider cannot write
+/// `inventory`'s families directly". It is deliberately tiny: a delegation is a
+/// composition-time statement by the **owning** module that one named grantee
+/// may write its families inside the grantee's own bundle, so a two-owner
+/// post-image (a deposit's pool debited in the same commit that mints the
+/// extractor's lot) is one bundle rather than two. It is never implicit,
+/// never transitive and never symmetric.
+pub const MAX_STATE_FAMILY_DELEGATES: usize = 4;
 /// Hard maximum encoded key bytes for one state-family record.
 pub const MAX_STATE_KEY_BYTES: usize = 1_024;
 /// Hard maximum canonical bytes in one state-family record.
@@ -527,13 +538,23 @@ impl<'a> ModuleActionState<'a> {
             .owner
             .as_ref()
             .ok_or(ModuleActionStateReadError::UnownedContext)?;
-        if context != family {
-            return Err(ModuleActionStateReadError::ForeignOwner {
-                context: context.clone(),
-                family: family.clone(),
-            });
+        if context == family {
+            return Ok(());
         }
-        Ok(())
+        // E7c3 B1: the same composition-declared delegation the transaction
+        // gate consults. A grantee that may write a family may also read it —
+        // the reverse would leave `mush-industry` able to debit a deposit's
+        // pool and unable to tell an operator what is left in it.
+        if self
+            .store
+            .is_some_and(|store| store.registry.delegates(family, context))
+        {
+            return Ok(());
+        }
+        Err(ModuleActionStateReadError::ForeignOwner {
+            context: context.clone(),
+            family: family.clone(),
+        })
     }
 
     pub(crate) const fn store(&self) -> Option<&'a ActionStateStore> {
@@ -561,6 +582,8 @@ type StateFamilyLocator = (OwnerId, StateFamilyId);
 pub struct StateFamilyRegistryBuilder {
     entries: BTreeMap<StateFamilyLocator, Arc<dyn ErasedStateFamily>>,
     owner_counts: BTreeMap<OwnerId, usize>,
+    /// `(family owner, grantee)` — see [`MAX_STATE_FAMILY_DELEGATES`].
+    delegations: BTreeSet<(OwnerId, OwnerId)>,
 }
 
 impl fmt::Debug for StateFamilyRegistryBuilder {
@@ -568,6 +591,7 @@ impl fmt::Debug for StateFamilyRegistryBuilder {
         f.debug_struct("StateFamilyRegistryBuilder")
             .field("families", &self.entries.keys().collect::<Vec<_>>())
             .field("owner_counts", &self.owner_counts)
+            .field("delegations", &self.delegations)
             .finish()
     }
 }
@@ -636,6 +660,37 @@ impl StateFamilyRegistryBuilder {
         })
     }
 
+    /// Delegate write and read authority over `owner`'s typed families to one
+    /// other composed `grantee`.
+    ///
+    /// Declared by the **owning** module during its own registration, never by
+    /// the grantee: a module cannot help itself to another's families. The
+    /// grantee must be a composed owner at freeze time.
+    pub(crate) fn delegate(
+        &mut self,
+        owner: OwnerId,
+        grantee: OwnerId,
+    ) -> Result<(), StateFamilyRegistryError> {
+        if owner == grantee {
+            return Err(StateFamilyRegistryError::SelfDelegation { owner });
+        }
+        let count = self
+            .delegations
+            .iter()
+            .filter(|(from, _)| from == &owner)
+            .count();
+        if count >= MAX_STATE_FAMILY_DELEGATES
+            && !self.delegations.contains(&(owner.clone(), grantee.clone()))
+        {
+            return Err(StateFamilyRegistryError::OwnerDelegateLimit {
+                owner,
+                max: MAX_STATE_FAMILY_DELEGATES,
+            });
+        }
+        self.delegations.insert((owner, grantee));
+        Ok(())
+    }
+
     pub(crate) fn freeze_for_owners_with_readiness(
         self,
         module_owners: &BTreeSet<OwnerId>,
@@ -648,9 +703,19 @@ impl StateFamilyRegistryBuilder {
                 });
             }
         }
-        let fingerprint = state_family_fingerprint(self.entries.values())?;
+        for (owner, grantee) in &self.delegations {
+            for named in [owner, grantee] {
+                if !module_owners.contains(named) {
+                    return Err(StateFamilyRegistryError::UnknownOwner {
+                        owner: named.clone(),
+                    });
+                }
+            }
+        }
+        let fingerprint = state_family_fingerprint(self.entries.values(), &self.delegations)?;
         Ok(StateFamilyRegistry {
             entries: self.entries,
+            delegations: self.delegations,
             fingerprint,
             owner_readiness,
         })
@@ -661,6 +726,7 @@ impl StateFamilyRegistryBuilder {
 #[derive(Clone)]
 pub struct StateFamilyRegistry {
     entries: BTreeMap<StateFamilyLocator, Arc<dyn ErasedStateFamily>>,
+    delegations: BTreeSet<(OwnerId, OwnerId)>,
     fingerprint: DefinitionDigest,
     owner_readiness: MechanicalOwnerReadiness,
 }
@@ -675,6 +741,20 @@ impl fmt::Debug for StateFamilyRegistry {
 }
 
 impl StateFamilyRegistry {
+    /// Whether `grantee` was delegated authority over `family_owner`'s typed
+    /// families at composition. Never transitive, never symmetric.
+    #[must_use]
+    pub fn delegates(&self, family_owner: &OwnerId, grantee: &OwnerId) -> bool {
+        self.delegations
+            .contains(&(family_owner.clone(), grantee.clone()))
+    }
+
+    /// Every `(family owner, grantee)` pair this composition declared.
+    #[must_use]
+    pub fn delegations(&self) -> Vec<(OwnerId, OwnerId)> {
+        self.delegations.iter().cloned().collect()
+    }
+
     #[must_use]
     pub const fn fingerprint(&self) -> DefinitionDigest {
         self.fingerprint
@@ -730,19 +810,31 @@ impl StateFamilyRegistry {
 
 fn state_family_fingerprint<'a>(
     entries: impl Iterator<Item = &'a Arc<dyn ErasedStateFamily>>,
+    delegations: &BTreeSet<(OwnerId, OwnerId)>,
 ) -> Result<DefinitionDigest, CanonicalEncodingError> {
     DefinitionDigest::for_canonical_value(
         "state_family_registry.v1",
-        &Value::Array(
-            entries
-                .map(|family| {
-                    json!({
-                        "owner": family.owner(),
-                        "descriptor": family.descriptor().canonical_value(),
+        &json!({
+            "families": Value::Array(
+                entries
+                    .map(|family| {
+                        json!({
+                            "owner": family.owner(),
+                            "descriptor": family.descriptor().canonical_value(),
+                        })
                     })
-                })
-                .collect(),
-        ),
+                    .collect(),
+            ),
+            // A delegation widens who may write an owner's families, so it is
+            // part of the composition's identity: two deployments that differ
+            // only in a delegation are not the same deployment.
+            "delegations": Value::Array(
+                delegations
+                    .iter()
+                    .map(|(owner, grantee)| json!({ "owner": owner, "grantee": grantee }))
+                    .collect(),
+            ),
+        }),
     )
 }
 
@@ -753,6 +845,10 @@ pub enum StateFamilyRegistryError {
     FamilyLimit { max: usize },
     #[error("owner {owner} exceeds its state-family limit of {max}")]
     OwnerFamilyLimit { owner: OwnerId, max: usize },
+    #[error("owner {owner} cannot delegate its state families to itself")]
+    SelfDelegation { owner: OwnerId },
+    #[error("owner {owner} exceeds its state-family delegate limit of {max}")]
+    OwnerDelegateLimit { owner: OwnerId, max: usize },
     #[error(
         "state family {owner}/{family} is already registered as {registered_key_type} -> {registered_value_type}; attempted {attempted_key_type} -> {attempted_value_type}"
     )]
@@ -1625,7 +1721,16 @@ impl ActionTxn<'_> {
         V: Clone + Send + Sync + 'static,
     {
         self.store.registry.get_for_handle(handle)?;
-        if handle.owner() != &self.owner {
+        // E7c3 B1: a family this transaction's owner does not own is writable
+        // only when the family's **own** owner delegated it at composition
+        // (`Registrar::delegate_state_families`). The persisted namespace and
+        // the replay write stay the family owner's either way
+        // (`PreparedTxn::authoritative_replay_writes` keys each write by
+        // `record.key.owner`), so a delegated write is one bundle carrying two
+        // owners' post-images, never a namespace transplant.
+        if handle.owner() != &self.owner
+            && !self.store.registry.delegates(handle.owner(), &self.owner)
+        {
             return Err(ActionStateError::OwnerMismatch {
                 transaction: self.owner.clone(),
                 family: handle.owner().clone(),
@@ -2315,6 +2420,143 @@ mod tests {
             .clone()
             .expect("registration captured handle");
         (engine, handle, serializer_calls)
+    }
+
+    /// A module that owns no family and exists only to be a **grantee** of one:
+    /// the delegation is declared by the *owning* module, never by this one.
+    struct GranteeModule {
+        owner: &'static str,
+    }
+
+    impl GameModule for GranteeModule {
+        fn name(&self) -> &'static str {
+            self.owner
+        }
+
+        fn register(&mut self, _registrar: &mut Registrar<'_>) -> Result<(), ModError> {
+            Ok(())
+        }
+    }
+
+    /// A `CounterModule` that delegates its families to one named grantee.
+    struct DelegatingCounterModule {
+        inner: CounterModule,
+        grantee: &'static str,
+    }
+
+    impl GameModule for DelegatingCounterModule {
+        fn name(&self) -> &'static str {
+            self.inner.owner
+        }
+
+        fn register(&mut self, registrar: &mut Registrar<'_>) -> Result<(), ModError> {
+            registrar.delegate_state_families(self.grantee)?;
+            self.inner.register(registrar)
+        }
+    }
+
+    fn delegated_fixture(owner: &'static str, grantee: &'static str) -> (Engine, CounterHandle) {
+        let captured = Arc::new(Mutex::new(None));
+        let module = DelegatingCounterModule {
+            inner: CounterModule {
+                owner,
+                captured: Arc::clone(&captured),
+                serializer_calls: Arc::new(AtomicUsize::new(0)),
+            },
+            grantee,
+        };
+        let engine = Engine::with_modules(
+            World::new_minimal(),
+            Registry::new(),
+            vec![Box::new(module), Box::new(GranteeModule { owner: grantee })],
+        )
+        .expect("the delegating pair composes");
+        let handle = captured
+            .lock()
+            .expect("capture mutex poisoned")
+            .clone()
+            .expect("registration captured handle");
+        (engine, handle)
+    }
+
+    /// E7c3 B1: the cross-owner write E7 cut 2's handoff named as cut 3's.
+    /// A **declared** delegation lets one grantee's transaction write the
+    /// owner's family, and the write still persists under the FAMILY owner's
+    /// namespace — so one bundle carries two owners' post-images and no bundle
+    /// format changed.
+    #[test]
+    fn a_declared_delegation_admits_one_grantee_and_keeps_the_family_owners_namespace() {
+        let (mut engine, handle) = delegated_fixture("state_test", "other_state");
+        let families = engine
+            .registry
+            .state_families()
+            .expect("the composed registry");
+        let owner = OwnerId::new("state_test").expect("owner");
+        let grantee = OwnerId::new("other_state").expect("grantee");
+        assert!(families.delegates(&owner, &grantee));
+        // Never symmetric, and never implicit for anybody else.
+        assert!(!families.delegates(&grantee, &owner));
+        assert!(!families.delegates(&owner, &OwnerId::new("nobody").expect("owner")));
+        assert_eq!(families.delegations(), vec![(owner, grantee.clone())]);
+
+        // The *write* half is proved where a real grantee exists — E7 cut 3's
+        // `e7c3_d_the_bundle_carries_two_owners_post_images` prepares an
+        // extraction bundle whose replay writes carry exactly the two
+        // namespaces `{industry, inventory}`, and `mush-server`'s
+        // `e7c3_wiring_the_quantity_delegation_is_declared_and_narrow` pins that
+        // the production composition holds exactly this one pair. What this
+        // test owns is the registry rule itself.
+        let _ = &handle;
+        let _ = &mut engine;
+    }
+
+    /// And an undeclared one still refuses: the fence is widened only by the
+    /// owner's own composition-time statement.
+    #[test]
+    fn an_undeclared_grantee_still_cannot_write_another_owners_family() {
+        let (mut first, first_handle, _) = fixture("state_test");
+        let (_second, second_handle, _) = fixture("other_state");
+        let mut txn = first.action_transaction(&first_handle).unwrap();
+        assert!(txn.get(&second_handle, &1).is_err());
+        assert!(
+            matches!(
+                txn.prepare(),
+                Err(ActionStateError::TransactionPoisoned { .. })
+            ),
+            "an undelegated cross-owner attempt still poisons the transaction"
+        );
+    }
+
+    /// The three refusals the delegation itself makes.
+    #[test]
+    fn a_delegation_refuses_itself_an_uncomposed_grantee_and_its_own_cap() {
+        let mut builder = StateFamilyRegistryBuilder::new();
+        let owner = OwnerId::new("state_test").expect("owner");
+        assert!(matches!(
+            builder.delegate(owner.clone(), owner.clone()),
+            Err(StateFamilyRegistryError::SelfDelegation { .. })
+        ));
+        for index in 0..MAX_STATE_FAMILY_DELEGATES {
+            let grantee = OwnerId::new(format!("grantee{index}")).expect("grantee");
+            builder
+                .delegate(owner.clone(), grantee)
+                .expect("inside the cap");
+        }
+        assert!(matches!(
+            builder.delegate(owner.clone(), OwnerId::new("onemore").expect("grantee")),
+            Err(StateFamilyRegistryError::OwnerDelegateLimit { .. })
+        ));
+        // An uncomposed grantee is refused at freeze, not silently ignored.
+        let mut builder = StateFamilyRegistryBuilder::new();
+        builder
+            .delegate(owner.clone(), OwnerId::new("ghost").expect("grantee"))
+            .expect("declared");
+        let owners = BTreeSet::from([owner]);
+        let readiness = MechanicalOwnerReadiness::for_owners(&owners);
+        assert!(matches!(
+            builder.freeze_for_owners_with_readiness(&owners, readiness),
+            Err(StateFamilyRegistryError::UnknownOwner { .. })
+        ));
     }
 
     fn install_direct(engine: &mut Engine, prepared: PreparedTxn) -> Vec<ModuleOp> {
