@@ -110,6 +110,16 @@ category = "baseline"
 note = "baseline pinned at b0e3b52 (module, shadowrun composition only)"
 
 [[handler]]
+name = "+contact"
+category = "read-only"
+note = "E7 cut 7 (10b 3.7, 08i answer 1): one contact this actor's own platform holds, rendered from mush-core's leak-safe ContactLedgerState plus propagation's provenance side projection. Writes nothing. It names NO future family on purpose: the contact record is K6's ContactState and mush-tactics is its sole lifecycle authority -- propagation registers no contact family at all. A contact somebody else holds and one that does not exist are the byte-identical refusal."
+
+[[handler]]
+name = "+contacts"
+category = "read-only"
+note = "E7 cut 7 (10b 3.7, Q16A): the contacts this actor's platform holds. One observer's picture is invisible to every other observer; the filter is the holder principal and no argument widens it. Writes nothing, and names NO future family: contacts are K6's ContactState, owned by mush-tactics."
+
+[[handler]]
 name = "+damage"
 category = "baseline"
 note = "baseline pinned at b0e3b52 (module, shadowrun composition only)"
@@ -282,6 +292,18 @@ note = "E6a (08f 3.5): renders the sr.nuyen account balance (or the pre-approval
 name = "+obfuscate"
 category = "baseline"
 note = "baseline pinned at b0e3b52 (module, wod composition only)"
+
+[[handler]]
+name = "+order"
+category = "legacy-post-image"
+family = "propagation.envelope"
+note = "E7 cut 7 (10b 3.7, T15, D-E7-14): issues one bounded whole-document propagation.envelope at envelope:<id> with a strict TryFrom wire that re-runs every constructor invariant (payload cap refused AT ISSUE, hop cap, monotonic relay stamps). Issuing revision N does not make it the recipient's order -- delivery does -- and the record takes no part in authority or prepared mechanics: no legality check reads an envelope. /report attaches a contact whose share is submitted through mush-tactics' own ingress only after the envelope is Delivered."
+
+[[handler]]
+name = "+orders"
+category = "legacy-post-image"
+family = "propagation.envelope"
+note = "E7 cut 7 (10b 3.7, Q4A): the bare verb reads the actor's own traffic and standing order. /ack writes the acknowledgement envelope -- an acknowledgement is ITSELF a delivery, so the spec takes the ceiling class of its switches; a duplicate ack is a HIT that writes nothing."
 
 [[handler]]
 name = "+paradox"
@@ -686,6 +708,12 @@ note = "baseline pinned at b0e3b52 (module, every composition)"
 name = "@parent"
 category = "baseline"
 note = "baseline pinned at b0e3b52 (core/engine registry)"
+
+[[handler]]
+name = "@prop"
+category = "legacy-post-image"
+family = "propagation.envelope"
+note = "E7 cut 7 (10b 3.7, 3.8 handoff). /envelopes reads (byte-identical for an unviewable and a nonexistent subject); /pass (staff) single-steps the coarse delivery pass over propagation.envelope and then arms the detection pass through mush-tactics' OWN sensor ingress -- one Ctx::submit_authoritative of the tactics-owned sensor_arm action, never a contact write; /phantom (staff) mints a propagation.phantom whose SubjectKey::Scoped resolves to no unit through any projection. Also writes propagation.provenance, a side projection with NO lifecycle authority (10b 3.7 OPEN 2, flagged for K review). None of the three takes part in authority or prepared mechanics."
 
 [[handler]]
 name = "@property"

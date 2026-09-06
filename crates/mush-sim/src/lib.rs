@@ -63,7 +63,8 @@ pub use journey::{
 };
 pub use route::{
     CadenceId, DriveProfile, DriveProfileWire, Journey, JourneyStatus, Leg, LegDef, LegDefWire,
-    MAX_LEGS, RouteDef, RouteDefError, RouteDefWire, RouteState, route_duration,
+    MAX_LEGS, MAX_ROUTE_ID_BYTES, RouteCatalog, RouteCatalogState, RouteDef, RouteDefError,
+    RouteDefWire, RouteState, route_duration,
 };
 pub use station::{MAX_STATION_FALLBACKS, StationFallback, StationFallbacks};
 pub use transition::{Plan, SpatialError, Transition, apply, move_carrier_subtree, plan, run};
@@ -95,6 +96,10 @@ pub struct SimulationModule {
     /// command handlers reach it synchronously; `None` leaves the oracle
     /// unwired and every consumer fails closed.
     accounts: Option<Arc<dyn AccountIdentity>>,
+    /// The composition-installed route catalog (E7 cut 6 fold, B6; landed with
+    /// cut 7). `None` leaves `@journey/plan|depart <route id>` on the manual
+    /// fixture-route fallback, which is exactly what it did before.
+    routes: Option<Arc<dyn route::RouteCatalog>>,
 }
 
 impl std::fmt::Debug for SimulationModule {
@@ -102,6 +107,7 @@ impl std::fmt::Debug for SimulationModule {
         f.debug_struct("SimulationModule")
             .field("config", &self.config)
             .field("accounts", &self.accounts.is_some())
+            .field("routes", &self.routes.is_some())
             .finish()
     }
 }
@@ -119,6 +125,7 @@ impl SimulationModule {
         SimulationModule {
             config,
             accounts: None,
+            routes: None,
         }
     }
 
@@ -129,6 +136,19 @@ impl SimulationModule {
     #[must_use]
     pub fn with_accounts(mut self, accounts: Arc<dyn AccountIdentity>) -> SimulationModule {
         self.accounts = Some(accounts);
+        self
+    }
+
+    /// Install the route catalog (E7 cut 6 fold B6, discharged by cut 7).
+    ///
+    /// `ruleset-tacsim` depends on `mush-sim`, so resolving a pack-authored
+    /// route id by an edge would be a cycle; the implementation is handed in at
+    /// `server_modules_with` instead, exactly as [`Self::with_accounts`] and
+    /// `IndustryModule::with_recipes` are. Unwired leaves the manual
+    /// fixture-route path, which is the pre-cut-7 behaviour verbatim.
+    #[must_use]
+    pub fn with_route_catalog(mut self, routes: Arc<dyn route::RouteCatalog>) -> SimulationModule {
+        self.routes = Some(routes);
         self
     }
 }
@@ -657,6 +677,13 @@ impl GameModule for SimulationModule {
         reg.state(match self.accounts.clone() {
             Some(oracle) => focus::AccountOracle::new(oracle),
             None => focus::AccountOracle::unwired(),
+        });
+        // E7c7 (cut 6 fold B6): the composition-installed route catalog, on the
+        // same shape. Unwired = the manual fixture route, which is cut 6's own
+        // behaviour unchanged.
+        reg.state(match self.routes.clone() {
+            Some(catalog) => route::RouteCatalogState::new(catalog),
+            None => route::RouteCatalogState::unwired(),
         });
         // E7c5 B2: the world-owned ephemeral focus map — an in-RAM slot, never
         // persisted, never an `Outbox` write, never hydrated at boot. Boot

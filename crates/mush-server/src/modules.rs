@@ -187,8 +187,37 @@ pub fn server_modules_with(
                 mush_economy::stands_in_contract(w, mush_economy::ContractId(run), who)
             },
         ))),
-        Box::new(mush_sim::SimulationModule::new()),
-        Box::new(mush_tactics::TacticsModule::new()),
+        // E7c7 (cut 6 fold, B6): the route catalog reaches `mush-sim` by
+        // composition, not by an edge — the impl reads `TacsimStore` at the root,
+        // exactly as `TacsimRecipeAuthority` does for `mush-industry`. Unwired,
+        // `@journey/depart <id>` builds the manual fixture route; wired, a
+        // pack-authored id resolves to its declared legs, drive class,
+        // propellant and alignment band.
+        Box::new(
+            mush_sim::SimulationModule::new()
+                .with_route_catalog(Arc::new(crate::sim_routes::TacsimRouteCatalog)),
+        ),
+        // E7 cut 7 B3 (OPEN 1): the observation POLICY is `mush-propagation`'s,
+        // but the observation INGRESS has to be `mush-tactics`' — the kernel's
+        // owner fence (`ScheduleSourceRegistryBuilder::register` and
+        // `scheduled_action_ingress`) forces source-owner ==
+        // schedule-family-owner == fired-action-owner, and the six `contact_*`
+        // actions are tactics'. So the policy arrives here, at the composition
+        // root, exactly as `IndustryModule::with_recipes` and
+        // `SimulationModule::with_accounts` do, and **`mush-tactics` gains no
+        // `mush-propagation` edge**: the trait is `mush-core`'s.
+        Box::new(
+            mush_tactics::TacticsModule::new()
+                .with_sensor_policy(Arc::new(mush_propagation::PropagationSensorPolicy)),
+        ),
+        // E7 cut 7 (10b §3.7): the propagation layer itself. It composes AFTER
+        // `mush-sim` (whose `SpatialState` every context is built from) and
+        // after `mush-tactics` (whose leak-safe contact ledger its policy
+        // reads); `on_world_loaded` runs in list order, so both are hydrated
+        // before propagation's boot. It registers NO contact family and NO
+        // contact guard validator — `mush-tactics` is the sole `ContactState`
+        // authority (08i answer 1, D-E7-36).
+        Box::new(mush_propagation::PropagationModule::new()),
         // E2: the accountable-value engine — the double-entry journal, accounts, and
         // the strict durable money ack-gate. After org (it authorizes through it).
         // E3b1 freezes the custody provider table at wiring: the built-in container
@@ -1775,6 +1804,26 @@ mod tests {
                     "the sim lane {name} must publish {class:?}"
                 );
             }
+            // E7 cut 7: FOUR lanes in TWO registration groups, each with its own
+            // `reg.classify_commands(..)` before its first `reg.command`.
+            // `+contacts`/`+contact` are pure reads over the leak-safe ledger;
+            // `+order` and `@prop` write propagation's own exempt documents, and
+            // `+orders` takes the CEILING class of its switches because `/ack`
+            // writes the acknowledgement envelope.
+            for (name, class) in [
+                ("+contacts", mush_core::CommandCompatibility::ReadOnly),
+                ("+contact", mush_core::CommandCompatibility::ReadOnly),
+                ("+order", mush_core::CommandCompatibility::LegacyPostImage),
+                ("+orders", mush_core::CommandCompatibility::LegacyPostImage),
+                ("@prop", mush_core::CommandCompatibility::LegacyPostImage),
+            ] {
+                assert!(
+                    registrations.iter().any(|(spec, owner, published)| {
+                        spec.name == name && *owner == Some("propagation") && *published == class
+                    }),
+                    "the propagation lane {name} must publish {class:?}"
+                );
+            }
             assert!(registrations.iter().any(|(_, owner, class)| {
                 *owner == Some("economy")
                     && *class == mush_core::CommandCompatibility::EconomyCarveOut
@@ -2028,6 +2077,13 @@ mod tests {
                 "scenes",
                 "sim",
                 "tactics",
+                // E7 cut 7: the propagation layer, immediately after
+                // `mush-tactics`. Its boot reads no tactics state, but its
+                // POLICY reads the leak-safe contact ledger tactics publishes
+                // and its contexts are built off `mush-sim`'s placement graph,
+                // both of which are hydrated by then (`on_world_loaded` runs in
+                // list order).
+                "propagation",
                 "economy",
                 // E7 cut 2: immediately after the economy (its boot asks about
                 // vault status) and before the market (whose listing quantity is
@@ -2087,6 +2143,7 @@ mod tests {
                     "scenes",
                     "sim",
                     "tactics",
+                    "propagation",
                     "economy",
                     "inventory",
                     // E7 cut 3: immediately after `mush-inventory`, whose handles
@@ -2302,6 +2359,7 @@ mod tests {
                 "scenes",
                 "sim",
                 "tactics",
+                "propagation",
                 "economy",
                 "inventory",
                 // E7 cut 3: immediately after `mush-inventory`, whose handles
@@ -2439,6 +2497,7 @@ mod tests {
                 "scenes",
                 "sim",
                 "tactics",
+                "propagation",
                 "economy",
                 "inventory",
                 // E7 cut 3: immediately after `mush-inventory`, whose handles

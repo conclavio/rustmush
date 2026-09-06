@@ -2283,6 +2283,13 @@ fn arrival_parent(ctx: &Ctx<'_>, place: ObjId) -> Result<SpatialParent, CmdError
 
 /// Parse `<route id> <place>[:secs] <place>[:secs] …` into the definition the
 /// journey is flown from, plus the placement its last leg arrives at.
+///
+/// **E7c7 (cut 6 fold, B6).** The id is first offered to the
+/// composition-installed [`RouteCatalogState`] — an authored `RouteDef` carries
+/// its own legs, drive class, declared propellant and alignment band, so those
+/// three accessors finally have a caller. A hand-typed id that names no authored
+/// route, or a line that also lists places, still builds the **manual fixture
+/// route** exactly as cut 6 did: the catalog is a resolution, never a gate.
 fn build_route(
     ctx: &Ctx<'_>,
     origin: ObjId,
@@ -2292,8 +2299,33 @@ fn build_route(
     let id_token = tokens
         .next()
         .ok_or_else(|| CmdError::msg("Usage: @journey/depart <carrier>=<route id> <place>…"))?;
+    if id_token.len() > mush_sim_max_route_id_bytes() {
+        return Err(CmdError::msg(format!(
+            "A route id is at most {} bytes.",
+            mush_sim_max_route_id_bytes()
+        )));
+    }
     let id = CanonicalId::new(id_token)
         .map_err(|e| CmdError::msg(format!("`{id_token}` is not a usable route id: {e}")))?;
+    let mut tokens = tokens.peekable();
+    if tokens.peek().is_none()
+        && let Some(authored) = ctx
+            .w
+            .module_state::<crate::route::RouteCatalogState>()
+            .and_then(|catalog| catalog.resolve(ctx.w, &id))
+    {
+        let (from, to) = authored.endpoints();
+        if from != origin {
+            return Err(CmdError::msg(format!(
+                "Route `{id_token}` sets out from {}; {} is at {}.",
+                display_name(ctx.w, from),
+                display_name(ctx.w, origin),
+                display_name(ctx.w, origin)
+            )));
+        }
+        let parent = arrival_parent(ctx, to)?;
+        return Ok((authored, parent));
+    }
     let mut legs: Vec<LegDef> = Vec::new();
     let mut last: Option<ObjId> = None;
     for token in tokens {
@@ -2332,6 +2364,10 @@ fn build_route(
     let route = RouteDef::new(id, (origin, destination), legs, None, drive_class, 0)
         .map_err(|e| CmdError::msg(e.to_string()))?;
     Ok((route, parent))
+}
+
+const fn mush_sim_max_route_id_bytes() -> usize {
+    crate::route::MAX_ROUTE_ID_BYTES
 }
 
 /// **The carrier-root invariant and the seal, surfaced early.**

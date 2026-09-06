@@ -159,6 +159,13 @@ mush-inventory = { path = "crates/mush-inventory" }
 # family, band table, route or corridor fact — the *ruleset* authors the data
 # through cut 1's packs and the crate owns the state machine.
 mush-industry = { path = "crates/mush-industry" }
+# E7 cut 7 (10b §3.7): one physical propagation context and two resolvers —
+# detection (what was seen) and delivery (what arrived) — plus the false-contact
+# phantoms, the delivery envelopes and the observation policy `mush-tactics`'
+# sensor ingress reads. `mush-propagation -> {core, sim}` only; it registers NO
+# contact family and NO contact guard validator, because `mush-tactics` is the
+# sole `ContactState` authority (08i answer 1, D-E7-36).
+mush-propagation = { path = "crates/mush-propagation" }
 ruleset-shadowrun = { path = "crates/ruleset-shadowrun" }
 # E7 cut 1 (10b §3.1): TacSim's packs, seed latch and corridor fixture. It is a
 # LAYER, not a `[rulesets].enabled` id — doc 10 §20 keeps ruleset metaphysics and

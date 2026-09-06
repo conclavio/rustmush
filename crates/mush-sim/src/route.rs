@@ -406,6 +406,86 @@ impl<'de> Deserialize<'de> for RouteDef {
     }
 }
 
+// ---- E7c7: B6-carried (cut 6 fold, B6 — the composition-installed route catalog) ----
+
+/// The most bytes a route id may carry on the command line before it is
+/// refused rather than hashed, matched or logged.
+pub const MAX_ROUTE_ID_BYTES: usize = 64;
+
+/// Resolve a typed route id against whatever authored the packs.
+///
+/// Cut 6's fold found `@journey/plan|depart <route id>` to be a **label only**:
+/// `build_route` fabricated a fresh `RouteDef` at the `manual` drive class with
+/// zero declared propellant and no alignment band, so `RouteDef::propellant()`,
+/// `alignment_band()` and `route_duration` had no caller. The verify's proposed
+/// fix — "resolve the id against cut 1's pack" — **cannot be an edge**:
+/// `ruleset-tacsim` depends on `mush-sim`, so `mush-sim -> ruleset-tacsim` is a
+/// cycle. It is therefore a composition seam in the
+/// [`SimulationModule::with_accounts`](crate::SimulationModule::with_accounts) /
+/// `IndustryModule::with_recipes` shape: the implementation lives at the
+/// composition root (`mush_server::sim_routes`), reads the ruleset's own
+/// published store, and hands back a `RouteDef` that has already re-run every
+/// constructor invariant.
+///
+/// **Bounded and read-only.** One id in, at most one definition out; the
+/// implementation performs no write, no allocation past the returned value and
+/// no unbounded walk (the store's index is a `BTreeMap` lookup).
+pub trait RouteCatalog: Send + Sync {
+    /// The authored route this id names, or `None` when nothing authoritative
+    /// answers for it — which is exactly "fall back to the manual fixture
+    /// route", never "invent one".
+    fn resolve(&self, world: &mush_core::World, id: &mush_core::CanonicalId) -> Option<RouteDef>;
+}
+
+/// A newtype over `Option<Arc<dyn RouteCatalog>>` so `SimulationModule` can carry
+/// the composition-installed catalog into world state and command handlers can
+/// reach it synchronously through `World::module_state::<RouteCatalogState>()`.
+/// `None` is an unwired composition (a test rig, an old wiring) and every
+/// consumer **falls back to the manual route**, never to a fabricated one.
+#[derive(Clone, Default)]
+pub struct RouteCatalogState(Option<std::sync::Arc<dyn RouteCatalog>>);
+
+impl std::fmt::Debug for RouteCatalogState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RouteCatalogState")
+            .field("wired", &self.0.is_some())
+            .finish()
+    }
+}
+
+impl RouteCatalogState {
+    /// The wired catalog.
+    #[must_use]
+    pub fn new(catalog: std::sync::Arc<dyn RouteCatalog>) -> Self {
+        Self(Some(catalog))
+    }
+
+    /// No catalog: every lookup answers `None`.
+    #[must_use]
+    pub const fn unwired() -> Self {
+        Self(None)
+    }
+
+    /// Whether a catalog is installed at all — the composition probe.
+    #[must_use]
+    pub const fn is_wired(&self) -> bool {
+        self.0.is_some()
+    }
+
+    /// Resolve one id, or `None` when unwired or unknown.
+    #[must_use]
+    pub fn resolve(
+        &self,
+        world: &mush_core::World,
+        id: &mush_core::CanonicalId,
+    ) -> Option<RouteDef> {
+        if id.as_str().len() > MAX_ROUTE_ID_BYTES {
+            return None;
+        }
+        self.0.as_ref().and_then(|c| c.resolve(world, id))
+    }
+}
+
 /// A drive class's performance, as a rules pack declares it.
 ///
 /// Deliberately three integers: [`route_duration`] must be a **pure function** with

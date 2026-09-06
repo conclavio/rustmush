@@ -79,6 +79,7 @@ pub mod resource;
 pub mod resource_provider;
 pub mod sched;
 pub mod schedule_source;
+pub mod sensor;
 pub mod world;
 
 pub use account::{AccountId, AccountIdentity};
@@ -319,6 +320,12 @@ pub use schedule_source::{
     ScheduleSourceCursor, ScheduleSourceKey, ScheduleSourcePage, ScheduleSourceRegistry,
     ScheduleSourceRegistryBuilder, ScheduleSourceRegistryError, ScheduleSourceScanError,
     ScheduledActionCandidate, ScheduledActionPlan, scheduled_action_ingress,
+};
+pub use sensor::{
+    CONTACT_TTL, ContactLedgerRow, ContactLedgerState, MAX_CONTACT_LEDGER_ROWS,
+    MAX_CONTACTS_PER_OBSERVER, MAX_INTENT_AUDIENCE, MAX_OBSERVATIONS_PER_PASS, ObservationIntent,
+    ObservationIntentError, ObservationIntentWire, ObservationKind, ObservationOp, ObserverRef,
+    SensorPolicy, SensorPolicyHandle, bounded_pass,
 };
 pub use world::{
     ChannelGrant, CommandSubjectLink, MAX_CONTAINMENT_DEPTH, SessionStat, World, WorldError,

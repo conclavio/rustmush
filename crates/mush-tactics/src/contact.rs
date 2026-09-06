@@ -62,6 +62,20 @@ impl ContactOperation {
         }
     }
 
+    /// The kernel-side vocabulary this operation answers to (E7c7 B3). One
+    /// mapping, used by the sensor ingress to name the source that fires this
+    /// exact provider — so a kind can never be armed on another's cursor.
+    pub(crate) const fn kind(self) -> mush_core::ObservationKind {
+        match self {
+            Self::Observe => mush_core::ObservationKind::Observe,
+            Self::Refresh => mush_core::ObservationKind::Refresh,
+            Self::Share => mush_core::ObservationKind::Share,
+            Self::Unshare => mush_core::ObservationKind::Unshare,
+            Self::Loss => mush_core::ObservationKind::Loss,
+            Self::Reacquire => mush_core::ObservationKind::Reacquire,
+        }
+    }
+
     const fn all() -> [Self; 6] {
         [
             Self::Observe,
