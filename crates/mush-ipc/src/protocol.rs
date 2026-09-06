@@ -614,6 +614,68 @@ pub enum ServiceReq {
     /// Ordering barrier: answered once every message queued before it has been
     /// processed and its output delivered.
     Barrier,
+    /// A Discord component click or modal submission the gateway bridge does
+    /// not route itself (interface programme D3, 03 §7a.4): the server
+    /// dispatches it by `custom_id` prefix to the handler a module registered
+    /// at wiring. Additive (same `IPC_VERSION`).
+    DiscordInteraction(DiscordInteraction),
+}
+
+/// A Discord interaction forwarded to the server (D3). The bridge has already
+/// authenticated the Discord user (the Gateway asserts `user_id`) and resolved
+/// the account it is linked to; a handler trusts both.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DiscordInteraction {
+    /// The Discord user's snowflake. Never rendered; `Debug` redacts it.
+    pub user_id: u64,
+    /// The account the user is linked to (display name), if any.
+    pub account: Option<String>,
+    /// The character the bridge chose for the account — the followed one,
+    /// else the relay character — if any.
+    pub actor: Option<ObjId>,
+    /// The component's routing key (`d:oncall:ack:<incident>`).
+    pub custom_id: String,
+    /// A select's picked values, or a modal's field values in order.
+    pub values: Vec<String>,
+}
+
+impl std::fmt::Debug for DiscordInteraction {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DiscordInteraction")
+            .field("user_id", &"<redacted>")
+            .field("account", &self.account)
+            .field("actor", &self.actor)
+            .field("custom_id", &self.custom_id)
+            .field("values", &self.values.len())
+            .finish()
+    }
+}
+
+/// A Discord-side control the server asks the gateway bridge to perform for a
+/// character (programme D3): the in-game `@discord/follow` / `/unfollow`
+/// verbs and a live `quiet` toggle. Fire-and-forget; the bridge answers the
+/// character with a `discord`-tagged system line. Additive (same
+/// `IPC_VERSION`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DiscordControlOp {
+    /// Attach a follow for the character's linked Discord user.
+    Follow,
+    /// Detach the character's follow, if any.
+    Unfollow,
+    /// Set the current follow's quiet mode (the persisted preference is the
+    /// server's; this is the live copy).
+    Quiet(bool),
+}
+
+/// Why a [`ServiceReq::DiscordInteraction`] produced no reply text.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, thiserror::Error)]
+pub enum DiscordInteractionError {
+    /// No module registered a handler for the `custom_id`'s prefix.
+    #[error("no handler for this control")]
+    UnknownPrefix,
+    /// The handler refused, with a bounded, viewer-safe reason.
+    #[error("{0}")]
+    Refused(String),
 }
 
 /// A correlated service reply (server → gateway), matched to its [`ServiceReq`]
@@ -639,6 +701,9 @@ pub enum ServiceResp {
     ActionStatus(ProjectedActionStatus),
     /// Acknowledgement of a [`ServiceReq::Barrier`].
     Barrier,
+    /// Result of a [`ServiceReq::DiscordInteraction`]: the handler's bounded
+    /// reply text, or why there is none.
+    DiscordInteraction(Result<String, DiscordInteractionError>),
     /// The boundary has reached its fixed correlated-request custody limit.
     ///
     /// This is a refusal *before* the request enters world-task custody. A
@@ -784,6 +849,15 @@ pub enum ToGateway {
         char: u64,
         /// `true` while the actor sits in an input context.
         exempt: bool,
+    },
+    /// Ask the gateway's Discord bridge to follow, unfollow or re-tune a
+    /// character's Discord follow (programme D3). Fire-and-forget: the bridge
+    /// tells the character what happened as a `discord`-tagged system line.
+    DiscordControl {
+        /// The character (widened `ObjId`).
+        char: u64,
+        /// What to do.
+        op: DiscordControlOp,
     },
     /// Close a whole session: every live connection of `char` is dropped
     /// (`@boot`). The gateway drops the transports and reports each resulting

@@ -81,8 +81,8 @@ use mush_core::{
     register_core_commands, register_engine_commands,
 };
 use mush_ipc::{
-    ActionSend, GatewayAction, GatewayInput, GatewayRequest, MAX_IN_FLIGHT_LIFECYCLE_OBLIGATIONS,
-    SendTarget,
+    ActionSend, DiscordControlOp, GatewayAction, GatewayInput, GatewayRequest,
+    MAX_IN_FLIGHT_LIFECYCLE_OBLIGATIONS, SendTarget,
 };
 use mush_llm::LlmService;
 use mush_proto::{ActionStatusId, OutputEvent, ProjectedActionStatus, RichText};
@@ -263,6 +263,20 @@ pub enum WorldMsg {
         actor: ObjId,
         /// `true` = inside a context.
         reply: oneshot::Sender<Result<bool, WorldReadError>>,
+    },
+    /// A Discord component interaction the gateway bridge forwarded
+    /// (programme D3, 03 §7a.4): dispatched by `custom_id` prefix to the
+    /// module handler registered at wiring. A handler may mutate, so this is
+    /// a world mutation; the reply carries its bounded text (or why none) and
+    /// is sent as soon as the handler returns — what it changed rides this
+    /// step's ordinary commit.
+    DiscordInteraction {
+        /// The forwarded interaction (the bridge authenticated the user).
+        interaction: mush_ipc::DiscordInteraction,
+        /// The handler's reply.
+        reply: oneshot::Sender<
+            Result<Result<String, mush_ipc::DiscordInteractionError>, WorldReadError>,
+        >,
     },
     /// Verify that an admitted `ConnUp` produced the exact engine-side
     /// connection-to-actor association before the gateway publishes its local
@@ -848,9 +862,9 @@ fn classify_world_msg(msg: &WorldMsg) -> IngressClass {
     match msg {
         WorldMsg::Inbound(msg) => classify_inbound(msg),
         WorldMsg::ReAttach { .. } => IngressClass::TransportBookkeeping,
-        WorldMsg::CreatePlayer { .. } | WorldMsg::AuthoritativeAction(_) => {
-            IngressClass::WorldMutation
-        }
+        WorldMsg::CreatePlayer { .. }
+        | WorldMsg::AuthoritativeAction(_)
+        | WorldMsg::DiscordInteraction { .. } => IngressClass::WorldMutation,
         WorldMsg::NameFree { .. }
         | WorldMsg::InInputContext { .. }
         | WorldMsg::ConnectionReady { .. }
@@ -903,6 +917,7 @@ fn classify_staff_op(kind: &StaffOpKind) -> IngressClass {
         | StaffOpKind::NewChar { .. }
         | StaffOpKind::DiscordLinkMint { .. }
         | StaffOpKind::DiscordUnlinkSelf { .. }
+        | StaffOpKind::DiscordFollow { .. }
         | StaffOpKind::DiscordSet { .. }
         | StaffOpKind::DiscordUnlink { .. }
         | StaffOpKind::DiscordBan { .. }
@@ -1065,6 +1080,26 @@ impl WorldHandle {
         if self
             .tx
             .send(WorldMsg::InInputContext { actor, reply })
+            .await
+            .is_err()
+        {
+            return Err(WorldReadError::Unavailable);
+        }
+        rx.await.unwrap_or(Err(WorldReadError::Unavailable))
+    }
+
+    /// Dispatch a Discord component interaction the gateway forwarded
+    /// (programme D3) to the module handler owning its `custom_id` prefix.
+    /// The inner result is the handler's answer (or why there is none); the
+    /// outer error is the world being busy or gone.
+    pub async fn discord_interaction(
+        &self,
+        interaction: mush_ipc::DiscordInteraction,
+    ) -> Result<Result<String, mush_ipc::DiscordInteractionError>, WorldReadError> {
+        let (reply, rx) = oneshot::channel();
+        if self
+            .tx
+            .send(WorldMsg::DiscordInteraction { interaction, reply })
             .await
             .is_err()
         {
@@ -3627,6 +3662,28 @@ async fn run(
                             let _ = reply.send(Ok(engine.world.input_depth(actor) > 0));
                             StepOutcome::Continue
                         }
+                        WorldMsg::DiscordInteraction { interaction, reply } => {
+                            let core = mush_core::DiscordInteraction {
+                                account: interaction.account.clone(),
+                                actor: interaction.actor,
+                                custom_id: interaction.custom_id.clone(),
+                                values: interaction.values.clone(),
+                            };
+                            let result = match engine.discord_interaction(&core, &mut out) {
+                                None => Err(mush_ipc::DiscordInteractionError::UnknownPrefix),
+                                Some(Ok(text)) => Ok(text),
+                                Some(Err(why)) => {
+                                    Err(mush_ipc::DiscordInteractionError::Refused(why))
+                                }
+                            };
+                            tracing::debug!(
+                                custom_id = %interaction.custom_id,
+                                handled = result.is_ok(),
+                                "discord interaction dispatched"
+                            );
+                            let _ = reply.send(Ok(result));
+                            StepOutcome::Continue
+                        }
                         WorldMsg::ConnectionReady { conn, actor, reply } => {
                             let _ = reply.send(Ok(engine.actor_of(conn) == Some(actor)));
                             StepOutcome::Continue
@@ -5222,6 +5279,14 @@ fn refuse_world_msg(msg: WorldMsg, reason: RefusalReason, gateway: &Gateway) {
             };
             let _ = reply.send(Err(error));
         }
+        WorldMsg::DiscordInteraction { reply, .. } => {
+            let error = if reason == RefusalReason::CommitPending {
+                WorldReadError::Busy
+            } else {
+                WorldReadError::Unavailable
+            };
+            let _ = reply.send(Err(error));
+        }
         WorldMsg::ConnectionReady { reply, .. } => {
             let error = if reason == RefusalReason::CommitPending {
                 WorldReadError::Busy
@@ -6605,6 +6670,30 @@ async fn run_staff_ops(
                     send_sys(gateway, actor, "@discord failed: staff executor gone.");
                 }
             }
+            // D3: the follow verbs are the gateway bridge's to answer; the
+            // control crosses the seam fire-and-forget and the bridge tells the
+            // character what happened on their own connections.
+            StaffOpKind::DiscordFollow { actor: subject, on } => {
+                tracing::info!(%actor, on, "@discord/follow requested");
+                gateway.discord_control(
+                    u64::from(subject.0),
+                    if on {
+                        DiscordControlOp::Follow
+                    } else {
+                        DiscordControlOp::Unfollow
+                    },
+                );
+                send_sys(
+                    gateway,
+                    actor,
+                    if on {
+                        "@discord/follow: asked the Discord bot to follow you here; it answers \
+                         on this screen and in your DM."
+                    } else {
+                        "@discord/unfollow: asked the Discord bot to detach."
+                    },
+                );
+            }
             StaffOpKind::DiscordShow { target, .. }
             | StaffOpKind::DiscordUnlink { target, .. }
             | StaffOpKind::DiscordBan { target, .. } => {
@@ -7121,10 +7210,31 @@ async fn staff_ops_loop(
             StaffOpKind::DiscordUnlinkSelf { actor: subject } => {
                 run_discord_unlink(&*store, subject, false).await
             }
+            // Answered on the world loop through the gateway control (D3); it is
+            // never queued to this executor, so this arm only keeps the match
+            // honest.
+            StaffOpKind::DiscordFollow { on, .. } => format!(
+                "@discord/{}: routed to the Discord bridge.",
+                if on { "follow" } else { "unfollow" }
+            ),
             StaffOpKind::DiscordSet {
                 actor: subject,
                 setting,
-            } => run_discord_set(&*store, subject, setting).await,
+            } => {
+                // `quiet` also applies live to a follow in progress (D3); the
+                // store carries the preference for the next one.
+                let live = match setting {
+                    crate::staff::DiscordSetting::Quiet(on) => Some(on),
+                    _ => None,
+                };
+                let text = run_discord_set(&*store, subject, setting).await;
+                if let Some(on) = live
+                    && text.starts_with("@discord/set:")
+                {
+                    gateway.discord_control(u64::from(subject.0), DiscordControlOp::Quiet(on));
+                }
+                text
+            }
             StaffOpKind::DiscordShow { target, .. } => run_discord_show(&*store, target).await,
             StaffOpKind::DiscordUnlink { target, .. } => {
                 run_discord_unlink(&*store, target, true).await
@@ -12664,6 +12774,22 @@ mod tests {
         assert_eq!(
             classify_world_msg(&WorldMsg::InInputContext { actor: GOD, reply }),
             IngressClass::WorldRead
+        );
+        // A forwarded Discord interaction runs a module handler that may
+        // mutate: a world mutation, never a read.
+        let (reply, _rx) = oneshot::channel();
+        assert_eq!(
+            classify_world_msg(&WorldMsg::DiscordInteraction {
+                interaction: mush_ipc::DiscordInteraction {
+                    user_id: 1,
+                    account: None,
+                    actor: None,
+                    custom_id: "oncall:ack:1".to_string(),
+                    values: vec![],
+                },
+                reply,
+            }),
+            IngressClass::WorldMutation
         );
         let (reply, _rx) = oneshot::channel();
         assert_eq!(

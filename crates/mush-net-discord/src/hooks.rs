@@ -3,6 +3,23 @@
 
 use futures::future::BoxFuture;
 
+use crate::api::InteractionReply;
+
+/// A component click or a modal submission, as the bridge routes it (D3).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Interaction {
+    /// The routing key (`d:req:<id>:<opt>`, `d:act:<nonce>`, `d:oncall:…`).
+    pub custom_id: String,
+    /// A select's picked values (one), empty for a button or a modal.
+    pub values: Vec<String>,
+    /// A modal's `(field, value)` pairs, empty for a click.
+    pub fields: Vec<(String, String)>,
+    /// The channel of the message the component was on, when known.
+    pub channel_id: Option<u64>,
+    /// The message the component was on, when known.
+    pub message_id: Option<u64>,
+}
+
 /// The result of redeeming a link code.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LinkOutcome {
@@ -118,4 +135,15 @@ pub trait DiscordHooks: Send + Sync {
 
     /// Run one DM line as `user_id`'s followed character.
     fn dm_line<'a>(&'a self, user_id: u64, line: &'a str) -> BoxFuture<'a, LineOutcome>;
+
+    /// Route a component click or a modal submission (D3) by its `custom_id`
+    /// namespace: `d:req:` answers a request through the game's `respond`,
+    /// `d:act:` opens or submits a notice's reply modal, `d:call:` is the
+    /// bridge's own, and anything else crosses to the server's registered
+    /// handlers. The reply must be produced within Discord's window.
+    fn interaction(
+        &self,
+        user_id: u64,
+        interaction: Interaction,
+    ) -> BoxFuture<'_, InteractionReply>;
 }

@@ -21,7 +21,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use mush_config::metrics::Metrics;
-use mush_ipc::{DetachCause, SendTarget, ToGateway};
+use mush_ipc::{DetachCause, DiscordControlOp, SendTarget, ToGateway};
 use mush_proto::OutputEvent;
 use tokio::sync::Notify;
 use tokio::sync::mpsc::Sender;
@@ -54,6 +54,12 @@ pub trait GatewaySink: Send + Sync {
 
     /// Set/clear a character's flood-exempt flag on the gateway throttle.
     fn set_flood_exempt(&self, char: u64, exempt: bool);
+
+    /// Ask the gateway's Discord bridge to follow, unfollow or re-tune a
+    /// character's Discord follow (programme D3). Fire-and-forget; a sink with
+    /// no Discord bridge drops it, and the bridge tells the character what
+    /// happened.
+    fn discord_control(&self, _char: u64, _op: DiscordControlOp) {}
 
     /// Whether this sink writes to the boundary socket (forked server) rather
     /// than a local [`SessionManager`](mush_session::SessionManager). The world
@@ -222,6 +228,10 @@ impl GatewaySink for SocketSink {
 
     fn set_flood_exempt(&self, char: u64, exempt: bool) {
         self.send(ToGateway::SetFloodExempt { char, exempt });
+    }
+
+    fn discord_control(&self, char: u64, op: DiscordControlOp) {
+        self.send(ToGateway::DiscordControl { char, op });
     }
 
     fn is_socket(&self) -> bool {

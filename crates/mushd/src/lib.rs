@@ -36,7 +36,7 @@ pub use mush_config::{config, ipguard, logging, unix_now_ms, unix_now_s};
 pub use mush_server::{help, modules, persist, quarantine, staff};
 
 // --- gateway half (mush-gateway) ---
-pub use mush_gateway::{bridge_common, discord_bridge, ssh_bridge, web_bridge};
+pub use mush_gateway::{bridge_common, controls, discord_bridge, ssh_bridge, web_bridge};
 
 /// The account layer: the gateway's [`Accounts`](mush_gateway::accounts::Accounts)
 /// auth backend merged with the transport-agnostic helpers from
@@ -94,6 +94,8 @@ pub mod world_task {
             sessions,
             deps,
             mush_server::decision_dispatch::DEFAULT_DECISION_PROVIDER_WORKERS,
+            // No Discord bridge in the convenience spawn: controls are dropped.
+            Arc::new(mush_gateway::controls::GatewayControls::default()),
         )
         .unwrap_or_else(|error| panic!("world task spawn: {error}"))
     }
@@ -109,6 +111,7 @@ pub mod world_task {
         sessions: Arc<SessionManager>,
         deps: ServerDeps,
         decision_workers: usize,
+        controls: Arc<mush_gateway::controls::GatewayControls>,
     ) -> Result<PersistHandles, String> {
         let llm = deps.llm.clone();
         spawn_persist_with_gateway_production(
@@ -116,7 +119,9 @@ pub mod world_task {
             deps,
             llm,
             decision_workers,
-            move |weak_inbound| Arc::new(InProcessSink::new(sessions, weak_inbound)),
+            move |weak_inbound| {
+                Arc::new(InProcessSink::new(sessions, weak_inbound).with_controls(controls))
+            },
         )
     }
 }

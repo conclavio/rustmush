@@ -16,6 +16,7 @@ use twilight_http::Client;
 use twilight_http::error::ErrorType;
 use twilight_model::application::command::CommandType;
 use twilight_model::application::interaction::application_command::CommandOptionValue;
+use twilight_model::application::interaction::modal::ModalInteractionComponent;
 use twilight_model::application::interaction::{
     InteractionContextType, InteractionData, InteractionType,
 };
@@ -69,14 +70,114 @@ impl ApiError {
     }
 }
 
-/// A message the bot sends: content, and whether an interaction reply is
-/// visible to the invoking user alone.
+/// Discord's `custom_id` cap, bytes.
+pub const MAX_CUSTOM_ID_BYTES: usize = 100;
+/// Discord's buttons-per-row cap.
+pub const MAX_BUTTONS_PER_ROW: usize = 5;
+/// Discord's action-rows-per-message cap.
+pub const MAX_ROWS: usize = 5;
+/// Discord's options-per-select cap.
+pub const MAX_SELECT_OPTIONS: usize = 25;
+/// Discord's button-label cap, characters.
+pub const MAX_BUTTON_LABEL_CHARS: usize = 80;
+
+/// A button's colour.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ButtonStyle {
+    /// Blurple: the main action.
+    Primary,
+    /// Grey: a neutral action.
+    Secondary,
+    /// Green: yes / agree.
+    Success,
+    /// Red: no / decline.
+    Danger,
+}
+
+/// One clickable button (D3). The click arrives as
+/// [`DiscordEvent::Component`] carrying `custom_id`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Button {
+    /// The routing key (`d:req:<id>:<opt>`), at most [`MAX_CUSTOM_ID_BYTES`].
+    pub custom_id: String,
+    /// The text on the button, at most [`MAX_BUTTON_LABEL_CHARS`].
+    pub label: String,
+    /// Its colour.
+    pub style: ButtonStyle,
+}
+
+/// One single-choice string select (D3). The pick arrives as
+/// [`DiscordEvent::Component`] with the chosen value in `values`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Select {
+    /// The routing key.
+    pub custom_id: String,
+    /// Shown before a pick.
+    pub placeholder: String,
+    /// `(value, label)` pairs, at most [`MAX_SELECT_OPTIONS`].
+    pub options: Vec<(String, String)>,
+}
+
+/// One action row of a message.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Row {
+    /// Up to [`MAX_BUTTONS_PER_ROW`] buttons.
+    Buttons(Vec<Button>),
+    /// One select menu.
+    Select(Select),
+}
+
+/// A modal with one text field (D3), opened in answer to a component click.
+/// Its submission arrives as [`DiscordEvent::Modal`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ModalSpec {
+    /// The routing key of the submission.
+    pub custom_id: String,
+    /// The modal's title (≤ 45 chars).
+    pub title: String,
+    /// The one field.
+    pub field: TextField,
+}
+
+/// The text field of a [`ModalSpec`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TextField {
+    /// The field's key in the submission.
+    pub custom_id: String,
+    /// The label above the field.
+    pub label: String,
+    /// A prefilled value (the `Notice` action's `prefill`).
+    pub value: Option<String>,
+    /// The longest accepted value, characters (≤ 4 000).
+    pub max_len: u16,
+    /// Multi-line (paragraph) rather than single-line.
+    pub paragraph: bool,
+}
+
+/// How the bot answers a component click or a modal submission.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum InteractionReply {
+    /// Acknowledge without changing anything (a deferred update).
+    Ack,
+    /// A private text reply to the clicker.
+    Ephemeral(String),
+    /// Replace the message the component was on — content and components
+    /// (an empty `components` removes them).
+    UpdateMessage(Outgoing),
+    /// Open a modal.
+    Modal(ModalSpec),
+}
+
+/// A message the bot sends: content, whether an interaction reply is
+/// visible to the invoking user alone, and any components (D3).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Outgoing {
     /// The text.
     pub content: String,
     /// For interaction replies: ephemeral (only the invoker sees it).
     pub ephemeral: bool,
+    /// Action rows under the text (at most [`MAX_ROWS`]).
+    pub components: Vec<Row>,
 }
 
 impl Outgoing {
@@ -86,6 +187,7 @@ impl Outgoing {
         Outgoing {
             content: content.into(),
             ephemeral: true,
+            components: Vec::new(),
         }
     }
 
@@ -95,7 +197,15 @@ impl Outgoing {
         Outgoing {
             content: content.into(),
             ephemeral: false,
+            components: Vec::new(),
         }
+    }
+
+    /// The same message with these action rows.
+    #[must_use]
+    pub fn with_components(mut self, rows: Vec<Row>) -> Outgoing {
+        self.components = rows;
+        self
     }
 }
 
@@ -170,6 +280,34 @@ pub enum DiscordEvent {
         /// The text.
         content: String,
     },
+    /// A button click or a select pick (D3).
+    Component {
+        /// The clicking Discord user.
+        user_id: u64,
+        /// The component's routing key.
+        custom_id: String,
+        /// The picked values (one for a single select; empty for a button).
+        values: Vec<String>,
+        /// The channel the message is in.
+        channel_id: Option<u64>,
+        /// The message the component is on.
+        message_id: Option<u64>,
+        /// How to reply.
+        handle: InteractionHandle,
+    },
+    /// A modal submission (D3).
+    Modal {
+        /// The submitting Discord user.
+        user_id: u64,
+        /// The modal's routing key.
+        custom_id: String,
+        /// `(field custom_id, value)` for every text field.
+        fields: Vec<(String, String)>,
+        /// The message whose component opened the modal, when known.
+        message_id: Option<u64>,
+        /// How to reply.
+        handle: InteractionHandle,
+    },
 }
 
 /// The REST calls the bot makes, object-safe so tests substitute a fake.
@@ -183,11 +321,20 @@ pub trait DiscordApi: Send + Sync {
         commands: &'a [SlashCommand],
     ) -> BoxFuture<'a, Result<(), ApiError>>;
 
-    /// Answer an interaction (within Discord's three-second window).
+    /// Answer a slash command with a message (within Discord's three-second
+    /// window).
     fn reply_interaction<'a>(
         &'a self,
         handle: &'a InteractionHandle,
         reply: Outgoing,
+    ) -> BoxFuture<'a, Result<(), ApiError>>;
+
+    /// Answer a component click or a modal submission (D3), within the same
+    /// window.
+    fn respond_component<'a>(
+        &'a self,
+        handle: &'a InteractionHandle,
+        reply: InteractionReply,
     ) -> BoxFuture<'a, Result<(), ApiError>>;
 
     /// Open (or find) the DM channel with a user. [`ApiError::CannotDm`] when
@@ -307,6 +454,57 @@ impl DiscordApi for DiscordRest {
         })
     }
 
+    fn respond_component<'a>(
+        &'a self,
+        handle: &'a InteractionHandle,
+        reply: InteractionReply,
+    ) -> BoxFuture<'a, Result<(), ApiError>> {
+        Box::pin(async move {
+            let app = self.app()?;
+            let interaction: Id<InteractionMarker> = id(handle.id, "interaction")?;
+            let response = match reply {
+                InteractionReply::Ack => InteractionResponse {
+                    kind: InteractionResponseType::DeferredUpdateMessage,
+                    data: None,
+                },
+                InteractionReply::Ephemeral(text) => InteractionResponse {
+                    kind: InteractionResponseType::ChannelMessageWithSource,
+                    data: Some(
+                        InteractionResponseDataBuilder::new()
+                            .content(text)
+                            .flags(MessageFlags::EPHEMERAL)
+                            .build(),
+                    ),
+                },
+                InteractionReply::UpdateMessage(msg) => InteractionResponse {
+                    kind: InteractionResponseType::UpdateMessage,
+                    data: Some(
+                        InteractionResponseDataBuilder::new()
+                            .content(msg.content)
+                            .components(build::rows(&msg.components))
+                            .build(),
+                    ),
+                },
+                InteractionReply::Modal(spec) => InteractionResponse {
+                    kind: InteractionResponseType::Modal,
+                    data: Some(
+                        InteractionResponseDataBuilder::new()
+                            .custom_id(spec.custom_id)
+                            .title(spec.title)
+                            .components([build::modal_field(&spec.field)])
+                            .build(),
+                    ),
+                },
+            };
+            self.client
+                .interaction(app)
+                .create_response(interaction, &handle.token, &response)
+                .await
+                .map(|_| ())
+                .map_err(|e| ApiError::from_http(&e))
+        })
+    }
+
     fn create_dm(&self, user_id: u64) -> BoxFuture<'_, Result<u64, ApiError>> {
         Box::pin(async move {
             let user: Id<UserMarker> = id(user_id, "user")?;
@@ -327,10 +525,12 @@ impl DiscordApi for DiscordRest {
             let channel: Id<ChannelMarker> = id(channel_id, "channel")?;
             // Player text never pings anyone: no mentions are parsed.
             let none = twilight_model::channel::message::AllowedMentions::default();
+            let components = build::rows(&msg.components);
             let message = self
                 .client
                 .create_message(channel)
                 .allowed_mentions(Some(&none))
+                .components(&components)
                 .content(&msg.content)
                 .await
                 .map_err(|e| ApiError::from_http(&e))?
@@ -350,13 +550,156 @@ impl DiscordApi for DiscordRest {
         Box::pin(async move {
             let channel: Id<ChannelMarker> = id(channel_id, "channel")?;
             let message: Id<MessageMarker> = id(message_id, "message")?;
+            // An empty row list clears the components (an answered request's
+            // buttons go away).
+            let components = build::rows(&msg.components);
             self.client
                 .update_message(channel, message)
                 .content(Some(&msg.content))
+                .components(Some(&components))
                 .await
                 .map(|_| ())
                 .map_err(|e| ApiError::from_http(&e))
         })
+    }
+}
+
+/// The twilight shapes of the crate's component specs, kept in one place so
+/// the library's field lists (and one deprecated field) touch nothing else.
+mod build {
+    use twilight_model::channel::message::component::{
+        ActionRow, Button, ButtonStyle, Component, Label, SelectMenu, SelectMenuOption,
+        SelectMenuType, TextInput, TextInputStyle,
+    };
+
+    use super::{
+        MAX_BUTTON_LABEL_CHARS, MAX_BUTTONS_PER_ROW, MAX_CUSTOM_ID_BYTES, MAX_ROWS,
+        MAX_SELECT_OPTIONS, Row, TextField,
+    };
+
+    fn clamp_chars(s: &str, max: usize) -> String {
+        if s.chars().count() <= max {
+            s.to_string()
+        } else {
+            s.chars().take(max.saturating_sub(1)).collect::<String>() + "…"
+        }
+    }
+
+    fn clamp_id(s: &str) -> String {
+        // A custom_id over the cap is a producer bug; a truncated id would
+        // route wrong, so it is cut *and* the caller's validation should have
+        // caught it (the DM writer checks before building).
+        let mut out = s.to_string();
+        while out.len() > MAX_CUSTOM_ID_BYTES {
+            out.pop();
+        }
+        out
+    }
+
+    /// Action rows for a message (bounded to Discord's caps).
+    pub(super) fn rows(rows: &[Row]) -> Vec<Component> {
+        rows.iter()
+            .take(MAX_ROWS)
+            .map(|row| {
+                Component::ActionRow(ActionRow {
+                    id: None,
+                    components: match row {
+                        Row::Buttons(buttons) => buttons
+                            .iter()
+                            .take(MAX_BUTTONS_PER_ROW)
+                            .map(|b| {
+                                Component::Button(Button {
+                                    id: None,
+                                    custom_id: Some(clamp_id(&b.custom_id)),
+                                    disabled: false,
+                                    emoji: None,
+                                    label: Some(clamp_chars(&b.label, MAX_BUTTON_LABEL_CHARS)),
+                                    style: match b.style {
+                                        super::ButtonStyle::Primary => ButtonStyle::Primary,
+                                        super::ButtonStyle::Secondary => ButtonStyle::Secondary,
+                                        super::ButtonStyle::Success => ButtonStyle::Success,
+                                        super::ButtonStyle::Danger => ButtonStyle::Danger,
+                                    },
+                                    url: None,
+                                    sku_id: None,
+                                })
+                            })
+                            .collect(),
+                        Row::Select(s) => vec![Component::SelectMenu(SelectMenu {
+                            id: None,
+                            channel_types: None,
+                            custom_id: clamp_id(&s.custom_id),
+                            default_values: None,
+                            disabled: false,
+                            kind: SelectMenuType::Text,
+                            max_values: Some(1),
+                            min_values: Some(1),
+                            options: Some(
+                                s.options
+                                    .iter()
+                                    .take(MAX_SELECT_OPTIONS)
+                                    .map(|(value, label)| SelectMenuOption {
+                                        default: false,
+                                        description: None,
+                                        emoji: None,
+                                        label: clamp_chars(label, 100),
+                                        value: clamp_id(value),
+                                    })
+                                    .collect(),
+                            ),
+                            placeholder: Some(clamp_chars(&s.placeholder, 150)),
+                            required: None,
+                        })],
+                    },
+                })
+            })
+            .collect()
+    }
+
+    /// A modal's one field: a `Label` wrapping a `TextInput` (components V2;
+    /// the input's own `label` is the deprecated pre-V2 form).
+    #[allow(deprecated)]
+    pub(super) fn modal_field(field: &TextField) -> Component {
+        Component::Label(Label {
+            id: None,
+            label: clamp_chars(&field.label, 45),
+            description: None,
+            component: Box::new(Component::TextInput(TextInput {
+                id: None,
+                custom_id: clamp_id(&field.custom_id),
+                label: None,
+                max_length: Some(field.max_len.clamp(1, 4000)),
+                min_length: None,
+                placeholder: None,
+                required: Some(true),
+                style: if field.paragraph {
+                    TextInputStyle::Paragraph
+                } else {
+                    TextInputStyle::Short
+                },
+                value: field
+                    .value
+                    .as_ref()
+                    .map(|v| clamp_chars(v, usize::from(field.max_len.clamp(1, 4000)))),
+            })),
+        })
+    }
+}
+
+/// Flatten a modal submission's text fields (through `Label`s and action
+/// rows) to `(custom_id, value)`.
+fn modal_fields(components: &[ModalInteractionComponent], out: &mut Vec<(String, String)>) {
+    for c in components {
+        match c {
+            ModalInteractionComponent::Label(l) => {
+                modal_fields(std::slice::from_ref(&*l.component), out);
+            }
+            ModalInteractionComponent::ActionRow(r) => modal_fields(&r.components, out),
+            ModalInteractionComponent::TextInput(t) => {
+                out.push((t.custom_id.clone(), t.value.clone()));
+            }
+            _ => {}
+        }
     }
 }
 
@@ -383,10 +726,48 @@ fn reduce(event: Event) -> Option<DiscordEvent> {
         Event::Ready(_) => Some(DiscordEvent::Ready),
         Event::InteractionCreate(ic) => {
             let interaction = ic.0;
-            if interaction.kind != InteractionType::ApplicationCommand {
-                return None;
-            }
             let user_id = interaction.author_id()?.get();
+            let handle = InteractionHandle {
+                id: interaction.id.get(),
+                token: interaction.token.clone(),
+            };
+            let message_id = interaction.message.as_ref().map(|m| m.id.get());
+            match interaction.kind {
+                InteractionType::MessageComponent => {
+                    let Some(InteractionData::MessageComponent(data)) = interaction.data else {
+                        return None;
+                    };
+                    let channel_id = interaction
+                        .message
+                        .as_ref()
+                        .map(|m| m.channel_id.get())
+                        .or_else(|| interaction.channel.as_ref().map(|c| c.id.get()));
+                    return Some(DiscordEvent::Component {
+                        user_id,
+                        custom_id: data.custom_id,
+                        values: data.values,
+                        channel_id,
+                        message_id,
+                        handle,
+                    });
+                }
+                InteractionType::ModalSubmit => {
+                    let Some(InteractionData::ModalSubmit(data)) = interaction.data else {
+                        return None;
+                    };
+                    let mut fields = Vec::new();
+                    modal_fields(&data.components, &mut fields);
+                    return Some(DiscordEvent::Modal {
+                        user_id,
+                        custom_id: data.custom_id,
+                        fields,
+                        message_id,
+                        handle,
+                    });
+                }
+                InteractionType::ApplicationCommand => {}
+                _ => return None,
+            }
             let Some(InteractionData::ApplicationCommand(cmd)) = interaction.data else {
                 return None;
             };
@@ -403,10 +784,7 @@ fn reduce(event: Event) -> Option<DiscordEvent> {
                 guild_id: interaction.guild_id.map(Id::get),
                 name: cmd.name,
                 options,
-                handle: InteractionHandle {
-                    id: interaction.id.get(),
-                    token: interaction.token,
-                },
+                handle,
             })
         }
         Event::MessageCreate(mc) => {
@@ -459,7 +837,8 @@ pub mod testing {
     use tokio::sync::mpsc;
 
     use super::{
-        ApiError, DiscordApi, DiscordEvent, EventSource, InteractionHandle, Outgoing, SlashCommand,
+        ApiError, DiscordApi, DiscordEvent, EventSource, InteractionHandle, InteractionReply,
+        Outgoing, SlashCommand,
     };
 
     /// One recorded REST call.
@@ -476,6 +855,13 @@ pub mod testing {
             interaction_id: u64,
             /// The reply.
             reply: Outgoing,
+        },
+        /// `respond_component`.
+        Respond {
+            /// The interaction id.
+            interaction_id: u64,
+            /// The reply.
+            reply: InteractionReply,
         },
         /// `create_dm`.
         CreateDm {
@@ -580,6 +966,19 @@ pub mod testing {
             })
         }
 
+        fn respond_component<'a>(
+            &'a self,
+            handle: &'a InteractionHandle,
+            reply: InteractionReply,
+        ) -> BoxFuture<'a, Result<(), ApiError>> {
+            Box::pin(async move {
+                self.record(Call::Respond {
+                    interaction_id: handle.id,
+                    reply,
+                })
+            })
+        }
+
         fn create_dm(&self, user_id: u64) -> BoxFuture<'_, Result<u64, ApiError>> {
             Box::pin(async move {
                 self.record(Call::CreateDm { user_id })?;
@@ -652,6 +1051,50 @@ pub mod testing {
                 .collect(),
             handle: InteractionHandle {
                 id: 77,
+                token: "tok".to_string(),
+            },
+        }
+    }
+
+    /// A component click (or select pick) for tests.
+    #[must_use]
+    pub fn component(
+        user_id: u64,
+        custom_id: &str,
+        values: &[&str],
+        message_id: u64,
+    ) -> DiscordEvent {
+        DiscordEvent::Component {
+            user_id,
+            custom_id: custom_id.to_string(),
+            values: values.iter().map(|v| (*v).to_string()).collect(),
+            channel_id: Some(900),
+            message_id: Some(message_id),
+            handle: InteractionHandle {
+                id: 78,
+                token: "tok".to_string(),
+            },
+        }
+    }
+
+    /// A modal submission for tests.
+    #[must_use]
+    pub fn modal(
+        user_id: u64,
+        custom_id: &str,
+        fields: &[(&str, &str)],
+        message_id: Option<u64>,
+    ) -> DiscordEvent {
+        DiscordEvent::Modal {
+            user_id,
+            custom_id: custom_id.to_string(),
+            fields: fields
+                .iter()
+                .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+                .collect(),
+            message_id,
+            handle: InteractionHandle {
+                id: 79,
                 token: "tok".to_string(),
             },
         }

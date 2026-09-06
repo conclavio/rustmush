@@ -21,13 +21,14 @@ use std::ops::ControlFlow;
 use std::sync::Arc;
 
 use mush_core::Inbound;
-use mush_ipc::{DetachCause, SendTarget};
+use mush_ipc::{DetachCause, DiscordControlOp, SendTarget};
 use mush_proto::OutputEvent;
 use mush_server::gateway_sink::GatewaySink;
 use mush_server::world_task::WorldMsg;
 use mush_session::{CharKey, ConnId, DetachReason, SessionManager};
 use tokio::sync::mpsc::WeakSender;
 
+use mush_gateway::controls::GatewayControls;
 use mush_gateway::delivery::{ConnDownPost, spawn_linkdead_reaper, transmit_and_police};
 
 /// The all-in-one in-process [`GatewaySink`]: the shared session manager plus a
@@ -39,13 +40,27 @@ pub struct InProcessSink {
     /// the world loop owns this sink, so a strong handle would keep its own
     /// inbound channel alive and it could never shut down.
     feedback: WeakSender<WorldMsg>,
+    /// The gateway-side control hooks (the Discord bridge, programme D3).
+    controls: Option<Arc<GatewayControls>>,
 }
 
 impl InProcessSink {
     /// Wrap the shared session manager and the world loop's inbound weak sender.
     #[must_use]
     pub fn new(sessions: Arc<SessionManager>, feedback: WeakSender<WorldMsg>) -> InProcessSink {
-        InProcessSink { sessions, feedback }
+        InProcessSink {
+            sessions,
+            feedback,
+            controls: None,
+        }
+    }
+
+    /// Route the server's gateway-side controls (`discord_control`) to
+    /// `controls`, where the Discord bridge registers at start-up.
+    #[must_use]
+    pub fn with_controls(mut self, controls: Arc<GatewayControls>) -> InProcessSink {
+        self.controls = Some(controls);
+        self
     }
 
     /// Post a batch of policed connections' `ConnDown`s back to the loop **in
@@ -100,6 +115,13 @@ impl GatewaySink for InProcessSink {
 
     fn set_flood_exempt(&self, char: u64, exempt: bool) {
         self.sessions.set_flood_exempt(CharKey(char), exempt);
+    }
+
+    fn discord_control(&self, char: u64, op: DiscordControlOp) {
+        match &self.controls {
+            Some(c) => c.discord_control(char, op),
+            None => tracing::debug!(char, ?op, "discord control with no registry; dropped"),
+        }
     }
 
     fn is_socket(&self) -> bool {

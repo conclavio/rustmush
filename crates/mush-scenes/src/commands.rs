@@ -69,6 +69,28 @@ fn actor_room(ctx: &Ctx<'_>) -> Result<ObjId, CmdError> {
         .ok_or_else(|| CmdError::msg("You are nowhere."))
 }
 
+/// Tell the player whose turn it now is, as a `Notice` (interface plan I11,
+/// programme D3): the client-neutral signal a Discord follow, a web toast or
+/// the SSH notice rail all render. Only players are told (an NPC's turn is
+/// the NPC module's); `pause` never fires it, `next` and `resume` do.
+fn your_turn_notice(ctx: &mut Ctx<'_>, s: &SceneRecord) {
+    if s.status != SceneStatus::Active {
+        return;
+    }
+    let Some(actor) = s.current_actor() else {
+        return;
+    };
+    if ctx.w.get(actor).is_none_or(|o| o.kind != ObjKind::Player) {
+        return;
+    }
+    ctx.notice_info(
+        actor,
+        "scene",
+        format!("It is your turn (round {}).", s.round),
+        None,
+    );
+}
+
 /// A one-line turn summary: round, whose turn, and the scene-local IC time.
 fn turn_line(w: &World, s: &SceneRecord) -> String {
     match s.current_actor() {
@@ -281,6 +303,7 @@ fn timestop_next(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     };
     persist_scene(ctx.out, &updated);
     announce(ctx, anchor, turn_line(ctx.w, &updated));
+    your_turn_notice(ctx, &updated);
     // H2b: an NPC's turn is a durable decision (D-H-11). The log says so, and
     // the world event hands the turn to the NPC module, which requests the
     // capture; the scene itself does not advance when it resolves.
@@ -356,6 +379,7 @@ fn timestop_resume(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             turn_line(ctx.w, &updated)
         ),
     );
+    your_turn_notice(ctx, &updated);
     log_event(
         ctx,
         &updated,

@@ -8,26 +8,44 @@
 //! policy under pressure — oldest narrative first, with a visible marker —
 //! that never drops a [`OutputEvent::Notice`] or a [`OutputEvent::Request`].
 //!
+//! D3 adds the **interactive** render: a request becomes its own message with
+//! its answers as buttons or a select ([`request_rows`]), a notice with an
+//! action gets a reply button, and the writer remembers which message shows
+//! which request so the bridge can mark it answered and the writer can mark
+//! it expired at the deadline ([`FollowState::take_request`]).
+//!
 //! The one invariant the writer must keep is the session's slow-client
 //! trip-wire: it **drains its channel eagerly** into its own bounded buffer
 //! and never awaits Discord while the channel could fill.
 
-use std::collections::VecDeque;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::collections::{HashMap, VecDeque};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use mush_proto::{Envelope, NarrativeKind, NoticeSeverity, OutputEvent, RequestKind, RichText};
+use mush_proto::{
+    Envelope, NarrativeKind, NoticeSeverity, OutputEvent, RequestKind, RequestOption, RichText,
+};
 use tokio::sync::mpsc;
 use tokio::time::Instant;
 
-use crate::api::{ApiError, DiscordApi, Outgoing};
+use crate::api::{
+    ApiError, Button, ButtonStyle, DiscordApi, MAX_BUTTONS_PER_ROW, MAX_CUSTOM_ID_BYTES, MAX_ROWS,
+    MAX_SELECT_OPTIONS, Outgoing, Row, Select,
+};
 
 /// How long a failed (retryable) send waits before the next attempt.
 pub const RETRY_BACKOFF: Duration = Duration::from_secs(5);
 
 /// Longest room description the compact `look` render keeps, characters.
 pub const ROOM_DESC_CHARS: usize = 300;
+
+/// The most notice reply buttons a follow remembers the prefill for.
+pub const MAX_NOTICE_ACTIONS: usize = 64;
+
+/// A choice with at most this many options is buttons (rows of five); more
+/// become selects. Leaves the fifth row for Decline.
+pub const MAX_CHOICE_BUTTONS: usize = 20;
 
 /// The writer's tunables (`[discord].dm_*`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -52,9 +70,60 @@ impl DmPolicy {
     }
 }
 
+/// Where a request is shown in the DM (D3): the message carrying its
+/// buttons, and the text to keep when the buttons are replaced by the answer.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RequestMessage {
+    /// The DM channel.
+    pub channel_id: u64,
+    /// The message.
+    pub message_id: u64,
+    /// The prompt as rendered.
+    pub text: String,
+    /// The answer components as sent, so an answer can be named by its label.
+    pub rows: Vec<Row>,
+}
+
+impl RequestMessage {
+    /// The label of the button `custom_id` or the select option `value` the
+    /// player picked, for the "answered" edit.
+    #[must_use]
+    pub fn label_for(&self, custom_id: &str, value: Option<&str>) -> Option<String> {
+        for row in &self.rows {
+            match row {
+                Row::Buttons(buttons) => {
+                    if let Some(b) = buttons.iter().find(|b| b.custom_id == custom_id) {
+                        return Some(b.label.clone());
+                    }
+                }
+                Row::Select(select) if select.custom_id == custom_id => {
+                    if let Some((_, label)) = select
+                        .options
+                        .iter()
+                        .find(|(v, _)| Some(v.as_str()) == value)
+                    {
+                        return Some(label.clone());
+                    }
+                }
+                Row::Select(_) => {}
+            }
+        }
+        None
+    }
+}
+
+/// The notice reply buttons offered, newest first, bounded.
+#[derive(Debug, Default)]
+struct NoticeActions {
+    order: VecDeque<u64>,
+    by_nonce: HashMap<u64, (String, String)>,
+}
+
 /// What the writer has learned about the follow, shared with the bridge:
 /// whether the character is in a scene (the idle sweeper never detaches a
-/// scene member), the quiet preference, and whether Discord closed the DM.
+/// scene member), the quiet preference, whether Discord closed the DM, and
+/// (D3) which message shows which open request and what each notice reply
+/// button prefills.
 #[derive(Debug, Default)]
 pub struct FollowState {
     /// The `scenes` keyframe said the character is in an active scene.
@@ -67,6 +136,11 @@ pub struct FollowState {
     /// `ObjRef::id` (`#7`), so the render can say "You" for their own speech
     /// the way the terminal does.
     pub self_id: String,
+    /// Open requests shown with components: request id → the message.
+    requests: Mutex<HashMap<u64, RequestMessage>>,
+    /// Notice reply buttons: nonce → `(label, prefill)`.
+    actions: Mutex<NoticeActions>,
+    next_nonce: AtomicU64,
 }
 
 impl FollowState {
@@ -80,6 +154,73 @@ impl FollowState {
         s.quiet.store(quiet, Ordering::Relaxed);
         Arc::new(s)
     }
+
+    /// Remember that request `id` is shown by `message` (the writer, once the
+    /// send succeeded).
+    pub fn request_shown(&self, id: u64, message: RequestMessage) {
+        self.requests
+            .lock()
+            .expect("requests poisoned")
+            .insert(id, message);
+    }
+
+    /// Where request `id` is shown, if it is still open here.
+    #[must_use]
+    pub fn request(&self, id: u64) -> Option<RequestMessage> {
+        self.requests
+            .lock()
+            .expect("requests poisoned")
+            .get(&id)
+            .cloned()
+    }
+
+    /// Forget request `id`, returning where it was shown: the bridge on an
+    /// answer, the writer at the deadline. `None` means the other side got
+    /// there first (already answered, or already expired).
+    pub fn take_request(&self, id: u64) -> Option<RequestMessage> {
+        self.requests.lock().expect("requests poisoned").remove(&id)
+    }
+
+    /// A notice reply button's `(label, prefill)` by its nonce.
+    #[must_use]
+    pub fn action(&self, nonce: u64) -> Option<(String, String)> {
+        self.actions
+            .lock()
+            .expect("actions poisoned")
+            .by_nonce
+            .get(&nonce)
+            .cloned()
+    }
+
+    /// Offer a notice reply button; returns its nonce. The oldest offers are
+    /// forgotten past [`MAX_NOTICE_ACTIONS`] (their buttons then say so).
+    pub fn offer_action(&self, label: &str, prefill: &str) -> u64 {
+        let nonce = self.next_nonce.fetch_add(1, Ordering::Relaxed) + 1;
+        let mut actions = self.actions.lock().expect("actions poisoned");
+        while actions.order.len() >= MAX_NOTICE_ACTIONS {
+            if let Some(old) = actions.order.pop_front() {
+                actions.by_nonce.remove(&old);
+            }
+        }
+        actions.order.push_back(nonce);
+        actions
+            .by_nonce
+            .insert(nonce, (label.to_string(), prefill.to_string()));
+        nonce
+    }
+}
+
+/// A notice with a reply button or a request with its answers (D3): sent as
+/// its own message, promptly, never dropped.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Interactive {
+    /// The message text.
+    pub text: String,
+    /// Its action rows.
+    pub rows: Vec<Row>,
+    /// For a request, `(request id, deadline in Unix ms)` so the writer can
+    /// record the message and expire it.
+    pub request: Option<(u64, Option<u64>)>,
 }
 
 /// What one event becomes on the DM.
@@ -91,6 +232,8 @@ pub enum Rendered {
     Line(String),
     /// A notice or request: sent promptly, never dropped.
     Priority(String),
+    /// A notice with a reply button, or a request with its answers.
+    Interactive(Interactive),
 }
 
 /// Escape Discord's inline markdown so player text renders as typed.
@@ -127,6 +270,86 @@ fn narrative_line(kind: NarrativeKind, actor: Option<&str>, own: bool, text: &st
             Some(name) => format!("<OOC> {name} {text}"),
             None => format!("<OOC> {text}"),
         },
+    }
+}
+
+/// The components for a request (D3). `Confirm` → Yes / No. `Choice` →
+/// buttons in rows of five up to [`MAX_CHOICE_BUTTONS`] options, else one or
+/// two selects; `Target` / `Text` → an "Answer…" button that opens a modal.
+/// Every kind but `Confirm` also offers Decline (`respond cancel`). The
+/// routing keys are `d:req:<id>:yes|no|cancel|text|o:<option>|s<n>`; an option
+/// whose id would not fit a `custom_id` is left to the text path.
+#[must_use]
+pub fn request_rows(id: u64, kind: RequestKind, options: &[RequestOption]) -> Vec<Row> {
+    let cid = |suffix: &str| format!("d:req:{id}:{suffix}");
+    let decline = Button {
+        custom_id: cid("cancel"),
+        label: "Decline".into(),
+        style: ButtonStyle::Secondary,
+    };
+    match kind {
+        RequestKind::Confirm => vec![Row::Buttons(vec![
+            Button {
+                custom_id: cid("yes"),
+                label: "Yes".into(),
+                style: ButtonStyle::Success,
+            },
+            Button {
+                custom_id: cid("no"),
+                label: "No".into(),
+                style: ButtonStyle::Danger,
+            },
+        ])],
+        RequestKind::Choice => {
+            let fits: Vec<&RequestOption> = options
+                .iter()
+                .filter(|o| cid(&format!("o:{}", o.id)).len() <= MAX_CUSTOM_ID_BYTES)
+                .collect();
+            let mut rows = Vec::new();
+            if fits.len() <= MAX_CHOICE_BUTTONS {
+                for chunk in fits.chunks(MAX_BUTTONS_PER_ROW) {
+                    rows.push(Row::Buttons(
+                        chunk
+                            .iter()
+                            .map(|o| Button {
+                                custom_id: cid(&format!("o:{}", o.id)),
+                                label: o.label.clone(),
+                                style: ButtonStyle::Primary,
+                            })
+                            .collect(),
+                    ));
+                }
+            } else {
+                for (n, chunk) in fits
+                    .chunks(MAX_SELECT_OPTIONS)
+                    .take(MAX_ROWS - 1)
+                    .enumerate()
+                {
+                    rows.push(Row::Select(Select {
+                        custom_id: cid(&format!("s{n}")),
+                        placeholder: if n == 0 {
+                            "Choose…".to_string()
+                        } else {
+                            format!("More choices ({})", n + 1)
+                        },
+                        options: chunk
+                            .iter()
+                            .map(|o| (o.id.to_string(), o.label.clone()))
+                            .collect(),
+                    }));
+                }
+            }
+            rows.push(Row::Buttons(vec![decline]));
+            rows
+        }
+        RequestKind::Target | RequestKind::Text => vec![Row::Buttons(vec![
+            Button {
+                custom_id: cid("text"),
+                label: "Answer…".into(),
+                style: ButtonStyle::Primary,
+            },
+            decline,
+        ])],
     }
 }
 
@@ -191,38 +414,38 @@ pub fn render(event: &OutputEvent, state: &FollowState) -> Rendered {
                 NoticeSeverity::Warn => "⚠",
                 NoticeSeverity::Urgent => "‼",
             };
-            let mut s = format!(
+            let s = format!(
                 "{marker} [{}] {}",
                 escape_md(category),
                 escape_md(&text.to_plain_text())
             );
             if let Some(a) = action {
-                s.push_str(&format!("  ({}: `{}`)", escape_md(&a.label), a.prefill));
+                // A reply button opens a modal prefilled with the action's
+                // line; the prefill stays here, never in the custom_id.
+                let nonce = state.offer_action(&a.label, &a.prefill);
+                return Rendered::Interactive(Interactive {
+                    text: s,
+                    rows: vec![Row::Buttons(vec![Button {
+                        custom_id: format!("d:act:{nonce}"),
+                        label: a.label.clone(),
+                        style: ButtonStyle::Primary,
+                    }])],
+                    request: None,
+                });
             }
             Rendered::Priority(s)
         }
         OutputEvent::Request {
+            id,
             kind,
             prompt,
             options,
-            ..
-        } => {
-            let mut s = format!("❓ {}", escape_md(&prompt.to_plain_text()));
-            match kind {
-                RequestKind::Confirm => s.push_str("\nReply `respond yes` or `respond no`."),
-                RequestKind::Choice => {
-                    for (i, o) in options.iter().enumerate() {
-                        s.push_str(&format!("\n  {}) {}", i + 1, escape_md(&o.label)));
-                    }
-                    s.push_str("\nReply `respond <number>`.");
-                }
-                RequestKind::Target | RequestKind::Text => {
-                    s.push_str("\nReply `respond <your answer>`.");
-                }
-            }
-            s.push_str(" `respond cancel` declines.");
-            Rendered::Priority(s)
-        }
+            deadline_ms,
+        } => Rendered::Interactive(Interactive {
+            text: format!("❓ {}", escape_md(&prompt.to_plain_text())),
+            rows: request_rows(*id, *kind, options),
+            request: Some((*id, *deadline_ms)),
+        }),
         OutputEvent::Panel { feed, data, .. } if feed == "scenes" => {
             if data.is_null() {
                 let was = state.in_scene.swap(false, Ordering::Relaxed);
@@ -317,11 +540,20 @@ pub fn chunk(lines: &[String], max_chars: usize) -> Vec<String> {
     out
 }
 
+/// One buffered priority item.
+#[derive(Debug)]
+enum PriorityItem {
+    /// A line; consecutive lines coalesce into one message.
+    Text(String),
+    /// Its own message, with components.
+    Interactive(Interactive),
+}
+
 /// The writer's buffers between flushes.
 #[derive(Debug, Default)]
 struct Buffers {
     /// Notices and requests, in order — never dropped.
-    priority: VecDeque<String>,
+    priority: VecDeque<PriorityItem>,
     /// Narrative-class lines, in order — bounded; the oldest go first.
     pending: VecDeque<String>,
     /// Lines dropped since the last marker.
@@ -341,7 +573,11 @@ impl Buffers {
                 true
             }
             Rendered::Priority(s) => {
-                self.priority.push_back(s);
+                self.priority.push_back(PriorityItem::Text(s));
+                true
+            }
+            Rendered::Interactive(i) => {
+                self.priority.push_back(PriorityItem::Interactive(i));
                 true
             }
         }
@@ -349,6 +585,12 @@ impl Buffers {
 
     fn is_empty(&self) -> bool {
         self.priority.is_empty() && self.pending.is_empty() && self.dropped == 0
+    }
+
+    fn clear(&mut self) {
+        self.priority.clear();
+        self.pending.clear();
+        self.dropped = 0;
     }
 }
 
@@ -361,17 +603,96 @@ enum Flush {
     Retry,
 }
 
-/// Send everything buffered: priority lines first, then the drop marker,
-/// then the narrative, each group chunked to the policy. A retryable failure
-/// stops the flush and puts the unsent lines back **in order**; a permanent
-/// one drops that chunk and continues; a closed DM drops everything and
-/// marks the follow deaf.
-async fn flush(
+/// Outcome of sending one group of plain lines.
+enum SendOutcome {
+    /// Every chunk went (or was permanently dropped).
+    Sent,
+    /// A retryable failure: the chunks that did not go, in order.
+    Retry(Vec<String>),
+    /// The user's DMs are closed.
+    Deaf,
+}
+
+/// Send `lines` as as many messages as the policy needs.
+async fn send_lines(
     api: &dyn DiscordApi,
     channel_id: u64,
     policy: &DmPolicy,
-    buffers: &mut Buffers,
+    lines: &[String],
+    priority: bool,
     state: &FollowState,
+) -> SendOutcome {
+    let messages = chunk(lines, policy.max_chars);
+    for (i, text) in messages.iter().enumerate() {
+        match api.send(channel_id, Outgoing::plain(text.clone())).await {
+            Ok(_) => {
+                tracing::debug!(
+                    priority,
+                    chars = text.chars().count(),
+                    "discord dm: message sent"
+                );
+            }
+            Err(ApiError::Retryable(why)) => {
+                tracing::debug!(%why, "discord dm: send deferred");
+                // Put back what did not go, this chunk included, in order.
+                // (A chunk boundary inside a hard-split line loses the
+                // split's sent prefix on retry — a lossy surface's accepted
+                // duplicate.)
+                return SendOutcome::Retry(messages[i..].to_vec());
+            }
+            Err(ApiError::CannotDm) => {
+                if !state.dm_closed.swap(true, Ordering::Relaxed) {
+                    tracing::warn!("discord dm: the user's DMs are closed; follow is deaf");
+                }
+                return SendOutcome::Deaf;
+            }
+            Err(ApiError::Permanent(why)) => {
+                tracing::warn!(%why, "discord dm: message dropped");
+            }
+        }
+    }
+    SendOutcome::Sent
+}
+
+/// At `deadline_ms` (Unix), mark request `id` expired in the DM unless it
+/// was answered first.
+fn spawn_expiry(api: Arc<dyn DiscordApi>, state: Arc<FollowState>, id: u64, deadline_ms: u64) {
+    let now_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .and_then(|d| u64::try_from(d.as_millis()).ok())
+        .unwrap_or(u64::MAX);
+    let wait = Duration::from_millis(deadline_ms.saturating_sub(now_ms));
+    tokio::spawn(async move {
+        tokio::time::sleep(wait).await;
+        if let Some(shown) = state.take_request(id) {
+            let _ = api
+                .edit(
+                    shown.channel_id,
+                    shown.message_id,
+                    Outgoing::plain(format!(
+                        "{}\n⌛ Expired — the game applied its default.",
+                        shown.text
+                    )),
+                )
+                .await;
+        }
+    });
+}
+
+/// Send everything buffered: priority items first (text runs coalesced,
+/// interactive items as their own messages), then the drop marker, then the
+/// narrative. A retryable failure stops the flush and puts the unsent items
+/// back **in order**; a permanent one drops that chunk and continues (an
+/// interactive item falls back to plain text, so the request is still
+/// answerable by `respond`); a closed DM drops everything and marks the
+/// follow deaf.
+async fn flush(
+    api: &Arc<dyn DiscordApi>,
+    channel_id: u64,
+    policy: &DmPolicy,
+    buffers: &mut Buffers,
+    state: &Arc<FollowState>,
 ) -> Flush {
     if buffers.dropped > 0 {
         let n = buffers.dropped;
@@ -381,62 +702,95 @@ async fn flush(
             if n == 1 { "" } else { "s" }
         ));
     }
-    // Two queues, one loop: priority first.
-    for is_priority in [true, false] {
-        let queue = if is_priority {
-            &mut buffers.priority
-        } else {
-            &mut buffers.pending
-        };
-        while !queue.is_empty() {
-            // Take as many whole lines as fit one message.
-            let mut lines: Vec<String> = Vec::new();
-            let mut len = 0usize;
-            while let Some(front) = queue.front() {
-                let l = front.chars().count();
-                if !lines.is_empty() && len + 1 + l > policy.max_chars {
-                    break;
+    while let Some(item) = buffers.priority.pop_front() {
+        match item {
+            PriorityItem::Text(first) => {
+                let mut len = first.chars().count();
+                let mut lines = vec![first];
+                while let Some(PriorityItem::Text(next)) = buffers.priority.front() {
+                    let l = next.chars().count();
+                    if len + 1 + l > policy.max_chars {
+                        break;
+                    }
+                    len += 1 + l;
+                    if let Some(PriorityItem::Text(next)) = buffers.priority.pop_front() {
+                        lines.push(next);
+                    }
                 }
-                len += l + usize::from(!lines.is_empty());
-                lines.push(queue.pop_front().expect("front exists"));
-                if l > policy.max_chars {
-                    break;
+                match send_lines(&**api, channel_id, policy, &lines, true, state).await {
+                    SendOutcome::Sent => {}
+                    SendOutcome::Retry(unsent) => {
+                        for m in unsent.into_iter().rev() {
+                            buffers.priority.push_front(PriorityItem::Text(m));
+                        }
+                        return Flush::Retry;
+                    }
+                    SendOutcome::Deaf => {
+                        buffers.clear();
+                        return Flush::Done;
+                    }
                 }
             }
-            let messages = chunk(&lines, policy.max_chars);
-            for (i, text) in messages.iter().enumerate() {
-                match api.send(channel_id, Outgoing::plain(text.clone())).await {
-                    Ok(_) => {
+            PriorityItem::Interactive(item) => {
+                let msg = Outgoing::plain(item.text.clone()).with_components(item.rows.clone());
+                match api.send(channel_id, msg).await {
+                    Ok(message_id) => {
                         tracing::debug!(
-                            priority = is_priority,
-                            chars = text.chars().count(),
-                            "discord dm: message sent"
+                            rows = item.rows.len(),
+                            request = item.request.map(|(id, _)| id),
+                            "discord dm: interactive message sent"
                         );
+                        if let Some((id, deadline)) = item.request {
+                            state.request_shown(
+                                id,
+                                RequestMessage {
+                                    channel_id,
+                                    message_id,
+                                    text: item.text.clone(),
+                                    rows: item.rows.clone(),
+                                },
+                            );
+                            if let Some(deadline_ms) = deadline {
+                                spawn_expiry(Arc::clone(api), Arc::clone(state), id, deadline_ms);
+                            }
+                        }
                     }
                     Err(ApiError::Retryable(why)) => {
-                        tracing::debug!(%why, "discord dm: send deferred");
-                        // Put back what did not go, this chunk included, in order.
-                        // (A chunk boundary inside a hard-split line loses the
-                        // split's sent prefix on retry — a lossy surface's
-                        // accepted duplicate.)
-                        let mut unsent: Vec<String> = messages[i..].to_vec();
-                        while let Some(m) = unsent.pop() {
-                            queue.push_front(m);
-                        }
+                        tracing::debug!(%why, "discord dm: interactive send deferred");
+                        buffers.priority.push_front(PriorityItem::Interactive(item));
                         return Flush::Retry;
                     }
                     Err(ApiError::CannotDm) => {
                         if !state.dm_closed.swap(true, Ordering::Relaxed) {
                             tracing::warn!("discord dm: the user's DMs are closed; follow is deaf");
                         }
-                        buffers.priority.clear();
-                        buffers.pending.clear();
+                        buffers.clear();
                         return Flush::Done;
                     }
                     Err(ApiError::Permanent(why)) => {
-                        tracing::warn!(%why, "discord dm: message dropped");
+                        // The components were refused; the text path still
+                        // answers it.
+                        tracing::warn!(%why, "discord dm: components refused; sending plain text");
+                        let plain = format!("{}\n(reply with `respond …`)", item.text);
+                        let _ = api.send(channel_id, Outgoing::plain(plain)).await;
                     }
                 }
+            }
+        }
+    }
+    if !buffers.pending.is_empty() {
+        let lines: Vec<String> = buffers.pending.drain(..).collect();
+        match send_lines(&**api, channel_id, policy, &lines, false, state).await {
+            SendOutcome::Sent => {}
+            SendOutcome::Retry(unsent) => {
+                for m in unsent.into_iter().rev() {
+                    buffers.pending.push_front(m);
+                }
+                return Flush::Retry;
+            }
+            SendOutcome::Deaf => {
+                buffers.clear();
+                return Flush::Done;
             }
         }
     }
@@ -467,18 +821,18 @@ pub async fn run_dm_writer(
                     // Drain first, then a bounded final flush: one attempt,
                     // no retry loop on a closing follow.
                     if !buffers.is_empty() {
-                        let _ = flush(&*api, channel_id, &policy, &mut buffers, &state).await;
+                        let _ = flush(&api, channel_id, &policy, &mut buffers, &state).await;
                     }
                     return;
                 }
                 Some(env) => {
                     let rendered = render(&env.event, &state);
                     tracing::trace!(seq = env.seq, kept = !matches!(rendered, Rendered::Drop), "discord dm: event");
-                    let priority = matches!(rendered, Rendered::Priority(_));
+                    let priority = matches!(rendered, Rendered::Priority(_) | Rendered::Interactive(_));
                     if buffers.push(rendered, policy.queue_lines) {
                         let now = Instant::now();
                         deadline = Some(match deadline {
-                            // A priority line flushes as soon as we return to
+                            // A priority item flushes as soon as we return to
                             // the loop; a narrative line waits out the window.
                             _ if priority => now,
                             Some(d) => d,
@@ -488,7 +842,7 @@ pub async fn run_dm_writer(
                 }
             },
             () = wait => {
-                deadline = match flush(&*api, channel_id, &policy, &mut buffers, &state).await {
+                deadline = match flush(&api, channel_id, &policy, &mut buffers, &state).await {
                     Flush::Done => None,
                     Flush::Retry => Some(Instant::now() + RETRY_BACKOFF),
                 };
@@ -501,7 +855,7 @@ pub async fn run_dm_writer(
 mod tests {
     use super::*;
     use crate::api::testing::{Call, FakeApi};
-    use mush_proto::{NoticeAction, ObjRef, PanelFrameKind, RequestOption, RoomView, SmolStr};
+    use mush_proto::{NoticeAction, ObjRef, PanelFrameKind, RoomView, SmolStr};
 
     fn env(event: OutputEvent) -> Arc<Envelope> {
         Arc::new(Envelope::new(1, 0, event))
@@ -513,6 +867,23 @@ mod tests {
             actor: Some(ObjRef::new("#7", who)),
             text: RichText::plain(what),
         }
+    }
+
+    fn option(id: &str, label: &str) -> RequestOption {
+        RequestOption {
+            id: SmolStr::new(id),
+            label: label.into(),
+        }
+    }
+
+    fn sends(api: &FakeApi) -> Vec<Outgoing> {
+        api.calls()
+            .into_iter()
+            .filter_map(|c| match c {
+                Call::Send { msg, .. } => Some(msg),
+                _ => None,
+            })
+            .collect()
     }
 
     /// Let the writer task run until it pends (it needs a few polls: drain
@@ -584,6 +955,20 @@ mod tests {
             Rendered::Drop,
             "an unlisted Sys tag is dropped"
         );
+        // A notice without an action is a priority line; with one it carries
+        // a reply button whose prefill stays server-side of Discord.
+        let plain_notice = OutputEvent::Notice {
+            id: 1,
+            severity: NoticeSeverity::Info,
+            category: SmolStr::new("mail"),
+            text: RichText::plain("New mail"),
+            action: None,
+            ts: 0,
+        };
+        assert_eq!(
+            render(&plain_notice, &state),
+            Rendered::Priority("• [mail] New mail".into())
+        );
         let notice = OutputEvent::Notice {
             id: 1,
             severity: NoticeSeverity::Urgent,
@@ -595,32 +980,45 @@ mod tests {
             }),
             ts: 0,
         };
+        let Rendered::Interactive(i) = render(&notice, &state) else {
+            panic!("a notice with an action is interactive");
+        };
+        assert_eq!(i.text, "‼ [page] Wiz pages: come back");
+        assert_eq!(i.request, None);
+        let Row::Buttons(buttons) = &i.rows[0] else {
+            panic!("one button row");
+        };
+        assert_eq!(buttons.len(), 1);
+        assert_eq!(buttons[0].label, "Reply");
+        let nonce: u64 = buttons[0]
+            .custom_id
+            .strip_prefix("d:act:")
+            .unwrap()
+            .parse()
+            .unwrap();
         assert_eq!(
-            render(&notice, &state),
-            Rendered::Priority("‼ [page] Wiz pages: come back  (Reply: `page Wiz=`)".into())
+            state.action(nonce),
+            Some(("Reply".to_string(), "page Wiz=".to_string()))
         );
+        assert!(
+            !buttons[0].custom_id.contains("page"),
+            "the prefill never rides the custom_id"
+        );
+        // A request is interactive: prompt text, answer components, and the
+        // id/deadline the writer needs.
         let request = OutputEvent::Request {
             id: 9,
             kind: RequestKind::Choice,
             prompt: RichText::plain("End the scene?"),
-            options: vec![
-                RequestOption {
-                    id: SmolStr::new("yes"),
-                    label: "Yes".into(),
-                },
-                RequestOption {
-                    id: SmolStr::new("no"),
-                    label: "No".into(),
-                },
-            ],
-            deadline_ms: None,
+            options: vec![option("yes", "Yes"), option("no", "No")],
+            deadline_ms: Some(1_000),
         };
-        let Rendered::Priority(text) = render(&request, &state) else {
-            panic!("a request is priority");
+        let Rendered::Interactive(i) = render(&request, &state) else {
+            panic!("a request is interactive");
         };
-        assert!(
-            text.contains("1) Yes") && text.contains("2) No") && text.contains("respond <number>")
-        );
+        assert_eq!(i.text, "❓ End the scene?");
+        assert_eq!(i.request, Some((9, Some(1_000))));
+        assert_eq!(i.rows.len(), 2, "a button row and the Decline row");
         // Dropped kinds.
         for ev in [
             OutputEvent::Who(vec![]),
@@ -660,6 +1058,88 @@ mod tests {
         assert!(text.starts_with("**Tap Room**"));
         assert!(text.contains("…"), "long descriptions are cut");
         assert!(text.contains("Here: Nick") && text.contains("Exits: out"));
+    }
+
+    #[test]
+    fn request_rows_follow_the_layout_rules() {
+        // Confirm: Yes / No, nothing else.
+        let rows = request_rows(4, RequestKind::Confirm, &[]);
+        assert_eq!(rows.len(), 1);
+        let Row::Buttons(b) = &rows[0] else { panic!() };
+        assert_eq!(
+            b.iter()
+                .map(|x| (x.custom_id.as_str(), x.style))
+                .collect::<Vec<_>>(),
+            vec![
+                ("d:req:4:yes", ButtonStyle::Success),
+                ("d:req:4:no", ButtonStyle::Danger)
+            ]
+        );
+        // Choice with twelve options: rows of five, then Decline.
+        let twelve: Vec<RequestOption> = (0..12)
+            .map(|i| option(&format!("o{i}"), &format!("Option {i}")))
+            .collect();
+        let rows = request_rows(5, RequestKind::Choice, &twelve);
+        assert_eq!(rows.len(), 4);
+        let sizes: Vec<usize> = rows
+            .iter()
+            .map(|r| match r {
+                Row::Buttons(b) => b.len(),
+                Row::Select(_) => usize::MAX,
+            })
+            .collect();
+        assert_eq!(sizes, vec![5, 5, 2, 1]);
+        let Row::Buttons(first) = &rows[0] else {
+            panic!()
+        };
+        assert_eq!(first[0].custom_id, "d:req:5:o:o0");
+        let Row::Buttons(last) = &rows[3] else {
+            panic!()
+        };
+        assert_eq!(last[0].custom_id, "d:req:5:cancel");
+        // Thirty options: two selects (25 + 5), then Decline.
+        let thirty: Vec<RequestOption> = (0..30)
+            .map(|i| option(&format!("o{i}"), &format!("Option {i}")))
+            .collect();
+        let rows = request_rows(6, RequestKind::Choice, &thirty);
+        assert_eq!(rows.len(), 3);
+        let Row::Select(s0) = &rows[0] else { panic!() };
+        let Row::Select(s1) = &rows[1] else { panic!() };
+        assert_eq!((s0.options.len(), s1.options.len()), (25, 5));
+        assert_eq!(
+            (s0.custom_id.as_str(), s1.custom_id.as_str()),
+            ("d:req:6:s0", "d:req:6:s1")
+        );
+        assert_eq!(s1.options[0].0, "o25");
+        // An option id too long for a custom_id is left to the text path.
+        let long = option(&"x".repeat(120), "Long");
+        let rows = request_rows(7, RequestKind::Choice, &[option("a", "A"), long]);
+        let Row::Buttons(b) = &rows[0] else { panic!() };
+        assert_eq!(b.len(), 1);
+        // Text and Target: Answer… opens a modal, plus Decline.
+        for kind in [RequestKind::Text, RequestKind::Target] {
+            let rows = request_rows(8, kind, &[]);
+            let Row::Buttons(b) = &rows[0] else { panic!() };
+            assert_eq!(
+                b.iter().map(|x| x.custom_id.as_str()).collect::<Vec<_>>(),
+                vec!["d:req:8:text", "d:req:8:cancel"]
+            );
+        }
+    }
+
+    #[test]
+    fn notice_actions_are_bounded_and_the_oldest_are_forgotten() {
+        let state = FollowState::new(false, "#1");
+        let first = state.offer_action("Reply", "page A=");
+        for i in 0..MAX_NOTICE_ACTIONS {
+            state.offer_action("Reply", &format!("page B{i}="));
+        }
+        assert_eq!(state.action(first), None, "the oldest offer is gone");
+        let last = state.offer_action("Reply", "page Z=");
+        assert_eq!(
+            state.action(last),
+            Some(("Reply".to_string(), "page Z=".to_string()))
+        );
     }
 
     #[test]
@@ -734,7 +1214,7 @@ mod tests {
         assert!(api.calls().is_empty(), "nothing is sent inside the window");
         tokio::time::advance(Duration::from_millis(1_600)).await;
         settle().await;
-        let sends: Vec<String> = api
+        let out: Vec<String> = api
             .calls()
             .into_iter()
             .filter_map(|c| match c {
@@ -745,10 +1225,10 @@ mod tests {
                 _ => None,
             })
             .collect();
-        assert_eq!(sends.len(), 1, "one coalesced message: {sends:?}");
-        assert!(sends[0].starts_with("… 2 lines dropped"));
-        assert!(sends[0].contains("line 2") && sends[0].contains("line 11"));
-        assert!(!sends[0].contains("\"line 1\"") && !sends[0].contains("\"line 0\""));
+        assert_eq!(out.len(), 1, "one coalesced message: {out:?}");
+        assert!(out[0].starts_with("… 2 lines dropped"));
+        assert!(out[0].contains("line 2") && out[0].contains("line 11"));
+        assert!(!out[0].contains("\"line 1\"") && !out[0].contains("\"line 0\""));
         // A notice goes out on the next loop turn, ahead of buffered narrative.
         tx.send(env(say("Nick", "later"))).await.unwrap();
         tx.send(env(OutputEvent::Notice {
@@ -763,20 +1243,121 @@ mod tests {
         .unwrap();
         // A priority line flushes on the writer's next turn, no window.
         settle().await;
-        let sends: Vec<String> = api
+        let out: Vec<String> = sends(&api).into_iter().map(|m| m.content).collect();
+        assert_eq!(out.len(), 3, "{out:?}");
+        assert!(
+            out[1].starts_with("• [mail] New mail"),
+            "priority first: {out:?}"
+        );
+        assert!(out[2].contains("later"));
+        drop(tx);
+        writer.await.unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_request_is_its_own_message_recorded_and_expired_at_the_deadline() {
+        let api = FakeApi::new();
+        let state = FollowState::new(false, "#1");
+        let (tx, rx) = mpsc::channel::<Arc<Envelope>>(256);
+        let policy = DmPolicy::new(1_500, 1_900, 100);
+        let writer = tokio::spawn(run_dm_writer(api.clone(), 555, rx, policy, state.clone()));
+        let now_ms = u64::try_from(
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_millis(),
+        )
+        .unwrap();
+        // A narrative line is waiting; the request does not wait with it.
+        tx.send(env(say("Nick", "before"))).await.unwrap();
+        tx.send(env(OutputEvent::Request {
+            id: 9,
+            kind: RequestKind::Confirm,
+            prompt: RichText::plain("Spend a willpower?"),
+            options: vec![],
+            deadline_ms: Some(now_ms + 2_000),
+        }))
+        .await
+        .unwrap();
+        settle().await;
+        let out = sends(&api);
+        assert_eq!(
+            out.len(),
+            2,
+            "the request went out at once, then the line: {out:?}"
+        );
+        assert_eq!(out[0].content, "❓ Spend a willpower?");
+        assert_eq!(out[0].components.len(), 1, "the Yes/No row");
+        assert!(out[1].components.is_empty());
+        let shown = state.request(9).expect("the request is recorded");
+        assert_eq!(shown.channel_id, 555);
+        assert_eq!(shown.text, "❓ Spend a willpower?");
+        // Unanswered at the deadline: the message is edited, buttons removed.
+        tokio::time::advance(Duration::from_millis(2_100)).await;
+        settle().await;
+        let edits: Vec<(u64, Outgoing)> = api
             .calls()
             .into_iter()
             .filter_map(|c| match c {
-                Call::Send { msg, .. } => Some(msg.content),
+                Call::Edit {
+                    message_id, msg, ..
+                } => Some((message_id, msg)),
                 _ => None,
             })
             .collect();
-        assert_eq!(sends.len(), 3, "{sends:?}");
-        assert!(
-            sends[1].starts_with("• [mail] New mail"),
-            "priority first: {sends:?}"
-        );
-        assert!(sends[2].contains("later"));
+        assert_eq!(edits.len(), 1, "{edits:?}");
+        assert_eq!(edits[0].0, shown.message_id);
+        assert!(edits[0].1.content.contains("Expired"));
+        assert!(edits[0].1.components.is_empty());
+        assert_eq!(state.request(9), None);
+        // Answered first (the bridge takes it): the deadline edits nothing.
+        tx.send(env(OutputEvent::Request {
+            id: 10,
+            kind: RequestKind::Confirm,
+            prompt: RichText::plain("Again?"),
+            options: vec![],
+            deadline_ms: Some(now_ms + 4_000),
+        }))
+        .await
+        .unwrap();
+        settle().await;
+        assert!(state.take_request(10).is_some());
+        tokio::time::advance(Duration::from_millis(3_000)).await;
+        settle().await;
+        let edits = api
+            .calls()
+            .iter()
+            .filter(|c| matches!(c, Call::Edit { .. }))
+            .count();
+        assert_eq!(edits, 1, "no second edit");
+        drop(tx);
+        writer.await.unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn refused_components_fall_back_to_plain_text() {
+        let api = FakeApi::new();
+        let state = FollowState::new(false, "#1");
+        let (tx, rx) = mpsc::channel::<Arc<Envelope>>(256);
+        let policy = DmPolicy::new(100, 1_900, 100);
+        let writer = tokio::spawn(run_dm_writer(api.clone(), 555, rx, policy, state.clone()));
+        api.script([Some(ApiError::Permanent("bad component".into()))]);
+        tx.send(env(OutputEvent::Request {
+            id: 3,
+            kind: RequestKind::Text,
+            prompt: RichText::plain("Name it."),
+            options: vec![],
+            deadline_ms: None,
+        }))
+        .await
+        .unwrap();
+        settle().await;
+        let out = sends(&api);
+        assert_eq!(out.len(), 2, "{out:?}");
+        assert!(!out[0].components.is_empty(), "the refused attempt");
+        assert!(out[1].components.is_empty());
+        assert!(out[1].content.contains("respond"));
+        assert_eq!(state.request(3), None, "nothing to edit later");
         drop(tx);
         writer.await.unwrap();
     }
@@ -797,19 +1378,12 @@ mod tests {
         settle().await;
         tokio::time::advance(RETRY_BACKOFF + Duration::from_millis(50)).await;
         settle().await;
-        let sends: Vec<String> = api
-            .calls()
-            .into_iter()
-            .filter_map(|c| match c {
-                Call::Send { msg, .. } => Some(msg.content),
-                _ => None,
-            })
-            .collect();
+        let out: Vec<String> = sends(&api).into_iter().map(|m| m.content).collect();
         // The first attempt failed; the retry carried both lines, in order.
-        assert_eq!(sends.len(), 2, "{sends:?}");
+        assert_eq!(out.len(), 2, "{out:?}");
         assert!(
-            sends[1].contains("\"first\"\n") && sends[1].ends_with("\"second\""),
-            "{sends:?}"
+            out[1].contains("\"first\"\n") && out[1].ends_with("\"second\""),
+            "{out:?}"
         );
         // Closed DMs: the follow goes deaf and buffers are dropped.
         api.script([Some(ApiError::CannotDm)]);

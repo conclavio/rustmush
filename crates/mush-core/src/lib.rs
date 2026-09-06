@@ -259,16 +259,16 @@ pub use mechanics::{
     canonical_json_bytes_with_limit,
 };
 pub use module::{
-    AMBIENT_IC_TIME_KEY, AsyncCompletion, ContextOutcome, EventHook, GameModule, HookPoint,
-    HookReadContext, InputContext, JobQueueSpec, MAX_AMBIENT_BYTES, MAX_AMBIENT_KEYS,
-    MAX_MODULE_KEY_BYTES, MAX_MODULE_NAMESPACE_BYTES, MAX_STORE_READ_BYTES, MAX_STORE_READ_KEYS,
-    Migration, ModError, ModuleBootData, ModuleCtx, ModuleOp, ModuleWrite, PanelFeedHandle,
-    Perceive, QueryHandler, RecoveryReporter, Registrar, STORE_READ_STALE_SECS,
-    STORE_READ_TIMEOUT_MS, Scene, SceneId, StackedContext, StoreReadCompletion, StoreReadError,
-    StoreReadResult, TickCadence, TickHandler, WeatherQuery, WorldEvent, WorldEventKind,
-    WorldObserver, WxSnapshot, apply_store_read_completion, can_perceive,
-    can_perceive_with_action_state, is_concealed, is_concealed_with_action_state, perceives_via,
-    room_ambient,
+    AMBIENT_IC_TIME_KEY, AsyncCompletion, ContextOutcome, DiscordInteraction,
+    DiscordInteractionHandler, EventHook, GameModule, HookPoint, HookReadContext, InputContext,
+    JobQueueSpec, MAX_AMBIENT_BYTES, MAX_AMBIENT_KEYS, MAX_MODULE_KEY_BYTES,
+    MAX_MODULE_NAMESPACE_BYTES, MAX_STORE_READ_BYTES, MAX_STORE_READ_KEYS, Migration, ModError,
+    ModuleBootData, ModuleCtx, ModuleOp, ModuleWrite, PanelFeedHandle, Perceive, QueryHandler,
+    RecoveryReporter, Registrar, STORE_READ_STALE_SECS, STORE_READ_TIMEOUT_MS, Scene, SceneId,
+    StackedContext, StoreReadCompletion, StoreReadError, StoreReadResult, TickCadence, TickHandler,
+    WeatherQuery, WorldEvent, WorldEventKind, WorldObserver, WxSnapshot,
+    apply_store_read_completion, can_perceive, can_perceive_with_action_state, is_concealed,
+    is_concealed_with_action_state, perceives_via, room_ambient,
 };
 pub use obj::{GOD, LIMBO, Obj, ObjId, ObjKind};
 pub use offer::{

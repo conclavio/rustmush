@@ -863,3 +863,45 @@ fn vf2_r6_a_corrupt_persisted_outcome_does_not_brick_the_boot() {
     let again = run(&mut r.engine, r.nick, "+scene/outcome success=Ann run=7");
     assert!(texts(&again).contains("sealed"), "{}", texts(&again));
 }
+
+/// Programme D3 (interface plan I11): the player whose turn it becomes gets a
+/// `scene` `Notice` — on `/next` and on `/resume`, never on `/pause` — the
+/// client-neutral signal a Discord follow, a web toast or the SSH notice rail
+/// all render. Only players are told.
+#[test]
+fn d3_the_player_whose_turn_it_is_gets_a_notice_on_next_and_resume_not_pause() {
+    fn turn_notices(out: &Outbox) -> Vec<ObjId> {
+        out.events()
+            .iter()
+            .filter_map(|(aud, e)| match (aud, e) {
+                (
+                    mush_core::output::Audience::Actor(a),
+                    OutputEvent::Notice { category, text, .. },
+                ) if category == "scene" && text.to_plain_text().starts_with("It is your turn") => {
+                    Some(*a)
+                }
+                _ => None,
+            })
+            .collect()
+    }
+    let mut r = rig();
+    run(&mut r.engine, r.nick, "+timestop");
+    let out = run(&mut r.engine, r.nick, "+timestop/next");
+    let current = scene(&r).current_actor().expect("a turn order");
+    assert!(
+        r.engine
+            .world
+            .get(current)
+            .is_some_and(|o| o.kind == ObjKind::Player),
+        "the fixture's turn goes to a player"
+    );
+    assert_eq!(turn_notices(&out), vec![current], "{}", texts(&out));
+    let out = run(&mut r.engine, r.nick, "+timestop/pause");
+    assert!(turn_notices(&out).is_empty(), "a pause is not a turn");
+    let out = run(&mut r.engine, r.nick, "+timestop/resume");
+    assert_eq!(
+        turn_notices(&out),
+        vec![current],
+        "resume re-announces the turn"
+    );
+}

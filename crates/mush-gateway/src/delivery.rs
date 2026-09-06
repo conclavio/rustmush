@@ -185,13 +185,39 @@ pub struct SessionDelivery {
     /// wrapper bumps the shared `to_server` depth gauge on every post (M18), so
     /// policed feedback counts toward the queue occupancy like any producer.
     boundary: ToServerTx,
+    /// The gateway-side control hooks (`ToGateway::DiscordControl`), when the
+    /// process runs a Discord bridge.
+    controls: Option<Arc<crate::controls::GatewayControls>>,
 }
 
 impl SessionDelivery {
     /// Wrap the gateway's session manager and the boundary writer's inbox.
     #[must_use]
     pub(crate) fn new(sessions: Arc<SessionManager>, boundary: ToServerTx) -> SessionDelivery {
-        SessionDelivery { sessions, boundary }
+        SessionDelivery {
+            sessions,
+            boundary,
+            controls: None,
+        }
+    }
+
+    /// Route the server's gateway-side controls to `controls`.
+    #[must_use]
+    pub(crate) fn with_controls(
+        mut self,
+        controls: Arc<crate::controls::GatewayControls>,
+    ) -> SessionDelivery {
+        self.controls = Some(controls);
+        self
+    }
+
+    /// `ToGateway::DiscordControl` (programme D3): hand it to the Discord
+    /// bridge, or drop it when none runs.
+    pub fn discord_control(&self, char: u64, op: mush_ipc::DiscordControlOp) {
+        match &self.controls {
+            Some(c) => c.discord_control(char, op),
+            None => tracing::debug!(char, ?op, "discord control with no registry; dropped"),
+        }
     }
 
     /// Route a resolved delivery batch onto the session manager, self-policing

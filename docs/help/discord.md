@@ -19,6 +19,9 @@ Linking (from any of your characters):
                       (Type it any way you like — lowercase, with or without
                       the dash.)
   @discord/unlink     Remove the link. `/unlink` in Discord does the same.
+  @discord/follow     Ask the bot to follow this character in your DM — the
+                      same as `/follow` there, handy just before you step away.
+  @discord/unfollow   Detach the follow.
   @discord/set relay=<one of your characters>
                       Which of your characters speaks in relayed channels when
                       none is attached (default: the one you connected most
@@ -29,8 +32,8 @@ Linking (from any of your characters):
                       ends, so a scene never loses you mid-turn.
   @discord/set quiet=on|off
                       A follow's DM shows only notices, questions and your own
-                      scene — no ambient room traffic. Applies from your next
-                      follow.
+                      scene — no ambient room traffic. Applies at once to a
+                      follow in progress, and to every follow after.
 
 In Discord, the bot answers these commands, all private to you:
 
@@ -65,6 +68,27 @@ Following:
   a scene is detached with a note; so is one whose DMs the bot can no longer
   reach. Under a burst the DM drops the oldest room lines first and says how
   many — notices and questions are never dropped.
+
+Buttons:
+
+  When the game asks you something — agree to end the scene, pick a target,
+  spend a point — the question arrives as its own message with its answers
+  as buttons (or a drop-down when there are many). Tapping one answers
+  exactly as `respond <n>` would at a terminal; the message then shows your
+  answer and the buttons go away. "Decline" is `respond cancel`. A free-text
+  question offers "Answer…", which opens a small form. If a question times
+  out unanswered, the message says so and the game applies its default — the
+  same as at a terminal. The game only ever accepts the first answer, from
+  whichever screen it came.
+
+  A notice that can be replied to — a page, a job update — carries a reply
+  button that opens a form prefilled with the command (`page Wiz=`); edit,
+  submit, and the line runs as your character. Buttons on old notices stop
+  working after a while; type the command in the DM instead.
+
+  Turns: when a scene's turn comes to you (`+timestop/next`, or the scene
+  resuming on your turn), you get a notice on every interface — the DM
+  included.
 
 Rules:
 

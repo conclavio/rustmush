@@ -30,13 +30,19 @@ pub mod dm;
 pub mod hooks;
 
 pub use api::{
-    ApiError, DiscordApi, DiscordEvent, DiscordRest, EventSource, InteractionHandle, Outgoing,
-    SlashCommand, SlashOption, TwilightEvents, testing,
+    ApiError, Button, ButtonStyle, DiscordApi, DiscordEvent, DiscordRest, EventSource,
+    InteractionHandle, InteractionReply, MAX_BUTTON_LABEL_CHARS, MAX_BUTTONS_PER_ROW,
+    MAX_CUSTOM_ID_BYTES, MAX_ROWS, MAX_SELECT_OPTIONS, ModalSpec, Outgoing, Row, Select,
+    SlashCommand, SlashOption, TextField, TwilightEvents, testing,
 };
 pub use bot::{LINK_REFUSED, NOT_FOLLOWING, ServeError, commands, serve};
 pub use config::{DiscordConfig, RelayMap};
-pub use dm::{DmPolicy, FollowState, Rendered, render, run_dm_writer};
+pub use dm::{
+    DmPolicy, FollowState, Interactive, MAX_NOTICE_ACTIONS, Rendered, RequestMessage, render,
+    run_dm_writer,
+};
 pub use hooks::{
-    DetachOutcome, DiscordHooks, FollowOutcome, LineOutcome, LinkOutcome, UnlinkOutcome, WhoAmI,
+    DetachOutcome, DiscordHooks, FollowOutcome, Interaction, LineOutcome, LinkOutcome,
+    UnlinkOutcome, WhoAmI,
 };
 pub use twilight_gateway::Intents;

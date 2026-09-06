@@ -63,6 +63,7 @@ use crate::web_bridge::WebBridge;
 pub mod accounts;
 pub mod bridge_common;
 pub mod composing;
+pub mod controls;
 pub mod delivery;
 pub mod discord_bridge;
 pub mod ssh_bridge;
@@ -1104,6 +1105,9 @@ async fn gateway_reader(
             ToGateway::SetFloodExempt { char, exempt } => {
                 transport.set_flood_exempt(char, exempt);
             }
+            ToGateway::DiscordControl { char, op } => {
+                transport.discord_control(char, op);
+            }
             ToGateway::Reply { id, resp } => {
                 let waiter = {
                     let mut p = pending.lock().expect("pending table poisoned");
@@ -1490,6 +1494,9 @@ struct BoundaryEnv {
     /// Replay custody is gateway-process state and therefore crosses every
     /// server boundary replacement unchanged.
     input_custody: Arc<Mutex<InputCustody>>,
+    /// Gateway-side control hooks (the Discord bridge, programme D3): process
+    /// state, shared by every boundary the process wires.
+    controls: Arc<controls::GatewayControls>,
 }
 
 /// Connect to a (freshly launched) server endpoint, run the [`ToGateway::Hello`]
@@ -1555,7 +1562,8 @@ async fn connect_and_wire(
     // D5: the reader's delivery transport self-polices slow clients and reaps
     // link-dead sessions, feeding the resulting `ConnDown`/`SessionGone` back to
     // THIS server over its own writer inbox.
-    let transport = SessionDelivery::new(Arc::clone(sessions), to_server_tx.clone());
+    let transport = SessionDelivery::new(Arc::clone(sessions), to_server_tx.clone())
+        .with_controls(Arc::clone(&env.controls));
     let (close_tx, close_rx) = oneshot::channel();
     tokio::spawn(gateway_writer(
         writer_half,
@@ -2057,10 +2065,15 @@ pub async fn serve(config: Config, opts: GatewayOptions) -> Result<(), String> {
     // populated at the first handshake below and refreshed on each restart.
     let manifest: ManifestCache = Arc::new(Mutex::new(HelloManifest::default()));
     // The M18 boundary tuning + manifest, threaded into every (re)connect.
+    // Gateway-side control hooks (programme D3): the Discord bridge registers
+    // into this once it starts, below; every boundary this process wires
+    // routes `ToGateway::DiscordControl` through it.
+    let controls = Arc::new(controls::GatewayControls::default());
     let env = BoundaryEnv {
         manifest: Arc::clone(&manifest),
         lifecycle,
         input_custody,
+        controls: Arc::clone(&controls),
         tuning: BoundaryTuning {
             metrics: Arc::clone(&metrics),
             to_server_cap: config.ipc_to_server_cap(),
@@ -2219,6 +2232,7 @@ pub async fn serve(config: Config, opts: GatewayOptions) -> Result<(), String> {
         Arc::clone(&link_dyn),
         Arc::clone(&guard),
         Arc::clone(&store),
+        &controls,
     );
 
     // The restart trigger (D1b): a channel the supervisor drains and a
@@ -2833,6 +2847,7 @@ mod tests {
                 high_water_pct: 80,
                 write_timeout: Duration::from_secs(1),
             },
+            controls: Arc::new(crate::controls::GatewayControls::default()),
             lifecycle,
             input_custody: Arc::new(Mutex::new(InputCustody::default())),
         };

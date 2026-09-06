@@ -543,6 +543,94 @@ prefix does, an unregistered prefix is a bounded refusal; the "your turn" notice
 by the engine's existing rules; **B** — 25/5/40 component limits; **P** — the reply text is bounded and
 carries no cross-viewer content.
 
+**As built (2026-09-06, branch `z`, uncommitted — the owner commits).** The structured half landed as
+designed, with these deviations recorded rather than assumed:
+
+- **Component specs are the transport's own types** (`Row::{Buttons, Select}`, `Button`, `Select`,
+  `ModalSpec`, `TextField`, `InteractionReply::{Ack, Ephemeral, UpdateMessage, Modal}` on `Outgoing`
+  and `DiscordApi::respond_component`), built into twilight shapes in one private `build` module — the
+  fake records them verbatim, so every layout test runs without Discord. Modals use the V2 `Label` +
+  `TextInput` pair; the input's deprecated `label` is the one `#[allow(deprecated)]` in the crate.
+- **Layout rules** (`dm::request_rows`): `Confirm` → Yes/No; `Choice` → buttons in rows of five up to
+  **20** options (not 25 — the fifth row is Decline), else one or two selects (`s0`, `s1`; 32 options
+  fit); `Target`/`Text` → "Answer…" opens a modal (500 characters, so no answer can exceed
+  `MAX_REQUEST_TEXT_BYTES`). An option id that would not fit a `custom_id` is left to the text path.
+  Keys: `d:req:<id>:yes|no|cancel|text|o:<opt>|s<n>`, `d:reqm:<id>` (the answer modal), `d:act:<nonce>`
+  and `d:actm:<nonce>` (a notice's reply button and its modal), `d:call:` reserved.
+- **The request message is remembered on `FollowState`** (`request_shown`/`take_request`: id → channel,
+  message, text, rows). The bridge takes it on a click and answers Discord with `UpdateMessage` (the
+  prompt plus `✅ <label>`, components gone); the writer takes it at `deadline_ms` and edits to
+  "⌛ Expired — the game applied its default." Whoever takes it first wins; the engine's own duplicate
+  rule still decides the answer. A request with no deadline keeps its buttons until answered. A
+  component send Discord refuses falls back to the plain text with the `respond` hint.
+- **Notice prefills never ride the `custom_id`**: the button carries a nonce; `FollowState` keeps the
+  newest 64 `(label, prefill)` pairs and an older button says it expired. The modal is prefilled and
+  editable; the submitted line runs through `dm_line` (so a `QUIT` in it detaches, like any line).
+- **The router is keyed by Discord user, like the rest of the hooks** (`DiscordHooks::interaction
+  (user_id, Interaction)`); the bridge resolves the follow. A click from a user with no follow is
+  refused privately without touching the game.
+- **The forwarded seam** is `ServiceReq::DiscordInteraction(DiscordInteraction { user_id, account,
+  actor, custom_id, values })` → `ServiceResp::DiscordInteraction(Result<String,
+  DiscordInteractionError::{UnknownPrefix, Refused}>)` — `actor` is the plan's addition: the followed
+  character, else the relay character, else the account's first, so a handler has a `Ctx` actor. On the
+  server: `WorldMsg::DiscordInteraction` (a `WorldMutation`, a handler may mutate),
+  `Engine::discord_interaction` → `Registry::discord_interaction_handler` (longest prefix), the
+  `DiscordInteractionHandler` trait and `Registrar::discord_interaction(prefix, handler)` (refuses `d:`
+  and a second claim). The **reply is sent when the handler returns, not after the commit** — an
+  advisory reply, like `respond` itself; a handler that must promise durability says so only after its
+  own durable step. The plan's "deferred update within 3 s, then edit" is not needed for a local round
+  trip and was not built; the bot answers each interaction once, directly.
+- **`Debug` on the IPC `DiscordInteraction` redacts the snowflake**, so a world-task trace never carries
+  one; the identity rule holds across the boundary.
+- **The "your turn" notice** fires in `mush-scenes` on `/next` and `/resume` for a player actor only
+  (`your_turn_notice`), never on `/pause`.
+- **The gateway-control arm the D2 as-built deferred landed here**: `ToGateway::DiscordControl { char,
+  op: DiscordControlOp::{Follow, Unfollow, Quiet(bool)} }` (additive), `GatewaySink::discord_control`
+  (default no-op; `SocketSink` sends the frame; the in-process sink and the split transport hand it to a
+  process-wide `GatewayControls` registry the bridge registers into at start-up, held weakly).
+  `@discord/follow` / `@discord/unfollow` are `StaffOpKind::DiscordFollow { actor, on }`, answered on
+  the world loop by the control (never queued to the store executor); `@discord/set quiet` now applies
+  live to a follow in progress as well as to the stored preference. The bridge answers every control
+  with a `discord`-tagged system line on the character's connections.
+
+Landed: `mush-net-discord` (`api.rs` components/modals/`InteractionReply`/`respond_component`, the
+`Component` and `Modal` events and their reducer arms, `testing::{component, modal}`; `dm.rs`
+`request_rows`, `Interactive`, `RequestMessage`, `FollowState::{request_shown, request, take_request,
+action, offer_action}`, the writer's interactive path, expiry timer and plain-text fallback; `hooks.rs`
+`Interaction` + `DiscordHooks::interaction`; `bot.rs` component/modal dispatch); `mush-ipc`
+(`DiscordInteraction`, `DiscordInteractionError`, `DiscordControlOp`, the two `ServiceReq`/`Resp` arms,
+`ToGateway::DiscordControl`); `mush-core` (`DiscordInteraction`, `DiscordInteractionHandler`,
+`Registrar::discord_interaction`, `Registry::discord_interaction_handler`,
+`Engine::discord_interaction`); `mush-server` (`WorldMsg::DiscordInteraction` + classification +
+refusal arm + `WorldHandle::discord_interaction`, both `ServiceReq` dispatchers,
+`GatewaySink::discord_control`, `StaffOpKind::DiscordFollow`, the `@discord/follow|unfollow` verbs,
+live quiet); `mush-scenes` (`your_turn_notice`); `mush-gateway` (`controls.rs`, `SessionDelivery::
+with_controls`, `BoundaryEnv.controls`, the reader arm, the bridge's router, `apply_control`,
+`BridgeControl`, `spawn_bot(…, &controls)`); `mushd` (`InProcessSink::with_controls`, the controls
+registry in `main`, the extra `spawn_persist_with_decision_workers` argument); `help discord`
+(Buttons, `@discord/follow`), `docs/ops.md` (D3 buttons, in-game controls), the README row.
+
+Tests: `mush-net-discord` **21 passed** (the layout rules per `RequestKind`, the bounded notice
+actions, a request as its own message recorded and expired at the deadline, no edit once answered,
+the plain-text fallback, component/modal routing and one answer per interaction); gateway lib
+**11 bridge tests** (request buttons/select/Decline/text modal answer through `respond` and mark
+the message, a second click told privately, not-following refused, notice reply modal prefilled and
+its line run as the character, unknown prefixes forwarded with account and actor and the snowflake
+redacted, `d:call:` kept, in-game controls follow/unfollow/quiet through the registry); `mush-core`
+engine **`discord_interactions_dispatch_by_owner_prefix`** (longest prefix, refusal, unknown, `GOD`
+fallback, `d:` and duplicate claims refused); `mush-scenes` **the your-turn notice on next and
+resume, never pause**; `mush-server` the world-message classifier covers the new arm. Whole
+workspace: `cargo test --workspace -j 6 --no-fail-fast` **243 binaries, 3 960 tests, 0 failures**;
+`cargo clippy --workspace --all-targets -- -D warnings` and `cargo fmt --check` clean. Not yet
+live-tested against Discord: the next smoke test should click a request's button (a scene prompt or
+`@ask`-style request) and a paged notice's Reply, and type `@discord/follow` from SSH. The S/B/P
+lenses were argued: **S** — a forged or stale `custom_id` reaches `respond`, whose engine rules
+(subject, offered option, first answer) refuse it, and the bridge only ever edits a message it
+recorded for that follow; **B** — the builder clamps rows/buttons/options/labels/ids to Discord's caps
+and `MAX_CHOICE_BUTTONS` leaves the Decline row; **P** — a handler's reply is ephemeral to the
+clicker and bounded to 1 900 characters, and the forwarded record names the account, never the
+snowflake, in any log.
+
 ### 3.4 Cut D4 — Relay
 
 **What it is.** R4. Staff-flagged comsys channels mirrored into Discord channels and back.
@@ -778,3 +866,8 @@ None blocks D1; q1 and q6 are the owner's, the rest are defaults the build takes
   `GameBridge`, the DM writer and its allow-list, auto-follow as a session-manager hook, the idle
   sweep, `quiet`; deviations recorded (hand-built render, `create_dm` per follow, the in-game
   `@discord/follow|unfollow` verbs and a live `quiet` toggle deferred to D3's gateway-control arm).
+- **Draft 0.4 — 2026-09-06.** D3 built (§3.3 "As built"): requests as buttons/selects/modals with the
+  answered/expired edits, notice reply buttons, the interaction router and the
+  `ServiceReq::DiscordInteraction` seam with `Registrar::discord_interaction` (the on-call hook), the
+  "your turn" notice in scenes, and the gateway-control arm carrying `@discord/follow|unfollow` and a
+  live `quiet`; deviations recorded (20-button ceiling, the advisory reply, `actor` on the seam).

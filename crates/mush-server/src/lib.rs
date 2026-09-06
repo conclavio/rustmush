@@ -1418,6 +1418,13 @@ async fn handle_request(world: &WorldHandle, req: ServiceReq) -> ServiceResp {
             Err(WorldReadError::Unavailable) => ServiceResp::Unavailable,
         },
         ServiceReq::Barrier => barrier_response(world.barrier_result().await),
+        ServiceReq::DiscordInteraction(interaction) => {
+            match world.discord_interaction(interaction).await {
+                Ok(result) => ServiceResp::DiscordInteraction(result),
+                Err(WorldReadError::Busy) => ServiceResp::Busy,
+                Err(WorldReadError::Unavailable) => ServiceResp::Unavailable,
+            }
+        }
     }
 }
 

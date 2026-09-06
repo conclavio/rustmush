@@ -42,14 +42,19 @@ use mush_config::discord::link_code_hash;
 use mush_config::ipguard::IpGuard;
 use mush_config::unix_now_s;
 use mush_core::ObjId;
-use mush_ipc::GatewayLink;
+use mush_ipc::{
+    DiscordControlOp, DiscordInteraction, DiscordInteractionError, GatewayLink, ServiceReq,
+    ServiceResp,
+};
 use mush_net_discord::{
     ApiError, DetachOutcome, DiscordApi, DiscordConfig, DiscordHooks, DiscordRest, DmPolicy,
-    FollowOutcome, FollowState, Intents, LineOutcome, LinkOutcome, Outgoing, TwilightEvents,
-    UnlinkOutcome, WhoAmI, run_dm_writer,
+    FollowOutcome, FollowState, Intents, Interaction, InteractionReply, LineOutcome, LinkOutcome,
+    ModalSpec, Outgoing, TextField, TwilightEvents, UnlinkOutcome, WhoAmI, run_dm_writer,
 };
-use mush_proto::{ClientCaps, ClientKind, ColorDepth, Envelope, OutputEvent, RichText};
-use mush_session::{ConnId, ConnectionHandle, SessionManager};
+use mush_proto::{
+    ClientCaps, ClientKind, ColorDepth, Envelope, OutputEvent, RespondChoice, RichText,
+};
+use mush_session::{CharKey, ConnId, ConnectionHandle, SessionManager};
 use mush_store::{AccountRec, CharacterRef, DiscordLinkRec, ObjectStore};
 use serde::Deserialize;
 use tokio::sync::{mpsc, oneshot};
@@ -57,6 +62,7 @@ use tokio::task::JoinHandle;
 
 use crate::accounts::AuthBackend;
 use crate::bridge_common::{GameBridge, LineOutcome as CoreLine};
+use crate::controls::{DiscordControl, GatewayControls};
 use crate::delivery::{char_key, char_key_obj};
 
 /// Discord connection ids start here: disjoint from SSH (allocated from 1)
@@ -130,6 +136,7 @@ pub fn spawn_bot<A: AuthBackend + 'static>(
     link: Arc<dyn GatewayLink>,
     guard: Arc<IpGuard>,
     store: Arc<dyn ObjectStore>,
+    controls: &GatewayControls,
 ) -> DiscordTask {
     let mut dc = match DiscordConfig::deserialize(config.discord.clone()) {
         Ok(dc) => dc,
@@ -169,6 +176,9 @@ pub fn spawn_bot<A: AuthBackend + 'static>(
         &dc,
     ));
     bridge.install_auto_follow();
+    // The server's `ToGateway::DiscordControl` (the in-game `@discord/follow`
+    // family) reaches the bridge through the process's control registry.
+    controls.set_discord(Arc::new(BridgeControl(Arc::downgrade(&bridge))));
     let sweeper = tokio::spawn(idle_sweeper(Arc::clone(&bridge)));
     let hooks: Arc<dyn DiscordHooks> = bridge;
     let (stop, stop_rx) = oneshot::channel::<()>();
@@ -681,6 +691,435 @@ impl<A: AuthBackend + 'static> DiscordBridge<A> {
     }
 }
 
+/// The longest free-text answer a request modal accepts, characters. The
+/// engine's cap is `MAX_REQUEST_TEXT_BYTES` (2 048 bytes); 500 characters
+/// cannot exceed it in any script, so a modal answer is never dropped for
+/// length.
+pub const MAX_MODAL_ANSWER_CHARS: u16 = 500;
+
+/// The longest command line the notice reply modal accepts, characters.
+pub const MAX_MODAL_LINE_CHARS: u16 = 1_000;
+
+/// Bound a handler's reply for a Discord ephemeral message.
+fn bounded_reply(text: String) -> String {
+    const MAX: usize = 1_900;
+    if text.chars().count() <= MAX {
+        text
+    } else {
+        text.chars().take(MAX - 1).collect::<String>() + "…"
+    }
+}
+
+impl<A: AuthBackend + 'static> DiscordBridge<A> {
+    /// The follow's connection and writer state, if `user_id` is following.
+    fn follow_of(&self, user_id: u64) -> Option<(ConnId, ObjId, Arc<FollowState>)> {
+        self.follows
+            .lock()
+            .expect("follows poisoned")
+            .get(&user_id)
+            .map(|f| (f.conn, f.character, Arc::clone(&f.state)))
+    }
+
+    /// The interaction router (D3, 03 §7a.4): by `custom_id` namespace.
+    async fn route_interaction(&self, user_id: u64, ix: Interaction) -> InteractionReply {
+        let id = ix.custom_id.clone();
+        if let Some(rest) = id.strip_prefix("d:req:") {
+            return self.answer_request(user_id, rest, &ix).await;
+        }
+        if let Some(rest) = id.strip_prefix("d:reqm:") {
+            return self.answer_request_modal(user_id, rest, &ix).await;
+        }
+        if let Some(nonce) = id.strip_prefix("d:act:") {
+            return self.open_action_modal(user_id, nonce);
+        }
+        if let Some(nonce) = id.strip_prefix("d:actm:") {
+            return self.submit_action_modal(user_id, nonce, &ix).await;
+        }
+        if id.starts_with("d:call:") {
+            return InteractionReply::Ephemeral("Calls are not available yet.".to_string());
+        }
+        self.forward_interaction(user_id, ix).await
+    }
+
+    /// Mark the request's message answered (or say so privately when the
+    /// message is no longer known here).
+    fn answered(
+        state: &FollowState,
+        request_id: u64,
+        custom_id: &str,
+        value: Option<&str>,
+        fallback_label: &str,
+    ) -> InteractionReply {
+        match state.take_request(request_id) {
+            Some(shown) => {
+                let label = shown
+                    .label_for(custom_id, value)
+                    .unwrap_or_else(|| fallback_label.to_string());
+                InteractionReply::UpdateMessage(Outgoing::plain(format!(
+                    "{}\n✅ {label}",
+                    shown.text
+                )))
+            }
+            None => InteractionReply::Ephemeral(
+                "Sent — though that request may already be closed.".to_string(),
+            ),
+        }
+    }
+
+    /// `d:req:<id>:<opt>` — a button or select on a request.
+    async fn answer_request(&self, user_id: u64, rest: &str, ix: &Interaction) -> InteractionReply {
+        let Some((id, opt)) = rest.split_once(':') else {
+            return InteractionReply::Ephemeral("That button is malformed.".to_string());
+        };
+        let Ok(request_id) = id.parse::<u64>() else {
+            return InteractionReply::Ephemeral("That button is malformed.".to_string());
+        };
+        let Some((conn, _, state)) = self.follow_of(user_id) else {
+            return InteractionReply::Ephemeral(
+                "You are not following a character here; `/follow` first.".to_string(),
+            );
+        };
+        let picked = ix.values.first().map(String::as_str);
+        let (choice, fallback) = match opt {
+            "yes" => (RespondChoice::Confirm(true), "Yes"),
+            "no" => (RespondChoice::Confirm(false), "No"),
+            "cancel" => (RespondChoice::Cancel, "Declined"),
+            "text" => {
+                return InteractionReply::Modal(ModalSpec {
+                    custom_id: format!("d:reqm:{request_id}"),
+                    title: "Your answer".to_string(),
+                    field: TextField {
+                        custom_id: "answer".to_string(),
+                        label: "Answer".to_string(),
+                        value: None,
+                        max_len: MAX_MODAL_ANSWER_CHARS,
+                        paragraph: true,
+                    },
+                });
+            }
+            o if o.starts_with("o:") => (RespondChoice::Choose(o[2..].into()), "Chosen"),
+            s if s.starts_with('s') => match picked {
+                Some(v) => (RespondChoice::Choose(v.into()), "Chosen"),
+                None => return InteractionReply::Ephemeral("Pick an option.".to_string()),
+            },
+            _ => return InteractionReply::Ephemeral("That button is malformed.".to_string()),
+        };
+        // The engine applies its own rules: the subject must match, the
+        // choice must be one it offered, and a second answer is ignored.
+        self.core.respond(conn.0, request_id, choice).await;
+        Self::answered(&state, request_id, &ix.custom_id, picked, fallback)
+    }
+
+    /// `d:reqm:<id>` — the free-text answer modal.
+    async fn answer_request_modal(
+        &self,
+        user_id: u64,
+        rest: &str,
+        ix: &Interaction,
+    ) -> InteractionReply {
+        let Ok(request_id) = rest.parse::<u64>() else {
+            return InteractionReply::Ephemeral("That form is malformed.".to_string());
+        };
+        let Some((conn, _, state)) = self.follow_of(user_id) else {
+            return InteractionReply::Ephemeral(
+                "You are not following a character here; `/follow` first.".to_string(),
+            );
+        };
+        let answer = ix
+            .fields
+            .iter()
+            .find(|(k, _)| k == "answer")
+            .map(|(_, v)| v.trim().to_string())
+            .unwrap_or_default();
+        if answer.is_empty() {
+            return InteractionReply::Ephemeral("An empty answer was not sent.".to_string());
+        }
+        self.core
+            .respond(conn.0, request_id, RespondChoice::Text(answer.clone()))
+            .await;
+        match state.take_request(request_id) {
+            Some(shown) => InteractionReply::UpdateMessage(Outgoing::plain(format!(
+                "{}\n✅ {}",
+                shown.text,
+                mush_net_discord::dm::escape_md(&answer)
+            ))),
+            None => InteractionReply::Ephemeral(
+                "Sent — though that request may already be closed.".to_string(),
+            ),
+        }
+    }
+
+    /// `d:act:<nonce>` — a notice's reply button opens the prefilled modal.
+    fn open_action_modal(&self, user_id: u64, nonce: &str) -> InteractionReply {
+        let Ok(nonce) = nonce.parse::<u64>() else {
+            return InteractionReply::Ephemeral("That button is malformed.".to_string());
+        };
+        let Some((_, _, state)) = self.follow_of(user_id) else {
+            return InteractionReply::Ephemeral(
+                "You are not following a character here; `/follow` first.".to_string(),
+            );
+        };
+        match state.action(nonce) {
+            Some((label, prefill)) => InteractionReply::Modal(ModalSpec {
+                custom_id: format!("d:actm:{nonce}"),
+                title: label,
+                field: TextField {
+                    custom_id: "line".to_string(),
+                    label: "Command".to_string(),
+                    value: Some(prefill),
+                    max_len: MAX_MODAL_LINE_CHARS,
+                    paragraph: false,
+                },
+            }),
+            None => InteractionReply::Ephemeral(
+                "That button has expired; type the command in the DM instead.".to_string(),
+            ),
+        }
+    }
+
+    /// `d:actm:<nonce>` — the reply modal's line runs as the character.
+    async fn submit_action_modal(
+        &self,
+        user_id: u64,
+        _nonce: &str,
+        ix: &Interaction,
+    ) -> InteractionReply {
+        let line = ix
+            .fields
+            .iter()
+            .find(|(k, _)| k == "line")
+            .map(|(_, v)| v.trim().to_string())
+            .unwrap_or_default();
+        if line.is_empty() {
+            return InteractionReply::Ephemeral("Nothing to send.".to_string());
+        }
+        match self.dm_line(user_id, &line).await {
+            LineOutcome::Accepted => InteractionReply::Ephemeral("Sent.".to_string()),
+            LineOutcome::Closed => InteractionReply::Ephemeral("Detached.".to_string()),
+            LineOutcome::NotFollowing => InteractionReply::Ephemeral(
+                "You are not following a character here; `/follow` first.".to_string(),
+            ),
+        }
+    }
+
+    /// Anything outside the bridge's namespaces crosses to the server, which
+    /// dispatches by prefix to the handler a module registered (03 §7a.4).
+    async fn forward_interaction(&self, user_id: u64, ix: Interaction) -> InteractionReply {
+        let account = match self.store.account_by_discord_user(user_id).await {
+            Ok(a) => a,
+            Err(e) => {
+                tracing::warn!(error = %e, "discord interaction: account lookup failed");
+                return InteractionReply::Ephemeral(
+                    "The account store is unavailable; try again shortly.".to_string(),
+                );
+            }
+        };
+        let actor = self
+            .follow_of(user_id)
+            .map(|(_, character, _)| character)
+            .or_else(|| {
+                let account = account.as_ref()?;
+                account
+                    .discord
+                    .as_ref()
+                    .and_then(|l| l.relay_character)
+                    .or_else(|| account.characters.first().map(|c| c.id))
+            });
+        let values = if ix.values.is_empty() {
+            ix.fields.into_iter().map(|(_, v)| v).collect()
+        } else {
+            ix.values
+        };
+        let req = DiscordInteraction {
+            user_id,
+            account: account.map(|a| a.name),
+            actor,
+            custom_id: ix.custom_id,
+            values,
+        };
+        match self
+            .core
+            .link
+            .request(ServiceReq::DiscordInteraction(req))
+            .await
+        {
+            Some(ServiceResp::DiscordInteraction(Ok(text))) => {
+                InteractionReply::Ephemeral(bounded_reply(text))
+            }
+            Some(ServiceResp::DiscordInteraction(Err(DiscordInteractionError::UnknownPrefix))) => {
+                InteractionReply::Ephemeral("That control is not known to the game.".to_string())
+            }
+            Some(ServiceResp::DiscordInteraction(Err(DiscordInteractionError::Refused(why)))) => {
+                InteractionReply::Ephemeral(bounded_reply(why))
+            }
+            Some(ServiceResp::Busy) => {
+                InteractionReply::Ephemeral("The game is busy; try again in a moment.".to_string())
+            }
+            Some(ServiceResp::Unavailable) | None => InteractionReply::Ephemeral(
+                "The game is not reachable right now; try again shortly.".to_string(),
+            ),
+            Some(other) => {
+                tracing::error!(?other, "discord interaction: wrong response type");
+                InteractionReply::Ephemeral("The game gave an unexpected answer.".to_string())
+            }
+        }
+    }
+}
+
+/// The bridge as the boundary's [`DiscordControl`] (programme D3): held weakly
+/// by the process's control registry, it runs each control on its own task.
+struct BridgeControl<A: AuthBackend + 'static>(Weak<DiscordBridge<A>>);
+
+impl<A: AuthBackend + 'static> DiscordControl for BridgeControl<A> {
+    fn control(&self, char: u64, op: DiscordControlOp) {
+        let Some(bridge) = self.0.upgrade() else {
+            return;
+        };
+        let Ok(rt) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        rt.spawn(async move {
+            bridge.apply_control(char_key_obj(CharKey(char)), op).await;
+        });
+    }
+}
+
+impl<A: AuthBackend + 'static> DiscordBridge<A> {
+    /// Tell `actor` (every connection) something about their Discord follow.
+    fn tell(&self, actor: ObjId, text: &str) {
+        let _ = self.core.sessions.send_to_char(
+            char_key(actor),
+            Arc::new(OutputEvent::Sys(RichText::tag("discord", text))),
+        );
+    }
+
+    /// The follow of `actor`'s character, if any: `(user, conn, state)`.
+    fn follow_of_character(&self, actor: ObjId) -> Option<(u64, ConnId, Arc<FollowState>)> {
+        self.follows
+            .lock()
+            .expect("follows poisoned")
+            .iter()
+            .find(|(_, f)| f.character == actor)
+            .map(|(user, f)| (*user, f.conn, Arc::clone(&f.state)))
+    }
+
+    /// Apply an in-game control (`@discord/follow`, `/unfollow`, a live
+    /// `quiet`) for `actor`, answering them with a `discord` system line.
+    pub async fn apply_control(&self, actor: ObjId, op: DiscordControlOp) {
+        match op {
+            DiscordControlOp::Follow => {
+                if let Some((_, _, _)) = self.follow_of_character(actor) {
+                    self.tell(actor, "Discord: already following you.");
+                    return;
+                }
+                let Ok(accounts) = self.store.list_accounts().await else {
+                    self.tell(
+                        actor,
+                        "Discord: the account store is unavailable; try again.",
+                    );
+                    return;
+                };
+                let Some(account) = accounts
+                    .into_iter()
+                    .find(|a| a.characters.iter().any(|c| c.id == actor))
+                else {
+                    self.tell(
+                        actor,
+                        "Discord: your character is not linked to an account.",
+                    );
+                    return;
+                };
+                let Some(link) = account.discord.as_ref() else {
+                    self.tell(
+                        actor,
+                        "Discord: your account has no Discord link — `@discord/link` mints a code.",
+                    );
+                    return;
+                };
+                let user_id = link.user_id;
+                if self
+                    .follows
+                    .lock()
+                    .expect("follows poisoned")
+                    .contains_key(&user_id)
+                {
+                    self.tell(
+                        actor,
+                        "Discord: your Discord user is already following another of your \
+                         characters; `/follow <name>` in the DM switches.",
+                    );
+                    return;
+                }
+                let Some(name) = account
+                    .characters
+                    .iter()
+                    .find(|c| c.id == actor)
+                    .map(|c| c.name.clone())
+                else {
+                    return;
+                };
+                let outcome = self
+                    .follow_impl(
+                        user_id,
+                        Some(&name),
+                        Some("You asked from the game to be followed here; `/detach` stops."),
+                    )
+                    .await;
+                let text = match outcome {
+                    FollowOutcome::Following { .. } => {
+                        "Discord: following you now — the bot's DM shows what you see."
+                    }
+                    FollowOutcome::DmsClosed => {
+                        "Discord: the bot cannot DM you. Allow DMs from server members (or \
+                         message the bot first), then try again."
+                    }
+                    FollowOutcome::Banned => "Discord: your Discord user may not follow.",
+                    FollowOutcome::NotLinked => {
+                        "Discord: your account has no Discord link — `@discord/link` mints a code."
+                    }
+                    FollowOutcome::WhichCharacter { .. } => {
+                        "Discord: could not pick the character."
+                    }
+                    FollowOutcome::Failed(_) => "Discord: the follow could not be attached.",
+                };
+                self.tell(actor, text);
+            }
+            DiscordControlOp::Unfollow => match self.follow_of_character(actor) {
+                Some((user, conn, _)) => {
+                    let removed = {
+                        let mut follows = self.follows.lock().expect("follows poisoned");
+                        follows
+                            .get(&user)
+                            .is_some_and(|f| f.conn == conn)
+                            .then(|| follows.remove(&user))
+                            .flatten()
+                    };
+                    if removed.is_some() {
+                        self.core.quit(conn).await;
+                    }
+                    self.tell(actor, "Discord: detached.");
+                }
+                None => self.tell(actor, "Discord: no follow to detach."),
+            },
+            DiscordControlOp::Quiet(on) => {
+                // No follow: the preference is stored for the next one; the
+                // server already said so.
+                if let Some((_, _, state)) = self.follow_of_character(actor) {
+                    state.quiet.store(on, Ordering::Relaxed);
+                    self.tell(
+                        actor,
+                        if on {
+                            "Discord: quiet on for your current follow."
+                        } else {
+                            "Discord: quiet off for your current follow."
+                        },
+                    );
+                }
+            }
+        }
+    }
+}
+
 /// The periodic idle sweep ([`IDLE_SWEEP_INTERVAL`]).
 async fn idle_sweeper<A: AuthBackend + 'static>(bridge: Arc<DiscordBridge<A>>) {
     let mut tick = tokio::time::interval(IDLE_SWEEP_INTERVAL);
@@ -810,6 +1249,14 @@ impl<A: AuthBackend + 'static> DiscordHooks for DiscordBridge<A> {
             }
         })
     }
+
+    fn interaction(
+        &self,
+        user_id: u64,
+        interaction: Interaction,
+    ) -> BoxFuture<'_, InteractionReply> {
+        Box::pin(async move { self.route_interaction(user_id, interaction).await })
+    }
 }
 
 #[cfg(test)]
@@ -817,8 +1264,10 @@ mod tests {
     use super::*;
     use mush_config::discord::normalize_link_code;
     use mush_ipc::{ServiceReq, ServiceResp, ToServer, WireInbound};
+    use mush_net_discord::RequestMessage;
+    use mush_net_discord::dm::request_rows;
     use mush_net_discord::testing::{Call, FakeApi};
-    use mush_proto::{NarrativeKind, ObjRef};
+    use mush_proto::{NarrativeKind, ObjRef, RequestKind, RequestOption};
     use mush_session::SessionConfig;
     use mush_store::{DiscordBanRec, DiscordCodeRecord, InMemoryStore};
 
@@ -827,15 +1276,21 @@ mod tests {
     const NICKY: ObjId = ObjId(7);
     const ALT: ObjId = ObjId(8);
 
-    /// A world link that admits everything and records what it was sent.
+    /// A world link that admits everything and records what it was sent and
+    /// asked; a forwarded Discord interaction is acknowledged by name.
     #[derive(Default)]
     struct AutoLink {
         sent: Mutex<Vec<ToServer>>,
+        requests: Mutex<Vec<ServiceReq>>,
     }
 
     impl AutoLink {
         fn sent(&self) -> Vec<ToServer> {
             self.sent.lock().unwrap().clone()
+        }
+
+        fn requests(&self) -> Vec<ServiceReq> {
+            self.requests.lock().unwrap().clone()
         }
     }
 
@@ -850,6 +1305,14 @@ mod tests {
                     ServiceReq::Barrier => ServiceResp::Barrier,
                     ServiceReq::ConnectionReady { .. } => ServiceResp::ConnectionReady(true),
                     ServiceReq::InInputContext { .. } => ServiceResp::InInputContext(false),
+                    ServiceReq::DiscordInteraction(ix) => {
+                        let reply = format!("acked {}", ix.custom_id);
+                        self.requests
+                            .lock()
+                            .unwrap()
+                            .push(ServiceReq::DiscordInteraction(ix));
+                        ServiceResp::DiscordInteraction(Ok(reply))
+                    }
                     _ => ServiceResp::Unavailable,
                 })
             })
@@ -1430,6 +1893,261 @@ mod tests {
             vec!["Nicky".to_string()]
         );
         assert_eq!(b.following(USER), None);
+    }
+
+    fn responds(link: &AutoLink) -> Vec<(u64, RespondChoice)> {
+        link.sent()
+            .into_iter()
+            .filter_map(|m| match m {
+                ToServer::Inbound(WireInbound::Respond { id, choice, .. }) => Some((id, choice)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn click(custom_id: &str, values: &[&str]) -> Interaction {
+        Interaction {
+            custom_id: custom_id.to_string(),
+            values: values.iter().map(|v| (*v).to_string()).collect(),
+            fields: Vec::new(),
+            channel_id: Some(1001),
+            message_id: Some(500),
+        }
+    }
+
+    fn shown(id: u64, text: &str, kind: RequestKind, options: &[RequestOption]) -> RequestMessage {
+        RequestMessage {
+            channel_id: 1001,
+            message_id: 500 + id,
+            text: text.to_string(),
+            rows: request_rows(id, kind, options),
+        }
+    }
+
+    /// The writer's state for `user`'s follow.
+    fn state_of<A: AuthBackend + 'static>(b: &DiscordBridge<A>, user: u64) -> Arc<FollowState> {
+        Arc::clone(&b.follows.lock().unwrap()[&user].state)
+    }
+
+    #[tokio::test]
+    async fn request_buttons_answer_through_respond_and_mark_the_message() {
+        let r = rig(|_| {}).await;
+        linked(&r.store, "Nick", USER, |_| {}).await;
+        let b = &r.bridge;
+        assert!(matches!(
+            b.follow(USER, None).await,
+            FollowOutcome::Following { attached: true, .. }
+        ));
+        let state = state_of(b, USER);
+        // The writer recorded a confirm request; Yes answers it and the
+        // message is rewritten with the answer, buttons gone.
+        state.request_shown(
+            9,
+            shown(9, "❓ Spend a willpower?", RequestKind::Confirm, &[]),
+        );
+        assert_eq!(
+            b.interaction(USER, click("d:req:9:yes", &[])).await,
+            InteractionReply::UpdateMessage(Outgoing::plain("❓ Spend a willpower?\n✅ Yes"))
+        );
+        assert_eq!(responds(&r.link), vec![(9, RespondChoice::Confirm(true))]);
+        // A second click: the engine's duplicate rule decides; here the
+        // message is already marked, so the clicker is told privately.
+        assert!(matches!(
+            b.interaction(USER, click("d:req:9:no", &[])).await,
+            InteractionReply::Ephemeral(t) if t.contains("already be closed")
+        ));
+        // A select pick names the option by its label.
+        let many: Vec<RequestOption> = (0..30)
+            .map(|i| RequestOption {
+                id: mush_proto::SmolStr::new(format!("o{i}")),
+                label: format!("Option {i}"),
+            })
+            .collect();
+        state.request_shown(11, shown(11, "❓ Who?", RequestKind::Choice, &many));
+        assert_eq!(
+            b.interaction(USER, click("d:req:11:s1", &["o27"])).await,
+            InteractionReply::UpdateMessage(Outgoing::plain("❓ Who?\n✅ Option 27"))
+        );
+        assert_eq!(
+            responds(&r.link).last(),
+            Some(&(11, RespondChoice::Choose("o27".into())))
+        );
+        // Decline is `respond cancel`.
+        state.request_shown(13, shown(13, "❓ Seal?", RequestKind::Choice, &many[..2]));
+        assert_eq!(
+            b.interaction(USER, click("d:req:13:cancel", &[])).await,
+            InteractionReply::UpdateMessage(Outgoing::plain("❓ Seal?\n✅ Decline"))
+        );
+        assert_eq!(responds(&r.link).last(), Some(&(13, RespondChoice::Cancel)));
+        // Text: the button opens a modal; the submission answers.
+        state.request_shown(12, shown(12, "❓ Name it.", RequestKind::Text, &[]));
+        let InteractionReply::Modal(spec) = b.interaction(USER, click("d:req:12:text", &[])).await
+        else {
+            panic!("a text request opens a modal");
+        };
+        assert_eq!(spec.custom_id, "d:reqm:12");
+        assert_eq!(
+            b.interaction(
+                USER,
+                Interaction {
+                    custom_id: "d:reqm:12".into(),
+                    values: vec![],
+                    fields: vec![("answer".into(), "the north door".into())],
+                    channel_id: None,
+                    message_id: Some(512),
+                },
+            )
+            .await,
+            InteractionReply::UpdateMessage(Outgoing::plain("❓ Name it.\n✅ the north door"))
+        );
+        assert_eq!(
+            responds(&r.link).last(),
+            Some(&(12, RespondChoice::Text("the north door".into())))
+        );
+        // Not following: refused without touching the game.
+        let before = responds(&r.link).len();
+        assert!(matches!(
+            b.interaction(OTHER, click("d:req:9:yes", &[])).await,
+            InteractionReply::Ephemeral(t) if t.contains("not following")
+        ));
+        assert_eq!(responds(&r.link).len(), before);
+    }
+
+    #[tokio::test]
+    async fn notice_reply_buttons_open_a_prefilled_modal_whose_line_runs_as_the_character() {
+        let r = rig(|_| {}).await;
+        linked(&r.store, "Nick", USER, |_| {}).await;
+        let b = &r.bridge;
+        assert!(matches!(
+            b.follow(USER, None).await,
+            FollowOutcome::Following { attached: true, .. }
+        ));
+        let state = state_of(b, USER);
+        let nonce = state.offer_action("Reply", "page Wiz=");
+        let InteractionReply::Modal(spec) = b
+            .interaction(USER, click(&format!("d:act:{nonce}"), &[]))
+            .await
+        else {
+            panic!("the reply button opens a modal");
+        };
+        assert_eq!(spec.title, "Reply");
+        assert_eq!(spec.custom_id, format!("d:actm:{nonce}"));
+        assert_eq!(spec.field.value.as_deref(), Some("page Wiz="));
+        assert_eq!(
+            b.interaction(
+                USER,
+                Interaction {
+                    custom_id: format!("d:actm:{nonce}"),
+                    values: vec![],
+                    fields: vec![("line".into(), "page Wiz=on my way".into())],
+                    channel_id: None,
+                    message_id: Some(600),
+                },
+            )
+            .await,
+            InteractionReply::Ephemeral("Sent.".into())
+        );
+        assert_eq!(
+            cmds(&r.link).last(),
+            Some(&(NICKY, "page Wiz=on my way".to_string()))
+        );
+        // A forgotten (or forged) button.
+        assert!(matches!(
+            b.interaction(USER, click("d:act:999999", &[])).await,
+            InteractionReply::Ephemeral(t) if t.contains("expired")
+        ));
+    }
+
+    #[tokio::test]
+    async fn unknown_prefixes_cross_to_the_server_with_the_account_and_actor() {
+        let r = rig(|_| {}).await;
+        linked(&r.store, "Nick", USER, |_| {}).await;
+        let b = &r.bridge;
+        assert!(matches!(
+            b.follow(USER, None).await,
+            FollowOutcome::Following { attached: true, .. }
+        ));
+        assert_eq!(
+            b.interaction(USER, click("oncall:ack:17", &[])).await,
+            InteractionReply::Ephemeral("acked oncall:ack:17".into())
+        );
+        let forwarded = r.link.requests();
+        assert_eq!(forwarded.len(), 1);
+        let ServiceReq::DiscordInteraction(ix) = &forwarded[0] else {
+            panic!("forwarded as a DiscordInteraction");
+        };
+        assert_eq!(ix.user_id, USER);
+        assert_eq!(ix.account.as_deref(), Some("Nick"));
+        assert_eq!(ix.actor, Some(NICKY), "the followed character");
+        assert!(
+            !format!("{ix:?}").contains(&USER.to_string()),
+            "Debug redacts the snowflake"
+        );
+        // An unlinked user is forwarded too, with no account: the handler
+        // decides what an anonymous click may do.
+        assert!(matches!(
+            b.interaction(OTHER, click("oncall:ack:18", &[])).await,
+            InteractionReply::Ephemeral(_)
+        ));
+        let ServiceReq::DiscordInteraction(ix) = &r.link.requests()[1] else {
+            panic!();
+        };
+        assert_eq!((ix.account.as_deref(), ix.actor), (None, None));
+        // The bridge keeps `d:call:` for itself.
+        assert!(matches!(
+            b.interaction(USER, click("d:call:join:1", &[])).await,
+            InteractionReply::Ephemeral(t) if t.contains("not available")
+        ));
+        assert_eq!(r.link.requests().len(), 2, "never forwarded");
+    }
+
+    #[tokio::test]
+    async fn in_game_controls_follow_unfollow_and_retune_quiet() {
+        let r = rig(|_| {}).await;
+        let b = &r.bridge;
+        // Unlinked: told so, nothing attached.
+        b.apply_control(NICKY, DiscordControlOp::Follow).await;
+        assert!(conn_ups(&r.link).is_empty());
+        linked(&r.store, "Nick", USER, |_| {}).await;
+        b.apply_control(NICKY, DiscordControlOp::Follow).await;
+        assert_eq!(b.following(USER), Some((NICKY, "Nicky".to_string())));
+        assert_eq!(conn_ups(&r.link).len(), 1);
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        assert!(
+            dm_sends(&r.api)
+                .first()
+                .is_some_and(|s| s.contains("asked from the game")),
+            "{:?}",
+            dm_sends(&r.api)
+        );
+        // Again: no second attach.
+        b.apply_control(NICKY, DiscordControlOp::Follow).await;
+        assert_eq!(conn_ups(&r.link).len(), 1);
+        // Quiet flips the live writer state.
+        let state = state_of(b, USER);
+        assert!(!state.quiet.load(Ordering::Relaxed));
+        b.apply_control(NICKY, DiscordControlOp::Quiet(true)).await;
+        assert!(state.quiet.load(Ordering::Relaxed));
+        b.apply_control(NICKY, DiscordControlOp::Quiet(false)).await;
+        assert!(!state.quiet.load(Ordering::Relaxed));
+        // Unfollow quits the follow; a second one is a no-op.
+        b.apply_control(NICKY, DiscordControlOp::Unfollow).await;
+        assert_eq!(b.following(USER), None);
+        assert_eq!(quits(&r.link), vec![NICKY]);
+        b.apply_control(NICKY, DiscordControlOp::Unfollow).await;
+        assert_eq!(quits(&r.link), vec![NICKY]);
+        // The registry hands controls to the bridge (and drops them without one).
+        let controls = GatewayControls::default();
+        controls.discord_control(u64::from(NICKY.0), DiscordControlOp::Follow);
+        assert!(!controls.has_discord());
+        controls.set_discord(Arc::new(BridgeControl(Arc::downgrade(&r.bridge))));
+        controls.discord_control(u64::from(NICKY.0), DiscordControlOp::Follow);
+        let mut waited = 0;
+        while r.bridge.following(USER).is_none() && waited < 40 {
+            tokio::time::sleep(Duration::from_millis(25)).await;
+            waited += 1;
+        }
+        assert_eq!(r.bridge.following(USER), Some((NICKY, "Nicky".to_string())));
     }
 
     #[tokio::test]

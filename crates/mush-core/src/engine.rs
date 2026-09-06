@@ -3270,6 +3270,25 @@ impl Engine {
     /// resolved, or the responder is not the subject — the stale/forged/
     /// duplicate contract. Never stamps idle: an answer to a server prompt is
     /// not live command input.
+    /// Dispatch a Discord component interaction the gateway forwarded
+    /// (programme D3, 03 §7a.4) to the module handler owning its `custom_id`
+    /// prefix. `None` when no module claims the prefix; the handler's own
+    /// `Err` is its viewer-safe refusal. Runs on the world loop like any
+    /// module callback, so what the handler mutates rides this step's commit.
+    pub fn discord_interaction(
+        &mut self,
+        interaction: &crate::module::DiscordInteraction,
+        out: &mut Outbox,
+    ) -> Option<Result<String, String>> {
+        crate::module::apply_discord_interaction_with_action_state(
+            &self.registry,
+            &mut self.world,
+            out,
+            interaction,
+            Some(&self.action_state),
+        )
+    }
+
     fn handle_respond(
         &mut self,
         _conn: ConnId,
@@ -5191,6 +5210,109 @@ mod tests {
     /// `Ctx::open_request`; a client `Respond` resumes the module with the
     /// choice, a duplicate/forged/non-subject answer is ignored, and the
     /// deadline fires the module's default (Expired). RAM-only, never idle.
+    /// Programme D3 (03 §7a.4): a forwarded Discord interaction reaches the
+    /// module that claimed its `custom_id` prefix — longest prefix wins, the
+    /// handler runs with a `Ctx` as the interaction's actor and may answer or
+    /// refuse; an unclaimed prefix is `None`; the gateway's `d:` namespace and
+    /// a second claim of a prefix are refused at registration.
+    #[test]
+    fn discord_interactions_dispatch_by_owner_prefix() {
+        use crate::module::{DiscordInteraction, DiscordInteractionHandler, ModError, Registrar};
+
+        struct Ack;
+        impl DiscordInteractionHandler for Ack {
+            fn handle(&self, ctx: &mut Ctx<'_>, ix: &DiscordInteraction) -> Result<String, String> {
+                ctx.out.info(ctx.actor, format!("acked {}", ix.custom_id));
+                Ok(format!(
+                    "ack {} by {} for {:?}",
+                    ix.custom_id,
+                    ctx.actor,
+                    ix.account.as_deref().unwrap_or("-")
+                ))
+            }
+        }
+        struct Deny;
+        impl DiscordInteractionHandler for Deny {
+            fn handle(
+                &self,
+                _ctx: &mut Ctx<'_>,
+                _ix: &DiscordInteraction,
+            ) -> Result<String, String> {
+                Err("not yours".to_string())
+            }
+        }
+        struct OnCall;
+        impl GameModule for OnCall {
+            fn name(&self) -> &'static str {
+                "oncall"
+            }
+            fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
+                reg.classify_commands(crate::CommandCompatibility::ReadOnly);
+                reg.discord_interaction("oncall:", Arc::new(Ack))?;
+                // A longer prefix inside the same owner wins over the shorter.
+                reg.discord_interaction("oncall:deny:", Arc::new(Deny))?;
+                assert!(
+                    reg.discord_interaction("d:req:", Arc::new(Ack)).is_err(),
+                    "the gateway's namespace cannot be claimed"
+                );
+                assert!(
+                    reg.discord_interaction("oncall:", Arc::new(Deny)).is_err(),
+                    "a prefix is claimed once"
+                );
+                Ok(())
+            }
+        }
+
+        let mut world = World::new_minimal();
+        world.set_now(1_000);
+        let mut registry = Registry::new();
+        register_core_commands(&mut registry).unwrap();
+        let mut engine = Engine::with_modules(world, registry, vec![Box::new(OnCall)]).unwrap();
+        let mut out = Outbox::new();
+
+        let ack = DiscordInteraction {
+            account: Some("Nick".to_string()),
+            actor: Some(GOD),
+            custom_id: "oncall:ack:17".to_string(),
+            values: vec![],
+        };
+        assert_eq!(
+            engine.discord_interaction(&ack, &mut out),
+            Some(Ok("ack oncall:ack:17 by #1 for \"Nick\"".to_string()))
+        );
+        assert!(
+            out.events().iter().any(
+                |(aud, e)| matches!((aud, e), (Audience::Actor(a), OutputEvent::Sys(t))
+                    if *a == GOD && t.to_plain_text().contains("acked oncall:ack:17"))
+            ),
+            "the handler's Ctx output reaches the actor"
+        );
+        let deny = DiscordInteraction {
+            custom_id: "oncall:deny:3".to_string(),
+            ..ack.clone()
+        };
+        assert_eq!(
+            engine.discord_interaction(&deny, &mut out),
+            Some(Err("not yours".to_string())),
+            "the longest matching prefix owns the interaction"
+        );
+        let unknown = DiscordInteraction {
+            custom_id: "jobs:claim:9".to_string(),
+            ..ack.clone()
+        };
+        assert_eq!(engine.discord_interaction(&unknown, &mut out), None);
+        // No character on the account: the handler still runs, as GOD.
+        let nobody = DiscordInteraction {
+            actor: None,
+            account: None,
+            ..ack
+        };
+        assert_eq!(
+            engine.discord_interaction(&nobody, &mut out),
+            Some(Ok("ack oncall:ack:17 by #1 for \"-\"".to_string()))
+        );
+    }
+
     #[test]
     fn open_request_round_trips_answer_and_deadline_default() {
         use crate::request::{RequestCompletion, RequestOutcome};

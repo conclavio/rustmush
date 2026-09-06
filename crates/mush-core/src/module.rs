@@ -1440,6 +1440,9 @@ pub struct ModuleTables {
     /// module name → its request-completion handler (interface plan I10: the
     /// server-initiated Request/Respond re-entry seam).
     request_completions: HashMap<SmolStr, Arc<dyn crate::request::RequestCompletion>>,
+    /// Discord interaction handlers by `custom_id` prefix (programme D3, 03
+    /// §7a.4): `(prefix, module, handler)`, longest prefix wins.
+    discord_interactions: Vec<(SmolStr, SmolStr, Arc<dyn DiscordInteractionHandler>)>,
     /// module name → its store-read completion handler (the H1 read seam).
     store_read_completions: HashMap<SmolStr, Arc<dyn StoreReadCompletion>>,
     /// module name → its capture action and decision capture sink (the H2a
@@ -1913,6 +1916,21 @@ impl Registry {
         module: &str,
     ) -> Option<Arc<dyn crate::request::RequestCompletion>> {
         self.mods.request_completions.get(module).map(Arc::clone)
+    }
+
+    /// The Discord interaction handler whose prefix is the longest match for
+    /// `custom_id`, with its module (programme D3).
+    #[must_use]
+    pub fn discord_interaction_handler(
+        &self,
+        custom_id: &str,
+    ) -> Option<(SmolStr, Arc<dyn DiscordInteractionHandler>)> {
+        self.mods
+            .discord_interactions
+            .iter()
+            .filter(|(prefix, _, _)| custom_id.starts_with(prefix.as_str()))
+            .max_by_key(|(prefix, _, _)| prefix.len())
+            .map(|(_, module, handler)| (module.clone(), Arc::clone(handler)))
     }
     /// The store-read completion handler registered by `module`, if any (the
     /// engine routes [`WorldCommand::StoreReadDone`](crate::engine::WorldCommand::StoreReadDone)
@@ -3119,6 +3137,42 @@ impl<'a> Registrar<'a> {
     /// re-entry point for server-initiated requests it opens with
     /// [`Ctx::open_request`](crate::cmd::Ctx::open_request) (interface plan
     /// I10). A module registers at most one; a second is a conflict.
+    /// Register the handler for Discord component interactions whose
+    /// `custom_id` starts with `prefix` (programme D3, 03 §7a.4). Prefixes are
+    /// owner namespaces — `oncall:` — and the gateway keeps `d:` for itself;
+    /// a prefix may be claimed once.
+    pub fn discord_interaction(
+        &mut self,
+        prefix: &str,
+        handler: Arc<dyn DiscordInteractionHandler>,
+    ) -> Result<(), ModError> {
+        let prefix = prefix.trim();
+        if prefix.is_empty() || prefix.starts_with("d:") {
+            return Err(ModError::msg(format!(
+                "module {}: a Discord interaction prefix must be non-empty and outside `d:` \
+                 (got {prefix:?})",
+                self.module
+            )));
+        }
+        let tables = self.reg.tables_mut();
+        if let Some((_, owner, _)) = tables
+            .discord_interactions
+            .iter()
+            .find(|(p, _, _)| p.as_str() == prefix)
+        {
+            return Err(ModError::Conflict {
+                module: self.module.clone(),
+                what: "discord interaction prefix",
+                name: SmolStr::new(prefix),
+                owner: owner.clone(),
+            });
+        }
+        tables
+            .discord_interactions
+            .push((SmolStr::new(prefix), self.module.clone(), handler));
+        Ok(())
+    }
+
     pub fn request_completion(
         &mut self,
         handler: Arc<dyn crate::request::RequestCompletion>,
@@ -3535,6 +3589,63 @@ pub(crate) fn apply_async_completion_with_action_state(
         typed_state,
     };
     handler.on_complete(&mut ctx, correlation, payload);
+}
+
+/// A Discord component interaction forwarded by the gateway (programme D3,
+/// 03 §7a.4). The bridge authenticated the Discord user (the Gateway asserts
+/// the id) and resolved the linked account; the handler trusts both.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DiscordInteraction {
+    /// The linked account's display name, if the user is linked.
+    pub account: Option<String>,
+    /// The character the bridge chose for the account (followed, else relay,
+    /// else first), if any — also the `Ctx` actor when present.
+    pub actor: Option<ObjId>,
+    /// The full routing key (`oncall:ack:17`).
+    pub custom_id: String,
+    /// A select's picked values or a modal's field values, in order.
+    pub values: Vec<String>,
+}
+
+/// The handler a module registers for a `custom_id` prefix
+/// ([`Registrar::discord_interaction`]). It runs on the world loop with a
+/// [`Ctx`] whose actor is the interaction's character (or `GOD` when the
+/// account has none), may mutate, and returns the bounded, viewer-safe text
+/// Discord shows the clicker privately — or a refusal reason.
+pub trait DiscordInteractionHandler: Send + Sync {
+    /// Handle one interaction.
+    ///
+    /// # Errors
+    ///
+    /// A bounded, viewer-safe reason the interaction was refused.
+    fn handle(&self, ctx: &mut Ctx<'_>, interaction: &DiscordInteraction)
+    -> Result<String, String>;
+}
+
+/// Dispatch a forwarded Discord interaction to the module handler with the
+/// longest matching prefix. `None` when no prefix matches.
+pub(crate) fn apply_discord_interaction_with_action_state(
+    reg: &Registry,
+    w: &mut World,
+    out: &mut Outbox,
+    interaction: &DiscordInteraction,
+    action_state: Option<&crate::action_state::ActionStateStore>,
+) -> Option<Result<String, String>> {
+    let (module, handler) = reg.discord_interaction_handler(&interaction.custom_id)?;
+    let actor = interaction.actor.unwrap_or(crate::GOD);
+    let typed_state =
+        crate::action_state::ModuleActionState::for_module(action_state, Some(module.as_str()));
+    let mut ctx = Ctx {
+        w,
+        actor,
+        switches: SwitchSet::default(),
+        args: ParsedArgs::default(),
+        out,
+        reg,
+        module: Some(module),
+        typed_state,
+    };
+    Some(handler.handle(&mut ctx, interaction))
 }
 
 /// Route a resolved server-initiated request (interface plan I10) to

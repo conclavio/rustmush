@@ -155,6 +155,15 @@ pub enum StaffOpKind {
         /// The requesting character (account resolved store-side).
         actor: ObjId,
     },
+    /// `@discord/follow` / `@discord/unfollow` (D3) — ask the gateway's
+    /// Discord bridge to attach or detach a follow for the CALLER's own
+    /// character. Answered by the bridge on the character's connections.
+    DiscordFollow {
+        /// The requesting character.
+        actor: ObjId,
+        /// `true` = follow, `false` = unfollow.
+        on: bool,
+    },
     /// `@discord/set relay=<character>|autofollow=on|off` — a self-service
     /// link preference on the CALLER's account.
     DiscordSet {
@@ -664,8 +673,9 @@ fn discord_audit(
 /// **privilege**, not the role: a refusal is recorded as `denied`, a permitted
 /// look as `use`, both before the op is queued (D-D-14).
 fn discord_cmd(queue: &StaffQueue, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
-    const USAGE: &str = "Usage: @discord, @discord/link, @discord/unlink, \
-                         @discord/set relay=<character>|none, @discord/set autofollow=on|off; \
+    const USAGE: &str = "Usage: @discord, @discord/link, @discord/unlink, @discord/follow, \
+                         @discord/unfollow, @discord/set relay=<character>|none, \
+                         @discord/set autofollow=on|off, @discord/set quiet=on|off; \
                          staff: @discord/show <player>, @discord/unlink <player>[=<reason>], \
                          @discord/ban <player>=<reason>, @discord/unban <player>[=<reason>].";
     let actor = ctx.actor;
@@ -708,6 +718,16 @@ fn discord_cmd(queue: &StaffQueue, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         queue.push(StaffOp {
             actor,
             kind: StaffOpKind::DiscordLinkMint { actor },
+        });
+        return Ok(());
+    }
+    if ctx.switches.has("follow") || ctx.switches.has("unfollow") {
+        queue.push(StaffOp {
+            actor,
+            kind: StaffOpKind::DiscordFollow {
+                actor,
+                on: ctx.switches.has("follow"),
+            },
         });
         return Ok(());
     }
@@ -1055,6 +1075,8 @@ pub fn register_server_commands_with_cap(
             switches: vec![
                 "link".into(),
                 "unlink".into(),
+                "follow".into(),
+                "unfollow".into(),
                 "set".into(),
                 "show".into(),
                 "ban".into(),
@@ -1068,6 +1090,8 @@ pub fn register_server_commands_with_cap(
                    relay character (see `help discord`). @discord/link mints a one-time \
                    code — DM the game's bot `/link <code>` within 10 minutes to bind your \
                    Discord user to this account; @discord/unlink removes the link. \
+                   @discord/follow asks the bot to follow this character in your DM (as \
+                   `/follow` there would); @discord/unfollow detaches it. \
                    @discord/set relay=<character>|none picks which of your characters \
                    speaks in relayed channels when none is attached; @discord/set \
                    autofollow=on|off attaches a Discord follow when your last terminal \
@@ -1543,6 +1567,20 @@ mod tests {
             (
                 "@discord/unlink",
                 StaffOpKind::DiscordUnlinkSelf { actor: nick },
+            ),
+            (
+                "@discord/follow",
+                StaffOpKind::DiscordFollow {
+                    actor: nick,
+                    on: true,
+                },
+            ),
+            (
+                "@discord/unfollow",
+                StaffOpKind::DiscordFollow {
+                    actor: nick,
+                    on: false,
+                },
             ),
             (
                 "@discord/set autofollow=on",

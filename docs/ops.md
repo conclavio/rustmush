@@ -1064,7 +1064,7 @@ Two operational tradeoffs of the file appender are **deliberate**:
   prunes `<data_dir>/logs/`. Add external rotation — e.g. `logrotate`, or a cron
   sweep like `find <data_dir>/logs -name 'mushd.log.*' -mtime +14 -delete`.
 
-## Discord bot (D1–D2): `[discord]`
+## Discord bot (D1–D3): `[discord]`
 
 The Discord transport (`mush-net-discord`, plan `docs/interface/04-discord-implementation-plan.md`)
 runs **inside the gateway process** (`mushd` all-in-one, or `mush-gateway` in the split deploy)
@@ -1083,6 +1083,30 @@ unchanged; the DM is a lossy render of what that connection receives, one REST c
 limits are the bot's own. The idle sweep (`follow_idle_detach_s`, `0` = never; every 60 s)
 detaches follows with no DM input that are not in a scene, and follows whose DMs Discord has
 closed.
+
+**Buttons (D3).** A `Request` the game poses to a followed character arrives in the DM as its own
+message with its answers as buttons (Confirm → Yes/No; a Choice → buttons in rows of five, or one or
+two drop-downs past twenty options; free text → an "Answer…" button that opens a form), plus
+Decline. A click is exactly `respond` — the engine's rules (right subject, an offered option, first
+answer wins) decide, and the bridge rewrites the message with the answer; at the request's deadline
+an unanswered message is edited to "Expired". A `Notice` with an action carries a reply button that
+opens a form prefilled with the action's line; submitting runs it as the character. Component
+routing keys (`custom_id`) are namespaced: `d:req:`, `d:reqm:`, `d:act:`, `d:actm:` and `d:call:`
+belong to the gateway bridge and never cross the boundary; **anything else** is forwarded to the
+server as `ServiceReq::DiscordInteraction { user_id, account, actor, custom_id, values }` and
+dispatched by longest prefix to the handler a module registered with
+`Registrar::discord_interaction("oncall:", …)` — the seam the on-call service's Acknowledge button
+uses (03 §7a.4). A prefix nobody claimed is answered "not known to the game"; a handler's reply is
+shown to the clicker alone, bounded to 1 900 characters. Interactions need no extra intent or portal
+setting; they arrive on the same Gateway session as slash commands.
+
+**In-game controls (D3).** `@discord/follow`, `@discord/unfollow` and a live `@discord/set
+quiet=on|off` cross the boundary the other way as `ToGateway::DiscordControl { char, op }`
+(fire-and-forget, additive): the world task's staff-op path calls `GatewaySink::discord_control`,
+the gateway's delivery transport hands it to the process's `GatewayControls` registry, and the
+Discord bridge — which registered itself there at start-up — answers the character with a
+`discord`-tagged system line on every connection. Without a running bridge the control is dropped
+at debug level; the character then hears nothing beyond the world task's "asked the bot" line.
 
 Setup, once, in the Discord developer portal:
 

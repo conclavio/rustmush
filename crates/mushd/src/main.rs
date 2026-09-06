@@ -434,6 +434,11 @@ async fn serve(config: Config, mut quarantine_spool: QuarantineSpool) -> Result<
         tracing::info!(sitebans = ban_count, "persisted sitebans loaded");
     }
 
+    // Gateway-side control hooks (programme D3): the Discord bridge registers
+    // into this when it starts, below; the in-process sink routes the server's
+    // `discord_control` through it.
+    let controls = Arc::new(mushd::controls::GatewayControls::default());
+
     // The single-writer world task + its store writer.
     let handles = world_task::spawn_persist_with_decision_workers(
         engine,
@@ -449,6 +454,7 @@ async fn serve(config: Config, mut quarantine_spool: QuarantineSpool) -> Result<
             quarantine_spool,
         },
         llm_cfg.decision_workers,
+        Arc::clone(&controls),
     )?;
     let persistence_integrity = handles.persistence_integrity.clone();
     let world = handles.handle;
@@ -554,6 +560,7 @@ async fn serve(config: Config, mut quarantine_spool: QuarantineSpool) -> Result<
         Arc::new(world.clone()) as Arc<dyn mush_ipc::GatewayLink>,
         Arc::clone(&guard),
         Arc::clone(&store) as Arc<dyn ObjectStore>,
+        &controls,
     );
 
     tracing::info!(ssh = %listener.addr(), web = %web_listen, "up; press Ctrl-C to shut down");

@@ -12,7 +12,8 @@ use crate::api::{
 };
 use crate::config::DiscordConfig;
 use crate::hooks::{
-    DetachOutcome, DiscordHooks, FollowOutcome, LineOutcome, LinkOutcome, UnlinkOutcome,
+    DetachOutcome, DiscordHooks, FollowOutcome, Interaction, LineOutcome, LinkOutcome,
+    UnlinkOutcome,
 };
 
 /// The window the `/link` attempt limiter counts over.
@@ -355,6 +356,58 @@ async fn handle_event(
                 }
             }
         }
+        DiscordEvent::Component {
+            user_id,
+            custom_id,
+            values,
+            channel_id,
+            message_id,
+            handle,
+        } => {
+            tracing::debug!(
+                dm = channel_id.is_some(),
+                "discord bot: component interaction"
+            );
+            let reply = hooks
+                .interaction(
+                    user_id,
+                    Interaction {
+                        custom_id,
+                        values,
+                        fields: Vec::new(),
+                        channel_id,
+                        message_id,
+                    },
+                )
+                .await;
+            if let Err(error) = api.respond_component(&handle, reply).await {
+                tracing::warn!(%error, "discord bot: component reply failed");
+            }
+        }
+        DiscordEvent::Modal {
+            user_id,
+            custom_id,
+            fields,
+            message_id,
+            handle,
+        } => {
+            tracing::debug!(fields = fields.len(), "discord bot: modal submission");
+            let reply = hooks
+                .interaction(
+                    user_id,
+                    Interaction {
+                        custom_id,
+                        values: Vec::new(),
+                        fields,
+                        channel_id: None,
+                        message_id,
+                    },
+                )
+                .await;
+            if let Err(error) = api.respond_component(&handle, reply).await {
+                tracing::warn!(%error, "discord bot: modal reply failed");
+            }
+        }
         DiscordEvent::Message {
             user_id,
             channel_id,
@@ -400,7 +453,8 @@ mod tests {
     use futures::future::BoxFuture;
 
     use super::*;
-    use crate::api::testing::{Call, FakeApi, FakeEvents, slash};
+    use crate::api::InteractionReply;
+    use crate::api::testing::{Call, FakeApi, FakeEvents, component, modal, slash};
     use crate::hooks::WhoAmI;
 
     /// A scripted hooks impl that records what it was asked.
@@ -410,6 +464,7 @@ mod tests {
         accept: Mutex<Vec<String>>,
         following: Mutex<Vec<u64>>,
         lines: Mutex<Vec<(u64, String)>>,
+        interactions: Mutex<Vec<(u64, Interaction)>>,
     }
 
     impl DiscordHooks for FakeHooks {
@@ -501,6 +556,22 @@ mod tests {
                 } else {
                     LineOutcome::Accepted
                 }
+            })
+        }
+
+        fn interaction(
+            &self,
+            user_id: u64,
+            interaction: Interaction,
+        ) -> BoxFuture<'_, InteractionReply> {
+            Box::pin(async move {
+                let reply =
+                    InteractionReply::Ephemeral(format!("routed {}", interaction.custom_id));
+                self.interactions
+                    .lock()
+                    .unwrap()
+                    .push((user_id, interaction));
+                reply
             })
         }
     }
@@ -669,6 +740,35 @@ mod tests {
             })
             .collect();
         assert_eq!(hints.len(), 1, "{hints:?}");
+    }
+
+    #[tokio::test]
+    async fn component_clicks_and_modal_submissions_route_to_the_hooks_and_are_answered() {
+        let (api, hooks) = run_events(vec![
+            component(1, "d:req:9:yes", &[], 500),
+            component(1, "d:req:9:s", &["mara"], 500),
+            modal(1, "d:actm:3", &[("line", "page Wiz=on my way")], Some(501)),
+        ])
+        .await;
+        let routed = hooks.interactions.lock().unwrap();
+        assert_eq!(routed.len(), 3);
+        assert_eq!(routed[0].1.custom_id, "d:req:9:yes");
+        assert_eq!(routed[0].1.message_id, Some(500));
+        assert_eq!(routed[1].1.values, vec!["mara".to_string()]);
+        assert_eq!(
+            routed[2].1.fields,
+            vec![("line".to_string(), "page Wiz=on my way".to_string())]
+        );
+        let answers: Vec<InteractionReply> = api
+            .calls()
+            .into_iter()
+            .filter_map(|c| match c {
+                Call::Respond { reply, .. } => Some(reply),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(answers.len(), 3, "every interaction is answered once");
+        assert!(matches!(&answers[0], InteractionReply::Ephemeral(t) if t == "routed d:req:9:yes"));
     }
 
     #[test]
