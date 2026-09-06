@@ -2517,21 +2517,25 @@ impl Engine {
     /// whether the loop should keep running.
     pub fn step(&mut self, msg: Inbound, out: &mut Outbox, fx: &mut Effects) -> StepOutcome {
         let outcome = match msg {
-            Inbound::Cmd {
-                conn: _,
-                actor,
-                line,
-            } => {
+            Inbound::Cmd { conn, actor, line } => {
                 if self.world.get(actor).is_some() {
-                    self.world.session_input(actor);
-                    dispatch_with_action_state(
-                        &self.registry,
-                        &mut self.world,
-                        actor,
-                        &line,
-                        out,
-                        Some(&self.action_state),
-                    );
+                    // Line-mode answer to a server-initiated request
+                    // (interface plan I10): `respond <arg>` when the actor has
+                    // a pending request resolves it without an idle stamp (an
+                    // answer is not live input). Otherwise normal dispatch.
+                    if let Some((id, choice)) = self.line_respond(actor, &line) {
+                        self.handle_respond(conn, actor, id, choice, out);
+                    } else {
+                        self.world.session_input(actor);
+                        dispatch_with_action_state(
+                            &self.registry,
+                            &mut self.world,
+                            actor,
+                            &line,
+                            out,
+                            Some(&self.action_state),
+                        );
+                    }
                 } else {
                     tracing::warn!(%actor, "Cmd for missing actor dropped");
                 }
@@ -3090,6 +3094,55 @@ impl Engine {
         }
     }
 
+    /// Interpret a line-mode `respond <arg>` against the actor's oldest
+    /// pending request (interface plan I10), so a raw client with no
+    /// structured channel can still answer: `respond yes`/`no`/`cancel` for a
+    /// confirm, `respond <n>` for a choice, `respond <text>` for a target or
+    /// text. `None` when the line is not a usable answer (no `respond` verb,
+    /// no pending request, or an arg the kind cannot read), in which case the
+    /// line falls through to normal command dispatch.
+    fn line_respond(&self, actor: ObjId, line: &str) -> Option<(u64, mush_proto::RespondChoice)> {
+        use mush_proto::{RequestKind, RespondChoice};
+        let rest = line.trim().strip_prefix("respond")?.trim();
+        if rest.is_empty() {
+            return None;
+        }
+        // The actor's oldest outstanding request (smallest minted id).
+        let id = self
+            .pending_requests
+            .iter()
+            .filter(|(_, p)| p.subject == actor)
+            .map(|(id, _)| *id)
+            .min()?;
+        let pending = self.pending_requests.get(&id)?;
+        let lower = rest.to_ascii_lowercase();
+        let choice = match pending.kind {
+            RequestKind::Confirm => match lower.as_str() {
+                "y" | "yes" => RespondChoice::Confirm(true),
+                "n" | "no" => RespondChoice::Confirm(false),
+                "cancel" => RespondChoice::Cancel,
+                _ => return None,
+            },
+            RequestKind::Choice => {
+                if lower == "cancel" {
+                    RespondChoice::Cancel
+                } else {
+                    let n: usize = rest.parse().ok()?;
+                    let opt = pending.options.get(n.checked_sub(1)?)?;
+                    RespondChoice::Choose(opt.id.clone())
+                }
+            }
+            RequestKind::Target | RequestKind::Text => {
+                if lower == "cancel" {
+                    RespondChoice::Cancel
+                } else {
+                    RespondChoice::Text(rest.to_string())
+                }
+            }
+        };
+        Some((id, choice))
+    }
+
     /// outcome — success, handler refusal, unknown name — produces exactly
     /// one `Reply` carrying the request's `id`, so the client can always
     /// correlate. A query for a missing actor is dropped (the connection is
@@ -3332,6 +3385,10 @@ impl Engine {
                     let timer = self
                         .sched
                         .insert(deadline_ms, ScheduledKind::RequestTimeout { id });
+                    // The kind and options are kept on the pending entry so a
+                    // line-mode `respond` can interpret the answer.
+                    let kind = req.kind;
+                    let options = req.options.clone();
                     // Deliver the ask to the subject reliably (a real prompt
                     // should reach them, unlike a transient composing pill);
                     // the answer is what rides the advisory one-way path.
@@ -3349,6 +3406,8 @@ impl Engine {
                         id,
                         crate::request::PendingRequest {
                             subject: req.subject,
+                            kind,
+                            options,
                             module: req.module,
                             payload: req.payload,
                             timer,
@@ -4896,6 +4955,68 @@ mod tests {
             &mut fx,
         );
         assert!(out.is_empty(), "a non-subject answer is ignored");
+
+        // Line mode (I10): `respond <n>` resolves the actor's oldest pending
+        // request without a structured channel — id 3 above is still pending
+        // (the forged answer never touched it).
+        let (mut out, mut fx) = (Outbox::new(), Effects::new());
+        engine.step(
+            Inbound::Cmd {
+                conn: 1,
+                actor: GOD,
+                line: "respond 2".into(),
+            },
+            &mut out,
+            &mut fx,
+        );
+        assert!(
+            texts(&out).iter().any(|t| t == "answered p1: mara"),
+            "{:?}",
+            texts(&out)
+        );
+
+        // An arg the kind cannot read falls through to normal dispatch,
+        // leaving the request pending; a valid arg then resolves it.
+        let (mut out, mut fx) = (Outbox::new(), Effects::new());
+        engine.step(
+            Inbound::Cmd {
+                conn: 1,
+                actor: GOD,
+                line: "@ask".into(),
+            },
+            &mut out,
+            &mut fx,
+        );
+        let (mut out, mut fx) = (Outbox::new(), Effects::new());
+        engine.step(
+            Inbound::Cmd {
+                conn: 1,
+                actor: GOD,
+                line: "respond 99".into(),
+            },
+            &mut out,
+            &mut fx,
+        );
+        assert!(
+            !texts(&out).iter().any(|t| t.starts_with("answered")),
+            "99 is not an option: {:?}",
+            texts(&out)
+        );
+        let (mut out, mut fx) = (Outbox::new(), Effects::new());
+        engine.step(
+            Inbound::Cmd {
+                conn: 1,
+                actor: GOD,
+                line: "respond 1".into(),
+            },
+            &mut out,
+            &mut fx,
+        );
+        assert!(
+            texts(&out).iter().any(|t| t == "answered p1: razor"),
+            "{:?}",
+            texts(&out)
+        );
     }
 
     #[test]

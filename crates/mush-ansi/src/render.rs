@@ -7,8 +7,8 @@
 //! **CRLF only** — never a bare `\n` (SSH raw mode).
 
 use mush_proto::{
-    ClientCaps, NarrativeKind, ObjRef, OutputEvent, ProjectedActionReceipt, RichText, RoomView,
-    Span, Style, WhoEntry,
+    ClientCaps, NarrativeKind, ObjRef, OutputEvent, ProjectedActionReceipt, RequestKind, RichText,
+    RoomView, Span, Style, WhoEntry,
 };
 
 use crate::color::sgr;
@@ -110,11 +110,39 @@ pub fn render(event: &OutputEvent, caps: &ClientCaps, theme: &AnsiTheme, out: &m
         // stream has nowhere to put "is typing" and nothing to say when it
         // stops.
         OutputEvent::Composing { .. } => {}
-        // A server-initiated request (interface plan I10): the modal clients
-        // render it; a line-only client cannot answer, so it shows nothing
-        // and the server applies its default on the deadline (D-I-21). The
-        // line-mode prompt and the `respond` command are I10 part 2.
-        OutputEvent::Request { .. } => {}
+        // A server-initiated request (interface plan I10, D-I-21): the modal
+        // clients show an overlay; line mode prints the ask and how to answer
+        // with `respond`. A client that never answers gets the server's
+        // deadline default.
+        OutputEvent::Request {
+            kind,
+            prompt,
+            options,
+            ..
+        } => {
+            w.tagged("system", "The game asks:");
+            w.end_line();
+            w.rich(prompt);
+            w.end_line();
+            match kind {
+                RequestKind::Confirm => {
+                    w.plain("  answer:  respond yes   respond no");
+                    w.end_line();
+                }
+                RequestKind::Choice => {
+                    for (i, o) in options.iter().enumerate() {
+                        w.plain(&format!("  {}  {}", i + 1, o.label));
+                        w.end_line();
+                    }
+                    w.plain("  answer:  respond <number>");
+                    w.end_line();
+                }
+                RequestKind::Target | RequestKind::Text => {
+                    w.plain("  answer:  respond <your answer>");
+                    w.end_line();
+                }
+            }
+        }
         OutputEvent::Hello { proto, server, .. } => {
             w.tagged("system", &format!("{server} (proto {proto})"));
             w.end_line();

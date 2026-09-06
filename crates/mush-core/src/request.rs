@@ -55,6 +55,11 @@ pub trait RequestCompletion: Send + Sync {
 pub(crate) struct PendingRequest {
     /// Who was asked (and who alone may answer).
     pub(crate) subject: ObjId,
+    /// What was asked — kept so a line-mode `respond` can interpret the
+    /// answer against the kind (interface plan I10).
+    pub(crate) kind: RequestKind,
+    /// The choice options, for mapping a line-mode `respond <n>`.
+    pub(crate) options: Vec<RequestOption>,
     /// The module to route the outcome to.
     pub(crate) module: SmolStr,
     /// The module's own JSON continuation.
