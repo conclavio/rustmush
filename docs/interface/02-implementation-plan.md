@@ -59,6 +59,13 @@ I builds, in this order:
 - **The tactical unit screen** (I8) — mockup T3 and mockup T1's unit-side
   panes, rendered from `TacticalUnit` through a read-only view, coordinated
   with E7 and gated on nothing E7 has not landed.
+- **A second wave of engine-level enablers** (I9 onward, added 2026-09-05,
+  D-I-20) — a generic renderer for the versioned semantic views the wire
+  already carries, and the two primitives it still lacks: server-initiated
+  interaction and a notification surface; then narrative backlog and finishing
+  the delta plumbing. These serve future game needs — targeting, consent,
+  contested rolls, alerts, mobile reconnect — rather than a mockup, and add
+  wire only where none exists.
 
 **Exit criterion.** A player on SSH (line and TUI) and a player on the web see
 the same screens by name and number, the same vitals, the same room band, and
@@ -200,9 +207,16 @@ tests stay green.
 | I6 | Ruleset screens on existing data: SR combat screen, WoD vitals and roll builder, shared widgets | 2 to 3 | I1, I2, I4 | web, mush-net-ssh, ruleset-shadowrun, ruleset-wod |
 | I7 | Comms IC/OOC | 1 | I2, I4 | mush-comsys, web, mush-net-ssh |
 | I8 | Tactical unit screen: mockup T3, mockup T1 unit-side panes, `tactics.vitals` | 2 | I1, I2, I4, I6; coordinated with E7 cut 8 | mush-tactics (`view.rs` only), web, mush-net-ssh |
+| I9 | Generic semantic-view renderer: list/detail/form over `View`/`ViewEnvelope`, one renderer per client | 2 to 3 | I1, I4 | mush-proto, mush-core (a demo view), mush-net-ssh, web |
+| I10 | Server-initiated interaction: `Request`/`Respond` (confirm, choice, target, text) | 2 | I1, I4 | mush-proto, mush-core, both bridges, mush-net-ssh, web |
+| I11 | Unified notification surface: one `Notice` event, three renders; `MailNotice` and the E6a alerts become producers | 1 to 2 | I9 | mush-proto, mush-core, mush-server, mush-net-ssh, web |
+| I12 | Server-side narrative backlog: `NarrativeBacklog` query, perceive-gated | 1 to 2 | I1 | mush-proto, mush-core, mush-server, mush-net-ssh, web |
+| I13 | Live panel deltas: producers emit `Delta`, the sheet drops its poll | 1 | I1 | mush-ruleset/sheet producers, mush-net-ssh, web |
 
 Order: I1, then I2 ∥ I3 ∥ I4 (disjoint files), then I6 ∥ I7 ∥ I5, then I8.
-Roughly 15 to 16 sessions, inside the assessment's 12 to 18.
+Then the **second wave** (engine-level enablers, D-I-20): I9, then I10, then
+I11, then I12; I13 opposite any of them.
+Roughly 15 to 16 sessions for I1–I8, plus 7 to 10 for the second wave.
 
 ### 3.1 Cut I1 — Contracts
 
@@ -1075,7 +1089,178 @@ table consistent; the placeholders render and degrade first.
 
 **Verify lenses.** **P (projection)**, **C (coordination)** — can the DTO and
 `@unit/show` drift, or can the view read state E7's migration has moved?
-**B (bounds)**.
+### 3.9 Cut I9 — The generic semantic-view renderer
+
+**What it is.** The client-side substrate that makes every future
+record-shaped feature cheap. The wire already carries versioned,
+gap-detecting keyframes and deltas on `View`/`ViewEnvelope` (rule 3), but
+`legal.actions` is the only consumer and each client renders it bespoke. I9
+adds a **declarative view schema** — the sheet's "declared once, walked at
+render time" precedent (D-I-2) — and one renderer per client that walks it,
+so a module ships a view and gets a list, a detail pane and a read-only form
+in the TUI, the desktop web and the mobile web with no client code.
+
+- **The schema** in `mush-proto`: a `ViewSchema { id, version, shape:
+  List | Detail | Form, columns | fields: [...] }` embedded in the keyframe
+  the way `SheetSchema` rides the sheet feed — declared, never a definition
+  body. Records are opaque JSON validated defensively at the client boundary
+  (the sheet store's precedent). Additive wire (rule 4).
+- **Three renderers** over it: TUI `render_view_rows` (a selectable list, a
+  detail pane, a key/value form, the I6 widgets reused), a web
+  `<GenericView>` family, and the mobile layout the web's responsive rules
+  already give. All three read one schema; the web renders richer (sortable
+  columns, inline detail) from the same frame.
+- **Registration** mirrors I4's screen model and `registerFeedScreen`: a
+  module that publishes a schema-bearing view gets a screen (web) or a
+  registered pane (TUI) with no bespoke code. The renderer is validated
+  against `legal.actions` and the sheet by render equivalence; whether to
+  retire their bespoke components is a follow-on, not a requirement of I9.
+- **The read-only rule holds** (D-I-18): a form's submit is a `Prefill`, a
+  `Run` on the allowlist, or the I10 interaction primitive once it lands; a
+  view never mutates on its own, and its authoritative consumers keep the
+  `resolution.outcome`/`Ack` channel untouched.
+
+**Tests (~20).** The schema round-trips through ts-rs; the three renderers
+name the same columns and fields from one fixture (one schema, three golden
+renders); a malformed record degrades to a placeholder, never a panic (T6);
+`legal.actions` renders equivalently through the generic renderer (a
+snapshot match); the projection probe still passes; each of List, Detail and
+Form renders and degrades.
+
+**Verify lenses.** **P (projection)** — can the generic renderer surface a
+field a bespoke one hid? **B (bounds)** — schema and record caps. **C
+(coordination)** — does the rendered `legal.actions` still match `+actions`?
+
+### 3.10 Cut I10 — Server-initiated interaction
+
+**What it is.** The one primitive the wire lacks. Today the server can
+*tell* the client what happened (`resolution.outcome` with `Ack`) but can
+only *ask* through the login and chargen `Prompt`. I10 adds a correlated
+**request/response**: the server poses a bounded choice and the client
+answers by id. It is the substrate for targeting, contested rolls,
+initiative declarations, consent flows and staff approvals — the
+interactions future mechanics will assume and cannot retrofit cheaply.
+
+- **The wire.** `OutputEvent::Request { id, kind: Confirm | Choice | Target |
+  Text, prompt: RichText, options?: [{ id, label }], deadline_ms?: u64 }`
+  and `ClientCommand::Respond { id, choice }`, correlated by `id`, bounded,
+  additive. A request is **advisory**: it never blocks the line parser,
+  expires at `deadline_ms` (the server's default), and a dropped or declined
+  request has a defined server-side default, so a disconnected or line-only
+  client is never stuck.
+- **Rendered from one event:** a modal on desktop web, a bottom sheet on
+  mobile, a boxed prompt in the TUI (the `Prompt` machinery generalizes), and
+  a plain `Requested: … [1]… [2]…; respond <n>` line in line mode, so
+  scripted and old clients answer too.
+- **Safety** (D-I-18, D-I-11, D-I-21). `Respond` carries the request id the
+  server minted, so it authorizes only that one interaction — never a bare
+  mutating key. It is perceive- and DARK-gated wherever it names another
+  object, rate-limited at the bridge, and never stamps idle. A request the
+  viewer may not satisfy is never sent.
+- **The fork (D-I-21 ★).** Whether a request may carry a runnable action, or
+  only a choice the server interprets. Default: choice-only — the server owns
+  the effect and the client never holds a runnable mutating token.
+
+**Tests (~22).** The round-trip; a request unanswered by `deadline_ms`
+applies the server default and cannot be answered late; a `Respond` with a
+stale or forged id is refused; the four kinds render in all three clients and
+in line mode; perceive and DARK gating; a declined request is defined; the
+projection probe (no opaque effect token on the wire under choice-only);
+composing and idle unaffected (rule 5).
+
+**Verify lenses.** **L (leak)**, **B (bounds)**, **S (staleness)** — can a
+late or replayed response fire twice, or a request authorize more than the
+one interaction it opened?
+
+### 3.11 Cut I11 — The unified notification surface
+
+**What it is.** E6a already produces org-inbox, staff-alert and escalation
+records server-side (`econ_inbox::OrgInbox`, `econ_alerts::StaffAlerts`,
+`EscalationOpened`), and `MailNotice` is the only typed notice on the wire;
+none has a consistent client home. I11 adds one **notification event** that
+generalizes `MailNotice` and gives every alert the same three-client surface.
+
+- **The wire.** `OutputEvent::Notice { id, severity: Info | Warn | Urgent,
+  category: SmolStr, text: RichText, action?: { label, prefill }, ts }`,
+  bounded, additive; `MailNotice` becomes one producer, with a compatibility
+  shim keeping the old tag until the clients cut over.
+- **One surface, three renders:** a transient toast plus a persistent tray on
+  the web, a banner plus a notices screen on mobile, and the TUI status line
+  plus a notices pane registered through I9's generic view. A notice's
+  `action` offers a one-tap `Prefill` (D-I-18), never a bare mutation.
+- **Producers.** Mail, pages, channel mentions, the E6a escalation, inbox and
+  alert records, and job-status changes each emit a `Notice`; the server owns
+  severity and de-duplication (the E6a `DroppedPage` precedent — record only
+  when delivered, deliver on connect).
+- **Never idle, never surveillance** (rule 5, D-I-11): a notice is delivered,
+  not polled, and never touches `last_input`.
+
+**Tests (~16).** The event round-trips; `MailNotice` and a `Notice` render
+the same on the mail surface (the shim); severity ordering and the cap; an
+`action` is a `Prefill` on the allowlist; the three renders from one fixture;
+delivered-not-stamped.
+
+**Verify lens.** **P (projection)** — can a notice carry an id or a body a
+viewer may not see? **B (bounds)**.
+
+### 3.12 Cut I12 — Server-side narrative backlog
+
+**What it is.** Scrollback is a client-local ring (`SCROLLBACK_CAP`), so a
+fresh connection or a scroll past the buffer has nothing behind it.
+`Query::ChannelBacklog` already proves the shape for channels. I12 adds the
+same for the room's narrative stream, so a mobile client reconnects into a
+scene and scrolls back past its buffer, and recaps and scene logs get a home.
+
+- **The wire.** `Query::NarrativeBacklog { before_seq?: u64, limit: u32 }`
+  returning bounded, newest-first narrative and channel lines the viewer was
+  entitled to, from a per-viewer server ring; additive, bounded by the
+  channel-backlog caps.
+- **Both clients.** The web's "show older" pulls from it instead of only
+  revealing its local ring; the TUI's scrollback pane requests it on `g` and
+  scroll-to-top; line mode reads it through a `+recap`-style command.
+- **Gating.** A viewer only ever receives lines they were present and
+  entitled to see (the resume buffer's precedent); DARK and perceive rules
+  apply; a private or paged line is never in another viewer's backlog.
+- **Retention is bounded and RAM-first** (the resume buffer's model); a
+  durable narrative log is a later, separate question.
+
+**Tests (~14).** Newest-first paging with `before_seq`; the cap; a viewer
+never receives a line they could not have seen (a perceive probe); a
+reconnect fills a gap the resume buffer could not; the TUI and web pull the
+same slice.
+
+**Verify lens.** **L (leak)** — can backlog serve a line the live stream
+would have withheld? **S (staleness)**, **B (bounds)**.
+
+### 3.13 Cut I13 — Live panel deltas (retire the sheet poll)
+
+**What it is.** `PanelFrameKind::Delta` exists in the contract but few
+producers emit it; the sheet still polls (`SheetPanel`'s poll and the refresh
+heuristic) with `applyDelta` wired and idle in the web store. I13 finishes
+the producer half, so live surfaces update incrementally instead of
+refetching whole frames — the win that matters most on mobile.
+
+- **Producers.** The sheet feed emits a `Delta` on mutation (the vitals
+  republish-on-write is the precedent, I1); the web store's idle `applyDelta`
+  goes live and `SheetPanel`'s poll and refresh heuristic retire (a §9
+  hand-back already anticipated this).
+- **The client half.** One shared delta-application discipline: a delta names
+  its base `revision` or generation, and a mismatch requests a fresh
+  keyframe (the `ViewCursor` rule, rule 3), so a dropped delta self-heals
+  rather than drifting.
+- **Consistency.** The TUI's panel store applies the same delta, so both
+  clients stop polling from one server change.
+- **Schedulable anytime.** This cut depends on nothing above and can land
+  opposite any of I9–I12; it is grouped here as the same "finish the
+  versioned-surface plumbing" theme.
+
+**Tests (~12).** A delta applies on a keyframe and matches a full refetch; a
+base-revision mismatch requests a keyframe and does not misapply; the sheet
+updates without a poll after a mutation; the TUI and web converge on the same
+state from the same delta.
+
+**Verify lens.** **S (staleness)** — can a reordered or dropped delta leave a
+surface silently wrong? **B (bounds)**.
 
 ---
 
@@ -1241,6 +1426,28 @@ Six standing rules:
   there is; the reservation keeps rooms and the shell from fighting over the
   same letters, and confining it to the scene screen leaves every other
   screen its full alphabet.
+- **D-I-20** I9–I13 are a **second wave** of engine-level UI enablers (owner
+  2026-09-05), beyond the mockup-driven I1–I8. The wire already carries
+  versioned semantic views (`View`/`ViewEnvelope`, a generation and gap
+  detection), keyframe-or-delta panel frames (`PanelFrameKind`), and an
+  authoritative-result-plus-ack channel (`resolution.outcome`, `Ack`). The
+  leverage is (a) a generic client renderer over the view channel so future
+  record-shaped features cost no client code (I9), and (b) the two primitives
+  the wire genuinely lacks — server-initiated interaction (I10) and a general
+  notification event (I11) — plus narrative backlog (I12) and finishing the
+  delta plumbing (I13). Build order I9, I10, I11, I12; I13 opposite any. Every
+  addition is additive wire (rule 4) and reuses I1's machinery. Rationale:
+  build the substrate and the missing primitives, not a second copy of what
+  the wire already models.
+- **D-I-21 ★** Server-initiated interaction (I10) is **choice-only** (default):
+  a `Request` carries a bounded choice and the server owns the effect when the
+  client `Respond`s by the minted request id; the client never holds a
+  runnable mutating token. This extends D-I-18 — a client never fires a
+  mutation on its own — to server-initiated flows. The fork left for the owner
+  is whether a request may instead carry a runnable action; the default
+  refuses it. Rationale: mode confusion and replay are the failure modes of an
+  interactive prompt, and choice-only keeps the worst case "a stale choice
+  ignored" rather than "a held token fired twice".
 
 ---
 
@@ -1326,6 +1533,9 @@ modal ruling (D-I-17, D-I-18) rather than by its default.**
     than showing `+sheet`'s text; it is the same walk the HUD tables need.
 13. **Pose counter.** Deferred (default) until scenes keep a RAM count or
     the ledger exposes one; the scene pill shows `round` and `turn`.
+14. ★ **Server-initiated interaction shape (I10).** Choice-only, the server
+    owns the effect on `Respond` (default, D-I-21), or a `Request` may carry a
+    runnable action the client fires on response.
 
 ---
 
@@ -1355,6 +1565,15 @@ modal ruling (D-I-17, D-I-18) rather than by its default.**
 
 ## 10. Changelog
 
+- **Draft 0.4 — 2026-09-05.** Second wave of engine-level enablers added on
+  the owner's brief, after I5–I7 landed (main `135e065`): I9 generic
+  semantic-view renderer, I10 server-initiated interaction, I11 unified
+  notification surface, I12 server-side narrative backlog, I13 live panel
+  deltas (§3.9–§3.13, the §3 table rows and order line, the §1 scope
+  bullet, D-I-20, D-I-21 ★, §8 q14). Grounded by symbol on the existing
+  wire: `View`/`ViewEnvelope`, `PanelFrameKind::Delta`, `resolution.outcome`
+  with `Ack`, `Query::ChannelBacklog`, `MailNotice`. Build order I9, I10,
+  I11, I12; I13 opposite any.
 - **Draft 0.3 — 2026-09-05.** Owner ruling: one-letter room exits are nav
   keys on the scene screen (§3.2 "Exits are keys", D-I-19, the D-I-18
   carve-out, the §7 row and reserved letters, the I2 test cases, the §3.4
