@@ -2210,6 +2210,14 @@ impl ObjectStore for InMemoryStore {
     }
 
     fn module_docs<'a>(&'a self, ns: &'a str) -> BoxFuture<'a, Result<ModuleDocs, StoreError>> {
+        self.module_docs_from(ns, &crate::store::NO_FLOORS)
+    }
+
+    fn module_docs_from<'a>(
+        &'a self,
+        ns: &'a str,
+        floors: &'a crate::store::ChunkFloors,
+    ) -> BoxFuture<'a, Result<ModuleDocs, StoreError>> {
         Box::pin(async move {
             validate_module_ns(ns)?;
             let mut out = ModuleDocs::default();
@@ -2221,6 +2229,10 @@ impl ObjectStore for InMemoryStore {
                     }
                     // J1: the store holds text; a ledger chunk is handed over as is.
                     if key.starts_with(mush_core::ledger::LOG_PREFIX) {
+                        // J4: below the floor, not even read.
+                        if crate::store::below_floor(key, floors) {
+                            continue;
+                        }
                         out.ledger.push((key.clone(), doc.clone()));
                     } else {
                         out.docs.push((key.clone(), serde_json::from_str(doc)?));
@@ -2228,7 +2240,8 @@ impl ObjectStore for InMemoryStore {
                 }
             }
             // J5: what the primary has been purged of comes from the archive.
-            crate::archive::merge_archived(self.ledger_archive(), ns, &mut out.ledger)?;
+            crate::archive::merge_archived(self.ledger_archive(), ns, &mut out.ledger, floors)?;
+            out.omitted = floors.clone();
             Ok(out)
         })
     }

@@ -41,7 +41,10 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use mush_core::{Ctx, LedgerHistory, ModuleWrite, canonical_json_bytes};
+use mush_core::{
+    BOOT_MANIFEST_FORMAT, BOOT_MANIFEST_KEY, BootManifest, Ctx, LedgerHistory, ModuleWrite,
+    canonical_json_bytes,
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use smol_str::SmolStr;
@@ -335,7 +338,7 @@ pub(crate) fn maybe_write(ctx: &mut Ctx<'_>, now: i64) {
         return;
     }
     let covered_seq = journal_len - 1;
-    let built = {
+    let (built, manifest_floor) = {
         let store = ctx.w.module_state::<EconomyStore>().expect("checked above");
         if store.fold.covered_seq != Some(covered_seq) {
             tracing::error!(
@@ -345,7 +348,14 @@ pub(crate) fn maybe_write(ctx: &mut Ctx<'_>, now: i64) {
             );
             return;
         }
-        build(store, previous.as_ref(), covered_seq, now)
+        // J4 (doc 12 §5.6): the chunk holding the RAM tail's floor at this
+        // head — every chunk below it is covered by the head and outside the
+        // tail, so the loader may skip it. Conservative by construction: the
+        // tail's floor only moves up as posts follow.
+        let tail_max = u64::try_from(store.tx_tail_max()).unwrap_or(u64::MAX);
+        let tail_floor_seq = covered_seq.saturating_add(1).saturating_sub(tail_max);
+        let floor = store.chunk_of_seq(tail_floor_seq).unwrap_or(0);
+        (build(store, previous.as_ref(), covered_seq, now), floor)
     };
     let Some(built) = built else {
         return;
@@ -366,6 +376,20 @@ pub(crate) fn maybe_write(ctx: &mut Ctx<'_>, now: i64) {
         ModuleWrite::JsonSet {
             key: new_head_key.clone(),
             value: head,
+        },
+    );
+    // J4: the boot manifest beside the head, for the loader.
+    let manifest = BootManifest {
+        format: BOOT_MANIFEST_FORMAT,
+        skip_log_chunks_below: [(SmolStr::new(JOURNAL_LOG), manifest_floor)]
+            .into_iter()
+            .collect(),
+    };
+    push_op(
+        ctx.out,
+        ModuleWrite::JsonSet {
+            key: SmolStr::new(BOOT_MANIFEST_KEY),
+            value: serde_json::to_value(&manifest).expect("a boot manifest serializes"),
         },
     );
     let mut keep: BTreeSet<SmolStr> = BTreeSet::new();

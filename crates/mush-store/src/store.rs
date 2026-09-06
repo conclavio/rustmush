@@ -271,6 +271,33 @@ pub struct ModuleDocs {
     /// `log:`-prefixed key — a malformed one is the inspection's to report)
     /// as raw JSON text.
     pub ledger: Vec<(String, String)>,
+    /// J4 (doc 12 §5.6): the floors this listing was narrowed by — per log
+    /// id, the chunk index below which no chunk document was fetched (primary
+    /// or archive). Empty for a whole listing.
+    pub omitted: std::collections::BTreeMap<String, u64>,
+}
+
+/// Per ledger log id, the chunk index below which a boot listing need not
+/// fetch (J4, doc 12 §5.6): the module's boot manifest, as the loader read it.
+pub type ChunkFloors = std::collections::BTreeMap<String, u64>;
+
+/// No floors: the whole listing (a `static`, so a backend's whole listing can
+/// borrow it for the future it returns).
+pub static NO_FLOORS: ChunkFloors = ChunkFloors::new();
+
+/// Whether a `log:{id}:{n}` key falls below its log's floor — the one test a
+/// narrowed listing applies, to primary keys and archived chunks alike.
+#[must_use]
+pub fn below_floor(key: &str, floors: &ChunkFloors) -> bool {
+    if floors.is_empty() {
+        return false;
+    }
+    let Some((log_id, chunk)) = mush_core::parse_chunk_key(key) else {
+        return false;
+    };
+    floors
+        .get(log_id.as_str())
+        .is_some_and(|floor| chunk < *floor)
 }
 
 impl ModuleDocs {
@@ -534,6 +561,25 @@ pub trait ObjectStore: Send + Sync {
     /// it to hand the text over as is.
     fn module_docs<'a>(&'a self, ns: &'a str) -> BoxFuture<'a, Result<ModuleDocs, StoreError>> {
         Box::pin(async move { Ok(ModuleDocs::split(self.module_json_list(ns).await?)) })
+    }
+
+    /// [`ObjectStore::module_docs`] **narrowed** (J4, doc 12 §5.6): a ledger
+    /// chunk below its log's floor is neither fetched from the primary nor
+    /// merged from the archive, and the floors come back in
+    /// [`ModuleDocs::omitted`]. With empty floors this is the whole listing.
+    /// The default lists whole and drops what the floors exclude — correct,
+    /// never narrow; a real backend overrides it to skip the fetch itself.
+    fn module_docs_from<'a>(
+        &'a self,
+        ns: &'a str,
+        floors: &'a ChunkFloors,
+    ) -> BoxFuture<'a, Result<ModuleDocs, StoreError>> {
+        Box::pin(async move {
+            let mut docs = self.module_docs(ns).await?;
+            docs.ledger.retain(|(key, _)| !below_floor(key, floors));
+            docs.omitted = floors.clone();
+            Ok(docs)
+        })
     }
 
     // ------------------------------------------------------------------

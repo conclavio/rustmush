@@ -229,6 +229,34 @@ fn boot_split(kv: Vec<(SmolStr, Value)>, ledger: Vec<LedgerDoc>) -> TestWorld {
     tw
 }
 
+/// J4: boot the way the production loader would after reading the manifest
+/// the sweep wrote into `kv` — the journal chunks below its floor never handed
+/// over, the omission carried as the min-present marker. `None` when `kv`
+/// holds no manifest.
+fn boot_narrowed(kv: Vec<(SmolStr, Value)>, ledger: Vec<LedgerDoc>) -> Option<(TestWorld, u64)> {
+    let (_, doc) = kv.iter().find(|(k, _)| k == mush_core::BOOT_MANIFEST_KEY)?;
+    let manifest: mush_core::BootManifest = serde_json::from_value(doc.clone()).ok()?;
+    let floor = manifest.floors().get("journal").copied()?;
+    let ledger: Vec<LedgerDoc> = ledger
+        .into_iter()
+        .filter(|(key, _)| {
+            mush_core::parse_chunk_key(key)
+                .is_none_or(|(log, chunk)| log != "journal" || chunk >= floor)
+        })
+        .collect();
+    let mut tw = econ_world();
+    tw.modules_loaded(HashMap::from([(
+        SmolStr::new(ECON_NS),
+        ModuleBootData {
+            kv,
+            ledger,
+            omitted: [(SmolStr::new("journal"), floor)].into_iter().collect(),
+            ..Default::default()
+        },
+    )]));
+    Some((tw, floor))
+}
+
 fn replay_stats(tw: &TestWorld) -> ReplayStats {
     tw.world()
         .module_state::<EconomyStore>()
@@ -434,7 +462,7 @@ fn scale_cold_journal_replay_phases() {
     println!(
         "scale_cold_journal_replay_phases: entries | chunks | json_kb | inspect_ms | \
          restore_ms | typed_ms | boot_total_ms | us_per_entry | entries_at_5s | \
-         ckpt_boot_ms | ckpt_select_ms | ckpt_replayed"
+         ckpt_boot_ms | ckpt_select_ms | ckpt_replayed | narrow_boot_ms | narrow_floor |          narrow_chunks"
     );
     let checkpoint_every = env_usize("SCALE_CHECKPOINT_EVERY", 0);
     for n in scales {
@@ -446,7 +474,7 @@ fn scale_cold_journal_replay_phases() {
         let phases = replay_phases(&journal.ledger);
         // Doc 12 J3: the checkpointed boot — boot once, let the sweep write a
         // checkpoint at the head, overlay its documents, and boot again.
-        let (ckpt_boot_ms, ckpt_select_ms, ckpt_replayed) = if checkpoint_every > 0 {
+        let (ckpt_boot_ms, ckpt_select_ms, ckpt_replayed, narrow) = if checkpoint_every > 0 {
             let mut tw = boot_split(journal.kv.clone(), journal.ledger.clone());
             let _ = tw.take_module_ops();
             tw.set_now(1_000);
@@ -459,7 +487,7 @@ fn scale_cold_journal_replay_phases() {
                 kv.iter().any(|(k, _)| k.starts_with("checkpoint:")),
                 "the sweep wrote a checkpoint"
             );
-            let booted = boot_split(kv, journal.ledger.clone());
+            let booted = boot_split(kv.clone(), journal.ledger.clone());
             let stats = replay_stats(&booted);
             assert!(
                 stats.from_checkpoint.is_some(),
@@ -483,9 +511,31 @@ fn scale_cold_journal_replay_phases() {
                 "the tail is kept across the checkpoint"
             );
             drop(booted);
-            (stats.elapsed_ms, stats.checkpoint_ms, stats.replayed)
+            // Doc 12 J4: the same boot with the chunks below the manifest's
+            // floor never handed over — what the narrowed fetch saves the boot
+            // (the fetch's own saving is the store's, measured on Redis).
+            let narrow = boot_narrowed(kv, journal.ledger.clone()).map(|(tw, floor)| {
+                let s = replay_stats(&tw);
+                assert_eq!(s.from_checkpoint, stats.from_checkpoint);
+                assert_eq!(s.entries, n);
+                (s.elapsed_ms, floor)
+            });
+            (
+                stats.elapsed_ms,
+                stats.checkpoint_ms,
+                stats.replayed,
+                narrow,
+            )
         } else {
-            (0, 0, 0)
+            (0, 0, 0, None)
+        };
+        let (narrow_boot_ms, narrow_floor) = narrow.unwrap_or((0, 0));
+        let narrow_chunks = if narrow.is_some() {
+            journal
+                .chunks
+                .saturating_sub(usize::try_from(narrow_floor).unwrap_or(usize::MAX))
+        } else {
+            0
         };
         let stats = replay_split(journal.kv, journal.ledger);
         assert_eq!(
@@ -499,7 +549,7 @@ fn scale_cold_journal_replay_phases() {
             .checked_div(us_per_entry)
             .unwrap_or(0);
         println!(
-            "{n} | {} | {} | {} | {} | {} | {} | {us_per_entry} | {entries_at_line} | {ckpt_boot_ms} | {ckpt_select_ms} | {ckpt_replayed}",
+            "{n} | {} | {} | {} | {} | {} | {} | {us_per_entry} | {entries_at_line} | {ckpt_boot_ms} | {ckpt_select_ms} | {ckpt_replayed} | {narrow_boot_ms} | {narrow_floor} | {narrow_chunks}",
             journal.chunks,
             journal.bytes / 1024,
             phases.inspect,

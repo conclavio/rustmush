@@ -295,11 +295,22 @@ impl TestWorld {
     ///
     /// Panics if a module rejects its boot data.
     pub fn modules_loaded(&mut self, boot: HashMap<SmolStr, ModuleBootData>) {
+        self.try_modules_loaded(boot)
+            .expect("module boot data must load");
+    }
+
+    /// [`TestWorld::modules_loaded`] with the modules' verdict (J4: a boot
+    /// narrowed by a manifest may answer `RetryFullFetch`).
+    ///
+    /// # Errors
+    /// Whatever a module's `on_world_loaded` returned.
+    pub fn try_modules_loaded(
+        &mut self,
+        boot: HashMap<SmolStr, ModuleBootData>,
+    ) -> Result<(), mush_core::ModError> {
         let mut out = Outbox::new();
         let mut fx = Effects::new();
-        self.engine
-            .modules_loaded(boot, &mut out, &mut fx)
-            .expect("module boot data must load");
+        self.engine.modules_loaded(boot, &mut out, &mut fx)
     }
 
     /// Render exactly what `viewer` would have received from `events`,

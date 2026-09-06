@@ -596,6 +596,16 @@ impl Ledger {
         inspect_ledger(docs, Some(self.chunk_target_bytes))
     }
 
+    /// [`Ledger::inspect`] over a **narrowed** boot (J4, doc 12 §5.6): for
+    /// each log in `floors`, every chunk below the named index may be absent
+    /// without being a hole — the loader skipped it on the namespace's boot
+    /// manifest. The sequence check starts at the first present chunk of such
+    /// a log; the restore is unchanged (it only ever reads the tail).
+    #[must_use]
+    pub fn inspect_from(&self, docs: &[LedgerDoc], floors: &ChunkFloors) -> LedgerHistory {
+        inspect_ledger_from(docs, Some(self.chunk_target_bytes), floors)
+    }
+
     /// Restore the open tail of every log from authoritative boot documents.
     ///
     /// Scans `(key, text)` chunk docs (`log:{id}:{chunk}`), groups by log id,
@@ -1236,6 +1246,9 @@ pub enum BreachKind {
 #[derive(Debug)]
 pub struct LedgerHistory {
     by_log: BTreeMap<SmolStr, BTreeMap<u64, ChunkFacts>>,
+    /// J4: the floors the inspection was made under (log id → chunks below
+    /// this index were allowed to be absent); empty for a whole inspection.
+    floors: ChunkFloors,
     /// Each log's **unsealed** tail chunk, decoded, with its entries' encoded
     /// byte total (the seal rule's counter).
     tails: BTreeMap<SmolStr, (LedgerChunk, usize)>,
@@ -1288,6 +1301,13 @@ impl LedgerHistory {
     /// The log ids seen, in order.
     pub fn logs(&self) -> impl Iterator<Item = &SmolStr> {
         self.by_log.keys()
+    }
+
+    /// J4: the chunk index below which `log_id`'s chunks were allowed to be
+    /// absent in this inspection — 0 when it was whole.
+    #[must_use]
+    pub fn floor(&self, log_id: &str) -> u64 {
+        self.floors.get(log_id).copied().unwrap_or(0)
     }
 
     /// `log_id`'s chunks in index order as `(chunk index, position in the
@@ -1373,6 +1393,26 @@ fn malformed_key_log_id(key: &str) -> SmolStr {
 /// tree: each payload is skipped, not built.
 #[must_use]
 pub fn inspect_ledger(docs: &[LedgerDoc], chunk_target: Option<usize>) -> LedgerHistory {
+    inspect_ledger_from(docs, chunk_target, &ChunkFloors::new())
+}
+
+/// Per ledger log id, the chunk index below which chunks may be absent from a
+/// boot without being a hole (J4, doc 12 §5.6): the loader skipped them on the
+/// namespace's boot manifest, and the module's checkpoint covers them.
+pub type ChunkFloors = BTreeMap<SmolStr, u64>;
+
+/// [`inspect_ledger`] over a **narrowed** boot: for each log in `floors`, a
+/// chunk below the floor may be absent, the run must be gap-free from the
+/// first present chunk up, and the sequence check starts at that chunk's first
+/// entry. A log absent from `floors` is inspected whole (chunk 0 onward). The
+/// floor's own chunk must be present when any higher one is — a manifest
+/// naming a chunk the store no longer has is a `MissingChunk` at the floor.
+#[must_use]
+pub fn inspect_ledger_from(
+    docs: &[LedgerDoc],
+    chunk_target: Option<usize>,
+    floors: &ChunkFloors,
+) -> LedgerHistory {
     let mut by_log: BTreeMap<SmolStr, BTreeMap<u64, ChunkFacts>> = BTreeMap::new();
     let mut breaches = BoundedBreaches::default();
     let mut valid_chunks = 0usize;
@@ -1439,12 +1479,16 @@ pub fn inspect_ledger(docs: &[LedgerDoc], chunk_target: Option<usize>) -> Ledger
         let Some(&max) = chunks.keys().next_back() else {
             continue;
         };
+        // J4: below a floor, absence is not a hole; the first present chunk
+        // may be anything at or below the floor, and must be the floor itself
+        // when it is above it.
+        let floor = floors.get(log_id).copied().unwrap_or(0);
         let mut prev: Option<u64> = None;
         for &idx in chunks.keys() {
             match prev {
-                None if idx != 0 => breaches.push(ContiguityBreach {
+                None if idx > floor => breaches.push(ContiguityBreach {
                     log_id: log_id.clone(),
-                    kind: BreachKind::MissingChunk { index: 0 },
+                    kind: BreachKind::MissingChunk { index: floor },
                 }),
                 Some(previous) => match previous.checked_add(1) {
                     Some(next) if idx != next => breaches.push(ContiguityBreach {
@@ -1462,7 +1506,17 @@ pub fn inspect_ledger(docs: &[LedgerDoc], chunk_target: Option<usize>) -> Ledger
             prev = Some(idx);
         }
 
-        let mut expected_seq = 0u64;
+        // J4: a narrowed log's sequence run starts where its first present
+        // chunk starts; a whole log's at 0.
+        let mut expected_seq = if floor > 0 {
+            chunks
+                .values()
+                .next()
+                .and_then(|facts| facts.seqs.first().copied())
+                .unwrap_or(0)
+        } else {
+            0
+        };
         for (&idx, facts) in chunks {
             if idx < max && !facts.sealed {
                 breaches.push(ContiguityBreach {
@@ -1547,6 +1601,7 @@ pub fn inspect_ledger(docs: &[LedgerDoc], chunk_target: Option<usize>) -> Ledger
 
     LedgerHistory {
         by_log,
+        floors: floors.clone(),
         tails,
         breaches,
         chunks: valid_chunks,
@@ -1576,16 +1631,21 @@ fn bounded_restore_error(breaches: &BoundedBreaches) -> LedgerRestoreError {
 /// fail closed), not every absent index.
 ///
 /// This assumes the log's **complete** chunk history is present in `kv` (chunk 0
-/// onward), which is true for the current boot path. If a future cold-chunk
-/// boot-skip lands (see [`LOG_PREFIX`]), a tail-only kv would look like a missing
-/// prefix here and this check must be revisited (e.g. keyed off a persisted
-/// min-present marker).
+/// onward). A boot narrowed by a boot manifest (J4, doc 12 §5.6) hands the
+/// omitted prefix as floors to [`scan_contiguity_from`] instead — the
+/// min-present marker this comment once foresaw.
 ///
 /// Returned details are capped at [`MAX_RESTORE_BREACH_DETAILS`]. Checked
 /// restore additionally reports the total and whether details were truncated.
 #[must_use]
 pub fn scan_contiguity(docs: &[LedgerDoc]) -> Vec<ContiguityBreach> {
     inspect_ledger(docs, None).breaches.details
+}
+
+/// [`scan_contiguity`] under chunk floors (J4): see [`inspect_ledger_from`].
+#[must_use]
+pub fn scan_contiguity_from(docs: &[LedgerDoc], floors: &ChunkFloors) -> Vec<ContiguityBreach> {
+    inspect_ledger_from(docs, None, floors).breaches.details
 }
 
 #[cfg(test)]
@@ -2047,6 +2107,88 @@ mod tests {
                 ]
             })
         ));
+    }
+
+    /// J4: below a floor, an absent chunk is not a hole; the sequence run
+    /// starts at the first present chunk; the restore resumes past the tail.
+    #[test]
+    fn j4_inspect_from_accepts_an_omitted_prefix_and_restores_the_tail() {
+        let whole = vec![
+            kv_chunk("s", 0, true, 0, 3),
+            kv_chunk("s", 1, true, 3, 2),
+            kv_chunk("s", 2, true, 5, 2),
+            kv_chunk("s", 3, false, 7, 1),
+        ];
+        let narrowed: Vec<_> = whole[2..].to_vec();
+        let floors: ChunkFloors = [(SmolStr::new("s"), 2u64)].into_iter().collect();
+        assert!(
+            !scan_contiguity(&as_docs(&narrowed)).is_empty(),
+            "whole: the prefix is a hole"
+        );
+        let history = inspect_ledger_from(&as_docs(&narrowed), None, &floors);
+        assert!(history.is_clean(), "{:?}", history.breaches());
+        assert_eq!((history.chunks(), history.entries()), (2, 3));
+        assert_eq!(history.floor("s"), 2);
+        assert_eq!(history.floor("other"), 0);
+        let mut led = Ledger::new();
+        assert!(led.inspect_from(&as_docs(&narrowed), &floors).is_clean());
+        led.restore_from_history(&history).unwrap();
+        assert_eq!(led.next_seq("s"), 8, "resumes past the present tail");
+        // Chunks below the floor may still be present: a floor permits, never
+        // demands, their absence.
+        let history = inspect_ledger_from(&as_docs(&whole), None, &floors);
+        assert!(history.is_clean());
+        assert_eq!(history.entries(), 8);
+        // A log the floors do not name is inspected whole.
+        let mut mixed = narrowed.clone();
+        mixed.push(kv_chunk("t", 1, false, 4, 1));
+        let history = inspect_ledger_from(&as_docs(&mixed), None, &floors);
+        assert!(
+            history
+                .breaches()
+                .iter()
+                .any(|b| b.log_id == "t" && b.kind == BreachKind::MissingChunk { index: 0 }),
+            "{:?}",
+            history.breaches()
+        );
+    }
+
+    /// J4: a floor names a chunk the store no longer has — the floor's own
+    /// chunk is missing though a higher one exists — and a gap above the floor
+    /// is still a gap.
+    #[test]
+    fn j4_inspect_from_flags_the_floor_chunk_missing_and_gaps_above_it() {
+        let floors: ChunkFloors = [(SmolStr::new("s"), 2u64)].into_iter().collect();
+        let above = vec![kv_chunk("s", 3, false, 7, 1)];
+        let history = inspect_ledger_from(&as_docs(&above), None, &floors);
+        assert_eq!(
+            history.breaches().first().map(|b| b.kind),
+            Some(BreachKind::MissingChunk { index: 2 })
+        );
+        let gapped = vec![kv_chunk("s", 2, true, 5, 2), kv_chunk("s", 4, false, 9, 1)];
+        let history = inspect_ledger_from(&as_docs(&gapped), None, &floors);
+        assert!(
+            history
+                .breaches()
+                .iter()
+                .any(|b| b.kind == BreachKind::MissingChunk { index: 3 }),
+            "{:?}",
+            history.breaches()
+        );
+        let seq_gap = vec![kv_chunk("s", 2, true, 5, 2), kv_chunk("s", 3, false, 9, 1)];
+        let history = inspect_ledger_from(&as_docs(&seq_gap), None, &floors);
+        assert!(
+            history.breaches().iter().any(|b| matches!(
+                b.kind,
+                BreachKind::SeqGap {
+                    expected: 7,
+                    found: 9,
+                    ..
+                }
+            )),
+            "{:?}",
+            history.breaches()
+        );
     }
 
     #[test]

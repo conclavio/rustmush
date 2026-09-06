@@ -53,8 +53,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use mush_core::{
-    ActionStateBootRecord, Effects, Engine, GameModule, Migration, ModuleBootData, Outbox,
-    is_action_state_persistence_key,
+    ActionStateBootRecord, BOOT_MANIFEST_KEY, BootManifest, Effects, Engine, GameModule, Migration,
+    ModError, ModuleBootData, Outbox, is_action_state_persistence_key,
 };
 use mush_llm::LlmService;
 use mush_ruleset::Ruleset;
@@ -793,22 +793,76 @@ impl<R: Ruleset + Send + Sync + 'static> mush_npc::AgentGrounding for RulesetAge
 
 /// Read and partition one namespace without invoking module-supplied boot
 /// callbacks. Typed state must be validated globally before callbacks run.
+/// How a namespace is fetched (J4, doc 12 §5.6).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Fetch {
+    /// Honour the namespace's boot manifest, if it has one: skip the ledger
+    /// chunks it names.
+    Narrowed,
+    /// The whole namespace, manifest ignored — the retry after a module
+    /// answered [`ModError::RetryFullFetch`], and every first boot's shape
+    /// before J4.
+    Whole,
+}
+
+/// The floors a namespace's boot manifest asks for, or none: no manifest,
+/// an unreadable one (said at `warn`), or a format this loader does not know.
+async fn manifest_floors(
+    store: &dyn ObjectStore,
+    ns: &str,
+) -> Result<mush_store::ChunkFloors, String> {
+    let Some(doc) = store
+        .module_json_get(ns, BOOT_MANIFEST_KEY)
+        .await
+        .map_err(|e| format!("reading {ns} boot manifest: {e}"))?
+    else {
+        return Ok(mush_store::ChunkFloors::new());
+    };
+    match serde_json::from_value::<BootManifest>(doc) {
+        Ok(manifest) => {
+            let floors = manifest.floors();
+            if floors.is_empty() && !manifest.skip_log_chunks_below.is_empty() {
+                tracing::warn!(
+                    ns,
+                    format = manifest.format,
+                    "boot manifest at an unknown format; fetching the namespace whole"
+                );
+            }
+            Ok(floors
+                .into_iter()
+                .map(|(log, below)| (log.to_string(), below))
+                .collect())
+        }
+        Err(error) => {
+            tracing::warn!(ns, %error, "boot manifest unreadable; fetching the namespace whole");
+            Ok(mush_store::ChunkFloors::new())
+        }
+    }
+}
+
 async fn load_one_namespace(
     store: &dyn ObjectStore,
     ns: &str,
+    fetch: Fetch,
 ) -> Result<(ModuleBootData, Vec<ActionStateBootRecord>), String> {
     // J1 / doc 12 D-12-3: the fetch is timed and handed to the module beside
     // its data — the part of a boot the replay timer never saw.
     let started = std::time::Instant::now();
+    // J4: the manifest first, then a listing that never fetches what it names.
+    let floors = match fetch {
+        Fetch::Narrowed => manifest_floors(store, ns).await?,
+        Fetch::Whole => mush_store::ChunkFloors::new(),
+    };
     let documents = store
-        .module_docs(ns)
+        .module_docs_from(ns, &floors)
         .await
         .map_err(|e| format!("listing module namespace {ns:?}: {e}"))?;
     let fetch_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
     let mut kv = Vec::new();
     let mut action_state = Vec::new();
     for (key, value) in documents.docs {
-        if key == SCHEMA_KEY {
+        // Loader-owned protocol documents never reach the module.
+        if key == SCHEMA_KEY || key == BOOT_MANIFEST_KEY {
             continue;
         }
         if is_action_state_persistence_key(&key) {
@@ -822,12 +876,21 @@ async fn load_one_namespace(
         .into_iter()
         .map(|(key, text)| (SmolStr::new(key), text))
         .collect();
+    let omitted = documents
+        .omitted
+        .into_iter()
+        .map(|(log, below)| (SmolStr::new(log), below))
+        .collect();
+    if !floors.is_empty() {
+        tracing::info!(ns, floors = ?floors, fetch_ms, "namespace fetched narrowed to its boot manifest");
+    }
     Ok((
         ModuleBootData {
             kv,
             ledger,
             streams: HashMap::new(),
             fetch_ms,
+            omitted,
         },
         action_state,
     ))
@@ -841,23 +904,34 @@ async fn load_requested_streams(
     boot: &mut HashMap<SmolStr, ModuleBootData>,
 ) -> Result<(), String> {
     for module in modules {
-        let ns = module.name();
         let data = boot
-            .get_mut(ns)
+            .get_mut(module.name())
             .expect("every composed module namespace was loaded in the first pass");
-        let mut streams = HashMap::new();
-        let stream_requests = module
-            .boot_stream_requests(&data.kv)
-            .map_err(|e| format!("validating module stream requests for {ns:?}: {e}"))?;
-        for (key, count) in stream_requests {
-            let entries = store
-                .stream_range(ns, &key, count)
-                .await
-                .map_err(|e| format!("loading module stream {ns}:{key}: {e}"))?;
-            streams.insert(key, entries);
-        }
-        data.streams = streams;
+        load_streams_for(store, module.as_ref(), data).await?;
     }
+    Ok(())
+}
+
+/// [`load_requested_streams`] for one module's data (the J4 retry refetches
+/// one namespace and needs its streams again).
+async fn load_streams_for(
+    store: &dyn ObjectStore,
+    module: &dyn GameModule,
+    data: &mut ModuleBootData,
+) -> Result<(), String> {
+    let ns = module.name();
+    let mut streams = HashMap::new();
+    let stream_requests = module
+        .boot_stream_requests(&data.kv)
+        .map_err(|e| format!("validating module stream requests for {ns:?}: {e}"))?;
+    for (key, count) in stream_requests {
+        let entries = store
+            .stream_range(ns, &key, count)
+            .await
+            .map_err(|e| format!("loading module stream {ns}:{key}: {e}"))?;
+        streams.insert(key, entries);
+    }
+    data.streams = streams;
     Ok(())
 }
 
@@ -881,7 +955,7 @@ async fn load_module_boot_with_action_state(
     let mut action_state = Vec::new();
     for module in modules {
         let (module_boot, mut module_action_state) =
-            load_one_namespace(store, module.name()).await?;
+            load_one_namespace(store, module.name(), Fetch::Narrowed).await?;
         boot.insert(SmolStr::new(module.name()), module_boot);
         action_state.append(&mut module_action_state);
     }
@@ -1053,9 +1127,54 @@ pub async fn boot_modules(engine: &mut Engine, store: &dyn ObjectStore) -> Resul
     load_requested_streams(store, engine.modules(), &mut boot).await?;
     let mut out = Outbox::new();
     let mut fx = Effects::new();
-    engine
-        .modules_loaded(boot, &mut out, &mut fx)
-        .map_err(|e| format!("module boot failed: {e}"))?;
+    // J4 (doc 12 §5.6): the modules are delivered one at a time, in order, so
+    // a module that cannot boot from a namespace narrowed by its own manifest
+    // (the checkpoint it stood for proved invalid or gone) gets that namespace
+    // fetched whole — manifest ignored — and delivered once more, itself
+    // alone; the retry's failure is the boot's.
+    let names: Vec<SmolStr> = engine
+        .modules()
+        .iter()
+        .map(|m| SmolStr::new(m.name()))
+        .collect();
+    for name in names {
+        let data = boot.remove(&name).unwrap_or_default();
+        match engine.module_loaded(&name, data, &mut out, &mut fx) {
+            Ok(()) => {}
+            Err(ModError::RetryFullFetch { reason, .. }) => {
+                tracing::warn!(
+                    module = %name,
+                    %reason,
+                    "module cannot boot from its narrowed namespace; fetching it whole and delivering again"
+                );
+                // The manifest is loader-owned and stood for a checkpoint that
+                // did not hold: clear it, so the next boot fetches whole until
+                // the module writes a new one beside its next checkpoint.
+                write_ops(
+                    store,
+                    vec![ModuleOp {
+                        ns: name.clone(),
+                        op: ModuleWrite::Del {
+                            key: SmolStr::new(BOOT_MANIFEST_KEY),
+                        },
+                    }],
+                )
+                .await?;
+                let (mut data, _already_hydrated_action_state) =
+                    load_one_namespace(store, &name, Fetch::Whole).await?;
+                let module = engine
+                    .modules()
+                    .iter()
+                    .find(|m| m.name() == name)
+                    .expect("the module was just delivered");
+                load_streams_for(store, module.as_ref(), &mut data).await?;
+                engine
+                    .module_loaded(&name, data, &mut out, &mut fx)
+                    .map_err(|e| format!("module boot failed after the whole fetch: {e}"))?;
+            }
+            Err(e) => return Err(format!("module boot failed: {e}")),
+        }
+    }
     // Nothing is connected yet; boot-time output has nowhere to go.
     let events = out.take();
     if !events.is_empty() {
@@ -1564,6 +1683,247 @@ mod tests {
         let kv = &boot[&SmolStr::new("toy")].kv;
         assert_eq!(kv.len(), 1);
         assert_eq!(kv[0].0, "doc:1");
+    }
+
+    /// J4 (doc 12 §5.6): the loader reads the namespace's boot manifest first
+    /// and fetches nothing it names; the omission reaches the module as the
+    /// min-present marker; the manifest itself never does; a whole fetch
+    /// ignores it.
+    #[tokio::test]
+    async fn j4_the_loader_narrows_the_fetch_to_the_boot_manifest() {
+        let store = InMemoryStore::new();
+        let chunk = |n: u64, sealed: bool| {
+            serde_json::json!({
+                "chunk": n, "sealed": sealed, "entries": [{ "seq": n, "value": { "n": n } }]
+            })
+        };
+        let set = |key: &str, value: serde_json::Value| ModuleOp {
+            ns: "toy".into(),
+            op: ModuleWrite::JsonSet {
+                key: key.into(),
+                value,
+            },
+        };
+        write_ops(
+            &store,
+            vec![
+                stamp("toy", 2),
+                set("doc:1", serde_json::json!({ "b": 1 })),
+                set("log:s:0", chunk(0, true)),
+                set("log:s:1", chunk(1, true)),
+                set("log:s:2", chunk(2, false)),
+                set("log:t:0", chunk(0, false)),
+                set(
+                    BOOT_MANIFEST_KEY,
+                    serde_json::to_value(BootManifest {
+                        format: mush_core::BOOT_MANIFEST_FORMAT,
+                        skip_log_chunks_below: [(SmolStr::new("s"), 2u64)].into_iter().collect(),
+                    })
+                    .unwrap(),
+                ),
+            ],
+        )
+        .await
+        .unwrap();
+        let (data, _) = load_one_namespace(&store, "toy", Fetch::Narrowed)
+            .await
+            .unwrap();
+        assert_eq!(
+            data.kv.iter().map(|(k, _)| k.as_str()).collect::<Vec<_>>(),
+            vec!["doc:1"],
+            "the manifest is loader-owned and never a module document"
+        );
+        let mut ledger: Vec<&str> = data.ledger.iter().map(|(k, _)| k.as_str()).collect();
+        ledger.sort_unstable();
+        assert_eq!(ledger, vec!["log:s:2", "log:t:0"]);
+        assert_eq!(
+            data.omitted,
+            [(SmolStr::new("s"), 2u64)].into_iter().collect()
+        );
+        let (whole, _) = load_one_namespace(&store, "toy", Fetch::Whole)
+            .await
+            .unwrap();
+        assert_eq!(whole.ledger.len(), 4, "a whole fetch ignores the manifest");
+        assert!(whole.omitted.is_empty());
+        // An unreadable manifest is a whole fetch, not a failed boot.
+        write_ops(
+            &store,
+            vec![set(
+                BOOT_MANIFEST_KEY,
+                serde_json::json!({ "format": "nine" }),
+            )],
+        )
+        .await
+        .unwrap();
+        let (data, _) = load_one_namespace(&store, "toy", Fetch::Narrowed)
+            .await
+            .unwrap();
+        assert_eq!(data.ledger.len(), 4);
+        assert!(data.omitted.is_empty());
+        // A manifest at a format this loader does not know: the same.
+        write_ops(
+            &store,
+            vec![set(
+                BOOT_MANIFEST_KEY,
+                serde_json::json!({ "format": 99, "skip_log_chunks_below": { "s": 2 } }),
+            )],
+        )
+        .await
+        .unwrap();
+        let (data, _) = load_one_namespace(&store, "toy", Fetch::Narrowed)
+            .await
+            .unwrap();
+        assert_eq!(data.ledger.len(), 4);
+    }
+
+    /// A module that refuses a narrowed namespace once (J4's
+    /// `RetryFullFetch`) and records what each delivery carried.
+    struct PickyMod {
+        deliveries: Arc<Mutex<Vec<(usize, usize)>>>,
+        refuse_narrowed: bool,
+    }
+
+    impl GameModule for PickyMod {
+        fn name(&self) -> &'static str {
+            "picky"
+        }
+
+        fn register(&mut self, _reg: &mut Registrar<'_>) -> Result<(), ModError> {
+            Ok(())
+        }
+
+        fn on_world_loaded(
+            &mut self,
+            _ctx: &mut mush_core::ModuleCtx<'_>,
+            data: ModuleBootData,
+        ) -> Result<(), ModError> {
+            self.deliveries
+                .lock()
+                .unwrap()
+                .push((data.ledger.len(), data.omitted.len()));
+            if self.refuse_narrowed && !data.omitted.is_empty() {
+                return Err(ModError::RetryFullFetch {
+                    module: SmolStr::new("picky"),
+                    reason: "the checkpoint the manifest stood for is gone".into(),
+                });
+            }
+            Ok(())
+        }
+    }
+
+    /// J4 (lens G): a module that cannot boot from its narrowed namespace is
+    /// delivered the whole one, itself alone, and the boot goes on; a module
+    /// that refuses the whole one too fails the boot; the retry is not
+    /// offered to a whole fetch.
+    #[tokio::test]
+    async fn j4_boot_modules_refetches_whole_for_a_module_that_asks() {
+        let store = InMemoryStore::new();
+        let chunk = |n: u64, sealed: bool| {
+            serde_json::json!({
+                "chunk": n, "sealed": sealed, "entries": [{ "seq": n, "value": { "n": n } }]
+            })
+        };
+        let set = |key: &str, value: serde_json::Value| ModuleOp {
+            ns: "picky".into(),
+            op: ModuleWrite::JsonSet {
+                key: key.into(),
+                value,
+            },
+        };
+        write_ops(
+            &store,
+            vec![
+                set("log:s:0", chunk(0, true)),
+                set("log:s:1", chunk(1, false)),
+                set(
+                    BOOT_MANIFEST_KEY,
+                    serde_json::to_value(BootManifest {
+                        format: mush_core::BOOT_MANIFEST_FORMAT,
+                        skip_log_chunks_below: [(SmolStr::new("s"), 1u64)].into_iter().collect(),
+                    })
+                    .unwrap(),
+                ),
+            ],
+        )
+        .await
+        .unwrap();
+        let deliveries = Arc::new(Mutex::new(Vec::new()));
+        let picky = PickyMod {
+            deliveries: Arc::clone(&deliveries),
+            refuse_narrowed: true,
+        };
+        let modules: Vec<Box<dyn GameModule>> =
+            vec![Box::new(picky), Box::new(ToyMod { loaded: Vec::new() })];
+        let mut engine =
+            Engine::with_modules(World::new_minimal(), mush_core::Registry::new(), modules)
+                .unwrap();
+        boot_modules(&mut engine, &store).await.unwrap();
+        assert_eq!(
+            *deliveries.lock().unwrap(),
+            vec![(1, 1), (2, 0)],
+            "narrowed first (one chunk, one floor), then whole (two chunks, no floor)"
+        );
+        assert_eq!(
+            store
+                .module_json_get("picky", BOOT_MANIFEST_KEY)
+                .await
+                .unwrap(),
+            None,
+            "the manifest that stood for nothing is cleared by the loader"
+        );
+
+        // The whole fetch refused too: the boot fails with the module's reason.
+        // (The first retry cleared the manifest; write it back for this one.)
+        write_ops(
+            &store,
+            vec![set(
+                BOOT_MANIFEST_KEY,
+                serde_json::to_value(BootManifest {
+                    format: mush_core::BOOT_MANIFEST_FORMAT,
+                    skip_log_chunks_below: [(SmolStr::new("s"), 1u64)].into_iter().collect(),
+                })
+                .unwrap(),
+            )],
+        )
+        .await
+        .unwrap();
+        let deliveries = Arc::new(Mutex::new(Vec::new()));
+        struct AlwaysRetry(Arc<Mutex<Vec<(usize, usize)>>>);
+        impl GameModule for AlwaysRetry {
+            fn name(&self) -> &'static str {
+                "picky"
+            }
+            fn register(&mut self, _reg: &mut Registrar<'_>) -> Result<(), ModError> {
+                Ok(())
+            }
+            fn on_world_loaded(
+                &mut self,
+                _ctx: &mut mush_core::ModuleCtx<'_>,
+                data: ModuleBootData,
+            ) -> Result<(), ModError> {
+                self.0
+                    .lock()
+                    .unwrap()
+                    .push((data.ledger.len(), data.omitted.len()));
+                Err(ModError::RetryFullFetch {
+                    module: SmolStr::new("picky"),
+                    reason: "never satisfied".into(),
+                })
+            }
+        }
+        let modules: Vec<Box<dyn GameModule>> =
+            vec![Box::new(AlwaysRetry(Arc::clone(&deliveries)))];
+        let mut engine =
+            Engine::with_modules(World::new_minimal(), mush_core::Registry::new(), modules)
+                .unwrap();
+        let err = boot_modules(&mut engine, &store).await.unwrap_err();
+        assert!(err.contains("after the whole fetch"), "{err}");
+        assert!(err.contains("never satisfied"), "{err}");
+        assert_eq!(
+            *deliveries.lock().unwrap(),
+            vec![(1, 1), (2, 0)],
+            "exactly one retry"
+        );
     }
 
     /// J1: ledger chunks reach boot data as text, apart from the ordinary

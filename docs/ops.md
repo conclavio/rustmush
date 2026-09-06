@@ -1031,6 +1031,17 @@ doc 12 J3 as built). Two heads are kept; the
 next write sweeps older ones. A document lagging a version older than the
 checkpoint heals without a drift verdict, said at `info` (doc 12 D-12-2).
 
+**The narrow fetch** (J4, doc 12 §5.6) needs no configuration. Beside every
+checkpoint head the economy writes `boot-manifest`, naming the journal chunk
+below which the next boot need not fetch; the loader reads it first and lists
+the namespace without those chunks (`namespace fetched narrowed to its boot
+manifest` at `info`, with the floors and `fetch_ms`). If the checkpoint the
+manifest stood for no longer holds, the boot log shows `module cannot boot
+from its narrowed namespace; fetching it whole and delivering again` at
+`warn`, the manifest is cleared, and the boot is a full replay; the next
+checkpoint writes a fresh manifest. Every module's namespace fetch is now one
+`JSON.MGET` per 256 keys rather than one `JSON.GET` per key.
+
 **The ledger archive tier** (J5, doc 12 §10) is off by default. With
 `[store.archive] enabled = true`, a pass runs once a UTC day inside `window`
 (`03:00-04:00`): it copies every **sealed** ledger chunk of every module

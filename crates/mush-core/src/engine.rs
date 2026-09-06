@@ -2040,32 +2040,61 @@ impl Engine {
         out: &mut Outbox,
         fx: &mut Effects,
     ) -> Result<(), ModError> {
-        let mut modules = std::mem::take(&mut self.modules);
-        let mut result = Ok(());
-        for m in &mut modules {
-            let mut data = boot.remove(m.name()).unwrap_or_default();
-            // J1: ledger chunks reach every module as text, however they came.
-            data.normalize();
-            let module_name = SmolStr::new(m.name());
-            let typed_state = crate::action_state::ModuleActionState::for_module(
-                Some(&self.action_state),
-                Some(module_name.as_str()),
-            );
-            let mut ctx = Ctx {
-                w: &mut self.world,
-                actor: GOD,
-                switches: SwitchSet::default(),
-                args: ParsedArgs::default(),
-                out,
-                reg: &self.registry,
-                module: Some(module_name),
-                typed_state,
-            };
-            if let Err(e) = m.on_world_loaded(&mut ctx, data) {
-                result = Err(e);
-                break;
-            }
+        for index in 0..self.modules.len() {
+            let data = boot.remove(self.modules[index].name()).unwrap_or_default();
+            self.load_module_at(index, data, out, fx)?;
         }
+        Ok(())
+    }
+
+    /// [`Engine::modules_loaded`] for **one** module (J4, doc 12 §5.6): the
+    /// driver walks the modules itself when a module may answer
+    /// [`ModError::RetryFullFetch`] to a narrowed namespace and needs its data
+    /// fetched whole and delivered again — to that module alone, in its place
+    /// in the order.
+    ///
+    /// # Errors
+    /// No module of that name; or whatever the module's
+    /// [`GameModule::on_world_loaded`] returned.
+    pub fn module_loaded(
+        &mut self,
+        name: &str,
+        data: ModuleBootData,
+        out: &mut Outbox,
+        fx: &mut Effects,
+    ) -> Result<(), ModError> {
+        let Some(index) = self.modules.iter().position(|m| m.name() == name) else {
+            return Err(ModError::msg(format!("no module named {name:?}")));
+        };
+        self.load_module_at(index, data, out, fx)
+    }
+
+    fn load_module_at(
+        &mut self,
+        index: usize,
+        mut data: ModuleBootData,
+        out: &mut Outbox,
+        fx: &mut Effects,
+    ) -> Result<(), ModError> {
+        let mut modules = std::mem::take(&mut self.modules);
+        // J1: ledger chunks reach every module as text, however they came.
+        data.normalize();
+        let module_name = SmolStr::new(modules[index].name());
+        let typed_state = crate::action_state::ModuleActionState::for_module(
+            Some(&self.action_state),
+            Some(module_name.as_str()),
+        );
+        let mut ctx = Ctx {
+            w: &mut self.world,
+            actor: GOD,
+            switches: SwitchSet::default(),
+            args: ParsedArgs::default(),
+            out,
+            reg: &self.registry,
+            module: Some(module_name),
+            typed_state,
+        };
+        let result = modules[index].on_world_loaded(&mut ctx, data);
         self.modules = modules;
         self.drain_deferred(out, fx);
         result

@@ -724,9 +724,83 @@ full replay, and the manifest rewritten), **S** (the store suites: `module_json_
 without omission returns the same documents for the kept keys, both backends). Size: two days,
 plus the Redis suite time.
 
+> **J4 as built — 2026-09-06.** §5.6 as designed, with the retry made a typed error and the
+> omission a marker rather than a key list.
+>
+> 1. **The manifest** (`mush_core::BootManifest` under `BOOT_MANIFEST_KEY`, `boot-manifest`):
+>    `{ format: 1, skip_log_chunks_below: { "journal": k } }`. The economy writes it beside every
+>    head, with *k* the chunk holding the RAM tail's floor at that head (`covered_seq + 1 −
+>    tx_tail_max`), so everything below is both covered and outside the tail. Loader-owned
+>    protocol: the loader reads it first, honours a format it knows (an unreadable or unknown
+>    one is a whole fetch at `warn`), and strips it from the module's documents.
+> 2. **The narrowed listing** (`ObjectStore::module_docs_from(ns, &floors)`): a chunk below its
+>    log's floor is neither fetched from the primary nor merged from the archive (J5's
+>    `merge_archived` takes the floors), and the floors come back in `ModuleDocs::omitted`. Both
+>    backends skip the fetch itself; the trait default lists whole and drops. **The Redis fetch
+>    is now pipelined**: one `JSON.MGET` per page of 256 keys instead of one `JSON.GET` per key,
+>    for every module's boot; a page that trips on a non-JSON key falls back to the per-key
+>    path, which still classifies each key positively before skipping it.
+> 3. **The marker** (`ModuleBootData.omitted`, log id → chunks below not fetched) reaches the
+>    inspection as `ChunkFloors`: `inspect_ledger_from` / `scan_contiguity_from` /
+>    `Ledger::inspect_from`. Below a floor absence is not a hole; the floor's own chunk must be
+>    present when a higher one is (a manifest naming a chunk the store no longer has is a
+>    `MissingChunk` at the floor); the sequence run starts at the first present chunk; a floor
+>    permits absence and never demands it. The restore is unchanged — it only reads the tail.
+> 4. **The retry** (`ModError::RetryFullFetch { module, reason }`): a module handed a narrowed
+>    namespace it cannot boot from returns it; `Engine::module_loaded` delivers one module, and
+>    `boot_modules` walks the modules in order, and on the retry **clears the manifest** (it is
+>    the loader's, and it stood for nothing), fetches that namespace whole, reloads its streams,
+>    and delivers it once more to that module alone; a second refusal fails the boot with the
+>    module's reason. The economy returns the retry when the fetch was narrowed and no valid
+>    checkpoint's covered chunk reaches the floor — the head invalid, gone, or below it.
+> 5. **J4-D1:** the omission is a marker, not the omitted keys — the ledger only needs the floor,
+>    and a key list would be thousands of strings for nothing. **J4-D2:** a floor above the RAM
+>    tail's chunk (the tail lengthened by config since the manifest was written) shortens the
+>    tail until posts refill it, at `info`; never a retry — the money is all there.
+>
+> **Measured (lens M).** The scale harness's checkpointed boot grew a narrowed twin: the same
+> boot with the chunks below the manifest's floor never handed over. Release build, this dev
+> box quiet, 100 accounts, the default 20 000-entry tail:
+>
+> | entries | chunks | full boot | checkpointed boot | narrowed boot | floor | chunks handed over |
+> |---:|---:|---:|---:|---:|---:|---:|
+> | 25 000 | 881 | 81 ms | 104 ms | 115 ms | 172 | 709 |
+> | 100 000 | 3 560 | 327 ms | 334 ms | 269 ms | 2 844 | 716 |
+>
+> At 100 000 entries the narrowed boot hands over a fifth of the chunks and is the first boot
+> shape faster than a full replay (269 vs 327 ms): what it saves is the inspection's text
+> decode of the 2 844 omitted chunks. At 25 000 the tail is most of the journal, the floor
+> omits a fifth, and the three shapes are within noise of each other. **The store-side saving
+> is the point of J4 and is not measurable in process**: on Redis the narrowed listing issues
+> no `JSON.MGET` for the omitted keys at all, and every listing is now one round trip per 256
+> keys rather than one per key; that number needs the Redis suite on a real instance (D-12-3).
+>
+> **Verify (lenses G, S, L, E, C).** G: through `boot_modules` over the in-memory store, a
+> module that refuses its narrowed namespace is delivered the whole one, itself alone, the
+> manifest is cleared, and the boot goes on; a module that refuses the whole one too fails the
+> boot with its reason after exactly one retry. In the economy: a tampered head under a floor,
+> no checkpoint documents under a floor, and a floor above the covered chunk (the manifest
+> naming a chunk the store no longer has) each answer the retry, and the same store fetched
+> whole boots by a full replay with the money right; a floor at the covered chunk boots with a
+> shorter tail (J4-D2). S: the store suite's narrowed listing returns the whole listing's text
+> for every key it keeps, lists nothing below a floor, leaves other logs and the ordinary
+> documents alone, echoes the floors, and narrows nothing on empty floors — the in-memory
+> backend on this box; the Redis suite is `REDIS_URL`-gated and was **not** run here. L: the
+> ledger accepts an omitted prefix and restores the tail past it, still flags the floor's own
+> chunk missing when a higher one exists, a gap above the floor, and a sequence gap above it,
+> inspects a log the floors do not name whole, and takes a present chunk below a floor as
+> present. E: end to end through the driver — the sweep writes head and manifest; a fresh
+> engine boots narrowed from the checkpoint with the tail full; the head tampered, the next
+> boot recovers whole with the manifest cleared; the recovered world's next checkpoint writes
+> a fresh manifest and the boot after it is narrowed again. C: the cadence-1 workspace pass
+> repeated for the boot rule's change. Findings folded: **J4-F1** — the RAM tail's floor was
+> computed from the inspection's entry count, which under a narrowed fetch counts only the
+> present chunks, so a narrowed boot retained every present body (31 for a tail of 3); the
+> journal's length is the restored tail's next sequence, and the floor comes from that.
+
 J1 is the first cut. The order after the owner's decisions (§9) is J2 → J5 (§10.6, the
-archive tier) → J3 → J4; J2 and J5 can each be taken alone. *J1, J2, J5 and J3 are built (§7's
-as-built blocks); J4 and the windowed index (J3-D1) remain.*
+archive tier) → J3 → J4; J2 and J5 can each be taken alone. *All five are built (§7's as-built
+blocks); the windowed index (D-12-6) remains, as its own cut.*
 
 ## 8. Open questions for the owner
 

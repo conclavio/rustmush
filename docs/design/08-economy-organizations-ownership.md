@@ -865,7 +865,10 @@ tail. A derived tail may be rebuilt and must never become authority.
 > `@econ/reverse` reach past the tail through the store-read seam. **J5 and J3 followed** (doc
 > 12 §7, §10): sealed chunks archive to compressed disk with a verified purge, and step 4's
 > checkpoint exists — `checkpoint:{seq}` plus immutable parts, written by the sweep after a
-> write-time drift check, validated by hash at boot, never authority.
+> write-time drift check, validated by hash at boot, never authority. **J4** closed the
+> programme: a boot manifest beside each head lets the loader skip the covered cold chunks, the
+> ledger inspection takes the omission as a floor, and a module that cannot boot narrowed asks
+> for the whole namespace once.
 
 ---
 

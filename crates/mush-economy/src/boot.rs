@@ -89,14 +89,21 @@ pub(crate) fn load_boot(
     let ModuleBootData {
         kv,
         ledger: mut ledger_docs,
+        omitted,
         ..
     } = data;
+    // J4 (doc 12 §5.6): what the loader left out on the boot manifest — the
+    // min-present marker the inspection honours; 0 for a whole fetch.
+    let narrowed_below: u64 = omitted
+        .get(crate::module::JOURNAL_LOG)
+        .copied()
+        .unwrap_or(0);
     // J1 (doc 12): ONE inspection of the journal's chunk documents serves the
     // contiguity decision, the ledger restore and the typed pass below; each
     // chunk is decoded from its text once, and the text is dropped as it goes.
     // Unreplayable journal → fail the boot (never destructively "recover" money).
     let mut journal = Ledger::new();
-    let history = journal.inspect(&ledger_docs);
+    let history = journal.inspect_from(&ledger_docs, &omitted);
     if !history.is_clean() {
         return Err(ModError::msg(format!(
             "economy: journal contiguity breach; refusing to boot on a hole ({} breach(es); first {:?})",
@@ -367,6 +374,9 @@ pub(crate) fn load_boot(
         } else if crate::checkpoint::is_checkpoint_key(key) {
             // J3: selected and validated below, once the journal is inspected.
             checkpoint_keys.insert(key.clone());
+        } else if key == mush_core::BOOT_MANIFEST_KEY {
+            // J4: loader-owned; the production loader strips it, a test rig
+            // may hand it over with the rest.
         } else {
             tracing::warn!(%key, "economy: unknown persisted key ignored");
         }
@@ -375,12 +385,16 @@ pub(crate) fn load_boot(
     // J2: the typed pass and the fold are one streamed loop (below), chunk by
     // chunk, so no more than one chunk's records exist outside the RAM tail at
     // any moment. What the fold needs of the whole journal is known up front.
-    let journal_total = history.entries_of(crate::module::JOURNAL_LOG);
-    let journal_empty = journal_total == 0;
-    let journal_max: Option<u64> = journal.next_seq(crate::module::JOURNAL_LOG).checked_sub(1);
+    // J4-F1: the journal's length is the restored tail's next sequence, not the
+    // inspection's entry count — a narrowed fetch hands over only the chunks
+    // at or above the manifest's floor, and a tail floor computed from those
+    // alone sat far too low (every present body was retained).
+    let journal_len = journal.next_seq(crate::module::JOURNAL_LOG);
+    let journal_empty = journal_len == 0;
+    let journal_max: Option<u64> = journal_len.checked_sub(1);
     // The RAM tail keeps the newest `tail_max` bodies: every entry at or past
     // this sequence. The index below keeps every id.
-    let keep_from: u64 = u64::try_from(journal_total.saturating_sub(tail_max)).unwrap_or(u64::MAX);
+    let keep_from: u64 = journal_len.saturating_sub(u64::try_from(tail_max).unwrap_or(u64::MAX));
     let mut tx_index: BTreeMap<TransactionId, TxRef> = BTreeMap::new();
     let mut chunk_firsts: BTreeMap<u64, u64> = BTreeMap::new();
 
@@ -409,6 +423,29 @@ pub(crate) fn load_boot(
     let (checkpoint, checkpoint_notes) = crate::checkpoint::select(&kv, journal_max, &history);
     for note in &checkpoint_notes {
         tracing::error!(%note, "economy: checkpoint rejected; replaying past it");
+    }
+    // J4: a boot narrowed by its own manifest can only proceed from a valid
+    // checkpoint covering every chunk the fetch left out; anything else is the
+    // driver's to fetch whole and deliver again — never a guess from a partial
+    // journal.
+    if narrowed_below > 0 {
+        let covered_chunk = checkpoint.as_ref().map(|c| c.head.covered_chunk);
+        if covered_chunk.is_none_or(|chunk| chunk < narrowed_below) {
+            let reason = match covered_chunk {
+                None => format!(
+                    "the journal was fetched from chunk {narrowed_below} on the boot manifest, but no valid checkpoint covers the chunks below it ({} rejected)",
+                    checkpoint_notes.len()
+                ),
+                Some(chunk) => format!(
+                    "the journal was fetched from chunk {narrowed_below} on the boot manifest, but the newest valid checkpoint covers only chunk {chunk}"
+                ),
+            };
+            tracing::warn!(%reason, "economy: cannot boot from a narrowed namespace; asking for the whole fetch");
+            return Err(ModError::RetryFullFetch {
+                module: SmolStr::new(crate::module::NS),
+                reason,
+            });
+        }
     }
     let mut covered: Option<u64> = None;
     let mut skip_below_chunk: u64 = 0;
@@ -447,6 +484,16 @@ pub(crate) fn load_boot(
             .rev()
             .find(|(_, first)| **first <= keep_from)
             .map_or(0, |(chunk, _)| *chunk);
+        // J4-D2: a manifest floor above the tail's chunk (the tail was
+        // lengthened since the manifest was written) leaves the tail shorter
+        // until posts refill it — never a retry, the money is all there.
+        if tail_chunk < narrowed_below {
+            tracing::info!(
+                tail_chunk,
+                narrowed_below,
+                "economy: the boot manifest's floor is above the RAM tail's chunk; the tail starts at the floor until posts refill it"
+            );
+        }
         skip_below_chunk = head.covered_chunk.min(tail_chunk);
         checkpoint_meta = Some(CheckpointMeta {
             covered_seq: head.covered_seq,

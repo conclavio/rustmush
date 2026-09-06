@@ -841,6 +841,154 @@ fn replay(tw: &TestWorld) -> (Option<u64>, usize, usize) {
     (r.from_checkpoint, r.replayed, r.entries)
 }
 
+/// J4: boot from `kv` the way the production loader would after reading a
+/// manifest with `floor` for the journal — the chunks below it never fetched,
+/// the omission handed over as the min-present marker.
+fn reboot_j4(
+    kv: Vec<(SmolStr, serde_json::Value)>,
+    tail: usize,
+    every: u64,
+    floor: u64,
+) -> Result<TestWorld, ModError> {
+    let kv: Vec<(SmolStr, serde_json::Value)> = kv
+        .into_iter()
+        .filter(|(k, _)| {
+            mush_core::parse_chunk_key(k)
+                .is_none_or(|(log, chunk)| log != "journal" || chunk >= floor)
+        })
+        .collect();
+    let mut omitted = std::collections::BTreeMap::new();
+    if floor > 0 {
+        omitted.insert(SmolStr::new("journal"), floor);
+    }
+    let mut tw = boot_j3(tail, every);
+    tw.try_modules_loaded(HashMap::from([(
+        SmolStr::new(NS),
+        ModuleBootData {
+            kv,
+            omitted,
+            ..ModuleBootData::default()
+        },
+    )]))?;
+    Ok(tw)
+}
+
+/// The boot manifest as `kv` holds it, if one was written.
+fn manifest_floor(kv: &[(SmolStr, serde_json::Value)]) -> Option<u64> {
+    let (_, doc) = kv.iter().find(|(k, _)| k == mush_core::BOOT_MANIFEST_KEY)?;
+    let manifest: mush_core::BootManifest =
+        serde_json::from_value(doc.clone()).expect("a manifest");
+    assert_eq!(manifest.format, mush_core::BOOT_MANIFEST_FORMAT);
+    manifest.skip_log_chunks_below.get("journal").copied()
+}
+
+/// J4 (doc 12 §5.6): the sweep writes the boot manifest beside the head,
+/// naming the chunk that holds the RAM tail's floor; a boot that never fetched
+/// the chunks below it resumes from the checkpoint with the tail full; a whole
+/// boot of the same store is unchanged.
+#[test]
+fn j4_the_checkpoint_writes_the_boot_manifest_and_a_narrowed_boot_resumes() {
+    let mut tw = boot_j3(3, 4);
+    setup_mint(&mut tw, 1);
+    mint_n(&mut tw, 120); // seq 0..=120, several chunks
+    sweep_at(&mut tw, 100);
+    let cp = store(&tw).checkpoint().cloned().expect("written");
+    assert_eq!(cp.covered_seq, 120);
+    let expected_floor = store(&tw).chunk_of_seq(121 - 3).expect("known chunk");
+    assert!(
+        expected_floor >= 1,
+        "the journal reached a second chunk: {expected_floor}"
+    );
+    let kv = fold_into(Vec::new(), &mut tw);
+    assert_eq!(
+        manifest_floor(&kv),
+        Some(expected_floor),
+        "the manifest names the tail's chunk"
+    );
+
+    let tw2 = reboot_j4(kv.clone(), 3, 4, expected_floor).expect("a narrowed boot");
+    let s = store(&tw2);
+    assert!(!s.is_frozen());
+    assert_eq!(
+        s.boot_replay().map(|r| (r.from_checkpoint, r.replayed)),
+        Some((Some(120), 0))
+    );
+    assert_eq!(
+        (s.journal_len(), s.tail_len(), s.tail_floor_seq()),
+        (121, 3, Some(118))
+    );
+    assert_eq!(s.transaction_ref(TransactionId(0)).map(|r| r.seq), Some(0));
+    assert_eq!(bal(&tw2, 1), 121);
+
+    let tw3 = reboot_j4(kv, 3, 4, 0).expect("a whole boot");
+    assert_eq!(bal(&tw3, 1), 121);
+    assert_eq!(store(&tw3).tail_len(), 3);
+}
+
+/// J4 (lens G): a boot narrowed by a manifest that stands for nothing — the
+/// checkpoint invalid, gone, or below the floor — asks the driver for the
+/// whole namespace instead of guessing from a partial journal; the whole
+/// fetch of the same store boots by a full replay.
+#[test]
+fn j4_a_narrowed_boot_without_a_usable_checkpoint_asks_for_the_whole_fetch() {
+    let mut tw = boot_j3(3, 4);
+    setup_mint(&mut tw, 1);
+    mint_n(&mut tw, 120);
+    sweep_at(&mut tw, 100);
+    let cp = store(&tw).checkpoint().cloned().expect("written");
+    let covered_chunk = store(&tw).chunk_of_seq(cp.covered_seq).expect("known");
+    let kv = fold_into(Vec::new(), &mut tw);
+    let floor = manifest_floor(&kv).expect("a manifest");
+    let is_retry = |r: &Result<TestWorld, ModError>| matches!(r, Err(ModError::RetryFullFetch { module, .. }) if module == NS);
+
+    // The head's hash does not recompute.
+    let mut tampered = kv.clone();
+    patch(&mut tampered, &cp.head_key, |v| {
+        v["state_hash"] = serde_json::json!("00");
+    });
+    assert!(
+        is_retry(&reboot_j4(tampered.clone(), 3, 4, floor)),
+        "a tampered head under a floor"
+    );
+    let whole = reboot_j4(tampered, 3, 4, 0).expect("the whole fetch boots");
+    assert_eq!(
+        store(&whole).boot_replay().map(|r| r.from_checkpoint),
+        Some(None)
+    );
+    assert!(!store(&whole).is_frozen());
+    assert_eq!(bal(&whole, 1), 121);
+
+    // No checkpoint documents at all under a floor.
+    let stripped: Vec<_> = kv
+        .iter()
+        .filter(|(k, _)| !k.starts_with("checkpoint:"))
+        .cloned()
+        .collect();
+    assert!(
+        is_retry(&reboot_j4(stripped, 3, 4, floor)),
+        "no checkpoint under a floor"
+    );
+
+    // A manifest naming a chunk the store no longer has: the floor is above
+    // the covered chunk, so the head's own chunk is missing from the fetch.
+    assert!(
+        is_retry(&reboot_j4(kv.clone(), 3, 4, covered_chunk + 1)),
+        "a floor above the covered chunk"
+    );
+
+    // A floor at the covered chunk is fine (the tail is what shortens).
+    let clamped = reboot_j4(kv, 3, 4, covered_chunk).expect("a floor at the covered chunk");
+    let s = store(&clamped);
+    assert!(!s.is_frozen());
+    assert_eq!(s.boot_replay().map(|r| r.from_checkpoint), Some(Some(120)));
+    assert!(
+        s.tail_len() <= 3,
+        "the tail is at most the limit: {}",
+        s.tail_len()
+    );
+    assert_eq!(bal(&clamped, 1), 121);
+}
+
 /// J3-F3 (cadence-1 verify fold): sequence 0 is both the journal's first
 /// sequence and the never-touched sentinel, and the boot's checkpoint rule
 /// first excluded every claim of 0 — so an account whose only touch was the
