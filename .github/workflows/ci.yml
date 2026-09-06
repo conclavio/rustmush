@@ -51,6 +51,7 @@ jobs:
           cargo test -p mush-contract-tests --lib
           cargo test -p mush-contract-tests --test gate5_fault_matrix
           cargo test -p mush-contract-tests --test schedule_source
+          cargo test -p mush-contract-tests --test ci_gated_test_inventory
       - name: Production migrations and compatibility declarations
         run: |
           cargo test -p mush-server --test production_action_migrations
