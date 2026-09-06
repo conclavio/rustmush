@@ -133,6 +133,15 @@ below 12 rows, so a small window always keeps the scrollback and the box.
 Password and hidden prompts (login, chargen) open the box on their own and
 mask or hide your typing, just as in line mode.
 
+When the game asks you something — a confirmation, a pick from a few
+options, a short line — an overlay opens over the screen. Pick an option and
+press Enter, or type the answer in the box for a free-text ask; Esc declines
+and the game takes its default. A notice (new mail, a page, an alert) prints
+into the scrollback as `[category] text`, with the reply command in
+parentheses; while the scene tail is off-screen the status line counts what
+arrived (`! 3 new`, or a bell where the terminal draws one), and the count
+clears once you scroll back to the tail.
+
 ## See also
 
   help getting-started, help mail, help channels, help intel, WHO

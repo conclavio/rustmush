@@ -316,9 +316,14 @@ to the subject alone. The client-side compensations from before — the
 ruleset-tagged `Sys` refresh heuristic in `GameApp` and `SheetPanel`'s 12s
 poll — were retired in cut I4 (the Refresh button and the sheet screen's `r`
 remain as manual nudges), which also renders the vitals strip;
-`SheetStore.applyKeyframe` accepts the pushed frame. Frames are whole
-keyframes; a true `Delta` remains a later refinement and
-`SheetStore.applyDelta` is ready for it.
+`SheetStore.applyKeyframe` accepts the pushed frame. Since interface cut I13
+(§3.13) the republish is an incremental `Delta` — the whole staff-filtered
+`data` with `revision`/`base_revision`, the large static `schema` omitted —
+and `SheetStore.applyDelta` is a revision watermark: it full-replaces `data`
+on a matching `base_revision`, ignores a stale frame, and on a gap asks
+`GameApp` for a fresh keyframe (rule-3 self-heal, storm-guarded). A template
+swap or a staff-visibility change forces a keyframe server-side, so the
+client never applies a schema-mismatched delta.
 
 ## Worldgen draft panel — Build tab (M7)
 

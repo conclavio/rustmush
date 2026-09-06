@@ -46,6 +46,12 @@ mail; channels; rolls; intel; actions — with single-key navigation and an
 input box you open with Enter. "@notui" (or Ctrl-]) returns to the classic
 line view, which stays the default. See "help tui".
 
+In the web client, a bell collects notices — new mail, a page, an alert —
+first as a brief toast, then in a tray you can open any time; a notice's
+button opens the composer with the reply ready. Scroll to the top of the
+scene and "Load older history" pulls the lines you already saw back from
+the server's recent buffer.
+
 Where to go next: "help movement" and "help communication" cover daily
 life; "help building" starts you on making rooms of your own; "help
 rules-of-conduct" covers expectations for play.
