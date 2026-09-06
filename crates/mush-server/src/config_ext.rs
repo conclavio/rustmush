@@ -134,6 +134,11 @@ pub fn economy_config_with(
             .collect(),
         cadences,
         stale_contract_age_secs: cfg.stale_contract_age_secs,
+        tx_tail_max: if cfg.tx_tail_max == 0 {
+            mush_economy::DEFAULT_TX_TAIL_MAX
+        } else {
+            cfg.tx_tail_max
+        },
     };
     config
         .check_declared_cadences()

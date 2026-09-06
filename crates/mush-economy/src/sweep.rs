@@ -468,6 +468,7 @@ fn disposition(e: &EconomyError) -> Disposition {
         EconomyError::TooFewLines
         | EconomyError::ZeroLine(_)
         | EconomyError::NoSuchTransaction(_)
+        | EconomyError::TransactionNotInMemory(_)
         | EconomyError::NotBalanced(_)
         | EconomyError::AlreadyReversed(_)
         | EconomyError::Stale { .. }
@@ -1538,10 +1539,10 @@ fn republish_settlements(ctx: &mut Ctx<'_>, now: i64) {
             // fire would race the bridge's own marker write rather than recover from
             // its failure.
             .filter(|(_, tx)| {
+                // J2: dated by the index, which outlives the RAM tail.
                 store
-                    .transactions()
-                    .find(|t| t.id == *tx)
-                    .is_some_and(|t| now.saturating_sub(t.posted_at) >= crate::SWEEP_PERIOD_SECS)
+                    .transaction_ref(*tx)
+                    .is_some_and(|r| now.saturating_sub(r.posted_at) >= crate::SWEEP_PERIOD_SECS)
             })
             .take(MAX_REPUBLISH_PER_SWEEP)
             .collect()
@@ -2034,6 +2035,15 @@ fn collect_garbage(ctx: &mut Ctx<'_>, now: i64) {
     // would ever look at. Cheap and unconditional: it walks only the windowed tails.
     if let Some(store) = ctx.w.module_state_mut::<EconomyStore>() {
         store.prune_debit_windows(now);
+        // J2: the RAM tail is evicted down to its limit here, never on a post.
+        let evicted = store.evict_tail();
+        if evicted > 0 {
+            tracing::debug!(
+                evicted,
+                tail = store.tail_len(),
+                "economy: RAM tail evicted"
+            );
+        }
     }
     if approvals.is_empty() && holds.is_empty() && escalations.is_empty() {
         return;

@@ -67,7 +67,7 @@ use crate::ids::{
     AccountId, ApprovalRequestId, CadenceId, ContractId, EscalationId, HoldId, InstrumentId,
     ObligationId, TransactionId, VaultId,
 };
-use crate::module::{BootParts, CustodyMark, EconomyStore};
+use crate::module::{BootParts, CustodyMark, EconomyStore, TxRef};
 use crate::obligation::{Obligation, ObligationCause, SuspendReason};
 use crate::record::{
     Account, AccountStatus, ApprovalRequest, CustodyDirection, EconomicAsset, EconomicTransaction,
@@ -82,6 +82,7 @@ pub(crate) fn load_boot(
     data: ModuleBootData,
     providers: &CustodyTable,
     outcomes: &crate::contract::CanonOutcomeKinds,
+    tail_max: usize,
 ) -> Result<EconomyStore, ModError> {
     let ModuleBootData {
         kv,
@@ -365,24 +366,18 @@ pub(crate) fn load_boot(
         }
     }
 
-    // The typed pass: every chunk of the journal, in the order the inspection
-    // fixed, decoded straight from its text into transactions — no `Value`
-    // tree in between — and its text released as soon as it is typed.
-    let mut entries: Vec<(u64, EconomicTransaction)> =
-        Vec::with_capacity(history.entries_of(crate::module::JOURNAL_LOG));
-    for (chunk, position) in history.chunk_docs(crate::module::JOURNAL_LOG) {
-        let text = std::mem::take(&mut ledger_docs[position].1);
-        let typed = typed_entries::<EconomicTransaction>(&text)
-            .map_err(|err| ModError::msg(format!("economy: bad journal chunk {chunk}: {err}")))?;
-        entries.extend(typed);
-    }
-    drop(ledger_docs);
-    drop(history);
-    // The inspection proved the sequence gap-free and chunk-ordered; the sort
-    // is the cheap guarantee that the fold below never depends on that proof.
-    entries.sort_by_key(|(seq, _)| *seq);
-    let journal_max: Option<u64> = entries.last().map(|(seq, _)| *seq);
-    let journal_empty = entries.is_empty();
+    // J2: the typed pass and the fold are one streamed loop (below), chunk by
+    // chunk, so no more than one chunk's records exist outside the RAM tail at
+    // any moment. What the fold needs of the whole journal is known up front.
+    let journal_total = history.entries_of(crate::module::JOURNAL_LOG);
+    let journal_empty = journal_total == 0;
+    let journal_max: Option<u64> = journal.next_seq(crate::module::JOURNAL_LOG).checked_sub(1);
+    // The RAM tail keeps the newest `tail_max` bodies: every entry at or past
+    // this sequence. The index below keeps every id.
+    let keep_from: u64 = u64::try_from(journal_total.saturating_sub(tail_max)).unwrap_or(u64::MAX);
+    let mut tx_index: BTreeMap<TransactionId, TxRef> = BTreeMap::new();
+    let mut created_count: BTreeMap<ObjId, u64> = BTreeMap::new();
+    let mut chunk_firsts: BTreeMap<u64, u64> = BTreeMap::new();
 
     // Replay: fold deltas into a running per-account balance; derive the idempotency
     // index, reversed set, and txid index; capture each account's balance at its own
@@ -424,7 +419,7 @@ pub(crate) fn load_boot(
     }
     let mut max_txid: u64 = 0;
 
-    for (seq, tx) in entries {
+    let mut fold = |seq: u64, tx: EconomicTransaction| -> Result<(), ModError> {
         let seq = &seq;
         let mut touched_here: BTreeSet<AccountId> = BTreeSet::new();
         for line in &tx.lines {
@@ -552,9 +547,52 @@ pub(crate) fn load_boot(
         // — D4's "only windowed accounts are tracked", reached the other way round.
         let _ = crate::module::note_window_debits(&mut debit_window, &tx);
         max_txid = max_txid.max(tx.id.0);
-        // Retained by move: the typed record is the one the fold just read.
-        transactions.insert(tx.id, tx);
+        // J2: the index keeps every id; the tail keeps the newest bodies, by move.
+        tx_index.insert(
+            tx.id,
+            TxRef {
+                seq: *seq,
+                idempotency: tx.idempotency.clone(),
+                posted_at: tx.posted_at,
+            },
+        );
+        for effect in &tx.asset_effects {
+            if effect.kind == crate::record::AssetEffectKind::Created {
+                *created_count.entry(effect.object).or_insert(0) += 1;
+            }
+        }
+        if *seq >= keep_from {
+            transactions.insert(tx.id, tx);
+        }
+        Ok(())
+    };
+    // The streamed typed pass (J1/J2): every chunk in the order the inspection
+    // fixed, decoded straight from its text — no `Value` tree in between — folded
+    // at once, its text released as it goes. The inspection proved the sequence
+    // gap-free and chunk-ordered; the check here is the cheap guarantee that the
+    // fold never depends on that proof.
+    let mut expected_seq = 0u64;
+    for (chunk, position) in history.chunk_docs(crate::module::JOURNAL_LOG) {
+        let text = std::mem::take(&mut ledger_docs[position].1);
+        let typed = typed_entries::<EconomicTransaction>(&text)
+            .map_err(|err| ModError::msg(format!("economy: bad journal chunk {chunk}: {err}")))?;
+        if let Some((first, _)) = typed.first() {
+            chunk_firsts.insert(chunk, *first);
+        }
+        for (seq, tx) in typed {
+            if seq != expected_seq {
+                return Err(ModError::msg(format!(
+                    "economy: journal order breach at seq {seq} (expected {expected_seq}); refusing to boot"
+                )));
+            }
+            expected_seq = expected_seq.saturating_add(1);
+            fold(seq, tx)?;
+        }
     }
+    // The fold's borrows end with its last use above; the texts and the
+    // inspection are done with.
+    drop(ledger_docs);
+    drop(history);
 
     // Directional self-heal + drift/ahead detection per account.
     //
@@ -993,7 +1031,7 @@ pub(crate) fn load_boot(
                 // that the journal says is not. The key resolves the question with no
                 // guessing at all.
                 if broken && quarantine.is_none() {
-                    match finished_transition(&c, &snapshot, &transactions) {
+                    match finished_transition(&c, &snapshot, &tx_index) {
                         Some(state) => {
                             tracing::info!(
                                 contract = c.id.0,
@@ -1023,10 +1061,10 @@ pub(crate) fn load_boot(
                 // never happened to it — the same class of drift as naming a
                 // transaction that does not exist, and it must not read as clean.
                 let mine = crate::contract::contract_op_key(c.id, "settle", c.amendments);
-                let claims_another = transactions
+                let claims_another = tx_index
                     .get(transaction)
-                    .is_some_and(|tx| tx.idempotency != mine);
-                if !transactions.contains_key(transaction) || claims_another {
+                    .is_some_and(|r| r.idempotency != mine);
+                if !tx_index.contains_key(transaction) || claims_another {
                     tracing::error!(
                         contract = c.id.0,
                         transaction = transaction.0,
@@ -1501,6 +1539,9 @@ pub(crate) fn load_boot(
         snapshot,
         journal,
         transactions,
+        tx_index,
+        created_count,
+        chunk_firsts,
         escalations,
         hold_terminal_at,
         next_account,
@@ -1757,7 +1798,7 @@ fn mint_escalation(next: &mut u64) -> Option<EscalationId> {
 fn finished_transition(
     c: &EconomicContract,
     snapshot: &EconomySnapshot,
-    transactions: &BTreeMap<TransactionId, EconomicTransaction>,
+    transactions: &BTreeMap<TransactionId, TxRef>,
 ) -> Option<ContractState> {
     for verb in ["settle", "refund", "forfeit"] {
         let key = crate::contract::contract_op_key(c.id, verb, c.amendments);

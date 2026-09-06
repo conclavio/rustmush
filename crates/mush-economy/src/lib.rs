@@ -158,8 +158,8 @@ pub use contract::{
 };
 pub use contract_live::accept_contract_as;
 pub use module::{
-    MAX_CANON_ENTITIES, MAX_PARTY_CAPS, MAX_REFUSAL_ACTORS, MAX_REFUSAL_ROWS, PartyCapTable,
-    RefusalTally, ReplayStats,
+    DEFAULT_TX_TAIL_MAX, MAX_CANON_ENTITIES, MAX_PARTY_CAPS, MAX_REFUSAL_ACTORS, MAX_REFUSAL_ROWS,
+    PartyCapTable, PendingEconomyRead, PendingEconomyReadKind, RefusalTally, ReplayStats, TxRef,
 };
 pub use snapshot::EconomySnapshot;
 

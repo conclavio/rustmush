@@ -34,7 +34,7 @@ use crate::ids::{
     AccountId, ApprovalRequestId, CadenceId, EscalationId, HoldId, InstrumentId, ObligationId,
     TransactionId, VaultId,
 };
-use crate::module::EconomyStore;
+use crate::module::{EconomyStore, JOURNAL_LOG, PendingEconomyRead, PendingEconomyReadKind};
 use crate::obligation::{
     GracePolicy, Obligation, ObligationCause, ObligationEvent, ObligationStatus, SuspendReason,
     SuspensionKey,
@@ -2636,15 +2636,306 @@ fn econ_reverse(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         .parse::<u64>()
         .map(TransactionId)
         .map_err(|_| CmdError::msg("Usage: @econ/reverse <txid>"))?;
-    let outcome = api::reverse(
-        ctx,
-        txid,
-        PrincipalId::Object(ctx.actor),
-        EconomicCause::Staff {
-            reason: "reversal".into(),
-        },
-    );
+    let cause = EconomicCause::Staff {
+        reason: "reversal".into(),
+    };
+    let outcome = api::reverse(ctx, txid, PrincipalId::Object(ctx.actor), cause.clone());
+    // J2: a target whose body left the RAM tail is read from the journal off the
+    // world loop and reversed when the chunk comes back (`EconomyArchiveRead`).
+    if let Err(crate::plan::EconomyError::TransactionNotInMemory(target)) = &outcome {
+        let target = *target;
+        let seq = ctx
+            .w
+            .module_state::<EconomyStore>()
+            .and_then(|s| s.transaction_ref(target))
+            .map(|r| r.seq)
+            .ok_or_else(|| CmdError::msg(format!("no such transaction: {target}")))?;
+        let kind = PendingEconomyReadKind::Reverse { target, cause };
+        return request_cold_read(ctx, seq, kind, |chunk| {
+            format!(
+                "Transaction #{target} is older than the in-memory tail; reading it from the journal (chunk {chunk}) …"
+            )
+        });
+    }
     finish(ctx, outcome, "Reversed")
+}
+
+/// Queue one cold journal read for the chunk holding `seq` (J2; the H1 seam):
+/// one read in flight per actor, a stale one superseded. `say` renders the
+/// line the actor sees while the read is out.
+fn request_cold_read(
+    ctx: &mut Ctx<'_>,
+    seq: u64,
+    kind: PendingEconomyReadKind,
+    say: impl FnOnce(u64) -> String,
+) -> Result<(), CmdError> {
+    let actor = ctx.actor;
+    let now = ctx.w.now();
+    let chunk = {
+        let store = ctx
+            .w
+            .module_state::<EconomyStore>()
+            .ok_or_else(|| CmdError::msg("The economy is not loaded."))?;
+        if let Some(p) = store.pending_reads.get(&actor)
+            && now.saturating_sub(p.requested_at) < mush_core::STORE_READ_STALE_SECS
+        {
+            return Err(CmdError::msg(
+                "A journal read is already in flight for you; wait for it to answer.",
+            ));
+        }
+        store
+            .chunk_of_seq(seq)
+            .ok_or_else(|| CmdError::msg("That part of the journal cannot be located."))?
+    };
+    let correlation = ctx
+        .read_store(vec![mush_core::chunk_key(JOURNAL_LOG, chunk)])
+        .map_err(|error| {
+            CmdError::msg(format!("That journal page cannot be requested: {error}."))
+        })?;
+    if let Some(store) = ctx.w.module_state_mut::<EconomyStore>() {
+        store.pending_reads.insert(
+            actor,
+            PendingEconomyRead {
+                correlation,
+                requested_at: now,
+                kind,
+            },
+        );
+    }
+    info(ctx, say(chunk));
+    Ok(())
+}
+
+/// Queue the next page of older history for `@econ/history` (J2): the
+/// `HISTORY_PAGE_CHUNKS` chunks ending at `hi`.
+fn request_history_page(
+    ctx: &mut Ctx<'_>,
+    hi: u64,
+    account: AccountId,
+    wanted: usize,
+    staff: bool,
+    pages_left: u8,
+    below_seq: u64,
+) -> Result<(), CmdError> {
+    let actor = ctx.actor;
+    let now = ctx.w.now();
+    {
+        let store = ctx
+            .w
+            .module_state::<EconomyStore>()
+            .ok_or_else(|| CmdError::msg("The economy is not loaded."))?;
+        if let Some(p) = store.pending_reads.get(&actor)
+            && now.saturating_sub(p.requested_at) < mush_core::STORE_READ_STALE_SECS
+        {
+            return Err(CmdError::msg(
+                "A journal read is already in flight for you; wait for it to answer.",
+            ));
+        }
+    }
+    let lo = hi.saturating_sub(HISTORY_PAGE_CHUNKS - 1);
+    let keys: Vec<SmolStr> = (lo..=hi)
+        .map(|n| mush_core::chunk_key(JOURNAL_LOG, n))
+        .collect();
+    let correlation = ctx
+        .read_store(keys)
+        .map_err(|error| CmdError::msg(format!("Older history cannot be requested: {error}.")))?;
+    if let Some(store) = ctx.w.module_state_mut::<EconomyStore>() {
+        store.pending_reads.insert(
+            actor,
+            PendingEconomyRead {
+                correlation,
+                requested_at: now,
+                kind: PendingEconomyReadKind::History {
+                    account,
+                    wanted,
+                    staff,
+                    next_hi: hi,
+                    pages_left,
+                    below_seq,
+                },
+            },
+        );
+    }
+    info(
+        ctx,
+        format!("Reading older history from the journal (chunks {lo}–{hi}) …"),
+    );
+    Ok(())
+}
+
+/// How many chunks one older-history page reads (J2): about 110 entries at the
+/// 16 KiB chunk target, H1's archive page.
+const HISTORY_PAGE_CHUNKS: u64 = mush_core::DEFAULT_ARCHIVE_PAGE_CHUNKS;
+/// How many pages one `@econ/history` may walk past the RAM tail before it
+/// stops with a line (J2): bounded, so an account with no recent activity
+/// cannot make one command read the whole journal.
+const HISTORY_MAX_PAGES: u8 = 8;
+
+/// The economy's [`mush_core::StoreReadCompletion`] (J2): finish the command
+/// that reached past the RAM tail, through the same renderers the warm path
+/// uses. Standing is re-checked here (treaty ruling 3): the actor must still
+/// exist, and for a history page still be entitled to view the account.
+pub(crate) struct EconomyArchiveRead;
+
+impl mush_core::StoreReadCompletion for EconomyArchiveRead {
+    fn on_read(&self, ctx: &mut Ctx<'_>, correlation: u64, result: mush_core::StoreReadResult) {
+        let actor = ctx.actor;
+        let pending = {
+            let Some(store) = ctx.w.module_state_mut::<EconomyStore>() else {
+                return;
+            };
+            match store.pending_reads.get(&actor) {
+                Some(p) if p.correlation == correlation => store.pending_reads.remove(&actor),
+                Some(p) => {
+                    tracing::warn!(
+                        %actor,
+                        correlation,
+                        pending = p.correlation,
+                        "economy: stale journal completion dropped"
+                    );
+                    return;
+                }
+                None => {
+                    tracing::warn!(
+                        %actor,
+                        correlation,
+                        "economy: journal completion with no pending read dropped"
+                    );
+                    return;
+                }
+            }
+        };
+        let Some(pending) = pending else {
+            return;
+        };
+        if ctx.w.get(actor).is_none() {
+            return;
+        }
+        let (docs, absent) = match result {
+            mush_core::StoreReadResult::Docs { docs, absent } => (docs, absent),
+            mush_core::StoreReadResult::Failed(detail) => {
+                info(ctx, format!("The journal read failed: {detail}."));
+                return;
+            }
+            mush_core::StoreReadResult::Oversized { bytes } => {
+                info(
+                    ctx,
+                    format!("The journal page was too large to read ({bytes} bytes)."),
+                );
+                return;
+            }
+        };
+        // A chunk below the RAM tail is sealed history the store holds; one that
+        // is absent is history the store no longer has (or never did), which no
+        // command may paper over.
+        if !absent.is_empty() {
+            info(
+                ctx,
+                format!(
+                    "That part of the journal is not in the store ({} chunk(s) absent).",
+                    absent.len()
+                ),
+            );
+            return;
+        }
+        let entries = match mush_core::read_cold_range(&docs, JOURNAL_LOG) {
+            Ok(entries) => entries,
+            Err(error) => {
+                info(ctx, format!("The journal page did not validate: {error}."));
+                return;
+            }
+        };
+        let mut transactions: Vec<crate::record::EconomicTransaction> =
+            Vec::with_capacity(entries.len());
+        for entry in entries {
+            match serde_json::from_value::<crate::record::EconomicTransaction>(entry.value) {
+                Ok(tx) => transactions.push(tx),
+                Err(error) => {
+                    info(
+                        ctx,
+                        format!(
+                            "The journal page holds an unreadable entry (seq {}): {error}.",
+                            entry.seq
+                        ),
+                    );
+                    return;
+                }
+            }
+        }
+        match pending.kind {
+            PendingEconomyReadKind::Reverse { target, cause } => {
+                let Some(original) = transactions.into_iter().find(|t| t.id == target) else {
+                    info(
+                        ctx,
+                        format!("Transaction #{target} was not in the chunk the journal named."),
+                    );
+                    return;
+                };
+                if !is_admin(ctx.w, actor) {
+                    info(ctx, "Permission denied.".to_string());
+                    return;
+                }
+                let outcome =
+                    api::reverse_original(ctx, &original, PrincipalId::Object(actor), cause);
+                if let Err(e) = finish(ctx, outcome, "Reversed") {
+                    info(ctx, e.to_string());
+                }
+            }
+            PendingEconomyReadKind::History {
+                account,
+                wanted,
+                staff,
+                next_hi,
+                pages_left,
+                below_seq,
+            } => {
+                if !may_view_account(ctx.w, actor, account) {
+                    info(ctx, "No such account.".to_string());
+                    return;
+                }
+                let staff = staff && is_admin(ctx.w, actor);
+                let mut touching: Vec<crate::record::EconomicTransaction> = transactions
+                    .into_iter()
+                    .filter(|t| t.journal_seq < below_seq && history_touches(t, account, staff))
+                    .collect();
+                touching.reverse();
+                let found = touching.len().min(wanted);
+                touching.truncate(found);
+                for row in history_rows(ctx, &touching, staff) {
+                    info(ctx, row);
+                }
+                let remaining = wanted - found;
+                let more_below = next_hi >= HISTORY_PAGE_CHUNKS;
+                if remaining == 0 || !more_below {
+                    if remaining > 0 {
+                        info(ctx, "That is the beginning of the journal.".to_string());
+                    }
+                    return;
+                }
+                if pages_left == 0 {
+                    info(
+                        ctx,
+                        format!(
+                            "Stopped after {HISTORY_MAX_PAGES} pages of older history; ask for fewer entries or a later account."
+                        ),
+                    );
+                    return;
+                }
+                let next_hi = next_hi - HISTORY_PAGE_CHUNKS;
+                if let Err(e) = request_history_page(
+                    ctx,
+                    next_hi,
+                    account,
+                    remaining,
+                    staff,
+                    pages_left - 1,
+                    below_seq,
+                ) {
+                    info(ctx, e.to_string());
+                }
+            }
+        }
+    }
 }
 
 fn econ_audit(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
@@ -2791,7 +3082,7 @@ fn econ_history(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         return Err(CmdError::msg(NO_SUCH));
     }
     let staff = is_admin(ctx.w, ctx.actor);
-    let entries: Vec<crate::record::EconomicTransaction> = {
+    let (entries, older) = {
         let store = ctx
             .w
             .module_state::<EconomyStore>()
@@ -2801,33 +3092,73 @@ fn econ_history(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         }
         let mut touching: Vec<crate::record::EconomicTransaction> = store
             .transactions()
-            // "Touching" includes an **effect-only** entry: an escrow placement moves
-            // `held_amount` and no line at all, and it is emphatically something that
-            // happened to this account.
-            .filter(|t| {
-                t.lines.iter().any(|l| l.account == id)
-                    || t.hold_effects.iter().any(|e| e.hold.account == id)
-            })
-            // Rule 4, **relaxed for an effect-only entry** (D3): a reservation on an
-            // account is a fact its viewers may see, and an escrow placement produces
-            // no journal line at all — so omitting the whole entry hid the one thing
-            // the payer most needs to see. The entry is shown; what it was FOR is
-            // not (no description, and `render_effect` names no contract).
-            .filter(|t| {
-                staff
-                    || !matches!(t.visibility, crate::record::EconomicVisibility::Staff)
-                    || t.lines.is_empty()
-            })
+            .filter(|t| history_touches(t, id, staff))
             .cloned()
             .collect();
         // Rule 6: newest first, then capped. (`transactions()` is id order, and ids
         // are monotonic, so reversing is chronological.)
         touching.reverse();
         touching.truncate(n);
-        touching
+        // J2: the RAM tail is the newest slice of the journal. When it did not
+        // fill the request and the journal goes further back, the rest is read
+        // from the sealed chunks below the tail, off the world loop.
+        let older = match store.tail_floor_seq() {
+            Some(floor) if touching.len() < n && floor > 0 => {
+                store.chunk_of_seq(floor - 1).map(|hi| (hi, floor))
+            }
+            _ => None,
+        };
+        (touching, older)
     };
+    let rows = history_rows(ctx, &entries, staff);
+    // Rule 6: newest first is the order they were collected in. `emit_list` does
+    // **not** sort (it caps and counts), and this render is deliberately uncapped
+    // and unsorted — the rows go out exactly as collected (look-back fold, E4c-C109).
+    if rows.is_empty() && older.is_none() {
+        info(ctx, format!("Nothing recorded against account #{id}."));
+    }
+    for r in rows {
+        info(ctx, r);
+    }
+    if let Some((hi, below_seq)) = older {
+        let wanted = n - entries.len();
+        request_history_page(ctx, hi, id, wanted, staff, HISTORY_MAX_PAGES, below_seq)?;
+    }
+    Ok(())
+}
+
+/// Whether `t` belongs in `account`'s history as `staff` (or not) may see it
+/// (J2: shared by the warm path and the cold pages).
+///
+/// "Touching" includes an **effect-only** entry: an escrow placement moves
+/// `held_amount` and no line at all, and it is emphatically something that
+/// happened to this account. Rule 4, **relaxed for an effect-only entry** (D3):
+/// a reservation on an account is a fact its viewers may see, and an escrow
+/// placement produces no journal line at all — so omitting the whole entry hid
+/// the one thing the payer most needs to see. The entry is shown; what it was
+/// FOR is not (no description, and `render_effect` names no contract).
+fn history_touches(
+    t: &crate::record::EconomicTransaction,
+    account: AccountId,
+    staff: bool,
+) -> bool {
+    let touches = t.lines.iter().any(|l| l.account == account)
+        || t.hold_effects.iter().any(|e| e.hold.account == account);
+    touches
+        && (staff
+            || !matches!(t.visibility, crate::record::EconomicVisibility::Staff)
+            || t.lines.is_empty())
+}
+
+/// Render history rows through the one renderer the warm path uses (J2:
+/// shared with the cold pages), newest first as given.
+fn history_rows(
+    ctx: &Ctx<'_>,
+    entries: &[crate::record::EconomicTransaction],
+    staff: bool,
+) -> Vec<String> {
     let mut rows: Vec<String> = Vec::new();
-    for t in &entries {
+    for t in entries {
         let mut parts: Vec<String> = Vec::new();
         let mut masked = false;
         for l in &t.lines {
@@ -2888,16 +3219,7 @@ fn econ_history(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             rows.push(format!("  \u{201c}{}\u{201d}", t.description));
         }
     }
-    // Rule 6: newest first is the order they were collected in. `emit_list` does
-    // **not** sort (it caps and counts), and this render is deliberately uncapped
-    // and unsorted — the rows go out exactly as collected (look-back fold, E4c-C109).
-    if rows.is_empty() {
-        info(ctx, format!("Nothing recorded against account #{id}."));
-    }
-    for r in rows {
-        info(ctx, r);
-    }
-    Ok(())
+    rows
 }
 
 fn finish(

@@ -8,10 +8,10 @@
 use std::collections::HashMap;
 
 use mush_core::{
-    Audience, Effects, GOD, LedgerChunk, LedgerEntry, ModuleBootData, ModuleWrite, ObjId, Outbox,
-    WorldEvent,
+    Audience, Effect, Effects, GOD, LedgerChunk, LedgerEntry, ModuleBootData, ModuleWrite, ObjId,
+    Outbox, StoreReadResult, WorldCommand, WorldEvent,
 };
-use mush_economy::{AccountId, EconomyStore};
+use mush_economy::{AccountId, EconomyConfig, EconomyStore, TransactionId};
 use mush_proto::OutputEvent;
 use mush_testkit::{TestWorld, text_of};
 use smol_str::SmolStr;
@@ -449,4 +449,245 @@ fn j1_boot_from_ledger_text_equals_boot_from_values() {
     assert_eq!((ra.entries, ra.fetch_ms), (rb.entries, rb.fetch_ms));
     assert_eq!(ra.entries, 1);
     assert_eq!(b.posts_since_boot(), 0, "a replay is not a post");
+}
+
+// ----------------------------------------------------------------------
+// J2: the bounded RAM tail (doc 12 §5.1 / §7 J2)
+// ----------------------------------------------------------------------
+
+/// The e2b rig with the RAM tail capped at `max` bodies.
+fn boot_with_tail(max: usize) -> TestWorld {
+    TestWorld::with_modules(vec![
+        Box::new(mush_org::OrgModule::new()),
+        Box::new(
+            mush_economy::EconomyModule::new().with_config(EconomyConfig {
+                tx_tail_max: max,
+                ..EconomyConfig::default()
+            }),
+        ),
+    ])
+}
+
+fn reboot_with_tail(kv: Vec<(SmolStr, serde_json::Value)>, max: usize) -> TestWorld {
+    let mut tw = boot_with_tail(max);
+    tw.modules_loaded(HashMap::from([(
+        SmolStr::new(NS),
+        ModuleBootData {
+            kv,
+            ..ModuleBootData::default()
+        },
+    )]));
+    tw
+}
+
+/// One sweep fire at wall-clock second `t` (the e4b1 helper).
+fn sweep_at(tw: &mut TestWorld, t: i64) {
+    tw.set_now(t);
+    let _ = tw.fire_due(t.saturating_mul(1000));
+}
+
+fn mint_n(tw: &mut TestWorld, n: usize) {
+    for i in 0..n {
+        let ev = tw.run(GOD, "@econ/mint 0=1 1");
+        assert!(!has_error(&ev), "mint {i}: {}", texts(&ev));
+    }
+}
+
+/// The one `StoreRead` effect a command deferred, as `(correlation, keys)`.
+fn one_read(effects: &[Effect]) -> (u64, Vec<SmolStr>) {
+    match effects {
+        [
+            Effect::StoreRead {
+                module,
+                correlation,
+                keys,
+                ..
+            },
+        ] => {
+            assert_eq!(module, NS);
+            (*correlation, keys.clone())
+        }
+        other => panic!("expected exactly one StoreRead effect: {other:?}"),
+    }
+}
+
+/// Serve a read from the persisted documents the way the world task's driver
+/// does: one document per key, absent keys reported.
+fn serve(kv: &[(SmolStr, serde_json::Value)], keys: Vec<SmolStr>) -> StoreReadResult {
+    let mut docs = Vec::new();
+    let mut absent = Vec::new();
+    for key in keys {
+        match kv.iter().find(|(k, _)| *k == key) {
+            Some((k, v)) => docs.push((k.clone(), v.clone())),
+            None => absent.push(key),
+        }
+    }
+    StoreReadResult::Docs { docs, absent }
+}
+
+fn complete(tw: &mut TestWorld, correlation: u64, result: StoreReadResult) -> String {
+    let events = tw.apply(WorldCommand::StoreReadDone {
+        module: SmolStr::new(NS),
+        actor: GOD,
+        correlation,
+        payload: result.to_payload(),
+    });
+    texts(&events)
+}
+
+/// A post never evicts; the sweep evicts the tail down to its limit, oldest
+/// first; the index keeps every id, its sequence and its chunk; and a reboot
+/// under the same limit comes up with the same tail and the same index (lens B
+/// and C).
+#[test]
+fn j2_the_tail_is_bounded_by_the_sweep_and_the_index_outlives_it() {
+    let mut tw = boot_with_tail(3);
+    setup_mint(&mut tw, 1);
+    mint_n(&mut tw, 5);
+    {
+        let s = store(&tw);
+        assert_eq!(s.journal_len(), 6);
+        assert_eq!(s.tail_len(), 6, "a post never evicts");
+        assert_eq!(s.tx_tail_max(), 3);
+    }
+    sweep_at(&mut tw, 100);
+    {
+        let s = store(&tw);
+        assert_eq!(s.tail_len(), 3, "the sweep evicts down to the limit");
+        assert_eq!(s.tail_floor_seq(), Some(3));
+        assert!(s.transaction(TransactionId(0)).is_none(), "the body left");
+        let r = s
+            .transaction_ref(TransactionId(0))
+            .expect("the index keeps every id");
+        assert_eq!(r.seq, 0);
+        assert!(s.transaction(TransactionId(5)).is_some());
+        assert!(
+            s.transaction_ref(TransactionId(6)).is_none(),
+            "never existed"
+        );
+        assert_eq!(s.chunk_of_seq(0), Some(0));
+        assert_eq!(s.chunk_of_seq(5), Some(0));
+    }
+    assert_eq!(bal(&tw, 1), 6);
+    let kv = fold_kv(&mut tw);
+    let tw2 = reboot_with_tail(kv, 3);
+    let s = store(&tw2);
+    assert!(!s.is_frozen());
+    assert_eq!(
+        (s.journal_len(), s.tail_len(), s.tail_floor_seq()),
+        (6, 3, Some(3))
+    );
+    assert_eq!(s.transaction_ref(TransactionId(0)).map(|r| r.seq), Some(0));
+    assert_eq!(s.transaction_ref(TransactionId(5)).map(|r| r.seq), Some(5));
+    assert_eq!(s.chunk_of_seq(2), Some(0));
+    assert_eq!(bal(&tw2, 1), 6);
+    // J2-F2: the replay stats count the journal, not the tail.
+    assert_eq!(s.boot_replay().map(|r| r.entries), Some(6));
+}
+
+/// `@econ/history` renders the tail's rows at once, then reads the sealed
+/// chunks below the tail off the world loop and renders the rest through the
+/// same rows, newest first (lens P).
+#[test]
+fn j2_history_reaches_past_the_tail_through_the_journal() {
+    let mut tw = boot_with_tail(2);
+    setup_mint(&mut tw, 1);
+    mint_n(&mut tw, 39); // 40 entries: chunk 0 sealed at 16 KiB, chunk 1 open
+    sweep_at(&mut tw, 100);
+    assert_eq!(store(&tw).tail_len(), 2);
+    let kv = fold_kv(&mut tw);
+    assert!(
+        kv.iter().any(|(k, _)| k == "log:journal:1"),
+        "the journal spans two chunks: {:?}",
+        kv.iter()
+            .map(|(k, _)| k.as_str())
+            .filter(|k| k.starts_with("log:"))
+            .collect::<Vec<_>>()
+    );
+
+    let (events, effects) = tw.run_with_effects(GOD, "@econ/history 1 20");
+    let text = texts(&events);
+    assert!(
+        text.contains("tx #39 at"),
+        "the tail's rows come first: {text}"
+    );
+    assert!(text.contains("tx #38 at"), "{text}");
+    assert!(
+        !text.contains("tx #37 at"),
+        "the tail holds two bodies: {text}"
+    );
+    assert!(text.contains("Reading older history"), "{text}");
+    let (correlation, keys) = one_read(&effects);
+    assert!(
+        keys.iter().all(|k| k.starts_with("log:journal:")),
+        "{keys:?}"
+    );
+
+    let text = complete(&mut tw, correlation, serve(&kv, keys));
+    for id in (20..=37).rev() {
+        assert!(
+            text.contains(&format!("tx #{id} at")),
+            "missing #{id}: {text}"
+        );
+    }
+    assert!(
+        !text.contains("tx #19 at"),
+        "capped at the 20 asked for: {text}"
+    );
+    // J2-F1: the open chunk holds the tail's bodies too; the page renders only
+    // what lies below the tail's floor, never the rows the command already sent.
+    assert!(
+        !text.contains("tx #39 at") && !text.contains("tx #38 at"),
+        "the tail's rows were repeated: {text}"
+    );
+    // The pending read is spent: a replayed completion is a stale drop.
+    let again = complete(&mut tw, correlation, serve(&kv, Vec::new()));
+    assert!(
+        again.is_empty(),
+        "a completion nobody waits on renders nothing: {again}"
+    );
+}
+
+/// `@econ/reverse` of a transaction whose body left the tail reads it from the
+/// journal off the world loop and reverses it on re-entry; the reversal is the
+/// engine's, and a replayed completion posts nothing twice (lens P).
+#[test]
+fn j2_reverse_reaches_past_the_tail_through_the_journal() {
+    let mut tw = boot_with_tail(2);
+    setup_mint(&mut tw, 1);
+    mint_n(&mut tw, 4);
+    sweep_at(&mut tw, 100);
+    assert!(store(&tw).transaction(TransactionId(0)).is_none());
+    let kv = fold_kv(&mut tw);
+
+    let (events, effects) = tw.run_with_effects(GOD, "@econ/reverse #0");
+    let text = texts(&events);
+    assert!(text.contains("older than the in-memory tail"), "{text}");
+    assert_eq!(bal(&tw, 1), 5, "nothing moved yet");
+    let (correlation, keys) = one_read(&effects);
+    assert_eq!(keys, vec![SmolStr::new("log:journal:0")]);
+
+    let text = complete(&mut tw, correlation, serve(&kv, keys.clone()));
+    assert!(text.contains("Reversed: transaction #5 posted."), "{text}");
+    assert_eq!(bal(&tw, 1), 4);
+    {
+        let s = store(&tw);
+        assert_eq!(
+            s.transaction(TransactionId(5)).map(|t| t.reverses),
+            Some(Some(TransactionId(0)))
+        );
+        assert_eq!(s.transaction_ref(TransactionId(5)).map(|r| r.seq), Some(5));
+    }
+    let again = complete(&mut tw, correlation, serve(&kv, keys));
+    assert!(again.is_empty(), "{again}");
+    assert_eq!(bal(&tw, 1), 4, "a stale completion posts nothing");
+
+    // A transaction the journal never had is refused at once, with no read.
+    let (events, effects) = tw.run_with_effects(GOD, "@econ/reverse #77");
+    assert!(
+        texts(&events).contains("no such transaction"),
+        "{}",
+        texts(&events)
+    );
+    assert!(effects.is_empty());
 }

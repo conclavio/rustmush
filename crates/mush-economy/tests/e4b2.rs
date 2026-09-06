@@ -55,6 +55,25 @@ fn boot() -> TestWorld {
     ])
 }
 
+/// [`boot`] with the RAM tail capped at `max` bodies (J2).
+fn boot_with_tail(max: usize) -> TestWorld {
+    TestWorld::with_modules(vec![
+        Box::new(
+            mush_org::OrgModule::new()
+                .with_capabilities(vocabulary())
+                .with_scope_use(vec![Arc::new(mush_economy::EconomyScopeUse)]),
+        ),
+        Box::new(
+            mush_economy::EconomyModule::with_custody(vec![]).with_config(
+                mush_economy::EconomyConfig {
+                    tx_tail_max: max,
+                    ..mush_economy::EconomyConfig::default()
+                },
+            ),
+        ),
+    ])
+}
+
 fn texts(events: &[(Audience, OutputEvent)]) -> String {
     events
         .iter()
@@ -7660,4 +7679,54 @@ fn h4_e4b2d33_an_exhausted_obligation_allocator_pages_the_contract() {
         "{:?}",
         page.recommended
     );
+}
+
+/// J2 (lens C): the boot's contract pass resolves a settlement through the
+/// journal-derived index, so every state survives a reboot whose RAM tail holds
+/// one body — the settled contract's transaction is index-only after it.
+#[test]
+fn j2_every_contract_state_survives_a_reboot_with_an_evicted_tail() {
+    for target in ["offered", "active", "disputed", "settled", "cancelled"] {
+        let mut tw = boot_with_tail(1);
+        let r = run_rig(&mut tw, 3_000);
+        let id = offered_run(&mut tw, &r, 300);
+        match target {
+            "offered" => {}
+            _ => accept_all(&mut tw, &r, id),
+        }
+        match target {
+            "disputed" => ok(&mut tw, r.a, &format!("@contract/dispute {id}")),
+            "settled" => ok(&mut tw, r.johnson, &format!("@contract/attest {id}=0")),
+            "cancelled" => ok(&mut tw, GOD, &format!("@contract/cancel {id}")),
+            _ => String::new(),
+        };
+        let before = state(&tw, id);
+        let held_before = held(&tw, r.j_acct);
+        let bal_before = bal(&tw, r.j_acct);
+        let journal_len = store(&tw).journal_len();
+
+        let kv = fold_kv(&mut tw);
+        reboot(&mut tw, kv);
+        let s = store(&tw);
+        assert!(!s.is_frozen(), "{target}: a clean reboot froze the economy");
+        assert_eq!(s.journal_len(), journal_len, "{target}");
+        assert!(
+            s.tail_len() <= 1,
+            "{target}: the tail kept {} bodies",
+            s.tail_len()
+        );
+        assert_eq!(
+            state(&tw, id),
+            before,
+            "{target}: the state did not survive the reboot"
+        );
+        assert_eq!(held(&tw, r.j_acct), held_before, "{target}");
+        assert_eq!(bal(&tw, r.j_acct), bal_before, "{target}");
+        if let ContractState::Settled { transaction } = before {
+            assert!(
+                store(&tw).transaction_ref(transaction).is_some(),
+                "{target}: the settlement is in the index"
+            );
+        }
+    }
 }

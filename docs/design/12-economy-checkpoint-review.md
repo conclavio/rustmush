@@ -214,7 +214,7 @@ C17 as "RAM tx index"). Six consumers read it; each can be served without full r
 | the sweep's republish filter (`sweep.rs` ~1542): `posted_at` of a settlement | one field by id | the reverse map |
 | `econ_audit` (newest 20 bodies) | recent bodies | the RAM tail |
 | account history (`commands.rs` ~2803): bodies touching an account, newest first, capped | recent bodies, then older | the RAM tail first; older pages through the store-read seam (H1 `Ctx::read_store` + `read_cold_range`), exactly as `+timestop/log` pages a closed scene |
-| `rebuild_debit_window` (`module.rs` ~854): bodies within `MAX_APPROVAL_WINDOW_SECS` | a time-bounded window | the RAM tail must cover at least that window |
+| `rebuild_debit_window` (`module.rs` ~854): bodies within `MAX_APPROVAL_WINDOW_SECS` | a time-bounded window | the RAM tail must cover at least that window — *superseded by J2-D1 (§7): no tail covers 90 days at the design rate; the rebuild folds from the tail and says when older spend is not counted* |
 | `transaction(id)` (reversal, staff audit) | one body by id | the RAM tail, else a cold read: the reverse map gives the seq, a carried `chunk_firsts: chunk → first seq` table gives the chunk key |
 
 The tail is bounded two ways: at least `MAX_APPROVAL_WINDOW_SECS` of entries, at most
@@ -502,6 +502,78 @@ the post path; the window floor holds under a clock that jumps), **P** (`@accoun
 past the tail is a page-bounded off-loop read, the world loop never blocking). RAM measured
 before/after at 100 000 entries. Independently valuable whatever happens to J3. Size: two to three
 days.
+
+> **J2 as built — 2026-09-06.**
+>
+> 1. **The tail.** `EconomyStore.transactions` is the newest `tx_tail_max` bodies (`[economy]
+>    tx_tail_max`, default `DEFAULT_TX_TAIL_MAX` = 20 000, ~300 chunks). A post only appends;
+>    the sweep evicts oldest-first down to the limit (`evict_tail`, beside the debit-window
+>    prune). Boot retains only the newest `tx_tail_max` while folding every entry, and the
+>    typed pass now **streams**: each chunk is decoded and folded at once and its text dropped,
+>    so no more than one chunk's records exist outside the tail at any moment (the rest of F9).
+> 2. **The index.** `tx_index: id → TxRef { seq, idempotency, posted_at }` for every transaction
+>    ever posted, `created_count: object → n` (the title generation), and `chunk_firsts: chunk
+>    → first seq` (what a cold read by sequence needs) — folded at boot, maintained by
+>    `index_transaction` and the post path's `note_chunk`. Consumers re-pointed: the boot
+>    contract pass (`finished_transition` and the settled-claim check read the index),
+>    `title_generation` (the counter), the sweep's republish filter (`posted_at` from the index),
+>    `econ_audit` and the warm half of `@econ/history` (the tail), `emit_post_events` and the
+>    hold-id lookups after a post (a just-posted body is always in the tail).
+> 3. **Past the tail, through the seam.** `@econ/history` renders the tail's rows at once and,
+>    when they did not fill the request and the journal goes further back, reads the sealed
+>    chunks below the tail off the world loop (`Ctx::read_store`, `DEFAULT_ARCHIVE_PAGE_CHUNKS`
+>    per page, at most `HISTORY_MAX_PAGES` = 8 pages per command) and renders the rest through
+>    the same rows via `EconomyArchiveRead`, the economy's `StoreReadCompletion`. `@econ/reverse`
+>    of a body that left the tail (`EconomyError::TransactionNotInMemory`, distinct from
+>    `NoSuchTransaction`) reads the chunk the index names and reverses on re-entry through
+>    `api::reverse_original`, which checks the fetched record against the index (seq and
+>    idempotency) before planning; standing is re-checked in the completion, one read per
+>    actor is in flight, a stale completion is dropped. An absent chunk is reported, never
+>    papered over (J5's purge will only ever remove chunks the archive holds).
+> 4. **J2-D1 — the debit window's horizon.** `rebuild_debit_window` folds from the tail; when the
+>    tail starts after the window floor it says so at `warn` and older spend is not counted. An
+>    approval window is a spend control, not a conservation rule; at the §9 design rate the
+>    90-day floor is 32 million entries and no RAM tail covers it. §5.1's "the tail must cover
+>    the window" row is superseded by this decision, which the owner should confirm.
+>
+> **Measured (M), release profile.** The economy booted **from a file** of split boot data (the
+> production loader's shape: ledger chunks as text) in a process that did nothing else
+> (`scale_cold_journal_replay_from_file`, `SCALE_JOURNAL_FILE`, sampled from outside for its peak
+> working set), with the tail at the default and at "unbounded" (`SCALE_TX_TAIL_MAX` past the
+> journal's length — what J1 retained):
+>
+> | entries | tail | peak working set | replay |
+> |---:|---:|---:|---:|
+> | 100 000 | 20 000 (bounded) | **126 MB** | 309 ms |
+> | 100 000 | 100 000 (unbounded) | 150 MB | 301 ms |
+> | 200 000 | 20 000 (bounded) | **247 MB** | 537 ms |
+> | 200 000 | 200 000 (unbounded) | 291 MB | 971 ms |
+>
+> Retention measured at **~0.25 KB per body** (24 MB over 80 000 evicted bodies; 44 MB over
+> 180 000) on two-line mints — below the ~0.6 KB the review estimated from `size_of` plus heap,
+> because the peak counts pages, not live bytes, and a mint's heap is small; a settlement with
+> effects is bigger. The rest of the peak is the process holding the journal's text twice (the
+> file it read and the parsed chunk strings, ~1.2 KB per entry together) — in production the store
+> hands the text over once, so the boot transient is about half of that, and D-12-4's 1 GB line
+> for a full-replay boot moves out to ~1.5 million entries. The bounded fold is also faster at
+> 200 000 (537 vs 971 ms: fewer map inserts, less allocation). The at-rest working set could not
+> be sampled reliably from outside (the process exits as its world drops); the peak is the number.
+>
+> **Verify (lenses C, B, P).** C: `e4b2::j2_every_contract_state_survives_a_reboot_with_an_evicted_tail`
+> (every state, the tail capped at one body, the settlement resolved through the index);
+> `e4c::j2_a_reissue_after_the_tail_evicted_the_first_title_mints_the_next_generation`;
+> `e2b::j2_the_tail_is_bounded_by_the_sweep_and_the_index_outlives_it` (reboot under the limit:
+> same tail, same index, same balances). B: the same test — six posts leave six bodies until the
+> sweep runs, then three; the index keeps all six ids and their chunk. P: `@econ/history` past
+> the tail is one `StoreRead` effect, rows rendered on the completion newest-first and capped;
+> `@econ/reverse` past the tail is one effect, the reversal posted on re-entry, a replayed
+> completion posts nothing, an unknown id refused with no read. Findings folded: **J2-F1** —
+> the first cold history page rendered the tail's two rows again, because the open chunk holds
+> the tail's bodies too; the completion now renders only entries below the tail floor captured
+> when the command ran, and the test asserts the rows are not repeated. **J2-F2** — the replay
+> stats counted the RAM tail (`transactions().count()`), so with the tail bounded the C17 line,
+> the per-entry cost and the harness all read 20 000 whatever the journal held; they count
+> `journal_len` now, and the tail test asserts it.
 
 **J3 — the checkpoint documents and the checkpoint boot.** §5.2–§5.5 and §5.8: the head, the
 mutable body, the immutable parts (now the window's keys only), the `idempotency:` point docs

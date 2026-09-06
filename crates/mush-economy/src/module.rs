@@ -36,7 +36,7 @@ use crate::ids::{
     AccountId, ApprovalRequestId, CadenceId, ContractId, EscalationId, HoldId, ObligationId,
     TransactionId, VaultId,
 };
-use crate::record::{Account, EconomicTransaction, Vault};
+use crate::record::{Account, EconomicTransaction, IdempotencyKey, Vault};
 use crate::snapshot::EconomySnapshot;
 
 /// The cold-replay wall time past which the durability checkpoint becomes the next
@@ -44,6 +44,13 @@ use crate::snapshot::EconomySnapshot;
 /// replay itself, with the store local (doc 12 D-12-3); the fetch is logged beside
 /// it, never inside it.
 pub const CHECKPOINT_REVIEW_SECS: u64 = 5;
+/// How many of the newest journal transactions the economy keeps in RAM as full
+/// records by default (doc 12 §5.1, J2): about the last 300 chunks. Everything
+/// older is reachable by id through [`EconomyStore::transaction_ref`] and by page
+/// through the store-read seam (`@econ/history`, `@econ/reverse`); the sweep
+/// evicts down to the limit, never the post path.
+pub const DEFAULT_TX_TAIL_MAX: usize = 20_000;
+
 /// The replayed-entry count past which the same review is due (08g §12.1 item 5).
 /// Doc 12 §4 derives the entry line from the measured per-entry cost: after J1
 /// (parse once, ~3 µs per entry) the 5 s line is ~1.5 million entries, and this
@@ -76,6 +83,58 @@ pub struct ReplayStats {
     pub fetch_ms: u64,
 }
 
+/// What the journal-derived index keeps for **every** transaction ever posted
+/// (J2): enough to find it (its sequence, hence its chunk), to answer "is this
+/// id mine" for a settlement, and to date it — without its body, which lives
+/// in the RAM tail while it is recent and in the journal always.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TxRef {
+    /// The journal sequence the transaction was posted at.
+    pub seq: u64,
+    /// The idempotency key it was posted under.
+    pub idempotency: IdempotencyKey,
+    /// When it was posted (wall-clock seconds).
+    pub posted_at: i64,
+}
+
+/// One cold journal read a command is waiting on (J2; the H1 pattern): the
+/// correlation `Ctx::read_store` returned and what the page is for, so the
+/// completion finishes the right command for the right actor. Transient world
+/// RAM — a restart drops it, and a completion nobody is waiting on is dropped.
+#[derive(Clone, Debug)]
+pub struct PendingEconomyRead {
+    /// The correlation the completion must carry.
+    pub correlation: u64,
+    /// When it was requested (world seconds); a request older than
+    /// `STORE_READ_STALE_SECS` is superseded by the next one.
+    pub requested_at: i64,
+    /// What the read is for.
+    pub kind: PendingEconomyReadKind,
+}
+
+/// The two commands that reach past the RAM tail (J2).
+#[derive(Clone, Debug)]
+pub enum PendingEconomyReadKind {
+    /// `@econ/history`: older entries touching `account`, `wanted` more rows,
+    /// paging down from chunk `next_hi` with `pages_left` pages allowed. Only
+    /// entries below `below_seq` — the RAM tail's floor when the command ran —
+    /// are rendered: the open chunk holds the tail's bodies too, and those
+    /// rows went out with the command.
+    History {
+        account: AccountId,
+        wanted: usize,
+        staff: bool,
+        next_hi: u64,
+        pages_left: u8,
+        below_seq: u64,
+    },
+    /// `@econ/reverse`: the body of `target`, which left the tail.
+    Reverse {
+        target: TransactionId,
+        cause: crate::record::EconomicCause,
+    },
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct EconomyStore {
     /// The last boot's cold replay cost (H3); `None` until `on_world_loaded`.
@@ -96,7 +155,20 @@ pub struct EconomyStore {
     pub(crate) journal: Ledger,
     /// Every transaction by id — journal-derived at boot, so a cold reversal can read
     /// the original without a store round-trip.
+    /// The **RAM tail** (J2): the newest [`EconomyConfig::tx_tail_max`]
+    /// transactions as full records, in id order. Evicted oldest-first by the
+    /// sweep ([`EconomyStore::evict_tail`]); a post only ever appends.
     pub(crate) transactions: BTreeMap<TransactionId, EconomicTransaction>,
+    /// Every transaction ever posted, by id (J2): what the tail's eviction keeps.
+    pub(crate) tx_index: BTreeMap<TransactionId, TxRef>,
+    /// How many `Created` title effects the journal holds per object (J2): the
+    /// title generation, which used to be counted over every retained body.
+    pub(crate) created_count: BTreeMap<ObjId, u64>,
+    /// The first journal sequence of every chunk (J2): chunk index → first seq,
+    /// the map a cold read by sequence needs to name its chunk.
+    pub(crate) chunk_firsts: BTreeMap<u64, u64>,
+    /// In-flight cold journal reads, one per requesting actor (J2). Transient.
+    pub(crate) pending_reads: std::collections::HashMap<ObjId, PendingEconomyRead>,
     pub(crate) next_account: u64,
     pub(crate) next_transaction: u64,
     /// The vault-id allocator (E3b1); never reused, resumed from `meta` floored at
@@ -336,6 +408,9 @@ pub(crate) struct BootParts {
     pub(crate) snapshot: EconomySnapshot,
     pub(crate) journal: Ledger,
     pub(crate) transactions: BTreeMap<TransactionId, EconomicTransaction>,
+    pub(crate) tx_index: BTreeMap<TransactionId, TxRef>,
+    pub(crate) created_count: BTreeMap<ObjId, u64>,
+    pub(crate) chunk_firsts: BTreeMap<u64, u64>,
     pub(crate) escalations: BTreeMap<EscalationId, Escalation>,
     pub(crate) hold_terminal_at: BTreeMap<HoldId, i64>,
     pub(crate) next_account: u64,
@@ -368,6 +443,10 @@ impl EconomyStore {
             snapshot: p.snapshot,
             journal: p.journal,
             transactions: p.transactions,
+            tx_index: p.tx_index,
+            created_count: p.created_count,
+            chunk_firsts: p.chunk_firsts,
+            pending_reads: std::collections::HashMap::new(),
             escalations: p.escalations,
             hold_terminal_at: p.hold_terminal_at,
             next_account: p.next_account,
@@ -429,14 +508,78 @@ impl EconomyStore {
     pub fn config(&self) -> &EconomyConfig {
         &self.config
     }
-    /// A transaction by id (for reversal + staff audit).
+    /// A transaction's **body** by id, while it is in the RAM tail (J2): a
+    /// reversal target, a just-posted transaction's effects. `None` for an id
+    /// that never existed *and* for one whose body left the tail — tell the two
+    /// apart with [`EconomyStore::transaction_ref`].
     #[must_use]
     pub fn transaction(&self, id: TransactionId) -> Option<&EconomicTransaction> {
         self.transactions.get(&id)
     }
-    /// The transactions in id order (staff audit).
+    /// The RAM tail in id order (staff audit; the newest
+    /// [`EconomyConfig::tx_tail_max`] transactions).
     pub fn transactions(&self) -> impl Iterator<Item = &EconomicTransaction> {
         self.transactions.values()
+    }
+    /// What the index keeps for **every** transaction ever posted (J2), or
+    /// `None` for an id the journal never had.
+    #[must_use]
+    pub fn transaction_ref(&self, id: TransactionId) -> Option<&TxRef> {
+        self.tx_index.get(&id)
+    }
+    /// How many transactions the RAM tail holds.
+    #[must_use]
+    pub fn tail_len(&self) -> usize {
+        self.transactions.len()
+    }
+    /// The journal sequence the RAM tail starts at, or `None` when it is empty.
+    #[must_use]
+    pub fn tail_floor_seq(&self) -> Option<u64> {
+        self.transactions.values().next().map(|t| t.journal_seq)
+    }
+    /// The limit the sweep evicts the tail down to.
+    #[must_use]
+    pub fn tx_tail_max(&self) -> usize {
+        if self.config.tx_tail_max == 0 {
+            DEFAULT_TX_TAIL_MAX
+        } else {
+            self.config.tx_tail_max
+        }
+    }
+    /// How many `Created` title effects the journal holds for `object` (J2):
+    /// the generation the next issue mints under.
+    #[must_use]
+    pub fn created_count(&self, object: ObjId) -> u64 {
+        self.created_count.get(&object).copied().unwrap_or(0)
+    }
+    /// The chunk of the journal that holds sequence `seq`, from the first-seq
+    /// map (J2); `None` before any entry.
+    #[must_use]
+    pub fn chunk_of_seq(&self, seq: u64) -> Option<u64> {
+        self.chunk_firsts
+            .iter()
+            .rev()
+            .find(|(_, first)| **first <= seq)
+            .map(|(chunk, _)| *chunk)
+    }
+    /// Record that `seq` opened `chunk` (the first entry a chunk received): the
+    /// post path calls it with the open chunk the append went into.
+    pub(crate) fn note_chunk(&mut self, chunk: u64, seq: u64) {
+        self.chunk_firsts.entry(chunk).or_insert(seq);
+    }
+    /// **Evict the RAM tail down to its limit**, oldest first (J2) — the sweep's
+    /// job, never the post path's, so a burst of posts costs no eviction work
+    /// in the step that posted them. The index keeps every id.
+    pub(crate) fn evict_tail(&mut self) -> usize {
+        let max = self.tx_tail_max();
+        let mut evicted = 0usize;
+        while self.transactions.len() > max {
+            if self.transactions.pop_first().is_none() {
+                break;
+            }
+            evicted += 1;
+        }
+        evicted
     }
 
     /// What the cold journal replay cost at the last boot (H3), or `None`
@@ -766,6 +909,20 @@ impl EconomyStore {
     /// ones), so it is maintained here and at boot from the journal alone.
     pub(crate) fn index_transaction(&mut self, tx: EconomicTransaction) {
         self.posts_since_boot = self.posts_since_boot.saturating_add(1);
+        // J2: the index keeps what the tail's eviction must not lose.
+        self.tx_index.insert(
+            tx.id,
+            TxRef {
+                seq: tx.journal_seq,
+                idempotency: tx.idempotency.clone(),
+                posted_at: tx.posted_at,
+            },
+        );
+        for effect in &tx.asset_effects {
+            if effect.kind == crate::record::AssetEffectKind::Created {
+                *self.created_count.entry(effect.object).or_insert(0) += 1;
+            }
+        }
         // E6a step 1 (D-E6-21): the rolling-window tail, the same fold boot replays.
         // D4: only an account whose live rule carries a window is tracked at all —
         // every other one is dropped again immediately, so the index is O(windowed
@@ -880,6 +1037,20 @@ impl EconomyStore {
             return;
         }
         let floor = now.saturating_sub(crate::record::MAX_APPROVAL_WINDOW_SECS);
+        // J2-D1 (doc 12): the fold runs over the RAM tail. When the tail starts
+        // after the window floor, older spend is not counted — an approval window
+        // is a spend control, not a conservation rule — and the gap is said.
+        if let Some(oldest) = self.transactions.values().next()
+            && oldest.posted_at > floor
+        {
+            tracing::warn!(
+                account = account.0,
+                tail_starts_at = oldest.posted_at,
+                floor,
+                "economy: the debit window was rebuilt from the RAM tail, which starts after \
+                 the window floor; older spend is not counted (doc 12 J2-D1)"
+            );
+        }
         let mut tails: BTreeMap<AccountId, WindowTail> = BTreeMap::new();
         for tx in self.transactions.values() {
             if tx.posted_at < floor {
@@ -1205,6 +1376,9 @@ impl GameModule for EconomyModule {
     fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
         reg.classify_commands(mush_core::CommandCompatibility::EconomyCarveOut);
         reg.state(EconomyStore::default());
+        // J2: `@econ/history` and `@econ/reverse` reach past the RAM tail through
+        // the store-read seam (H1); this is where the page comes back.
+        reg.store_read_completion(Arc::new(crate::commands::EconomyArchiveRead))?;
         reg.subscribe(WorldEventKind::ObjDestroyed, Arc::new(on_obj_destroyed));
         // E4c §6.1 item 2: the canon attestation observer. The economy subscribes
         // to **core's** event, never to `mush-canon` — the dependency runs the other
@@ -1247,12 +1421,26 @@ impl GameModule for EconomyModule {
     ) -> Result<(), ModError> {
         let fetch_ms = data.fetch_ms;
         let started = std::time::Instant::now();
-        let mut store = boot::load_boot(ctx, data, &self.providers, &self.canon_outcome_kinds)?;
+        let tail_max = if self.config.tx_tail_max == 0 {
+            DEFAULT_TX_TAIL_MAX
+        } else {
+            self.config.tx_tail_max
+        };
+        let mut store = boot::load_boot(
+            ctx,
+            data,
+            &self.providers,
+            &self.canon_outcome_kinds,
+            tail_max,
+        )?;
         // C17 (08g §12.1 item 5): the cold replay is the whole boot cost until a
         // durability checkpoint exists. Say what it cost, every boot, and say loudly
         // when it crosses the line the owner drew.
         let elapsed = started.elapsed();
-        let entries = store.transactions().count();
+        // J2-F2: the journal's length, not the RAM tail's — the tail is bounded
+        // now, and the C17 line, the per-entry cost and the harness all count
+        // what was replayed.
+        let entries = usize::try_from(store.journal_len()).unwrap_or(usize::MAX);
         let elapsed_ms = u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX);
         store.boot_replay = Some(ReplayStats {
             entries,

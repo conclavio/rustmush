@@ -1362,6 +1362,41 @@ pub fn reverse(
     actor: PrincipalId,
     cause: EconomicCause,
 ) -> Result<PostOutcome, EconomyError> {
+    let original = {
+        let store = ctx
+            .w
+            .module_state::<EconomyStore>()
+            .ok_or(EconomyError::EconomyFrozen)?;
+        if store.frozen {
+            return Err(EconomyError::EconomyFrozen);
+        }
+        match store.transaction(target) {
+            Some(original) => original.clone(),
+            // J2: known to the journal but its body has left the RAM tail — the
+            // caller reaches it through the store-read seam and re-enters with
+            // [`reverse_original`].
+            None if store.transaction_ref(target).is_some() => {
+                return Err(EconomyError::TransactionNotInMemory(target));
+            }
+            None => return Err(EconomyError::NoSuchTransaction(target)),
+        }
+    };
+    reverse_original(ctx, &original, actor, cause)
+}
+
+/// [`reverse`] with the original in hand (J2): the re-entry after a cold read
+/// of a transaction whose body left the RAM tail. The original is the journal's
+/// own record — the completion decoded it from the chunk the index named — so
+/// the `reverses` back-reference is as engine-set as on the warm path.
+///
+/// # Errors
+/// Every reason the warm path refuses.
+pub fn reverse_original(
+    ctx: &mut Ctx<'_>,
+    original: &EconomicTransaction,
+    actor: PrincipalId,
+    cause: EconomicCause,
+) -> Result<PostOutcome, EconomyError> {
     let (outcome, providers) = {
         let store = ctx
             .w
@@ -1370,13 +1405,14 @@ pub fn reverse(
         if store.frozen {
             return Err(EconomyError::EconomyFrozen);
         }
-        let original = store
-            .transaction(target)
-            .ok_or(EconomyError::NoSuchTransaction(target))?
-            .clone();
+        // The journal's record of the target must be the record in hand.
+        match store.transaction_ref(original.id) {
+            Some(r) if r.seq == original.journal_seq && r.idempotency == original.idempotency => {}
+            _ => return Err(EconomyError::NoSuchTransaction(original.id)),
+        }
         let auth = WorldAuth { w: ctx.w };
         (
-            plan_reversal(&original, actor.clone(), cause, store.snapshot(), &auth),
+            plan_reversal(original, actor.clone(), cause, store.snapshot(), &auth),
             store.providers(),
         )
     };
@@ -2505,14 +2541,11 @@ pub fn issue_title(
 /// leaves behind: the asset is `WrittenOff`, the effect that created it is still
 /// there, and "how many times has this been titled" is exactly what the key needs.
 fn title_generation(ctx: &Ctx<'_>, object: ObjId) -> u64 {
-    let Some(store) = ctx.w.module_state::<EconomyStore>() else {
-        return 0;
-    };
-    store
-        .transactions()
-        .flat_map(|t| t.asset_effects.iter())
-        .filter(|e| e.object == object && e.kind == crate::record::AssetEffectKind::Created)
-        .count() as u64
+    // J2: counted by the index over every transaction ever posted, not over the
+    // bodies the RAM tail happens to hold.
+    ctx.w
+        .module_state::<EconomyStore>()
+        .map_or(0, |store| store.created_count(object))
 }
 
 /// Record that this contract's settlement reached the chronicle (E4c verify fold,
@@ -2876,6 +2909,9 @@ fn install_commit(ctx: &mut Ctx<'_>, commit: PreparedEconomyCommit) -> Transacti
                 "economy: the transaction allocator moved between prepare and install — \
              something re-entered post() after the custody move (see install_commit)"
             );
+            // J2: the entry goes into the chunk that is open now (a seal, if this
+            // append causes one, happens after the entry is in).
+            let chunk_now = store.journal.open_chunk(JOURNAL_LOG);
             let (applied_seq, journal_op) = store.journal.apply_prepared(journal).unwrap_or_else(
                 |error| {
                     panic!(
@@ -2890,6 +2926,7 @@ fn install_commit(ctx: &mut Ctx<'_>, commit: PreparedEconomyCommit) -> Transacti
             );
             store.next_transaction = next_transaction;
             store.snapshot = snapshot;
+            store.note_chunk(chunk_now, applied_seq);
             store.index_transaction(transaction);
             (journal_op, store.meta_doc())
         };

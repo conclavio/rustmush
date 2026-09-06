@@ -74,6 +74,10 @@ ic_epoch = "2020-01-01 00:00"      # (M5) IC datetime at OOC unix time 0 — the
 # flavor pool sizing IS configurable — see [weather] below. In-game: "help
 # scripting" and "help weather".
 
+[economy]                          # (E2+) the economy's limits; every key optional
+# tx_tail_max = 20000              # (J2) newest journal transactions kept in RAM as full records;
+#                                  #      older ones are read from the journal on demand (doc 12)
+
 [weather]                          # (M10) weather LLM flavor top-up
 # The deterministic Markov weather machine is unaffected by this; only the
 # staff-reviewed GENERATED flavor-text pool sizing is tuned here.

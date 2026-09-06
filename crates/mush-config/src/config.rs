@@ -428,6 +428,10 @@ pub struct EconomyCfg {
     /// `mush-economy` crate default (7 days). A contract whose own deadline has not
     /// lapsed is never paged for staleness.
     pub stale_contract_age_secs: i64,
+    /// How many of the newest journal transactions the economy keeps in RAM as
+    /// full records (doc 12 J2). Older ones stay reachable through the journal.
+    /// Defaults to the `mush-economy` crate default (20 000); zero means that.
+    pub tx_tail_max: usize,
 }
 
 impl Default for EconomyCfg {
@@ -439,6 +443,8 @@ impl Default for EconomyCfg {
             // Mirrors `mush_economy::STALE_CONTRACT_AGE_SECS` (kept as a literal so
             // `mush-config` needs no `mush-economy` dep).
             stale_contract_age_secs: 7 * 86_400,
+            // Mirrors `mush_economy::DEFAULT_TX_TAIL_MAX`.
+            tx_tail_max: 20_000,
         }
     }
 }

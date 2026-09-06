@@ -304,6 +304,27 @@ fn boot() -> TestWorld {
     boot_with(Vec::new(), Vec::new(), Vec::new())
 }
 
+/// [`boot_with`] issuers only, with the RAM tail capped at `max` bodies (J2).
+fn boot_with_tail(issuers: Vec<SystemPrincipalId>, max: usize) -> TestWorld {
+    TestWorld::with_modules(vec![
+        Box::new(
+            mush_org::OrgModule::new()
+                .with_capabilities(vocabulary())
+                .with_scope_use(vec![Arc::new(mush_economy::EconomyScopeUse)]),
+        ),
+        Box::new(
+            mush_economy::EconomyModule::with_custody(vec![])
+                .with_title_issuers(issuers)
+                .with_canon_outcome_kinds(vec![smol_str::SmolStr::new_static("scene.outcome")])
+                .with_config(mush_economy::EconomyConfig {
+                    tx_tail_max: max,
+                    ..mush_economy::EconomyConfig::default()
+                }),
+        ),
+        Box::new(TitleIssuingRuleset),
+    ])
+}
+
 fn texts(events: &[(Audience, OutputEvent)]) -> String {
     events
         .iter()
@@ -2600,4 +2621,48 @@ fn h4_t6_a_dispute_resolved_to_settle_names_the_transaction() {
         )),
         "{out}"
     );
+}
+
+/// J2 (lens C): the title generation is counted by the journal-derived index,
+/// so a re-issue after the RAM tail has evicted the first issue still mints the
+/// next generation rather than colliding with the first.
+#[test]
+fn j2_a_reissue_after_the_tail_evicted_the_first_title_mints_the_next_generation() {
+    let issuer = SystemPrincipalId::new("wod.housing").expect("valid");
+    let mut tw = boot_with_tail(vec![issuer], 1);
+    let owner = tw.spawn_player("Owner");
+    let flat = thing(&mut tw, "flat");
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@titleissue {}=wod.housing #{}", flat.0, owner.0),
+    );
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@asset/writeoff #{}=condemned", flat.0),
+    );
+    sweep_at(&mut tw, 100);
+    assert_eq!(
+        store(&tw).tail_len(),
+        1,
+        "only the write-off's body remains"
+    );
+    assert_eq!(
+        store(&tw).created_count(flat),
+        1,
+        "the index still counts the first title"
+    );
+
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@titleissue {}=wod.housing #{}", flat.0, owner.0),
+    );
+    assert_eq!(
+        snap(&tw).asset(flat).expect("asset").lifecycle,
+        mush_economy::AssetLifecycle::Active,
+        "the re-issue was swallowed as an idempotency hit"
+    );
+    assert_eq!(store(&tw).created_count(flat), 2);
 }

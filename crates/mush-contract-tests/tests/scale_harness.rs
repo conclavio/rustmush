@@ -17,7 +17,7 @@
 //! slow runner cannot fail a scheduled run merely by being slow. Sizes come from
 //! the environment — `SCALE_JOURNAL_ENTRIES`, `SCALE_ACCOUNTS`, `SCALE_OBJECTS`,
 //! `SCALE_BUNDLES`, `SCALE_TICK_WRITES`, `SCALE_TICK_POST_BYTES`,
-//! `SCALE_PROFILE_SCALES` — with the defaults §3.3 and doc 12 name. The
+//! `SCALE_PROFILE_SCALES`, `SCALE_TX_TAIL_MAX` — with the defaults §3.3 and doc 12 name. The
 //! un-ignored `h3_*` tests at the bottom run each seeder at a tiny size under
 //! `cargo test --workspace`, so the ignored bodies cannot rot unnoticed.
 //!
@@ -116,10 +116,18 @@ fn ms(d: Duration) -> u64 {
 const ECON_NS: &str = "economy";
 
 fn econ_world() -> TestWorld {
-    // Economy authorizes through org; load both (the e2b rig).
+    // Economy authorizes through org; load both (the e2b rig). `SCALE_TX_TAIL_MAX`
+    // (doc 12 J2) caps the RAM tail; 0 is the crate default, and a value past
+    // the journal's length is the unbounded retention J2 replaced — the two
+    // ends of the RAM measurement, on one binary.
     TestWorld::with_modules(vec![
         Box::new(mush_org::OrgModule::new()),
-        Box::new(mush_economy::EconomyModule::new()),
+        Box::new(
+            mush_economy::EconomyModule::new().with_config(mush_economy::EconomyConfig {
+                tx_tail_max: env_usize("SCALE_TX_TAIL_MAX", 0),
+                ..mush_economy::EconomyConfig::default()
+            }),
+        ),
     ])
 }
 
@@ -196,6 +204,13 @@ fn replay_journal(kv: Vec<(SmolStr, Value)>) -> ReplayStats {
 /// [`replay_journal`] with the ledger chunks already in the text form the
 /// production loader hands over (J1).
 fn replay_split(kv: Vec<(SmolStr, Value)>, ledger: Vec<LedgerDoc>) -> ReplayStats {
+    let tw = boot_split(kv, ledger);
+    replay_stats(&tw)
+}
+
+/// Boot a fresh economy from split boot data and keep the world (the RAM
+/// measurement holds it after the boot).
+fn boot_split(kv: Vec<(SmolStr, Value)>, ledger: Vec<LedgerDoc>) -> TestWorld {
     let mut tw = econ_world();
     tw.modules_loaded(HashMap::from([(
         SmolStr::new(ECON_NS),
@@ -205,11 +220,38 @@ fn replay_split(kv: Vec<(SmolStr, Value)>, ledger: Vec<LedgerDoc>) -> ReplayStat
             ..Default::default()
         },
     )]));
+    tw
+}
+
+fn replay_stats(tw: &TestWorld) -> ReplayStats {
     tw.world()
         .module_state::<EconomyStore>()
         .expect("economy store")
         .boot_replay()
         .expect("the economy booted, so it recorded its replay")
+}
+
+/// The split boot data as a file (`SCALE_JOURNAL_OUT` / `SCALE_JOURNAL_FILE`):
+/// what the RAM measurement of doc 12 J2 boots from in a process of its own,
+/// so the seeder's own allocations are not in the number.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct JournalFile {
+    kv: Vec<(SmolStr, Value)>,
+    ledger: Vec<LedgerDoc>,
+}
+
+fn write_journal_file(path: &str, kv: &[(SmolStr, Value)], ledger: &[LedgerDoc]) {
+    let file = JournalFile {
+        kv: kv.to_vec(),
+        ledger: ledger.to_vec(),
+    };
+    let text = serde_json::to_string(&file).expect("the journal file encodes");
+    std::fs::write(path, text).expect("the journal file is written");
+}
+
+fn read_journal_file(path: &str) -> JournalFile {
+    let text = std::fs::read_to_string(path).expect("the journal file is read");
+    serde_json::from_str(&text).expect("the journal file decodes")
 }
 
 /// The economy checkpoint review (`docs/design/12-economy-checkpoint-review.md`
@@ -382,6 +424,10 @@ fn scale_cold_journal_replay_phases() {
     );
     for n in scales {
         let journal = synth_journal(n, accounts);
+        if let Ok(path) = std::env::var("SCALE_JOURNAL_OUT") {
+            write_journal_file(&path, &journal.kv, &journal.ledger);
+            println!("wrote {path}: {n} entries, {} chunks", journal.chunks);
+        }
         let phases = replay_phases(&journal.ledger);
         let stats = replay_split(journal.kv, journal.ledger);
         assert_eq!(
@@ -404,6 +450,42 @@ fn scale_cold_journal_replay_phases() {
             stats.elapsed_ms
         );
     }
+}
+
+/// Doc 12 J2 (lens M): boot the economy from `SCALE_JOURNAL_FILE` — split
+/// boot data a previous `scale_cold_journal_replay_phases` run wrote with
+/// `SCALE_JOURNAL_OUT` — in a process that did nothing else, then hold the
+/// booted world for `SCALE_HOLD_MS` so an outside sampler can read the peak
+/// and the at-rest working set. `SCALE_TX_TAIL_MAX` sets the RAM tail (0 is
+/// the default; a value past the journal's length is unbounded retention).
+#[test]
+#[ignore = "scale harness: run by the CI `scale` job (workflow_dispatch / weekly)"]
+fn scale_cold_journal_replay_from_file() {
+    let Ok(path) = std::env::var("SCALE_JOURNAL_FILE") else {
+        println!("scale_cold_journal_replay_from_file: SCALE_JOURNAL_FILE unset; nothing to boot");
+        return;
+    };
+    let file = read_journal_file(&path);
+    let entries = file.ledger.len();
+    let tw = boot_split(file.kv, file.ledger);
+    let stats = replay_stats(&tw);
+    let store = tw
+        .world()
+        .module_state::<EconomyStore>()
+        .expect("economy store");
+    println!(
+        "from_file: chunks={entries} entries={} replay_ms={} tail={} tail_max={} journal_len={}",
+        stats.entries,
+        stats.elapsed_ms,
+        store.tail_len(),
+        store.tx_tail_max(),
+        store.journal_len()
+    );
+    let hold_ms = env_usize("SCALE_HOLD_MS", 0);
+    if hold_ms > 0 {
+        std::thread::sleep(Duration::from_millis(u64::try_from(hold_ms).unwrap_or(0)));
+    }
+    drop(tw);
 }
 
 #[test]
@@ -951,6 +1033,21 @@ fn h3_journal_seeder_yields_its_stated_count() {
     assert_eq!(stats.entries, 10);
     // Before any boot there is nothing to report.
     assert!(EconomyStore::default().boot_replay().is_none());
+}
+
+#[test]
+fn j2_the_journal_file_round_trips_and_boots() {
+    let journal = synth_journal(12, 3);
+    let path =
+        std::env::temp_dir().join(format!("rustmush_j2_journal_{}.json", std::process::id()));
+    let path = path.to_string_lossy().into_owned();
+    write_journal_file(&path, &journal.kv, &journal.ledger);
+    let back = read_journal_file(&path);
+    let _ = std::fs::remove_file(&path);
+    assert_eq!(back.ledger, journal.ledger);
+    assert_eq!(back.kv.len(), journal.kv.len());
+    let tw = boot_split(back.kv, back.ledger);
+    assert_eq!(replay_stats(&tw).entries, 12);
 }
 
 #[test]

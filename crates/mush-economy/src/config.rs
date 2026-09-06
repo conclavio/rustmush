@@ -198,6 +198,13 @@ pub struct EconomyConfig {
     /// its window is the parties' stated patience, and a 14-day run is not stuck on
     /// day 7. A non-positive value pages nothing.
     pub stale_contract_age_secs: i64,
+    /// How many of the newest journal transactions stay in RAM as full records
+    /// (doc 12 §5.1, J2; `[economy] tx_tail_max`). Everything older is reachable
+    /// by id through the journal-derived index and by page through the store-read
+    /// seam; nothing is forgotten, only its body leaves RAM. Default
+    /// [`crate::DEFAULT_TX_TAIL_MAX`]; the sweep evicts down to it, never the post
+    /// path. Zero means "the default".
+    pub tx_tail_max: usize,
 }
 
 impl Default for EconomyConfig {
@@ -207,6 +214,7 @@ impl Default for EconomyConfig {
             instruments: BTreeMap::new(),
             cadences: BTreeMap::new(),
             stale_contract_age_secs: crate::contract::STALE_CONTRACT_AGE_SECS,
+            tx_tail_max: crate::module::DEFAULT_TX_TAIL_MAX,
         }
     }
 }

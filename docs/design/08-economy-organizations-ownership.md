@@ -860,6 +860,9 @@ tail. A derived tail may be rebuilt and must never become authority.
 > ledger chunks reach boot as text, one inspection serves the contiguity check, the restore and
 > the typed pass, and the replay measures ~3 µs per entry — 313 ms at 100 000 entries, 652 ms at
 > 200 000 — so the 5 s line is ~1.5 million entries and the million-entry line is the binding one.
+> **J2 landed the same day:** the RAM transaction index is a bounded tail (`[economy] tx_tail_max`,
+> default 20 000) over a journal-derived index that keeps every id; `@econ/history` and
+> `@econ/reverse` reach past the tail through the store-read seam.
 
 ---
 

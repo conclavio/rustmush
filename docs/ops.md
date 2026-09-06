@@ -1003,6 +1003,16 @@ derived from the measured per-entry cost and `D` the projected days to it at
 the current rate. Watch the rate: at the design rate in doc 12 §9 the line is
 weeks away, and the RAM lines in D-12-4 bind first.
 
+The economy keeps only the newest journal transactions in RAM as full records
+(`[economy] tx_tail_max`, default 20 000; doc 12 J2). Older ones stay reachable
+by id through the journal-derived index and by page through the store-read
+seam: `@econ/history` reads sealed chunks below the tail off the world loop
+(up to 8 pages of 4 chunks per command), and `@econ/reverse` of an old
+transaction reads its chunk and reverses on re-entry. Eviction happens in the
+economy sweep, never on a post. A rebuilt approval window (`@account/approval
+… window=`) folds from the tail and logs a `warn` when the tail starts after
+the window floor (doc 12 J2-D1).
+
 **Structured logging** is configured under `[log]`:
 
 ```toml

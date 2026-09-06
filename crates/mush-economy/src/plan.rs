@@ -578,6 +578,10 @@ pub enum EconomyError {
     /// A referenced transaction does not exist (reversal target).
     #[error("no such transaction: {0}")]
     NoSuchTransaction(TransactionId),
+    /// The transaction exists in the journal but its body has left the RAM tail
+    /// (J2); read it through the store-read seam and re-enter.
+    #[error("transaction {0} is older than the in-memory tail; it is being read from the journal")]
+    TransactionNotInMemory(TransactionId),
     /// A referenced account is not active.
     #[error("account {0} is not active")]
     InactiveAccount(AccountId),
