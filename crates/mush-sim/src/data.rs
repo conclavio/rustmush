@@ -539,6 +539,14 @@ pub struct SpatialState {
     pub next_domain_id: u64,
     /// Where quarantined/unplaced objects are projected (design D4 item 3).
     pub recovery_room: ObjId,
+    /// Where a carrier root that is **under way** is projected (E7 cut 6 fold,
+    /// D2). Same shape as [`SpatialState::recovery_room`] and the same default
+    /// ([`DEFAULT_IN_TRANSIT_ROOM`], the engine's own nowhere-room), but a
+    /// different meaning: a *stopped* journey quarantines its root into
+    /// `recovery_room`, while a root that is still moving projects here, so a
+    /// departed ship actually leaves the room it departed from and staff can
+    /// tell "in passage" from "wrecked" at a glance.
+    pub in_transit_room: ObjId,
     /// The audit ledger of staff spatial operations and system recoveries.
     pub recovery: Ledger,
     /// Rebuilt indexes.
@@ -559,6 +567,7 @@ impl Default for SpatialState {
             control_gen: BTreeMap::new(),
             next_domain_id: 0,
             recovery_room: DEFAULT_RECOVERY_ROOM,
+            in_transit_room: DEFAULT_IN_TRANSIT_ROOM,
             recovery: Ledger::default(),
             derived: Derived::default(),
         }
@@ -580,6 +589,7 @@ impl PartialEq for SpatialState {
             && self.control_gen == other.control_gen
             && self.next_domain_id == other.next_domain_id
             && self.recovery_room == other.recovery_room
+            && self.in_transit_room == other.in_transit_room
             && self.derived == other.derived
     }
 }
@@ -737,20 +747,65 @@ impl SpatialState {
     }
 
     /// `obj` plus every transitive structural descendant, in BFS order.
+    ///
+    /// The membership test is a `BTreeSet` index rather than a linear scan of
+    /// the result, so the walk is linear in the records it visits (E7 cut 6
+    /// fold, C8: the old `Vec::contains` form was quadratic).
     #[must_use]
     pub fn subtree(&self, obj: ObjId) -> Vec<ObjId> {
+        self.walk_subtree(obj, usize::MAX)
+    }
+
+    /// The BFS of [`SpatialState::subtree`], stopping as soon as `limit`
+    /// records have been **visited**. The one walker the bounded and unbounded
+    /// forms share, so they can never disagree about what a subtree is.
+    fn walk_subtree(&self, obj: ObjId, limit: usize) -> Vec<ObjId> {
+        if limit == 0 {
+            return Vec::new();
+        }
         let mut out = vec![obj];
+        let mut seen: BTreeSet<ObjId> = BTreeSet::from([obj]);
         let mut i = 0;
-        while i < out.len() {
+        while i < out.len() && out.len() < limit {
             let cur = out[i];
             for c in self.descendant_edges(cur) {
-                if !out.contains(&c) {
+                if seen.insert(c) {
                     out.push(c);
+                    if out.len() >= limit {
+                        break;
+                    }
                 }
             }
             i += 1;
         }
         out
+    }
+
+    /// The subtree of `obj` when it fits in `max` records, or `Err(count)` with
+    /// `count == max + 1` when it does not.
+    ///
+    /// **Bounded on records VISITED** (D-LBK-5): the walk stops the moment it
+    /// has seen one record too many, so a pathological graph costs the cap, not
+    /// the graph. The caller refuses — never truncates (§4 rule 1).
+    ///
+    /// # Errors
+    ///
+    /// `Err(max + 1)` when the subtree is larger than `max`.
+    pub fn subtree_bounded(&self, obj: ObjId, max: usize) -> Result<Vec<ObjId>, usize> {
+        let walked = self.walk_subtree(obj, max.saturating_add(1));
+        if walked.len() > max {
+            Err(walked.len())
+        } else {
+            Ok(walked)
+        }
+    }
+
+    /// The same bounded walk for the callers that legitimately work on a
+    /// prefix (the arrival's onboard scene floors, the link refresh): at most
+    /// `max` records visited, and the walk stops there.
+    #[must_use]
+    pub fn subtree_truncated(&self, obj: ObjId, max: usize) -> Vec<ObjId> {
+        self.walk_subtree(obj, max)
     }
 
     /// The height of `obj`'s structural subtree: 0 with no children, else
@@ -906,6 +961,11 @@ pub(crate) fn persist_control_gen(out: &mut Outbox, unit: ObjId, generation: u64
 
 /// The default recovery room when none is configured.
 pub const DEFAULT_RECOVERY_ROOM: ObjId = LIMBO;
+
+/// The default in-transit room when none is configured (E7 cut 6 fold, D2).
+/// [`LIMBO`] is the engine's own nowhere-room: nothing walks in and nothing
+/// there is takeable, which is exactly what an under-way hull needs.
+pub const DEFAULT_IN_TRANSIT_ROOM: ObjId = LIMBO;
 
 #[cfg(test)]
 mod tests {

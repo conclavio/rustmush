@@ -580,6 +580,18 @@ fn e7c6_t9_the_carrier_subtree_walk_is_bounded() {
         ),
         "got {outcome:?}"
     );
+    // Bounded on records VISITED, not on the finished result (E7 cut 6 fold,
+    // C8(a)): the walk stops one record past the cap, so the refusal costs the
+    // cap and not the graph. The old form reported the whole subtree's size,
+    // which was itself the proof that it had walked all of it.
+    assert!(
+        matches!(
+            outcome,
+            Err(mush_sim::SpatialError::CarrierTooLarge { count, .. })
+                if count <= MAX_CARRIER_SUBTREE + 1
+        ),
+        "the walk visited every record before applying the cap: {outcome:?}"
+    );
 }
 
 // ======================================================================
@@ -762,12 +774,31 @@ fn e7c6_s5_a_rate_generation_change_re_anchors_and_never_pauses() {
         "the journey re-anchored instead of stalling"
     );
     assert_eq!(after.cursor(), before.cursor(), "no leg was skipped");
-    // The remaining IC duration is the un-applied legs, exactly.
-    let remaining = after.arrival_at().expect("a due stamp") - tw.world().world_ic_now().at;
+    // **The IC duration still to run is PRESERVED, not restarted** (E7 cut 6
+    // fold, R2). The world IC axis is continuous across a generation, so a
+    // re-anchor relabels the departure stamp and moves no boundary at all: the
+    // arrival lands at the same absolute IC position it always would have. The
+    // shipped form of this assertion pinned `remaining == 200` — the WHOLE
+    // second leg — which encoded the bug (a rate change extended the passage)
+    // as intent.
     assert_eq!(
-        remaining, 200,
-        "the second leg still has all 200 IC seconds"
+        after.departed().at,
+        before.departed().at,
+        "a re-anchor relabels the generation; it must not re-base the departure"
     );
+    assert_eq!(
+        after.arrival_at(),
+        before.arrival_at(),
+        "a re-anchor moved a leg boundary"
+    );
+    let remaining = after.arrival_at().expect("a due stamp") - tw.world().world_ic_now().at;
+    let elapsed_on_leg = tw.world().world_ic_now().at - 1_100;
+    assert_eq!(
+        remaining,
+        200 - elapsed_on_leg,
+        "the seconds already flown on the in-flight leg must not be handed back"
+    );
+    assert!(remaining < 200, "the leg was restarted: {remaining}");
     // And it still arrives.
     advance(&mut tw, 10_000);
     assert_eq!(*journey(&tw, fx.carrier).state(), JourneyState::Arrived);
@@ -837,6 +868,16 @@ fn e7c6_s7_a_corrupt_journey_document_is_skipped_not_defaulted() {
         book(&tw2).get(fx.carrier).is_none(),
         "a document past its own cap must be refused, never truncated into service"
     );
+    // And refused is not the same as gone (E7 cut 6 fold, R3): the document is
+    // HELD, its key is recorded, and the carrier it names — whose whole crewed
+    // subtree is otherwise nowhere — is quarantined where staff can find it.
+    let key = carrier_journey_key(fx.carrier).to_string();
+    assert!(
+        book(&tw2).held.contains_key(key.as_str()),
+        "the refused document was not held: {:?}",
+        book(&tw2).held
+    );
+    assert!(state(&tw2).is_quarantined(fx.carrier));
 }
 
 // ======================================================================
@@ -1346,5 +1387,1549 @@ fn e7c6_p7_a_destroyed_carrier_root_drops_its_journey() {
         tw.world()
             .get(fx.carrier)
             .is_none_or(|o| o.flags.contains(Flags::GOING))
+    );
+}
+
+// ======================================================================
+// ---- E7 cut 6 independent verify fold ----
+//
+// One regression test per confirmed finding, named `vf_<lens><n>_…`. The
+// owner decisions taken are D1(a) (a stopped journey quarantines its root and
+// the gate widens to any journey record on an unplaced root), D2(a) (a new
+// `SpatialState.in_transit_room`), D3(a) + filter-before-take (a
+// revision-scoped `applied_revision`), D4(ii) (the promotion row is recorded as
+// deviation (i) and pinned in all four cells) and D5(b) (the reads open to a
+// billet-holder, the writes stay staff-only).
+// ======================================================================
+
+/// The production module order — `ScenesModule` BEFORE `SimulationModule`, as
+/// `mush-server::modules::server_modules_with` composes them — for the cases
+/// that turn on the scenes seam.
+fn scenes_first() -> TestWorld {
+    TestWorld::with_modules(vec![
+        Box::new(ScenesModule::new()),
+        Box::new(SimulationModule::new()),
+    ])
+}
+
+/// Every `sim` op the last command produced, as `("set"|"del", key)` — a fold
+/// would hide a delete, and R3 is entirely about a delete.
+fn op_pairs(tw: &mut TestWorld) -> Vec<(&'static str, String)> {
+    tw.take_module_ops()
+        .into_iter()
+        .filter(|op| op.ns == "sim")
+        .filter_map(|op| match op.op {
+            ModuleWrite::JsonSet { key, .. } => Some(("set", key.to_string())),
+            ModuleWrite::Del { key } => Some(("del", key.to_string())),
+            ModuleWrite::StreamAppend { .. } => None,
+        })
+        .collect()
+}
+
+fn run_as(tw: &mut TestWorld, actor: ObjId, line: &str) -> String {
+    texts(&tw.run(actor, line))
+}
+
+fn thing(tw: &mut TestWorld, name: &str) -> ObjId {
+    tw.world_mut()
+        .create(ObjKind::Thing, name, GOD, Some(LIMBO))
+        .unwrap()
+}
+
+/// Re-write a live journey record with a different state, the way a later cut's
+/// authority (or a hand-edited document) would.
+fn set_state(tw: &mut TestWorld, root: ObjId, state: JourneyState) {
+    let j = journey(tw, root);
+    let next = CarrierJourney::new(
+        j.id(),
+        j.root(),
+        j.route().clone(),
+        j.destination().clone(),
+        j.departed().clone(),
+        j.advanced_at().clone(),
+        j.cursor(),
+        state,
+        None,
+    )
+    .expect("a coherent journey");
+    tw.world_mut()
+        .module_state_mut::<JourneyBook>()
+        .expect("journey book")
+        .journeys
+        .insert(root, next);
+}
+
+// ---- C1: the seal is no longer one-armed --------------------------------
+
+/// **C1(a).** A craft aboard a cruising mothership cannot be given a journey of
+/// its own: the `CarrierMove` arm is sealed, so it cannot leave the sealed
+/// subtree mid-leg the way `@spatial/place` was already refused from doing.
+#[test]
+fn vf_c1a_a_craft_cannot_launch_from_a_sealed_mothership() {
+    let (mut tw, fx) = scene();
+    depart(&mut tw, &fx);
+    assert!(book(&tw).under_way(fx.carrier));
+    let before = subtree_shape(&tw, fx.carrier);
+
+    let refused = err(
+        &mut tw,
+        &format!("@journey/depart #{}=escape #{}:10", fx.craft.0, fx.phobos.0),
+    );
+    assert!(refused.contains("under way"), "{refused}");
+    assert!(book(&tw).get(fx.craft).is_none(), "a record was written");
+    assert_eq!(
+        subtree_shape(&tw, fx.carrier),
+        before,
+        "the sealed subtree lost a record"
+    );
+    // The PROJECTION, not just the record: the craft is still bolted to a ship
+    // in passage, so it is exactly where the ship is.
+    assert_eq!(loc(&tw, fx.craft), loc(&tw, fx.carrier));
+    assert_eq!(loc(&tw, fx.craft), Some(state(&tw).in_transit_room));
+
+    // The transition itself refuses, not merely the command wrapper.
+    let outcome = mush_sim::plan(
+        state(&tw),
+        tw.world(),
+        &Transition::CarrierMove {
+            root: fx.craft,
+            parent: None,
+        },
+    );
+    assert!(
+        matches!(outcome, Err(mush_sim::SpatialError::CarrierSealed { root, .. }) if root == fx.carrier),
+        "got {outcome:?}"
+    );
+}
+
+/// **C1(b).** A journey may not END inside a carrier that is under way — at
+/// plan time, and (for a passage already flown) at arrival, where it stops and
+/// pages instead of boarding eleven records onto a moving ship.
+#[test]
+fn vf_c1b_an_arriving_carrier_cannot_board_an_under_way_one() {
+    let (mut tw, fx) = scene();
+    let hauler = thing(&mut tw, "Hauler");
+    let dock = tw
+        .world_mut()
+        .create(ObjKind::Room, "Dock", GOD, None)
+        .unwrap();
+    bind(&mut tw, hauler, "sim.participant");
+    bind(&mut tw, dock, "sim.interior");
+    ok(&mut tw, &format!("@spatial/place/domain #{}=0", hauler.0));
+    ok(
+        &mut tw,
+        &format!("@spatial/space #{}=moving:#{}", dock.0, hauler.0),
+    );
+
+    // The carrier sets out for the hauler's dock while the hauler is still
+    // stationary — legal at the moment it departs.
+    ok(
+        &mut tw,
+        &format!(
+            "@journey/depart #{}=ferry #{}:100 #{}:200",
+            fx.carrier.0, fx.field.0, dock.0
+        ),
+    );
+    ok(
+        &mut tw,
+        &format!("@journey/depart #{}=haul #{}:900", hauler.0, fx.phobos.0),
+    );
+    assert!(book(&tw).under_way(hauler));
+
+    // Plan time: nobody else may aim at that dock now.
+    let stray = thing(&mut tw, "Stray");
+    bind(&mut tw, stray, "sim.participant");
+    ok(&mut tw, &format!("@spatial/place/domain #{}=0", stray.0));
+    let plan_refusal = err(
+        &mut tw,
+        &format!("@journey/plan #{}=late #{}:10", stray.0, dock.0),
+    );
+    assert!(plan_refusal.contains("under way"), "{plan_refusal}");
+
+    // Arrival time: the passage was already flown, so it stops and pages
+    // rather than crossing the boundary.
+    advance(&mut tw, 1_301);
+    let stopped = journey(&tw, fx.carrier);
+    assert_eq!(*stopped.state(), JourneyState::Failed);
+    assert!(
+        stopped.anomaly().is_some_and(|a| a.contains("under way")),
+        "{:?}",
+        stopped.anomaly()
+    );
+    assert!(
+        !state(&tw).subtree(hauler).contains(&fx.carrier),
+        "eleven records boarded a ship that is under way"
+    );
+    // And D1 held the stopped ship rather than leaving it loose — projected
+    // into the recovery room, not into the moving hauler's dock.
+    assert!(state(&tw).is_quarantined(fx.carrier));
+    assert_eq!(loc(&tw, fx.carrier), Some(state(&tw).recovery_room));
+    assert!(!tw.world().contents_of(dock).contains(&fx.carrier));
+    for a in &fx.aboard {
+        assert!(!tw.world().contents_of(dock).contains(a));
+    }
+}
+
+/// **C1(c).** `Unplace` is sealed too — which is the only place the economy's
+/// `InteriorCustodyProvider::move_out` can be refused, because it deliberately
+/// skips this module's own `CarryAttempt` hook.
+#[test]
+fn vf_c1c_unplace_is_sealed_too() {
+    let (mut tw, fx) = scene();
+    depart(&mut tw, &fx);
+    let trooper = fx.aboard[0];
+
+    let refusal = err(
+        &mut tw,
+        &format!("@spatial/unplace #{}=pulled mid-passage", trooper.0),
+    );
+    assert!(refusal.contains("under way"), "{refusal}");
+    assert!(state(&tw).subtree(fx.carrier).contains(&trooper));
+    // The projection is untouched too: the trooper is still in the bay aboard
+    // the ship, not standing wherever the withdrawal aimed him.
+    assert_eq!(loc(&tw, trooper), Some(fx.bay));
+    assert!(tw.world().contents_of(fx.bay).contains(&trooper));
+
+    // The check lives in the TRANSITION, so every caller is covered — the
+    // custody withdrawal path included.
+    let outcome = mush_sim::plan(
+        state(&tw),
+        tw.world(),
+        &Transition::Unplace {
+            obj: trooper,
+            reason: "withdrawn".into(),
+            by: Some(GOD),
+            keep: true,
+        },
+    );
+    assert!(
+        matches!(outcome, Err(mush_sim::SpatialError::CarrierSealed { obj, root }) if obj == trooper && root == fx.carrier),
+        "got {outcome:?}"
+    );
+}
+
+/// **D4's four-cell pin.** `Place` and `@journey/depart` of an aboard craft,
+/// once with the root `Cruising` and once `Promoted` — all four cells refuse.
+/// Cut 6's seal treats `Promoted` exactly as `Cruising` (it is `is_under_way`,
+/// the ONE predicate), and nothing in cut 6 writes `Promoted` at all: the
+/// launch-once-promoted rule arrives with cut 8's tactical domain, which is its
+/// first writer. Recorded as deviation (i); the row can never again be neither
+/// built nor recorded.
+#[test]
+fn vf_c1e_the_promoted_cell_is_pinned() {
+    for promoted in [false, true] {
+        let (mut tw, fx) = scene();
+        depart(&mut tw, &fx);
+        if promoted {
+            set_state(
+                &mut tw,
+                fx.carrier,
+                JourneyState::Promoted {
+                    domain: mush_sim::DomainId(1),
+                },
+            );
+            assert!(book(&tw).under_way(fx.carrier));
+        }
+        let placed = err(&mut tw, &format!("@spatial/place/domain #{}=1", fx.craft.0));
+        assert!(
+            placed.contains("under way"),
+            "promoted={promoted}: {placed}"
+        );
+        let launched = err(
+            &mut tw,
+            &format!("@journey/depart #{}=escape #{}:10", fx.craft.0, fx.phobos.0),
+        );
+        assert!(
+            launched.contains("under way"),
+            "promoted={promoted}: {launched}"
+        );
+    }
+}
+
+// ---- B1/D2: a departed carrier actually leaves ---------------------------
+
+/// **B1 (D2(a)).** A departed carrier and its exposed mounts LEAVE the room they
+/// departed from: the projection is the new `in_transit_room`, not "left where
+/// it is", and the projection audit agrees at every phase.
+#[test]
+fn vf_b1_a_departed_carrier_leaves_the_room() {
+    let (mut tw, fx) = scene();
+    assert_eq!(loc(&tw, fx.carrier), Some(fx.field));
+    assert_eq!(loc(&tw, fx.craft), Some(fx.field), "an exposed mount");
+    assert!(mush_sim::verify_projections(state(&tw), tw.world()).is_empty());
+
+    depart(&mut tw, &fx);
+    let transit = state(&tw).in_transit_room;
+    assert_eq!(parent(&tw, fx.carrier), SpatialParent::Unplaced);
+    assert_eq!(
+        loc(&tw, fx.carrier),
+        Some(transit),
+        "a departed carrier must not still be in the room it left"
+    );
+    assert_eq!(
+        loc(&tw, fx.craft),
+        Some(transit),
+        "an exposed mount rides with the ship it is bolted to"
+    );
+    assert!(
+        !tw.world().contents_of(fx.field).contains(&fx.carrier),
+        "the origin room still contains the departed carrier"
+    );
+    assert!(!tw.world().contents_of(fx.field).contains(&fx.craft));
+    assert!(mush_sim::verify_projections(state(&tw), tw.world()).is_empty());
+
+    advance(&mut tw, 1_150);
+    assert_eq!(loc(&tw, fx.carrier), Some(transit), "still in passage");
+    assert!(mush_sim::verify_projections(state(&tw), tw.world()).is_empty());
+
+    advance(&mut tw, 1_301);
+    assert_eq!(loc(&tw, fx.carrier), Some(fx.phobos));
+    assert_eq!(loc(&tw, fx.craft), Some(fx.phobos));
+    assert!(mush_sim::verify_projections(state(&tw), tw.world()).is_empty());
+}
+
+// ---- C4/D1: a stopped journey never un-gates its carrier -----------------
+
+/// **C4 (D1(a)).** Pausing the destination domain mid-leg stops the journey —
+/// and the stopped ship is HELD, not left as an ordinary takeable object a
+/// bystander can pick up with its crew and mounted craft aboard.
+#[test]
+fn vf_c4a_a_paused_destination_leaves_a_gated_carrier() {
+    let (mut tw, fx) = scene();
+    depart(&mut tw, &fx);
+    let thief = tw
+        .world_mut()
+        .create(ObjKind::Player, "Bystander", GOD, Some(LIMBO))
+        .unwrap();
+    ok(&mut tw, "@domain/pause 1");
+    advance(&mut tw, 1_301);
+
+    let stopped = journey(&tw, fx.carrier);
+    assert_eq!(*stopped.state(), JourneyState::Failed);
+    assert!(
+        stopped
+            .anomaly()
+            .is_some_and(|a| a.contains("could not be placed")),
+        "{:?}",
+        stopped.anomaly()
+    );
+    assert!(state(&tw).is_quarantined(fx.carrier), "the ship is loose");
+    assert_eq!(loc(&tw, fx.carrier), Some(state(&tw).recovery_room));
+    assert_eq!(state(&tw).subtree(fx.carrier).len(), 11, "still hosting");
+
+    // The real hook, not just the predicate: an ordinary player standing where
+    // the ship is projected cannot take it.
+    let events = tw.run(thief, &format!("get #{}", fx.carrier.0));
+    assert!(
+        has_error(&events),
+        "a non-staff player picked up a dropship: {}",
+        texts(&events)
+    );
+    assert_ne!(loc(&tw, fx.carrier), Some(thief));
+}
+
+/// **C4, the `Captured` arm (deviation (f)).** A terminal state a LATER cut
+/// writes lands in the same place, and the gate covers it by construction —
+/// the widened `journeying_reason` is phrased over record presence and
+/// unplacedness, not over a second under-way predicate.
+#[test]
+fn vf_c4b_a_captured_carrier_is_still_gated() {
+    let (mut tw, fx) = scene();
+    depart(&mut tw, &fx);
+    let thief = tw
+        .world_mut()
+        .create(ObjKind::Player, "Bystander", GOD, Some(LIMBO))
+        .unwrap();
+    set_state(&mut tw, fx.carrier, JourneyState::Captured { by: GOD });
+    assert!(!book(&tw).under_way(fx.carrier));
+    advance(&mut tw, 1_150);
+
+    let st = state(&tw);
+    assert!(
+        st.is_placed(fx.carrier) || st.is_quarantined(fx.carrier),
+        "a captured carrier is neither placed nor held"
+    );
+    assert!(
+        mush_sim::journey::journeying_reason(book(&tw), tw.world(), fx.carrier).is_some(),
+        "the gate went silent for a terminal journey"
+    );
+    let events = tw.run(thief, &format!("get #{}", fx.carrier.0));
+    assert!(has_error(&events), "{}", texts(&events));
+}
+
+/// **R7 (with B4).** The command a stopped journey's page RECOMMENDS actually
+/// runs — before the fold `@journey/divert` refused exactly the journey whose
+/// anomaly named it, and the obvious second try (`@journey/depart`) refused too
+/// because the stopped root is unplaced.
+#[test]
+fn vf_c4c_the_anomalys_command_actually_recovers() {
+    let (mut tw, fx) = scene();
+    depart(&mut tw, &fx);
+    let mut kv = fold_kv(&mut tw, "sim");
+    let doc = doc_mut(&mut kv, carrier_journey_key(fx.carrier).as_str());
+    doc["departed"]["at"] = serde_json::json!(i64::MAX - 10);
+    doc["advanced_at"]["at"] = serde_json::json!(i64::MAX - 10);
+
+    let mut tw2 = boot();
+    tw2.set_now(2_000);
+    let fx2 = build(&mut tw2);
+    tw2.modules_loaded(HashMap::from([(
+        SmolStr::new("sim"),
+        ModuleBootData {
+            kv,
+            ..ModuleBootData::default()
+        },
+    )]));
+    let stopped = journey(&tw2, fx2.carrier);
+    assert_eq!(*stopped.state(), JourneyState::Failed);
+    let anomaly = stopped.anomaly().expect("a paged diagnosis").to_string();
+    assert!(anomaly.contains("@journey/divert"), "{anomaly}");
+    assert!(state(&tw2).is_quarantined(fx2.carrier), "and it is held");
+
+    // The exact shape the page names.
+    ok(
+        &mut tw2,
+        &format!(
+            "@journey/divert #{}=recover #{}:10",
+            fx2.carrier.0, fx2.phobos.0
+        ),
+    );
+    assert!(book(&tw2).under_way(fx2.carrier));
+    assert!(
+        !state(&tw2).is_quarantined(fx2.carrier),
+        "a ship under way again must leave the recovery room"
+    );
+    advance(&mut tw2, 2_011);
+    assert_eq!(*journey(&tw2, fx2.carrier).state(), JourneyState::Arrived);
+}
+
+/// **C5.** Every writer of a `controls_are_live` input refreshes: a stopped
+/// journey re-derives the crew's links in the same edit, instead of leaving a
+/// live grant standing until some unrelated edit silently drops it.
+#[test]
+fn vf_c5_a_stopped_journey_refreshes_its_links() {
+    let (mut tw, fx) = scene();
+    let held = |tw: &TestWorld| {
+        tw.world()
+            .command_subjects_of(fx.pilot)
+            .iter()
+            .any(|g| g.subject == fx.carrier)
+    };
+    depart(&mut tw, &fx);
+    assert!(held(&tw), "the crew has the helm while cruising");
+    ok(&mut tw, "@domain/pause 1");
+    advance(&mut tw, 1_301);
+    assert_eq!(*journey(&tw, fx.carrier).state(), JourneyState::Failed);
+    let after_fail = held(&tw);
+    // An unrelated edit must not change the answer — that is the whole point.
+    ok(
+        &mut tw,
+        &format!("@spatial/station #{}=gunner,gunner", fx.carrier.0),
+    );
+    assert_eq!(
+        held(&tw),
+        after_fail,
+        "an unrelated station edit changed the published links, so `fail` had left them stale"
+    );
+}
+
+// ---- C3/D3: the arrival heal expires ------------------------------------
+
+/// **C3 (D3(a)).** An `Arrived` journey's repair claim is scoped to the
+/// placement revision it landed at, so a deliberate later relocation stands
+/// instead of being reverted — whole subtree included, with a revision bump, a
+/// duplicate narrative and a false scene page — on the next 1 s fire, forever.
+#[test]
+fn vf_c3_a_later_placement_of_an_arrived_carrier_is_not_undone() {
+    let (mut tw, fx) = scene();
+    depart(&mut tw, &fx);
+    advance(&mut tw, 1_301);
+    assert!(
+        matches!(parent(&tw, fx.carrier), SpatialParent::Direct { domain, .. } if domain.0 == 1)
+    );
+    ok(
+        &mut tw,
+        &format!("@spatial/place/domain #{}=0", fx.carrier.0),
+    );
+    let revision = placement_revision(&tw, fx.carrier).expect("a placement");
+    let _ = fold_kv(&mut tw, "sim");
+
+    for t in 1..=3 {
+        advance(&mut tw, 1_400 + t);
+        assert!(
+            matches!(parent(&tw, fx.carrier), SpatialParent::Direct { domain, .. } if domain.0 == 0),
+            "the arrived journey dragged the carrier back on fire {t}"
+        );
+        assert_eq!(placement_revision(&tw, fx.carrier), Some(revision));
+    }
+    let keys = op_keys(&mut tw);
+    assert!(
+        !keys
+            .iter()
+            .any(|k| k == &format!("placement:{}", fx.carrier.0)),
+        "the heal kept rewriting the placement: {keys:?}"
+    );
+    for a in &fx.aboard {
+        assert!(state(&tw).subtree(fx.carrier).contains(a));
+    }
+}
+
+// ---- R2: a re-anchor preserves the remaining duration --------------------
+
+/// **R2.** A world-IC rate generation change moves NO boundary: the IC axis is
+/// continuous, so re-anchoring relabels the departure stamp and the arrival
+/// lands at the same absolute IC position. Repeated bumps therefore cannot
+/// defer an arrival without limit.
+#[test]
+fn vf_r2_a_rate_generation_change_preserves_the_exact_remaining_duration() {
+    let (mut tw, fx) = scene();
+    depart(&mut tw, &fx);
+    let arrival = journey(&tw, fx.carrier).arrival_at().expect("a due stamp");
+    advance(&mut tw, 1_290);
+    let remaining_before = arrival - tw.world().world_ic_now().at;
+    assert_eq!(remaining_before, 10);
+
+    let epoch = tw
+        .world()
+        .next_world_timeline_epoch(1)
+        .expect("a new world-IC epoch");
+    tw.world_mut()
+        .append_world_timeline_epoch(epoch)
+        .expect("the epoch appends");
+    advance(&mut tw, 1_291);
+    let after = journey(&tw, fx.carrier);
+    assert_eq!(
+        after.arrival_at(),
+        Some(arrival),
+        "the re-anchor moved the arrival stamp"
+    );
+    assert_eq!(
+        arrival - tw.world().world_ic_now().at,
+        9,
+        "the re-anchor handed back seconds that had already been flown"
+    );
+
+    // A bump cadence shorter than the leg must not defer the arrival forever.
+    for step in 0..5 {
+        let epoch = tw
+            .world()
+            .next_world_timeline_epoch(1)
+            .expect("a new world-IC epoch");
+        tw.world_mut()
+            .append_world_timeline_epoch(epoch)
+            .expect("the epoch appends");
+        advance(&mut tw, 1_292 + step);
+    }
+    advance(&mut tw, 1_400);
+    assert_eq!(
+        *journey(&tw, fx.carrier).state(),
+        JourneyState::Arrived,
+        "repeated rate changes deferred the arrival past IC {}",
+        tw.world().world_ic_now().at
+    );
+}
+
+// ---- R3: a refused journey document is held, never deleted ---------------
+
+/// **R3.** An under-way carrier is deliberately not placed, so its `cjourney:`
+/// document is the ONLY record of where the ship and its whole crewed subtree
+/// are. A wire refusal must therefore never be a durable delete.
+#[test]
+fn vf_r3_an_unreadable_carrier_journey_is_held_not_deleted() {
+    let (mut tw, fx) = scene();
+    depart(&mut tw, &fx);
+    let mut kv = fold_kv(&mut tw, "sim");
+    let key = carrier_journey_key(fx.carrier).to_string();
+    doc_mut(&mut kv, &key)["cursor"] = serde_json::json!(99); // past the route's two legs
+
+    let mut tw2 = boot();
+    tw2.set_now(1_150);
+    let fx2 = build(&mut tw2);
+    let _ = tw2.take_module_ops();
+    tw2.modules_loaded(HashMap::from([(
+        SmolStr::new("sim"),
+        ModuleBootData {
+            kv,
+            ..ModuleBootData::default()
+        },
+    )]));
+    assert!(
+        book(&tw2).get(fx2.carrier).is_none(),
+        "refused, as designed"
+    );
+    let ops = op_pairs(&mut tw2);
+    assert!(
+        !ops.iter().any(|(kind, k)| *kind == "del" && *k == key),
+        "boot issued a durable delete for the only record of an under-way carrier: {ops:?}"
+    );
+    assert!(
+        book(&tw2).held.contains_key(key.as_str()),
+        "the refused document was not recorded as held: {:?}",
+        book(&tw2).held
+    );
+    assert!(
+        state(&tw2).is_quarantined(fx2.carrier),
+        "the stranded carrier is neither placed nor findable"
+    );
+    assert_eq!(loc(&tw2, fx2.carrier), Some(state(&tw2).recovery_room));
+}
+
+// ---- R4: a rate change must not wedge a promoted domain ------------------
+
+/// **R4.** `DomainSummary::new` demanded one clock generation, so after ANY
+/// world rate change every standing activation became un-demotable — forever,
+/// across every reboot, accumulating against `MAX_ACTIVE_DOMAINS`.
+#[test]
+fn vf_r4_a_promoted_domain_demotes_across_a_rate_generation_change() {
+    let (mut tw, _fx) = scene();
+    ok(&mut tw, "@domain/promote 0=player");
+    let epoch = tw
+        .world()
+        .next_world_timeline_epoch(2)
+        .expect("a new world-IC epoch");
+    tw.world_mut()
+        .append_world_timeline_epoch(epoch)
+        .expect("the epoch appends");
+    tw.set_now(2_000);
+
+    let text = ok(&mut tw, "@domain/demote 0");
+    assert!(text.contains("summary is written first"), "{text}");
+    assert!(!activations(&tw).is_promoted(mush_sim::DomainId(0)));
+    let summary = activations(&tw)
+        .summaries
+        .get(&mush_sim::DomainId(0))
+        .cloned()
+        .expect("a summary");
+    assert_eq!(
+        summary.elapsed(),
+        tw.world().world_ic_now().at - 1_000,
+        "the elapsed IC window must stay exact across the generation"
+    );
+    assert_eq!(summary.to().clock, tw.world().world_ic_now().clock);
+    // And the slot really is free again.
+    ok(&mut tw, "@domain/promote 0=player");
+    assert_eq!(activations(&tw).live(), 1);
+}
+
+// ---- C7: a journey cannot dock into a custody backing --------------------
+
+/// **C7.** An arrival is not `@spatial/place`: it is `apply_arrival` →
+/// `move_carrier_subtree`, and `InteriorCustodyProvider::contents` derives vault
+/// stock purely from the placement graph. Docking into a vault backing would
+/// therefore be an unjournaled deposit of a ship and everyone aboard.
+#[test]
+fn vf_c7_a_journey_cannot_dock_into_a_vault_backing() {
+    let mut tw = TestWorld::with_modules(vec![
+        Box::new(mush_org::OrgModule::new()),
+        Box::new(SimulationModule::new()),
+        Box::new(mush_economy::EconomyModule::with_custody(vec![
+            std::sync::Arc::new(mush_sim::InteriorCustodyProvider),
+        ])),
+    ]);
+    tw.set_now(1_000);
+    let fx = build(&mut tw);
+    let warehouse = tw
+        .world_mut()
+        .create(ObjKind::Room, "Bonded Warehouse", GOD, None)
+        .unwrap();
+    bind(&mut tw, warehouse, "sim.interior");
+    ok(&mut tw, &format!("@spatial/space #{}=fixed:1", warehouse.0));
+    let created = ok(
+        &mut tw,
+        &format!("@vault/create bay=interior:#{}", warehouse.0),
+    );
+    assert!(created.contains("Created vault"), "{created}");
+
+    for verb in ["plan", "depart"] {
+        let refusal = err(
+            &mut tw,
+            &format!(
+                "@journey/{verb} #{}=corridor #{}:100",
+                fx.carrier.0, warehouse.0
+            ),
+        );
+        assert!(refusal.contains("custody vault"), "{verb}: {refusal}");
+    }
+    assert!(book(&tw).get(fx.carrier).is_none());
+    assert!(state(&tw).is_placed(fx.carrier), "it never left");
+}
+
+// ---- C8: the walk is bounded, and Place is capped too --------------------
+
+/// **C8(b).** `Transition::Place` builds its projection bundle from the same
+/// subtree walk a carrier move does, so ONE constant caps both — before the
+/// fold, `@spatial/place/domain` on an over-cap root built exactly the bundle
+/// `MAX_CARRIER_SUBTREE` exists to refuse.
+#[test]
+fn vf_c8_place_is_capped_too() {
+    let (mut tw, fx) = scene();
+    {
+        let st = tw
+            .world_mut()
+            .module_state_mut::<SpatialState>()
+            .expect("sim state");
+        for i in 0..MAX_CARRIER_SUBTREE {
+            let object = ObjId(50_000 + u32::try_from(i).expect("a small index"));
+            st.placements.insert(
+                object,
+                PlacementRecord {
+                    object,
+                    parent: SpatialParent::Interior {
+                        space: fx.bay,
+                        slot: None,
+                    },
+                    revision: 1,
+                    unplaced: None,
+                },
+            );
+        }
+        st.derived = mush_sim::graph::rebuild(st);
+    }
+    let outcome = mush_sim::plan(
+        state(&tw),
+        tw.world(),
+        &Transition::Place {
+            obj: fx.carrier,
+            parent: SpatialParent::Direct {
+                domain: mush_sim::DomainId(1),
+                pose: mush_sim::passive_rules_value(serde_json::json!({})).expect("a pose"),
+            },
+        },
+    );
+    assert!(
+        matches!(
+            outcome,
+            Err(mush_sim::SpatialError::CarrierTooLarge { count, max, .. })
+                if max == MAX_CARRIER_SUBTREE && count <= MAX_CARRIER_SUBTREE + 1
+        ),
+        "got {outcome:?}"
+    );
+}
+
+// ---- C9/D5: who may read a journey ---------------------------------------
+
+/// **C9 (D5(b)).** The reads open to an actor who crews the carrier; the writes
+/// stay staff-only; a bystander gets the byte-identical rule-4 line, so the read
+/// leaks nothing.
+#[test]
+fn vf_c9_a_billeted_pilot_may_read_its_own_journey() {
+    let (mut tw, fx) = scene();
+    let bystander = tw
+        .world_mut()
+        .create(ObjKind::Player, "Passer", GOD, Some(LIMBO))
+        .unwrap();
+    depart(&mut tw, &fx);
+
+    let crewed = run_as(
+        &mut tw,
+        fx.pilot,
+        &format!("@journey/show #{}", fx.carrier.0),
+    );
+    assert!(
+        crewed.contains("Cruising"),
+        "the ship's own pilot: {crewed}"
+    );
+    let stranger = run_as(
+        &mut tw,
+        bystander,
+        &format!("@journey/show #{}", fx.carrier.0),
+    );
+    assert_eq!(stranger, "No journey.");
+    let absent = run_as(&mut tw, bystander, "@journey/show Nowhere-At-All");
+    assert_eq!(stranger, absent, "rule 4: byte-identical");
+
+    for actor in [fx.pilot, bystander] {
+        let refused = run_as(
+            &mut tw,
+            actor,
+            &format!("@journey/depart #{}=x #{}:10", fx.carrier.0, fx.phobos.0),
+        );
+        assert!(refused.contains("Permission denied"), "{refused}");
+    }
+}
+
+// ---- C10: an incoherent hydrated record is repaired ----------------------
+
+/// **C10.** A stored record saying `Cruising` while the placement document says
+/// the root is in a hangar survived boot intact and left a ship permanently
+/// sealed and permanently un-movable, with no anomaly and no page.
+#[test]
+fn vf_c10_a_placed_cruising_root_is_repaired_at_boot() {
+    let (mut tw, fx) = scene();
+    depart(&mut tw, &fx);
+    let mut kv = fold_kv(&mut tw, "sim");
+    // Rewind ONLY the placement document to its pre-departure value, leaving a
+    // `Cruising` journey against a placed root.
+    *doc_mut(&mut kv, &format!("placement:{}", fx.carrier.0)) = serde_json::json!({
+        "object": fx.carrier.0,
+        "parent": { "kind": "Direct", "domain": 0, "pose": { "definition": mush_sim::passive_definition_ref(), "data": {} } },
+        "revision": 1,
+        "unplaced": null
+    });
+
+    let mut tw2 = boot();
+    tw2.set_now(1_050);
+    let fx2 = build(&mut tw2);
+    tw2.modules_loaded(HashMap::from([(
+        SmolStr::new("sim"),
+        ModuleBootData {
+            kv,
+            ..ModuleBootData::default()
+        },
+    )]));
+    let placed = state(&tw2).is_placed(fx2.carrier);
+    let stopped = book(&tw2)
+        .get(fx2.carrier)
+        .is_some_and(|j| !j.state().is_under_way());
+    assert!(
+        !placed || stopped,
+        "boot left a placed root permanently sealed by a cruising record"
+    );
+}
+
+// ---- R5/B3: the eight tactical slots ------------------------------------
+
+/// Create `n` extra domains deterministically, so the reboot world matches.
+fn extra_domains(tw: &mut TestWorld, n: usize) {
+    for i in 0..n {
+        let room = tw
+            .world_mut()
+            .create(ObjKind::Room, &format!("Rock{i}"), GOD, None)
+            .unwrap();
+        bind(tw, room, "sim.domain");
+        ok(tw, &format!("@domain/create #{}=sim.passive", room.0));
+    }
+}
+
+/// **R5.** Boot installs the activation book and now RE-EVALUATES the queue:
+/// a slot freed out of band (an activation dropped, deleted or belonging to a
+/// domain that is no longer active) must not leave a queued request stranded
+/// until the next `@domain/promote|demote`.
+#[test]
+fn vf_r5_boot_re_evaluates_the_activation_queue() {
+    let (mut tw, _fx) = scene();
+    extra_domains(&mut tw, MAX_ACTIVE_DOMAINS + 1);
+    for id in 0..MAX_ACTIVE_DOMAINS {
+        ok(&mut tw, &format!("@domain/promote {id}=player"));
+    }
+    let over = u64::try_from(MAX_ACTIVE_DOMAINS).expect("a small limit");
+    let queued = ok(&mut tw, &format!("@domain/promote {over}=interception"));
+    assert!(queued.contains("QUEUED"), "{queued}");
+
+    let mut kv = fold_kv(&mut tw, "sim");
+    // A slot frees out of band: one live activation document is gone.
+    kv.retain(|(k, _)| k.as_str() != "activation:0");
+
+    let mut tw2 = boot();
+    tw2.set_now(1_000);
+    let _fx2 = build(&mut tw2);
+    extra_domains(&mut tw2, MAX_ACTIVE_DOMAINS + 1);
+    tw2.modules_loaded(HashMap::from([(
+        SmolStr::new("sim"),
+        ModuleBootData {
+            kv,
+            ..ModuleBootData::default()
+        },
+    )]));
+    assert!(
+        activations(&tw2).is_promoted(mush_sim::DomainId(over)),
+        "a slot is free ({} live of {MAX_ACTIVE_DOMAINS}) and a request is still queued",
+        activations(&tw2).live()
+    );
+    assert_eq!(activations(&tw2).next_queued(), None);
+}
+
+/// **B3.** Retiring or pausing a promoted domain releases its tactical slot,
+/// writing the summary FIRST — before the fold, eight retired domains starved
+/// every live one and could not even be re-promoted to clear the leak.
+#[test]
+fn vf_b3_retire_and_pause_release_the_tactical_slot() {
+    let (mut tw, _fx) = scene();
+    ok(&mut tw, "@domain/promote 1=interception");
+    assert_eq!(activations(&tw).live(), 1);
+    let _ = tw.take_module_ops();
+    ok(&mut tw, "@domain/retire 1");
+    let ops = op_pairs(&mut tw);
+    let set_summary = ops
+        .iter()
+        .position(|(k, key)| *k == "set" && key == "summary:1");
+    let del_activation = ops
+        .iter()
+        .position(|(k, key)| *k == "del" && key == "activation:1");
+    assert!(
+        set_summary.is_some() && del_activation.is_some() && set_summary < del_activation,
+        "{ops:?}"
+    );
+    assert_eq!(activations(&tw).live(), 0, "a retired domain kept its slot");
+
+    // Pause does the same.
+    ok(&mut tw, "@domain/promote 0=player");
+    assert_eq!(activations(&tw).live(), 1);
+    ok(&mut tw, "@domain/pause 0");
+    assert_eq!(activations(&tw).live(), 0, "a paused domain kept its slot");
+
+    // And a hydrated activation for a domain that is no longer active is
+    // dropped rather than holding a slot across every reboot.
+    ok(&mut tw, "@domain/resume 0");
+    ok(&mut tw, "@domain/promote 0=player");
+    let mut kv = fold_kv(&mut tw, "sim");
+    for (key, value) in kv.iter_mut() {
+        if key.as_str() == "domain:0" {
+            value["status"] = serde_json::json!("Retired");
+        }
+    }
+    let mut tw2 = boot();
+    tw2.set_now(1_000);
+    let _ = build(&mut tw2);
+    tw2.modules_loaded(HashMap::from([(
+        SmolStr::new("sim"),
+        ModuleBootData {
+            kv,
+            ..ModuleBootData::default()
+        },
+    )]));
+    assert_eq!(activations(&tw2).live(), 0);
+}
+
+// ---- R6/R9/R10: the arrival's post-move steps ---------------------------
+
+/// **R6.** A replayed arrival — a journey document older than its placement
+/// document — used to skip the event, the narrative AND the onboard IC-floor
+/// raise entirely, and nothing else ever raised it. The floor raise is
+/// monotonic, so it belongs outside the `already` short-circuit.
+#[test]
+fn vf_r6_a_re_derived_arrival_still_raises_the_onboard_floors() {
+    let mut tw = scenes_first();
+    tw.set_now(1_000);
+    let fx = build(&mut tw);
+    let aboard = open_scene(&mut tw, fx.bay, 0, 1);
+    depart(&mut tw, &fx);
+    advance(&mut tw, 1_301);
+    assert_eq!(scene_of(&tw, aboard).ic_floor, 1_300);
+
+    let ops = tw.take_module_ops();
+    let mut kv: Vec<(SmolStr, serde_json::Value)> = Vec::new();
+    let mut scenes_kv: Vec<(SmolStr, serde_json::Value)> = Vec::new();
+    for op in ops {
+        let target = if op.ns == "sim" {
+            &mut kv
+        } else if op.ns == "scenes" {
+            &mut scenes_kv
+        } else {
+            continue;
+        };
+        match op.op {
+            ModuleWrite::JsonSet { key, value } => {
+                target.retain(|(k, _)| *k != key);
+                target.push((key, value));
+            }
+            ModuleWrite::Del { key } => target.retain(|(k, _)| *k != key),
+            ModuleWrite::StreamAppend { .. } => {}
+        }
+    }
+    // The crash: the placement landed; the journey doc and the scene doc did not.
+    let doc = doc_mut(&mut kv, carrier_journey_key(fx.carrier).as_str());
+    doc["cursor"] = serde_json::json!(1);
+    doc["state"] = serde_json::json!({ "state": "Cruising" });
+    doc["advanced_at"]["at"] = serde_json::json!(1_150);
+    doc["applied_revision"] = serde_json::json!(0);
+    for (_, v) in scenes_kv.iter_mut() {
+        if v.get("ic_floor").is_some() {
+            v["ic_floor"] = serde_json::json!(0);
+        }
+    }
+
+    let mut tw2 = scenes_first();
+    tw2.set_now(1_400);
+    let fx2 = build(&mut tw2);
+    let aboard2 = open_scene(&mut tw2, fx2.bay, 0, 1);
+    tw2.modules_loaded(HashMap::from([
+        (
+            SmolStr::new("sim"),
+            ModuleBootData {
+                kv,
+                ..ModuleBootData::default()
+            },
+        ),
+        (
+            SmolStr::new("scenes"),
+            ModuleBootData {
+                kv: scenes_kv,
+                ..ModuleBootData::default()
+            },
+        ),
+    ]));
+    assert_eq!(*journey(&tw2, fx2.carrier).state(), JourneyState::Arrived);
+    let floors: Vec<i64> = tw2
+        .world()
+        .module_state::<ScenesState>()
+        .expect("scenes state")
+        .scenes
+        .values()
+        .filter(|s| s.anchor == fx2.bay)
+        .map(|s| s.ic_floor)
+        .collect();
+    assert!(
+        floors.contains(&1_300),
+        "`already` short-circuited before the onboard floor raise: {floors:?} (scene {aboard2:?})"
+    );
+}
+
+/// **R10.** A repeated arrival raise at the identical stamp is a HIT, not an
+/// operator page: the floor is monotonic, so `NotForward` with a floor already
+/// at or past the stamp means the repair worked. Only `AheadOfWorld` and
+/// `AlreadySealed` need a human.
+#[test]
+fn vf_r10_a_repeated_arrival_floor_raise_is_a_hit_not_a_page() {
+    // The classification is a log level, so it is pinned at the source: the
+    // `NotForward`-with-`floor >= at` arm must `continue` at `debug` before the
+    // `error!` page, and the two arms that need a decision must still reach it.
+    const SRC: &str = include_str!("../src/journey.rs");
+    let hit = SRC
+        .find("ArrivalFloorRefusal::NotForward { at: refused, floor }")
+        .expect("the NotForward hit arm");
+    let page = SRC
+        .find("an onboard scene refused the arrival IC-floor raise")
+        .expect("the page");
+    assert!(hit < page, "the hit arm must be classified before the page");
+    assert!(SRC[hit..page].contains("tracing::debug!"));
+    assert!(SRC[hit..page].contains("continue;"));
+
+    // And behaviourally: a re-derived arrival at the same stamp leaves the floor
+    // exactly where it is and never holds the journey.
+    let mut tw = scenes_first();
+    tw.set_now(1_000);
+    let fx = build(&mut tw);
+    let aboard = open_scene(&mut tw, fx.bay, 0, 1);
+    depart(&mut tw, &fx);
+    advance(&mut tw, 1_301);
+    assert_eq!(scene_of(&tw, aboard).ic_floor, 1_300);
+    for t in 1..=3 {
+        advance(&mut tw, 1_400 + t);
+        assert_eq!(scene_of(&tw, aboard).ic_floor, 1_300);
+    }
+    assert_eq!(*journey(&tw, fx.carrier).state(), JourneyState::Arrived);
+}
+
+// ---- R8/R11/R13: the tick's budget, rotation and catch-up ----------------
+
+/// **R8.** A terminal, coherent journey costs no `visited` budget, so a world
+/// with a long passage history still works a live boundary on the FIRST fire
+/// instead of `ceil(N/64)` seconds later.
+#[test]
+fn vf_r8_a_terminal_journey_stops_costing_the_budget() {
+    let (mut tw, fx) = scene();
+    let mut old: Vec<ObjId> = Vec::new();
+    for i in 0..70 {
+        let hauler = thing(&mut tw, &format!("Hauler{i}"));
+        bind(&mut tw, hauler, "sim.participant");
+        ok(&mut tw, &format!("@spatial/place/domain #{}=0", hauler.0));
+        ok(
+            &mut tw,
+            &format!("@journey/depart #{}=hop #{}:10", hauler.0, fx.phobos.0),
+        );
+        old.push(hauler);
+    }
+    // Several fires to work them all off (16 per fire), then they are terminal.
+    for t in 0..12 {
+        advance(&mut tw, 1_011 + t);
+    }
+    for h in &old {
+        assert_eq!(*journey(&tw, *h).state(), JourneyState::Arrived, "{h}");
+    }
+
+    // The newest root sorts last in the book, i.e. worst case for the rotation.
+    let late = thing(&mut tw, "Latecomer");
+    bind(&mut tw, late, "sim.participant");
+    ok(&mut tw, &format!("@spatial/place/domain #{}=0", late.0));
+    ok(
+        &mut tw,
+        &format!("@journey/depart #{}=hop #{}:10", late.0, fx.phobos.0),
+    );
+    assert!(book(&tw).journeys.len() > mush_sim::MAX_JOURNEYS_VISITED_PER_FIRE);
+    advance(&mut tw, 1_040);
+    assert_eq!(
+        *journey(&tw, late).state(),
+        JourneyState::Arrived,
+        "a live boundary waited behind {} terminal records",
+        old.len()
+    );
+}
+
+/// **R11.** The rotation cursor rides the allocator document, so a restart
+/// resumes the rotation instead of re-walking the lowest root ids and starving
+/// the tail of the book after every reboot.
+#[test]
+fn vf_r11_the_rotation_cursor_survives_a_reboot() {
+    let (mut tw, fx) = scene();
+    depart(&mut tw, &fx);
+    advance(&mut tw, 1_301);
+    assert_eq!(*journey(&tw, fx.carrier).state(), JourneyState::Arrived);
+    let cursor = book(&tw).cursor;
+    assert_ne!(cursor, 0, "the rotation never moved");
+
+    let kv = fold_kv(&mut tw, "sim");
+    let meta = kv
+        .iter()
+        .find(|(k, _)| k.as_str() == "journey_meta")
+        .map(|(_, v)| v.clone())
+        .expect("the allocator document");
+    assert_eq!(
+        meta.get("rotation_cursor")
+            .and_then(serde_json::Value::as_u64),
+        Some(u64::from(cursor)),
+        "the cursor is not carried in the document that already exists: {meta}"
+    );
+
+    let mut tw2 = boot();
+    tw2.set_now(2_000);
+    let _ = build(&mut tw2);
+    tw2.modules_loaded(HashMap::from([(
+        SmolStr::new("sim"),
+        ModuleBootData {
+            kv,
+            ..ModuleBootData::default()
+        },
+    )]));
+    assert_eq!(
+        book(&tw2).cursor,
+        cursor,
+        "the reboot restarted the rotation at the head of the book"
+    );
+}
+
+/// **R12.** The module's own no-panic contract, stated as code: the persistence
+/// helpers page instead of panicking, because they run in the world task from
+/// the tick and from boot.
+#[test]
+fn vf_r12_the_persistence_helpers_do_not_panic() {
+    let sources = [
+        include_str!("../src/journey.rs"),
+        include_str!("../src/domain.rs"),
+    ]
+    .join(
+        "
+",
+    );
+    for panicking in [
+        "expect(\"carrier journey serializes\")",
+        "expect(\"domain activation serializes\")",
+        "expect(\"domain summary serializes\")",
+    ] {
+        assert!(
+            !sources.contains(panicking),
+            "a persistence helper still panics on a serialization failure: {panicking}"
+        );
+    }
+    // And the pages exist in their place.
+    assert!(sources.contains("would not serialize"));
+}
+
+/// **R13.** A long downtime is caught up ONE leg boundary at a time, each
+/// observed exactly once, so a later cut can hang an interception or an
+/// alignment-band advance on a boundary without the catch-up collapsing past it.
+#[test]
+fn vf_r13_a_downtime_observes_every_leg_boundary_once() {
+    let (mut tw, fx) = scene();
+    ok(
+        &mut tw,
+        &format!(
+            "@journey/depart #{}=four #{}:10 #{}:10 #{}:10 #{}:10",
+            fx.carrier.0, fx.field.0, fx.bay.0, fx.hold.0, fx.phobos.0
+        ),
+    );
+    let _ = tw.take_module_ops();
+    // One fire, well past the last boundary.
+    advance(&mut tw, 1_100);
+    let key = carrier_journey_key(fx.carrier).to_string();
+    let writes = op_pairs(&mut tw)
+        .into_iter()
+        .filter(|(kind, k)| *kind == "set" && *k == key)
+        .count();
+    assert_eq!(
+        writes, 4,
+        "the four boundaries collapsed into {writes} advance(s)"
+    );
+    let arrived = journey(&tw, fx.carrier);
+    assert_eq!(*arrived.state(), JourneyState::Arrived);
+    assert_eq!(arrived.cursor(), 4);
+}
+
+// ---- B8: the journey census --------------------------------------------
+
+/// **B8.** The `cjourney:` key space is bounded by a declared census, refused
+/// at the producer rather than admitted and then truncated.
+#[test]
+fn vf_b8_the_journey_census_is_bounded() {
+    let (mut tw, fx) = scene();
+    {
+        // Fill the book to the cap directly: the point under test is the bound
+        // in `journey_ineligible`, not the authoring path.
+        let route = {
+            depart(&mut tw, &fx);
+            let j = journey(&tw, fx.carrier);
+            (
+                j.route().clone(),
+                j.destination().clone(),
+                j.departed().clone(),
+            )
+        };
+        let book = tw
+            .world_mut()
+            .module_state_mut::<JourneyBook>()
+            .expect("journey book");
+        for i in 0..mush_sim::MAX_CARRIER_JOURNEYS {
+            let root = ObjId(60_000 + u32::try_from(i).expect("a small index"));
+            let record = CarrierJourney::new(
+                mush_sim::JourneyId(u64::try_from(i).expect("a small index")),
+                root,
+                route.0.clone(),
+                route.1.clone(),
+                route.2.clone(),
+                route.2.clone(),
+                0,
+                JourneyState::Arrived,
+                None,
+            )
+            .expect("a coherent journey");
+            book.journeys.insert(root, record);
+        }
+    }
+    let hauler = thing(&mut tw, "Overflow");
+    bind(&mut tw, hauler, "sim.participant");
+    ok(&mut tw, &format!("@spatial/place/domain #{}=0", hauler.0));
+    let refused = err(
+        &mut tw,
+        &format!("@journey/depart #{}=hop #{}:10", hauler.0, fx.phobos.0),
+    );
+    assert!(
+        refused.contains(&mush_sim::MAX_CARRIER_JOURNEYS.to_string()),
+        "the census must name its cap: {refused}"
+    );
+    assert!(book(&tw).get(hauler).is_none());
+}
+
+// ---- The deviations, pinned so their inertness cannot drift --------------
+
+/// **Deviation (b).** The alignment-band advance is structurally inert: nothing
+/// authors a band, and `mush-sim` names `advance_cadence_manual` nowhere, so it
+/// writes no economy document. Pinned so the inertness cannot drift silently.
+#[test]
+fn vf_db_the_alignment_band_is_inert() {
+    let (mut tw, fx) = scene();
+    depart(&mut tw, &fx);
+    assert!(journey(&tw, fx.carrier).route().alignment_band().is_none());
+    for src in [
+        include_str!("../src/journey.rs"),
+        include_str!("../src/commands.rs"),
+        include_str!("../src/route.rs"),
+        include_str!("../src/transition.rs"),
+    ] {
+        assert!(
+            !src.contains("advance_cadence_manual"),
+            "mush-sim now writes an economy cadence document"
+        );
+    }
+}
+
+/// **Deviation (c).** `@journey/plan` writes nothing — no document, and no
+/// allocator bump either, so a future durable step in the dry run fails loudly.
+#[test]
+fn vf_dc_plan_bumps_no_allocator() {
+    let (mut tw, fx) = scene();
+    let before = book(&tw).next_id;
+    let _ = fold_kv(&mut tw, "sim");
+    ok(
+        &mut tw,
+        &format!(
+            "@journey/plan #{}=corridor #{}:100 #{}:200",
+            fx.carrier.0, fx.field.0, fx.phobos.0
+        ),
+    );
+    assert_eq!(fold_kv(&mut tw, "sim"), Vec::new(), "the dry run wrote");
+    assert_eq!(
+        book(&tw).next_id,
+        before,
+        "the dry run bumped the allocator"
+    );
+}
+
+/// **Deviation (d).** Leg boundaries are a pure function of the STORED
+/// document, which is what makes the leg cursor an idempotency key a reboot can
+/// re-derive identically. When a drive profile lands, its resolved seconds must
+/// be frozen into the record at `/depart`, never looked up at tick time.
+#[test]
+fn vf_dd_boundaries_are_a_function_of_the_stored_document_only() {
+    let (mut tw, fx) = scene();
+    depart(&mut tw, &fx);
+    let before = journey(&tw, fx.carrier);
+    let kv = fold_kv(&mut tw, "sim");
+
+    let mut tw2 = boot();
+    tw2.set_now(1_050);
+    let fx2 = build(&mut tw2);
+    tw2.modules_loaded(HashMap::from([(
+        SmolStr::new("sim"),
+        ModuleBootData {
+            kv,
+            ..ModuleBootData::default()
+        },
+    )]));
+    let after = journey(&tw2, fx2.carrier);
+    assert_eq!(after.leg_due_at(0), before.leg_due_at(0));
+    assert_eq!(after.leg_due_at(1), before.leg_due_at(1));
+    assert_eq!(after.arrival_at(), before.arrival_at());
+}
+
+/// **Deviation (e).** The order holds and a corrupt summary is dropped without
+/// deleting its key: a demotion can never leave a domain demoted-without-summary.
+#[test]
+fn vf_de_the_summary_is_written_before_the_activation_delete() {
+    let (mut tw, _fx) = scene();
+    ok(&mut tw, "@domain/promote 0=player");
+    let _ = tw.take_module_ops();
+    advance(&mut tw, 1_030);
+    ok(&mut tw, "@domain/demote 0");
+    let ops = op_pairs(&mut tw);
+    let set_summary = ops
+        .iter()
+        .position(|(k, key)| *k == "set" && key == "summary:0");
+    let del_activation = ops
+        .iter()
+        .position(|(k, key)| *k == "del" && key == "activation:0");
+    assert!(
+        set_summary.is_some() && set_summary < del_activation,
+        "{ops:?}"
+    );
+
+    // A corrupt summary document is dropped at boot, never deleted.
+    let mut kv = fold_kv(&mut tw, "sim");
+    for (key, value) in kv.iter_mut() {
+        if key.as_str() == "summary:0" {
+            value["contacts"] = serde_json::json!("not a number");
+        }
+    }
+    let mut tw2 = boot();
+    tw2.set_now(2_000);
+    let _ = build(&mut tw2);
+    let _ = tw2.take_module_ops();
+    tw2.modules_loaded(HashMap::from([(
+        SmolStr::new("sim"),
+        ModuleBootData {
+            kv,
+            ..ModuleBootData::default()
+        },
+    )]));
+    assert!(
+        !activations(&tw2)
+            .summaries
+            .contains_key(&mush_sim::DomainId(0))
+    );
+    let ops = op_pairs(&mut tw2);
+    assert!(
+        !ops.iter().any(|(k, key)| *k == "del" && key == "summary:0"),
+        "a corrupt summary document was deleted: {ops:?}"
+    );
+}
+
+/// **Deviation (h).** Once the arrival is confirmed the record is a PASSIVE
+/// marker: three further fires write nothing at all, which is what makes it
+/// safe for cut 7/8 to poll `JourneyBook` for a `sim.journey.arrived` fact
+/// rather than re-deriving "arrived" from placement.
+#[test]
+fn vf_dh_an_arrived_journey_emits_no_further_sim_op() {
+    let (mut tw, fx) = scene();
+    depart(&mut tw, &fx);
+    advance(&mut tw, 1_301);
+    assert_eq!(*journey(&tw, fx.carrier).state(), JourneyState::Arrived);
+    let _ = tw.take_module_ops();
+    for t in 1..=3 {
+        advance(&mut tw, 1_400 + t);
+    }
+    assert_eq!(
+        op_pairs(&mut tw),
+        Vec::new(),
+        "an arrived journey kept writing"
+    );
+}
+
+/// **B6, grounded rather than fixed.** `@journey/depart`'s `<route id>` is only
+/// a LABEL: `build_route` fabricates a fresh `RouteDef` from the command line at
+/// the `manual` drive class with zero declared propellant and no alignment band,
+/// so `RouteDef::propellant()`, `alignment_band()` and `route_duration` have no
+/// cut-6 caller. Resolving the id against cut 1's authored pack cannot be done
+/// inside cut 6's edge set: the pack store is `ruleset-tacsim`'s
+/// (`ruleset_tacsim::store`), and `ruleset-tacsim` depends on `mush-sim`, so the
+/// lookup would be a cycle. It needs a composition-installed catalog in the
+/// `SimulationModule::with_accounts` shape, which is cut 7's. Pinned here so the
+/// deviation is honest and a later fix has a failing assertion to flip.
+#[test]
+fn vf_b6_a_hand_typed_route_is_a_manual_fixture_route() {
+    let (mut tw, fx) = scene();
+    ok(
+        &mut tw,
+        &format!(
+            "@journey/depart #{}=not_a_real_route_id #{}:1",
+            fx.carrier.0, fx.phobos.0
+        ),
+    );
+    let route = journey(&tw, fx.carrier).route().clone();
+    assert_eq!(route.propellant(), 0, "no declared propellant to reserve");
+    assert!(route.alignment_band().is_none());
+    assert_eq!(route.drive_class().as_str(), "manual");
+    advance(&mut tw, 1_002);
+    assert_eq!(*journey(&tw, fx.carrier).state(), JourneyState::Arrived);
+}
+
+// ---- R9: the arrival event ----------------------------------------------
+
+/// A module composed AFTER `mush-sim` — standing in for `mush-script`,
+/// `mush-npc` and `mush-weather`, which all subscribe to `Moved` and are all
+/// composed after it in `server_modules_with`. It records every `Moved` it sees
+/// and whether its own `on_world_loaded` had run at the time.
+#[derive(Default)]
+struct LateProbeState {
+    hydrated: std::sync::atomic::AtomicBool,
+    before_hydration: std::sync::atomic::AtomicUsize,
+    moves: std::sync::Mutex<Vec<(ObjId, Option<ObjId>, ObjId)>>,
+}
+
+struct LateModule(std::sync::Arc<LateProbeState>);
+
+impl mush_core::GameModule for LateModule {
+    fn name(&self) -> &'static str {
+        "lateprobe"
+    }
+    fn register(&mut self, reg: &mut mush_core::Registrar<'_>) -> Result<(), mush_core::ModError> {
+        let probe = std::sync::Arc::clone(&self.0);
+        reg.subscribe(
+            mush_core::WorldEventKind::Moved,
+            std::sync::Arc::new(
+                move |_ctx: &mut mush_core::Ctx<'_>, ev: &mush_core::WorldEvent| {
+                    if let mush_core::WorldEvent::Moved { who, from, to } = ev {
+                        if !probe.hydrated.load(std::sync::atomic::Ordering::SeqCst) {
+                            probe
+                                .before_hydration
+                                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        }
+                        if let Ok(mut moves) = probe.moves.lock() {
+                            moves.push((*who, *from, *to));
+                        }
+                    }
+                },
+            ),
+        );
+        Ok(())
+    }
+    fn on_world_loaded(
+        &mut self,
+        _ctx: &mut mush_core::ModuleCtx<'_>,
+        _data: ModuleBootData,
+    ) -> Result<(), mush_core::ModError> {
+        self.0
+            .hydrated
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        Ok(())
+    }
+}
+
+fn with_late_probe(probe: &std::sync::Arc<LateProbeState>) -> TestWorld {
+    TestWorld::with_modules(vec![
+        Box::new(ScenesModule::new()),
+        Box::new(SimulationModule::new()),
+        Box::new(LateModule(std::sync::Arc::clone(probe))),
+    ])
+}
+
+/// **R9(1).** `Ctx::emit_world_event` dispatches INLINE, and the modules that
+/// subscribe to `Moved` are composed after `mush-sim`, so a boot-time arrival
+/// used to wake observers whose own `on_world_loaded` had not run. The durable
+/// truth is unchanged either way; only the audience is.
+#[test]
+fn vf_r9a_the_boot_arrival_emits_no_world_event() {
+    let probe = std::sync::Arc::new(LateProbeState::default());
+    let mut tw = with_late_probe(&probe);
+    tw.set_now(1_000);
+    let fx = build(&mut tw);
+    depart(&mut tw, &fx);
+    advance(&mut tw, 1_301);
+    let mut kv = fold_kv(&mut tw, "sim");
+    // The s3 crash gap: the journey says Arrived, the placement document does not.
+    *doc_mut(&mut kv, &format!("placement:{}", fx.carrier.0)) = serde_json::json!({
+        "object": fx.carrier.0,
+        "parent": { "kind": "Unplaced" },
+        "revision": 2,
+        "unplaced": {
+            "reason": "under way on a carrier journey",
+            "by": null,
+            "at": 1_000,
+            "previous": null,
+            "quarantined": false
+        }
+    });
+
+    let probe2 = std::sync::Arc::new(LateProbeState::default());
+    let mut tw2 = with_late_probe(&probe2);
+    tw2.set_now(2_000);
+    let fx2 = build(&mut tw2);
+    probe2
+        .hydrated
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    probe2
+        .before_hydration
+        .store(0, std::sync::atomic::Ordering::SeqCst);
+    tw2.modules_loaded(HashMap::from([(
+        SmolStr::new("sim"),
+        ModuleBootData {
+            kv,
+            ..ModuleBootData::default()
+        },
+    )]));
+    assert!(
+        matches!(parent(&tw2, fx2.carrier), SpatialParent::Direct { domain, .. } if domain.0 == 1),
+        "the heal did not run"
+    );
+    assert_eq!(
+        probe2
+            .before_hydration
+            .load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "the boot heal woke a module whose `on_world_loaded` had not yet run"
+    );
+}
+
+/// **R9(2)/(3).** The arrival event names where the ship came FROM, and the
+/// departure emits its own half — before the fold `from: None` left every
+/// `Joined` without a matching `Left`, and a departure emitted nothing at all.
+#[test]
+fn vf_r9b_the_arrival_event_names_where_it_came_from() {
+    let probe = std::sync::Arc::new(LateProbeState::default());
+    let mut tw = with_late_probe(&probe);
+    tw.set_now(1_000);
+    let fx = build(&mut tw);
+    if let Ok(mut moves) = probe.moves.lock() {
+        moves.clear();
+    }
+    depart(&mut tw, &fx);
+    advance(&mut tw, 1_301);
+
+    let moves: Vec<(ObjId, Option<ObjId>, ObjId)> = probe
+        .moves
+        .lock()
+        .map(|m| {
+            m.iter()
+                .filter(|(who, _, _)| *who == fx.carrier)
+                .copied()
+                .collect()
+        })
+        .unwrap_or_default();
+    let transit = state(&tw).in_transit_room;
+    assert_eq!(
+        moves,
+        vec![
+            (fx.carrier, Some(fx.field), transit),
+            (fx.carrier, Some(transit), fx.phobos),
+        ],
+        "the departure and the arrival must each name both ends exactly once"
     );
 }

@@ -1757,14 +1757,24 @@ mod tests {
             // authoritative control-lease ingress, so the sim lane publishes
             // `Authoritative` (`/show` reads and `/fallback` writes the exempt
             // `sim.station_fallback` record under the same lane).
-            assert!(
-                registrations.iter().any(|(spec, owner, class)| {
-                    spec.name == "@station"
-                        && *owner == Some("sim")
-                        && *class == mush_core::CommandCompatibility::Authoritative
-                }),
-                "the sim @station lane must publish `Authoritative`"
-            );
+            //
+            // E7 cut 6 (fold B10): `@journey` is the sim lane's other E7 verb
+            // and had no row here — it is covered by the allowlist tripwire and
+            // by `e7c6_p4`, but `e7c6_p4` builds a two-module `TestWorld`, so
+            // nothing caught a composition-order change that re-classified it.
+            // A ROW in this loop, not a new stanza: `PINNED_BASELINE` is
+            // untouched.
+            for (name, class) in [
+                ("@station", mush_core::CommandCompatibility::Authoritative),
+                ("@journey", mush_core::CommandCompatibility::LegacyPostImage),
+            ] {
+                assert!(
+                    registrations.iter().any(|(spec, owner, published)| {
+                        spec.name == name && *owner == Some("sim") && *published == class
+                    }),
+                    "the sim lane {name} must publish {class:?}"
+                );
+            }
             assert!(registrations.iter().any(|(_, owner, class)| {
                 *owner == Some("economy")
                     && *class == mush_core::CommandCompatibility::EconomyCarveOut

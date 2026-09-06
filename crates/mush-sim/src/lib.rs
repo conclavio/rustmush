@@ -57,8 +57,9 @@ pub use graph::{
 };
 pub use journey::{
     CarrierJourney, CarrierJourneyError, CarrierJourneyWire, JourneyBook, JourneyId, JourneyState,
-    MAX_CARRIER_SUBTREE, MAX_JOURNEY_ANOMALY_BYTES, MAX_JOURNEYS_VISITED_PER_FIRE,
-    MAX_JOURNEYS_WORKED_PER_FIRE, carrier_journey_key, same_place, under_way_root_of,
+    MAX_CARRIER_JOURNEYS, MAX_CARRIER_SUBTREE, MAX_JOURNEY_ANOMALY_BYTES,
+    MAX_JOURNEYS_VISITED_PER_FIRE, MAX_JOURNEYS_WORKED_PER_FIRE, carrier_journey_key, same_place,
+    under_way_root_of,
 };
 pub use route::{
     CadenceId, DriveProfile, DriveProfileWire, Journey, JourneyStatus, Leg, LegDef, LegDefWire,
@@ -704,17 +705,16 @@ impl GameModule for SimulationModule {
         mut data: ModuleBootData,
     ) -> Result<(), ModError> {
         let (journeys, dead_journeys) = boot::extract_journeys(&mut data);
-        let (carriers, next_journey_id, dead_carriers) =
-            journey::extract_carrier_journeys(&mut data);
+        let carriers = journey::extract_carrier_journeys(&mut data);
         let workflow = domain::extract_domain_workflow(&mut data);
         let q = boot::load_boot(ctx, data, self.config.recovery_room)?;
         boot::install_journeys(ctx, journeys, dead_journeys);
-        domain::install_domain_workflow(ctx.w, workflow);
+        domain::install_domain_workflow(ctx, workflow);
         // Installing the carrier journeys runs the same idempotent advance the
         // tick runs (B3): an arrival already applied is a no-op, and one whose
         // durable cursor says it arrived but whose carrier is not there is
         // repaired here.
-        journey::install_carrier_journeys(ctx, carriers, next_journey_id, dead_carriers);
+        journey::install_carrier_journeys(ctx, carriers);
         if q > 0 {
             tracing::warn!(
                 quarantined = q,

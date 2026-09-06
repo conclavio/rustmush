@@ -440,13 +440,22 @@ pub fn summary_key(domain: DomainId) -> SmolStr {
 }
 
 pub(crate) fn persist_activation(out: &mut Outbox, a: &DomainActivation) {
-    push_op(
-        out,
-        mush_core::ModuleWrite::JsonSet {
-            key: activation_key(a.domain),
-            value: serde_json::to_value(a).expect("domain activation serializes"),
-        },
-    );
+    match serde_json::to_value(a) {
+        Ok(value) => push_op(
+            out,
+            mush_core::ModuleWrite::JsonSet {
+                key: activation_key(a.domain),
+                value,
+            },
+        ),
+        // E7 cut 6 fold, R12: this runs from a command and from boot, both in
+        // the world task, so it pages instead of panicking.
+        Err(error) => tracing::error!(
+            domain = %a.domain,
+            %error,
+            "sim: a domain activation would not serialize; the document was NOT written"
+        ),
+    }
 }
 
 pub(crate) fn persist_activation_del(out: &mut Outbox, domain: DomainId) {
@@ -458,14 +467,30 @@ pub(crate) fn persist_activation_del(out: &mut Outbox, domain: DomainId) {
     );
 }
 
-pub(crate) fn persist_summary(out: &mut Outbox, s: &DomainSummary) {
-    push_op(
-        out,
-        mush_core::ModuleWrite::JsonSet {
-            key: summary_key(s.domain),
-            value: serde_json::to_value(s).expect("domain summary serializes"),
-        },
-    );
+pub(crate) fn persist_summary(out: &mut Outbox, s: &DomainSummary) -> bool {
+    match serde_json::to_value(s) {
+        Ok(value) => {
+            push_op(
+                out,
+                mush_core::ModuleWrite::JsonSet {
+                    key: summary_key(s.domain),
+                    value,
+                },
+            );
+            true
+        }
+        // E7 cut 6 fold, R12. A summary that will not serialize must NOT be
+        // followed by the activation delete: the caller reads this and leaves
+        // the domain promoted rather than demoting it without a summary.
+        Err(error) => {
+            tracing::error!(
+                domain = %s.domain,
+                %error,
+                "sim: a domain summary would not serialize; the domain STAYS PROMOTED"
+            );
+            false
+        }
+    }
 }
 
 // ----------------------------------------------------------------------
@@ -512,10 +537,51 @@ pub(crate) fn extract_domain_workflow(data: &mut mush_core::ModuleBootData) -> A
     book
 }
 
-/// Install the hydrated workflow records.
-pub(crate) fn install_domain_workflow(w: &mut mush_core::World, book: ActivationBook) {
-    if let Some(slot) = w.module_state_mut::<ActivationBook>() {
+/// Install the hydrated workflow records, drop the activations that can no
+/// longer be live, and **re-evaluate the queue** (E7 cut 6 fold, R5/B3).
+///
+/// Two things free a tactical slot without any command running: an activation
+/// document the wire refused (dropped by `extract_domain_workflow`), and an
+/// activation for a domain that has since been retired, paused or deleted. Both
+/// lower the live count below [`MAX_ACTIVE_DOMAINS`] — and before the fold
+/// nothing drained the queue except `@domain/promote|demote`, so a world could
+/// sit at seven live with a request queued indefinitely, breaking §9 q1's "a
+/// queued trigger re-evaluates whenever a slot frees, never dropped".
+pub(crate) fn install_domain_workflow(ctx: &mut mush_core::Ctx<'_>, mut book: ActivationBook) {
+    let stale: Vec<DomainId> = {
+        let live_domains = ctx.w.module_state::<crate::data::SpatialState>();
+        book.activations
+            .keys()
+            .copied()
+            .filter(|id| {
+                live_domains.is_some_and(|st| {
+                    st.domains
+                        .get(id)
+                        .is_none_or(|d| d.status != crate::data::DomainStatus::Active)
+                })
+            })
+            .collect()
+    };
+    for id in stale {
+        tracing::warn!(
+            domain = %id,
+            "sim: an activation for a domain that is not active was dropped at boot; its \
+             tactical slot is released"
+        );
+        book.activations.remove(&id);
+        persist_activation_del(ctx.out, id);
+    }
+    let promoted = drain_queue(&mut book);
+    let records: Vec<DomainActivation> = promoted
+        .iter()
+        .filter_map(|id| book.activations.get(id).cloned())
+        .collect();
+    if let Some(slot) = ctx.w.module_state_mut::<ActivationBook>() {
         *slot = book;
+    }
+    for record in &records {
+        persist_activation(ctx.out, record);
+        tracing::info!(domain = %record.domain, "sim: a queued domain came off the queue at boot");
     }
 }
 

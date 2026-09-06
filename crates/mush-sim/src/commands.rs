@@ -25,8 +25,8 @@ use crate::links::{refresh_actor_links, refresh_unit_actors};
 use crate::route::{self, Journey, JourneyStatus, Leg, LegDef, MAX_LEGS, RouteDef, RouteState};
 use crate::transition::{Transition, move_carrier_subtree, run};
 use mush_core::{
-    ArgShape, CanonicalId, ChannelId, CmdError, CommandCompatibility, CommandSpec, Ctx, Flags,
-    ModError, ObjId, ObjKind, Powers, Registrar, Role, match_object, perm,
+    ArgShape, CanonicalId, ChannelId, ClockRef, ClockStamp, CmdError, CommandCompatibility,
+    CommandSpec, Ctx, Flags, ModError, ObjId, ObjKind, Powers, Registrar, Role, match_object, perm,
 };
 use smol_str::SmolStr;
 
@@ -329,6 +329,51 @@ fn domain_status(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     Ok(())
 }
 
+/// Close a domain's standing activation because the domain is leaving
+/// `Active` (E7 cut 6 fold, B3): write the summary FIRST — the same order
+/// `@domain/demote` uses, so a reader can never see a stood-down domain with no
+/// summary — then delete the activation and re-evaluate the queue.
+///
+/// Before the fold nothing but `@domain/demote` removed an activation, so a
+/// retired or paused domain kept one of the eight tactical slots forever and
+/// could not even be re-promoted to clear it (`domain_promote` refuses a
+/// non-Active domain).
+fn release_activation(ctx: &mut Ctx<'_>, id: DomainId, why: &str) {
+    let Some(request) = ab(ctx).activations.get(&id).cloned() else {
+        return;
+    };
+    let to = ctx.w.world_ic_now();
+    let units = domain_units(ctx, id);
+    let from = ClockStamp {
+        clock: to.clock.clone(),
+        at: request.at().at.min(to.at),
+    };
+    match DomainSummary::new(id, from, to, 0, units) {
+        Ok(summary) => {
+            if domain::persist_summary(ctx.out, &summary) {
+                domain::persist_activation_del(ctx.out, id);
+                if let Some(book) = ctx.w.module_state_mut::<ActivationBook>() {
+                    book.summaries.insert(id, summary);
+                    book.activations.remove(&id);
+                }
+                info(
+                    ctx,
+                    format!("Domain #{id} stood down ({why}); its summary is written first."),
+                );
+            }
+        }
+        Err(error) => tracing::error!(
+            domain = %id,
+            %error,
+            "sim: a standing activation could not be closed; it keeps its tactical slot. \
+             Recommended: @domain/demote the domain by hand"
+        ),
+    }
+    for other in flush_dequeued(ctx) {
+        info(ctx, format!("Domain #{other} came off the queue."));
+    }
+}
+
 fn domain_set_status(ctx: &mut Ctx<'_>, status: DomainStatus) -> Result<(), CmdError> {
     let id = resolve_domain(ctx, ctx.args.lhs())?;
     let rec = {
@@ -347,6 +392,9 @@ fn domain_set_status(ctx: &mut Ctx<'_>, status: DomainStatus) -> Result<(), CmdE
     };
     persist_domain(ctx.out, &rec);
     info(ctx, format!("Domain #{} is now {:?}.", rec.id, rec.status));
+    if rec.status != DomainStatus::Active {
+        release_activation(ctx, id, "it is no longer active");
+    }
     Ok(())
 }
 
@@ -364,6 +412,7 @@ fn domain_retire(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         ctx,
         format!("Domain #{id} retired; its host may now drop `sim.domain`."),
     );
+    release_activation(ctx, id, "it was retired");
     Ok(())
 }
 
@@ -2150,6 +2199,11 @@ const DEFAULT_LEG_S: u32 = route::DEFAULT_TRAVEL_S;
 /// source of truth for a duration T1 froze.
 const STAFF_DRIVE_CLASS: &str = "manual";
 
+/// The one rule-4 line every refused journey read answers with, so a carrier
+/// with no journey, a carrier the viewer does not crew and an object that never
+/// existed are byte-identical.
+const JOURNEY_NONE: &str = "No journey.";
+
 fn jb<'a>(ctx: &'a Ctx<'_>) -> &'a JourneyBook {
     ctx.w
         .module_state::<JourneyBook>()
@@ -2192,6 +2246,30 @@ fn arrival_parent(ctx: &Ctx<'_>, place: ObjId) -> Result<SpatialParent, CmdError
         });
     }
     if s.spaces.contains_key(&place) {
+        // **A journey may not dock into a custody backing** (E7 cut 6 fold,
+        // C7). `InteriorCustodyProvider::contents` derives a vault's stock
+        // purely from the placement graph, so an arrival inside a vault-backed
+        // interior would silently make a ship, its bays and everyone aboard
+        // vault stock — with no economy act, no journal entry and no owner
+        // assent — and the departure would remove them just as silently.
+        //
+        // The read is direct: `mush-sim -> mush-economy` is a pre-existing,
+        // unconditional edge (E3c's `CustodyProvider`), so this needs no oracle
+        // and no composition parameter. `None` (the economy is not composed)
+        // means "not wired", never "no", like every other optional-module read
+        // in the crate. Docking into a vault wants a real deposit act, which is
+        // a write across that edge and therefore a later cut's.
+        if ctx
+            .w
+            .module_state::<mush_economy::EconomyStore>()
+            .is_some_and(|store| store.snapshot().is_vault_backing(place))
+        {
+            return Err(CmdError::msg(format!(
+                "{} backs a custody vault; a journey cannot dock into one (a deposit is an \
+                 economy act, not a placement).",
+                display_name(ctx.w, place)
+            )));
+        }
         return Ok(SpatialParent::Interior {
             space: place,
             slot: None,
@@ -2256,11 +2334,13 @@ fn build_route(
     Ok((route, parent))
 }
 
-/// **The carrier-root invariant, surfaced early.** `move_carrier_subtree`
-/// refuses a root that would come to rest inside its own subtree, but refusing
-/// it at arrival would strand a carrier that had already flown the whole
-/// passage. The same check runs here so a self-carrying plan never departs.
-fn refuse_self_carrying_destination(
+/// **The carrier-root invariant and the seal, surfaced early.**
+/// `move_carrier_subtree` refuses a root that would come to rest inside its own
+/// subtree or inside ANOTHER carrier that is under way, but refusing either at
+/// arrival would strand a carrier that had already flown the whole passage. The
+/// same two checks run here, at `/plan`, `/depart` and `/divert`, so an
+/// unreachable destination never departs (E7 cut 6 fold, C1(b)).
+fn refuse_unreachable_destination(
     ctx: &Ctx<'_>,
     carrier: ObjId,
     destination: &SpatialParent,
@@ -2279,7 +2359,21 @@ fn refuse_self_carrying_destination(
             display_name(ctx.w, anchor)
         )));
     }
+    if let Some(root) = mush_sim_under_way_root_of(ctx, anchor) {
+        return Err(CmdError::msg(format!(
+            "{} is aboard {}, which is under way; nothing crosses a carrier's boundary \
+             mid-journey, so a journey cannot end there.",
+            display_name(ctx.w, anchor),
+            display_name(ctx.w, root)
+        )));
+    }
     Ok(())
+}
+
+/// The under-way carrier root `obj` rides, if any — the one predicate the seal
+/// uses, read from the command path.
+fn mush_sim_under_way_root_of(ctx: &Ctx<'_>, obj: ObjId) -> Option<ObjId> {
+    crate::journey::under_way_root_of(st(ctx), jb(ctx), obj)
 }
 
 /// Why a carrier may not set out. One predicate, shared by `/plan`, `/depart`
@@ -2301,9 +2395,33 @@ fn journey_ineligible(ctx: &Ctx<'_>, carrier: ObjId) -> Option<String> {
             "{name} is already under way (@journey/divert to re-plan it)."
         ));
     }
+    // **The seal, read as a command refusal** (E7 cut 6 fold, C1(a)). Without
+    // this, any `sim.participant` inside a cruising carrier's subtree could be
+    // given a journey of its own and leave the sealed subtree mid-leg — the
+    // exact act `@spatial/place` refuses with `CarrierSealed`.
+    if let Some(root) = mush_sim_under_way_root_of(ctx, carrier)
+        && root != carrier
+    {
+        return Some(format!(
+            "{name} is aboard {}, which is under way; nothing crosses a carrier's boundary \
+             mid-journey.",
+            display_name(ctx.w, root)
+        ));
+    }
     if rs_ref(ctx).is_traveling(carrier) {
         return Some(format!(
             "{name} is on a legacy @route; @route/abort it before giving it a journey."
+        ));
+    }
+    // The census (E7 cut 6 fold, B8): the `cjourney:` key space is bounded, and
+    // the bound is checked before the record exists, not after.
+    if jb(ctx).journeys.len() >= crate::journey::MAX_CARRIER_JOURNEYS
+        && !jb(ctx).journeys.contains_key(&carrier)
+    {
+        return Some(format!(
+            "This world already holds {} carrier journeys ({name} would be one too many); close \
+             one before opening another.",
+            crate::journey::MAX_CARRIER_JOURNEYS
         ));
     }
     let s = st(ctx);
@@ -2318,14 +2436,39 @@ fn journey_ineligible(ctx: &Ctx<'_>, carrier: ObjId) -> Option<String> {
     None
 }
 
+/// Whether `actor` crews `unit` at ANY of its authored stations — the read
+/// gate for `@journey/show|list|plan` (E7 cut 6 fold, D5(b)). Reuses cut 5's
+/// `holds_billet` exactly, so "who may read this ship's journey" and "who may
+/// drive it" have one answer.
+fn crews(ctx: &Ctx<'_>, actor: ObjId, unit: ObjId) -> bool {
+    st(ctx).stations.get(&unit).is_some_and(|hs| {
+        hs.stations
+            .keys()
+            .any(|s| holds_billet(ctx, actor, unit, s))
+    })
+}
+
+/// The read gate: staff, or an actor who holds a billet on that carrier.
+fn may_read_journey(ctx: &Ctx<'_>, carrier: ObjId) -> bool {
+    is_admin(ctx.w, ctx.actor) || crews(ctx, ctx.actor, carrier)
+}
+
 fn cmd_journey(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
-    require_admin(ctx)?;
-    if ctx.switches.has("plan") {
-        journey_plan(ctx)
-    } else if ctx.switches.has("depart") {
+    // **The write half stays staff-only for cut 6** (D5(b)): `/depart` and
+    // `/divert` put a ship and everyone inside it under way, and crew authority
+    // — seats, proxies, musters, consent — is cut 10's (`force.assign`). The
+    // READS are open to an actor who crews the carrier, because cut 5's whole
+    // premise is that the focused station is the live control surface; a
+    // bystander gets the byte-identical rule-4 `"No journey."`, so the read
+    // leaks nothing.
+    if ctx.switches.has("depart") {
+        require_admin(ctx)?;
         journey_depart(ctx)
     } else if ctx.switches.has("divert") {
+        require_admin(ctx)?;
         journey_divert(ctx)
+    } else if ctx.switches.has("plan") {
+        journey_plan(ctx)
     } else if ctx.switches.has("show") || !ctx.args.lhs().trim().is_empty() {
         journey_show(ctx)
     } else {
@@ -2340,14 +2483,21 @@ fn cmd_journey(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 /// legs with their IC boundaries, and **writes nothing** (recorded as a
 /// deviation in §3.6 As built).
 fn journey_plan(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
-    let carrier = match_object(ctx.w, ctx.actor, ctx.args.lhs())?;
+    let Ok(carrier) = match_object(ctx.w, ctx.actor, ctx.args.lhs()) else {
+        info(ctx, JOURNEY_NONE);
+        return Ok(());
+    };
+    if !may_read_journey(ctx, carrier) {
+        info(ctx, JOURNEY_NONE);
+        return Ok(());
+    }
     if let Some(why) = journey_ineligible(ctx, carrier) {
         return Err(CmdError::msg(why));
     }
     let spec = rhs_required(ctx, "@journey/plan <carrier>=<route id> <place>[:secs] …")?;
     let origin = origin_anchor(ctx, carrier)?;
     let (route, destination) = build_route(ctx, origin, &spec)?;
-    refuse_self_carrying_destination(ctx, carrier, &destination)?;
+    refuse_unreachable_destination(ctx, carrier, &destination)?;
     let now = ctx.w.world_ic_now();
     let probe = CarrierJourney::new(
         JourneyId(0),
@@ -2383,7 +2533,7 @@ fn journey_depart(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let spec = rhs_required(ctx, "@journey/depart <carrier>=<route id> <place>[:secs] …")?;
     let origin = origin_anchor(ctx, carrier)?;
     let (route, destination) = build_route(ctx, origin, &spec)?;
-    refuse_self_carrying_destination(ctx, carrier, &destination)?;
+    refuse_unreachable_destination(ctx, carrier, &destination)?;
     let now = ctx.w.world_ic_now();
     let id = ctx
         .w
@@ -2403,22 +2553,53 @@ fn journey_depart(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     )
     .map_err(|e| CmdError::msg(e.to_string()))?;
     let from = ctx.w.get(carrier).and_then(|o| o.location);
+    let legs = record.route().legs().len();
+    let due = record.arrival_at();
+    // **The record goes into the book BEFORE the move** (E7 cut 6 fold, D2).
+    // `graph::project` answers `in_transit_room` for a root the book says is
+    // under way, and the projection is computed inside the move's plan — so
+    // without this the ship, its exposed mounts and the " sets out." narrative
+    // all stayed in the room it departed from for the whole passage. A refused
+    // move rolls the entry back, so a refusal still mutates nothing.
+    if let Some(book) = ctx.w.module_state_mut::<JourneyBook>() {
+        book.journeys.insert(carrier, record.clone());
+    }
     // The ONE checked carrier move: the root leaves its live-domain direct
     // placement and its whole subtree rides with it. A refusal mutates nothing,
     // and the allocator bump above is only a RAM cursor until the record below
     // persists it.
-    let moved = move_carrier_subtree(ctx, carrier, None).map_err(sim_err)?;
+    let moved = match move_carrier_subtree(ctx, carrier, None) {
+        Ok(moved) => moved,
+        Err(error) => {
+            if let Some(book) = ctx.w.module_state_mut::<JourneyBook>() {
+                book.journeys.remove(&carrier);
+            }
+            return Err(sim_err(error));
+        }
+    };
     journey::persist_journey(ctx.out, &record);
-    let next_id = jb(ctx).next_id;
-    journey::persist_journey_meta(ctx.out, next_id);
-    let legs = record.route().legs().len();
-    let due = record.arrival_at();
-    if let Some(book) = ctx.w.module_state_mut::<JourneyBook>() {
-        book.journeys.insert(carrier, record);
-    }
+    let (next_id, cursor) = {
+        let book = jb(ctx);
+        (book.next_id, book.cursor)
+    };
+    journey::persist_journey_meta(ctx.out, next_id, cursor);
     // Bump then refresh: the crew keeps the helm while the ship is under way.
     journey::refresh_carrier_links(ctx, carrier);
     if let Some(from) = from {
+        // The departure half of the arrival's `Moved` (E7 cut 6 fold, R9(3)):
+        // `move_carrier_subtree` mutates the world directly and only the `Ctx`
+        // dispatch layer emits, so before the fold a ship's arrival had no
+        // matching departure anywhere. Cut 6 adds no `WorldEvent` variant —
+        // this is the one the tree already has.
+        if let Some(to) = ctx.w.get(carrier).and_then(|o| o.location)
+            && to != from
+        {
+            ctx.emit_world_event(&mush_core::WorldEvent::Moved {
+                who: carrier,
+                from: Some(from),
+                to,
+            });
+        }
         let text = mush_proto::RichText::new()
             .span(mush_core::output::name_span(ctx.w, carrier))
             .text(" sets out.");
@@ -2448,9 +2629,14 @@ fn journey_depart(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 
 fn journey_divert(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let carrier = match_object(ctx.w, ctx.actor, ctx.args.lhs())?;
+    // **A stopped journey diverts** (E7 cut 6 fold, R7). `journey::fail` writes
+    // an anomaly whose recommended command is exactly this one, and before the
+    // fold the `is_under_way` filter refused it — the page named the only
+    // command the same code path would not run. An `Arrived` journey is done
+    // and still refuses: that is a fresh `@journey/depart`.
     let current = jb(ctx)
         .get(carrier)
-        .filter(|j| j.state().is_under_way())
+        .filter(|j| *j.state() != JourneyState::Arrived)
         .cloned()
         .ok_or_else(|| CmdError::msg("That carrier is not under way."))?;
     let spec = rhs_required(ctx, "@journey/divert <carrier>=<route id> <place>[:secs] …")?;
@@ -2458,7 +2644,7 @@ fn journey_divert(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     // original origin endpoint: it has not landed, it has only changed its mind.
     let origin = current.route().endpoints().0;
     let (route, destination) = build_route(ctx, origin, &spec)?;
-    refuse_self_carrying_destination(ctx, carrier, &destination)?;
+    refuse_unreachable_destination(ctx, carrier, &destination)?;
     let to = route.id().clone();
     let now = ctx.w.world_ic_now();
     let record = CarrierJourney::new(
@@ -2478,6 +2664,20 @@ fn journey_divert(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     if let Some(book) = ctx.w.module_state_mut::<JourneyBook>() {
         book.journeys.insert(carrier, record);
     }
+    // A carrier held after a stopped journey (D1) is under way again, so the
+    // hold is released and it projects into the in-transit room rather than
+    // sitting in the recovery room beside the wrecks.
+    if st(ctx).is_quarantined(carrier)
+        && let Err(error) = crate::transition::set_carrier_root_quarantine(
+            ctx,
+            carrier,
+            false,
+            "under way on a carrier journey",
+        )
+    {
+        return Err(sim_err(error));
+    }
+    journey::refresh_carrier_links(ctx, carrier);
     info(
         ctx,
         format!(
@@ -2488,13 +2688,29 @@ fn journey_divert(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     Ok(())
 }
 
+/// Render a journey state for a viewer. Deliberately not `{:?}`: the derived
+/// form prints `Captured { by: ObjId(n) }`, i.e. the captor's raw object id, to
+/// anyone who can read the journey at all (E7 cut 6 fold, deviation (f)'s
+/// residual). Cut 9 owns capture and will decide what a viewer may perceive
+/// about a captor; until then the arm names the state and nothing else.
+fn render_state(state: &JourneyState) -> String {
+    match state {
+        JourneyState::Cruising => "Cruising".to_string(),
+        JourneyState::Promoted { domain } => format!("Promoted (domain #{domain})"),
+        JourneyState::Diverted { to } => format!("Diverted (`{to}`)"),
+        JourneyState::Arrived => "Arrived".to_string(),
+        JourneyState::Captured { .. } => "Captured".to_string(),
+        JourneyState::Failed => "Failed".to_string(),
+    }
+}
+
 fn describe_journey(ctx: &Ctx<'_>, j: &CarrierJourney, lead: &str) -> Vec<String> {
     let mut lines = vec![format!(
-        "{lead} journey #{} for {} on route `{}` — {:?}, leg {}/{}.",
+        "{lead} journey #{} for {} on route `{}` — {}, leg {}/{}.",
         j.id(),
         display_name(ctx.w, j.root()),
         j.route().id(),
-        j.state(),
+        render_state(j.state()),
         j.cursor(),
         j.route().legs().len(),
     )];
@@ -2528,12 +2744,16 @@ fn describe_journey(ctx: &Ctx<'_>, j: &CarrierJourney, lead: &str) -> Vec<String
 /// with no journey, and an object that never existed (rule 4): all three are
 /// the one line below, so a probe learns nothing from the difference.
 fn journey_show(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
-    const NONE: &str = "No journey.";
+    const NONE: &str = JOURNEY_NONE;
     let lhs = ctx.args.lhs().trim().to_string();
     let Ok(carrier) = match_object(ctx.w, ctx.actor, &lhs) else {
         info(ctx, NONE);
         return Ok(());
     };
+    if !may_read_journey(ctx, carrier) {
+        info(ctx, NONE);
+        return Ok(());
+    }
     let Some(journey) = jb(ctx).get(carrier).cloned() else {
         info(ctx, NONE);
         return Ok(());
@@ -2545,16 +2765,23 @@ fn journey_show(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 }
 
 fn journey_list(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    let staff = is_admin(ctx.w, ctx.actor);
+    let roots: Vec<ObjId> = jb(ctx).journeys.keys().copied().collect();
+    let visible: std::collections::BTreeSet<ObjId> = roots
+        .into_iter()
+        .filter(|root| staff || crews(ctx, ctx.actor, *root))
+        .collect();
     let lines: Vec<String> = jb(ctx)
         .journeys
         .values()
+        .filter(|j| visible.contains(&j.root()))
         .map(|j| {
             format!(
-                "  #{} {} on `{}` — {:?}, leg {}/{}",
+                "  #{} {} on `{}` — {}, leg {}/{}",
                 j.id(),
                 display_name(ctx.w, j.root()),
                 j.route().id(),
-                j.state(),
+                render_state(j.state()),
                 j.cursor(),
                 j.route().legs().len()
             )
@@ -2718,18 +2945,47 @@ fn domain_demote(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     }
     let to = ctx.w.world_ic_now();
     let units = domain_units(ctx, id);
+    // **A world-IC rate change must not wedge a promoted domain** (E7 cut 6
+    // fold, R4). The IC axis is CONTINUOUS across a generation
+    // (`WorldTimeline::next_rate_epoch` sets `ic_anchor = current.ic_at(..)`),
+    // so the window's two ends are directly comparable and only the generation
+    // LABEL differs. Before the fold `DomainSummary::new`'s `ClockMismatch` arm
+    // refused every demotion taken after any rate change — forever, across every
+    // reboot, with the page recommending a generation that never comes back —
+    // and the wedged domains accumulated against `MAX_ACTIVE_DOMAINS`.
+    //
+    // So the opening stamp is normalised onto the closing generation at this
+    // ONE construction site: the elapsed IC window stays exact to the second,
+    // and the record documents a cross-generation window rather than refusing
+    // to exist. (`min` keeps `WindowBackwards` unreachable; a backwards window
+    // would mean the IC axis itself ran backwards.)
+    let opened_generation = match request.at().clock {
+        ClockRef::WorldIc { generation } => Some(generation),
+        _ => None,
+    };
+    let from = ClockStamp {
+        clock: to.clock.clone(),
+        at: request.at().at.min(to.at),
+    };
+    if from.clock != request.at().clock {
+        tracing::info!(
+            domain = %id,
+            opened_generation = ?opened_generation,
+            "sim: a domain summary window spans a world-IC rate generation; the opening stamp \
+             is normalised onto the closing generation (the IC axis is continuous)"
+        );
+    }
     // The summary is written BEFORE the cadence changes, and a summary that
     // will not construct leaves the domain PROMOTED and pages — never
     // demoted-without-summary.
-    let summary = match DomainSummary::new(id, request.at().clone(), to, 0, units) {
+    let summary = match DomainSummary::new(id, from, to, 0, units) {
         Ok(summary) => summary,
         Err(error) => {
             tracing::error!(
                 domain = %id,
                 %error,
                 "sim: a domain summary would not construct; the domain STAYS PROMOTED. \
-                 Recommended: @domain/status to read its window, then @domain/demote again \
-                 once the world-IC generation is settled"
+                 Recommended: @domain/status to read its window, then @domain/demote again"
             );
             return Err(CmdError::msg(format!(
                 "Domain #{id} could not write its summary ({error}); it stays promoted and staff \
@@ -2737,7 +2993,12 @@ fn domain_demote(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             )));
         }
     };
-    domain::persist_summary(ctx.out, &summary);
+    if !domain::persist_summary(ctx.out, &summary) {
+        return Err(CmdError::msg(format!(
+            "Domain #{id} could not write its summary; it stays promoted and staff have been \
+             paged."
+        )));
+    }
     domain::persist_activation_del(ctx.out, id);
     let elapsed = summary.elapsed();
     if let Some(book) = ctx.w.module_state_mut::<ActivationBook>() {

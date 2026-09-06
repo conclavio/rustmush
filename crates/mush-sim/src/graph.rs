@@ -118,11 +118,32 @@ pub fn presence(st: &SpatialState, obj: ObjId) -> Option<Presence> {
     }
 }
 
+/// Where an **unplaced** record projects, if anywhere (E7 cut 6 fold, D2):
+/// quarantined → the recovery room; a carrier root the [`JourneyBook`] says is
+/// **under way** → the in-transit room; anything else → `None`, i.e. "left
+/// where it is".
+///
+/// The two arms are deliberately distinct: a *stopped* journey quarantines its
+/// root (D1) and a *moving* one does not, so staff reading the recovery room
+/// see wrecks and not ships in passage.
+///
+/// [`JourneyBook`]: crate::journey::JourneyBook
+#[must_use]
+fn unplaced_projection(st: &SpatialState, w: &World, obj: ObjId) -> Option<ObjId> {
+    if st.is_quarantined(obj) {
+        return Some(st.recovery_room);
+    }
+    w.module_state::<crate::journey::JourneyBook>()
+        .is_some_and(|book| book.under_way(obj))
+        .then_some(st.in_transit_room)
+}
+
 /// Where `obj`'s `Obj.location` must be for its placement (design D1):
 /// Direct → the domain's presentation room; Interior → the space; Attached
 /// exposed → the host's projected location (falling back to the host's actual
 /// location); Attached suppressed → the host itself; Unplaced → the recovery
-/// room when quarantined, else `None` (left where it is).
+/// room when quarantined, the in-transit room while under way, else `None`
+/// (left where it is).
 #[must_use]
 pub fn project(st: &SpatialState, w: &World, obj: ObjId) -> Option<ObjId> {
     let mut cur = obj;
@@ -135,8 +156,11 @@ pub fn project(st: &SpatialState, w: &World, obj: ObjId) -> Option<ObjId> {
             SpatialParent::Attached { host, .. } => {
                 if presence(st, cur) == Some(Presence::DerivedExposed) {
                     // Follow the host's projection; if the host has none, its
-                    // real location.
-                    if st.is_placed(host) {
+                    // real location. An unplaced host that still projects
+                    // somewhere (quarantined, or under way — D2) is followed
+                    // too, so an exposed mount leaves the origin room with the
+                    // ship it is bolted to instead of staying behind.
+                    if st.is_placed(host) || unplaced_projection(st, w, host).is_some() {
                         cur = host;
                         continue;
                     }
@@ -145,11 +169,7 @@ pub fn project(st: &SpatialState, w: &World, obj: ObjId) -> Option<ObjId> {
                 return Some(host);
             }
             SpatialParent::Unplaced => {
-                return if st.is_quarantined(cur) {
-                    Some(st.recovery_room)
-                } else {
-                    None
-                };
+                return unplaced_projection(st, w, cur);
             }
         }
     }

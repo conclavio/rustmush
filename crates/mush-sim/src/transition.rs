@@ -290,7 +290,18 @@ fn projections_for(
     obj: ObjId,
     out: &mut Vec<(ObjId, ObjId)>,
 ) -> Result<(), SpatialError> {
-    for o in st.subtree(obj) {
+    // Bounded on records VISITED (D-LBK-5), and by ONE constant: `Place`,
+    // `CarrierMove` and the root quarantine all build their projection bundle
+    // here, so `MAX_CARRIER_SUBTREE` caps every one of them with the same
+    // refuse-never-truncate shape (E7 cut 6 fold, C8(b)).
+    let subtree = st
+        .subtree_bounded(obj, crate::journey::MAX_CARRIER_SUBTREE)
+        .map_err(|count| SpatialError::CarrierTooLarge {
+            root: obj,
+            count,
+            max: crate::journey::MAX_CARRIER_SUBTREE,
+        })?;
+    for o in subtree {
         if let Some(dest) = project(st, w, o) {
             check_projection(w, o, dest)?;
             out.push((o, dest));
@@ -395,23 +406,37 @@ fn resolve_parent(
     }
 }
 
-/// **The carrier seal** (E7c6 B3, the T lens). While a carrier root is under
-/// way its subtree is sealed: a placement may not cross the boundary in either
-/// direction, so a craft cannot launch mid-leg and nobody boards mid-passage.
+/// **The carrier seal** (E7c6 B3, the T lens; E7 cut 6 fold C1). While a
+/// carrier root is under way its subtree is sealed: a placement may not cross
+/// the boundary in **any** direction, so a craft cannot launch mid-leg, nobody
+/// boards mid-passage, and nothing walks out through `Unplace` (which is the
+/// economy's `InteriorCustodyProvider::move_out` path — it deliberately skips
+/// this module's own `CarryAttempt` hook, so the check has to live in the
+/// transition, not the gate).
+///
 /// A move *within* one carrier's subtree (an occupant walking between
 /// compartments) is untouched, and so is the carrier's own move, which goes
-/// through [`Transition::CarrierMove`] instead.
-fn carrier_seal(
+/// through [`Transition::CarrierMove`] and names itself `exempt`.
+///
+/// `parent_obj` is `None` for a crossing that leaves the graph entirely
+/// (`Unplace`, or a `CarrierMove` putting a root under way). `exempt` is the
+/// carrier root whose OWN journey is performing the move: its own boundary is
+/// not a crossing for itself.
+fn carrier_seal_with(
     st: &SpatialState,
     w: &World,
     obj: ObjId,
-    parent_obj: ObjId,
+    parent_obj: Option<ObjId>,
+    exempt: Option<ObjId>,
 ) -> Result<(), SpatialError> {
     let Some(book) = w.module_state::<crate::journey::JourneyBook>() else {
         return Ok(());
     };
-    let from = crate::journey::under_way_root_of(st, book, obj);
-    let to = crate::journey::under_way_root_of(st, book, parent_obj);
+    let root_of = |x: ObjId| {
+        crate::journey::under_way_root_of(st, book, x).filter(|root| Some(*root) != exempt)
+    };
+    let from = root_of(obj);
+    let to = parent_obj.and_then(root_of);
     if from == to {
         return Ok(());
     }
@@ -419,6 +444,16 @@ fn carrier_seal(
         Some(root) => Err(SpatialError::CarrierSealed { obj, root }),
         None => Ok(()),
     }
+}
+
+/// The seal over an ordinary placement crossing (`Place`, `Unplace`).
+fn carrier_seal(
+    st: &SpatialState,
+    w: &World,
+    obj: ObjId,
+    parent_obj: Option<ObjId>,
+) -> Result<(), SpatialError> {
+    carrier_seal_with(st, w, obj, parent_obj, None)
 }
 
 pub fn plan(st: &SpatialState, w: &World, t: &Transition) -> Result<Plan, SpatialError> {
@@ -433,7 +468,7 @@ pub fn plan(st: &SpatialState, w: &World, t: &Transition) -> Result<Plan, Spatia
             needs(w, obj, "sim.participant")?;
             route_free(w, obj)?;
             let parent_obj = resolve_parent(st, w, obj, parent)?;
-            carrier_seal(st, w, obj, parent_obj)?;
+            carrier_seal(st, w, obj, Some(parent_obj))?;
             // Acyclic + bounded: obj must not be an ancestor of its new parent.
             if parent_obj == obj {
                 return Err(SpatialError::Cycle { obj, via: obj });
@@ -494,6 +529,11 @@ pub fn plan(st: &SpatialState, w: &World, t: &Transition) -> Result<Plan, Spatia
             if deps > 0 {
                 return Err(SpatialError::HasDependents { obj, count: deps });
             }
+            // The same seal, on the crossing that leaves the graph entirely.
+            // `custody::InteriorCustodyProvider::move_out` reaches here with
+            // this module's own carry hook deliberately skipped, so this is the
+            // only place that withdrawal can be refused.
+            carrier_seal(st, w, obj, None)?;
             if !keep {
                 check_projection(w, obj, st.recovery_room)?;
                 plan.projections.push((obj, st.recovery_room));
@@ -670,14 +710,16 @@ pub fn plan(st: &SpatialState, w: &World, t: &Transition) -> Result<Plan, Spatia
             // Bounded on records VISITED (D-LBK-5), closing §7's missing
             // per-carrier cap: a pathological carrier cannot make an arrival
             // bundle unbounded — the move is refused instead.
-            let subtree = st.subtree(root);
-            if subtree.len() > crate::journey::MAX_CARRIER_SUBTREE {
-                return Err(SpatialError::CarrierTooLarge {
+            // The walk itself stops at the cap (E7 cut 6 fold, C8(a)): the
+            // refusal costs `MAX_CARRIER_SUBTREE + 1` records visited, not the
+            // whole pathological graph, and it is still refuse-never-truncate.
+            let subtree = st
+                .subtree_bounded(root, crate::journey::MAX_CARRIER_SUBTREE)
+                .map_err(|count| SpatialError::CarrierTooLarge {
                     root,
-                    count: subtree.len(),
+                    count,
                     max: crate::journey::MAX_CARRIER_SUBTREE,
-                });
-            }
+                })?;
             let prev = st.placements.get(&root);
             let revision = match prev {
                 Some(p) => checked_placement_revision(root, p.revision)?,
@@ -686,6 +728,11 @@ pub fn plan(st: &SpatialState, w: &World, t: &Transition) -> Result<Plan, Spatia
             let rec = match parent {
                 Some(parent) => {
                     let parent_obj = resolve_parent(st, w, root, parent)?;
+                    // A carrier may not come to rest inside ANOTHER carrier
+                    // that is under way: the arrival is a boundary crossing
+                    // like any other (E7 cut 6 fold, C1(b)). Its own journey is
+                    // exempt, which is what makes this the ONE carrier path.
+                    carrier_seal_with(st, w, root, Some(parent_obj), Some(root))?;
                     // **The carrier-root invariant.** A root may never come to
                     // rest inside its own subtree — not at any depth, not
                     // through a bay it carries. Stated twice on purpose: once
@@ -719,23 +766,28 @@ pub fn plan(st: &SpatialState, w: &World, t: &Transition) -> Result<Plan, Spatia
                         unplaced: None,
                     }
                 }
-                None => PlacementRecord {
-                    object: root,
-                    parent: SpatialParent::Unplaced,
-                    revision,
-                    unplaced: Some(UnplacedInfo {
-                        reason: "under way on a carrier journey".into(),
-                        by: None,
-                        at: w.now(),
-                        previous: prev
-                            .map(|p| p.parent.clone())
-                            .filter(SpatialParent::is_placed),
-                        // NOT quarantined: a carrier under way is a live,
-                        // crewed object whose subtree stays placed; only its
-                        // own direct placement is suspended.
-                        quarantined: false,
-                    }),
-                },
+                None => {
+                    // Nor may a craft launch OUT of a sealed mothership by
+                    // being given a journey of its own (C1(a)).
+                    carrier_seal_with(st, w, root, None, Some(root))?;
+                    PlacementRecord {
+                        object: root,
+                        parent: SpatialParent::Unplaced,
+                        revision,
+                        unplaced: Some(UnplacedInfo {
+                            reason: "under way on a carrier journey".into(),
+                            by: None,
+                            at: w.now(),
+                            previous: prev
+                                .map(|p| p.parent.clone())
+                                .filter(SpatialParent::is_placed),
+                            // NOT quarantined: a carrier under way is a live,
+                            // crewed object whose subtree stays placed; only its
+                            // own direct placement is suspended.
+                            quarantined: false,
+                        }),
+                    }
+                }
             };
             // The whole subtree's projections are recomputed against the post
             // state and pre-validated, so the move is atomic: everything hosted
@@ -835,15 +887,8 @@ pub fn apply(
     Ok(())
 }
 
-/// Plan and apply in one step against a command context.
-pub fn run(ctx: &mut Ctx<'_>, t: &Transition) -> Result<(), SpatialError> {
-    let plan = {
-        let st = ctx
-            .w
-            .module_state::<SpatialState>()
-            .expect("sim state slot installed at registration");
-        plan(st, ctx.w, t)?
-    };
+/// Apply an already-validated [`Plan`] against a command context.
+fn apply_plan(ctx: &mut Ctx<'_>, plan: Plan) -> Result<(), SpatialError> {
     // Take the slot out to satisfy the borrow checker (world + slot are both
     // mutated); put it back before returning.
     let mut st = std::mem::take(
@@ -856,6 +901,93 @@ pub fn run(ctx: &mut Ctx<'_>, t: &Transition) -> Result<(), SpatialError> {
         .module_state_mut::<SpatialState>()
         .expect("sim state slot installed at registration") = st;
     r
+}
+
+/// Plan and apply in one step against a command context.
+pub fn run(ctx: &mut Ctx<'_>, t: &Transition) -> Result<(), SpatialError> {
+    let plan = {
+        let st = ctx
+            .w
+            .module_state::<SpatialState>()
+            .expect("sim state slot installed at registration");
+        plan(st, ctx.w, t)?
+    };
+    apply_plan(ctx, plan)
+}
+
+/// **Latch (or release) the quarantine flag on ONE unplaced carrier root**
+/// (E7 cut 6 fold, D1) — never its subtree, which keeps riding it.
+///
+/// This is not a second carrier mover: the root's own record is already
+/// `Unplaced` and stays `Unplaced`; only the `quarantined` latch (and therefore
+/// [`crate::graph::project`]'s answer) changes. It goes through the same
+/// validate-then-apply `Plan` every other transition does, so a refusal mutates
+/// nothing and the whole subtree's projections are re-derived together.
+///
+/// A **stopped** journey latches it (the root lands in `recovery_room`, is
+/// `is_quarantined`, and `placed_or_quarantined` covers it, so no bystander can
+/// pick a dropship up); `@journey/divert` releases it again as the ship gets
+/// under way (back to `in_transit_room`).
+///
+/// # Errors
+///
+/// Every error [`plan`]/[`apply`] can raise, plus [`SpatialError::NotPlaced`]
+/// when `root` has no placement record at all.
+pub(crate) fn set_carrier_root_quarantine(
+    ctx: &mut Ctx<'_>,
+    root: ObjId,
+    quarantined: bool,
+    reason: &str,
+) -> Result<(), SpatialError> {
+    let plan = {
+        let st = ctx
+            .w
+            .module_state::<SpatialState>()
+            .expect("sim state slot installed at registration");
+        let prev = st
+            .placements
+            .get(&root)
+            .ok_or(SpatialError::NotPlaced(root))?;
+        if prev.parent.is_placed() {
+            // A placed root needs no holding pen; leave the graph alone.
+            return Ok(());
+        }
+        if prev
+            .unplaced
+            .as_ref()
+            .is_some_and(|u| u.quarantined == quarantined)
+        {
+            return Ok(()); // already in the requested posture
+        }
+        let mut unplaced = prev.unplaced.clone().unwrap_or(UnplacedInfo {
+            reason: reason.to_string(),
+            by: None,
+            at: ctx.w.now(),
+            previous: None,
+            quarantined,
+        });
+        unplaced.quarantined = quarantined;
+        unplaced.reason = reason.to_string();
+        let rec = PlacementRecord {
+            object: root,
+            parent: SpatialParent::Unplaced,
+            revision: checked_placement_revision(root, prev.revision)?,
+            unplaced: Some(unplaced),
+        };
+        let mut post = st.clone();
+        post.placements.insert(root, rec.clone());
+        post.derived = rebuild(&post);
+        let mut plan = Plan::default();
+        projections_for(&post, ctx.w, root, &mut plan.projections)?;
+        plan.audit = serde_json::json!({
+            "op": if quarantined { "journey_hold" } else { "journey_release" },
+            "root": root.0,
+            "reason": reason,
+        });
+        plan.set_placements.push(rec);
+        plan
+    };
+    apply_plan(ctx, plan)
 }
 
 /// **The one checked carrier move** (E7 cut 6, B2/B3).
