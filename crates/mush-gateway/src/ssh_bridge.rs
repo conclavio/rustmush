@@ -39,7 +39,7 @@ use std::net::IpAddr;
 use std::sync::Arc;
 
 use mush_core::ObjId;
-use mush_proto::{ClientCaps, OutputEvent};
+use mush_proto::{ClientCaps, OutputEvent, RespondChoice};
 use mush_session::{ConnId, ConnectionHandle, SessionManager};
 use smol_str::SmolStr;
 use tokio::sync::mpsc;
@@ -359,6 +359,10 @@ mod net {
                 };
                 self.core.query(conn, 0, SmolStr::new(name), args).await;
             })
+        }
+
+        fn respond(&self, conn: u64, id: u64, choice: RespondChoice) -> BoxFuture<'_, ()> {
+            Box::pin(async move { self.core.respond(conn, id, choice).await })
         }
 
         fn disconnected(&self, conn: u64) -> BoxFuture<'_, ()> {

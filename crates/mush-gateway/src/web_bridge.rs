@@ -739,29 +739,7 @@ impl<A: AuthBackend + 'static> WebHooks for WebBridge<A> {
     }
 
     fn respond(&self, conn: u64, id: u64, choice: RespondChoice) -> BoxFuture<'_, ()> {
-        Box::pin(async move {
-            let conn_id = ConnId(conn);
-            // Advisory (interface plan I10): shares the per-connection input
-            // flood bucket so a Respond flood cannot reach the world loop past
-            // the throttle, but never stamps idle. A throttled or unattached
-            // answer is dropped silently — the server applies the deadline
-            // default. Rides the one-way path like Composing.
-            if self.core.sessions.check_input(conn_id) == FloodVerdict::Throttled {
-                return;
-            }
-            let Some(actor) = self.core.actor_of(conn_id) else {
-                return;
-            };
-            self.core
-                .link
-                .to_server(ToServer::Inbound(WireInbound::Respond {
-                    conn,
-                    actor,
-                    id,
-                    choice,
-                }))
-                .await;
-        })
+        Box::pin(async move { self.core.respond(conn, id, choice).await })
     }
 
     fn disconnected(&self, conn: u64) -> BoxFuture<'_, ()> {

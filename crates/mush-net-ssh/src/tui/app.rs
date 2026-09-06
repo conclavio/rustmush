@@ -27,7 +27,10 @@ use std::collections::{HashMap, VecDeque};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use mush_ansi::AnsiTheme;
-use mush_proto::{ClientCaps, ExitRef, InputMode, OutputEvent, PanelFrameKind, RoomView, WhoEntry};
+use mush_proto::{
+    ClientCaps, ExitRef, InputMode, OutputEvent, PanelFrameKind, RequestKind, RequestOption,
+    RespondChoice, RichText, RoomView, WhoEntry,
+};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -142,6 +145,19 @@ pub struct InputResult {
     /// Read-only queries the transport should submit via `hooks.query`,
     /// `(name, args)`. Read-only, so they never stamp idle.
     pub queries: Vec<(String, Value)>,
+    /// Answers to server-initiated requests the transport should submit via
+    /// `hooks.respond`, `(id, choice)` (interface plan I10, D-I-21). Advisory,
+    /// never idle stamps.
+    pub responds: Vec<(u64, RespondChoice)>,
+}
+
+/// A server-initiated request being shown as an overlay (interface plan I10).
+#[derive(Clone, Debug, PartialEq)]
+struct TuiRequest {
+    id: u64,
+    kind: RequestKind,
+    prompt: RichText,
+    options: Vec<RequestOption>,
 }
 
 /// One command from the `commands.list` keyframe.
@@ -214,6 +230,10 @@ pub struct TuiApp {
     channel_aliases: Vec<String>,
     palette: Option<Palette>,
     help: bool,
+    /// The server-initiated request shown as an overlay, if any (I10).
+    request: Option<TuiRequest>,
+    /// The request id whose free-text answer the input box is capturing (I10).
+    answering: Option<u64>,
     thinking: Vec<(String, i64)>,
     composing: Vec<(String, i64)>,
 }
@@ -271,6 +291,8 @@ impl TuiApp {
             channel_aliases: Vec::new(),
             palette: None,
             help: false,
+            request: None,
+            answering: None,
             thinking: Vec::new(),
             composing: Vec::new(),
         })
@@ -561,6 +583,23 @@ impl TuiApp {
                 }
                 return queries;
             }
+            OutputEvent::Request {
+                id,
+                kind,
+                prompt,
+                options,
+                ..
+            } => {
+                // Interface plan I10: show the ask as an overlay (the newest
+                // replaces any showing). The answer goes back via `responds`.
+                self.request = Some(TuiRequest {
+                    id: *id,
+                    kind: *kind,
+                    prompt: prompt.clone(),
+                    options: options.clone(),
+                });
+                return queries;
+            }
             OutputEvent::Hello { panels, .. } => {
                 self.manifest.panels.clone_from(panels);
                 let empty = || Value::Object(serde_json::Map::new());
@@ -700,6 +739,10 @@ impl TuiApp {
                 return;
             }
             _ => {}
+        }
+        if self.request.is_some() {
+            self.request_key(key, r);
+            return;
         }
         if self.help {
             if matches!(
@@ -897,7 +940,67 @@ impl TuiApp {
     /// A submitted line: a client-local `/command`, else the sticky-mode
     /// form of a game line (D-I-8: an explicit trigger or a channel alias
     /// verb always wins).
+    /// Answer the server-initiated request overlay (interface plan I10,
+    /// D-I-21): `y`/`n` for a confirm, a digit for a choice, Enter to type a
+    /// target/text answer in the box, Esc to cancel (the server then applies
+    /// its default). Only the subject sees this, so nothing here idle-stamps.
+    fn request_key(&mut self, key: Key, r: &mut InputResult) {
+        let (id, kind) = match self.request.as_ref() {
+            Some(req) => (req.id, req.kind),
+            None => return,
+        };
+        let choice = match kind {
+            RequestKind::Confirm => match key {
+                Key::Char('y' | 'Y') => Some(RespondChoice::Confirm(true)),
+                Key::Char('n' | 'N') => Some(RespondChoice::Confirm(false)),
+                Key::Esc => Some(RespondChoice::Cancel),
+                _ => None,
+            },
+            RequestKind::Choice => match key {
+                Key::Char(c @ '1'..='9') => {
+                    let idx = (c as usize) - ('1' as usize);
+                    self.request
+                        .as_ref()
+                        .and_then(|req| req.options.get(idx))
+                        .map(|o| RespondChoice::Choose(o.id.clone()))
+                }
+                Key::Esc => Some(RespondChoice::Cancel),
+                _ => None,
+            },
+            RequestKind::Target | RequestKind::Text => match key {
+                Key::Enter => {
+                    // Capture the free-text answer in the box.
+                    self.answering = Some(id);
+                    self.request = None;
+                    self.enter_input(None);
+                    return;
+                }
+                Key::Esc => Some(RespondChoice::Cancel),
+                _ => None,
+            },
+        };
+        match choice {
+            Some(c) => {
+                r.responds.push((id, c));
+                self.request = None;
+            }
+            None => r.redraw = false,
+        }
+    }
+
     fn submit_line(&mut self, line: String, r: &mut InputResult) {
+        if let Some(id) = self.answering.take() {
+            // The box was capturing a target/text answer (I10): the line is
+            // the answer, not a command; an empty line cancels.
+            let choice = if line.trim().is_empty() {
+                RespondChoice::Cancel
+            } else {
+                RespondChoice::Text(line)
+            };
+            r.responds.push((id, choice));
+            self.request = None;
+            return;
+        }
         self.scroll_off = 0;
         if let Some(local) = line.strip_prefix('/') {
             match local.trim() {
@@ -1473,6 +1576,9 @@ impl TuiApp {
         if self.help {
             self.draw_help(frame, area);
         }
+        if self.request.is_some() {
+            self.draw_request(frame, area);
+        }
     }
 
     fn draw_tabs(&self, frame: &mut Frame<'_>, area: Rect, now: i64) {
@@ -1820,6 +1926,54 @@ impl TuiApp {
         frame.render_widget(Paragraph::new(Text::from(lines)).block(block), area);
     }
 
+    /// The server-initiated request overlay (interface plan I10): the prompt,
+    /// the options (a confirm as `y`/`n`, a choice numbered), and the keys.
+    fn draw_request(&self, frame: &mut Frame<'_>, area: Rect) {
+        let Some(req) = self.request.as_ref() else {
+            return;
+        };
+        let mut lines: Vec<Line<'static>> = vec![Line::from(Span::styled(
+            sanitize(&req.prompt.to_plain_text()),
+            Style::default().add_modifier(Modifier::BOLD),
+        ))];
+        lines.push(Line::from(""));
+        match req.kind {
+            RequestKind::Confirm => {
+                lines.push(Line::from("y  yes      n  no"));
+            }
+            RequestKind::Choice => {
+                for (i, o) in req.options.iter().enumerate().take(9) {
+                    lines.push(Line::from(format!("{}  {}", i + 1, sanitize(&o.label))));
+                }
+            }
+            RequestKind::Target | RequestKind::Text => {
+                lines.push(Line::from(dim_span_owned("Enter to type your answer")));
+            }
+        }
+        lines.push(Line::from(""));
+        lines.push(Line::from(dim_span_owned(
+            "Esc cancels (the game decides for you)",
+        )));
+        let h = u16::try_from(lines.len() + 2)
+            .unwrap_or(u16::MAX)
+            .min(area.height);
+        let w = area.width.min(64);
+        if h < 3 || w < 10 {
+            return;
+        }
+        let rect = Rect {
+            x: area.x + (area.width - w) / 2,
+            y: area.y + (area.height - h) / 2,
+            width: w,
+            height: h,
+        };
+        frame.render_widget(Clear, rect);
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .title("the game asks");
+        frame.render_widget(Paragraph::new(Text::from(lines)).block(block), rect);
+    }
+
     fn draw_help(&self, frame: &mut Frame<'_>, area: Rect) {
         let mut lines: Vec<Line<'static>> = vec![
             Line::from(Span::styled(
@@ -1944,7 +2098,8 @@ pub fn manifest_has(manifest: &TuiManifest, feed: &str) -> bool {
 mod tests {
     use super::*;
     use mush_proto::{
-        ClientKind, ColorDepth, NarrativeKind, ObjRef, PromptSpec, RichText, SmolStr,
+        ClientKind, ColorDepth, NarrativeKind, ObjRef, PromptSpec, RequestKind, RequestOption,
+        RespondChoice, RichText, SmolStr,
     };
 
     fn caps() -> ClientCaps {
@@ -2627,6 +2782,72 @@ mod tests {
         let before = app.focused_pane();
         app.feed_input(&[0x0e, 0x0f]);
         assert_eq!(app.focused_pane(), before);
+    }
+
+    /// I10: the server-initiated request overlay — a confirm answers with
+    /// `y`/`n`, a choice with a digit, a target/text opens the box so the next
+    /// line is the answer, and a key that answers nothing leaves it up. The
+    /// answers ride `InputResult.responds`.
+    #[test]
+    fn request_overlay_answers_across_kinds() {
+        let mut app = app();
+        let req = |id, kind, options: Vec<RequestOption>| OutputEvent::Request {
+            id,
+            kind,
+            prompt: RichText::plain("?"),
+            options,
+            deadline_ms: None,
+        };
+
+        app.apply_event(&req(1, RequestKind::Confirm, vec![]));
+        assert_eq!(
+            app.feed_input(b"y").responds,
+            vec![(1, RespondChoice::Confirm(true))]
+        );
+
+        app.apply_event(&req(2, RequestKind::Confirm, vec![]));
+        assert_eq!(
+            app.feed_input(b"n").responds,
+            vec![(2, RespondChoice::Confirm(false))]
+        );
+
+        app.apply_event(&req(
+            3,
+            RequestKind::Choice,
+            vec![
+                RequestOption {
+                    id: "razor".into(),
+                    label: "Razor".into(),
+                },
+                RequestOption {
+                    id: "mara".into(),
+                    label: "Mara".into(),
+                },
+            ],
+        ));
+        assert_eq!(
+            app.feed_input(b"2").responds,
+            vec![(3, RespondChoice::Choose("mara".into()))]
+        );
+
+        // Target/Text: Enter opens the box, the next line is the answer.
+        app.apply_event(&req(4, RequestKind::Text, vec![]));
+        assert!(
+            app.feed_input(b"\r").responds.is_empty(),
+            "Enter opens the box"
+        );
+        assert_eq!(
+            app.feed_input(b"Fenris\r").responds,
+            vec![(4, RespondChoice::Text("Fenris".into()))]
+        );
+
+        // A key that answers nothing leaves the overlay up.
+        app.apply_event(&req(5, RequestKind::Confirm, vec![]));
+        assert!(app.feed_input(b"z").responds.is_empty());
+        assert_eq!(
+            app.feed_input(b"y").responds,
+            vec![(5, RespondChoice::Confirm(true))]
+        );
     }
 
     /// I6: `^R` opens the box with `+roll ` ready and Tab completes the

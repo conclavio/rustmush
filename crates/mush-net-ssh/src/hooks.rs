@@ -15,7 +15,7 @@ use std::net::IpAddr;
 use std::sync::Arc;
 
 use futures::future::BoxFuture;
-use mush_proto::{ClientCaps, OutputEvent};
+use mush_proto::{ClientCaps, OutputEvent, RespondChoice};
 use tokio::sync::mpsc;
 
 /// One character on an account, as shown on the character-select screen.
@@ -140,6 +140,14 @@ pub trait SshHooks: Send + Sync {
     /// query name, with arguments). The default is a no-op, so a binary
     /// without query support simply serves no widget data.
     fn query(&self, _conn: u64, _name: String, _args: serde_json::Value) -> BoxFuture<'_, ()> {
+        Box::pin(async {})
+    }
+
+    /// A client's answer to a server-initiated request (interface plan I10,
+    /// D-I-21): the TUI's request overlay and a line-mode `respond` both route
+    /// here. Advisory and best-effort — a lost answer means the server applies
+    /// the deadline default; never an idle stamp. The default drops it.
+    fn respond(&self, _conn: u64, _id: u64, _choice: RespondChoice) -> BoxFuture<'_, ()> {
         Box::pin(async {})
     }
 

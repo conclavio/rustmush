@@ -36,7 +36,7 @@ use mush_ipc::{
 use mush_net_ssh::MAX_LINE_CHARS;
 use mush_proto::{
     ActionStatusId, MAX_VIEW_WIRE_INTEGER, ObjRef, OutputEvent, ProjectedActionReceipt,
-    ProjectedActionStatus, ProjectedCommitToken, RichText, ViewEnvelope,
+    ProjectedActionStatus, ProjectedCommitToken, RespondChoice, RichText, ViewEnvelope,
 };
 use mush_session::{
     ConnId, ConnectionHandle, DetachOutcome, DetachReason, FloodVerdict, SendToConn, SessId,
@@ -354,6 +354,29 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
             .session_of_conn(conn)
             .and_then(|s| self.sessions.character_of(s))
             .map(char_key_obj)
+    }
+
+    /// Route a client's answer to a server-initiated request (interface plan
+    /// I10, D-I-21). Shares the per-connection input flood bucket so a Respond
+    /// flood cannot reach the world loop past the throttle, never idle-stamps,
+    /// and drops a throttled or unattached answer silently (the server applies
+    /// the deadline default). Advisory, one-way. Used by both bridges.
+    pub async fn respond(&self, conn: u64, id: u64, choice: RespondChoice) {
+        let conn_id = ConnId(conn);
+        if self.sessions.check_input(conn_id) == FloodVerdict::Throttled {
+            return;
+        }
+        let Some(actor) = self.actor_of(conn_id) else {
+            return;
+        };
+        self.link
+            .to_server(ToServer::Inbound(WireInbound::Respond {
+                conn,
+                actor,
+                id,
+                choice,
+            }))
+            .await;
     }
 
     async fn legal_actions_for(
