@@ -1547,7 +1547,7 @@ fn notice_seam_bounds_text_on_a_char_boundary_mints_monotonic_ids_and_maps_the_a
                 ts,
             } if *a == Audience::Actor(GOD) => Some((
                 *id,
-                severity.clone(),
+                *severity,
                 category.to_string(),
                 text.to_plain_text(),
                 action.clone(),
