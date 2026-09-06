@@ -28,6 +28,7 @@ use mush_core::{
 };
 use mush_economy::ExternalRef;
 use mush_inventory::{EndpointRef, Grade, InventoryError, InventoryFamilies, LotId};
+use mush_org::PrincipalId;
 use serde_json::json;
 use smol_str::SmolStr;
 use thiserror::Error;
@@ -64,10 +65,12 @@ pub struct IndustryFamilies {
     /// rather than merely declared (cut 2's fold B8 mechanism: an `ActionTxn`
     /// has no scan, so the count rides the same bundle as the record it counts).
     pub place_census: StateFamilyHandle<ObjId, PlaceCensus>,
-    /// `industry.claim_index` — every live claim over one subject, written in
-    /// the same bundle as the claim. An `ActionTxn` has no scan, so this is how
-    /// a provider knows the live set at all (cut 2's fold B10 mechanism), and
-    /// it is what makes `MAX_CLAIMS_PER_SUBJECT` a counted bound.
+    /// `industry.claim_index` — every claim **ever filed** over one subject,
+    /// written in the same bundle as the claim. An `ActionTxn` has no scan, so
+    /// this is how a provider knows the set at all (cut 2's fold B10 mechanism).
+    /// It is **add-only and never pruned**, so `MAX_CLAIMS_PER_SUBJECT` is a
+    /// **lifetime** bound (E7c3 verify fold B5); pruning terminal claims is cut
+    /// 4's, with the marker-mirror retirement.
     pub claim_index: StateFamilyHandle<SmolStr, ClaimIndex>,
     /// Cut 2's handles, delegated to this owner at composition. Every quantity
     /// mutation goes through their exported verbs, never through a `txn` write
@@ -340,14 +343,29 @@ impl IndustryFamilies {
 
     /// Open or restart one run.
     ///
+    /// **One run per deposit, and only its own operator may replace a live one**
+    /// (E7c3 verify fold C2 / D1(a)). A `Running` run whose `operator()` differs
+    /// from the incoming run's is refused with [`IndustryError::RunNotYours`],
+    /// which renders byte-identically to the missing-body refusal: without this,
+    /// a co-tenant's `@extract/start` silently redirected the deposit's single
+    /// run — and every later cycle's minted lot — to their own endpoint. A
+    /// `Stopped` run carries no live tenure and may be replaced by anyone the
+    /// offer authorized; a same-operator restart is always allowed.
+    ///
     /// # Errors
+    /// [`IndustryError::RunNotYours`] on a foreign redirect of a live run;
     /// [`IndustryError::State`] if the family is unwritable.
     pub fn put_run(
         &self,
         txn: &mut ActionTxn<'_>,
         run: ExtractionRun,
     ) -> Result<(), IndustryError> {
-        if txn.get(&self.runs, &run.deposit())?.is_some() {
+        if let Some(existing) = txn.get(&self.runs, &run.deposit())?.cloned() {
+            if existing.state() == crate::record::RunState::Running
+                && existing.operator() != run.operator()
+            {
+                return Err(IndustryError::RunNotYours);
+            }
             txn.replace(&self.runs, &run.deposit(), run)?;
         } else {
             txn.insert(&self.runs, &run.deposit(), run)?;
@@ -411,6 +429,16 @@ impl IndustryFamilies {
         }
         if live_run.state() != crate::record::RunState::Running {
             return Err(IndustryError::RunStopped);
+        }
+        // E7c3 verify fold C2 / D1(a): the cycling actor must be the run's own
+        // operator, so a shared-claim co-tenant cannot cycle a run that is not
+        // theirs and mint under the incumbent's name. The run's operator is the
+        // object that opened it (`start` builds `PrincipalId::Object(actor)`), so
+        // this is a world-free equality — the offer's licence/claim gate lives in
+        // `project_offer`; this closes the run itself. Renders as the missing-run
+        // refusal.
+        if live_run.operator() != &PrincipalId::Object(actor) {
+            return Err(IndustryError::RunNotYours);
         }
         if !live.accessibility().is_workable() {
             return Err(IndustryError::Unworkable);
@@ -552,6 +580,11 @@ pub enum IndustryError {
     /// The run is stopped.
     #[error("that extraction run is stopped")]
     RunStopped,
+    /// A live run at that body belongs to a different operator (E7c3 verify
+    /// fold C2): starting would redirect it, cycling would mint under its
+    /// operator's name. Renders as the missing-run refusal.
+    #[error("that extraction run is not yours")]
+    RunNotYours,
     /// The body is collapsed, suspended or otherwise unworkable right now.
     #[error("that ore body cannot be worked right now")]
     Unworkable,

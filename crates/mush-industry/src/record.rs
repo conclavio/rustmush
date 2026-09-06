@@ -575,6 +575,18 @@ impl OreDeposit {
         let scaled = base
             .checked_mul(u64::from(self.accessibility.get()))
             .map_or(0, |scaled| scaled / u64::from(MAX_ACCESSIBILITY));
+        // E7c3 verify fold C3: a **workable, non-empty** body whose curve still
+        // yields (`base > 0`) must extract at least one unit. Without this, a
+        // low accessibility scaling (`base * accessibility < MAX_ACCESSIBILITY`)
+        // floors to 0 and the body reports `Depleted` while matter remains — the
+        // reserve is stranded and the refusal mislabelled. A body the curve has
+        // genuinely exhausted (`base == 0`) or an unworkable one (`accessibility
+        // == 0`) still yields 0 and refuses honestly.
+        let scaled = if scaled == 0 && base > 0 && self.accessibility.is_workable() {
+            1
+        } else {
+            scaled
+        };
         scaled.min(remaining)
     }
 
@@ -1424,14 +1436,22 @@ impl PlaceCensus {
     }
 }
 
-/// The live claims over one subject — the **index**, not a counter.
+/// Every claim **ever filed** over one subject — the **index**, not a counter.
 ///
-/// An `ActionTxn` has no scan, so a provider that must know "every live claim
-/// over this body" needs the set written beside the records, in the same
-/// bundle. That is cut 2's fold B10 mechanism (`inventory.reservation_index`)
-/// applied to tenure, and it is also what makes
-/// [`MAX_CLAIMS_PER_SUBJECT`] a **counted** bound rather than a declared one:
-/// the list cannot hold more.
+/// An `ActionTxn` has no scan, so a provider that must know the claims over a
+/// body needs the set written beside the records, in the same bundle. That is
+/// cut 2's fold B10 mechanism (`inventory.reservation_index`) applied to tenure.
+///
+/// **This index is add-only: it is never pruned.** `file_claim` extends it and
+/// no path removes an id — a released (`Uncontested`), suspended, seized or
+/// past-term claim stays counted. So [`MAX_CLAIMS_PER_SUBJECT`] is a **lifetime**
+/// bound on how many claims may ever be filed over one subject, not a bound on
+/// the live set (E7c3 verify fold B5). *Exclusivity* is enforced separately, in
+/// `IndustryProvider::file`, against the claims whose `contest_state` still
+/// [`authorizes`](ContestState::authorizes) — that check reads the live set;
+/// this cap counts the lifetime one. Pruning terminal claims from the index is
+/// deferred to cut 4, alongside the `FactProvider`/`WorldFacts` widening that
+/// retires the marker mirrors.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize)]
 #[serde(transparent)]
 pub struct ClaimIndex {

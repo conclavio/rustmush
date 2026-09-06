@@ -24,10 +24,22 @@
 //! **quarantine the deposit** — every `@extract` and every `@claim` mutation
 //! against it refuses until it is reconciled, and its pool never rises:
 //!
-//! * the economy hydrated **no vault** for the endpoint the deposit names;
-//! * the endpoint's pool is missing or half-present (cut 2's own quarantine,
-//!   asked through `InventoryStore`);
-//! * the survey document for the deposit failed its wire.
+//! * the economy hydrated **no vault** for the endpoint the deposit names
+//!   (`Quarantine::VaultMissing`);
+//! * the endpoint's pool is **half-present** — cut 2's own quarantine, asked
+//!   through `InventoryStore` (`Quarantine::EndpointQuarantined`);
+//! * the survey document for the deposit failed its wire
+//!   (`Quarantine::SurveyLost`).
+//!
+//! A **fully-absent** pool pair at a still-hydrated vault (both `inventory.pool`
+//! and `inventory.book` gone, which the kernel does not refuse at boot because
+//! *missing* is not *corrupt*) is **not** a distinct quarantine shape: it
+//! degrades to `Depleted` by design (E7c3 verify fold R2). That is fail-closed —
+//! `remaining()` reads 0, `next_yield` is 0, and extraction refuses — and it is
+//! why cut 3 constructs no `NoPool` variant. A fully-absent pool at a hydrated
+//! vault is unreachable through this crate's own verbs (`open_deposit` seeds the
+//! pool in the same bundle as the record), so the shape can only arise from
+//! external corruption, and the fail-closed degradation is the honest answer.
 //!
 //! The load-bearing rule is that **a skipped record must not raise
 //! authorization or availability**. A quarantined deposit authorizes nobody and
@@ -68,8 +80,6 @@ pub enum Quarantine {
     VaultMissing,
     /// Cut 2 quarantined the endpoint the deposit pools at.
     EndpointQuarantined,
-    /// The deposit's endpoint holds no pool of its own commodity at all.
-    NoPool,
     /// The survey document for this deposit failed its wire and was skipped.
     SurveyLost,
 }
@@ -90,11 +100,6 @@ impl Quarantine {
                 "cut 2 quarantined this body's endpoint; run `@inv/quarantine`, reconcile the \
                  endpoint it names, then `@deposit/show <id>`"
             }
-            Self::NoPool => {
-                "this body's endpoint holds no pool of its commodity, so nothing can be \
-                 extracted and nothing was; re-open the body or restore the pool bundle, \
-                 then `@deposit/show <id>`"
-            }
             Self::SurveyLost => {
                 "this body's survey disclosure document failed its wire and was skipped; the \
                  bands every surveyor was told are lost. Restore the document or accept the \
@@ -114,9 +119,14 @@ pub struct IndustryStore {
     surveys: BTreeMap<OreDepositId, SurveyDoc>,
     /// The applied-marker mirror the `industry.*` fact provider answers from.
     applied: BTreeMap<SmolStr, AppliedMarker>,
-    /// Whether the last reconciliation completed inside its page budget. A
-    /// truncated walk leaves the store **fail-closed**: it does not claim the
-    /// mirror is complete, and `facts::resolve` answers nothing at all.
+    /// Whether the last reconciliation completed inside its page budget **and**
+    /// held the whole marker family in the RAM mirror. A truncated walk — the
+    /// page budget tripped, or the mirror pruned past `MAX_APPLIED_MARKERS`
+    /// (E7c3 verify fold R1) — leaves the store **fail-closed**: it does not
+    /// claim the mirror is complete, and `facts::resolve` answers nothing at
+    /// all, for the newest fact as much as the oldest. Never a non-monotone
+    /// flip. The durable family is unbounded until cut 4 prunes it, so past the
+    /// cap facts go dark honestly and loudly rather than answering some.
     complete: bool,
     /// How many reconciliations have run — the pin that keeps the mirror off
     /// the command path (cut 2's fold B4).
@@ -334,6 +344,14 @@ pub fn reconcile(ctx: &mut mush_core::ModuleCtx<'_>, families: &crate::IndustryF
     // ---- the marker mirror the facts answer from ----
     let mut cursor: Option<String> = None;
     let mut pages = 0;
+    // E7c3 verify fold R1: cut 2 carries this flag and cut 3 dropped it. The RAM
+    // mirror keeps only the newest `MAX_APPLIED_MARKERS`, but `is_complete()`
+    // stayed true after a `pop_first`, so `facts::resolve` answered `None`
+    // (unsatisfied) for the older-but-durable, committed markers while the newest
+    // answered `Some` — a silent, non-monotone flip a reboot re-derived. A pruned
+    // mirror is truncated, and a truncated mirror is fail-closed for the WHOLE
+    // family, exactly as cut 2 arranges (same 4096 cap / 256-page budget).
+    let mut truncated = false;
     loop {
         if pages >= crate::record::MAX_MARKER_PAGES {
             tracing::error!(
@@ -374,12 +392,26 @@ pub fn reconcile(ctx: &mut mush_core::ModuleCtx<'_>, families: &crate::IndustryF
             // first), so keeping the newest is a `pop_first`, never a sort.
             while applied.len() > MAX_APPLIED_MARKERS {
                 applied.pop_first();
+                truncated = true;
             }
         }
         match next {
             Some(next) => cursor = Some(next),
             None => break,
         }
+    }
+    if truncated {
+        // A pruned mirror is not "behind by one sweep" — it is a mirror that
+        // silently drops committed markers, so it answers NOTHING for the whole
+        // family until the durable family is pruned (cut 4's seam). An operator
+        // event, not a note.
+        tracing::error!(
+            target: "industry",
+            markers = applied.len(),
+            "industry: the applied-marker mirror is truncated; every industry fact answers \
+             unsatisfied until the durable marker family is pruned (cut 4)"
+        );
+        complete = false;
     }
 
     let Some(store) = ctx.w.module_state_mut::<IndustryStore>() else {

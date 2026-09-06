@@ -9,10 +9,11 @@
 use std::sync::Arc;
 
 use mush_core::{
-    ClockRef, ClockStamp, CommitToken, Engine, GOD, IdempotencyKey, IdempotencyScope, ObjId,
-    OwnerId, RequestUid, ScopedIdempotencyKey,
+    ClockRef, ClockStamp, CommitToken, Engine, GOD, IdempotencyKey, IdempotencyScope,
+    ModuleBootData, ObjId, ObjKind, OfferKeyRing, OfferSecret, OwnerId, PerceivedRef, RequestUid,
+    ResolutionKeyRing, ResolutionSecret, ScopedIdempotencyKey,
 };
-use mush_economy::{ExternalRef, VaultId};
+use mush_economy::{ExternalRef, FactProvider, VaultId};
 use mush_industry::{
     Accessibility, BandId, ClaimIndex, ClaimRecord, ClaimSubject, ContestState, CurvePoint,
     Exclusivity, ExtractionRefusal, ExtractionRun, IndustryError, IndustryFamilies,
@@ -1584,4 +1585,718 @@ fn e7c3_records_the_curve_is_pure_and_two_evaluations_agree() {
     assert_eq!(body.next_yield(9_000), 100, "past 40k cumulative");
     assert_eq!(body.next_yield(50), 50, "clamped to what is left");
     assert_eq!(body.next_yield(0), 0, "and a depleted body yields zero");
+}
+
+// =====================================================================
+// ---- E7 cut 3 independent verify fold ----
+// One item per confirmed finding across the C/R/B lenses, plus the two
+// builder-flagged test gaps (B4 survey locality, B2 extract e2e / re-survey).
+// =====================================================================
+
+/// A body at a caller-named world place (the rig helper hardcodes `#7`).
+fn body_at(id: u64, place: ObjId, reserve: u64, points: &[(u64, u64)]) -> OreDeposit {
+    OreDeposit::new(
+        OreDepositId(id),
+        place,
+        commodity("metals"),
+        Grade::new(60).expect("grade"),
+        Accessibility::new(100).expect("accessibility"),
+        band("grade_b"),
+        band("reserve_major"),
+        curve(points),
+        endpoint(id),
+        reserve,
+    )
+    .expect("test body")
+}
+
+fn install_offer_keys(world: &mut TestWorld) {
+    world
+        .engine_mut()
+        .set_offer_keys(OfferKeyRing::new(OfferSecret::new(1, [0x41; 32]).unwrap(), []).unwrap());
+    world.engine_mut().set_resolution_keys(
+        ResolutionKeyRing::new(ResolutionSecret::new(1, [0x52; 32]).unwrap(), []).unwrap(),
+    );
+}
+
+/// Whether `project_offer`, regenerated through the engine exactly as
+/// `resolve_legal_action` does, publishes an offer with `verb` to `actor`.
+fn projects_verb(world: &TestWorld, actor: ObjId, verb: &str) -> bool {
+    let query = world
+        .engine()
+        .legal_action_query(
+            mush_core::PrincipalId::Object { id: actor },
+            actor,
+            PerceivedRef::SelfActor,
+        )
+        .expect("self-actor query");
+    world
+        .engine()
+        .project_legal_actions(&query)
+        .expect("projection")
+        .projected()
+        .into_iter()
+        .any(|offer| offer.presentation().verb == verb)
+}
+
+#[test]
+fn vf_c1_project_offer_gates_claim_contest() {
+    let (mut world, families) = boot();
+    install_offer_keys(&mut world);
+    let gov = world.spawn_player("gov"); // issuer
+    let alice = world.spawn_player("alice"); // holder
+    let bob = world.spawn_player("bob"); // stranger
+    let rec = ClaimRecord::new(
+        mush_industry::ClaimId(0xC1),
+        ClaimSubject::Deposit {
+            deposit: OreDepositId(0xC1),
+        },
+        PrincipalId::Object(gov),
+        PrincipalId::Object(alice),
+        ObjId(9001),
+        Exclusivity::Shared,
+        1,
+        later(100_000),
+        Transferability::Bound,
+    )
+    .unwrap();
+    {
+        let e = world.engine_mut();
+        apply(e, &families, |txn| families.file_claim(txn, rec.clone())).unwrap();
+    }
+    // The gate lives in project_offer (the seam with &Engine): the contest verb
+    // projects for the issuer and for staff, never for an arbitrary actor.
+    assert!(
+        !projects_verb(&world, bob, "claim-contest"),
+        "a non-issuer, non-staff actor is offered no contest path"
+    );
+    assert!(
+        projects_verb(&world, gov, "claim-contest"),
+        "the issuing authority is offered it"
+    );
+    assert!(
+        projects_verb(&world, GOD, "claim-contest"),
+        "staff are offered it"
+    );
+}
+
+#[test]
+fn vf_c1_a_non_issuer_cannot_seize_or_release_a_foreign_claim() {
+    let (mut world, families) = boot();
+    install_offer_keys(&mut world);
+    let gov = world.spawn_player("gov"); // issuer
+    let alice = world.spawn_player("alice"); // holder
+    let bob = world.spawn_player("bob"); // non-issuer, non-holder, non-staff
+    let rec = ClaimRecord::new(
+        mush_industry::ClaimId(0x42),
+        ClaimSubject::Deposit {
+            deposit: OreDepositId(1),
+        },
+        PrincipalId::Object(gov),
+        PrincipalId::Object(alice),
+        ObjId(4242),
+        Exclusivity::Shared,
+        1,
+        later(100_000),
+        Transferability::Transferable,
+    )
+    .unwrap();
+    {
+        let e = world.engine_mut();
+        apply(e, &families, |txn| families.file_claim(txn, rec.clone())).unwrap();
+    }
+    // All four contest switches (contest/suspend/seize/release) ride ONE offer,
+    // whose `claim` Choice, for a non-staff actor, is only the claims it may
+    // administer. The stranger's set is empty and the verb does not project, so
+    // the coordinator refuses every switch identically to a missing claim.
+    assert!(
+        mush_industry::provider::administrable_claims(world.engine(), &families, bob).is_empty(),
+        "a stranger may administer no claim"
+    );
+    assert!(!projects_verb(&world, bob, "claim-contest"));
+    // The issuer may administer exactly this claim.
+    assert_eq!(
+        mush_industry::provider::administrable_claims(world.engine(), &families, gov),
+        vec![rec.id()],
+        "the issuer may administer their own claim"
+    );
+    assert!(projects_verb(&world, gov, "claim-contest"));
+    // And the claim's contest state was never touched by the stranger.
+    let live = {
+        let e = world.engine_mut();
+        read(e, &families, |txn| {
+            families.claim(txn, rec.id()).unwrap().unwrap()
+        })
+    };
+    assert_eq!(
+        live.contest_state(),
+        &ContestState::Uncontested,
+        "the foreign claim's contest state is byte-identical"
+    );
+}
+
+#[test]
+fn vf_c2_a_second_start_does_not_redirect_a_co_tenants_run() {
+    let (mut world, families) = boot();
+    let body = deposit(601, 40_000, &[(0, 500)]);
+    let alice = ObjId(2);
+    let bob = ObjId(3);
+    let alice_end = endpoint(60_001);
+    let bob_end = endpoint(60_002);
+    let engine = world.engine_mut();
+    open(engine, &families, &body);
+    apply(engine, &families, |txn| {
+        families.put_run(
+            txn,
+            ExtractionRun::new(body.id(), PrincipalId::Object(alice), alice_end)?,
+        )
+    })
+    .expect("alice opens the run");
+    // Bob's start on the SAME deposit is refused -- never a silent redirect.
+    let redirect = apply(engine, &families, |txn| {
+        families.put_run(
+            txn,
+            ExtractionRun::new(body.id(), PrincipalId::Object(bob), bob_end)?,
+        )
+    });
+    assert!(
+        matches!(redirect, Err(IndustryError::RunNotYours)),
+        "a co-tenant's start does not replace a live run: {redirect:?}"
+    );
+    let run = read(engine, &families, |txn| {
+        families.run(txn, body.id()).unwrap().unwrap()
+    });
+    assert_eq!(run.operator(), &PrincipalId::Object(alice));
+    assert_eq!(run.facility_endpoint(), alice_end);
+    // Bob cannot cycle Alice's run either.
+    let bob_cycle = apply(engine, &families, |txn| {
+        let live = families.deposit(txn, body.id())?.unwrap();
+        let run = families.run(txn, body.id())?.unwrap();
+        families.run_cycle(
+            txn,
+            &live,
+            &run,
+            bob,
+            RequestUid::from_bytes([0xB0; 16]),
+            &holder(bob, "extract"),
+            &now(),
+            CommitToken::from_bytes([0xB0; 16]),
+            source("extract/601/0"),
+        )
+    });
+    assert!(
+        matches!(bob_cycle, Err(IndustryError::RunNotYours)),
+        "a co-tenant cannot cycle a run that is not theirs: {bob_cycle:?}"
+    );
+    // Alice's own cycle mints to ALICE's endpoint -- the run operator's, never a
+    // redirector's.
+    let cycled = apply(engine, &families, |txn| {
+        let live = families.deposit(txn, body.id())?.unwrap();
+        let run = families.run(txn, body.id())?.unwrap();
+        families.run_cycle(
+            txn,
+            &live,
+            &run,
+            alice,
+            RequestUid::from_bytes([0xA1; 16]),
+            &holder(alice, "extract"),
+            &now(),
+            CommitToken::from_bytes([0xA1; 16]),
+            source("extract/601/0"),
+        )
+    })
+    .expect("alice cycles her own run");
+    let lot = read(engine, &families, |txn| {
+        txn.get(&families.inventory.lots, &cycled.lot)
+            .unwrap()
+            .cloned()
+            .unwrap()
+    });
+    assert_eq!(
+        lot.endpoint(),
+        alice_end,
+        "the cycle minted at the run operator's endpoint"
+    );
+}
+
+#[test]
+fn vf_c4_claim_move_is_not_offered_to_a_non_holder() {
+    let (mut world, families) = boot();
+    install_offer_keys(&mut world);
+    let alice = world.spawn_player("alice"); // holder
+    let bob = world.spawn_player("bob"); // non-holder
+    let rec = ClaimRecord::new(
+        mush_industry::ClaimId(0xC4),
+        ClaimSubject::Place { place: ObjId(7) },
+        PrincipalId::Object(alice),
+        PrincipalId::Object(alice),
+        ObjId(9004),
+        Exclusivity::Shared,
+        1,
+        later(100_000),
+        Transferability::Transferable,
+    )
+    .unwrap();
+    {
+        let e = world.engine_mut();
+        apply(e, &families, |txn| families.file_claim(txn, rec.clone())).unwrap();
+    }
+    assert!(
+        mush_industry::provider::movable_claims(world.engine(), &families, alice)
+            .contains(&rec.id()),
+        "the holder may move the record half"
+    );
+    assert!(
+        mush_industry::provider::movable_claims(world.engine(), &families, bob).is_empty(),
+        "a non-holder may not"
+    );
+    assert!(projects_verb(&world, alice, "claim-move"));
+    assert!(
+        !projects_verb(&world, bob, "claim-move"),
+        "the record-half offer is not open to a non-holder"
+    );
+}
+
+#[test]
+fn vf_c3_a_low_accessibility_body_does_not_strand_its_reserve() {
+    let (mut world, families) = boot();
+    // accessibility 10, per_cycle 5 -> 5 * 10 / 100 = 0 by integer floor. Before
+    // the fix the body reported Depleted with 100 units still in the ground.
+    let body = OreDeposit::new(
+        OreDepositId(603),
+        ObjId(7),
+        commodity("metals"),
+        Grade::new(60).expect("grade"),
+        Accessibility::new(10).expect("accessibility"),
+        band("grade_b"),
+        band("reserve_major"),
+        curve(&[(0, 5)]),
+        endpoint(603),
+        100,
+    )
+    .expect("low-accessibility body");
+    let to = endpoint(603);
+    assert!(
+        body.next_yield(100) >= 1,
+        "a workable, non-empty body whose curve still yields must not strand its reserve"
+    );
+    let engine = world.engine_mut();
+    open(engine, &families, &body);
+    start_run(engine, &families, &body, to);
+    let mut extracted = 0_u64;
+    for ordinal in 0..250_u32 {
+        match cycle(engine, &families, &body, (ordinal % 250) as u8 + 1) {
+            Ok(cycled) => {
+                assert!(
+                    cycled.quantity >= 1,
+                    "every cycle extracts at least one unit"
+                );
+                extracted += cycled.quantity;
+            }
+            Err(IndustryError::Depleted) => break,
+            Err(other) => panic!("cycle {ordinal}: {other}"),
+        }
+    }
+    assert_eq!(
+        extracted, 100,
+        "the low-accessibility body yields exactly its reserve, none stranded"
+    );
+}
+
+#[test]
+fn vf_b3_claim_show_is_not_a_deposit_oracle() {
+    let (mut world, families) = boot();
+    let secret = OreDepositId(0x5EC7);
+    let alice = world.spawn_player("alice"); // holder
+    let bob = world.spawn_player("bob"); // stranger, in LIMBO, not co-located
+    let gov = world.spawn_player("gov"); // issuer
+    let rec = ClaimRecord::new(
+        mush_industry::ClaimId(0x777),
+        ClaimSubject::Deposit { deposit: secret },
+        PrincipalId::Object(gov),
+        PrincipalId::Object(alice),
+        ObjId(9777),
+        Exclusivity::Shared,
+        7,
+        later(100_000),
+        Transferability::Bound,
+    )
+    .unwrap();
+    {
+        let e = world.engine_mut();
+        apply(e, &families, |txn| families.file_claim(txn, rec.clone())).unwrap();
+    }
+    // A stranger who only knows the claim id sees NO_SUCH_CLAIM, byte-identical
+    // to an unknown id -- no fog-gated deposit id, no principals.
+    let ev = world.run(bob, &format!("@claim/show {}", rec.id()));
+    let stranger = world.seen_by(&ev, bob).join("\n");
+    let ev = world.run(bob, "@claim/show claim#00000000dead0000");
+    let unknown = world.seen_by(&ev, bob).join("\n");
+    assert_eq!(
+        stranger, unknown,
+        "a stranger's @claim/show is byte-identical to an unknown id"
+    );
+    assert!(stranger.contains("No such claim"));
+    assert!(
+        !stranger.contains("5ec7") && !stranger.contains("obj:"),
+        "no deposit id or principal reached a stranger: {stranger}"
+    );
+    // The holder sees the record -- but not the raw deposit id (non-staff).
+    let ev = world.run(alice, &format!("@claim/show {}", rec.id()));
+    let holder = world.seen_by(&ev, alice).join("\n");
+    assert!(!holder.contains("No such claim"));
+    assert!(
+        holder.contains("an ore body") && !holder.contains("5ec7"),
+        "a non-staff holder sees the claim without the fog-gated deposit id: {holder}"
+    );
+    // Staff see everything, including the raw deposit id.
+    let ev = world.run(GOD, &format!("@claim/show {}", rec.id()));
+    let staff = world.seen_by(&ev, GOD).join("\n");
+    assert!(
+        staff.contains("5ec7"),
+        "staff read the raw deposit id: {staff}"
+    );
+}
+
+#[test]
+fn vf_r1_a_pruned_mirror_answers_no_fact_for_the_newest_too() {
+    let (mut world, families) = boot();
+    let total = mush_industry::MAX_APPLIED_MARKERS + 1;
+    let oldest = smol_str::SmolStr::new(format!("{:016x}{:064x}", 0_u64, 0_u64));
+    let nord = total - 1;
+    let newest = smol_str::SmolStr::new(format!("{nord:016x}{nord:064x}"));
+    let c = mush_core::CanonicalId::new("metals").unwrap();
+    {
+        let engine = world.engine_mut();
+        let mut chunk = 0;
+        while chunk * 512 < total {
+            apply(engine, &families, |txn| {
+                for i in 0..512 {
+                    let o = chunk * 512 + i;
+                    if o >= total {
+                        break;
+                    }
+                    let id = smol_str::SmolStr::new(format!("{o:016x}{o:064x}"));
+                    let marker = mush_industry::AppliedMarker::new(
+                        mush_industry::FACT_EXTRACTION_CYCLED,
+                        OreDepositId(1),
+                        o as u64,
+                        c.clone(),
+                        1,
+                        EndpointRef(VaultId(1)),
+                        GOD,
+                        o as i64,
+                    )?;
+                    txn.insert(&families.applied, &id, marker)
+                        .map_err(IndustryError::from)?;
+                }
+                Ok(())
+            })
+            .expect("insert a chunk of markers");
+            chunk += 1;
+        }
+    }
+    world.modules_loaded(std::collections::HashMap::new());
+    let store = world
+        .world()
+        .module_state::<IndustryStore>()
+        .expect("industry store");
+    assert!(
+        store.marker(oldest.as_str()).is_none(),
+        "the oldest marker is pruned from the RAM mirror"
+    );
+    assert!(
+        store.marker(newest.as_str()).is_some(),
+        "the newest is kept"
+    );
+    assert!(
+        !store.is_complete(),
+        "the restored `truncated` flag makes a pruned mirror NOT complete"
+    );
+    let provider = mush_industry::IndustryFactProvider;
+    assert!(
+        provider
+            .resolve(
+                world.world(),
+                mush_industry::FACT_EXTRACTION_CYCLED,
+                oldest.as_str(),
+                None
+            )
+            .is_none()
+    );
+    assert!(
+        provider
+            .resolve(
+                world.world(),
+                mush_industry::FACT_EXTRACTION_CYCLED,
+                newest.as_str(),
+                None
+            )
+            .is_none(),
+        "fail-closed for the WHOLE family: the NEWEST fact answers None too, never a \
+         non-monotone flip"
+    );
+}
+
+#[test]
+fn vf_r2_a_fully_absent_pool_degrades_to_depleted_by_design() {
+    // `Quarantine::NoPool` was a dead variant claiming a third shape the tree
+    // never constructs. A fully-absent pool pair at a hydrated vault is not a
+    // distinct quarantine: it degrades to Depleted -- fail-closed -- by design.
+    let (mut world, families) = boot();
+    let body = deposit(602, 10_000, &[(0, 500)]);
+    let to = endpoint(602);
+    let engine = world.engine_mut();
+    open(engine, &families, &body);
+    start_run(engine, &families, &body, to);
+    let key = mush_inventory::pool_key(body.endpoint(), body.commodity()).expect("pool key");
+    apply(engine, &families, |txn| {
+        txn.remove(&families.inventory.pools, &key)
+            .map_err(IndustryError::from)?;
+        txn.remove(&families.inventory.books, &key)
+            .map_err(IndustryError::from)?;
+        Ok(())
+    })
+    .expect("delete both halves of the pool pair");
+    let remaining = read(engine, &families, |txn| {
+        families.remaining(txn, &body).expect("remaining")
+    });
+    assert_eq!(remaining, 0, "a fully-absent pool reads as empty");
+    let refused = cycle(engine, &families, &body, 1);
+    assert!(
+        matches!(refused, Err(IndustryError::Depleted)),
+        "a fully-absent pool degrades to Depleted, not a special shape: {refused:?}"
+    );
+}
+
+#[test]
+fn vf_b5_max_claims_bounds_the_lifetime_set() {
+    let (mut world, families) = boot();
+    let subject = ClaimSubject::Place { place: ObjId(705) };
+    let engine = world.engine_mut();
+    let mut ids = Vec::new();
+    for i in 0..MAX_CLAIMS_PER_SUBJECT {
+        let rec = ClaimRecord::new(
+            mush_industry::ClaimId(0xB500 + i as u64),
+            subject,
+            PrincipalId::Object(GOD),
+            PrincipalId::Object(GOD),
+            ObjId(9500 + i as u32),
+            Exclusivity::Shared,
+            1,
+            later(100_000),
+            Transferability::Transferable,
+        )
+        .unwrap();
+        apply(engine, &families, |txn| {
+            families.file_claim(txn, rec.clone())
+        })
+        .expect("file within the cap");
+        ids.push(rec.id());
+    }
+    // "Release" them all -- suspend is terminal-ish, and the index is add-only,
+    // so no slot is freed.
+    for id in &ids {
+        let live = read(engine, &families, |txn| {
+            families.claim(txn, *id).unwrap().unwrap()
+        });
+        apply(engine, &families, |txn| {
+            families.put_claim(
+                txn,
+                live.revision(),
+                live.with_contest_state(ContestState::Suspended {
+                    by: PrincipalId::Object(GOD),
+                })
+                .unwrap(),
+            )
+        })
+        .expect("suspending frees no index slot");
+    }
+    // A ninth file over the SAME subject still refuses: the cap is a LIFETIME
+    // bound, not a live one.
+    let ninth = ClaimRecord::new(
+        mush_industry::ClaimId(0xB5FF),
+        subject,
+        PrincipalId::Object(GOD),
+        PrincipalId::Object(GOD),
+        ObjId(9599),
+        Exclusivity::Shared,
+        1,
+        later(100_000),
+        Transferability::Transferable,
+    )
+    .unwrap();
+    let refused = apply(engine, &families, |txn| {
+        families.file_claim(txn, ninth.clone())
+    });
+    assert!(
+        matches!(refused, Err(IndustryError::Record(_))),
+        "MAX_CLAIMS_PER_SUBJECT is a LIFETIME bound; releasing frees no slot: {refused:?}"
+    );
+}
+
+#[test]
+fn vf_b6_a_ninth_surveyor_is_not_locked_out_or_leaked() {
+    let (mut world, families) = boot();
+    let place = world
+        .world_mut()
+        .create(ObjKind::Room, "Crowded Site", GOD, None)
+        .expect("place");
+    let body = body_at(702, place, 40_000, &[(0, 500)]);
+    {
+        let e = world.engine_mut();
+        open(e, &families, &body);
+    }
+    // Fill the disclosure map to its cap with 8 distinct principals.
+    let rows: Vec<SurveyRow> = (0..MAX_SURVEY_BANDS)
+        .map(|i| SurveyRow {
+            principal: PrincipalId::Object(ObjId(101 + i as u32)),
+            bands: SurveyBands {
+                grade_class: band("grade_b"),
+                reserve_class: band("reserve_major"),
+                at: now(),
+                fact: source("survey/702"),
+            },
+        })
+        .collect();
+    let full = SurveyDoc::from_rows(body.id(), rows).expect("a full survey doc");
+    if let Some(store) = world.world_mut().module_state_mut::<IndustryStore>() {
+        store.put_survey(full);
+    }
+    // A ninth, co-located, non-staff surveyor is refused -- but byte-identically
+    // to an unknown body, never with the "at most 8 principals" cap message.
+    let ninth = world.spawn_player("ninth");
+    world.world_mut().move_to(ninth, place).expect("co-locate");
+    let ev = world.run(ninth, &format!("@survey {}", body.id()));
+    let seen = world.seen_by(&ev, ninth).join("\n");
+    let ev = world.run(ninth, "@survey deposit#00000000dead0000");
+    let unknown = world.seen_by(&ev, ninth).join("\n");
+    assert_eq!(
+        seen, unknown,
+        "the ninth surveyor's refusal is byte-identical to an unknown body"
+    );
+    assert!(
+        !seen.contains("at most"),
+        "a full surveyor roster is not leaked as a distinct message: {seen}"
+    );
+    assert!(seen.contains("No such ore body"));
+}
+
+#[test]
+fn vf_b4_survey_off_site_is_indistinguishable_from_unknown() {
+    let (mut world, families) = boot();
+    let place = world
+        .world_mut()
+        .create(ObjKind::Room, "Ceres Site", GOD, None)
+        .expect("place");
+    let body = body_at(701, place, 40_000, &[(0, 500)]);
+    {
+        let e = world.engine_mut();
+        open(e, &families, &body);
+    }
+    let bob = world.spawn_player("bob"); // spawns in LIMBO, off-site
+    let ev = world.run(bob, &format!("@survey {}", body.id()));
+    let off = world.seen_by(&ev, bob);
+    let ev = world.run(bob, "@survey deposit#00000000dead0000");
+    let unknown = world.seen_by(&ev, bob);
+    assert_eq!(
+        off, unknown,
+        "off-site survey renders identically to an unknown id"
+    );
+    for line in off.iter().chain(unknown.iter()) {
+        assert!(
+            !line.contains("grade band") && !line.contains("reserve band"),
+            "no bands leak off-site: {line}"
+        );
+    }
+    assert!(
+        world
+            .world()
+            .module_state::<IndustryStore>()
+            .and_then(|store| store.survey(body.id()))
+            .is_none(),
+        "a refused survey writes no disclosure row"
+    );
+    // On-site: the two recorded bands.
+    world.world_mut().move_to(bob, place).expect("move on-site");
+    let ev = world.run(bob, &format!("@survey {}", body.id()));
+    let on_site = world.seen_by(&ev, bob).join("\n");
+    assert!(
+        on_site.contains("grade band grade_b") && on_site.contains("reserve band reserve_major"),
+        "an on-site survey yields the two recorded bands: {on_site}"
+    );
+    // Staff survey from anywhere (GOD is off-site in LIMBO).
+    let ev = world.run(GOD, &format!("@survey {}", body.id()));
+    let staff = world.seen_by(&ev, GOD).join("\n");
+    assert!(
+        staff.contains("grade band grade_b"),
+        "staff survey from anywhere: {staff}"
+    );
+}
+
+#[test]
+fn vf_b2_a_re_survey_across_a_reboot_is_a_hit() {
+    let (mut world, families) = boot();
+    let place = world
+        .world_mut()
+        .create(ObjKind::Room, "Survey Site", GOD, None)
+        .expect("place");
+    let body = body_at(703, place, 40_000, &[(0, 500)]);
+    {
+        let e = world.engine_mut();
+        open(e, &families, &body);
+    }
+    let alice = world.spawn_player("alice");
+    world.world_mut().move_to(alice, place).expect("co-locate");
+    let _ = world.run(alice, &format!("@survey {}", body.id()));
+    let doc = world
+        .world()
+        .module_state::<IndustryStore>()
+        .and_then(|store| store.survey(body.id()).cloned())
+        .expect("a survey doc");
+    let alice_principal = PrincipalId::Object(alice);
+    let at_before = doc
+        .bands_for(&alice_principal)
+        .expect("alice's row")
+        .at
+        .clone();
+    // Reboot: hand the persisted document back through modules_loaded, which
+    // re-decodes it through the SurveyDoc TryFrom wire.
+    let value = serde_json::to_value(&doc).expect("serialize");
+    let mut boot_data = std::collections::HashMap::new();
+    boot_data.insert(
+        smol_str::SmolStr::new("industry"),
+        ModuleBootData {
+            kv: vec![(mush_industry::store::survey_key(body.id()), value)],
+            streams: std::collections::HashMap::new(),
+        },
+    );
+    world.modules_loaded(boot_data);
+    let rebooted = world
+        .world()
+        .module_state::<IndustryStore>()
+        .and_then(|store| store.survey(body.id()).cloned())
+        .expect("the doc survives the reboot through modules_loaded");
+    assert_eq!(
+        rebooted.bands_for(&alice_principal).expect("row").at,
+        at_before,
+        "the disclosure survived the wire round-trip unchanged"
+    );
+    // A re-survey is a HIT: it rewrites nothing and answers the ORIGINAL stamp,
+    // never the re-survey's later one.
+    let fresh_bands = SurveyBands {
+        grade_class: band("grade_b"),
+        reserve_class: band("reserve_major"),
+        at: later(999_999),
+        fact: source("survey/703"),
+    };
+    let (again, fresh) = rebooted
+        .disclosed(&alice_principal, fresh_bands)
+        .expect("re-survey");
+    assert!(!fresh, "a re-survey after a reboot is a HIT");
+    assert_eq!(
+        again.bands_for(&alice_principal).expect("row").at,
+        at_before,
+        "the HIT kept the original disclosure stamp"
+    );
 }

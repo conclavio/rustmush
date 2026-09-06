@@ -37,8 +37,8 @@ use crate::families::IndustryFamilies;
 use crate::licence::licence_accounts;
 use crate::provider::{IndustryVerb, action_ref};
 use crate::record::{
-    ClaimId, INDUSTRY_PAGE, MAX_LIST_PAGES, MAX_LIST_ROWS, OreDeposit, OreDepositId, SurveyBands,
-    SurveyDoc,
+    ClaimId, ClaimSubject, ContestState, INDUSTRY_PAGE, MAX_LIST_PAGES, MAX_LIST_ROWS, OreDeposit,
+    OreDepositId, SurveyBands, SurveyDoc,
 };
 use crate::store::IndustryStore;
 
@@ -389,9 +389,19 @@ fn cmd_survey(ctx: &mut Ctx<'_>, families: &IndustryFamilies) -> Result<(), CmdE
         .module_state::<IndustryStore>()
         .and_then(|store| store.survey(id).cloned())
         .unwrap_or_else(|| SurveyDoc::empty(id));
-    let (next, fresh) = existing
-        .disclosed(&principal, bands.clone())
-        .map_err(|source| CmdError::msg(source.to_string()))?;
+    let (next, fresh) = match existing.disclosed(&principal, bands.clone()) {
+        Ok(result) => result,
+        Err(_) => {
+            // E7c3 verify fold B6: past `MAX_SURVEY_BANDS` a new principal's
+            // disclosure refuses. Collapse it to the **same** line an unknown
+            // body renders rather than surfacing "a deposit discloses to at most
+            // 8 principals", which minor-leaked that the surveyor roster is full
+            // to a co-located actor. The cap is a lifetime one and stands (rows
+            // are never evicted); only the disclosure of it changes.
+            ctx.out.info(ctx.actor, NO_SUCH_DEPOSIT);
+            return Ok(());
+        }
+    };
     if fresh {
         if let Some(store) = ctx.w.module_state_mut::<IndustryStore>() {
             store.put_survey(next.clone());
@@ -693,18 +703,67 @@ fn cmd_claim(
         ctx.out.info(ctx.actor, NO_SUCH_CLAIM);
         return Ok(());
     };
+    // E7c3 verify fold B3: `@claim/show` is gated to staff, the holder, the
+    // issuer, or an actor standing where the claim's subject is. Otherwise it
+    // renders `NO_SUCH_CLAIM` byte-identically to an unknown id — without this
+    // gate, anyone who learned a claim id read the **fog-gated deposit id** and
+    // both claimant principals out of a bare family read (the same existence
+    // oracle `@survey`'s locality gate and `@deposit/show`'s byte-identity close).
+    let here = ctx.w.get(ctx.actor).and_then(|actor| actor.location);
+    let subject_place = match claim.subject() {
+        ClaimSubject::Deposit { deposit } => {
+            deposit_by_id(ctx, families, deposit).map(|body| body.place())
+        }
+        ClaimSubject::Place { place } => Some(place),
+    };
+    let authorized = staff
+        || mush_economy::acts_for(ctx.w, ctx.actor, claim.holder())
+        || mush_economy::acts_for(ctx.w, ctx.actor, claim.issuer())
+        || (subject_place.is_some() && here == subject_place);
+    if !authorized {
+        ctx.out.info(ctx.actor, NO_SUCH_CLAIM);
+        return Ok(());
+    }
+    // Explicit formatting, never `{:?}` (which leaked the raw `OreDepositId`):
+    // a non-staff viewer never sees the fog-gated deposit id, and the contest
+    // state renders as a word rather than a Debug dump.
     ctx.out.info(
         ctx.actor,
         format!(
-            "{id} - {:?} | issuer {} | holder {} | priority {} | {:?}",
-            claim.subject(),
+            "{id} - {} | issuer {} | holder {} | priority {} | {}",
+            claim_subject_label(claim.subject(), staff),
             mush_economy::principal_token(claim.issuer()),
             mush_economy::principal_token(claim.holder()),
             claim.priority(),
-            claim.contest_state()
+            contest_state_label(claim.contest_state()),
         ),
     );
     Ok(())
+}
+
+/// Render a claim's subject for `@claim/show`. A non-staff viewer never sees the
+/// fog-gated `OreDepositId`; a place is a world location and is shown plainly.
+fn claim_subject_label(subject: ClaimSubject, staff: bool) -> String {
+    match subject {
+        ClaimSubject::Deposit { deposit } => {
+            if staff {
+                deposit.to_string()
+            } else {
+                "an ore body".to_owned()
+            }
+        }
+        ClaimSubject::Place { place } => format!("place #{}", place.0),
+    }
+}
+
+/// The one-word contest state a `@claim/show` line carries.
+const fn contest_state_label(state: &ContestState) -> &'static str {
+    match state {
+        ContestState::Uncontested => "uncontested",
+        ContestState::Contested { .. } => "contested",
+        ContestState::Suspended { .. } => "suspended",
+        ContestState::Seized { .. } => "seized",
+    }
 }
 
 /// Whether the claim's titled object carries an `Encumbrance::Collateral`.

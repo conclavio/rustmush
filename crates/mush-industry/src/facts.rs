@@ -16,10 +16,17 @@
 //! [`IndustryStore`](crate::store::IndustryStore) at boot and on the coarse
 //! sweep, exactly as cut 2 does, with the same direction guarantee: the mirror
 //! is **behind** the authoritative truth by at most one sweep and never ahead,
-//! and a mirror that could not see the whole family answers **nothing at all**.
-//! Cut 2 recorded widening `FactProvider`/`WorldFacts` to carry the typed-state
-//! store as cut 3's ask; cut 3 records it again as cut 4's, because the seam
-//! change is a kernel one and this cut's budget went to the cross-owner write.
+//! and a mirror that could not see the whole family — because the walk tripped
+//! its page budget **or** because the family outgrew `MAX_APPLIED_MARKERS` and
+//! the mirror pruned it — answers **nothing at all**, for the newest fact as
+//! much as the oldest (E7c3 verify fold R1: the `truncated` flag was dropped and
+//! is restored; without it a fact went silently unsatisfied after 4096 later
+//! cycles, a non-monotone flip). The durable marker family is unbounded — it
+//! grows one marker per committed cycle and is command-bounded until pruned —
+//! so past the cap every industry fact fails closed and pages at
+//! `tracing::error!`; **pruning the durable family is cut 4's**, alongside
+//! widening `FactProvider`/`WorldFacts` to carry the typed-state store, which
+//! retires the mirror and its sweep entirely.
 
 use mush_core::World;
 use mush_economy::{FactProvider, FactState};

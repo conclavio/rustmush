@@ -196,6 +196,7 @@ fn refuse(source: &IndustryError) -> ActionError {
         | IndustryError::NoClaim
         | IndustryError::NoRun
         | IndustryError::RunStopped
+        | IndustryError::RunNotYours
         | IndustryError::Unworkable
         | IndustryError::Depleted => error(ActionErrorCode::ProviderRejected, REFUSED),
         other => error(ActionErrorCode::ProviderRejected, other.to_string()),
@@ -547,6 +548,80 @@ pub fn authorized_deposits(
     out
 }
 
+/// Every claim, bounded on records **visited** (D-LBK-5). An unreadable family
+/// answers an empty list, which projects no offer at all.
+fn scan_all_claims(engine: &Engine, families: &IndustryFamilies) -> Vec<ClaimRecord> {
+    let state = engine.action_state();
+    let mut claims: Vec<ClaimRecord> = Vec::new();
+    let mut cursor: Option<String> = None;
+    let mut pages = 0;
+    loop {
+        if pages >= crate::record::MAX_LIST_PAGES {
+            break;
+        }
+        pages += 1;
+        let Ok(page) = state.scan_family(
+            &families.claims,
+            cursor.as_deref(),
+            crate::record::INDUSTRY_PAGE,
+        ) else {
+            return Vec::new();
+        };
+        for entry in page.entries() {
+            if claims.len() >= crate::record::MAX_LIST_ROWS * 4 {
+                break;
+            }
+            claims.push(entry.value().clone());
+        }
+        match page.next_after().map(ToString::to_string) {
+            Some(next) => cursor = Some(next),
+            None => break,
+        }
+    }
+    claims
+}
+
+/// The claims a non-staff actor may move the **contest state** of: those whose
+/// `issuer()` its principal `acts_for` (E7c3 verify fold C1). Bounded, sorted,
+/// capped at [`MAX_DEPOSIT_CHOICES`]. Staff are not restricted here — this feeds
+/// the non-staff `Choice`, so a griefer is never offered a foreign claim id.
+#[must_use]
+pub fn administrable_claims(
+    engine: &Engine,
+    families: &IndustryFamilies,
+    actor: ObjId,
+) -> Vec<ClaimId> {
+    let mut out: Vec<ClaimId> = scan_all_claims(engine, families)
+        .into_iter()
+        .filter(|claim| mush_economy::acts_for(&engine.world, actor, claim.issuer()))
+        .map(|claim| claim.id())
+        .collect();
+    out.sort_unstable();
+    out.dedup();
+    out.truncate(MAX_DEPOSIT_CHOICES);
+    out
+}
+
+/// The transferable claims a non-staff actor may move the **holder** of: those
+/// it holds or `acts_for` the holder of (E7c3 verify fold C4). The authority
+/// half stays E4's `AssetOp::TransferTitle`, posted by the command; this gate
+/// keeps the record-half offer from being open to every actor.
+#[must_use]
+pub fn movable_claims(engine: &Engine, families: &IndustryFamilies, actor: ObjId) -> Vec<ClaimId> {
+    let mut out: Vec<ClaimId> = scan_all_claims(engine, families)
+        .into_iter()
+        .filter(|claim| {
+            claim.transferability() == Transferability::Transferable
+                && mush_economy::acts_for(&engine.world, actor, claim.holder())
+        })
+        .map(|claim| claim.id())
+        .collect();
+    out.sort_unstable();
+    out.dedup();
+    out.truncate(MAX_DEPOSIT_CHOICES);
+    out
+}
+
 impl IndustryProvider {
     fn parameters<'i>(
         &self,
@@ -630,12 +705,54 @@ impl ActionProvider for IndustryProvider {
                 parameters.push(text("transferability", 16)?);
             }
             IndustryVerb::ClaimMove => {
-                parameters.push(text("claim", 32)?);
+                // E7c3 verify fold C4: the record half of a transfer is gated
+                // here — a non-staff actor is offered a `Choice` only over the
+                // transferable claims it holds, so the offer cannot be selected
+                // by a non-holder to rewrite `record.holder` and split tenure
+                // from title. The authority half stays E4's `TransferTitle`,
+                // which the command posts first. Staff may name any claim by id.
+                if staff {
+                    parameters.push(text("claim", 32)?);
+                } else {
+                    let claims = movable_claims(engine, &self.families, actor);
+                    if claims.is_empty() {
+                        return Ok(None);
+                    }
+                    parameters.push(parameter(
+                        "claim",
+                        true,
+                        mush_core::ProjectedParameterKind::Choice {
+                            choices: claims.iter().map(ToString::to_string).collect(),
+                        },
+                    )?);
+                }
                 parameters.push(text("holder", 64)?);
                 parameters.push(integer("revision", 1, i64::MAX)?);
             }
             IndustryVerb::ClaimContest => {
-                parameters.push(text("claim", 32)?);
+                // E7c3 verify fold C1: the whole contest path — suspend, seize,
+                // contest, release — is gated here, the seam that has `&Engine`
+                // (`prepare_authoritative` gets no world). Staff may contest any
+                // claim by id; every other actor is offered a `Choice` only over
+                // the claims whose `issuer()` its principal `acts_for`, so naming
+                // a foreign claim is refused identically whether it exists or not,
+                // and no griefer can forge an issuer's suspension or seizure or
+                // undo a real authority's.
+                if staff {
+                    parameters.push(text("claim", 32)?);
+                } else {
+                    let claims = administrable_claims(engine, &self.families, actor);
+                    if claims.is_empty() {
+                        return Ok(None);
+                    }
+                    parameters.push(parameter(
+                        "claim",
+                        true,
+                        mush_core::ProjectedParameterKind::Choice {
+                            choices: claims.iter().map(ToString::to_string).collect(),
+                        },
+                    )?);
+                }
                 parameters.push(text("state", 16)?);
                 parameters.push(integer("revision", 1, i64::MAX)?);
                 parameters.push(parameter(
@@ -805,7 +922,7 @@ impl ActionProvider for IndustryProvider {
             IndustryVerb::DepositAccess => self.access(txn, &parameters, &mut data)?,
             IndustryVerb::ClaimFile => self.file(txn, invocation, &parameters, &mut data)?,
             IndustryVerb::ClaimMove => self.mv(txn, &parameters, &mut data)?,
-            IndustryVerb::ClaimContest => self.contest(txn, &parameters, &now, &mut data)?,
+            IndustryVerb::ClaimContest => self.contest(txn, &parameters, &now, actor, &mut data)?,
             IndustryVerb::ExtractStart => self.start(txn, &parameters, actor, &mut data)?,
             IndustryVerb::ExtractCycle => {
                 self.cycle(txn, invocation, &parameters, &now, actor, &mut data)?
@@ -1050,6 +1167,7 @@ impl IndustryProvider {
         txn: &mut ActionTxn<'_>,
         parameters: &serde_json::Map<String, Value>,
         now: &ClockStamp,
+        actor: ObjId,
         data: &mut BTreeMap<String, Value>,
     ) -> Result<String, ActionError> {
         let id = claim_field(parameters, "claim")?;
@@ -1059,6 +1177,12 @@ impl IndustryProvider {
             .claim(txn, id)
             .map_err(|source| refuse(&source))?
             .ok_or_else(|| error(ActionErrorCode::ProviderRejected, REFUSED))?;
+        // E7c3 verify fold C1: the contest is attributed to the **acting**
+        // principal, not forged as the claim's issuer. `project_offer` has
+        // already gated this verb to staff or an actor who `acts_for` the
+        // issuer, so the acting object is the honest author of a suspension or
+        // seizure — the previous `by: live.issuer()` attributed every griefed
+        // suspension to an authority that never acted.
         let state = match text_field(parameters, "state")?.as_str() {
             "uncontested" => ContestState::Uncontested,
             "contested" => {
@@ -1076,10 +1200,10 @@ impl IndustryProvider {
                 }
             }
             "suspended" => ContestState::Suspended {
-                by: live.issuer().clone(),
+                by: PrincipalId::Object(actor),
             },
             "seized" => ContestState::Seized {
-                by: live.issuer().clone(),
+                by: PrincipalId::Object(actor),
                 at: now.clone(),
             },
             _ => {

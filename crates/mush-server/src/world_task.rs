@@ -14135,6 +14135,355 @@ mod tests {
         assert_eq!(a.request(), again.request());
     }
 
+    // ---- E7 cut 3 independent verify fold: B2 (the @extract e2e gap) ----
+
+    /// A test-only module that seeds GOD's extraction-licence account: the
+    /// entitlement instrument (no `@instrument/register` builds one — it is
+    /// hardcoded `Currency`) and an `Active` account in it. Composed only in this
+    /// test's world, never in a production composition, so the allowlist tripwire
+    /// (which enumerates the *production* registry) never sees `@seedlicence`.
+    struct LicenceSetup;
+
+    fn seed_licence(ctx: &mut mush_core::Ctx<'_>) -> Result<(), mush_core::CmdError> {
+        let id = mush_economy::InstrumentId::new("tacsim.extraction").expect("instrument id");
+        let _ = mush_economy::register_instrument(
+            ctx,
+            mush_economy::InstrumentDef {
+                id: id.clone(),
+                ruleset: SmolStr::new_static("tacsim"),
+                code: SmolStr::new("tacsim.extraction"),
+                kind: mush_economy::InstrumentKind::Entitlement,
+                scale: 0,
+                transferable: false,
+                negative_policy: mush_economy::NegativePolicy::SystemOnly,
+                status: mush_economy::InstrumentStatus::Active,
+                display: None,
+                revision: 1,
+            },
+        );
+        let account_id = {
+            ctx.w
+                .module_state_mut::<mush_economy::EconomyStore>()
+                .expect("economy store")
+                .alloc_account()
+                .expect("an account id")
+        };
+        mush_economy::open_account(
+            ctx,
+            mush_economy::Account {
+                id: account_id,
+                owner: mush_org::PrincipalId::Object(ctx.actor),
+                instrument: id,
+                scope: None,
+                name: SmolStr::new("extraction licence"),
+                status: mush_economy::AccountStatus::Active,
+                posted_balance: mush_economy::Amount::ZERO,
+                held_amount: mush_economy::Amount::ZERO,
+                last_hold_seq: 0,
+                credit: mush_economy::CreditPolicy::forbid(),
+                last_journal_seq: 0,
+                revision: 1,
+                approval: None,
+            },
+        );
+        Ok(())
+    }
+
+    impl mush_core::GameModule for LicenceSetup {
+        fn name(&self) -> &'static str {
+            "testlicencesetup"
+        }
+        fn register(
+            &mut self,
+            reg: &mut mush_core::Registrar<'_>,
+        ) -> Result<(), mush_core::ModError> {
+            reg.classify_commands(mush_core::CommandCompatibility::LegacyPostImage);
+            reg.command(
+                mush_core::CommandSpec {
+                    name: "@seedlicence".into(),
+                    switches: Vec::new(),
+                    shape: mush_core::ArgShape::EqPair,
+                    ..mush_core::CommandSpec::default()
+                },
+                std::sync::Arc::new(|ctx: &mut mush_core::Ctx<'_>| seed_licence(ctx)),
+            )?;
+            Ok(())
+        }
+    }
+
+    /// economy + inventory(delegates "industry") + industry(licence) + the licence
+    /// seeder, behind the real command seam: the smallest world in which a typed
+    /// `@extract/cycle` can actually commit a lot.
+    fn extract_world() -> (mush_testkit::TestWorld, mush_industry::IndustryFamilies) {
+        let cell: mush_inventory::InventoryHandleCell = std::sync::Arc::default();
+        let licence = mush_economy::InstrumentId::new("tacsim.extraction").expect("id");
+        let mut world = mush_testkit::TestWorld::with_modules(vec![
+            Box::new(mush_economy::EconomyModule::new()),
+            Box::new(
+                mush_inventory::InventoryModule::new()
+                    .with_quantity_delegates(["industry"])
+                    .with_handle_cell(std::sync::Arc::clone(&cell)),
+            ),
+            Box::new(
+                mush_industry::IndustryModule::new()
+                    .with_inventory(std::sync::Arc::clone(&cell))
+                    .with_extraction_licence(licence),
+            ),
+            Box::new(LicenceSetup),
+        ]);
+        world.engine_mut().set_offer_keys(
+            OfferKeyRing::new(OfferSecret::new(1, [0x71; 32]).unwrap(), []).unwrap(),
+        );
+        let families = world
+            .world()
+            .module_state::<mush_industry::IndustryHandles>()
+            .expect("industry handles")
+            .0
+            .clone();
+        (world, families)
+    }
+
+    fn apply_industry<T>(
+        engine: &mut Engine,
+        families: &mush_industry::IndustryFamilies,
+        body: impl FnOnce(&mut mush_core::ActionTxn<'_>) -> Result<T, mush_industry::IndustryError>,
+    ) -> Result<T, mush_industry::IndustryError> {
+        let (result, prepared) = {
+            let mut txn = engine
+                .action_transaction(&families.deposits)
+                .expect("industry transaction");
+            let result = body(&mut txn);
+            match result {
+                Ok(value) => (Ok(value), txn.prepare().ok()),
+                Err(error) => (Err(error), None),
+            }
+        };
+        if let Some(prepared) = prepared {
+            let (_, installation) = prepared.into_parts();
+            engine.install_prepared_action(installation);
+        }
+        result
+    }
+
+    fn make_gods_vault(world: &mut mush_testkit::TestWorld) -> u64 {
+        let created = world.run(GOD, "@create facility");
+        let object = created
+            .iter()
+            .find_map(|(_, event)| {
+                let text = mush_testkit::text_of(event);
+                let at = text.find("(#")?;
+                text[at + 2..]
+                    .chars()
+                    .take_while(char::is_ascii_digit)
+                    .collect::<String>()
+                    .parse::<u64>()
+                    .ok()
+            })
+            .expect("created object");
+        let out = world.run(GOD, &format!("@vault/create facility=container:#{object}"));
+        out.iter()
+            .find_map(|(_, event)| {
+                let text = mush_testkit::text_of(event);
+                let at = text.find("vault #")?;
+                text[at + 7..]
+                    .chars()
+                    .take_while(char::is_ascii_digit)
+                    .collect::<String>()
+                    .parse::<u64>()
+                    .ok()
+            })
+            .expect("vault id")
+    }
+
+    /// Drive one queued authoritative submission through the coordinator to a
+    /// durable checkpoint (or to the refusal `resolve_and_stage_offer` raises).
+    async fn drive_submit(
+        world: &mut mush_testkit::TestWorld,
+        store: &mush_store::InMemoryStore,
+        submit: &mush_core::AuthoritativeSubmit,
+        epoch: u64,
+    ) -> Result<String, String> {
+        let ingress = ActionCoordinator::command_ingress(submit, epoch).unwrap();
+        let permit = match ActionCoordinator::preflight(store, ingress).await.unwrap() {
+            ActionPreflight::Vacant(permit) => permit,
+            _ => return Err("preflight was not vacant".to_owned()),
+        };
+        let engine = world.engine_mut();
+        let submission = command_offer_submission(engine, submit)?;
+        let (staged, _) = resolve_and_stage_offer(engine, permit, submission)?;
+        let summary = staged.summary.as_deref().unwrap_or_default().to_owned();
+        let (persistence, installation) = engine
+            .take_staged_action()
+            .unwrap()
+            .expect("a staged action")
+            .into_parts();
+        let StagedActionPersistence::Authoritative(bundle) = persistence else {
+            panic!("authoritative lane");
+        };
+        store
+            .reserve_authoritative_intent(*bundle.clone())
+            .await
+            .unwrap();
+        store
+            .reconcile_authoritative(bundle.token(), bundle.bundle_hash())
+            .await
+            .unwrap();
+        engine.install_prepared_action(installation);
+        store
+            .checkpoint_authoritative(bundle.token(), bundle.bundle_hash())
+            .await
+            .unwrap();
+        Ok(summary)
+    }
+
+    #[tokio::test]
+    async fn vf_b2_extract_command_to_receipt_commits_one_lot() {
+        let (mut world, families) = extract_world();
+        let store = mush_store::InMemoryStore::new();
+        // GOD's extraction licence (entitlement instrument + Active account).
+        let _ = world.run(GOD, "@seedlicence");
+        // GOD's own facility endpoint, and a body whose pool is seeded directly.
+        let facility = make_gods_vault(&mut world);
+        let body = mush_industry::OreDeposit::new(
+            mush_industry::OreDepositId(0x0E7C3),
+            ObjId(7),
+            CanonicalId::new("metals").unwrap(),
+            mush_inventory::Grade::new(60).unwrap(),
+            mush_industry::Accessibility::new(100).unwrap(),
+            mush_industry::BandId::new("grade_b").unwrap(),
+            mush_industry::BandId::new("reserve_major").unwrap(),
+            mush_industry::YieldCurve::new(vec![mush_industry::CurvePoint {
+                cumulative: 0,
+                per_cycle: 500,
+            }])
+            .unwrap(),
+            mush_inventory::EndpointRef(mush_economy::VaultId(90_001)),
+            40_000,
+        )
+        .unwrap();
+        let now = world.world().world_ic_now();
+        let claim = mush_industry::ClaimRecord::new(
+            mush_industry::ClaimId(0x0C1A),
+            mush_industry::ClaimSubject::Deposit { deposit: body.id() },
+            mush_org::PrincipalId::Object(GOD),
+            mush_org::PrincipalId::Object(GOD),
+            ObjId(90_099),
+            mush_industry::Exclusivity::Shared,
+            1,
+            mush_core::ClockStamp {
+                clock: now.clock,
+                at: now.at.saturating_add(1_000_000),
+            },
+            mush_industry::Transferability::Transferable,
+        )
+        .unwrap();
+        {
+            let engine = world.engine_mut();
+            apply_industry(engine, &families, |txn| {
+                families.open_deposit(txn, body.clone())
+            })
+            .expect("open the body");
+            apply_industry(engine, &families, |txn| {
+                families.file_claim(txn, claim.clone())
+            })
+            .expect("file the claim");
+        }
+
+        // @extract/start <body>=<facility>, driven to commit.
+        let _ = world.run(GOD, &format!("@extract/start {}={}", body.id(), facility));
+        let start_submit = *world
+            .engine_mut()
+            .take_authoritative_submit()
+            .expect("@extract/start queued a submission");
+        let _ = world.drain_write_batch();
+        drive_submit(&mut world, &store, &start_submit, 1)
+            .await
+            .expect("the start commits");
+
+        // @extract/cycle <body>, driven to commit.
+        let _ = world.run(GOD, &format!("@extract/cycle {}", body.id()));
+        let cycle_submit = *world
+            .engine_mut()
+            .take_authoritative_submit()
+            .expect("@extract/cycle queued a submission");
+        let _ = world.drain_write_batch();
+        let summary = drive_submit(&mut world, &store, &cycle_submit, 1)
+            .await
+            .expect("the cycle commits");
+        assert!(
+            summary.contains("produced 500"),
+            "the receipt names the yield: {summary}"
+        );
+
+        // Exactly one lot minted, at the OPERATOR's endpoint, and the run advanced.
+        {
+            let engine = world.engine_mut();
+            let markers: Vec<mush_industry::AppliedMarker> = engine
+                .action_state()
+                .scan_family(&families.applied, None, 64)
+                .expect("scan markers")
+                .entries()
+                .iter()
+                .map(|entry| entry.value().clone())
+                .collect();
+            assert_eq!(
+                markers.len(),
+                1,
+                "the committed bundle wrote exactly one marker"
+            );
+            assert_eq!(markers[0].deposit(), body.id());
+            assert_eq!(markers[0].quantity(), 500);
+            assert_eq!(
+                markers[0].to(),
+                mush_inventory::EndpointRef(mush_economy::VaultId(facility)),
+                "the lot landed at the operator's own endpoint"
+            );
+            assert_eq!(markers[0].actor(), GOD);
+            let run = engine
+                .action_state()
+                .get(&families.runs, &body.id())
+                .expect("read run")
+                .cloned()
+                .expect("the run exists");
+            assert_eq!(
+                run.next_cycle(),
+                1,
+                "industry.run advanced exactly one cycle"
+            );
+        }
+
+        // A retyped-identical submission is a marker HIT: a reboot (fresh epoch)
+        // gets past the durable idempotency key, and the applied marker refuses
+        // the replay, so nothing commits twice.
+        let _ = world.drain_write_batch();
+        let replay = drive_submit(&mut world, &store, &cycle_submit, 2).await;
+        assert!(
+            replay
+                .as_ref()
+                .err()
+                .is_some_and(|error| error.contains("already been applied")),
+            "the applied marker is the replay guard: {replay:?}"
+        );
+        // And still exactly one marker, the run still at cycle 1.
+        {
+            let engine = world.engine_mut();
+            let count = engine
+                .action_state()
+                .scan_family(&families.applied, None, 64)
+                .expect("scan markers")
+                .entries()
+                .len();
+            assert_eq!(count, 1, "the replay committed no second marker");
+            let run = engine
+                .action_state()
+                .get(&families.runs, &body.id())
+                .expect("read run")
+                .cloned()
+                .expect("run");
+            assert_eq!(run.next_cycle(), 1, "the run did not advance on the replay");
+        }
+    }
+
     /// E7c2 fold C4: the fan-out arm voided the ENGINE-wide slot, so a
     /// legitimate submission queued in an earlier step — possibly a different
     /// actor's — was silently destroyed and its owner was told nothing.
