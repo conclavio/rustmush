@@ -394,6 +394,116 @@ and gen-ts.
 concealment probe with `+obfuscate`); **B** — the coalescer's bounds under a hostile burst; **S** — a
 shard reconnect never duplicates or reorders (the `seq` is the order).
 
+**As built (2026-09-06, branch `z`, uncommitted — the owner commits).** The follow connection landed
+as designed — a structured `ConnectionHandle` with `ClientKind::Discord`, attached through the shared
+`GameBridge` core exactly as a web tab is, connection ids from `DISCORD_CONN_ID_BASE = 1 << 48` — with
+these deviations recorded rather than assumed:
+
+- **The DM render is a hand-built allow-list (`dm::render`), not `mush_ansi` at `ColorDepth::None`.**
+  The lossy surface needs eight event shapes rendered plainly; the terminal renderer's text fallback
+  would then have to be de-styled and re-escaped for Discord markdown. A direct render is smaller,
+  deterministic under test, and cannot leak an ANSI escape. Kept: `Narrative` (all eight kinds), `Sys`
+  tagged `scene|discord` always and `error|system|channel|privilege` unless quiet, `Room` (name,
+  description cut at 300 chars, contents, exits), `Panel{feed:"scenes"}` as a one-line summary that
+  also tracks `in_scene` (the null keyframe says "no longer in a scene" once), `Notice` and `Request`
+  as **priority** lines (a request renders its options with the `respond <n>` hint — buttons are D3),
+  `Weather`, `SessionInfo` (the "Following **X**" line), `Disconnect`. Dropped: `Channel` (D4 decides
+  the relay/mention rule), `MailNotice`, `Who`, `View`, `Composing`, `Reply`, `Resumed`, `Prompt`,
+  `Ping`, `Hello`. Player text is markdown-escaped and every send carries **no allowed mentions**, so
+  a follow can never ping anyone.
+- **The drop marker counts lines, not `seq` ranges** (`… N lines dropped (the DM could not keep up;
+  your terminal's backlog has them) …`). Priority lines are held and sent first; narrative goes
+  oldest-first under `dm_queue_lines`. A retryable failure (429, 5xx) backs off `RETRY_BACKOFF` (5 s)
+  and puts the unsent lines back **in order**; `CannotDm` marks the follow deaf (`FollowState
+  ::dm_closed`) and the idle sweep detaches it at its next pass.
+- **Inbound is keyed by Discord user, not connection:** `DiscordHooks::{follow, detach, dm_line}
+  (user_id, …)`. The bridge's `follows` map *is* the D-D-6 rule (one follow per user; another character
+  replaces the first with a clean `quit`), and the writer task removes the entry when the session drops
+  the handle — quit, boot, the linkdead reaper, shutdown — so the map never outlives its connections.
+  Slash sugar (`/say /pose /look /scene`) becomes the corresponding line; `/detach` and a typed `QUIT`
+  both end in `GameBridge::quit`. A DM while unattached gets one hint per `HINT_INTERVAL` (600 s) and
+  is not executed; guild messages are ignored until D4.
+- **Auto-follow is a `SessionManager` hook, not a `GameBridge` one.** Each transport bridge owns its
+  own `GameBridge`, so the linkdead event a *web or SSH* drop produces is visible only in the shared
+  manager: `SessionManager::set_linkdead_hook(Arc<dyn Fn(CharKey, Duration)>)`, invoked at the end of
+  `detach_at` after every map borrow is released. The bridge holds itself weakly and runs the follow on
+  its own task. The reverse lookup (character → account) is the same `list_accounts` scan `@discord`
+  uses — a per-character index is the fix if linkdead events ever get frequent. The attach is
+  `Rejoined { from_linkdead: true }` (one announce), and the DM's first line is the intro ("Your
+  terminal dropped; following here…"), sent before the connection's own output.
+- **`create_dm` is called on every follow** (Discord returns the existing channel) rather than trusting
+  the stored `dm_channel`, which is kept current but informational (the on-call outbox reads it, 03
+  §7a). It is also the one call that reports closed DMs *before* anything is attached.
+- **`quiet` applies from the next follow.** `@discord/set quiet=on|off` writes `DiscordLinkRec.quiet`;
+  the writer's `FollowState` is built from it at attach. A live toggle — like the in-game
+  **`@discord/follow|unfollow` verbs — is deferred to D3**, which adds the gateway-control arm both need;
+  D2's R1 is covered from the Discord side (`/follow`, `/detach`) and by auto-follow.
+- Caps: `height: 24` rather than `0` (nothing on a structured sink pages by height, but a zero is a
+  surprise to anything that divides by it); the address is `0.0.0.0` (WHO shows it so).
+- Idle: a 60 s sweep (`IDLE_SWEEP_INTERVAL`); `follow_idle_detach_s = 0` disables it; a scene member
+  is never idle-detached — the writer's `in_scene` comes from the `scenes` keyframe that already flows
+  on the connection, so the planned `ScenesQuery` round trip is not needed.
+- Intents: `DIRECT_MESSAGES` only. The content of a DM to the bot is exempt from the privileged
+  Message Content intent (it gates guild messages), so D2 needs no portal toggle.
+- **Slash commands are registered globally, not per guild** (`DiscordApi::register_commands`,
+  `set_global_commands` with `contexts = [Guild, BotDm]`). D1 registered them to the guild for
+  instant availability, but Discord never offers a guild-scoped command inside a bot's DM — and the DM
+  is where `/link` and `/follow` are typed. Caught while preparing the first live smoke test.
+  `[discord].guild_id` stays required: D4's relay channels and D5's staff channel live there.
+- **The ids may come from the environment.** `application_id` / `guild_id` left at `0` are read from
+  `DISCORD_APPLICATION_ID` / `DISCORD_GUILD_ID` (`application_id_env` / `guild_id_env` name the
+  variables; `DiscordConfig::resolve_ids_from_env` runs before `validate` at boot), so a deployment
+  can keep every Discord value beside the token in `.env` or the unit's environment. A nonzero toml
+  value wins. The owner's smoke-test setup asked for it.
+
+Landed: `ClientKind::Discord` + regenerated `ClientKind.ts` (proto); `SessionManager::
+set_linkdead_hook` / `LinkdeadHook` (session); `DiscordLinkRec.quiet` (store); `mush-net-discord`:
+`dm.rs` (`DmPolicy`, `FollowState`, `render`, `escape_md`, `chunk`, `run_dm_writer`), `hooks.rs`
+(`follow`/`detach`/`dm_line` and their outcomes), `bot.rs` (nine slash commands, the DM line path, the
+follow hint), `api.rs` (no allowed mentions on sends), `mush-proto` dep; `discord_bridge.rs` rewritten
+as `DiscordBridge<A: AuthBackend>` over `GameBridge` (`follow_impl`, `pick_character`, `auto_follow`,
+`sweep_idle`, `install_auto_follow`, `following`) with `spawn_bot(config, accounts, sessions, link,
+guard, store)` wired in both binaries (gateway, mushd); `DiscordSetting::Quiet`, `@discord/set quiet`
+and the status line (server); `help discord` (Following), `docs/ops.md` (the D2 paragraph, intents,
+slash commands), the README row; `/mushd.toml` git-ignored (the local run config; the tracked ones
+live under `deploy/`).
+
+Tests: `mush-net-discord` **16 passed** (the render allow-list and quiet table, chunking, the writer's
+coalescing/priority/drop-marker behaviour, retry order and the deaf DM under `start_paused`, the bot's
+command registration, limiter, follow/detach/sugar routing, the DM hint, the closed gateway, the
+env-id fallback); gateway lib **41 passed** (seven bridge tests: link/refusals, follow attaches a
+structured connection and its output reaches the DM, follow refusals + `QUIT` + unlink-detaches,
+auto-follow on linkdead as a rejoin, the idle sweep with scene and deaf cases, idle `0` = never);
+server `@discord` **4 passed** (the `quiet` setting queues like the others); session **6** and store
+**33 passed**; `cargo clippy --all-targets -- -D warnings` clean over proto, session, store, config,
+net-discord, gateway, server and mushd; `cargo fmt --check` clean; `cargo gen-ts` regenerated
+`ClientKind.ts`. The full `cargo test --workspace` **ran green after the smoke test: 243 test binaries, 3 949 tests,
+0 failures** (`-j 6 --no-fail-fast`; the first attempt had died in the compile phase on a Windows
+resource error, `os error 1453`, under full parallelism). It caught one D1 leftover the filtered runs had
+missed: the four module boot-order tests in `mush-server::modules` enumerate the composition and now list
+`privileges` after `canon`. `cargo clippy --workspace --all-targets -- -D warnings` is clean too. The
+L/B/S lenses were argued, not probed: **L**
+holds by construction (the DM renders only what the character's own session delivered; the bridge adds
+the intro, the idle note and `SessionInfo`), **B** is the `dm_queue_lines` bound plus `chunk`'s hard
+split with the sink drained eagerly, **S** is moot for follows (sends are REST; a shard reconnect
+touches only inbound events, and the bot's own DMs are filtered by `author.bot`).
+
+**Live smoke test (2026-09-06, the owner's bot, `mushd` all-in-one, memory store).** Passed end to
+end: boot → global command registration → `gateway ready`; SSH login → `@discord/link` → `/link` in
+the bot's DM → `discord: account linked`; `/follow` → `discord follow attached` as connection
+`281474976710656` (`1 << 48`) beside SSH connection 1, the "Following **faenix**" DM delivered; DM
+lines `look` and `say hi` accepted for the follow, executed as the character, and their output
+delivered back as DMs (three sends, all accepted by Discord) — the owner confirmed both directions in
+the client. Two findings from the attempt: (1) guild-scoped commands are not offered in a bot's DM
+(fixed: global registration with the `BotDm` context, above); (2) the first attempt was silent both
+ways while the console showed neither the link nor the follow at `INFO` — the process being watched
+had not performed them, so a second bot session on the same token (or a stale binary) is the likely
+cause; the second attempt, run with `RUST_LOG=info,mush_net_discord=debug,mush_gateway=debug`, was
+clean. Debug-level lines (never content: a DM's character count, "dm line accepted", "message sent")
+were added to the bot, the bridge and the writer so the next smoke test can be read from the log
+alone. Polish landed after the test: the follower's own `say`/`whisper` renders in second person
+("You say, …") as the terminal does, keyed on `FollowState::self_id`.
+
 ### 3.3 Cut D3 — Interact
 
 **What it is.** The structured half of R2, and the interaction router the on-call service needs.
@@ -664,3 +774,7 @@ None blocks D1; q1 and q6 are the owner's, the rest are defaults the build takes
 - **Draft 0.2 — 2026-09-06.** D1 built (§3.1 "As built"): the identity layer, the privilege and its
   audit ledger, the transport crate and bridge, docs and pins; deviations recorded; the L/A/S verify
   still owed.
+- **Draft 0.3 — 2026-09-06.** D2 built (§3.2 "As built"): the follow connection through the shared
+  `GameBridge`, the DM writer and its allow-list, auto-follow as a session-manager hook, the idle
+  sweep, `quiet`; deviations recorded (hand-built render, `create_dm` per follow, the in-game
+  `@discord/follow|unfollow` verbs and a live `quiet` toggle deferred to D3's gateway-control arm).

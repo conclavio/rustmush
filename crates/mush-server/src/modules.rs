@@ -2025,6 +2025,7 @@ mod tests {
             [
                 "comsys",
                 "canon",
+                "privileges",
                 "org",
                 "faction",
                 "scenes",
@@ -2084,6 +2085,7 @@ mod tests {
                 [
                     "comsys",
                     "canon",
+                    "privileges",
                     "org",
                     "faction",
                     "scenes",
@@ -2299,6 +2301,7 @@ mod tests {
             [
                 "comsys",
                 "canon",
+                "privileges",
                 "org",
                 "faction",
                 "scenes",
@@ -2436,6 +2439,7 @@ mod tests {
             [
                 "comsys",
                 "canon",
+                "privileges",
                 "org",
                 "faction",
                 "scenes",

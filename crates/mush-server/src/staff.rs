@@ -230,6 +230,9 @@ pub enum DiscordSetting {
     RelayCharacter(Option<ObjId>),
     /// Attach a Discord follow when the last terminal connection drops.
     AutoFollow(bool),
+    /// Quiet follows (D2): the DM shows only notices, requests and the
+    /// character's own scene. Applies from the next follow.
+    Quiet(bool),
 }
 
 /// Who `@discord/unban` lifts a ban from. A raw snowflake is accepted only
@@ -820,6 +823,11 @@ fn discord_cmd(queue: &StaffQueue, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 "off" | "no" | "false" => DiscordSetting::AutoFollow(false),
                 _ => return Err(CmdError::msg("Usage: @discord/set autofollow=on|off.")),
             },
+            "quiet" => match rhs.to_ascii_lowercase().as_str() {
+                "on" | "yes" | "true" => DiscordSetting::Quiet(true),
+                "off" | "no" | "false" => DiscordSetting::Quiet(false),
+                _ => return Err(CmdError::msg("Usage: @discord/set quiet=on|off.")),
+            },
             _ => return Err(CmdError::msg(USAGE)),
         };
         queue.push(StaffOp {
@@ -1063,7 +1071,8 @@ pub fn register_server_commands_with_cap(
                    @discord/set relay=<character>|none picks which of your characters \
                    speaks in relayed channels when none is attached; @discord/set \
                    autofollow=on|off attaches a Discord follow when your last terminal \
-                   connection drops. Staff: @discord/show <player> (needs the \
+                   connection drops; @discord/set quiet=on|off keeps a follow's DM to \
+                   notices, requests and your own scene. Staff: @discord/show <player> (needs the \
                    DISCORD_IDENTITY privilege — every look is recorded), @discord/unlink \
                    <player>[=<reason>], @discord/ban <player>=<reason>, @discord/unban \
                    <player>[=<reason>] (Wizards; every action is recorded)."
@@ -1407,7 +1416,9 @@ mod tests {
         // denial, nothing queued (D-D-14).
         let out = run(&mut engine, GOD, "@discord/show Nick");
         assert!(
-            sys_texts(&out).iter().any(|t| t.contains("Permission denied")),
+            sys_texts(&out)
+                .iter()
+                .any(|t| t.contains("Permission denied")),
             "{:?}",
             sys_texts(&out)
         );
@@ -1448,22 +1459,35 @@ mod tests {
         // A mortal may not ban.
         let out = run(&mut engine, nick, "@discord/ban Nick=spam");
         assert!(
-            sys_texts(&out).iter().any(|t| t.contains("Permission denied")),
+            sys_texts(&out)
+                .iter()
+                .any(|t| t.contains("Permission denied")),
             "{:?}",
             sys_texts(&out)
         );
         assert!(queue.drain().is_empty());
         // A wizard needs a reason, and never an identity in it.
         let out = run(&mut engine, GOD, "@discord/ban Nick");
-        assert!(sys_texts(&out).iter().any(|t| t.contains("A reason is required")));
-        let out = run(&mut engine, GOD, "@discord/ban Nick=user 123456789012345678 spams");
+        assert!(
+            sys_texts(&out)
+                .iter()
+                .any(|t| t.contains("A reason is required"))
+        );
+        let out = run(
+            &mut engine,
+            GOD,
+            "@discord/ban Nick=user 123456789012345678 spams",
+        );
         assert!(
             sys_texts(&out)
                 .iter()
                 .any(|t| t.contains("may not contain an identifier"))
         );
         assert!(queue.drain().is_empty());
-        assert!(audit_actions(&engine).is_empty(), "nothing refused is recorded");
+        assert!(
+            audit_actions(&engine).is_empty(),
+            "nothing refused is recorded"
+        );
         // Ban, unban by snowflake, unlink: each queued and audited.
         let out = run(&mut engine, GOD, "@discord/ban Nick=relay spam");
         assert!(sys_texts(&out).is_empty(), "{:?}", sys_texts(&out));
@@ -1512,8 +1536,14 @@ mod tests {
             .unwrap();
         let cases = [
             ("@discord", StaffOpKind::DiscordStatus { actor: nick }),
-            ("@discord/link", StaffOpKind::DiscordLinkMint { actor: nick }),
-            ("@discord/unlink", StaffOpKind::DiscordUnlinkSelf { actor: nick }),
+            (
+                "@discord/link",
+                StaffOpKind::DiscordLinkMint { actor: nick },
+            ),
+            (
+                "@discord/unlink",
+                StaffOpKind::DiscordUnlinkSelf { actor: nick },
+            ),
             (
                 "@discord/set autofollow=on",
                 StaffOpKind::DiscordSet {
@@ -1533,6 +1563,13 @@ mod tests {
                 StaffOpKind::DiscordSet {
                     actor: nick,
                     setting: DiscordSetting::RelayCharacter(Some(nick)),
+                },
+            ),
+            (
+                "@discord/set quiet=on",
+                StaffOpKind::DiscordSet {
+                    actor: nick,
+                    setting: DiscordSetting::Quiet(true),
                 },
             ),
         ];

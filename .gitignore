@@ -26,3 +26,6 @@ logs/
 # OS noise
 Thumbs.db
 .DS_Store
+
+# Local run config (ids, ports); the tracked ones live under deploy/ and mushd.toml.example
+/mushd.toml

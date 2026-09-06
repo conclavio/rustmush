@@ -98,7 +98,7 @@ pub use conn::{ConnId, ConnectionHandle, Sink};
 pub use flood::{FloodBucket, FloodVerdict};
 pub use manager::{
     AttachOutcome, CharKey, DetachOutcome, DetachReason, EnvelopeClock, ExpiredSession,
-    NarrativeBacklog, ReplayError, SendReport, SendToConn, SessId, SessionConfig, SessionManager,
-    SessionMeta, system_unix_ms,
+    LinkdeadHook, NarrativeBacklog, ReplayError, SendReport, SendToConn, SessId, SessionConfig,
+    SessionManager, SessionMeta, system_unix_ms,
 };
 pub use sanitize::sanitize_line;

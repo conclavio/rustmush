@@ -68,11 +68,13 @@ listen = "127.0.0.1:8080"          # (M4) bind a public address or reverse-proxy
 # Note: `features` / `panels` are filled from the module registry at boot —
 # do not set them here.
 
-[discord]                          # (D1) the Discord bot (mush-net-discord); off unless enabled
+[discord]                          # (D1–D2) the Discord bot (mush-net-discord); off unless enabled
 enabled = false
 # token_env = "DISCORD_BOT_TOKEN"  # the env var holding the bot token — NEVER the token itself
-# application_id = 0              # the bot's application id (required when enabled)
-# guild_id = 0                    # the one guild it serves (slash commands register there)
+# application_id = 0              # the bot's application id (required when enabled); 0 = read the env var below
+# application_id_env = "DISCORD_APPLICATION_ID"
+# guild_id = 0                    # the one guild it serves (relay + staff channels); 0 = read the env var below
+# guild_id_env = "DISCORD_GUILD_ID"
 # link_attempts_per_10m = 5       # failed /link attempts one Discord user may make per 10 min
 # auto_follow_default = false     # what a new link's auto-follow starts as (D2)
 # dm_coalesce_ms = 1500           # (D2) DM batching window

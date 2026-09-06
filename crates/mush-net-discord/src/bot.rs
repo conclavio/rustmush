@@ -11,14 +11,24 @@ use crate::api::{
     DiscordApi, DiscordEvent, EventSource, InteractionHandle, Outgoing, SlashCommand, SlashOption,
 };
 use crate::config::DiscordConfig;
-use crate::hooks::{DiscordHooks, LinkOutcome, UnlinkOutcome};
+use crate::hooks::{
+    DetachOutcome, DiscordHooks, FollowOutcome, LineOutcome, LinkOutcome, UnlinkOutcome,
+};
 
 /// The window the `/link` attempt limiter counts over.
 pub const LINK_ATTEMPT_WINDOW: Duration = Duration::from_secs(600);
 
-/// The slash commands D1 registers (guild-scoped, so they appear at once).
+/// How often an unfollowed user typing in the DM is reminded to `/follow`.
+pub const HINT_INTERVAL: Duration = Duration::from_secs(600);
+
+/// The slash commands the bot registers (guild-scoped, so they appear at once).
 #[must_use]
 pub fn commands() -> Vec<SlashCommand> {
+    let text = |name: &'static str, description: &'static str| SlashOption {
+        name,
+        description,
+        required: true,
+    };
     vec![
         SlashCommand {
             name: "link",
@@ -37,6 +47,40 @@ pub fn commands() -> Vec<SlashCommand> {
         SlashCommand {
             name: "whoami",
             description: "Which game account this Discord user is linked to",
+            options: vec![],
+        },
+        SlashCommand {
+            name: "follow",
+            description: "Follow one of your characters here: their room, scene and pages, and act as them",
+            options: vec![SlashOption {
+                name: "character",
+                description: "Which character (needed only if your account has several)",
+                required: false,
+            }],
+        },
+        SlashCommand {
+            name: "detach",
+            description: "Stop following; your character leaves the game as if you typed QUIT",
+            options: vec![],
+        },
+        SlashCommand {
+            name: "say",
+            description: "Say something in your character's room",
+            options: vec![text("text", "What to say")],
+        },
+        SlashCommand {
+            name: "pose",
+            description: "Pose (emote) as your character",
+            options: vec![text("text", "The action, without your name")],
+        },
+        SlashCommand {
+            name: "look",
+            description: "Look at your character's room",
+            options: vec![],
+        },
+        SlashCommand {
+            name: "scene",
+            description: "Show the scene your character is in",
             options: vec![],
         },
     ]
@@ -91,6 +135,13 @@ impl LinkLimiter {
     }
 }
 
+/// Per-user state the loop keeps: the link limiter and the "use `/follow`"
+/// hint's last time.
+struct Loop {
+    limiter: LinkLimiter,
+    hinted: HashMap<u64, Instant>,
+}
+
 /// The bot: registers the commands, then serves events until `shutdown`
 /// resolves or the source ends. Message content never reaches a log above
 /// `trace`; replies never echo a code.
@@ -106,13 +157,15 @@ pub async fn serve(
     config: DiscordConfig,
     shutdown: impl std::future::Future<Output = ()> + Send + 'static,
 ) -> Result<(), ServeError> {
-    api.register_guild_commands(config.guild_id, &commands())
-        .await?;
+    api.register_commands(&commands()).await?;
     tracing::info!(
         guild = config.guild_id,
-        "discord bot: slash commands registered"
+        "discord bot: slash commands registered (global; guild and bot-DM contexts)"
     );
-    let mut limiter = LinkLimiter::new(config.link_attempts_per_10m);
+    let mut state = Loop {
+        limiter: LinkLimiter::new(config.link_attempts_per_10m),
+        hinted: HashMap::new(),
+    };
     tokio::pin!(shutdown);
     loop {
         tokio::select! {
@@ -125,7 +178,7 @@ pub async fn serve(
                     tracing::error!("discord bot: gateway closed permanently");
                     return Err(ServeError::GatewayClosed);
                 };
-                handle_event(&*hooks, &*api, &mut limiter, event).await;
+                handle_event(&*hooks, &*api, &mut state, event).await;
             }
         }
     }
@@ -143,10 +196,42 @@ async fn reply(api: &dyn DiscordApi, handle: &InteractionHandle, text: &str) {
 /// The uniform refusal for `/link` — one text for every reason (03 §3, R0).
 pub const LINK_REFUSED: &str = "That code could not be linked. Codes come from `@discord/link` in the game, last ten minutes, and work once; check it and try again.";
 
+/// The reminder an unfollowed user gets when they type in the DM.
+pub const NOT_FOLLOWING: &str = "You are not following a character. `/follow` (or `/follow <name>`) attaches one; then what you type here runs as them.";
+
+fn follow_reply(outcome: &FollowOutcome) -> String {
+    match outcome {
+        FollowOutcome::Following {
+            character,
+            attached: true,
+        } => format!(
+            "Following **{character}**. What you type here runs as them — say, pose, `+roll`, \
+             `respond <n>` to a request, `+scene/pause` and every other command. `/detach` (or \
+             `QUIT`) stops; your terminal can join the same session any time."
+        ),
+        FollowOutcome::Following {
+            character,
+            attached: false,
+        } => format!("Already following **{character}**."),
+        FollowOutcome::NotLinked => "This Discord user is not linked to a game account. In the \
+                                     game, `@discord/link` mints a code; then `/link <code>` here."
+            .to_string(),
+        FollowOutcome::Banned => "This Discord user may not follow.".to_string(),
+        FollowOutcome::WhichCharacter { available } => format!(
+            "Which character? `/follow <name>` — you have: {}.",
+            available.join(", ")
+        ),
+        FollowOutcome::DmsClosed => "I cannot send you direct messages. Allow DMs from members \
+                                     of this server (or message me first), then `/follow` again."
+            .to_string(),
+        FollowOutcome::Failed(why) => format!("Could not attach: {why}."),
+    }
+}
+
 async fn handle_event(
     hooks: &dyn DiscordHooks,
     api: &dyn DiscordApi,
-    limiter: &mut LinkLimiter,
+    state: &mut Loop,
     event: DiscordEvent,
 ) {
     match event {
@@ -159,88 +244,151 @@ async fn handle_event(
             options,
             handle,
             ..
-        } => match name.as_str() {
-            "link" => {
-                if !limiter.admit(user_id, Instant::now()) {
-                    reply(
-                        api,
-                        &handle,
-                        "Too many attempts; wait ten minutes and try again.",
-                    )
-                    .await;
-                    return;
-                }
-                let raw = options
+        } => {
+            let option = |key: &str| -> Option<&str> {
+                options
                     .iter()
-                    .find(|(k, _)| k == "code")
+                    .find(|(k, _)| k == key)
                     .map(|(_, v)| v.as_str())
-                    .unwrap_or("");
-                let Some(code) = normalize_link_code(raw) else {
-                    reply(api, &handle, LINK_REFUSED).await;
-                    return;
-                };
-                match hooks.link_redeem(user_id, &code).await {
-                    LinkOutcome::Linked { account } => {
-                        limiter.forgive(user_id);
+            };
+            match name.as_str() {
+                "link" => {
+                    if !state.limiter.admit(user_id, Instant::now()) {
+                        reply(
+                            api,
+                            &handle,
+                            "Too many attempts; wait ten minutes and try again.",
+                        )
+                        .await;
+                        return;
+                    }
+                    let Some(code) = normalize_link_code(option("code").unwrap_or("")) else {
+                        reply(api, &handle, LINK_REFUSED).await;
+                        return;
+                    };
+                    match hooks.link_redeem(user_id, &code).await {
+                        LinkOutcome::Linked { account } => {
+                            state.limiter.forgive(user_id);
+                            reply(
+                                api,
+                                &handle,
+                                &format!(
+                                    "Linked to the game account **{account}**. `/follow` here \
+                                     attaches one of its characters; `@discord` in the game shows \
+                                     the link; `/unlink` here or `@discord/unlink` there removes it."
+                                ),
+                            )
+                            .await;
+                        }
+                        LinkOutcome::Refused => reply(api, &handle, LINK_REFUSED).await,
+                    }
+                }
+                "unlink" => match hooks.unlink(user_id).await {
+                    UnlinkOutcome::Unlinked { account } => {
+                        reply(
+                            api,
+                            &handle,
+                            &format!("Unlinked from the game account **{account}**."),
+                        )
+                        .await;
+                    }
+                    UnlinkOutcome::NotLinked => {
+                        reply(
+                            api,
+                            &handle,
+                            "This Discord user is not linked to a game account.",
+                        )
+                        .await;
+                    }
+                },
+                "whoami" => match hooks.whoami(user_id).await {
+                    Some(w) => {
                         reply(
                             api,
                             &handle,
                             &format!(
-                                "Linked to the game account **{account}**. `@discord` in the game \
-                                 shows the link; `/unlink` here or `@discord/unlink` there removes it."
+                                "Linked to the game account **{}** since unix {}; auto-follow {}.",
+                                w.account,
+                                w.linked_at,
+                                if w.auto_follow { "on" } else { "off" }
                             ),
                         )
                         .await;
                     }
-                    LinkOutcome::Refused => reply(api, &handle, LINK_REFUSED).await,
+                    None => {
+                        reply(api, &handle, "This Discord user is not linked to a game account. In the game, `@discord/link` mints a code; then `/link <code>` here.").await;
+                    }
+                },
+                "follow" => {
+                    let outcome = hooks.follow(user_id, option("character")).await;
+                    reply(api, &handle, &follow_reply(&outcome)).await;
+                }
+                "detach" => match hooks.detach(user_id).await {
+                    DetachOutcome::Detached { character } => {
+                        reply(api, &handle, &format!("Detached from **{character}**.")).await;
+                    }
+                    DetachOutcome::NotFollowing => {
+                        reply(api, &handle, "You are not following a character.").await;
+                    }
+                },
+                // Sugar: each of these is one command line, run exactly as
+                // typed input would be (D-D-7).
+                "say" | "pose" | "look" | "scene" => {
+                    let line = match name.as_str() {
+                        "say" => format!("say {}", option("text").unwrap_or("")),
+                        "pose" => format!("pose {}", option("text").unwrap_or("")),
+                        "look" => "look".to_string(),
+                        _ => "+scene".to_string(),
+                    };
+                    match hooks.dm_line(user_id, &line).await {
+                        LineOutcome::Accepted => reply(api, &handle, "Sent.").await,
+                        LineOutcome::Closed => reply(api, &handle, "Detached.").await,
+                        LineOutcome::NotFollowing => reply(api, &handle, NOT_FOLLOWING).await,
+                    }
+                }
+                other => {
+                    tracing::debug!(
+                        command = other,
+                        "discord bot: unknown slash command ignored"
+                    );
+                    reply(api, &handle, "That command is not available.").await;
                 }
             }
-            "unlink" => match hooks.unlink(user_id).await {
-                UnlinkOutcome::Unlinked { account } => {
-                    reply(
-                        api,
-                        &handle,
-                        &format!("Unlinked from the game account **{account}**."),
-                    )
-                    .await;
-                }
-                UnlinkOutcome::NotLinked => {
-                    reply(
-                        api,
-                        &handle,
-                        "This Discord user is not linked to a game account.",
-                    )
-                    .await;
-                }
-            },
-            "whoami" => match hooks.whoami(user_id).await {
-                Some(w) => {
-                    reply(
-                        api,
-                        &handle,
-                        &format!(
-                            "Linked to the game account **{}** since unix {}; auto-follow {}.",
-                            w.account,
-                            w.linked_at,
-                            if w.auto_follow { "on" } else { "off" }
-                        ),
-                    )
-                    .await;
-                }
-                None => {
-                    reply(api, &handle, "This Discord user is not linked to a game account. In the game, `@discord/link` mints a code; then `/link <code>` here.").await;
-                }
-            },
-            other => {
-                tracing::debug!(
-                    command = other,
-                    "discord bot: unknown slash command ignored"
-                );
-                reply(api, &handle, "That command is not available.").await;
+        }
+        DiscordEvent::Message {
+            user_id,
+            channel_id,
+            guild_id,
+            content,
+        } => {
+            // Only a DM is a command line (D2); guild messages are the relay's (D4).
+            // (The length is logged, never the text.)
+            tracing::debug!(
+                dm = guild_id.is_none(),
+                chars = content.chars().count(),
+                "discord bot: message event"
+            );
+            if guild_id.is_some() || content.trim().is_empty() {
+                return;
             }
-        },
-        DiscordEvent::Message { .. } => {
-            // D2 (DM lines) and D4 (relay) consume these; D1 ignores them.
+            match hooks.dm_line(user_id, &content).await {
+                LineOutcome::Accepted | LineOutcome::Closed => {}
+                LineOutcome::NotFollowing => {
+                    let now = Instant::now();
+                    let due = state
+                        .hinted
+                        .get(&user_id)
+                        .is_none_or(|t| now.duration_since(*t) >= HINT_INTERVAL);
+                    if due {
+                        state.hinted.insert(user_id, now);
+                        if let Err(error) =
+                            api.send(channel_id, Outgoing::plain(NOT_FOLLOWING)).await
+                        {
+                            tracing::debug!(%error, "discord bot: follow hint failed");
+                        }
+                    }
+                }
+            }
         }
     }
 }
@@ -255,12 +403,13 @@ mod tests {
     use crate::api::testing::{Call, FakeApi, FakeEvents, slash};
     use crate::hooks::WhoAmI;
 
-    /// A scripted hooks impl that records the normalized codes it was asked
-    /// to redeem.
+    /// A scripted hooks impl that records what it was asked.
     #[derive(Default)]
     struct FakeHooks {
         linked: Mutex<Vec<(u64, String)>>,
         accept: Mutex<Vec<String>>,
+        following: Mutex<Vec<u64>>,
+        lines: Mutex<Vec<(u64, String)>>,
     }
 
     impl DiscordHooks for FakeHooks {
@@ -301,6 +450,59 @@ mod tests {
                 })
             })
         }
+
+        fn follow<'a>(
+            &'a self,
+            user_id: u64,
+            character: Option<&'a str>,
+        ) -> BoxFuture<'a, FollowOutcome> {
+            Box::pin(async move {
+                if user_id != 1 {
+                    return FollowOutcome::NotLinked;
+                }
+                match character {
+                    None => FollowOutcome::WhichCharacter {
+                        available: vec!["Nicky".into(), "Alt".into()],
+                    },
+                    Some(name) => {
+                        self.following.lock().unwrap().push(user_id);
+                        FollowOutcome::Following {
+                            character: name.to_string(),
+                            attached: true,
+                        }
+                    }
+                }
+            })
+        }
+
+        fn detach(&self, user_id: u64) -> BoxFuture<'_, DetachOutcome> {
+            Box::pin(async move {
+                let mut f = self.following.lock().unwrap();
+                if let Some(i) = f.iter().position(|u| *u == user_id) {
+                    f.remove(i);
+                    DetachOutcome::Detached {
+                        character: "Nicky".into(),
+                    }
+                } else {
+                    DetachOutcome::NotFollowing
+                }
+            })
+        }
+
+        fn dm_line<'a>(&'a self, user_id: u64, line: &'a str) -> BoxFuture<'a, LineOutcome> {
+            Box::pin(async move {
+                if !self.following.lock().unwrap().contains(&user_id) {
+                    return LineOutcome::NotFollowing;
+                }
+                self.lines.lock().unwrap().push((user_id, line.to_string()));
+                if line.eq_ignore_ascii_case("quit") {
+                    self.following.lock().unwrap().retain(|u| *u != user_id);
+                    LineOutcome::Closed
+                } else {
+                    LineOutcome::Accepted
+                }
+            })
+        }
     }
 
     fn config() -> DiscordConfig {
@@ -325,36 +527,53 @@ mod tests {
             .collect()
     }
 
-    #[tokio::test]
-    async fn registers_commands_then_links_with_a_normalized_code() {
+    fn dm(user_id: u64, content: &str) -> DiscordEvent {
+        DiscordEvent::Message {
+            user_id,
+            channel_id: 900,
+            guild_id: None,
+            content: content.to_string(),
+        }
+    }
+
+    async fn run_events(events: Vec<DiscordEvent>) -> (Arc<FakeApi>, Arc<FakeHooks>) {
         let api = FakeApi::new();
         let hooks = Arc::new(FakeHooks::default());
         hooks.accept.lock().unwrap().push("ABCDEFGH".to_string());
-        let (events, tx) = FakeEvents::new();
+        let (source, tx) = FakeEvents::new();
         let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
         let task = tokio::spawn(serve(
             hooks.clone(),
             api.clone(),
-            Box::new(events),
+            Box::new(source),
             config(),
             async move {
                 let _ = stop_rx.await;
             },
         ));
-        tx.send(slash(1, "link", &[("code", "abcd-efgh")])).unwrap();
-        tx.send(slash(1, "whoami", &[])).unwrap();
-        tx.send(slash(2, "link", &[("code", "not a code")]))
-            .unwrap();
-        tx.send(slash(2, "unlink", &[])).unwrap();
-        // Let the loop drain, then stop it.
+        for e in events {
+            tx.send(e).unwrap();
+        }
         tokio::time::sleep(Duration::from_millis(50)).await;
         let _ = stop_tx.send(());
         task.await.unwrap().unwrap();
+        (api, hooks)
+    }
 
+    #[tokio::test]
+    async fn registers_commands_then_links_with_a_normalized_code() {
+        let (api, hooks) = run_events(vec![
+            slash(1, "link", &[("code", "abcd-efgh")]),
+            slash(1, "whoami", &[]),
+            slash(2, "link", &[("code", "not a code")]),
+            slash(2, "unlink", &[]),
+        ])
+        .await;
         let calls = api.calls();
         assert!(matches!(
             &calls[0],
-            Call::RegisterCommands { guild_id: 42, names } if names == &["link", "unlink", "whoami"]
+            Call::RegisterCommands { names }
+                if names == &["link", "unlink", "whoami", "follow", "detach", "say", "pose", "look", "scene"]
         ));
         assert_eq!(
             hooks.linked.lock().unwrap().as_slice(),
@@ -366,31 +585,19 @@ mod tests {
         assert!(r[1].contains("since unix 5; auto-follow on"));
         assert_eq!(r[2], LINK_REFUSED);
         assert!(r[3].contains("not linked"));
-        // No reply ever echoes the code.
-        assert!(r.iter().all(|t| !t.contains("ABCD")));
+        assert!(
+            r.iter().all(|t| !t.contains("ABCD")),
+            "no reply echoes the code"
+        );
     }
 
     #[tokio::test]
     async fn the_link_limiter_refuses_the_sixth_attempt_without_a_lookup() {
-        let api = FakeApi::new();
-        let hooks = Arc::new(FakeHooks::default());
-        let (events, tx) = FakeEvents::new();
-        let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
-        let task = tokio::spawn(serve(
-            hooks.clone(),
-            api.clone(),
-            Box::new(events),
-            config(),
-            async move {
-                let _ = stop_rx.await;
-            },
-        ));
-        for _ in 0..6 {
-            tx.send(slash(3, "link", &[("code", "ABCDEFGH")])).unwrap();
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-        let _ = stop_tx.send(());
-        task.await.unwrap().unwrap();
+        // A code the hooks refuse: a success would forgive the window.
+        let events: Vec<DiscordEvent> = (0..6)
+            .map(|_| slash(3, "link", &[("code", "ABCDEFGJ")]))
+            .collect();
+        let (api, hooks) = run_events(events).await;
         assert_eq!(
             hooks.linked.lock().unwrap().len(),
             5,
@@ -399,6 +606,69 @@ mod tests {
         let r = replies(&api);
         assert_eq!(r.len(), 6);
         assert!(r[5].contains("Too many attempts"));
+    }
+
+    #[tokio::test]
+    async fn follow_detach_sugar_and_dm_lines_route_to_the_hooks() {
+        let (api, hooks) = run_events(vec![
+            slash(1, "follow", &[]),
+            slash(1, "follow", &[("character", "Nicky")]),
+            slash(1, "say", &[("text", "hello")]),
+            slash(1, "pose", &[("text", "waves")]),
+            slash(1, "look", &[]),
+            slash(1, "scene", &[]),
+            dm(1, "+roll 3"),
+            DiscordEvent::Message {
+                user_id: 1,
+                channel_id: 901,
+                guild_id: Some(42),
+                content: "guild chatter is not a line".into(),
+            },
+            dm(1, "QUIT"),
+            slash(1, "detach", &[]),
+            slash(2, "follow", &[("character", "X")]),
+        ])
+        .await;
+        assert_eq!(
+            hooks.lines.lock().unwrap().as_slice(),
+            &[
+                (1, "say hello".to_string()),
+                (1, "pose waves".to_string()),
+                (1, "look".to_string()),
+                (1, "+scene".to_string()),
+                (1, "+roll 3".to_string()),
+                (1, "QUIT".to_string()),
+            ]
+        );
+        let r = replies(&api);
+        assert!(r[0].contains("Which character?") && r[0].contains("Nicky, Alt"));
+        assert!(r[1].contains("Following **Nicky**"));
+        assert_eq!(&r[2..6], ["Sent.", "Sent.", "Sent.", "Sent."]);
+        assert!(
+            r[6].contains("not following"),
+            "QUIT closed the follow: {r:?}"
+        );
+        assert!(r[7].contains("not linked"));
+    }
+
+    #[tokio::test]
+    async fn an_unfollowed_dm_gets_one_hint_per_interval() {
+        let (api, hooks) = run_events(vec![dm(5, "look"), dm(5, "look again")]).await;
+        assert!(hooks.lines.lock().unwrap().is_empty(), "nothing ran");
+        let hints: Vec<Call> = api
+            .calls()
+            .into_iter()
+            .filter(|c| {
+                matches!(
+                    c,
+                    Call::Send {
+                        channel_id: 900,
+                        ..
+                    }
+                )
+            })
+            .collect();
+        assert_eq!(hints.len(), 1, "{hints:?}");
     }
 
     #[test]

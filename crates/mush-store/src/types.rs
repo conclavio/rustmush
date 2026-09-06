@@ -1128,6 +1128,10 @@ pub struct DiscordLinkRec {
     /// The DM channel the bot opened with this user, once known.
     #[serde(default)]
     pub dm_channel: Option<u64>,
+    /// Quiet follows (D-D-7): the DM carries only notices, requests and the
+    /// character's own scene, not ambient room traffic.
+    #[serde(default)]
+    pub quiet: bool,
 }
 
 impl std::fmt::Debug for DiscordLinkRec {
@@ -1503,6 +1507,7 @@ mod tests {
                 relay_character: None,
                 auto_follow: false,
                 dm_channel: Some(111_222_333_444_555_666),
+                quiet: false,
             }),
         };
         let debug = format!("{rec:?}");

@@ -544,11 +544,15 @@ async fn serve(config: Config, mut quarantine_spool: QuarantineSpool) -> Result<
         }
     });
 
-    // The Discord bot (D1): same session manager, same store; off unless
-    // `[discord].enabled`, and loud but non-fatal when it cannot start.
+    // The Discord bot (D1/D2): same accounts, session manager, world handle,
+    // guard and store as the SSH and web paths; off unless `[discord].enabled`,
+    // and loud but non-fatal when it cannot start.
     let discord = mushd::discord_bridge::spawn_bot(
         &config,
+        Arc::clone(&accounts),
         Arc::clone(&sessions),
+        Arc::new(world.clone()) as Arc<dyn mush_ipc::GatewayLink>,
+        Arc::clone(&guard),
         Arc::clone(&store) as Arc<dyn ObjectStore>,
     );
 

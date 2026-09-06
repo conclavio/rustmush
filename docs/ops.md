@@ -1064,7 +1064,7 @@ Two operational tradeoffs of the file appender are **deliberate**:
   prunes `<data_dir>/logs/`. Add external rotation — e.g. `logrotate`, or a cron
   sweep like `find <data_dir>/logs -name 'mushd.log.*' -mtime +14 -delete`.
 
-## Discord bot (D1): `[discord]`
+## Discord bot (D1–D2): `[discord]`
 
 The Discord transport (`mush-net-discord`, plan `docs/interface/04-discord-implementation-plan.md`)
 runs **inside the gateway process** (`mushd` all-in-one, or `mush-gateway` in the split deploy)
@@ -1073,27 +1073,50 @@ to start — an invalid table, a missing id, an unset token, a fatal Gateway clo
 log and **non-fatal**: SSH and web players keep playing while you fix it (the web listener's
 rule).
 
+A **follow** (D2, `/follow` in the bot's DM, or auto-follow when a terminal goes linkdead) is a
+real connection of the character's session — `ClientKind::Discord`, structured, connection ids
+from `1 << 48` so they never collide with SSH (from 1) or web (from `1 << 32`) — attached through
+the same `GameBridge` core as a web tab. WHO shows it with address `0.0.0.0`. Everything the
+game gates per connection (perception, `@ignore`, the turn gate, flood limits, `@boot`) applies
+unchanged; the DM is a lossy render of what that connection receives, one REST call per batch
+(`dm_coalesce_ms`), and the bridge never calls `IpGuard::connection_opened` for it — the per-user
+limits are the bot's own. The idle sweep (`follow_idle_detach_s`, `0` = never; every 60 s)
+detaches follows with no DM input that are not in a scene, and follows whose DMs Discord has
+closed.
+
 Setup, once, in the Discord developer portal:
 
-1. Create an application; note its **Application ID** (`[discord].application_id`).
+1. Create an application; note its **Application ID**. It goes in `[discord].application_id`, or —
+   when that is `0` (the default) — in the environment variable `[discord].application_id_env` names
+   (`DISCORD_APPLICATION_ID`), so every Discord value can live beside the token. The guild id works
+   the same way (`[discord].guild_id`, else `DISCORD_GUILD_ID`). A nonzero toml value always wins.
 2. Under *Bot*, create the bot user and copy its **token** into the environment variable
    `[discord].token_env` names (`DISCORD_BOT_TOKEN` by default) — in `.env` for dev, the unit's
    environment in prod. The token is **never** put in `mushd.toml` and never logged
    (`DiscordConfig` holds only the variable's name).
-3. Intents: D1 needs none. D2 (DM follow) needs *Direct Messages*; D4 (the channel relay) needs
-   the privileged **Message Content** intent — a portal toggle while the app is under Discord's
-   review threshold (10 000 unique users at the time of writing), a review above it.
+3. Intents: the bot subscribes to *Direct Messages* (not privileged — nothing to toggle) for the
+   DM lines of a follow; the content of a DM to the bot arrives without the privileged **Message
+   Content** intent, which gates guild messages only. D4 (the channel relay) will need that one —
+   a portal toggle while the app is under Discord's review threshold (10 000 unique users at the
+   time of writing), a review above it.
 4. Invite the bot to **one** guild (`[discord].guild_id`) with the `bot` and
-   `applications.commands` scopes. Slash commands (`/link`, `/unlink`, `/whoami`) are registered to
-   that guild at start-up, so they appear immediately.
+   `applications.commands` scopes. Slash commands (`/link`, `/unlink`, `/whoami`, `/follow`,
+   `/detach`, `/say`, `/pose`, `/look`, `/scene`) are registered **globally** at start-up with the
+   guild and bot-DM contexts — a guild-scoped command is never offered inside a bot's DM, and the DM
+   is where `/link` and `/follow` are meant to be typed. Global registration is usually live within
+   a minute; Discord's documentation still allows up to an hour on first registration, and a
+   client sometimes needs a restart to refresh its command list. Players must allow DMs from server
+   members (or message the bot first) for `/follow` to open the conversation; a refusal is reported
+   to them, and nothing is attached.
 5. Egress: the gateway process now makes **outbound** connections — HTTPS to `discord.com` and a
    websocket to Discord's gateway — where before it made none. Allow them.
 
-What the bot stores and logs: the Discord user's numeric id (never the handle), the link time
-and the player's preferences, in the account record and the `discord:*` keys below; link codes
-only as SHA-256 with a 10-minute TTL; **no message content** above `trace`, and no identity in any
-log line — the privileges audit (`@privilege/audit`) is the record of who looked at whose identity
-and why, and it never contains one.
+What the bot stores and logs: the Discord user's numeric id (never the handle), the link time,
+the player's preferences and the DM channel id once a follow opened it, in the account record and
+the `discord:*` keys below; link codes only as SHA-256 with a 10-minute TTL; **no message content**
+in either direction above `trace`, and no identity in any log line — the privileges audit
+(`@privilege/audit`) is the record of who looked at whose identity and why, and it never contains
+one.
 
 The staff surface (`help admin`, `help discord`): `@discord/show <player>` is gated by the
 `DISCORD_IDENTITY` **privilege**, which no rank implies — grant it with

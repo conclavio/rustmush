@@ -7184,9 +7184,11 @@ async fn run_discord_status(store: &dyn ObjectStore, subject: ObjId) -> String {
                 _ => "",
             };
             format!(
-                "@discord: linked since unix {}; auto-follow {}; relay character: {relay}.{banned}",
+                "@discord: linked since unix {}; auto-follow {}; quiet {}; relay character: \
+                 {relay}.{banned}",
                 link.linked_at,
                 if link.auto_follow { "on" } else { "off" },
+                if link.quiet { "on" } else { "off" },
             )
         }
     }
@@ -7304,6 +7306,13 @@ async fn run_discord_set(
         DiscordSetting::AutoFollow(on) => {
             link.auto_follow = on;
             format!("auto-follow {}", if on { "on" } else { "off" })
+        }
+        DiscordSetting::Quiet(on) => {
+            link.quiet = on;
+            format!(
+                "quiet {} (applies from your next follow)",
+                if on { "on" } else { "off" }
+            )
         }
     };
     match store.set_account_discord(&account.name, Some(&link)).await {

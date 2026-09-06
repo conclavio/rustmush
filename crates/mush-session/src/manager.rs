@@ -286,7 +286,17 @@ pub struct SessionManager {
     /// pastes into mail compose must not lose body lines).
     flood_exempt: DashMap<CharKey, ()>,
     next_sess: AtomicU64,
+    /// Called synchronously from [`SessionManager::detach`] when a detach
+    /// leaves a session **linkdead** (its last connection dropped uncleanly).
+    /// The one place every transport's drop passes through, so a driver that
+    /// wants to react — the Discord bridge's auto-follow (D-D-4) — hooks
+    /// here rather than into each bridge. Must not block; a driver spawns.
+    linkdead_hook: Mutex<Option<LinkdeadHook>>,
 }
+
+/// A driver's linkdead observer: `(character, grace)` — see
+/// [`SessionManager::set_linkdead_hook`].
+pub type LinkdeadHook = Arc<dyn Fn(CharKey, Duration) + Send + Sync>;
 
 impl Default for SessionManager {
     fn default() -> Self {
@@ -320,12 +330,21 @@ impl SessionManager {
             by_char: DashMap::new(),
             flood_exempt: DashMap::new(),
             next_sess: AtomicU64::new(1),
+            linkdead_hook: Mutex::new(None),
         }
     }
 
     /// The active configuration.
     pub fn config(&self) -> SessionConfig {
         self.config
+    }
+
+    /// Install (or replace) the linkdead observer: called synchronously,
+    /// inside [`SessionManager::detach`], with the character whose last
+    /// connection just dropped uncleanly and the grace before it is reaped.
+    /// It must return promptly — a driver that wants to do I/O spawns.
+    pub fn set_linkdead_hook(&self, hook: LinkdeadHook) {
+        *self.linkdead_hook.lock().expect("linkdead hook poisoned") = Some(hook);
     }
 
     // ---- attach / detach ------------------------------------------------
@@ -478,6 +497,7 @@ impl SessionManager {
         let (_, entry) = self.conns.remove(&conn)?;
         let sess = entry.sess;
         let mut close_char: Option<CharKey> = None;
+        let mut linkdead_char: Option<CharKey> = None;
         let outcome = match self.sessions.get_mut(&sess) {
             // Session already gone (concurrent close): nothing left to do.
             None => return Some(DetachOutcome::Closed),
@@ -495,6 +515,7 @@ impl SessionManager {
                     DetachOutcome::Closed
                 } else {
                     s.state = SessState::Linkdead { since: now };
+                    linkdead_char = Some(s.character);
                     DetachOutcome::Linkdead {
                         grace: self.config.linkdead_grace,
                     }
@@ -504,6 +525,19 @@ impl SessionManager {
         if let Some(character) = close_char {
             self.sessions.remove(&sess);
             self.by_char.remove_if(&character, |_, v| *v == sess);
+        }
+        // Observe AFTER every map borrow above is released: the hook may
+        // call back into this manager (a driver attaching a replacement
+        // connection) without deadlocking on a shard.
+        if let (DetachOutcome::Linkdead { grace }, Some(character)) = (outcome, linkdead_char) {
+            let hook = self
+                .linkdead_hook
+                .lock()
+                .expect("linkdead hook poisoned")
+                .clone();
+            if let Some(hook) = hook {
+                hook(character, grace);
+            }
         }
         Some(outcome)
     }

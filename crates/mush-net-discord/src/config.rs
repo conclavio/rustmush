@@ -44,11 +44,19 @@ pub struct DiscordConfig {
     pub enabled: bool,
     /// The environment variable holding the bot token.
     pub token_env: String,
-    /// The Discord application id (the bot's).
+    /// The Discord application id (the bot's). `0` means "read
+    /// `application_id_env`", so a deployment can keep every Discord value
+    /// beside the token in the environment.
     pub application_id: u64,
-    /// The one guild the bot serves (slash commands are registered per guild
-    /// so they appear immediately).
+    /// The environment variable consulted when `application_id` is `0`.
+    pub application_id_env: String,
+    /// The one guild the bot serves: the relay channels (D4) and the staff
+    /// channel (D5) live there. The slash commands themselves are registered
+    /// globally so they also work in the bot's DM. `0` means "read
+    /// `guild_id_env`".
     pub guild_id: u64,
+    /// The environment variable consulted when `guild_id` is `0`.
+    pub guild_id_env: String,
     /// How many failed `/link` attempts one Discord user may make per ten
     /// minutes before further attempts are refused without a lookup.
     pub link_attempts_per_10m: u32,
@@ -76,7 +84,9 @@ impl Default for DiscordConfig {
             enabled: false,
             token_env: "DISCORD_BOT_TOKEN".to_string(),
             application_id: 0,
+            application_id_env: "DISCORD_APPLICATION_ID".to_string(),
             guild_id: 0,
+            guild_id_env: "DISCORD_GUILD_ID".to_string(),
             link_attempts_per_10m: 5,
             dm_coalesce_ms: 1_500,
             dm_max_chars: 1_900,
@@ -101,9 +111,39 @@ impl DiscordConfig {
         }
     }
 
+    /// Fill a zero `application_id` / `guild_id` from the environment
+    /// variables `application_id_env` / `guild_id_env` name. Called at boot
+    /// before [`validate`](Self::validate); a variable that is unset or not a
+    /// number leaves the field `0`, so `validate` reports it.
+    pub fn resolve_ids_from_env(&mut self) {
+        self.resolve_ids_with(|name| std::env::var(name).ok());
+    }
+
+    /// [`resolve_ids_from_env`](Self::resolve_ids_from_env) over any lookup
+    /// (tests pass a map).
+    pub fn resolve_ids_with(&mut self, lookup: impl Fn(&str) -> Option<String>) {
+        let parse = |name: &str| -> Option<u64> {
+            lookup(name)
+                .and_then(|v| v.trim().parse::<u64>().ok())
+                .filter(|id| *id > 0)
+        };
+        if self.application_id == 0
+            && let Some(id) = parse(&self.application_id_env)
+        {
+            self.application_id = id;
+        }
+        if self.guild_id == 0
+            && let Some(id) = parse(&self.guild_id_env)
+        {
+            self.guild_id = id;
+        }
+    }
+
     /// Refuse a configuration that says `enabled` but cannot run: a zero
-    /// application or guild id. (A missing token is reported separately, at
-    /// boot, because it is an environment fact rather than a file fact.)
+    /// application or guild id after
+    /// [`resolve_ids_from_env`](Self::resolve_ids_from_env). (A missing token
+    /// is reported separately, at boot, because it is an environment fact
+    /// rather than a file fact.)
     ///
     /// # Errors
     ///
@@ -113,10 +153,17 @@ impl DiscordConfig {
             return Ok(());
         }
         if self.application_id == 0 {
-            return Err("[discord].application_id is required when enabled".to_string());
+            return Err(format!(
+                "[discord].application_id is required when enabled (or set the {} environment \
+                 variable)",
+                self.application_id_env
+            ));
         }
         if self.guild_id == 0 {
-            return Err("[discord].guild_id is required when enabled".to_string());
+            return Err(format!(
+                "[discord].guild_id is required when enabled (or set the {} environment variable)",
+                self.guild_id_env
+            ));
         }
         if self.token_env.trim().is_empty() {
             return Err("[discord].token_env must name an environment variable".to_string());
@@ -146,6 +193,34 @@ mod tests {
         assert!(cfg.validate().unwrap_err().contains("guild_id"));
         let cfg: DiscordConfig =
             toml::from_str("enabled = true\napplication_id = 5\nguild_id = 7").unwrap();
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn zero_ids_fall_back_to_the_environment_and_toml_values_win() {
+        let env = |name: &str| -> Option<String> {
+            match name {
+                "DISCORD_APPLICATION_ID" => Some(" 123456789012345678 ".to_string()),
+                "DISCORD_GUILD_ID" => Some("not a number".to_string()),
+                _ => None,
+            }
+        };
+        let mut cfg: DiscordConfig = toml::from_str("enabled = true").unwrap();
+        cfg.resolve_ids_with(env);
+        assert_eq!(cfg.application_id, 123_456_789_012_345_678);
+        assert_eq!(
+            cfg.guild_id, 0,
+            "an unparsable variable leaves the field for validate"
+        );
+        assert!(cfg.validate().unwrap_err().contains("DISCORD_GUILD_ID"));
+        let mut cfg: DiscordConfig =
+            toml::from_str("enabled = true\napplication_id = 5\nguild_id = 7").unwrap();
+        cfg.resolve_ids_with(env);
+        assert_eq!(
+            (cfg.application_id, cfg.guild_id),
+            (5, 7),
+            "toml values are never overridden"
+        );
         assert!(cfg.validate().is_ok());
     }
 

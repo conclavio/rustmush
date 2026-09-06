@@ -1,7 +1,7 @@
-//! # mush-net-discord — the Discord transport (D1)
+//! # mush-net-discord — the Discord transport (D1, D2)
 //!
 //! The fourth interface's transport half (`docs/interface/04-discord-implementation-plan.md`
-//! §3.1). Like `mush-net-ssh` and `mush-net-web` it owns the wire — here the
+//! §3.1–3.2). Like `mush-net-ssh` and `mush-net-web` it owns the wire — here the
 //! Discord Gateway websocket and REST, through [`twilight`] — and calls
 //! **hooks** the gateway's bridge implements for everything game-side.
 //!
@@ -14,23 +14,29 @@
 //! - [`EventSource`] — Gateway events reduced to [`DiscordEvent`].
 //!   [`TwilightEvents`] is one reconnecting shard; [`testing::FakeEvents`] is
 //!   a channel.
-//! - [`DiscordHooks`] — what the bot asks the game side (`/link`, `/unlink`,
-//!   `/whoami` in D1).
+//! - [`DiscordHooks`] — what the bot asks the game side: link, unlink, whoami
+//!   (D1); follow, detach, a DM line (D2).
 //!
-//! [`serve`] is the bot task. No test in this workspace ever reaches Discord.
+//! [`serve`] is the bot task; [`dm::run_dm_writer`] is one follow's lossy
+//! render (the allow-list in [`dm::render`], coalescing, the drop marker). No
+//! test in this workspace ever reaches Discord.
 //!
 //! [`twilight`]: https://twilight.rs
 
 pub mod api;
 pub mod bot;
 pub mod config;
+pub mod dm;
 pub mod hooks;
 
 pub use api::{
     ApiError, DiscordApi, DiscordEvent, DiscordRest, EventSource, InteractionHandle, Outgoing,
     SlashCommand, SlashOption, TwilightEvents, testing,
 };
-pub use bot::{LINK_REFUSED, ServeError, commands, serve};
+pub use bot::{LINK_REFUSED, NOT_FOLLOWING, ServeError, commands, serve};
 pub use config::{DiscordConfig, RelayMap};
-pub use hooks::{DiscordHooks, LinkOutcome, UnlinkOutcome, WhoAmI};
+pub use dm::{DmPolicy, FollowState, Rendered, render, run_dm_writer};
+pub use hooks::{
+    DetachOutcome, DiscordHooks, FollowOutcome, LineOutcome, LinkOutcome, UnlinkOutcome, WhoAmI,
+};
 pub use twilight_gateway::Intents;

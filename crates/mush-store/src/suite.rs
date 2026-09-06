@@ -492,6 +492,7 @@ pub async fn account_discord_link(store: &dyn ObjectStore) {
         relay_character: Some(ObjId(7)),
         auto_follow: true,
         dm_channel: None,
+        quiet: false,
     };
     assert!(
         store

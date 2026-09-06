@@ -4,10 +4,11 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
-description = "The Discord transport (D1): config, the DiscordApi seam over twilight with an in-memory fake, the bot's DM slash commands"
+description = "The Discord transport (D1–D2): config, the DiscordApi/EventSource seams over twilight with in-memory fakes, the bot's DM slash commands, the lossy DM writer"
 
 [dependencies]
 mush-config.workspace = true
+mush-proto.workspace = true
 twilight-http.workspace = true
 twilight-gateway.workspace = true
 twilight-model.workspace = true
@@ -21,6 +22,8 @@ thiserror.workspace = true
 
 [dev-dependencies]
 toml.workspace = true
+# `start_paused` / `time::advance` in the DM writer tests.
+tokio = { workspace = true, features = ["test-util"] }
 
 [lints]
 workspace = true

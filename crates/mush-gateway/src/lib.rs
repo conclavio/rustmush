@@ -2208,9 +2208,18 @@ pub async fn serve(config: Config, opts: GatewayOptions) -> Result<(), String> {
         }
     };
 
-    // The Discord bot (D1): the same session manager (in-game notices) and the
-    // same store (the link records). Loud but non-fatal, like the web listener.
-    let discord = discord_bridge::spawn_bot(&config, Arc::clone(&sessions), Arc::clone(&store));
+    // The Discord bot (D1/D2): the same accounts, session manager, boundary
+    // link, guard and store the SSH and web paths use — a Discord follow is a
+    // structured connection of the character's own session, attached through
+    // the same `GameBridge` core. Loud but non-fatal, like the web listener.
+    let discord = discord_bridge::spawn_bot(
+        &config,
+        Arc::clone(&accounts),
+        Arc::clone(&sessions),
+        Arc::clone(&link_dyn),
+        Arc::clone(&guard),
+        Arc::clone(&store),
+    );
 
     // The restart trigger (D1b): a channel the supervisor drains and a
     // `SIGHUP` handler / the test fills. Handed back through `restart_ready`.

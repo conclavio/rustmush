@@ -3,4 +3,4 @@
 /**
  * Which transport the client connected over.
  */
-export type ClientKind = "ssh" | "web";
+export type ClientKind = "ssh" | "web" | "discord";

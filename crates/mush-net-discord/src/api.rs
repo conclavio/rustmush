@@ -16,13 +16,15 @@ use twilight_http::Client;
 use twilight_http::error::ErrorType;
 use twilight_model::application::command::CommandType;
 use twilight_model::application::interaction::application_command::CommandOptionValue;
-use twilight_model::application::interaction::{InteractionData, InteractionType};
+use twilight_model::application::interaction::{
+    InteractionContextType, InteractionData, InteractionType,
+};
 use twilight_model::channel::message::MessageFlags;
 use twilight_model::gateway::event::Event;
 use twilight_model::http::interaction::{InteractionResponse, InteractionResponseType};
 use twilight_model::id::Id;
 use twilight_model::id::marker::{
-    ApplicationMarker, ChannelMarker, GuildMarker, InteractionMarker, MessageMarker, UserMarker,
+    ApplicationMarker, ChannelMarker, InteractionMarker, MessageMarker, UserMarker,
 };
 use twilight_util::builder::InteractionResponseDataBuilder;
 use twilight_util::builder::command::{CommandBuilder, StringBuilder};
@@ -172,10 +174,12 @@ pub enum DiscordEvent {
 
 /// The REST calls the bot makes, object-safe so tests substitute a fake.
 pub trait DiscordApi: Send + Sync {
-    /// Replace the guild's slash commands with `commands`.
-    fn register_guild_commands<'a>(
+    /// Replace the application's slash commands with `commands`. They are
+    /// registered **globally** with the guild and bot-DM contexts: a
+    /// guild-scoped command is never offered inside the bot's DM, and the DM
+    /// is where `/link` and `/follow` live.
+    fn register_commands<'a>(
         &'a self,
-        guild_id: u64,
         commands: &'a [SlashCommand],
     ) -> BoxFuture<'a, Result<(), ApiError>>;
 
@@ -246,18 +250,19 @@ impl DiscordRest {
 }
 
 impl DiscordApi for DiscordRest {
-    fn register_guild_commands<'a>(
+    fn register_commands<'a>(
         &'a self,
-        guild_id: u64,
         commands: &'a [SlashCommand],
     ) -> BoxFuture<'a, Result<(), ApiError>> {
         Box::pin(async move {
-            let guild: Id<GuildMarker> = id(guild_id, "guild")?;
             let app = self.app()?;
             let built: Vec<_> = commands
                 .iter()
                 .map(|c| {
-                    let mut b = CommandBuilder::new(c.name, c.description, CommandType::ChatInput);
+                    let mut b = CommandBuilder::new(c.name, c.description, CommandType::ChatInput)
+                        // Usable in the guild and in a DM with the bot; never
+                        // in group DMs or DMs with other users.
+                        .contexts([InteractionContextType::Guild, InteractionContextType::BotDm]);
                     for o in &c.options {
                         b = b.option(
                             StringBuilder::new(o.name, o.description)
@@ -270,7 +275,7 @@ impl DiscordApi for DiscordRest {
                 .collect();
             self.client
                 .interaction(app)
-                .set_guild_commands(guild, &built)
+                .set_global_commands(&built)
                 .await
                 .map(|_| ())
                 .map_err(|e| ApiError::from_http(&e))
@@ -320,9 +325,12 @@ impl DiscordApi for DiscordRest {
     fn send(&self, channel_id: u64, msg: Outgoing) -> BoxFuture<'_, Result<u64, ApiError>> {
         Box::pin(async move {
             let channel: Id<ChannelMarker> = id(channel_id, "channel")?;
+            // Player text never pings anyone: no mentions are parsed.
+            let none = twilight_model::channel::message::AllowedMentions::default();
             let message = self
                 .client
                 .create_message(channel)
+                .allowed_mentions(Some(&none))
                 .content(&msg.content)
                 .await
                 .map_err(|e| ApiError::from_http(&e))?
@@ -457,10 +465,8 @@ pub mod testing {
     /// One recorded REST call.
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub enum Call {
-        /// `register_guild_commands`.
+        /// `register_commands`.
         RegisterCommands {
-            /// The guild.
-            guild_id: u64,
             /// The command names.
             names: Vec<String>,
         },
@@ -550,14 +556,12 @@ pub mod testing {
     }
 
     impl DiscordApi for FakeApi {
-        fn register_guild_commands<'a>(
+        fn register_commands<'a>(
             &'a self,
-            guild_id: u64,
             commands: &'a [SlashCommand],
         ) -> BoxFuture<'a, Result<(), ApiError>> {
             Box::pin(async move {
                 self.record(Call::RegisterCommands {
-                    guild_id,
                     names: commands.iter().map(|c| c.name.to_string()).collect(),
                 })
             })

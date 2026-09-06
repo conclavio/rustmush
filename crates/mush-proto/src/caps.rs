@@ -12,6 +12,11 @@ pub enum ClientKind {
     Ssh,
     /// WebSocket connection (structured JSON events).
     Web,
+    /// A Discord follow (interface programme D, D-D-1): a structured
+    /// connection of the character's own session whose events the gateway's
+    /// Discord bridge renders into a DM — lossy by design, never more than
+    /// the terminal would show.
+    Discord,
 }
 
 /// How much color the connection can display; the ANSI renderer downgrades
