@@ -127,7 +127,7 @@ pub use engine::{
     MAX_POSTS_PER_SWEEP, MAX_REASON_BYTES, NoCustody, NoFacts, ValidateEnv, apply, plan_reversal,
     validate,
 };
-pub use hash::plan_hash;
+pub use hash::{PLAN_HASH_DOMAIN, plan_hash};
 pub use ids::{
     AccountId, ApprovalRequestId, CadenceId, ContractId, EscalationId, HoldId, InstrumentId,
     ObligationId, TransactionId, VaultId,

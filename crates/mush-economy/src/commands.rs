@@ -925,11 +925,17 @@ fn vault_refusal(ctx: &Ctx<'_>, id: VaultId, detail: impl std::fmt::Display) -> 
 
 /// A plan carrying only title/custody ops (the effect-only shape invariant 10
 /// admits) attributed to the acting player.
-fn ops_plan(ctx: &Ctx<'_>, asset_ops: Vec<AssetOp>, custody_ops: Vec<CustodyOp>) -> EconomyPlan {
+fn ops_plan(
+    ctx: &mut Ctx<'_>,
+    asset_ops: Vec<AssetOp>,
+    custody_ops: Vec<CustodyOp>,
+) -> EconomyPlan {
     let mut p = EconomyPlan::new(
         cmd_key(ctx),
         PrincipalId::Object(ctx.actor),
-        EconomicCause::Command { serial: 0 },
+        EconomicCause::Command {
+            serial: ctx.w.next_correlation_id(),
+        },
         Vec::new(),
     );
     p.asset_ops = asset_ops;
@@ -2520,7 +2526,9 @@ fn econ_pay(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let mut plan = EconomyPlan::new(
         cmd_key(ctx),
         PrincipalId::Object(ctx.actor),
-        EconomicCause::Command { serial: 0 },
+        EconomicCause::Command {
+            serial: ctx.w.next_correlation_id(),
+        },
         vec![
             RequestedLine {
                 account: from,
@@ -4040,7 +4048,9 @@ fn hold_place(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let mut plan = EconomyPlan::new(
         cmd_key(ctx),
         PrincipalId::Object(ctx.actor),
-        EconomicCause::Command { serial: 0 },
+        EconomicCause::Command {
+            serial: ctx.w.next_correlation_id(),
+        },
         Vec::new(),
     );
     plan.hold_ops = vec![HoldOp::Place {
@@ -4096,7 +4106,9 @@ fn hold_release(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let mut plan = EconomyPlan::new(
         cmd_key(ctx),
         PrincipalId::Object(ctx.actor),
-        EconomicCause::Command { serial: 0 },
+        EconomicCause::Command {
+            serial: ctx.w.next_correlation_id(),
+        },
         Vec::new(),
     );
     plan.hold_ops = vec![HoldOp::Release { hold: id }];
@@ -4150,7 +4162,9 @@ fn hold_capture(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let mut plan = EconomyPlan::new(
         cmd_key(ctx),
         PrincipalId::Object(ctx.actor),
-        EconomicCause::Command { serial: 0 },
+        EconomicCause::Command {
+            serial: ctx.w.next_correlation_id(),
+        },
         vec![
             RequestedLine {
                 account: from,

@@ -10,11 +10,19 @@ mod support;
 
 use std::net::IpAddr;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 use std::time::Duration;
 
 use futures::future::BoxFuture;
-use mush_core::{Engine, GOD, Inbound, LIMBO, ObjId, ObjKind, WorldCommand};
+use mush_core::{
+    AuthoritativeBundle, AuthoritativeBundleDraft, AuthoritativeSemanticEvent, CanonicalHash,
+    CanonicalId, ClockRef, ClockStamp, CommitToken, DefinitionDescriptor, DefinitionId,
+    DefinitionKind, DefinitionRegistryBuilder, Engine, GOD, IdempotencyKey, IdempotencyScope,
+    Inbound, LIMBO, ObjId, ObjKind, OwnerId, PreparedCausalRef, PrincipalId, RequestUid,
+    RulesValue, ScopedIdempotencyKey, WorldCommand,
+};
+use mush_economy::VaultId;
+use mush_inventory::{EndpointRef, InventoryError, InventoryFamilies, InventoryHandles};
 use mush_llm::{
     CompletionResponse, ContentBlock, LlmProvider, LlmService, MockProvider, RouteConfig,
     StopReason, Usage,
@@ -27,6 +35,7 @@ use mush_store::{
     WriteBatch, WriteReceipt,
 };
 use mush_testkit::text_of;
+use mushd::persist::{PersistenceIntegrityLatch, StoreJob, StoreWriter, spawn_store_writer};
 use smol_str::SmolStr;
 use tokio::sync::mpsc;
 
@@ -373,6 +382,328 @@ async fn m5_module_round_trip(store: Arc<dyn ObjectStore>) {
 #[tokio::test(flavor = "multi_thread")]
 async fn m5_module_persistence_round_trip_in_memory() {
     m5_module_round_trip(Arc::new(InMemoryStore::new())).await;
+}
+
+// ---------------------------------------------------------------------------
+// H4 (E2-D30): the economy journal and an inventory pool over a reboot
+// (`docs/design/11-h-implementation-plan.md` §3.4). Each runs in-memory
+// (ungated) and against a live Redis — the reboot-from-Redis-alone surrogate.
+// ---------------------------------------------------------------------------
+
+/// Open an account, post, place a hold and create an obligation on one boot; a
+/// second boot from the store alone shows the same balance, hold and
+/// obligation, and comes up spending — the boot's contiguity and conservation
+/// checks passed, or the economy would be frozen and the post refused.
+async fn economy_journal_round_trip(store: Arc<dyn ObjectStore>) {
+    let guard = Arc::new(IpGuard::new());
+    let (sessions, handles) = boot_module_rig(&store, &guard).await;
+    let world = handles.handle.clone();
+    let mut god_rx = attach_direct(&sessions, &world, 1, GOD, "god").await;
+
+    // A scale-0 instrument, so amounts render as plain integers.
+    god_cmd_committed(&world, "@instrument/register gold=0").await;
+    god_cmd_committed(&world, "@account/system faucet=gold").await; // account 0
+    god_cmd_committed(&world, "@account/open #1=gold").await; // account 1: God
+    god_cmd_committed(&world, "@account/system till=gold").await; // account 2
+    god_cmd_committed(&world, "@econ/mint 0=1 500").await;
+    god_cmd_committed(&world, "@hold/place 1=100 earnest").await;
+    let hold = support::parse_id_after(
+        &text_of(&*expect_text(&mut god_rx, "Reserved: hold #").await),
+        "hold #",
+    );
+    god_cmd_committed(&world, "@obligation/create 1=2 10 every=manual:600").await;
+    let obligation = support::parse_id_after(
+        &text_of(&*expect_text(&mut god_rx, " created: ").await),
+        "Obligation #",
+    );
+    // Every prior mutation crossed its exact barrier; player creation is an
+    // independently acknowledgement-gated final persistence probe.
+    world.create_player("Fence").await.expect("fence create");
+
+    // --- second boot: rebuild from the store alone. ----------------------
+    let (sessions2, handles2) = boot_module_rig(&store, &guard).await;
+    let world2 = handles2.handle.clone();
+    let mut god_rx2 = attach_direct(&sessions2, &world2, 2, GOD, "god").await;
+    god_cmd(&world2, "@account/show 1").await;
+    let shown = text_of(&*expect_text(&mut god_rx2, "balance").await);
+    assert!(
+        shown.contains("500"),
+        "the balance did not survive: {shown:?}"
+    );
+    god_cmd(&world2, &format!("@hold/show {hold}")).await;
+    let shown = text_of(&*expect_text(&mut god_rx2, &format!("hold #{hold} on")).await);
+    assert!(
+        shown.contains("100"),
+        "the hold did not survive whole: {shown:?}"
+    );
+    god_cmd(&world2, &format!("@obligation/show {obligation}")).await;
+    let shown = text_of(&*expect_text(&mut god_rx2, &format!("obligation #{obligation} ")).await);
+    assert!(
+        shown.contains("owes") && shown.contains("10"),
+        "the obligation did not survive whole: {shown:?}"
+    );
+    // Still spending: a frozen economy refuses every post.
+    god_cmd_committed(&world2, "@econ/mint 0=1 1").await;
+    god_cmd(&world2, "@account/show 1").await;
+    let shown = text_of(&*expect_text(&mut god_rx2, "balance").await);
+    assert!(
+        shown.contains("501"),
+        "the rebooted economy is not posting: {shown:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn economy_journal_round_trip_in_memory() {
+    economy_journal_round_trip(Arc::new(InMemoryStore::new())).await;
+}
+
+/// The same round trip over a live Redis. Gated on `REDIS_URL`; runs in db 3
+/// (dbs 1, 2 and 4–15 are claimed by the other gated suites).
+#[tokio::test(flavor = "multi_thread")]
+async fn economy_journal_round_trip_redis_gated() {
+    let Some(url) = std::env::var("REDIS_URL").ok().filter(|s| !s.is_empty()) else {
+        eprintln!(
+            "skipping economy_journal_round_trip_redis_gated: REDIS_URL not set \
+             (no live Redis on this machine)"
+        );
+        return;
+    };
+    let url = support::redis_url_with_db(&url, 3);
+    let store = mush_store::RedisStore::connect(&url)
+        .await
+        .expect("connect to REDIS_URL");
+    store.wipe_namespaces().await.expect("wipe test namespaces");
+    economy_journal_round_trip(Arc::new(store)).await;
+}
+
+/// Boot the production module composition on `store` and hand back the engine
+/// itself — the first half of [`boot_module_rig`], without the world task — for
+/// a rig that must reach a K state family through its module's own handles.
+async fn boot_engine(store: &Arc<dyn ObjectStore>) -> Engine {
+    let world = load_or_seed_world(&**store).await.expect("boot world");
+    let staff = Arc::new(StaffQueue::new());
+    let mut registry = world_task::base_registry();
+    register_server_commands(&mut registry, &staff).unwrap();
+    let mut engine = Engine::with_modules(world, registry, mushd::modules::server_modules())
+        .expect("module registration");
+    mushd::modules::boot_modules(&mut engine, &**store)
+        .await
+        .expect("module boot");
+    engine
+}
+
+fn inventory_families(engine: &Engine) -> InventoryFamilies {
+    engine
+        .world
+        .module_state::<InventoryHandles>()
+        .expect("inventory publishes its handles")
+        .0
+        .clone()
+}
+
+/// The store writer a rig drives directly, exactly as `spawn_persist` spawns it.
+fn spawn_writer(store: &Arc<dyn ObjectStore>) -> (StoreWriter, tokio::task::JoinHandle<()>) {
+    let (signals, _signal_rx) = world_task::writer_signal_channel();
+    spawn_store_writer(
+        Arc::clone(store),
+        signals,
+        Arc::new(mush_config::metrics::Metrics::new()),
+        Arc::new(AtomicU64::new(0)),
+        mushd::quarantine::QuarantineSpool::in_memory(),
+        PersistenceIntegrityLatch::new(),
+    )
+}
+
+/// One inventory verb, persisted the way the world task persists a prepared
+/// K state-family action: its replay writes ride an authoritative bundle
+/// through the real store writer (the store refuses the legacy lane for
+/// `action-state/v1` keys), and the images are installed on the exact receipt.
+/// An `Err` from the verb is a test failure, not a silent skip.
+async fn apply_inventory<T>(
+    engine: &mut Engine,
+    writer: &StoreWriter,
+    families: &InventoryFamilies,
+    step: u8,
+    body: impl FnOnce(&mut mush_core::ActionTxn<'_>) -> Result<T, InventoryError>,
+) -> T {
+    let (value, prepared) = {
+        let mut txn = engine
+            .action_transaction(&families.pools)
+            .expect("inventory transaction");
+        let value = body(&mut txn).expect("the inventory verb is accepted");
+        (value, txn.prepare().expect("the transaction prepares"))
+    };
+    let owner = prepared.owner().clone();
+    let writes = prepared.authoritative_replay_writes();
+    assert!(!writes.is_empty(), "a pool write persists something");
+    let (_, installation) = prepared.into_parts();
+
+    // The bundle around those exact writes, provided by the families' owner.
+    let mut definitions = DefinitionRegistryBuilder::new();
+    let action = definitions
+        .register(
+            owner.clone(),
+            DefinitionDescriptor::new(
+                DefinitionKind::new("action").unwrap(),
+                DefinitionId::new("round_trip_step").unwrap(),
+                1,
+                serde_json::json!({}),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    let outcome = definitions
+        .register(
+            owner.clone(),
+            DefinitionDescriptor::new(
+                DefinitionKind::new("outcome").unwrap(),
+                DefinitionId::new("round_trip_stepped").unwrap(),
+                1,
+                serde_json::json!({}),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    let request = RequestUid::from_bytes([0x40 + step; 16]);
+    let principal = PrincipalId::Object { id: GOD };
+    let bundle = AuthoritativeBundle::new(AuthoritativeBundleDraft {
+        token: CommitToken::from_bytes([0x50 + step; 16]),
+        request,
+        idempotency: ScopedIdempotencyKey::new(
+            IdempotencyScope {
+                principal: principal.clone(),
+                owner: owner.clone(),
+                namespace: CanonicalId::new("round_trip_step").unwrap(),
+            },
+            0,
+            IdempotencyKey::Request(request),
+        ),
+        ingress_hash: CanonicalHash::from_bytes([0x60 + step; 32]),
+        request_hash: CanonicalHash::from_bytes([0x70 + step; 32]),
+        plan_hash: CanonicalHash::from_bytes([0x80 + step; 32]),
+        action: action.clone(),
+        provider: owner,
+        cause: PreparedCausalRef::new(request, None, 0).unwrap(),
+        definitions: vec![action.clone(), outcome.clone()],
+        writes,
+        outcome: RulesValue::new(outcome.clone(), serde_json::json!({ "step": step })).unwrap(),
+        resolution: None,
+        semantic_events: vec![
+            AuthoritativeSemanticEvent::root(
+                PreparedCausalRef::new(request, None, 0).unwrap(),
+                &action,
+                RulesValue::new(outcome, serde_json::json!({ "step": step })).unwrap(),
+                vec![principal.clone()],
+            )
+            .unwrap(),
+        ],
+        eligible_witnesses: vec![principal],
+        durable_outbox: vec![],
+    })
+    .expect("the inventory writes bundle");
+
+    let (ownership, _owned) = tokio::sync::oneshot::channel();
+    let (notify, receipt) = tokio::sync::oneshot::channel();
+    writer
+        .send(StoreJob::Authoritative {
+            bundle: Box::new(bundle),
+            ownership,
+            notify,
+        })
+        .await
+        .expect("the writer is running");
+    receipt
+        .await
+        .expect("the writer answers")
+        .expect("the inventory bundle finalizes");
+    engine.install_prepared_action(installation);
+    value
+}
+
+/// Credit a pool and reserve part of it on one boot; a second boot from the
+/// store alone answers the same availability and still holds the reservation
+/// (E7 cut 2's pool pair on K's `ReservationBook`).
+async fn inventory_pool_round_trip(store: Arc<dyn ObjectStore>) {
+    let mut engine = boot_engine(&store).await;
+    let families = inventory_families(&engine);
+    let (writer, join) = spawn_writer(&store);
+    let at = EndpointRef(VaultId(7));
+    let metals = CanonicalId::new("metals").expect("commodity");
+    let holder = ScopedIdempotencyKey::new(
+        IdempotencyScope {
+            principal: PrincipalId::Object { id: GOD },
+            owner: OwnerId::new("inventory").expect("owner"),
+            namespace: CanonicalId::new("round_trip").expect("namespace"),
+        },
+        0,
+        IdempotencyKey::Request(RequestUid::from_bytes([0x44; 16])),
+    );
+    let stamp = ClockStamp {
+        clock: ClockRef::WorldIc { generation: 1 },
+        at: 1_000,
+    };
+    apply_inventory(&mut engine, &writer, &families, 1, |txn| {
+        families.credit(txn, at, &metals, 100).map(|_| ())
+    })
+    .await;
+    let reservation = apply_inventory(&mut engine, &writer, &families, 2, |txn| {
+        families.reserve(txn, at, &metals, &holder, 30, &stamp)
+    })
+    .await;
+    let before = {
+        let mut txn = engine
+            .action_transaction(&families.pools)
+            .expect("inventory transaction");
+        families
+            .available(&mut txn, at, &metals)
+            .expect("available")
+    };
+    assert_eq!(before, 70, "the hold reduced availability");
+    drop(engine);
+    drop(writer);
+    join.await.expect("the writer drained and exited");
+
+    // --- second boot: rebuild from the store alone. ----------------------
+    let mut engine2 = boot_engine(&store).await;
+    let families2 = inventory_families(&engine2);
+    let mut txn = engine2
+        .action_transaction(&families2.pools)
+        .expect("inventory transaction");
+    assert_eq!(
+        families2
+            .available(&mut txn, at, &metals)
+            .expect("available"),
+        70,
+        "the pool and its hold did not survive the reboot"
+    );
+    let record = families2
+        .reservation(&mut txn, at, &metals, reservation)
+        .expect("the pool pair is readable")
+        .expect("the reservation survived the reboot");
+    assert_eq!(record.id(), reservation);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn inventory_pool_round_trip_in_memory() {
+    inventory_pool_round_trip(Arc::new(InMemoryStore::new())).await;
+}
+
+/// The same round trip over a live Redis. Gated on `REDIS_URL`; runs in db 4.
+#[tokio::test(flavor = "multi_thread")]
+async fn inventory_pool_round_trip_redis_gated() {
+    let Some(url) = std::env::var("REDIS_URL").ok().filter(|s| !s.is_empty()) else {
+        eprintln!(
+            "skipping inventory_pool_round_trip_redis_gated: REDIS_URL not set \
+             (no live Redis on this machine)"
+        );
+        return;
+    };
+    let url = support::redis_url_with_db(&url, 4);
+    let store = mush_store::RedisStore::connect(&url)
+        .await
+        .expect("connect to REDIS_URL");
+    store.wipe_namespaces().await.expect("wipe test namespaces");
+    inventory_pool_round_trip(Arc::new(store)).await;
 }
 
 // ---------------------------------------------------------------------------

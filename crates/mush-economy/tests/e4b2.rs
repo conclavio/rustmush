@@ -7557,3 +7557,106 @@ fn cv_5_the_adjudicator_kind_test_only_narrows_the_object_arm() {
     );
     assert!(contract(&tw, id).consent.adjudicator.is_none());
 }
+
+// ======================================================================
+// H4 (E4b2-D33): the exhausted obligation allocator pages
+// ======================================================================
+
+/// A lease whose rent cannot be recorded because the obligation allocator is
+/// exhausted pages the contract at level 2 under its own kind, instead of a log
+/// line nobody reads. The allocator is exhausted the only way it can be: a
+/// persisted meta doc at the ceiling, read back at boot.
+#[test]
+fn h4_e4b2d33_an_exhausted_obligation_allocator_pages_the_contract() {
+    let mut tw = boot();
+    let landlord = tw.spawn_player("Landlord");
+    let tenant = tw.spawn_player("Tenant");
+    ok(&mut tw, GOD, "@instrument/register gold=0");
+    ok(&mut tw, GOD, "@account/system faucet=gold");
+    ok(&mut tw, GOD, &format!("@account/open #{}=gold", landlord.0));
+    ok(&mut tw, GOD, &format!("@account/open #{}=gold", tenant.0));
+    let faucet = snap(&tw)
+        .accounts()
+        .find(|x| matches!(x.owner, PrincipalId::System(_)))
+        .expect("faucet")
+        .id;
+    let l_acct = account_of(&tw, landlord);
+    let t_acct = account_of(&tw, tenant);
+    ok(&mut tw, GOD, &format!("@econ/mint {faucet}={t_acct} 1000"));
+    let flat = thing(&mut tw, "flat");
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@asset/title #{}=#{}", flat.0, landlord.0),
+    );
+    ok(&mut tw, landlord, "@contract/draft Lease");
+    let id = only_contract(&tw);
+    ok(
+        &mut tw,
+        landlord,
+        &format!("@contract/party {id}=#{}", tenant.0),
+    );
+    ok(&mut tw, tenant, &format!("@contract/pay {id}={t_acct} 100"));
+    ok(
+        &mut tw,
+        landlord,
+        &format!("@contract/split {id}={l_acct} 1000‰"),
+    );
+    ok(
+        &mut tw,
+        landlord,
+        &format!("@contract/remainder {id}={l_acct}"),
+    );
+    ok(
+        &mut tw,
+        landlord,
+        &format!(
+            "@contract/deliver {id}=collateral #{} #{}",
+            flat.0, landlord.0
+        ),
+    );
+    ok(
+        &mut tw,
+        landlord,
+        &format!("@contract/deliver {id}=obligation {t_acct} {l_acct} 50 every=600"),
+    );
+    ok(
+        &mut tw,
+        landlord,
+        &format!("@contract/condition {id}=attest party:#{}", landlord.0),
+    );
+    ok(&mut tw, landlord, &format!("@contract/offer {id}"));
+    ok(&mut tw, landlord, &format!("@contract/accept {id}"));
+
+    // Reboot with the obligation allocator at its ceiling: the tenant's
+    // acceptance then activates the lease on a world that can mint no
+    // obligation id.
+    let mut kv = fold_kv(&mut tw);
+    patch(&mut kv, "meta", |v| {
+        v["next_obligation_id"] = serde_json::json!(u64::MAX);
+    });
+    reboot(&mut tw, kv);
+    ok(&mut tw, tenant, &format!("@contract/accept {id}"));
+    assert_eq!(state(&tw, id), ContractState::Active);
+    assert!(
+        snap(&tw)
+            .obligations()
+            .all(|o| o.cause != ObligationCause::Contract(id)),
+        "an obligation was minted from an exhausted allocator"
+    );
+    let page = store(&tw)
+        .escalations()
+        .find(|e| e.subject == mush_economy::EscalationSubject::Contract(id))
+        .expect("the lease with no rent record was paged");
+    assert_eq!(page.kind, mush_economy::EscalationKind::AllocatorExhausted);
+    assert_eq!(page.kind.label(), "allocator exhausted");
+    assert_eq!(page.level, 2);
+    assert!(page.context.contains("no rent record"), "{}", page.context);
+    assert!(
+        page.recommended
+            .iter()
+            .any(|c| c == &format!("@contract/show #{id}")),
+        "{:?}",
+        page.recommended
+    );
+}

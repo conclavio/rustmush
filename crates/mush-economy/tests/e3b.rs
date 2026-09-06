@@ -117,24 +117,6 @@ fn reboot(tw: &mut TestWorld, kv: Vec<(SmolStr, serde_json::Value)>) {
         },
     )]));
 }
-#[allow(dead_code)]
-fn try_boot(tw: &mut TestWorld, kv: Vec<(SmolStr, serde_json::Value)>) -> Result<(), String> {
-    let mut out = Outbox::new();
-    let mut fx = Effects::new();
-    tw.engine_mut()
-        .modules_loaded(
-            HashMap::from([(
-                SmolStr::new(NS),
-                ModuleBootData {
-                    kv,
-                    streams: HashMap::new(),
-                },
-            )]),
-            &mut out,
-            &mut fx,
-        )
-        .map_err(|e| format!("{e:?}"))
-}
 fn patch(kv: &mut [(SmolStr, serde_json::Value)], key: &str, f: impl Fn(&mut serde_json::Value)) {
     for (k, v) in kv.iter_mut() {
         if k == key {

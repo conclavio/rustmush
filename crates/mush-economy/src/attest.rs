@@ -207,7 +207,7 @@ fn page_missing_canon(ctx: &mut Ctx<'_>, id: ContractId, source: &str) {
     );
     crate::sweep::page(
         ctx,
-        crate::escalation::EscalationKind::SettlementRefused,
+        crate::escalation::EscalationKind::EvidenceUnavailable,
         crate::escalation::EscalationSubject::Contract(id),
         None,
         format!(

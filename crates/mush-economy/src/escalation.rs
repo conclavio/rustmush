@@ -65,6 +65,17 @@ pub enum EscalationKind {
     /// (D-E5-1: a home never ends on its own), so the only thing left that can move
     /// it is a person — which is precisely what this ladder is for.
     StoryWindow,
+    /// An economic event could not be announced: the observer chain hit its depth
+    /// cap and the event was dropped, so a chronicle line (a public settlement, a
+    /// delinquency) never reached its audience (H4, E4c-D42; was `SettlementRefused`).
+    AnnouncementDropped,
+    /// A live canon condition cites a source no record can be found for anywhere
+    /// the seam can read — the evidence the condition consented to is past recovery
+    /// (H4, E4c-D42; was `SettlementRefused`).
+    EvidenceUnavailable,
+    /// An id allocator is exhausted, so a record that should exist could not be
+    /// minted — a lease running with no rent record (H4, E4b2-D33 / E4c-D42).
+    AllocatorExhausted,
 }
 
 impl EscalationKind {
@@ -78,6 +89,9 @@ impl EscalationKind {
             EscalationKind::EconomyFrozen => "economy frozen",
             EscalationKind::BootReconciliation => "boot reconciliation",
             EscalationKind::StoryWindow => "story window",
+            EscalationKind::AnnouncementDropped => "announcement dropped",
+            EscalationKind::EvidenceUnavailable => "evidence unavailable",
+            EscalationKind::AllocatorExhausted => "allocator exhausted",
         }
     }
 }

@@ -159,7 +159,7 @@ fn page_dropped(ctx: &mut Ctx<'_>, ev: &EconomicEvent) {
     let now = ctx.w.now();
     let _ = crate::sweep::page(
         ctx,
-        crate::escalation::EscalationKind::SettlementRefused,
+        crate::escalation::EscalationKind::AnnouncementDropped,
         subject,
         None,
         format!(

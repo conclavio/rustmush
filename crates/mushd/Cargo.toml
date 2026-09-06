@@ -98,6 +98,11 @@ rand_chacha.workspace = true
 axum.workspace = true
 reqwest.workspace = true
 tokio-tungstenite.workspace = true
+# H4 (E2-D30): the inventory pool round trip seeds K state families through the
+# module's own handles before booting from the store alone.
+mush-inventory.workspace = true
+# ...and names its endpoints by the economy's `VaultId`.
+mush-economy.workspace = true
 
 [lints]
 workspace = true

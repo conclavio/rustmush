@@ -386,3 +386,31 @@ fn boot_refuses_a_missing_account_doc() {
         "the refusal should name the cause"
     );
 }
+
+// ----------------------------------------------------------------------
+// H4 (E2-D24): the dispatch serial
+// ----------------------------------------------------------------------
+
+/// A command-caused post carries the world's per-boot dispatch correlation as
+/// its serial (D-H-10), so two commands in one boot never share one. Pre-H4
+/// entries carry `0`; nothing about them changes.
+#[test]
+fn h4_e2d24_two_commands_in_one_boot_carry_distinct_serials() {
+    let mut tw = boot();
+    let _p = setup_mint(&mut tw, 1000);
+    let q = tw.spawn_player("Quinn");
+    assert!(!has_error(
+        &tw.run(GOD, &format!("@account/open #{}=gold", q.0))
+    ));
+    assert!(!has_error(&tw.run(GOD, "@econ/pay 1=2 10")), "first pay");
+    assert!(!has_error(&tw.run(GOD, "@econ/pay 1=2 10")), "second pay");
+    let serials: Vec<u64> = store(&tw)
+        .transactions()
+        .filter_map(|t| match t.cause {
+            mush_economy::EconomicCause::Command { serial } => Some(serial),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(serials.len(), 2, "two command-caused posts: {serials:?}");
+    assert_ne!(serials[0], serials[1], "one boot, one serial each");
+}

@@ -2490,3 +2490,114 @@ fn e6c_b4_a_title_over_a_frozen_written_off_record_refuses() {
         mush_economy::AssetLifecycle::Active
     );
 }
+
+// ======================================================================
+// H4: the debt sweep — each page carries its own kind (E4c-D42), and a
+// staff settle names its transaction (T6)
+// ======================================================================
+
+/// A canon evidence seam that can find nothing at all — the source every
+/// live condition consented to is past recovery.
+#[derive(Debug)]
+struct NoEvidence;
+
+impl mush_economy::CanonEvidence for NoEvidence {
+    fn records_for_source(
+        &self,
+        _w: &World,
+        _source: &str,
+        _limit: usize,
+    ) -> Vec<mush_economy::CanonRecord> {
+        Vec::new()
+    }
+}
+
+/// [`boot`] with the canon evidence seam wired to [`NoEvidence`].
+fn boot_without_evidence() -> TestWorld {
+    TestWorld::with_modules(vec![
+        Box::new(
+            mush_org::OrgModule::new()
+                .with_capabilities(vocabulary())
+                .with_scope_use(vec![Arc::new(mush_economy::EconomyScopeUse)]),
+        ),
+        Box::new(
+            mush_economy::EconomyModule::with_custody(vec![])
+                .with_canon_outcome_kinds(vec![smol_str::SmolStr::new_static("scene.outcome")])
+                .with_canon_evidence(Arc::new(NoEvidence)),
+        ),
+        Box::new(TitleIssuingRuleset),
+    ])
+}
+
+/// H4 (E4c-D42). The observer depth cap pages `AnnouncementDropped`; a live
+/// canon condition whose source no record can be found for pages
+/// `EvidenceUnavailable`; neither wears `SettlementRefused` any more, which now
+/// means only what it says.
+#[test]
+fn h4_e4cd42_each_page_carries_its_own_kind() {
+    // (a) The depth cap.
+    let mut tw = boot_with(Vec::new(), vec![Arc::new(Recurser)], Vec::new());
+    let r = run_rig(&mut tw, 20_000);
+    ok(
+        &mut tw,
+        r.johnson,
+        &format!("@econ/pay {}={} 10", r.j_acct, r.r_acct),
+    );
+    let dropped = store(&tw)
+        .escalations()
+        .find(|e| e.context.contains("depth cap"))
+        .expect("the depth cap paged");
+    assert_eq!(
+        dropped.kind,
+        mush_economy::EscalationKind::AnnouncementDropped
+    );
+    assert_eq!(dropped.kind.label(), "announcement dropped");
+
+    // (b) Evidence past recovery: a live canon condition, a recovery re-scan,
+    // and a seam that answers with nothing.
+    let mut tw = boot_without_evidence();
+    let r = run_rig(&mut tw, 2_000);
+    let id = accepted_run(&mut tw, &r, 300, "attest canon:scene.outcome:scene:99");
+    ok(&mut tw, GOD, "@econfreeze");
+    ok(&mut tw, GOD, "@econ/unfreeze");
+    let missing = store(&tw)
+        .escalations()
+        .find(|e| e.subject == mush_economy::EscalationSubject::Contract(id))
+        .expect("the unrecoverable source paged its contract");
+    assert_eq!(
+        missing.kind,
+        mush_economy::EscalationKind::EvidenceUnavailable
+    );
+    assert_eq!(missing.kind.label(), "evidence unavailable");
+    assert!(missing.context.contains("scene:99"), "{}", missing.context);
+    assert!(
+        store(&tw)
+            .escalations()
+            .all(|e| e.kind != mush_economy::EscalationKind::SettlementRefused),
+        "a page that is not a settlement refusal wore that kind"
+    );
+}
+
+/// H4 (T6). Staff who resolve a dispute to settle see the transaction the
+/// settlement posted — the id every other settle path already prints.
+#[test]
+fn h4_t6_a_dispute_resolved_to_settle_names_the_transaction() {
+    let mut tw = boot();
+    let r = run_rig(&mut tw, 2_000);
+    let id = accepted_run(&mut tw, &r, 300, "attest canon:scene.outcome:scene:99");
+    ok(&mut tw, r.runner, &format!("@contract/dispute {id}"));
+    let out = ok(
+        &mut tw,
+        GOD,
+        &format!("@contract/resolve {id}=settle the scene was never sealed"),
+    );
+    let ContractState::Settled { transaction } = state(&tw, id) else {
+        panic!("the resolution did not settle");
+    };
+    assert!(
+        out.contains(&format!(
+            "Contract #{id} settled as transaction #{transaction}."
+        )),
+        "{out}"
+    );
+}

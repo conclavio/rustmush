@@ -1924,7 +1924,9 @@ pub(crate) fn accept_core_as(
         let mut plan = EconomyPlan::new(
             cmd_key(ctx),
             actor,
-            EconomicCause::Command { serial: 0 },
+            EconomicCause::Command {
+                serial: ctx.w.next_correlation_id(),
+            },
             Vec::new(),
         );
         plan.visibility = c.consent.visibility.clone();
@@ -2184,9 +2186,26 @@ fn create_lease_obligations(ctx: &mut Ctx<'_>, id: ContractId) {
             .module_state_mut::<EconomyStore>()
             .and_then(EconomyStore::alloc_obligation);
         let Some(oid) = minted else {
+            // H4 (E4b2-D33): an exhausted allocator is not a reason to lose the
+            // world — but a lease that is active with no rent record is a fact a
+            // person has to hear. Level 2, on the contract, deduped by subject.
             tracing::error!(
                 contract = id.0,
                 "economy: the obligation allocator is exhausted; a lease has no rent record"
+            );
+            let now = ctx.w.now();
+            let _ = crate::sweep::page(
+                ctx,
+                crate::escalation::EscalationKind::AllocatorExhausted,
+                crate::escalation::EscalationSubject::Contract(id),
+                None,
+                format!(
+                    "contract #{id} activated as a lease but its rent could not be recorded: \
+                     the obligation allocator is exhausted, so the lease is running with no \
+                     rent record"
+                ),
+                vec![format!("@contract/show #{id}")],
+                now,
             );
             continue;
         };
@@ -2383,7 +2402,7 @@ fn contract_attest(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 /// What one settlement attempt did.
 pub(crate) enum Settled {
     /// Posted (or already posted) as this transaction.
-    Posted(#[allow(dead_code)] crate::ids::TransactionId),
+    Posted(crate::ids::TransactionId),
     /// Re-verification (or the plan) refused; nothing moved.
     ///
     /// It carries the resources the detail **names** (E4b2 verify fold, A6) as well
@@ -2887,7 +2906,9 @@ fn apply_resolution(ctx: &mut Ctx<'_>, id: ContractId, resolution: Resolution) {
             c.settle_attempts = 0;
             save(ctx, c);
             match settle(ctx, id) {
-                Settled::Posted(_) => {}
+                Settled::Posted(tx) => {
+                    info(ctx, format!("Contract #{id} settled as transaction #{tx}."));
+                }
                 // A6: the detail reaches a **party**, so it goes through the hiding
                 // renderer first. Naming another party's frozen account in the reply
                 // to `@contract/agree` is a disclosure the surface never made.

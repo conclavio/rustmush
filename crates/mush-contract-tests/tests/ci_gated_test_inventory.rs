@@ -243,10 +243,12 @@ fn the_gated_suffix_census_is_stable_and_every_live_backend_proof_names_its_back
         .map(|t| t.name.as_str())
         .collect();
     // 10 at the 08j S4 fold; +1 for H1's `scene_archive_reads_cold_chunks_redis_gated`;
-    // +2 for H3's `scale_world_boot_redis_gated` and `scale_authoritative_soak_redis_gated`.
+    // +2 for H3's `scale_world_boot_redis_gated` and `scale_authoritative_soak_redis_gated`;
+    // +2 for H4's `economy_journal_round_trip_redis_gated` and
+    // `inventory_pool_round_trip_redis_gated`.
     assert_eq!(
         live.len(),
-        13,
+        15,
         "the live-backend `*_gated` census changed: {live:?}"
     );
     for name in &live {

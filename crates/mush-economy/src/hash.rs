@@ -9,16 +9,18 @@
 //!   (account, delta, memo) — so reordered request lines and any map-iteration
 //!   difference hash identically. No `HashMap`-backed value is ever hashed.
 //! - **Stability across a retry.** It EXCLUDES ephemeral concurrency metadata —
-//!   `expected_revisions`, timestamps, and the idempotency key itself — so a retry
-//!   rebuilt against a re-fetched snapshot still matches, and "same key, different
-//!   plan" (a real conflict) is the only thing that changes the hash.
+//!   `expected_revisions`, timestamps, the idempotency key itself, and (H4) the
+//!   command dispatch serial — so a retry rebuilt against a re-fetched snapshot
+//!   still matches, a command re-run once its approval lands still matches, and
+//!   "same key, different plan" (a real conflict) is the only thing that changes
+//!   the hash.
 
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 use crate::ids::TransactionId;
 use crate::plan::{AssetOp, CustodyOp, EconomyPlan, HoldOp};
-use crate::record::EconomicVisibility;
+use crate::record::{EconomicCause, EconomicVisibility};
 use mush_org::PrincipalId;
 
 #[derive(Serialize)]
@@ -51,7 +53,20 @@ struct CanonicalPlan<'a> {
     hold_ops: Vec<&'a HoldOp>,
 }
 
+/// The plan hash's **documentary** domain (H4, 08j S8; 08g §300/§343's recorded
+/// fix). It names what [`plan_hash`] hashes — the v3 canonical plan — and it is
+/// deliberately **not** in the hashed bytes: `PIN_DIGEST` and `PIN_DIGEST_V3` pin
+/// those bytes, and every stored idempotency record in every existing world depends
+/// on them. A v4 that wants a domain in the bytes adopts
+/// `mush_core::CanonicalHash::for_canonical_value` (domain + version + bounded
+/// canonical JSON) and re-pins; until then this constant is the label and nothing
+/// else.
+pub const PLAN_HASH_DOMAIN: &str = "economy.plan/v3";
+
 /// The canonical SHA-256 hash of `plan`'s economic identity.
+///
+/// Labelled by [`PLAN_HASH_DOMAIN`], which is documentary: the hashed bytes carry
+/// no domain (see the constant).
 #[must_use]
 pub fn plan_hash(plan: &EconomyPlan) -> [u8; 32] {
     let mut lines: Vec<CanonicalLine<'_>> = plan
@@ -91,9 +106,21 @@ pub fn plan_hash(plan: &EconomyPlan) -> [u8; 32] {
         .map(|op| (hold_op_key(op), op))
         .collect();
     hold_ops.sort_by(|a, b| a.0.cmp(&b.0));
+    // H4 (E2-D24; verify lens C fold, C1): the command dispatch serial is journal
+    // metadata, not plan identity. It is the world's per-boot correlation, so a
+    // re-run of the same command — the approval round-trip's "run it again once it
+    // is approved" — must hash identically to the run that asked; and every
+    // Command-caused hash in every existing world was computed with `serial: 0`.
+    // Canonicalize it away here, exactly like the other ephemeral metadata above.
+    let cause = match &plan.cause {
+        EconomicCause::Command { .. } => {
+            std::borrow::Cow::Owned(EconomicCause::Command { serial: 0 })
+        }
+        other => std::borrow::Cow::Borrowed(other),
+    };
     let canonical = CanonicalPlan {
         actor: &plan.actor,
-        cause: &plan.cause,
+        cause: &cause,
         description: &plan.description,
         visibility: &plan.visibility,
         lines,
@@ -183,6 +210,42 @@ mod tests {
     #[test]
     fn v3_reproduces_the_hard_coded_e3_digest_for_a_title_and_custody_plan() {
         assert_eq!(hex(&plan_hash(&pin_plan_v3())), PIN_DIGEST_V3);
+    }
+
+    /// H4 (E2-D24, lens C fold C1): the dispatch serial is not plan identity. Two
+    /// plans that differ only in it hash the same, and a serial of `7` hashes
+    /// exactly as the `0` every pre-H4 record was computed with.
+    #[test]
+    fn h4_e2d24_the_dispatch_serial_is_journal_metadata_not_plan_identity() {
+        let mut zero = pin_plan();
+        zero.cause = EconomicCause::Command { serial: 0 };
+        let mut seven = pin_plan();
+        seven.cause = EconomicCause::Command { serial: 7 };
+        assert_eq!(plan_hash(&zero), plan_hash(&seven));
+        assert_ne!(
+            plan_hash(&zero),
+            plan_hash(&pin_plan()),
+            "the cause's kind is still identity"
+        );
+    }
+
+    /// H4 (S8): naming the domain changed no hashed byte — both pins still hold —
+    /// and the domain is documentary: prefixing it would produce a different digest,
+    /// which is exactly the digest no stored idempotency record carries.
+    #[test]
+    fn h4_s8_plan_hash_bytes_are_unchanged_and_the_domain_is_documentary() {
+        assert_eq!(PLAN_HASH_DOMAIN, "economy.plan/v3");
+        assert_eq!(hex(&plan_hash(&pin_plan())), PIN_DIGEST);
+        assert_eq!(hex(&plan_hash(&pin_plan_v3())), PIN_DIGEST_V3);
+        let mut domained = Sha256::new();
+        domained.update(PLAN_HASH_DOMAIN.as_bytes());
+        domained.update(plan_hash(&pin_plan()));
+        let domained: [u8; 32] = domained.finalize().into();
+        assert_ne!(
+            hex(&domained),
+            PIN_DIGEST,
+            "the domain is a label, never part of the pinned bytes"
+        );
     }
 
     /// The digest of [`pin_plan`] computed on the **pre-v2** (E2a) hash function and

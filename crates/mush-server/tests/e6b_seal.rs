@@ -783,7 +783,13 @@ fn vf2_r3_a_source_no_record_answers_pages_the_ladder() {
         .find(|e| e.subject == mush_economy::EscalationSubject::Contract(id))
         .cloned()
         .expect("a page about the missing evidence");
-    assert_eq!(paged.kind, mush_economy::EscalationKind::SettlementRefused);
+    // H4 (E4c-D42): evidence past recovery wears its own kind; `SettlementRefused`
+    // now means only a settlement refusal.
+    assert_eq!(
+        paged.kind,
+        mush_economy::EscalationKind::EvidenceUnavailable
+    );
+    assert_eq!(paged.kind.label(), "evidence unavailable");
     assert!(
         paged
             .recommended

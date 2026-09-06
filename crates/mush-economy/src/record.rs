@@ -337,7 +337,11 @@ pub struct JournalLine {
 pub enum EconomicCause {
     /// A player command with a dispatch serial.
     Command {
-        /// The command dispatch serial.
+        /// The command's dispatch serial: the world's **per-boot** monotonic
+        /// dispatch correlation (`World::next_correlation_id`, the same counter the
+        /// NPC path draws), so two commands in one boot never share one (H4,
+        /// E2-D24; D-H-10). It restarts at boot — pair it with `posted_at` to order
+        /// across boots. Pre-H4 entries carry `0`.
         serial: u64,
     },
     /// An internal economy record (contract/obligation/work-order) without widening
