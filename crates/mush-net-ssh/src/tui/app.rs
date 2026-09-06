@@ -226,6 +226,9 @@ pub struct TuiApp {
     panels: PanelStore,
     manifest: TuiManifest,
     mail_unread: usize,
+    /// Notices (I11) that arrived while the scene tail was not in view; the
+    /// status line shows the count. Cleared when the tail is on screen again.
+    notice_unseen: usize,
     commands: Vec<CommandEntry>,
     channel_aliases: Vec<String>,
     palette: Option<Palette>,
@@ -287,6 +290,7 @@ impl TuiApp {
             panels: PanelStore::new(),
             manifest: TuiManifest::default(),
             mail_unread: 0,
+            notice_unseen: 0,
             commands: Vec::new(),
             channel_aliases: Vec::new(),
             palette: None,
@@ -575,6 +579,12 @@ impl TuiApp {
             }
             OutputEvent::MailNotice { unread, .. } => {
                 self.mail_unread = usize::try_from(*unread).unwrap_or(0);
+            }
+            OutputEvent::Notice { .. } => {
+                // Count it for the status line, then fall through to render it
+                // into the scrollback (the terminal's notice history). The
+                // count clears in `draw` once the scene tail is back in view.
+                self.notice_unseen = self.notice_unseen.saturating_add(1);
             }
             OutputEvent::Composing { actor, active } => {
                 self.composing.retain(|(n, _)| n != &actor.name);
@@ -1540,6 +1550,18 @@ impl TuiApp {
         let now = self.now();
         self.thinking.retain(|(_, at)| now - at < THINKING_TTL_S);
         self.composing.retain(|(_, at)| now - at < COMPOSING_TTL_S);
+        // The scene tail is the terminal's notice surface: while it is in view
+        // (following the tail on a screen that shows the scrollback), notices
+        // are seen as they land, so the unseen count clears (I11).
+        if self.scroll_off == 0
+            && self
+                .screen()
+                .panes
+                .iter()
+                .any(|p| matches!(p.content, PaneContent::Scrollback))
+        {
+            self.notice_unseen = 0;
+        }
         let chrome = area.height >= MIN_CHROME_ROWS;
         let vitals = self.panels.vitals();
         let gauge_h = u16::from(chrome && !vitals.is_empty());
@@ -1655,6 +1677,14 @@ impl TuiApp {
             line.spans.push(dim_span_owned(sep));
             line.spans
                 .push(dim_span_owned(&format!("{name} is typing")));
+        }
+        if self.notice_unseen > 0 {
+            let bell = if self.caps.utf8 { "\u{1f514}" } else { "!" };
+            line.spans.push(dim_span_owned(sep));
+            line.spans.push(Span::styled(
+                format!("{bell} {} new", self.notice_unseen),
+                Style::default().add_modifier(Modifier::BOLD),
+            ));
         }
         frame.render_widget(Paragraph::new(line), area);
     }
@@ -2102,8 +2132,8 @@ pub fn manifest_has(manifest: &TuiManifest, feed: &str) -> bool {
 mod tests {
     use super::*;
     use mush_proto::{
-        ClientKind, ColorDepth, NarrativeKind, ObjRef, PromptSpec, RequestKind, RequestOption,
-        RespondChoice, RichText, SmolStr,
+        ClientKind, ColorDepth, NarrativeKind, NoticeAction, NoticeSeverity, ObjRef, PromptSpec,
+        RequestKind, RequestOption, RespondChoice, RichText, SmolStr,
     };
 
     fn caps() -> ClientCaps {
@@ -2637,6 +2667,53 @@ mod tests {
         let tabs = text.lines().next().unwrap();
         assert!(tabs.contains("3 mail 3"), "{tabs:?}");
         assert!(tabs.contains("4 chan 7"), "{tabs:?}");
+    }
+
+    fn page_notice() -> OutputEvent {
+        OutputEvent::Notice {
+            id: 7,
+            severity: NoticeSeverity::Urgent,
+            category: SmolStr::new_static("page"),
+            text: RichText::plain("Razor: meet me at the docks"),
+            action: Some(NoticeAction {
+                label: "Reply".into(),
+                prefill: "page Razor=".into(),
+            }),
+            ts: 0,
+        }
+    }
+
+    #[test]
+    fn a_notice_lands_in_the_scrollback_with_its_category_and_action_hint() {
+        let mut app = app();
+        app.apply_event(&page_notice());
+        let rows = app.scrollback_rows(70);
+        let joined: String = rows
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert!(joined.contains("[page]"), "{joined:?}");
+        assert!(joined.contains("meet me at the docks"), "{joined:?}");
+        assert!(joined.contains("(page Razor=)"), "{joined:?}");
+    }
+
+    #[test]
+    fn unseen_notices_show_on_the_status_line_and_clear_when_the_tail_returns() {
+        let mut app = app();
+        app.apply_event(&page_notice());
+        assert_eq!(app.notice_unseen, 1);
+        // On a screen without the scrollback pane (sheet, digit 2) the count
+        // stands, and the status line names it.
+        app.feed_input(b"2");
+        let away = super::super::frame_text(&mut app, 120, 34);
+        assert!(away.contains("1 new"), "{away}");
+        assert_eq!(app.notice_unseen, 1);
+        // Back on the scene tail, drawing marks them seen.
+        app.feed_input(b"1");
+        let home = super::super::frame_text(&mut app, 120, 34);
+        assert!(!home.contains("1 new"), "{home}");
+        assert_eq!(app.notice_unseen, 0);
     }
 
     #[test]

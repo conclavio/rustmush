@@ -1316,6 +1316,50 @@ delivered-not-stamped.
 **Verify lens.** **P (projection)** — can a notice carry an id or a body a
 viewer may not see? **B (bounds)**.
 
+**As built (2026-09-05, branch `interface-i11`) — the wire and the three
+client surfaces; the E6a/page producers held back.** The event and all three
+renders landed; the server-side producers beyond the mail shim are deferred,
+deliberately, to keep this cut out of the E7-active economy crates until it
+lands.
+
+- **The wire (commit `ce33afc`).** `OutputEvent::Notice { id, severity:
+  Info | Warn | Urgent, category, text, action?: { label, prefill }, ts }`,
+  additive and ts-exported, with `NoticeSeverity`/`NoticeAction` and
+  `MAX_NOTICE_TEXT_BYTES = 512`. The producer seam (`Ctx::…`) bounds the text
+  and owns severity; a wire round-trip test pins it. Severity is read by the
+  client, never derived (rule 5).
+- **Three renders.** Web: a transient toast for the newest unseen notices and
+  a persistent tray (the bell), `NotificationStore` + `NotificationTray`, the
+  `action` opening the composer as a `Prefill` (D-I-18). Line mode
+  (`mush-ansi`): the notice inline, `[category]` coloured by severity, the
+  prefill as a hint. TUI: the notice in the scrollback (the terminal's notice
+  history) plus an unseen count on the status line that clears when the scene
+  tail is back in view — not the generic-view pane the spec floated, because
+  the scrollback already *is* the terminal's persistent history and digits are
+  full (the constraint I8 shares); the status-line count is the indicator the
+  spec asked for.
+- **The one live producer.** `MailNotice` flows into the surface through a
+  client-side shim (`fromMail` on the web; the TUI/line renderers still show
+  their own mail line), so real mail notifications populate the surface today
+  with no server change. The typed server producers — pages, channel mentions,
+  and the E6a escalation/inbox/alert records — are the remaining work, held
+  back like I10's first real producer to avoid editing E7's in-flight crates;
+  each is an additive `Ctx` emit behind the settled wire, no client change.
+- **Tests.** Web: `notifications.test.ts` (7) — parse, dedup, the toast/tray
+  split, the mail shim's disjoint id namespace. Rust: the wire round-trip, and
+  two TUI tests (the scrollback render with its category and action hint; the
+  status-line count that clears on return to the tail). `MAX_NOTICE_TEXT_BYTES`
+  is re-exported so the dead-code lint stays green.
+
+**Verify (P/B).** **P** — a notice is delivered to its subject's own
+connections (the producer's `to_actor`/perceive concern, as with the mail
+shim); the wire carries only the id, category, bounded text and an
+allowlist-shaped prefill, no cross-viewer body. **B** — text bounded at the
+producer to `MAX_NOTICE_TEXT_BYTES`; the web history capped at
+`NOTIFICATION_CAP`, the toasts at `MAX_TOASTS`; the TUI count is a
+`saturating_add`. Never idle: `Notice` is delivered, and its apply path never
+stamps `last_input`.
+
 ### 3.12 Cut I12 — Server-side narrative backlog
 
 **What it is.** Scrollback is a client-local ring (`SCROLLBACK_CAP`), so a
@@ -1690,6 +1734,16 @@ modal ruling (D-I-17, D-I-18) rather than by its default.**
 
 ## 10. Changelog
 
+- **Draft 0.7 — 2026-09-05.** I11 built and folded (§3.11 as-built): the
+  `Notice` wire (`OutputEvent::Notice`, `NoticeSeverity`, `NoticeAction`,
+  `MAX_NOTICE_TEXT_BYTES`, ts-exported, round-trip tested) and all three client
+  surfaces — the web toast + tray (`NotificationStore`/`NotificationTray`, the
+  mail shim delivering real notifications today), the line-mode inline notice,
+  and the TUI scrollback line + status-line unseen count. The typed server
+  producers (pages, mentions, the E6a escalation/inbox/alert records) are held
+  back behind the settled wire, like I10's first real producer, to keep the cut
+  out of E7's in-flight economy crates. The P/B verify holds: delivered to the
+  subject, bounded text, id-only wire, never idle-stamped.
 - **Draft 0.6 — 2026-09-05.** I10 part 2 built and folded (§3.10 as-built,
   D-I-22 ★ ephemeral/RAM-only): the engine request lifecycle and all three
   clients (web modal, SSH/TUI overlay, line-mode `respond`), grounded on a

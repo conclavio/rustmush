@@ -13,7 +13,7 @@
 
 use mush_ansi::{AnsiTheme, fmt_duration, merge_styles};
 use mush_proto::{
-    ClientCaps, Color as MushColor, ColorDepth, NarrativeKind, ObjRef, OutputEvent,
+    ClientCaps, Color as MushColor, ColorDepth, NarrativeKind, NoticeSeverity, ObjRef, OutputEvent,
     ProjectedActionReceipt, RichText, RoomView, Span as MushSpan, Style as MushStyle, VitalRole,
     VitalState, VitalValue, VitalsFrame, WhoEntry,
 };
@@ -309,6 +309,29 @@ pub fn render_event(
             );
             w.end_line();
         }
+        // A unified notification (I11): the terminal's scrollback is its
+        // history, so a notice renders inline like line mode does — `[cat]`
+        // coloured by severity, then the action's prefill as a hint. The tab
+        // status line carries the unseen count (stored in `apply_event`).
+        OutputEvent::Notice {
+            severity,
+            category,
+            text,
+            action,
+            ..
+        } => {
+            let tag = match severity {
+                NoticeSeverity::Urgent => "error",
+                NoticeSeverity::Warn | NoticeSeverity::Info => "system",
+            };
+            w.clock_gutter();
+            w.tagged(tag, &format!("[{category}] "));
+            w.rich(text);
+            if let Some(a) = action {
+                w.plain(&format!("  ({})", a.prefill));
+            }
+            w.end_line();
+        }
         OutputEvent::Weather { text, .. } => {
             w.clock_gutter();
             w.rich(text);
@@ -370,9 +393,6 @@ pub fn render_event(
         // the TUI overlay and line-mode prompt are I10 part 2, until when a
         // TUI user falls back to the server's default (D-I-21).
         | OutputEvent::Request { .. }
-        // A unified notification (I11): the notices pane and status line show
-        // it (stored in apply_event); the scrollback has nowhere for it.
-        | OutputEvent::Notice { .. }
         | OutputEvent::View(_) => {}
     }
     w.finish()
