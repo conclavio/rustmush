@@ -338,7 +338,9 @@ O(entries) RAM index crosses the economy's 1 GB budget in weeks at the §9 desig
   re-enters with expected revisions, the way quotes and approvals already re-enter (doc 08 §7.4).
   A hit returns the original result or refuses a different plan, as today; a miss posts. No
   probabilistic structure: a false "reused key" refusal on a money path is not acceptable, and a
-  round trip on a month-old key is.
+  round trip on a month-old key is. *Amended by D-12-6: a Bloom filter gates the slow lookup —
+  a negative is certain and posts synchronously; a positive is never a refusal on the filter
+  alone, it is what sends the key to the off-loop read.*
 - **The checkpoint** (§5.2) carries only the window's keys, so its parts are O(window), not
   O(entries), and boot from a checkpoint is O(records + window) at any journal size. The full
   replay still rebuilds the window from the journal (an entry older than the window contributes
@@ -639,7 +641,8 @@ economy checkpointed and booted stays frozen). Size: four to five days.
 >    key, carried by the checkpoint) sits in front of the cold check. The boot's contract heal
 >    (`finished_transition`) also reads keys that may be older than any window. That needs its
 >    own design page and the owner's eye; this cut carries the whole index in the parts, so J3's
->    RAM story is J2's, and D-12-4's ~7 million-entry line for the index stands.
+>    RAM story is J2's, and D-12-4's ~7 million-entry line for the index stands. *Decided the
+>    same day: D-12-6, a Bloom filter gate on the slow lookup.*
 > 7. **J3-D2:** the covered sequence is the journal head at write time, not a chunk boundary
 >    — the boot skips whole chunks below the covered chunk and entries at or below the covered
 >    sequence within it, which is simpler than aligning writes to seals and loses nothing.
@@ -803,7 +806,28 @@ tail; mandatory on D-12-4) → **J5 (the ledger archive tier, §10)** → J3 wit
 (the checkpoint carries the window; the `idempotency:` docs and their backfill) → J4 (the narrow
 fetch). After J4 the boot is O(records + window); after J5 the journal's residence in Redis
 (F10) is bounded too. J5 goes before the checkpoint because the store running out of memory is
-an outage, where a slow boot is a slow restart.
+an outage, where a slow boot is a slow restart. *As built, J3 landed without §5.8 (J3-D1); the
+window is its own cut after J4, under D-12-6.*
+
+**D-12-6 — The §5.8 window is gated by a Bloom filter on the slow lookup (owner, 2026-09-06).**
+Resolves J3-D1. §5.8 as written could not tell a never-used key from a key used before the
+window, so every fresh post would have paid the off-loop store check. The owner's direction: the
+RAM index keeps the window's keys; a **Bloom filter over every key ever posted** rides in the
+checkpoint body, is maintained on every post and rebuilt by a full replay; a post's key is looked
+up in RAM first, and a miss is put to the filter — a **negative is certain**, so the post proceeds
+synchronously as today, and only a positive outside the window gates the slow lookup, the
+off-loop read of the key's `idempotency:{namespace}:{key_hash}` document. Sizing: ~20 bits a key
+(about 2.5 MB per million keys, a false-positive rate near 1 in 10 000), a 30-day window to start.
+The review's default for the rare positive is a **transient refusal** ("try again shortly") while
+the off-loop read warms the RAM index with the answer, so no `post` caller grows a re-entry path
+and the retry posts synchronously; the one sub-point left open is whether that visible retry is
+acceptable on interactive money commands or whether the rare positive should re-enter instead,
+the §5.8 letter. Two notes for the design page: on Redis the "forever" key documents live in
+Redis RAM (~150 bytes a key), so the window moves that cost to the store rather than to disk —
+a key-indexed disk tier is a separate question, not J5's chunk archive; and the boot's contract
+heal reads keys older than any window, so it reads them through the same gate. The cut gets its
+own design page and follows J4; D-12-1's metric is the trigger, well before D-12-4's ~7 million
+line.
 
 ## 10. The ledger archive tier (owner direction, 2026-09-05; J5)
 
