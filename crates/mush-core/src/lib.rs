@@ -72,6 +72,7 @@ pub mod obj;
 pub mod offer;
 pub mod output;
 pub mod perm;
+pub mod request;
 pub mod resolution;
 pub mod resource;
 pub mod resource_provider;

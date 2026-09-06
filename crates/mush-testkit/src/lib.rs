@@ -433,7 +433,9 @@ pub fn text_of(event: &OutputEvent) -> String {
         OutputEvent::Composing { actor, active } => {
             format!("[composing {} active={active}]", actor.name)
         }
-        OutputEvent::Request { id, kind, prompt, .. } => {
+        OutputEvent::Request {
+            id, kind, prompt, ..
+        } => {
             format!("[request {id} {kind:?} {}]", prompt.to_plain_text())
         }
         OutputEvent::Panel { feed, .. } => format!("[panel {feed}]"),

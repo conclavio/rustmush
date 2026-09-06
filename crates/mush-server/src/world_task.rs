@@ -831,6 +831,12 @@ fn classify_inbound(msg: &Inbound) -> IngressClass {
         Inbound::ConnUp { .. } | Inbound::ConnDown { .. } | Inbound::SessionGone { .. } => {
             IngressClass::ConnectionHooks
         }
+        // A client's answer to a server-initiated request (interface plan
+        // I10) resumes the opening module's logic, which may mutate; it is
+        // admitted only where a write is, exactly like async re-entry, so a
+        // Respond in a restricted mode is refused and the deadline default
+        // fires later.
+        Inbound::Respond { .. } => IngressClass::AsyncApply,
         Inbound::Apply(_) => IngressClass::AsyncApply,
         Inbound::Control(ControlMsg::Shutdown) => IngressClass::Shutdown,
         Inbound::Control(ControlMsg::Dump) => IngressClass::StaffMutation,
@@ -4975,6 +4981,9 @@ fn refuse_world_msg(msg: WorldMsg, reason: RefusalReason, gateway: &Gateway) {
         // A presence hint is best-effort by contract: dropping it costs
         // nothing (the clients expire their pills on a timer).
         WorldMsg::Inbound(Inbound::Composing { .. }) => {}
+        // A request answer is advisory/best-effort (interface plan I10):
+        // dropping it means the server applies the deadline default. No reply.
+        WorldMsg::Inbound(Inbound::Respond { .. }) => {}
         WorldMsg::Inbound(Inbound::Apply(_)) => {
             tracing::warn!(?reason, "async apply suppressed by world mode");
         }
@@ -5717,6 +5726,9 @@ pub fn render_ps(engine: &Engine, now_ms: i64) -> String {
                 scenes.push(format!("  {module}:{tag}  {scene}  next in {remain_s}s"));
             }
             ScheduledKind::Control(_) => control += 1,
+            // A server-initiated request deadline (interface plan I10):
+            // ephemeral and not shown in the @ps report.
+            ScheduledKind::RequestTimeout { .. } => {}
         }
     }
     let mut ticks = Vec::new();

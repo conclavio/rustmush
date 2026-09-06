@@ -256,6 +256,12 @@ pub enum Deferred {
         /// (mail/XP) still delivers the RAM effect with a "may not survive" warning.
         strict: bool,
     },
+    /// Open a server-initiated request (interface plan I10, D-I-21):
+    /// [`Ctx::open_request`](crate::cmd::Ctx::open_request). The engine mints
+    /// an id, delivers the [`OutputEvent::Request`], arms the deadline, and
+    /// routes the outcome back to the opening module's
+    /// [`RequestCompletion`](crate::request::RequestCompletion).
+    OpenRequest(crate::request::OpenRequest),
 }
 
 // ---- E7c2: B1 — the `Authoritative` ingress adapter seam ----
@@ -436,6 +442,24 @@ pub enum Inbound {
         actor: ObjId,
         /// `true` when a draft began, `false` when it was sent or abandoned.
         active: bool,
+    },
+    /// A client's answer to a server-initiated
+    /// [`OutputEvent::Request`](mush_proto::OutputEvent::Request) (interface
+    /// plan I10, D-I-21), correlated by `id`. The engine looks up the pending
+    /// request, verifies the responder is its subject, cancels the deadline,
+    /// and routes the choice to the opening module's
+    /// [`RequestCompletion`](crate::request::RequestCompletion). A stale,
+    /// forged or duplicate `id` is ignored, never an error, and this never
+    /// stamps idle.
+    Respond {
+        /// The connection it arrived on.
+        conn: ConnId,
+        /// The actor answering (must be the request's subject).
+        actor: ObjId,
+        /// The request id from the originating `Request`.
+        id: u64,
+        /// The viewer's choice.
+        choice: mush_proto::RespondChoice,
     },
     /// Typed completion of deferred async work (treaty ruling 3).
     Apply(WorldCommand),
@@ -626,6 +650,14 @@ pub struct Engine {
     /// requires the pre-ingress queue to be global. A second submission by the
     /// **same** actor is still back-pressure, and a handler still cannot buffer.
     authoritative_submits: BTreeMap<ObjId, Box<AuthoritativeSubmit>>,
+    /// Server-initiated requests outstanding, by engine-minted id (interface
+    /// plan I10, D-I-22: RAM-only, lost on restart).
+    pending_requests: HashMap<u64, crate::request::PendingRequest>,
+    /// Next request id to mint.
+    next_request_id: u64,
+    /// Outstanding requests per subject, capped by
+    /// [`MAX_OPEN_REQUESTS_PER_SUBJECT`](crate::request::MAX_OPEN_REQUESTS_PER_SUBJECT).
+    open_requests_per_subject: HashMap<ObjId, u32>,
 }
 
 /// How many actors may hold a queued authoritative submission at once. Small,
@@ -663,6 +695,9 @@ impl Engine {
             lag_last_ms: 0,
             lag_max_ms: 0,
             authoritative_submits: BTreeMap::new(),
+            pending_requests: HashMap::new(),
+            next_request_id: 1,
+            open_requests_per_subject: HashMap::new(),
         }
     }
 
@@ -2520,6 +2555,15 @@ impl Engine {
                 self.handle_composing(conn, actor, active, out);
                 StepOutcome::Continue
             }
+            Inbound::Respond {
+                conn,
+                actor,
+                id,
+                choice,
+            } => {
+                self.handle_respond(conn, actor, id, choice, out);
+                StepOutcome::Continue
+            }
             Inbound::ConnUp {
                 conn,
                 actor,
@@ -2601,6 +2645,25 @@ impl Engine {
                 }
                 ScheduledKind::Control(name) => {
                     tracing::debug!(%name, "control timer with no consumer (M1)");
+                }
+                ScheduledKind::RequestTimeout { id } => {
+                    // Interface plan I10: the deadline passed with no answer.
+                    // Apply the module's default (Expired) and drop the entry.
+                    if let Some(pending) = self.pending_requests.remove(&id) {
+                        self.dec_open_requests(pending.subject);
+                        if self.world.get(pending.subject).is_some() {
+                            crate::module::apply_request_completion_with_action_state(
+                                &self.registry,
+                                &mut self.world,
+                                out,
+                                pending.module,
+                                pending.subject,
+                                &pending.payload,
+                                crate::request::RequestOutcome::Expired,
+                                Some(&self.action_state),
+                            );
+                        }
+                    }
                 }
             }
         }
@@ -2976,6 +3039,57 @@ impl Engine {
         );
     }
 
+    /// Route a client's answer to a server-initiated request (interface plan
+    /// I10, D-I-21). Ignored (never an error) when the id is unknown, already
+    /// resolved, or the responder is not the subject — the stale/forged/
+    /// duplicate contract. Never stamps idle: an answer to a server prompt is
+    /// not live command input.
+    fn handle_respond(
+        &mut self,
+        _conn: ConnId,
+        actor: ObjId,
+        id: u64,
+        choice: mush_proto::RespondChoice,
+        out: &mut Outbox,
+    ) {
+        let Some(pending) = self.pending_requests.get(&id) else {
+            return;
+        };
+        if pending.subject != actor {
+            return;
+        }
+        let pending = self
+            .pending_requests
+            .remove(&id)
+            .expect("pending request just observed");
+        self.sched.cancel(pending.timer);
+        self.dec_open_requests(pending.subject);
+        // Re-validate (treaty ruling 3): the subject may have vanished.
+        if self.world.get(pending.subject).is_none() {
+            return;
+        }
+        crate::module::apply_request_completion_with_action_state(
+            &self.registry,
+            &mut self.world,
+            out,
+            pending.module,
+            pending.subject,
+            &pending.payload,
+            crate::request::RequestOutcome::Answered(choice),
+            Some(&self.action_state),
+        );
+    }
+
+    /// Decrement (and prune) a subject's outstanding-request count.
+    fn dec_open_requests(&mut self, subject: ObjId) {
+        if let Some(n) = self.open_requests_per_subject.get_mut(&subject) {
+            *n = n.saturating_sub(1);
+            if *n == 0 {
+                self.open_requests_per_subject.remove(&subject);
+            }
+        }
+    }
+
     /// outcome — success, handler refusal, unknown name — produces exactly
     /// one `Reply` carrying the request's `id`, so the client can always
     /// correlate. A query for a missing actor is dropped (the connection is
@@ -3193,6 +3307,53 @@ impl Engine {
                     // (money-safe: a step that moves money is never downgraded).
                     let entry = self.durable_gate.get_or_insert((actor, false));
                     entry.1 |= strict;
+                }
+                Deferred::OpenRequest(req) => {
+                    // Interface plan I10: mint an id, deliver the Request to
+                    // the subject (best-effort, never idle-stamping), arm the
+                    // deadline, and register the pending entry. A subject at
+                    // the per-subject cap drops the open (logged).
+                    let count = self
+                        .open_requests_per_subject
+                        .entry(req.subject)
+                        .or_insert(0);
+                    if *count >= crate::request::MAX_OPEN_REQUESTS_PER_SUBJECT {
+                        tracing::debug!(subject = %req.subject, "open request dropped: subject at cap");
+                        continue;
+                    }
+                    *count += 1;
+                    let id = self.next_request_id;
+                    self.next_request_id = self.next_request_id.wrapping_add(1);
+                    let deadline_ms = self
+                        .world
+                        .now()
+                        .saturating_mul(1000)
+                        .saturating_add(req.timeout_ms);
+                    let timer = self
+                        .sched
+                        .insert(deadline_ms, ScheduledKind::RequestTimeout { id });
+                    // Deliver the ask to the subject reliably (a real prompt
+                    // should reach them, unlike a transient composing pill);
+                    // the answer is what rides the advisory one-way path.
+                    out.to_actor(
+                        req.subject,
+                        OutputEvent::Request {
+                            id,
+                            kind: req.kind,
+                            prompt: req.prompt,
+                            options: req.options,
+                            deadline_ms: Some(u64::try_from(deadline_ms).unwrap_or(0)),
+                        },
+                    );
+                    self.pending_requests.insert(
+                        id,
+                        crate::request::PendingRequest {
+                            subject: req.subject,
+                            module: req.module,
+                            payload: req.payload,
+                            timer,
+                        },
+                    );
                 }
             }
         }
@@ -4552,6 +4713,189 @@ mod tests {
             &mut fx,
         );
         assert!(out.is_empty());
+    }
+
+    /// Interface plan I10: a module opens a Choice request with
+    /// `Ctx::open_request`; a client `Respond` resumes the module with the
+    /// choice, a duplicate/forged/non-subject answer is ignored, and the
+    /// deadline fires the module's default (Expired). RAM-only, never idle.
+    #[test]
+    fn open_request_round_trips_answer_and_deadline_default() {
+        use crate::request::{RequestCompletion, RequestOutcome};
+        use mush_proto::{RequestKind, RequestOption, RespondChoice};
+
+        struct AskDone;
+        impl RequestCompletion for AskDone {
+            fn on_respond(&self, ctx: &mut Ctx<'_>, payload: &str, outcome: RequestOutcome) {
+                if ctx.w.get(ctx.actor).is_none() {
+                    return; // re-validate (treaty ruling 3)
+                }
+                let line = match outcome {
+                    RequestOutcome::Answered(RespondChoice::Choose(id)) => {
+                        format!("answered {payload}: {id}")
+                    }
+                    RequestOutcome::Answered(RespondChoice::Confirm(b)) => {
+                        format!("answered {payload}: confirm {b}")
+                    }
+                    RequestOutcome::Answered(RespondChoice::Text(t)) => {
+                        format!("answered {payload}: {t}")
+                    }
+                    RequestOutcome::Answered(RespondChoice::Cancel) => {
+                        format!("answered {payload}: cancel")
+                    }
+                    RequestOutcome::Expired => format!("expired {payload}"),
+                };
+                ctx.out.info(ctx.actor, line);
+            }
+        }
+        struct AskModule;
+        impl GameModule for AskModule {
+            fn name(&self) -> &'static str {
+                "ask"
+            }
+            fn register(&mut self, reg: &mut module::Registrar<'_>) -> Result<(), ModError> {
+                reg.classify_commands(crate::CommandCompatibility::ReadOnly);
+                reg.request_completion(Arc::new(AskDone))?;
+                reg.command(
+                    CommandSpec {
+                        name: "@ask".into(),
+                        ..CommandSpec::default()
+                    },
+                    Arc::new(|ctx: &mut Ctx<'_>| {
+                        let subject = ctx.actor;
+                        ctx.open_request(
+                            subject,
+                            RequestKind::Choice,
+                            RichText::plain("pick"),
+                            vec![
+                                RequestOption {
+                                    id: "razor".into(),
+                                    label: "Razor".into(),
+                                },
+                                RequestOption {
+                                    id: "mara".into(),
+                                    label: "Mara".into(),
+                                },
+                            ],
+                            60_000,
+                            "p1",
+                        );
+                        Ok(())
+                    }),
+                )?;
+                Ok(())
+            }
+        }
+
+        let mut world = World::new_minimal();
+        world.set_now(1_000);
+        let mut registry = Registry::new();
+        register_core_commands(&mut registry).unwrap();
+        let mut engine = Engine::with_modules(world, registry, vec![Box::new(AskModule)]).unwrap();
+
+        // Open: `@ask` as GOD emits a Choice Request (id 1) with two options.
+        let (mut out, mut fx) = (Outbox::new(), Effects::new());
+        engine.step(
+            Inbound::Cmd {
+                conn: 1,
+                actor: GOD,
+                line: "@ask".into(),
+            },
+            &mut out,
+            &mut fx,
+        );
+        let req = out
+            .events()
+            .iter()
+            .find_map(|(aud, e)| match (aud, e) {
+                (
+                    Audience::Actor(a),
+                    OutputEvent::Request {
+                        id, kind, options, ..
+                    },
+                ) if *a == GOD => Some((*id, *kind, options.len())),
+                _ => None,
+            })
+            .expect("a Request to GOD");
+        assert_eq!(req, (1, RequestKind::Choice, 2));
+
+        // Answer: a Respond with the chosen option resumes the module.
+        let (mut out, mut fx) = (Outbox::new(), Effects::new());
+        engine.step(
+            Inbound::Respond {
+                conn: 1,
+                actor: GOD,
+                id: 1,
+                choice: RespondChoice::Choose("razor".into()),
+            },
+            &mut out,
+            &mut fx,
+        );
+        assert!(
+            texts(&out).iter().any(|t| t == "answered p1: razor"),
+            "{:?}",
+            texts(&out)
+        );
+
+        // A duplicate answer for the resolved id is ignored (not an error).
+        let (mut out, mut fx) = (Outbox::new(), Effects::new());
+        engine.step(
+            Inbound::Respond {
+                conn: 1,
+                actor: GOD,
+                id: 1,
+                choice: RespondChoice::Choose("mara".into()),
+            },
+            &mut out,
+            &mut fx,
+        );
+        assert!(out.is_empty(), "a resolved id is ignored");
+
+        // Deadline default: a second `@ask` (id 2), then time passes and
+        // fire_due applies Expired.
+        let (mut out, mut fx) = (Outbox::new(), Effects::new());
+        engine.step(
+            Inbound::Cmd {
+                conn: 1,
+                actor: GOD,
+                line: "@ask".into(),
+            },
+            &mut out,
+            &mut fx,
+        );
+        // The 60s deadline was set from now()=1000s: due at 1_060_000 ms.
+        let (mut out, mut fx) = (Outbox::new(), Effects::new());
+        engine.fire_due(1_061_000, &mut out, &mut fx);
+        assert!(
+            texts(&out).iter().any(|t| t == "expired p1"),
+            "{:?}",
+            texts(&out)
+        );
+
+        // A forged answer from a non-subject is ignored: open a third (id 3),
+        // answer as a different actor.
+        let (mut out, mut fx) = (Outbox::new(), Effects::new());
+        engine.step(
+            Inbound::Cmd {
+                conn: 1,
+                actor: GOD,
+                line: "@ask".into(),
+            },
+            &mut out,
+            &mut fx,
+        );
+        let (mut out, mut fx) = (Outbox::new(), Effects::new());
+        engine.step(
+            Inbound::Respond {
+                conn: 9,
+                actor: ObjId(99),
+                id: 3,
+                choice: RespondChoice::Cancel,
+            },
+            &mut out,
+            &mut fx,
+        );
+        assert!(out.is_empty(), "a non-subject answer is ignored");
     }
 
     #[test]

@@ -71,6 +71,13 @@ pub enum ScheduledKind {
     },
     /// A named engine-internal control timer (garbage sweeps, checkpoints).
     Control(SmolStr),
+    /// A server-initiated request's deadline (interface plan I10): when it
+    /// fires, the engine applies the module's default for request `id` and
+    /// drops the pending entry.
+    RequestTimeout {
+        /// The request id (engine-minted).
+        id: u64,
+    },
 }
 
 /// Handle to one scheduled entry, for [`Scheduler::cancel`].

@@ -1213,6 +1213,9 @@ pub struct ModuleTables {
     weather: Option<(SmolStr, Arc<dyn WeatherQuery>)>,
     /// module name → its async-completion handler (the LLM re-entry seam).
     async_completions: HashMap<SmolStr, Arc<dyn AsyncCompletion>>,
+    /// module name → its request-completion handler (interface plan I10: the
+    /// server-initiated Request/Respond re-entry seam).
+    request_completions: HashMap<SmolStr, Arc<dyn crate::request::RequestCompletion>>,
     state_inits: Vec<StateInit>,
 }
 
@@ -1664,6 +1667,17 @@ impl Registry {
     #[must_use]
     pub fn async_completion(&self, module: &str) -> Option<Arc<dyn AsyncCompletion>> {
         self.mods.async_completions.get(module).map(Arc::clone)
+    }
+
+    /// This module's registered
+    /// [`RequestCompletion`](crate::request::RequestCompletion), if any
+    /// (interface plan I10).
+    #[must_use]
+    pub fn request_completion(
+        &self,
+        module: &str,
+    ) -> Option<Arc<dyn crate::request::RequestCompletion>> {
+        self.mods.request_completions.get(module).map(Arc::clone)
     }
 
     /// Drain the collected state-slot inits (the engine installs them on
@@ -2843,6 +2857,35 @@ impl<'a> Registrar<'a> {
             .insert(self.module.clone(), handler);
         Ok(())
     }
+
+    /// Register this module's
+    /// [`RequestCompletion`](crate::request::RequestCompletion) handler — the
+    /// re-entry point for server-initiated requests it opens with
+    /// [`Ctx::open_request`](crate::cmd::Ctx::open_request) (interface plan
+    /// I10). A module registers at most one; a second is a conflict.
+    pub fn request_completion(
+        &mut self,
+        handler: Arc<dyn crate::request::RequestCompletion>,
+    ) -> Result<(), ModError> {
+        if self
+            .reg
+            .tables_mut()
+            .request_completions
+            .contains_key(&self.module)
+        {
+            return Err(ModError::Conflict {
+                module: self.module.clone(),
+                what: "request completion",
+                name: self.module.clone(),
+                owner: self.module.clone(),
+            });
+        }
+        self.reg
+            .tables_mut()
+            .request_completions
+            .insert(self.module.clone(), handler);
+        Ok(())
+    }
 }
 
 // ----------------------------------------------------------------------
@@ -3180,6 +3223,41 @@ pub(crate) fn apply_async_completion_with_action_state(
     handler.on_complete(&mut ctx, correlation, payload);
 }
 
+/// Route a resolved server-initiated request (interface plan I10) to
+/// `module`'s registered [`RequestCompletion`](crate::request::RequestCompletion),
+/// in the world task, with a full [`Ctx`] whose `actor` is the subject. A
+/// missing handler is logged and dropped. The handler re-validates against
+/// current world state (treaty ruling 3).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn apply_request_completion_with_action_state(
+    reg: &Registry,
+    w: &mut World,
+    out: &mut Outbox,
+    module: SmolStr,
+    subject: ObjId,
+    payload: &str,
+    outcome: crate::request::RequestOutcome,
+    action_state: Option<&crate::action_state::ActionStateStore>,
+) {
+    let Some(handler) = reg.request_completion(&module) else {
+        tracing::warn!(%module, "request completion for unregistered module dropped");
+        return;
+    };
+    let typed_state =
+        crate::action_state::ModuleActionState::for_module(action_state, Some(module.as_str()));
+    let mut ctx = Ctx {
+        w,
+        actor: subject,
+        switches: SwitchSet::default(),
+        args: ParsedArgs::default(),
+        out,
+        reg,
+        module: Some(module),
+        typed_state,
+    };
+    handler.on_respond(&mut ctx, payload, outcome);
+}
+
 /// Fire the `Connected` / `Disconnected` hooks for an actor.
 pub fn fire_conn_hook(
     reg: &Registry,
@@ -3378,6 +3456,44 @@ impl Ctx<'_> {
     /// check `ns == module`.
     pub fn persist(&mut self, op: ModuleOp) {
         self.out.defer(Deferred::Persist(op));
+    }
+
+    /// Open a server-initiated request to `subject` (interface plan I10,
+    /// D-I-21): the client is asked and answers by id, or the deadline fires
+    /// this module's default; either way the engine routes the outcome to this
+    /// module's registered
+    /// [`RequestCompletion`](crate::request::RequestCompletion). Choice-only —
+    /// the server owns the effect. Ephemeral / RAM-only (D-I-22): a request
+    /// outstanding at a restart is lost. A no-op when this context carries no
+    /// module identity. Options past
+    /// [`MAX_REQUEST_OPTIONS`](mush_proto::MAX_REQUEST_OPTIONS) are dropped; a
+    /// negative timeout clamps to zero (fires on the next scheduler pass).
+    pub fn open_request(
+        &mut self,
+        subject: ObjId,
+        kind: mush_proto::RequestKind,
+        prompt: mush_proto::RichText,
+        options: Vec<mush_proto::RequestOption>,
+        timeout_ms: i64,
+        payload: impl Into<String>,
+    ) {
+        let Some(module) = self.module.clone() else {
+            tracing::warn!("open_request with no module identity; dropped");
+            return;
+        };
+        self.out
+            .defer(Deferred::OpenRequest(crate::request::OpenRequest {
+                subject,
+                kind,
+                prompt,
+                options: options
+                    .into_iter()
+                    .take(mush_proto::MAX_REQUEST_OPTIONS)
+                    .collect(),
+                timeout_ms: timeout_ms.max(0),
+                module,
+                payload: payload.into(),
+            }));
     }
 
     // ---- E7c2: B1 — the `Authoritative` ingress adapter seam ----

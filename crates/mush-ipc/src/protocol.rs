@@ -10,7 +10,9 @@ use mush_core::{
     ActionOfferId, CommitToken, DisconnectKind, Inbound, ObjId, PerceivedRef, ProjectedLegalAction,
     RequestUid,
 };
-use mush_proto::{ActionStatusId, OutputEvent, ProjectedActionReceipt, ProjectedActionStatus};
+use mush_proto::{
+    ActionStatusId, OutputEvent, ProjectedActionReceipt, ProjectedActionStatus, RespondChoice,
+};
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 
@@ -141,6 +143,20 @@ pub enum WireInbound {
         actor: ObjId,
         /// `true` when a draft began, `false` when it was sent or abandoned.
         active: bool,
+    },
+    /// A client's answer to a server-initiated request ([`Inbound::Respond`],
+    /// interface plan I10): advisory and best-effort, so it rides the plain
+    /// one-way path like `Composing`. A lost answer means the server applies
+    /// its deadline default.
+    Respond {
+        /// The connection it arrived on.
+        conn: u64,
+        /// The actor answering (must be the request's subject).
+        actor: ObjId,
+        /// The request id from the originating `Request`.
+        id: u64,
+        /// The viewer's choice.
+        choice: RespondChoice,
     },
 }
 
@@ -443,6 +459,17 @@ impl From<WireInbound> for Inbound {
                 actor,
                 active,
             },
+            WireInbound::Respond {
+                conn,
+                actor,
+                id,
+                choice,
+            } => Inbound::Respond {
+                conn,
+                actor,
+                id,
+                choice,
+            },
         }
     }
 }
@@ -495,6 +522,17 @@ impl TryFrom<Inbound> for WireInbound {
                 conn,
                 actor,
                 active,
+            }),
+            Inbound::Respond {
+                conn,
+                actor,
+                id,
+                choice,
+            } => Ok(WireInbound::Respond {
+                conn,
+                actor,
+                id,
+                choice,
             }),
             Inbound::Apply(_) => Err(WireInboundError::Apply),
             Inbound::Control(_) => Err(WireInboundError::Control),
