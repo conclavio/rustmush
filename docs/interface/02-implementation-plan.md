@@ -1389,6 +1389,69 @@ same slice.
 **Verify lens.** **L (leak)** — can backlog serve a line the live stream
 would have withheld? **S (staleness)**, **B (bounds)**.
 
+**Design (2026-09-05) — recommended, adversarially verified (not yet built).**
+From an 8-agent code map, a 4-approach design pass, and a 6-lens adversarial
+verify (leak ×2, staleness/bounds); the design **holds**. **Approach R
+(resume-ring-backed), not a world-side capture ring.**
+
+- **The insight.** The `mush-session` per-viewer **resume ring**
+  (`SessEntry.ring: VecDeque<(seq, Arc<Envelope>)>`, default 512, always-on,
+  RAM-only, process-local) already *is* a per-viewer, already-gated backlog of
+  every delivered line. Its sole writer `deliver_to_session` is reached only
+  for `SendTarget::Char`/`All`, and a `Char(X)` line is the world's own "X was
+  entitled to see this" assertion — the room fan-out already applied `exclude`
+  / `!is_connected` / `is_ignoring` / M11 `can_perceive`. So the backlog needs
+  **no new capture, no re-gating, no world state**: it reads the viewer's own
+  ring, filtered to `Narrative`, newest-first. Exactly the spec's RAM-first /
+  bounded / durable-later retention.
+- **Wire.** Additive `Query::NarrativeBacklog { before_seq: Option<u64>,
+  limit: u32 }` (no room field — the ring is per-viewer by construction). Reply
+  reuses `Reply{ Panel{ feed:"narrative", kind:Delta,
+  data:{backlog:{before_seq, more, evicted, lines:[…newest-first]}} } }`,
+  byte-parallel to `comsys.backlog`. `cargo gen-ts` + committed bindings, plus a
+  serde round-trip test (no `ts_export` needle exists for any `Query` variant,
+  `ChannelBacklog` included). No new `OutputEvent`, no world `QueryHandler`, no
+  `legacy-handlers.toml` stanza.
+- **Where it is answered.** NOT a core `QueryHandler` — the ring is
+  gateway-side, unreachable by `&World`. A new read-only
+  `SessionManager::backlog_matching(sess, before_seq, limit, keep)` (sibling of
+  `replay_since`) and a `narrative_backlog_reply` on the shared `Core`, answered
+  **locally** at both bridge seams (`web_bridge.rs request()` and
+  `bridge_common.rs query()`, exactly like `legal.actions`), delivered
+  conn-scoped so it never re-enters the ring. `ssh_bridge.rs` untouched.
+- **Leak proof (verified).** Single write path; the `Narrative`-only filter
+  excludes the sole cross-viewer residue (`Sys` on `Audience::All`);
+  commit-binding is free (`release_classified_sends` drops `OnCommit` narrative
+  on `Aborted` *before* delivery); session↔character is 1:1 for life;
+  cross-account isolation rests on `authorize_character` ownership +
+  append-only accounts (named as a load-bearing external invariant a future
+  character-transfer milestone must re-check). Entitlement is **frozen at
+  send-time**, never re-derived — correct for momentary first-Conceal-wins
+  concealment. Under-inclusion only, never over.
+- **Verify fixes folded.** (S1) the `more`/`evicted` formula is pinned —
+  collect `limit+1`, `more = collected>limit`, `evicted = !more &&
+  evicted_seq>0`, clamp `limit` to `1..=200` (else silent truncation or spurious
+  empty pages). (S2) the local arm uses a **strict flood check that ignores
+  flood-exempt** (mail-compose/chargen), since a locally-answered query has no
+  world-side backpressure. (A2+S4) a `debug_assert`+test tripwire that no
+  `Narrative` ever rides the `All` / `send_to_session` paths — hardening the
+  leak proof over all four `deliver_to_session` writers, mirroring the SP1
+  rule-1 tripwire. The M11 gate is `Audience::Room` only; `Audience::Actor`
+  narratives (give/whisper/page) are safe because each names only the acting
+  initiator; the load-bearing citation is `world_task.rs`
+  `resolve_classified_sends` (not `engine.rs`).
+- **Clients.** Web `scrollback.svelte.ts` gains a real prepend (today "Show
+  older" only widens the RAM window) + scroll-anchor preservation; TUI
+  `push_front` at the ring top (second-phase). Line mode deferred.
+- **★ Owner forks.** (1) **retention depth** — ship the shared-512 resume ring,
+  or add a dedicated narrative-only session ring for depth (note: enabling I13
+  churns the same ring, shrinking I12's usable narrative depth in busy scenes);
+  (2) **config-wire the caps** (512 / 200) now vs hardcode as today; (3)
+  **line-mode `+backlog`** now vs defer (structured web/TUI meet the goal today).
+- **Effort:** small-to-medium — 1 `Query` variant + gen-ts; a ~15-line session
+  primitive; 1 bridge handler + 2 one-line routing arms; the web prepend; TUI
+  optional.
+
 ### 3.13 Cut I13 — Live panel deltas (retire the sheet poll)
 
 **What it is.** `PanelFrameKind::Delta` exists in the contract but few
@@ -1418,6 +1481,69 @@ state from the same delta.
 
 **Verify lens.** **S (staleness)** — can a reordered or dropped delta leave a
 surface silently wrong? **B (bounds)**.
+
+**Design (2026-09-05) — recommended, adversarially verified (not yet built).**
+From the same map/design/verify passes (drift ×2, bounds); the design
+**holds** — and the one "high" attacker claim, that a republish drops the
+authoritative overlay, was **refuted**: `sheet_keyframe` reads via `read_ctx`,
+which applies the Condition-Monitor / temp-Willpower overlay. **Approach B
+(full-data versioned delta) + a per-subject schema fingerprint.**
+
+- **Spine.** The republish sends the *whole* staff-filtered `data` as
+  `kind=Delta` carrying `revision`+`base_revision` and **omitting** the large
+  static `schema` — schema is the dominant cost, so dropping it captures the
+  bulk of the win with no field-diff, no prior-data snapshot, no removed-field
+  semantics. The client is a pure revision watermark that resyncs on any base
+  gap. No proto/gen-ts/allowlist change (the fields live inside `Panel.data`).
+- **Revision.** Reuse `VitalsRevisions` (bumped once per `AttrSet` before both
+  republishes); the on-subscribe keyframe reads it via
+  `w.module_state::<VitalsRevisions>()` exactly like `VitalsQuery`. Add
+  `revision` to all three on-subscribe builders (wod/sr `sheet_panel`, generic
+  `SheetQuery`).
+- **Schema-change → keyframe.** A per-subject 8-byte `SheetSchemaFps` slot
+  (beside `VitalsRevisions`): when the schema fingerprint changes (template
+  swap) — or on the first write after boot (prior `None`) — emit a Keyframe,
+  not a Delta. Verify fix: the fingerprint is a **64-bit hash over
+  `schema.describe()`** (the exact wire schema bytes, already computed for the
+  keyframe) **combined with the subject's `show_staff` bit**
+  (`perm::has_role(w, subject, Royalty)`) — so a Royalty demote-then-write also
+  force-keyframes, closing the one realizable old-web stale-key drop (the old
+  shallow-merge `applyDelta` never removes a key the delta omits).
+- **Trait.** Replace `VitalsSource::sheet_keyframe -> Option<OutputEvent>` with
+  `sheet_frame(ctx, subject, revision, prior_fp) -> Option<SheetFrame{event,
+  schema_fp}>`; it **must** read via the overlay-applying `read_ctx`
+  (preserving Condition-Monitor / temp-Willpower across the refactor).
+  `base_revision = revision.saturating_sub(1)`, and force a Keyframe when
+  `revision==0` (never a Delta at revision 0). Republish stays subject-only.
+- **Clients.** Web `applyDelta` becomes a stale/resync/applied state machine on
+  `base_revision==revision`, full-replacing `data`; resync via `refreshSheet()`
+  with a storm guard (mirrors `legal.actions`). TUI adds a
+  `feed.ends_with(".sheet")` Delta arm whose `cur` is **the server `revision`
+  read from the held frame's data**, NOT the local `PanelState.revision`
+  counter; it shallow-merges so the delta's `data` replaces but the omitted
+  `schema` is preserved; a base gap falls to the existing storm-guarded resync.
+- **Bounds.** The 1 MiB `within_bounds` cap is absolute — a data-dominant delta
+  can be dropped too (the "deltas always pass" assumption is false). Fix: cap
+  sheet doc size server-side (bound map/list entry counts, or reject an
+  oversized `put_by`) so no keyframe *or* delta exceeds `MAX_VIEW_DATA_BYTES`;
+  optionally harden the TUI so an over-bounds frame doesn't strand
+  `resync_pending`.
+- **Reset-on-hello / resume.** `VitalsRevisions`+`SheetSchemaFps` are
+  RAM/boot-reset; the first post-boot write per subject force-keyframes,
+  reseeding the client before any delta. Sheet deltas ride the resume ring too,
+  so a resume replays them — the base-gap guard covers mid-session resume
+  replay, not only boot. The sheet stays a Panel sibling of vitals
+  (revision≈ViewCursor sequence, fp-change≈generation, resync≈ResyncRequired)
+  because the world-side observer cannot reach the gateway's per-conn
+  view-sequence allocator.
+- **★ Owner forks.** (1) **full-data delta B** (recommended — simple,
+  drift-proof, ~80-90% win) **vs minimal field-diff A** (trims the residual,
+  helps large SR sheets under frequent writes, but B→A later is *not* purely
+  additive — B replaces `data`, A merges); (2) **server fingerprint slot**
+  (recommended) **vs a `schema_id` on every frame**.
+- **Effort:** medium — `mush-ruleset/vitals.rs` (trait + fp slot + republish),
+  both rulesets' `sheet_cmds.rs`, the generic path, web `sheet.svelte.ts` +
+  `game.svelte.ts`, TUI `panels.rs`; no proto/gen-ts/allowlist.
 
 ---
 
@@ -1734,6 +1860,20 @@ modal ruling (D-I-17, D-I-18) rather than by its default.**
 
 ## 10. Changelog
 
+- **Draft 0.8 — 2026-09-05.** Recommended, adversarially-verified **designs**
+  for I12 (§3.12) and I13 (§3.13), not yet built. Produced by three workflows —
+  an 8-agent code map, a 4-approach design pass (judged + a completeness
+  critic), and a 6-lens adversarial verify (per-cut adjudication). Both designs
+  **hold**. I12 = resume-ring-backed (the per-viewer session ring is already a
+  gated backlog; no world capture, no re-gating); I13 = full-data versioned
+  delta + a per-subject schema fingerprint (reuse `VitalsRevisions`; the client
+  is a revision watermark). Verify fixes folded into both (I12: `more`/`evicted`
+  formula, strict flood check, the Narrative-never-broadcast tripwire; I13: the
+  `describe()`+`show_staff` fingerprint, TUI `cur`=server-revision, the
+  `revision==0` guard, the overlay-preserving `read_ctx`, the absolute-1 MiB
+  server-side cap). Owner forks surfaced per cut (I12: retention depth,
+  config-wire caps, line-mode `+backlog`; I13: full-data vs field-diff, fp-slot
+  vs `schema_id`).
 - **Draft 0.7 — 2026-09-05.** I11 built and folded (§3.11 as-built): the
   `Notice` wire (`OutputEvent::Notice`, `NoticeSeverity`, `NoticeAction`,
   `MAX_NOTICE_TEXT_BYTES`, ts-exported, round-trip tested) and all three client
