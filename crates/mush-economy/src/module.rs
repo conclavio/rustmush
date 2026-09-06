@@ -55,8 +55,20 @@ pub const JOURNAL_LOG: &str = "journal";
 /// idempotency + reversed), the append-only journal [`Ledger`] (open tail in RAM),
 /// the txid index (for cold reversal — journal-derived at boot), the monotonic
 /// allocators, and the whole-economy freeze latch.
+/// What the cold journal replay cost at the last boot (H3; the C17 log's
+/// numbers as an accessor, so a harness can read them).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ReplayStats {
+    /// Journal transactions replayed.
+    pub entries: usize,
+    /// Wall time the replay took, milliseconds.
+    pub elapsed_ms: u64,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct EconomyStore {
+    /// The last boot's cold replay cost (H3); `None` until `on_world_loaded`.
+    pub(crate) boot_replay: Option<ReplayStats>,
     pub(crate) snapshot: EconomySnapshot,
     /// The double-entry journal (append-only; open tail in RAM, cold chunks paged
     /// from `data.kv` at boot).
@@ -336,6 +348,7 @@ impl EconomyStore {
     /// provider table is empty here — the module injects the frozen one after boot.
     pub(crate) fn from_parts(p: BootParts) -> EconomyStore {
         EconomyStore {
+            boot_replay: None,
             snapshot: p.snapshot,
             journal: p.journal,
             transactions: p.transactions,
@@ -408,6 +421,13 @@ impl EconomyStore {
     /// The transactions in id order (staff audit).
     pub fn transactions(&self) -> impl Iterator<Item = &EconomicTransaction> {
         self.transactions.values()
+    }
+
+    /// What the cold journal replay cost at the last boot (H3), or `None`
+    /// before the module has booted.
+    #[must_use]
+    pub fn boot_replay(&self) -> Option<ReplayStats> {
+        self.boot_replay
     }
 
     /// Mint the next account id, or `None` at the ceiling (E4b1 verify fold, B2).
@@ -1203,6 +1223,10 @@ impl GameModule for EconomyModule {
         let elapsed = started.elapsed();
         let entries = store.transactions().count();
         let elapsed_ms = u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX);
+        store.boot_replay = Some(ReplayStats {
+            entries,
+            elapsed_ms,
+        });
         tracing::info!(entries, elapsed_ms, "economy: journal replayed at boot");
         if elapsed.as_secs() > CHECKPOINT_REVIEW_SECS || entries > CHECKPOINT_REVIEW_ENTRIES {
             tracing::warn!(

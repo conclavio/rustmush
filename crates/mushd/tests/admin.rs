@@ -492,6 +492,14 @@ fn render_stats_reports_counts_lag_and_store_health() {
             today_cost: 0.0567,
             features: vec![("worldgen_room".to_string(), 1000, 200, 0.05)],
         }),
+        // H3: the authoritative lane line.
+        auth_slot_held: false,
+        auth_hold_last_ms: 4,
+        auth_hold_p99_ms: 9,
+        auth_hold_max_ms: 31,
+        auth_last_bundle_bytes: 2_048,
+        auth_last_replay_writes: 3,
+        auth_commits: [12, 1, 0, 0],
     };
     // Booted 1h 1m 1s ago.
     let text = render_stats(&engine, &health, now - 3_661, now, &extra);
@@ -511,6 +519,13 @@ fn render_stats_reports_counts_lag_and_store_health() {
         "{text}"
     );
     assert!(text.contains("NPC agents: 4 active, 1 thinking"), "{text}");
+    // H3: the authoritative lane, aggregates only.
+    assert!(
+        text.contains(
+            "Authoritative lane: slot free; hold last 4ms, p99 9ms, max 31ms; last bundle 2048 bytes / 3 writes; commits 12 finalized, 1 refused, 0 integrity, 0 quarantined"
+        ),
+        "{text}"
+    );
     assert!(
         text.contains(
             "Mechanics: 1 definitions from 1 owners, 0 bridges, 0 migrations; fingerprint "
@@ -551,6 +566,13 @@ fn render_stats_reports_counts_lag_and_store_health() {
     let text = render_stats(&engine, &ro, now, now, &StatsExtra::default());
     assert!(text.contains("READ-ONLY"), "{text}");
     assert!(text.contains("no writes yet this boot"), "{text}");
+    // H3: the lane line renders with zero commits.
+    assert!(
+        text.contains(
+            "Authoritative lane: slot free; hold last 0ms, p99 0ms, max 0ms; last bundle 0 bytes / 0 writes; commits 0 finalized, 0 refused, 0 integrity, 0 quarantined"
+        ),
+        "{text}"
+    );
     assert!(
         !text.contains("LLM today:"),
         "no LLM line without a service"

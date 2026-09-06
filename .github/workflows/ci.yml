@@ -4,6 +4,10 @@ on:
   push:
     branches: [main]
   pull_request:
+  # H3: the `scale` job below runs only on these two triggers.
+  workflow_dispatch:
+  schedule:
+    - cron: "17 4 * * 1"
 
 env:
   CARGO_TERM_COLOR: always
@@ -83,6 +87,28 @@ jobs:
           cargo test -p mushd --test persistence -- --test-threads=1
           cargo test -p mushd --test m10c_e2e m10c_persistence_twin_redis_gated -- --exact --test-threads=1
           cargo test -p mushd --test shadowrun_e2e sr5_sheet_survives_redis_reboot_gated -- --exact --test-threads=1
+
+  # H3 (11-h §3.3): the scale harness — cold journal replay, world boot,
+  # the authoritative write-through soak and the tick-shaped bundle. Every
+  # test is `#[ignore]`; this job is the only thing that runs them, on demand
+  # or weekly, never on push. It is report-only by design (D-H-8): a shared
+  # runner's speed is not a threshold, so read the `scale_*:` lines in the log.
+  # Run the harness locally with `SCALE_ASSERT=1` to assert the thresholds.
+  # Redis twins use logical dbs 1 and 2.
+  scale:
+    name: H3 scale harness
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    env:
+      REDIS_URL: redis://127.0.0.1:6379
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Start disposable Redis 8
+        run: docker run -d --rm --name redis -p 127.0.0.1:6379:6379 redis:8 redis-server --appendonly yes --appendfsync always --no-appendfsync-on-rewrite no
+      - name: Scale harness
+        run: cargo test --release -p mush-contract-tests --test scale_harness -- --ignored --test-threads=1 --nocapture
 
   definition-wire-fixtures:
     name: K8 definition and wire fixtures

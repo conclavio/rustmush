@@ -196,6 +196,31 @@ The gated inventory needs the two `_redis_gated` names in `ci.yml` (census +2). 
 
 **Hands to:** E7 cut 8 — the histograms and the tick-shaped measurement; the economy owner — the replay numbers 08g §12.1 item 5 keys on.
 
+**As built (2026-09-05, H3).** Everything above landed as specified, with these deviations, each for a reason found in the tree or in the first run:
+
+1. **A refusal never enters the hold histogram.** `observe_authoritative_commit(hold_ms: Option<u64>, …)`: a commit refused before the slot was taken is counted (`outcome="refused"`) and sized, but `None` feeds no hold bucket, so `auth_hold_count` is the number of commits that held the slot and a refusal storm cannot drag p50/p99 to zero. (Draft 0.2 said "records `refused` and no hold"; this is the reading that keeps the percentiles honest.)
+2. **The clock is a `SlotClock` over `Mutex<Option<Instant>>`**, not a `Cell`: the writer future holds `&SlotClock` across awaits and `Cell` is not `Sync`. It is never contended. The seam is an outer `commit_authoritative_with_retry(…, metrics: &Metrics)` around the renamed body `commit_authoritative_inner(…, slot: &SlotClock)`; the clock starts the moment the reservation loop breaks with the exact receipt — a fresh reservation or a resumed `PendingExact` alike — before `terminate_at("after_intent_before_ownership")`, and is read on every return. `checkpoint_finalized_with_retry` took `&Metrics` so both quarantine sites count.
+3. **`encoded_len` is exactly the cap check's number**: the canonical bytes of the hash material plus `bundle_hash`, kept from the `Vec` `build` already produced (no second encode), stored `#[serde(skip)]`, and re-measured on deserialize because the wire path also goes through `build`. `key_and_bundle_wire_are_strict` asserts absence from the wire, equality with a recomputation, and survival of a round trip.
+4. **`@stats` renders** `Authoritative lane: slot free|HELD; hold last N ms, p99 M ms, max X ms; last bundle B bytes / W writes; commits F finalized, R refused, I integrity, Q quarantined` from seven `StatsExtra` fields; `/metrics` gained two gauges beyond the plan (`mush_authoritative_last_bundle_bytes`, `mush_authoritative_last_replay_writes`) and `MetricsSnapshot::authoritative_hold_{p99,mean}_ms`; `write_histogram` and `histogram_p99` are the loop-lag pair generalized.
+5. **The replay accessor is `EconomyStore::boot_replay() -> Option<ReplayStats>`** (the plan said `EconomyModule::last_replay`): the store is what a test or the world reaches through `module_state::<EconomyStore>()`; it is set in `on_world_loaded` beside the C17 log line. Exported from `mush_economy`.
+6. **The harness seeds through the real command surface** (`@econ/mint` per entry, module ops folded every 1 000), so seeding costs the full engine per entry (see the numbers). The soak interleaves **module-cell** legacy batches, not object upserts: an object written by the legacy lane without an allocator bump trips `validate_replay_admission` ("an object id is not below the allocator resume point") on the next reservation — the tiny seeder found this in its first run. The soak's "never held across a completed commit" is asserted as `auth_hold_count ≥ receipts received` (the observation and the release precede the receipt) plus slot-free once the writer drains. Three knobs beyond the plan: `SCALE_ACCOUNTS` 100, `SCALE_TICK_WRITES` 512, `SCALE_TICK_POST_BYTES` 2 048. Under `SCALE_ASSERT=1`: replay within `CHECKPOINT_REVIEW_SECS`/`_ENTRIES`, soak p99 hold ≤ 250 ms, tick fill ≤ 80 % of its nearest cap.
+7. **The CI `scale` job is report-only** — no `SCALE_ASSERT` — because D-H-8's reason (a shared runner's speed is not a threshold) applies to the runner most of all; it runs the release profile with `--nocapture` so the `scale_*:` lines are the artifact. Gated census 13; README range 1–15; dbs 1 (world boot) and 2 (soak).
+
+**Measured (2026-09-05, release profile, the Windows dev box, `InMemoryStore`):**
+
+| Measurement | Size | Result |
+|---|---|---|
+| Cold journal replay | 100 000 entries / 100 accounts | **6 998 ms** (seeding took 446 s: 4.5 ms per mint through the engine) |
+| World boot | 50 000 objects | 67 ms |
+| Authoritative soak | 2 000 bundles + 500 legacy batches | 688 ms total, 344 µs per bundle; hold p50/p99 ≤ 1 ms, max 1 ms; 2 246 bytes / 2 writes per bundle; 2 000 finalized, 0 refused/integrity/quarantined |
+| Tick shape | 512 post-images × 2 048 B | 1 095 434 bytes encoded; nearest cap **replay writes at 50 %**; bundle bytes at 6.5 %; outbox payload at 0.8 % |
+
+**Finding for the economy owner (08g §12.1 item 5):** the cold replay crossed the 5 s line at 100 000 entries — an order of magnitude before the 1 000 000-entry line — so the durability checkpoint review is due now, not at a million. The number is repeatable on demand: `SCALE_JOURNAL_ENTRIES=100000 cargo test --release -p mush-contract-tests --test scale_harness -- --ignored --nocapture scale_cold`.
+
+**Verify (2026-09-05, lenses O/L).** *O* — per settled commit the lane adds one stashed-`usize` read (no re-encode: `build` kept the length of the bytes it already produced for the cap), one `Vec::len`, two uncontended mutex operations, one `Instant::now`, one `SystemTime::now` and about forty relaxed atomic operations; no allocation; nothing at all on the reservation retry loop, where the clock has not started. Rendering is on the scrape path only. `AuthoritativeBundle` grew by one `usize`. No finding. *L* — the four `/metrics` families carry only an `outcome` label from a fixed set of four; the `@stats` line is ten numbers; the harness prints counts, sizes and durations; no `tracing` line was added; the quarantine counter is unlabeled. No finding. One build-time fold, recorded as item 1 above: the refused-storm skew.
+
+Tests: `crates/mush-config/src/metrics.rs` (`h3_*`, 3), `crates/mush-core/src/authoritative.rs` (`key_and_bundle_wire_are_strict` extended), `crates/mush-server/src/persist.rs` (`h3_a_refused_reservation_records_refused_and_no_hold`; lane assertions in `authoritative_writer_reserves_reconciles_and_returns_exact_receipt` and `authoritative_writer_quarantines_whole_bundle_after_bounded_poison`), `crates/mushd/tests/admin.rs` (the lane line, populated and zero), `crates/mush-contract-tests/tests/scale_harness.rs` (`h3_*` tiny seeders, 4; six `#[ignore]` measurements).
+
 ### 3.4 Cut H4 — the kernel-edge debt sweep
 
 | Id | Where | Fix | Test |
@@ -253,7 +278,7 @@ Standing rules: clients render, they never compute (I plan rule 1) — H1's arch
 
 ## 7. Constants
 
-`MAX_STORE_READ_KEYS` 16 · `MAX_STORE_READ_BYTES` 512 KiB · `MAX_PENDING_STORE_READS_PER_ACTOR` 1 · `ARCHIVE_PAGE_CHUNKS` 4 (≈ 64 KiB of entries) · `STORE_READ_TIMEOUT_MS` 5 000 · `NPC_DECISION_LEASE_SECS` 60 (≤ `MAX_DECISION_LEASE_DURATION` 3 600) · `NPC_SCENE_TURN_DEADLINE_SECS` 120 (config default) · `BUNDLE_BUCKETS_BYTES` [1 KiB, 4 KiB, 16 KiB, 64 KiB, 256 KiB, 1 MiB, 2 MiB, 4 MiB, 8 MiB, 12 MiB, 16 MiB] · `WRITE_BUCKETS` [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1 024] · `SCALE_JOURNAL_ENTRIES` 100 000 / `SCALE_OBJECTS` 50 000 / `SCALE_BUNDLES` 2 000 (env-overridable). Cited, not redefined: `MAX_DECISION_CONTEXT_BYTES` 64 KiB, `MAX_DECISION_OFFERS` 32, the per-actor/controller/global decision caps, `MAX_DECISION_PROVIDER_WORKERS` 32.
+`MAX_STORE_READ_KEYS` 16 · `MAX_STORE_READ_BYTES` 512 KiB · `MAX_PENDING_STORE_READS_PER_ACTOR` 1 · `ARCHIVE_PAGE_CHUNKS` 4 (≈ 64 KiB of entries) · `STORE_READ_TIMEOUT_MS` 5 000 · `NPC_DECISION_LEASE_SECS` 60 (≤ `MAX_DECISION_LEASE_DURATION` 3 600) · `NPC_SCENE_TURN_DEADLINE_SECS` 120 (config default) · `BUNDLE_BUCKETS_BYTES` [1 KiB, 4 KiB, 16 KiB, 64 KiB, 256 KiB, 1 MiB, 2 MiB, 4 MiB, 8 MiB, 12 MiB, 16 MiB] · `WRITE_BUCKETS` [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1 024] · `SCALE_JOURNAL_ENTRIES` 100 000 / `SCALE_ACCOUNTS` 100 / `SCALE_OBJECTS` 50 000 / `SCALE_BUNDLES` 2 000 / `SCALE_TICK_WRITES` 512 / `SCALE_TICK_POST_BYTES` 2 048 (env-overridable; under `SCALE_ASSERT=1` the soak's p99 hold line is 250 ms and the tick's headroom line is 80 % of its nearest cap). Cited, not redefined: `MAX_DECISION_CONTEXT_BYTES` 64 KiB, `MAX_DECISION_OFFERS` 32, the per-actor/controller/global decision caps, `MAX_DECISION_PROVIDER_WORKERS` 32.
 
 **Config.** `[llm].decision_workers` (parsed by `mush-llm`'s `LlmConfig`; default 8, boot-refused above 32) · `[llm.routes.npc_decision]` (a route stanza like `npc_dialogue_minor`; absent → the adapter answers `Unavailable` and boot warns once) · `[npc].scene_turn_deadline_secs` (a new `NpcCfg` section; default 120).
 
@@ -313,5 +338,6 @@ The review re-opened every symbol the draft leaned on that had not been opened w
 
 ## 11. Changelog
 
+- **H3 as built — 2026-09-05.** §3.3 gained the as-built, measured and verify blocks; §7 the harness knobs and threshold lines. The first release-profile run put the 100 000-entry cold replay at 7.0 s, past the 5 s checkpoint-review line.
 - **Draft 0.2 — 2026-09-05.** The review pass folded (§10): the explicit `actor` on `DecisionCaptureDraft`, the new `NpcCfg` section and `mush-llm`-parsed `decision_workers`, `LlmFeature::NpcDecision` as a variant, hold time measured inside `commit_authoritative_with_retry`, seven call sites, the `DecisionCause` fields, Redis db assignment, the `Settled::Posted` allow.
 - **Draft 0.1 — 2026-09-05.** First plan, from the "what other low-level work" assessment, grounded on `ad743c6`.

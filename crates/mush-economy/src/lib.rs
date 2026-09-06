@@ -159,7 +159,7 @@ pub use contract::{
 pub use contract_live::accept_contract_as;
 pub use module::{
     MAX_CANON_ENTITIES, MAX_PARTY_CAPS, MAX_REFUSAL_ACTORS, MAX_REFUSAL_ROWS, PartyCapTable,
-    RefusalTally,
+    RefusalTally, ReplayStats,
 };
 pub use snapshot::EconomySnapshot;
 

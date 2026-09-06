@@ -37,6 +37,41 @@ use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 /// The final `+Inf` bucket is implicit (`total` minus the sum of these).
 pub const LAG_BUCKETS_MS: [u64; 12] = [1, 2, 5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000];
 
+/// Authoritative-bundle size histogram bucket upper bounds, bytes (H3). The
+/// top bucket is the kernel's `MAX_AUTHORITATIVE_BUNDLE_BYTES` (16 MiB), so a
+/// bundle that lands there is at the cap.
+pub const BUNDLE_BUCKETS_BYTES: [u64; 11] = [
+    1 << 10,
+    4 << 10,
+    16 << 10,
+    64 << 10,
+    256 << 10,
+    1 << 20,
+    2 << 20,
+    4 << 20,
+    8 << 20,
+    12 << 20,
+    16 << 20,
+];
+
+/// Authoritative-bundle replay-write count histogram bucket upper bounds
+/// (H3). The top bucket is the kernel's `MAX_AUTHORITATIVE_REPLAY_WRITES`.
+pub const WRITE_BUCKETS: [u64; 11] = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024];
+
+/// How one authoritative commit ended, for the `outcome` label of
+/// `mush_authoritative_commits_total` (H3).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AuthoritativeCommitOutcome {
+    /// The exact receipt was finalized and checkpointed.
+    Finalized,
+    /// Reservation definitively created no intent (a refusal before the slot
+    /// was held).
+    Refused,
+    /// An integrity failure: an intent may exist, identity is contradictory,
+    /// or the store is damaged.
+    Integrity,
+}
+
 /// Cumulative LLM counters for one (feature route, provider) pair, since boot.
 /// Sourced from the `mush-llm` audit aggregate; every field is monotonic, so
 /// they render as Prometheus counters.
@@ -122,6 +157,30 @@ pub struct Metrics {
     store_authoritative_queue_depth: AtomicI64,
     store_control_queue_depth: AtomicI64,
     store_last_ack_unix: AtomicI64,
+
+    // -- the authoritative lane (H3; event-driven from the store writer) --
+    /// The single pending-intent slot: held from the exact reservation
+    /// receipt until the commit settles (finalized, failed or quarantined).
+    auth_slot_held: AtomicBool,
+    /// Unix seconds the slot was last taken (0 = never).
+    auth_slot_held_since_unix: AtomicI64,
+    auth_hold_last_ms: AtomicU64,
+    auth_hold_max_ms: AtomicU64,
+    auth_hold_buckets: [AtomicU64; 12],
+    auth_hold_count: AtomicU64,
+    auth_hold_sum_ms: AtomicU64,
+    auth_bytes_last: AtomicU64,
+    auth_bytes_buckets: [AtomicU64; 11],
+    auth_bytes_count: AtomicU64,
+    auth_bytes_sum: AtomicU64,
+    auth_writes_last: AtomicU64,
+    auth_writes_buckets: [AtomicU64; 11],
+    auth_writes_count: AtomicU64,
+    auth_writes_sum: AtomicU64,
+    auth_commits_finalized_total: AtomicU64,
+    auth_commits_refused_total: AtomicU64,
+    auth_commits_integrity_total: AtomicU64,
+    auth_commits_quarantined_total: AtomicU64,
 
     // -- NPC agents (published each sample) --
     npc_active: AtomicI64,
@@ -329,6 +388,79 @@ impl Metrics {
             .fetch_add(delta, Ordering::Relaxed);
     }
 
+    // -- the authoritative lane (H3) ---------------------------------------
+
+    /// The store writer took the single pending-intent slot (the exact
+    /// reservation receipt arrived) at `now_unix`.
+    pub fn authoritative_slot_held(&self, now_unix: i64) {
+        self.auth_slot_held.store(true, Ordering::Relaxed);
+        self.auth_slot_held_since_unix
+            .store(now_unix, Ordering::Relaxed);
+    }
+
+    /// The slot is free again (the commit settled either way).
+    pub fn authoritative_slot_released(&self) {
+        self.auth_slot_held.store(false, Ordering::Relaxed);
+    }
+
+    /// Record one settled authoritative commit: how long the slot was held
+    /// (`None` for a commit refused before the slot was taken — a refusal
+    /// is counted but never enters the hold histogram, so a refusal storm
+    /// cannot drag the hold percentiles down), the bundle's canonical encoded
+    /// size, its replay-write count, and how it ended. Aggregates only —
+    /// never a token, hash, owner or key.
+    pub fn observe_authoritative_commit(
+        &self,
+        hold_ms: Option<u64>,
+        bundle_bytes: u64,
+        replay_writes: u64,
+        outcome: AuthoritativeCommitOutcome,
+    ) {
+        if let Some(hold_ms) = hold_ms {
+            self.auth_hold_last_ms.store(hold_ms, Ordering::Relaxed);
+            self.auth_hold_max_ms.fetch_max(hold_ms, Ordering::Relaxed);
+            self.auth_hold_count.fetch_add(1, Ordering::Relaxed);
+            self.auth_hold_sum_ms.fetch_add(hold_ms, Ordering::Relaxed);
+            for (i, &bound) in LAG_BUCKETS_MS.iter().enumerate() {
+                if hold_ms <= bound {
+                    self.auth_hold_buckets[i].fetch_add(1, Ordering::Relaxed);
+                }
+            }
+        }
+        self.auth_bytes_last.store(bundle_bytes, Ordering::Relaxed);
+        self.auth_bytes_count.fetch_add(1, Ordering::Relaxed);
+        self.auth_bytes_sum
+            .fetch_add(bundle_bytes, Ordering::Relaxed);
+        for (i, &bound) in BUNDLE_BUCKETS_BYTES.iter().enumerate() {
+            if bundle_bytes <= bound {
+                self.auth_bytes_buckets[i].fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        self.auth_writes_last
+            .store(replay_writes, Ordering::Relaxed);
+        self.auth_writes_count.fetch_add(1, Ordering::Relaxed);
+        self.auth_writes_sum
+            .fetch_add(replay_writes, Ordering::Relaxed);
+        for (i, &bound) in WRITE_BUCKETS.iter().enumerate() {
+            if replay_writes <= bound {
+                self.auth_writes_buckets[i].fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        let counter = match outcome {
+            AuthoritativeCommitOutcome::Finalized => &self.auth_commits_finalized_total,
+            AuthoritativeCommitOutcome::Refused => &self.auth_commits_refused_total,
+            AuthoritativeCommitOutcome::Integrity => &self.auth_commits_integrity_total,
+        };
+        counter.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// One authoritative bundle was spooled to the quarantine dead-letter
+    /// (counted beside its `Integrity` outcome).
+    pub fn authoritative_bundle_quarantined(&self) {
+        self.auth_commits_quarantined_total
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
     /// Record that the store acknowledged a write at `unix_s`.
     pub fn set_store_last_ack_unix(&self, unix_s: i64) {
         self.store_last_ack_unix.store(unix_s, Ordering::Relaxed);
@@ -505,6 +637,33 @@ impl Metrics {
                 .load(Ordering::Relaxed),
             store_control_queue_depth: self.store_control_queue_depth.load(Ordering::Relaxed),
             store_last_ack_unix: self.store_last_ack_unix.load(Ordering::Relaxed),
+            auth_slot_held: self.auth_slot_held.load(Ordering::Relaxed),
+            auth_slot_held_since_unix: self.auth_slot_held_since_unix.load(Ordering::Relaxed),
+            auth_hold_last_ms: self.auth_hold_last_ms.load(Ordering::Relaxed),
+            auth_hold_max_ms: self.auth_hold_max_ms.load(Ordering::Relaxed),
+            auth_hold_buckets: std::array::from_fn(|i| {
+                self.auth_hold_buckets[i].load(Ordering::Relaxed)
+            }),
+            auth_hold_count: self.auth_hold_count.load(Ordering::Relaxed),
+            auth_hold_sum_ms: self.auth_hold_sum_ms.load(Ordering::Relaxed),
+            auth_bytes_last: self.auth_bytes_last.load(Ordering::Relaxed),
+            auth_bytes_buckets: std::array::from_fn(|i| {
+                self.auth_bytes_buckets[i].load(Ordering::Relaxed)
+            }),
+            auth_bytes_count: self.auth_bytes_count.load(Ordering::Relaxed),
+            auth_bytes_sum: self.auth_bytes_sum.load(Ordering::Relaxed),
+            auth_writes_last: self.auth_writes_last.load(Ordering::Relaxed),
+            auth_writes_buckets: std::array::from_fn(|i| {
+                self.auth_writes_buckets[i].load(Ordering::Relaxed)
+            }),
+            auth_writes_count: self.auth_writes_count.load(Ordering::Relaxed),
+            auth_writes_sum: self.auth_writes_sum.load(Ordering::Relaxed),
+            auth_commits_finalized_total: self.auth_commits_finalized_total.load(Ordering::Relaxed),
+            auth_commits_refused_total: self.auth_commits_refused_total.load(Ordering::Relaxed),
+            auth_commits_integrity_total: self.auth_commits_integrity_total.load(Ordering::Relaxed),
+            auth_commits_quarantined_total: self
+                .auth_commits_quarantined_total
+                .load(Ordering::Relaxed),
             npc_active: self.npc_active.load(Ordering::Relaxed),
             npc_thinking: self.npc_thinking.load(Ordering::Relaxed),
             ipc_frames_shed_total: self.ipc_frames_shed_total.load(Ordering::Relaxed),
@@ -629,6 +788,45 @@ pub struct MetricsSnapshot {
     pub store_control_queue_depth: i64,
     /// Unix seconds of the last acked store write (0 = none yet).
     pub store_last_ack_unix: i64,
+    /// Whether the single authoritative pending-intent slot is held now (H3).
+    pub auth_slot_held: bool,
+    /// Unix seconds the slot was last taken (0 = never).
+    pub auth_slot_held_since_unix: i64,
+    /// Most recent slot hold, ms.
+    pub auth_hold_last_ms: u64,
+    /// Longest slot hold since boot, ms.
+    pub auth_hold_max_ms: u64,
+    /// Cumulative slot-hold histogram bucket counts (aligned to [`LAG_BUCKETS_MS`]).
+    pub auth_hold_buckets: [u64; 12],
+    /// Commits that held the slot (the hold histogram's count; refusals
+    /// never held it and are not counted here).
+    pub auth_hold_count: u64,
+    /// Sum of all slot holds, ms.
+    pub auth_hold_sum_ms: u64,
+    /// Most recent bundle's canonical encoded size, bytes.
+    pub auth_bytes_last: u64,
+    /// Cumulative bundle-size histogram bucket counts (aligned to [`BUNDLE_BUCKETS_BYTES`]).
+    pub auth_bytes_buckets: [u64; 11],
+    /// Bundle-size observations.
+    pub auth_bytes_count: u64,
+    /// Sum of all bundle sizes, bytes.
+    pub auth_bytes_sum: u64,
+    /// Most recent bundle's replay-write count.
+    pub auth_writes_last: u64,
+    /// Cumulative replay-write histogram bucket counts (aligned to [`WRITE_BUCKETS`]).
+    pub auth_writes_buckets: [u64; 11],
+    /// Replay-write observations.
+    pub auth_writes_count: u64,
+    /// Sum of all replay-write counts.
+    pub auth_writes_sum: u64,
+    /// Commits finalized since boot.
+    pub auth_commits_finalized_total: u64,
+    /// Commits refused before the slot was taken since boot.
+    pub auth_commits_refused_total: u64,
+    /// Commits that ended in an integrity failure since boot.
+    pub auth_commits_integrity_total: u64,
+    /// Bundles spooled to the quarantine dead-letter since boot.
+    pub auth_commits_quarantined_total: u64,
     /// NPCs with a live runtime.
     pub npc_active: i64,
     /// NPCs with an in-flight turn.
@@ -678,18 +876,32 @@ impl MetricsSnapshot {
     /// the open-topped `+Inf` bucket.
     #[must_use]
     pub fn loop_lag_p99_ms(&self) -> u64 {
-        if self.lag_count == 0 {
-            return 0;
-        }
-        // rank of the p99 observation (1-based), ceil(0.99 * count).
-        let target = self.lag_count.saturating_mul(99).div_ceil(100).max(1);
-        for (i, &bound) in LAG_BUCKETS_MS.iter().enumerate() {
-            if self.lag_buckets[i] >= target {
-                return bound;
-            }
-        }
-        // In the +Inf bucket: the best bound we have is the observed max.
-        self.loop_lag_max_ms
+        histogram_p99(
+            &LAG_BUCKETS_MS,
+            &self.lag_buckets,
+            self.lag_count,
+            self.loop_lag_max_ms,
+        )
+    }
+
+    /// The approximate p99 authoritative slot hold (ms), by the same rule as
+    /// [`MetricsSnapshot::loop_lag_p99_ms`] (H3). `0` before any commit.
+    #[must_use]
+    pub fn authoritative_hold_p99_ms(&self) -> u64 {
+        histogram_p99(
+            &LAG_BUCKETS_MS,
+            &self.auth_hold_buckets,
+            self.auth_hold_count,
+            self.auth_hold_max_ms,
+        )
+    }
+
+    /// The mean authoritative slot hold (ms); `0` before any commit.
+    #[must_use]
+    pub fn authoritative_hold_mean_ms(&self) -> u64 {
+        self.auth_hold_sum_ms
+            .checked_div(self.auth_hold_count)
+            .unwrap_or(0)
     }
 
     /// Prometheus text exposition (`text/plain; version=0.0.4`). Only
@@ -757,6 +969,7 @@ impl MetricsSnapshot {
             &[(&[], self.loop_lag_max_ms as f64)],
         );
         self.write_lag_histogram(&mut o);
+        self.write_authoritative_lane(&mut o);
 
         // World-loop liveness heartbeat: advances every iteration. A wedged
         // loop freezes this while `loop_lag_last_ms` stays low — alert on
@@ -953,23 +1166,99 @@ impl MetricsSnapshot {
     }
 
     fn write_lag_histogram(&self, o: &mut String) {
-        o.push_str("# HELP mush_loop_lag_ms World-loop iteration lag histogram, milliseconds.\n");
-        o.push_str("# TYPE mush_loop_lag_ms histogram\n");
-        // Each bucket already holds the cumulative count of observations
-        // `<= le` (observe_loop_lag increments every bucket whose bound the
-        // sample fits), which is exactly the Prometheus bucket value.
-        for (i, &bound) in LAG_BUCKETS_MS.iter().enumerate() {
-            o.push_str(&format!(
-                "mush_loop_lag_ms_bucket{{le=\"{bound}\"}} {}\n",
-                self.lag_buckets[i]
-            ));
-        }
-        o.push_str(&format!(
-            "mush_loop_lag_ms_bucket{{le=\"+Inf\"}} {}\n",
-            self.lag_count
-        ));
-        o.push_str(&format!("mush_loop_lag_ms_sum {}\n", self.lag_sum_ms));
-        o.push_str(&format!("mush_loop_lag_ms_count {}\n", self.lag_count));
+        write_histogram(
+            o,
+            "mush_loop_lag_ms",
+            "World-loop iteration lag histogram, milliseconds.",
+            &LAG_BUCKETS_MS,
+            &self.lag_buckets,
+            self.lag_count,
+            self.lag_sum_ms,
+        );
+    }
+
+    /// The authoritative lane (H3): three histograms, the outcome counters,
+    /// and the slot gauges. Every number is an aggregate.
+    fn write_authoritative_lane(&self, o: &mut String) {
+        write_histogram(
+            o,
+            "mush_authoritative_slot_hold_ms",
+            "How long the single authoritative pending-intent slot was held per commit, milliseconds.",
+            &LAG_BUCKETS_MS,
+            &self.auth_hold_buckets,
+            self.auth_hold_count,
+            self.auth_hold_sum_ms,
+        );
+        write_histogram(
+            o,
+            "mush_authoritative_bundle_bytes",
+            "Canonical encoded size of each authoritative bundle, bytes.",
+            &BUNDLE_BUCKETS_BYTES,
+            &self.auth_bytes_buckets,
+            self.auth_bytes_count,
+            self.auth_bytes_sum,
+        );
+        write_histogram(
+            o,
+            "mush_authoritative_replay_writes",
+            "Replay writes carried by each authoritative bundle.",
+            &WRITE_BUCKETS,
+            &self.auth_writes_buckets,
+            self.auth_writes_count,
+            self.auth_writes_sum,
+        );
+        metric(
+            o,
+            "mush_authoritative_commits_total",
+            "counter",
+            "Settled authoritative commits since boot, by outcome.",
+            &[
+                (
+                    &[("outcome", "finalized")],
+                    self.auth_commits_finalized_total as f64,
+                ),
+                (
+                    &[("outcome", "refused")],
+                    self.auth_commits_refused_total as f64,
+                ),
+                (
+                    &[("outcome", "integrity")],
+                    self.auth_commits_integrity_total as f64,
+                ),
+                (
+                    &[("outcome", "quarantined")],
+                    self.auth_commits_quarantined_total as f64,
+                ),
+            ],
+        );
+        metric(
+            o,
+            "mush_authoritative_slot_held",
+            "gauge",
+            "1 while the single authoritative pending-intent slot is held, else 0.",
+            &[(&[], if self.auth_slot_held { 1.0 } else { 0.0 })],
+        );
+        metric(
+            o,
+            "mush_authoritative_slot_held_since_unixtime",
+            "gauge",
+            "Unix time the authoritative slot was last taken (0 = never).",
+            &[(&[], self.auth_slot_held_since_unix as f64)],
+        );
+        metric(
+            o,
+            "mush_authoritative_last_bundle_bytes",
+            "gauge",
+            "Canonical encoded size of the most recent authoritative bundle, bytes.",
+            &[(&[], self.auth_bytes_last as f64)],
+        );
+        metric(
+            o,
+            "mush_authoritative_last_replay_writes",
+            "gauge",
+            "Replay writes carried by the most recent authoritative bundle.",
+            &[(&[], self.auth_writes_last as f64)],
+        );
     }
 
     fn write_llm(&self, o: &mut String) {
@@ -1077,6 +1366,46 @@ fn esc(s: &str) -> String {
 
 /// Emit one metric family: a HELP+TYPE header then one line per label set.
 /// `samples` pairs a label slice with its value.
+/// The bucket upper bound in which the 99th-percentile observation of a
+/// cumulative histogram falls; `max` when it lands in the open-topped `+Inf`
+/// bucket; `0` when nothing was observed.
+fn histogram_p99(bounds: &[u64], counts: &[u64], count: u64, max: u64) -> u64 {
+    if count == 0 {
+        return 0;
+    }
+    // rank of the p99 observation (1-based), ceil(0.99 * count).
+    let target = count.saturating_mul(99).div_ceil(100).max(1);
+    for (i, &bound) in bounds.iter().enumerate() {
+        if counts[i] >= target {
+            return bound;
+        }
+    }
+    max
+}
+
+/// One Prometheus histogram family from cumulative bucket counts. Each
+/// bucket already holds the count of observations `<= le` (the observer
+/// increments every bucket whose bound the sample fits), which is exactly the
+/// Prometheus bucket value.
+fn write_histogram(
+    o: &mut String,
+    name: &str,
+    help: &str,
+    bounds: &[u64],
+    counts: &[u64],
+    count: u64,
+    sum: u64,
+) {
+    o.push_str(&format!("# HELP {name} {help}\n"));
+    o.push_str(&format!("# TYPE {name} histogram\n"));
+    for (i, &bound) in bounds.iter().enumerate() {
+        o.push_str(&format!("{name}_bucket{{le=\"{bound}\"}} {}\n", counts[i]));
+    }
+    o.push_str(&format!("{name}_bucket{{le=\"+Inf\"}} {count}\n"));
+    o.push_str(&format!("{name}_sum {sum}\n"));
+    o.push_str(&format!("{name}_count {count}\n"));
+}
+
 fn metric(o: &mut String, name: &str, kind: &str, help: &str, samples: &[(&[(&str, &str)], f64)]) {
     o.push_str(&format!("# HELP {name} {help}\n"));
     o.push_str(&format!("# TYPE {name} {kind}\n"));
@@ -1157,6 +1486,100 @@ fn fmt_value(v: f64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ---- H3: the authoritative lane ----
+
+    #[test]
+    fn h3_authoritative_commit_lands_in_every_bucket_at_or_above_its_value() {
+        let m = Metrics::new();
+        m.authoritative_slot_held(1_000);
+        assert!(m.snapshot().auth_slot_held);
+        assert_eq!(m.snapshot().auth_slot_held_since_unix, 1_000);
+        m.authoritative_slot_released();
+        m.observe_authoritative_commit(Some(7), 5_000, 3, AuthoritativeCommitOutcome::Finalized);
+        let s = m.snapshot();
+        assert!(!s.auth_slot_held);
+        assert_eq!(s.auth_hold_last_ms, 7);
+        assert_eq!(s.auth_hold_max_ms, 7);
+        assert_eq!(s.auth_hold_count, 1);
+        assert_eq!(s.auth_hold_sum_ms, 7);
+        // 7 ms fits every bound from 10 up, not 1/2/5.
+        for (i, &bound) in LAG_BUCKETS_MS.iter().enumerate() {
+            assert_eq!(s.auth_hold_buckets[i], u64::from(bound >= 7), "le={bound}");
+        }
+        // 5 000 bytes fits 16 KiB and up, not 1 KiB / 4 KiB.
+        for (i, &bound) in BUNDLE_BUCKETS_BYTES.iter().enumerate() {
+            assert_eq!(
+                s.auth_bytes_buckets[i],
+                u64::from(bound >= 5_000),
+                "le={bound}"
+            );
+        }
+        // 3 writes fits 4 and up.
+        for (i, &bound) in WRITE_BUCKETS.iter().enumerate() {
+            assert_eq!(
+                s.auth_writes_buckets[i],
+                u64::from(bound >= 3),
+                "le={bound}"
+            );
+        }
+        assert_eq!(s.auth_commits_finalized_total, 1);
+        assert_eq!(s.auth_commits_refused_total, 0);
+        assert_eq!(s.auth_bytes_last, 5_000);
+        assert_eq!(s.auth_writes_last, 3);
+    }
+
+    #[test]
+    fn h3_authoritative_p99_and_mean_follow_the_loop_lag_rule() {
+        let m = Metrics::new();
+        assert_eq!(m.snapshot().authoritative_hold_p99_ms(), 0);
+        assert_eq!(m.snapshot().authoritative_hold_mean_ms(), 0);
+        for _ in 0..99 {
+            m.observe_authoritative_commit(Some(1), 100, 1, AuthoritativeCommitOutcome::Finalized);
+        }
+        m.observe_authoritative_commit(Some(900), 100, 1, AuthoritativeCommitOutcome::Integrity);
+        m.authoritative_bundle_quarantined();
+        let s = m.snapshot();
+        // 99 fast and 1 slow: the p99 rank is still the fast bucket.
+        assert_eq!(s.authoritative_hold_p99_ms(), 1);
+        assert_eq!(s.authoritative_hold_mean_ms(), 9);
+        assert_eq!(s.auth_commits_integrity_total, 1);
+        assert_eq!(s.auth_commits_quarantined_total, 1);
+        // A refusal is counted and sized but never enters the hold histogram.
+        m.observe_authoritative_commit(None, 100, 1, AuthoritativeCommitOutcome::Refused);
+        let s = m.snapshot();
+        assert_eq!(s.auth_commits_refused_total, 1);
+        assert_eq!(s.auth_hold_count, 100);
+        assert_eq!(s.auth_bytes_count, 101);
+        assert_eq!(s.auth_writes_count, 101);
+    }
+
+    #[test]
+    fn h3_authoritative_lane_renders_and_carries_only_aggregates() {
+        let m = Metrics::new();
+        m.observe_authoritative_commit(Some(12), 2_048, 2, AuthoritativeCommitOutcome::Finalized);
+        m.authoritative_slot_held(77);
+        let text = m.snapshot().to_prometheus(1);
+        for needle in [
+            "# TYPE mush_authoritative_slot_hold_ms histogram",
+            "mush_authoritative_slot_hold_ms_bucket{le=\"25\"} 1",
+            "mush_authoritative_slot_hold_ms_bucket{le=\"+Inf\"} 1",
+            "mush_authoritative_slot_hold_ms_sum 12",
+            "# TYPE mush_authoritative_bundle_bytes histogram",
+            "mush_authoritative_bundle_bytes_bucket{le=\"4096\"} 1",
+            "mush_authoritative_bundle_bytes_bucket{le=\"1024\"} 0",
+            "# TYPE mush_authoritative_replay_writes histogram",
+            "mush_authoritative_replay_writes_bucket{le=\"2\"} 1",
+            "mush_authoritative_commits_total{outcome=\"finalized\"} 1",
+            "mush_authoritative_commits_total{outcome=\"quarantined\"} 0",
+            "mush_authoritative_slot_held 1",
+            "mush_authoritative_slot_held_since_unixtime 77",
+            "mush_authoritative_last_bundle_bytes 2048",
+            "mush_authoritative_last_replay_writes 2",
+        ] {
+            assert!(text.contains(needle), "missing {needle:?} in:\n{text}");
+        }
+    }
 
     #[test]
     fn connection_counters_balance() {

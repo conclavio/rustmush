@@ -932,6 +932,25 @@ depth, NPC active/thinking, today's LLM spend by feature). That `/metrics` +
 `/healthz` + `@stats` all reflect real state is CI-tested end-to-end in
 `crates/mushd/tests/web_e2e.rs::metrics_healthz_and_stats_reflect_real_state`.
 
+**The authoritative lane** (H3) is measured event-by-event by the store writer,
+not sampled: every settled authoritative commit feeds
+`mush_authoritative_slot_hold_ms` (how long the single pending-intent slot was
+held, from the exact reservation receipt to the checkpoint — transient reserve
+back-off is not counted), `mush_authoritative_bundle_bytes` (the canonical
+encoded size the 16 MiB cap check measured) and
+`mush_authoritative_replay_writes` (against the 1 024-write cap), plus
+`mush_authoritative_commits_total{outcome="finalized|refused|integrity|quarantined"}`
+and the gauges `mush_authoritative_slot_held` (0/1),
+`mush_authoritative_slot_held_since_unixtime`, `mush_authoritative_last_bundle_bytes`
+and `mush_authoritative_last_replay_writes`. Alert on `slot_held` staying 1 while
+`slot_held_since_unixtime` does not advance (a wedged commit), on any
+`integrity`/`quarantined` increment, and on the bytes or writes histograms
+filling their top bucket (a bundle at the cap). `@stats` renders the same lane
+as one line. Every number is an aggregate; no token, hash, owner or key is
+exposed. The scale harness that exercises this lane on demand
+(`crates/mush-contract-tests/tests/scale_harness.rs`) runs in the CI `scale`
+job on `workflow_dispatch` or the weekly schedule, never on push.
+
 **Structured logging** is configured under `[log]`:
 
 ```toml

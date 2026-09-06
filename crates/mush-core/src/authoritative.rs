@@ -591,6 +591,11 @@ pub struct AuthoritativeBundle {
     eligible_witnesses: Vec<PrincipalId>,
     durable_outbox: Vec<DurableOutboxIntent>,
     bundle_hash: CanonicalHash,
+    /// The canonical encoded size the cap check measured at construction
+    /// (H3, D-H-9). Never on the wire and never in the hash: a lane
+    /// observation, stashed so the commit path need not encode twice.
+    #[serde(skip)]
+    encoded_len: usize,
 }
 
 #[derive(Deserialize)]
@@ -855,11 +860,14 @@ impl AuthoritativeBundle {
             .as_object_mut()
             .expect("bundle hash material is always an object")
             .insert("bundle_hash".to_owned(), json!(bundle_hash));
-        canonical_json_bytes_with_limit(&bounded_material, MAX_AUTHORITATIVE_BUNDLE_BYTES)
-            .map_err(|_| AuthoritativeBundleError::BundleTooLarge {
-                max: MAX_AUTHORITATIVE_BUNDLE_BYTES,
-            })?;
+        let encoded_len =
+            canonical_json_bytes_with_limit(&bounded_material, MAX_AUTHORITATIVE_BUNDLE_BYTES)
+                .map_err(|_| AuthoritativeBundleError::BundleTooLarge {
+                    max: MAX_AUTHORITATIVE_BUNDLE_BYTES,
+                })?
+                .len();
         Ok(Self {
+            encoded_len,
             schema_version,
             token: draft.token,
             request: draft.request,
@@ -935,6 +943,14 @@ impl AuthoritativeBundle {
     #[must_use]
     pub const fn bundle_hash(&self) -> CanonicalHash {
         self.bundle_hash
+    }
+
+    /// The canonical encoded size of this bundle in bytes — exactly what the
+    /// `MAX_AUTHORITATIVE_BUNDLE_BYTES` cap check measured at construction
+    /// (H3). A lane observation, not wire data.
+    #[must_use]
+    pub const fn encoded_len(&self) -> usize {
+        self.encoded_len
     }
 
     #[must_use]
@@ -1805,7 +1821,24 @@ mod tests {
     fn key_and_bundle_wire_are_strict() {
         assert!(AuthoritativeKey::parse_canonical("action-state/v1/family/1").is_ok());
         assert!(AuthoritativeKey::parse_canonical("Upper").is_err());
-        let mut value = serde_json::to_value(AuthoritativeBundle::new(draft()).unwrap()).unwrap();
+        let bundle = AuthoritativeBundle::new(draft()).unwrap();
+        let mut value = serde_json::to_value(&bundle).unwrap();
+        // H3: the stashed encoded length is a lane observation, never wire
+        // data — and it is the cap check's own measurement.
+        assert!(value.get("encoded_len").is_none(), "{value}");
+        let mut bounded = bundle_hash_material(&draft(), AuthoritativeBundle::SCHEMA_VERSION);
+        bounded
+            .as_object_mut()
+            .unwrap()
+            .insert("bundle_hash".to_owned(), json!(bundle.bundle_hash()));
+        let material =
+            canonical_json_bytes_with_limit(&bounded, MAX_AUTHORITATIVE_BUNDLE_BYTES).unwrap();
+        assert_eq!(bundle.encoded_len(), material.len());
+        assert!(bundle.encoded_len() > 0);
+        // A bundle rebuilt from the wire re-measures through the same `build`,
+        // so the observation survives a round trip without travelling.
+        let decoded: AuthoritativeBundle = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(decoded.encoded_len(), bundle.encoded_len());
         value["unknown"] = json!(true);
         assert!(serde_json::from_value::<AuthoritativeBundle>(value).is_err());
 

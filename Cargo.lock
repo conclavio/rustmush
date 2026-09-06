@@ -1972,9 +1972,12 @@ dependencies = [
 name = "mush-contract-tests"
 version = "0.1.0"
 dependencies = [
+ "futures",
  "mush-config",
  "mush-core",
+ "mush-economy",
  "mush-llm",
+ "mush-org",
  "mush-proto",
  "mush-server",
  "mush-store",
@@ -1982,6 +1985,7 @@ dependencies = [
  "mush-testkit",
  "serde",
  "serde_json",
+ "smol_str",
  "static_assertions",
  "tokio",
  "toml",

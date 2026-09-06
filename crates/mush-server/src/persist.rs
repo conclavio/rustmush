@@ -37,10 +37,11 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use mush_config::metrics::Metrics;
+use mush_config::metrics::{AuthoritativeCommitOutcome, Metrics};
 use mush_core::{AuthoritativeBundle, CommitToken, ObjId, World};
 use mush_store::{
     AuthoritativeReceipt, AuthoritativeRetentionUsage, AuthoritativeStore, BundleStatus,
@@ -893,6 +894,7 @@ async fn writer_loop(
                         &mut healthy,
                         &signals,
                         &quarantine_spool,
+                        &metrics,
                     )
                     .await;
                     if let Err(AuthoritativeCommitFailure::Integrity(detail)) = &result {
@@ -937,6 +939,38 @@ async fn writer_loop(
     tracing::info!("store writer drained and exiting");
 }
 
+/// The lane clock (H3): started at the exact reservation receipt — never at
+/// the call, so transient reserve back-off is not counted as slot time — and
+/// read once the commit settles either way.
+struct SlotClock<'m> {
+    metrics: &'m Metrics,
+    /// A `Mutex` only so a `&SlotClock` may be held across the writer's
+    /// awaits (`Cell` is not `Sync`); it is never contended.
+    held_at: Mutex<Option<Instant>>,
+}
+
+impl SlotClock<'_> {
+    /// The single pending-intent slot is now held.
+    fn start(&self) {
+        *self.held_at.lock().unwrap_or_else(|e| e.into_inner()) = Some(Instant::now());
+        self.metrics.authoritative_slot_held(unix_now_s());
+    }
+
+    /// How long the slot was held (`None` if it never was), releasing it.
+    fn finish(&self) -> Option<u64> {
+        let held = self
+            .held_at
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
+            .map(|at| u64::try_from(at.elapsed().as_millis()).unwrap_or(u64::MAX));
+        self.metrics.authoritative_slot_released();
+        held
+    }
+}
+
+/// Reserve, reconcile and checkpoint one exact-token bundle, recording the
+/// lane's hold time, bundle size, replay-write count and outcome (H3).
 async fn commit_authoritative_with_retry(
     store: &dyn ObjectStore,
     bundle: AuthoritativeBundle,
@@ -944,6 +978,43 @@ async fn commit_authoritative_with_retry(
     healthy: &mut bool,
     signals: &WriterSignalSender,
     quarantine_spool: &QuarantineSpool,
+    metrics: &Metrics,
+) -> Result<AuthoritativeReceipt, AuthoritativeCommitFailure> {
+    let bundle_bytes = u64::try_from(bundle.encoded_len()).unwrap_or(u64::MAX);
+    let replay_writes = u64::try_from(bundle.writes().len()).unwrap_or(u64::MAX);
+    let slot = SlotClock {
+        metrics,
+        held_at: Mutex::new(None),
+    };
+    let result = commit_authoritative_inner(
+        store,
+        bundle,
+        ownership,
+        healthy,
+        signals,
+        quarantine_spool,
+        &slot,
+    )
+    .await;
+    let hold_ms = slot.finish();
+    let outcome = match &result {
+        Ok(_) => AuthoritativeCommitOutcome::Finalized,
+        Err(AuthoritativeCommitFailure::Refused(_)) => AuthoritativeCommitOutcome::Refused,
+        Err(AuthoritativeCommitFailure::Integrity(_)) => AuthoritativeCommitOutcome::Integrity,
+    };
+    metrics.observe_authoritative_commit(hold_ms, bundle_bytes, replay_writes, outcome);
+    result
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn commit_authoritative_inner(
+    store: &dyn ObjectStore,
+    bundle: AuthoritativeBundle,
+    ownership: oneshot::Sender<Result<IntentReceipt, AuthoritativeCommitFailure>>,
+    healthy: &mut bool,
+    signals: &WriterSignalSender,
+    quarantine_spool: &QuarantineSpool,
+    slot: &SlotClock<'_>,
 ) -> Result<AuthoritativeReceipt, AuthoritativeCommitFailure> {
     let token = bundle.token();
     let hash = bundle.bundle_hash();
@@ -1022,6 +1093,7 @@ async fn commit_authoritative_with_retry(
                             signals,
                             quarantine_spool,
                             &mut delay,
+                            slot.metrics,
                         )
                         .await;
                     }
@@ -1078,6 +1150,8 @@ async fn commit_authoritative_with_retry(
             }
         }
     };
+    // The slot is held from here (H3): the exact intent exists.
+    slot.start();
     crate::process_fault::terminate_at("after_intent_before_ownership").await;
     publish_ownership(&mut ownership, Ok(intent));
     crate::process_fault::terminate_at("after_ownership_before_materialization").await;
@@ -1094,6 +1168,7 @@ async fn commit_authoritative_with_retry(
                     signals,
                     quarantine_spool,
                     &mut delay,
+                    slot.metrics,
                 )
                 .await;
             }
@@ -1126,6 +1201,7 @@ async fn commit_authoritative_with_retry(
                         signals,
                         quarantine_spool,
                         &mut delay,
+                        slot.metrics,
                     )
                     .await;
                 }
@@ -1143,6 +1219,7 @@ async fn commit_authoritative_with_retry(
                         );
                         continue;
                     }
+                    slot.metrics.authoritative_bundle_quarantined();
                     quarantine_spool
                         .quarantine_authoritative_bundle(
                             &bundle,
@@ -1247,6 +1324,7 @@ async fn checkpoint_finalized_with_retry(
     signals: &WriterSignalSender,
     quarantine_spool: &QuarantineSpool,
     delay: &mut Duration,
+    metrics: &Metrics,
 ) -> Result<AuthoritativeReceipt, AuthoritativeCommitFailure> {
     let token = bundle.token();
     let hash = bundle.bundle_hash();
@@ -1291,6 +1369,7 @@ async fn checkpoint_finalized_with_retry(
                     );
                     continue;
                 }
+                metrics.authoritative_bundle_quarantined();
                 quarantine_spool
                     .quarantine_authoritative_bundle(bundle, &error, deterministic_attempts)
                     .map_err(|quarantine_error| {
@@ -2242,6 +2321,12 @@ mod tests {
     use mush_store::{AuthoritativeStore, BundleStatus, InMemoryStore, RedisStore};
 
     fn boot_recovery_bundle() -> AuthoritativeBundle {
+        boot_recovery_bundle_variant(0)
+    }
+
+    /// The recovery fixture with every identity byte offset by `tag`, so two
+    /// variants are distinct exact intents (`0` is the fixture itself).
+    fn boot_recovery_bundle_variant(tag: u8) -> AuthoritativeBundle {
         let owner = OwnerId::new("boot_recovery_test").unwrap();
         let mut definitions = DefinitionRegistryBuilder::new();
         let action = definitions
@@ -2268,10 +2353,10 @@ mod tests {
                 .unwrap(),
             )
             .unwrap();
-        let request = RequestUid::from_bytes([71; 16]);
+        let request = RequestUid::from_bytes([71 + tag; 16]);
         let principal = PrincipalId::Object { id: GOD };
         AuthoritativeBundle::new(AuthoritativeBundleDraft {
-            token: CommitToken::from_bytes([72; 16]),
+            token: CommitToken::from_bytes([72 + tag; 16]),
             request,
             idempotency: ScopedIdempotencyKey::new(
                 IdempotencyScope {
@@ -2282,9 +2367,9 @@ mod tests {
                 0,
                 IdempotencyKey::Request(request),
             ),
-            ingress_hash: CanonicalHash::from_bytes([73; 32]),
-            request_hash: CanonicalHash::from_bytes([74; 32]),
-            plan_hash: CanonicalHash::from_bytes([75; 32]),
+            ingress_hash: CanonicalHash::from_bytes([73 + tag; 32]),
+            request_hash: CanonicalHash::from_bytes([74 + tag; 32]),
+            plan_hash: CanonicalHash::from_bytes([75 + tag; 32]),
             action: action.clone(),
             provider: owner.clone(),
             cause: PreparedCausalRef::new(request, None, 0).unwrap(),
@@ -2605,6 +2690,7 @@ mod tests {
         let mut healthy = true;
 
         let spool = QuarantineSpool::in_memory();
+        let metrics = Metrics::new();
         let (ownership, owned) = oneshot::channel();
         let receipt = commit_authoritative_with_retry(
             &store,
@@ -2613,6 +2699,7 @@ mod tests {
             &mut healthy,
             &signals,
             &spool,
+            &metrics,
         )
         .await
         .unwrap();
@@ -2622,6 +2709,17 @@ mod tests {
         assert_eq!(owned.bundle_hash, bundle.bundle_hash());
         assert!(receipt.matches_bundle(&bundle));
         assert!(healthy);
+        // H3: one finalized commit on the lane, its slot released, its size
+        // and write count exactly the bundle's own.
+        let lane = metrics.snapshot();
+        assert_eq!(lane.auth_commits_finalized_total, 1);
+        assert_eq!(lane.auth_commits_refused_total, 0);
+        assert_eq!(lane.auth_commits_integrity_total, 0);
+        assert_eq!(lane.auth_hold_count, 1);
+        assert!(!lane.auth_slot_held);
+        assert!(lane.auth_slot_held_since_unix > 0, "the slot was taken");
+        assert_eq!(lane.auth_bytes_last, bundle.encoded_len() as u64);
+        assert_eq!(lane.auth_writes_last, bundle.writes().len() as u64);
         assert_eq!(
             store
                 .authoritative_status(bundle.token(), bundle.bundle_hash())
@@ -2645,6 +2743,62 @@ mod tests {
                 .is_empty(),
             "the writer checkpoints and releases finalized replay material"
         );
+    }
+
+    /// H3: a reservation refused before any intent exists is one settled
+    /// commit with the `refused` outcome and a zero hold — the slot was never
+    /// taken, so the hold clock never started.
+    #[tokio::test]
+    async fn h3_a_refused_reservation_records_refused_and_no_hold() {
+        let store = InMemoryStore::new();
+        load_or_seed_world(&store).await.unwrap();
+        // Another exact intent is already in flight (one unresolved intent
+        // per backend), so this bundle's reservation is refused outright.
+        store
+            .reserve_authoritative_intent(boot_recovery_bundle_variant(10))
+            .await
+            .unwrap();
+        let bundle = boot_recovery_bundle();
+        let (signals, _signal_rx) = crate::world_task::writer_signal_channel();
+        let mut healthy = true;
+        let spool = QuarantineSpool::in_memory();
+        let metrics = Metrics::new();
+        let (ownership, owned) = oneshot::channel();
+        let error = commit_authoritative_with_retry(
+            &store,
+            bundle.clone(),
+            ownership,
+            &mut healthy,
+            &signals,
+            &spool,
+            &metrics,
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(error, AuthoritativeCommitFailure::Refused(_)),
+            "{error:?}"
+        );
+        assert!(matches!(
+            owned.await.unwrap(),
+            Err(AuthoritativeCommitFailure::Refused(_))
+        ));
+        let lane = metrics.snapshot();
+        assert_eq!(lane.auth_commits_refused_total, 1);
+        assert_eq!(lane.auth_commits_finalized_total, 0);
+        assert_eq!(lane.auth_commits_integrity_total, 0);
+        assert_eq!(lane.auth_hold_count, 0, "a refusal never held the slot");
+        assert_eq!(
+            lane.auth_bytes_count, 1,
+            "but it is one settled, sized commit"
+        );
+        assert!(!lane.auth_slot_held);
+        assert_eq!(
+            lane.auth_slot_held_since_unix, 0,
+            "the slot was never taken"
+        );
+        assert_eq!(lane.auth_bytes_last, bundle.encoded_len() as u64);
+        assert_eq!(lane.auth_writes_last, 2);
     }
 
     #[tokio::test]
@@ -2674,6 +2828,7 @@ mod tests {
         let (signals, _signal_rx) = crate::world_task::writer_signal_channel();
         let mut healthy = true;
         let mut spool = QuarantineSpool::in_memory();
+        let metrics = Metrics::new();
         let (ownership, owned) = oneshot::channel();
         let error = commit_authoritative_with_retry(
             &store,
@@ -2682,6 +2837,7 @@ mod tests {
             &mut healthy,
             &signals,
             &spool,
+            &metrics,
         )
         .await
         .unwrap_err();
@@ -2693,6 +2849,16 @@ mod tests {
                 if detail.contains("quarantined")
                     && detail.contains("after 3 deterministic reconciliation failures")
         ));
+        // H3: the resumed PendingExact held the slot from resumption until
+        // the quarantine settled it — one hold, one integrity outcome, one
+        // quarantined bundle, and the slot free again.
+        let lane = metrics.snapshot();
+        assert_eq!(lane.auth_hold_count, 1);
+        assert!(!lane.auth_slot_held);
+        assert!(lane.auth_slot_held_since_unix > 0);
+        assert_eq!(lane.auth_commits_finalized_total, 0);
+        assert_eq!(lane.auth_commits_integrity_total, 1);
+        assert_eq!(lane.auth_commits_quarantined_total, 1);
         assert!(matches!(
             store
                 .authoritative_status(bundle.token(), bundle.bundle_hash())
@@ -2771,6 +2937,7 @@ mod tests {
             &mut healthy,
             &signals,
             &spool,
+            &Metrics::new(),
         )
         .await
         .unwrap_err();

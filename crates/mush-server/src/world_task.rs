@@ -5952,6 +5952,22 @@ pub struct StatsExtra {
     pub npc_thinking: i64,
     /// Approximate p99 loop lag (ms) from the histogram.
     pub lag_p99: u64,
+    /// The authoritative lane (H3): whether the single pending-intent slot is
+    /// held right now.
+    pub auth_slot_held: bool,
+    /// Most recent authoritative slot hold, ms.
+    pub auth_hold_last_ms: u64,
+    /// Approximate p99 authoritative slot hold, ms.
+    pub auth_hold_p99_ms: u64,
+    /// Longest authoritative slot hold since boot, ms.
+    pub auth_hold_max_ms: u64,
+    /// Most recent authoritative bundle's canonical encoded size, bytes.
+    pub auth_last_bundle_bytes: u64,
+    /// Most recent authoritative bundle's replay-write count.
+    pub auth_last_replay_writes: u64,
+    /// Settled authoritative commits since boot: finalized, refused,
+    /// integrity, quarantined.
+    pub auth_commits: [u64; 4],
     /// Input frames shed gateway->server since boot (M18 IPC bounding).
     pub ipc_frames_shed: u64,
     /// IPC write timeouts on a wedged peer since boot (M18).
@@ -6014,6 +6030,18 @@ fn stats_extra(metrics: &Metrics, llm: Option<&Arc<LlmService>>) -> StatsExtra {
         npc_active: snap.npc_active,
         npc_thinking: snap.npc_thinking,
         lag_p99: snap.loop_lag_p99_ms(),
+        auth_slot_held: snap.auth_slot_held,
+        auth_hold_last_ms: snap.auth_hold_last_ms,
+        auth_hold_p99_ms: snap.authoritative_hold_p99_ms(),
+        auth_hold_max_ms: snap.auth_hold_max_ms,
+        auth_last_bundle_bytes: snap.auth_bytes_last,
+        auth_last_replay_writes: snap.auth_writes_last,
+        auth_commits: [
+            snap.auth_commits_finalized_total,
+            snap.auth_commits_refused_total,
+            snap.auth_commits_integrity_total,
+            snap.auth_commits_quarantined_total,
+        ],
         ipc_frames_shed: snap.ipc_frames_shed_total,
         ipc_write_timeouts: snap.ipc_write_timeouts_total,
         ipc_to_gw_overflow: snap.ipc_to_gw_overflow_total,
@@ -6073,6 +6101,21 @@ pub fn render_stats(
     text.push_str(&format!(
         "\nStore: {store}; last write {write_age}; write-queue {}",
         extra.write_queue_depth
+    ));
+    // H3: the authoritative lane — the one pending-intent slot every
+    // authoritative commit serializes on. Aggregates only.
+    text.push_str(&format!(
+        "\nAuthoritative lane: slot {}; hold last {}ms, p99 {}ms, max {}ms; last bundle {} bytes / {} writes; commits {} finalized, {} refused, {} integrity, {} quarantined",
+        if extra.auth_slot_held { "HELD" } else { "free" },
+        extra.auth_hold_last_ms,
+        extra.auth_hold_p99_ms,
+        extra.auth_hold_max_ms,
+        extra.auth_last_bundle_bytes,
+        extra.auth_last_replay_writes,
+        extra.auth_commits[0],
+        extra.auth_commits[1],
+        extra.auth_commits[2],
+        extra.auth_commits[3],
     ));
     text.push_str(&format!(
         "\nNPC agents: {} active, {} thinking",
