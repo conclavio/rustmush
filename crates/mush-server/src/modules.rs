@@ -639,10 +639,20 @@ pub fn worldgen_module_with(
 /// dialogue-only.
 #[must_use]
 pub fn npc_module(grounding: Option<Arc<dyn mush_npc::AgentGrounding>>) -> Box<dyn GameModule> {
-    match grounding {
-        Some(g) => Box::new(mush_npc::NpcModule::with_grounding(g)),
-        None => Box::new(mush_npc::NpcModule::new()),
-    }
+    npc_module_with(grounding, &mush_config::config::NpcCfg::default())
+}
+
+/// H2b: [`npc_module`] with the `[npc]` section applied (the scene-turn
+/// decision deadline). `main.rs` and the forked server use this.
+pub fn npc_module_with(
+    grounding: Option<Arc<dyn mush_npc::AgentGrounding>>,
+    npc: &mush_config::config::NpcCfg,
+) -> Box<dyn GameModule> {
+    let module = match grounding {
+        Some(g) => mush_npc::NpcModule::with_grounding(g),
+        None => mush_npc::NpcModule::new(),
+    };
+    Box::new(module.with_scene_turn_deadline_secs(i64::from(npc.scene_turn_deadline_secs)))
 }
 
 /// Build the NPC↔ruleset grounding adapter for the enabled ruleset, if one

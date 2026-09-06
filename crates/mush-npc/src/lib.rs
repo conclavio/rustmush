@@ -139,7 +139,10 @@ pub use memory::{
     MAX_MEMORY_SUMMARY_CHARS, MemoryBuffer, MemoryEvent, MemoryRecall, MemoryRecord,
     MemoryRecordError, MemoryUpdate, record_key,
 };
-pub use module::NpcModule;
+pub use module::{
+    MAX_TURN_DESCRIPTION_BYTES, MAX_TURN_EXITS, MAX_TURN_NAME_BYTES, MAX_TURN_PERSONA_BYTES,
+    MAX_TURN_PRESENT, NpcModule, scene_turn_context,
+};
 pub use profile::{
     AgentProfile, AgentProfileValidationError, KnowledgeBounds, MAX_AGENT_PROFILE_BYTES,
     MAX_PROFILE_BACKGROUND_BYTES, MAX_PROFILE_FALLBACK_BYTES, MAX_PROFILE_FALLBACK_LINES,
@@ -149,6 +152,7 @@ pub use profile::{
 };
 pub use prompt::{ENGINE_FRAME, system_prompt, user_prompt};
 pub use query::IntelListQuery;
+pub use runtime::DEFAULT_SCENE_TURN_DEADLINE_SECS;
 pub use runtime::{
     MAX_PENDING_STIMULI, MAX_PENDING_STIMULUS_BYTES, NpcConfig, NpcHostState, NpcRuntime,
 };

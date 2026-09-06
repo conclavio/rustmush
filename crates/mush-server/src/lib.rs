@@ -308,7 +308,7 @@ async fn build_engine(
         crate::config_ext::worldgen_config(&config.worldgen),
     ));
     let npc_grounding = modules::npc_agent_adapter(&config.rulesets.enabled);
-    mods.push(modules::npc_module(npc_grounding));
+    mods.push(modules::npc_module_with(npc_grounding, &config.npc));
     let rulesets = modules::ruleset_modules(
         &config.rulesets.enabled,
         &onboarding,

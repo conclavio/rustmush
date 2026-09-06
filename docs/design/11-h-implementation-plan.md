@@ -180,6 +180,16 @@ Tests: `crates/mush-core` (`h2a_*` in the engine drain), `crates/mush-npc/tests/
 
 **Verify lens.** **S (scene)** — can a decision act on a scene it was not captured in, act after the scene closed, or act for an NPC no longer a participant?
 
+**As built (2026-09-05, H2b).** `WorldEvent::SceneTurn { scene, actor, round }` and `WorldEventKind::SceneTurn`; `timestop_next` emits it after `log_event(TurnAdvanced)` when the new current actor is an `ObjKind::Npc`; `NpcObserver` subscribes and queues one `NpcDecisionRequest` per turn through H2a's ingress (`request_decision` → the agent tick → `Ctx::capture_decision`); `[npc].scene_turn_deadline_secs` reaches the module through `modules::npc_module_with` (`NpcModule::with_scene_turn_deadline_secs`, `NpcConfig::scene_turn_deadline_secs`, default `DEFAULT_SCENE_TURN_DEADLINE_SECS` 120) in both binaries. Deviations:
+
+1. **The `TurnAdvanced` detail carries `npc_turn: true`, not `decision: <id>`.** The decision id is derived when the loop builds the plan, a step after the log line is written; the log and the recap say "(an NPC: its decision was requested)", and the request's cause instance `scene-<id>-round-<n>-npc-<obj>` is the join key to the pending family.
+2. **The context is a bounded scene view with its own limits** (`MAX_TURN_PRESENT` 32, `MAX_TURN_EXITS` 32, `MAX_TURN_NAME_BYTES` 64, `MAX_TURN_DESCRIPTION_BYTES` 8 KiB, `MAX_TURN_PERSONA_BYTES` 4 KiB): at the dialogue snapshot's bounds (`MAX_SCENE_PRESENT` 128 × 256-byte names, a 16 KiB description) a full room would have exceeded the kernel's 64 KiB, so the turn view is smaller than the dialogue view by design. `scene_turn_context` is public and tested at its bounds; no memories, no ids.
+3. **The observer runs on the event's actor, never `ctx.actor`** (the facilitator): a player's turn, an `ObjKind::Npc` with no profile, a disabled agent and an NPC in another room each get nothing, because the request is built only for an enabled agent at the event's actor and the event names one actor.
+
+**Verify (2026-09-05, lens S).** *S* — a decision can act only for the actor it was captured for (the kernel's `PendingDecision.actor`, projected against that actor's own offers at execution), so it cannot act in a scene it was not captured in: the scene is context, not authority, and `npc_idle` is the only offer today. After the scene closes the decision still resolves (the kernel does not know scenes) and its action is the NPC's own no-op; a scene-aware action is H2c's coordinator path, where the offer projection itself decides. An NPC no longer a participant is not sent a turn, and a stale pending record for it resolves to idle. The lifecycle test shows the scene untouched by the decision's resolution: still `active`, the NPC still on turn, because nothing auto-advances (the design's "no automatic turn deadlines initially" stands). No finding.
+
+Tests: `crates/mush-server/tests/h2b_scene_turns.rs` (5: one request per NPC turn with the deadline and the context; same-round instance and cross-round replaceable key; player / profileless / disabled get nothing; the log names the NPC turn; the context under the cap at its bounds), `crates/mush-server/src/world_task.rs` (`h2b_an_npc_scene_turn_runs_to_its_action_and_leaves_the_scene_in_place`).
+
 #### H2c — `UseAbility` onto the coordinator
 
 **What it is.** `apply_action`'s `UseAbility` arm calls `grounding.invoke_ability` — the bespoke mutation path 09's table says to delete as abilities migrate. Under K7.0's rule the completion is an **immediate deterministic controller**: the asynchronous choice already happened on the legacy dialogue lane, the mapping to a projected action is deterministic, so the completion enters the coordinator directly with no `PendingDecision`.
@@ -367,6 +377,7 @@ The review re-opened every symbol the draft leaned on that had not been opened w
 
 ## 11. Changelog
 
+- **H2b as built — 2026-09-05.** §3.2 H2b gained the as-built and verify blocks (no finding under S); the turn context has its own, smaller bounds.
 - **H2a as built — 2026-09-05.** §3.2 H2a gained the as-built and verify blocks; T1 (ordinal target tokens) folded before the first run.
 - **H4 as built — 2026-09-05.** §3.4 gained the as-built and verify blocks. Lens C found the dispatch serial inside the hashed plan (C1); `plan_hash` now canonicalizes it away.
 - **H3 as built — 2026-09-05.** §3.3 gained the as-built, measured and verify blocks; §7 the harness knobs and threshold lines. The first release-profile run put the 100 000-entry cold replay at 7.0 s, past the 5 s checkpoint-review line.

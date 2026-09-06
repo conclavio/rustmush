@@ -844,6 +844,13 @@ before a crash is re-discovered, re-leased and finished after it (K7.4).
 - **Indicator.** `mush_npc_thinking` counts dialogue turns in flight **plus**
   non-terminal decisions; `mush_npc_decisions{state="ready|leased|resolving"}`
   splits the decisions; `@stats` prints both lines.
+- **Scene turns (H2b).** When `+timestop/next` hands the turn to an NPC agent,
+  that turn is one durable decision: the NPC module requests it (cause
+  `npc.scene_turn`, keyed on the scene, the round and the NPC), the agent tick
+  captures it, and it resolves as above — or falls back to `npc_idle` after
+  `[npc].scene_turn_deadline_secs` (default 120). The scene never advances on
+  its own; the facilitator still types `+timestop/next`. `+timestop/log` marks
+  an NPC's turn as a requested decision.
 - **What the model sees.** The fixed frame, the projected offers as tools
   (parameters typed and bounded from the offer schema; targets as opaque
   ordinal tokens), and the context fenced as untrusted data. Never a witness,

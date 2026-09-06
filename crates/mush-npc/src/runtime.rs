@@ -29,6 +29,10 @@ pub const MAX_PENDING_STIMULI: usize = 64;
 /// Hard ceiling on the serialized payload retained in one NPC mailbox.
 pub const MAX_PENDING_STIMULUS_BYTES: usize = 32 * 1024;
 
+/// H2b: the default scene-turn decision deadline, seconds (11-h §7
+/// `NPC_SCENE_TURN_DEADLINE_SECS`; `[npc].scene_turn_deadline_secs`).
+pub const DEFAULT_SCENE_TURN_DEADLINE_SECS: i64 = 120;
+
 /// Host tuning knobs.
 #[derive(Clone, Debug)]
 pub struct NpcConfig {
@@ -41,6 +45,9 @@ pub struct NpcConfig {
     pub transcript_chars: usize,
     /// How many long-term memories to recall per turn.
     pub recall_top_n: usize,
+    /// H2b: how long an NPC's scene turn may wait for its durable decision
+    /// before the idle fallback fires, seconds (`[npc].scene_turn_deadline_secs`).
+    pub scene_turn_deadline_secs: i64,
 }
 
 impl Default for NpcConfig {
@@ -50,6 +57,7 @@ impl Default for NpcConfig {
             tick: Duration::from_secs(1),
             transcript_chars: 1500,
             recall_top_n: 5,
+            scene_turn_deadline_secs: DEFAULT_SCENE_TURN_DEADLINE_SECS,
         }
     }
 }

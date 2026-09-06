@@ -568,6 +568,8 @@ pub enum WorldEventKind {
     /// consequences drive further simulation (faction clocks advancing from
     /// scene outcomes). Observers react to the carried kind/entities.
     CanonRecorded,
+    /// H2b: a turn-based scene handed its turn to an NPC.
+    SceneTurn,
 }
 
 /// A world mutation, delivered to subscribed observers **post-mutation** in
@@ -681,6 +683,18 @@ pub enum WorldEvent {
         /// field, which doc 09 C6 keeps `WorldEvent` for.
         source: String,
     },
+    /// H2b: `+timestop/next` handed the turn to `actor`, an `ObjKind::Npc`,
+    /// in round `round` of scene `scene`. The NPC module turns this into a
+    /// durable decision request; the scene does not auto-advance when the
+    /// decision resolves.
+    SceneTurn {
+        /// The scene (its `SceneUid`).
+        scene: u64,
+        /// The NPC whose turn it is.
+        actor: ObjId,
+        /// The round the turn belongs to.
+        round: u32,
+    },
 }
 
 impl WorldEvent {
@@ -698,6 +712,7 @@ impl WorldEvent {
             WorldEvent::PowerUsed { .. } => WorldEventKind::PowerUsed,
             WorldEvent::Rolled { .. } => WorldEventKind::Rolled,
             WorldEvent::CanonRecorded { .. } => WorldEventKind::CanonRecorded,
+            WorldEvent::SceneTurn { .. } => WorldEventKind::SceneTurn,
         }
     }
 
@@ -711,6 +726,7 @@ impl WorldEvent {
             | WorldEvent::Disconnected { who }
             | WorldEvent::PowerUsed { who, .. }
             | WorldEvent::Rolled { who, .. } => *who,
+            WorldEvent::SceneTurn { actor, .. } => *actor,
             WorldEvent::ObjCreated { creator, .. } => *creator,
             WorldEvent::ObjDestroyed { obj } | WorldEvent::AttrSet { obj, .. } => *obj,
             // A system consequence — no single actor; observers run as GOD.

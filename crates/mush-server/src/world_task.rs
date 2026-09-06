@@ -15461,4 +15461,94 @@ mod tests {
         );
         assert!(refused.is_err(), "33 workers must refuse");
     }
+
+    // ---- H2b: an NPC's scene turn as a durable decision ---------------
+
+    /// `+timestop/next` hands the turn to an NPC; the NPC module requests a
+    /// decision; the tick captures it; the loop runs it to `npc_idle` through
+    /// the coordinator; and the scene stays exactly where it was — Active,
+    /// the NPC still holding the turn — because nothing auto-advances.
+    #[tokio::test]
+    async fn h2b_an_npc_scene_turn_runs_to_its_action_and_leaves_the_scene_in_place() {
+        let mut tw = mush_testkit::TestWorld::with_modules(vec![
+            Box::new(mush_scenes::ScenesModule::new()),
+            Box::new(mush_npc::NpcModule::new()),
+        ]);
+        tw.engine_mut().set_decision_keys(
+            DecisionKeyRing::new(DecisionSecret::new(1, [0x5a; 32]).unwrap(), []).unwrap(),
+        );
+        tw.engine_mut().set_offer_keys(
+            OfferKeyRing::new(OfferSecret::new(1, [0x6b; 32]).unwrap(), []).unwrap(),
+        );
+        let room = tw
+            .world_mut()
+            .create(mush_core::ObjKind::Room, "The Bar", GOD, None)
+            .unwrap();
+        tw.world_mut().move_to(GOD, room).unwrap();
+        let player = tw.spawn_player("Pat");
+        tw.world_mut().move_to(player, room).unwrap();
+        tw.world_mut().set_connected(player, true);
+        tw.world_mut().set_live_conns(player, 1);
+        let created: String = tw
+            .run(GOD, "@agent/create Bob")
+            .iter()
+            .map(|(_, e)| mush_testkit::text_of(e))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let at = created.find("(#").unwrap();
+        let digits: String = created[at + 2..]
+            .chars()
+            .take_while(char::is_ascii_digit)
+            .collect();
+        let npc = mush_core::ObjId(digits.parse().unwrap());
+        let _ = tw.run(GOD, "+timestop");
+        // Round 1 opens on Pat; the second advance hands the turn to Bob.
+        let _ = tw.run(GOD, "+timestop/next");
+        let _ = tw.run(GOD, "+timestop/next");
+        let queued = tw
+            .world()
+            .module_state::<mush_npc::NpcHostState>()
+            .unwrap()
+            .decision_requests
+            .len();
+        assert_eq!(queued, 1, "the NPC's turn requested one decision");
+        let _ = tw.fire_due(5_000);
+        assert!(tw.engine().has_decision_capture());
+        let engine = tw.into_engine();
+
+        let deps = ServerDeps::in_memory();
+        let store = Arc::clone(&deps.store);
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mut providers = DecisionProviderRegistry::new();
+        providers
+            .register(Arc::new(IdleChoosingProvider {
+                owner: OwnerId::new("npc").unwrap(),
+                calls: Arc::clone(&calls),
+            }))
+            .unwrap();
+        let handles = spawn_persist_with_gateway_and_decisions(
+            engine,
+            deps,
+            DurableOutboxRegistry::new(),
+            providers,
+            1,
+            |_| Arc::new(BlackholeGateway),
+        )
+        .expect("decision runtime startup");
+        let receipt = wait_for_receipt(&store, npc, 5).await;
+        assert_eq!(receipt["value"]["outcome"], "idle");
+        assert_eq!(calls.load(AtomicOrdering::SeqCst), 1);
+        // The scene did not move: still active, the NPC still on turn.
+        let scenes = store.module_json_list("scenes").await.unwrap();
+        let record = scenes
+            .iter()
+            .find(|(key, value)| key.starts_with("scene:") && value.get("participants").is_some())
+            .map(|(_, value)| value.clone())
+            .expect("the persisted scene record");
+        assert_eq!(record["status"], "active", "{record}");
+        let participants = record["participants"].as_array().unwrap();
+        let turn_index = record["turn_index"].as_u64().unwrap() as usize;
+        assert_eq!(participants[turn_index], npc.0, "{record}");
+        stop_test_server(handles).await;
+    }
 }

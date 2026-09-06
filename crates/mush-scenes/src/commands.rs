@@ -281,14 +281,27 @@ fn timestop_next(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     };
     persist_scene(ctx.out, &updated);
     announce(ctx, anchor, turn_line(ctx.w, &updated));
+    // H2b: an NPC's turn is a durable decision (D-H-11). The log says so, and
+    // the world event hands the turn to the NPC module, which requests the
+    // capture; the scene itself does not advance when it resolves.
+    let npc_turn = updated
+        .current_actor()
+        .filter(|&who| ctx.w.get(who).is_some_and(|o| o.kind == ObjKind::Npc));
     log_event(
         ctx,
         &updated,
         SceneEventKind::TurnAdvanced,
         updated.current_actor(),
-        serde_json::json!({ "round": updated.round }),
+        serde_json::json!({ "round": updated.round, "npc_turn": npc_turn.is_some() }),
     );
     crate::panel::publish(ctx, &updated);
+    if let Some(actor) = npc_turn {
+        ctx.emit_world_event(&mush_core::WorldEvent::SceneTurn {
+            scene: updated.id.0,
+            actor,
+            round: updated.round,
+        });
+    }
     Ok(())
 }
 
@@ -751,7 +764,11 @@ fn render_event(w: &World, ev: &SceneEvent) -> String {
                 .get("round")
                 .and_then(serde_json::Value::as_u64)
                 .unwrap_or(0);
-            format!("Round {round} — {who}'s turn.")
+            if ev.detail.get("npc_turn") == Some(&serde_json::Value::Bool(true)) {
+                format!("Round {round} — {who}'s turn (an NPC: its decision was requested).")
+            } else {
+                format!("Round {round} — {who}'s turn.")
+            }
         }
         SceneEventKind::Paused => "The scene was paused.".to_string(),
         SceneEventKind::Resumed => "The scene resumed.".to_string(),

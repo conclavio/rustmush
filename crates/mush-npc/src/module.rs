@@ -50,6 +50,8 @@ pub struct NpcModule {
     grounding: Arc<dyn AgentGrounding>,
     /// H2a: how long one provider lease on an NPC decision lasts, seconds.
     decision_lease_secs: i64,
+    /// H2b: how long a scene turn waits for its decision, seconds.
+    scene_turn_deadline_secs: i64,
 }
 
 impl NpcModule {
@@ -59,6 +61,7 @@ impl NpcModule {
         NpcModule {
             grounding: Arc::new(NoGrounding),
             decision_lease_secs: crate::decision::NPC_DECISION_LEASE_SECS,
+            scene_turn_deadline_secs: crate::runtime::DEFAULT_SCENE_TURN_DEADLINE_SECS,
         }
     }
 
@@ -71,12 +74,21 @@ impl NpcModule {
         self
     }
 
+    /// H2b: `[npc].scene_turn_deadline_secs` — how long an NPC's scene turn
+    /// waits for its durable decision before `npc_idle` fires.
+    #[must_use]
+    pub fn with_scene_turn_deadline_secs(mut self, secs: i64) -> NpcModule {
+        self.scene_turn_deadline_secs = secs.max(1);
+        self
+    }
+
     /// A module grounded by `grounding` (the driver's ruleset adapter).
     #[must_use]
     pub fn with_grounding(grounding: Arc<dyn AgentGrounding>) -> NpcModule {
         NpcModule {
             grounding,
             decision_lease_secs: crate::decision::NPC_DECISION_LEASE_SECS,
+            scene_turn_deadline_secs: crate::runtime::DEFAULT_SCENE_TURN_DEADLINE_SECS,
         }
     }
 }
@@ -96,7 +108,8 @@ impl GameModule for NpcModule {
         reg.classify_commands(mush_core::CommandCompatibility::LegacyPostImage);
         reg.attr_namespace("agent")?;
         let panel = reg.panel_feed(THINKING_FEED)?;
-        let state = NpcHostState::new(panel);
+        let mut state = NpcHostState::new(panel);
+        state.config.scene_turn_deadline_secs = self.scene_turn_deadline_secs;
         let tick_period = state.config.tick;
         reg.state(state);
 
@@ -115,6 +128,9 @@ impl GameModule for NpcModule {
         // M14 informant tie-in: a witnessed power use (already projected
         // per-observer by the ruleset director) files intel for its witnesses.
         reg.subscribe(WorldEventKind::PowerUsed, Arc::new(NpcObserver));
+        // H2b: a turn-based scene handing its turn to an NPC is a durable
+        // decision request.
+        reg.subscribe(WorldEventKind::SceneTurn, Arc::new(NpcObserver));
 
         // The coalescing/cooldown driver.
         reg.tick(
@@ -368,6 +384,11 @@ impl WorldObserver for NpcObserver {
                 witnesses,
                 detail,
             } => on_power_used(ctx, *who, *room, witnesses, detail),
+            WorldEvent::SceneTurn {
+                scene,
+                actor,
+                round,
+            } => on_scene_turn(ctx, *scene, *actor, *round),
             _ => {}
         }
     }
@@ -529,6 +550,109 @@ fn on_presence(ctx: &mut Ctx<'_>, who: ObjId, connected: bool) {
 /// concealment), so a witnessed power always reaches the informant's principal.
 /// `room` is carried for completeness; the room *name* an intel record stores is
 /// read from the informant's own location inside [`file_intel`].
+/// H2b: the bounds of one scene-turn context, sized so a full room stays far
+/// under the kernel's `MAX_DECISION_CONTEXT_BYTES` (64 KiB): 32 names of 64
+/// bytes twice over, an 8 KiB description and a 4 KiB persona is under 16 KiB
+/// of JSON at the worst.
+pub const MAX_TURN_NAME_BYTES: usize = 64;
+/// How many present players a turn context names.
+pub const MAX_TURN_PRESENT: usize = 32;
+/// How many exits a turn context names.
+pub const MAX_TURN_EXITS: usize = 32;
+/// The room description's byte bound in a turn context.
+pub const MAX_TURN_DESCRIPTION_BYTES: usize = 8 * 1024;
+/// The persona's byte bound in a turn context.
+pub const MAX_TURN_PERSONA_BYTES: usize = 4 * 1024;
+
+/// H2b: the public-safe context an NPC's scene turn carries — the room, who
+/// is present, the exits and the NPC's own persona, every field bounded. No
+/// memories in v1, no truth ids: names only.
+pub fn scene_turn_context(
+    w: &World,
+    profile: &AgentProfile,
+    scene: u64,
+    round: u32,
+    actor: ObjId,
+    room: ObjId,
+) -> serde_json::Value {
+    let present: Vec<String> = players_present(w, room)
+        .into_iter()
+        .filter(|&who| who != actor)
+        .take(MAX_TURN_PRESENT)
+        .map(|who| bounded_text(display_name(w, who), MAX_TURN_NAME_BYTES))
+        .collect();
+    let exits: Vec<String> = w
+        .exits_of(room)
+        .iter()
+        .take(MAX_TURN_EXITS)
+        .map(|&exit| bounded_text(display_name(w, exit), MAX_TURN_NAME_BYTES))
+        .collect();
+    serde_json::json!({
+        "scene": scene,
+        "round": round,
+        "room": bounded_text(display_name(w, room), MAX_TURN_NAME_BYTES),
+        "description": bounded_text(
+            attr_text(w, room, "short_desc")
+                .or_else(|| attr_text(w, room, "desc"))
+                .unwrap_or_default(),
+            MAX_TURN_DESCRIPTION_BYTES,
+        ),
+        "present": present,
+        "exits": exits,
+        "persona": bounded_text(profile.persona.clone(), MAX_TURN_PERSONA_BYTES),
+    })
+}
+
+/// H2b: the scene handed its turn to `actor`. Queue one durable decision
+/// for it — the actor is the NPC, never `ctx.actor` (the facilitator); the
+/// cause instance keys on `(scene, round, actor)`, so a re-advance to the
+/// same NPC in the same round is an identical retry, and the replaceable key
+/// on `(scene, actor)` lets a new round displace the older pending record.
+/// The context is a bounded scene view under `MAX_DECISION_CONTEXT_BYTES`.
+fn on_scene_turn(ctx: &mut Ctx<'_>, scene: u64, actor: ObjId, round: u32) {
+    let Some(profile) = read_profile(ctx.w, actor) else {
+        return;
+    };
+    if !profile.enabled || ctx.w.get(actor).is_none_or(|o| o.kind != ObjKind::Npc) {
+        return;
+    }
+    let Some(room) = ctx.w.get(actor).and_then(|o| o.location) else {
+        return;
+    };
+    let context = scene_turn_context(ctx.w, &profile, scene, round, actor, room);
+    let (Ok(cause_kind), Ok(instance), Ok(replaceable)) = (
+        mush_core::CanonicalId::new("npc.scene_turn"),
+        mush_core::IdempotencyKeyText::parse_canonical(format!(
+            "scene-{scene}-round-{round}-npc-{}",
+            actor.0
+        )),
+        mush_core::IdempotencyKeyText::parse_canonical(format!("scene-{scene}-npc-{}", actor.0)),
+    ) else {
+        return;
+    };
+    let deadline_secs = ctx
+        .state::<NpcHostState>()
+        .map_or(crate::runtime::DEFAULT_SCENE_TURN_DEADLINE_SECS, |h| {
+            h.config.scene_turn_deadline_secs
+        });
+    let request = crate::decision::NpcDecisionRequest {
+        npc: actor,
+        cause_kind,
+        instance: instance.clone(),
+        replaceable_key: Some(replaceable),
+        context,
+        deadline_secs,
+        key: instance,
+    };
+    let queued = ctx
+        .w
+        .module_state_mut::<NpcHostState>()
+        .is_some_and(|h| h.request_decision(request));
+    if !queued {
+        tracing::warn!(npc = %actor, scene, round, "npc: the scene turn's decision request was dropped (queue full)");
+    }
+}
+
 fn on_power_used(ctx: &mut Ctx<'_>, who: ObjId, _room: ObjId, witnesses: &[ObjId], detail: &str) {
     for &npc in witnesses {
         // Defensive: the director returns the NPC subset already, but never file

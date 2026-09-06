@@ -148,6 +148,12 @@ catch_up_domains = ""              # cut 8
 # start_room = 0                    # live start room approved characters land in (#0 = Limbo)
 # start_room_unapproved = 0         # restricted chargen area (defaults to start_room)
 
+[npc]                              # (H2b) the NPC agent layer's world-task knobs
+# How long an NPC's scene turn may wait for its durable decision before the
+# idle fallback fires, seconds. Every key here defaults; an unknown key refuses
+# to boot, like every other typed section.
+scene_turn_deadline_secs = 120
+
 [llm]                              # (M7) LLM layer: worldgen (@gen), budgets, kill switch
 # Master switch. FALSE by default so a keyless clone boots and passes tests;
 # worldgen commands still register, but @gen answers "LLM features are

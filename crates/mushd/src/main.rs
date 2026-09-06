@@ -307,7 +307,7 @@ async fn serve(config: Config, mut quarantine_spool: QuarantineSpool) -> Result<
     // on-loop abilities through the generic ruleset grounding adapter (WoD,
     // Shadowrun, …); dialogue-only when no ruleset is enabled.
     let npc_grounding = modules::npc_agent_adapter(&config.rulesets.enabled);
-    mods.push(modules::npc_module(npc_grounding));
+    mods.push(modules::npc_module_with(npc_grounding, &config.npc));
     let rulesets = modules::ruleset_modules(
         &config.rulesets.enabled,
         &onboarding,
