@@ -148,22 +148,54 @@ fn refuse(source: &InventoryError) -> ActionError {
     }
 }
 
-/// Every endpoint the actor may act on **and** that is live right now.
+/// Whether the actor may **take** quantity out of that endpoint.
+///
+/// E7c2 fold C8 / owner decision D4: this is E3's own vault-withdraw authority,
+/// asked through `mush_economy`'s exported seam and rebuilt nowhere. Before the
+/// fold the write gate and the read gate were the *same* predicate —
+/// `has_role(Royalty) || acts_for(actor, &vault.owner)` — whose `Organization`
+/// arm answers true on `holds_capability("economy.account.post", root)`, so an
+/// org's **money-posting** grant read as authority to walk its physical stock
+/// out. §3.2's invariant (3) says the custody rules are E3's, unchanged; this is
+/// what makes that true, and it is the one `may_take` its custody test row names.
+#[must_use]
+pub fn may_take(world: &mush_core::World, actor: ObjId, endpoint: EndpointRef) -> bool {
+    mush_economy::may_take_from_vault(world, actor, endpoint.vault())
+}
+
+/// Every endpoint the actor may **take from** and that is live right now.
 ///
 /// Bounded on records visited, and total: an unreadable economy answers an empty
 /// list, which projects no offer rather than an offer nobody can honour.
+///
+/// E7c2 fold C12: the matching set is collected, sorted and *then* truncated —
+/// it used to `break` at [`MAX_ENDPOINT_CHOICES`] in snapshot order and sort
+/// whatever survived, so past 64 vaults an actor silently lost endpoints they
+/// hold. [`endpoints_truncated`] says whether the cap was reached, and the
+/// command layer says so out loud rather than projecting a quiet omission.
 #[must_use]
 pub fn live_endpoints(world: &mush_core::World, actor: ObjId) -> Vec<VaultId> {
-    let staff = mush_core::perm::has_role(world, actor, mush_core::Role::Royalty);
+    collect_live_endpoints(world, actor).0
+}
+
+/// Whether the actor holds more live endpoints than one offer may publish.
+#[must_use]
+pub fn endpoints_truncated(world: &mush_core::World, actor: ObjId) -> bool {
+    collect_live_endpoints(world, actor).1
+}
+
+fn collect_live_endpoints(world: &mush_core::World, actor: ObjId) -> (Vec<VaultId>, bool) {
     let Some(store) = world.module_state::<EconomyStore>() else {
-        return Vec::new();
+        return (Vec::new(), false);
     };
     let mut out = Vec::new();
     for vault in store.snapshot().vaults() {
-        if out.len() >= MAX_ENDPOINT_CHOICES {
+        // Bounded on records VISITED: one past the cap is all it takes to know
+        // "there were more", and it is never an unbounded scan.
+        if out.len() > MAX_ENDPOINT_CHOICES {
             break;
         }
-        if !staff && !mush_economy::acts_for(world, actor, &vault.owner) {
+        if !may_take(world, actor, EndpointRef(vault.id)) {
             continue;
         }
         if endpoint_state(world, vault.id).is_live() {
@@ -171,7 +203,9 @@ pub fn live_endpoints(world: &mush_core::World, actor: ObjId) -> Vec<VaultId> {
         }
     }
     out.sort_unstable();
-    out
+    let truncated = out.len() > MAX_ENDPOINT_CHOICES;
+    out.truncate(MAX_ENDPOINT_CHOICES);
+    (out, truncated)
 }
 
 fn endpoint_choices(endpoints: &[VaultId]) -> Vec<String> {
@@ -316,11 +350,20 @@ impl InventoryProvider {
         })
     }
 
-    fn marker_id(&self, invocation: &ActionInvocation) -> SmolStr {
-        // §4 rule 3, the key shape stated in the plan: `inventory:applied:{request}`.
-        // Deterministic and replay-stable, so a re-run of the identical request
-        // rewrites the identical marker rather than minting a second fact.
-        SmolStr::new(invocation.request().to_hex())
+    /// The marker id one request's fact is stored and answered under.
+    ///
+    /// `{at}{request}`: the IC second the offer's FIXED parameters stamped,
+    /// order-preserving in 16 hex bytes, then the request digest. E7c2 fold R3 —
+    /// canonical key order is therefore **time** order, so the RAM mirror keeps
+    /// the newest `MAX_APPLIED_MARKERS` rather than whichever request digests
+    /// happened to sort first, and a committed transfer's fact stops answering
+    /// unsatisfied for ever once the family passes its cap.
+    ///
+    /// It stays a pure function of durable causal input: the stamp rides the
+    /// offer, so two replays of one request name the identical marker.
+    fn marker_id(&self, invocation: &ActionInvocation, now: &ClockStamp) -> SmolStr {
+        let ordered = (now.at as u64) ^ (1_u64 << 63);
+        SmolStr::new(format!("{ordered:016x}{}", invocation.request().to_hex()))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -345,17 +388,28 @@ impl InventoryProvider {
             now.at,
         )
         .map_err(|source| error(ActionErrorCode::Integrity, source.to_string()))?;
-        let id = self.marker_id(invocation);
-        let existed = txn
+        let id = self.marker_id(invocation, now);
+        // E7c2 fold R1(a) / owner decision D1: **the marker IS the replay
+        // guard**. It used to be `txn.replace`d, which made it a rewritable
+        // mirror rather than evidence — and `InventoryVerb::Move` derives
+        // nothing and consumes nothing, so a retry after a reboot (whose
+        // `ScopedIdempotencyKey` carries a per-process random epoch and
+        // therefore does not survive one) moved the quantity twice and rewrote
+        // the same fact over it. The id is epoch-free and stable across a
+        // reboot, so refusing an existing one closes the whole cut with one
+        // branch. `Dissolve` alone writes none: its guard is the consumed lot.
+        if txn
             .get(&self.families.applied, &id)
             .map_err(|error| state_error(&error))?
-            .is_some();
-        if existed {
-            txn.replace(&self.families.applied, &id, marker)
-        } else {
-            txn.insert(&self.families.applied, &id, marker)
+            .is_some()
+        {
+            return Err(error(
+                ActionErrorCode::ProviderRejected,
+                "that request has already been applied",
+            ));
         }
-        .map_err(|error| state_error(&error))
+        txn.insert(&self.families.applied, &id, marker)
+            .map_err(|error| state_error(&error))
     }
 }
 
@@ -616,16 +670,24 @@ impl ActionProvider for InventoryProvider {
                     .families
                     .transfer(txn, from, to, &commodity, quantity)
                     .map_err(|source| refuse(&source))?;
-                self.write_marker(
-                    txn,
-                    invocation,
-                    FACT_TRANSFERRED,
-                    Some(from),
-                    Some(to),
-                    &commodity,
-                    quantity,
-                    &now,
-                )?;
+                // E7c2 fold C6: a same-endpoint move is a no-op HIT on purpose
+                // (deviation (g)) and writes nothing — so it must publish no
+                // `inventory.transferred` fact either. It used to commit a
+                // marker naming a quantity that never moved, and
+                // `FactProvider::resolve` returns only `{satisfied, actor, at}`,
+                // so no consumer of D-E7-31's gate could tell the difference.
+                if moved.moved > 0 {
+                    self.write_marker(
+                        txn,
+                        invocation,
+                        FACT_TRANSFERRED,
+                        Some(from),
+                        Some(to),
+                        &commodity,
+                        quantity,
+                        &now,
+                    )?;
+                }
                 data.insert("from".to_owned(), json!(from.vault().0));
                 data.insert("to".to_owned(), json!(to.vault().0));
                 data.insert("commodity".to_owned(), json!(commodity.as_str()));
@@ -639,27 +701,56 @@ impl ActionProvider for InventoryProvider {
                 }
             }
             InventoryVerb::Split => {
+                // E7c2 fold C1: the `endpoint` Choice the offer minted from the
+                // actor's own live set is READ here, not decoration. Before the
+                // fold the three lot arms never read it, so the list authorised
+                // endpoint A while the mechanic mutated endpoint B.
+                let endpoint = endpoint_field(&parameters, "endpoint")?;
                 let lot = lot_field(&parameters, "lot")?;
                 let quantity = u64_field(&parameters, "quantity")?;
                 let child = crate::pool::derive_lot_id(invocation.request(), 0)
                     .map_err(|source| refuse(&source))?;
                 let created = self
                     .families
-                    .split(txn, lot, quantity, child)
+                    .split(txn, endpoint, lot, quantity, child)
                     .map_err(|source| refuse(&source))?;
+                // E7c2 fold C11: every verb that mints a lot publishes
+                // `inventory.lot.created`, so a consumer waiting on a split-off
+                // parcel does not wait for ever.
+                self.write_marker(
+                    txn,
+                    invocation,
+                    FACT_LOT_CREATED,
+                    None,
+                    Some(created.endpoint()),
+                    created.commodity(),
+                    created.quantity(),
+                    &now,
+                )?;
                 data.insert("lot".to_owned(), json!(created.id().0));
                 data.insert("parent".to_owned(), json!(lot.0));
                 data.insert("quantity".to_owned(), json!(quantity));
                 format!("Split {quantity} off {lot} into {}.", created.id())
             }
             InventoryVerb::Merge => {
+                let endpoint = endpoint_field(&parameters, "endpoint")?;
                 let lots = lots_field(&parameters)?;
                 let child = crate::pool::derive_lot_id(invocation.request(), 0)
                     .map_err(|source| refuse(&source))?;
                 let created = self
                     .families
-                    .merge(txn, &lots, child)
+                    .merge(txn, endpoint, &lots, child)
                     .map_err(|source| refuse(&source))?;
+                self.write_marker(
+                    txn,
+                    invocation,
+                    FACT_LOT_CREATED,
+                    None,
+                    Some(created.endpoint()),
+                    created.commodity(),
+                    created.quantity(),
+                    &now,
+                )?;
                 data.insert("lot".to_owned(), json!(created.id().0));
                 data.insert("quantity".to_owned(), json!(created.quantity()));
                 data.insert(
@@ -669,10 +760,11 @@ impl ActionProvider for InventoryProvider {
                 format!("Merged {} lots into {}.", lots.len(), created.id())
             }
             InventoryVerb::Dissolve => {
+                let endpoint = endpoint_field(&parameters, "endpoint")?;
                 let lot = lot_field(&parameters, "lot")?;
                 let (tranche, moved) = self
                     .families
-                    .dissolve(txn, lot)
+                    .dissolve(txn, endpoint, lot)
                     .map_err(|source| refuse(&source))?;
                 data.insert("lot".to_owned(), json!(lot.0));
                 data.insert("tranche".to_owned(), json!(tranche.0));
@@ -852,19 +944,29 @@ pub fn action_ref(registry: &mush_core::Registry, verb: InventoryVerb) -> Option
         .cloned()
 }
 
-/// Whether an endpoint is one this actor may act on, for the command layer's
+/// Whether an endpoint is one this actor may **read**, for the command layer's
 /// **byte-identical** refusal (§4 rule 4): an endpoint the viewer may not read
 /// and one that does not exist answer the same way.
+///
+/// E7c2 fold C8 / owner decision D4: this delegates to E3's own
+/// `may_view_vault` — staff, the exact object-owner, or `vault.view` on the
+/// vault's scope under `scope_coherent`. It used to be a predicate of cut 2's
+/// own, which disagreed with `@vault/show` in both directions: a `vault.view`
+/// grantee got `NO_SUCH_ENDPOINT` from `@inv/show`, and an org's money-posting
+/// grantee got a read they had never been given.
+///
+/// The one addition is fold R7's: **staff see a quarantined endpoint** even when
+/// the economy hydrated no vault for it, because otherwise the quantity stranded
+/// there is invisible to the only people who could reconcile it.
 #[must_use]
 pub fn endpoint_visible(world: &mush_core::World, actor: ObjId, endpoint: EndpointRef) -> bool {
-    let staff = mush_core::perm::has_role(world, actor, mush_core::Role::Royalty);
-    let Some(store) = world.module_state::<EconomyStore>() else {
-        return false;
-    };
-    store
-        .snapshot()
-        .vault(endpoint.vault())
-        .is_some_and(|vault| staff || mush_economy::acts_for(world, actor, &vault.owner))
+    if mush_economy::may_view_vault(world, actor, endpoint.vault()) {
+        return true;
+    }
+    mush_core::perm::has_role(world, actor, mush_core::Role::Royalty)
+        && world
+            .module_state::<crate::store::InventoryStore>()
+            .is_some_and(|store| store.is_quarantined(endpoint))
 }
 
 /// The endpoint's live state, for a command's own pre-check.
@@ -873,13 +975,16 @@ pub fn endpoint_status(world: &mush_core::World, endpoint: EndpointRef) -> Endpo
     endpoint_state(world, endpoint.vault())
 }
 
-/// The tranche id one endpoint's commodity pools into, for a projection.
+/// The tranche id one endpoint's commodity pools into at `generation`, for a
+/// projection. The root is a sequence (fold B2), so a projection that wants the
+/// current one asks `InventoryFamilies::tranche_for` inside a transaction.
 ///
 /// # Errors
 /// [`InventoryError::Identity`] if the canonical value cannot be hashed.
 pub fn tranche_of(
     endpoint: EndpointRef,
     commodity: &CanonicalId,
+    generation: u32,
 ) -> Result<TrancheId, InventoryError> {
-    crate::pool::tranche_key(endpoint, commodity)
+    crate::pool::tranche_key(endpoint, commodity, generation)
 }

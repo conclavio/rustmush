@@ -3350,8 +3350,10 @@ impl Ctx<'_> {
     /// your own and emit no success line: the whole mechanic belongs to the
     /// registered provider, and the actor's confirmation is released only after
     /// the durable receipt. **Calling this twice in one command is a refusal**
-    /// — the engine stages nothing at all and tells the actor so — because a
-    /// command that fans out could commit one half and lose the other.
+    /// — the engine stages nothing at all *for that actor* and tells them so,
+    /// leaving every other actor's queued submission alone (E7c2 fold C4) —
+    /// because a command that fans out could commit one half and lose the
+    /// other.
     pub fn submit_authoritative(
         &mut self,
         action: crate::mechanics::DefinitionRef,

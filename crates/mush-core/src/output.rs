@@ -258,6 +258,19 @@ impl Outbox {
         self.sys_to_actor(actor, "system", msg);
     }
 
+    /// Queue a non-authoritative informational line to one actor.
+    ///
+    /// It is `BestEffort` on purpose (E7c2 fold R11): it is **not** withheld by
+    /// the durable-ack gate and must never be mistaken for a confirmation, so it
+    /// may only ever say that something was received — never that it happened.
+    pub fn best_effort_info(&mut self, actor: ObjId, msg: impl Into<String>) {
+        self.push_classified(
+            DeliveryClass::BestEffort,
+            Audience::Actor(actor),
+            OutputEvent::Sys(RichText::tag("system", msg)),
+        );
+    }
+
     /// Defer async work or a timer (routed by the engine after the current
     /// handler returns — see the type-level docs).
     pub fn defer(&mut self, deferred: Deferred) {

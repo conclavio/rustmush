@@ -61,11 +61,16 @@ pub use pool::{
     pool_resource, reservation_deadline, reservation_id_from_text, reservation_id_text,
     tranche_key,
 };
-pub use provider::{InventoryVerb, action_ref, endpoint_status, endpoint_visible, live_endpoints};
+pub use provider::{
+    InventoryVerb, MAX_ENDPOINT_CHOICES, action_ref, endpoint_status, endpoint_visible,
+    endpoints_truncated, live_endpoints, may_take,
+};
 pub use record::{
     AppliedMarker, EndpointRef, FACT_LOT_CREATED, FACT_TRANSFERRED, Grade, INV_PAGE,
-    InventoryRecordError, Lineage, Lot, LotId, MAX_GRADE, MAX_LINEAGE_DEPTH, MAX_LOT_PARENTS,
-    MAX_LOT_QUANTITY, MAX_POOL_QUANTITY, MAX_POOLS_PER_ENDPOINT, MAX_TRANCHE_ABSORBED, NS, Pool,
-    PoolTranche, RESERVATION_TTL_IC_DAYS, RESERVATION_TTL_SECS, TrancheId, owner,
+    InventoryRecordError, Lineage, Lot, LotCensus, LotId, MAX_APPLIED_MARKERS, MAX_GRADE,
+    MAX_LINEAGE_DEPTH, MAX_LOT_PARENTS, MAX_LOT_QUANTITY, MAX_LOTS_PER_ENDPOINT, MAX_POOL_QUANTITY,
+    MAX_POOLS_PER_ENDPOINT, MAX_RETAINED_TERMINAL_RESERVATIONS, MAX_TRANCHE_ABSORBED,
+    MAX_TRANCHE_GENERATIONS, MAX_TRANCHE_INHERITED, NS, Pool, PoolCensus, PoolTranche,
+    RESERVATION_TTL_IC_DAYS, RESERVATION_TTL_SECS, TrancheId, owner,
 };
-pub use store::InventoryStore;
+pub use store::{InventoryStore, Quarantine};

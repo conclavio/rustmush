@@ -40,6 +40,22 @@ pub const MAX_POOL_QUANTITY: i64 = 1_000_000_000_000;
 pub const MAX_LOT_QUANTITY: u64 = 1_000_000_000;
 /// Largest lot set one tranche records absorbing.
 pub const MAX_TRANCHE_ABSORBED: usize = 256;
+/// Largest set of foreign roots one tranche records inheriting (E7c2 fold C2).
+/// A pool-to-pool transfer records the source slot's root here, so the
+/// destination's lineage reaches the source's `absorbed` set transitively.
+pub const MAX_TRANCHE_INHERITED: usize = 64;
+/// Largest tranche generation one `(endpoint, commodity)` slot may reach
+/// (E7c2 fold B2). The root is a **sequence**, not a singleton: a full
+/// `absorbed` set, a full `inherited` set or a depth-pinning dissolve rolls to
+/// `generation + 1` and names its predecessor, so no cap is an absorbing state.
+pub const MAX_TRANCHE_GENERATIONS: u32 = 64;
+/// How many terminal reservation records one book keeps before a fresh hold
+/// prunes the oldest through K's own `ReservationBook::checked_prune_terminal`
+/// (E7c2 fold C3). Well inside `MAX_RESERVATION_BOOK_RECORDS` (256), so a slot
+/// never reaches the book's own record limit.
+pub const MAX_RETAINED_TERMINAL_RESERVATIONS: usize = 32;
+/// Largest number of live lot records one endpoint may hold (E7c2 fold B8).
+pub const MAX_LOTS_PER_ENDPOINT: u32 = 512;
 /// Largest quality grade. `0` is legal (slag is still matter).
 pub const MAX_GRADE: u8 = 100;
 /// Page size for every `@inv` listing, counted on records **visited**.
@@ -506,8 +522,12 @@ pub struct PoolTranche {
     id: TrancheId,
     endpoint: EndpointRef,
     commodity: CanonicalId,
+    generation: u32,
+    predecessor: Option<TrancheId>,
+    inherited: Vec<TrancheId>,
     absorbed: Vec<LotId>,
     quantity: u64,
+    remaining: u64,
     depth: u32,
 }
 
@@ -517,8 +537,12 @@ struct PoolTrancheWire {
     id: TrancheId,
     endpoint: EndpointRef,
     commodity: CanonicalId,
+    generation: u32,
+    predecessor: Option<TrancheId>,
+    inherited: Vec<TrancheId>,
     absorbed: Vec<LotId>,
     quantity: u64,
+    remaining: u64,
     depth: u32,
 }
 
@@ -532,8 +556,12 @@ impl<'de> Deserialize<'de> for PoolTranche {
             wire.id,
             wire.endpoint,
             wire.commodity,
+            wire.generation,
+            wire.predecessor,
+            wire.inherited,
             wire.absorbed,
             wire.quantity,
+            wire.remaining,
             wire.depth,
         )
         .map_err(serde::de::Error::custom)
@@ -544,28 +572,58 @@ impl PoolTranche {
     /// Build a tranche.
     ///
     /// # Errors
-    /// [`InventoryRecordError`] for an empty, oversized or non-canonical
-    /// absorbed set, a zero quantity, or a depth past [`MAX_LINEAGE_DEPTH`].
+    /// [`InventoryRecordError`] for an oversized or non-canonical absorbed or
+    /// inherited set, a root that names itself, a zero quantity, a `remaining`
+    /// past `quantity`, a generation past [`MAX_TRANCHE_GENERATIONS`], or a
+    /// depth past [`MAX_LINEAGE_DEPTH`].
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         id: TrancheId,
         endpoint: EndpointRef,
         commodity: CanonicalId,
+        generation: u32,
+        predecessor: Option<TrancheId>,
+        inherited: Vec<TrancheId>,
         absorbed: Vec<LotId>,
         quantity: u64,
+        remaining: u64,
         depth: u32,
     ) -> Result<Self, InventoryRecordError> {
-        Self::from_parts(id, endpoint, commodity, absorbed, quantity, depth)
+        Self::from_parts(
+            id,
+            endpoint,
+            commodity,
+            generation,
+            predecessor,
+            inherited,
+            absorbed,
+            quantity,
+            remaining,
+            depth,
+        )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn from_parts(
         id: TrancheId,
         endpoint: EndpointRef,
         commodity: CanonicalId,
+        generation: u32,
+        predecessor: Option<TrancheId>,
+        inherited: Vec<TrancheId>,
         absorbed: Vec<LotId>,
         quantity: u64,
+        remaining: u64,
         depth: u32,
     ) -> Result<Self, InventoryRecordError> {
-        if absorbed.is_empty() || absorbed.len() > MAX_TRANCHE_ABSORBED {
+        // A root records matter it absorbed, matter it inherited from another
+        // endpoint's root, or both — but never neither.
+        if absorbed.is_empty() && inherited.is_empty() {
+            return Err(InventoryRecordError::TrancheAbsorbed {
+                max: MAX_TRANCHE_ABSORBED,
+            });
+        }
+        if absorbed.len() > MAX_TRANCHE_ABSORBED {
             return Err(InventoryRecordError::TrancheAbsorbed {
                 max: MAX_TRANCHE_ABSORBED,
             });
@@ -577,8 +635,34 @@ impl PoolTranche {
             }
             previous = Some(*lot);
         }
+        if inherited.len() > MAX_TRANCHE_INHERITED {
+            return Err(InventoryRecordError::TrancheInherited {
+                max: MAX_TRANCHE_INHERITED,
+            });
+        }
+        let mut previous: Option<TrancheId> = None;
+        for root in &inherited {
+            if previous.is_some_and(|previous| previous >= *root) {
+                return Err(InventoryRecordError::NonCanonicalParents);
+            }
+            if *root == id {
+                return Err(InventoryRecordError::LineageCycle);
+            }
+            previous = Some(*root);
+        }
+        if predecessor == Some(id) {
+            return Err(InventoryRecordError::LineageCycle);
+        }
+        if generation > MAX_TRANCHE_GENERATIONS {
+            return Err(InventoryRecordError::TrancheGeneration {
+                max: MAX_TRANCHE_GENERATIONS,
+            });
+        }
         if quantity == 0 {
             return Err(InventoryRecordError::ZeroQuantity);
+        }
+        if remaining > quantity {
+            return Err(InventoryRecordError::TrancheRemaining);
         }
         if depth > MAX_LINEAGE_DEPTH {
             return Err(InventoryRecordError::LineageDepth {
@@ -589,8 +673,12 @@ impl PoolTranche {
             id,
             endpoint,
             commodity,
+            generation,
+            predecessor,
+            inherited,
             absorbed,
             quantity,
+            remaining,
             depth,
         })
     }
@@ -625,6 +713,34 @@ impl PoolTranche {
         self.quantity
     }
 
+    /// How much of that a `crystallize` may still claim descent from.
+    ///
+    /// E7c2 fold C7: a lineage claim is bounded by the matter that established
+    /// it. `dissolve` and an inbound `transfer` add to it; `crystallize` draws
+    /// it down. One dissolved unit licenses exactly one minted unit.
+    #[must_use]
+    pub const fn remaining(&self) -> u64 {
+        self.remaining
+    }
+
+    /// Which generation of this `(endpoint, commodity)` root it is.
+    #[must_use]
+    pub const fn generation(&self) -> u32 {
+        self.generation
+    }
+
+    /// The full predecessor generation this one succeeded, if any.
+    #[must_use]
+    pub const fn predecessor(&self) -> Option<TrancheId> {
+        self.predecessor
+    }
+
+    /// Foreign roots whose matter arrived here by transfer. **Never shortened.**
+    #[must_use]
+    pub fn inherited(&self) -> &[TrancheId] {
+        &self.inherited
+    }
+
     /// The deepest lineage it absorbed, so a crystallized child is one deeper.
     #[must_use]
     pub const fn depth(&self) -> u32 {
@@ -652,12 +768,210 @@ impl PoolTranche {
             self.id,
             self.endpoint,
             self.commodity.clone(),
+            self.generation,
+            self.predecessor,
+            self.inherited.clone(),
             absorbed,
             self.quantity
                 .checked_add(quantity)
                 .ok_or(InventoryRecordError::QuantityOverflow)?,
+            self.remaining
+                .checked_add(quantity)
+                .ok_or(InventoryRecordError::QuantityOverflow)?,
             self.depth.max(depth),
         )
+    }
+
+    /// Record one foreign root whose matter arrived here, and the quantity it
+    /// brought. **Append-only and deduplicated**, exactly like `absorbed`.
+    ///
+    /// # Errors
+    /// [`InventoryRecordError::TrancheInherited`] past
+    /// [`MAX_TRANCHE_INHERITED`], or [`InventoryRecordError::QuantityOverflow`].
+    pub fn checked_inherit(
+        &self,
+        root: TrancheId,
+        quantity: u64,
+    ) -> Result<Self, InventoryRecordError> {
+        let mut inherited = self.inherited.clone();
+        if !inherited.contains(&root) {
+            if inherited.len() >= MAX_TRANCHE_INHERITED {
+                return Err(InventoryRecordError::TrancheInherited {
+                    max: MAX_TRANCHE_INHERITED,
+                });
+            }
+            inherited.push(root);
+            inherited.sort_unstable();
+        }
+        Self::from_parts(
+            self.id,
+            self.endpoint,
+            self.commodity.clone(),
+            self.generation,
+            self.predecessor,
+            inherited,
+            self.absorbed.clone(),
+            self.quantity
+                .checked_add(quantity)
+                .ok_or(InventoryRecordError::QuantityOverflow)?,
+            self.remaining
+                .checked_add(quantity)
+                .ok_or(InventoryRecordError::QuantityOverflow)?,
+            self.depth,
+        )
+    }
+
+    /// Draw one mint's worth of lineage claim off this root.
+    ///
+    /// # Errors
+    /// [`InventoryRecordError::TrancheDraw`] when the root never held that much.
+    pub fn checked_draw(&self, amount: u64) -> Result<Self, InventoryRecordError> {
+        let remaining =
+            self.remaining
+                .checked_sub(amount)
+                .ok_or(InventoryRecordError::TrancheDraw {
+                    remaining: self.remaining,
+                    requested: amount,
+                })?;
+        Self::from_parts(
+            self.id,
+            self.endpoint,
+            self.commodity.clone(),
+            self.generation,
+            self.predecessor,
+            self.inherited.clone(),
+            self.absorbed.clone(),
+            self.quantity,
+            remaining,
+            self.depth,
+        )
+    }
+}
+
+// ---- E7c2 fold B8: the per-endpoint census the published bounds are counted on ----
+
+/// How many distinct commodities one endpoint pools.
+///
+/// §7 publishes [`MAX_POOLS_PER_ENDPOINT`] as a shipped bound and, before the
+/// E7c2 fold, **nothing anywhere counted an endpoint's pools** — the constant was
+/// declared, re-exported twice and enforced nowhere. `ActionTxn` has no scan, so
+/// the count that enforces it is a record written **in the same bundle** as the
+/// pool it counts: never a walk, and never an unenforced constant.
+///
+/// It is a separate family from [`LotCensus`] for a mechanical reason: one
+/// `ActionTxn` may mutate one state record only once, and `dissolve` both creates
+/// a pool and consumes a lot.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize)]
+#[serde(transparent)]
+pub struct PoolCensus(u32);
+
+#[derive(Deserialize)]
+#[serde(transparent)]
+struct PoolCensusWire(u32);
+
+impl<'de> Deserialize<'de> for PoolCensus {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let wire = PoolCensusWire::deserialize(deserializer)?;
+        Self::new(wire.0).map_err(serde::de::Error::custom)
+    }
+}
+
+impl PoolCensus {
+    /// Build a pool count.
+    ///
+    /// # Errors
+    /// [`InventoryRecordError::EndpointPools`] past [`MAX_POOLS_PER_ENDPOINT`].
+    pub const fn new(pools: u32) -> Result<Self, InventoryRecordError> {
+        if pools as usize > MAX_POOLS_PER_ENDPOINT {
+            return Err(InventoryRecordError::EndpointPools {
+                max: MAX_POOLS_PER_ENDPOINT,
+            });
+        }
+        Ok(Self(pools))
+    }
+
+    /// The count.
+    #[must_use]
+    pub const fn get(self) -> u32 {
+        self.0
+    }
+
+    /// One more pool. **Refuses at [`MAX_POOLS_PER_ENDPOINT`]**, on the create
+    /// path only — crediting one of the existing pools counts nothing.
+    ///
+    /// # Errors
+    /// [`InventoryRecordError::EndpointPools`] past the cap.
+    pub const fn checked_add(self) -> Result<Self, InventoryRecordError> {
+        let Some(pools) = self.0.checked_add(1) else {
+            return Err(InventoryRecordError::EndpointPools {
+                max: MAX_POOLS_PER_ENDPOINT,
+            });
+        };
+        Self::new(pools)
+    }
+}
+
+/// How many live lot records one endpoint holds ([`MAX_LOTS_PER_ENDPOINT`]).
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize)]
+#[serde(transparent)]
+pub struct LotCensus(u32);
+
+#[derive(Deserialize)]
+#[serde(transparent)]
+struct LotCensusWire(u32);
+
+impl<'de> Deserialize<'de> for LotCensus {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let wire = LotCensusWire::deserialize(deserializer)?;
+        Self::new(wire.0).map_err(serde::de::Error::custom)
+    }
+}
+
+impl LotCensus {
+    /// Build a lot count.
+    ///
+    /// # Errors
+    /// [`InventoryRecordError::EndpointLots`] past [`MAX_LOTS_PER_ENDPOINT`].
+    pub const fn new(lots: u32) -> Result<Self, InventoryRecordError> {
+        if lots > MAX_LOTS_PER_ENDPOINT {
+            return Err(InventoryRecordError::EndpointLots {
+                max: MAX_LOTS_PER_ENDPOINT,
+            });
+        }
+        Ok(Self(lots))
+    }
+
+    /// The count.
+    #[must_use]
+    pub const fn get(self) -> u32 {
+        self.0
+    }
+
+    /// `delta` more live lots here (negative to consume).
+    ///
+    /// A census is a **bound**, not a ledger: a count that would go negative
+    /// (a lot seeded outside the exported verbs, then consumed through them)
+    /// clamps at zero rather than refusing an otherwise legal act.
+    ///
+    /// # Errors
+    /// [`InventoryRecordError::EndpointLots`] past the cap.
+    pub const fn checked_move(self, delta: i64) -> Result<Self, InventoryRecordError> {
+        let mut lots = self.0 as i64 + delta;
+        if lots < 0 {
+            lots = 0;
+        }
+        if lots > MAX_LOTS_PER_ENDPOINT as i64 {
+            return Err(InventoryRecordError::EndpointLots {
+                max: MAX_LOTS_PER_ENDPOINT,
+            });
+        }
+        Self::new(lots as u32)
     }
 }
 
@@ -883,6 +1197,41 @@ pub enum InventoryRecordError {
     TrancheAbsorbed {
         /// The cap.
         max: usize,
+    },
+    /// Past [`MAX_TRANCHE_INHERITED`].
+    #[error("a tranche inherits at most {max} foreign roots")]
+    TrancheInherited {
+        /// The cap.
+        max: usize,
+    },
+    /// Past [`MAX_TRANCHE_GENERATIONS`].
+    #[error("that pool's lineage root has rolled {max} times")]
+    TrancheGeneration {
+        /// The cap.
+        max: u32,
+    },
+    /// `remaining` may never exceed the matter that established the root.
+    #[error("a tranche cannot have more left to claim than it absorbed")]
+    TrancheRemaining,
+    /// A mint asked for more lineage than the root ever held.
+    #[error("that lineage root has {remaining} left and {requested} was asked for")]
+    TrancheDraw {
+        /// What the root may still license.
+        remaining: u64,
+        /// What was asked for.
+        requested: u64,
+    },
+    /// Past [`MAX_POOLS_PER_ENDPOINT`].
+    #[error("an endpoint pools at most {max} distinct commodities")]
+    EndpointPools {
+        /// The cap.
+        max: usize,
+    },
+    /// Past [`MAX_LOTS_PER_ENDPOINT`].
+    #[error("an endpoint holds at most {max} lots")]
+    EndpointLots {
+        /// The cap.
+        max: u32,
     },
     /// Past [`MAX_LINEAGE_DEPTH`].
     #[error("lineage depth is at most {max}")]

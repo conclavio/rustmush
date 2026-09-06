@@ -2501,6 +2501,18 @@ enum CommandSubmitDrive {
     Refused {
         actor: ObjId,
         detail: String,
+        /// Whether this refusal is a **durable-integrity** event rather than an
+        /// ordinary "that action is not currently available" (E7c2 fold R8).
+        ///
+        /// `ActionPreflight::Quarantined` (*the request was consumed by a
+        /// never-finalized intent whose complete recovery material is in
+        /// quarantine*), `ActionPreflight::Conflict` (*the scoped key is bound
+        /// to different canonical ingress*) and retirement exhaustion used to
+        /// collapse into the same arm and the same `tracing::info!` as a typo,
+        /// which left a quarantined authoritative intent on the command lane
+        /// indistinguishable in the log from a mistyped verb. The actor's line
+        /// is unchanged either way — that is the disclosure rule.
+        integrity: bool,
     },
     /// The same request already owns a durable, not-yet-finalized intent.
     AlreadyOwned {
@@ -2546,7 +2558,13 @@ impl CommandSubmitDriver {
             let envelope = match ActionCoordinator::command_ingress(&submit, self.idempotency_epoch)
             {
                 Ok(envelope) => envelope,
-                Err(detail) => return Ok(CommandSubmitDrive::Refused { actor, detail }),
+                Err(detail) => {
+                    return Ok(CommandSubmitDrive::Refused {
+                        actor,
+                        detail,
+                        integrity: false,
+                    });
+                }
             };
             let status = match ActionCoordinator::status_id(envelope.idempotency()) {
                 Ok(status) => status,
@@ -2554,6 +2572,7 @@ impl CommandSubmitDriver {
                     return Ok(CommandSubmitDrive::Refused {
                         actor,
                         detail: error.to_string(),
+                        integrity: false,
                     });
                 }
             };
@@ -2565,6 +2584,7 @@ impl CommandSubmitDriver {
                     return Ok(CommandSubmitDrive::Refused {
                         actor,
                         detail: error.to_string(),
+                        integrity: false,
                     });
                 }
                 Err(error) => return Err(error.to_string()),
@@ -2578,11 +2598,21 @@ impl CommandSubmitDriver {
                 ActionPreflight::Vacant(permit) => {
                     let submission = match command_offer_submission(engine, &submit) {
                         Ok(submission) => submission,
-                        Err(detail) => return Ok(CommandSubmitDrive::Refused { actor, detail }),
+                        Err(detail) => {
+                            return Ok(CommandSubmitDrive::Refused {
+                                actor,
+                                detail,
+                                integrity: false,
+                            });
+                        }
                     };
                     return Ok(match resolve_and_stage_offer(engine, permit, submission) {
                         Ok((staged, actor)) => CommandSubmitDrive::Staged { staged, actor },
-                        Err(detail) => CommandSubmitDrive::Refused { actor, detail },
+                        Err(detail) => CommandSubmitDrive::Refused {
+                            actor,
+                            detail,
+                            integrity: false,
+                        },
                     });
                 }
                 ActionPreflight::Pending { .. } => {
@@ -2595,16 +2625,21 @@ impl CommandSubmitDriver {
                         status,
                     });
                 }
-                ActionPreflight::Quarantined(_) => {
+                ActionPreflight::Quarantined(receipt) => {
                     return Ok(CommandSubmitDrive::Refused {
                         actor,
-                        detail: "that request is quarantined and will not be replanned".to_owned(),
+                        detail: format!(
+                            "that request is quarantined and will not be replanned (spool {})",
+                            receipt.token()
+                        ),
+                        integrity: true,
                     });
                 }
                 ActionPreflight::Conflict => {
                     return Ok(CommandSubmitDrive::Refused {
                         actor,
                         detail: "that request identity conflicts with different ingress".to_owned(),
+                        integrity: true,
                     });
                 }
             }
@@ -2612,6 +2647,7 @@ impl CommandSubmitDriver {
         Ok(CommandSubmitDrive::Refused {
             actor,
             detail: "the idempotency retirement watermark changed repeatedly".to_owned(),
+            integrity: true,
         })
     }
 }
@@ -3713,6 +3749,16 @@ async fn run(
             // ---- E7c2: B1 — the `Authoritative` ingress adapter seam ----
             Wake::CommandSubmits => {
                 let Some(store) = deps.store.authoritative_store() else {
+                    // E7c2 fold R11: a queued submission parked by a freeze was
+                    // mute — acceptance and loss were indistinguishable at the
+                    // terminal. Tell whoever is waiting before the world stops.
+                    let waiting: Vec<ObjId> = engine.queued_authoritative_actors().collect();
+                    for actor in waiting {
+                        out.best_effort_error(
+                            actor,
+                            "Your queued action is held while the world recovers; nothing was done.",
+                        );
+                    }
                     apply_integrity_freeze(
                         &engine.world,
                         &gateway,
@@ -3726,12 +3772,27 @@ async fn run(
                     Ok(
                         CommandSubmitDrive::Idle | CommandSubmitDrive::DeferredByLegacyPredecessor,
                     ) => {}
-                    Ok(CommandSubmitDrive::Refused { actor, detail }) => {
-                        tracing::info!(
-                            actor = %actor,
-                            detail = %detail,
-                            "command authoritative submission refused before any durable intent"
-                        );
+                    Ok(CommandSubmitDrive::Refused {
+                        actor,
+                        detail,
+                        integrity,
+                    }) => {
+                        // E7c2 fold R8: a quarantined or conflicting durable
+                        // identity is an operator event, not a typo. The actor's
+                        // line is the same generic one either way.
+                        if integrity {
+                            tracing::error!(
+                                actor = %actor,
+                                detail = %detail,
+                                "command authoritative submission hit a durable-integrity refusal"
+                            );
+                        } else {
+                            tracing::info!(
+                                actor = %actor,
+                                detail = %detail,
+                                "command authoritative submission refused before any durable intent"
+                            );
+                        }
                         // Nothing was staged, so this is transient runtime
                         // truth: it is delivered whatever the step's unrelated
                         // writes do, and it never claims a mutation happened.
@@ -3777,8 +3838,16 @@ async fn run(
                         // collects it below and the delivery boundary withholds
                         // it until this exact bundle's durable receipt resolves,
                         // suppressing it entirely on abort (§4 checklist item 1).
+                        //
+                        // E7c2 fold B12: it is the PROVIDER's own sentence, the
+                        // same projection a HIT renders — never
+                        // `deterministic_commit_token`'s internal binding digest
+                        // rendered raw into player output.
                         failure_actor = Some(actor);
-                        out.info(actor, format!("Done. (commit {})", staged.token));
+                        out.info(
+                            actor,
+                            staged.summary.clone().unwrap_or_else(|| "Done.".to_owned()),
+                        );
                         action_completion = Some(ActionCompletion {
                             staged,
                             owned: None,
@@ -6959,7 +7028,7 @@ fn complete_pending_ownership(
         if let Some(reply) = action.owned.take() {
             let projected = result
                 .as_ref()
-                .map(|()| action.staged)
+                .map(|()| action.staged.clone())
                 .map_err(Clone::clone);
             let _ = reply.send(projected);
         }
@@ -7067,7 +7136,7 @@ fn complete_pending_commit(
         && let Some(finished) = completion.finished.take()
     {
         let result = if outcome == DeliveryOutcome::Committed && completion.ownership_valid {
-            Ok(completion.staged)
+            Ok(completion.staged.clone())
         } else {
             Err(terminal_failure.unwrap_or_else(|| {
                 AuthoritativeCommitFailure::Integrity(
@@ -13595,10 +13664,11 @@ mod tests {
             world.engine().has_authoritative_submit(),
             "the handler's one submission must be queued"
         );
-        assert!(
-            out.events().is_empty(),
-            "the handler itself confirms nothing: {:?}",
-            b1_lines(&out)
+        assert_eq!(
+            b1_lines(&out),
+            vec!["Queued.".to_owned()],
+            "the handler itself confirms nothing; the engine acknowledges RECEIPT \
+             only (E7c2 fold R11)"
         );
         let store = mush_store::InMemoryStore::new();
         let _ = world.drain_write_batch();
@@ -13798,9 +13868,15 @@ mod tests {
     async fn e7c2_b1_the_confirmation_never_outruns_the_durable_ack() {
         let mut world = b1_world();
         let handler_out = b1_run(&mut world, "@b1submit 6");
-        assert!(
-            handler_out.events().is_empty(),
-            "an Authoritative handler emits no success presentation of its own"
+        assert_eq!(
+            b1_lines(&handler_out),
+            vec!["Queued.".to_owned()],
+            "an Authoritative handler emits no success presentation of its own; the \
+             only line is the engine's BestEffort receipt acknowledgement"
+        );
+        assert_eq!(
+            handler_out.classes(),
+            [mush_core::DeliveryClass::BestEffort]
         );
         let store = mush_store::InMemoryStore::new();
         let _ = world.drain_write_batch();
@@ -13813,8 +13889,509 @@ mod tests {
         };
         // What the world loop then queues, and its delivery class.
         let mut out = Outbox::new();
-        out.info(actor, format!("Done. (commit {})", staged.token));
+        out.info(
+            actor,
+            staged.summary.clone().unwrap_or_else(|| "Done.".to_owned()),
+        );
         assert_eq!(out.classes(), [mush_core::DeliveryClass::OnCommit]);
+    }
+
+    // ---- E7 cut 2 independent verify fold ----
+
+    fn b1_run_as(world: &mut mush_testkit::TestWorld, actor: ObjId, line: &str) -> Outbox {
+        let mut out = Outbox::new();
+        let mut fx = Effects::new();
+        world.engine_mut().step(
+            Inbound::Cmd {
+                conn: 1,
+                actor,
+                line: line.to_owned(),
+            },
+            &mut out,
+            &mut fx,
+        );
+        out
+    }
+
+    /// `EconomyModule` + `InventoryModule` behind the real command seam, with a
+    /// container-backed vault and a seeded pool: the smallest world in which a
+    /// typed `@inv/move` can actually commit.
+    fn inv_world() -> (
+        mush_testkit::TestWorld,
+        mush_inventory::InventoryFamilies,
+        u64,
+    ) {
+        let mut world = mush_testkit::TestWorld::with_modules(vec![
+            Box::new(mush_economy::EconomyModule::new()),
+            Box::new(mush_inventory::InventoryModule::new()),
+        ]);
+        world.engine_mut().set_offer_keys(
+            OfferKeyRing::new(OfferSecret::new(1, [0x62; 32]).unwrap(), []).unwrap(),
+        );
+        let families = world
+            .world()
+            .module_state::<mush_inventory::InventoryHandles>()
+            .expect("inventory handles")
+            .0
+            .clone();
+        let vault = |world: &mut mush_testkit::TestWorld, name: &str| -> u64 {
+            let created = world.run(GOD, &format!("@create {name}"));
+            let object = created
+                .iter()
+                .find_map(|(_, event)| {
+                    let text = mush_testkit::text_of(event);
+                    let at = text.find("(#")?;
+                    text[at + 2..]
+                        .chars()
+                        .take_while(char::is_ascii_digit)
+                        .collect::<String>()
+                        .parse::<u64>()
+                        .ok()
+                })
+                .expect("created object");
+            let out = world.run(GOD, &format!("@vault/create {name}=container:#{object}"));
+            out.iter()
+                .find_map(|(_, event)| {
+                    let text = mush_testkit::text_of(event);
+                    let at = text.find("vault #")?;
+                    text[at + 7..]
+                        .chars()
+                        .take_while(char::is_ascii_digit)
+                        .collect::<String>()
+                        .parse::<u64>()
+                        .ok()
+                })
+                .expect("vault id")
+        };
+        let from = vault(&mut world, "from");
+        let _to = vault(&mut world, "to");
+        {
+            let engine = world.engine_mut();
+            let mut txn = engine
+                .action_transaction(&families.pools)
+                .expect("inventory transaction");
+            families
+                .credit(
+                    &mut txn,
+                    mush_inventory::EndpointRef(mush_economy::VaultId(from)),
+                    &mush_core::CanonicalId::new("metals").expect("commodity"),
+                    100,
+                )
+                .expect("seed");
+            let prepared = txn.prepare().expect("prepared");
+            let (_, installation) = prepared.into_parts();
+            engine.install_prepared_action(installation);
+        }
+        (world, families, from)
+    }
+
+    fn inv_available(
+        engine: &mut Engine,
+        families: &mush_inventory::InventoryFamilies,
+        vault: u64,
+    ) -> u64 {
+        let mut txn = engine
+            .action_transaction(&families.pools)
+            .expect("inventory transaction");
+        families
+            .available(
+                &mut txn,
+                mush_inventory::EndpointRef(mush_economy::VaultId(vault)),
+                &mush_core::CanonicalId::new("metals").expect("commodity"),
+            )
+            .expect("available")
+    }
+
+    /// D1 as taken: the durable key derives from the request identity alone, so a
+    /// replay after a reboot is a **HIT** with no second bundle. The epoch is a
+    /// per-process random and does NOT survive a restart, and `InventoryVerb::Move`
+    /// derives nothing and consumes nothing — so before the fold the second
+    /// attempt moved the quantity twice and rewrote the same
+    /// `inventory.transferred` marker over it.
+    #[tokio::test]
+    async fn vf_r1_a_replayed_move_across_an_epoch_change_moves_nothing_twice() {
+        let (mut world, families, from) = inv_world();
+        let to = from + 1;
+        let _ = world.run(GOD, &format!("@inv/move {from}/metals:10={to}"));
+        let submit = *world
+            .engine_mut()
+            .take_authoritative_submit()
+            .expect("the command queued a submission");
+        let store = mush_store::InMemoryStore::new();
+        let _ = world.drain_write_batch();
+        let mut engine = world.into_engine();
+
+        // Attempt one, on this process's epoch.
+        let first = ActionCoordinator::command_ingress(&submit, 1).unwrap();
+        let ActionPreflight::Vacant(permit) =
+            ActionCoordinator::preflight(&store, first).await.unwrap()
+        else {
+            panic!("the first attempt is vacant")
+        };
+        let submission = command_offer_submission(&engine, &submit).expect("offer");
+        let (staged, _) = resolve_and_stage_offer(&mut engine, permit, submission).expect("staged");
+        let (persistence, installation) = engine
+            .take_staged_action()
+            .unwrap()
+            .expect("staged action")
+            .into_parts();
+        let StagedActionPersistence::Authoritative(bundle) = persistence else {
+            panic!("authoritative lane")
+        };
+        assert_eq!(bundle.token(), staged.token);
+        store
+            .reserve_authoritative_intent(*bundle.clone())
+            .await
+            .unwrap();
+        store
+            .reconcile_authoritative(bundle.token(), bundle.bundle_hash())
+            .await
+            .unwrap();
+        engine.install_prepared_action(installation);
+        store
+            .checkpoint_authoritative(bundle.token(), bundle.bundle_hash())
+            .await
+            .unwrap();
+        assert_eq!(inv_available(&mut engine, &families, from), 90);
+
+        // The reboot: a fresh process epoch. The REQUEST identity survives it and
+        // the durable key does not, so preflight is vacant all over again.
+        let replay = ActionCoordinator::command_ingress(&submit, 2).unwrap();
+        let epoch_free = ActionCoordinator::command_ingress(&submit, 1).unwrap();
+        assert_eq!(
+            replay.request(),
+            epoch_free.request(),
+            "the request identity is epoch-free"
+        );
+        assert_ne!(
+            replay.idempotency().epoch(),
+            epoch_free.idempotency().epoch(),
+            "but the durable key it is looked up under is not"
+        );
+        let ActionPreflight::Vacant(permit) =
+            ActionCoordinator::preflight(&store, replay).await.unwrap()
+        else {
+            panic!("the ingress cannot catch this; the mechanic must")
+        };
+        let submission = command_offer_submission(&engine, &submit).expect("offer");
+        let refused = resolve_and_stage_offer(&mut engine, permit, submission)
+            .expect_err("the applied marker refuses the replay");
+        assert!(
+            refused.contains("already been applied"),
+            "the marker is the replay guard: {refused}"
+        );
+        assert_eq!(
+            inv_available(&mut engine, &families, from),
+            90,
+            "and the quantity moved exactly once"
+        );
+    }
+
+    /// The other half of D1: a deliberately **retyped** intent is a new request,
+    /// as the player means it. The handler's `key` used to be a constant per-verb
+    /// discriminator, so `@inv/move 1/metals:5=2` had one request identity for
+    /// that actor for ever and "move five more" silently collapsed into a HIT.
+    #[tokio::test]
+    async fn vf_r1_two_deliberately_retyped_moves_move_twice() {
+        let (mut world, _families, from) = inv_world();
+        let to = from + 1;
+        let line = format!("@inv/move {from}/metals:5={to}");
+        let _ = world.run(GOD, &line);
+        let first = *world
+            .engine_mut()
+            .take_authoritative_submit()
+            .expect("first submission");
+        let _ = world.run(GOD, &line);
+        let second = *world
+            .engine_mut()
+            .take_authoritative_submit()
+            .expect("second submission");
+        assert_ne!(
+            first.key.as_str(),
+            second.key.as_str(),
+            "two typed intents carry two discriminators"
+        );
+        let a = ActionCoordinator::command_ingress(&first, 1).unwrap();
+        let b = ActionCoordinator::command_ingress(&second, 1).unwrap();
+        assert_ne!(
+            a.request(),
+            b.request(),
+            "and therefore two request identities, so both commit"
+        );
+        // While driving the SAME submission value twice is still one identity.
+        let again = ActionCoordinator::command_ingress(&first, 1).unwrap();
+        assert_eq!(a.request(), again.request());
+    }
+
+    /// E7c2 fold C4: the fan-out arm voided the ENGINE-wide slot, so a
+    /// legitimate submission queued in an earlier step — possibly a different
+    /// actor's — was silently destroyed and its owner was told nothing.
+    #[tokio::test]
+    async fn vf_c4_a_fan_out_never_voids_a_submission_from_an_earlier_step() {
+        let mut world = b1_world();
+        let _ = b1_run(&mut world, "@b1submit 3");
+        assert!(world.engine().has_authoritative_submit());
+        let out = b1_run(&mut world, "@b1submit/twice 7");
+        assert!(
+            world.engine().has_authoritative_submit(),
+            "the incumbent from the earlier step survives the fan-out"
+        );
+        assert!(
+            b1_lines(&out)
+                .iter()
+                .any(|line| line.contains("still committing")),
+            "{:?}",
+            b1_lines(&out)
+        );
+        let store = mush_store::InMemoryStore::new();
+        let _ = world.drain_write_batch();
+        let mut engine = world.into_engine();
+        let mut driver = CommandSubmitDriver::new(1);
+        let CommandSubmitDrive::Staged { staged, .. } =
+            driver.drive_one(&mut engine, &store).await.unwrap()
+        else {
+            panic!("the incumbent still drives")
+        };
+        assert_eq!(
+            staged.summary.as_deref(),
+            Some("The counter stands at 3."),
+            "and it is the FIRST submission, not the fan-out's"
+        );
+    }
+
+    /// D3 as taken: the slot is per actor, so a fan-out drops only the fanning
+    /// actor's own — and it tells them. Nobody else's submission is touched and
+    /// nobody else is told anything at all.
+    #[tokio::test]
+    async fn vf_c4_a_fan_out_tells_every_actor_it_dropped() {
+        let mut world = b1_world();
+        let bystander = world.spawn_player("bystander");
+        let _ = b1_run_as(&mut world, bystander, "@b1submit 5");
+        assert!(world.engine().has_authoritative_submit_for(bystander));
+        let out = b1_run(&mut world, "@b1submit/twice 9");
+        let dropped: Vec<String> = b1_lines(&out)
+            .into_iter()
+            .filter(|line| line.contains("more than one authoritative action"))
+            .collect();
+        assert_eq!(dropped.len(), 1, "one line per dropped actor: {dropped:?}");
+        assert!(
+            !world.engine().has_authoritative_submit_for(GOD),
+            "the fanning actor stages nothing at all"
+        );
+        assert!(
+            world.engine().has_authoritative_submit_for(bystander),
+            "and the bystander's submission is untouched"
+        );
+    }
+
+    /// E7c2 fold B7: one player's queued submission used to answer every other
+    /// player's mutation with "An earlier action is still committing" — a
+    /// cross-actor denial and a cross-actor tell. The durable one-intent rule
+    /// (D-E7-39 / 08i answer 6) is about the STORE and is enforced downstream.
+    #[tokio::test]
+    async fn vf_b7_one_actors_submission_does_not_block_another() {
+        let mut world = b1_world();
+        let alice = world.spawn_player("alice");
+        let bob = world.spawn_player("bob");
+        let alice_out = b1_run_as(&mut world, alice, "@b1submit 3");
+        let bob_out = b1_run_as(&mut world, bob, "@b1submit 4");
+        assert!(
+            !b1_lines(&bob_out)
+                .iter()
+                .any(|line| line.contains("still committing")),
+            "bob is not refused because alice got there first: {:?}",
+            b1_lines(&bob_out)
+        );
+        assert!(world.engine().has_authoritative_submit_for(alice));
+        assert!(world.engine().has_authoritative_submit_for(bob));
+        assert!(!b1_lines(&alice_out).iter().any(|line| line.contains("bob")));
+        // Bob's OWN second submission, while his first is queued, is still
+        // back-pressure — and the refusal names nobody else.
+        let again = b1_run_as(&mut world, bob, "@b1submit 5");
+        let refusal: Vec<String> = b1_lines(&again)
+            .into_iter()
+            .filter(|line| line.contains("still committing"))
+            .collect();
+        assert_eq!(refusal.len(), 1, "{refusal:?}");
+        assert!(refusal[0].starts_with("Your earlier action"), "{refusal:?}");
+        // Both drive, in successive steps.
+        let store = mush_store::InMemoryStore::new();
+        let _ = world.drain_write_batch();
+        let mut engine = world.into_engine();
+        let mut driver = CommandSubmitDriver::new(1);
+        for _ in 0..2 {
+            match driver.drive_one(&mut engine, &store).await.unwrap() {
+                CommandSubmitDrive::Staged { .. } => {}
+                CommandSubmitDrive::Refused { detail, .. } => panic!("refused: {detail}"),
+                _ => panic!("expected a staged submission"),
+            }
+            let (_, installation) = engine
+                .take_staged_action()
+                .unwrap()
+                .expect("staged action")
+                .into_parts();
+            engine.abort_prepared_action(installation);
+        }
+        assert!(!engine.has_authoritative_submit());
+    }
+
+    /// E7c2 fold R8: a quarantined durable identity on the command lane used to
+    /// be indistinguishable in the log from a typo. The actor's line is
+    /// unchanged — that is the disclosure rule — but the drive result is not.
+    #[tokio::test]
+    async fn vf_r8_a_quarantined_preflight_is_an_integrity_event() {
+        let mut world = b1_world();
+        let _ = b1_run(&mut world, "@b1submit 3");
+        let store = mush_store::InMemoryStore::new();
+        let _ = world.drain_write_batch();
+        let mut engine = world.into_engine();
+        let mut driver = CommandSubmitDriver::new(1);
+        assert!(matches!(
+            driver.drive_one(&mut engine, &store).await.unwrap(),
+            CommandSubmitDrive::Staged { .. }
+        ));
+        let (persistence, _installation) = engine
+            .take_staged_action()
+            .unwrap()
+            .expect("staged action")
+            .into_parts();
+        let StagedActionPersistence::Authoritative(bundle) = persistence else {
+            panic!("authoritative lane")
+        };
+        store
+            .reserve_authoritative_intent(*bundle.clone())
+            .await
+            .unwrap();
+        store
+            .discard_quarantined_authoritative_intent(
+                bundle.token(),
+                bundle.bundle_hash(),
+                bundle.bundle_hash(),
+            )
+            .await
+            .expect("quarantine the intent");
+        // The identical command again: preflight now answers `Quarantined`.
+        let mut out = Outbox::new();
+        let mut fx = Effects::new();
+        engine.step(
+            Inbound::Cmd {
+                conn: 1,
+                actor: GOD,
+                line: "@b1submit 3".to_owned(),
+            },
+            &mut out,
+            &mut fx,
+        );
+        match driver.drive_one(&mut engine, &store).await.unwrap() {
+            CommandSubmitDrive::Refused {
+                integrity, detail, ..
+            } => {
+                assert!(integrity, "a quarantine is an operator event: {detail}");
+                assert!(detail.contains("quarantined"), "{detail}");
+            }
+            _ => panic!("expected an integrity refusal"),
+        }
+    }
+
+    /// E7c2 fold R11: acceptance and loss used to be indistinguishable at the
+    /// terminal — an `Authoritative` handler emits nothing and the only later
+    /// line is the driver's, so a submission dropped by a crash or parked by a
+    /// freeze produced no output whatever.
+    #[tokio::test]
+    async fn vf_r11_a_queued_submission_acknowledges_receipt_without_claiming_a_mutation() {
+        let mut world = b1_world();
+        let out = b1_run(&mut world, "@b1submit 3");
+        assert_eq!(
+            b1_lines(&out),
+            vec!["Queued.".to_owned()],
+            "exactly one non-committal line"
+        );
+        assert_eq!(
+            out.classes(),
+            [mush_core::DeliveryClass::BestEffort],
+            "BestEffort, so the durable-ack gate never withholds it and it can \
+             never be read as the confirmation"
+        );
+        assert!(world.engine().has_authoritative_submit());
+    }
+
+    /// E7c2 fold B12: the first commit rendered `deterministic_commit_token`'s
+    /// internal binding digest raw into player output while the replay of the
+    /// same act got the provider's own sentence. Both now read the same.
+    #[tokio::test]
+    async fn vf_b12_the_first_commit_and_the_hit_read_the_same() {
+        let mut world = b1_world();
+        let _ = b1_run(&mut world, "@b1submit 4");
+        let store = mush_store::InMemoryStore::new();
+        let _ = world.drain_write_batch();
+        let mut engine = world.into_engine();
+        let mut driver = CommandSubmitDriver::new(1);
+        let CommandSubmitDrive::Staged { staged, .. } =
+            driver.drive_one(&mut engine, &store).await.unwrap()
+        else {
+            panic!("staged")
+        };
+        let fresh = staged.summary.clone().expect("the provider's own summary");
+        assert!(
+            !fresh.contains(&staged.token.to_string()),
+            "no raw commit token in player output: {fresh}"
+        );
+        let (persistence, installation) = engine
+            .take_staged_action()
+            .unwrap()
+            .expect("staged action")
+            .into_parts();
+        let StagedActionPersistence::Authoritative(bundle) = persistence else {
+            panic!("authoritative lane")
+        };
+        store
+            .reserve_authoritative_intent(*bundle.clone())
+            .await
+            .unwrap();
+        store
+            .reconcile_authoritative(bundle.token(), bundle.bundle_hash())
+            .await
+            .unwrap();
+        engine.install_prepared_action(installation);
+        store
+            .checkpoint_authoritative(bundle.token(), bundle.bundle_hash())
+            .await
+            .unwrap();
+        let mut out = Outbox::new();
+        let mut fx = Effects::new();
+        engine.step(
+            Inbound::Cmd {
+                conn: 1,
+                actor: GOD,
+                line: "@b1submit 4".to_owned(),
+            },
+            &mut out,
+            &mut fx,
+        );
+        let CommandSubmitDrive::AlreadyFinished {
+            actor,
+            receipt,
+            status,
+        } = driver.drive_one(&mut engine, &store).await.unwrap()
+        else {
+            panic!("the retyped identical command is a HIT")
+        };
+        let projections = engine
+            .registry
+            .action_providers()
+            .map(mush_core::ActionProviderRegistry::receipt_projection_table)
+            .expect("projections");
+        let hit = ActionCoordinator::project_finalized_receipt(
+            &projections,
+            &PrincipalId::Object { id: actor },
+            status,
+            &receipt,
+        )
+        .expect("projected")
+        .result()
+        .map(|result| result.summary().to_owned())
+        .expect("summary");
+        assert_eq!(fresh, hit, "the first commit and its HIT read the same");
     }
 
     /// The seam must not fork a second spelling of the five steps. Both

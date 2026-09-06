@@ -4127,6 +4127,16 @@ pub struct PreparedAuthoritativeAction {
 }
 
 impl PreparedAuthoritativeAction {
+    /// The durable outcome this preparation produced.
+    ///
+    /// E7c2 fold B12: the staging path needs the provider's own receipt line for
+    /// the acting principal at stage time, so a first commit and its replay read
+    /// the same rather than the first one rendering a raw commit token.
+    #[must_use]
+    pub const fn outcome(&self) -> &RulesValue {
+        &self.outcome
+    }
+
     pub fn into_parts(self) -> PreparedAuthoritativeActionParts {
         (
             self.outcome,

@@ -19,21 +19,33 @@
 //! # Bounds
 //!
 //! Every switch is bounded on records **visited**, never on records matched
-//! (D-LBK-5): `lots` and `reservations` page at [`INV_PAGE`], and `lot`'s
-//! lineage page walks at most [`MAX_LINEAGE_PAGE`] stored parents — coarsening
-//! the *projection* deletes no stored parent.
+//! (D-LBK-5), and — since E7c2 fold B1 — a listing pages to exhaustion under a
+//! budget counted in **pages** rather than stopping after one. It used to count
+//! `visited` against `INV_PAGE`, which is also the page size, so the loop could
+//! run exactly once and a viewer's own stock was displaced by unrelated
+//! endpoints and reported as *"(nothing pooled here)"*. A truncated listing now
+//! says so and hands back a continuation cursor — an **argument**, not a switch —
+//! instead of the old *"narrow the commodity to see more"*, which was false
+//! because the commodity filter ran after the single page too.
+//!
+//! `lot`'s lineage page walks at most [`MAX_LINEAGE_PAGE`] stored parents;
+//! coarsening the *projection* deletes no stored parent.
 
 use std::sync::Arc;
 
 use mush_core::{
     ArgShape, CmdError, CommandCompatibility, CommandSpec, Ctx, IdempotencyKeyText, ModError,
-    PerceivedRef, Registrar,
+    PerceivedRef, Registrar, StateFamilyHandle,
 };
 use serde_json::json;
+use smol_str::SmolStr;
 
 use crate::pool::InventoryFamilies;
-use crate::provider::{InventoryVerb, action_ref, endpoint_status, endpoint_visible};
+use crate::provider::{
+    InventoryVerb, action_ref, endpoint_status, endpoint_visible, endpoints_truncated,
+};
 use crate::record::{EndpointRef, INV_PAGE, LotId, MAX_LOT_PARENTS};
+use crate::store::InventoryStore;
 
 /// The one refusal an unviewable and an absent endpoint share, byte for byte.
 pub const NO_SUCH_ENDPOINT: &str = "There is no such endpoint.";
@@ -41,9 +53,103 @@ pub const NO_SUCH_ENDPOINT: &str = "There is no such endpoint.";
 pub const NO_SUCH_LOT: &str = "There is no such lot.";
 /// Largest stored lineage the `lot` page renders in one call.
 pub const MAX_LINEAGE_PAGE: usize = MAX_LOT_PARENTS;
+/// Largest number of pages one listing visits before it declares itself
+/// truncated. Bounded on records **visited**, never on records matched.
+pub const MAX_LIST_PAGES: usize = 128;
+/// Largest number of rows one listing renders before it hands back a cursor.
+pub const MAX_LIST_ROWS: usize = INV_PAGE;
+/// Largest continuation cursor one listing accepts, in bytes.
+pub const MAX_LIST_CURSOR_BYTES: usize = 128;
 
-fn key(text: &str) -> IdempotencyKeyText {
-    IdempotencyKeyText::parse_canonical(text).expect("static inventory command key is canonical")
+/// The command's idempotency discriminator, parsed **fallibly**.
+///
+/// It used to be a static per-verb string and an `expect`; since E7c2 fold
+/// R1(b) it carries an IC-second sequence, so it is derived from world input and
+/// no command path may panic on it.
+fn key(text: &str) -> Result<IdempotencyKeyText, CmdError> {
+    IdempotencyKeyText::parse_canonical(text)
+        .map_err(|_| CmdError::msg("Inventory is not available on this server."))
+}
+
+/// What one bounded listing walk produced.
+struct Listing {
+    rows: Vec<String>,
+    /// The cursor a follow-up call resumes after, when the walk stopped early.
+    next: Option<SmolStr>,
+    /// How many records the walk visited.
+    visited: usize,
+}
+
+/// Page one typed family to exhaustion under an explicit **page** budget,
+/// collecting whatever rows the caller's projection yields.
+///
+/// This is `store::reconcile`'s own loop shape, which was already right; the
+/// listings were the ones that were not.
+fn walk<K, V>(
+    ctx: &Ctx<'_>,
+    handle: &StateFamilyHandle<K, V>,
+    start: Option<SmolStr>,
+    mut project: impl FnMut(&V) -> Vec<String>,
+) -> Result<Listing, CmdError>
+where
+    K: Send + Sync + 'static,
+    V: Clone + Send + Sync + 'static,
+{
+    let mut rows: Vec<String> = Vec::new();
+    let mut after = start.clone();
+    let mut cursor = start;
+    let mut visited = 0_usize;
+    let mut pages = 0_usize;
+    let mut next = None;
+    'walk: loop {
+        let page = ctx
+            .scan_action_state(handle, after.as_deref(), INV_PAGE)
+            .map_err(|_| CmdError::msg(NO_SUCH_ENDPOINT))?;
+        for entry in page.entries() {
+            if rows.len() >= MAX_LIST_ROWS {
+                next = cursor.clone();
+                break 'walk;
+            }
+            visited += 1;
+            rows.extend(project(entry.value()));
+            cursor = Some(SmolStr::new(entry.encoded_key()));
+        }
+        pages += 1;
+        match page.next_after().cloned() {
+            Some(more) => after = Some(more),
+            None => break,
+        }
+        if pages >= MAX_LIST_PAGES {
+            next = after.clone();
+            break;
+        }
+    }
+    Ok(Listing {
+        rows,
+        next,
+        visited,
+    })
+}
+
+/// Split a trailing `after=<cursor>` argument off a listing's raw arguments.
+///
+/// A cursor is an **argument**, not a switch: `@inv` stays one primary verb with
+/// one allowlist stanza (rule 1 / K8.5).
+fn split_cursor(raw: &str) -> Result<(String, Option<SmolStr>), CmdError> {
+    let mut head = raw.trim().to_owned();
+    let mut cursor = None;
+    if let Some(at) = head.rfind("after=") {
+        let (before, token) = head.split_at(at);
+        let value = token.trim_start_matches("after=").trim();
+        if value.len() > MAX_LIST_CURSOR_BYTES {
+            return Err(CmdError::msg("That continuation is not one of ours."));
+        }
+        if !value.is_empty() {
+            cursor = Some(SmolStr::new(value));
+        }
+        head = before.trim().to_owned();
+    }
+    Ok((head, cursor))
 }
 
 fn parse_endpoint(text: &str) -> Option<EndpointRef> {
@@ -73,6 +179,32 @@ fn submit(
     let Some(action) = action_ref(ctx.reg, verb) else {
         return Err(CmdError::msg("Inventory is not available on this server."));
     };
+    // E7c2 fold C12: an actor holding more live endpoints than one offer may
+    // publish is TOLD so. The offer silently omitted the rest, and the parameter
+    // refusal that followed read as "that endpoint is not live".
+    if endpoints_truncated(ctx.w, ctx.actor) {
+        ctx.out.info(
+            ctx.actor,
+            format!(
+                "You hold more than {} live endpoints; only the first {} by id can be \
+                 named right now.",
+                crate::provider::MAX_ENDPOINT_CHOICES,
+                crate::provider::MAX_ENDPOINT_CHOICES
+            ),
+        );
+    }
+    // E7c2 fold R1(b) / owner decision D1: the discriminator carries the IC
+    // second and an ordinal inside it, so a deliberately retyped intent is a
+    // NEW request rather than a silent preflight HIT that moves nothing —
+    // while driving the same `AuthoritativeSubmit` value twice is still one
+    // commit, and the marker (fold R1(a)) is what makes that true across a
+    // reboot. It is a sequence, never a random: nothing here draws.
+    let at = ctx.w.world_ic_now().at;
+    let attempt = ctx
+        .w
+        .module_state_mut::<InventoryStore>()
+        .map_or(0, |store| store.next_attempt(at));
+    let discriminator = format!("{discriminator}.{at:x}.{attempt:x}");
     // The handler performs NO mutation of its own and emits no success line:
     // the mechanic is the provider's and the confirmation is the receipt's.
     ctx.submit_authoritative(
@@ -80,7 +212,7 @@ fn submit(
         PerceivedRef::SelfActor,
         Vec::new(),
         parameters,
-        key(discriminator),
+        key(&discriminator)?,
     );
     Ok(())
 }
@@ -107,13 +239,15 @@ pub fn register(reg: &mut Registrar<'_>, families: &InventoryFamilies) -> Result
                 "dissolve".into(),
                 "crystallize".into(),
                 "reservations".into(),
+                "quarantine".into(),
             ],
             shape: ArgShape::EqPair,
-            help: "@inv/show <endpoint> · @inv/lots <endpoint> [commodity] · \
+            help: "@inv/show <endpoint> [after=<cursor>] · \
+                   @inv/lots <endpoint> [commodity] [after=<cursor>] · \
                    @inv/lot <id> · @inv/move <endpoint>/<commodity>:<n>=<endpoint> · \
                    @inv/split <lot>=<n> · @inv/merge <lot>,<lot>… · \
                    @inv/dissolve <lot> · @inv/crystallize <endpoint>/<commodity>=<n>[/<grade>] · \
-                   @inv/reservations <endpoint>"
+                   @inv/reservations <endpoint> [after=<cursor>] · @inv/quarantine (staff)"
                 .to_owned(),
             ..CommandSpec::default()
         },
@@ -122,9 +256,12 @@ pub fn register(reg: &mut Registrar<'_>, families: &InventoryFamilies) -> Result
 }
 
 fn dispatch(ctx: &mut Ctx<'_>, families: &InventoryFamilies) -> Result<(), CmdError> {
-    // Keep the fact mirror fresh on the cheapest path there is: one bounded
-    // reconciliation per inventory command (see `crate::facts`).
-    crate::store::reconcile(ctx, families);
+    // E7c2 fold B4: NO per-command `store::reconcile`. Rebuilding three whole
+    // typed families on the world single-writer for every read switch cost
+    // ~12 k record visits per command and grew with the tree's pool count
+    // rather than with the caller's. 08i answer 15 grants typed reads in ticks
+    // and boot reconciliation, which is what the 60 s sweep and
+    // `on_world_loaded` are; the mirror's own contract already tolerates them.
     if ctx.switches.has("show") {
         return show(ctx, families);
     }
@@ -137,17 +274,20 @@ fn dispatch(ctx: &mut Ctx<'_>, families: &InventoryFamilies) -> Result<(), CmdEr
     if ctx.switches.has("reservations") {
         return reservations(ctx, families);
     }
+    if ctx.switches.has("quarantine") {
+        return quarantine(ctx);
+    }
     if ctx.switches.has("move") {
         return move_stock(ctx);
     }
     if ctx.switches.has("split") {
-        return split(ctx);
+        return split(ctx, families);
     }
     if ctx.switches.has("merge") {
-        return merge(ctx);
+        return merge(ctx, families);
     }
     if ctx.switches.has("dissolve") {
-        return dissolve(ctx);
+        return dissolve(ctx, families);
     }
     if ctx.switches.has("crystallize") {
         return crystallize(ctx);
@@ -157,59 +297,43 @@ fn dispatch(ctx: &mut Ctx<'_>, families: &InventoryFamilies) -> Result<(), CmdEr
     ))
 }
 
-// ---- the four reads ----
-
-fn show(ctx: &mut Ctx<'_>, families: &InventoryFamilies) -> Result<(), CmdError> {
-    let Some(endpoint) = parse_endpoint(ctx.args.raw()) else {
-        return Err(CmdError::msg(NO_SUCH_ENDPOINT));
-    };
-    // ONE expression decides both refusals, so they cannot drift apart.
-    if !endpoint_visible(ctx.w, ctx.actor, endpoint) {
-        return Err(CmdError::msg(NO_SUCH_ENDPOINT));
+/// The staff surface half of the quarantine (E7c2 fold B14).
+///
+/// `orphaned_pool_keys` — a pool scalar that survived without its book — can be
+/// marked only **by key**, because no endpoint is recoverable from a scalar
+/// alone. `@inv/show` is keyed by endpoint, so that half of the quarantine had
+/// no operator surface at all: nothing named it, and §4.0's staff ladder forbids
+/// parking state on "wait for staff" without the order filled in.
+fn quarantine(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    if !mush_core::perm::has_role(ctx.w, ctx.actor, mush_core::Role::Royalty) {
+        // A non-staff actor sees exactly what a staffer with nothing quarantined
+        // would: the switch is not theirs, and it says nothing about the world.
+        return Err(CmdError::msg(
+            "Use @inv/show, /lots, /lot or /reservations.",
+        ));
     }
-    let quarantined = ctx
-        .w
-        .module_state::<crate::store::InventoryStore>()
-        .is_some_and(|store| store.is_quarantined(endpoint));
-    let status = endpoint_status(ctx.w, endpoint);
-    let mut lines = vec![format!("{endpoint} — {status:?}")];
-    if quarantined {
+    let Some(store) = ctx.w.module_state::<InventoryStore>() else {
+        return Err(CmdError::msg("Inventory is not available on this server."));
+    };
+    let mut lines = vec!["Inventory quarantine:".to_owned()];
+    for (endpoint, why) in store.quarantined() {
+        lines.push(format!("  {endpoint} — {}", why.runbook()));
+    }
+    for key in store.orphaned_keys() {
+        lines.push(format!(
+            "  pool key {key} — {}",
+            crate::store::Quarantine::HalfPair.runbook()
+        ));
+    }
+    if !store.is_complete() {
         lines.push(
-            "  QUARANTINED: this endpoint's pool and book disagree; every debit and \
-             reservation against it refuses until it is reconciled."
+            "  the applied-marker mirror is truncated; every inventory fact answers \
+             unsatisfied until the family is pruned"
                 .to_owned(),
         );
     }
-    let mut after: Option<smol_str::SmolStr> = None;
-    let mut visited = 0_usize;
-    while visited < INV_PAGE {
-        let page = ctx
-            .scan_action_state(&families.books, after.as_deref(), INV_PAGE)
-            .map_err(|_| CmdError::msg(NO_SUCH_ENDPOINT))?;
-        for entry in page.entries() {
-            visited += 1;
-            let book = entry.value();
-            if crate::store::endpoint_of(book.resource().subject.clone()) != Some(endpoint) {
-                continue;
-            }
-            let holds = book
-                .records()
-                .iter()
-                .filter(|record| record.state() == mush_core::ReservationState::Held)
-                .count();
-            lines.push(format!(
-                "  {} — {} held reservation(s)",
-                book.resource().id.as_str(),
-                holds
-            ));
-        }
-        match page.next_after().cloned() {
-            Some(next) => after = Some(next),
-            None => break,
-        }
-    }
     if lines.len() == 1 {
-        lines.push("  (nothing pooled here)".to_owned());
+        lines.push("  (nothing quarantined)".to_owned());
     }
     for line in lines {
         ctx.out.info(ctx.actor, line);
@@ -217,9 +341,78 @@ fn show(ctx: &mut Ctx<'_>, families: &InventoryFamilies) -> Result<(), CmdError>
     Ok(())
 }
 
+// ---- the four reads ----
+
+fn show(ctx: &mut Ctx<'_>, families: &InventoryFamilies) -> Result<(), CmdError> {
+    let (head, cursor) = split_cursor(ctx.args.raw())?;
+    let Some(endpoint) = parse_endpoint(&head) else {
+        return Err(CmdError::msg(NO_SUCH_ENDPOINT));
+    };
+    // ONE expression decides both refusals, so they cannot drift apart.
+    if !endpoint_visible(ctx.w, ctx.actor, endpoint) {
+        return Err(CmdError::msg(NO_SUCH_ENDPOINT));
+    }
+    let quarantine = ctx
+        .w
+        .module_state::<InventoryStore>()
+        .and_then(|store| store.quarantine_reason(endpoint));
+    let status = endpoint_status(ctx.w, endpoint);
+    let mut lines = vec![format!("{endpoint} — {status}")];
+    if let Some(why) = quarantine {
+        lines.push(format!("  QUARANTINED: {}", why.runbook()));
+    }
+    let listing = walk(ctx, &families.books, cursor, |book| {
+        if crate::store::endpoint_of(book.resource().subject.clone()) != Some(endpoint) {
+            return Vec::new();
+        }
+        let holds = book
+            .records()
+            .iter()
+            .filter(|record| record.state() == mush_core::ReservationState::Held)
+            .count();
+        vec![format!(
+            "  {} — {holds} held reservation(s)",
+            book.resource().id.as_str()
+        )]
+    })?;
+    let empty = listing.rows.is_empty();
+    let listing_meta = Listing {
+        rows: Vec::new(),
+        next: listing.next.clone(),
+        visited: listing.visited,
+    };
+    lines.extend(listing.rows);
+    if empty {
+        lines.push("  (nothing pooled here)".to_owned());
+    }
+    if let Some(next) = listing_meta.next.clone() {
+        lines.push(continuation(
+            "show",
+            &format!("{}", endpoint.vault().0),
+            &listing_meta,
+            &next,
+        ));
+    }
+    for line in lines {
+        ctx.out.info(ctx.actor, line);
+    }
+    Ok(())
+}
+
+/// The honest continuation line. It names the exact follow-up, because the
+/// advice it replaced — *"narrow the commodity to see more"* — was false: the
+/// commodity filter ran after the single page too, so narrowing surfaced fewer
+/// rows, never more.
+fn continuation(switch: &str, subject: &str, listing: &Listing, cursor: &str) -> String {
+    format!(
+        "  … {} records visited and more remain; continue with @inv/{switch} {subject} after={cursor}",
+        listing.visited
+    )
+}
+
 fn lots(ctx: &mut Ctx<'_>, families: &InventoryFamilies) -> Result<(), CmdError> {
-    let raw = ctx.args.raw().trim().to_owned();
-    let (endpoint_text, filter) = raw.split_once(' ').unwrap_or((raw.as_str(), ""));
+    let (head, cursor) = split_cursor(ctx.args.raw())?;
+    let (endpoint_text, filter) = head.split_once(' ').unwrap_or((head.as_str(), ""));
     let Some(endpoint) = parse_endpoint(endpoint_text) else {
         return Err(CmdError::msg(NO_SUCH_ENDPOINT));
     };
@@ -227,43 +420,41 @@ fn lots(ctx: &mut Ctx<'_>, families: &InventoryFamilies) -> Result<(), CmdError>
         return Err(CmdError::msg(NO_SUCH_ENDPOINT));
     }
     let filter = filter.trim().to_owned();
-    let page = ctx
-        .scan_action_state(&families.lots, None, INV_PAGE)
-        .map_err(|_| CmdError::msg(NO_SUCH_ENDPOINT))?;
-    let mut rows = Vec::new();
-    let visited = page.entries().len();
-    for entry in page.entries() {
-        let lot = entry.value();
+    let listing = walk(ctx, &families.lots, cursor, |lot| {
         if lot.endpoint() != endpoint {
-            continue;
+            return Vec::new();
         }
         if !filter.is_empty() && lot.commodity().as_str() != filter {
-            continue;
+            return Vec::new();
         }
-        rows.push(format!(
+        vec![format!(
             "  {} — {} {} (grade {})",
             lot.id(),
             lot.quantity(),
             lot.commodity().as_str(),
             lot.grade().get()
-        ));
-    }
-    let more = page.next_after().is_some();
+        )]
+    })?;
+    let meta = Listing {
+        rows: Vec::new(),
+        next: listing.next.clone(),
+        visited: listing.visited,
+    };
     ctx.out.info(ctx.actor, format!("Lots at {endpoint}:"));
-    if rows.is_empty() {
+    if listing.rows.is_empty() {
         ctx.out.info(ctx.actor, "  (none)");
     }
-    for row in rows {
+    for row in listing.rows {
         ctx.out.info(ctx.actor, row);
     }
-    if more {
-        // The page marker is bounded on records VISITED, which is what makes
-        // this listing cost-bounded; it deliberately does not report how many
-        // rows the viewer could not see.
-        ctx.out.info(
-            ctx.actor,
-            format!("  … {visited} records visited; narrow the commodity to see more."),
-        );
+    if let Some(next) = meta.next.clone() {
+        let subject = if filter.is_empty() {
+            format!("{}", endpoint.vault().0)
+        } else {
+            format!("{} {filter}", endpoint.vault().0)
+        };
+        ctx.out
+            .info(ctx.actor, continuation("lots", &subject, &meta, &next));
     }
     Ok(())
 }
@@ -340,46 +531,57 @@ fn lot(ctx: &mut Ctx<'_>, families: &InventoryFamilies) -> Result<(), CmdError> 
 }
 
 fn reservations(ctx: &mut Ctx<'_>, families: &InventoryFamilies) -> Result<(), CmdError> {
-    let Some(endpoint) = parse_endpoint(ctx.args.raw()) else {
+    let (head, cursor) = split_cursor(ctx.args.raw())?;
+    let Some(endpoint) = parse_endpoint(&head) else {
         return Err(CmdError::msg(NO_SUCH_ENDPOINT));
     };
     if !endpoint_visible(ctx.w, ctx.actor, endpoint) {
         return Err(CmdError::msg(NO_SUCH_ENDPOINT));
     }
-    // One internal view feeds the render (§4 rule 4): the page is turned into
+    // One internal view feeds the render (§4 rule 4): the walk is turned into
     // owned rows before a single line is queued, so the projection and any later
     // DTO come from the same bounded walk.
-    let rows: Vec<String> = {
-        let page = ctx
-            .scan_action_state(&families.books, None, INV_PAGE)
-            .map_err(|_| CmdError::msg(NO_SUCH_ENDPOINT))?;
-        page.entries()
+    let listing = walk(ctx, &families.books, cursor, |book| {
+        if crate::store::endpoint_of(book.resource().subject.clone()) != Some(endpoint) {
+            return Vec::new();
+        }
+        book.records()
             .iter()
-            .filter(|entry| {
-                crate::store::endpoint_of(entry.value().resource().subject.clone())
-                    == Some(endpoint)
-            })
-            .flat_map(|entry| {
-                let book = entry.value();
-                book.records().iter().map(move |record| {
-                    format!(
-                        "  {} {} × {} — {:?}",
-                        book.resource().id.as_str(),
-                        record.amount(),
-                        record.id().0.to_hex(),
-                        record.state()
-                    )
-                })
+            .map(|record| {
+                format!(
+                    "  {} {} × {} — {:?}",
+                    book.resource().id.as_str(),
+                    record.amount(),
+                    record.id().0.to_hex(),
+                    record.state()
+                )
             })
             .collect()
+    })?;
+    let meta = Listing {
+        rows: Vec::new(),
+        next: listing.next.clone(),
+        visited: listing.visited,
     };
     ctx.out
         .info(ctx.actor, format!("Reservations at {endpoint}:"));
-    if rows.is_empty() {
+    if listing.rows.is_empty() {
         ctx.out.info(ctx.actor, "  (none)");
     }
-    for row in rows {
+    for row in listing.rows {
         ctx.out.info(ctx.actor, row);
+    }
+    if let Some(next) = meta.next.clone() {
+        // It used to print no continuation marker at all and silently truncate.
+        ctx.out.info(
+            ctx.actor,
+            continuation(
+                "reservations",
+                &format!("{}", endpoint.vault().0),
+                &meta,
+                &next,
+            ),
+        );
     }
     Ok(())
 }
@@ -412,7 +614,7 @@ fn move_stock(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     )
 }
 
-fn split(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+fn split(ctx: &mut Ctx<'_>, families: &InventoryFamilies) -> Result<(), CmdError> {
     let lot = ctx.args.lhs().trim().to_owned();
     let quantity = ctx
         .args
@@ -422,7 +624,7 @@ fn split(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         .parse::<u64>()
         .map_err(|_| CmdError::msg("Usage: @inv/split <lot>=<n>"))?;
     let id = LotId::parse(&lot).ok_or_else(|| CmdError::msg(NO_SUCH_LOT))?;
-    let endpoint = lot_endpoint_text(ctx, id)?;
+    let endpoint = lot_endpoint_text(ctx, families, id)?;
     submit(
         ctx,
         InventoryVerb::Split,
@@ -431,7 +633,7 @@ fn split(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     )
 }
 
-fn merge(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+fn merge(ctx: &mut Ctx<'_>, families: &InventoryFamilies) -> Result<(), CmdError> {
     let raw = ctx.args.raw().trim().to_owned();
     let mut ids = Vec::new();
     for token in raw.split(',') {
@@ -443,7 +645,7 @@ fn merge(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     if ids.len() < 2 {
         return Err(CmdError::msg("Usage: @inv/merge <lot>,<lot>…"));
     }
-    let endpoint = lot_endpoint_text(ctx, ids[0])?;
+    let endpoint = lot_endpoint_text(ctx, families, ids[0])?;
     let list = ids
         .iter()
         .map(ToString::to_string)
@@ -457,9 +659,9 @@ fn merge(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     )
 }
 
-fn dissolve(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+fn dissolve(ctx: &mut Ctx<'_>, families: &InventoryFamilies) -> Result<(), CmdError> {
     let id = LotId::parse(ctx.args.raw()).ok_or_else(|| CmdError::msg(NO_SUCH_LOT))?;
-    let endpoint = lot_endpoint_text(ctx, id)?;
+    let endpoint = lot_endpoint_text(ctx, families, id)?;
     submit(
         ctx,
         InventoryVerb::Dissolve,
@@ -478,7 +680,16 @@ fn crystallize(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         .trim()
         .parse::<u64>()
         .map_err(|_| CmdError::msg("How much?"))?;
-    let grade = grade.trim().parse::<u64>().unwrap_or(0);
+    // E7c2 fold B13: an *omitted* grade still defaults to 0 ("slag is still
+    // matter"), but a malformed one refuses instead of being silently coerced.
+    // Grade is durable and **unmergeable** — `pool::merge` refuses
+    // `MergeMismatch` across grades — so a silent substitution there is a
+    // permanent value change the player never asked for, and the quantity beside
+    // it already parses strictly.
+    let grade = grade
+        .trim()
+        .parse::<u64>()
+        .map_err(|_| CmdError::msg("A grade is 0 to 100."))?;
     submit(
         ctx,
         InventoryVerb::Crystallize,
@@ -492,17 +703,29 @@ fn crystallize(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     )
 }
 
-/// The endpoint text a lot-shaped action's `endpoint` choice must carry.
+/// The endpoint text a lot-shaped action's `endpoint` choice must carry: **the
+/// lot's own**, when it is one the actor may take from.
 ///
-/// A lot the viewer may not see answers exactly [`NO_SUCH_LOT`], the same bytes
-/// as a lot that does not exist.
-fn lot_endpoint_text(ctx: &Ctx<'_>, _lot: LotId) -> Result<String, CmdError> {
-    // The lot family is authoritative and the command layer deliberately does
-    // not read it to choose an endpoint: it names the actor's own live set and
-    // lets the provider refuse a lot that is not there. Anything else would let
-    // a non-custodian probe for lot existence through the choice list.
-    let live = crate::provider::live_endpoints(ctx.w, ctx.actor);
-    live.first()
-        .map(|vault| vault.0.to_string())
-        .ok_or_else(|| CmdError::msg(NO_SUCH_LOT))
+/// E7c2 fold C1. It used to return `live_endpoints(..).first()` — an arbitrary
+/// endpoint *of the actor's*, never the lot's — which is what made the `Choice`
+/// list decorative for `/split`, `/merge` and `/dissolve`: the offer authorised
+/// endpoint A while the mechanic went on to restructure or destroy a lot at
+/// endpoint B, anywhere in the world, by id.
+///
+/// It adds **no oracle**: a lot that does not exist, a lot at an endpoint the
+/// actor may not take from, and a lot the actor may not see all answer exactly
+/// [`NO_SUCH_LOT`], the same bytes, through this one expression.
+fn lot_endpoint_text(
+    ctx: &Ctx<'_>,
+    families: &InventoryFamilies,
+    lot: LotId,
+) -> Result<String, CmdError> {
+    let Ok(Some(record)) = ctx.action_state(&families.lots, &lot) else {
+        return Err(CmdError::msg(NO_SUCH_LOT));
+    };
+    let endpoint = record.endpoint();
+    if !crate::provider::live_endpoints(ctx.w, ctx.actor).contains(&endpoint.vault()) {
+        return Err(CmdError::msg(NO_SUCH_LOT));
+    }
+    Ok(endpoint.vault().0.to_string())
 }

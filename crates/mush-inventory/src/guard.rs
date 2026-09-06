@@ -19,7 +19,7 @@ use std::fmt;
 
 use mush_core::{
     ActionError, ActionErrorCode, AuthorityGuard, AuthorityGuardContext, AuthorityGuardValidator,
-    ReservationBook, ReservationBookId, ReservationState, StateFamilyHandle,
+    ReservationBook, ReservationBookId, ReservationId, ReservationState, StateFamilyHandle,
 };
 
 /// Re-reads the book and answers `false` on a missing record, a bumped revision
@@ -30,6 +30,12 @@ use mush_core::{
 /// are `ControlLease` and `Contact`.
 pub struct ReservationGuardValidator {
     books: StateFamilyHandle<ReservationBookId, ReservationBook>,
+    /// E7c2 fold B10: `AuthorityGuard::Reservation` names the **reservation**
+    /// while the book is keyed by its **resource**, so this validator used to
+    /// walk the whole owner's book family and answer `Ok(false)` — for ever —
+    /// once its page budget ran out. The index is written in the same bundle as
+    /// the hold, so finding the book is one point lookup and the cliff is gone.
+    index: StateFamilyHandle<ReservationId, ReservationBookId>,
 }
 
 impl fmt::Debug for ReservationGuardValidator {
@@ -43,10 +49,14 @@ impl fmt::Debug for ReservationGuardValidator {
 }
 
 impl ReservationGuardValidator {
-    /// Wrap the book family handle the module registered.
+    /// Wrap the book family handle and the reservation index the module
+    /// registered.
     #[must_use]
-    pub const fn new(books: StateFamilyHandle<ReservationBookId, ReservationBook>) -> Self {
-        Self { books }
+    pub const fn new(
+        books: StateFamilyHandle<ReservationBookId, ReservationBook>,
+        index: StateFamilyHandle<ReservationId, ReservationBookId>,
+    ) -> Self {
+        Self { books, index }
     }
 }
 
@@ -76,38 +86,35 @@ impl AuthorityGuardValidator for ReservationGuardValidator {
             return Ok(false);
         };
         // The book a reservation lives in is keyed by its own resource, which
-        // the guard does not name — so the search is over the *pages* of this
-        // owner's book family, bounded on records visited.
-        let mut after: Option<smol_str::SmolStr> = None;
-        for _ in 0..crate::store::MAX_BOOT_PAGES {
-            let page = context
-                .scan_action_state(&self.books, after.as_deref(), crate::record::INV_PAGE)
-                .map_err(|_| {
-                    ActionError::new(
-                        ActionErrorCode::Integrity,
-                        false,
-                        "inventory reservation authority state is unavailable",
-                    )
-                    .expect("static inventory guard read error is bounded")
-                })?;
-            for entry in page.entries() {
-                if let Some(record) = entry
-                    .value()
-                    .records()
-                    .iter()
-                    .find(|record| record.id() == reservation)
-                {
-                    return Ok(
-                        record.state() == ReservationState::Held && record.revision() == *revision
-                    );
-                }
-            }
-            match page.next_after().cloned() {
-                Some(next) => after = Some(next),
-                None => return Ok(false),
-            }
-        }
-        // A budget that ran out is not evidence of currency.
-        Ok(false)
+        // the guard does not name — so the index written beside the hold names
+        // it instead. Two point lookups, no walk, no budget cliff.
+        let unavailable = || {
+            ActionError::new(
+                ActionErrorCode::Integrity,
+                false,
+                "inventory reservation authority state is unavailable",
+            )
+            .expect("static inventory guard read error is bounded")
+        };
+        let Some(book_id) = context
+            .action_state(&self.index, &reservation)
+            .map_err(|_| unavailable())?
+            .copied()
+        else {
+            return Ok(false);
+        };
+        let Some(book) = context
+            .action_state(&self.books, &book_id)
+            .map_err(|_| unavailable())?
+        else {
+            return Ok(false);
+        };
+        Ok(book
+            .records()
+            .iter()
+            .find(|record| record.id() == reservation)
+            .is_some_and(|record| {
+                record.state() == ReservationState::Held && record.revision() == *revision
+            }))
     }
 }

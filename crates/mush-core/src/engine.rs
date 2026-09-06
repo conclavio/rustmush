@@ -19,7 +19,7 @@
 //! `@slowtest` is the M1 prototype of this seam: a fake 3-second "LLM
 //! call" proving typed re-entry without ever blocking the game loop.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt;
 use std::sync::Arc;
 
@@ -240,7 +240,9 @@ pub enum Deferred {
     /// five steps the `WorldMsg::AuthoritativeAction` arm takes. A handler can
     /// therefore neither construct an opaque `ActionOfferId` nor bypass
     /// projection, and **a second submission in one command is a refusal**
-    /// ([`Engine::drain_deferred`] stages nothing at all in that case).
+    /// ([`Engine::drain_deferred`] stages nothing at all in that case — and,
+    /// since E7c2 fold C4, voids nothing of any *other* actor's, and nothing
+    /// that actor queued in an earlier step).
     AuthoritativeSubmit(Box<AuthoritativeSubmit>),
     /// Select the actor for the dirty step's durable-write failure diagnostic
     /// ([`Ctx::gate_on_durable_ack`](crate::cmd::Ctx::gate_on_durable_ack)).
@@ -610,12 +612,26 @@ pub struct Engine {
     lag_last_ms: u64,
     /// Worst loop-iteration lag reported since boot (ms).
     lag_max_ms: u64,
-    /// E7c2 B1: at most one command-originated authoritative submission
-    /// awaiting [`Engine::take_authoritative_submit`]. One is the whole queue —
-    /// the store admits one unresolved authoritative intent per backend
-    /// (D-E7-39), so a second is back-pressure, not a buffer.
-    authoritative_submit: Option<Box<AuthoritativeSubmit>>,
+    /// E7c2 B1: command-originated authoritative submissions awaiting
+    /// [`Engine::take_authoritative_submit`], **at most one per actor** and at
+    /// most [`AUTHORITATIVE_SUBMIT_QUEUE_MAX`] in all, drained one per step.
+    ///
+    /// E7c2 fold B7 / owner decision D3 made this a map. It was a single
+    /// unkeyed `Option`, so one player's queued submission answered **every
+    /// other player's** `@inv` mutation with "An earlier action is still
+    /// committing" — a cross-actor denial and a cross-actor tell. The rule that
+    /// was cited for it, D-E7-39 / 08i answer 6, is about the **store**: one
+    /// unresolved authoritative intent per store/backend, which
+    /// `ActionCoordinator::preflight` already enforces downstream. Nothing in it
+    /// requires the pre-ingress queue to be global. A second submission by the
+    /// **same** actor is still back-pressure, and a handler still cannot buffer.
+    authoritative_submits: BTreeMap<ObjId, Box<AuthoritativeSubmit>>,
 }
+
+/// How many actors may hold a queued authoritative submission at once. Small,
+/// because each one is drained one per step and the durable admission slot
+/// downstream is still one.
+pub const AUTHORITATIVE_SUBMIT_QUEUE_MAX: usize = 64;
 
 impl Engine {
     /// Wrap a world and a fully registered command table. The caller
@@ -646,7 +662,7 @@ impl Engine {
             pending_waits: HashMap::new(),
             lag_last_ms: 0,
             lag_max_ms: 0,
-            authoritative_submit: None,
+            authoritative_submits: BTreeMap::new(),
         }
     }
 
@@ -3064,10 +3080,11 @@ impl Engine {
     /// capped per actor ([`WAIT_QUEUE_MAX`]) so no player can grow the heap
     /// without bound.
     fn drain_deferred(&mut self, out: &mut Outbox, fx: &mut Effects) {
-        // E7c2 B1: how many authoritative submissions *this* drain saw. A
-        // handler that submits twice fans out, so the second one voids the
-        // first: nothing at all is staged and the actor is told plainly.
-        let mut submits = 0_usize;
+        // E7c2 B1: which actors *this* drain queued for. A handler that submits
+        // twice fans out, so the second one voids the first — but only ever the
+        // first of THIS drain, and only ever that actor's (fold C4).
+        let mut queued_this_drain: BTreeSet<ObjId> = BTreeSet::new();
+        let mut fanned_out: BTreeSet<ObjId> = BTreeSet::new();
         for d in out.take_deferred() {
             match d {
                 Deferred::Effect(e) => fx.push(e),
@@ -3120,27 +3137,55 @@ impl Engine {
                     }
                 }
                 Deferred::AuthoritativeSubmit(request) => {
-                    submits = submits.saturating_add(1);
-                    if submits > 1 {
-                        // Fan-out: void whatever this drain queued, so the
-                        // command stages NOTHING rather than an arbitrary half.
-                        self.authoritative_submit = None;
+                    let actor = request.actor;
+                    if fanned_out.contains(&actor) {
+                        // Already told; a third submission adds no new fact.
+                        continue;
+                    }
+                    if queued_this_drain.contains(&actor) {
+                        // Fan-out: void only what THIS drain queued for THIS
+                        // actor, so the command stages nothing rather than an
+                        // arbitrary half — and an incumbent submission from an
+                        // earlier step, or anybody else's, is untouched. It used
+                        // to clear the engine-wide slot, which silently
+                        // destroyed a different actor's legitimate, still
+                        // pending submission and told them nothing at all.
+                        self.authoritative_submits.remove(&actor);
+                        queued_this_drain.remove(&actor);
+                        fanned_out.insert(actor);
                         out.best_effort_error(
-                            request.actor,
+                            actor,
                             "That command tried to submit more than one authoritative action; nothing was staged.",
                         );
                         continue;
                     }
-                    if self.authoritative_submit.is_some() {
-                        // One unresolved authoritative intent per backend
-                        // (D-E7-39). This is back-pressure, not a buffer.
+                    if self.authoritative_submits.contains_key(&actor) {
+                        // Back-pressure, not a buffer — and it names nobody
+                        // else's activity.
                         out.best_effort_error(
-                            request.actor,
-                            "An earlier action is still committing; try again in a moment.",
+                            actor,
+                            "Your earlier action is still committing; try again in a moment.",
                         );
                         continue;
                     }
-                    self.authoritative_submit = Some(request);
+                    if self.authoritative_submits.len() >= AUTHORITATIVE_SUBMIT_QUEUE_MAX {
+                        out.best_effort_error(
+                            actor,
+                            "Too many actions are committing right now; try again in a moment.",
+                        );
+                        continue;
+                    }
+                    self.authoritative_submits.insert(actor, request);
+                    queued_this_drain.insert(actor);
+                    // E7c2 fold R11: acknowledge RECEIPT without claiming a
+                    // mutation. The handler emits nothing and the only later
+                    // line is the driver's, so a submission dropped by a crash
+                    // or parked by a freeze was indistinguishable at the
+                    // terminal from one that was never accepted: the actor's
+                    // `@inv/move` produced no output whatever. `BestEffort`, so
+                    // the durable-ack gate never withholds it and it can never
+                    // be read as the confirmation.
+                    out.best_effort_info(actor, "Queued.");
                 }
                 Deferred::DurableGate { actor, strict } => {
                     // First gate of the step sets the actor; strictness DOMINATES —
@@ -3156,15 +3201,29 @@ impl Engine {
     /// E7c2 B1: whether one command-originated authoritative submission is
     /// waiting for the driving loop. The loop arms its drain on this.
     #[must_use]
-    pub const fn has_authoritative_submit(&self) -> bool {
-        self.authoritative_submit.is_some()
+    pub fn has_authoritative_submit(&self) -> bool {
+        !self.authoritative_submits.is_empty()
+    }
+
+    /// E7c2 fold B7: whether that exact actor has one queued.
+    #[must_use]
+    pub fn has_authoritative_submit_for(&self, actor: ObjId) -> bool {
+        self.authoritative_submits.contains_key(&actor)
     }
 
     /// E7c2 B1: take the one waiting command-originated authoritative
     /// submission. The driving loop owns every later step; nothing here
     /// projects, resolves, prepares or persists.
     pub fn take_authoritative_submit(&mut self) -> Option<Box<AuthoritativeSubmit>> {
-        self.authoritative_submit.take()
+        self.authoritative_submits
+            .pop_first()
+            .map(|(_, request)| request)
+    }
+
+    /// E7c2 fold R11: the actors whose submissions are queued but not yet
+    /// driven, so a freeze can tell them rather than leaving the queue mute.
+    pub fn queued_authoritative_actors(&self) -> impl Iterator<Item = ObjId> + '_ {
+        self.authoritative_submits.keys().copied()
     }
 
     /// Take the durable-ack output gate the last step requested (if any):

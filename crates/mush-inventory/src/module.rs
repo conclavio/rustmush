@@ -6,15 +6,18 @@ use std::time::Duration;
 
 use mush_core::{
     BoundedScalar, CanonicalId, GameModule, ModError, ModuleBootData, ModuleCtx, Registrar,
-    ReservationBook, ReservationBookId, ReservationBookStateCodec, StateFamilyDescriptor,
-    StateFamilyId, TickCadence, reservation_book_state_family_descriptor,
+    ReservationBook, ReservationBookId, ReservationBookStateCodec, ReservationId,
+    StateFamilyDescriptor, StateFamilyId, TickCadence, reservation_book_state_family_descriptor,
 };
 use serde_json::Value;
 use smol_str::SmolStr;
 
 use crate::guard::ReservationGuardValidator;
 use crate::pool::InventoryFamilies;
-use crate::record::{AppliedMarker, Lot, LotId, MAX_MARKER_ID_BYTES, NS, PoolTranche, TrancheId};
+use crate::record::{
+    AppliedMarker, EndpointRef, Lot, LotCensus, LotId, MAX_MARKER_ID_BYTES, NS, PoolCensus,
+    PoolTranche, TrancheId,
+};
 use crate::store::InventoryStore;
 
 /// The coarse reconciliation cadence. It exists for one reason: the fact mirror
@@ -138,8 +141,11 @@ impl GameModule for InventoryModule {
             |key: &TrancheId| Ok(format!("{:016x}", key.0)),
             |value: &Value| serde_json::from_value(value.clone()).map_err(|e| e.to_string()),
             |value: &PoolTranche| {
-                if value.absorbed().is_empty() {
-                    Err("a tranche absorbed at least one lot".to_owned())
+                // E7c2 fold C2: a root records matter it absorbed, matter it
+                // inherited from another endpoint's root, or both — never
+                // neither.
+                if value.absorbed().is_empty() && value.inherited().is_empty() {
+                    Err("a tranche absorbed or inherited at least one root".to_owned())
                 } else {
                     Ok(())
                 }
@@ -181,12 +187,83 @@ impl GameModule for InventoryModule {
             |value: &AppliedMarker| serde_json::to_value(value).map_err(|e| e.to_string()),
         )?;
 
+        // ---- E7c2 fold B8 — the per-endpoint census §7's bounds are counted on ----
+        let endpoint_key = |key: &EndpointRef| {
+            key.key_text()
+                .map(|text| text.as_str().to_owned())
+                .map_err(|error| error.to_string())
+        };
+        let census = reg.state_family::<EndpointRef, PoolCensus, _, _, _, _>(
+            StateFamilyDescriptor::new(
+                family_id("inventory_census")?,
+                canonical("inventory.endpoint_id.v1")?,
+                canonical("inventory.census.v1")?,
+                1,
+                canonical("inventory.census.decode_json.v1")?,
+                canonical("inventory.census.bounds.v1")?,
+                canonical("inventory.census.json.v1")?,
+            )
+            .map_err(|error| ModError::msg(error.to_string()))?,
+            endpoint_key,
+            |value: &Value| serde_json::from_value(value.clone()).map_err(|e| e.to_string()),
+            |value: &PoolCensus| {
+                if value.get() as usize > crate::record::MAX_POOLS_PER_ENDPOINT {
+                    Err("an endpoint pools at most MAX_POOLS_PER_ENDPOINT commodities".to_owned())
+                } else {
+                    Ok(())
+                }
+            },
+            |value: &PoolCensus| serde_json::to_value(value).map_err(|e| e.to_string()),
+        )?;
+        let lot_census = reg.state_family::<EndpointRef, LotCensus, _, _, _, _>(
+            StateFamilyDescriptor::new(
+                family_id("inventory_lot_census")?,
+                canonical("inventory.endpoint_id.v1")?,
+                canonical("inventory.lot_census.v1")?,
+                1,
+                canonical("inventory.lot_census.decode_json.v1")?,
+                canonical("inventory.lot_census.bounds.v1")?,
+                canonical("inventory.lot_census.json.v1")?,
+            )
+            .map_err(|error| ModError::msg(error.to_string()))?,
+            endpoint_key,
+            |value: &Value| serde_json::from_value(value.clone()).map_err(|e| e.to_string()),
+            |value: &LotCensus| {
+                if value.get() > crate::record::MAX_LOTS_PER_ENDPOINT {
+                    Err("an endpoint holds at most MAX_LOTS_PER_ENDPOINT lots".to_owned())
+                } else {
+                    Ok(())
+                }
+            },
+            |value: &LotCensus| serde_json::to_value(value).map_err(|e| e.to_string()),
+        )?;
+        // ---- E7c2 fold B10 — the reservation → book index the guard reads ----
+        let reservations = reg.state_family::<ReservationId, ReservationBookId, _, _, _, _>(
+            StateFamilyDescriptor::new(
+                family_id("inventory_reservation_index")?,
+                canonical("inventory.reservation_id.v1")?,
+                canonical("inventory.reservation_index.v1")?,
+                1,
+                canonical("inventory.reservation_index.decode_json.v1")?,
+                canonical("inventory.reservation_index.bounds.v1")?,
+                canonical("inventory.reservation_index.json.v1")?,
+            )
+            .map_err(|error| ModError::msg(error.to_string()))?,
+            |key: &ReservationId| Ok(key.0.to_hex()),
+            |value: &Value| serde_json::from_value(value.clone()).map_err(|e| e.to_string()),
+            |_value: &ReservationBookId| Ok(()),
+            |value: &ReservationBookId| serde_json::to_value(value).map_err(|e| e.to_string()),
+        )?;
+
         let families = InventoryFamilies {
             pools,
             books: books.clone(),
             lots,
             tranches,
             applied,
+            census,
+            lot_census,
+            reservations: reservations.clone(),
         };
 
         // ---- E7c2: B4 — the first `Reservation` validator on the tree ----
@@ -197,7 +274,7 @@ impl GameModule for InventoryModule {
         // `mush-industry`'s owner is legal by construction, not by luck.
         reg.authority_guard_validator(
             mush_core::AuthorityGuardKind::Reservation,
-            ReservationGuardValidator::new(books),
+            ReservationGuardValidator::new(books, reservations),
         )?;
 
         // ---- E7c2: B5 — the prepared path ----

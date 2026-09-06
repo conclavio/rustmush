@@ -880,7 +880,12 @@ pub fn refuse_named(
 }
 
 /// §4.5 view standing over a vault: staff, its owner, or `vault.view` on its scope.
-pub(crate) fn may_view_vault(w: &World, actor: ObjId, id: VaultId) -> bool {
+///
+/// Exported (E7c2 fold C8, 08i answer 16's owner-exported `pub fn` seam) so a
+/// neutral quantity authority bound to E3 custody endpoints asks **this**
+/// question instead of keeping a second, disagreeing copy of it.
+#[must_use]
+pub fn may_view_vault(w: &World, actor: ObjId, id: VaultId) -> bool {
     if api::is_staff(w, actor) {
         return true;
     }

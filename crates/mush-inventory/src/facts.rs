@@ -13,12 +13,21 @@
 //! **Why a mirror.** `FactProvider::resolve` receives `&World`, while typed state
 //! lives on the `Engine`, so a provider on this tree cannot read a typed family
 //! at all. Cut 2 therefore mirrors the marker family into
-//! [`InventoryStore`](crate::store::InventoryStore) at boot, on the coarse sweep
-//! tick, and at the top of every `@inv` command. The mirror is **behind** the
-//! authoritative truth by at most one of those and never ahead, which is the
-//! direction that matters: `facts.rs`'s own contract is *unknown is unsatisfied,
-//! everywhere*, so a settlement waits rather than paying early. Widening the seam
-//! to carry the typed-state store is recorded as an ask in 10b §3.2's "As built".
+//! [`InventoryStore`](crate::store::InventoryStore) at boot and on the coarse
+//! sweep tick. The mirror is **behind** the authoritative truth by at most one
+//! sweep and never ahead, which is the direction that matters: this file's own
+//! contract is *unknown is unsatisfied, everywhere*, so a settlement waits rather
+//! than paying early. Widening the seam to carry the typed-state store is
+//! recorded as an ask in 10b §3.2's "As built".
+//!
+//! **"Behind by at most one sweep" is now a property of the code, not of key
+//! order** (E7c2 fold R3). It was false past `MAX_APPLIED_MARKERS`: marker ids
+//! were request digests, the walk kept the lexicographically first 4 096, and a
+//! *committed* transfer's fact then answered unsatisfied **for ever** rather than
+//! late. Two things fix it and both are load-bearing here. The id is now
+//! `{at}{request}`, so canonical order is time order and the mirror keeps the
+//! newest; and a mirror that could not see the whole family answers **nothing at
+//! all**, so "unknown is unsatisfied" no longer depends on where a hash sorted.
 
 use mush_core::World;
 use mush_economy::{FactProvider, FactState};
@@ -46,6 +55,11 @@ impl FactProvider for InventoryFactProvider {
             return None;
         }
         let store = w.module_state::<InventoryStore>()?;
+        // A truncated mirror cannot distinguish "no such fact" from "the fact is
+        // past the page budget", so it answers neither.
+        if !store.is_complete() {
+            return None;
+        }
         let marker = store.marker(id)?;
         if marker.kind() != kind {
             return None;

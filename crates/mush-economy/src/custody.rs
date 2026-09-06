@@ -462,6 +462,60 @@ impl EndpointState {
     }
 }
 
+/// Prose, not Rust struct syntax. The audience for an endpoint's state is
+/// already entitled to the vault (E7c2's B11 was refuted as a leak precisely
+/// because the view gate sits above the render), so this is presentation polish
+/// rather than a disclosure change — but `Contested { provider: "sim" }` is not
+/// a sentence.
+impl std::fmt::Display for EndpointState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Missing => write!(f, "no such vault"),
+            Self::Inactive(status) => write!(f, "{status:?}"),
+            Self::BackingUnavailable => write!(f, "backing unavailable"),
+            Self::Contested { provider } => write!(f, "contested by {provider}"),
+            Self::Live => write!(f, "live"),
+        }
+    }
+}
+
+/// Whether `actor` holds E3's **withdraw** standing over that vault (§4.4's
+/// vault policy, `CustodyOp::Withdraw`): staff, the vault's own owner — itself,
+/// or whoever MUSH-controls it — or `vault.withdraw` on the vault's compartment
+/// under `scope_coherent`.
+///
+/// Exported (E7c2 fold C8, owner decision D4; 08i answer 16's owner-exported
+/// `pub fn` seam) because a quantity endpoint's **take** gate and its **read**
+/// gate are different questions and cut 2 had one predicate answering both. The
+/// difference is not cosmetic: `acts_for`'s `Organization` arm answers true on
+/// `economy.account.post`, so "may post the org's money" was being read as "may
+/// walk the org's physical stock out". Vault ops never consult title (D5), and
+/// this adds no capability to E3's vocabulary — `vault.withdraw` is the one
+/// `authorize_vault` already asks for.
+///
+/// The per-deposit `ContractAuth` arm of §4.4 is deliberately not reachable
+/// here: it authorizes one named object into one named vault, never a pool take.
+#[must_use]
+pub fn may_take_from_vault(w: &World, actor: ObjId, vault: crate::ids::VaultId) -> bool {
+    let Some(store) = w.module_state::<EconomyStore>() else {
+        return false;
+    };
+    let Some(record) = store.snapshot().vault(vault) else {
+        return false;
+    };
+    if crate::api::is_staff(w, actor) {
+        return true;
+    }
+    if matches!(record.owner, PrincipalId::Object(_)) && crate::acts_for(w, actor, &record.owner) {
+        return true;
+    }
+    let Some(scope) = record.scope else {
+        return false;
+    };
+    crate::api::scope_coherent(w, Some(scope), &record.owner)
+        && crate::api::holds_capability(w, actor, "vault.withdraw", scope)
+}
+
 /// Resolve one quantity endpoint's state, asking E3's own rules and rebuilding
 /// none of them.
 ///

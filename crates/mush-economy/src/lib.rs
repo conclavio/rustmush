@@ -247,6 +247,7 @@ pub use api::{
 };
 pub use commands::{
     ASSET_PAGE_VISIT, may_view_account, may_view_asset, may_view_hold, may_view_obligation,
+    may_view_vault,
 };
 // E6a step 1 (E5b-D36/D37): the parsing and existence-hiding helpers a ruleset
 // layered on the economy needs, exported so it never keeps a third copy.
@@ -260,6 +261,7 @@ pub use commands::{
 };
 pub use custody::{
     ContainerProvider, CustodyError, CustodyProvider, CustodyTable, EndpointState, endpoint_state,
+    may_take_from_vault,
 };
 pub use module::{
     CHECKPOINT_REVIEW_ENTRIES, CHECKPOINT_REVIEW_SECS, EconomyModule, EconomyScopeUse,

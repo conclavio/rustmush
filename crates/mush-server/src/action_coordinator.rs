@@ -82,10 +82,23 @@ impl ActionPermit {
 }
 
 /// Exact identity of an action staged into the engine's one-shot K3 lane.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct StagedAuthoritativeAction {
     pub token: CommitToken,
     pub bundle_hash: CanonicalHash,
+    /// The provider's own receipt summary for the acting principal, when the
+    /// lane has one (E7c2 fold B12).
+    ///
+    /// The command lane used to confirm a fresh commit with
+    /// `"Done. (commit {token})"` — `deterministic_commit_token`'s internal
+    /// binding digest, rendered raw into player output — while the **replay** of
+    /// the same act got the provider's own sentence through
+    /// `project_finalized_receipt`. The first success and its HIT read as two
+    /// different mechanisms, and the useful line was the one only a replay got.
+    /// This is that same projection, taken at stage time; it is still
+    /// commit-bound, so §4's "confirmation never outruns the durable ack" is
+    /// untouched.
+    pub summary: Option<String>,
 }
 
 /// Exact durable action identity plus provider-worker custody. The worker
@@ -624,7 +637,11 @@ impl ActionCoordinator {
         engine
             .stage_authoritative_action(prepared, guards, bundle)
             .map_err(ActionCoordinatorError::Stage)?;
-        Ok(StagedAuthoritativeAction { token, bundle_hash })
+        Ok(StagedAuthoritativeAction {
+            token,
+            bundle_hash,
+            summary: None,
+        })
     }
 
     /// Execute only the exact route, invocation, and server-held guards
@@ -641,6 +658,19 @@ impl ActionCoordinator {
         let (prepared, output) = engine
             .prepare_registered_resolved_authoritative_action(&action, &resolved, token)
             .map_err(ActionCoordinatorError::Provider)?;
+        // E7c2 fold B12: the provider's own sentence for the acting principal,
+        // taken through the very projection a HIT uses, so a first commit and
+        // its replay read the same and neither carries a raw commit token.
+        let summary = engine
+            .registry
+            .action_providers()
+            .map(mush_core::ActionProviderRegistry::receipt_projection_table)
+            .and_then(|projections| {
+                projections
+                    .project(&action, output.outcome(), permit.ingress.principal())
+                    .ok()
+            })
+            .and_then(|projected| projected.map(|result| result.summary().to_owned()));
         let bundle = match assemble_bundle(
             &permit.ingress,
             &action,
@@ -660,7 +690,11 @@ impl ActionCoordinator {
         engine
             .stage_authoritative_action(prepared, guards, bundle)
             .map_err(ActionCoordinatorError::Stage)?;
-        Ok(StagedAuthoritativeAction { token, bundle_hash })
+        Ok(StagedAuthoritativeAction {
+            token,
+            bundle_hash,
+            summary,
+        })
     }
 
     /// Plan and prepare one discovered durable schedule after its canonical
@@ -702,7 +736,11 @@ impl ActionCoordinator {
         engine
             .stage_authoritative_action(prepared, guards, bundle)
             .map_err(ActionCoordinatorError::Stage)?;
-        Ok(StagedAuthoritativeAction { token, bundle_hash })
+        Ok(StagedAuthoritativeAction {
+            token,
+            bundle_hash,
+            summary: None,
+        })
     }
 
     /// Prepare one operational delayed-decision lease through its registered
@@ -745,6 +783,7 @@ impl ActionCoordinator {
         let staged = StagedAuthoritativeAction {
             token: bundle.token(),
             bundle_hash: bundle.bundle_hash(),
+            summary: None,
         };
         engine
             .stage_authoritative_action(prepared, guards, bundle)
@@ -849,6 +888,7 @@ impl ActionCoordinator {
         let staged = StagedAuthoritativeAction {
             token: bundle.token(),
             bundle_hash: bundle.bundle_hash(),
+            summary: None,
         };
         engine
             .stage_authoritative_action(prepared, guards, bundle)
@@ -897,6 +937,7 @@ impl ActionCoordinator {
         let staged = StagedAuthoritativeAction {
             token: bundle.token(),
             bundle_hash: bundle.bundle_hash(),
+            summary: None,
         };
         engine
             .stage_authoritative_action(prepared, guards, bundle)
@@ -943,6 +984,7 @@ impl ActionCoordinator {
         let staged = StagedAuthoritativeAction {
             token: bundle.token(),
             bundle_hash: bundle.bundle_hash(),
+            summary: None,
         };
         engine
             .stage_authoritative_action(prepared, guards, bundle)
@@ -989,6 +1031,7 @@ impl ActionCoordinator {
         let staged = StagedAuthoritativeAction {
             token: bundle.token(),
             bundle_hash: bundle.bundle_hash(),
+            summary: None,
         };
         engine
             .stage_authoritative_action(prepared, guards, bundle)
@@ -1038,6 +1081,7 @@ impl ActionCoordinator {
         let staged = StagedAuthoritativeAction {
             token: bundle.token(),
             bundle_hash: bundle.bundle_hash(),
+            summary: None,
         };
         engine
             .stage_authoritative_action(prepared, guards, bundle)
@@ -1087,6 +1131,7 @@ impl ActionCoordinator {
         let staged = StagedAuthoritativeAction {
             token: bundle.token(),
             bundle_hash: bundle.bundle_hash(),
+            summary: None,
         };
         engine
             .stage_authoritative_action(prepared, guards, bundle)

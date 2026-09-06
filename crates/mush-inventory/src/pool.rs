@@ -28,8 +28,9 @@ use serde_json::json;
 use thiserror::Error;
 
 use crate::record::{
-    EndpointRef, Grade, InventoryRecordError, Lineage, Lot, LotId, MAX_LOT_PARENTS,
-    MAX_POOL_QUANTITY, PoolTranche, RESERVATION_TTL_SECS, TrancheId, owner,
+    EndpointRef, Grade, InventoryRecordError, Lineage, Lot, LotId, MAX_LINEAGE_DEPTH,
+    MAX_LOT_PARENTS, MAX_POOL_QUANTITY, MAX_RETAINED_TERMINAL_RESERVATIONS, MAX_TRANCHE_ABSORBED,
+    MAX_TRANCHE_GENERATIONS, PoolTranche, RESERVATION_TTL_SECS, TrancheId, owner,
 };
 
 /// Domain tag of every derived inventory id. One domain, one encoder.
@@ -52,6 +53,19 @@ pub struct InventoryFamilies {
     pub tranches: StateFamilyHandle<TrancheId, PoolTranche>,
     /// `inventory.applied` — the committed bundle's own fact markers.
     pub applied: StateFamilyHandle<smol_str::SmolStr, crate::record::AppliedMarker>,
+    /// `inventory.census` — the per-endpoint pool/lot counts §7's published
+    /// bounds are actually enforced on (E7c2 fold B8). `ActionTxn` has no scan,
+    /// so the count rides the same bundle as the record it counts.
+    pub census: StateFamilyHandle<EndpointRef, crate::record::PoolCensus>,
+    /// `inventory.lot_census` - the live-lot count per endpoint. A separate
+    /// family from `census` because one `ActionTxn` may mutate one record only
+    /// once and `dissolve` both creates a pool and consumes a lot.
+    pub lot_census: StateFamilyHandle<EndpointRef, crate::record::LotCensus>,
+    /// `inventory.reservation_index` — one [`ReservationId`] → its
+    /// [`ReservationBookId`], written in the same bundle as the hold (E7c2 fold
+    /// B10). It turns the guard validator's O(books) walk, and its permanent
+    /// budget cliff, into one point lookup.
+    pub reservations: StateFamilyHandle<ReservationId, ReservationBookId>,
 }
 
 /// The `ResourceRef` one `(endpoint, commodity)` pool is keyed by.
@@ -141,6 +155,13 @@ pub struct Moved {
     pub balance: u64,
     /// Its availability after the mutation (balance minus every live hold).
     pub available: u64,
+    /// How much quantity this call **actually moved**, as
+    /// `credit`/`debit`/`transfer` report it (the reservation verbs leave it
+    /// zero — they have their own record). Zero for a same-endpoint transfer,
+    /// which deviation (g) makes a no-op HIT — and (E7c2 fold C6) a fact that
+    /// names a movement must not exist for a bundle that moved nothing, so the
+    /// caller reads this before writing a marker.
+    pub moved: u64,
 }
 
 impl InventoryFamilies {
@@ -278,7 +299,13 @@ impl InventoryFamilies {
         let existed = pair.is_some();
         let (scalar, book) = match pair {
             Some(pair) => pair,
-            None => self.fresh_pair(endpoint, commodity)?,
+            None => {
+                // E7c2 fold B8: `MAX_POOLS_PER_ENDPOINT` is counted HERE, on the
+                // create path only, so crediting one of the endpoint's existing
+                // pools still succeeds past the cap.
+                self.add_pool(txn, endpoint)?;
+                self.fresh_pair(endpoint, commodity)?
+            }
         };
         // THE gate. One call re-checks bounds, checked arithmetic, the scalar
         // revision and post-mutation availability; cut 2 adds no second one.
@@ -288,7 +315,50 @@ impl InventoryFamilies {
         Ok(Moved {
             balance: balance_of(scalar)?,
             available,
+            moved: match operation {
+                ResourceOperation::Increase { amount } | ResourceOperation::Decrease { amount } => {
+                    amount
+                }
+                // Cut 2 never issues one; a `Set` moves an unknowable delta and
+                // must not be reported as a movement.
+                ResourceOperation::Set { .. } => 0,
+            },
         })
+    }
+
+    /// One more pool at that endpoint, bounded by
+    /// [`MAX_POOLS_PER_ENDPOINT`](crate::record::MAX_POOLS_PER_ENDPOINT).
+    fn add_pool(
+        &self,
+        txn: &mut ActionTxn<'_>,
+        endpoint: EndpointRef,
+    ) -> Result<(), InventoryError> {
+        let existing = txn.get(&self.census, &endpoint)?.copied();
+        let next = existing.unwrap_or_default().checked_add()?;
+        if existing.is_some() {
+            txn.replace(&self.census, &endpoint, next)?;
+        } else {
+            txn.insert(&self.census, &endpoint, next)?;
+        }
+        Ok(())
+    }
+
+    /// `delta` more live lots at that endpoint, bounded by
+    /// [`MAX_LOTS_PER_ENDPOINT`](crate::record::MAX_LOTS_PER_ENDPOINT).
+    fn move_lots(
+        &self,
+        txn: &mut ActionTxn<'_>,
+        endpoint: EndpointRef,
+        delta: i64,
+    ) -> Result<(), InventoryError> {
+        let existing = txn.get(&self.lot_census, &endpoint)?.copied();
+        let next = existing.unwrap_or_default().checked_move(delta)?;
+        if existing.is_some() {
+            txn.replace(&self.lot_census, &endpoint, next)?;
+        } else {
+            txn.insert(&self.lot_census, &endpoint, next)?;
+        }
+        Ok(())
     }
 
     /// Move quantity between two endpoints in **one** bundle.
@@ -296,7 +366,17 @@ impl InventoryFamilies {
     /// A transfer whose source and destination are the same endpoint is a
     /// **no-op HIT, not a double credit**: crediting and debiting one pool would
     /// bump the scalar revision twice for no movement and let a replay observe a
-    /// balance that never existed.
+    /// balance that never existed. It reports [`Moved::moved`] `== 0`, which is
+    /// what keeps the caller from publishing a transferred fact for it (E7c2
+    /// fold C6).
+    ///
+    /// **A transfer carries lineage** (E7c2 fold C2). §3.2's anti-laundering
+    /// claim used to hold only *within one endpoint*: a pool-to-pool hop named
+    /// nothing, so dissolve-at-A → move A→B → crystallize-at-B broke the chain
+    /// in one ordinary act. The source slot's root is now drawn down by what
+    /// left and recorded on the destination's root through
+    /// [`PoolTranche::checked_inherit`], so `crystallize` at B names a root that
+    /// transitively reaches A's `absorbed` set.
     ///
     /// # Errors
     /// [`InventoryError`] on any refusal; **nothing is written on an error**.
@@ -326,12 +406,95 @@ impl InventoryFamilies {
             return Ok(Moved {
                 balance: balance_of(scalar)?,
                 available,
+                moved: 0,
             });
         }
         // Debit first: a refusal there must leave the destination untouched, and
         // `ActionTxn` discards the whole mutation set on any error anyway.
         self.debit(txn, from, commodity, amount)?;
-        self.credit(txn, to, commodity, amount)
+        let moved = self.credit(txn, to, commodity, amount)?;
+        self.carry_lineage(txn, from, to, commodity, amount)?;
+        Ok(Moved {
+            moved: amount,
+            ..moved
+        })
+    }
+
+    /// Record, on the destination's root, that `amount` arrived from the
+    /// source's — and draw the source's claim down by exactly that much, so no
+    /// unit is licensed twice.
+    ///
+    /// A source slot with no root carries nothing: there is no provenance to
+    /// carry, and inventing one would be the laundering this closes.
+    fn carry_lineage(
+        &self,
+        txn: &mut ActionTxn<'_>,
+        from: EndpointRef,
+        to: EndpointRef,
+        commodity: &CanonicalId,
+        amount: u64,
+    ) -> Result<(), InventoryError> {
+        let Some((source_id, source)) = self.tranche_for(txn, from, commodity)? else {
+            return Ok(());
+        };
+        let carried = source.remaining().min(amount);
+        if carried == 0 {
+            return Ok(());
+        }
+        let drawn = source.checked_draw(carried)?;
+        txn.replace(&self.tranches, &source_id, drawn)?;
+        match self.tranche_for(txn, to, commodity)? {
+            Some((id, current)) => match current.checked_inherit(source_id, carried) {
+                Ok(next) => {
+                    txn.replace(&self.tranches, &id, next)?;
+                }
+                // A full inherited set is not an absorbing state either: roll to
+                // the next generation, which names the full predecessor.
+                Err(InventoryRecordError::TrancheInherited { .. }) => {
+                    let generation =
+                        current
+                            .generation()
+                            .checked_add(1)
+                            .ok_or(InventoryError::Record(
+                                InventoryRecordError::TrancheGeneration {
+                                    max: MAX_TRANCHE_GENERATIONS,
+                                },
+                            ))?;
+                    let id = tranche_key(to, commodity, generation)?;
+                    let next = PoolTranche::new(
+                        id,
+                        to,
+                        commodity.clone(),
+                        generation,
+                        Some(current.id()),
+                        vec![source_id],
+                        Vec::new(),
+                        carried,
+                        carried,
+                        current.depth(),
+                    )?;
+                    txn.insert(&self.tranches, &id, next)?;
+                }
+                Err(other) => return Err(other.into()),
+            },
+            None => {
+                let id = tranche_key(to, commodity, 0)?;
+                let next = PoolTranche::new(
+                    id,
+                    to,
+                    commodity.clone(),
+                    0,
+                    None,
+                    vec![source_id],
+                    Vec::new(),
+                    carried,
+                    carried,
+                    0,
+                )?;
+                txn.insert(&self.tranches, &id, next)?;
+            }
+        }
+        Ok(())
     }
 
     // ---- reservations: K's lifecycle, written, never rebuilt ----
@@ -357,6 +520,11 @@ impl InventoryFamilies {
         };
         let resource = pool_resource(endpoint, commodity)?;
         let id = ReservationId::derive(holder, &resource).map_err(|_| InventoryError::Identity)?;
+        // E7c2 fold C3: terminal records were never retired, so one holder could
+        // hold **once** per slot for the life of the world and the 257th hold at
+        // a slot refused for ever. Retention is K's own `checked_prune_terminal`
+        // in this same bundle — no second lifecycle, no state machine.
+        let book = retire_terminal(book, scalar, id)?;
         let record = ReservationRecord::held(
             id,
             resource,
@@ -367,6 +535,15 @@ impl InventoryFamilies {
         .map_err(InventoryError::Reservation)?;
         let book = book.checked_hold(book.revision(), scalar, record, now)?;
         self.write_pair(txn, key, true, scalar, book)?;
+        // E7c2 fold B10: the guard validator cannot key the book from the guard,
+        // so it walked the whole family and answered "not current" when its page
+        // budget ran out. This index makes it a point lookup, and it rides the
+        // one bundle the hold is already in.
+        if txn.get(&self.reservations, &id)?.is_some() {
+            txn.replace(&self.reservations, &id, key)?;
+        } else {
+            txn.insert(&self.reservations, &id, key)?;
+        }
         Ok(id)
     }
 
@@ -404,6 +581,7 @@ impl InventoryFamilies {
         Ok(Moved {
             balance: balance_of(scalar)?,
             available,
+            moved: 0,
         })
     }
 
@@ -485,12 +663,20 @@ impl InventoryFamilies {
 
     /// Split `amount` off one lot into a new one at the same endpoint.
     ///
+    /// `endpoint` is **the endpoint the offer authorised** (E7c2 fold C1): a lot
+    /// at any other endpoint answers [`InventoryError::NoLot`], byte-identically
+    /// to a lot that does not exist, so the check adds no oracle. Before the
+    /// fold the three lot verbs read no endpoint at all and derived it from the
+    /// record itself, which meant the `Choice` list authorised endpoint A while
+    /// the mechanic mutated endpoint B.
+    ///
     /// # Errors
-    /// [`InventoryError`] on a missing lot, a zero or oversized split, or the
-    /// depth cap. **Nothing is written on an error.**
+    /// [`InventoryError`] on a missing lot, a lot at another endpoint, a zero or
+    /// oversized split, or the depth cap. **Nothing is written on an error.**
     pub fn split(
         &self,
         txn: &mut ActionTxn<'_>,
+        endpoint: EndpointRef,
         lot: LotId,
         amount: u64,
         child: LotId,
@@ -499,6 +685,9 @@ impl InventoryFamilies {
             .get(&self.lots, &lot)?
             .cloned()
             .ok_or(InventoryError::NoLot)?;
+        if parent.endpoint() != endpoint {
+            return Err(InventoryError::NoLot);
+        }
         if amount == 0 {
             return Err(InventoryError::Record(InventoryRecordError::ZeroQuantity));
         }
@@ -529,6 +718,7 @@ impl InventoryFamilies {
             depth,
         )?;
         let shrunk = parent.checked_resize(parent.revision(), remainder)?;
+        self.move_lots(txn, endpoint, 1)?;
         txn.replace(&self.lots, &lot, shrunk)?;
         txn.insert(&self.lots, &child, created.clone())?;
         Ok(created)
@@ -544,6 +734,7 @@ impl InventoryFamilies {
     pub fn merge(
         &self,
         txn: &mut ActionTxn<'_>,
+        endpoint: EndpointRef,
         parents: &[LotId],
         child: LotId,
     ) -> Result<Lot, InventoryError> {
@@ -569,7 +760,10 @@ impl InventoryFamilies {
             );
         }
         let first = loaded.first().ok_or(InventoryError::NoLot)?;
-        let endpoint = first.endpoint();
+        // E7c2 fold C1: the authorised endpoint decides, not the record.
+        if first.endpoint() != endpoint {
+            return Err(InventoryError::NoLot);
+        }
         let commodity = first.commodity().clone();
         let grade = first.grade();
         let mut quantity = 0_u64;
@@ -602,6 +796,8 @@ impl InventoryFamilies {
             depth,
         )?;
         // Validate-then-mutate: every check above ran before the first write.
+        let consumed = i64::try_from(ordered.len()).map_err(|_| InventoryError::Identity)?;
+        self.move_lots(txn, endpoint, 1 - consumed)?;
         for id in &ordered {
             txn.remove(&self.lots, id)?;
         }
@@ -623,45 +819,115 @@ impl InventoryFamilies {
     pub fn dissolve(
         &self,
         txn: &mut ActionTxn<'_>,
+        endpoint: EndpointRef,
         lot: LotId,
     ) -> Result<(TrancheId, Moved), InventoryError> {
         let record = txn
             .get(&self.lots, &lot)?
             .cloned()
             .ok_or(InventoryError::NoLot)?;
-        let endpoint = record.endpoint();
+        // E7c2 fold C1: the authorised endpoint decides, not the record.
+        if record.endpoint() != endpoint {
+            return Err(InventoryError::NoLot);
+        }
         let commodity = record.commodity().clone();
-        // ONE tranche per `(endpoint, commodity)`, keyed deterministically. That
-        // is what lets `crystallize` name a parent without a scan, and it is why
-        // `absorbed` is append-only: the root is shared, so dropping an entry
-        // would drop somebody else's provenance.
-        let tranche = tranche_key(endpoint, &commodity)?;
+        // One tranche per `(endpoint, commodity, generation)`, keyed
+        // deterministically. That is what lets `crystallize` name a parent
+        // without a scan, and it is why `absorbed` is append-only: the root is
+        // shared, so dropping an entry would drop somebody else's provenance.
+        //
+        // E7c2 fold B2: the root is a **sequence**, not a singleton. A full
+        // `absorbed` set, or a lot deep enough to pin the shared root at
+        // `MAX_LINEAGE_DEPTH` and disable `crystallize` for every other holder,
+        // rolls to `generation + 1` naming the full predecessor — so neither cap
+        // is an absorbing state and nothing already recorded is dropped.
         let existing = self.tranche_for(txn, endpoint, &commodity)?;
-        let next = match &existing {
-            Some((id, current)) => (
+        let roll = existing.as_ref().is_some_and(|(_, current)| {
+            current.absorbed().len() >= MAX_TRANCHE_ABSORBED
+                || current.depth().max(record.depth()) >= MAX_LINEAGE_DEPTH
+        });
+        let (id, next, fresh) = match (&existing, roll) {
+            (Some((id, current)), false) => (
                 *id,
                 current.checked_absorb(lot, record.quantity(), record.depth())?,
+                false,
             ),
-            None => (
-                tranche,
-                PoolTranche::new(
-                    tranche,
-                    endpoint,
-                    commodity.clone(),
-                    vec![lot],
-                    record.quantity(),
-                    record.depth(),
-                )?,
-            ),
+            (Some((_, current)), true) => {
+                let generation =
+                    current
+                        .generation()
+                        .checked_add(1)
+                        .ok_or(InventoryError::Record(
+                            InventoryRecordError::TrancheGeneration {
+                                max: MAX_TRANCHE_GENERATIONS,
+                            },
+                        ))?;
+                let id = tranche_key(endpoint, &commodity, generation)?;
+                (
+                    id,
+                    self.fresh_tranche(
+                        id,
+                        endpoint,
+                        &commodity,
+                        generation,
+                        Some(current.id()),
+                        lot,
+                        &record,
+                    )?,
+                    true,
+                )
+            }
+            (None, _) => {
+                let id = tranche_key(endpoint, &commodity, 0)?;
+                (
+                    id,
+                    self.fresh_tranche(id, endpoint, &commodity, 0, None, lot, &record)?,
+                    true,
+                )
+            }
         };
         let moved = self.credit(txn, endpoint, &commodity, record.quantity())?;
-        if existing.is_some() {
-            txn.replace(&self.tranches, &next.0, next.1)?;
+        if fresh {
+            txn.insert(&self.tranches, &id, next)?;
         } else {
-            txn.insert(&self.tranches, &next.0, next.1)?;
+            txn.replace(&self.tranches, &id, next)?;
         }
+        self.move_lots(txn, endpoint, -1)?;
         txn.remove(&self.lots, &lot)?;
-        Ok((next.0, moved))
+        Ok((id, moved))
+    }
+
+    /// A fresh generation of one slot's lineage root.
+    ///
+    /// The depth it starts at is the absorbed lot's, **clamped one below**
+    /// [`MAX_LINEAGE_DEPTH`]: depth is a bound-enforcement device, not a
+    /// provenance record, and re-anchoring it here is what keeps one deep lot
+    /// from disabling `crystallize` at that slot for ever. The chain across
+    /// generations is `predecessor`, itself bounded by
+    /// [`MAX_TRANCHE_GENERATIONS`], so no verb walks an unbounded chain.
+    #[allow(clippy::too_many_arguments)]
+    fn fresh_tranche(
+        &self,
+        id: TrancheId,
+        endpoint: EndpointRef,
+        commodity: &CanonicalId,
+        generation: u32,
+        predecessor: Option<TrancheId>,
+        lot: LotId,
+        record: &Lot,
+    ) -> Result<PoolTranche, InventoryError> {
+        Ok(PoolTranche::new(
+            id,
+            endpoint,
+            commodity.clone(),
+            generation,
+            predecessor,
+            Vec::new(),
+            vec![lot],
+            record.quantity(),
+            record.quantity(),
+            record.depth().min(MAX_LINEAGE_DEPTH.saturating_sub(1)),
+        )?)
     }
 
     /// Mint one lot out of a pool, **whose parent is that endpoint's tranche**.
@@ -686,6 +952,12 @@ impl InventoryFamilies {
         let (tranche_id, tranche) = self
             .tranche_for(txn, endpoint, commodity)?
             .ok_or(InventoryError::NoTranche)?;
+        // E7c2 fold C7: a lineage claim is bounded by the matter that
+        // established it. One dissolved unit used to license every unit that
+        // ever arrived in that pool to claim descent from that root.
+        let drawn = tranche
+            .checked_draw(amount)
+            .map_err(|_| InventoryError::NoTranche)?;
         let depth = tranche
             .depth()
             .checked_add(1)
@@ -704,13 +976,43 @@ impl InventoryFamilies {
             depth,
         )?;
         let moved = self.debit(txn, endpoint, commodity, amount)?;
+        self.move_lots(txn, endpoint, 1)?;
+        txn.replace(&self.tranches, &tranche_id, drawn)?;
         txn.insert(&self.lots, &child, created.clone())?;
         Ok((created, moved))
     }
 
-    /// The endpoint's tranche for one commodity, if it has one.
+    /// One exact generation of the endpoint's root for one commodity.
     ///
-    /// Bounded on records **visited**: a tranche family page, never a full scan.
+    /// **Verifies what it loaded** (E7c2 fold C10): `tranche_key` truncates a
+    /// canonical hash to 64 bits, and a key is not proof that the record it
+    /// found is the record it names. A tranche whose own `endpoint`, `commodity`
+    /// or `generation` disagrees with the key answers `None` — the same fail-
+    /// closed rule `store::endpoint_of` already follows.
+    fn tranche_at(
+        &self,
+        txn: &mut ActionTxn<'_>,
+        endpoint: EndpointRef,
+        commodity: &CanonicalId,
+        generation: u32,
+    ) -> Result<Option<(TrancheId, PoolTranche)>, InventoryError> {
+        let id = tranche_key(endpoint, commodity, generation)?;
+        let Some(record) = txn.get(&self.tranches, &id)?.cloned() else {
+            return Ok(None);
+        };
+        if record.endpoint() != endpoint
+            || record.commodity() != commodity
+            || record.generation() != generation
+        {
+            return Ok(None);
+        }
+        Ok(Some((id, record)))
+    }
+
+    /// The endpoint's **current** tranche generation for one commodity.
+    ///
+    /// Bounded on records visited: at most [`MAX_TRANCHE_GENERATIONS`] + 1 point
+    /// lookups, never a scan.
     ///
     /// # Errors
     /// [`InventoryError::State`] if the family cannot be read.
@@ -720,27 +1022,77 @@ impl InventoryFamilies {
         endpoint: EndpointRef,
         commodity: &CanonicalId,
     ) -> Result<Option<(TrancheId, PoolTranche)>, InventoryError> {
-        let id = tranche_key(endpoint, commodity)?;
-        Ok(txn.get(&self.tranches, &id)?.cloned().map(|t| (id, t)))
+        let mut current = None;
+        for generation in 0..=MAX_TRANCHE_GENERATIONS {
+            match self.tranche_at(txn, endpoint, commodity, generation)? {
+                Some(found) => current = Some(found),
+                None => break,
+            }
+        }
+        Ok(current)
     }
 }
 
-/// The deterministic tranche key for one `(endpoint, commodity)`.
+/// Retire terminal reservation records so neither a repeat holder nor the book's
+/// own record cap becomes an absorbing state (E7c2 fold C3).
 ///
-/// One tranche per endpoint and commodity is what makes `crystallize` able to
-/// name a parent at all without a scan, and it is why `absorbed` is append-only:
-/// the root is shared, so losing an entry would lose somebody else's provenance.
+/// The holder's own terminal record goes first — that is the (a) half, a holder
+/// that could never reserve again after a clean consume — and then the oldest
+/// terminal records down to [`MAX_RETAINED_TERMINAL_RESERVATIONS`], which is the
+/// (b) half. A **live** duplicate is untouched and still refuses.
+fn retire_terminal(
+    book: ReservationBook,
+    scalar: BoundedScalar,
+    holder: ReservationId,
+) -> Result<ReservationBook, InventoryError> {
+    let terminal = |record: &&ReservationRecord| record.state() != ReservationState::Held;
+    let mut book = book;
+    if let Some(record) = book
+        .records()
+        .iter()
+        .find(|record| record.id() == holder && terminal(record))
+        .cloned()
+    {
+        book =
+            book.checked_prune_terminal(book.revision(), scalar, record.id(), record.revision())?;
+    }
+    for _ in 0..mush_core::MAX_RESERVATION_BOOK_RECORDS {
+        if book.records().iter().filter(terminal).count() <= MAX_RETAINED_TERMINAL_RESERVATIONS {
+            break;
+        }
+        let Some(record) = book.records().iter().find(terminal).cloned() else {
+            break;
+        };
+        book =
+            book.checked_prune_terminal(book.revision(), scalar, record.id(), record.revision())?;
+    }
+    Ok(book)
+}
+
+/// The deterministic tranche key for one `(endpoint, commodity, generation)`.
+///
+/// One tranche per endpoint, commodity and generation is what makes
+/// `crystallize` able to name a parent at all without a scan, and it is why
+/// `absorbed` is append-only: the root is shared, so losing an entry would lose
+/// somebody else's provenance. The **generation** is E7c2 fold B2: a full root
+/// rolls forward naming its predecessor instead of refusing for ever.
 ///
 /// # Errors
 /// [`InventoryError::Identity`] if the canonical value cannot be hashed.
 pub fn tranche_key(
     endpoint: EndpointRef,
     commodity: &CanonicalId,
+    generation: u32,
 ) -> Result<TrancheId, InventoryError> {
     let digest = CanonicalHash::for_canonical_value(
         ID_DOMAIN,
         1,
-        &json!({ "class": "tranche.endpoint", "endpoint": endpoint, "commodity": commodity }),
+        &json!({
+            "class": "tranche.endpoint",
+            "endpoint": endpoint,
+            "commodity": commodity,
+            "generation": generation,
+        }),
         ID_BYTES,
     )
     .map_err(|_| InventoryError::Identity)?;
