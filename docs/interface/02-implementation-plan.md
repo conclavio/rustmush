@@ -1443,11 +1443,13 @@ verify (leak ×2, staleness/bounds); the design **holds**. **Approach R
 - **Clients.** Web `scrollback.svelte.ts` gains a real prepend (today "Show
   older" only widens the RAM window) + scroll-anchor preservation; TUI
   `push_front` at the ring top (second-phase). Line mode deferred.
-- **★ Owner forks.** (1) **retention depth** — ship the shared-512 resume ring,
-  or add a dedicated narrative-only session ring for depth (note: enabling I13
-  churns the same ring, shrinking I12's usable narrative depth in busy scenes);
-  (2) **config-wire the caps** (512 / 200) now vs hardcode as today; (3)
-  **line-mode `+backlog`** now vs defer (structured web/TUI meet the goal today).
+- **★ Owner forks — DECIDED (owner, 2026-09-05, recommendations approved).**
+  (1) **retention depth** → ship the shared-512 resume ring; add a dedicated
+  narrative-only session ring later only if busy-scene depth proves shallow
+  (note: enabling I13 churns the same ring, shrinking I12's usable narrative
+  depth in busy scenes). (2) **config-wire the caps** (512 / 200) → hardcode
+  now; wire when the deferred durable-log work lands. (3) **line-mode
+  `+backlog`** → defer (structured web/TUI meet the goal today).
 - **Effort:** small-to-medium — 1 `Query` variant + gen-ts; a ~15-line session
   primitive; 1 bridge handler + 2 one-line routing arms; the web prepend; TUI
   optional.
@@ -1536,11 +1538,12 @@ which applies the Condition-Monitor / temp-Willpower overlay. **Approach B
   (revision≈ViewCursor sequence, fp-change≈generation, resync≈ResyncRequired)
   because the world-side observer cannot reach the gateway's per-conn
   view-sequence allocator.
-- **★ Owner forks.** (1) **full-data delta B** (recommended — simple,
-  drift-proof, ~80-90% win) **vs minimal field-diff A** (trims the residual,
-  helps large SR sheets under frequent writes, but B→A later is *not* purely
-  additive — B replaces `data`, A merges); (2) **server fingerprint slot**
-  (recommended) **vs a `schema_id` on every frame**.
+- **★ Owner forks — DECIDED (owner, 2026-09-05, recommendations approved).**
+  (1) payload → **full-data delta B** (simple, drift-proof, ~80-90% win; the
+  B→A upgrade later is *not* purely additive — B replaces `data`, A merges — so
+  this commits to B for now). (2) schema-change signal → **server fingerprint
+  slot** (8 bytes/subject, keeps the client a dumb watermark), not a `schema_id`
+  on every frame.
 - **Effort:** medium — `mush-ruleset/vitals.rs` (trait + fp slot + republish),
   both rulesets' `sheet_cmds.rs`, the generic path, web `sheet.svelte.ts` +
   `game.svelte.ts`, TUI `panels.rs`; no proto/gen-ts/allowlist.
@@ -1860,6 +1863,10 @@ modal ruling (D-I-17, D-I-18) rather than by its default.**
 
 ## 10. Changelog
 
+- **Draft 0.9 — 2026-09-05.** Owner approved the §3.12/§3.13 recommendations;
+  all five design forks decided in place (I12: shared-512 ring, hardcode caps,
+  defer line-mode `+backlog`; I13: full-data delta B, server fingerprint slot).
+  Both cuts cleared to build on the recommended designs.
 - **Draft 0.8 — 2026-09-05.** Recommended, adversarially-verified **designs**
   for I12 (§3.12) and I13 (§3.13), not yet built. Produced by three workflows —
   an 8-agent code map, a 4-approach design pass (judged + a completeness
