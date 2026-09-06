@@ -962,6 +962,159 @@ pub fn render_sheet_rows(payload: &Value, ctx: &RenderCtx<'_>) -> PaneRows {
     }
 }
 
+/// The widest a generic-view list column is padded to (interface plan I9).
+const VIEW_COL_MAX_W: usize = 24;
+/// The most columns a generic-view list renders.
+const VIEW_MAX_COLS: usize = 12;
+
+/// The generic semantic-view pane (interface plan I9): a `{ schema, rows,
+/// record }` payload walked into rows by its declared `shape` — a list with a
+/// header and one row per record (a row is selectable, prefilling the line
+/// named by the schema's `actionKey`, D-I-18), or a detail/form as
+/// label/value rows. The same convention the web's `genericview.ts` walks;
+/// nothing here names a view or a field, and every value is read defensively.
+#[must_use]
+pub fn render_view_rows(data: &Value, ctx: &RenderCtx<'_>) -> PaneRows {
+    let Some(schema) = data.get("schema") else {
+        return PaneRows::one("(no view)");
+    };
+    let shape = schema.get("shape").and_then(Value::as_str).unwrap_or("");
+    let label_style = ctx.tag("system");
+    match shape {
+        "list" => {
+            let cols = view_columns(schema);
+            if cols.is_empty() {
+                return PaneRows::one("(empty view)");
+            }
+            let action_key = schema.get("actionKey").and_then(Value::as_str);
+            let empty = Vec::new();
+            let rows_data = data.get("rows").and_then(Value::as_array).unwrap_or(&empty);
+            let mut widths: Vec<usize> = cols.iter().map(|c| c.label.chars().count()).collect();
+            for r in rows_data {
+                for (i, c) in cols.iter().enumerate() {
+                    widths[i] = widths[i].max(view_cell_text(r, &c.key).chars().count());
+                }
+            }
+            for w in &mut widths {
+                *w = (*w).min(VIEW_COL_MAX_W);
+            }
+            let mut rows = Vec::new();
+            let header = cols
+                .iter()
+                .enumerate()
+                .map(|(i, c)| view_pad(&c.label, widths[i], c.right))
+                .collect::<Vec<_>>()
+                .join("  ");
+            rows.push(PaneRow::plain(Line::from(Span::styled(
+                header,
+                label_style,
+            ))));
+            if rows_data.is_empty() {
+                rows.push(PaneRow::plain(Line::from(dim_span_owned("(none)"))));
+            }
+            for r in rows_data {
+                let cells = cols
+                    .iter()
+                    .enumerate()
+                    .map(|(i, c)| view_pad(&view_cell_text(r, &c.key), widths[i], c.right))
+                    .collect::<Vec<_>>()
+                    .join("  ");
+                let line = Line::from(Span::raw(cells));
+                let prefill = action_key
+                    .and_then(|ak| r.get(ak).and_then(Value::as_str))
+                    .filter(|s| !s.is_empty());
+                match prefill {
+                    Some(p) => rows.push(PaneRow::selectable(line, p.to_string(), p.to_string())),
+                    None => rows.push(PaneRow::plain(line)),
+                }
+            }
+            PaneRows { rows }
+        }
+        "detail" | "form" => {
+            let Some(fields) = schema.get("fields").and_then(Value::as_array) else {
+                return PaneRows::one("(empty view)");
+            };
+            if fields.is_empty() {
+                return PaneRows::one("(empty view)");
+            }
+            let record = data.get("record");
+            let mut rows = Vec::new();
+            for f in fields {
+                let Some(key) = f.get("key").and_then(Value::as_str) else {
+                    continue;
+                };
+                let label = f.get("label").and_then(Value::as_str).unwrap_or(key);
+                let value = record
+                    .and_then(|r| r.get(key))
+                    .map(view_scalar_text)
+                    .unwrap_or_default();
+                rows.push(PaneRow::plain(Line::from(vec![
+                    Span::styled(format!("{}: ", clean(label)), label_style),
+                    Span::raw(value),
+                ])));
+            }
+            PaneRows { rows }
+        }
+        _ => PaneRows::one("(unknown view shape)"),
+    }
+}
+
+/// One resolved list column.
+struct ViewCol {
+    key: String,
+    label: String,
+    right: bool,
+}
+
+fn view_columns(schema: &Value) -> Vec<ViewCol> {
+    schema
+        .get("columns")
+        .and_then(Value::as_array)
+        .map(|a| {
+            a.iter()
+                .filter_map(|c| {
+                    let key = c.get("key").and_then(Value::as_str)?;
+                    let label = c.get("label").and_then(Value::as_str).unwrap_or(key);
+                    let right = c.get("align").and_then(Value::as_str) == Some("right");
+                    Some(ViewCol {
+                        key: key.to_string(),
+                        label: label.to_string(),
+                        right,
+                    })
+                })
+                .take(VIEW_MAX_COLS)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// A cell's display text: a string as-is, a number or bool stringified,
+/// anything else (or absent) empty. Control chars stripped.
+fn view_cell_text(row: &Value, key: &str) -> String {
+    row.get(key).map(view_scalar_text).unwrap_or_default()
+}
+
+fn view_scalar_text(v: &Value) -> String {
+    match v {
+        Value::String(s) => clean(s),
+        Value::Number(n) => n.to_string(),
+        Value::Bool(b) => b.to_string(),
+        _ => String::new(),
+    }
+}
+
+/// Pad (or truncate) `s` to `w` display columns, right-aligned when asked.
+fn view_pad(s: &str, w: usize, right: bool) -> String {
+    let s = truncate_chars(s, w);
+    let gap = w.saturating_sub(s.chars().count());
+    let fill = " ".repeat(gap);
+    if right {
+        format!("{fill}{s}")
+    } else {
+        format!("{s}{fill}")
+    }
+}
+
 /// The vitals pane (interface plan I6): every `.vitals` frame as widget
 /// rows — a subject header, then each vital as `<mark> <label> <widget>`:
 /// a track as boxes grouped in threes with the deepest level and the
@@ -1529,6 +1682,65 @@ mod tests {
             "TUI actions pane",
             &all,
             &["secret-token", "scene_turn", "private-definition-digest"],
+        );
+    }
+
+    /// I9: the generic view renderer walks a list schema into a header plus
+    /// one row per record (selectable, prefilling the schema's `actionKey`
+    /// line), and a detail schema into label/value rows; a malformed or
+    /// unknown shape degrades, never panics.
+    #[test]
+    fn view_rows_render_list_and_detail_shapes() {
+        let theme = AnsiTheme::default();
+        let store = PanelStore::new();
+        let ctx = RenderCtx {
+            theme: &theme,
+            depth: ColorDepth::TrueColor,
+            utf8: true,
+            store: &store,
+            selected_channel: None,
+        };
+        let list = serde_json::json!({
+            "schema": { "id": "jobs", "version": 1, "shape": "list",
+                "columns": [ { "key": "id", "label": "#", "align": "right" },
+                             { "key": "title", "label": "Title" } ],
+                "actionKey": "_open" },
+            "rows": [ { "id": 3, "title": "Docks", "_open": "@job 3" },
+                      { "id": 4, "title": "Lamp" } ]
+        });
+        let rows = render_view_rows(&list, &ctx);
+        let t: Vec<String> = rows.rows.iter().map(|r| line_text(&r.line)).collect();
+        assert_eq!(t[0], "#  Title");
+        assert_eq!(t[1], "3  Docks");
+        assert_eq!(t[2], "4  Lamp ");
+        assert_eq!(rows.rows[1].prefill.as_deref(), Some("@job 3"));
+        assert!(rows.rows[1].selectable);
+        assert!(
+            !rows.rows[2].selectable,
+            "a row with no action line is plain"
+        );
+
+        let detail = serde_json::json!({
+            "schema": { "id": "job", "version": 1, "shape": "detail",
+                "fields": [ { "key": "title", "label": "Title" },
+                            { "key": "n", "label": "Count", "kind": "number" } ] },
+            "record": { "title": "Docks", "n": 2 }
+        });
+        let rows = render_view_rows(&detail, &ctx);
+        let t: Vec<String> = rows.rows.iter().map(|r| line_text(&r.line)).collect();
+        assert_eq!(t, vec!["Title: Docks".to_string(), "Count: 2".to_string()]);
+
+        assert_eq!(
+            line_text(&render_view_rows(&serde_json::json!({}), &ctx).rows[0].line),
+            "(no view)"
+        );
+        assert_eq!(
+            line_text(
+                &render_view_rows(&serde_json::json!({ "schema": { "shape": "grid" } }), &ctx).rows
+                    [0]
+                .line
+            ),
+            "(unknown view shape)"
         );
     }
 
