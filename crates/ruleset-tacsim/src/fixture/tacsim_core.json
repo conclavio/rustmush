@@ -3,7 +3,7 @@
     "id": "tacsim.core",
     "version": 1,
     "kind": "rules_definition",
-    "digest": "5a287bd80b28a1644b43bcf0ee84581c0e436ad614dbd5003eb2416d5772ba12",
+    "digest": "25dd2279206de1ffa32e45714b0e57f89fda2ba543eebec703821bf749855cad",
     "requires": []
   },
   "entries": {
@@ -16,7 +16,9 @@
         ],
         "outputs": [
           { "commodity": "structural_alloys", "units": 1 }
-        ]
+        ],
+        "requires": ["smelt"],
+        "work_units": 3
       }
     },
     "carbon_feedstock": {

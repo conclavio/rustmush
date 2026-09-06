@@ -1528,6 +1528,88 @@ impl ClaimIndex {
     }
 }
 
+/// E7c4 (D2 discharged): per-deposit retention of the durable `industry.applied`
+/// family.
+pub const MAX_RETAINED_MARKERS_PER_DEPOSIT: usize = 8;
+
+/// A bounded FIFO of the most recent applied-marker keys for one deposit, written
+/// in the same bundle as each cycle so the durable marker family is **bounded
+/// per deposit** (D2, deferred to cut 4). Pruning an evicted marker cannot break
+/// replay idempotency: a replayed old cycle refuses at the run's monotone
+/// `next_cycle` check long before its marker would be consulted.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize)]
+#[serde(transparent)]
+pub struct MarkerRing {
+    keys: Vec<SmolStr>,
+}
+
+#[derive(Deserialize)]
+#[serde(transparent)]
+struct MarkerRingWire(Vec<SmolStr>);
+
+impl<'de> Deserialize<'de> for MarkerRing {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let wire = MarkerRingWire::deserialize(deserializer)?;
+        Self::new(wire.0).map_err(serde::de::Error::custom)
+    }
+}
+
+impl MarkerRing {
+    /// Build a ring, refused past the retention cap (never truncated).
+    ///
+    /// # Errors
+    /// [`IndustryRecordError::MarkerRingCap`] past the cap.
+    pub fn new(keys: Vec<SmolStr>) -> Result<Self, IndustryRecordError> {
+        if keys.len() > MAX_RETAINED_MARKERS_PER_DEPOSIT {
+            return Err(IndustryRecordError::MarkerRingCap {
+                max: MAX_RETAINED_MARKERS_PER_DEPOSIT,
+            });
+        }
+        Ok(Self { keys })
+    }
+
+    /// An empty ring.
+    #[must_use]
+    pub fn empty() -> Self {
+        Self { keys: Vec::new() }
+    }
+
+    /// Push a key, returning the new ring and the evicted (oldest) key, if the
+    /// push overflowed the retention cap.
+    #[must_use]
+    pub fn push(&self, key: SmolStr) -> (Self, Option<SmolStr>) {
+        let mut keys = self.keys.clone();
+        keys.push(key);
+        let evicted = if keys.len() > MAX_RETAINED_MARKERS_PER_DEPOSIT {
+            Some(keys.remove(0))
+        } else {
+            None
+        };
+        (Self { keys }, evicted)
+    }
+
+    /// The retained keys, oldest first.
+    #[must_use]
+    pub fn keys(&self) -> &[SmolStr] {
+        &self.keys
+    }
+
+    /// How many keys are retained.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.keys.len()
+    }
+
+    /// Whether the ring is empty.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.keys.is_empty()
+    }
+}
+
 /// Every invariant refusal a cut-3 record can make.
 #[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
 pub enum IndustryRecordError {
@@ -1603,4 +1685,42 @@ pub enum IndustryRecordError {
     /// A revision at `u64::MAX`.
     #[error("a revision would overflow")]
     RevisionOverflow,
+    /// A facility slot count that is zero or above the cap (E7c4 B1).
+    #[error("a facility runs 1..={max} concurrent slots")]
+    FacilitySlots {
+        /// The cap.
+        max: u32,
+    },
+    /// A facility capability set past the cap (E7c4 B1).
+    #[error("a facility carries at most {max} capabilities")]
+    FacilityCapabilities {
+        /// The cap.
+        max: usize,
+    },
+    /// A work order input line count past the cap (E7c4 B3).
+    #[error("a work order names at most {max} material inputs")]
+    WorkOrderInputs {
+        /// The cap.
+        max: usize,
+    },
+    /// A reservation list on a stored work order past the cap. **Refused on
+    /// load, never truncated** (E7c4 B3).
+    #[error("a work order names at most {max} reservations")]
+    ReservationCap {
+        /// The cap.
+        max: usize,
+    },
+    /// A recipe pinned with a zero quantity, or work units above the cap
+    /// (E7c4 B3).
+    #[error("a work order quantity is 1..={max}")]
+    QuantityCap {
+        /// The cap.
+        max: u32,
+    },
+    /// A marker ring past its retention cap (E7c4 D2).
+    #[error("a marker ring retains at most {max} keys")]
+    MarkerRingCap {
+        /// The cap.
+        max: usize,
+    },
 }

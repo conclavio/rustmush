@@ -304,7 +304,11 @@ pub fn server_modules_with(
         // it does not touch at all: a `Representation::Lot` listing is still
         // refused at creation and lifting that refusal is cut 11's.
         Box::new(
-            mush_industry::IndustryModule::new().with_inventory(Arc::clone(&inventory_handles)),
+            mush_industry::IndustryModule::new()
+                .with_inventory(Arc::clone(&inventory_handles))
+                // E7c4 B2: the recipe authority reaches industry by composition,
+                // not by an edge — the impl reads `TacsimStore` at the root.
+                .with_recipes(Arc::new(crate::industry_recipes::TacsimRecipeAuthority)),
         ),
         Box::new(mush_mail::MailModule),
         Box::new(mush_jobs::JobsModule::new()),
@@ -1678,6 +1682,13 @@ mod tests {
                 ("@extract", mush_core::CommandCompatibility::Authoritative),
                 ("@survey", mush_core::CommandCompatibility::LegacyPostImage),
                 ("@licence", mush_core::CommandCompatibility::ReadOnly),
+                // E7 cut 4: the work-order lane (ceiling Authoritative) and the
+                // facility lane (LegacyPostImage — open writes a document).
+                ("@wo", mush_core::CommandCompatibility::Authoritative),
+                (
+                    "@facility",
+                    mush_core::CommandCompatibility::LegacyPostImage,
+                ),
             ] {
                 assert!(
                     registrations.iter().any(|(spec, owner, published)| {

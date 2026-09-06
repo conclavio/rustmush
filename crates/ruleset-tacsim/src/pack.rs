@@ -388,6 +388,15 @@ pub enum PackEntry {
     /// be credited inside a bundle. This entry is what a later cut's seed
     /// hands that verb.
     Deposit(DepositDef),
+    /// One production facility a campaign-seed pack authors at a place (E7 cut 4).
+    ///
+    /// The pack carries the authored **definition/policy** half — the capability
+    /// set a recipe's `requires` is matched against, and the concurrent-slot cap.
+    /// `at` is the pack-local id of a `Location` in this same pack, resolved to a
+    /// world object by the seed, exactly as a deposit's `place` is. `mush-industry`
+    /// owns the capacity state machine and never reads a pack; instantiating a
+    /// facility binds this definition to the seeded object.
+    Facility(FacilityDef),
 }
 
 impl PackEntry {
@@ -400,6 +409,7 @@ impl PackEntry {
             PackEntry::Route(_) => "route",
             PackEntry::Location(_) => "location",
             PackEntry::Deposit(_) => "deposit",
+            PackEntry::Facility(_) => "facility",
         }
     }
 
@@ -463,6 +473,19 @@ impl PackEntry {
                         }
                     }
                 }
+                // E7 cut 4: the capability set and the work-unit total are the
+                // authored numbers cut 4's facility gate and production schedule
+                // rest on, refused ON LOAD.
+                if def.requires.len() > MAX_REQUIRES {
+                    return Err(PackError::TooManyRecipeLines { max: MAX_REQUIRES });
+                }
+                if def.work_units == 0 || def.work_units > MAX_RECIPE_UNITS {
+                    return Err(PackError::RecipeUnitsTooLarge {
+                        commodity: "work_units".to_owned(),
+                        actual: def.work_units,
+                        max: MAX_RECIPE_UNITS,
+                    });
+                }
             }
             PackEntry::Deposit(def) => {
                 if too_long(&def.label) {
@@ -507,6 +530,30 @@ impl PackEntry {
                         return Err(PackError::DepositCurveInvalid);
                     }
                     previous = Some(*point);
+                }
+            }
+            PackEntry::Facility(def) => {
+                if too_long(&def.label) {
+                    return Err(PackError::LabelTooLong {
+                        max: MAX_LABEL_BYTES,
+                    });
+                }
+                // Magnitudes (P3): the slot cap and the capability set are the
+                // authored numbers cut 4's capacity book and recipe gate rest on,
+                // so a zero-slot or oversized facility is refused ON LOAD rather
+                // than at the first reservation. Stated here, not imported, for the
+                // same no-edge reason as `MAX_DEPOSIT_RESERVE`.
+                if def.slots == 0 || def.slots > MAX_FACILITY_SLOTS {
+                    return Err(PackError::FacilitySlotsOutOfRange {
+                        actual: def.slots,
+                        max: MAX_FACILITY_SLOTS,
+                    });
+                }
+                if def.capabilities.len() > MAX_FACILITY_CAPABILITIES {
+                    return Err(PackError::FacilityCapabilitiesOutOfRange {
+                        actual: def.capabilities.len(),
+                        max: MAX_FACILITY_CAPABILITIES,
+                    });
                 }
             }
             PackEntry::Route(entry) => {
@@ -564,6 +611,13 @@ pub struct CommodityDef {
 }
 
 /// A recipe. Authored in cut 1, consumed by cut 4.
+///
+/// E7 cut 4 extends it with `requires` (the facility capabilities matched against
+/// `FacilityRecord.capabilities`) and `work_units` (the production schedule's
+/// `total_units`), both bounded on load (cut 1's P3 pattern). Both are
+/// `#[serde(default)]` so cut 1's authored recipes need not restate them, but
+/// they are **always serialized**, so extending the type moves the core pack
+/// digest — re-derived, never hand-edited.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RecipeDef {
@@ -573,6 +627,19 @@ pub struct RecipeDef {
     pub inputs: Vec<RecipeLine>,
     /// What it produces.
     pub outputs: Vec<RecipeLine>,
+    /// The facility capabilities this recipe needs (E7 cut 4). A recipe requiring
+    /// none is legal; a facility must offer every one it names.
+    #[serde(default)]
+    pub requires: std::collections::BTreeSet<CanonicalId>,
+    /// The total work units one run takes — the production schedule's
+    /// `total_units` (E7 cut 4). `1..=MAX_RECIPE_UNITS`.
+    #[serde(default = "default_work_units")]
+    pub work_units: u64,
+}
+
+/// A recipe that does not name its work explicitly does one unit of work.
+const fn default_work_units() -> u64 {
+    1
 }
 
 /// A place a campaign-seed pack instantiates.
@@ -595,6 +662,32 @@ pub const MAX_DEPOSIT_RESERVE: u64 = 1_000_000_000;
 pub const MAX_DEPOSIT_YIELD: u64 = 1_000_000;
 /// The largest curve a pack may author.
 pub const MAX_DEPOSIT_CURVE_POINTS: usize = 16;
+/// The largest concurrent-slot cap a facility may declare (E7 cut 4). Matches
+/// `mush_industry::MAX_FACILITY_SLOTS` by value and is stated here rather than
+/// imported, for the same no-edge reason as [`MAX_DEPOSIT_RESERVE`].
+pub const MAX_FACILITY_SLOTS: u32 = 8;
+/// The largest capability set a facility may declare (E7 cut 4). Matches
+/// `mush_industry::MAX_FACILITY_CAPABILITIES` by value.
+pub const MAX_FACILITY_CAPABILITIES: usize = 32;
+
+/// A production facility a campaign-seed pack authors (E7 cut 4, 10b §3.4).
+///
+/// `at` is the **pack-local id** of a `Location` in this same pack, exactly as a
+/// deposit's `place` is. `capabilities` is the set a recipe's `requires` is
+/// matched against; `slots` is the concurrent-run cap. `mush-industry` owns the
+/// capacity book and re-checks every bound on its own constructor.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FacilityDef {
+    /// The human-facing name.
+    pub label: String,
+    /// The pack-local id of the place it sits at.
+    pub at: CanonicalId,
+    /// The capability set a recipe's `requires` is matched against.
+    pub capabilities: std::collections::BTreeSet<CanonicalId>,
+    /// The concurrent-run slot cap.
+    pub slots: u32,
+}
 
 /// One point of an authored depletion curve: cumulative extraction, and the
 /// per-cycle yield at or above it.
@@ -801,7 +894,10 @@ impl RulesPack {
                 (manifest.kind, entry),
                 (
                     PackKind::RulesDefinition,
-                    PackEntry::Location(_) | PackEntry::Route(_) | PackEntry::Deposit(_)
+                    PackEntry::Location(_)
+                        | PackEntry::Route(_)
+                        | PackEntry::Deposit(_)
+                        | PackEntry::Facility(_)
                 ) | (
                     PackKind::CampaignSeed,
                     PackEntry::Commodity(_) | PackEntry::Recipe(_)
@@ -827,6 +923,18 @@ impl RulesPack {
                     return Err(PackError::UnknownRouteEndpoint {
                         route: id.to_string(),
                         place: def.place.to_string(),
+                    });
+                }
+            }
+            // E7 cut 4: a facility's `at` is symbolic for the same reason, checked
+            // the same way — resolving across packs would make a facility's
+            // location depend on load order.
+            if let PackEntry::Facility(def) = entry {
+                let declared = matches!(entries.get(&def.at), Some(PackEntry::Location(_)));
+                if !declared {
+                    return Err(PackError::UnknownRouteEndpoint {
+                        route: id.to_string(),
+                        place: def.at.to_string(),
                     });
                 }
             }
@@ -1218,6 +1326,22 @@ pub enum PackError {
          increasing thresholds and never-rising yields"
     )]
     DepositCurveInvalid,
+    /// A facility whose slot cap is zero or oversized (E7 cut 4).
+    #[error("a facility declares {actual} slots; the range is 1..={max}")]
+    FacilitySlotsOutOfRange {
+        /// What was declared.
+        actual: u32,
+        /// [`MAX_FACILITY_SLOTS`].
+        max: u32,
+    },
+    /// A facility whose capability set is oversized (E7 cut 4).
+    #[error("a facility declares {actual} capabilities; the maximum is {max}")]
+    FacilityCapabilitiesOutOfRange {
+        /// How many were declared.
+        actual: usize,
+        /// [`MAX_FACILITY_CAPABILITIES`].
+        max: usize,
+    },
     /// A route with no legs.
     #[error("a route needs at least one leg")]
     EmptyRoute,

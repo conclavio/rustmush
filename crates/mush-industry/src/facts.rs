@@ -50,28 +50,41 @@ impl FactProvider for IndustryFactProvider {
         if revision.is_some_and(|revision| revision != 1) {
             return None;
         }
-        match kind {
-            FACT_EXTRACTION_CYCLED => {}
-            // Cut 4's arm, on this same provider and this same namespace.
-            // Until cut 4 writes its marker the honest answer is "unknown",
-            // which is unsatisfied.
-            FACT_WORKORDER_COMPLETED => return None,
-            _ => return None,
-        }
         let store = w.module_state::<IndustryStore>()?;
         // A truncated mirror cannot distinguish "no such fact" from "the fact is
         // past the page budget", so it answers neither.
         if !store.is_complete() {
             return None;
         }
-        let marker = store.marker(id)?;
-        if marker.kind() != kind {
-            return None;
+        match kind {
+            FACT_EXTRACTION_CYCLED => {
+                let marker = store.marker(id)?;
+                if marker.kind() != kind {
+                    return None;
+                }
+                Some(FactState {
+                    satisfied: true,
+                    actor: Some(marker.actor()),
+                    at: marker.at(),
+                })
+            }
+            // E7c4 B7: cut 4's arm on this SAME provider and namespace, answered
+            // from the committed terminal bundle's own `industry.wo_applied`
+            // marker — never a status. A bundle that did not commit leaves no
+            // marker and this answers `None` (unsatisfied), which never settles
+            // money early.
+            FACT_WORKORDER_COMPLETED => {
+                let marker = store.wo_marker(id)?;
+                if marker.kind() != kind {
+                    return None;
+                }
+                Some(FactState {
+                    satisfied: true,
+                    actor: Some(marker.actor()),
+                    at: marker.at(),
+                })
+            }
+            _ => None,
         }
-        Some(FactState {
-            satisfied: true,
-            actor: Some(marker.actor()),
-            at: marker.at(),
-        })
     }
 }

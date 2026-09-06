@@ -572,7 +572,7 @@ mod tests {
         let bad_digest = write(
             "bad_digest.json",
             &ruleset_tacsim::fixture::CORE_JSON.replacen(
-                "5a287bd80b28a1644b43bcf0ee84581c0e436ad614dbd5003eb2416d5772ba12",
+                "25dd2279206de1ffa32e45714b0e57f89fda2ba543eebec703821bf749855cad",
                 "0000000000000000000000000000000000000000000000000000000000000000",
                 1,
             ),

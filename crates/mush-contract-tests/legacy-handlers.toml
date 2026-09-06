@@ -544,6 +544,12 @@ family = "industry.run"
 note = "E7 cut 3 (10b 3.3, D lens): extraction -- @extract/start|cycle|stop, every switch on B1's ingress adapter seam. ONE cycle is ONE bundle: a SINGLE debit of the deposit endpoint's pool (InventoryFamilies::debit over ReservationBook::checked_apply_resource -- NO hold, because a reserve+consume in one bundle is a DuplicateMutation and a hold carries quantity across no time at all; 10b 3.3 deviation (g)), one Lot minted with Lineage::Origin { source } at the operator's endpoint via mint_origin, that endpoint's lot census, the run's advanced post-image, and the applied marker industry.extraction.cycled is answered from -- all in one ActionTxn, so a crash mid-cycle produces NO LOT OR EXACTLY ONE and never a debited reserve with no lot. Cut 3 writes NO depletion arithmetic of its own: every quantity mutation is cut 2's owner-exported verb over ReservationBook::checked_apply_resource, and checked_hold subtracts every live hold before admitting the next, so two reservations against one remaining unit are refused BY THE KERNEL. Yield is arithmetic, not a roll: YieldCurve::at is a bounded walk over a monotone table with checked integer arithmetic in a fixed order, so two evaluations always agree and a replay is a HIT; an accessibility event moves the NEXT cycle and never a completed one. The bundle carries two owners' post-images -- industry.run beside inventory.pool/book/lot -- through the composition-declared state-family delegation mush-inventory publishes for 'industry' (Registrar::delegate_state_families), which is the cross-owner write E7 cut 2's own handoff named as cut 3's; the persisted namespace of every write stays the family owner's. The retryable key shape is extract/{deposit}/{cycle}. Cut 3 registers NO schedule source (cut 4 attaches the schedule) and NO second AuthorityGuardKind::Reservation validator (it holds against cut 2's book under cut 2's validator; cut 4's capacity book registers mush-industry's). Refusals are indistinguishable: depletion, a missing licence, a suspended claim and a body the actor may not know exists answer ONE sentence, and only staff get the reason."
 
 [[handler]]
+name = "@facility"
+category = "legacy-post-image"
+family = "industry.facility"
+note = "E7 cut 4 (10b 3.4, OPEN 1): a facility's DEFINITION/policy half -- object, owner, capabilities, maximum_slots, capacity_revision, policy_revision -- pack- and seed-authored, exempt/legacy-post-image, written as the industry:facility:<obj> document. It carries NO active_slots counter (the fail-open shape OPEN 1 forbids): availability is derived at every read from the live capacity reservations on K's ReservationBook via checked_available. @facility/open (staff, authored data on cut 3's @deposit/open precedent) writes the document; list|show read. The AUTHORITATIVE half is the capacity book -- industry.facility_slots (BoundedScalar) + industry.facility_book (ReservationBook) + industry.capacity_index -- under mush-industry's OWN OwnerId, registering the tree's SECOND AuthorityGuardKind::Reservation validator, legal by construction because the registry is keyed (OwnerId, kind) (cut 2 pinned exactly this)."
+
+[[handler]]
 name = "@faction"
 category = "baseline"
 note = "baseline pinned at b0e3b52 (module, every composition)"
@@ -792,6 +798,12 @@ note = "baseline pinned at b0e3b52 (core/engine registry)"
 name = "@weather"
 category = "baseline"
 note = "baseline pinned at b0e3b52 (module, every composition)"
+
+[[handler]]
+name = "@wo"
+category = "authoritative"
+family = "industry.workorder"
+note = "E7 cut 4 (10b 3.4, contradiction (iii)): work orders. AUTHORITATIVE typed state -- its state transition gates capacity legality (a Running order holds a slot a competitor cannot take) and its reservations/holds lists index authoritative records, so WorkOrder and ProductionSchedule are prepared-path families, not exempt documents. @wo/draft|submit|cancel|deliver|restamp ride cut 2's B1 ingress seam (submit reserves each material input as a cut-2 inventory reservation, one facility slot as a B1 capacity reservation, all under the work order's deterministic holder key wo/{order}, in one bundle; deliver consumes every reservation, releases the slot, materializes the output lot via cut 2's mint_origin, and writes the industry.workorder.completed marker the fact is answered from -- no fallible step after the first install); quote|show|list are ReadOnly reads (a conservative over-declaration 08j 7 Accept permits). @wo/quote's price and duration are a PURE FUNCTION of the recorded pinned inputs and reserve nothing, so a quote is never an inventory or capacity oracle. The recipe reaches industry by composition (Arc<dyn RecipeAuthority> at the root reading TacsimStore), not by an edge; money stays an E4 Hold and never grows a resource field. The production schedule runs on ClockRef::WorldIc via a Registrar::schedule_source on handoff.rs's shape (D-E7-16's 'cut 8 gets the first production schedule source' corrected)."
 
 [[handler]]
 name = "@wod"

@@ -3,7 +3,7 @@
     "id": "tacsim.corridor",
     "version": 1,
     "kind": "campaign_seed",
-    "digest": "e0aa83077ad17b5fb79537670c9221e5fb846a08688b50ebdb59663afcb3f7c9",
+    "digest": "1885f24044f15bdb63b858ed861665465e2b4527233696d237ec84389f758792",
     "requires": [
       { "id": "tacsim.core", "version": 1 }
     ]
@@ -47,6 +47,15 @@
     "phobos_yard": {
       "kind": "location",
       "def": { "label": "Phobos Yard", "role": "yard" }
+    },
+    "phobos_forge": {
+      "kind": "facility",
+      "def": {
+        "label": "Phobos Yard Forge",
+        "at": "phobos_yard",
+        "capabilities": ["forge", "smelt"],
+        "slots": 2
+      }
     },
     "transfer_node": {
       "kind": "location",

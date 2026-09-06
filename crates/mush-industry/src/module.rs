@@ -13,13 +13,17 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use mush_core::{
-    CanonicalId, GameModule, ModError, ModuleBootData, ModuleCtx, ObjId, Registrar,
-    StateFamilyDescriptor, StateFamilyId, TickCadence,
+    AuthorityGuardKind, BoundedScalar, CanonicalId, DurableSchedule, DurableScheduleStateCodec,
+    GameModule, ModError, ModuleBootData, ModuleCtx, ObjId, Registrar, ReservationBook,
+    ReservationBookId, ReservationBookStateCodec, ReservationId, ScheduleId, StateFamilyDescriptor,
+    StateFamilyId, TickCadence, durable_schedule_state_family_descriptor,
+    reservation_book_state_family_descriptor,
 };
 use mush_economy::InstrumentId;
 use serde_json::Value;
 use smol_str::SmolStr;
 
+use crate::facility::{CapacityGuardValidator, MAX_FACILITY_SLOTS};
 use crate::families::IndustryFamilies;
 use crate::record::{
     AppliedMarker, ClaimId, ClaimIndex, ClaimRecord, ExtractionRun, MAX_MARKER_ID_BYTES, NS,
@@ -68,12 +72,22 @@ pub fn industry_title_issuer() -> mush_org::SystemPrincipalId {
 pub struct IndustryHandles(pub IndustryFamilies);
 
 /// The neutral industry authority (doc 10 §14, D-E7-3).
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub struct IndustryModule {
     families: Option<IndustryFamilies>,
     licence: Option<InstrumentId>,
     catalog: Option<(SmolStr, SmolStr)>,
     inventory: Option<mush_inventory::InventoryHandleCell>,
+    recipes: Option<Arc<dyn crate::workorder::RecipeAuthority>>,
+}
+
+impl std::fmt::Debug for IndustryModule {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("IndustryModule")
+            .field("has_recipes", &self.recipes.is_some())
+            .finish_non_exhaustive()
+    }
 }
 
 impl IndustryModule {
@@ -85,7 +99,19 @@ impl IndustryModule {
             licence: None,
             catalog: None,
             inventory: None,
+            recipes: None,
         }
+    }
+
+    /// Hand this module the one recipe authority (the composition-root seam that
+    /// answers a `RecipeRef` from the ruleset's published packs, `digest_of` and
+    /// `resolve`). Unset, `@wo/draft` refuses: a server that has said nothing
+    /// about what a recipe *is* must not let anyone pin one. Exactly the shape of
+    /// `EconomyModule::{with_custody, with_facts, with_title_issuers}`.
+    #[must_use]
+    pub fn with_recipes(mut self, recipes: Arc<dyn crate::workorder::RecipeAuthority>) -> Self {
+        self.recipes = Some(recipes);
+        self
     }
 
     /// Take cut 2's family handles from the composition root's cell.
@@ -315,6 +341,182 @@ impl GameModule for IndustryModule {
             |value: &PlaceCensus| serde_json::to_value(value).map_err(|e| e.to_string()),
         )?;
 
+        // ---- E7c4: B1 — the facility capacity pair and its reservation index ----
+        // `industry.facility_slots` is K's `BoundedScalar` bounded
+        // `0..=maximum_slots` with `current == maximum` (its `Deserialize`
+        // re-runs `BoundedScalar::new`, so the wire re-checks every bound), and
+        // `industry.facility_book` is K's own descriptor and codec, so cut 4
+        // defines no schema identity of its own for it — exactly cut 2's pool
+        // pair, applied to capacity.
+        let facility_slots = reg.state_family::<ReservationBookId, BoundedScalar, _, _, _, _>(
+            StateFamilyDescriptor::new(
+                family_id("industry_facility_slots")?,
+                canonical("reservation_book_id.v1")?,
+                canonical("industry.facility_slots.v1")?,
+                1,
+                canonical("industry.facility_slots.decode_json.v1")?,
+                canonical("industry.facility_slots.bounds.v1")?,
+                canonical("industry.facility_slots.json.v1")?,
+            )
+            .map_err(|error| ModError::msg(error.to_string()))?,
+            |key: &ReservationBookId| Ok(key.canonical_hash().to_hex()),
+            |value: &Value| serde_json::from_value(value.clone()).map_err(|e| e.to_string()),
+            |value: &BoundedScalar| {
+                if value.minimum() == 0
+                    && value.maximum() >= 1
+                    && value.maximum() <= i64::from(MAX_FACILITY_SLOTS)
+                    && value.current() == value.maximum()
+                {
+                    Ok(())
+                } else {
+                    Err(
+                        "a facility-slots scalar is bounded 0..=MAX_FACILITY_SLOTS with \
+                         current == maximum"
+                            .to_owned(),
+                    )
+                }
+            },
+            |value: &BoundedScalar| serde_json::to_value(value).map_err(|e| e.to_string()),
+        )?;
+        let facility_books = reg.state_family::<ReservationBookId, ReservationBook, _, _, _, _>(
+            reservation_book_state_family_descriptor(family_id("industry_facility_book")?)
+                .map_err(|error| ModError::msg(error.to_string()))?,
+            ReservationBookStateCodec,
+            ReservationBookStateCodec,
+            ReservationBookStateCodec,
+            ReservationBookStateCodec,
+        )?;
+        let capacity_index = reg.state_family::<ReservationId, ReservationBookId, _, _, _, _>(
+            StateFamilyDescriptor::new(
+                family_id("industry_capacity_index")?,
+                canonical("industry.reservation_id.v1")?,
+                canonical("industry.capacity_index.v1")?,
+                1,
+                canonical("industry.capacity_index.decode_json.v1")?,
+                canonical("industry.capacity_index.bounds.v1")?,
+                canonical("industry.capacity_index.json.v1")?,
+            )
+            .map_err(|error| ModError::msg(error.to_string()))?,
+            |key: &ReservationId| Ok(key.0.to_hex()),
+            |value: &Value| serde_json::from_value(value.clone()).map_err(|e| e.to_string()),
+            |_value: &ReservationBookId| Ok(()),
+            |value: &ReservationBookId| serde_json::to_value(value).map_err(|e| e.to_string()),
+        )?;
+
+        // ---- E7c4: B3 — the work-order family (authoritative, contradiction (iii)) ----
+        let work_orders = reg
+            .state_family::<crate::workorder::WorkOrderId, crate::workorder::WorkOrder, _, _, _, _>(
+                StateFamilyDescriptor::new(
+                    family_id("industry_work_orders")?,
+                    canonical("industry.work_order_id.v1")?,
+                    canonical("industry.work_order.v1")?,
+                    1,
+                    canonical("industry.work_order.decode_json.v1")?,
+                    canonical("industry.work_order.invariants.v1")?,
+                    canonical("industry.work_order.json.v1")?,
+                )
+                .map_err(|error| ModError::msg(error.to_string()))?,
+                |key: &crate::workorder::WorkOrderId| Ok(format!("{:016x}", key.0)),
+                |value: &Value| serde_json::from_value(value.clone()).map_err(|e| e.to_string()),
+                |value: &crate::workorder::WorkOrder| {
+                    if value.revision() == 0 {
+                        Err("a work order revision starts at 1".to_owned())
+                    } else {
+                        Ok(())
+                    }
+                },
+                |value: &crate::workorder::WorkOrder| {
+                    serde_json::to_value(value).map_err(|e| e.to_string())
+                },
+            )?;
+
+        // ---- E7c4: B5 — the production schedule family and its job sidecar ----
+        let schedules = reg.state_family::<ScheduleId, DurableSchedule, _, _, _, _>(
+            durable_schedule_state_family_descriptor(family_id("industry_production_schedule")?)
+                .map_err(|error| ModError::msg(error.to_string()))?,
+            DurableScheduleStateCodec,
+            DurableScheduleStateCodec,
+            DurableScheduleStateCodec,
+            DurableScheduleStateCodec,
+        )?;
+        let jobs = reg.state_family::<ScheduleId, crate::workorder::ProductionJob, _, _, _, _>(
+            StateFamilyDescriptor::new(
+                family_id("industry_production_job")?,
+                canonical("durable_schedule_id.v1")?,
+                canonical("industry.production_job.v1")?,
+                1,
+                canonical("industry.production_job.decode_json.v1")?,
+                canonical("industry.production_job.invariants.v1")?,
+                canonical("industry.production_job.json.v1")?,
+            )
+            .map_err(|error| ModError::msg(error.to_string()))?,
+            |key: &ScheduleId| Ok(key.canonical_hash().to_hex()),
+            |value: &Value| serde_json::from_value(value.clone()).map_err(|e| e.to_string()),
+            crate::workorder::ProductionJob::validate,
+            |value: &crate::workorder::ProductionJob| {
+                serde_json::to_value(value).map_err(|e| e.to_string())
+            },
+        )?;
+        // ---- E7c4: B7 — the work-order completion marker family ----
+        let wo_applied = reg
+            .state_family::<SmolStr, crate::workorder::WorkOrderMarker, _, _, _, _>(
+                StateFamilyDescriptor::new(
+                    family_id("industry_wo_applied")?,
+                    canonical("industry.marker_id.v1")?,
+                    canonical("industry.wo_applied.v1")?,
+                    1,
+                    canonical("industry.wo_applied.decode_json.v1")?,
+                    canonical("industry.wo_applied.invariants.v1")?,
+                    canonical("industry.wo_applied.json.v1")?,
+                )
+                .map_err(|error| ModError::msg(error.to_string()))?,
+                |key: &SmolStr| {
+                    if key.is_empty() || key.len() > MAX_MARKER_ID_BYTES {
+                        Err("an applied-marker id is 1..=96 bytes".to_owned())
+                    } else if key
+                        .bytes()
+                        .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
+                    {
+                        Ok(key.to_string())
+                    } else {
+                        Err("an applied-marker id is lowercase hex".to_owned())
+                    }
+                },
+                |value: &Value| serde_json::from_value(value.clone()).map_err(|e| e.to_string()),
+                |_value: &crate::workorder::WorkOrderMarker| Ok(()),
+                |value: &crate::workorder::WorkOrderMarker| {
+                    serde_json::to_value(value).map_err(|e| e.to_string())
+                },
+            )?;
+        // ---- E7c4: D2 discharged — the per-deposit marker ring ----
+        let marker_ring = reg.state_family::<OreDepositId, crate::record::MarkerRing, _, _, _, _>(
+            StateFamilyDescriptor::new(
+                family_id("industry_marker_ring")?,
+                canonical("industry.deposit_id.v1")?,
+                canonical("industry.marker_ring.v1")?,
+                1,
+                canonical("industry.marker_ring.decode_json.v1")?,
+                canonical("industry.marker_ring.bounds.v1")?,
+                canonical("industry.marker_ring.json.v1")?,
+            )
+            .map_err(|error| ModError::msg(error.to_string()))?,
+            |key: &OreDepositId| Ok(format!("{:016x}", key.0)),
+            |value: &Value| serde_json::from_value(value.clone()).map_err(|e| e.to_string()),
+            |value: &crate::record::MarkerRing| {
+                if value.len() > crate::record::MAX_RETAINED_MARKERS_PER_DEPOSIT {
+                    Err(
+                        "a marker ring retains at most MAX_RETAINED_MARKERS_PER_DEPOSIT keys"
+                            .to_owned(),
+                    )
+                } else {
+                    Ok(())
+                }
+            },
+            |value: &crate::record::MarkerRing| {
+                serde_json::to_value(value).map_err(|e| e.to_string())
+            },
+        )?;
+
         // Cut 2's handles, taken from the composition root's cell. Cut 3 never
         // re-registers an inventory family and never mints a handle: the
         // capability is cut 2's, and the *delegation* that lets this owner's
@@ -339,7 +541,25 @@ impl GameModule for IndustryModule {
             applied,
             place_census,
             inventory,
+            facility_slots,
+            facility_books: facility_books.clone(),
+            capacity_index: capacity_index.clone(),
+            work_orders,
+            schedules,
+            jobs,
+            wo_applied,
+            marker_ring,
         };
+
+        // ---- E7c4: B1 — the tree's SECOND `Reservation` validator, under
+        // `mush-industry`'s own `OwnerId`. The registry is keyed
+        // `(OwnerId, AuthorityGuardKind)` and stamps this module's owner, so it
+        // lands on a different key from cut 2's inventory validator: legal by
+        // construction, not by luck (cut 2 pinned exactly this composition).
+        reg.authority_guard_validator(
+            AuthorityGuardKind::Reservation,
+            CapacityGuardValidator::new(facility_books, capacity_index),
+        )?;
 
         // ---- E7c3: B6 — the prepared path ----
         crate::provider::register(reg, &families)?;
@@ -360,8 +580,8 @@ impl GameModule for IndustryModule {
             ),
         )?;
 
-        // ---- E7c3: B7 — commands ----
-        crate::commands::register(reg, &families, self.claim_catalog())?;
+        // ---- E7c3/E7c4: B7/B8 — commands ----
+        crate::commands::register(reg, &families, self.claim_catalog(), self.recipes.clone())?;
         self.families = Some(families);
         Ok(())
     }

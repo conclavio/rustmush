@@ -68,6 +68,7 @@ pub mod econ_canon;
 pub mod econ_inbox;
 pub mod gateway_sink;
 pub mod help;
+pub mod industry_recipes;
 pub mod modules;
 pub mod persist;
 mod process_fault;

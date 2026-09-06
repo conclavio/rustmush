@@ -342,6 +342,15 @@ fn pack_show(ctx: &mut Ctx<'_>, arg: &str, cursor: &str) -> Result<(), CmdError>
                 route.legs.len(),
                 route.drive_class
             ),
+            // E7 cut 4: the authored capability set and slot cap — catalogue
+            // policy, disclosing nothing a viewer may not know.
+            PackEntry::Facility(def) => format!(
+                "{} at {} — {} slots, {} capabilities",
+                def.label,
+                def.at,
+                def.slots,
+                def.capabilities.len()
+            ),
         };
         rows.push(format!("  {entry_id} ({}) {detail}", entry.label()));
     }

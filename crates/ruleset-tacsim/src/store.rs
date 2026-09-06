@@ -228,6 +228,26 @@ impl TacsimStore {
             .map(PackRecord::digest)
     }
 
+    /// Resolve one recipe id in a published pack version to its **pack digest**
+    /// and its authored definition (E7 cut 4's `RecipeAuthority` seam, read at the
+    /// composition root). `None` if the pack version is not **published** (a
+    /// retired version fails closed here) or the id is not a recipe — no second
+    /// digest, no second registry (§9 q3): the pack's own published digest is the
+    /// only one.
+    #[must_use]
+    pub fn recipe(
+        &self,
+        pack: &CanonicalId,
+        version: u32,
+        id: &CanonicalId,
+    ) -> Option<(mush_core::DefinitionDigest, crate::pack::RecipeDef)> {
+        let digest = self.published_digest(pack, version)?;
+        match self.pack(pack, version)?.pack.entry(id) {
+            Some(crate::pack::PackEntry::Recipe(def)) => Some((digest, def.clone())),
+            _ => None,
+        }
+    }
+
     /// The seed latch for one `(pack, version)`.
     #[must_use]
     pub fn seed(&self, pack: &CanonicalId, version: u32) -> Option<&SeedApplication> {

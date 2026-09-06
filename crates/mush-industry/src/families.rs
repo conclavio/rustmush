@@ -23,8 +23,9 @@
 //! write by `record.key.owner`).
 
 use mush_core::{
-    ActionStateError, ActionTxn, CanonicalHash, CanonicalId, ClockStamp, CommitToken, ObjId,
-    RequestUid, ScopedIdempotencyKey, StateFamilyHandle,
+    ActionStateError, ActionTxn, BoundedScalar, CanonicalHash, CanonicalId, ClockStamp,
+    CommitToken, ObjId, RequestUid, ReservationBook, ReservationBookError, ReservationBookId,
+    ReservationId, ReservationRecord, ReservationState, ScopedIdempotencyKey, StateFamilyHandle,
 };
 use mush_economy::ExternalRef;
 use mush_inventory::{EndpointRef, Grade, InventoryError, InventoryFamilies, LotId};
@@ -76,6 +77,41 @@ pub struct IndustryFamilies {
     /// mutation goes through their exported verbs, never through a `txn` write
     /// of this crate's own.
     pub inventory: InventoryFamilies,
+    /// `industry.facility_slots` — the [`BoundedScalar`] half of a facility's
+    /// capacity, `0..=maximum_slots` with `current == maximum` (slots are held
+    /// and released, never consumed). The `(pool, book)` pair of cut 2 applied to
+    /// capacity (E7c4 B1, D-E7-2: one C8-conformant reservation shape, two
+    /// owners, money is neither).
+    pub facility_slots: StateFamilyHandle<ReservationBookId, BoundedScalar>,
+    /// `industry.facility_book` — K's [`ReservationBook`] half. **Authoritative**;
+    /// the facility *definition* half is the exempt document.
+    pub facility_books: StateFamilyHandle<ReservationBookId, ReservationBook>,
+    /// `industry.capacity_index` — one [`ReservationId`] → its
+    /// [`ReservationBookId`], written in the same bundle as the slot hold so the
+    /// [`CapacityGuardValidator`](crate::facility::CapacityGuardValidator) is two
+    /// point lookups (cut 2's fold B10).
+    pub capacity_index: StateFamilyHandle<ReservationId, ReservationBookId>,
+    /// `industry.workorder` — **authoritative** (contradiction (iii)): its state
+    /// transition gates capacity legality and its lists index authoritative
+    /// records.
+    pub work_orders: StateFamilyHandle<crate::workorder::WorkOrderId, crate::workorder::WorkOrder>,
+    /// `industry.production_schedule` — K's [`DurableSchedule`](mush_core::DurableSchedule),
+    /// created in the same bundle as the transition to `Running` (B5).
+    pub schedules: StateFamilyHandle<mush_core::ScheduleId, mush_core::DurableSchedule>,
+    /// `industry.production_job` — the schedule sidecar keyed by `ScheduleId`
+    /// (the `handoff.rs` `HandoffJob` pattern).
+    pub jobs: StateFamilyHandle<mush_core::ScheduleId, crate::workorder::ProductionJob>,
+    /// `industry.wo_applied` — the committed terminal bundle's own
+    /// `industry.workorder.completed` marker (B7). A second marker family beside
+    /// cut 3's `industry.applied`, mirrored into the same store so the one
+    /// `IndustryFactProvider` answers both arms (DECIDED (f)).
+    pub wo_applied: StateFamilyHandle<SmolStr, crate::workorder::WorkOrderMarker>,
+    /// `industry.marker_ring` — a bounded per-deposit FIFO of recent extraction
+    /// marker keys, written in each cycle's bundle so the durable
+    /// `industry.applied` family is **bounded per deposit** (D2, discharged in cut
+    /// 4). Pruning cannot break replay: the run's monotone `next_cycle` refuses a
+    /// replayed old cycle first.
+    pub marker_ring: StateFamilyHandle<OreDepositId, crate::record::MarkerRing>,
 }
 
 /// The canonical token one claim subject is censused under.
@@ -373,6 +409,249 @@ impl IndustryFamilies {
         Ok(())
     }
 
+    // ---- E7c4 B1: facility capacity, on K's ReservationBook ----
+
+    fn load_capacity_pair(
+        &self,
+        txn: &mut ActionTxn<'_>,
+        object: ObjId,
+    ) -> Result<(ReservationBookId, Option<(BoundedScalar, ReservationBook)>), IndustryError> {
+        let key = crate::facility::facility_capacity_key(object)?;
+        let scalar = txn.get(&self.facility_slots, &key)?.copied();
+        let book = txn.get(&self.facility_books, &key)?.cloned();
+        match (scalar, book) {
+            (Some(scalar), Some(book)) => Ok((key, Some((scalar, book)))),
+            (None, None) => Ok((key, None)),
+            // Half a capacity pair is the half-state boot quarantines: reaching it
+            // inside a transaction means an owner path bypassed the pair, so refuse
+            // rather than repair — the fail-closed direction (a slot that vanished
+            // must not read as free).
+            _ => Err(IndustryError::CapacityHalf),
+        }
+    }
+
+    fn write_capacity_pair(
+        &self,
+        txn: &mut ActionTxn<'_>,
+        key: ReservationBookId,
+        existed: bool,
+        scalar: BoundedScalar,
+        book: ReservationBook,
+    ) -> Result<(), IndustryError> {
+        if existed {
+            txn.replace(&self.facility_slots, &key, scalar)?;
+            txn.replace(&self.facility_books, &key, book)?;
+        } else {
+            txn.insert(&self.facility_slots, &key, scalar)?;
+            txn.insert(&self.facility_books, &key, book)?;
+        }
+        Ok(())
+    }
+
+    fn fresh_capacity_pair(
+        &self,
+        object: ObjId,
+        maximum_slots: u32,
+    ) -> Result<(BoundedScalar, ReservationBook), IndustryError> {
+        let resource = crate::facility::facility_resource(object)?;
+        let max = i64::from(maximum_slots);
+        // `current == maximum`: every slot is free at the start, and a slot is
+        // *held* (not consumed), so `current` never moves — availability falls and
+        // rises with the live holds alone, and there is no stored occupancy counter
+        // (OPEN 1).
+        let scalar = BoundedScalar::new(0, max, max, 1).map_err(|_| IndustryError::Identity)?;
+        let book = ReservationBook::new(resource, scalar)?;
+        Ok((scalar, book))
+    }
+
+    /// Free slots at this facility, **derived at every read** from the live book.
+    ///
+    /// A facility with no book yet has every slot free; there is no counter to
+    /// read (OPEN 1). This is the only availability path, and a test asserts it
+    /// reads no stored `active_slots`.
+    ///
+    /// # Errors
+    /// [`IndustryError`] on a half pair or an unreadable family.
+    pub fn available_slots(
+        &self,
+        txn: &mut ActionTxn<'_>,
+        object: ObjId,
+        maximum_slots: u32,
+    ) -> Result<u64, IndustryError> {
+        let (_, pair) = self.load_capacity_pair(txn, object)?;
+        match pair {
+            None => Ok(u64::from(maximum_slots)),
+            Some((scalar, book)) => Ok(book.checked_available(scalar)?),
+        }
+    }
+
+    /// Hold one slot for the work order's deterministic holder key.
+    ///
+    /// **Two orders contending for the last slot: exactly one starts**, and the
+    /// second refuses at K's `checked_hold` (`InsufficientAvailable`), never at a
+    /// cut-4 check. A `Held` slot for the same holder that was released is retired
+    /// first, so a holder that finished may reserve again.
+    ///
+    /// # Errors
+    /// [`IndustryError`] on any refusal; **nothing is written on an error**.
+    pub fn reserve_slot(
+        &self,
+        txn: &mut ActionTxn<'_>,
+        object: ObjId,
+        maximum_slots: u32,
+        holder: &ScopedIdempotencyKey,
+        now: &ClockStamp,
+    ) -> Result<ReservationId, IndustryError> {
+        let (key, pair) = self.load_capacity_pair(txn, object)?;
+        let (existed, scalar, book) = match pair {
+            Some((scalar, book)) => (true, scalar, book),
+            None => {
+                let (scalar, book) = self.fresh_capacity_pair(object, maximum_slots)?;
+                (false, scalar, book)
+            }
+        };
+        let resource = crate::facility::facility_resource(object)?;
+        let id = ReservationId::derive(holder, &resource).map_err(|_| IndustryError::Identity)?;
+        let book = retire_terminal_capacity(book, scalar, id)?;
+        let record = ReservationRecord::held(
+            id,
+            resource,
+            holder.clone(),
+            1,
+            mush_inventory::reservation_deadline(now).map_err(IndustryError::Inventory)?,
+        )?;
+        let book = book.checked_hold(book.revision(), scalar, record, now)?;
+        self.write_capacity_pair(txn, key, existed, scalar, book)?;
+        if txn.get(&self.capacity_index, &id)?.is_some() {
+            txn.replace(&self.capacity_index, &id, key)?;
+        } else {
+            txn.insert(&self.capacity_index, &id, key)?;
+        }
+        Ok(id)
+    }
+
+    /// Release one held slot — the terminal transition's capacity step, and
+    /// cancellation's. Idempotent by K's own rule: a second release finds a
+    /// terminal record and is refused, never re-applied.
+    ///
+    /// # Errors
+    /// [`IndustryError`] on any refusal; **nothing is written on an error**.
+    pub fn release_slot(
+        &self,
+        txn: &mut ActionTxn<'_>,
+        object: ObjId,
+        reservation: ReservationId,
+        expected_reservation_revision: u64,
+    ) -> Result<(), IndustryError> {
+        let (key, pair) = self.load_capacity_pair(txn, object)?;
+        let Some((scalar, book)) = pair else {
+            return Err(IndustryError::NoCapacity);
+        };
+        let book = book.checked_release(
+            book.revision(),
+            scalar,
+            reservation,
+            expected_reservation_revision,
+        )?;
+        self.write_capacity_pair(txn, key, true, scalar, book)
+    }
+
+    /// Expire one elapsed slot hold.
+    ///
+    /// # Errors
+    /// [`IndustryError`] on any refusal.
+    pub fn expire_slot(
+        &self,
+        txn: &mut ActionTxn<'_>,
+        object: ObjId,
+        reservation: ReservationId,
+        expected_reservation_revision: u64,
+        now: &ClockStamp,
+    ) -> Result<(), IndustryError> {
+        let (key, pair) = self.load_capacity_pair(txn, object)?;
+        let Some((scalar, book)) = pair else {
+            return Err(IndustryError::NoCapacity);
+        };
+        let book = book.checked_expire(
+            book.revision(),
+            scalar,
+            reservation,
+            expected_reservation_revision,
+            now,
+        )?;
+        self.write_capacity_pair(txn, key, true, scalar, book)
+    }
+
+    /// One slot hold's exact record, if the facility has it.
+    ///
+    /// # Errors
+    /// [`IndustryError`] on a half pair or an unreadable family.
+    pub fn slot_reservation(
+        &self,
+        txn: &mut ActionTxn<'_>,
+        object: ObjId,
+        reservation: ReservationId,
+    ) -> Result<Option<ReservationRecord>, IndustryError> {
+        let (_, pair) = self.load_capacity_pair(txn, object)?;
+        Ok(pair.and_then(|(_, book)| {
+            book.records()
+                .iter()
+                .find(|record| record.id() == reservation)
+                .cloned()
+        }))
+    }
+
+    // ---- E7c4 B3: work orders ----
+
+    /// One work order, if it exists.
+    ///
+    /// # Errors
+    /// [`IndustryError::State`] if the family is unreadable.
+    pub fn work_order(
+        &self,
+        txn: &mut ActionTxn<'_>,
+        id: crate::workorder::WorkOrderId,
+    ) -> Result<Option<crate::workorder::WorkOrder>, IndustryError> {
+        Ok(txn.get(&self.work_orders, &id)?.cloned())
+    }
+
+    /// Insert one fresh work order (a draft).
+    ///
+    /// # Errors
+    /// [`IndustryError::WorkOrderExists`] on a duplicate id.
+    pub fn open_work_order(
+        &self,
+        txn: &mut ActionTxn<'_>,
+        order: crate::workorder::WorkOrder,
+    ) -> Result<(), IndustryError> {
+        if txn.get(&self.work_orders, &order.id())?.is_some() {
+            return Err(IndustryError::WorkOrderExists);
+        }
+        txn.insert(&self.work_orders, &order.id(), order)?;
+        Ok(())
+    }
+
+    /// Replace one work order under a checked revision.
+    ///
+    /// # Errors
+    /// [`IndustryError::NoWorkOrder`] on a missing order,
+    /// [`IndustryError::StaleRevision`] on a mismatch.
+    pub fn put_work_order(
+        &self,
+        txn: &mut ActionTxn<'_>,
+        expected_revision: u64,
+        order: crate::workorder::WorkOrder,
+    ) -> Result<(), IndustryError> {
+        let live = self
+            .work_order(txn, order.id())?
+            .ok_or(IndustryError::NoWorkOrder)?;
+        if live.revision() != expected_revision {
+            return Err(IndustryError::StaleRevision);
+        }
+        txn.replace(&self.work_orders, &order.id(), order)?;
+        Ok(())
+    }
+
     // ---- the extraction cycle (B6) ----
 
     /// Run **one** extraction cycle as one bundle.
@@ -507,6 +786,28 @@ impl IndustryFamilies {
             now.at,
         )?;
         txn.insert(&self.applied, &marker_key, marker)?;
+        // D2 (discharged in cut 4): keep the durable `industry.applied` family
+        // bounded per deposit. The ring rides this same bundle; an evicted
+        // (oldest) marker is deleted. This cannot break replay idempotency: a
+        // replayed old cycle refuses at the `next_cycle`/revision check above long
+        // before its marker would be read, so the marker is a fast guard the ring
+        // may retire while the run's monotonicity remains the durable one.
+        let ring = txn
+            .get(&self.marker_ring, &live.id())?
+            .cloned()
+            .unwrap_or_else(crate::record::MarkerRing::empty);
+        let ring_existed = txn.get(&self.marker_ring, &live.id())?.is_some();
+        let (ring, evicted) = ring.push(marker_key);
+        if let Some(old) = evicted
+            && txn.get(&self.applied, &old)?.is_some()
+        {
+            txn.remove(&self.applied, &old)?;
+        }
+        if ring_existed {
+            txn.replace(&self.marker_ring, &live.id(), ring)?;
+        } else {
+            txn.insert(&self.marker_ring, &live.id(), ring)?;
+        }
         Ok(Cycled {
             cycle: live_run.next_cycle(),
             quantity,
@@ -514,6 +815,41 @@ impl IndustryFamilies {
             remaining: remaining.saturating_sub(quantity),
         })
     }
+}
+
+/// Retire the terminal capacity record for one holder before re-holding, and
+/// keep the book's terminal tail bounded (cut 2's fold C3, applied to capacity):
+/// without it a facility that has run and released `MAX_RESERVATION_BOOK_RECORDS`
+/// orders would refuse the next slot for ever.
+fn retire_terminal_capacity(
+    book: ReservationBook,
+    scalar: BoundedScalar,
+    holder: ReservationId,
+) -> Result<ReservationBook, IndustryError> {
+    let terminal = |record: &&ReservationRecord| record.state() != ReservationState::Held;
+    let mut book = book;
+    if let Some(record) = book
+        .records()
+        .iter()
+        .find(|record| record.id() == holder && terminal(record))
+        .cloned()
+    {
+        book =
+            book.checked_prune_terminal(book.revision(), scalar, record.id(), record.revision())?;
+    }
+    for _ in 0..mush_core::MAX_RESERVATION_BOOK_RECORDS {
+        if book.records().iter().filter(terminal).count()
+            <= mush_inventory::MAX_RETAINED_TERMINAL_RESERVATIONS
+        {
+            break;
+        }
+        let Some(record) = book.records().iter().find(terminal).cloned() else {
+            break;
+        };
+        book =
+            book.checked_prune_terminal(book.revision(), scalar, record.id(), record.revision())?;
+    }
+    Ok(book)
 }
 
 /// Derive the lot identity one cycle mints.
@@ -597,6 +933,24 @@ pub enum IndustryError {
     /// The request already has an applied marker.
     #[error("that request has already been applied")]
     AlreadyApplied,
+    /// A capacity book/scalar pair was half-present — the fail-closed shape.
+    #[error("that facility's capacity state is half-present")]
+    CapacityHalf,
+    /// No capacity book at that facility (a release/expire with no live book).
+    #[error("that facility has no capacity book")]
+    NoCapacity,
+    /// K refused a capacity book transition (contention, revision, deadline).
+    #[error(transparent)]
+    Book(#[from] ReservationBookError),
+    /// K refused a reservation-record transition.
+    #[error(transparent)]
+    Reservation(#[from] mush_core::ReservationError),
+    /// No such work order.
+    #[error("no such work order")]
+    NoWorkOrder,
+    /// That work order already exists.
+    #[error("that work order already exists")]
+    WorkOrderExists,
 }
 
 impl From<ActionStateError> for IndustryError {

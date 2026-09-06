@@ -24,15 +24,18 @@
 
 use std::sync::Arc;
 
+use std::collections::BTreeSet;
+
 use mush_core::{
-    ArgShape, CmdError, CommandCompatibility, CommandSpec, Ctx, IdempotencyKeyText, ModError,
-    ObjId, PerceivedRef, Registrar,
+    ArgShape, CanonicalId, CmdError, CommandCompatibility, CommandSpec, Ctx, IdempotencyKeyText,
+    ModError, ObjId, PerceivedRef, Registrar,
 };
 use mush_economy::{CatalogRef, EconomyStore};
 use mush_org::PrincipalId;
 use serde_json::json;
 use smol_str::SmolStr;
 
+use crate::facility::{FacilityRecord, facility_capacity_key};
 use crate::families::IndustryFamilies;
 use crate::licence::licence_accounts;
 use crate::provider::{IndustryVerb, action_ref};
@@ -41,6 +44,7 @@ use crate::record::{
     OreDepositId, SurveyBands, SurveyDoc,
 };
 use crate::store::IndustryStore;
+use crate::workorder::{RecipeAuthority, WorkOrder, WorkOrderId, quote_duration, quote_price};
 
 /// The one line an unknown, unreadable or unsurveyed ore body renders.
 ///
@@ -820,7 +824,375 @@ fn cmd_extract(ctx: &mut Ctx<'_>, _families: &IndustryFamilies) -> Result<(), Cm
     )
 }
 
-/// Register the five lanes.
+/// The line an unknown, unreadable or unviewable facility renders.
+pub const NO_SUCH_FACILITY: &str = "No such facility.";
+/// The line an unknown or unviewable work order renders — byte-identical to the
+/// nonexistent-id line (the P lens).
+pub const NO_SUCH_WORK_ORDER: &str = "No such work order.";
+
+// ---- E7c4 B8: @facility (LegacyPostImage — open writes a document) ----
+
+fn facility_available(
+    ctx: &Ctx<'_>,
+    families: &IndustryFamilies,
+    object: ObjId,
+    maximum_slots: u32,
+) -> u64 {
+    let Ok(key) = facility_capacity_key(object) else {
+        return u64::from(maximum_slots);
+    };
+    let scalar = ctx
+        .action_state(&families.facility_slots, &key)
+        .ok()
+        .flatten()
+        .copied();
+    let book = ctx
+        .action_state(&families.facility_books, &key)
+        .ok()
+        .flatten();
+    match (scalar, book) {
+        (Some(scalar), Some(book)) => book.checked_available(scalar).unwrap_or(0),
+        _ => u64::from(maximum_slots),
+    }
+}
+
+fn cmd_facility(ctx: &mut Ctx<'_>, families: &IndustryFamilies) -> Result<(), CmdError> {
+    if ctx.switches.has("open") {
+        // Instantiating a facility binds a pack `FacilityDef` to a seeded object;
+        // it is a staff act, seeded as authored data (cut 3's `@deposit/open`
+        // precedent). `@facility/open <object>=<slots> [cap...]`.
+        if !crate::store::is_staff(ctx.w, ctx.actor) {
+            return Err(CmdError::msg("Only staff open facilities."));
+        }
+        let object = ObjId(ctx.args.lhs().trim().parse::<u32>().map_err(|_| {
+            CmdError::msg("Usage: @facility/open <object>=<slots> [capability...]")
+        })?);
+        let rhs = ctx.args.rhs().unwrap_or_default();
+        let mut parts = rhs.split_whitespace();
+        let slots: u32 = parts
+            .next()
+            .and_then(|token| token.parse().ok())
+            .ok_or_else(|| {
+                CmdError::msg("Usage: @facility/open <object>=<slots> [capability...]")
+            })?;
+        let mut capabilities = BTreeSet::new();
+        for token in parts {
+            capabilities.insert(
+                CanonicalId::new(token)
+                    .map_err(|_| CmdError::msg("a capability is a canonical id"))?,
+            );
+        }
+        let facility =
+            FacilityRecord::new(object, PrincipalId::Object(ctx.actor), capabilities, slots)
+                .map_err(|error| CmdError::msg(error.to_string()))?;
+        crate::store::persist_facility(ctx.out, &facility);
+        if let Some(store) = ctx.w.module_state_mut::<IndustryStore>() {
+            store.put_facility(facility);
+        }
+        ctx.out.info(
+            ctx.actor,
+            format!("Facility #{} opened with {slots} slots.", object.0),
+        );
+        return Ok(());
+    }
+    if ctx.switches.has("show") {
+        let Ok(id) = ctx.args.lhs().trim().parse::<u32>() else {
+            ctx.out.info(ctx.actor, NO_SUCH_FACILITY);
+            return Ok(());
+        };
+        let object = ObjId(id);
+        let Some(facility) = ctx
+            .w
+            .module_state::<IndustryStore>()
+            .and_then(|store| store.facility(object).cloned())
+        else {
+            ctx.out.info(ctx.actor, NO_SUCH_FACILITY);
+            return Ok(());
+        };
+        let available = facility_available(ctx, families, object, facility.maximum_slots());
+        ctx.out.info(
+            ctx.actor,
+            format!(
+                "Facility #{}: {} slots ({available} available), capabilities [{}]",
+                object.0,
+                facility.maximum_slots(),
+                facility
+                    .capabilities()
+                    .iter()
+                    .map(CanonicalId::as_str)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        );
+        return Ok(());
+    }
+    // list
+    let facilities: Vec<FacilityRecord> = ctx
+        .w
+        .module_state::<IndustryStore>()
+        .map(|store| store.facilities().into_iter().cloned().collect())
+        .unwrap_or_default();
+    if facilities.is_empty() {
+        ctx.out.info(ctx.actor, "(no facilities)");
+        return Ok(());
+    }
+    for facility in facilities.iter().take(MAX_LIST_ROWS) {
+        let available =
+            facility_available(ctx, families, facility.object(), facility.maximum_slots());
+        ctx.out.info(
+            ctx.actor,
+            format!(
+                "Facility #{}: {} slots ({available} available)",
+                facility.object().0,
+                facility.maximum_slots()
+            ),
+        );
+    }
+    Ok(())
+}
+
+// ---- E7c4 B8: @wo (Authoritative — draft/submit/... ride the B1 seam) ----
+
+fn cmd_wo(
+    ctx: &mut Ctx<'_>,
+    families: &IndustryFamilies,
+    recipes: Option<&std::sync::Arc<dyn RecipeAuthority>>,
+) -> Result<(), CmdError> {
+    if ctx.switches.has("draft") {
+        let Some(recipes) = recipes else {
+            return Err(CmdError::msg(
+                "Work orders are not available on this server.",
+            ));
+        };
+        // `@wo/draft <pack>/<recipe>/<version>=<facility> <qty> <account> <source> <destination> [beneficiary]`
+        let lhs = ctx.args.lhs().trim();
+        let mut parts = lhs.split('/');
+        let pack = CanonicalId::new(parts.next().unwrap_or_default().trim())
+            .map_err(|_| CmdError::msg("Usage: @wo/draft <pack>/<recipe>/<version>=..."))?;
+        let recipe_id = CanonicalId::new(parts.next().unwrap_or_default().trim())
+            .map_err(|_| CmdError::msg("Usage: @wo/draft <pack>/<recipe>/<version>=..."))?;
+        let version: u32 = parts
+            .next()
+            .and_then(|token| token.trim().parse().ok())
+            .unwrap_or(1);
+        let rhs = ctx.args.rhs().unwrap_or_default();
+        let mut rp = rhs.split_whitespace();
+        let facility = ObjId(
+            rp.next()
+                .and_then(|token| token.parse().ok())
+                .ok_or_else(|| {
+                    CmdError::msg(
+                        "Usage: @wo/draft ...=<facility> <qty> <account> <source> <destination>",
+                    )
+                })?,
+        );
+        let quantity: u32 = rp.next().and_then(|token| token.parse().ok()).unwrap_or(1);
+        let account: u64 = rp.next().and_then(|token| token.parse().ok()).unwrap_or(0);
+        let source: u64 = rp.next().and_then(|token| token.parse().ok()).unwrap_or(0);
+        let destination: u64 = rp
+            .next()
+            .and_then(|token| token.parse().ok())
+            .ok_or_else(|| CmdError::msg("a work order needs a destination endpoint"))?;
+        let beneficiary = rp
+            .next()
+            .map(str::to_owned)
+            .unwrap_or_else(|| format!("obj:{}", ctx.actor.0));
+        let Some((recipe_ref, pinned)) = recipes.resolve(ctx.w, &pack, version, &recipe_id) else {
+            // Fog + fail-closed: an unknown or retired recipe is indistinguishable.
+            return Err(CmdError::msg("No such recipe."));
+        };
+        let Some(facility_rec) = ctx
+            .w
+            .module_state::<IndustryStore>()
+            .and_then(|store| store.facility(facility).cloned())
+        else {
+            return Err(CmdError::msg(NO_SUCH_FACILITY));
+        };
+        if !facility_rec.offers(pinned.requires()) {
+            return Err(CmdError::msg("That facility cannot run that recipe."));
+        }
+        let pinned_json = serde_json::to_string(&pinned)
+            .map_err(|_| CmdError::msg("that recipe could not be pinned"))?;
+        let params = json!({
+            "facility": facility.0,
+            "facility_slots": facility_rec.maximum_slots(),
+            "capacity_revision": facility_rec.capacity_revision(),
+            "policy_revision": facility_rec.policy_revision(),
+            "pack": pack.as_str(),
+            "version": version,
+            "recipe": recipe_id.as_str(),
+            "digest": recipe_ref.digest().to_hex(),
+            "quantity": quantity,
+            "account": account,
+            "source": source,
+            "destination": destination,
+            "beneficiary": beneficiary,
+            "pinned": pinned_json,
+        });
+        return submit(ctx, IndustryVerb::WoDraft, params, "wo.draft");
+    }
+    if ctx.switches.has("submit") {
+        let order_arg = ctx.args.lhs().trim().to_owned();
+        // B4: revalidate the pinned recipe digest and the facility revisions
+        // against the live world before submitting — a drift makes the draft
+        // stale and refuses (fail-closed). The reservations themselves happen in
+        // the provider's atomic bundle.
+        if let Some(order) = wo_by_id(ctx, families, &order_arg) {
+            let facility_ok = ctx
+                .w
+                .module_state::<IndustryStore>()
+                .and_then(|store| store.facility(order.facility()).cloned())
+                .is_some_and(|facility| {
+                    facility.capacity_revision() == order.capacity_revision()
+                        && facility.policy_revision() == order.policy_revision()
+                });
+            if !facility_ok {
+                return Err(CmdError::msg(
+                    "that work order is stale — its facility changed; redraft it.",
+                ));
+            }
+            let digest_ok = recipes.is_some_and(|authority| {
+                authority.digest_of(ctx.w, order.recipe()) == Some(order.recipe().digest())
+            });
+            if !digest_ok {
+                return Err(CmdError::msg(
+                    "that work order's recipe has drifted; redraft it.",
+                ));
+            }
+        }
+        return submit(
+            ctx,
+            IndustryVerb::WoSubmit,
+            json!({ "order": order_arg }),
+            "wo.submit",
+        );
+    }
+    if ctx.switches.has("deliver") {
+        let order = ctx.args.lhs().trim().to_owned();
+        return submit(
+            ctx,
+            IndustryVerb::WoDeliver,
+            json!({ "order": order }),
+            "wo.deliver",
+        );
+    }
+    if ctx.switches.has("cancel") {
+        let order = ctx.args.lhs().trim().to_owned();
+        return submit(
+            ctx,
+            IndustryVerb::WoCancel,
+            json!({ "order": order }),
+            "wo.cancel",
+        );
+    }
+    if ctx.switches.has("restamp") {
+        let order = ctx.args.lhs().trim().to_owned();
+        let policy = ctx.args.rhs().unwrap_or_default().trim().to_owned();
+        return submit(
+            ctx,
+            IndustryVerb::WoRestamp,
+            json!({ "order": order, "policy": policy }),
+            "wo.restamp",
+        );
+    }
+    if ctx.switches.has("quote") {
+        // ReadOnly, a **pure function of recorded inputs**, reserving nothing.
+        let Some(order) = wo_by_id(ctx, families, ctx.args.lhs().trim()) else {
+            ctx.out.info(ctx.actor, NO_SUCH_WORK_ORDER);
+            return Ok(());
+        };
+        if !wo_viewable(&order, ctx.actor) {
+            ctx.out.info(ctx.actor, NO_SUCH_WORK_ORDER);
+            return Ok(());
+        }
+        let price = quote_price(order.pinned(), order.quantity());
+        let duration = quote_duration(order.pinned(), order.quantity());
+        ctx.out.info(
+            ctx.actor,
+            format!(
+                "{}: price {price} input units, duration {duration} work units.",
+                order.id()
+            ),
+        );
+        return Ok(());
+    }
+    if ctx.switches.has("show") {
+        let Some(order) = wo_by_id(ctx, families, ctx.args.lhs().trim()) else {
+            ctx.out.info(ctx.actor, NO_SUCH_WORK_ORDER);
+            return Ok(());
+        };
+        if !wo_viewable(&order, ctx.actor) {
+            // Byte-identical to the nonexistent-id line (the P lens): a projected
+            // order carries no hidden org, account or endpoint fact.
+            ctx.out.info(ctx.actor, NO_SUCH_WORK_ORDER);
+            return Ok(());
+        }
+        ctx.out.info(
+            ctx.actor,
+            format!(
+                "{}: {:?} at facility #{}, quantity {}.",
+                order.id(),
+                order.state(),
+                order.facility().0,
+                order.quantity()
+            ),
+        );
+        return Ok(());
+    }
+    // list — the actor's own orders, bounded on records visited.
+    let mut cursor: Option<String> = None;
+    let mut pages = 0;
+    let mut rows = 0;
+    loop {
+        if pages >= MAX_LIST_PAGES || rows >= MAX_LIST_ROWS {
+            break;
+        }
+        pages += 1;
+        let page =
+            match ctx.scan_action_state(&families.work_orders, cursor.as_deref(), INDUSTRY_PAGE) {
+                Ok(page) => page,
+                Err(_) => break,
+            };
+        let mut batch: Vec<WorkOrder> = Vec::new();
+        for entry in page.entries() {
+            batch.push(entry.value().clone());
+        }
+        let next = page.next_after().map(ToString::to_string);
+        for order in batch {
+            if wo_viewable(&order, ctx.actor) && rows < MAX_LIST_ROWS {
+                rows += 1;
+                ctx.out
+                    .info(ctx.actor, format!("{}: {:?}", order.id(), order.state()));
+            }
+        }
+        match next {
+            Some(next) => cursor = Some(next),
+            None => break,
+        }
+    }
+    if rows == 0 {
+        ctx.out.info(ctx.actor, "(no work orders)");
+    }
+    Ok(())
+}
+
+fn wo_by_id(ctx: &Ctx<'_>, families: &IndustryFamilies, raw: &str) -> Option<WorkOrder> {
+    let id = WorkOrderId::parse(raw)?;
+    ctx.action_state(&families.work_orders, &id)
+        .ok()
+        .flatten()
+        .cloned()
+}
+
+/// Whether the viewer may see this order — its requester, its beneficiary, or
+/// staff. One internal view, so an unviewable order and a nonexistent one render
+/// identically.
+fn wo_viewable(order: &WorkOrder, actor: ObjId) -> bool {
+    let principal = PrincipalId::Object(actor);
+    order.requester() == &principal || order.beneficiary() == &principal
+}
+
+/// Register the lanes (cut 3's five plus cut 4's `@facility` and `@wo`).
 ///
 /// # Errors
 /// [`ModError`] if registration collides.
@@ -828,6 +1200,7 @@ pub fn register(
     reg: &mut Registrar<'_>,
     families: &IndustryFamilies,
     catalog: (SmolStr, SmolStr),
+    recipes: Option<std::sync::Arc<dyn RecipeAuthority>>,
 ) -> Result<(), ModError> {
     // K8.5: the ceiling class of `@deposit`'s four switches, declared before
     // the first `reg.command` of this group.
@@ -872,10 +1245,46 @@ pub fn register(
         },
         Arc::new(move |ctx: &mut Ctx<'_>| cmd_extract(ctx, &extract_families)),
     )?;
+    // E7c4 B8: `@wo` rides the same Authoritative group. Its ceiling class is
+    // Authoritative (draft/submit/deliver/cancel/restamp ride the B1 seam); the
+    // read switches (quote/show/list) never submit, a conservative
+    // over-declaration 08j §7 "Accept" permits.
+    let wo_families = families.clone();
+    let wo_recipes = recipes.clone();
+    reg.command(
+        CommandSpec {
+            name: "@wo".into(),
+            switches: vec![
+                "draft".into(),
+                "set".into(),
+                "submit".into(),
+                "cancel".into(),
+                "deliver".into(),
+                "restamp".into(),
+                "quote".into(),
+                "show".into(),
+                "list".into(),
+            ],
+            shape: ArgShape::EqPair,
+            ..CommandSpec::default()
+        },
+        Arc::new(move |ctx: &mut Ctx<'_>| cmd_wo(ctx, &wo_families, wo_recipes.as_ref())),
+    )?;
 
     // K8.5: a **new registration group**, so the class is declared again. The
-    // survey writes the one conventional document this cut owns.
+    // survey and the facility document are the conventional documents this cut
+    // owns (a facility's `open` writes one; `list`/`show` read).
     reg.classify_commands(CommandCompatibility::LegacyPostImage);
+    let facility_families = families.clone();
+    reg.command(
+        CommandSpec {
+            name: "@facility".into(),
+            switches: vec!["open".into(), "list".into(), "show".into()],
+            shape: ArgShape::EqPair,
+            ..CommandSpec::default()
+        },
+        Arc::new(move |ctx: &mut Ctx<'_>| cmd_facility(ctx, &facility_families)),
+    )?;
     let survey_families = families.clone();
     reg.command(
         CommandSpec {

@@ -55,6 +55,7 @@
 
 pub mod commands;
 pub mod custody;
+pub mod facility;
 pub mod facts;
 pub mod families;
 pub mod licence;
@@ -62,8 +63,13 @@ pub mod module;
 pub mod provider;
 pub mod record;
 pub mod store;
+pub mod workorder;
 
 pub use custody::IndustryCustodyProvider;
+pub use facility::{
+    CapacityGuardValidator, FACILITY_CLASS, FacilityRecord, MAX_FACILITY_CAPABILITIES,
+    MAX_FACILITY_SLOTS, facility_capacity_key, facility_key, facility_of_key, facility_resource,
+};
 pub use facts::IndustryFactProvider;
 pub use families::{IndustryError, IndustryFamilies, claim_subject_token, marker_id};
 pub use licence::{ExtractionRefusal, extraction_authorized, licence_accounts};
@@ -83,3 +89,9 @@ pub use record::{
     SurveyBands, SurveyDoc, SurveyRow, Transferability, YieldCurve, owner,
 };
 pub use store::{IndustryStore, Quarantine};
+pub use workorder::{
+    DeliveryTarget, InterruptionCause, MAX_RESERVATIONS_PER_ORDER, MAX_WORK_ORDER_INPUTS,
+    MAX_WORK_ORDER_QUANTITY, PinnedRecipe, ProductionSchedule, RecipeAuthority, RecipeLine,
+    RecipeRef, WorkOrder, WorkOrderId, WorkOrderState, derive_work_order_id, wo_holder,
+    wo_holder_text,
+};

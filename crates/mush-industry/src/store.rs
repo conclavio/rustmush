@@ -52,10 +52,12 @@ use mush_economy::{EconomyStore, InstrumentId, VaultId};
 use mush_inventory::{EndpointRef, InventoryStore};
 use smol_str::SmolStr;
 
+use crate::facility::{FacilityRecord, facility_of_key};
 use crate::record::{
     AppliedMarker, MAX_APPLIED_MARKERS, MAX_MARKER_ID_BYTES, NS, OreDeposit, OreDepositId,
     SurveyDoc,
 };
+use crate::workorder::WorkOrderMarker;
 
 /// The document key one deposit's disclosure map lives at.
 #[must_use]
@@ -117,8 +119,15 @@ pub struct IndustryStore {
     quarantined: BTreeMap<OreDepositId, Quarantine>,
     /// The one conventional document: per-deposit disclosure.
     surveys: BTreeMap<OreDepositId, SurveyDoc>,
-    /// The applied-marker mirror the `industry.*` fact provider answers from.
+    /// E7c4 B1: the facility definition documents (`industry:facility:<obj>`),
+    /// exempt/legacy-post-image, hydrated at boot and read at draft/offer time.
+    facilities: BTreeMap<ObjId, FacilityRecord>,
+    /// The extraction applied-marker mirror the `industry.*` fact provider answers
+    /// from.
     applied: BTreeMap<SmolStr, AppliedMarker>,
+    /// E7c4 B7: the work-order completion-marker mirror the SAME provider's second
+    /// arm (`industry.workorder.completed`) answers from (DECIDED (f)).
+    wo_applied: BTreeMap<SmolStr, WorkOrderMarker>,
     /// Whether the last reconciliation completed inside its page budget **and**
     /// held the whole marker family in the RAM mirror. A truncated walk — the
     /// page budget tripped, or the mirror pruned past `MAX_APPLIED_MARKERS`
@@ -198,10 +207,33 @@ impl IndustryStore {
         self.reconciliations
     }
 
-    /// One applied marker, if the mirror has it.
+    /// One extraction applied marker, if the mirror has it.
     #[must_use]
     pub fn marker(&self, id: &str) -> Option<&AppliedMarker> {
         self.applied.get(id)
+    }
+
+    /// One work-order completion marker, if the mirror has it.
+    #[must_use]
+    pub fn wo_marker(&self, id: &str) -> Option<&WorkOrderMarker> {
+        self.wo_applied.get(id)
+    }
+
+    /// One facility definition document, if hydrated.
+    #[must_use]
+    pub fn facility(&self, object: ObjId) -> Option<&FacilityRecord> {
+        self.facilities.get(&object)
+    }
+
+    /// Install one facility definition document (the single RAM write path).
+    pub fn put_facility(&mut self, facility: FacilityRecord) {
+        self.facilities.insert(facility.object(), facility);
+    }
+
+    /// Every hydrated facility, in canonical order.
+    #[must_use]
+    pub fn facilities(&self) -> Vec<&FacilityRecord> {
+        self.facilities.values().collect()
     }
 
     /// Every mirrored marker of one kind, newest last.
@@ -233,6 +265,23 @@ impl IndustryStore {
 pub fn hydrate(store: &mut IndustryStore, kv: &[(SmolStr, serde_json::Value)]) {
     let mut lost = BTreeSet::new();
     for (key, value) in kv {
+        // E7c4 B1: facility definition documents — skipped LOUDLY on a wire
+        // failure, exactly as a survey is; the loss is availability (a facility
+        // whose document is gone offers no slots), the fail-closed direction.
+        if let Some(object) = facility_of_key(key.as_str()) {
+            match serde_json::from_value::<FacilityRecord>(value.clone()) {
+                Ok(facility) if facility.object() == object => store.put_facility(facility),
+                Ok(_) | Err(_) => {
+                    tracing::error!(
+                        target: "industry",
+                        key = %key,
+                        "industry: a facility document failed its wire or disagrees with its \
+                         key; skipped"
+                    );
+                }
+            }
+            continue;
+        }
         let Some(deposit) = survey_of_key(key.as_str()) else {
             // A key this crate does not own. Not an error: the namespace may
             // grow, and a boot must not refuse on a document it will simply
@@ -268,6 +317,25 @@ pub fn hydrate(store: &mut IndustryStore, kv: &[(SmolStr, serde_json::Value)]) {
     for deposit in lost {
         store.quarantined.insert(deposit, Quarantine::SurveyLost);
     }
+}
+
+/// Queue one facility definition document write (E7c4 B1, legacy-post-image).
+pub fn persist_facility(out: &mut Outbox, facility: &FacilityRecord) {
+    let Ok(value) = serde_json::to_value(facility) else {
+        tracing::error!(
+            target: "industry",
+            object = facility.object().0,
+            "industry: a facility document would not serialize; not written"
+        );
+        return;
+    };
+    out.defer(mush_core::Deferred::Persist(mush_core::ModuleOp {
+        ns: SmolStr::new_static(NS),
+        op: mush_core::ModuleWrite::JsonSet {
+            key: crate::facility::facility_key(facility.object()),
+            value,
+        },
+    }));
 }
 
 /// Queue one survey document write.
@@ -414,6 +482,47 @@ pub fn reconcile(ctx: &mut mush_core::ModuleCtx<'_>, families: &crate::IndustryF
         complete = false;
     }
 
+    // ---- E7c4 B7: the work-order completion-marker mirror ----
+    let mut wo_applied: BTreeMap<SmolStr, WorkOrderMarker> = BTreeMap::new();
+    let mut cursor: Option<String> = None;
+    let mut pages = 0;
+    loop {
+        if pages >= crate::record::MAX_MARKER_PAGES {
+            complete = false;
+            break;
+        }
+        pages += 1;
+        let page = match ctx.scan_action_state(
+            &families.wo_applied,
+            cursor.as_deref(),
+            crate::record::INDUSTRY_PAGE,
+        ) {
+            Ok(page) => page,
+            Err(_) => {
+                complete = false;
+                break;
+            }
+        };
+        let mut rows: Vec<(SmolStr, WorkOrderMarker)> = Vec::new();
+        for entry in page.entries() {
+            if entry.encoded_key().len() <= MAX_MARKER_ID_BYTES {
+                rows.push((SmolStr::new(entry.encoded_key()), entry.value().clone()));
+            }
+        }
+        let next = page.next_after().map(ToString::to_string);
+        for (key, marker) in rows {
+            wo_applied.insert(key, marker);
+            while wo_applied.len() > MAX_APPLIED_MARKERS {
+                wo_applied.pop_first();
+                complete = false;
+            }
+        }
+        match next {
+            Some(next) => cursor = Some(next),
+            None => break,
+        }
+    }
+
     let Some(store) = ctx.w.module_state_mut::<IndustryStore>() else {
         return;
     };
@@ -436,6 +545,7 @@ pub fn reconcile(ctx: &mut mush_core::ModuleCtx<'_>, families: &crate::IndustryF
     }
     store.quarantined = quarantined;
     store.applied = applied;
+    store.wo_applied = wo_applied;
     store.complete = complete;
     store.reconciliations = store.reconciliations.saturating_add(1);
 }

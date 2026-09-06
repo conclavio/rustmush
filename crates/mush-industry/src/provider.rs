@@ -33,25 +33,32 @@ use std::collections::BTreeMap;
 
 use mush_core::{
     ActionError, ActionErrorCode, ActionInvocation, ActionPresentation, ActionProvider, ActionTxn,
-    AuthoritativeActionOutput, CanonicalId, ClockStamp, DefinitionDescriptor, DefinitionId,
-    DefinitionKind, DefinitionRef, DefinitionValidationContext, Engine, LegalActionQuery, ModError,
-    ObjId, PerceivedRef, PrincipalId as CorePrincipalId, Registrar, RevisionSet, RulesValue,
-    SubjectKey,
+    AuthoritativeActionOutput, CanonicalId, ClockStamp, CommitToken, DefinitionDescriptor,
+    DefinitionDigest, DefinitionId, DefinitionKind, DefinitionRef, DefinitionValidationContext,
+    DurableSchedule, DurableScheduleDraft, Engine, LegalActionQuery, ModError, ObjId, PerceivedRef,
+    PrincipalId as CorePrincipalId, Registrar, ReservationId, RevisionSet, RulesValue,
+    ScheduleActionAdapter, ScheduleActionDraft, ScheduleAdvance, ScheduleCatchUpOrder,
+    ScheduleEvaluation, ScheduleId, ScheduleRestartPolicy, StateFamilyHandle, SubjectKey,
 };
-use mush_economy::{ContractId, ExternalRef, VaultId};
-use mush_inventory::EndpointRef;
+use mush_economy::{AccountId, ContractId, EconomicVisibility, ExternalRef, VaultId};
+use mush_inventory::{EndpointRef, Grade};
 use mush_org::PrincipalId;
 use serde_json::{Value, json};
 use smol_str::SmolStr;
 
 use crate::families::{
-    Cycled, IndustryError, IndustryFamilies, derive_claim_id, derive_deposit_id,
+    Cycled, IndustryError, IndustryFamilies, derive_claim_id, derive_deposit_id, marker_id,
 };
 use crate::record::{
     Accessibility, BandId, ClaimId, ClaimRecord, ClaimSubject, ContestState, CurvePoint,
-    Exclusivity, ExtractionRun, MAX_ACCESSIBILITY, MAX_BAND_BYTES, MAX_CLAIM_PRIORITY,
-    MAX_CURVE_POINTS, MAX_ORE_RESERVE, MAX_REASON_BYTES, NS, OreDeposit, OreDepositId, RunState,
-    Transferability, YieldCurve,
+    Exclusivity, ExtractionRun, FACT_WORKORDER_COMPLETED, MAX_ACCESSIBILITY, MAX_BAND_BYTES,
+    MAX_CLAIM_PRIORITY, MAX_CURVE_POINTS, MAX_ORE_RESERVE, MAX_REASON_BYTES, NS, OreDeposit,
+    OreDepositId, RunState, Transferability, YieldCurve,
+};
+use crate::workorder::{
+    DeliveryTarget, PRODUCTION_CADENCE_SECS, PRODUCTION_MAX_CATCH_UP,
+    PRODUCTION_UNITS_PER_OCCURRENCE, PinnedRecipe, ProductionJob, ProductionSchedule, RecipeRef,
+    WorkOrder, WorkOrderId, WorkOrderMarker, WorkOrderState, derive_work_order_id, wo_holder,
 };
 
 /// The eight action ids, and the one outcome schema they share.
@@ -70,7 +77,19 @@ pub const ACTION_EXTRACT_START: &str = "industry_extract_start";
 pub const ACTION_EXTRACT_CYCLE: &str = "industry_extract_cycle";
 /// Stop an extraction run.
 pub const ACTION_EXTRACT_STOP: &str = "industry_extract_stop";
-/// The one durable outcome schema all eight reference.
+/// Draft a work order (E7c4).
+pub const ACTION_WO_DRAFT: &str = "industry_wo_draft";
+/// Submit (acquire + start) a work order (E7c4).
+pub const ACTION_WO_SUBMIT: &str = "industry_wo_submit";
+/// Advance a work order's production one occurrence (E7c4, the schedule action).
+pub const ACTION_WO_ADVANCE: &str = "industry_wo_advance";
+/// Deliver (complete) a work order (E7c4).
+pub const ACTION_WO_DELIVER: &str = "industry_wo_deliver";
+/// Cancel a work order (E7c4).
+pub const ACTION_WO_CANCEL: &str = "industry_wo_cancel";
+/// Restamp an interrupted work order (E7c4).
+pub const ACTION_WO_RESTAMP: &str = "industry_wo_restamp";
+/// The one durable outcome schema all actions reference.
 pub const OUTCOME_ID: &str = "industry_result";
 
 /// Largest ore-body choice list one offer publishes. Well inside K's
@@ -102,12 +121,24 @@ pub enum IndustryVerb {
     ExtractCycle,
     /// Stop an extraction run.
     ExtractStop,
+    /// E7c4 B3: draft one work order (Draft state, no reservation).
+    WoDraft,
+    /// E7c4 B4: acquire and start one work order (reserve materials + capacity).
+    WoSubmit,
+    /// E7c4 B7: run one production occurrence (progress; the schedule advance).
+    WoAdvance,
+    /// E7c4 B7: complete and deliver one work order (consume, materialize, place).
+    WoDeliver,
+    /// E7c4 B7: cancel one work order (release every reservation once).
+    WoCancel,
+    /// E7c4 B6: restamp one interrupted order under a campaign-registered policy.
+    WoRestamp,
 }
 
 impl IndustryVerb {
     /// Every verb, in registration order.
     #[must_use]
-    pub const fn all() -> [Self; 8] {
+    pub const fn all() -> [Self; 14] {
         [
             Self::DepositOpen,
             Self::DepositAccess,
@@ -117,6 +148,12 @@ impl IndustryVerb {
             Self::ExtractStart,
             Self::ExtractCycle,
             Self::ExtractStop,
+            Self::WoDraft,
+            Self::WoSubmit,
+            Self::WoAdvance,
+            Self::WoDeliver,
+            Self::WoCancel,
+            Self::WoRestamp,
         ]
     }
 
@@ -130,6 +167,25 @@ impl IndustryVerb {
             Self::ExtractStart => ACTION_EXTRACT_START,
             Self::ExtractCycle => ACTION_EXTRACT_CYCLE,
             Self::ExtractStop => ACTION_EXTRACT_STOP,
+            Self::WoDraft => ACTION_WO_DRAFT,
+            Self::WoSubmit => ACTION_WO_SUBMIT,
+            Self::WoAdvance => ACTION_WO_ADVANCE,
+            Self::WoDeliver => ACTION_WO_DELIVER,
+            Self::WoCancel => ACTION_WO_CANCEL,
+            Self::WoRestamp => ACTION_WO_RESTAMP,
+        }
+    }
+
+    /// The future family a verb's descriptor names (rule 1's tell).
+    const fn family(self) -> &'static str {
+        match self {
+            Self::WoDraft
+            | Self::WoSubmit
+            | Self::WoAdvance
+            | Self::WoDeliver
+            | Self::WoCancel
+            | Self::WoRestamp => "industry.workorder",
+            _ => "industry.deposit",
         }
     }
 
@@ -143,6 +199,12 @@ impl IndustryVerb {
             Self::ExtractStart => "extract-start",
             Self::ExtractCycle => "extract-cycle",
             Self::ExtractStop => "extract-stop",
+            Self::WoDraft => "wo-draft",
+            Self::WoSubmit => "wo-submit",
+            Self::WoAdvance => "wo-advance",
+            Self::WoDeliver => "wo-deliver",
+            Self::WoCancel => "wo-cancel",
+            Self::WoRestamp => "wo-restamp",
         }
     }
 
@@ -162,6 +224,27 @@ impl IndustryVerb {
             Self::ExtractStart => ("Start extraction", "Open an extraction run at an ore body."),
             Self::ExtractCycle => ("Run a cycle", "Run one extraction cycle."),
             Self::ExtractStop => ("Stop extraction", "Stop an extraction run."),
+            Self::WoDraft => (
+                "Draft a work order",
+                "Record a production order at a facility.",
+            ),
+            Self::WoSubmit => (
+                "Submit a work order",
+                "Reserve materials and a facility slot and start production.",
+            ),
+            Self::WoAdvance => (
+                "Advance production",
+                "Run one scheduled production occurrence.",
+            ),
+            Self::WoDeliver => (
+                "Deliver a work order",
+                "Complete production and place the output at its destination.",
+            ),
+            Self::WoCancel => ("Cancel a work order", "Release every reservation once."),
+            Self::WoRestamp => (
+                "Restamp a work order",
+                "Re-anchor an interrupted order under a campaign policy.",
+            ),
         }
     }
 }
@@ -184,6 +267,11 @@ fn error(code: ActionErrorCode, message: impl Into<String>) -> ActionError {
 /// refusals a viewer may not distinguish are byte-identical.
 const REFUSED: &str = "You cannot work that here.";
 
+/// The one line every work-order refusal a viewer may not distinguish renders.
+const WO_REFUSED: &str = "You cannot do that with that work order.";
+/// The line a replayed delivery renders (a marker HIT).
+const WO_ALREADY: &str = "That work order has already been delivered.";
+
 fn refuse(source: &IndustryError) -> ActionError {
     match source {
         IndustryError::State | IndustryError::Identity => error(
@@ -199,6 +287,16 @@ fn refuse(source: &IndustryError) -> ActionError {
         | IndustryError::RunNotYours
         | IndustryError::Unworkable
         | IndustryError::Depleted => error(ActionErrorCode::ProviderRejected, REFUSED),
+        // Every work-order mechanical refusal a competitor could mine for
+        // information renders identically (the P lens): a full facility slot, a
+        // missing order, a stale record and a half-present capacity book all read
+        // the same to a principal who may not see the order.
+        IndustryError::NoWorkOrder
+        | IndustryError::WorkOrderExists
+        | IndustryError::Book(_)
+        | IndustryError::Reservation(_)
+        | IndustryError::CapacityHalf
+        | IndustryError::NoCapacity => error(ActionErrorCode::ProviderRejected, WO_REFUSED),
         other => error(ActionErrorCode::ProviderRejected, other.to_string()),
     }
 }
@@ -268,6 +366,36 @@ fn endpoint_field(
                 format!("an industry action needs an endpoint for {key}"),
             )
         })
+}
+
+fn work_order_field(
+    parameters: &serde_json::Map<String, Value>,
+    key: &str,
+) -> Result<WorkOrderId, ActionError> {
+    WorkOrderId::parse(&text_field(parameters, key)?)
+        .ok_or_else(|| error(ActionErrorCode::InvalidRequest, WO_REFUSED))
+}
+
+fn canonical_field(
+    parameters: &serde_json::Map<String, Value>,
+    key: &str,
+    max: usize,
+) -> Result<CanonicalId, ActionError> {
+    let raw = text_field(parameters, key)?;
+    if raw.len() > max {
+        return Err(error(ActionErrorCode::InvalidRequest, WO_REFUSED));
+    }
+    CanonicalId::new(&raw).map_err(|_| error(ActionErrorCode::InvalidRequest, WO_REFUSED))
+}
+
+fn optional_endpoint(
+    parameters: &serde_json::Map<String, Value>,
+    key: &str,
+) -> Result<Option<EndpointRef>, ActionError> {
+    match parameters.get(key).and_then(Value::as_u64) {
+        None | Some(0) => Ok(None),
+        Some(id) => Ok(Some(EndpointRef(VaultId(id)))),
+    }
 }
 
 fn commodity_field(
@@ -805,6 +933,50 @@ impl ActionProvider for IndustryProvider {
             IndustryVerb::ExtractStop => {
                 parameters.push(text("deposit", 32)?);
             }
+            IndustryVerb::WoDraft => {
+                // The draft command (world available) resolves the recipe from the
+                // authority and pins the facility policy, then submits these as
+                // parameters; the provider re-checks the shapes and writes the
+                // Draft work order. `pinned` carries the resolved lines as a JSON
+                // blob and `digest` the pack digest.
+                parameters.push(integer("facility", 0, i64::from(u32::MAX))?);
+                parameters.push(integer(
+                    "facility_slots",
+                    1,
+                    i64::from(crate::facility::MAX_FACILITY_SLOTS),
+                )?);
+                parameters.push(integer("capacity_revision", 1, i64::MAX)?);
+                parameters.push(integer("policy_revision", 1, i64::MAX)?);
+                parameters.push(text("pack", 64)?);
+                parameters.push(integer("version", 1, i64::from(u32::MAX))?);
+                parameters.push(text("recipe", 64)?);
+                parameters.push(text("digest", 64)?);
+                parameters.push(integer(
+                    "quantity",
+                    1,
+                    i64::from(crate::workorder::MAX_WORK_ORDER_QUANTITY),
+                )?);
+                parameters.push(integer("account", 0, i64::MAX)?);
+                parameters.push(integer("source", 0, i64::MAX)?);
+                parameters.push(integer("destination", 0, i64::MAX)?);
+                parameters.push(text("beneficiary", 64)?);
+                parameters.push(text("pinned", 4096)?);
+            }
+            IndustryVerb::WoSubmit
+            | IndustryVerb::WoDeliver
+            | IndustryVerb::WoCancel
+            | IndustryVerb::WoRestamp => {
+                parameters.push(text("order", 32)?);
+                if self.verb == IndustryVerb::WoRestamp {
+                    parameters.push(text("policy", 64)?);
+                }
+            }
+            IndustryVerb::WoAdvance => {
+                // The production advance is **not** player-offered: it enters only
+                // through the schedule source's adapter `plan`, on the scheduler
+                // principal. No offer at all.
+                return Ok(None);
+            }
         }
         let definitions = engine.registry.definitions().ok_or_else(|| {
             error(
@@ -928,6 +1100,16 @@ impl ActionProvider for IndustryProvider {
                 self.cycle(txn, invocation, &parameters, &now, actor, &mut data)?
             }
             IndustryVerb::ExtractStop => self.stop(txn, &parameters, &mut data)?,
+            IndustryVerb::WoDraft => {
+                self.wo_draft(txn, invocation, &parameters, actor, &mut data)?
+            }
+            IndustryVerb::WoSubmit => self.wo_submit(txn, &parameters, &now, actor, &mut data)?,
+            IndustryVerb::WoAdvance => self.wo_advance(txn, &parameters, &mut data)?,
+            IndustryVerb::WoDeliver => {
+                self.wo_deliver(txn, invocation, &parameters, &now, actor, &mut data)?
+            }
+            IndustryVerb::WoCancel => self.wo_cancel(txn, &parameters, actor, &mut data)?,
+            IndustryVerb::WoRestamp => self.wo_restamp(txn, &parameters, actor, &mut data)?,
         };
         data.insert("summary".to_owned(), json!(summary));
         let outcome = RulesValue::new(self.outcome.clone(), json!(data)).map_err(|_| {
@@ -1345,6 +1527,503 @@ impl IndustryProvider {
             revision: Some(1),
         }
     }
+
+    // ---- E7c4: the work-order lifecycle ----
+
+    /// B3 — write one Draft work order from the resolved, pinned inputs the draft
+    /// command computed (world available there; the provider has no world).
+    fn wo_draft(
+        &self,
+        txn: &mut ActionTxn<'_>,
+        invocation: &ActionInvocation,
+        parameters: &serde_json::Map<String, Value>,
+        actor: ObjId,
+        data: &mut BTreeMap<String, Value>,
+    ) -> Result<String, ActionError> {
+        let facility = obj_field(parameters, "facility")?;
+        let facility_slots = u32::try_from(u64_field(
+            parameters,
+            "facility_slots",
+            u64::from(crate::facility::MAX_FACILITY_SLOTS),
+        )?)
+        .map_err(|_| error(ActionErrorCode::InvalidRequest, WO_REFUSED))?;
+        let capacity_revision = u64_field(parameters, "capacity_revision", u64::MAX)?;
+        let policy_revision = u64_field(parameters, "policy_revision", u64::MAX)?;
+        let pack = canonical_field(parameters, "pack", 64)?;
+        let version = u32::try_from(u64_field(parameters, "version", u64::from(u32::MAX))?)
+            .map_err(|_| error(ActionErrorCode::InvalidRequest, WO_REFUSED))?;
+        let recipe_id = canonical_field(parameters, "recipe", 64)?;
+        let digest = DefinitionDigest::from_hex(&text_field(parameters, "digest")?)
+            .map_err(|_| error(ActionErrorCode::InvalidRequest, WO_REFUSED))?;
+        let quantity = u32::try_from(u64_field(
+            parameters,
+            "quantity",
+            u64::from(crate::workorder::MAX_WORK_ORDER_QUANTITY),
+        )?)
+        .map_err(|_| error(ActionErrorCode::InvalidRequest, WO_REFUSED))?;
+        let account = AccountId(u64_field(parameters, "account", u64::MAX)?);
+        let source = optional_endpoint(parameters, "source")?;
+        let destination = DeliveryTarget::Endpoint {
+            endpoint: endpoint_field(parameters, "destination")?,
+        };
+        let beneficiary = principal_field(parameters, "beneficiary")?;
+        let pinned: PinnedRecipe = serde_json::from_str(&text_field(parameters, "pinned")?)
+            .map_err(|_| error(ActionErrorCode::InvalidRequest, WO_REFUSED))?;
+        let recipe = RecipeRef::new(pack, version, recipe_id, digest)
+            .map_err(|source| error(ActionErrorCode::InvalidRequest, source.to_string()))?;
+        let id = derive_work_order_id(invocation.request(), 0).map_err(|source| refuse(&source))?;
+        let order = WorkOrder::draft(
+            id,
+            PrincipalId::Object(actor),
+            beneficiary,
+            facility,
+            facility_slots,
+            capacity_revision,
+            policy_revision,
+            recipe,
+            pinned,
+            quantity,
+            account,
+            source,
+            destination,
+            EconomicVisibility::Parties,
+        )
+        .map_err(|source| error(ActionErrorCode::InvalidRequest, source.to_string()))?;
+        self.families
+            .open_work_order(txn, order)
+            .map_err(|source| refuse(&source))?;
+        data.insert("order".to_owned(), json!(id.to_string()));
+        Ok(format!("Drafted {id}."))
+    }
+
+    /// B4 — acquire and start: reserve every material input (cut 2), one capacity
+    /// slot (B1), open the production schedule, and transition Draft → Running —
+    /// **one bundle**. The acquisition order is fixed and every reservation
+    /// carries the work order's deterministic holder key.
+    fn wo_submit(
+        &self,
+        txn: &mut ActionTxn<'_>,
+        parameters: &serde_json::Map<String, Value>,
+        now: &ClockStamp,
+        actor: ObjId,
+        data: &mut BTreeMap<String, Value>,
+    ) -> Result<String, ActionError> {
+        let id = work_order_field(parameters, "order")?;
+        let order = self
+            .families
+            .work_order(txn, id)
+            .map_err(|source| refuse(&source))?
+            .ok_or_else(|| error(ActionErrorCode::ProviderRejected, WO_REFUSED))?;
+        self.require_requester(&order, actor)?;
+        if *order.state() != WorkOrderState::Draft {
+            return Err(error(ActionErrorCode::ProviderRejected, WO_REFUSED));
+        }
+        let holder = wo_holder(id).map_err(|source| refuse(&source))?;
+        let mut reservations = Vec::new();
+        // money Hold → materials → capacity → destination (the fixed order). The
+        // Hold is the submit command's E4b1 economy post; its id is recorded on
+        // the order (kept empty here when no hold was supplied).
+        if !order.pinned().inputs().is_empty() {
+            let source = order.material_source().ok_or_else(|| {
+                error(
+                    ActionErrorCode::ProviderRejected,
+                    "a recipe with inputs needs a material source",
+                )
+            })?;
+            for line in order.pinned().inputs() {
+                let amount = line
+                    .units()
+                    .checked_mul(u64::from(order.quantity()))
+                    .ok_or_else(|| error(ActionErrorCode::BoundsExceeded, WO_REFUSED))?;
+                let rid = self
+                    .families
+                    .inventory
+                    .reserve(txn, source, line.commodity(), &holder, amount, now)
+                    .map_err(|error| refuse(&IndustryError::Inventory(error)))?;
+                reservations.push(rid);
+            }
+        }
+        let capacity = self
+            .families
+            .reserve_slot(txn, order.facility(), order.facility_slots(), &holder, now)
+            .map_err(|source| refuse(&source))?;
+        reservations.push(capacity);
+
+        let total_units = order
+            .pinned()
+            .work_units()
+            .checked_mul(u64::from(order.quantity()))
+            .ok_or_else(|| error(ActionErrorCode::BoundsExceeded, WO_REFUSED))?;
+        let production = self.open_schedule(txn, &order, now, actor, total_units)?;
+        let next = order
+            .acquired(
+                order.holds().to_vec(),
+                reservations,
+                Some(production),
+                WorkOrderState::Running,
+            )
+            .map_err(|source| error(ActionErrorCode::Integrity, source.to_string()))?;
+        self.families
+            .put_work_order(txn, order.revision(), next)
+            .map_err(|source| refuse(&source))?;
+        data.insert("order".to_owned(), json!(id.to_string()));
+        Ok(format!("Submitted {id}; production started."))
+    }
+
+    /// Open the production schedule in the same bundle as the transition to
+    /// `Running` (B5): a `DurableSchedule` on `ClockRef::WorldIc`, a job sidecar
+    /// keyed by `ScheduleId`, and an occupancy check before reuse (handoff's
+    /// pattern).
+    fn open_schedule(
+        &self,
+        txn: &mut ActionTxn<'_>,
+        order: &WorkOrder,
+        now: &ClockStamp,
+        actor: ObjId,
+        total_units: u64,
+    ) -> Result<ProductionSchedule, ActionError> {
+        let local = CanonicalId::new(format!("production.{:016x}", order.id().0))
+            .map_err(|_| error(ActionErrorCode::Integrity, WO_REFUSED))?;
+        let schedule_id = ScheduleId::derive(&crate::record::owner(), &local)
+            .map_err(|_| error(ActionErrorCode::Integrity, WO_REFUSED))?;
+        // Occupancy: a prior schedule at this id may be reused only if it is
+        // Completed and no live job stands (handoff.rs's rule).
+        let prior = txn
+            .get(&self.families.schedules, &schedule_id)
+            .map_err(|_| error(ActionErrorCode::Integrity, WO_REFUSED))?
+            .cloned();
+        if prior
+            .as_ref()
+            .is_some_and(|prior| prior.state() != mush_core::ScheduleState::Completed)
+            || txn
+                .get(&self.families.jobs, &schedule_id)
+                .map_err(|_| error(ActionErrorCode::Integrity, WO_REFUSED))?
+                .is_some()
+        {
+            return Err(error(
+                ActionErrorCode::ProviderRejected,
+                "that facility slot's production schedule is still occupied",
+            ));
+        }
+        let next_due = ClockStamp {
+            clock: now.clock.clone(),
+            at: now
+                .at
+                .checked_add(PRODUCTION_CADENCE_SECS)
+                .ok_or_else(|| error(ActionErrorCode::BoundsExceeded, WO_REFUSED))?,
+        };
+        let schedule = DurableSchedule::new(DurableScheduleDraft {
+            id: schedule_id,
+            owner: crate::record::owner(),
+            clock: now.clock.clone(),
+            next_due,
+            cadence: Some(PRODUCTION_CADENCE_SECS),
+            generation: 1,
+            next_ordinal: 0,
+            restart: ScheduleRestartPolicy::Resume,
+            catch_up_order: ScheduleCatchUpOrder::OldestFirst,
+            max_catch_up: PRODUCTION_MAX_CATCH_UP,
+        })
+        .map_err(|source| error(ActionErrorCode::Integrity, source.to_string()))?;
+        if prior.is_some() {
+            txn.replace(&self.families.schedules, &schedule_id, schedule)
+        } else {
+            txn.insert(&self.families.schedules, &schedule_id, schedule)
+        }
+        .map_err(|_| error(ActionErrorCode::Integrity, WO_REFUSED))?;
+        let job = ProductionJob::new(
+            schedule_id,
+            order.id(),
+            actor,
+            PRODUCTION_UNITS_PER_OCCURRENCE,
+            1,
+        )
+        .map_err(|source| error(ActionErrorCode::Integrity, source.to_string()))?;
+        txn.insert(&self.families.jobs, &schedule_id, job)
+            .map_err(|_| error(ActionErrorCode::Integrity, WO_REFUSED))?;
+        let policy = CanonicalId::new("production")
+            .map_err(|_| error(ActionErrorCode::Integrity, WO_REFUSED))?;
+        ProductionSchedule::new(schedule_id, now.clone(), policy, total_units, 0)
+            .map_err(|source| error(ActionErrorCode::Integrity, source.to_string()))
+    }
+
+    /// B6 — one scheduled production occurrence's progress. Driven only by an
+    /// occurrence (the schedule adapter), never by observation. When production
+    /// completes, the order moves to `AwaitingDelivery`.
+    fn wo_advance(
+        &self,
+        txn: &mut ActionTxn<'_>,
+        parameters: &serde_json::Map<String, Value>,
+        data: &mut BTreeMap<String, Value>,
+    ) -> Result<String, ActionError> {
+        let id = work_order_field(parameters, "order")?;
+        let units = u64_field(parameters, "units", crate::workorder::MAX_RECIPE_WORK_UNITS)?;
+        let order = self
+            .families
+            .work_order(txn, id)
+            .map_err(|source| refuse(&source))?
+            .ok_or_else(|| error(ActionErrorCode::ProviderRejected, WO_REFUSED))?;
+        if *order.state() != WorkOrderState::Running {
+            return Err(error(ActionErrorCode::ProviderRejected, WO_REFUSED));
+        }
+        let mut next = order
+            .with_progress(units)
+            .map_err(|source| error(ActionErrorCode::Integrity, source.to_string()))?;
+        if next.schedule().is_some_and(ProductionSchedule::is_complete) {
+            next = next
+                .with_state(WorkOrderState::AwaitingDelivery)
+                .map_err(|source| error(ActionErrorCode::Integrity, source.to_string()))?;
+        }
+        self.families
+            .put_work_order(txn, order.revision(), next)
+            .map_err(|source| refuse(&source))?;
+        data.insert("order".to_owned(), json!(id.to_string()));
+        Ok(format!("Advanced {id}."))
+    }
+
+    /// B7 — the terminal transition: consume every material reservation (cut 2),
+    /// release the capacity slot (B1), materialize the output lot at the
+    /// destination (cut 2's `mint_origin`), write the completion marker the fact
+    /// answers from, and transition to `Completed { commit }` — **one plan, one
+    /// batch, no fallible step after the first install**. A retry from
+    /// `AwaitingDelivery` re-runs neither production nor consumption (the marker
+    /// and the derived lot are the replay guards).
+    fn wo_deliver(
+        &self,
+        txn: &mut ActionTxn<'_>,
+        invocation: &ActionInvocation,
+        parameters: &serde_json::Map<String, Value>,
+        now: &ClockStamp,
+        actor: ObjId,
+        data: &mut BTreeMap<String, Value>,
+    ) -> Result<String, ActionError> {
+        let id = work_order_field(parameters, "order")?;
+        let order = self
+            .families
+            .work_order(txn, id)
+            .map_err(|source| refuse(&source))?
+            .ok_or_else(|| error(ActionErrorCode::ProviderRejected, WO_REFUSED))?;
+        self.require_requester(&order, actor)?;
+        // Deliverable only once production has finished, and only from a live
+        // resource-holding state; a second deliver is a marker HIT below.
+        match order.state() {
+            WorkOrderState::Running | WorkOrderState::AwaitingDelivery => {}
+            _ => return Err(error(ActionErrorCode::ProviderRejected, WO_REFUSED)),
+        }
+        if !order
+            .schedule()
+            .is_some_and(ProductionSchedule::is_complete)
+        {
+            return Err(error(ActionErrorCode::ProviderRejected, WO_REFUSED));
+        }
+        let holder = wo_holder(id).map_err(|source| refuse(&source))?;
+        let commit = CommitToken::from_bytes(*invocation.request().as_bytes());
+
+        // The completion marker is the epoch-free replay guard: it REFUSES an
+        // existing marker rather than rewriting it, so a retry cannot mint twice.
+        let marker_key = marker_id(invocation.request(), now.at);
+        if txn
+            .get(&self.families.wo_applied, &marker_key)
+            .map_err(|error| refuse(&IndustryError::from(error)))?
+            .is_some()
+        {
+            return Err(error(ActionErrorCode::ProviderRejected, WO_ALREADY));
+        }
+
+        // Consume every material reservation.
+        if !order.pinned().inputs().is_empty() {
+            let source = order.material_source().ok_or_else(|| {
+                error(
+                    ActionErrorCode::Integrity,
+                    "a running order lost its source",
+                )
+            })?;
+            for line in order.pinned().inputs() {
+                let resource = mush_inventory::pool_resource(source, line.commodity())
+                    .map_err(|source| error(ActionErrorCode::Integrity, source.to_string()))?;
+                let rid = ReservationId::derive(&holder, &resource)
+                    .map_err(|_| error(ActionErrorCode::Integrity, WO_REFUSED))?;
+                let record = self
+                    .families
+                    .inventory
+                    .reservation(txn, source, line.commodity(), rid)
+                    .map_err(|error| refuse(&IndustryError::Inventory(error)))?
+                    .ok_or_else(|| error(ActionErrorCode::Integrity, WO_REFUSED))?;
+                self.families
+                    .inventory
+                    .consume(
+                        txn,
+                        source,
+                        line.commodity(),
+                        rid,
+                        record.revision(),
+                        now,
+                        commit,
+                    )
+                    .map_err(|error| refuse(&IndustryError::Inventory(error)))?;
+            }
+        }
+        // Release the capacity slot (it returns to the facility).
+        let cap_resource = crate::facility::facility_resource(order.facility())
+            .map_err(|source| error(ActionErrorCode::Integrity, source.to_string()))?;
+        let cap_id = ReservationId::derive(&holder, &cap_resource)
+            .map_err(|_| error(ActionErrorCode::Integrity, WO_REFUSED))?;
+        if let Some(record) = self
+            .families
+            .slot_reservation(txn, order.facility(), cap_id)
+            .map_err(|source| refuse(&source))?
+            && record.state() == mush_core::ReservationState::Held
+        {
+            self.families
+                .release_slot(txn, order.facility(), cap_id, record.revision())
+                .map_err(|source| refuse(&source))?;
+        }
+        // Materialize the output at the destination. The commodity output is a
+        // cut-2 lot; a unit-representation output's title/maintenance is cut 5's
+        // (issue_title needs a world the provider does not have).
+        let dest = order.destination().endpoint();
+        let grade = Grade::new(0).map_err(|_| error(ActionErrorCode::Integrity, WO_REFUSED))?;
+        for (ordinal, line) in order.pinned().outputs().iter().enumerate() {
+            let amount = line
+                .units()
+                .checked_mul(u64::from(order.quantity()))
+                .ok_or_else(|| error(ActionErrorCode::BoundsExceeded, WO_REFUSED))?;
+            let lot = mush_inventory::derive_lot_id(
+                invocation.request(),
+                u32::try_from(ordinal)
+                    .map_err(|_| error(ActionErrorCode::BoundsExceeded, WO_REFUSED))?,
+            )
+            .map_err(|source| refuse(&IndustryError::Inventory(source)))?;
+            self.families
+                .inventory
+                .mint_origin(
+                    txn,
+                    dest,
+                    line.commodity(),
+                    amount,
+                    grade,
+                    self.wo_source(id),
+                    lot,
+                )
+                .map_err(|error| refuse(&IndustryError::Inventory(error)))?;
+        }
+        let marker = WorkOrderMarker::new(FACT_WORKORDER_COMPLETED, id, actor, now.at)
+            .map_err(|source| error(ActionErrorCode::Integrity, source.to_string()))?;
+        txn.insert(&self.families.wo_applied, &marker_key, marker)
+            .map_err(|error| refuse(&IndustryError::from(error)))?;
+        let next = order
+            .with_state(WorkOrderState::Completed { commit })
+            .map_err(|source| error(ActionErrorCode::Integrity, source.to_string()))?;
+        self.families
+            .put_work_order(txn, order.revision(), next)
+            .map_err(|source| refuse(&source))?;
+        data.insert("order".to_owned(), json!(id.to_string()));
+        Ok(format!("Delivered {id}."))
+    }
+
+    /// B7 — cancel: release every reservation exactly once and mark `Cancelled`.
+    /// A second cancel is a HIT (the order is already terminal).
+    fn wo_cancel(
+        &self,
+        txn: &mut ActionTxn<'_>,
+        parameters: &serde_json::Map<String, Value>,
+        actor: ObjId,
+        data: &mut BTreeMap<String, Value>,
+    ) -> Result<String, ActionError> {
+        let id = work_order_field(parameters, "order")?;
+        let order = self
+            .families
+            .work_order(txn, id)
+            .map_err(|source| refuse(&source))?
+            .ok_or_else(|| error(ActionErrorCode::ProviderRejected, WO_REFUSED))?;
+        self.require_requester(&order, actor)?;
+        if order.state().is_terminal() {
+            // A second cancel resurrects nothing and releases nothing again.
+            data.insert("order".to_owned(), json!(id.to_string()));
+            return Ok(format!("{id} was already terminal."));
+        }
+        let holder = wo_holder(id).map_err(|source| refuse(&source))?;
+        if order.state().holds_resources() {
+            if !order.pinned().inputs().is_empty()
+                && let Some(source) = order.material_source()
+            {
+                for line in order.pinned().inputs() {
+                    let resource = mush_inventory::pool_resource(source, line.commodity())
+                        .map_err(|source| error(ActionErrorCode::Integrity, source.to_string()))?;
+                    let rid = ReservationId::derive(&holder, &resource)
+                        .map_err(|_| error(ActionErrorCode::Integrity, WO_REFUSED))?;
+                    if let Some(record) = self
+                        .families
+                        .inventory
+                        .reservation(txn, source, line.commodity(), rid)
+                        .map_err(|error| refuse(&IndustryError::Inventory(error)))?
+                        && record.state() == mush_core::ReservationState::Held
+                    {
+                        self.families
+                            .inventory
+                            .release(txn, source, line.commodity(), rid, record.revision())
+                            .map_err(|error| refuse(&IndustryError::Inventory(error)))?;
+                    }
+                }
+            }
+            let cap_resource = crate::facility::facility_resource(order.facility())
+                .map_err(|source| error(ActionErrorCode::Integrity, source.to_string()))?;
+            let cap_id = ReservationId::derive(&holder, &cap_resource)
+                .map_err(|_| error(ActionErrorCode::Integrity, WO_REFUSED))?;
+            if let Some(record) = self
+                .families
+                .slot_reservation(txn, order.facility(), cap_id)
+                .map_err(|source| refuse(&source))?
+                && record.state() == mush_core::ReservationState::Held
+            {
+                self.families
+                    .release_slot(txn, order.facility(), cap_id, record.revision())
+                    .map_err(|source| refuse(&source))?;
+            }
+        }
+        let next = order
+            .with_state(WorkOrderState::Cancelled)
+            .map_err(|source| error(ActionErrorCode::Integrity, source.to_string()))?;
+        self.families
+            .put_work_order(txn, order.revision(), next)
+            .map_err(|source| refuse(&source))?;
+        data.insert("order".to_owned(), json!(id.to_string()));
+        Ok(format!("Cancelled {id}."))
+    }
+
+    /// B6 — restamp is campaign authority and refuses without a registered
+    /// policy. Cut 4 ships the pause default and the registration seam only (§9
+    /// q8), so there is no policy yet: it always refuses, naming the seam.
+    fn wo_restamp(
+        &self,
+        _txn: &mut ActionTxn<'_>,
+        _parameters: &serde_json::Map<String, Value>,
+        _actor: ObjId,
+        _data: &mut BTreeMap<String, Value>,
+    ) -> Result<String, ActionError> {
+        Err(error(
+            ActionErrorCode::ProviderRejected,
+            "no restamp policy is registered; the campaign layer (cut 9) registers one",
+        ))
+    }
+
+    fn require_requester(&self, order: &WorkOrder, actor: ObjId) -> Result<(), ActionError> {
+        if order.requester() == &PrincipalId::Object(actor) {
+            Ok(())
+        } else {
+            Err(error(ActionErrorCode::ProviderRejected, WO_REFUSED))
+        }
+    }
+
+    /// The `ExternalRef` a delivered lot's `Lineage::Origin` names.
+    fn wo_source(&self, order: WorkOrderId) -> ExternalRef {
+        ExternalRef {
+            provider: SmolStr::new_static(NS),
+            kind: SmolStr::new_static("workorder.output"),
+            id: SmolStr::new(format!("wo/{:016x}", order.0)),
+            revision: Some(1),
+        }
+    }
 }
 
 fn obj_field(parameters: &serde_json::Map<String, Value>, key: &str) -> Result<ObjId, ActionError> {
@@ -1488,7 +2167,7 @@ pub fn register(reg: &mut Registrar<'_>, families: &IndustryFamilies) -> Result<
             descriptor(
                 "action",
                 verb.id(),
-                json!({ "subject": "self_actor", "targets": 0, "family": "industry.deposit" }),
+                json!({ "subject": "self_actor", "targets": 0, "family": verb.family() }),
             )
             .map(|descriptor| descriptor.with_references(vec![outcome.clone()]))
         })
@@ -1497,8 +2176,12 @@ pub fn register(reg: &mut Registrar<'_>, families: &IndustryFamilies) -> Result<
         DefinitionKind::new("action").map_err(|error| ModError::msg(error.to_string()))?,
         exact_validator(&descriptors),
     )?;
+    let mut advance_action: Option<DefinitionRef> = None;
     for (verb, descriptor) in verbs.into_iter().zip(descriptors) {
         let action = reg.definition(descriptor)?;
+        if verb == IndustryVerb::WoAdvance {
+            advance_action = Some(action.clone());
+        }
         reg.action_provider(
             action.clone(),
             IndustryProvider {
@@ -1509,7 +2192,109 @@ pub fn register(reg: &mut Registrar<'_>, families: &IndustryFamilies) -> Result<
             },
         )?;
     }
+
+    // ---- E7c4: B5 — the production schedule source, on `handoff.rs`'s shape ----
+    // D-E7-16's "cut 8 gets the first production schedule source" is corrected:
+    // the tree already has one (`mush-sim/src/handoff.rs`), which this copies as
+    // the pattern. One source per family, under `mush-industry`'s own `OwnerId`.
+    let advance_action = advance_action
+        .ok_or_else(|| ModError::msg("industry: the production advance action is unregistered"))?;
+    reg.schedule_source(
+        CanonicalId::new("production").map_err(|error| ModError::msg(error.to_string()))?,
+        advance_action,
+        families.schedules.clone(),
+        ProductionScheduleAdapter {
+            schedules: families.schedules.clone(),
+            jobs: families.jobs.clone(),
+        },
+    )?;
     Ok(())
+}
+
+/// The production schedule's adapter (the `HandoffScheduleAdapter` shape): `plan`
+/// re-derives the candidate from stored state and **refuses a stale one** rather
+/// than acting on it, then builds the `WoAdvance` draft on the requester's actor
+/// with the definition guard the kernel requires.
+#[derive(Clone)]
+struct ProductionScheduleAdapter {
+    schedules: StateFamilyHandle<ScheduleId, DurableSchedule>,
+    jobs: StateFamilyHandle<ScheduleId, ProductionJob>,
+}
+
+impl ScheduleActionAdapter for ProductionScheduleAdapter {
+    fn plan(
+        &self,
+        action: &DefinitionRef,
+        advance: &ScheduleAdvance,
+        engine: &Engine,
+    ) -> Result<ScheduleActionDraft, ActionError> {
+        let current = engine
+            .action_state()
+            .get(&self.schedules, &advance.schedule())
+            .map_err(|_| {
+                error(
+                    ActionErrorCode::Integrity,
+                    "production schedule is unavailable",
+                )
+            })?;
+        // Re-derive: the candidate is current only if re-planning the live cursor
+        // yields the identical advance (handoff's `candidate_is_current`).
+        let candidate_is_current = current.is_some_and(|schedule| {
+            matches!(
+                schedule.plan_due(schedule.revision(), advance.observed_at(), advance.cause()),
+                Ok(ScheduleEvaluation::Advance(planned)) if planned.as_ref() == advance
+            )
+        });
+        if !candidate_is_current {
+            return Err(error(
+                ActionErrorCode::Stale,
+                "production schedule candidate is no longer current",
+            ));
+        }
+        let job = engine
+            .action_state()
+            .get(&self.jobs, &advance.schedule())
+            .map_err(|_| error(ActionErrorCode::Integrity, "production job is unavailable"))?
+            .ok_or_else(|| error(ActionErrorCode::Integrity, "production job is missing"))?;
+        let occurrences = u64::try_from(advance.occurrences().len())
+            .map_err(|_| error(ActionErrorCode::BoundsExceeded, "too many occurrences"))?;
+        let units = occurrences
+            .checked_mul(job.units_per_occurrence())
+            .ok_or_else(|| error(ActionErrorCode::BoundsExceeded, "occurrence overflow"))?;
+        let definitions = engine.registry.definitions().ok_or_else(|| {
+            error(
+                ActionErrorCode::Integrity,
+                "definition registry is unavailable",
+            )
+        })?;
+        let mut guards = engine
+            .registry
+            .server_guard_set_builder(RevisionSet::default())
+            .map_err(|_| error(ActionErrorCode::Integrity, "guard registry is unavailable"))?;
+        guards
+            .add_definition(action.clone(), definitions)
+            .map_err(|_| {
+                error(
+                    ActionErrorCode::Integrity,
+                    "definition guard is unavailable",
+                )
+            })?;
+        Ok(ScheduleActionDraft {
+            // The invocation's actor is the requester (from the job), while its
+            // principal is the scheduler — the `HandoffScheduleAdapter` shape.
+            actor: job.actor(),
+            subject: PerceivedRef::SelfActor,
+            targets: Vec::new(),
+            parameters: json!({
+                "order": job.order().to_string(),
+                "units": units,
+                "now": advance.observed_at(),
+            }),
+            guards: guards
+                .finish()
+                .map_err(|_| error(ActionErrorCode::Integrity, "production guards are invalid"))?,
+        })
+    }
 }
 
 /// The registered `DefinitionRef` for one verb, rebuilt from the frozen
