@@ -14,9 +14,11 @@ pub mod boot;
 pub mod commands;
 pub mod custody;
 pub mod data;
+pub mod domain;
 pub mod focus;
 pub mod graph;
 mod handoff;
+pub mod journey;
 pub mod links;
 pub mod route;
 pub mod station;
@@ -44,16 +46,26 @@ pub use data::{
     SpatialState, StationAssignment, StationId, StationSpec, UnplacedInfo, cgen_key,
     passive_definition_ref, passive_rules_value,
 };
+pub use domain::{
+    ActivationBook, DomainActivation, DomainActivationWire, DomainSummary, DomainSummaryWire,
+    DomainWorkflowError, MAX_ACTIVE_DOMAINS, PromotionTrigger, QUIET_BOUNDARY, activation_key,
+    summary_key,
+};
 pub use focus::{AccountOracle, ActiveFocus, FocusState, MAX_BILLETS_LISTED, ReachProof};
 pub use graph::{
     effective_domain, presence, project, space_domain, verify_indexes, verify_projections,
+};
+pub use journey::{
+    CarrierJourney, CarrierJourneyError, CarrierJourneyWire, JourneyBook, JourneyId, JourneyState,
+    MAX_CARRIER_SUBTREE, MAX_JOURNEY_ANOMALY_BYTES, MAX_JOURNEYS_VISITED_PER_FIRE,
+    MAX_JOURNEYS_WORKED_PER_FIRE, carrier_journey_key, same_place, under_way_root_of,
 };
 pub use route::{
     CadenceId, DriveProfile, DriveProfileWire, Journey, JourneyStatus, Leg, LegDef, LegDefWire,
     MAX_LEGS, RouteDef, RouteDefError, RouteDefWire, RouteState, route_duration,
 };
 pub use station::{MAX_STATION_FALLBACKS, StationFallback, StationFallbacks};
-pub use transition::{Plan, SpatialError, Transition, apply, plan, run};
+pub use transition::{Plan, SpatialError, Transition, apply, move_carrier_subtree, plan, run};
 
 /// Module configuration.
 #[derive(Clone, Debug)]
@@ -222,11 +234,22 @@ impl EventHook for PlacementGate {
     }
 }
 
-/// The full movement veto: a traveling object (route.rs) OR a placed/
-/// quarantined sim object moves only through its sanctioned mover.
+/// The full movement veto: a traveling object (route.rs), a carrier under way
+/// (journey.rs) OR a placed/quarantined sim object moves only through its
+/// sanctioned mover.
+///
+/// **E7c6:** the journey arm is load-bearing, not decoration. A cruising carrier
+/// root is deliberately *not* placed (only its subtree is), so
+/// `placed_or_quarantined` says nothing about it — without this arm the
+/// move/carry hooks would let anyone pick a ship up mid-passage, and the ONE
+/// checked `move_carrier_subtree` would stop being the only way a carrier moves.
 fn gate_reason(w: &World, obj: ObjId) -> Option<String> {
     w.module_state::<route::RouteState>()
         .and_then(|rs| route::traveling_reason(rs, w, obj))
+        .or_else(|| {
+            w.module_state::<journey::JourneyBook>()
+                .and_then(|book| journey::journeying_reason(book, w, obj))
+        })
         .or_else(|| placed_or_quarantined(w, obj))
 }
 
@@ -389,6 +412,9 @@ fn on_obj_destroyed(ctx: &mut Ctx<'_>, ev: &WorldEvent) {
     };
     let obj = *obj;
     route::on_traveler_destroyed(ctx, obj);
+    // E7c6: a destroyed carrier root drops its journey, so the seal lifts with
+    // the husk and no ghost record keeps a dead subtree "under way".
+    journey::on_root_destroyed(ctx, obj);
     let Some(st) = state(ctx.w) else { return };
     // Snapshot what to do from the records BEFORE mutating.
     let hosted: Option<DomainId> = st.domain_of_host(obj).map(|d| d.id);
@@ -639,6 +665,12 @@ impl GameModule for SimulationModule {
         // controller reads on a clean switch. Persisted as `sim.station_fallback`
         // docs; boot re-hydration of the slot is a follow-up (§3.5 as-built).
         reg.state(station::StationFallbacks::default());
+        // E7c6 B2: the carrier-journey book (one `cjourney:<root>` document per
+        // carrier) and B5's domain-workflow book (`activation:`/`summary:`).
+        // Both are RAM mirrors of exempt `sim.journey` / `sim.domain` records,
+        // hydrated at boot.
+        reg.state(journey::JourneyBook::default());
+        reg.state(domain::ActivationBook::default());
         reg.behavior(domain_spec())?;
         reg.behavior(interior_spec())?;
         reg.behavior(participant_spec())?;
@@ -652,6 +684,16 @@ impl GameModule for SimulationModule {
             TickCadence::Coarse(Duration::from_secs(route::SWEEP_SECS)),
             Arc::new(route::sweep),
         )?;
+        // E7c6 B1+B2+B3: ONE `Coarse` tick advances every carrier journey on the
+        // world's IC clock — the housing assessment tick's "pull, not a
+        // subscription" shape. It is the whole driver: the leg cursor makes it
+        // idempotent, so its re-run at boot IS the crash-gap heal and there is no
+        // second reconcile pass to disagree with it.
+        reg.tick(
+            journey::TICK_TAG,
+            TickCadence::Coarse(Duration::from_secs(journey::TICK_SECS)),
+            Arc::new(journey::tick),
+        )?;
         commands::register(reg)?;
         Ok(())
     }
@@ -662,8 +704,17 @@ impl GameModule for SimulationModule {
         mut data: ModuleBootData,
     ) -> Result<(), ModError> {
         let (journeys, dead_journeys) = boot::extract_journeys(&mut data);
+        let (carriers, next_journey_id, dead_carriers) =
+            journey::extract_carrier_journeys(&mut data);
+        let workflow = domain::extract_domain_workflow(&mut data);
         let q = boot::load_boot(ctx, data, self.config.recovery_room)?;
         boot::install_journeys(ctx, journeys, dead_journeys);
+        domain::install_domain_workflow(ctx.w, workflow);
+        // Installing the carrier journeys runs the same idempotent advance the
+        // tick runs (B3): an arrival already applied is a no-op, and one whose
+        // durable cursor says it arrived but whose carrier is not there is
+        // repaired here.
+        journey::install_carrier_journeys(ctx, carriers, next_journey_id, dead_carriers);
         if q > 0 {
             tracing::warn!(
                 quarantined = q,

@@ -54,10 +54,11 @@ use mush_proto::{NarrativeKind, OutputEvent, RichText};
 use smol_str::SmolStr;
 
 pub use data::{
-    KIND_TIMESTOP, MAX_IC_FLOOR_LEAD_SECS, MAX_OUTCOME_NAME_BYTES, MAX_OUTCOME_NOTE_BYTES,
-    MAX_OUTCOME_SUBJECTS, MAX_PENDING_STORE_READS_PER_ACTOR, NS, PauseReason, PendingArchiveRead,
-    SceneAdvanceError, SceneEvent, SceneEventKind, SceneMode, SceneOutcome, SceneRecord,
-    SceneStatus, SceneUid, ScenesState, SealerGateSlot, scene_key,
+    ArrivalFloorRefusal, KIND_TIMESTOP, MAX_IC_FLOOR_LEAD_SECS, MAX_OUTCOME_NAME_BYTES,
+    MAX_OUTCOME_NOTE_BYTES, MAX_OUTCOME_SUBJECTS, MAX_PENDING_STORE_READS_PER_ACTOR, NS,
+    PauseReason, PendingArchiveRead, SceneAdvanceError, SceneEvent, SceneEventKind, SceneMode,
+    SceneOutcome, SceneRecord, SceneStatus, SceneUid, ScenesState, SealerGateSlot,
+    persist_scene_record, scene_key,
 };
 
 /// The canon kind a **sealed scene outcome** is recorded under (E6b, 08f §4.1).

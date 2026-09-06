@@ -807,6 +807,17 @@ pub(crate) fn persist_scene(out: &mut Outbox, s: &SceneRecord) {
     );
 }
 
+/// The public half of [`persist_scene`], for the **one** cross-crate writer this
+/// crate has: `mush-sim`'s journey arrival, which raises an onboard scene's IC
+/// floor through [`SceneRecord::raise_ic_floor_on_arrival`] and must mirror the
+/// raised record in the same `Outbox` batch as the arrival itself (E7 cut 6 B4,
+/// 10b §3.6 OPEN 3). It is deliberately the *only* seam that writes a scene
+/// document from outside `mush-scenes`: everything else about a scene — its
+/// lifecycle, its turn cursor, its seal — stays this crate's.
+pub fn persist_scene_record(out: &mut Outbox, s: &SceneRecord) {
+    persist_scene(out, s);
+}
+
 /// Mirror the meta document (the id allocator resume point).
 pub(crate) fn persist_meta(out: &mut Outbox, next_scene_uid: u64) {
     push_op(

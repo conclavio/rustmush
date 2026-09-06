@@ -12,6 +12,13 @@ mush-core.workspace = true
 # (doc 08b §5.1). The edge is unconditional — no cargo feature — and acyclic:
 # mush-economy depends on {core, org} only.
 mush-economy.workspace = true
+# E7 cut 6 (10b §3.6 OPEN 3): a journey arrival raises each onboard scene's IC
+# floor through E6b's one seam, `SceneRecord::raise_ic_floor_on_arrival`, so the
+# whole floor rule (08f R4 — monotonic, bounded, refused after the seal, and it
+# never touches `clock_generation`) lives in one place instead of being
+# re-derived across the boundary. The edge is acyclic: `mush-scenes` depends on
+# {core, canon, proto} and never on `mush-sim`.
+mush-scenes.workspace = true
 mush-proto.workspace = true
 serde.workspace = true
 serde_json.workspace = true

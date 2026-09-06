@@ -99,6 +99,29 @@ pub enum SpatialError {
     /// both (the mirror of `route_ineligible`).
     #[error("{0} is en route; @route/abort it before placing it in the simulation")]
     EnRoute(ObjId),
+    /// E7c6 B2/B3: a carrier under way is a **sealed subtree**. Nothing crosses
+    /// the boundary while it moves — a craft cannot launch mid-leg and nobody
+    /// boards mid-passage — so nothing can be orphaned by an arrival (the
+    /// T lens). Movement *within* the subtree stays free.
+    #[error(
+        "{obj} is aboard {root}, which is under way; nothing crosses a carrier's boundary mid-journey"
+    )]
+    CarrierSealed {
+        /// The object whose placement was refused.
+        obj: ObjId,
+        /// The carrier root that is under way.
+        root: ObjId,
+    },
+    /// E7c6: the carrier's subtree is larger than one move may visit.
+    #[error("{root} carries {count} records; a carrier move visits at most {max}")]
+    CarrierTooLarge {
+        /// The carrier root.
+        root: ObjId,
+        /// How many records its subtree holds.
+        count: usize,
+        /// [`crate::journey::MAX_CARRIER_SUBTREE`].
+        max: usize,
+    },
     /// A projection move would be refused by the world.
     #[error("cannot project {obj} into {dest}: {reason}")]
     Projection {
@@ -161,6 +184,19 @@ pub enum Transition {
     Retire {
         /// The domain.
         domain: DomainId,
+    },
+    /// E7 cut 6 (B2/B3): move a **carrier root** — and, by construction, its
+    /// whole subtree — in one atomic step. `parent` is `None` while the carrier
+    /// is under way (the root is deliberately not directly placed in a live
+    /// domain; only its subtree is) and `Some(..)` when it comes to rest.
+    ///
+    /// This is the ONE checked carrier path: reach it through
+    /// [`move_carrier_subtree`], never by constructing the variant elsewhere.
+    CarrierMove {
+        /// The carrier root.
+        root: ObjId,
+        /// Where it comes to rest, or `None` to put it under way.
+        parent: Option<SpatialParent>,
     },
 }
 
@@ -277,6 +313,114 @@ fn route_free(w: &World, obj: ObjId) -> Result<(), SpatialError> {
     Ok(())
 }
 
+/// Resolve the structural parent OBJECT a [`SpatialParent`] names, running every
+/// existence, liveness and capacity check that placing `obj` there requires.
+/// Shared by [`Transition::Place`] and [`Transition::CarrierMove`], so the two
+/// can never diverge on what a legal parent is.
+fn resolve_parent(
+    st: &SpatialState,
+    w: &World,
+    obj: ObjId,
+    parent: &SpatialParent,
+) -> Result<ObjId, SpatialError> {
+    match parent {
+        SpatialParent::Direct { domain, .. } => {
+            let d = st
+                .domains
+                .get(domain)
+                .ok_or(SpatialError::NoSuchDomain(*domain))?;
+            if d.status != DomainStatus::Active {
+                return Err(SpatialError::DomainClosed(*domain, d.status));
+            }
+            live(w, d.presentation_location)?;
+            Ok(d.host)
+        }
+        SpatialParent::Interior { space, slot } => {
+            live(w, *space)?;
+            let s = st
+                .spaces
+                .get(space)
+                .ok_or(SpatialError::NoSuchSpace(*space))?;
+            needs(w, *space, "sim.interior")?;
+            if let Some(slot) = slot {
+                let cap = s
+                    .compartments
+                    .get(slot)
+                    .ok_or_else(|| SpatialError::NoSuchSlot {
+                        space: *space,
+                        slot: slot.to_string(),
+                    })?;
+                if let Some(max) = cap.maximum_items {
+                    let mut n = st.occupants(*space, Some(slot));
+                    if matches!(st.parent_of(obj), SpatialParent::Interior { space: sp, slot: ref sl, .. } if sp == *space && sl.as_ref() == Some(slot))
+                    {
+                        n = n.saturating_sub(1); // re-placing into the same slot
+                    }
+                    if n as u32 >= max {
+                        return Err(SpatialError::Full {
+                            what: format!("{space} compartment `{slot}`"),
+                            max,
+                        });
+                    }
+                }
+            }
+            Ok(*space)
+        }
+        SpatialParent::Attached { host, mount, .. } => {
+            live(w, *host)?;
+            let spec = st
+                .mounts
+                .get(host)
+                .and_then(|m| m.mounts.get(mount))
+                .ok_or_else(|| SpatialError::NoSuchMount {
+                    host: *host,
+                    mount: mount.to_string(),
+                })?;
+            if let Some(max) = spec.capacity.maximum_items {
+                let mut n = st.attachments(*host, mount);
+                if matches!(st.parent_of(obj), SpatialParent::Attached { host: h, mount: ref m, .. } if h == *host && m == mount)
+                {
+                    n = n.saturating_sub(1);
+                }
+                if n as u32 >= max {
+                    return Err(SpatialError::Full {
+                        what: format!("{host} mount `{mount}`"),
+                        max,
+                    });
+                }
+            }
+            Ok(*host)
+        }
+        SpatialParent::Unplaced => Err(SpatialError::NotPlaced(obj)),
+    }
+}
+
+/// **The carrier seal** (E7c6 B3, the T lens). While a carrier root is under
+/// way its subtree is sealed: a placement may not cross the boundary in either
+/// direction, so a craft cannot launch mid-leg and nobody boards mid-passage.
+/// A move *within* one carrier's subtree (an occupant walking between
+/// compartments) is untouched, and so is the carrier's own move, which goes
+/// through [`Transition::CarrierMove`] instead.
+fn carrier_seal(
+    st: &SpatialState,
+    w: &World,
+    obj: ObjId,
+    parent_obj: ObjId,
+) -> Result<(), SpatialError> {
+    let Some(book) = w.module_state::<crate::journey::JourneyBook>() else {
+        return Ok(());
+    };
+    let from = crate::journey::under_way_root_of(st, book, obj);
+    let to = crate::journey::under_way_root_of(st, book, parent_obj);
+    if from == to {
+        return Ok(());
+    }
+    match from.or(to) {
+        Some(root) => Err(SpatialError::CarrierSealed { obj, root }),
+        None => Ok(()),
+    }
+}
+
 pub fn plan(st: &SpatialState, w: &World, t: &Transition) -> Result<Plan, SpatialError> {
     let mut plan = Plan::default();
     match t {
@@ -288,76 +432,8 @@ pub fn plan(st: &SpatialState, w: &World, t: &Transition) -> Result<Plan, Spatia
             live(w, obj)?;
             needs(w, obj, "sim.participant")?;
             route_free(w, obj)?;
-            let parent_obj = match parent {
-                SpatialParent::Direct { domain, .. } => {
-                    let d = st
-                        .domains
-                        .get(domain)
-                        .ok_or(SpatialError::NoSuchDomain(*domain))?;
-                    if d.status != DomainStatus::Active {
-                        return Err(SpatialError::DomainClosed(*domain, d.status));
-                    }
-                    live(w, d.presentation_location)?;
-                    d.host
-                }
-                SpatialParent::Interior { space, slot } => {
-                    live(w, *space)?;
-                    let s = st
-                        .spaces
-                        .get(space)
-                        .ok_or(SpatialError::NoSuchSpace(*space))?;
-                    needs(w, *space, "sim.interior")?;
-                    if let Some(slot) = slot {
-                        let cap =
-                            s.compartments
-                                .get(slot)
-                                .ok_or_else(|| SpatialError::NoSuchSlot {
-                                    space: *space,
-                                    slot: slot.to_string(),
-                                })?;
-                        if let Some(max) = cap.maximum_items {
-                            let mut n = st.occupants(*space, Some(slot));
-                            if matches!(st.parent_of(obj), SpatialParent::Interior { space: sp, slot: ref sl, .. } if sp == *space && sl.as_ref() == Some(slot))
-                            {
-                                n = n.saturating_sub(1); // re-placing into the same slot
-                            }
-                            if n as u32 >= max {
-                                return Err(SpatialError::Full {
-                                    what: format!("{space} compartment `{slot}`"),
-                                    max,
-                                });
-                            }
-                        }
-                    }
-                    *space
-                }
-                SpatialParent::Attached { host, mount, .. } => {
-                    live(w, *host)?;
-                    let spec = st
-                        .mounts
-                        .get(host)
-                        .and_then(|m| m.mounts.get(mount))
-                        .ok_or_else(|| SpatialError::NoSuchMount {
-                            host: *host,
-                            mount: mount.to_string(),
-                        })?;
-                    if let Some(max) = spec.capacity.maximum_items {
-                        let mut n = st.attachments(*host, mount);
-                        if matches!(st.parent_of(obj), SpatialParent::Attached { host: h, mount: ref m, .. } if h == *host && m == mount)
-                        {
-                            n = n.saturating_sub(1);
-                        }
-                        if n as u32 >= max {
-                            return Err(SpatialError::Full {
-                                what: format!("{host} mount `{mount}`"),
-                                max,
-                            });
-                        }
-                    }
-                    *host
-                }
-                SpatialParent::Unplaced => return Err(SpatialError::NotPlaced(obj)),
-            };
+            let parent_obj = resolve_parent(st, w, obj, parent)?;
+            carrier_seal(st, w, obj, parent_obj)?;
             // Acyclic + bounded: obj must not be an ancestor of its new parent.
             if parent_obj == obj {
                 return Err(SpatialError::Cycle { obj, via: obj });
@@ -583,6 +659,102 @@ pub fn plan(st: &SpatialState, w: &World, t: &Transition) -> Result<Plan, Spatia
             plan.retire.push(*domain);
             plan.audit = serde_json::json!({ "op": "retire", "domain": domain.0 });
         }
+        Transition::CarrierMove { root, parent } => {
+            let root = *root;
+            if st.held_placement(root).is_some() {
+                return Err(SpatialError::HeldPlacement(root));
+            }
+            live(w, root)?;
+            needs(w, root, "sim.participant")?;
+            route_free(w, root)?;
+            // Bounded on records VISITED (D-LBK-5), closing §7's missing
+            // per-carrier cap: a pathological carrier cannot make an arrival
+            // bundle unbounded — the move is refused instead.
+            let subtree = st.subtree(root);
+            if subtree.len() > crate::journey::MAX_CARRIER_SUBTREE {
+                return Err(SpatialError::CarrierTooLarge {
+                    root,
+                    count: subtree.len(),
+                    max: crate::journey::MAX_CARRIER_SUBTREE,
+                });
+            }
+            let prev = st.placements.get(&root);
+            let revision = match prev {
+                Some(p) => checked_placement_revision(root, p.revision)?,
+                None => 1,
+            };
+            let rec = match parent {
+                Some(parent) => {
+                    let parent_obj = resolve_parent(st, w, root, parent)?;
+                    // **The carrier-root invariant.** A root may never come to
+                    // rest inside its own subtree — not at any depth, not
+                    // through a bay it carries. Stated twice on purpose: once
+                    // over the descendant relation (the atomic subtree that
+                    // moves with it) and once over the ancestor relation
+                    // (`graph::ancestors`), which are duals, so a malformed
+                    // record set cannot slip between them.
+                    if parent_obj == root || subtree.contains(&parent_obj) {
+                        return Err(SpatialError::Cycle {
+                            obj: root,
+                            via: parent_obj,
+                        });
+                    }
+                    let up = ancestors(st, parent_obj)?;
+                    if up.contains(&root) {
+                        return Err(SpatialError::Cycle {
+                            obj: root,
+                            via: parent_obj,
+                        });
+                    }
+                    if up.len() + 1 + st.subtree_height(root) > crate::data::MAX_SPATIAL_DEPTH {
+                        return Err(SpatialError::TooDeep { obj: root });
+                    }
+                    if let Some(s) = st.spaces.get(&root) {
+                        anchor_consistent(root, &s.anchor, parent)?;
+                    }
+                    PlacementRecord {
+                        object: root,
+                        parent: parent.clone(),
+                        revision,
+                        unplaced: None,
+                    }
+                }
+                None => PlacementRecord {
+                    object: root,
+                    parent: SpatialParent::Unplaced,
+                    revision,
+                    unplaced: Some(UnplacedInfo {
+                        reason: "under way on a carrier journey".into(),
+                        by: None,
+                        at: w.now(),
+                        previous: prev
+                            .map(|p| p.parent.clone())
+                            .filter(SpatialParent::is_placed),
+                        // NOT quarantined: a carrier under way is a live,
+                        // crewed object whose subtree stays placed; only its
+                        // own direct placement is suspended.
+                        quarantined: false,
+                    }),
+                },
+            };
+            // The whole subtree's projections are recomputed against the post
+            // state and pre-validated, so the move is atomic: everything hosted
+            // arrives with the root, and a refusal mutates nothing.
+            let mut post = st.clone();
+            post.placements.insert(root, rec.clone());
+            post.derived = rebuild(&post);
+            projections_for(&post, w, root, &mut plan.projections)?;
+            plan.audit = serde_json::json!({
+                "op": "carrier_move",
+                "root": root.0,
+                "parent": parent
+                    .as_ref()
+                    .map(|p| serde_json::to_value(p).unwrap_or_default()),
+                "previous": prev.map(|p| serde_json::to_value(&p.parent).unwrap_or_default()),
+                "subtree": subtree.len(),
+            });
+            plan.set_placements.push(rec);
+        }
     }
     Ok(plan)
 }
@@ -684,4 +856,42 @@ pub fn run(ctx: &mut Ctx<'_>, t: &Transition) -> Result<(), SpatialError> {
         .module_state_mut::<SpatialState>()
         .expect("sim state slot installed at registration") = st;
     r
+}
+
+/// **The one checked carrier move** (E7 cut 6, B2/B3).
+///
+/// Every carrier-root placement change on the tree goes through here —
+/// `@journey/depart`, the journey tick's arrival, and the boot re-run of that
+/// same tick — so the carrier-root invariant is stated once:
+///
+/// - **no cycle**: a root can never come to rest inside its own subtree, at any
+///   depth (checked over the descendant relation *and* over
+///   [`crate::graph::ancestors`], which are duals);
+/// - **the subtree is atomic**: only the root's own placement record changes, so
+///   every anchored interior, occupant, mount, craft and hold keeps its exact
+///   relationship and the whole set's projections are recomputed and
+///   pre-validated together — a refusal mutates nothing;
+/// - **bounded** on records visited ([`crate::journey::MAX_CARRIER_SUBTREE`]);
+/// - **crew control follows**: every actor crewing anything in the subtree has
+///   its links re-derived afterwards, which — with `links::controls_are_live` —
+///   is what keeps a *cruising* root's crew in command instead of silently
+///   dropping every grant mid-journey.
+///
+/// Returns the subtree that moved (root first), for the caller's conservation
+/// assertions.
+pub fn move_carrier_subtree(
+    ctx: &mut Ctx<'_>,
+    root: ObjId,
+    parent: Option<SpatialParent>,
+) -> Result<Vec<ObjId>, SpatialError> {
+    run(ctx, &Transition::CarrierMove { root, parent })?;
+    let subtree = ctx
+        .w
+        .module_state::<SpatialState>()
+        .map(|st| st.subtree(root))
+        .unwrap_or_default();
+    for unit in &subtree {
+        crate::links::refresh_unit_actors(ctx.w, *unit);
+    }
+    Ok(subtree)
 }

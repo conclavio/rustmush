@@ -14,17 +14,35 @@ use mush_core::{ChannelGrant, Flags, ObjId, World};
 use smol_str::SmolStr;
 
 use crate::data::{NS, SpatialState};
+use crate::journey::JourneyBook;
+
+/// Whether `unit`'s control surface is live — the gate a crew grant hangs on.
+///
+/// **E7 cut 6 B3 (10b §3.6 contradiction (v), the T lens).** This used to be a
+/// bare `st.is_placed(unit)`. A carrier root under way is deliberately *not*
+/// directly placed (only its subtree is), so the bare placement test silently
+/// dropped every crew grant on a ship the moment it left — the pilot lost the
+/// helm mid-passage and got it back on arrival, with no refusal and no line of
+/// output anywhere. Controls are live when the unit is placed **or** when it is
+/// a carrier root that is currently under way; `journey::is_under_way` is the
+/// one predicate the seal, the move/carry gate and the tick all share, so the
+/// four can never disagree about what "moving" means.
+fn controls_are_live(st: &SpatialState, w: &World, unit: ObjId) -> bool {
+    st.is_placed(unit)
+        || w.module_state::<JourneyBook>()
+            .is_some_and(|book| book.under_way(unit))
+}
 
 /// Exact grants `actor` should currently hold: one per occupied station on a
-/// **placed, live** unit. Channels, priority, and epoch stay paired on that
-/// station all the way through command resolution and stale-intent checks.
+/// **live-controlled, live** unit. Channels, priority, and epoch stay paired on
+/// that station all the way through command resolution and stale-intent checks.
 fn desired_links(st: &SpatialState, w: &World, actor: ObjId) -> Vec<ChannelGrant> {
     let Some(units) = st.derived.assignments_by_actor.get(&actor) else {
         return Vec::new();
     };
     let mut grants = Vec::new();
     for unit in units.iter().copied() {
-        if !st.is_placed(unit)
+        if !controls_are_live(st, w, unit)
             || w.get(unit)
                 .is_none_or(|object| object.flags.contains(Flags::GOING))
         {
