@@ -117,6 +117,21 @@ fn declared_fallback(engine: &Engine, unit: ObjId, station: &StationId) -> Optio
         .and_then(|fallbacks| fallbacks.holder(unit, station))
 }
 
+/// The released station whose declared fallback a DEPARTED billet-holder reseats
+/// (C1/C2, invariant 6). When the actor holds no focus on `unit` — the release or
+/// switch already relinquished it — re-source the offer from a surviving billet
+/// grant on `unit` whose station declares a fallback. Bounded by the actor's own
+/// grants on the unit (D-LBK-5), never a scan of the unit's whole seat map.
+fn departed_fallback_station(engine: &Engine, actor: ObjId, unit: ObjId) -> Option<StationId> {
+    engine
+        .world
+        .command_subjects_of(actor)
+        .iter()
+        .filter(|grant| grant.subject == unit)
+        .filter_map(|grant| StationId::new(grant.station.as_str()))
+        .find(|station| declared_fallback(engine, unit, station).is_some())
+}
+
 /// The requester's current control-generation on `station` of `unit` (the exact
 /// grant epoch `World::channel_grant_is_current` compares), or `None` when the
 /// requester holds no such grant.
@@ -586,15 +601,28 @@ impl HandoffProvider {
         };
         let unit = *unit;
         let actor = query.actor();
-        let Some(focus) = engine
+        let actor_principal = PrincipalId::Object { id: actor };
+        // The station this offer projects for, and whether the actor is currently
+        // DRIVING it (focused). A focused billet-holder rides the manual
+        // `@station/handoff`; a DEPARTED billet-holder (focus already relinquished
+        // by the same release/switch that fired the fallback — C1/C2) re-sources
+        // the relief offer from the surviving billet grant, not the transient
+        // `FocusState` the release tore down. The departed path exists only for the
+        // `request` verb (the fallback fire); `cancel` still requires focus.
+        let focused_here = engine
             .world
             .module_state::<FocusState>()
             .and_then(|state| state.focus_of_actor(actor))
             .filter(|focus| focus.unit == unit)
-        else {
-            return Ok(None);
+            .map(|focus| focus.station.clone());
+        let (station, driving) = match focused_here {
+            Some(station) => (station, true),
+            None if request => match departed_fallback_station(engine, actor, unit) {
+                Some(station) => (station, false),
+                None => return Ok(None),
+            },
+            None => return Ok(None),
         };
-        let station = focus.station.clone();
         let Some(spatial) = engine.world.module_state::<SpatialState>() else {
             return Ok(None);
         };
@@ -610,31 +638,49 @@ impl HandoffProvider {
             .get(&self.families.leases, &key)
             .map_err(|error| Self::state_error(&error))?;
         let revision = lease.map_or(0, ControlLeaseState::revision);
-        let actor_principal = PrincipalId::Object { id: actor };
         let now = engine.world.world_ic_now();
         let fixed = if request {
-            // The authority split, by lease state (the create/relief split of the
-            // OWNER DECISION):
-            //   * VACANT  -> CREATE: a focused billet-holder establishes the lease
-            //     for themselves (cut 5's first-production-creator path).
-            //   * HELD by self -> RELIEF to the declared fallback controller (if one
-            //     is declared and differs from self); this is the held-relief case
-            //     candidate (iii) must also project, and the immediate controller's
-            //     path.
-            //   * HELD by another -> a non-holder cannot relieve; no offer.
-            let next_holder = match lease.and_then(ControlLeaseState::holder) {
-                None => actor_principal.clone(),
-                Some(holder) if *holder == actor_principal => {
-                    let Some(fallback) = declared_fallback(engine, unit, &station) else {
-                        return Ok(None);
-                    };
-                    let next = PrincipalId::Object { id: fallback };
-                    if next == actor_principal {
-                        return Ok(None);
+            let holder = lease.and_then(ControlLeaseState::holder);
+            let next_holder = if driving {
+                // The manual `@station/handoff` authority split, by lease state:
+                //   * VACANT  -> CREATE: a focused billet-holder establishes the
+                //     lease for themselves (cut 5's first-production-creator path).
+                //   * HELD by self -> RELIEF to the declared fallback controller (if
+                //     one is declared and differs from self).
+                //   * HELD by another -> a non-holder cannot relieve; no offer.
+                match holder {
+                    None => actor_principal.clone(),
+                    Some(holder) if *holder == actor_principal => {
+                        let Some(fallback) = declared_fallback(engine, unit, &station) else {
+                            return Ok(None);
+                        };
+                        let next = PrincipalId::Object { id: fallback };
+                        if next == actor_principal {
+                            return Ok(None);
+                        }
+                        next
                     }
-                    next
+                    Some(_) => return Ok(None),
                 }
-                Some(_) => return Ok(None),
+            } else {
+                // The clean-release / switch fallback fire (C1/C2, invariant 6): the
+                // released station reseats the DECLARED fallback, whether the lease
+                // was vacant (create with holder = fallback) or held by the departing
+                // actor (relief to the fallback). A lease already held by a THIRD
+                // party is left untouched. Authority is the surviving billet grant,
+                // re-checked at apply under the post-bump epoch (invariant 3).
+                let Some(fallback) = declared_fallback(engine, unit, &station) else {
+                    return Ok(None);
+                };
+                let next = PrincipalId::Object { id: fallback };
+                if next == actor_principal {
+                    return Ok(None);
+                }
+                match holder {
+                    None => next,
+                    Some(holder) if *holder == actor_principal => next,
+                    Some(_) => return Ok(None),
+                }
             };
             json!({
                 "channel": channel,

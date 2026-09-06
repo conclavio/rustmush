@@ -17,10 +17,10 @@ use std::sync::Arc;
 use mush_core::{
     AccountId, AccountIdentity, ActionInvocation, ActionInvocationDraft, ActionOfferId,
     CanonicalHash, CanonicalId, ChannelId, CommitToken, ControlLeaseState, DefinitionId,
-    DefinitionKey, DefinitionKind, DefinitionRef, GOD, IdempotencyKey, IdempotencyScope, LIMBO,
-    ModuleBootData, ModuleOp, ModuleWrite, ObjId, ObjKind, OfferKeyRing, OfferSecret, OwnerId,
-    PerceivedRef, PrincipalId, RequestUid, ScheduleDriveCause, ScopedIdempotencyKey,
-    scheduled_action_ingress,
+    DefinitionKey, DefinitionKind, DefinitionRef, GOD, IdempotencyKey, IdempotencyKeyText,
+    IdempotencyScope, LIMBO, ModuleBootData, ModuleOp, ModuleWrite, ObjId, ObjKind,
+    OfferExecutionContext, OfferKeyRing, OfferSecret, OfferSubmission, OwnerId, PerceivedRef,
+    PrincipalId, RequestUid, ScheduleDriveCause, ScopedIdempotencyKey, scheduled_action_ingress,
 };
 use mush_proto::OutputEvent;
 use mush_sim::{AccountOracle, FocusState, ReachProof, SimulationModule};
@@ -1097,4 +1097,453 @@ fn e7c5_h_station_existence_hiding_unknown_vs_unviewable() {
     );
     assert!(unknown_unit.contains("No such station."), "{unknown_unit}");
     let _ = fx.other;
+}
+
+// ---- E7 cut 5 independent verify fold ----
+//
+// The clean-release / switch fallback that never seated (C1/C2), the
+// station-existence leak (B1), the boot-hydration lapse (D2/R2), the fallback
+// census (B2), the bounded `+stations` scan (B3), and reach's acquire-time-only
+// stance (C3/D3). Named `vf_<lens><n>_…`.
+
+/// Resolve one queued command-originated authoritative submit through the REAL
+/// offer path (as `mush-server`'s `command_offer_submission` +
+/// `resolve_and_stage_offer` do) and stage it, returning the transaction ops so
+/// the lease post-image can be read. This is what the shipped H tests never did:
+/// it drives the fallback's DEFERRED submit to a staged request, proving the
+/// relief offer both projects and resolves AFTER the release tore down the focus.
+fn drive_fire_submit(
+    tw: &mut TestWorld,
+    submit: &mush_core::AuthoritativeSubmit,
+    token: u8,
+) -> Vec<ModuleOp> {
+    let (action, resolved) = {
+        let engine = tw.engine();
+        let query = engine
+            .legal_action_query(
+                PrincipalId::Object { id: submit.actor },
+                submit.actor,
+                submit.subject.clone(),
+            )
+            .expect("the fire's subject still queries under the fresh grant epoch");
+        let offers = engine.project_legal_actions(&query).expect("projection");
+        let projected = offers
+            .projected_for_action(&submit.action)
+            .expect("the released station's relief offer projects after focus is gone");
+        assert_eq!(projected.subject(), &submit.subject);
+        let submission = OfferSubmission {
+            offer: projected.offer(),
+            subject: projected.subject().clone(),
+            targets: submit.targets.clone(),
+            parameters: submit.parameters.clone(),
+        };
+        let execution = OfferExecutionContext {
+            request: RequestUid::from_bytes([token; 16]),
+            principal: PrincipalId::Object { id: submit.actor },
+            actor: submit.actor,
+            idempotency: ScopedIdempotencyKey::new(
+                IdempotencyScope {
+                    principal: PrincipalId::Object { id: submit.actor },
+                    owner: submit.action.key().owner.clone(),
+                    namespace: CanonicalId::new(submit.action.key().id.as_str()).unwrap(),
+                },
+                1,
+                IdempotencyKey::Request(RequestUid::from_bytes([token; 16])),
+            ),
+            viewer_scope: query.viewer_scope(),
+            now: None,
+        };
+        let resolved = engine
+            .resolve_legal_action(&offers, execution, submission)
+            .expect("the fire resolves against the projected relief offer");
+        let (action, resolved, _guards) = resolved.into_authoritative_parts();
+        (action, resolved)
+    };
+    let (prepared, _) = tw
+        .engine_mut()
+        .prepare_registered_resolved_authoritative_action(
+            &action,
+            &resolved,
+            CommitToken::from_bytes([token; 16]),
+        )
+        .expect("the resolved fire stages");
+    let (ops, installation) = prepared.into_parts();
+    tw.engine_mut().install_prepared_action(installation);
+    ops
+}
+
+// C1 (HIGH): a clean `+focus/release` fires the released station's declared
+// fallback AND it actually SEATS — the deferred submit is no longer self-staled
+// by the same release. Drives resolution to completion and asserts the lease
+// holder becomes the fallback.
+#[test]
+fn vf_c1_a_clean_release_fallback_actually_seats() {
+    let (mut tw, fx, _, _) = scene();
+    let backup = tw.spawn_player("Backup");
+    tw.world_mut().move_to(backup, fx.field).unwrap();
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@station/fallback #{}/pilot=#{}", fx.atlas.0, backup.0),
+    );
+    ok(&mut tw, fx.pilot, &format!("+focus #{}/pilot", fx.atlas.0));
+    arm_offer_keys(&mut tw);
+    ok(&mut tw, fx.pilot, "+focus/release");
+    let submit = *tw
+        .engine_mut()
+        .take_authoritative_submit()
+        .expect("the clean release fired the fallback controller");
+    // Failure (a) fixed: the fire pins the POST-bump epoch, matching the pilot's
+    // still-projecting grant, so it is not refused as stale at resolution.
+    let PerceivedRef::KnownObject { revision, .. } = submit.subject else {
+        panic!("the fire names an exact object subject")
+    };
+    assert_eq!(
+        revision,
+        grant_epoch_of(&tw, fx.pilot, fx.atlas, "pilot"),
+        "the fire pins the new grant epoch, not the pre-release one"
+    );
+    let boundary_at = tw.world().world_ic_now().at;
+    // Failure (b) fixed: the relief offer re-sources from the surviving billet
+    // grant, so it still projects after the focus is gone; drive it and apply.
+    let pending = lease_post_image(&drive_fire_submit(&mut tw, &submit, 7));
+    assert!(pending.pending().is_some(), "the relief is pending");
+    let applied = lease_post_image(&apply_due(&mut tw, boundary_at, 8));
+    assert_eq!(
+        applied.holder(),
+        Some(&PrincipalId::Object { id: backup }),
+        "the declared fallback actually seats"
+    );
+    assert!(applied.pending().is_none());
+}
+
+/// A scheduler/system-principal control-handoff request (D1 unclean-loss): NO
+/// station-grant witness, so the apply is authorized by the declared record
+/// alone and never gated on a departed pilot's grant epoch.
+#[allow(clippy::too_many_arguments)]
+fn system_request_invocation(
+    action: &DefinitionRef,
+    req: u8,
+    unit: ObjId,
+    channel: &str,
+    next: ObjId,
+    expected_revision: u64,
+    boundary_at: i64,
+) -> ActionInvocation {
+    let principal = PrincipalId::Scoped {
+        owner: OwnerId::new(NS).unwrap(),
+        class: CanonicalId::new("scheduler").unwrap(),
+        id: IdempotencyKeyText::parse_canonical("station.fallback.system").unwrap(),
+    };
+    ActionInvocation::new(ActionInvocationDraft {
+        request: RequestUid::from_bytes([req; 16]),
+        principal: principal.clone(),
+        actor: unit,
+        offered_action: ActionOfferId(CanonicalHash::from_bytes([9; 32])),
+        subject: PerceivedRef::KnownObject {
+            id: unit,
+            revision: 0,
+        },
+        targets: Vec::new(),
+        parameters: json!({
+            "channel": channel,
+            "next_holder": PrincipalId::Object { id: next },
+            "requested_at": utc(boundary_at - 1),
+            "boundary": utc(boundary_at),
+            "reason": "focus.station_seat",
+            "expected_revision": expected_revision,
+            // No station / grant_epoch: witness None -> apply is not grant-gated.
+        }),
+        idempotency: ScopedIdempotencyKey::new(
+            IdempotencyScope {
+                principal,
+                owner: action.key().owner.clone(),
+                namespace: CanonicalId::new(action.key().id.as_str()).unwrap(),
+            },
+            1,
+            IdempotencyKey::Request(RequestUid::from_bytes([req; 16])),
+        ),
+    })
+    .unwrap()
+}
+
+// C1 (unclean loss): a linkdead pilot cannot issue the release, so the
+// system/scheduler principal fires the relief, authorized by the declared
+// `sim.station_fallback` record with no station witness. Drives to completion
+// and asserts the seat fills with the declared fallback.
+#[test]
+fn vf_c1_b_unclean_loss_system_principal_seats() {
+    let (mut tw, fx, _, _) = scene();
+    let backup = tw.spawn_player("Backup");
+    tw.world_mut().move_to(backup, fx.field).unwrap();
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@station/fallback #{}/pilot=#{}", fx.atlas.0, backup.0),
+    );
+    // The pilot never focuses (gone); the system fires the relief on its behalf.
+    let request = action_ref(&tw, REQUEST_ACTION);
+    let inv = system_request_invocation(&request, 1, fx.atlas, "movement", backup, 0, 100);
+    let pending = lease_post_image(&install_request(&mut tw, &request, &inv, 1));
+    assert!(pending.pending().is_some(), "the system relief is pending");
+    let applied = lease_post_image(&apply_due(&mut tw, 100, 2));
+    assert_eq!(
+        applied.holder(),
+        Some(&PrincipalId::Object { id: backup }),
+        "the declared fallback seats under the system principal, no witness needed"
+    );
+    assert_eq!(applied.epoch(), 1);
+}
+
+// C2 (MEDIUM): a focus SWITCH (`+focus <other>`) also fires the released
+// station's declared fallback — the same mechanism, not only `+focus/release`.
+#[test]
+fn vf_c2_a_switch_fires_the_released_stations_fallback() {
+    let (mut tw, fx, _, _) = scene();
+    let backup = tw.spawn_player("Backup");
+    tw.world_mut().move_to(backup, fx.field).unwrap();
+    // Pilot is billeted on BOTH atlas/pilot and locust/pilot; a fallback on each.
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@spatial/assign #{}=pilot,#{}", fx.locust.0, fx.pilot.0),
+    );
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@station/fallback #{}/pilot=#{}", fx.atlas.0, backup.0),
+    );
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@station/fallback #{}/pilot=#{}", fx.locust.0, backup.0),
+    );
+    ok(&mut tw, fx.pilot, &format!("+focus #{}/pilot", fx.atlas.0));
+    assert!(
+        !tw.engine().has_authoritative_submit(),
+        "an acquire fires no fallback"
+    );
+    arm_offer_keys(&mut tw);
+    // SWITCH atlas -> locust: this releases atlas/pilot and must fire its fallback.
+    ok(&mut tw, fx.pilot, &format!("+focus #{}/pilot", fx.locust.0));
+    let submit = *tw
+        .engine_mut()
+        .take_authoritative_submit()
+        .expect("the switch fired the released atlas/pilot fallback");
+    let PerceivedRef::KnownObject { id, .. } = submit.subject else {
+        panic!()
+    };
+    assert_eq!(id, fx.atlas, "the fired relief is for the RELEASED unit");
+    let boundary_at = tw.world().world_ic_now().at;
+    let _ = drive_fire_submit(&mut tw, &submit, 7);
+    let applied = lease_post_image(&apply_due(&mut tw, boundary_at, 8));
+    assert_eq!(
+        applied.holder(),
+        Some(&PrincipalId::Object { id: backup }),
+        "the switched-away station seats its fallback"
+    );
+}
+
+// B1 (MEDIUM): `@station/handoff`/`/cancel` reveals nothing about station
+// existence to a co-located NON-holder — an existing station (not held) and a
+// non-existent one refuse byte-identically, so the unit's station complement
+// cannot be enumerated.
+#[test]
+fn vf_b1_station_existence_is_hidden_from_a_nonholder() {
+    let (mut tw, fx, _, _) = scene();
+    // A co-located bystander with no billet on Atlas.
+    let bystander = tw.spawn_player("Bystander");
+    tw.world_mut().move_to(bystander, fx.field).unwrap();
+    let existing = err(
+        &mut tw,
+        bystander,
+        &format!("@station/handoff #{}/pilot", fx.atlas.0),
+    );
+    let missing = err(
+        &mut tw,
+        bystander,
+        &format!("@station/handoff #{}/ghostseat", fx.atlas.0),
+    );
+    assert_eq!(
+        existing, missing,
+        "an existing-but-not-held station and a missing one refuse byte-identically"
+    );
+    assert!(existing.contains("No such station."), "{existing}");
+    // A crew member holding a DIFFERENT seat on the same unit is equally blind to
+    // a seat they do not hold.
+    let existing_g = err(
+        &mut tw,
+        fx.gunner,
+        &format!("@station/handoff #{}/pilot", fx.atlas.0),
+    );
+    let missing_g = err(
+        &mut tw,
+        fx.gunner,
+        &format!("@station/handoff #{}/ghostseat", fx.atlas.0),
+    );
+    assert_eq!(existing_g, missing_g);
+    assert!(existing_g.contains("No such station."));
+    // The holder still gets the discoverable "+focus it first" hint (they already
+    // know the seat exists — it is their billet).
+    let held = err(
+        &mut tw,
+        fx.pilot,
+        &format!("@station/handoff #{}/pilot", fx.atlas.0),
+    );
+    assert!(held.contains("+focus it first"), "{held}");
+}
+
+// B2 (LOW, folded into D2): the declared-fallback family is census-bounded. A
+// pathological station name is refused (it cannot exist on the unit), and the
+// count is capped by MAX_STATION_FALLBACKS.
+#[test]
+fn vf_b2_station_fallbacks_are_bounded() {
+    let (mut tw, fx, _, _) = scene();
+    // A pathological station name is refused: it is not a station on the unit.
+    let long = "z".repeat(4096);
+    let refused = err(
+        &mut tw,
+        GOD,
+        &format!(
+            "@station/fallback #{}/{}=#{}",
+            fx.atlas.0, long, fx.gunner.0
+        ),
+    );
+    assert!(refused.contains("No such station."), "{refused}");
+    // The RAM census refuses a NEW key past the cap but never a re-declare.
+    let mut slot = mush_sim::StationFallbacks::default();
+    let station = mush_sim::StationId::new("pilot").unwrap();
+    for n in 0..mush_sim::MAX_STATION_FALLBACKS {
+        assert!(slot.declare(ObjId(n as u32 + 1), station.clone(), fx.gunner));
+    }
+    assert!(
+        !slot.declare(ObjId(u32::MAX), station.clone(), fx.gunner),
+        "a NEW key past the cap is refused"
+    );
+    assert!(
+        slot.declare(ObjId(1), station, fx.pilot),
+        "re-declaring an existing key still succeeds at the cap"
+    );
+    assert_eq!(slot.len(), mush_sim::MAX_STATION_FALLBACKS);
+}
+
+// B3 (LOW): `+stations` iterates the actor's OWN seats, so a unit crowded with
+// many other actors' seats does not inflate the scan — the actor still sees
+// their single billet regardless of where it sorts among the crowd.
+#[test]
+fn vf_b3_stations_scan_is_bounded() {
+    let (mut tw, fx, _, _) = scene();
+    // Crowd Locust with many other actors' seats, then give Pilot a billet whose
+    // station name sorts AFTER all of them.
+    ok(
+        &mut tw,
+        GOD,
+        &format!(
+            "@spatial/station #{}=zpilot,pilot,channels:movement",
+            fx.locust.0
+        ),
+    );
+    for n in 0..80u32 {
+        let crew = tw.spawn_player(&format!("Crew{n}"));
+        let sid = format!("seat{n:03}");
+        ok(
+            &mut tw,
+            GOD,
+            &format!(
+                "@spatial/station #{}={sid},gunner,channels:fire",
+                fx.locust.0
+            ),
+        );
+        ok(
+            &mut tw,
+            GOD,
+            &format!("@spatial/assign #{}={sid},#{}", fx.locust.0, crew.0),
+        );
+    }
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@spatial/assign #{}=zpilot,#{}", fx.locust.0, fx.pilot.0),
+    );
+    let out = ok(&mut tw, fx.pilot, "+stations");
+    // Pilot sees their Atlas pilot billet and the Locust zpilot billet, and none
+    // of the 80 other-actor seats — the scan is bounded by Pilot's own billets.
+    assert!(out.contains("`pilot`"), "{out}");
+    assert!(out.contains("`zpilot`"), "{out}");
+    assert!(
+        !out.contains("seat0"),
+        "no other actor's seat is listed: {out}"
+    );
+}
+
+// C3 / D3(b): reach is an ACQUIRE-TIME gate only in cut 5. Focusing at a console
+// and then leaving the room does NOT lose foreground control; continuous reach
+// is tracked to cut 7 (`RemoteLink`/`EnvelopeId`). This pins the documented
+// stance so a cut-7 change is deliberate.
+#[test]
+fn vf_c3_reach_is_acquire_time_only_in_cut5() {
+    let (mut tw, fx, _, _) = scene();
+    ok(&mut tw, fx.pilot, &format!("+focus #{}/pilot", fx.atlas.0));
+    // Walk off the console into another room.
+    tw.world_mut().move_to(fx.pilot, fx.other).unwrap();
+    // Foreground control is retained (reach is not re-evaluated); `@station/show`
+    // and a handoff still proceed for the still-focused billet-holder.
+    let shown = ok(&mut tw, fx.pilot, "@station/show");
+    assert!(shown.contains("driving"), "{shown}");
+    assert_eq!(
+        focused_station_of(&tw, fx.pilot),
+        Some(fx.atlas),
+        "focus survives leaving the console (acquire-time reach only)"
+    );
+}
+
+fn focused_station_of(tw: &TestWorld, actor: ObjId) -> Option<ObjId> {
+    focus(tw).focus_of_actor(actor).map(|f| f.unit)
+}
+
+// D2 / R2: the declared fallback survives a reboot — `load_boot` hydrates the
+// `StationFallbacks` mirror from the persisted `station_fallback:` docs, so a
+// clean switch fires a fallback after a restart without staff re-declaring.
+#[test]
+fn vf_d2_station_fallbacks_hydrate_at_boot() {
+    let (mut tw, fx, _, _) = scene();
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@station/fallback #{}/pilot=#{}", fx.atlas.0, fx.gunner.0),
+    );
+    // Fold the store writes into a KV map and reboot into a fresh world.
+    let mut kv: Vec<(SmolStr, Value)> = Vec::new();
+    for op in tw.take_module_ops() {
+        match op.op {
+            ModuleWrite::JsonSet { key, value } => {
+                kv.retain(|(k, _)| *k != key);
+                kv.push((key, value));
+            }
+            ModuleWrite::Del { key } => kv.retain(|(k, _)| *k != key),
+            ModuleWrite::StreamAppend { .. } => {}
+        }
+    }
+    assert!(
+        kv.iter().any(|(k, _)| k.starts_with("station_fallback:")),
+        "the declaration persisted a durable doc"
+    );
+    let mut tw2 = TestWorld::with_modules(vec![Box::new(SimulationModule::new())]);
+    tw2.modules_loaded(HashMap::from([(
+        SmolStr::new("sim"),
+        ModuleBootData {
+            kv,
+            streams: HashMap::new(),
+        },
+    )]));
+    let restored = tw2
+        .world()
+        .module_state::<mush_sim::StationFallbacks>()
+        .expect("station-fallback slot")
+        .holder(fx.atlas, &mush_sim::StationId::new("pilot").unwrap());
+    assert_eq!(
+        restored,
+        Some(fx.gunner),
+        "the declared fallback is live in the RAM mirror after a reboot"
+    );
 }

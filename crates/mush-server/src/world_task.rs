@@ -14694,6 +14694,183 @@ mod tests {
         Ok(summary)
     }
 
+    // ---- E7 cut 5 independent verify fold: the driver-level C1 e2e ----
+
+    /// A fixed character->account oracle for the sim focus seam.
+    struct FoldMapOracle(std::collections::BTreeMap<ObjId, mush_core::AccountId>);
+    impl mush_core::AccountIdentity for FoldMapOracle {
+        fn account_of(&self, character: ObjId) -> Option<mush_core::AccountId> {
+            self.0.get(&character).copied()
+        }
+    }
+
+    /// The `(unit, station)` lease post-image carried in an applied bundle's
+    /// replay writes (the driver never re-reads the internal family handle).
+    fn bundle_lease(bundle: &AuthoritativeBundle) -> mush_core::ControlLeaseState {
+        let value = bundle
+            .writes()
+            .iter()
+            .find_map(|write| match write {
+                mush_core::ReplayWrite::ModuleJsonSet { key, value, .. }
+                    if key.as_str().contains("control_leases") =>
+                {
+                    Some(value.clone())
+                }
+                _ => None,
+            })
+            .expect("the bundle carries a control-lease post-image");
+        let state = value.get("value").cloned().unwrap_or(value);
+        serde_json::from_value(state).expect("a valid control-lease post-image")
+    }
+
+    /// Discover, prepare and COMMIT the one due scheduled control-handoff apply,
+    /// returning its bundle so the seated lease can be read.
+    async fn drive_scheduled_apply(
+        world: &mut mush_testkit::TestWorld,
+        store: &mush_store::InMemoryStore,
+        at: i64,
+    ) -> AuthoritativeBundle {
+        world.world_mut().set_now(at);
+        let candidate = world
+            .engine()
+            .discover_scheduled_actions(mush_core::ScheduleDriveCause::Live, None, 32)
+            .expect("discovery")
+            .candidates()[0]
+            .clone();
+        let ingress =
+            ActionCoordinator::scheduled_ingress(candidate.action(), candidate.advance(), 1)
+                .unwrap();
+        let permit = match ActionCoordinator::preflight(store, ingress).await.unwrap() {
+            ActionPreflight::Vacant(permit) => permit,
+            _ => panic!("scheduled apply preflight was not vacant"),
+        };
+        ActionCoordinator::prepare_and_stage_scheduled(permit, world.engine_mut(), &candidate)
+            .expect("the apply stages");
+        let (persistence, installation) = world
+            .engine_mut()
+            .take_staged_action()
+            .unwrap()
+            .expect("a staged apply")
+            .into_parts();
+        let StagedActionPersistence::Authoritative(bundle) = persistence else {
+            panic!("authoritative lane");
+        };
+        store
+            .reserve_authoritative_intent(*bundle.clone())
+            .await
+            .unwrap();
+        store
+            .reconcile_authoritative(bundle.token(), bundle.bundle_hash())
+            .await
+            .unwrap();
+        world.engine_mut().install_prepared_action(installation);
+        store
+            .checkpoint_authoritative(bundle.token(), bundle.bundle_hash())
+            .await
+            .unwrap();
+        *bundle
+    }
+
+    /// C1 (HIGH), the "does the fallback actually seat" e2e the shipped H tests
+    /// never wrote: a clean `+focus/release` fires the declared fallback, the
+    /// real `command_offer_submission` + `resolve_and_stage_offer` resolve the
+    /// deferred submit against the re-sourced relief offer (it is no longer
+    /// self-staled by its own release), and the durable scheduled apply seats the
+    /// lease on the declared fallback.
+    #[tokio::test]
+    async fn vf_c1_a_clean_release_fallback_actually_seats() {
+        use mush_core::ObjKind;
+
+        let mut world =
+            mush_testkit::TestWorld::with_modules(vec![
+                Box::new(mush_sim::SimulationModule::new()),
+            ]);
+        world
+            .engine_mut()
+            .set_offer_keys(OfferKeyRing::new(OfferSecret::new(3, [3; 32]).unwrap(), []).unwrap());
+        let field = world
+            .world_mut()
+            .create(ObjKind::Room, "Field", GOD, None)
+            .unwrap();
+        let atlas = world
+            .world_mut()
+            .create(ObjKind::Thing, "Atlas", GOD, Some(LIMBO))
+            .unwrap();
+        let pilot = world.spawn_player("Pilot");
+        let backup = world.spawn_player("Backup");
+        for (obj, beh) in [(field, "sim.domain"), (atlas, "sim.participant")] {
+            world
+                .world_mut()
+                .attach_behavior(
+                    obj,
+                    mush_core::BehaviorId::new(beh).unwrap(),
+                    mush_core::BehaviorBinding {
+                        schema_version: 1,
+                        attached_by: GOD,
+                        attached_at: 0,
+                    },
+                )
+                .unwrap();
+        }
+        *world
+            .world_mut()
+            .module_state_mut::<mush_sim::AccountOracle>()
+            .unwrap() = mush_sim::AccountOracle::new(Arc::new(FoldMapOracle(
+            std::collections::BTreeMap::from([(
+                pilot,
+                mush_core::AccountId::mint("PilotAcct", 1).unwrap(),
+            )]),
+        )));
+        let refused = |events: &[(mush_core::Audience, OutputEvent)]| {
+            events.iter().any(|(_, event)| {
+                matches!(event, OutputEvent::Sys(rich)
+                    if rich.spans().iter().any(|span| span.tag.as_deref() == Some("error")))
+            })
+        };
+        for line in [
+            format!("@domain/create #{}=sim.passive", field.0),
+            format!("@spatial/place/domain #{}=0", atlas.0),
+            format!(
+                "@spatial/station #{}=pilot,pilot,channels:movement",
+                atlas.0
+            ),
+            format!("@spatial/assign #{}=pilot,#{}", atlas.0, pilot.0),
+        ] {
+            assert!(
+                !refused(&world.run(GOD, &line)),
+                "setup line refused: {line}"
+            );
+        }
+        world.world_mut().move_to(pilot, field).unwrap();
+        world.world_mut().move_to(backup, field).unwrap();
+        let _ = world.run(
+            GOD,
+            &format!("@station/fallback #{}/pilot=#{}", atlas.0, backup.0),
+        );
+        let _ = world.run(pilot, &format!("+focus #{}/pilot", atlas.0));
+        let _ = world.run(pilot, "+focus/release");
+        let fire = *world
+            .engine_mut()
+            .take_authoritative_submit()
+            .expect("the clean release fired the fallback controller");
+
+        let store = mush_store::InMemoryStore::new();
+        let _ = world.drain_write_batch();
+        let boundary_at = world.world().world_ic_now().at;
+        // Resolve + stage the fallback fire through the REAL command-submit path.
+        drive_submit(&mut world, &store, &fire, 1)
+            .await
+            .expect("the fallback fire resolves and stages (not self-staled)");
+        // Apply the scheduled handoff at its boundary: the seat FILLS with backup.
+        let applied = bundle_lease(&drive_scheduled_apply(&mut world, &store, boundary_at).await);
+        assert_eq!(
+            applied.holder(),
+            Some(&PrincipalId::Object { id: backup }),
+            "the declared fallback actually seats through the full driver path"
+        );
+        assert!(applied.pending().is_none());
+    }
+
     #[tokio::test]
     async fn vf_b2_extract_command_to_receipt_commits_one_lot() {
         let (mut world, families) = extract_world();

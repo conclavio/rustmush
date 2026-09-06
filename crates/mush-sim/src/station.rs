@@ -35,11 +35,15 @@ use serde_json::json;
 use smol_str::SmolStr;
 
 use crate::NS;
-use crate::commands::{focused_station, info, is_admin, rhs_required, st};
+use crate::commands::{focused_station, holds_billet, info, is_admin, rhs_required, st};
 use crate::data::StationId;
 
-/// Byte-identical for an unknown and an unviewable unit: a refusal over a
-/// station the actor may not know exists must say nothing about its existence.
+/// Byte-identical for an unknown/unviewable unit AND for a station the actor
+/// does not hold a billet on (B1): a refusal must reveal nothing about which
+/// units or stations exist to an actor with no authority over them.
+/// `resolve_visible_unit` collapses the unit level; `station_handoff`'s
+/// `holds_billet` gate collapses the station level (an existing-but-not-held
+/// station and a non-existent one both refuse with this line to a non-holder).
 const NO_SUCH_STATION: &str = "No such station.";
 
 /// One declared station fallback — a bounded whole-document workflow record
@@ -56,10 +60,19 @@ pub struct StationFallback {
     pub holder: ObjId,
 }
 
+/// Census bound on the declared-fallback family (B2, folded into D2): a K-style
+/// count cap on the RAM mirror and, by construction, the durable
+/// `sim.station_fallback` doc set the boot hydration reads back. The count is
+/// otherwise only naturally bounded by station topology and the `is_admin` gate;
+/// this makes the ceiling explicit so a declared-policy family cannot grow
+/// unbounded. Station-name length is bounded by the existing
+/// station-must-exist-on-the-unit gate on the declare path.
+pub const MAX_STATION_FALLBACKS: usize = 4096;
+
 /// The world-owned RAM mirror of the declared fallbacks (keyed by unit+station),
 /// the data the immediate controller reads on a clean switch. Persisted as
-/// `sim.station_fallback` docs; a reboot re-declares like focus (boot hydration
-/// of the slot is a follow-up, noted in §3.5's as-built).
+/// `sim.station_fallback` docs and re-hydrated at boot from a `station_fallback:`
+/// branch in `load_boot` (D2), bounded by [`MAX_STATION_FALLBACKS`].
 #[derive(Clone, Debug, Default)]
 pub struct StationFallbacks(BTreeMap<(ObjId, StationId), ObjId>);
 
@@ -70,9 +83,18 @@ impl StationFallbacks {
         self.0.get(&(unit, station.clone())).copied()
     }
 
-    /// Declare (or replace) one station's fallback controller.
-    pub fn declare(&mut self, unit: ObjId, station: StationId, holder: ObjId) {
-        self.0.insert((unit, station), holder);
+    /// Declare (or replace) one station's fallback controller. Returns `false`
+    /// without inserting when a NEW key would exceed [`MAX_STATION_FALLBACKS`]
+    /// (re-declaring an existing station never grows the map, so it always
+    /// succeeds).
+    #[must_use]
+    pub fn declare(&mut self, unit: ObjId, station: StationId, holder: ObjId) -> bool {
+        let key = (unit, station);
+        if !self.0.contains_key(&key) && self.0.len() >= MAX_STATION_FALLBACKS {
+            return false;
+        }
+        self.0.insert(key, holder);
+        true
     }
 
     /// How many fallbacks are declared.
@@ -88,7 +110,7 @@ impl StationFallbacks {
 }
 
 /// The `sim.station_fallback` document key.
-fn fallback_key(unit: ObjId, station: &StationId) -> SmolStr {
+pub(crate) fn fallback_key(unit: ObjId, station: &StationId) -> SmolStr {
     SmolStr::new(format!("station_fallback:{}:{}", unit.0, station.as_str()))
 }
 
@@ -151,22 +173,24 @@ pub(crate) fn cmd_station(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 /// success line — the mechanic and the confirmation are the provider's and the
 /// durable receipt's. Authority and every coordinate are the offer's
 /// (`project_station_offer`); this handler only proves reach/focus for an
-/// immediate refusal and passes the exact subject revision.
+/// immediate refusal and passes the exact subject revision. The existence-hiding
+/// guarantee holds at BOTH the unit level (`resolve_visible_unit`) and the
+/// station level (the `holds_billet` gate below — B1): a co-located non-holder
+/// cannot tell an existing station from a missing one.
 fn station_handoff(ctx: &mut Ctx<'_>, cancel: bool) -> Result<(), CmdError> {
     let (unit, station) = parse_unit_station(ctx, ctx.args.lhs())?;
-    // Existence hiding: a station that does not exist on the unit is refused with
-    // the SAME line as an unknown/unviewable unit, so probing reveals nothing
-    // about which stations exist — before any focus/authority feedback.
-    if st(ctx)
-        .stations
-        .get(&unit)
-        .is_none_or(|hs| !hs.stations.contains_key(&station))
-    {
+    // Existence hiding (B1): a station is refused with the SAME `NO_SUCH_STATION`
+    // line to any actor who does not hold that billet — whether the station is
+    // absent OR merely not this actor's seat. `holds_billet` is false in both
+    // cases, so a co-located non-holder can never distinguish an existing station
+    // from a missing one, and cannot enumerate a unit's station complement. Only a
+    // billet-holder (who already knows the seat exists) sees the "+focus" hint.
+    if !holds_billet(ctx, ctx.actor, unit, &station) {
         return Err(CmdError::msg(NO_SUCH_STATION));
     }
     // Focus-gated: the offer is projected only for the actor's focused station
     // (the billet that proves authority and fixes the one channel). Refuse early
-    // when the actor is not driving that station.
+    // when the actor holds the billet but is not driving that station.
     if focused_station(ctx, ctx.actor) != Some((unit, station.clone())) {
         return Err(CmdError::msg(format!(
             "You are not driving `{station}` there; +focus it first."
@@ -254,9 +278,15 @@ fn station_fallback(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         station: station.clone(),
         holder,
     };
-    // The RAM mirror the immediate controller reads...
-    if let Some(slot) = ctx.w.module_state_mut::<StationFallbacks>() {
-        slot.declare(unit, station.clone(), holder);
+    // The RAM mirror the immediate controller reads. Bounded by the census
+    // (B2/D2): refuse past the cap BEFORE writing the durable doc, so the RAM
+    // mirror and the persisted set never disagree.
+    if let Some(slot) = ctx.w.module_state_mut::<StationFallbacks>()
+        && !slot.declare(unit, station.clone(), holder)
+    {
+        return Err(CmdError::msg(
+            "Too many station fallbacks are declared; remove one first.",
+        ));
     }
     // ...and the durable exempt record.
     ctx.persist(ModuleOp {
@@ -278,11 +308,15 @@ fn station_fallback(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 }
 
 /// The immediate deterministic controller (B6 / invariant 6; K7.0 template). On
-/// a clean switch away from `station` on `unit`, if a fallback is declared, hand
-/// the released station to it **immediately** — a direct `submit_authoritative`
-/// with a deterministic key and **no `PendingDecision`**, exactly the
-/// `mush-npc` `UseAbility` immediate-controller shape. Called from
-/// `crate::commands`' focus release/switch, before the focus is relinquished.
+/// a clean release OR switch away from `station` on `unit`, if a fallback is
+/// declared, hand the released station to it **immediately** — a direct
+/// `submit_authoritative` with a deterministic key and **no `PendingDecision`**,
+/// exactly the `mush-npc` `UseAbility` immediate-controller shape. Called from
+/// BOTH `focus_release` and `focus_acquire`'s switch path (C2), **after** the
+/// unit's control-generation bump and republish (C1), so the deferred submit
+/// pins the NEW grant epoch — the offer re-sources the relief from the surviving
+/// billet grant (`HandoffProvider::departed_fallback_station`) rather than the
+/// focus the release just tore down, and so the seat actually fills.
 pub(crate) fn fire_station_fallback(ctx: &mut Ctx<'_>, unit: ObjId, station: &StationId) {
     let Some(holder) = fallbacks(ctx).and_then(|f| f.holder(unit, station)) else {
         return;

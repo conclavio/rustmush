@@ -22,6 +22,7 @@ use crate::data::{
     placement_key,
 };
 use crate::graph::{ancestors, project, rebuild};
+use crate::station::{StationFallback, StationFallbacks, fallback_key};
 
 fn parse_id(key: &str, prefix: &str) -> Option<u64> {
     key.strip_prefix(prefix)?.parse().ok()
@@ -277,6 +278,7 @@ pub(crate) fn load_boot(
     let mut meta_next: Option<u64> = None;
     let mut placements: BTreeMap<ObjId, PlacementRecord> = BTreeMap::new();
     let mut raw_assignments: Vec<HostAssignments> = Vec::new();
+    let mut station_fallbacks: Vec<StationFallback> = Vec::new();
     let mut log_docs: Vec<(SmolStr, serde_json::Value)> = Vec::new();
 
     for (key, value) in data.kv {
@@ -408,6 +410,23 @@ pub(crate) fn load_boot(
                             reason,
                         },
                     );
+                }
+            }
+        } else if key.starts_with("station_fallback:") {
+            // D2: the declared fallback controllers (sibling of `cgen:`). Without
+            // this branch the docs fell to the "unknown doc ignored" warn every
+            // boot and the RAM mirror stayed empty, so a durable staff policy went
+            // silently inert after the routine reboot. Drop-on-unreadable (never
+            // fatal): a bad fallback record must not brick boot.
+            match serde_json::from_value::<StationFallback>(value) {
+                Ok(rec) if fallback_key(rec.unit, &rec.station) == key => {
+                    station_fallbacks.push(rec);
+                }
+                Ok(rec) => {
+                    tracing::error!(%key, unit = %rec.unit, "sim: station-fallback doc key/body mismatch dropped")
+                }
+                Err(e) => {
+                    tracing::error!(%key, error = %e, "sim: unparseable station-fallback doc dropped")
                 }
             }
         } else {
@@ -630,6 +649,22 @@ pub(crate) fn load_boot(
     *ctx.w
         .module_state_mut::<SpatialState>()
         .expect("sim state slot installed at registration") = st;
+    // D2: hydrate the declared-fallback RAM mirror the immediate controller and
+    // `project_station_offer`'s relief branch read, bounded by the census. The
+    // durable docs survive on disk regardless; this restores the live mirror so a
+    // clean switch fires a fallback after a reboot without staff re-declaring.
+    if !station_fallbacks.is_empty()
+        && let Some(slot) = ctx.w.module_state_mut::<StationFallbacks>()
+    {
+        for rec in station_fallbacks {
+            if !slot.declare(rec.unit, rec.station.clone(), rec.holder) {
+                tracing::warn!(
+                    "sim: station-fallback census reached at boot; extra declared fallbacks dropped"
+                );
+                break;
+            }
+        }
+    }
     // Republish control links from the installed assignments (M27 owner-republish).
     for actor in assigned_actors {
         crate::links::refresh_actor_links(ctx.w, actor);

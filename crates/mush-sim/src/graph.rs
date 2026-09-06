@@ -211,11 +211,15 @@ pub fn rebuild(st: &SpatialState) -> Derived {
         }
     }
     for a in st.assignments.values() {
-        for seat in a.seats.values() {
+        for (sid, seat) in &a.seats {
             d.assignments_by_actor
                 .entry(seat.actor)
                 .or_default()
                 .insert(a.host);
+            d.seats_by_actor
+                .entry(seat.actor)
+                .or_default()
+                .insert((a.host, sid.clone()));
         }
     }
     d

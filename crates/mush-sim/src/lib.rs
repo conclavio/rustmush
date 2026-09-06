@@ -52,7 +52,7 @@ pub use route::{
     CadenceId, DriveProfile, DriveProfileWire, Journey, JourneyStatus, Leg, LegDef, LegDefWire,
     MAX_LEGS, RouteDef, RouteDefError, RouteDefWire, RouteState, route_duration,
 };
-pub use station::{StationFallback, StationFallbacks};
+pub use station::{MAX_STATION_FALLBACKS, StationFallback, StationFallbacks};
 pub use transition::{Plan, SpatialError, Transition, apply, plan, run};
 
 /// Module configuration.

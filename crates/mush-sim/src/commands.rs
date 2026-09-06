@@ -1447,7 +1447,7 @@ pub(crate) fn focused_station(ctx: &Ctx<'_>, actor: ObjId) -> Option<(ObjId, Sta
 
 /// Whether `actor` holds the seat `station` on `unit` (a billet), and the unit
 /// actually defines that station. No focus implied — billet is eligibility.
-fn holds_billet(ctx: &Ctx<'_>, actor: ObjId, unit: ObjId, station: &StationId) -> bool {
+pub(crate) fn holds_billet(ctx: &Ctx<'_>, actor: ObjId, unit: ObjId, station: &StationId) -> bool {
     let s = st(ctx);
     s.stations
         .get(&unit)
@@ -1562,11 +1562,21 @@ fn focus_acquire(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     if let Some((prior, prior_generation)) = prior_gen {
         apply_focus_bump_and_refresh(ctx, prior, prior_generation, ctx.actor);
     }
-    for prior in released {
+    for prior in &released {
         // A different actor of the same account that was displaced: re-derive
         // its links so its (now non-foreground) grants carry the fresh epoch.
         if prior.actor != ctx.actor {
             refresh_actor_links(ctx.w, prior.actor);
+        }
+    }
+    // C2 / invariant 6: a focus SWITCH releases the prior station just as
+    // `+focus/release` does, so it must fire that station's declared fallback too
+    // — AFTER the prior unit's epoch bump above, so the fire pins the new grant
+    // epoch and its offer re-sources from the surviving billet grant. Mirror
+    // `focus_release`: fire for the switching actor's own displaced focus.
+    for prior in &released {
+        if prior.actor == ctx.actor {
+            crate::station::fire_station_fallback(ctx, prior.unit, &prior.station);
         }
     }
     info(
@@ -1590,10 +1600,6 @@ fn focus_release(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     else {
         return Err(CmdError::msg("You hold no foreground focus."));
     };
-    // B6 / invariant 6: a clean release fires the released station's declared
-    // fallback immediately (the K7.0 immediate-controller seam), before the focus
-    // is relinquished. A handler error below discards this deferred submit too.
-    crate::station::fire_station_fallback(ctx, unit, &station);
     let generation = prepare_focus_bump(ctx, unit)?;
     let released = ctx
         .w
@@ -1608,6 +1614,13 @@ fn focus_release(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     {
         refresh_actor_links(ctx.w, focus.actor);
     }
+    // B6 / invariant 6 (C1): a clean release fires the released station's declared
+    // fallback immediately (the K7.0 immediate-controller seam) — AFTER the epoch
+    // bump and republish, so the deferred submit pins the NEW grant epoch and its
+    // offer re-sources from the surviving billet grant rather than the focus this
+    // release just relinquished. Fired past every fallible step, so no partial
+    // release ever queues an orphan submit.
+    crate::station::fire_station_fallback(ctx, unit, &station);
     info(ctx, "You relinquish foreground control.");
     Ok(())
 }
@@ -1640,46 +1653,40 @@ fn cmd_stations(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let actor = ctx.actor;
     let focused = focused_station(ctx, actor);
     let mut lines: Vec<String> = Vec::new();
-    let mut visited = 0usize;
     let mut truncated = false;
     {
         let s = st(ctx);
-        let units: Vec<ObjId> = s
+        // B3: iterate the actor's OWN seats via `seats_by_actor`, so the scan cost
+        // is bounded by their own billet count and the `MAX_BILLETS_LISTED` cap —
+        // never a walk of every unit's whole (uncapped) `seats` map to skip other
+        // actors' seats.
+        let own: Vec<(ObjId, StationId)> = s
             .derived
-            .assignments_by_actor
+            .seats_by_actor
             .get(&actor)
-            .map(|us| us.iter().copied().collect())
+            .map(|seats| seats.iter().cloned().collect())
             .unwrap_or_default();
-        'outer: for unit in units {
-            let Some(ha) = s.assignments.get(&unit) else {
-                continue;
-            };
-            for (station, seat) in &ha.seats {
-                if seat.actor != actor {
-                    continue;
-                }
-                if visited >= MAX_BILLETS_LISTED {
-                    truncated = true;
-                    break 'outer;
-                }
-                visited += 1;
-                let role = s
-                    .stations
-                    .get(&unit)
-                    .and_then(|hs| hs.stations.get(station))
-                    .map_or_else(|| "?".to_string(), |spec| spec.role.to_string());
-                let mark = if focused.as_ref() == Some(&(unit, station.clone())) {
-                    " [FOCUSED]"
-                } else {
-                    ""
-                };
-                // Name the unit (the crew member knows their own billet) but
-                // never its location.
-                lines.push(format!(
-                    "  {} — `{station}` ({role}){mark}",
-                    display_name(ctx.w, unit)
-                ));
+        for (unit, station) in own {
+            if lines.len() >= MAX_BILLETS_LISTED {
+                truncated = true;
+                break;
             }
+            let role = s
+                .stations
+                .get(&unit)
+                .and_then(|hs| hs.stations.get(&station))
+                .map_or_else(|| "?".to_string(), |spec| spec.role.to_string());
+            let mark = if focused.as_ref() == Some(&(unit, station.clone())) {
+                " [FOCUSED]"
+            } else {
+                ""
+            };
+            // Name the unit (the crew member knows their own billet) but never its
+            // location.
+            lines.push(format!(
+                "  {} — `{station}` ({role}){mark}",
+                display_name(ctx.w, unit)
+            ));
         }
     }
     if lines.is_empty() {

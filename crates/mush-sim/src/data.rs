@@ -501,6 +501,10 @@ pub struct Derived {
     pub spaces_in_domain: BTreeMap<DomainId, BTreeSet<ObjId>>,
     /// Actor → the units it holds a control station on.
     pub assignments_by_actor: BTreeMap<ObjId, BTreeSet<ObjId>>,
+    /// Actor → the exact `(unit, station)` seats it holds (B3): `+stations` and
+    /// the fallback re-source iterate THIS, so their scan cost is bounded by the
+    /// actor's own billets, never a walk of every unit's whole `seats` map.
+    pub seats_by_actor: BTreeMap<ObjId, BTreeSet<(ObjId, StationId)>>,
 }
 
 /// The module's state slot: the durable records, the allocator, the recovery
