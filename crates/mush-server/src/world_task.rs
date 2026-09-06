@@ -3650,6 +3650,7 @@ async fn run(
                     &persistence_integrity,
                     &tx,
                     llm.as_ref(),
+                    &deps.store,
                 );
                 let decision_response = completed.decision_response.take();
                 let decision_terminal = completed.decision_terminal.take();
@@ -4345,6 +4346,7 @@ async fn run(
                         &persistence_integrity,
                         &tx,
                         llm.as_ref(),
+                        &deps.store,
                     );
                     finish_pending_operational(&mut engine, &gateway, completed);
                 }
@@ -4448,6 +4450,7 @@ async fn run(
                             &persistence_integrity,
                             &tx,
                             llm.as_ref(),
+                            &deps.store,
                         );
                     } else if create_completion.is_some() {
                         // Creating a player necessarily dirties the world. A
@@ -4464,6 +4467,7 @@ async fn run(
                             &persistence_integrity,
                             &tx,
                             llm.as_ref(),
+                            &deps.store,
                         );
                     } else {
                         release_classified_sends(
@@ -4477,6 +4481,7 @@ async fn run(
                             DeliveryOutcome::NoWrite,
                             &tx,
                             llm.as_ref(),
+                            &deps.store,
                         );
                     }
                 }
@@ -4532,6 +4537,7 @@ async fn run(
                         &persistence_integrity,
                         &tx,
                         llm.as_ref(),
+                        &deps.store,
                     );
                 }
                 FlushOutcome::Refused(detail) => {
@@ -4549,6 +4555,7 @@ async fn run(
                         &health,
                         &tx,
                         llm.as_ref(),
+                        &deps.store,
                     );
                 }
                 FlushOutcome::Rejected(detail) => {
@@ -4568,6 +4575,7 @@ async fn run(
                         &persistence_integrity,
                         &tx,
                         llm.as_ref(),
+                        &deps.store,
                     );
                 }
                 FlushOutcome::WriterGone => {
@@ -4590,6 +4598,7 @@ async fn run(
                         &persistence_integrity,
                         &tx,
                         llm.as_ref(),
+                        &deps.store,
                     );
                 }
             }
@@ -4648,6 +4657,7 @@ async fn run(
                         DeliveryOutcome::NoWrite,
                         &tx,
                         llm.as_ref(),
+                        &deps.store,
                     );
                 }
                 FlushOutcome::Queued {
@@ -4695,6 +4705,7 @@ async fn run(
                         &persistence_integrity,
                         &tx,
                         llm.as_ref(),
+                        &deps.store,
                     );
                 }
                 FlushOutcome::Refused(detail) => refuse_before_submission(
@@ -4707,6 +4718,7 @@ async fn run(
                     &health,
                     &tx,
                     llm.as_ref(),
+                    &deps.store,
                 ),
                 FlushOutcome::Rejected(detail) => abort_without_receipt(
                     sends,
@@ -4720,6 +4732,7 @@ async fn run(
                     &persistence_integrity,
                     &tx,
                     llm.as_ref(),
+                    &deps.store,
                 ),
                 FlushOutcome::WriterGone => abort_without_receipt(
                     sends,
@@ -4733,6 +4746,7 @@ async fn run(
                     &persistence_integrity,
                     &tx,
                     llm.as_ref(),
+                    &deps.store,
                 ),
             }
         }
@@ -4832,6 +4846,7 @@ async fn run(
                         DeliveryOutcome::NoWrite,
                         &tx,
                         llm.as_ref(),
+                        &deps.store,
                     );
                     tracing::info!("world task shut down cleanly");
                     break;
@@ -4881,6 +4896,7 @@ async fn run(
                         &persistence_integrity,
                         &tx,
                         llm.as_ref(),
+                        &deps.store,
                     );
                     metrics.set_persistence_state(
                         health.mode.store_read_only(),
@@ -4900,6 +4916,7 @@ async fn run(
                         &health,
                         &tx,
                         llm.as_ref(),
+                        &deps.store,
                     );
                     tracing::warn!(%detail, "shutdown write refused before submission");
                     break;
@@ -4917,6 +4934,7 @@ async fn run(
                         &persistence_integrity,
                         &tx,
                         llm.as_ref(),
+                        &deps.store,
                     );
                     metrics.set_persistence_state(
                         health.mode.store_read_only(),
@@ -4938,6 +4956,7 @@ async fn run(
                         &persistence_integrity,
                         &tx,
                         llm.as_ref(),
+                        &deps.store,
                     );
                     metrics.set_persistence_state(
                         health.mode.store_read_only(),
@@ -6890,6 +6909,7 @@ fn release_classified_effects(
     outcome: DeliveryOutcome,
     tx: &mpsc::WeakSender<WorldMsg>,
     llm: Option<&Arc<LlmService>>,
+    store: &Arc<dyn ObjectStore>,
 ) {
     if outcome == DeliveryOutcome::Aborted {
         if !effects.is_empty() {
@@ -6917,7 +6937,7 @@ fn release_classified_effects(
         );
     }
     match admission_for(mode, IngressClass::ExternalEffect) {
-        Admission::Allow => spawn_effect_list(released, tx, llm),
+        Admission::Allow => spawn_effect_list(released, tx, llm, store),
         Admission::Refuse(reason) => {
             if !released.is_empty() {
                 tracing::warn!(
@@ -7075,6 +7095,7 @@ fn complete_pending_commit(
     persistence_integrity: &PersistenceIntegrityLatch,
     tx: &mpsc::WeakSender<WorldMsg>,
     llm: Option<&Arc<LlmService>>,
+    store: &Arc<dyn ObjectStore>,
 ) -> CompletedPending {
     let PendingCommit {
         sends,
@@ -7166,7 +7187,7 @@ fn complete_pending_commit(
     } else {
         health.mode
     };
-    release_classified_effects(effect_mode, effects, outcome, tx, llm);
+    release_classified_effects(effect_mode, effects, outcome, tx, llm, store);
 
     match (create, failure.as_deref()) {
         (Some(create), None) => {
@@ -7253,12 +7274,20 @@ fn abort_without_receipt(
     persistence_integrity: &PersistenceIntegrityLatch,
     tx: &mpsc::WeakSender<WorldMsg>,
     llm: Option<&Arc<LlmService>>,
+    store: &Arc<dyn ObjectStore>,
 ) {
     let has_abort_output = sends
         .iter()
         .any(|(class, _, _)| matches!(class, DeliveryClass::BestEffort | DeliveryClass::OnAbort));
     release_classified_sends(gateway, sends, DeliveryOutcome::Aborted);
-    release_classified_effects(health.mode, effects, DeliveryOutcome::Aborted, tx, llm);
+    release_classified_effects(
+        health.mode,
+        effects,
+        DeliveryOutcome::Aborted,
+        tx,
+        llm,
+        store,
+    );
     apply_integrity_freeze(world, gateway, health, persistence_integrity, detail);
     if let Some(actor) = failure_actor
         && !has_abort_output
@@ -7284,12 +7313,20 @@ fn refuse_before_submission(
     health: &StoreHealth,
     tx: &mpsc::WeakSender<WorldMsg>,
     llm: Option<&Arc<LlmService>>,
+    store: &Arc<dyn ObjectStore>,
 ) {
     let has_abort_output = sends
         .iter()
         .any(|(class, _, _)| matches!(class, DeliveryClass::BestEffort | DeliveryClass::OnAbort));
     release_classified_sends(gateway, sends, DeliveryOutcome::Aborted);
-    release_classified_effects(health.mode, effects, DeliveryOutcome::Aborted, tx, llm);
+    release_classified_effects(
+        health.mode,
+        effects,
+        DeliveryOutcome::Aborted,
+        tx,
+        llm,
+        store,
+    );
     if let Some(actor) = failure_actor
         && !has_abort_output
     {
@@ -7344,9 +7381,49 @@ fn spawn_effect_list(
     effects: Vec<Effect>,
     tx: &mpsc::WeakSender<WorldMsg>,
     llm: Option<&Arc<LlmService>>,
+    store: &Arc<dyn ObjectStore>,
 ) {
     for effect in effects {
         match effect {
+            // H1: the module store-read seam. Perform the bounded read OFF
+            // the world loop against the store handle this task holds, then
+            // re-enter as the typed `WorldCommand::StoreReadDone`. The
+            // namespace is the requesting module's own (locked by
+            // `Ctx::read_store`), one `module_json_get` per key, and the
+            // byte/time bounds are decided in `store_read`, never here.
+            Effect::StoreRead {
+                module,
+                actor,
+                correlation,
+                keys,
+            } => {
+                let Some(tx) = tx.upgrade() else {
+                    tracing::debug!(%module, correlation, "world channel closing; store read dropped");
+                    continue;
+                };
+                let store = Arc::clone(store);
+                tokio::spawn(async move {
+                    let result =
+                        crate::store_read::perform_store_read(&*store, module.as_str(), &keys)
+                            .await;
+                    let done = WorldCommand::StoreReadDone {
+                        module,
+                        actor,
+                        correlation,
+                        payload: result.to_payload(),
+                    };
+                    if tx
+                        .send(WorldMsg::Inbound(Inbound::Apply(done)))
+                        .await
+                        .is_err()
+                    {
+                        tracing::debug!(
+                            correlation,
+                            "store read completion after shutdown dropped"
+                        );
+                    }
+                });
+            }
             Effect::SlowTest {
                 actor,
                 correlation,
@@ -7533,6 +7610,12 @@ fn spawn_effect_list(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// H1: the store handle the effect-release helpers now carry (tests that
+    /// never launch a store read hand them an empty in-memory store).
+    fn test_effect_store() -> Arc<dyn ObjectStore> {
+        Arc::new(InMemoryStore::new())
+    }
     use std::collections::BTreeSet;
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering as AtomicOrdering};
@@ -9193,6 +9276,7 @@ mod tests {
             &integrity,
             &world_tx.downgrade(),
             None,
+            &test_effect_store(),
         );
 
         assert_eq!(calls.load(AtomicOrdering::SeqCst), 0);
@@ -12370,6 +12454,7 @@ mod tests {
             DeliveryOutcome::NoWrite,
             &effect_weak,
             None,
+            &store,
         );
         tokio::time::sleep(Duration::from_millis(10)).await;
         assert!(
@@ -12516,6 +12601,7 @@ mod tests {
             &persistence_integrity,
             &tx.downgrade(),
             None,
+            &test_effect_store(),
         );
 
         assert_eq!(completed.outcome, DeliveryOutcome::Committed);
@@ -12616,6 +12702,7 @@ mod tests {
             &persistence_integrity,
             &tx.downgrade(),
             None,
+            &test_effect_store(),
         );
         assert_eq!(completed.outcome, DeliveryOutcome::Committed);
         assert_eq!(
@@ -12646,6 +12733,7 @@ mod tests {
             &persistence_integrity,
             &tx.downgrade(),
             None,
+            &test_effect_store(),
         );
 
         assert_eq!(completed.outcome, DeliveryOutcome::Aborted);
@@ -12787,6 +12875,7 @@ mod tests {
                 &persistence_integrity,
                 &tx.downgrade(),
                 None,
+                &test_effect_store(),
             );
 
             assert_eq!(completed.outcome, DeliveryOutcome::Aborted);
@@ -12963,6 +13052,7 @@ mod tests {
             &persistence_integrity,
             &tx.downgrade(),
             None,
+            &test_effect_store(),
         );
         finish_pending_operational(&mut engine, &gateway, completed);
 
@@ -13309,6 +13399,7 @@ mod tests {
             &persistence_integrity,
             &weak,
             None,
+            &test_effect_store(),
         );
         tokio::task::yield_now().await;
         assert!(health.mode.integrity_frozen());

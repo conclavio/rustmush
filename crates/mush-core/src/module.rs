@@ -101,6 +101,33 @@ pub const MAX_MODULE_NAMESPACE_BYTES: usize = 256;
 /// Maximum UTF-8 bytes in a key within a module persistence namespace.
 pub const MAX_MODULE_KEY_BYTES: usize = 4 * 1024;
 
+/// The most keys one [`Ctx::read_store`] request may name (H1). A page of
+/// ledger chunks is the intended shape — a handful of `log:{id}:{n}`
+/// documents — never a namespace listing.
+pub const MAX_STORE_READ_KEYS: usize = 16;
+
+/// The most bytes one store read may return, summed over the encoded
+/// documents (H1). Past this the driving loop re-enters with
+/// [`StoreReadResult::Oversized`] and **no** documents, so a module cannot
+/// pull an unbounded slice of history into the world loop. Sized for
+/// `MAX_STORE_READ_KEYS` ledger chunks at their 16 KiB target with headroom,
+/// well under the 8 MiB single-chunk safety ceiling.
+pub const MAX_STORE_READ_BYTES: usize = 512 * 1024;
+
+/// How long the driving loop lets one store read run before it re-enters
+/// with [`StoreReadResult::Failed`] (H1). A read is a view, so it is never
+/// retried; the requester may simply ask again.
+pub const STORE_READ_TIMEOUT_MS: u64 = 5_000;
+
+/// How old (world seconds) a module's pending-read bookkeeping may be before
+/// a new request from the same actor supersedes it (H1 verify fold, B1).
+/// A read that launched answers within [`STORE_READ_TIMEOUT_MS`]; one that
+/// never launched — the effect refused while the world was booting or
+/// recovering, or the completion dropped for the same reason — answers never,
+/// and without this window that actor could not read again until a restart.
+/// A late completion for the superseded correlation is then a stale drop.
+pub const STORE_READ_STALE_SECS: i64 = 30;
+
 /// One write against a module's persisted namespace.
 ///
 /// Redis mapping (applied by mush-store inside the same MULTI/EXEC as the
@@ -858,6 +885,141 @@ pub trait AsyncCompletion: Send + Sync {
     fn on_complete(&self, ctx: &mut Ctx<'_>, correlation: u64, payload: &str);
 }
 
+// ----------------------------------------------------------------------
+// H1 — the module store-read seam
+// ----------------------------------------------------------------------
+
+/// What one [`Effect::StoreRead`](crate::engine::Effect::StoreRead) came back
+/// with (H1). Carried across the world channel as an encoded `String` in
+/// [`WorldCommand::StoreReadDone`](crate::engine::WorldCommand::StoreReadDone)
+/// and decoded by [`StoreReadResult::from_payload`] before the module's
+/// [`StoreReadCompletion`] sees it.
+#[derive(Clone, Debug, PartialEq)]
+pub enum StoreReadResult {
+    /// Every requested key was looked up. `docs` holds the present ones in
+    /// request order; `absent` the keys the store had no document for.
+    Docs {
+        /// `(key, document)` for each key that existed.
+        docs: Vec<(SmolStr, serde_json::Value)>,
+        /// The requested keys that did not exist.
+        absent: Vec<SmolStr>,
+    },
+    /// The read did not complete (a store error, a timeout, an undecodable
+    /// completion). Nothing is returned; the requester may ask again.
+    Failed(String),
+    /// The documents would have exceeded [`MAX_STORE_READ_BYTES`]; nothing is
+    /// returned. `bytes` is the count observed when the ceiling was crossed,
+    /// not the full size.
+    Oversized {
+        /// Encoded bytes observed before the limit was crossed.
+        bytes: usize,
+    },
+}
+
+/// The wire form of [`StoreReadResult`] — externally tagged, strict.
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+enum StoreReadPayload {
+    Docs {
+        docs: Vec<(SmolStr, serde_json::Value)>,
+        absent: Vec<SmolStr>,
+    },
+    Failed {
+        detail: String,
+    },
+    Oversized {
+        bytes: usize,
+    },
+}
+
+impl StoreReadResult {
+    /// Encode for the world channel. Infallible: every variant is plain data,
+    /// and a `Value` that somehow fails to serialize becomes a `Failed`.
+    #[must_use]
+    pub fn to_payload(&self) -> String {
+        let wire = match self {
+            StoreReadResult::Docs { docs, absent } => StoreReadPayload::Docs {
+                docs: docs.clone(),
+                absent: absent.clone(),
+            },
+            StoreReadResult::Failed(detail) => StoreReadPayload::Failed {
+                detail: detail.clone(),
+            },
+            StoreReadResult::Oversized { bytes } => StoreReadPayload::Oversized { bytes: *bytes },
+        };
+        serde_json::to_string(&wire).unwrap_or_else(|e| {
+            serde_json::to_string(&StoreReadPayload::Failed {
+                detail: format!("store read result could not be encoded: {e}"),
+            })
+            .expect("a plain string payload always encodes")
+        })
+    }
+
+    /// Decode from the world channel. A malformed payload decodes to
+    /// [`StoreReadResult::Failed`] rather than being dropped, so a handler
+    /// always hears back for a correlation it is waiting on.
+    #[must_use]
+    pub fn from_payload(payload: &str) -> StoreReadResult {
+        match serde_json::from_str::<StoreReadPayload>(payload) {
+            Ok(StoreReadPayload::Docs { docs, absent }) => StoreReadResult::Docs { docs, absent },
+            Ok(StoreReadPayload::Failed { detail }) => StoreReadResult::Failed(detail),
+            Ok(StoreReadPayload::Oversized { bytes }) => StoreReadResult::Oversized { bytes },
+            Err(e) => StoreReadResult::Failed(format!("undecodable store read payload: {e}")),
+        }
+    }
+}
+
+/// Typed re-entry of a module's deferred store read (H1;
+/// [`Effect::StoreRead`](crate::engine::Effect::StoreRead) →
+/// [`WorldCommand::StoreReadDone`](crate::engine::WorldCommand::StoreReadDone)).
+/// The driving loop performs the read off the world loop against the store
+/// handle it holds — `mush-core` never does — and re-enters with the result;
+/// the engine routes it here, in the world task, with a full [`Ctx`]
+/// carrying the requesting module's identity and the requesting actor.
+///
+/// **Re-validate against current world state**: the actor may have gone, the
+/// scene may have closed. A read is a **view**: the handler renders and may
+/// update its own RAM bookkeeping (a pending-read watermark), and it never
+/// needs to persist. A completion the world cannot apply (a mode refusal, a
+/// vanished actor) is dropped with a log and never retried (D-H-3).
+pub trait StoreReadCompletion: Send + Sync {
+    /// Apply one read result. `correlation` echoes what
+    /// [`Ctx::read_store`] returned; `ctx.actor` is the requesting actor.
+    fn on_read(&self, ctx: &mut Ctx<'_>, correlation: u64, result: StoreReadResult);
+}
+
+/// Why [`Ctx::read_store`] refused to queue a read. Every variant is decided
+/// before anything is deferred, so a refused read leaves no trace.
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum StoreReadError {
+    /// The context carries no module identity (a core command), so there is
+    /// no namespace to read.
+    #[error("only a module may read the store; this context has no module identity")]
+    NoModule,
+    /// More keys than [`MAX_STORE_READ_KEYS`].
+    #[error("a store read names at most {max} keys ({requested} requested)")]
+    TooManyKeys {
+        /// Keys requested.
+        requested: usize,
+        /// The ceiling.
+        max: usize,
+    },
+    /// A read of nothing is a programming error, not a no-op.
+    #[error("a store read names at least one key")]
+    NoKeys,
+    /// An empty key cannot name a document.
+    #[error("a store read key must not be empty")]
+    EmptyKey,
+    /// A key past [`MAX_MODULE_KEY_BYTES`] cannot exist in the store.
+    #[error("store read key is {bytes} bytes, exceeding the {max}-byte limit")]
+    KeyTooLong {
+        /// UTF-8 encoded key length.
+        bytes: usize,
+        /// The ceiling.
+        max: usize,
+    },
+}
+
 /// A module job queue declaration (chargen approval, XP spends, +requests).
 /// **Registry only in M3** — the jobs module consumes these.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1216,6 +1378,8 @@ pub struct ModuleTables {
     /// module name → its request-completion handler (interface plan I10: the
     /// server-initiated Request/Respond re-entry seam).
     request_completions: HashMap<SmolStr, Arc<dyn crate::request::RequestCompletion>>,
+    /// module name → its store-read completion handler (the H1 read seam).
+    store_read_completions: HashMap<SmolStr, Arc<dyn StoreReadCompletion>>,
     state_inits: Vec<StateInit>,
 }
 
@@ -1678,6 +1842,13 @@ impl Registry {
         module: &str,
     ) -> Option<Arc<dyn crate::request::RequestCompletion>> {
         self.mods.request_completions.get(module).map(Arc::clone)
+    }
+    /// The store-read completion handler registered by `module`, if any (the
+    /// engine routes [`WorldCommand::StoreReadDone`](crate::engine::WorldCommand::StoreReadDone)
+    /// here — H1).
+    #[must_use]
+    pub fn store_read_completion(&self, module: &str) -> Option<Arc<dyn StoreReadCompletion>> {
+        self.mods.store_read_completions.get(module).map(Arc::clone)
     }
 
     /// Drain the collected state-slot inits (the engine installs them on
@@ -2886,6 +3057,34 @@ impl<'a> Registrar<'a> {
             .insert(self.module.clone(), handler);
         Ok(())
     }
+    /// Register this module's [`StoreReadCompletion`] handler — the re-entry
+    /// point for its deferred store reads ([`Ctx::read_store`], H1). A module
+    /// registers at most one; a second registration is a conflict. A module
+    /// that never registers one may still call `read_store`, but the
+    /// completion is then dropped with a log — so register first.
+    pub fn store_read_completion(
+        &mut self,
+        handler: Arc<dyn StoreReadCompletion>,
+    ) -> Result<(), ModError> {
+        if self
+            .reg
+            .tables_mut()
+            .store_read_completions
+            .contains_key(&self.module)
+        {
+            return Err(ModError::Conflict {
+                module: self.module.clone(),
+                what: "store read completion",
+                name: self.module.clone(),
+                owner: self.module.clone(),
+            });
+        }
+        self.reg
+            .tables_mut()
+            .store_read_completions
+            .insert(self.module.clone(), handler);
+        Ok(())
+    }
 }
 
 // ----------------------------------------------------------------------
@@ -3258,6 +3457,67 @@ pub(crate) fn apply_request_completion_with_action_state(
     handler.on_respond(&mut ctx, payload, outcome);
 }
 
+/// Route a [`WorldCommand::StoreReadDone`](crate::engine::WorldCommand::StoreReadDone)
+/// to `module`'s registered [`StoreReadCompletion`] handler, in the world
+/// task, with a full [`Ctx`] carrying the module identity (H1). A missing
+/// handler is logged and dropped — the same contract as
+/// [`apply_async_completion`].
+pub fn apply_store_read_completion(
+    reg: &Registry,
+    w: &mut World,
+    out: &mut Outbox,
+    module: SmolStr,
+    actor: ObjId,
+    correlation: u64,
+    payload: &str,
+) {
+    apply_store_read_completion_with_action_state(
+        reg,
+        w,
+        out,
+        module,
+        actor,
+        correlation,
+        payload,
+        None,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn apply_store_read_completion_with_action_state(
+    reg: &Registry,
+    w: &mut World,
+    out: &mut Outbox,
+    module: SmolStr,
+    actor: ObjId,
+    correlation: u64,
+    payload: &str,
+    action_state: Option<&crate::action_state::ActionStateStore>,
+) {
+    let Some(handler) = reg.store_read_completion(&module) else {
+        tracing::warn!(
+            %module,
+            correlation,
+            "store read completion for a module with no registered handler dropped"
+        );
+        return;
+    };
+    let result = StoreReadResult::from_payload(payload);
+    let typed_state =
+        crate::action_state::ModuleActionState::for_module(action_state, Some(module.as_str()));
+    let mut ctx = Ctx {
+        w,
+        actor,
+        switches: SwitchSet::default(),
+        args: ParsedArgs::default(),
+        out,
+        reg,
+        module: Some(module),
+        typed_state,
+    };
+    handler.on_read(&mut ctx, correlation, result);
+}
+
 /// Fire the `Connected` / `Disconnected` hooks for an actor.
 pub fn fire_conn_hook(
     reg: &Registry,
@@ -3547,6 +3807,55 @@ impl Ctx<'_> {
                 key,
             },
         )));
+    }
+
+    // ---- H1: the module store-read seam ----
+    /// Queue a bounded, off-loop read of documents from **this module's own**
+    /// namespace, completing later through the module's registered
+    /// [`StoreReadCompletion`] with the returned correlation id.
+    ///
+    /// The namespace is `ctx.module`, never a parameter, so no module can read
+    /// another's documents; `keys` are namespace-relative (a ledger page is
+    /// `chunk_key(log_id, n)` for a handful of `n`). At most
+    /// [`MAX_STORE_READ_KEYS`] keys; the driving loop fetches each with one
+    /// `module_json_get` — never a listing — and caps the returned bytes at
+    /// [`MAX_STORE_READ_BYTES`]. The world loop never waits.
+    ///
+    /// Like every deferred item, a read queued by a handler that then returns
+    /// `Err` is discarded with the rest of its deferred work.
+    pub fn read_store(&mut self, keys: Vec<SmolStr>) -> Result<u64, StoreReadError> {
+        let Some(module) = self.module.clone() else {
+            return Err(StoreReadError::NoModule);
+        };
+        if keys.is_empty() {
+            return Err(StoreReadError::NoKeys);
+        }
+        if keys.len() > MAX_STORE_READ_KEYS {
+            return Err(StoreReadError::TooManyKeys {
+                requested: keys.len(),
+                max: MAX_STORE_READ_KEYS,
+            });
+        }
+        for key in &keys {
+            if key.is_empty() {
+                return Err(StoreReadError::EmptyKey);
+            }
+            if key.len() > MAX_MODULE_KEY_BYTES {
+                return Err(StoreReadError::KeyTooLong {
+                    bytes: key.len(),
+                    max: MAX_MODULE_KEY_BYTES,
+                });
+            }
+        }
+        let correlation = self.w.next_correlation_id();
+        self.out
+            .defer(Deferred::Effect(crate::engine::Effect::StoreRead {
+                module,
+                actor: self.actor,
+                correlation,
+                keys,
+            }));
+        Ok(correlation)
     }
 
     /// Mark the acting player as the preferred recipient for a durable-write

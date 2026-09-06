@@ -152,11 +152,32 @@ impl CanonEvent {
     }
 }
 
+/// One chronicle archive page a reader is waiting on (H1): the correlation
+/// `Ctx::read_store` returned and the chunk range it covers. Transient world
+/// RAM — a restart drops it, and a completion nobody is waiting on is dropped.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PendingCanonRead {
+    /// The correlation the completion must carry.
+    pub correlation: u64,
+    /// When it was requested (world seconds). A request older than
+    /// `STORE_READ_STALE_SECS` is superseded by the next one (verify fold B1).
+    pub requested_at: i64,
+    /// The requested page (0 is the newest).
+    pub page: u64,
+    /// The chunk range the page covers, inclusive.
+    pub chunk_lo: u64,
+    /// The chunk range the page covers, inclusive.
+    pub chunk_hi: u64,
+}
+
 /// The live canon state, held in a module state slot on the `World`.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct CanonState {
+    /// In-flight archive reads, one per requesting actor (H1). Transient.
+    pub pending_reads: std::collections::HashMap<ObjId, PendingCanonRead>,
     /// The single append-only chronicle log (chunked; only the open tail in
-    /// RAM — deep history pages in via the store-read seam once built).
+    /// RAM — deep history pages in through the store-read seam, H1:
+    /// `+chronicle/archive`).
     pub ledger: Ledger,
     /// The durable-id allocator resume point (persisted in the meta doc).
     pub next_canon_id: u64,

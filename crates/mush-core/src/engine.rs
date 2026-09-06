@@ -141,6 +141,24 @@ pub enum WorldCommand {
         /// Opaque module-owned result payload (JSON as a string).
         payload: String,
     },
+    /// Typed completion of an [`Effect::StoreRead`] (H1, the module store-read
+    /// seam): routed in the world task to `module`'s registered
+    /// [`StoreReadCompletion`](crate::module::StoreReadCompletion) handler.
+    /// `payload` is the encoded
+    /// [`StoreReadResult`](crate::module::StoreReadResult), carried as a
+    /// `String` so the enum stays `Eq`; the handler decodes it through
+    /// [`StoreReadResult::from_payload`](crate::module::StoreReadResult::from_payload)
+    /// (a malformed payload is delivered as a `Failed` result, never dropped).
+    StoreReadDone {
+        /// The requesting module — also the namespace that was read.
+        module: SmolStr,
+        /// The requesting actor (the handler runs with this as `ctx.actor`).
+        actor: ObjId,
+        /// Correlation id echoed from the originating [`Effect::StoreRead`].
+        correlation: u64,
+        /// The encoded read result.
+        payload: String,
+    },
 }
 
 /// A future-free description of deferred async work. `mush-core` holds no
@@ -177,6 +195,24 @@ pub enum Effect {
         correlation: u64,
         /// Opaque module-owned request payload (JSON as a string).
         payload: String,
+    },
+    /// A bounded, off-loop read of module documents (H1, the module
+    /// store-read seam — `docs/design/11-h-implementation-plan.md` §3.1).
+    /// The driving loop fetches each key **from the requesting module's own
+    /// namespace** with one `module_json_get` per key — never a namespace
+    /// listing — off the world loop, and re-enters with
+    /// [`WorldCommand::StoreReadDone`]. Built only through
+    /// [`Ctx::read_store`](crate::Ctx::read_store), which bounds the key count
+    /// and locks the namespace to `module`; `mush-core` never holds the store.
+    StoreRead {
+        /// The requesting module — the namespace to read.
+        module: SmolStr,
+        /// The requesting actor, echoed into the completion.
+        actor: ObjId,
+        /// Correlation id echoed into the completion.
+        correlation: u64,
+        /// The namespace-relative keys to fetch (≤ `MAX_STORE_READ_KEYS`).
+        keys: Vec<SmolStr>,
     },
 }
 
@@ -3253,6 +3289,26 @@ impl Engine {
                     Some(&self.action_state),
                 );
             }
+            WorldCommand::StoreReadDone {
+                module,
+                actor,
+                correlation,
+                payload,
+            } => {
+                // The read seam's re-entry (H1): the same routing shape as
+                // `ModuleAsyncDone`. The handler re-validates (the actor may
+                // be gone) and renders; it never needs to persist.
+                module::apply_store_read_completion_with_action_state(
+                    &self.registry,
+                    &mut self.world,
+                    out,
+                    module,
+                    actor,
+                    correlation,
+                    &payload,
+                    Some(&self.action_state),
+                );
+            }
         }
     }
 
@@ -5124,6 +5180,270 @@ mod tests {
             "'responds' is not a respond: {:?}",
             texts(&out)
         );
+    }
+
+    // ---- H1: the module store-read seam ----
+
+    /// A module whose command asks for a page of its own documents and whose
+    /// read completion renders what came back to the actor.
+    struct ReaderModule;
+
+    struct ReaderDone;
+    impl crate::module::StoreReadCompletion for ReaderDone {
+        fn on_read(
+            &self,
+            ctx: &mut Ctx<'_>,
+            correlation: u64,
+            result: crate::module::StoreReadResult,
+        ) {
+            if ctx.w.get(ctx.actor).is_none() {
+                return; // re-validate (treaty ruling 3)
+            }
+            assert_eq!(ctx.module.as_deref(), Some("reader"));
+            let line = match result {
+                crate::module::StoreReadResult::Docs { docs, absent } => format!(
+                    "read #{correlation}: {} doc(s), {} absent",
+                    docs.len(),
+                    absent.len()
+                ),
+                crate::module::StoreReadResult::Failed(detail) => {
+                    format!("read #{correlation} failed: {detail}")
+                }
+                crate::module::StoreReadResult::Oversized { bytes } => {
+                    format!("read #{correlation} oversized: {bytes}")
+                }
+            };
+            ctx.out.info(ctx.actor, line);
+        }
+    }
+
+    impl crate::module::GameModule for ReaderModule {
+        fn name(&self) -> &'static str {
+            "reader"
+        }
+        fn register(
+            &mut self,
+            reg: &mut crate::module::Registrar<'_>,
+        ) -> Result<(), crate::module::ModError> {
+            reg.classify_commands(crate::CommandCompatibility::ReadOnly);
+            reg.store_read_completion(std::sync::Arc::new(ReaderDone))?;
+            reg.command(
+                crate::cmd::CommandSpec {
+                    name: "+readpage".into(),
+                    shape: crate::cmd::ArgShape::Raw,
+                    ..crate::cmd::CommandSpec::default()
+                },
+                std::sync::Arc::new(|ctx: &mut Ctx<'_>| -> Result<(), crate::cmd::CmdError> {
+                    let n: usize = ctx.args.raw().trim().parse().unwrap_or(1);
+                    let keys: Vec<SmolStr> = (0..n)
+                        .map(|i| crate::ledger::chunk_key("log1", i as u64))
+                        .collect();
+                    match ctx.read_store(keys) {
+                        Ok(c) => ctx.out.info(ctx.actor, format!("queued #{c}")),
+                        Err(e) => ctx.out.info(ctx.actor, format!("refused: {e}")),
+                    }
+                    Ok(())
+                }),
+            )
+        }
+    }
+
+    fn reader_engine() -> Engine {
+        let mut world = World::new_minimal();
+        world.set_now(1_000);
+        let mut registry = Registry::new();
+        register_core_commands(&mut registry).unwrap();
+        Engine::with_modules(world, registry, vec![Box::new(ReaderModule)]).unwrap()
+    }
+
+    fn plain_lines(out: &Outbox) -> Vec<String> {
+        out.events()
+            .iter()
+            .filter_map(|(_, e)| match e {
+                OutputEvent::Sys(t) => Some(t.to_plain_text()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn h1_read_store_queues_a_namespace_locked_effect_with_a_fresh_correlation() {
+        let mut engine = reader_engine();
+        let (mut out, mut fx) = (Outbox::new(), Effects::new());
+        engine.step(
+            Inbound::Cmd {
+                conn: 0,
+                actor: GOD,
+                line: "+readpage 3".into(),
+            },
+            &mut out,
+            &mut fx,
+        );
+        let effects = fx.drain();
+        assert_eq!(effects.len(), 1, "one read effect: {effects:?}");
+        let Effect::StoreRead {
+            module,
+            actor,
+            correlation,
+            keys,
+        } = &effects[0]
+        else {
+            panic!("expected a StoreRead effect: {effects:?}");
+        };
+        assert_eq!(
+            module.as_str(),
+            "reader",
+            "the namespace is the module's own"
+        );
+        assert_eq!(*actor, GOD);
+        assert_eq!(keys.len(), 3);
+        assert_eq!(keys[2], crate::ledger::chunk_key("log1", 2));
+        assert!(
+            plain_lines(&out)
+                .iter()
+                .any(|l| l == &format!("queued #{correlation}"))
+        );
+
+        // A second read draws a fresh correlation.
+        let (mut out, mut fx) = (Outbox::new(), Effects::new());
+        engine.step(
+            Inbound::Cmd {
+                conn: 0,
+                actor: GOD,
+                line: "+readpage 1".into(),
+            },
+            &mut out,
+            &mut fx,
+        );
+        let effects = fx.drain();
+        let Effect::StoreRead {
+            correlation: second,
+            ..
+        } = &effects[0]
+        else {
+            panic!("expected a StoreRead effect: {effects:?}");
+        };
+        assert_ne!(second, correlation);
+        // A read never queues persistence.
+        assert!(engine.take_module_ops().is_empty());
+    }
+
+    #[test]
+    fn h1_read_store_refuses_too_many_keys_and_empty_keys_without_queueing() {
+        let mut engine = reader_engine();
+        let (mut out, mut fx) = (Outbox::new(), Effects::new());
+        engine.step(
+            Inbound::Cmd {
+                conn: 0,
+                actor: GOD,
+                line: format!("+readpage {}", crate::module::MAX_STORE_READ_KEYS + 1),
+            },
+            &mut out,
+            &mut fx,
+        );
+        assert!(fx.is_empty(), "an over-cap read must queue nothing");
+        assert!(
+            plain_lines(&out).iter().any(|l| l.starts_with("refused:")),
+            "{:?}",
+            plain_lines(&out)
+        );
+        // Zero keys is refused too.
+        let (mut out, mut fx) = (Outbox::new(), Effects::new());
+        engine.step(
+            Inbound::Cmd {
+                conn: 0,
+                actor: GOD,
+                line: "+readpage 0".into(),
+            },
+            &mut out,
+            &mut fx,
+        );
+        assert!(fx.is_empty());
+        assert!(plain_lines(&out).iter().any(|l| l.starts_with("refused:")));
+    }
+
+    #[test]
+    fn h1_store_read_done_routes_to_the_registered_completion_and_drops_the_unregistered() {
+        let mut engine = reader_engine();
+        let payload = crate::module::StoreReadResult::Docs {
+            docs: vec![(
+                crate::ledger::chunk_key("log1", 0),
+                serde_json::json!({ "chunk": 0, "sealed": true, "entries": [] }),
+            )],
+            absent: vec![crate::ledger::chunk_key("log1", 1)],
+        }
+        .to_payload();
+        let (mut out, mut fx) = (Outbox::new(), Effects::new());
+        engine.step(
+            Inbound::Apply(WorldCommand::StoreReadDone {
+                module: SmolStr::new("reader"),
+                actor: GOD,
+                correlation: 9,
+                payload,
+            }),
+            &mut out,
+            &mut fx,
+        );
+        assert!(
+            plain_lines(&out)
+                .iter()
+                .any(|l| l == "read #9: 1 doc(s), 1 absent"),
+            "{:?}",
+            plain_lines(&out)
+        );
+        assert!(
+            engine.take_module_ops().is_empty(),
+            "a render queues no persist op"
+        );
+
+        // A malformed payload is delivered as Failed, never dropped.
+        let (mut out, mut fx) = (Outbox::new(), Effects::new());
+        engine.step(
+            Inbound::Apply(WorldCommand::StoreReadDone {
+                module: SmolStr::new("reader"),
+                actor: GOD,
+                correlation: 10,
+                payload: "{not json".into(),
+            }),
+            &mut out,
+            &mut fx,
+        );
+        assert!(
+            plain_lines(&out)
+                .iter()
+                .any(|l| l.starts_with("read #10 failed:")),
+            "{:?}",
+            plain_lines(&out)
+        );
+
+        // A completion for a module with no handler is dropped, not a panic.
+        let (mut out, mut fx) = (Outbox::new(), Effects::new());
+        engine.step(
+            Inbound::Apply(WorldCommand::StoreReadDone {
+                module: SmolStr::new("nobody"),
+                actor: GOD,
+                correlation: 11,
+                payload: crate::module::StoreReadResult::Failed("x".into()).to_payload(),
+            }),
+            &mut out,
+            &mut fx,
+        );
+        assert!(out.is_empty());
+
+        // The payload codec round-trips every variant.
+        for r in [
+            crate::module::StoreReadResult::Failed("boom".into()),
+            crate::module::StoreReadResult::Oversized { bytes: 600_000 },
+            crate::module::StoreReadResult::Docs {
+                docs: Vec::new(),
+                absent: Vec::new(),
+            },
+        ] {
+            assert_eq!(
+                crate::module::StoreReadResult::from_payload(&r.to_payload()),
+                r
+            );
+        }
     }
 
     #[test]

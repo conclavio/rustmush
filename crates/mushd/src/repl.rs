@@ -11,7 +11,7 @@
 use std::io::Write as _;
 
 use mush_core::{
-    Audience, Effect, Effects, GOD, Inbound, Outbox, StepOutcome, WorldCommand,
+    Audience, Effect, Effects, GOD, Inbound, Outbox, StepOutcome, StoreReadResult, WorldCommand,
     can_perceive_with_action_state, event_subject,
 };
 use mush_testkit::text_of;
@@ -168,6 +168,34 @@ fn run_effects_sync(engine: &mut mush_core::Engine, fx: &mut Effects, out: &mut 
                     println!(
                         "(repl: Effect::ModuleAsync from {module} #{correlation} dropped -- \
                          no LLM service in the REPL)"
+                    );
+                }
+                // H1: the REPL holds no store, so a module's store read
+                // cannot be performed here. Answer it with a typed `Failed`
+                // rather than dropping it, so the module's pending-read
+                // bookkeeping clears exactly as it would on a real failure.
+                Effect::StoreRead {
+                    module,
+                    actor,
+                    correlation,
+                    ..
+                } => {
+                    println!(
+                        "(repl: Effect::StoreRead from {module} #{correlation} answered Failed -- \
+                         no store in the REPL)"
+                    );
+                    engine.step(
+                        Inbound::Apply(WorldCommand::StoreReadDone {
+                            module,
+                            actor,
+                            correlation,
+                            payload: StoreReadResult::Failed(
+                                "the offline REPL has no store to read".to_string(),
+                            )
+                            .to_payload(),
+                        }),
+                        out,
+                        fx,
                     );
                 }
             }

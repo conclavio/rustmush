@@ -12,6 +12,10 @@ history is never rewritten, only added to (see retcons, below).
                       "previously on..." of the world. You see public events
                       and those you were personally involved in. Events that
                       have since been retconned are marked.
+  +chronicle/archive [page]
+                      Older canon than the recent view holds, a page at a time
+                      (page 0 is the newest archived page). The page arrives a
+                      moment later, read from the store without pausing play.
 
 Each entry is a one-line summary of a consequence, with the characters
 involved. What you see is filtered: some canon is public knowledge, some is
@@ -22,6 +26,9 @@ discovers it.
 
   @canon              (staff) The full recent ledger: every canon event with
                       its id, visibility scope, and entities — retcons included.
+  @canon/archive [page]
+                      (staff) The same, over the archived pages older than the
+                      recent ledger.
   @canon/retcon <id>=<reason>
                       (staff) Supersede canon event <id>. This does NOT erase
                       history: it appends an auditable retcon that marks the
@@ -38,8 +45,8 @@ actually established. Today the scene system records a scene's conclusion; the
 faction, combat, and obligation systems will record their consequences as they
 come online.
 
-Only recent canon is shown; reading deep history is the archive, arriving with
-the recap tools.
+`+chronicle` shows the recent tail the server keeps in memory; everything older
+is on disk and reads a page at a time with `+chronicle/archive`.
 
 ## See also
 

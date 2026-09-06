@@ -29,6 +29,7 @@ critique pass. They are the *reference* design; where they conflict with each ot
 | [10-tacsim-foundations.md](10-tacsim-foundations.md) | TacSim foundations (Draft 0.4): scope, decisions 1A–7A and C1A–C30A, addenda T1–T16, sharpenings R1–R7, the E7 backlog |
 | [10a-tacsim-e7-owner-questions.md](10a-tacsim-e7-owner-questions.md) | E7 owner survey (Draft 0.2, answered): 22 decisions, the eleven-cut structure, handbacks to E5/E6 |
 | [10b-e7-implementation-plan.md](10b-e7-implementation-plan.md) | E7 implementation plan (Draft 0.2, defaults accepted): the authoritative eleven-cut plan over the landed K4a/K5a primitives |
+| [11-h-implementation-plan.md](11-h-implementation-plan.md) | H implementation plan (Draft 0.2, reviewed): four cuts of low-level work beside E7 and I — the module store-read seam (H1), the K7 production NPC cutover (H2a–c), authoritative-lane instrumentation and the scale harness (H3), the kernel-edge debt sweep (H4) |
 
 `06-object-behaviors-spatial-domains.md` and its later companion proposals are
 implementation-informed drafts produced by dedicated design conversations deferred in `PLAN.md`.

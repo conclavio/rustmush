@@ -63,7 +63,7 @@ $env:REDIS_URL = "redis://127.0.0.1:6379"; cargo test --workspace  # PowerShell
 ```
 
 Point `REDIS_URL` at a **disposable** instance: the gated tests wipe their key namespaces
-(they use logical dbs 7–15 plus the default db).
+(they use logical dbs 5–15 plus the default db).
 
 The web SPA builds with `npm install && npm run build` in `web/` (vitest: `npm test`).
 Debug server builds serve `web/dist` straight from disk (rebuild the SPA, refresh the

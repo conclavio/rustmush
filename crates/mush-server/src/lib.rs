@@ -73,6 +73,7 @@ mod process_fault;
 pub mod quarantine;
 pub mod retained;
 pub mod staff;
+pub mod store_read;
 pub mod timeline;
 pub mod world_task;
 

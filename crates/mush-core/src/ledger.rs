@@ -755,6 +755,195 @@ pub fn is_sealed_chunk(key: &str, value: &serde_json::Value) -> bool {
             .all(|pair| pair[0].seq.checked_add(1) == Some(pair[1].seq))
 }
 
+/// How many chunks one archive page covers by default (H1, §8 q1: about
+/// 64 KiB of entries at the 16 KiB chunk target). Readers page **by chunk
+/// index**, newest first — see [`archive_page_range`].
+pub const DEFAULT_ARCHIVE_PAGE_CHUNKS: u64 = 4;
+
+/// The chunk range archive page `page` covers over the on-disk chunks
+/// `0..=hi_bound`, newest first: page 0 is the newest
+/// [`DEFAULT_ARCHIVE_PAGE_CHUNKS`] chunks ending at `hi_bound`, page 1 the
+/// ones before it, and so on. `None` once a page would start past the
+/// oldest chunk. The last page may be short.
+#[must_use]
+pub fn archive_page_range(hi_bound: u64, page: u64) -> Option<(u64, u64)> {
+    let per = DEFAULT_ARCHIVE_PAGE_CHUNKS;
+    let skip = page.checked_mul(per)?;
+    if skip > hi_bound {
+        return None;
+    }
+    let hi = hi_bound - skip;
+    let lo = hi.saturating_sub(per - 1);
+    Some((lo, hi))
+}
+
+/// Why a cold page could not be read as a contiguous slice of one log (H1).
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum LedgerReadError {
+    /// No chunk document for `log_id` was in the page at all.
+    #[error("no chunk documents for log {log_id:?} in the page")]
+    NoChunks {
+        /// The requested log.
+        log_id: SmolStr,
+    },
+    /// A returned key was not a chunk of the requested log — the requester
+    /// asked for the wrong keys, or the store answered for keys it was not
+    /// asked for.
+    #[error("key {key:?} is not a chunk document of log {log_id:?}")]
+    ForeignKey {
+        /// The offending key.
+        key: SmolStr,
+        /// The requested log.
+        log_id: SmolStr,
+    },
+    /// A chunk document did not decode, or was oversized.
+    #[error("chunk {chunk} of log {log_id:?} is malformed")]
+    Malformed {
+        /// The chunk index from the key.
+        chunk: u64,
+        /// The requested log.
+        log_id: SmolStr,
+    },
+    /// The key's chunk index and the document's disagree.
+    #[error("key names chunk {key_chunk} but the document says chunk {doc_chunk}")]
+    IndexMismatch {
+        /// The index in the key.
+        key_chunk: u64,
+        /// The index in the document.
+        doc_chunk: u64,
+    },
+    /// The same chunk index appeared twice in the page.
+    #[error("chunk {chunk} appears twice in the page")]
+    DuplicateChunk {
+        /// The duplicated index.
+        chunk: u64,
+    },
+    /// The page skips a chunk index: a hole in the history the store holds.
+    #[error("chunk {expected} is missing from the page (next present is {found})")]
+    ChunkGap {
+        /// The index that should have followed.
+        expected: u64,
+        /// The index that did.
+        found: u64,
+    },
+    /// An interior chunk (not the highest in the page) is unsealed — which
+    /// the ledger never writes, so this is corruption.
+    #[error("interior chunk {chunk} is unsealed")]
+    UnsealedInterior {
+        /// The unsealed chunk.
+        chunk: u64,
+    },
+    /// A chunk with no entries — the ledger never writes one.
+    #[error("chunk {chunk} is empty")]
+    EmptyChunk {
+        /// The empty chunk.
+        chunk: u64,
+    },
+    /// Entry sequence numbers are not gap-free across the page.
+    #[error("entry sequence gap: expected seq {expected}, found {found}")]
+    SequenceGap {
+        /// The sequence number that should have come next.
+        expected: u64,
+        /// The one that did.
+        found: u64,
+    },
+}
+
+/// Decode one **cold page** of a log — the `log:{log_id}:{n}` documents a
+/// [`Ctx::read_store`](crate::Ctx::read_store) brought back — into an ordered,
+/// contiguous run of entries (H1, D-H-2).
+///
+/// The page unit is the **chunk index**: the caller built its keys with
+/// [`chunk_key`] for a range of indices and this validates what came back.
+/// Every document must be a chunk of `log_id`; indices must be contiguous
+/// (a hole is a [`LedgerReadError::ChunkGap`] — history the store no longer
+/// holds, or never did); every chunk but the highest returned must be sealed
+/// (a page may end at the open tail, which is legitimately unsealed); no
+/// chunk may be empty; and entry sequence numbers must be gap-free across the
+/// whole page. Entries come back ordered by `seq`, oldest first.
+///
+/// Keys the store reported absent are the caller's to drop before calling
+/// this (a trailing absent chunk past a hint is normal; an interior one is a
+/// gap this reports).
+pub fn read_cold_range(
+    docs: &[(SmolStr, serde_json::Value)],
+    log_id: &str,
+) -> Result<Vec<LedgerEntry>, LedgerReadError> {
+    let log = SmolStr::new(log_id);
+    let mut chunks: BTreeMap<u64, LedgerChunk> = BTreeMap::new();
+    for (key, value) in docs {
+        let Some((id, key_chunk)) = parse_chunk_key(key) else {
+            return Err(LedgerReadError::ForeignKey {
+                key: key.clone(),
+                log_id: log.clone(),
+            });
+        };
+        if id != log_id {
+            return Err(LedgerReadError::ForeignKey {
+                key: key.clone(),
+                log_id: log.clone(),
+            });
+        }
+        if encoded_len_bounded(value, MAX_SAFE_CHUNK_BYTES).is_err() {
+            return Err(LedgerReadError::Malformed {
+                chunk: key_chunk,
+                log_id: log.clone(),
+            });
+        }
+        let chunk = serde_json::from_value::<LedgerChunk>(value.clone()).map_err(|_| {
+            LedgerReadError::Malformed {
+                chunk: key_chunk,
+                log_id: log.clone(),
+            }
+        })?;
+        if chunk.chunk != key_chunk {
+            return Err(LedgerReadError::IndexMismatch {
+                key_chunk,
+                doc_chunk: chunk.chunk,
+            });
+        }
+        if chunk.entries.is_empty() {
+            return Err(LedgerReadError::EmptyChunk { chunk: key_chunk });
+        }
+        if chunks.insert(key_chunk, chunk).is_some() {
+            return Err(LedgerReadError::DuplicateChunk { chunk: key_chunk });
+        }
+    }
+    let Some((&highest, _)) = chunks.last_key_value() else {
+        return Err(LedgerReadError::NoChunks { log_id: log });
+    };
+    let mut expected_chunk: Option<u64> = None;
+    let mut expected_seq: Option<u64> = None;
+    let mut entries = Vec::new();
+    for (&index, chunk) in &chunks {
+        if let Some(expected) = expected_chunk
+            && index != expected
+        {
+            return Err(LedgerReadError::ChunkGap {
+                expected,
+                found: index,
+            });
+        }
+        if index != highest && !chunk.sealed {
+            return Err(LedgerReadError::UnsealedInterior { chunk: index });
+        }
+        for entry in &chunk.entries {
+            if let Some(expected) = expected_seq
+                && entry.seq != expected
+            {
+                return Err(LedgerReadError::SequenceGap {
+                    expected,
+                    found: entry.seq,
+                });
+            }
+            expected_seq = entry.seq.checked_add(1);
+            entries.push(entry.clone());
+        }
+        expected_chunk = index.checked_add(1);
+    }
+    Ok(entries)
+}
+
 /// Parse `log:{log_id}:{chunk}` into `(log_id, chunk)`. The chunk is the final
 /// `:`-segment; the log id is everything between the prefix and it (so a log id
 /// may itself contain `:`). Returns `None` for any non-chunk key.
@@ -1233,6 +1422,171 @@ mod tests {
             "next append writes a fresh chunk key"
         );
         assert_eq!(c1.entries[0].seq, 1, "sequence is continuous across chunks");
+    }
+
+    // ---- H1: the cold-range reader ----
+
+    /// A log with three sealed chunks (target 0: one entry per chunk) plus an
+    /// open fourth, as the persisted `(key, value)` docs a store read returns.
+    fn cold_docs() -> Vec<(SmolStr, serde_json::Value)> {
+        let mut led = Ledger::with_chunk_target(0);
+        let mut docs: BTreeMap<SmolStr, serde_json::Value> = BTreeMap::new();
+        for n in 0..3 {
+            let (_, op) = led.append("s", serde_json::json!({ "n": n }));
+            let (k, c) = chunk_of(&op);
+            docs.insert(k, serde_json::to_value(c).unwrap());
+        }
+        // An unsealed tail chunk: a ledger with a large target holds it open.
+        let mut open = Ledger::with_chunk_target(1 << 20);
+        // Seed it to the same seq by restoring the sealed history first.
+        let sealed: Vec<(SmolStr, serde_json::Value)> =
+            docs.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+        open.restore_from_kv(&sealed).unwrap();
+        let (_, op) = open.append("s", serde_json::json!({ "n": 3 }));
+        let (k, c) = chunk_of(&op);
+        assert!(!c.sealed);
+        docs.insert(k, serde_json::to_value(c).unwrap());
+        docs.into_iter().collect()
+    }
+
+    #[test]
+    fn h1_read_cold_range_orders_a_contiguous_page_and_accepts_an_open_tail() {
+        let docs = cold_docs();
+        let entries = read_cold_range(&docs, "s").unwrap();
+        assert_eq!(
+            entries.iter().map(|e| e.seq).collect::<Vec<_>>(),
+            vec![0, 1, 2, 3]
+        );
+        // Reversed input order does not matter: the page orders by chunk.
+        let mut rev = docs.clone();
+        rev.reverse();
+        assert_eq!(read_cold_range(&rev, "s").unwrap(), entries);
+        // A sealed-only sub-page is fine too.
+        let sealed_only: Vec<_> = docs.iter().take(3).cloned().collect();
+        assert_eq!(read_cold_range(&sealed_only, "s").unwrap().len(), 3);
+    }
+
+    #[test]
+    fn h1_read_cold_range_refuses_gaps_interior_unsealed_foreign_and_duplicate() {
+        let docs = cold_docs();
+        // A gap: chunks 0 and 2 without 1.
+        let gapped: Vec<_> = docs
+            .iter()
+            .filter(|(k, _)| k != &chunk_key("s", 1))
+            .cloned()
+            .collect();
+        assert!(matches!(
+            read_cold_range(&gapped, "s"),
+            Err(LedgerReadError::ChunkGap {
+                expected: 1,
+                found: 2
+            })
+        ));
+        // An unsealed interior chunk: flip chunk 1's seal off.
+        let mut unsealed = docs.clone();
+        for (k, v) in &mut unsealed {
+            if k == &chunk_key("s", 1) {
+                v["sealed"] = serde_json::json!(false);
+            }
+        }
+        assert!(matches!(
+            read_cold_range(&unsealed, "s"),
+            Err(LedgerReadError::UnsealedInterior { chunk: 1 })
+        ));
+        // A foreign log's chunk in the page.
+        let mut foreign = docs.clone();
+        foreign.push((chunk_key("other", 0), docs[0].1.clone()));
+        assert!(matches!(
+            read_cold_range(&foreign, "s"),
+            Err(LedgerReadError::ForeignKey { .. })
+        ));
+        // A non-chunk key.
+        let mut junk = docs.clone();
+        junk.push((SmolStr::new("scene:1"), serde_json::json!({})));
+        assert!(matches!(
+            read_cold_range(&junk, "s"),
+            Err(LedgerReadError::ForeignKey { .. })
+        ));
+        // A duplicate chunk.
+        let mut dup = docs.clone();
+        dup.push(docs[0].clone());
+        assert!(matches!(
+            read_cold_range(&dup, "s"),
+            Err(LedgerReadError::DuplicateChunk { chunk: 0 })
+        ));
+        // Nothing for the log at all.
+        assert!(matches!(
+            read_cold_range(&[], "s"),
+            Err(LedgerReadError::NoChunks { .. })
+        ));
+    }
+
+    #[test]
+    fn h1_archive_pages_walk_newest_first_and_end_at_chunk_zero() {
+        // Ten chunks on disk (0..=9), four per page.
+        assert_eq!(archive_page_range(9, 0), Some((6, 9)));
+        assert_eq!(archive_page_range(9, 1), Some((2, 5)));
+        assert_eq!(
+            archive_page_range(9, 2),
+            Some((0, 1)),
+            "the last page is short"
+        );
+        assert_eq!(archive_page_range(9, 3), None, "past the oldest chunk");
+        // A single chunk is one page.
+        assert_eq!(archive_page_range(0, 0), Some((0, 0)));
+        assert_eq!(archive_page_range(0, 1), None);
+        // No overflow on absurd pages.
+        assert_eq!(archive_page_range(9, u64::MAX), None);
+    }
+
+    #[test]
+    fn h1_read_cold_range_refuses_sequence_gaps_index_mismatch_and_empty_chunks() {
+        let docs = cold_docs();
+        // A sequence gap: renumber chunk 2's entry.
+        let mut seq_gap = docs.clone();
+        for (k, v) in &mut seq_gap {
+            if k == &chunk_key("s", 2) {
+                v["entries"][0]["seq"] = serde_json::json!(7);
+            }
+        }
+        assert!(matches!(
+            read_cold_range(&seq_gap, "s"),
+            Err(LedgerReadError::SequenceGap {
+                expected: 2,
+                found: 7
+            })
+        ));
+        // The document's own index disagrees with its key.
+        let mut mismatch = docs.clone();
+        for (k, v) in &mut mismatch {
+            if k == &chunk_key("s", 1) {
+                v["chunk"] = serde_json::json!(5);
+            }
+        }
+        assert!(matches!(
+            read_cold_range(&mismatch, "s"),
+            Err(LedgerReadError::IndexMismatch {
+                key_chunk: 1,
+                doc_chunk: 5
+            })
+        ));
+        // An empty chunk.
+        let mut empty = docs.clone();
+        for (k, v) in &mut empty {
+            if k == &chunk_key("s", 1) {
+                v["entries"] = serde_json::json!([]);
+            }
+        }
+        assert!(matches!(
+            read_cold_range(&empty, "s"),
+            Err(LedgerReadError::EmptyChunk { chunk: 1 })
+        ));
+        // A document that is not a chunk at all.
+        let malformed = vec![(chunk_key("s", 0), serde_json::json!({ "nope": 1 }))];
+        assert!(matches!(
+            read_cold_range(&malformed, "s"),
+            Err(LedgerReadError::Malformed { chunk: 0, .. })
+        ));
     }
 
     #[test]

@@ -293,6 +293,15 @@ pub struct SceneRecord {
     /// [`SceneRecord::clock_generation`].
     #[serde(default)]
     pub ic_floor: i64,
+    /// **The archive bound** (H1, D-H-2): the ledger's open chunk index for
+    /// this scene's log, stamped when the scene closes (and again if a later
+    /// seal rolls the chunk). After a restart a closed scene's log tail is no
+    /// longer in RAM, so this is how `+timestop/log/archive` knows which
+    /// `log:{id}:{n}` documents exist — `0..=log_chunks`, the last of them
+    /// possibly unsealed. A record from before H1 carries `None` and is paged
+    /// by probing forward from chunk 0.
+    #[serde(default)]
+    pub log_chunks: Option<u64>,
 }
 
 impl SceneRecord {
@@ -589,9 +598,39 @@ impl PartialEq for SealerGateSlot {
     }
 }
 
+/// One archive page a reader is waiting on (H1): the correlation
+/// `Ctx::read_store` returned and what the page was for, so the completion
+/// renders the right view for the right scene. Transient world RAM — a
+/// restart drops it, and a completion nobody is waiting on is dropped.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PendingArchiveRead {
+    /// The correlation the completion must carry.
+    pub correlation: u64,
+    /// When it was requested (world seconds). A request older than
+    /// `STORE_READ_STALE_SECS` is superseded by the next one (verify fold B1).
+    pub requested_at: i64,
+    /// The scene whose log is being paged.
+    pub scene: SceneUid,
+    /// The requested page (0 is the newest).
+    pub page: u64,
+    /// `true` for `+recap/archive` (the witnessed-narrative view), `false`
+    /// for `+timestop/log/archive` (the mechanical timeline).
+    pub recap: bool,
+    /// The chunk range the page covers, inclusive.
+    pub chunk_lo: u64,
+    /// The chunk range the page covers, inclusive.
+    pub chunk_hi: u64,
+}
+
+/// The most archive reads one actor may have in flight (H1, D-H-3): a second
+/// request while one is pending is refused with a line, never queued.
+pub const MAX_PENDING_STORE_READS_PER_ACTOR: usize = 1;
+
 /// The live scenes state, held in a module state slot on the `World`.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ScenesState {
+    /// In-flight archive reads, one per requesting actor (H1). Transient.
+    pub pending_reads: std::collections::HashMap<ObjId, PendingArchiveRead>,
     /// The wiring-frozen sealer gate (E6b independent verify fold, M4). `None` on
     /// any composition that wires no economy, which is the pre-fold behaviour.
     pub sealer_gate: SealerGateSlot,
@@ -741,6 +780,7 @@ mod tests {
             seal_run: None,
             outcome: None,
             ic_floor: 0,
+            log_chunks: None,
         }
     }
 

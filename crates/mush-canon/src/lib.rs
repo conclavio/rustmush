@@ -18,17 +18,21 @@
 //! - `@canon/retcon <id>=<reason>` (staff) — append a supersession.
 //!
 //! Built on the chunked [`Ledger`](mush_core::Ledger) substrate: only the open
-//! tail lives in RAM; deep history pages in through the store-read seam (built
-//! with its consumers — cold recaps and deep chronicle).
+//! tail lives in RAM; deep history pages in through the module store-read seam
+//! (H1) — `+chronicle/archive [page]` and `@canon/archive [page]`.
 
 mod commands;
 mod data;
+
+use std::sync::Arc;
 
 use mush_core::module::{GameModule, ModError, ModuleBootData, ModuleCtx, Registrar};
 use mush_core::{Ctx, is_log_key};
 use smol_str::SmolStr;
 
-pub use data::{CanonDraft, CanonEvent, CanonId, CanonScope, CanonState, LOG, META_KEY, NS};
+pub use data::{
+    CanonDraft, CanonEvent, CanonId, CanonScope, CanonState, LOG, META_KEY, NS, PendingCanonRead,
+};
 
 use data::{persist_meta, push_op};
 
@@ -57,6 +61,8 @@ impl GameModule for CanonModule {
     fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
         reg.classify_commands(mush_core::CommandCompatibility::LegacyPostImage);
         reg.state(CanonState::default());
+        // H1: cold chronicle pages come back through the store-read seam.
+        reg.store_read_completion(Arc::new(commands::CanonArchiveRead))?;
         commands::register(reg)?;
         Ok(())
     }
@@ -125,6 +131,8 @@ impl GameModule for CanonModule {
         *ctx.w
             .module_state_mut::<CanonState>()
             .expect("canon state slot installed at registration") = CanonState {
+            // Pending archive reads are transient: a boot starts with none.
+            pending_reads: Default::default(),
             ledger,
             next_canon_id,
             sealed_tail,

@@ -430,11 +430,20 @@ pub trait ObjectStore: Send + Sync {
     // Module persistence reads (`mod:{ns}:{key}` keys)
     //
     // Module state is *written* through [`WriteBatch::module_ops`] — same
-    // transaction, same atomicity as object writes. These reads are the
-    // out-of-band load path: modules hydrate their state at boot/module
-    // load, never during play (play-time reads come from the module's own
-    // in-RAM state). Called from the boot task; the concurrency notes for
-    // account/ban methods apply.
+    // transaction, same atomicity as object writes. These reads serve two
+    // paths, both off the world loop:
+    //
+    // - **boot / module load**: `module_json_list` hydrates a module's whole
+    //   namespace into RAM once, from the boot task;
+    // - **the store-read seam** (H1, `docs/design/11-h-implementation-plan.md`
+    //   §3.1): during play a module asks for a bounded page of its **own**
+    //   documents by key through `Ctx::read_store`; the world task performs
+    //   one `module_json_get` per key from a detached task — never a listing —
+    //   and re-enters with a typed completion. Play-time *authoritative*
+    //   state still lives in RAM; the seam serves cold history (sealed ledger
+    //   chunks, archives), never a hot-path lookup.
+    //
+    // The concurrency notes for account/ban methods apply to both.
     //
     // Namespace rules (enforced by every implementation): `ns` is non-empty
     // and contains no `:` — otherwise `mod:a:*` listings could leak keys

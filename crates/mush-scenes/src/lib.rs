@@ -56,9 +56,9 @@ use smol_str::SmolStr;
 
 pub use data::{
     KIND_TIMESTOP, MAX_IC_FLOOR_LEAD_SECS, MAX_OUTCOME_NAME_BYTES, MAX_OUTCOME_NOTE_BYTES,
-    MAX_OUTCOME_SUBJECTS, NS, PauseReason, SceneAdvanceError, SceneEvent, SceneEventKind,
-    SceneMode, SceneOutcome, SceneRecord, SceneStatus, SceneUid, ScenesState, SealerGateSlot,
-    scene_key,
+    MAX_OUTCOME_SUBJECTS, MAX_PENDING_STORE_READS_PER_ACTOR, NS, PauseReason, PendingArchiveRead,
+    SceneAdvanceError, SceneEvent, SceneEventKind, SceneMode, SceneOutcome, SceneRecord,
+    SceneStatus, SceneUid, ScenesState, SealerGateSlot, scene_key,
 };
 
 /// The canon kind a **sealed scene outcome** is recorded under (E6b, 08f §4.1).
@@ -193,6 +193,9 @@ impl GameModule for ScenesModule {
         let _ = reg.panel_feed(panel::FEED)?;
         reg.query_handler(panel::FEED, Arc::new(panel::ScenesQuery))?;
         reg.hook(HookPoint::RoomAmbient, Arc::new(panel::SceneAmbient));
+        // H1: the archive — cold pages of a scene's log come back through the
+        // module store-read seam and render here.
+        reg.store_read_completion(Arc::new(commands::ScenesArchiveRead))?;
         commands::register(reg)?;
         Ok(())
     }
@@ -955,6 +958,8 @@ fn load_boot(ctx: &mut ModuleCtx<'_>, data: ModuleBootData) -> Result<(), ModErr
         .map(|st| st.sealer_gate.clone())
         .unwrap_or_default();
     let st = ScenesState {
+        // Pending archive reads are transient: a boot starts with none.
+        pending_reads: Default::default(),
         sealer_gate,
         scenes,
         next_scene_uid,

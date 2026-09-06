@@ -242,9 +242,10 @@ fn the_gated_suffix_census_is_stable_and_every_live_backend_proof_names_its_back
         .filter(|t| t.backend_gated() && t.name.ends_with("_gated"))
         .map(|t| t.name.as_str())
         .collect();
+    // 10 at the 08j S4 fold; +1 for H1's `scene_archive_reads_cold_chunks_redis_gated`.
     assert_eq!(
         live.len(),
-        10,
+        11,
         "the live-backend `*_gated` census changed: {live:?}"
     );
     for name in &live {

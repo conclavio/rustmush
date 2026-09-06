@@ -10,13 +10,16 @@ use std::sync::Arc;
 
 use mush_core::output::display_name;
 use mush_core::{
-    ArgShape, CmdError, CommandSpec, Ctx, ModError, ObjId, ObjKind, Registrar, Role, World, perm,
+    ArgShape, CmdError, CommandSpec, Ctx, ModError, ObjId, ObjKind, Registrar, Role,
+    StoreReadCompletion, StoreReadResult, World, archive_page_range, chunk_key, perm,
+    read_cold_range,
 };
+use smol_str::SmolStr;
 
 use crate::data::{
     DEFAULT_ROUND_SECONDS, KIND_TIMESTOP, MAX_IC_FLOOR_LEAD_SECS, MAX_OUTCOME_NOTE_BYTES,
-    MAX_OUTCOME_SUBJECTS, PauseReason, SceneEvent, SceneEventKind, SceneMode, SceneOutcome,
-    SceneRecord, SceneStatus, SceneUid, ScenesState, persist_meta, persist_scene,
+    MAX_OUTCOME_SUBJECTS, PauseReason, PendingArchiveRead, SceneEvent, SceneEventKind, SceneMode,
+    SceneOutcome, SceneRecord, SceneStatus, SceneUid, ScenesState, persist_meta, persist_scene,
 };
 
 /// Record one lifecycle event into `s`'s log (stamped with the current wall
@@ -82,7 +85,11 @@ fn cmd_timestop(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     if ctx.switches.has("who") {
         show_scene(ctx)
     } else if ctx.switches.has("log") {
-        timestop_log(ctx)
+        if ctx.switches.has("archive") {
+            archive_read(ctx, false)
+        } else {
+            timestop_log(ctx)
+        }
     } else if ctx.switches.has("next") {
         timestop_next(ctx)
     } else if ctx.switches.has("pause") {
@@ -172,6 +179,7 @@ fn timestop_start(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             seal_run: None,
             outcome: None,
             ic_floor: 0,
+            log_chunks: None,
         };
         st.scenes.insert(id, rec.clone());
         rec
@@ -402,7 +410,7 @@ fn timestop_release(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 fn timestop_end(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let s = driver_scene(ctx)?;
     let now = ctx.w.now();
-    let (anchor, members, updated) = {
+    let (anchor, members, mut updated) = {
         let st = state(ctx);
         let rec = st.scenes.get_mut(&s.id).expect("resolved above");
         rec.status = SceneStatus::Closed;
@@ -415,12 +423,11 @@ fn timestop_end(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     for obj in members {
         ctx.w.clear_exclusive_scene_member(obj);
     }
-    persist_scene(ctx.out, &updated);
-    announce(
-        ctx,
-        anchor,
-        format!("Time resumes — the timestop (scene #{}) ends.", updated.id),
-    );
+    // The closing event is logged BEFORE the record persists, so the archive
+    // bound stamped below (H1, D-H-2) sees the chunk that event landed in —
+    // an `Ended` that rolls the chunk over would otherwise leave the bound one
+    // short. Nothing fallible follows the mutation, so the ledger contract
+    // (append only on the success path) holds.
     log_event(
         ctx,
         &updated,
@@ -428,9 +435,304 @@ fn timestop_end(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         Some(ctx.actor),
         serde_json::json!({}),
     );
+    let log_chunks = state_ref(ctx).events.open_chunk(&updated.id.to_string());
+    updated.log_chunks = Some(log_chunks);
+    if let Some(rec) = state(ctx).scenes.get_mut(&updated.id) {
+        rec.log_chunks = Some(log_chunks);
+    }
+    persist_scene(ctx.out, &updated);
+    announce(
+        ctx,
+        anchor,
+        format!("Time resumes — the timestop (scene #{}) ends.", updated.id),
+    );
     crate::emit_scene_concluded(ctx, &updated);
     crate::panel::publish(ctx, &updated);
     Ok(())
+}
+
+// ----------------------------------------------------------------------
+// H1 — the archive: cold pages of a scene's log through the store-read seam
+// ----------------------------------------------------------------------
+
+/// Re-stamp a scene's archive bound from the ledger's open chunk after an
+/// append that may have rolled the chunk (the seal on a closed scene), and
+/// persist the record only when the bound moved (H1, D-H-2).
+fn restamp_log_chunks(ctx: &mut Ctx<'_>, id: SceneUid) {
+    let open = state_ref(ctx).events.open_chunk(&id.to_string());
+    let changed = {
+        let st = state(ctx);
+        match st.scenes.get_mut(&id) {
+            Some(rec) if rec.log_chunks.is_some() && rec.log_chunks != Some(open) => {
+                rec.log_chunks = Some(open);
+                Some(rec.clone())
+            }
+            _ => None,
+        }
+    };
+    if let Some(rec) = changed {
+        persist_scene(ctx.out, &rec);
+    }
+}
+
+/// `+timestop/log/archive [page]` and `+recap/archive [page]` — request one
+/// page of a scene's **cold** log (sealed chunks on disk, or a scene closed
+/// before the last restart whose tail is no longer in RAM) through the
+/// module store-read seam. Page 0 is the newest. The page renders when the
+/// read completes ([`ScenesArchiveRead`]); the world loop never waits.
+fn archive_read(ctx: &mut Ctx<'_>, recap: bool) -> Result<(), CmdError> {
+    let actor = ctx.actor;
+    let Some(s) = readable_scene(ctx) else {
+        to_actor(ctx, "You are not in a scene.");
+        return Ok(());
+    };
+    // D-H-3: one read in flight per actor; a second is refused, never queued.
+    // Verify fold B1: unless the pending one is past the stale window — a read
+    // that never launched (refused while booting/recovering) would otherwise
+    // wedge this actor's archive until a restart. Superseding it makes any
+    // late completion for the old correlation a stale drop.
+    let now = ctx.w.now();
+    if let Some(p) = state_ref(ctx).pending_reads.get(&actor)
+        && now.saturating_sub(p.requested_at) < mush_core::STORE_READ_STALE_SECS
+    {
+        to_actor(
+            ctx,
+            "An archive read is already in flight for you; wait for it to answer.",
+        );
+        return Ok(());
+    }
+    let raw = ctx.args.raw().trim().to_string();
+    let page: u64 = if raw.is_empty() {
+        0
+    } else {
+        raw.parse()
+            .map_err(|_| CmdError::msg("Usage: /archive [page]  (page 0 is the newest)"))?
+    };
+    let log_id = s.id.to_string();
+    let (open_chunk, tail_live) = {
+        let st = state_ref(ctx);
+        (
+            st.events.open_chunk(&log_id),
+            st.events.next_seq(&log_id) > 0,
+        )
+    };
+    // Which chunks are on disk. A live tail (the log is in RAM) means every
+    // chunk below the open one is sealed history; a scene closed before the
+    // last restart carries its bound on the record; a pre-H1 record without
+    // one is paged by probing forward from chunk 0, oldest first.
+    let (lo, hi) = if tail_live {
+        if open_chunk == 0 {
+            to_actor(
+                ctx,
+                format!(
+                    "Nothing of scene #{} is archived yet; its whole log is still live \
+                     (+timestop/log).",
+                    s.id
+                ),
+            );
+            return Ok(());
+        }
+        let Some(range) = archive_page_range(open_chunk - 1, page) else {
+            to_actor(ctx, "No such archive page.");
+            return Ok(());
+        };
+        range
+    } else if let Some(bound) = s.log_chunks {
+        let Some(range) = archive_page_range(bound, page) else {
+            to_actor(ctx, "No such archive page.");
+            return Ok(());
+        };
+        range
+    } else {
+        let lo = page.saturating_mul(mush_core::DEFAULT_ARCHIVE_PAGE_CHUNKS);
+        (
+            lo,
+            lo.saturating_add(mush_core::DEFAULT_ARCHIVE_PAGE_CHUNKS - 1),
+        )
+    };
+    let keys: Vec<SmolStr> = (lo..=hi).map(|n| chunk_key(&log_id, n)).collect();
+    let correlation = match ctx.read_store(keys) {
+        Ok(c) => c,
+        Err(error) => {
+            to_actor(
+                ctx,
+                format!("That archive page cannot be requested: {error}."),
+            );
+            return Ok(());
+        }
+    };
+    state(ctx).pending_reads.insert(
+        actor,
+        PendingArchiveRead {
+            correlation,
+            requested_at: now,
+            scene: s.id,
+            page,
+            recap,
+            chunk_lo: lo,
+            chunk_hi: hi,
+        },
+    );
+    to_actor(
+        ctx,
+        format!(
+            "Reading page {page} of scene #{}'s archive (chunks {lo}–{hi}) …",
+            s.id
+        ),
+    );
+    Ok(())
+}
+
+/// The scenes module's [`StoreReadCompletion`] (H1): render the archive page
+/// a reader asked for, through the **same** renderers the live path uses
+/// ([`render_event`] for the timeline, [`recap_line`] plus the frozen
+/// witness set for the personal recap).
+pub(crate) struct ScenesArchiveRead;
+
+impl StoreReadCompletion for ScenesArchiveRead {
+    fn on_read(&self, ctx: &mut Ctx<'_>, correlation: u64, result: StoreReadResult) {
+        let actor = ctx.actor;
+        let pending = {
+            let st = state(ctx);
+            match st.pending_reads.get(&actor) {
+                Some(p) if p.correlation == correlation => st.pending_reads.remove(&actor),
+                Some(p) => {
+                    tracing::warn!(
+                        %actor,
+                        correlation,
+                        pending = p.correlation,
+                        "scenes: stale archive completion dropped"
+                    );
+                    return;
+                }
+                None => {
+                    tracing::warn!(
+                        %actor,
+                        correlation,
+                        "scenes: archive completion with no pending read dropped"
+                    );
+                    return;
+                }
+            }
+        };
+        let Some(pending) = pending else {
+            return;
+        };
+        // Re-validate (treaty ruling 3): the actor and the scene must still
+        // exist, and the actor must still be entitled to read the scene.
+        if ctx.w.get(actor).is_none() {
+            return;
+        }
+        let Some(s) = state_ref(ctx).scenes.get(&pending.scene).cloned() else {
+            to_actor(ctx, "That scene no longer exists.");
+            return;
+        };
+        let staff = is_staff(ctx.w, actor);
+        if !staff && !s.members().any(|m| m == actor) {
+            to_actor(ctx, "You are not a member of that scene.");
+            return;
+        }
+        let log_id = s.id.to_string();
+        let docs = match result {
+            StoreReadResult::Failed(detail) => {
+                to_actor(
+                    ctx,
+                    format!(
+                        "The archive read for scene #{} did not complete ({detail}); ask again.",
+                        s.id
+                    ),
+                );
+                return;
+            }
+            StoreReadResult::Oversized { bytes } => {
+                to_actor(
+                    ctx,
+                    format!(
+                        "Page {} of scene #{}'s archive is too large to read at once \
+                         ({bytes} bytes).",
+                        pending.page, s.id
+                    ),
+                );
+                return;
+            }
+            // Absent keys are dropped: a chunk past the bound is normal (a
+            // seal rolled the chunk after the stamp, or a probe ran off the
+            // end); an interior hole is a gap `read_cold_range` reports.
+            StoreReadResult::Docs { docs, .. } => docs,
+        };
+        if docs.is_empty() {
+            to_actor(
+                ctx,
+                format!(
+                    "Scene #{} has no archived chunks {}–{}.",
+                    s.id, pending.chunk_lo, pending.chunk_hi
+                ),
+            );
+            return;
+        }
+        let entries = match read_cold_range(&docs, &log_id) {
+            Ok(entries) => entries,
+            Err(error) => {
+                to_actor(
+                    ctx,
+                    format!(
+                        "Page {} of scene #{}'s archive cannot be read: {error}.",
+                        pending.page, s.id
+                    ),
+                );
+                return;
+            }
+        };
+        let events: Vec<(u64, SceneEvent)> = entries
+            .iter()
+            .filter_map(|e| {
+                serde_json::from_value::<SceneEvent>(e.value.clone())
+                    .ok()
+                    .map(|ev| (e.seq, ev))
+            })
+            .collect();
+        if pending.recap {
+            // The personal recap: only what this viewer perceived (everything,
+            // for staff), by the witness set frozen when each event was recorded.
+            let lines: Vec<String> = events
+                .iter()
+                .filter(|(_, ev)| staff || ev.actor == Some(actor) || ev.witnesses.contains(&actor))
+                .filter_map(|(_, ev)| recap_line(ctx, ev))
+                .collect();
+            to_actor(
+                ctx,
+                format!(
+                    "Recap of {} (scene #{}), archive page {} — as you witnessed it:",
+                    s.title, s.id, pending.page
+                ),
+            );
+            if lines.is_empty() {
+                to_actor(ctx, "  (nothing you witnessed)");
+            }
+            for l in lines {
+                to_actor(ctx, format!("  {l}"));
+            }
+        } else {
+            let lines: Vec<String> = events
+                .iter()
+                .map(|(seq, ev)| format!("  {:>3}. {}", seq, render_event(ctx.w, ev)))
+                .collect();
+            to_actor(
+                ctx,
+                format!(
+                    "Scene #{} — archive page {} (chunks {}–{}), {} event(s):",
+                    s.id,
+                    pending.page,
+                    pending.chunk_lo,
+                    pending.chunk_hi,
+                    lines.len()
+                ),
+            );
+            for l in lines {
+                to_actor(ctx, l);
+            }
+        }
+    }
 }
 
 // ----------------------------------------------------------------------
@@ -464,9 +766,9 @@ fn render_event(w: &World, ev: &SceneEvent) -> String {
 }
 
 /// `+timestop/log` — the recent (RAM-resident tail) events of the scene you are
-/// in, as a deterministic mechanical timeline. Older, sealed history needs the
-/// store-read seam (a later prerequisite); for a normal-length scene the tail
-/// is the whole log.
+/// in, as a deterministic mechanical timeline. Older, sealed history is on
+/// disk and pages in through `+timestop/log/archive` (H1); for a
+/// normal-length scene the tail is the whole log.
 fn timestop_log(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let Some(s) = readable_scene(ctx) else {
         to_actor(ctx, "You are not in a scene.");
@@ -479,8 +781,7 @@ fn timestop_log(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     if total == 0 {
         let msg = if s.status == SceneStatus::Closed {
             format!(
-                "Scene #{}'s transcript is archived; reading a finished scene from a prior \
-                 session needs the archive (not yet built).",
+                "Scene #{}'s transcript is archived; read it with +timestop/log/archive [page].",
                 s.id
             )
         } else {
@@ -501,7 +802,8 @@ fn timestop_log(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let omitted = total.saturating_sub(lines.len() as u64);
     let header = if omitted > 0 {
         format!(
-            "Scene #{} — showing {} of {} events ({} earlier not shown here):",
+            "Scene #{} — showing {} of {} events ({} earlier are in the archive: \
+             +timestop/log/archive):",
             s.id,
             lines.len(),
             total,
@@ -560,9 +862,12 @@ fn recap_line(ctx: &Ctx<'_>, ev: &SceneEvent) -> Option<String> {
 /// `+recap` — a narrative recap of the scene you are in, filtered to the events
 /// **you witnessed** (a personal recap; staff see everything). Distinct from
 /// `+timestop/log`, which is the raw mechanical timeline. Reads the RAM-resident
-/// tail; a finished scene from a prior session needs the archive (store-read
-/// seam), not yet built.
+/// tail; a finished scene from a prior session is read with `+recap/archive`
+/// (H1), through the same witness filter and renderer.
 fn scene_recap(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    if ctx.switches.has("archive") {
+        return archive_read(ctx, true);
+    }
     let actor = ctx.actor;
     let Some(s) = readable_scene(ctx) else {
         to_actor(ctx, "You are not in a scene.");
@@ -573,8 +878,7 @@ fn scene_recap(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let total = state_ref(ctx).events.next_seq(&log_id);
     if total == 0 {
         let msg = if s.status == SceneStatus::Closed {
-            "That scene's transcript is archived; reading a finished scene from a prior session \
-             needs the archive (not yet built)."
+            "That scene's transcript is archived; read it with +recap/archive [page]."
         } else {
             "Nothing has happened yet."
         };
@@ -604,7 +908,7 @@ fn scene_recap(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     if omitted > 0 {
         to_actor(
             ctx,
-            format!("  (… {omitted} earlier event(s) not shown here …)"),
+            format!("  (… {omitted} earlier event(s) are in the archive: +recap/archive …)"),
         );
     }
     if lines.is_empty() {
@@ -1047,6 +1351,9 @@ fn scene_outcome(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         Some(actor),
         serde_json::json!({ "outcome": name, "run": rec.seal_run }),
     );
+    // H1: a seal on a closed scene appends after the close stamped the
+    // archive bound; if that append rolled the chunk, the bound moves.
+    restamp_log_chunks(ctx, rec.id);
     let anchor = rec.anchor;
     announce(
         ctx,
@@ -1071,6 +1378,7 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
             switches: vec![
                 "who".into(),
                 "log".into(),
+                "archive".into(),
                 "next".into(),
                 "pause".into(),
                 "resume".into(),
@@ -1084,6 +1392,9 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
                    +timestop/who   --  Show the scene here (round, whose turn, order).\n\
                    +timestop/log   --  Show the scene's recorded event timeline (speech, turns, \
                    arrivals) — a deterministic transcript of what happened.\n\
+                   +timestop/log/archive [page]  --  Read older history: the sealed pages of a \
+                   long scene's log, or the whole log of a scene that ended before the last \
+                   restart. Page 0 is the newest; the page arrives a moment later.\n\
                    +timestop/next  --  (facilitator/staff) Advance to the next turn; wrapping \
                    past the last starts a new round.\n\
                    +timestop/pause , +timestop/resume  --  Freeze / unfreeze turn advancement.\n\
@@ -1136,10 +1447,14 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
     reg.command(
         CommandSpec {
             name: "+recap".into(),
-            shape: ArgShape::None,
+            shape: ArgShape::Raw,
+            switches: vec!["archive".into()],
             help: "+recap  --  A narrative recap of the scene you are in, told as the events you \
                    witnessed: speech, arrivals, the rounds. (The raw mechanical timeline is \
-                   +timestop/log.)"
+                   +timestop/log.)\n\
+                   +recap/archive [page]  --  The same recap over older history: a long scene's \
+                   sealed pages, or a scene that ended before the last restart. Page 0 is the \
+                   newest; the page arrives a moment later."
                 .into(),
             ..CommandSpec::default()
         },

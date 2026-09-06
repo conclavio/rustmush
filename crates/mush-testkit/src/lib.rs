@@ -29,8 +29,8 @@
 use std::collections::HashMap;
 
 use mush_core::{
-    Audience, Effects, Engine, GOD, GameModule, Inbound, LIMBO, ModuleBootData, ModuleOp, ObjId,
-    ObjKind, Outbox, Registry, World, WorldEvent, can_perceive, event_subject,
+    Audience, Effect, Effects, Engine, GOD, GameModule, Inbound, LIMBO, ModuleBootData, ModuleOp,
+    ObjId, ObjKind, Outbox, Registry, World, WorldCommand, WorldEvent, can_perceive, event_subject,
     register_core_commands,
 };
 use mush_proto::{NarrativeKind, ObjRef, OutputEvent, RichText, RoomView, WhoEntry};
@@ -215,6 +215,40 @@ impl TestWorld {
             &mut out,
             &mut fx,
         );
+        out.take()
+    }
+
+    /// Dispatch one input line as `actor` and return both the queued output
+    /// and the [`Effect`]s the step deferred, in emission order. A module's
+    /// store read (`Ctx::read_store`, H1) is an effect: assert on it here,
+    /// perform it however the test likes, then re-enter the result with
+    /// [`TestWorld::apply`].
+    pub fn run_with_effects(
+        &mut self,
+        actor: ObjId,
+        line: &str,
+    ) -> (Vec<(Audience, OutputEvent)>, Vec<Effect>) {
+        let mut out = Outbox::new();
+        let mut fx = Effects::new();
+        self.engine.step(
+            Inbound::Cmd {
+                conn: 0,
+                actor,
+                line: line.to_string(),
+            },
+            &mut out,
+            &mut fx,
+        );
+        (out.take(), fx.drain())
+    }
+
+    /// Re-enter one typed completion (a store read result, an async
+    /// completion) exactly as the world task would, returning the emitted
+    /// events.
+    pub fn apply(&mut self, cmd: WorldCommand) -> Vec<(Audience, OutputEvent)> {
+        let mut out = Outbox::new();
+        let mut fx = Effects::new();
+        self.engine.step(Inbound::Apply(cmd), &mut out, &mut fx);
         out.take()
     }
 

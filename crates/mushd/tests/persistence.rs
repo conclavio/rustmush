@@ -375,6 +375,78 @@ async fn m5_module_persistence_round_trip_in_memory() {
     m5_module_round_trip(Arc::new(InMemoryStore::new())).await;
 }
 
+// ---------------------------------------------------------------------------
+// H1: the scene archive over the module store-read seam
+// (`docs/design/11-h-implementation-plan.md` §3.1). A scene played and closed
+// on one boot is read back on the next — when its log tail is no longer in
+// RAM — through `+timestop/log/archive` and `+recap/archive`: the world task
+// performs the read off-loop against the store and re-enters the typed
+// completion. Exercised in-memory (ungated) and against a live Redis.
+// ---------------------------------------------------------------------------
+
+async fn scene_archive_round_trip(store: Arc<dyn ObjectStore>) {
+    let guard = Arc::new(IpGuard::new());
+
+    // --- first boot: play a short scene and close it. -------------------
+    let (sessions, handles) = boot_module_rig(&store, &guard).await;
+    let world = handles.handle.clone();
+    let mut god_rx = attach_direct(&sessions, &world, 1, GOD, "god").await;
+    god_cmd_committed(&world, "+timestop").await;
+    expect_text(&mut god_rx, "a timestop begins").await;
+    god_cmd_committed(&world, "say the vault is empty").await;
+    god_cmd_committed(&world, "+timestop/end").await;
+    expect_text(&mut god_rx, "Time resumes").await;
+    // Every prior mutation crossed its exact barrier; player creation is an
+    // independently acknowledgement-gated final persistence probe.
+    world
+        .create_player("Archivist")
+        .await
+        .expect("archivist create");
+
+    // --- second boot: the closed scene's log is on disk only. -----------
+    let (sessions2, handles2) = boot_module_rig(&store, &guard).await;
+    let world2 = handles2.handle.clone();
+    let mut god_rx2 = attach_direct(&sessions2, &world2, 2, GOD, "god").await;
+    god_cmd(&world2, "+timestop/log").await;
+    expect_text(&mut god_rx2, "+timestop/log/archive").await;
+    god_cmd(&world2, "+timestop/log/archive").await;
+    expect_text(&mut god_rx2, "Reading page 0").await;
+    // The read ran off the world loop and re-entered as the completion.
+    expect_text(&mut god_rx2, "archive page 0").await;
+    expect_text(&mut god_rx2, "the vault is empty").await;
+    god_cmd(&world2, "+recap/archive").await;
+    expect_text(&mut god_rx2, "as you witnessed it").await;
+    expect_text(&mut god_rx2, "the vault is empty").await;
+    // The world stayed live throughout.
+    god_cmd(&world2, "WHO").await;
+    expect_text(&mut god_rx2, "God").await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn scene_archive_reads_cold_chunks_in_memory() {
+    scene_archive_round_trip(Arc::new(InMemoryStore::new())).await;
+}
+
+/// The same round trip over a live Redis: the reboot-from-Redis-alone
+/// surrogate for the archive. Gated on `REDIS_URL`; runs in db 5 (dbs 6–15
+/// are claimed by the other gated suites, which run in parallel).
+#[tokio::test(flavor = "multi_thread")]
+async fn scene_archive_reads_cold_chunks_redis_gated() {
+    let Some(url) = std::env::var("REDIS_URL").ok().filter(|s| !s.is_empty()) else {
+        eprintln!(
+            "skipping scene_archive_reads_cold_chunks_redis_gated: REDIS_URL not set \
+             (no live Redis on this machine)"
+        );
+        return;
+    };
+    let url = support::redis_url_with_db(&url, 5);
+    let store = mush_store::RedisStore::connect(&url)
+        .await
+        .expect("connect to REDIS_URL");
+    store.wipe_namespaces().await.expect("wipe test namespaces");
+    scene_archive_round_trip(Arc::new(store)).await;
+}
+
 /// The same round trip over a live Redis — the reboot-from-Redis-alone
 /// surrogate. Gated on `REDIS_URL`; runs in db 15 (dbs 12–14 are claimed by
 /// the durability and boot-round-trip gated tests, which run in parallel).

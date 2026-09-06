@@ -40,10 +40,17 @@ themselves across a restart.
   +timestop/who       Show the scene here: round, whose turn, participants.
   +timestop/log       Show the scene's recorded timeline (speech, turns,
                       arrivals) — a plain transcript of what happened.
+  +timestop/log/archive [page]
+                      Read older history: the sealed pages of a long scene's
+                      log, or the whole log of a scene that ended before the
+                      last restart. Page 0 is the newest; the page arrives a
+                      moment later, read from the store without pausing play.
   +recap              A narrative recap of the scene, told as the events you
                       witnessed (speech, arrivals, the rounds). When the scene
                       concludes it is also recorded in the world chronicle
                       (see help chronicle).
+  +recap/archive [page]
+                      The same recap over older history, page by page.
   +timestop/next      (facilitator/staff) Advance to the next participant's
                       turn; wrapping past the last starts a new round.
   +timestop/pause     (facilitator/staff) Freeze turn advancement.
@@ -61,13 +68,11 @@ drive or end any scene.
 ## Not yet
 
 This cut gives you the turn-based *envelope* — the freeze, the initiative
-order, the durable/restart-safe record, and the recorded transcript. It does
-not yet route dice or other mechanical commands through the turn (an out-of-turn
-`+roll` is not rejected), roll system initiative automatically, or build
-perspective-filtered recaps of what each character perceived. `+timestop/log`
-currently shows a scene's recent events; reading the full history of a long,
-finished scene arrives with the recap tools. Those build onto the same scene
-next.
+order, the durable/restart-safe record, and the recorded transcript, with the
+archive for anything older than the recent tail. It does not yet roll system
+initiative automatically, or narrate a recap with a storyteller's voice; the
+recap is the deterministic, witnessed timeline. Those build onto the same
+scene next.
 
 ## See also
 
