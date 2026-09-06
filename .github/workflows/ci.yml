@@ -155,7 +155,7 @@ jobs:
           cargo test -p mush-contract-tests tactical_gate::tests::tactical_keyframe_line_receipt_and_llm_surfaces_share_one_redacted_dto -- --exact
           cargo test -p mush-server --test ipc_authoritative_action authenticated_action_transfers_ownership_only_after_exact_intent -- --exact
           cargo test -p mush-gateway --lib bridge_common::projection_tests::line_action_list_renders_only_projected_presentation -- --exact
-          cargo test -p mush-net-ssh --lib tui::render::tests::legal_action_panel_renders_only_public_presentation -- --exact
+          cargo test -p mush-net-ssh --lib tui::render::tests::view_rows_reproduce_actions_and_never_leak_undeclared_fields -- --exact
 
   web:
     runs-on: ubuntu-latest
