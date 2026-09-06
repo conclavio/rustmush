@@ -158,6 +158,19 @@ be derived from the other by a measured per-entry cost (§4).
 persisted min-present marker)"; `restore_from_kv` validates from chunk 0 on the same assumption.
 §5.6 is that revisit.
 
+**F9 — A full replay holds the whole journal as `serde_json::Value` until the fold ends.** The
+store parses every document to `Value` before `load_boot` runs, and `data.kv` lives through the
+boot. A 575-byte entry is roughly 3 KB as a `Value` tree (fifteen keyed fields, two line objects,
+and `plan_hash` as thirty-two boxed numbers), so the transient is ~330 MB at 100 000 entries and
+crosses 1 GB near 330 000 — a memory line, not a time line, and one that J1's parse-once only
+removes if the parse goes from text straight to typed records with the text dropped chunk by
+chunk. (Estimate from the shapes; the harness does not measure peak working set.)
+
+**F10 — The journal itself is Redis memory.** At 575 bytes per entry plus RedisJSON's overhead the
+journal is ~1 GB of store RAM near 1 000 000 entries. Sealed chunks are immutable; nothing here
+moves them anywhere colder. That is the other half of C17 ("cold paging") and it binds before any
+boot-time line does at the rates in §9.
+
 **F8 — The remainder column is noise, not a non-linearity.** The first run's 47 → 90 → 1 154 ms
 looked like retention biting at 100 000; the second run (100 000 → 200 000 → 25 000, §2) shows
 ≈ 0 ms at 25 000 and 288 ms at 200 000, so the 1.1–1.5 s remainders at 100 000 are the
@@ -307,6 +320,30 @@ cost and gets its own test.
 Independently of the checkpoint, the per-key `JSON.GET` loop should become a pipelined
 `JSON.MGET` in pages — it is the fetch cost of every module's boot, not just the economy's.
 
+### 5.8 The idempotency index: forever on disk, a window in RAM (D-12-5)
+
+R-B2's semantics stay: a key is never forgotten, and a retry of the same plan after any interval
+must find its original result rather than post again. What changes is the mechanism, because an
+O(entries) RAM index crosses the economy's 1 GB budget in weeks at the §9 design rate:
+
+- **On disk, forever:** every post also writes `idempotency:{namespace}:{key_hash}` — the key doc
+  08 §15.1 already names and nobody writes — carrying the `IdempotencyRecord` (transaction id,
+  plan hash, posted-at). ~100 bytes per entry in the store; a one-time backfill from the journal
+  when the cut lands.
+- **In RAM, a window:** the index keeps keys posted within `IDEMPOTENCY_WINDOW_SECS` (30 days to
+  start). The window's floor is the system's own retry horizon — the durable outbox's dead-letter
+  bound and K7's deadlines — so a crash retry or a redelivered wake never reaches the cold path.
+- **The check:** a key inside the window is checked synchronously on the world task, as today. A
+  key outside it is checked **off-loop** through the store-read seam (H1) before the post
+  re-enters with expected revisions, the way quotes and approvals already re-enter (doc 08 §7.4).
+  A hit returns the original result or refuses a different plan, as today; a miss posts. No
+  probabilistic structure: a false "reused key" refusal on a money path is not acceptable, and a
+  round trip on a month-old key is.
+- **The checkpoint** (§5.2) carries only the window's keys, so its parts are O(window), not
+  O(entries), and boot from a checkpoint is O(records + window) at any journal size. The full
+  replay still rebuilds the window from the journal (an entry older than the window contributes
+  no key).
+
 ### 5.7 Sizing
 
 | journal | chunks | checkpoint parts (idempotency + reverse map) | mutable body | cold boot reads |
@@ -352,6 +389,10 @@ entries boot in seconds and it is where the loader and the store change.
 per-entry cost after each cut (§4) instead of leaving a number that today's code cannot reach
 inside the time line by an order of magnitude.
 
+> **Owner decisions of 2026-09-05 (§9)** set a design rate of 250 entries a minute and a 1 GB RAM
+> budget, which make J2 mandatory, add streaming to J1, and fold the windowed idempotency index
+> (§5.8) into J3. The order above stands; the reasons are stronger.
+
 ## 7. Cuts
 
 Each cut lands under the house discipline (confirm by symbol, build, clippy `-D warnings`,
@@ -363,10 +404,13 @@ parsed chunks it built, `scan_contiguity` and `Ledger::restore_from_kv` share on
 (a `LedgerHistory` value the caller passes to both), the boot-side byte counting checks the raw
 document length instead of re-serializing every entry, and no chunk `Value` is cloned (deserialize
 through `&Value`). `mush-economy`: `load_boot` consumes the parsed chunks and types each entry
-once. `mush-contract-tests`: the scale harness gains the synthetic seeder from §2 beside the
-engine-driven one (the engine one stays, at a small default, as the shape check), and
-`SCALE_JOURNAL_ENTRIES` runs in seconds. `CHECKPOINT_REVIEW_ENTRIES` is re-derived from the
-measured per-entry cost so the two lines agree (§4). *Lenses:* **E** (every breach kind
+once. Under D-12-4 the parse **streams**: the loader hands ledger chunks to the module as text
+(or typed), chunk by chunk, and drops each after typing, so the `Value` tree of F9 never exists
+whole — this is the part of J1 that touches `ModuleBootData`. J1 also adds the journal rate
+metric and the `@stats` projection of D-12-1 and the `fetch_ms` number of D-12-3.
+`mush-contract-tests`: the synthetic seeder landed with this review; `SCALE_JOURNAL_ENTRIES` on
+the engine-driven seeder stays as the shape check at a small default. `CHECKPOINT_REVIEW_ENTRIES`
+is re-derived from the measured per-entry cost so the two lines agree (§4). *Lenses:* **E** (every breach kind
 `inspect_history` reports is still reported from the shared inspection — the existing
 `ledger.rs` breach tests run unchanged), **R** (restore semantics: sealed-tail-becomes-empty-open
 and the unsealed-tail byte count are byte-identical to today), **M** (the harness numbers
@@ -383,10 +427,12 @@ past the tail is a page-bounded off-loop read, the world loop never blocking). R
 before/after at 100 000 entries. Independently valuable whatever happens to J3. Size: two to three
 days.
 
-**J3 — the checkpoint documents and the checkpoint boot.** §5.2–§5.5: the head, the mutable
-body, the immutable parts, the sweep-time writer with the write-time drift check, GC, and
-`load_boot` seeding from a validated checkpoint with the tail replay — **with the full fetch
-still in place** (the cold chunks arrive and are ignored; the loader is untouched). *Lenses:*
+**J3 — the checkpoint documents and the checkpoint boot.** §5.2–§5.5 and §5.8: the head, the
+mutable body, the immutable parts (now the window's keys only), the `idempotency:` point docs
+with their one-time backfill and the off-loop cold check, the sweep-time writer with the
+write-time drift check, GC, and `load_boot` seeding from a validated checkpoint with the tail
+replay — **with the full fetch still in place** (the cold chunks arrive and are ignored; the
+loader is untouched). *Lenses:*
 **V** (validation: a head with a missing part, a part with a wrong hash, a wrong `state_hash`, a
 `covered_seq` past the journal head, an unsealed `covered_chunk` — each is ignored and the boot
 full-replays, never fails, never freezes), **D** (drift: every existing boot drift/ahead/B5 test
@@ -421,3 +467,62 @@ J1 is the first cut. J2 → J3 → J4 is the order if the checkpoint is taken; J
 5. **Idempotency key retention.** R-B2 keeps keys forever; the checkpoint's parts are ~130 B per
    entry because of it. A bounded retention (say, keys older than a year may be re-used) would
    shrink the checkpoint to O(records) and is a rules change, not an engineering one.
+
+## 9. Owner decisions (2026-09-05) and what they change
+
+The owner answered §8 the same day. Recorded as decisions with the arithmetic they imply.
+
+**D-12-1 — Growth rate: unknown, so a design rate and a measured one.** The optimistic edge the
+owner drew — 1 000 players, half online, five entries a minute each — is 2 500 entries a minute,
+3.6 million a day, 2 GB of journal a day: beyond every line in this review and beyond a VPS's
+Redis in days (F10). It is a ceiling, not a design point. The review therefore takes **250
+entries a minute** (a tenth of the edge; 360 000 a day) as the design rate, keeps the edge as the
+stress case, and makes the real rate observable: J1 adds `mush_economy_journal_entries_total` and
+an `@stats` line with the current entries-per-minute and the projected days to the 5 s line at
+the measured per-entry cost. Time to each line, at three rates:
+
+| stage | entries at 5 s | 2 500/min (edge) | 250/min (design) | 25/min |
+|---|---:|---:|---:|---:|
+| today | 70k–110k | 28–44 min | 5–7 h | 2–3 days |
+| after J1 | 140k–230k | 1–1.5 h | 9–15 h | 4–6 days |
+| after J1 + J2 | 170k–280k | 1–2 h | 11–19 h | 5–8 days |
+| after J3 (checkpoint) | ~500k | 3 h | 33 h | 14 days |
+| after J4 (narrow fetch), index O(entries) | 1.2M–1.6M | 8–11 h | 3–4 days | 33–44 days |
+| after J4 with §5.8's window | no entry line (O(records + window)) | — | — | — |
+
+**D-12-2 — Healing a lagging document older than the checkpoint without a drift verdict is
+acceptable**, with §5.3's write-time check as the condition. §5.5 stands as designed.
+
+**D-12-3 — The 5 s line means replay with the store local to the server**; it was replay-only
+originally and stays so as the spec. The fetch and text-parse time is logged as a second number
+(`fetch_ms`, from `load_one_namespace`) beside `replay_ms` so a run on the VPS shows both, and a
+separate line for it can be drawn when there is a reason to. The CI `scale` job runs on GitHub
+runners; the VPS number comes from running the harness on the VPS by hand
+(`SCALE_PROFILE_SCALES=… cargo test --release … scale_cold_journal_replay_phases`).
+
+**D-12-4 — The economy's RAM budget is 1 GB.** Three structures grow with entries; the budget
+dates each:
+
+| structure | bytes per entry | 1 GB at | at 250/min | at 25/min |
+|---|---:|---:|---:|---:|
+| retained transactions (F4) | ~600 | ~1.7M entries | 5 days | 47 days |
+| the idempotency index in RAM (F5) | ~150 | ~7M entries | 19 days | 190 days |
+| the journal's `Value` tree during a full-replay boot (F9) | ~3 000 | ~330k entries | 22 h | 9 days |
+
+So **J2 is mandatory on the budget alone**, whatever the boot time; J1's parse must stream text to
+typed records (F9), or J4 must land, before the journal passes ~330 000 entries; and the RAM
+idempotency index must be bounded (D-12-5) before ~7 000 000.
+
+**D-12-5 — Idempotency keys are retained forever** (the owner's reason: consistency with anything
+that still points at old accounts; the review adds the stronger one — a same-plan retry after any
+interval must not post twice). Retention is a semantics the review keeps; the O(entries) **RAM**
+index is a mechanism it replaces with §5.8 (a window in RAM, every key on disk, the cold check
+off-loop). "Until we observe it trending towards an issue" is honoured by D-12-1's metric — at the
+design rate the trend is visible in weeks, which is why the mechanism is designed now and cut
+when the metric says so.
+
+**Revised order.** J1 (parse once, streaming; the rate metric; `fetch_ms`) → J2 (the bounded
+tail; mandatory on D-12-4) → J3 with §5.8 folded in (the checkpoint carries the window; the
+`idempotency:` docs and their backfill) → J4 (the narrow fetch). After J4 the boot is
+O(records + window) and the remaining entry-linear cost is the journal's own residence in Redis
+(F10), which is the cold-paging half of C17 and a separate review.
