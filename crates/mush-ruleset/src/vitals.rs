@@ -439,6 +439,11 @@ impl WorldObserver for VitalsRepublish {
                 m.0.insert(subject, fp);
             }
             ctx.out.to_actor(subject, event);
+        } else if let Some(m) = ctx.state_mut::<SheetSchemaFps>() {
+            // No sheet to publish (wiped, or unreadable): forget its
+            // fingerprint so a recreated sheet force-keyframes rather than
+            // arriving as a delta the client cannot base.
+            m.0.remove(&subject);
         }
     }
 }

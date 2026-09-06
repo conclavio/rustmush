@@ -1474,6 +1474,23 @@ TUI + line-mode narrative surfaces are deferred (the bridge already answers
 `narrative.backlog` for the TUI, and both clients' local buffers — 1000 / the
 terminal — exceed the 512 ring), documented like I11's producers.
 
+**Verify fold (implementation verify, 2026-09-06).** Both cuts held; the
+folded fixes: (web) a **session segment** on every full rehydrate
+(`beginSegment` nulls the old blocks' seqs — a fresh attach restarts the seq
+namespace, so they must never be the cursor or the de-dup key — records the
+seam, re-arms the backlog; pages splice in at the seam), the `fetchingBacklog`
+latch set only when a request actually went out and released on every
+`hello`, a cap-truncated page ending the backlog instead of re-fetching it on
+every scroll, the scroll anchor restored only on a real prepend
+(`prependGen`), the `evicted` flag surfaced; (gateway) a 256 KB per-page byte
+budget; (session) a `limit.max(1)` guard, a `check_query_flood_at` test
+variant, an attach-time `debug_assert` that a rejoin is by the same account,
+and the three `#[should_panic]` tripwire tests the as-built promised. Caveat
+kept on record: the leak proof inherits the live Room gate's single-subject
+limitation (a room line may name a second party the recipient perceived at
+send-time) — correct while no concealment renders; a world-side per-observer
+projection when it does.
+
 ### 3.13 Cut I13 — Live panel deltas (retire the sheet poll)
 
 **What it is.** `PanelFrameKind::Delta` exists in the contract but few
@@ -1590,7 +1607,19 @@ verify claim was **refuted** (the overlay rides `read_ctx`). **Deviation:** the
 absolute-1 MiB sheet-doc server-side cap is deferred (a pre-existing, not
 reachable-today condition — today's sheets render well under the cap); the TUI
 no-wedge hardening is in place, and it is noted as a residual to fold if a
-ruleset approaches the cap.
+ruleset approaches the cap. **Residual (implementation verify, 2026-09-06):**
+overlay-only mutations — the typed Willpower Roll spend and the SR
+condition-damage/heal actions write only their authoritative state, never
+the sheet attribute, so no `AttrSet` fires and nothing republishes; the "live
+by push, no poll" claim is not yet true for them. The real fix is a
+`WorldEventKind::ActionStateChanged{subject}` (or equivalent) emitted from the
+action-commit seam and subscribed beside `AttrSet` in `vitals.rs`; until it
+lands the web client re-requests its own sheet after acknowledging its own
+action's commit receipt (an interim mitigation that does not cover a
+staffer's condition-damage on another subject). Also noted: the `show_staff`
+fingerprint bit is republish-to-republish (a promote → reconnect → demote →
+write sequence yields a stripped delta), and both shipped clients'
+full-replace of `data` is the defence.
 
 ---
 

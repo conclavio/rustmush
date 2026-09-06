@@ -738,24 +738,38 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
                 matches!(ev, OutputEvent::Narrative { .. })
             })
             .unwrap_or_default();
-        let lines: Vec<serde_json::Value> = bl
-            .lines
-            .iter()
-            .filter_map(|env| match &env.event {
-                OutputEvent::Narrative { kind, actor, text } => Some(serde_json::json!({
-                    "seq": env.seq,
-                    "ts": env.ts,
-                    "kind": kind,
-                    "actor": actor,
-                    "text": text,
-                })),
-                _ => None,
-            })
-            .collect();
+        // A per-page byte budget (I12 verify fold): a ring pre-filled with
+        // long lines must not amplify one pull into a multi-megabyte reply
+        // multiplied by the connection's queue. Past the budget the page is
+        // cut short and `more` set, so the client simply pages again. At
+        // least one line always ships, so a single oversized line can never
+        // stall paging.
+        const MAX_NARRATIVE_BACKLOG_BYTES: usize = 256 * 1024;
+        let mut more = bl.more;
+        let mut bytes = 0usize;
+        let mut lines: Vec<serde_json::Value> = Vec::with_capacity(bl.lines.len());
+        for env in &bl.lines {
+            let OutputEvent::Narrative { kind, actor, text } = &env.event else {
+                continue;
+            };
+            let size = text.to_plain_text().len();
+            if !lines.is_empty() && bytes + size > MAX_NARRATIVE_BACKLOG_BYTES {
+                more = true;
+                break;
+            }
+            bytes += size;
+            lines.push(serde_json::json!({
+                "seq": env.seq,
+                "ts": env.ts,
+                "kind": kind,
+                "actor": actor,
+                "text": text,
+            }));
+        }
         let data = serde_json::json!({
             "backlog": {
                 "before_seq": before_seq,
-                "more": bl.more,
+                "more": more,
                 "evicted": bl.evicted,
                 "lines": lines,
             }

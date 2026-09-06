@@ -92,15 +92,35 @@ describe("SheetStore", () => {
     expect(s.data.strength).toBe(3);
   });
 
-  it("applyDelta before any keyframe is 'stale'; a malformed frame is 'resync'", () => {
+  it("a well-formed delta before any keyframe, or after unavailable, asks to resync", () => {
     const s = new SheetStore();
-    // Not loaded yet — the pending hydration keyframe will seed it.
-    expect(s.applyDelta({ revision: 1, base_revision: 0, data: {} })).toBe("stale");
+    // Not loaded yet: a delta proves the feed is wired, so a fresh keyframe is
+    // the right answer (the storm guard bounds it to one Req).
+    expect(s.applyDelta({ revision: 1, base_revision: 0, data: {} })).toBe("resync");
     s.applyKeyframe(keyframe);
+    s.markUnavailable();
+    expect(s.applyDelta({ revision: 6, base_revision: 5, data: {} })).toBe("resync");
+  });
+
+  it("a malformed frame is 'resync' and leaves state intact", () => {
+    const s = new SheetStore();
+    s.applyKeyframe(keyframe); // revision 5
     expect(s.applyDelta(null)).toBe("resync");
     expect(s.applyDelta("nope")).toBe("resync");
     expect(s.applyDelta({ data: { strength: 4 } })).toBe("resync"); // no revision/base
+    expect(s.applyDelta({ revision: 6, base_revision: 5, data: [1, 2] })).toBe("resync"); // data not an object
+    expect(s.applyDelta({ revision: 6, base_revision: 5 })).toBe("resync"); // data missing
     expect(s.data.strength).toBe(3);
+    expect(s.revision).toBe(5);
+  });
+
+  it("markUnavailable releases the resync storm guard", () => {
+    const s = new SheetStore();
+    s.applyKeyframe(keyframe);
+    s.resyncPending = true;
+    s.markUnavailable();
+    expect(s.resyncPending).toBe(false);
+    expect(s.unavailable).toBe(true);
   });
 
   it("markUnavailable flips the graceful-degradation flag", () => {

@@ -538,3 +538,40 @@ fn backlog_matching_reports_evicted_once_the_ring_rolls() {
     assert!(!bl.more, "no further match — older seqs were evicted");
     assert!(bl.evicted, "the ring rolled, so older history may be gone");
 }
+
+// ---- I12 leak tripwire: the ring's non-Char writers refuse a Narrative ------
+//
+// The narrative backlog's leak proof rests on one invariant: a `Narrative`
+// reaches the resume ring only through the M11-gated resolved-Char fan-out
+// (`send_to_char`), never a session- or broadcast-scoped writer. These pin
+// the `debug_assert` on each of the three other `deliver_to_session` callers.
+
+#[cfg(debug_assertions)]
+#[test]
+#[should_panic(expected = "Narrative must reach the resume ring")]
+fn send_to_session_refuses_a_narrative() {
+    let mgr = manager_with_ticking_clock(SessionConfig::default());
+    let (web, _rx) = web_conn(1, 8);
+    let (sess, _) = mgr.attach(web, CharKey(1), "a".into());
+    mgr.send_to_session(sess, Arc::new(narr("leak")));
+}
+
+#[cfg(debug_assertions)]
+#[test]
+#[should_panic(expected = "Narrative must reach the resume ring")]
+fn send_event_to_session_refuses_a_narrative() {
+    let mgr = manager_with_ticking_clock(SessionConfig::default());
+    let (web, _rx) = web_conn(1, 8);
+    let (sess, _) = mgr.attach(web, CharKey(1), "a".into());
+    mgr.send_event_to_session(sess, narr("leak"));
+}
+
+#[cfg(debug_assertions)]
+#[test]
+#[should_panic(expected = "Narrative must reach the resume ring")]
+fn broadcast_all_refuses_a_narrative() {
+    let mgr = manager_with_ticking_clock(SessionConfig::default());
+    let (web, _rx) = web_conn(1, 8);
+    mgr.attach(web, CharKey(1), "a".into());
+    mgr.broadcast_all(Arc::new(narr("leak")));
+}

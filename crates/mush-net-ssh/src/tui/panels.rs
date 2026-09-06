@@ -230,6 +230,15 @@ impl PanelStore {
             // No held keyframe to base the delta on: fail closed, rehydrate.
             return self.resync(feed);
         };
+        // A delta for a different subject than the held keyframe (a future
+        // view-another's-sheet reuse of this feed) must never merge.
+        if let (Some(held), Some(mine)) = (
+            base_frame.get("target").and_then(Value::as_str),
+            data.get("target").and_then(Value::as_str),
+        ) && held != mine
+        {
+            return PanelOutcome::Ignored;
+        }
         let cur = base_frame
             .get("revision")
             .and_then(Value::as_u64)

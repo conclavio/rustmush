@@ -5,13 +5,13 @@
 // Hydration: `GameApp` issues `Req { q: sheet }` on `hello` (gated on a
 // `*.sheet` panel being in the server's panel manifest — see
 // `SessionStore.sheetFeed`) and again on manual refresh
-// (`GameApp.refreshSheet`) and a light poll while the Sheet tab is mounted
-// (`SheetPanel.svelte`). Since interface plan I13 a sheet mutation republishes
-// a live DELTA (the whole staff-filtered `data`, `schema` omitted) carrying a
-// `revision` and a `base_revision`: this store is a pure revision watermark —
-// a delta applies only when its `base_revision` matches the held revision,
-// otherwise the store reports "resync" and `GameApp` re-requests a fresh
-// keyframe (rule 3 self-heal). The watermark resets on `hello`.
+// (`GameApp.refreshSheet`); the old mounted-tab poll was retired in cut I4.
+// Since interface plan I13 a sheet mutation republishes a live DELTA (the
+// whole staff-filtered `data`, `schema` omitted) carrying a `revision` and a
+// `base_revision`: this store is a pure revision watermark — a delta applies
+// only when its `base_revision` matches the held revision, otherwise the
+// store reports "resync" and `GameApp` re-requests a fresh keyframe (rule 3
+// self-heal). The watermark resets on `hello`.
 
 import {
   parseApproval,
@@ -34,11 +34,12 @@ export class SheetStore {
    * (interface plan I13); reset to 0 on `hello`/keyframe. */
   revision = $state(0);
   /** A keyframe re-request is in flight after a base-revision gap — the
-   * storm guard so one gap does not fire a burst of `refreshSheet`s. */
+   * storm guard so one gap does not fire a burst of `refreshSheet`s.
+   * Released by ANY reply to a sheet Req (a keyframe seeds anew; a refusal
+   * must not leave every later gap dropped silently). */
   resyncPending = $state(false);
   /** The server answered the sheet query with a polite "not available"
-   * (today: `mushd`'s `Query::Sheet` handler predates the ruleset landing —
-   * see web/README.md) rather than a panel keyframe. */
+   * rather than a panel keyframe, and nothing was loaded before it. */
   unavailable = $state(false);
 
   /** The owning ruleset id (`schema.ruleset`), once loaded — drives the
@@ -71,13 +72,12 @@ export class SheetStore {
    * WHOLE staff-filtered `data`, so a match REPLACES `data` (a dropped field
    * is truly gone — no stale key). Returns:
    * - `"applied"` — `base_revision === revision`, state advanced;
-   * - `"stale"` — an old or duplicate delta (or none held yet), ignored;
-   * - `"resync"` — a gap or malformed frame; the caller re-requests a
-   *   keyframe and the store is left untouched. */
+   * - `"stale"` — an old or duplicate delta, ignored;
+   * - `"resync"` — a gap, a malformed frame, or a well-formed delta arriving
+   *   while nothing is loaded (a delta proves the feed is wired, so a fresh
+   *   keyframe is the right answer; the storm guard bounds it to one Req).
+   *   The store is left untouched. */
   applyDelta(raw: unknown): SheetDeltaOutcome {
-    if (!this.loaded) {
-      return "stale";
-    }
     if (typeof raw !== "object" || raw === null) {
       return "resync";
     }
@@ -87,15 +87,19 @@ export class SheetStore {
     if (typeof rev !== "number" || typeof base !== "number") {
       return "resync";
     }
+    if (typeof o.data !== "object" || o.data === null || Array.isArray(o.data)) {
+      return "resync";
+    }
+    if (!this.loaded || this.unavailable) {
+      return "resync";
+    }
     if (rev <= this.revision) {
       return "stale";
     }
     if (base !== this.revision) {
       return "resync";
     }
-    if (typeof o.data === "object" && o.data !== null && !Array.isArray(o.data)) {
-      this.data = o.data as Record<string, unknown>;
-    }
+    this.data = o.data as Record<string, unknown>;
     if (o.approved !== undefined) {
       this.approval = parseApproval(o.approved);
     }
@@ -104,10 +108,13 @@ export class SheetStore {
   }
 
   /** The sheet query answered with a fallback message instead of a panel
-   * keyframe — the panel should render a graceful "not available" state. */
+   * keyframe — the panel should render a graceful "not available" state.
+   * Also releases the resync storm guard, so the next live delta can ask
+   * again rather than being dropped forever. */
   markUnavailable(): void {
     this.loaded = false;
     this.unavailable = true;
+    this.resyncPending = false;
   }
 
   clear(): void {

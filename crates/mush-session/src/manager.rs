@@ -364,6 +364,16 @@ impl SessionManager {
             Entry::Occupied(mut occ) => {
                 let sess = *occ.get();
                 let joined = self.sessions.get_mut(&sess).map(|mut s| {
+                    // Interface plan I12: a rejoin can read the whole resume
+                    // ring (the narrative backlog), so a second principal must
+                    // never attach to another account's session. `mushd`
+                    // guarantees this by construction (append-only accounts,
+                    // no character transfer); assert it so a future transfer
+                    // path re-checks the entitlement at this seam.
+                    debug_assert_eq!(
+                        s.account, account,
+                        "attach: rejoin by a different account (I12 ring entitlement)"
+                    );
                     let from_linkdead = matches!(s.state, SessState::Linkdead { .. });
                     s.state = SessState::Online;
                     let others = s.conns.len();
@@ -953,7 +963,9 @@ impl SessionManager {
     /// (true when the ring has evicted anything and this page reached the
     /// oldest retained match) — monotonic `evicted_seq`, so never a false
     /// negative. An unknown/reaped session yields `Err(UnknownSession)`; the
-    /// caller answers it as an empty backlog (re-hydration safe).
+    /// gateway answers that reap race with an empty page (re-hydration safe).
+    /// A connection with no session at all never reaches here — the bridge
+    /// drops the query, as it does every unattached query.
     pub fn backlog_matching(
         &self,
         sess: SessId,
@@ -965,6 +977,10 @@ impl SessionManager {
             .sessions
             .get(&sess)
             .ok_or(ReplayError::UnknownSession)?;
+        // A zero limit would return `lines = []` with `more = true` — a
+        // spurious empty terminal page. The bridge clamps to 1..=200; guard
+        // here too for any future caller.
+        let limit = limit.max(1);
         let mut lines: Vec<Arc<Envelope>> = Vec::new();
         for (seq, env) in s.ring.iter().rev() {
             if before_seq.is_some_and(|b| *seq >= b) {
@@ -1028,6 +1044,16 @@ impl SessionManager {
                 return FloodVerdict::Ok;
             }
         }
+        match self.conns.get(&conn) {
+            Some(e) => e.bucket.lock().expect("flood bucket poisoned").check(now),
+            None => FloodVerdict::Ok,
+        }
+    }
+
+    /// [`check_query_flood`](Self::check_query_flood) at an explicit instant,
+    /// so the strict bucket is testable with a manual clock like
+    /// [`check_input_at`](Self::check_input_at).
+    pub fn check_query_flood_at(&self, conn: ConnId, now: Instant) -> FloodVerdict {
         match self.conns.get(&conn) {
             Some(e) => e.bucket.lock().expect("flood bucket poisoned").check(now),
             None => FloodVerdict::Ok,

@@ -125,3 +125,92 @@ describe("ScrollbackStore", () => {
     expect(sb.oldestNarrativeSeq).toBe(4);
   });
 });
+
+// ---- I12 verify fold: session segments, the cap loop, the prepend generation --
+
+describe("ScrollbackStore — I12 verify fold", () => {
+  const older = (seq: number, ts = seq * 10) => ({
+    seq,
+    ts,
+    cls: "ev-narrative",
+    lines: [[{ text: `n${seq}`, cls: "", css: "", cmd: null }]],
+    speaker: null,
+    body: null,
+    groupable: false,
+  });
+
+  it("beginSegment nulls old seqs, re-arms the backlog, and pages splice at the seam", () => {
+    const sb = new ScrollbackStore();
+    sb.push("ev-narrative", [], 100, { seq: 40 }); // the old session
+    sb.push("ev-narrative", [], 110, { seq: 41 });
+    sb.prependOlder([], false); // its ring is exhausted
+    expect(sb.moreBacklog).toBe(false);
+    sb.beginSegment();
+    expect(sb.entries.every((b) => b.seq === null)).toBe(true);
+    expect(sb.oldestNarrativeSeq).toBeNull(); // an old seq is never the cursor
+    expect(sb.moreBacklog).toBe(true);
+    // The new session: a live block (seq 3), then a page (1, 2) that must land
+    // at the seam — after the old blocks, before the live tail.
+    sb.push("ev-narrative", [], 200, { seq: 3 });
+    expect(sb.prependOlder([older(1), older(2)], false)).toBe(2);
+    expect(sb.entries.map((b) => b.seq)).toEqual([null, null, 1, 2, 3]);
+    expect(sb.oldestNarrativeSeq).toBe(1);
+  });
+
+  it("an old-segment seq never dedups a new-session line with the same number", () => {
+    const sb = new ScrollbackStore();
+    sb.push("ev-narrative", [], 100, { seq: 2 }); // the old session's seq 2
+    sb.beginSegment();
+    sb.push("ev-narrative", [], 200, { seq: 5 });
+    expect(sb.prependOlder([older(2)], false)).toBe(1); // a real, different line
+    expect(sb.entries.map((b) => b.seq)).toEqual([null, 2, 5]);
+  });
+
+  it("a cap-truncated page ends the backlog instead of looping", () => {
+    const sb = new ScrollbackStore(4);
+    sb.push("ev-narrative", [], 100, { seq: 10 });
+    sb.push("ev-narrative", [], 110, { seq: 11 });
+    // room = 2: a page of 3 is truncated -> exhausted even though the server
+    // said more; the newest of the batch is what is kept.
+    expect(sb.prependOlder([older(7), older(8), older(9)], true)).toBe(2);
+    expect(sb.entries.map((b) => b.seq)).toEqual([8, 9, 10, 11]);
+    expect(sb.moreBacklog).toBe(false);
+    // A full cap holds nothing more: still exhausted, nothing added.
+    expect(sb.prependOlder([older(6)], true)).toBe(0);
+    expect(sb.moreBacklog).toBe(false);
+  });
+
+  it("prependGen bumps only on a real prepend", () => {
+    const sb = new ScrollbackStore();
+    sb.push("ev-narrative", [], 100, { seq: 5 });
+    expect(sb.prependGen).toBe(0);
+    sb.prependOlder([], false); // an empty page
+    expect(sb.prependGen).toBe(0);
+    sb.prependOlder([older(5)], false); // all duplicates
+    expect(sb.prependGen).toBe(0);
+    sb.prependOlder([older(4)], false);
+    expect(sb.prependGen).toBe(1);
+  });
+
+  it("prependOlder records the server's evicted flag and clears fetching", () => {
+    const sb = new ScrollbackStore();
+    sb.fetchingBacklog = true;
+    sb.prependOlder([], false, true);
+    expect(sb.fetchingBacklog).toBe(false);
+    expect(sb.backlogEvicted).toBe(true);
+  });
+
+  it("the cap rolling the head off keeps the seam in place", () => {
+    const sb = new ScrollbackStore(3);
+    sb.push("ev-narrative", [], 100, { seq: 1 });
+    sb.beginSegment(); // seam after the one old block
+    sb.push("ev-narrative", [], 200, { seq: 10 });
+    sb.push("ev-narrative", [], 210, { seq: 11 });
+    sb.push("ev-narrative", [], 220, { seq: 12 }); // rolls the old block off
+    expect(sb.entries.map((b) => b.seq)).toEqual([10, 11, 12]);
+    // The seam moved to 0 with the head: a page (seq 9) lands at the front.
+    sb.prependOlder([older(9)], false); // room 0 -> nothing added, exhausted
+    expect(sb.entries.map((b) => b.seq)).toEqual([10, 11, 12]);
+    expect(sb.moreBacklog).toBe(false);
+  });
+});

@@ -3,7 +3,8 @@
   // groups (interface plan I5: consecutive speech and action by one actor
   // under a single name header, everything else standing alone), autoscrolls
   // while pinned to the bottom, shows the "N new lines" pill while the
-  // reader has scrolled up, and offers "show older" at the top.
+  // reader has scrolled up, offers "show older" at the top, and past the
+  // local buffer pulls older history from the server (interface plan I12).
   import { tick } from "svelte";
 
   import { fmtClock } from "$lib/render";
@@ -29,12 +30,14 @@
   const PIN_SLOP = 48;
   /** Within this many px of the top triggers a backlog fetch. */
   const TOP_SLOP = 24;
-  /** Distance-from-bottom to restore after a prepend (invariant under
+  /** Distance-from-bottom to restore after a real prepend (invariant under
    * prepending content above, so the view does not jump). `null` when no
    * fetch is pending its anchor restore. */
   let anchorFromBottom: number | null = null;
+  /** The last `prependGen` this component restored an anchor for. */
+  let lastGen = 0;
 
-  /** Ask for older history and remember the scroll anchor so the prepended
+  /** Ask for older history and remember the scroll anchor so a prepended
    * page does not shove the view down. */
   function loadOlder(): void {
     if (!onLoadOlder || sb.fetchingBacklog || !sb.moreBacklog || !viewport) {
@@ -63,8 +66,9 @@
     sb.setPinned(true);
   }
 
-  // Autoscroll on new content while pinned; otherwise restore the scroll
-  // anchor after a backlog prepend so the reader stays on the same line.
+  // Autoscroll on new content while pinned — and nothing else here: the
+  // anchor restore below keys on a real prepend, never on an unrelated live
+  // push while a fetch is in flight.
   $effect(() => {
     void sb.entries.length; // track
     if (sb.pinned) {
@@ -73,14 +77,29 @@
           viewport.scrollTop = viewport.scrollHeight;
         }
       });
-    } else if (anchorFromBottom !== null) {
+    }
+  });
+
+  // Restore the scroll anchor exactly when a backlog page actually added
+  // blocks (`prependGen` bumped); a fetch that ended with nothing to show
+  // (empty page, all duplicates, throttled) drops its stale anchor instead of
+  // teleporting the view later.
+  $effect(() => {
+    const gen = sb.prependGen;
+    const fetching = sb.fetchingBacklog;
+    if (gen !== lastGen) {
+      lastGen = gen;
       const keep = anchorFromBottom;
       anchorFromBottom = null;
-      void tick().then(() => {
-        if (viewport) {
-          viewport.scrollTop = viewport.scrollHeight - keep;
-        }
-      });
+      if (keep !== null && !sb.pinned) {
+        void tick().then(() => {
+          if (viewport) {
+            viewport.scrollTop = viewport.scrollHeight - keep;
+          }
+        });
+      }
+    } else if (!fetching) {
+      anchorFromBottom = null;
     }
   });
 </script>
@@ -95,6 +114,8 @@
       <button type="button" class="older" onclick={loadOlder} disabled={sb.fetchingBacklog}>
         {sb.fetchingBacklog ? "Loading older history…" : "Load older history"}
       </button>
+    {:else if sb.backlogEvicted}
+      <div class="older hint">Older history is no longer available.</div>
     {/if}
     {#each sb.visibleGroups as group (group.id)}
       {#if group.speaker}
@@ -174,6 +195,12 @@
 
   .older:hover {
     color: var(--fg);
+  }
+
+  .older.hint {
+    cursor: default;
+    color: var(--fg-faint);
+    text-align: center;
   }
 
   .block {

@@ -99,7 +99,7 @@
     <div class="empty">
       <p><strong>Character sheets</strong></p>
       <p class="muted">
-        The sheet query isn't wired up on this server yet.
+        The sheet isn't available right now.
         <button type="button" class="linklike" onclick={() => app.refreshSheet()}>Try again</button>
       </p>
     </div>

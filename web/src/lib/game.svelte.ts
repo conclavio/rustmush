@@ -205,7 +205,11 @@ export class GameApp {
         // attach; fresh Room output follows and the hello-pass re-requested
         // panel state (vitals and scenes included — the resume seam
         // re-subscribes them, interface plan I4). Keep old scrollback, mark
-        // the seam; the mode resets to nav (D-I-17).
+        // the seam; the mode resets to nav (D-I-17). The fresh attach has a
+        // fresh resume ring and seq namespace, so start a new session segment
+        // first (interface plan I12): old blocks lose their seqs — never the
+        // cursor or de-dup key again — and later pages land at the seam.
+        this.scrollback.beginSegment();
         this.scrollback.pushText("ev-sys ev-local", "— Reconnected (some history skipped) —");
         this.composer?.blur();
         this.screens.paletteOpen = false;
@@ -493,6 +497,9 @@ export class GameApp {
    * actions through its own resync guard. */
   #hydrate(): void {
     this.#pending.clear(); // ids from a previous socket never resolve
+    // Likewise a backlog page requested on a previous socket never arrives
+    // (I12): release the in-flight latch on every hello.
+    this.scrollback.fetchingBacklog = false;
     for (const { pending, q } of hydrationQueries(this.session)) {
       this.#req(pending, q);
     }
@@ -501,14 +508,25 @@ export class GameApp {
     }
   }
 
-  #req(pending: PendingReq, q: Parameters<WsClient["req"]>[0]): void {
+  /** Send a correlated request. Returns whether the frame actually went out
+   * (a closed socket sends nothing), so a caller never latches an in-flight
+   * flag on a request that was never made. */
+  #req(pending: PendingReq, q: Parameters<WsClient["req"]>[0]): boolean {
     const id = this.client.req(q);
     if (id !== null) {
       this.#pending.set(id, pending);
+      return true;
     }
+    return false;
   }
 
   #routeReply(event: OutputEvent, pending: PendingReq | null, ts: number): void {
+    if (pending?.kind === "sheet") {
+      // ANY reply to a sheet Req releases the I13 resync storm guard before
+      // classification — a keyframe re-seeds, and a refusal/odd reply must
+      // not leave every later gap delta dropped silently.
+      this.sheet.resyncPending = false;
+    }
     switch (event.t) {
       case "who":
         this.who.replace(event.d, Date.now());
@@ -527,7 +545,10 @@ export class GameApp {
         if (pending?.kind === "backlog") {
           this.channels.backlogFetched[pending.channel.toLowerCase()] = true;
         }
-        if (pending?.kind === "sheet") {
+        if (pending?.kind === "sheet" && !this.sheet.loaded) {
+          // Only blank the panel when nothing was ever loaded: a transient
+          // Sys (a throttle, a commit-pending refusal) must not wipe a live
+          // sheet. The resync storm guard was released above regardless.
           this.sheet.markUnavailable();
         }
         if (pending?.kind === "narrative_backlog") {
@@ -624,8 +645,9 @@ export class GameApp {
     if (this.scrollback.fetchingBacklog || !this.scrollback.moreBacklog) {
       return;
     }
-    this.scrollback.fetchingBacklog = true;
-    this.#req(
+    // Latch only once the frame actually went out: a request never sent (a
+    // closed socket) must not wedge every later scroll-to-top.
+    this.scrollback.fetchingBacklog = this.#req(
       { kind: "narrative_backlog" },
       {
         t: "narrative_backlog",
@@ -636,18 +658,20 @@ export class GameApp {
 
   #applyNarrativeBacklog(data: unknown): void {
     this.scrollback.fetchingBacklog = false;
-    const bl = (data as { backlog?: { more?: boolean; lines?: unknown[] } })?.backlog;
+    const bl = (
+      data as { backlog?: { more?: boolean; evicted?: boolean; lines?: unknown[] } }
+    )?.backlog;
     if (!bl || !Array.isArray(bl.lines)) {
       this.scrollback.moreBacklog = false;
       return;
     }
-    // The wire is newest-first; `prependOlder` wants oldest-first at the head.
+    // The wire is newest-first; `prependOlder` wants oldest-first at the seam.
     const older = bl.lines
       .slice()
       .reverse()
       .map((l) => this.#renderBacklogLine(l))
       .filter((b): b is SbOlderBlock => b !== null);
-    this.scrollback.prependOlder(older, bl.more === true);
+    this.scrollback.prependOlder(older, bl.more === true, bl.evicted === true);
   }
 
   #renderBacklogLine(raw: unknown): SbOlderBlock | null {
@@ -696,6 +720,14 @@ export class GameApp {
       // and accepted into client state. A failed send leaves the gateway copy
       // live, so reconnect re-emits it and this same idempotent path retries.
       this.client.ackCommit(receipt.commit);
+      // Interface plan I13 interim mitigation: an authoritative action may
+      // mutate overlay-only state (a typed Willpower spend, condition damage)
+      // that writes no sheet attribute and so never republishes. Re-request
+      // the viewer's own sheet after their own commit; the server-side
+      // ActionStateChanged republish seam retires this (§3.13 residual).
+      if (this.session.sheetFeed) {
+        this.refreshSheet();
+      }
       return;
     }
     if (view.view !== "legal.actions") {
@@ -1039,10 +1071,12 @@ export class GameApp {
 
   // -- sheet ----------------------------------------------------------------
 
-  /** Re-request the viewer's sheet (the panel's Refresh button and the
-   * sheet screen's `r`). Since interface cut I1 every command-side sheet
-   * write republishes the keyframe, so this is a manual nudge, not a
-   * liveness mechanism. No-op before a sheet feed is known. */
+  /** Re-request the viewer's sheet (the panel's Refresh button, the sheet
+   * screen's `r`, and the I13 self-heal after a delta base gap). Since
+   * interface cut I1 every command-side sheet write republishes — as a
+   * keyframe then, an incremental delta since I13 — so this is a manual
+   * nudge and the rule-3 recovery path, not a liveness mechanism. No-op
+   * before a sheet feed is known. */
   refreshSheet(): void {
     if (this.session.sheetFeed === null) {
       return;
