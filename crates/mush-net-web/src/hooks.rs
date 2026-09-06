@@ -23,7 +23,7 @@ use std::net::IpAddr;
 use std::sync::Arc;
 
 use futures::future::BoxFuture;
-use mush_proto::{Envelope, ProjectedCommitToken, Query};
+use mush_proto::{Envelope, ProjectedCommitToken, Query, RespondChoice};
 use serde::Serialize;
 use tokio::sync::mpsc;
 
@@ -221,6 +221,16 @@ pub trait WebHooks: Send + Sync {
     /// was sent or abandoned. The binary rate-limits it and fans it out to
     /// the room; it is never an idle stamp. The default drops it.
     fn composing(&self, _conn: u64, _active: bool) -> BoxFuture<'_, ()> {
+        Box::pin(async {})
+    }
+
+    /// A client's answer to a server-initiated request
+    /// ([`ClientCommand::Respond`](mush_proto::ClientCommand::Respond),
+    /// interface plan I10, D-I-21): the engine correlates it by `id`, applies
+    /// the choice, and re-validates. Advisory and best-effort — a lost answer
+    /// means the server applies the deadline default; never an idle stamp.
+    /// The default drops it.
+    fn respond(&self, _conn: u64, _id: u64, _choice: RespondChoice) -> BoxFuture<'_, ()> {
         Box::pin(async {})
     }
 

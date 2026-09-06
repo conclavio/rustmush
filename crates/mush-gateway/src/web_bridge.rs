@@ -57,7 +57,9 @@ use mush_net_web::{
     CharSummary, LoginErr, LoginOk, NewWebConn, RegisterErr, ResumeErr, ResumeOk, SessionStart,
     TokenIdentity, WebHooks,
 };
-use mush_proto::{ClientCaps, ClientKind, ColorDepth, OutputEvent, Query, RichText, SmolStr};
+use mush_proto::{
+    ClientCaps, ClientKind, ColorDepth, OutputEvent, Query, RespondChoice, RichText, SmolStr,
+};
 use mush_session::{ConnId, ConnectionHandle, FloodVerdict, ReplayError, SessionManager};
 use mush_store::{ObjectStore, TokenRecord};
 use sha2::{Digest, Sha256};
@@ -731,6 +733,32 @@ impl<A: AuthBackend + 'static> WebHooks for WebBridge<A> {
                     conn,
                     actor,
                     active,
+                }))
+                .await;
+        })
+    }
+
+    fn respond(&self, conn: u64, id: u64, choice: RespondChoice) -> BoxFuture<'_, ()> {
+        Box::pin(async move {
+            let conn_id = ConnId(conn);
+            // Advisory (interface plan I10): shares the per-connection input
+            // flood bucket so a Respond flood cannot reach the world loop past
+            // the throttle, but never stamps idle. A throttled or unattached
+            // answer is dropped silently — the server applies the deadline
+            // default. Rides the one-way path like Composing.
+            if self.core.sessions.check_input(conn_id) == FloodVerdict::Throttled {
+                return;
+            }
+            let Some(actor) = self.core.actor_of(conn_id) else {
+                return;
+            };
+            self.core
+                .link
+                .to_server(ToServer::Inbound(WireInbound::Respond {
+                    conn,
+                    actor,
+                    id,
+                    choice,
                 }))
                 .await;
         })

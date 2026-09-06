@@ -417,13 +417,12 @@ async fn pump(
                             // idle stamp, never a protocol error.
                             hooks.composing(conn_id, active).await;
                         }
-                        Ok(ClientCommand::Respond { id, .. }) => {
+                        Ok(ClientCommand::Respond { id, choice }) => {
                             // A server-initiated interaction reply (interface
-                            // plan I10). The engine request registry that
-                            // correlates it is I10 part 2; until a Request
-                            // producer exists, a stray Respond is logged and
-                            // ignored, never a protocol error.
-                            tracing::debug!(conn = conn_id, id, "respond received (no request registry yet; ignored)");
+                            // plan I10, D-I-21): the engine correlates it by
+                            // id and applies the choice; a stale/forged id is
+                            // ignored engine-side, never a protocol error.
+                            hooks.respond(conn_id, id, choice).await;
                         }
                         Ok(ClientCommand::Resume { .. }) => {
                             tracing::warn!(conn = conn_id, "mid-connection resume is a protocol error");
