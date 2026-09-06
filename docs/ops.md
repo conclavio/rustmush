@@ -984,7 +984,11 @@ filling their top bucket (a bundle at the cap). `@stats` renders the same lane
 as one line. Every number is an aggregate; no token, hash, owner or key is
 exposed. The scale harness that exercises this lane on demand
 (`crates/mush-contract-tests/tests/scale_harness.rs`) runs in the CI `scale`
-job on `workflow_dispatch` or the weekly schedule, never on push.
+job on `workflow_dispatch` or the weekly schedule, never on push. The same
+harness reports the economy's cold journal replay phase by phase
+(`scale_cold_journal_replay_phases`, scales from `SCALE_PROFILE_SCALES`,
+default `25000,50000,100000`) over a journal it synthesizes in milliseconds;
+`docs/design/12-economy-checkpoint-review.md` reads those numbers.
 
 **Structured logging** is configured under `[log]`:
 

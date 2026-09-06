@@ -7,15 +7,19 @@
 //! and the shape of a tick-sized bundle against the kernel's three caps (10b
 //! §9 q6).
 //!
+//! A fifth, from the economy checkpoint review (doc 12 §2): the same cold
+//! replay **phase by phase** over a journal synthesized in milliseconds rather
+//! than minted through the engine, at several scales.
+//!
 //! Every measuring test is `#[ignore]`: the CI `scale` job runs them on
 //! `workflow_dispatch` and a weekly schedule with a live Redis. They
 //! **report**, and assert a threshold only under `SCALE_ASSERT=1` (D-H-8), so a
 //! slow runner cannot fail a scheduled run merely by being slow. Sizes come from
 //! the environment — `SCALE_JOURNAL_ENTRIES`, `SCALE_ACCOUNTS`, `SCALE_OBJECTS`,
-//! `SCALE_BUNDLES`, `SCALE_TICK_WRITES`, `SCALE_TICK_POST_BYTES` — with the
-//! defaults §3.3 names. The un-ignored `h3_*` tests at the bottom run each
-//! seeder at a tiny size under `cargo test --workspace`, so the ignored bodies
-//! cannot rot unnoticed.
+//! `SCALE_BUNDLES`, `SCALE_TICK_WRITES`, `SCALE_TICK_POST_BYTES`,
+//! `SCALE_PROFILE_SCALES` — with the defaults §3.3 and doc 12 name. The
+//! un-ignored `h3_*` tests at the bottom run each seeder at a tiny size under
+//! `cargo test --workspace`, so the ignored bodies cannot rot unnoticed.
 //!
 //! Redis twins run in logical dbs 1 (world boot) and 2 (soak); dbs 3–15 belong
 //! to the other gated suites (see `README.md`).
@@ -26,6 +30,7 @@ use std::sync::atomic::AtomicU64;
 use std::time::{Duration, Instant};
 
 use mush_config::metrics::{BUNDLE_BUCKETS_BYTES, LAG_BUCKETS_MS, Metrics, MetricsSnapshot};
+use mush_core::ledger::DEFAULT_CHUNK_TARGET_BYTES;
 use mush_core::{
     Audience, AuthoritativeBundle, AuthoritativeBundleDraft, AuthoritativeBundleError,
     AuthoritativeKey, AuthoritativeSemanticEvent, CanonicalHash, CanonicalId, CommitToken,
@@ -35,7 +40,11 @@ use mush_core::{
     ModuleWrite, Obj, ObjId, ObjKind, OwnerId, PreparedCausalRef, PrincipalId, ReplayWrite,
     RequestUid, RulesValue, ScopedIdempotencyKey, canonical_json_bytes,
 };
-use mush_economy::{CHECKPOINT_REVIEW_ENTRIES, CHECKPOINT_REVIEW_SECS, EconomyStore, ReplayStats};
+use mush_core::{Ledger, LedgerChunk, LedgerEntry, scan_contiguity};
+use mush_economy::{
+    CHECKPOINT_REVIEW_ENTRIES, CHECKPOINT_REVIEW_SECS, EconomicTransaction, EconomyStore,
+    ReplayStats,
+};
 use mush_proto::OutputEvent;
 use mush_server::persist::{
     AuthoritativeCommitFailure, PersistenceIntegrityLatch, StoreJob, load_or_seed_world,
@@ -192,6 +201,196 @@ fn replay_journal(kv: Vec<(SmolStr, Value)>) -> ReplayStats {
         .expect("economy store")
         .boot_replay()
         .expect("the economy booted, so it recorded its replay")
+}
+
+/// The economy checkpoint review (`docs/design/12-economy-checkpoint-review.md`
+/// §2): the journal `seed_journal` produces, **synthesized** — the real docs
+/// (instrument, faucet, `accounts` player accounts, `meta`) plus one real mint
+/// whose journal entry is the template every entry clones, packed into chunks
+/// at the ledger's own 16 KiB seal — so a cold replay at `entries` costs
+/// milliseconds to seed instead of minutes through the engine. Returns the
+/// namespace as a cold store would hold it, the chunk count, and the journal's
+/// JSON byte size.
+fn synth_journal(entries: usize, accounts: usize) -> (Vec<(SmolStr, Value)>, usize, usize) {
+    let accounts = accounts.max(1);
+    let mut tw = econ_world();
+    let mut kv = HashMap::new();
+    let ev = tw.run(GOD, "@instrument/register gold=2");
+    assert!(!has_error(&ev), "instrument: {}", texts(&ev));
+    let ev = tw.run(GOD, "@account/system faucet=gold");
+    assert!(!has_error(&ev), "faucet: {}", texts(&ev));
+    for n in 0..accounts {
+        let p = tw.spawn_player(&format!("Scale{n}"));
+        let ev = tw.run(GOD, &format!("@account/open #{}=gold", p.0));
+        assert!(!has_error(&ev), "account {n}: {}", texts(&ev));
+    }
+    fold_economy_ops(&mut kv, &mut tw);
+    let ev = tw.run(GOD, "@econ/mint 0=1 1");
+    assert!(!has_error(&ev), "template mint: {}", texts(&ev));
+    let mut after = HashMap::new();
+    fold_economy_ops(&mut after, &mut tw);
+    let chunk: LedgerChunk = serde_json::from_value(
+        after
+            .remove("log:journal:0")
+            .expect("the template mint wrote chunk 0"),
+    )
+    .expect("chunk 0 parses");
+    let template = chunk.entries[0].value.clone();
+
+    let mut chunks: Vec<LedgerChunk> = Vec::new();
+    let mut open = LedgerChunk {
+        chunk: 0,
+        sealed: false,
+        entries: Vec::new(),
+    };
+    let mut open_bytes = 0usize;
+    let mut total_bytes = 0usize;
+    for i in 0..entries {
+        let seq = u64::try_from(i).expect("entry count fits u64");
+        let mut tx = template.clone();
+        tx["id"] = Value::from(seq + 1);
+        tx["journal_seq"] = Value::from(seq);
+        tx["idempotency"]["key"] = Value::from(format!("scale-{i}"));
+        tx["posted_at"] = Value::from(1_700_000_000_u64 + seq);
+        tx["lines"][1]["account"] =
+            Value::from(u64::try_from(1 + i % accounts).expect("account id fits u64"));
+        let entry = LedgerEntry { seq, value: tx };
+        let bytes = serde_json::to_vec(&entry).expect("entry encodes").len();
+        total_bytes += bytes;
+        open_bytes += bytes;
+        open.entries.push(entry);
+        if open_bytes >= DEFAULT_CHUNK_TARGET_BYTES {
+            open.sealed = true;
+            let next = open.chunk + 1;
+            chunks.push(std::mem::replace(
+                &mut open,
+                LedgerChunk {
+                    chunk: next,
+                    sealed: false,
+                    entries: Vec::new(),
+                },
+            ));
+            open_bytes = 0;
+        }
+    }
+    if !open.entries.is_empty() {
+        chunks.push(open);
+    }
+    let count = chunks.len();
+    for c in chunks {
+        kv.insert(
+            SmolStr::new(format!("log:journal:{}", c.chunk)),
+            serde_json::to_value(&c).expect("chunk encodes"),
+        );
+    }
+    (kv.into_iter().collect(), count, total_bytes)
+}
+
+/// The cold replay's phases (doc 12 §1), each timed in isolation on the same
+/// kv by calling exactly what `load_boot` calls, in milliseconds.
+struct ReplayPhases {
+    /// The text→`Value` parse the store does before the C17 timer starts.
+    fetch_parse: u64,
+    /// `scan_contiguity` (the first `inspect_history`).
+    scan: u64,
+    /// `Ledger::restore_from_kv` (the second).
+    restore: u64,
+    /// `load_boot`'s own chunk parse (the third).
+    chunk_parse: u64,
+    /// Typing every entry as an `EconomicTransaction`, then the seq sort.
+    tx_parse: u64,
+}
+
+fn replay_phases(kv: &[(SmolStr, Value)]) -> ReplayPhases {
+    let texts: Vec<String> = kv
+        .iter()
+        .map(|(_, v)| serde_json::to_string(v).expect("doc encodes"))
+        .collect();
+    let started = Instant::now();
+    let parsed: Vec<Value> = texts
+        .iter()
+        .map(|s| serde_json::from_str(s).expect("doc parses"))
+        .collect();
+    let fetch_parse = ms(started.elapsed());
+    drop(parsed);
+
+    let started = Instant::now();
+    let breaches = scan_contiguity(kv);
+    let scan = ms(started.elapsed());
+    assert!(
+        breaches.is_empty(),
+        "the synthetic journal is contiguous: {breaches:?}"
+    );
+
+    let started = Instant::now();
+    let mut ledger = Ledger::new();
+    ledger
+        .restore_from_kv(kv)
+        .expect("the synthetic journal restores");
+    let restore = ms(started.elapsed());
+
+    let started = Instant::now();
+    let chunks: Vec<LedgerChunk> = kv
+        .iter()
+        .filter(|(k, _)| k.starts_with("log:journal:"))
+        .map(|(_, v)| serde_json::from_value(v.clone()).expect("chunk parses"))
+        .collect();
+    let chunk_parse = ms(started.elapsed());
+
+    let started = Instant::now();
+    let mut txs: Vec<(u64, EconomicTransaction)> = chunks
+        .into_iter()
+        .flat_map(|c| c.entries)
+        .map(|e| (e.seq, serde_json::from_value(e.value).expect("entry types")))
+        .collect();
+    txs.sort_by_key(|(seq, _)| *seq);
+    let tx_parse = ms(started.elapsed());
+
+    ReplayPhases {
+        fetch_parse,
+        scan,
+        restore,
+        chunk_parse,
+        tx_parse,
+    }
+}
+
+/// Doc 12 §2: where the cold replay's time goes, phase by phase, at each
+/// scale in `SCALE_PROFILE_SCALES` (comma-separated entry counts; default
+/// `25000,50000,100000`). `boot_total_ms` is the C17 timer; the phases sum to
+/// most of it (F1) and `fetch_parse_ms` sits outside it (F3).
+#[test]
+#[ignore = "scale harness: run by the CI `scale` job (workflow_dispatch / weekly)"]
+fn scale_cold_journal_replay_phases() {
+    let scales: Vec<usize> = std::env::var("SCALE_PROFILE_SCALES")
+        .ok()
+        .map(|s| s.split(',').filter_map(|x| x.trim().parse().ok()).collect())
+        .filter(|v: &Vec<usize>| !v.is_empty())
+        .unwrap_or_else(|| vec![25_000, 50_000, 100_000]);
+    let accounts = env_usize("SCALE_ACCOUNTS", 100);
+    println!(
+        "scale_cold_journal_replay_phases: entries | chunks | json_kb | fetch_parse_ms | \
+         scan_ms | restore_ms | chunk_parse_ms | tx_parse_ms | boot_total_ms"
+    );
+    for n in scales {
+        let (kv, chunks, bytes) = synth_journal(n, accounts);
+        let phases = replay_phases(&kv);
+        let stats = replay_journal(kv);
+        assert_eq!(
+            stats.entries, n,
+            "every synthetic entry is one journal transaction"
+        );
+        println!(
+            "{n} | {chunks} | {} | {} | {} | {} | {} | {} | {}",
+            bytes / 1024,
+            phases.fetch_parse,
+            phases.scan,
+            phases.restore,
+            phases.chunk_parse,
+            phases.tx_parse,
+            stats.elapsed_ms
+        );
+    }
 }
 
 #[test]
@@ -739,6 +938,16 @@ fn h3_journal_seeder_yields_its_stated_count() {
     assert_eq!(stats.entries, 10);
     // Before any boot there is nothing to report.
     assert!(EconomyStore::default().boot_replay().is_none());
+}
+
+#[test]
+fn h3_synthetic_journal_seeder_yields_its_stated_count_and_replays_clean() {
+    let (kv, chunks, bytes) = synth_journal(10, 3);
+    assert!(chunks >= 1 && bytes > 0);
+    // The phases run on the same kv the boot then consumes.
+    let _ = replay_phases(&kv);
+    let stats = replay_journal(kv);
+    assert_eq!(stats.entries, 10);
 }
 
 #[tokio::test(flavor = "multi_thread")]

@@ -851,7 +851,10 @@ tail. A derived tail may be rebuilt and must never become authority.
 > **As shipped (E2–E5):** step 4's checkpoint does not exist — boot replays the whole journal — and
 > cold paging has no reader. Both stay deferred with the trigger in §7's note: **when a cold replay
 > exceeds 5 s or 1,000,000 entries**, the checkpoint becomes the next cut's first item (08g §12.1
-> item 5).
+> item 5). **The trigger fired at 100 000 entries** (H3's harness, 2026-09-05: 7.0 s); the review
+> is [12](12-economy-checkpoint-review.md) — the replay is serde-bound (three inspections of the
+> journal before the fold), so "parse once" is recommended before any checkpoint, and the checkpoint
+> as designed there is coupled to a bounded RAM transaction index and a narrower boot fetch.
 
 ---
 
