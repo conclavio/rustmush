@@ -81,6 +81,15 @@ pub struct ReplayStats {
     /// milliseconds (doc 12 D-12-3: logged beside the replay, not inside it;
     /// zero when the loader did not measure — a test rig).
     pub fetch_ms: u64,
+    /// J3: the covered sequence of the checkpoint the boot seeded from, or
+    /// `None` for a full replay.
+    pub from_checkpoint: Option<u64>,
+    /// J3: how many journal entries the boot actually folded (the tail past
+    /// the checkpoint, or every entry).
+    pub replayed: usize,
+    /// J3: wall time selecting, validating and seeding from the checkpoint
+    /// documents took, milliseconds, inside `elapsed_ms` (zero with none).
+    pub checkpoint_ms: u64,
 }
 
 /// What the journal-derived index keeps for **every** transaction ever posted
@@ -161,14 +170,28 @@ pub struct EconomyStore {
     pub(crate) transactions: BTreeMap<TransactionId, EconomicTransaction>,
     /// Every transaction ever posted, by id (J2): what the tail's eviction keeps.
     pub(crate) tx_index: BTreeMap<TransactionId, TxRef>,
-    /// How many `Created` title effects the journal holds per object (J2): the
-    /// title generation, which used to be counted over every retained body.
-    pub(crate) created_count: BTreeMap<ObjId, u64>,
+    /// The journal-authority shadow (J3, [`crate::fold`]): every accumulator the
+    /// boot replay derives from the journal, folded live by the same function on
+    /// every post — balances, holds, titles, custody, terminal times, the title
+    /// generation, the reversed set, the allocator high-water marks. What the
+    /// checkpoint writer compares the projections against, and what it writes.
+    pub(crate) fold: crate::fold::FoldState,
     /// The first journal sequence of every chunk (J2): chunk index → first seq,
     /// the map a cold read by sequence needs to name its chunk.
     pub(crate) chunk_firsts: BTreeMap<u64, u64>,
     /// In-flight cold journal reads, one per requesting actor (J2). Transient.
     pub(crate) pending_reads: std::collections::HashMap<ObjId, PendingEconomyRead>,
+    /// J3: the checkpoint this store last wrote or booted from, if any.
+    pub(crate) checkpoint: Option<crate::checkpoint::CheckpointMeta>,
+    /// J3: every checkpoint document key the store knows (booted with or
+    /// written), so a write can sweep what its head and the one it supersedes
+    /// no longer name.
+    pub(crate) checkpoint_keys: std::collections::BTreeSet<SmolStr>,
+    /// J3: what boot reported — the checkpoint it seeded from and the entries
+    /// it folded — for `ReplayStats`.
+    pub(crate) boot_from_checkpoint: Option<u64>,
+    pub(crate) boot_replayed: usize,
+    pub(crate) boot_checkpoint_ms: u64,
     pub(crate) next_account: u64,
     pub(crate) next_transaction: u64,
     /// The vault-id allocator (E3b1); never reused, resumed from `meta` floored at
@@ -198,24 +221,9 @@ pub struct EconomyStore {
     /// `contract:` key plus `meta`. Re-minting one would attach a live escrow hold
     /// (whose `purpose` names a `ContractId`) to a different agreement.
     pub(crate) next_contract: u64,
-    /// Where the journal last saw each object's custody, and **who put it there**
-    /// (E4b2). RAM-only and journal-derived, exactly like
-    /// [`EconomyStore::hold_terminal_at`]: it is evidence, not economic truth, so it
-    /// is rebuilt at boot from the `custody_effects` rather than stored, and a
-    /// `CustodyEffect` keeps the byte shape E3 journaled.
-    ///
-    /// A contract records the depositor of its `DepositInto` object from here, so a
-    /// refund can put the thing back where it came from — the custody lock has no
-    /// exception, so the contract's own unwind is the only way out.
-    pub(crate) last_custody: BTreeMap<ObjId, CustodyMark>,
     /// The open + recently-acknowledged level-2/3 escalation records (§4.6), by id.
     /// Leaf docs (`escalation:{id}`): a corrupt one is skipped loudly at boot.
     pub(crate) escalations: BTreeMap<EscalationId, Escalation>,
-    /// When each **terminal** hold became terminal (wall clock), journal-derived at
-    /// boot and stamped at install. RAM-only on purpose: it is a GC schedule, not
-    /// economic truth, so it is re-derived from the journal rather than stored — and
-    /// a hold record itself therefore keeps the byte shape E4a journaled.
-    pub(crate) hold_terminal_at: BTreeMap<HoldId, i64>,
     /// How many **consecutive** sweep fires have failed to expire each still-`Held`
     /// reservation whose deadline has passed (E4b1 verify fold, S6). RAM-only, like
     /// [`EconomyStore::hold_terminal_at`]: it is a ladder counter, not economic
@@ -390,7 +398,7 @@ pub const MAX_CANON_ENTITIES: usize = 64;
 /// One object's last journaled custody movement (E4b2): which vault, which way, and
 /// **which principal's post did it**. The depositor is the transaction's `actor`,
 /// which is journal authority — never a claim on the contract record.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct CustodyMark {
     /// The vault involved.
     pub vault: VaultId,
@@ -409,10 +417,14 @@ pub(crate) struct BootParts {
     pub(crate) journal: Ledger,
     pub(crate) transactions: BTreeMap<TransactionId, EconomicTransaction>,
     pub(crate) tx_index: BTreeMap<TransactionId, TxRef>,
-    pub(crate) created_count: BTreeMap<ObjId, u64>,
+    pub(crate) fold: crate::fold::FoldState,
     pub(crate) chunk_firsts: BTreeMap<u64, u64>,
     pub(crate) escalations: BTreeMap<EscalationId, Escalation>,
-    pub(crate) hold_terminal_at: BTreeMap<HoldId, i64>,
+    pub(crate) checkpoint: Option<crate::checkpoint::CheckpointMeta>,
+    pub(crate) checkpoint_keys: std::collections::BTreeSet<SmolStr>,
+    pub(crate) boot_from_checkpoint: Option<u64>,
+    pub(crate) boot_replayed: usize,
+    pub(crate) boot_checkpoint_ms: u64,
     pub(crate) next_account: u64,
     pub(crate) next_transaction: u64,
     pub(crate) next_vault: u64,
@@ -422,7 +434,6 @@ pub(crate) struct BootParts {
     pub(crate) next_cadence: u64,
     pub(crate) next_escalation: u64,
     pub(crate) next_contract: u64,
-    pub(crate) last_custody: BTreeMap<ObjId, CustodyMark>,
     pub(crate) debit_window: BTreeMap<AccountId, WindowTail>,
     pub(crate) notices: BTreeMap<ObjId, Vec<crate::notice::PendingNotice>>,
     pub(crate) sweep_contract_cursor: u64,
@@ -444,11 +455,15 @@ impl EconomyStore {
             journal: p.journal,
             transactions: p.transactions,
             tx_index: p.tx_index,
-            created_count: p.created_count,
+            fold: p.fold,
             chunk_firsts: p.chunk_firsts,
             pending_reads: std::collections::HashMap::new(),
+            checkpoint: p.checkpoint,
+            checkpoint_keys: p.checkpoint_keys,
+            boot_from_checkpoint: p.boot_from_checkpoint,
+            boot_replayed: p.boot_replayed,
+            boot_checkpoint_ms: p.boot_checkpoint_ms,
             escalations: p.escalations,
-            hold_terminal_at: p.hold_terminal_at,
             next_account: p.next_account,
             next_transaction: p.next_transaction,
             next_vault: p.next_vault,
@@ -458,7 +473,6 @@ impl EconomyStore {
             next_cadence: p.next_cadence,
             next_escalation: p.next_escalation,
             next_contract: p.next_contract,
-            last_custody: p.last_custody,
             sweep_contract_cursor: p.sweep_contract_cursor,
             hold_expiry_failures: BTreeMap::new(),
             obligation_defers: BTreeMap::new(),
@@ -537,6 +551,11 @@ impl EconomyStore {
     pub fn tail_floor_seq(&self) -> Option<u64> {
         self.transactions.values().next().map(|t| t.journal_seq)
     }
+    /// J3: the checkpoint this store last wrote or booted from.
+    #[must_use]
+    pub fn checkpoint(&self) -> Option<&crate::checkpoint::CheckpointMeta> {
+        self.checkpoint.as_ref()
+    }
     /// The limit the sweep evicts the tail down to.
     #[must_use]
     pub fn tx_tail_max(&self) -> usize {
@@ -550,7 +569,7 @@ impl EconomyStore {
     /// the generation the next issue mints under.
     #[must_use]
     pub fn created_count(&self, object: ObjId) -> u64 {
-        self.created_count.get(&object).copied().unwrap_or(0)
+        self.fold.created_count.get(&object).copied().unwrap_or(0)
     }
     /// The chunk of the journal that holds sequence `seq`, from the first-seq
     /// map (J2); `None` before any entry.
@@ -807,7 +826,7 @@ impl EconomyStore {
     /// Where the journal last saw `object`'s custody, and who moved it (E4b2).
     #[must_use]
     pub(crate) fn last_custody(&self, object: ObjId) -> Option<&CustodyMark> {
-        self.last_custody.get(&object)
+        self.fold.last_custody.get(&object)
     }
     /// One escalation record.
     #[must_use]
@@ -826,7 +845,7 @@ impl EconomyStore {
     /// When a terminal hold became terminal, if this store knows (GC evidence).
     #[must_use]
     pub(crate) fn hold_terminal_at(&self, id: HoldId) -> Option<i64> {
-        self.hold_terminal_at.get(&id).copied()
+        self.fold.hold_terminal_at.get(&id).copied()
     }
     /// The last completed sweep's two stamps (wall, IC).
     #[must_use]
@@ -918,11 +937,8 @@ impl EconomyStore {
                 posted_at: tx.posted_at,
             },
         );
-        for effect in &tx.asset_effects {
-            if effect.kind == crate::record::AssetEffectKind::Created {
-                *self.created_count.entry(effect.object).or_insert(0) += 1;
-            }
-        }
+        // J3: the journal-authority shadow, folded by the one function boot uses.
+        self.fold.fold_entry(tx.journal_seq, &tx);
         // E6a step 1 (D-E6-21): the rolling-window tail, the same fold boot replays.
         // D4: only an account whose live rule carries a window is tracked at all —
         // every other one is dropped again immediately, so the index is O(windowed
@@ -932,28 +948,11 @@ impl EconomyStore {
                 self.debit_window.remove(&account);
             }
         }
-        // E4b2: the last-custody mark, with the depositor the journal names.
-        for effect in &tx.custody_effects {
-            self.last_custody.insert(
-                effect.object,
-                CustodyMark {
-                    vault: effect.vault,
-                    direction: effect.direction,
-                    by: tx.actor.clone(),
-                    at: tx.posted_at,
-                },
-            );
-        }
+        // E4b1: the hold allocator advances past every reservation placed; the
+        // terminal times and the custody marks are the shadow's now.
         for effect in &tx.hold_effects {
-            match effect.kind {
-                crate::record::HoldEffectKind::Placed => {
-                    self.next_hold = self.next_hold.max(effect.hold.id.0.saturating_add(1));
-                }
-                crate::record::HoldEffectKind::Captured
-                | crate::record::HoldEffectKind::Released
-                | crate::record::HoldEffectKind::Expired => {
-                    self.hold_terminal_at.insert(effect.hold.id, tx.posted_at);
-                }
+            if effect.kind == crate::record::HoldEffectKind::Placed {
+                self.next_hold = self.next_hold.max(effect.hold.id.0.saturating_add(1));
             }
         }
         self.transactions.insert(tx.id, tx);
@@ -1077,7 +1076,7 @@ pub const MAX_WINDOW_ENTRIES: usize = 4_096;
 
 /// One account's rolling-window tail: `(posted_at, debit)` oldest first, plus the
 /// fail-closed latch the per-account cap sets.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct WindowTail {
     /// The entries, oldest first, each `(posted_at, debit)`.
     pub(crate) entries: std::collections::VecDeque<(i64, Amount)>,
@@ -1442,15 +1441,24 @@ impl GameModule for EconomyModule {
         // what was replayed.
         let entries = usize::try_from(store.journal_len()).unwrap_or(usize::MAX);
         let elapsed_ms = u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX);
+        let from_checkpoint = store.boot_from_checkpoint;
+        let replayed = store.boot_replayed;
+        let checkpoint_ms = store.boot_checkpoint_ms;
         store.boot_replay = Some(ReplayStats {
             entries,
             elapsed_ms,
             fetch_ms,
+            from_checkpoint,
+            replayed,
+            checkpoint_ms,
         });
         tracing::info!(
             entries,
             elapsed_ms,
             fetch_ms,
+            from_checkpoint = ?from_checkpoint,
+            replayed,
+            checkpoint_ms,
             "economy: journal replayed at boot"
         );
         if elapsed.as_secs() > CHECKPOINT_REVIEW_SECS || entries > CHECKPOINT_REVIEW_ENTRIES {

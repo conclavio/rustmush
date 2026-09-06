@@ -590,6 +590,129 @@ posted before the checkpoint is refused after a checkpoint boot; a key reused wi
 plan is refused), **T** (torn writes: crash between parts and head; crash mid-GC), **F** (frozen
 economy checkpointed and booted stays frozen). Size: four to five days.
 
+> **J3 as built — 2026-09-06.** Built after J1, J2 and J5, which changed what a checkpoint is
+> for: with the replay at ~3.3 µs per entry, the tail bounded and cold chunks archived, the
+> checkpoint's remaining value is the boot **skipping every covered chunk's decode**, the
+> runtime **drift shadow** it needs, and the trust model its documents carry — not the boot
+> time the §6/§9 rows once forecast. §5.8's windowed idempotency index is **not** in this cut
+> (J3-D1, below).
+>
+> 1. **The shared fold** (`mush_economy::fold::FoldState`): every accumulator the boot replay
+>    derives from the journal — running balances and held amounts, last sequence and touch
+>    count per account, title and reservation post-states, terminal times, custody marks,
+>    consumed approvals, the reversed set, the title generation, the allocator high-water
+>    marks — as one value folded by one function, `fold_entry`, which boot replays with and
+>    `index_transaction` calls on every post. The store's three journal-derived maps moved into
+>    it. The live store therefore carries a **journal-authority shadow** of its projections.
+> 2. **The documents** (`mush_economy::checkpoint`): the head `checkpoint:{seq}` (format,
+>    covered sequence and chunk, written-at, the part list with each part's SHA-256 and
+>    sequence range, the `state_hash`, the body: the fold plus the debit-window tails and the
+>    chunk-to-first-sequence map) and the immutable parts `checkpoint:{seq}:idem:{n}` (the
+>    idempotency records and transaction refs for one range, ≤ 25 000 rows each). A later
+>    checkpoint re-lists the parts it inherits and writes only the new range. Hashes are over
+>    canonical JSON, domain-separated.
+> 3. **The writer** runs from the sweep after GC, every `checkpoint_every_entries` past the last
+>    covered sequence, never on the post path. **The write-time drift check** compares every
+>    account, title and reservation projection with the shadow first; a mismatch writes nothing,
+>    says so at `error`, and **freezes the economy** — boot's money-safety rule at runtime, a
+>    property the boot-only fold never gave. Parts are persisted before the head; two heads are
+>    kept and the next write sweeps what neither names. Nothing is written while frozen or
+>    with the cadence at 0.
+> 4. **The boot** selects the newest checkpoint whose key agrees with its covered sequence,
+>    whose sequence is at or below the journal head, whose covered chunk exists, whose parts
+>    are all present and hash to the head, decode and cover what they claim, and whose state
+>    hash recomputes; every rejected one is said at `error` and ignored. It seeds the fold,
+>    the idempotency index, the transaction refs, the reversed set and the two maps, decodes
+>    **no chunk below the covered one except those holding the RAM tail** (J3-F4), keeps the
+>    tail's bodies without folding them, skips every other entry at or below the covered
+>    sequence, and folds the rest. `ReplayStats` gained `from_checkpoint`, `replayed` and
+>    `checkpoint_ms`.
+> 5. **§5.5 as decided (D-12-2):** a document claiming a sequence at or before the covered one
+>    is judged when that sequence is the last the fold touched for it (the checkpoint's value is
+>    the value at the claim), and otherwise lags — healed unverified, at `info`, exempt from the
+>    drift and "never appears at" verdicts. Drift at the head still freezes.
+> 6. **J3-D1 — the windowed idempotency index (§5.8) is deferred to its own cut.** Building it
+>    exposed a hole the review glossed over: a post's idempotency check is synchronous on the
+>    world task, and a window cannot tell a never-used key from a key used before the window —
+>    so either every post with a fresh key pays an off-loop store check (a re-entry the dozens
+>    of `post` callers do not have), or a probabilistic fast-negative (a Bloom filter over every
+>    key, carried by the checkpoint) sits in front of the cold check. The boot's contract heal
+>    (`finished_transition`) also reads keys that may be older than any window. That needs its
+>    own design page and the owner's eye; this cut carries the whole index in the parts, so J3's
+>    RAM story is J2's, and D-12-4's ~7 million-entry line for the index stands.
+> 7. **J3-D2:** the covered sequence is the journal head at write time, not a chunk boundary
+>    — the boot skips whole chunks below the covered chunk and entries at or below the covered
+>    sequence within it, which is simpler than aligning writes to seals and loses nothing.
+>
+> **Measured (lens M).** The scale harness's phases test grew a checkpointed boot beside the
+> full replay (`SCALE_CHECKPOINT_EVERY`): boot once, let the sweep write a checkpoint at the
+> head, overlay its documents, boot again. Release build, this dev box, 100 accounts:
+>
+> | entries | chunks | full boot | of which typed decode | checkpointed boot | of which select + seed | replayed |
+> |---:|---:|---:|---:|---:|---:|---:|
+> | 25 000 | 881 | 95 ms | 39 ms | 127 ms | 64 ms | 0 |
+> | 100 000 | 3 560 | 307 ms | 159 ms | 326 ms | 204 ms | 0 |
+>
+> (The default 20 000-entry RAM tail is decoded either way — J3-F4 — which is most of the
+> 25 000-entry journal.) **The checkpoint as built is boot-time neutral to slightly worse.** It
+> skips the typed decode of every covered chunk outside the tail and pays about the same to
+> decode and hash the parts, because the parts carry **one row per journal entry** (the whole
+> idempotency index, per D-12-4 and J3-D1) — the checkpoint moved the per-entry cost from the
+> journal to its own documents, and the inspection pass (the text decode of every chunk, ~59 ms
+> at 100 000) is paid either way. The boot-time and RAM win
+> the review forecast lives entirely in §5.8's window, deferred (J3-D1). What this cut delivers
+> on its own is the runtime drift shadow, the write-time freeze, and the checkpoint documents'
+> trust model. `ReplayStats` and the boot log line carry `checkpoint_ms` so the split stays
+> visible.
+>
+> **J3-F2 (owner-facing, pre-existing).** The measurement first booted a *frozen* economy: the
+> synthetic journal's documents were captured before the template mint, so the faucet and
+> account 1 carried `last_journal_seq == 0` — the never-touched sentinel — while the journal's
+> entry 0 touched them, and the boot read that as drift at seq 0 rather than lag. Sequence 0 is
+> both a real journal sequence and the sentinel, so a document lost between the **first**
+> journal append and its own write reads as drift and freezes instead of healing. A one-entry
+> exposure, untouched by J3, and the J1/J2 measurements ran on that frozen boot without
+> noticing (their timings were unaffected). The fix is a 1-based journal or an `Option` on the
+> anchor, both schema changes — flagged, not taken here. The harness now captures the documents
+> as the mint left them.
+>
+> **Verify (lenses V, D, I, T, F).** V: a missing part, a tampered part, a wrong state hash, a
+> head not covering what its key says — each ignored, the journal replayed whole, unfrozen,
+> balances right; a garbage newer head does not shadow a valid older one. D: drift at the
+> claimed head sequence still freezes after a checkpoint boot; a pre-checkpoint lag heals
+> without a verdict; the write-time check names every disagreement (unit). I: a key posted
+> before the checkpoint is refused as already posted after a checkpoint boot (a test-only
+> `@testpost` command posts under a chosen key); a fresh key posts. T: parts with no head and a
+> head with no parts are both ignored. F: a frozen economy writes no checkpoint; a zero cadence
+> writes none. The round trip: the sweep writes at its cadence, a boot seeds and replays only
+> the tail, a later checkpoint inherits the earlier part, and the third write sweeps the first
+> head while keeping the part it introduced. Findings folded: **J3-F1** — the round-trip test
+> first expected a checkpoint from fewer new entries than the cadence; the cadence is what the
+> test now asserts.
+>
+> **The cadence-1 pass (lens C).** The default cadence means no ordinary test ever reaches the
+> writer, so the write-time drift check and the checkpointed boot were exercised by the five
+> J3 tests alone. The whole workspace was therefore run once with the cadence forced to 1 —
+> every sweep in every economy-touching test writes a checkpoint and every reboot seeds from
+> one. Twelve tests failed, from two causes, both folded:
+>
+> - **J3-F3 — the sentinel at the checkpoint.** The §5.5 rule excluded every claim of sequence
+>   0 as the never-touched sentinel, so an account whose only touch was the journal's first
+>   entry was left to the head verdict, which read its balance against nothing and froze; and a
+>   hold or asset the rule could not place lagged where B5 should have frozen. The fold's last
+>   touch now decides what the stored sequence alone cannot: a claim at the touch is judged at
+>   the value (a real first touch at 0 included), a touch past the claim lags (the sentinel on
+>   an account the journal did touch included), and no touch or an earlier one is left to the
+>   verdicts — an untouched sentinel is nothing, a claim the journal never made is still B5.
+> - **J3-F4 — the empty tail.** A checkpointed boot decoded nothing below the covered chunk, so
+>   J2's RAM tail came up empty: every history page and reversal went cold, and the boot heals
+>   that read a transaction's body (a settlement's stamp, a lost transition) found none. The
+>   boot now decodes from the chunk holding the tail's floor even below the checkpoint's, keeping
+>   those entries' bodies without folding them; the tail is full after any boot.
+>
+> With both folded the cadence-1 pass is clean across the workspace, and it is the run to
+> repeat whenever the fold, the writer or the boot rule changes.
+
 **J4 — the narrow fetch.** §5.6: the boot manifest, `ModuleBootData.omitted`, the min-present
 marker through `scan_contiguity`/`restore_from_kv`, the `RetryFullFetch` path, and the pipelined
 `JSON.MGET` (which every module gets). *Lenses:* **G** (a manifest naming a chunk the store no
@@ -599,8 +722,8 @@ without omission returns the same documents for the kept keys, both backends). S
 plus the Redis suite time.
 
 J1 is the first cut. The order after the owner's decisions (§9) is J2 → J5 (§10.6, the
-archive tier) → J3 → J4; J2 and J5 can each be taken alone. *J1, J2 and J5 are built (§7's
-as-built blocks); J3 and J4 remain.*
+archive tier) → J3 → J4; J2 and J5 can each be taken alone. *J1, J2, J5 and J3 are built (§7's
+as-built blocks); J4 and the windowed index (J3-D1) remain.*
 
 ## 8. Open questions for the owner
 

@@ -7,11 +7,19 @@
 
 use std::collections::HashMap;
 
+use std::sync::Arc;
+
+use mush_core::module::{ModError, Registrar};
 use mush_core::{
-    Audience, Effect, Effects, GOD, LedgerChunk, LedgerEntry, ModuleBootData, ModuleWrite, ObjId,
-    Outbox, StoreReadResult, WorldCommand, WorldEvent,
+    ArgShape, Audience, CmdError, CommandSpec, Ctx, Effect, Effects, GOD, GameModule, LedgerChunk,
+    LedgerEntry, ModuleBootData, ModuleWrite, ObjId, Outbox, StoreReadResult, WorldCommand,
+    WorldEvent,
 };
-use mush_economy::{AccountId, EconomyConfig, EconomyStore, TransactionId};
+use mush_economy::{
+    AccountId, EconomicCause, EconomyConfig, EconomyPlan, EconomyStore, IdempotencyKey,
+    PostOutcome, RequestedLine, TransactionId,
+};
+use mush_org::PrincipalId;
 use mush_proto::OutputEvent;
 use mush_testkit::{TestWorld, text_of};
 use smol_str::SmolStr;
@@ -690,4 +698,452 @@ fn j2_reverse_reaches_past_the_tail_through_the_journal() {
         texts(&events)
     );
     assert!(effects.is_empty());
+}
+
+// ----------------------------------------------------------------------
+// J3: the checkpoint (doc 12 §5.2–§5.5, §7 J3)
+// ----------------------------------------------------------------------
+
+/// A test-only module with one command, `@testpost <key> <amount>`: a mint
+/// from the faucet to account 1 under an idempotency key the test chooses —
+/// the way to re-post a pre-checkpoint key after a checkpoint boot (lens I).
+struct TestPostMod;
+
+impl GameModule for TestPostMod {
+    fn name(&self) -> &'static str {
+        "e2btestpost"
+    }
+    fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
+        reg.classify_commands(mush_core::CommandCompatibility::EconomyCarveOut);
+        reg.command(
+            CommandSpec {
+                name: "@testpost".into(),
+                shape: ArgShape::Raw,
+                help: "@testpost <key> <amount>   test: mint under a chosen idempotency key".into(),
+                ..CommandSpec::default()
+            },
+            Arc::new(|ctx: &mut Ctx<'_>| -> Result<(), CmdError> {
+                let raw = ctx.args.raw().to_string();
+                let mut words = raw.split_whitespace();
+                let key = words.next().unwrap_or("k").to_string();
+                let amount: i64 = words
+                    .next()
+                    .and_then(|w| w.parse().ok())
+                    .ok_or_else(|| CmdError::msg("Usage: @testpost <key> <amount>"))?;
+                let plan = EconomyPlan::new(
+                    IdempotencyKey::new("t", key),
+                    PrincipalId::Object(ctx.actor),
+                    EconomicCause::Staff {
+                        reason: "test".into(),
+                    },
+                    vec![
+                        RequestedLine {
+                            account: AccountId(0),
+                            delta: mush_economy::Amount::from_minor(-amount),
+                            memo: "mint".into(),
+                        },
+                        RequestedLine {
+                            account: AccountId(1),
+                            delta: mush_economy::Amount::from_minor(amount),
+                            memo: "grant".into(),
+                        },
+                    ],
+                );
+                let outcome = mush_economy::post(ctx, &plan);
+                let actor = ctx.actor;
+                let line = match outcome {
+                    Ok(PostOutcome::Posted(id)) => format!("posted #{id}"),
+                    Ok(PostOutcome::AlreadyPosted(id)) => format!("already #{id}"),
+                    Ok(other) => format!("other {other:?}"),
+                    Err(e) => format!("refused {e}"),
+                };
+                ctx.out.sys_to_actor(actor, "test", line);
+                Ok(())
+            }),
+        )?;
+        Ok(())
+    }
+}
+
+/// The e2b rig with the RAM tail and the checkpoint cadence set, plus the
+/// test post command.
+fn boot_j3(tail: usize, every: u64) -> TestWorld {
+    TestWorld::with_modules(vec![
+        Box::new(mush_org::OrgModule::new()),
+        Box::new(
+            mush_economy::EconomyModule::new().with_config(EconomyConfig {
+                tx_tail_max: tail,
+                checkpoint_every_entries: every,
+                ..EconomyConfig::default()
+            }),
+        ),
+        Box::new(TestPostMod),
+    ])
+}
+
+fn reboot_j3(kv: Vec<(SmolStr, serde_json::Value)>, tail: usize, every: u64) -> TestWorld {
+    let mut tw = boot_j3(tail, every);
+    tw.modules_loaded(HashMap::from([(
+        SmolStr::new(NS),
+        ModuleBootData {
+            kv,
+            ..ModuleBootData::default()
+        },
+    )]));
+    tw
+}
+
+/// Overlay the world's new module ops on `base` (last write wins, deletes
+/// remove): what a store holds after those ops committed.
+fn fold_into(
+    mut base: Vec<(SmolStr, serde_json::Value)>,
+    tw: &mut TestWorld,
+) -> Vec<(SmolStr, serde_json::Value)> {
+    for op in tw.take_module_ops() {
+        if op.ns != NS {
+            continue;
+        }
+        match op.op {
+            ModuleWrite::JsonSet { key, value } => {
+                base.retain(|(k, _)| *k != key);
+                base.push((key, value));
+            }
+            ModuleWrite::Del { key } => base.retain(|(k, _)| *k != key),
+            ModuleWrite::StreamAppend { .. } => {}
+        }
+    }
+    base
+}
+
+fn checkpoint_keys(kv: &[(SmolStr, serde_json::Value)]) -> Vec<String> {
+    let mut keys: Vec<String> = kv
+        .iter()
+        .filter(|(k, _)| k.starts_with("checkpoint:"))
+        .map(|(k, _)| k.to_string())
+        .collect();
+    keys.sort();
+    keys
+}
+
+fn patch(kv: &mut [(SmolStr, serde_json::Value)], key: &str, f: impl Fn(&mut serde_json::Value)) {
+    let mut seen = false;
+    for (k, v) in kv.iter_mut() {
+        if k == key {
+            f(v);
+            seen = true;
+        }
+    }
+    assert!(seen, "no such persisted key: {key}");
+}
+
+fn replay(tw: &TestWorld) -> (Option<u64>, usize, usize) {
+    let r = store(tw).boot_replay().expect("booted");
+    (r.from_checkpoint, r.replayed, r.entries)
+}
+
+/// J3-F3 (cadence-1 verify fold): sequence 0 is both the journal's first
+/// sequence and the never-touched sentinel, and the boot's checkpoint rule
+/// first excluded every claim of 0 — so an account whose only touch was the
+/// journal's first entry read as drift after a checkpoint boot and froze. The
+/// fold's last touch decides: a claim at the touch is judged, a touch past the
+/// claim (the sentinel on an account the journal did touch) lags and heals, and
+/// a claim the journal never made is still B5.
+#[test]
+fn j3_a_first_entry_touch_and_a_sentinel_lag_survive_a_checkpoint_boot() {
+    let mut tw = boot_j3(20_000, 1);
+    setup_mint(&mut tw, 1); // seq 0: the faucet and account 1, never again
+    let q = tw.spawn_player("Quinn");
+    assert!(!has_error(
+        &tw.run(GOD, &format!("@account/open #{}=gold", q.0))
+    ));
+    let ev = tw.run(GOD, "@econ/mint 0=2 1"); // seq 1: the faucet and account 2
+    assert!(!has_error(&ev), "second mint: {}", texts(&ev));
+    sweep_at(&mut tw, 100);
+    assert_eq!(store(&tw).checkpoint().map(|c| c.covered_seq), Some(1));
+    let kv = fold_into(Vec::new(), &mut tw);
+
+    let tw2 = reboot_j3(kv.clone(), 20_000, 1);
+    assert_eq!(replay(&tw2), (Some(1), 0, 2));
+    assert!(
+        !store(&tw2).is_frozen(),
+        "an account whose only touch is seq 0 is judged at its value, not read as the sentinel"
+    );
+    assert_eq!((bal(&tw2, 1), bal(&tw2, 2)), (1, 1));
+
+    // The sentinel on an account the journal touched: the doc write of the
+    // second mint lost, so account 2 still reads as never touched. It lags.
+    let mut lost = kv.clone();
+    patch(&mut lost, "account:2", |v| {
+        v["posted_balance"] = serde_json::json!(0);
+        v["last_journal_seq"] = serde_json::json!(0);
+    });
+    let tw3 = reboot_j3(lost, 20_000, 1);
+    assert!(
+        !store(&tw3).is_frozen(),
+        "a sentinel the journal outran lags and heals"
+    );
+    assert_eq!(bal(&tw3, 2), 1);
+
+    // B5 under a checkpoint: a claim the journal never made still freezes.
+    let mut impossible = kv;
+    patch(&mut impossible, "account:1", |v| {
+        v["last_journal_seq"] = serde_json::json!(1);
+    });
+    let tw4 = reboot_j3(impossible, 20_000, 1);
+    assert!(
+        store(&tw4).is_frozen(),
+        "a doc claiming a sequence it never appears at is B5, checkpoint or not"
+    );
+}
+
+/// J3-F4 (cadence-1 verify fold): a checkpointed boot used to decode nothing
+/// below the covered chunk, so the RAM tail came up empty and every history
+/// page and reversal went cold until new posts refilled it. The chunks holding
+/// the tail are decoded whatever the checkpoint covers; their entries are kept,
+/// not folded.
+#[test]
+fn j3_the_tail_is_kept_across_a_checkpoint_boot() {
+    let mut tw = boot_j3(3, 1);
+    setup_mint(&mut tw, 1);
+    mint_n(&mut tw, 5); // seq 0..=5
+    sweep_at(&mut tw, 100);
+    assert_eq!(store(&tw).checkpoint().map(|c| c.covered_seq), Some(5));
+    assert_eq!(store(&tw).tail_len(), 3, "the sweep evicted to the limit");
+    let kv = fold_into(Vec::new(), &mut tw);
+
+    let tw2 = reboot_j3(kv, 3, 1);
+    assert_eq!(replay(&tw2), (Some(5), 0, 6));
+    let s = store(&tw2);
+    assert!(!s.is_frozen());
+    assert_eq!(
+        (s.journal_len(), s.tail_len(), s.tail_floor_seq()),
+        (6, 3, Some(3)),
+        "the newest bodies are in RAM after a checkpoint boot"
+    );
+    assert!(s.transaction(TransactionId(5)).is_some());
+    assert!(
+        s.transaction(TransactionId(2)).is_none(),
+        "below the tail: index only"
+    );
+    assert_eq!(s.transaction_ref(TransactionId(0)).map(|r| r.seq), Some(0));
+    assert_eq!(bal(&tw2, 1), 6);
+}
+
+/// The sweep writes a checkpoint at its cadence; a boot seeds from it and
+/// replays only the tail; a second checkpoint inherits the first's part and
+/// sweeps the head it supersedes' predecessor.
+#[test]
+fn j3_the_sweep_writes_a_checkpoint_and_boot_resumes_from_it() {
+    let mut tw = boot_j3(20_000, 4);
+    setup_mint(&mut tw, 1);
+    mint_n(&mut tw, 5); // seq 0..=5
+    assert!(store(&tw).checkpoint().is_none());
+    sweep_at(&mut tw, 100);
+    let cp = store(&tw)
+        .checkpoint()
+        .cloned()
+        .expect("written at the cadence");
+    assert_eq!((cp.covered_seq, cp.parts.len(), cp.max_txid), (5, 1, 5));
+    let kv = fold_into(Vec::new(), &mut tw);
+    assert_eq!(
+        checkpoint_keys(&kv),
+        vec![
+            "checkpoint:5".to_string(),
+            "checkpoint:5:idem:0".to_string()
+        ]
+    );
+
+    let tw2 = reboot_j3(kv.clone(), 20_000, 4);
+    assert_eq!(replay(&tw2), (Some(5), 0, 6));
+    assert_eq!(bal(&tw2, 1), 6);
+    assert!(!store(&tw2).is_frozen());
+    assert_eq!(
+        store(&tw2).transaction_ref(TransactionId(0)).map(|r| r.seq),
+        Some(0)
+    );
+    assert_eq!(store(&tw2).checkpoint().map(|c| c.covered_seq), Some(5));
+    assert_eq!(store(&tw2).created_count(ObjId(1)), 0);
+
+    // The tail past the checkpoint replays; a later checkpoint inherits the
+    // part and sweeps nothing yet (two heads are kept).
+    let mut tw2 = tw2;
+    mint_n(&mut tw2, 3); // seq 6..=8: below the cadence, so no checkpoint yet
+    let kv2 = fold_into(kv, &mut tw2);
+    let tw3 = reboot_j3(kv2.clone(), 20_000, 4);
+    assert_eq!(replay(&tw3), (Some(5), 3, 9));
+    assert_eq!(bal(&tw3, 1), 9);
+    let mut tw3 = tw3;
+    sweep_at(&mut tw3, 1_000);
+    assert_eq!(
+        store(&tw3).checkpoint().map(|c| c.covered_seq),
+        Some(5),
+        "three new entries are under the cadence of four"
+    );
+    mint_n(&mut tw3, 1); // seq 9: the fourth
+    sweep_at(&mut tw3, 2_000);
+    let cp = store(&tw3)
+        .checkpoint()
+        .cloned()
+        .expect("the second checkpoint");
+    assert_eq!((cp.covered_seq, cp.parts.len()), (9, 2));
+    let kv3 = fold_into(kv2, &mut tw3);
+    assert_eq!(
+        checkpoint_keys(&kv3),
+        vec![
+            "checkpoint:5".to_string(),
+            "checkpoint:5:idem:0".to_string(),
+            "checkpoint:9".to_string(),
+            "checkpoint:9:idem:1".to_string(),
+        ]
+    );
+    // A third sweeps the first head; the part it introduced is still inherited.
+    mint_n(&mut tw3, 4); // seq 10..=13
+    sweep_at(&mut tw3, 3_000);
+    let kv4 = fold_into(kv3, &mut tw3);
+    assert_eq!(
+        checkpoint_keys(&kv4),
+        vec![
+            "checkpoint:13".to_string(),
+            "checkpoint:13:idem:2".to_string(),
+            "checkpoint:5:idem:0".to_string(),
+            "checkpoint:9".to_string(),
+            "checkpoint:9:idem:1".to_string(),
+        ]
+    );
+    let tw4 = reboot_j3(kv4, 20_000, 4);
+    assert_eq!(replay(&tw4), (Some(13), 0, 14));
+    assert_eq!(bal(&tw4, 1), 14);
+}
+
+/// Lens V: every way a checkpoint can be wrong is ignored — a missing part, a
+/// tampered part, a wrong state hash, a head that does not cover what its key
+/// says — and the boot replays the whole journal, unfrozen, with the right
+/// balances. Lens T: parts with no head, or a head with no parts, the same.
+#[test]
+fn j3_an_invalid_checkpoint_is_ignored_and_the_journal_replayed_whole() {
+    let mut tw = boot_j3(20_000, 2);
+    setup_mint(&mut tw, 1);
+    mint_n(&mut tw, 3);
+    sweep_at(&mut tw, 100);
+    let kv = fold_into(Vec::new(), &mut tw);
+    assert_eq!(checkpoint_keys(&kv).len(), 2);
+    let full = (None, 4, 4);
+
+    let mut missing_part = kv.clone();
+    missing_part.retain(|(k, _)| k != "checkpoint:3:idem:0");
+    let tw2 = reboot_j3(missing_part, 20_000, 2);
+    assert_eq!(replay(&tw2), full, "a missing part");
+    assert_eq!(bal(&tw2, 1), 4);
+    assert!(!store(&tw2).is_frozen());
+
+    let mut tampered = kv.clone();
+    patch(&mut tampered, "checkpoint:3:idem:0", |v| {
+        v["rows"][0]["posted_at"] = serde_json::json!(999);
+    });
+    let tw3 = reboot_j3(tampered, 20_000, 2);
+    assert_eq!(replay(&tw3), full, "a tampered part");
+    assert_eq!(bal(&tw3, 1), 4);
+
+    let mut bad_hash = kv.clone();
+    patch(&mut bad_hash, "checkpoint:3", |v| {
+        v["state_hash"] = serde_json::json!("00".repeat(32));
+    });
+    let tw4 = reboot_j3(bad_hash, 20_000, 2);
+    assert_eq!(replay(&tw4), full, "a wrong state hash");
+
+    let mut wrong_seq = kv.clone();
+    patch(&mut wrong_seq, "checkpoint:3", |v| {
+        v["covered_seq"] = serde_json::json!(99);
+    });
+    let tw5 = reboot_j3(wrong_seq, 20_000, 2);
+    assert_eq!(replay(&tw5), full, "a head not covering what its key says");
+
+    let mut headless = kv.clone();
+    headless.retain(|(k, _)| k != "checkpoint:3");
+    let tw6 = reboot_j3(headless, 20_000, 2);
+    assert_eq!(replay(&tw6), full, "parts with no head");
+
+    // A garbage newer head does not shadow the valid older one.
+    let mut garbage = kv.clone();
+    garbage.push((
+        SmolStr::new("checkpoint:7"),
+        serde_json::json!({ "format": 1, "nope": true }),
+    ));
+    let tw7 = reboot_j3(garbage, 20_000, 2);
+    assert_eq!(replay(&tw7), (Some(3), 0, 4), "the valid one is still used");
+}
+
+/// Lens D: drift at the head is still caught after a checkpoint boot; a
+/// document lagging a pre-checkpoint version heals without a verdict.
+#[test]
+fn j3_drift_still_freezes_and_a_pre_checkpoint_lag_heals() {
+    let mut tw = boot_j3(20_000, 2);
+    setup_mint(&mut tw, 1);
+    mint_n(&mut tw, 3); // account 1: balance 4 at seq 3
+    sweep_at(&mut tw, 100);
+    let kv = fold_into(Vec::new(), &mut tw);
+
+    let mut drifted = kv.clone();
+    patch(&mut drifted, "account:1", |v| {
+        v["posted_balance"] = serde_json::json!(40);
+    });
+    let tw2 = reboot_j3(drifted, 20_000, 2);
+    assert_eq!(replay(&tw2).0, Some(3));
+    assert!(
+        store(&tw2).is_frozen(),
+        "drift at the claimed head sequence freezes"
+    );
+
+    let mut lagging = kv.clone();
+    patch(&mut lagging, "account:1", |v| {
+        v["posted_balance"] = serde_json::json!(2);
+        v["last_journal_seq"] = serde_json::json!(1);
+    });
+    let tw3 = reboot_j3(lagging, 20_000, 2);
+    assert_eq!(replay(&tw3).0, Some(3));
+    assert!(!store(&tw3).is_frozen(), "a pre-checkpoint lag heals");
+    assert_eq!(bal(&tw3, 1), 4);
+}
+
+/// Lens I: a key posted before the checkpoint is still refused as already
+/// posted after a checkpoint boot; a fresh key posts.
+#[test]
+fn j3_idempotency_survives_a_checkpoint_boot() {
+    let mut tw = boot_j3(20_000, 2);
+    setup_mint(&mut tw, 1);
+    let first = texts(&tw.run(GOD, "@testpost alpha 5"));
+    assert!(first.contains("posted #1"), "{first}");
+    mint_n(&mut tw, 2);
+    sweep_at(&mut tw, 100);
+    let kv = fold_into(Vec::new(), &mut tw);
+    let mut tw2 = reboot_j3(kv, 20_000, 2);
+    assert_eq!(replay(&tw2).0, Some(3));
+    let again = texts(&tw2.run(GOD, "@testpost alpha 5"));
+    assert!(again.contains("already #1"), "{again}");
+    assert_eq!(bal(&tw2, 1), 8);
+    let fresh = texts(&tw2.run(GOD, "@testpost beta 1"));
+    assert!(fresh.contains("posted #4"), "{fresh}");
+    assert_eq!(bal(&tw2, 1), 9);
+}
+
+/// Lens F: a frozen economy writes no checkpoint; disabled cadence writes none.
+#[test]
+fn j3_no_checkpoint_while_frozen_or_disabled() {
+    let mut tw = boot_j3(20_000, 0);
+    setup_mint(&mut tw, 1);
+    mint_n(&mut tw, 5);
+    sweep_at(&mut tw, 100);
+    assert!(store(&tw).checkpoint().is_none(), "disabled");
+    let kv = fold_into(Vec::new(), &mut tw);
+    let mut frozen = kv.clone();
+    patch(&mut frozen, "account:1", |v| {
+        v["posted_balance"] = serde_json::json!(40);
+    });
+    let mut tw2 = reboot_j3(frozen, 20_000, 2);
+    assert!(store(&tw2).is_frozen());
+    sweep_at(&mut tw2, 200);
+    assert!(
+        store(&tw2).checkpoint().is_none(),
+        "frozen: nothing written"
+    );
 }

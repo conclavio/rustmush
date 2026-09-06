@@ -133,6 +133,8 @@ pub(crate) fn sweep(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<SceneId>) {
     forgive_suspended(ctx, evidence);
     step_contracts(ctx, now, ic_now);
     collect_garbage(ctx, now);
+    // J3: the checkpoint, after the write-time drift check, at its cadence.
+    crate::checkpoint::maybe_write(ctx, now);
     renotify(ctx, now);
     // E6a step 1 verify fold (R6): `Engine::reattach` fires no `Connected`, so a
     // session held across a restart never triggers the reconnect hook. Deliver every
@@ -2057,7 +2059,7 @@ fn collect_garbage(ctx: &mut Ctx<'_>, now: i64) {
         }
         for id in &holds {
             store.snapshot.remove_hold(*id);
-            store.hold_terminal_at.remove(id);
+            store.fold.forget_hold(*id);
             store.hold_expiry_failures.remove(id);
         }
         for id in &escalations {

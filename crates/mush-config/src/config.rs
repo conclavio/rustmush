@@ -479,6 +479,10 @@ pub struct EconomyCfg {
     /// full records (doc 12 J2). Older ones stay reachable through the journal.
     /// Defaults to the `mush-economy` crate default (20 000); zero means that.
     pub tx_tail_max: usize,
+    /// How many journal entries past the last checkpoint start the next one
+    /// (doc 12 J3). Defaults to the `mush-economy` crate default (10 000);
+    /// zero disables writing checkpoints.
+    pub checkpoint_every_entries: u64,
 }
 
 impl Default for EconomyCfg {
@@ -492,6 +496,8 @@ impl Default for EconomyCfg {
             stale_contract_age_secs: 7 * 86_400,
             // Mirrors `mush_economy::DEFAULT_TX_TAIL_MAX`.
             tx_tail_max: 20_000,
+            // Mirrors `mush_economy::DEFAULT_CHECKPOINT_EVERY_ENTRIES`.
+            checkpoint_every_entries: 10_000,
         }
     }
 }

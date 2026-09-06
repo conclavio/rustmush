@@ -108,10 +108,12 @@ mod observer;
 // destroy gate, and the `@asset`/`@vault` surface.
 mod api;
 mod boot;
+pub mod checkpoint;
 mod commands;
 mod config;
 mod custody;
 mod declared;
+pub mod fold;
 mod module;
 mod notice;
 mod render;
@@ -153,10 +155,14 @@ pub use attest::{
     CanonEvidence, CanonEvidenceSeam, CanonRecord, MAX_CANON_RECORDS_PER_SOURCE,
     MAX_CANON_SOURCE_LOOKUPS,
 };
+pub use checkpoint::{
+    CHECKPOINT_FORMAT, CheckpointMeta, DEFAULT_CHECKPOINT_EVERY_ENTRIES, is_checkpoint_key,
+};
 pub use contract::{
     DepositReturn, MAX_HOME_VAULT_VISIT, PartyCap, deposit_returns, owner_home, principal_token,
 };
 pub use contract_live::accept_contract_as;
+pub use fold::FoldState;
 pub use module::{
     DEFAULT_TX_TAIL_MAX, MAX_CANON_ENTITIES, MAX_PARTY_CAPS, MAX_REFUSAL_ACTORS, MAX_REFUSAL_ROWS,
     PartyCapTable, PendingEconomyRead, PendingEconomyReadKind, RefusalTally, ReplayStats, TxRef,

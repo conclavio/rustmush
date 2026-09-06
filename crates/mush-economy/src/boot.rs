@@ -56,6 +56,7 @@ use smol_str::SmolStr;
 
 use crate::amount::Amount;
 use crate::api::{self, META_KEY};
+use crate::checkpoint::{CheckpointMeta, ValidCheckpoint};
 use crate::clock::CadenceClock;
 use crate::contract::{ContractState, DepositRecord, EconomicContract, TypedCondition};
 use crate::custody::CustodyTable;
@@ -63,6 +64,7 @@ use crate::escalation::{
     ESCALATION_GC_AFTER_SECS, Escalation, EscalationKind, EscalationSubject, MAX_BOOT_ESCALATIONS,
     escalation_key,
 };
+use crate::fold::FoldState;
 use crate::ids::{
     AccountId, ApprovalRequestId, CadenceId, ContractId, EscalationId, HoldId, InstrumentId,
     ObligationId, TransactionId, VaultId,
@@ -71,7 +73,7 @@ use crate::module::{BootParts, CustodyMark, EconomyStore, TxRef};
 use crate::obligation::{Obligation, ObligationCause, SuspendReason};
 use crate::record::{
     Account, AccountStatus, ApprovalRequest, CustodyDirection, EconomicAsset, EconomicTransaction,
-    Encumbrance, Hold, HoldEffectKind, IdempotencyRecord, InstrumentDef, Vault, VaultStatus,
+    Encumbrance, Hold, IdempotencyRecord, InstrumentDef, Vault, VaultStatus,
 };
 use crate::snapshot::EconomySnapshot;
 
@@ -136,6 +138,7 @@ pub(crate) fn load_boot(
     let mut max_cadence_key: Option<u64> = None;
     let mut max_escalation_key: Option<u64> = None;
     let mut max_contract_key: Option<u64> = None;
+    let mut checkpoint_keys: BTreeSet<SmolStr> = BTreeSet::new();
 
     for (key, value) in &kv {
         if key == META_KEY {
@@ -361,6 +364,9 @@ pub(crate) fn load_boot(
                     tracing::warn!(%key, error = %e, "economy: corrupt notice doc; skipping");
                 }
             }
+        } else if crate::checkpoint::is_checkpoint_key(key) {
+            // J3: selected and validated below, once the journal is inspected.
+            checkpoint_keys.insert(key.clone());
         } else {
             tracing::warn!(%key, "economy: unknown persisted key ignored");
         }
@@ -376,161 +382,152 @@ pub(crate) fn load_boot(
     // this sequence. The index below keeps every id.
     let keep_from: u64 = u64::try_from(journal_total.saturating_sub(tail_max)).unwrap_or(u64::MAX);
     let mut tx_index: BTreeMap<TransactionId, TxRef> = BTreeMap::new();
-    let mut created_count: BTreeMap<ObjId, u64> = BTreeMap::new();
     let mut chunk_firsts: BTreeMap<u64, u64> = BTreeMap::new();
 
-    // Replay: fold deltas into a running per-account balance; derive the idempotency
-    // index, reversed set, and txid index; capture each account's balance at its own
-    // stored `last_journal_seq` (the drift detector). E3: fold the asset effects the
-    // same way, and collect the audit-only custody effects.
-    let mut running: BTreeMap<AccountId, i128> = BTreeMap::new();
-    let mut last_touch: BTreeMap<AccountId, u64> = BTreeMap::new();
-    // How many journal ENTRIES carry a line on each account — `apply` bumps
-    // `revision` exactly once per such entry, so `1 + touches` is the journal's own
-    // revision for the account (invariant: revision is journal authority).
-    let mut touches: BTreeMap<AccountId, u64> = BTreeMap::new();
+    // Replay: the journal-authority accumulators (J3, `FoldState`, the one fold
+    // the live post path uses too), plus what only boot captures — each
+    // projection's journal value at the sequence its stored doc CLAIMS (the
+    // drift detectors), the idempotency index and the reversed set into the
+    // snapshot, the transaction index, and the RAM tail.
+    let mut state = FoldState::default();
     let mut snapshot_at_stored: BTreeMap<AccountId, i128> = BTreeMap::new();
-    let mut journal_assets: BTreeMap<ObjId, EconomicAsset> = BTreeMap::new();
     let mut asset_at_stored: BTreeMap<ObjId, EconomicAsset> = BTreeMap::new();
-    let mut last_custody: BTreeMap<ObjId, CustodyMark> = BTreeMap::new();
     // E6a step 1 (D-E6-21): the rolling-window tails, folded by the same function
     // `index_transaction` uses, so replay and live indexing cannot disagree.
     let mut debit_window: BTreeMap<AccountId, crate::module::WindowTail> = BTreeMap::new();
-    let mut max_custody_vault: Option<u64> = None;
-    let mut consumed_approval: BTreeMap<ApprovalRequestId, TransactionId> = BTreeMap::new();
-    let mut max_consumed_approval: Option<u64> = None;
-    // ---- E4b1: the reservations, folded exactly the way `apply` folds them ----
-    // `journal_holds` is the last post-state per hold; `hold_at_stored` is the
-    // post-state at the sequence the stored doc CLAIMS (the drift detector);
-    // `running_held`/`held_at_stored` are the same pair for `Account.held_amount`,
-    // anchored on `last_hold_seq` because an effect-only placement never moves
-    // `last_journal_seq` (D11).
-    let mut journal_holds: BTreeMap<HoldId, Hold> = BTreeMap::new();
     let mut hold_at_stored: BTreeMap<HoldId, Hold> = BTreeMap::new();
-    let mut max_hold_id: Option<u64> = None;
-    let mut hold_terminal_at: BTreeMap<HoldId, i64> = BTreeMap::new();
-    let mut running_held: BTreeMap<AccountId, i128> = BTreeMap::new();
     let mut held_at_stored: BTreeMap<AccountId, i128> = BTreeMap::new();
-    let mut last_hold_touch: BTreeMap<AccountId, u64> = BTreeMap::new();
     let mut transactions: BTreeMap<TransactionId, EconomicTransaction> = BTreeMap::new();
     let mut snapshot = EconomySnapshot::new();
     for def in instruments.values() {
         snapshot.put_instrument(def.clone());
     }
-    let mut max_txid: u64 = 0;
+    // J3: seed from the newest VALID checkpoint, if any; every rejected one is
+    // said at `error` and ignored — a checkpoint is a projection, never
+    // authority, so an invalid one costs a full replay and nothing else.
+    let checkpoint_started = std::time::Instant::now();
+    let (checkpoint, checkpoint_notes) = crate::checkpoint::select(&kv, journal_max, &history);
+    for note in &checkpoint_notes {
+        tracing::error!(%note, "economy: checkpoint rejected; replaying past it");
+    }
+    let mut covered: Option<u64> = None;
+    let mut skip_below_chunk: u64 = 0;
+    let mut checkpoint_meta: Option<CheckpointMeta> = None;
+    if let Some(ValidCheckpoint {
+        head,
+        head_key,
+        rows,
+    }) = checkpoint
+    {
+        for row in &rows {
+            let Some((record, tx_ref)) = ValidCheckpoint::record_of(row) else {
+                return Err(ModError::msg(format!(
+                    "economy: checkpoint {head_key} carries an undecodable row for transaction {}",
+                    row.tx
+                )));
+            };
+            snapshot.put_idempotency(record);
+            tx_index.insert(row.tx, tx_ref);
+        }
+        state = head.body.fold;
+        for target in &state.reversed {
+            snapshot.mark_reversed(*target);
+        }
+        debit_window = head.body.debit_window;
+        chunk_firsts = head.body.chunk_firsts;
+        covered = Some(head.covered_seq);
+        // J3-F4: the RAM tail (J2) is the newest `tail_max` bodies whatever the
+        // boot seeded from, so the chunks holding `keep_from..` are decoded
+        // even below the checkpoint's — their entries are retained, not
+        // folded. The chunk map is the checkpoint's (complete: every boot and
+        // every opened chunk records its first sequence); a map that knew less
+        // would only decode more.
+        let tail_chunk = chunk_firsts
+            .iter()
+            .rev()
+            .find(|(_, first)| **first <= keep_from)
+            .map_or(0, |(chunk, _)| *chunk);
+        skip_below_chunk = head.covered_chunk.min(tail_chunk);
+        checkpoint_meta = Some(CheckpointMeta {
+            covered_seq: head.covered_seq,
+            head_key,
+            parts: head.parts,
+            max_txid: head.max_txid,
+        });
+        tracing::info!(
+            covered_seq = head.covered_seq,
+            covered_chunk = head.covered_chunk,
+            rows = rows.len(),
+            "economy: booting from a checkpoint; replaying the tail"
+        );
+    }
+    let checkpoint_ms = u64::try_from(checkpoint_started.elapsed().as_millis()).unwrap_or(u64::MAX);
 
-    let mut fold = |seq: u64, tx: EconomicTransaction| -> Result<(), ModError> {
-        let seq = &seq;
-        let mut touched_here: BTreeSet<AccountId> = BTreeSet::new();
+    let mut fold = |seq: u64, tx: EconomicTransaction, retain_only: bool| -> Result<(), ModError> {
+        // J3-F4: an entry the checkpoint covers is not folded again — only its
+        // body is kept when it falls inside the RAM tail.
+        if retain_only {
+            if seq >= keep_from {
+                transactions.insert(tx.id, tx);
+            }
+            return Ok(());
+        }
+        // A journal line or hold referencing an account with no doc is corruption —
+        // the account metadata was lost while its money history survived. Fail closed.
         for line in &tx.lines {
-            // A journal line referencing an account with no doc is corruption — the
-            // account metadata was lost while its money history survived. Fail closed.
             if !stored_accounts.contains_key(&line.account) {
                 return Err(ModError::msg(format!(
                     "economy: journal seq {seq} references unknown account {}; refusing to boot",
                     line.account
                 )));
             }
-            *running.entry(line.account).or_insert(0) += line.delta.widen();
-            last_touch.insert(line.account, *seq);
-            touched_here.insert(line.account);
+        }
+        for effect in &tx.hold_effects {
+            if !stored_accounts.contains_key(&effect.hold.account) {
+                return Err(ModError::msg(format!(
+                    "economy: journal seq {seq} holds against unknown account {}; refusing to boot",
+                    effect.hold.account
+                )));
+            }
+        }
+        state.fold_entry(seq, &tx);
+        // The drift detectors: each projection's journal value at the sequence
+        // its stored doc claims (E4b1 verify fold, B3/B5).
+        for line in &tx.lines {
             if stored_accounts
                 .get(&line.account)
                 .map(|a| a.last_journal_seq)
-                == Some(*seq)
+                == Some(seq)
             {
                 snapshot_at_stored.insert(
                     line.account,
-                    *running.get(&line.account).expect("just inserted"),
+                    state.running.get(&line.account).copied().unwrap_or(0),
                 );
             }
         }
-        // E3: the title effects carry the full post-state; the LAST one per object
-        // wins. An effect-only entry contributes zero to every balance (invariant 10).
         for effect in &tx.asset_effects {
-            let mut post = effect.post.clone();
-            post.last_journal_seq = *seq;
-            // The doc-authority latch is never replayed (D-E3-1).
-            post.frozen = false;
-            post.frozen_reason = None;
             if stored_assets
                 .get(&effect.object)
                 .map(|a| a.last_journal_seq)
-                == Some(*seq)
+                == Some(seq)
+                && let Some(post) = state.journal_assets.get(&effect.object)
             {
                 asset_at_stored.insert(effect.object, post.clone());
             }
-            journal_assets.insert(effect.object, post);
         }
-        // E4b1: reservations. Each effect carries the FULL post-state, so replay
-        // rebuilds every hold — and every account's `held_amount` — from the journal
-        // alone; a capture/release/expiry takes the WHOLE reservation off `held`,
-        // which is exactly what `apply` does.
         for effect in &tx.hold_effects {
-            let post = effect.hold.clone();
-            if !stored_accounts.contains_key(&post.account) {
-                return Err(ModError::msg(format!(
-                    "economy: journal seq {seq} holds against unknown account {}; refusing to boot",
-                    post.account
-                )));
+            let post = &effect.hold;
+            if stored_holds.get(&post.id).map(|h| h.last_journal_seq) == Some(seq)
+                && let Some(journal) = state.journal_holds.get(&post.id)
+            {
+                hold_at_stored.insert(post.id, journal.clone());
             }
-            // E4b1 verify fold, B3: a hold effect touches its account exactly as a
-            // line does — `apply` bumps `revision` once per entry over
-            // `balance_deltas ∪ held_deltas`. Replay counted only the lines, so a
-            // place/release pair left the re-derived revision BELOW the value that
-            // was live before the crash; boot's `max` then kept the doc's higher
-            // number for a doc that survived and silently rewound one that did not,
-            // and an `expected_revisions` guard captured before the holds stopped
-            // being `Stale` after the restart.
-            touched_here.insert(post.account);
-            max_hold_id = Some(max_hold_id.map_or(post.id.0, |m: u64| m.max(post.id.0)));
-            let signed = if effect.kind == HoldEffectKind::Placed {
-                post.amount.widen()
-            } else {
-                hold_terminal_at.insert(post.id, tx.posted_at);
-                -post.amount.widen()
-            };
-            *running_held.entry(post.account).or_insert(0) += signed;
-            last_hold_touch.insert(post.account, *seq);
-            if stored_holds.get(&post.id).map(|h| h.last_journal_seq) == Some(*seq) {
-                hold_at_stored.insert(post.id, post.clone());
-            }
-            if stored_accounts.get(&post.account).map(|a| a.last_hold_seq) == Some(*seq) {
+            if stored_accounts.get(&post.account).map(|a| a.last_hold_seq) == Some(seq) {
                 held_at_stored.insert(
                     post.account,
-                    *running_held.get(&post.account).expect("just inserted"),
+                    state.running_held.get(&post.account).copied().unwrap_or(0),
                 );
             }
-            journal_holds.insert(post.id, post);
-        }
-        // One revision per ENTRY per touched account — lines ∪ hold effects, the
-        // exact set `apply` folds over (B3).
-        for account in &touched_here {
-            *touches.entry(*account).or_insert(0) += 1;
-        }
-        for effect in &tx.custody_effects {
-            // E4b2: the depositor is the transaction's actor — journal authority, so
-            // a contract's refund returns the object to whoever really put it there
-            // rather than to whoever the record claims.
-            last_custody.insert(
-                effect.object,
-                CustodyMark {
-                    vault: effect.vault,
-                    direction: effect.direction,
-                    by: tx.actor.clone(),
-                    at: tx.posted_at,
-                },
-            );
-            max_custody_vault =
-                Some(max_custody_vault.map_or(effect.vault.0, |m: u64| m.max(effect.vault.0)));
-        }
-        // The journal is the authority on which requests were SPENT: a `Consumed`
-        // doc can be lost, the entry that consumed it cannot. Keyed by ID (C3) —
-        // healing by plan hash would let an unrelated request with a colliding
-        // intent inherit the consumption.
-        if let Some(id) = tx.consumed_approval {
-            consumed_approval.insert(id, tx.id);
-            max_consumed_approval = Some(max_consumed_approval.map_or(id.0, |m: u64| m.max(id.0)));
         }
         // Idempotency index (journal-derived — the double-post backstop).
         snapshot.put_idempotency(IdempotencyRecord {
@@ -546,22 +543,16 @@ pub(crate) fn load_boot(
         // so replay folds every debit and the membership filter runs once at the end
         // — D4's "only windowed accounts are tracked", reached the other way round.
         let _ = crate::module::note_window_debits(&mut debit_window, &tx);
-        max_txid = max_txid.max(tx.id.0);
         // J2: the index keeps every id; the tail keeps the newest bodies, by move.
         tx_index.insert(
             tx.id,
             TxRef {
-                seq: *seq,
+                seq,
                 idempotency: tx.idempotency.clone(),
                 posted_at: tx.posted_at,
             },
         );
-        for effect in &tx.asset_effects {
-            if effect.kind == crate::record::AssetEffectKind::Created {
-                *created_count.entry(effect.object).or_insert(0) += 1;
-            }
-        }
-        if *seq >= keep_from {
+        if seq >= keep_from {
             transactions.insert(tx.id, tx);
         }
         Ok(())
@@ -571,8 +562,14 @@ pub(crate) fn load_boot(
     // at once, its text released as it goes. The inspection proved the sequence
     // gap-free and chunk-ordered; the check here is the cheap guarantee that the
     // fold never depends on that proof.
-    let mut expected_seq = 0u64;
+    let mut expected_seq = covered.map_or(0, |c| c.saturating_add(1));
+    let mut replayed = 0usize;
     for (chunk, position) in history.chunk_docs(crate::module::JOURNAL_LOG) {
+        // J3: a chunk wholly below the checkpoint's is never decoded; its
+        // text goes with the rest.
+        if chunk < skip_below_chunk {
+            continue;
+        }
         let text = std::mem::take(&mut ledger_docs[position].1);
         let typed = typed_entries::<EconomicTransaction>(&text)
             .map_err(|err| ModError::msg(format!("economy: bad journal chunk {chunk}: {err}")))?;
@@ -580,19 +577,105 @@ pub(crate) fn load_boot(
             chunk_firsts.insert(chunk, *first);
         }
         for (seq, tx) in typed {
+            if covered.is_some_and(|c| seq <= c) {
+                fold(seq, tx, true)?;
+                continue;
+            }
             if seq != expected_seq {
                 return Err(ModError::msg(format!(
                     "economy: journal order breach at seq {seq} (expected {expected_seq}); refusing to boot"
                 )));
             }
             expected_seq = expected_seq.saturating_add(1);
-            fold(seq, tx)?;
+            fold(seq, tx, false)?;
+            replayed += 1;
         }
     }
     // The fold's borrows end with its last use above; the texts and the
     // inspection are done with.
     drop(ledger_docs);
     drop(history);
+
+    // J3 (doc 12 §5.5, D-12-2): a document claiming a sequence at or before the
+    // checkpoint's is judged only when that sequence is the last the fold
+    // touched for it — the checkpoint's value is then the value at the claim.
+    // Otherwise it LAGS a pre-checkpoint version: healed to the journal-derived
+    // value below, without a drift or "never appears at" verdict, said at info.
+    let mut lag_accounts: BTreeSet<AccountId> = BTreeSet::new();
+    let mut lag_held: BTreeSet<AccountId> = BTreeSet::new();
+    let mut lag_assets: BTreeSet<ObjId> = BTreeSet::new();
+    let mut lag_holds: BTreeSet<HoldId> = BTreeSet::new();
+    if let Some(c) = covered {
+        // The fold's last touch decides what a stored sequence alone cannot
+        // (J3-F3): a claim AT the touch is judged at the value — a real first
+        // touch at seq 0 included, which `last_journal_seq == 0` also spells
+        // as the never-touched sentinel; a touch PAST the claim lags — the
+        // sentinel on an account the journal did touch included; no touch, or a
+        // touch before the claim, is left to the verdicts below (an untouched
+        // sentinel is nothing to judge; a claim the journal never made is B5).
+        for (id, a) in &stored_accounts {
+            if a.last_journal_seq <= c {
+                match state.last_touch.get(id) {
+                    Some(&t) if t == a.last_journal_seq => {
+                        snapshot_at_stored.insert(*id, state.running.get(id).copied().unwrap_or(0));
+                    }
+                    Some(&t) if t > a.last_journal_seq => {
+                        lag_accounts.insert(*id);
+                    }
+                    _ => {}
+                }
+            }
+            if a.last_hold_seq <= c {
+                match state.last_hold_touch.get(id) {
+                    Some(&t) if t == a.last_hold_seq => {
+                        held_at_stored
+                            .insert(*id, state.running_held.get(id).copied().unwrap_or(0));
+                    }
+                    Some(&t) if t > a.last_hold_seq => {
+                        lag_held.insert(*id);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        for (object, a) in &stored_assets {
+            if a.last_journal_seq <= c {
+                match state.journal_assets.get(object) {
+                    Some(j) if j.last_journal_seq == a.last_journal_seq => {
+                        asset_at_stored.insert(*object, j.clone());
+                    }
+                    Some(j) if j.last_journal_seq > a.last_journal_seq => {
+                        lag_assets.insert(*object);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        for (id, h) in &stored_holds {
+            if h.last_journal_seq <= c {
+                match state.journal_holds.get(id) {
+                    Some(j) if j.last_journal_seq == h.last_journal_seq => {
+                        hold_at_stored.insert(*id, j.clone());
+                    }
+                    Some(j) if j.last_journal_seq > h.last_journal_seq => {
+                        lag_holds.insert(*id);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        let lagging = lag_accounts.len() + lag_held.len() + lag_assets.len() + lag_holds.len();
+        if lagging > 0 {
+            tracing::info!(
+                accounts = lag_accounts.len(),
+                held = lag_held.len(),
+                assets = lag_assets.len(),
+                holds = lag_holds.len(),
+                covered_seq = c,
+                "economy: documents lagging a pre-checkpoint version are healed unverified (doc 12 §5.5)"
+            );
+        }
+    }
 
     // Directional self-heal + drift/ahead detection per account.
     //
@@ -613,14 +696,14 @@ pub(crate) fn load_boot(
     }
     // `held_amount`, re-derived: Σ of the account's still-`Held` reservations (§4.2).
     let mut derived_held: BTreeMap<AccountId, i128> = BTreeMap::new();
-    for h in journal_holds.values() {
+    for h in state.journal_holds.values() {
         if h.status.is_held() {
             *derived_held.entry(h.account).or_insert(0) += h.amount.widen();
         }
     }
     let mut healed: Vec<Account> = Vec::new();
     for (id, mut acct) in stored_accounts {
-        let derived = i64::try_from(*running.get(&id).unwrap_or(&0))
+        let derived = i64::try_from(*state.running.get(&id).unwrap_or(&0))
             .ok()
             .map(Amount::from_minor);
         let Some(derived) = derived else {
@@ -647,7 +730,10 @@ pub(crate) fn load_boot(
         // claiming a sequence it never appears at, with a zero balance, was the one
         // shape that walked straight through. `last_journal_seq == 0` is the "never
         // touched" sentinel and is not a claim.
-        if acct.last_journal_seq != 0 && !snapshot_at_stored.contains_key(&id) {
+        if acct.last_journal_seq != 0
+            && !snapshot_at_stored.contains_key(&id)
+            && !lag_accounts.contains(&id)
+        {
             tracing::error!(
                 account = id.0,
                 stored_seq = acct.last_journal_seq,
@@ -656,7 +742,8 @@ pub(crate) fn load_boot(
             frozen = true;
         }
         let claimed = snapshot_at_stored.get(&id).copied().unwrap_or(0);
-        if Amount::from_widened(claimed) != Some(acct.posted_balance) {
+        if !lag_accounts.contains(&id) && Amount::from_widened(claimed) != Some(acct.posted_balance)
+        {
             tracing::error!(
                 account = id.0,
                 "economy: stored balance drifts from the journal at its claimed seq; freezing"
@@ -672,7 +759,7 @@ pub(crate) fn load_boot(
         let derived_held_amount = i64::try_from(derived_held.get(&id).copied().unwrap_or(0))
             .ok()
             .map(Amount::from_minor);
-        let hold_touch = last_hold_touch.get(&id).copied().unwrap_or(0);
+        let hold_touch = state.last_hold_touch.get(&id).copied().unwrap_or(0);
         let mut held_ok = true;
         if acct.last_hold_seq > journal_max.unwrap_or(0) && acct.last_hold_seq != 0 {
             tracing::error!(account = id.0, stored_seq = acct.last_hold_seq, journal_max = ?journal_max, "economy: held projection ahead of the journal (lost tail); freezing");
@@ -682,7 +769,7 @@ pub(crate) fn load_boot(
         // a hold sequence at which this account has NO hold effect is impossible, and
         // `held_amount: 0` is precisely where the comparison below goes blind —
         // `unwrap_or(0)` cannot tell "no effect there" from "reserved nothing there".
-        if acct.last_hold_seq != 0 && !held_at_stored.contains_key(&id) {
+        if acct.last_hold_seq != 0 && !held_at_stored.contains_key(&id) && !lag_held.contains(&id) {
             tracing::error!(
                 account = id.0,
                 stored_seq = acct.last_hold_seq,
@@ -691,7 +778,7 @@ pub(crate) fn load_boot(
             frozen = true;
         }
         let claimed_held = held_at_stored.get(&id).copied().unwrap_or(0);
-        if Amount::from_widened(claimed_held) != Some(acct.held_amount) {
+        if !lag_held.contains(&id) && Amount::from_widened(claimed_held) != Some(acct.held_amount) {
             tracing::error!(
                 account = id.0,
                 "economy: stored held_amount drifts from the journal at its claimed hold seq; freezing"
@@ -725,15 +812,15 @@ pub(crate) fn load_boot(
         // pre-reboot value then passed against a state it was never checked against.
         // `max` because `revision` is also bumped by doc-authority backstops (the
         // destruction freeze), which the journal cannot see: never LOWER it.
-        let journal_revision = 1 + touches.get(&id).copied().unwrap_or(0);
-        let stale_seq = acct.last_journal_seq != last_touch.get(&id).copied().unwrap_or(0);
+        let journal_revision = 1 + state.touches.get(&id).copied().unwrap_or(0);
+        let stale_seq = acct.last_journal_seq != state.last_touch.get(&id).copied().unwrap_or(0);
         if acct.posted_balance != derived
             || stale_seq
             || acct.revision < journal_revision
             || held_moved
         {
             acct.posted_balance = derived;
-            acct.last_journal_seq = last_touch.get(&id).copied().unwrap_or(0);
+            acct.last_journal_seq = state.last_touch.get(&id).copied().unwrap_or(0);
             acct.revision = acct.revision.max(journal_revision);
             healed.push(acct.clone());
         }
@@ -742,7 +829,7 @@ pub(crate) fn load_boot(
 
     // ---- E3: asset projections ------------------------------------------
     let mut healed_assets: Vec<EconomicAsset> = Vec::new();
-    for (object, derived) in &journal_assets {
+    for (object, derived) in &state.journal_assets {
         match stored_assets.remove(object) {
             None => {
                 // A journaled title whose doc vanished: rebuild it, but NEVER silently
@@ -778,6 +865,14 @@ pub(crate) fn load_boot(
                                 "economy: asset projection drifts from the journal at its claimed seq; freezing"
                             );
                             drifted = true;
+                        }
+                        // J3: a pre-checkpoint version the fold cannot judge; healed.
+                        None if lag_assets.contains(object) => {
+                            tracing::info!(
+                                object = object.0,
+                                stored_seq = doc.last_journal_seq,
+                                "economy: asset projection lags a pre-checkpoint version; healed unverified"
+                            );
                         }
                         // ...or a sequence at which it had none: an impossible doc.
                         None => {
@@ -825,7 +920,7 @@ pub(crate) fn load_boot(
     // disagrees with the journal at its own claimed sequence, or one ahead of the
     // journal, is drift, and drift freezes.
     let mut healed_holds: Vec<Hold> = Vec::new();
-    for (id, derived) in &journal_holds {
+    for (id, derived) in &state.journal_holds {
         match stored_holds.remove(id) {
             None => {
                 tracing::warn!(
@@ -849,6 +944,13 @@ pub(crate) fn load_boot(
                                 "economy: hold projection drifts from the journal at its claimed seq; freezing"
                             );
                             drifted = true;
+                        }
+                        None if lag_holds.contains(id) => {
+                            tracing::info!(
+                                hold = id.0,
+                                stored_seq = doc.last_journal_seq,
+                                "economy: hold projection lags a pre-checkpoint version; healed unverified"
+                            );
                         }
                         None => {
                             tracing::error!(
@@ -904,7 +1006,7 @@ pub(crate) fn load_boot(
     let max_stored_approval: Option<u64> = stored_approvals.keys().map(|id| id.0).max();
     for (id, mut r) in stored_approvals {
         if r.status == crate::record::ApprovalStatus::Pending {
-            if let Some(tx) = consumed_approval.get(&id) {
+            if let Some(tx) = state.consumed_approval.get(&id) {
                 tracing::warn!(
                     approval = id.0,
                     transaction = tx.0,
@@ -1017,10 +1119,12 @@ pub(crate) fn load_boot(
         }
         match &c.state {
             ContractState::Active | ContractState::ReadyToSettle => {
-                let broken = c
-                    .escrow
-                    .iter()
-                    .any(|id| !journal_holds.get(id).is_some_and(|h| h.status.is_held()));
+                let broken = c.escrow.iter().any(|id| {
+                    !state
+                        .journal_holds
+                        .get(id)
+                        .is_some_and(|h| h.status.is_held())
+                });
                 // E4b2 verify fold, B1: **finish the transition before disputing it.**
                 // A terminal transition is a post under the contract's own
                 // deterministic key followed by a state write, so a lost doc write
@@ -1150,7 +1254,7 @@ pub(crate) fn load_boot(
         // custody lock has no exception, so the contract's own unwind is the only
         // route out, and it has to know whose the thing was.
         if c.state.is_live() {
-            let deposits = derive_deposits(&c, &last_custody);
+            let deposits = derive_deposits(&c, &state.last_custody);
             if deposits != c.deposits {
                 c.deposits = deposits;
                 c.revision += 1;
@@ -1185,7 +1289,8 @@ pub(crate) fn load_boot(
     //   fresh key and lands the same terminal state again.
     // - **anything else** — a settled contract, a hold matching no consideration, a
     //   contract with no record at all: a human decides. Page, with the command.
-    let orphans: Vec<Hold> = journal_holds
+    let orphans: Vec<Hold> = state
+        .journal_holds
         .values()
         .filter(|h| h.status.is_held())
         .filter(|h| match h.purpose {
@@ -1336,7 +1441,8 @@ pub(crate) fn load_boot(
     }
 
     // ---- E3: custody reconciliation (audit-only; never derives a location) --
-    let deposited: Vec<(ObjId, VaultId)> = last_custody
+    let deposited: Vec<(ObjId, VaultId)> = state
+        .last_custody
         .iter()
         .filter(|(_, mark)| mark.direction == CustodyDirection::Deposit)
         .map(|(o, mark)| (*o, mark.vault))
@@ -1458,17 +1564,20 @@ pub(crate) fn load_boot(
     // max so a stale meta never re-mints a live id.
     let next_account = meta_u64(&meta, "next_account_id")
         .max(next_after(snapshot.accounts().map(|a| a.id.0).max()));
-    let next_transaction =
-        meta_u64(&meta, "next_transaction_id").max(if journal_empty { 0 } else { max_txid + 1 });
+    let next_transaction = meta_u64(&meta, "next_transaction_id").max(if journal_empty {
+        0
+    } else {
+        state.max_txid + 1
+    });
     let next_vault = meta_u64(&meta, "next_vault_id")
-        .max(next_after(max_custody_vault))
+        .max(next_after(state.max_custody_vault))
         .max(next_after(snapshot.vaults().map(|v| v.id.0).max()));
     // C4: floor the approval allocator past every id the JOURNAL has seen and every
     // stored doc — including the ones just garbage-collected, and the ones whose doc
     // failed to deserialize (skipped as leaves, but their ids were minted), so a
     // collected or unreadable id is never re-minted onto a different request.
     let next_approval = meta_u64(&meta, "next_approval_id")
-        .max(next_after(max_consumed_approval))
+        .max(next_after(state.max_consumed_approval))
         .max(next_after(max_stored_approval))
         .max(next_after(max_approval_key));
     // D14 / the E4a handoff: the hold allocator is floored from the **journal**, and
@@ -1477,7 +1586,7 @@ pub(crate) fn load_boot(
     // garbage-collected id and re-mint it under a stale `Contract.escrow` reference,
     // attaching live escrow to a dead contract. `HoldIdReused` in the engine is the
     // backstop for that, never the mechanism.
-    let next_hold = meta_u64(&meta, "next_hold_id").max(next_after(max_hold_id));
+    let next_hold = meta_u64(&meta, "next_hold_id").max(next_after(state.max_hold_id));
     let next_obligation = meta_u64(&meta, "next_obligation_id").max(next_after(max_obligation_key));
     let next_cadence = meta_u64(&meta, "next_cadence_id")
         .max(next_after(max_cadence_key))
@@ -1540,10 +1649,14 @@ pub(crate) fn load_boot(
         journal,
         transactions,
         tx_index,
-        created_count,
+        fold: state,
         chunk_firsts,
         escalations,
-        hold_terminal_at,
+        checkpoint: checkpoint_meta,
+        checkpoint_keys,
+        boot_from_checkpoint: covered,
+        boot_replayed: replayed,
+        boot_checkpoint_ms: checkpoint_ms,
         next_account,
         next_transaction,
         next_vault,
@@ -1553,7 +1666,6 @@ pub(crate) fn load_boot(
         next_cadence,
         next_escalation,
         next_contract,
-        last_custody,
         debit_window,
         notices: stored_notices,
         sweep_contract_cursor,
@@ -1579,7 +1691,7 @@ pub(crate) fn load_boot(
 /// Compare only the **journal-authority** fields of two asset records: the
 /// doc-authority `frozen`/`frozen_reason` latch is deliberately excluded, so a
 /// frozen doc never trips drift and a clean one never clears the latch (C1/C2).
-fn journal_fields_eq(a: &EconomicAsset, b: &EconomicAsset) -> bool {
+pub(crate) fn journal_fields_eq(a: &EconomicAsset, b: &EconomicAsset) -> bool {
     a.object == b.object
         && a.title_owner == b.title_owner
         && a.scope == b.scope

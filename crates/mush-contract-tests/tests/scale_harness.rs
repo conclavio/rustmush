@@ -17,7 +17,8 @@
 //! slow runner cannot fail a scheduled run merely by being slow. Sizes come from
 //! the environment — `SCALE_JOURNAL_ENTRIES`, `SCALE_ACCOUNTS`, `SCALE_OBJECTS`,
 //! `SCALE_BUNDLES`, `SCALE_TICK_WRITES`, `SCALE_TICK_POST_BYTES`,
-//! `SCALE_PROFILE_SCALES`, `SCALE_TX_TAIL_MAX` — with the defaults §3.3 and doc 12 name. The
+//! `SCALE_PROFILE_SCALES`, `SCALE_TX_TAIL_MAX`, `SCALE_CHECKPOINT_EVERY` — with the defaults
+//! §3.3 and doc 12 name. The
 //! un-ignored `h3_*` tests at the bottom run each seeder at a tiny size under
 //! `cargo test --workspace`, so the ignored bodies cannot rot unnoticed.
 //!
@@ -125,6 +126,11 @@ fn econ_world() -> TestWorld {
         Box::new(
             mush_economy::EconomyModule::new().with_config(mush_economy::EconomyConfig {
                 tx_tail_max: env_usize("SCALE_TX_TAIL_MAX", 0),
+                // `SCALE_CHECKPOINT_EVERY` (doc 12 J3): the checkpoint cadence; 0
+                // (the default here) writes none, so the replay numbers stay the
+                // full-replay numbers unless the checkpointed boot is asked for.
+                checkpoint_every_entries: u64::try_from(env_usize("SCALE_CHECKPOINT_EVERY", 0))
+                    .unwrap_or(0),
                 ..mush_economy::EconomyConfig::default()
             }),
         ),
@@ -256,8 +262,8 @@ fn read_journal_file(path: &str) -> JournalFile {
 
 /// The economy checkpoint review (`docs/design/12-economy-checkpoint-review.md`
 /// §2): the journal `seed_journal` produces, **synthesized** — the real docs
-/// (instrument, faucet, `accounts` player accounts, `meta`) plus one real mint
-/// whose journal entry is the template every entry clones, packed into chunks
+/// (instrument, faucet, `accounts` player accounts, `meta`) as one real mint
+/// left them, whose journal entry is the template every entry clones, packed into chunks
 /// at the ledger's own 16 KiB seal — so a cold replay at `entries` costs
 /// milliseconds to seed instead of minutes through the engine. Returns the
 /// namespace as the production loader hands it over — ordinary docs as values,
@@ -288,6 +294,13 @@ fn synth_journal(entries: usize, accounts: usize) -> SyntheticJournal {
     )
     .expect("chunk 0 parses");
     let template = chunk.entries[0].value.clone();
+    // The documents as the template mint left them, so the faucet and account
+    // 1 claim seq 0 with the balances the journal's seq 0 gives them. Captured
+    // before the mint, both would carry `last_journal_seq == 0` as the
+    // never-touched sentinel while the journal's entry 0 touches them, and the
+    // boot reads that as drift at seq 0, not lag (doc 12 J3-F2): the
+    // measurement then booted a frozen economy, whose sweep writes nothing.
+    kv.extend(after);
 
     let mut chunks: Vec<LedgerChunk> = Vec::new();
     let mut open = LedgerChunk {
@@ -420,8 +433,10 @@ fn scale_cold_journal_replay_phases() {
     let accounts = env_usize("SCALE_ACCOUNTS", 100);
     println!(
         "scale_cold_journal_replay_phases: entries | chunks | json_kb | inspect_ms | \
-         restore_ms | typed_ms | boot_total_ms | us_per_entry | entries_at_5s"
+         restore_ms | typed_ms | boot_total_ms | us_per_entry | entries_at_5s | \
+         ckpt_boot_ms | ckpt_select_ms | ckpt_replayed"
     );
+    let checkpoint_every = env_usize("SCALE_CHECKPOINT_EVERY", 0);
     for n in scales {
         let journal = synth_journal(n, accounts);
         if let Ok(path) = std::env::var("SCALE_JOURNAL_OUT") {
@@ -429,6 +444,49 @@ fn scale_cold_journal_replay_phases() {
             println!("wrote {path}: {n} entries, {} chunks", journal.chunks);
         }
         let phases = replay_phases(&journal.ledger);
+        // Doc 12 J3: the checkpointed boot — boot once, let the sweep write a
+        // checkpoint at the head, overlay its documents, and boot again.
+        let (ckpt_boot_ms, ckpt_select_ms, ckpt_replayed) = if checkpoint_every > 0 {
+            let mut tw = boot_split(journal.kv.clone(), journal.ledger.clone());
+            let _ = tw.take_module_ops();
+            tw.set_now(1_000);
+            let _ = tw.fire_due(1_000_000);
+            let mut kv: HashMap<SmolStr, Value> = journal.kv.iter().cloned().collect();
+            fold_economy_ops(&mut kv, &mut tw);
+            drop(tw);
+            let kv: Vec<(SmolStr, Value)> = kv.into_iter().collect();
+            assert!(
+                kv.iter().any(|(k, _)| k.starts_with("checkpoint:")),
+                "the sweep wrote a checkpoint"
+            );
+            let booted = boot_split(kv, journal.ledger.clone());
+            let stats = replay_stats(&booted);
+            assert!(
+                stats.from_checkpoint.is_some(),
+                "the second boot resumed from the checkpoint"
+            );
+            assert_eq!(stats.entries, n, "the journal is still counted whole");
+            // J3-F4: the RAM tail is full after a checkpointed boot, across
+            // however many chunks the tail spans.
+            let tail_max = match env_usize("SCALE_TX_TAIL_MAX", 0) {
+                0 => mush_economy::DEFAULT_TX_TAIL_MAX,
+                m => m,
+            };
+            let tail = booted
+                .world()
+                .module_state::<EconomyStore>()
+                .expect("economy store")
+                .tail_len();
+            assert_eq!(
+                tail,
+                n.min(tail_max),
+                "the tail is kept across the checkpoint"
+            );
+            drop(booted);
+            (stats.elapsed_ms, stats.checkpoint_ms, stats.replayed)
+        } else {
+            (0, 0, 0)
+        };
         let stats = replay_split(journal.kv, journal.ledger);
         assert_eq!(
             stats.entries, n,
@@ -441,7 +499,7 @@ fn scale_cold_journal_replay_phases() {
             .checked_div(us_per_entry)
             .unwrap_or(0);
         println!(
-            "{n} | {} | {} | {} | {} | {} | {} | {us_per_entry} | {entries_at_line}",
+            "{n} | {} | {} | {} | {} | {} | {} | {us_per_entry} | {entries_at_line} | {ckpt_boot_ms} | {ckpt_select_ms} | {ckpt_replayed}",
             journal.chunks,
             journal.bytes / 1024,
             phases.inspect,

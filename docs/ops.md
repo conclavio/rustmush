@@ -1013,6 +1013,24 @@ economy sweep, never on a post. A rebuilt approval window (`@account/approval
 … window=`) folds from the tail and logs a `warn` when the tail starts after
 the window floor (doc 12 J2-D1).
 
+**The economy checkpoint** (J3, doc 12 §5.2–§5.5) is written by the economy
+sweep every `[economy] checkpoint_every_entries` journal entries (default
+10 000; 0 writes none) as `checkpoint:{seq}` plus immutable
+`checkpoint:{seq}:idem:{n}` parts, after a **write-time drift check**: the
+live projections are compared with a journal-authority shadow the store
+folds on every post, and a mismatch writes nothing and freezes the economy
+(`@econ/unfreeze` clears it; the boot log names the first mismatch). Boot
+seeds from the newest checkpoint whose parts are present and hash to the
+head and whose state hash recomputes, and replays only the tail; any other
+checkpoint is ignored at `error` and the journal replayed whole — a
+checkpoint is never authority. The boot log line `economy: journal replayed
+at boot` carries `from_checkpoint`, `replayed` and `checkpoint_ms` (the
+time selecting, validating and seeding from the checkpoint took; it roughly
+matches the decode it saves while the parts carry every idempotency row —
+doc 12 J3 as built). Two heads are kept; the
+next write sweeps older ones. A document lagging a version older than the
+checkpoint heals without a drift verdict, said at `info` (doc 12 D-12-2).
+
 **The ledger archive tier** (J5, doc 12 §10) is off by default. With
 `[store.archive] enabled = true`, a pass runs once a UTC day inside `window`
 (`03:00-04:00`): it copies every **sealed** ledger chunk of every module

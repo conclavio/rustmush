@@ -139,6 +139,7 @@ pub fn economy_config_with(
         } else {
             cfg.tx_tail_max
         },
+        checkpoint_every_entries: cfg.checkpoint_every_entries,
     };
     config
         .check_declared_cadences()
