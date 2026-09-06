@@ -854,7 +854,9 @@ tail. A derived tail may be rebuilt and must never become authority.
 > item 5). **The trigger fired at 100 000 entries** (H3's harness, 2026-09-05: 7.0 s); the review
 > is [12](12-economy-checkpoint-review.md) — the replay is serde-bound (three inspections of the
 > journal before the fold), so "parse once" is recommended before any checkpoint, and the checkpoint
-> as designed there is coupled to a bounded RAM transaction index and a narrower boot fetch.
+> as designed there is coupled to a bounded RAM transaction index and a narrower boot fetch; the
+> cold-paging half is its §10, the ledger archive tier (sealed chunks to compressed disk, a tiered
+> store read, the journal's authority spanning both tiers).
 
 ---
 

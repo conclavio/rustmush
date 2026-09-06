@@ -169,7 +169,7 @@ chunk. (Estimate from the shapes; the harness does not measure peak working set.
 **F10 — The journal itself is Redis memory.** At 575 bytes per entry plus RedisJSON's overhead the
 journal is ~1 GB of store RAM near 1 000 000 entries. Sealed chunks are immutable; nothing here
 moves them anywhere colder. That is the other half of C17 ("cold paging") and it binds before any
-boot-time line does at the rates in §9.
+boot-time line does at the rates in §9. §10 is the owner's answer: the ledger archive tier.
 
 **F8 — The remainder column is noise, not a non-linearity.** The first run's 47 → 90 → 1 154 ms
 looked like retention biting at 100 000; the second run (100 000 → 200 000 → 25 000, §2) shows
@@ -450,7 +450,8 @@ full replay, and the manifest rewritten), **S** (the store suites: `module_json_
 without omission returns the same documents for the kept keys, both backends). Size: two days,
 plus the Redis suite time.
 
-J1 is the first cut. J2 → J3 → J4 is the order if the checkpoint is taken; J2 can be taken alone.
+J1 is the first cut. The order after the owner's decisions (§9) is J2 → J5 (§10.6, the
+archive tier) → J3 → J4; J2 and J5 can each be taken alone.
 
 ## 8. Open questions for the owner
 
@@ -522,7 +523,91 @@ design rate the trend is visible in weeks, which is why the mechanism is designe
 when the metric says so.
 
 **Revised order.** J1 (parse once, streaming; the rate metric; `fetch_ms`) → J2 (the bounded
-tail; mandatory on D-12-4) → J3 with §5.8 folded in (the checkpoint carries the window; the
-`idempotency:` docs and their backfill) → J4 (the narrow fetch). After J4 the boot is
-O(records + window) and the remaining entry-linear cost is the journal's own residence in Redis
-(F10), which is the cold-paging half of C17 and a separate review.
+tail; mandatory on D-12-4) → **J5 (the ledger archive tier, §10)** → J3 with §5.8 folded in
+(the checkpoint carries the window; the `idempotency:` docs and their backfill) → J4 (the narrow
+fetch). After J4 the boot is O(records + window); after J5 the journal's residence in Redis
+(F10) is bounded too. J5 goes before the checkpoint because the store running out of memory is
+an outage, where a slow boot is a slow restart.
+
+## 10. The ledger archive tier (owner direction, 2026-09-05; J5)
+
+The owner's direction: a nightly ETL job inside a maintenance window defined in the TOML copies
+journal entries to a compressed disk-based store; Redis is purged at a high watermark, keeping
+everything under 48 hours old so a chunk gets two nightly chances to be copied; a read that
+misses the primary store checks the secondary. Against the code, three details change and each
+one makes the direction safer.
+
+### 10.1 The unit is the sealed chunk
+
+The ledger's persisted unit is `log:{id}:{chunk}` — rewritten on every append until it seals at
+`DEFAULT_CHUNK_TARGET_BYTES`, then immutable (`LedgerChunk.sealed`). The ETL copies **sealed
+chunks only**; the open tail is never eligible, so there is no torn state to reason about, and
+copying is idempotent: a chunk the archive already holds is hash-checked, not re-copied. The
+facility is generic over the `log:` key family per namespace, so scene logs (`log:{scene_uid}:*`,
+paged by H1 after a scene closes) and canon's log ride the same tier.
+
+### 10.2 The purge gate is the verified copy; 48 hours is the hot floor
+
+A chunk is purgeable when it is **sealed**, the `posted_at` of its newest entry is older than
+`retain_hours` (48), **and the archive holds it with a matching SHA-256**. Two nightly chances are
+not the safety mechanism — one failed night plus one purge would lose money history — the
+verified copy is; the 48 hours keeps recent history hot in Redis for account views and audit,
+with two nights of grace on top. Purging runs at a **high** watermark down to a **low** one,
+oldest eligible first, bounded per pass, measured as ledger-family bytes resident in Redis
+(what the purge can actually reduce), not instance memory. A pass that finds nothing eligible
+above the high mark logs and escalates rather than purging unverified chunks.
+
+### 10.3 Reads fall through at the store, and boot reads through it too
+
+Today a purge breaks boot: `scan_contiguity` requires the complete chunk history and refuses on
+a hole ("journal contiguity breach; refusing to boot"). The fix is a tiered `ObjectStore` for
+the `log:` family: `module_json_get` on a primary miss consults the archive index;
+`module_json_list` merges the primary's keys with the archive's for that namespace (a key in
+both is served from the primary and hash-compared). Then a full-replay boot, H1's cold reads,
+the scene archives and canon all read the archive without knowing it exists, the contiguity
+check runs over both tiers unchanged, and **the journal's authority spans both tiers** — which
+is what keeps the checkpoint a projection (§5.4 rule 1): a full replay is always still possible.
+§5.6's min-present marker is then needed only for the checkpoint's boot-skip, not for the
+purge. The archive is read-only to the server; only the ETL writes it.
+
+### 10.4 The archive on disk
+
+Segments of `segment_chunks` (256) sealed chunks each, `<data_dir>/archive/<ns>/<log>/
+{first}-{last}.seg`, each chunk a separate zstd frame so one cold read decompresses one chunk
+(index: chunk → segment, offset, length, sha256, newest `posted_at`); the index is a
+rebuildable side file, and every segment is self-describing. Written temp → fsync → rename,
+index appended after, so a crash mid-copy leaves nothing half-present. JSON compresses ~6–8×:
+at the §9 design rate (360 000 entries, ~200 MB raw a day) that is ~30 MB a day, ~11 GB a
+year; Redis holds the floor's two days plus the open tail. **The archive is money and belongs
+in the same backup set as Redis**; a hash mismatch on read is treated as absent, which at boot
+is a contiguity breach and a fail-closed boot — the right failure.
+
+### 10.5 Configuration
+
+```toml
+[store.archive]                    # (J5) the ledger archive tier — sealed log chunks to disk
+enabled = false
+dir = "archive"                    # under [server].data_dir
+window = "03:00-04:00"             # UTC, daily; the ETL and the purge run only inside it
+retain_hours = 48                  # never purge a chunk whose newest entry is younger
+high_watermark_mb = 512            # ledger-family bytes resident in Redis that start a purge
+low_watermark_mb = 256             # … and where it stops
+segment_chunks = 256
+```
+
+### 10.6 Cut and lenses
+
+**J5 — the ledger archive tier.** `mush-store`: the archive writer/reader and the tiered
+`ObjectStore`; `mushd`: the windowed job (a tokio task beside the writer, never on the world
+task), the two-phase pass (copy and verify every new sealed chunk; then purge if above the
+mark), the config; `mush-config`: `[store.archive]`; ops: the backup note and the metrics
+(`mush_ledger_archive_chunks_total`, `mush_ledger_resident_bytes`, last pass outcome).
+*Lenses:* **H** (a hole: a chunk in neither tier fails boot exactly as today; a chunk in the
+archive only boots and pages), **V** (verify: a tampered segment reads as absent; a chunk
+present in both tiers with different hashes is reported and the primary wins), **T** (torn
+ETL: crash after segment, before index; crash mid-purge), **W** (the window: nothing runs
+outside it; a pass that overruns the window finishes its chunk and stops), **O** (the open
+tail is never copied, never purged; a chunk sealed during the pass is picked up next night),
+**S** (the store suites: `module_json_get`/`module_json_list` through the tiered store return
+the same documents as the flat store for every key that exists, both backends). Size: three to
+four days.
