@@ -691,7 +691,18 @@ impl AuthEval for WorldAuth<'_> {
         // Without this the placer clause below was an open door: the accepting party
         // places their own escrow, so they would have been able to release it the
         // instant afterwards and leave a live contract standing on nothing.
-        if matches!(hold.purpose, crate::record::HoldPurpose::Escrow { .. }) {
+        //
+        // **An engine-owned reservation namespace is the same rule one step out**
+        // (E7 cut 9 independent verify fold, C2; decision E2(a)). A campaign bond is
+        // a `Reservation`, not an `Escrow` — there is no contract — and the clause
+        // above therefore let its *placer* (`@hold/release`) and its *beneficiary*
+        // (`@hold/capture`) end it out of band, with no campaign transition, nothing
+        // paused and nothing paged. The namespaces in
+        // [`ENGINE_OWNED_RESERVATIONS`] are settled by the engine that placed them
+        // and by nothing else; see [`settle_engine_reservation`].
+        if matches!(hold.purpose, crate::record::HoldPurpose::Escrow { .. })
+            || is_engine_owned_reservation(&hold.purpose)
+        {
             return false;
         }
         match op {
@@ -2625,6 +2636,110 @@ pub(crate) fn contract_principal() -> PrincipalId {
     )
 }
 
+// ---- engine-owned reservation namespaces (E7 cut 9 fold, C2/E2(a)) ---------
+
+/// The `HoldPurpose::Reservation { kind }` namespaces the **engine owns**, and
+/// which `@hold/release` and `@hold/capture` therefore refuse (E7 cut 9 independent
+/// verify fold, C2; decision E2(a)).
+///
+/// `HoldPurpose::Escrow` was the first of these and is handled by its own clause in
+/// [`WorldAuth::authorize_hold`], because a contract's escrow has a contract to name.
+/// A campaign bond has none — §4.0g (iv) chose `Reservation` for exactly that reason
+/// — and the cost was not seen: `authorize_hold` locked only `Escrow`, so the bond's
+/// *placer* released it and its *beneficiary* captured it through the economy's own
+/// verbs, with no campaign transition, nothing paused and nothing paged, while the
+/// campaign settlement read the vanished hold as a replay hit.
+///
+/// It is a **frozen table in code**, not a document, a grant or a command argument:
+/// a namespace any caller could stamp on a purpose is not a lockout, it is a hole.
+/// A hold in one of these namespaces moves only through
+/// [`settle_engine_reservation`], which is the seam the placing engine settles under.
+pub const ENGINE_OWNED_RESERVATIONS: &[&str] = &["campaign.operation"];
+
+/// Whether `purpose` is a reservation in an [`ENGINE_OWNED_RESERVATIONS`] namespace.
+#[must_use]
+pub fn is_engine_owned_reservation(purpose: &crate::record::HoldPurpose) -> bool {
+    match purpose {
+        crate::record::HoldPurpose::Reservation { kind, .. } => {
+            ENGINE_OWNED_RESERVATIONS.contains(&kind.as_str())
+        }
+        crate::record::HoldPurpose::Escrow { .. } | crate::record::HoldPurpose::Manual { .. } => {
+            false
+        }
+    }
+}
+
+/// The injected authority one engine-owned reservation is settled under. It is
+/// deliberately built **per settlement, around one hold**, exactly as
+/// [`crate::ContractAuth`] is built around one contract's own escrow: it authorizes a
+/// `Release` of that hold, or a `Capture` of that hold's **own** amount plus the two
+/// lines that move it, and nothing else at all.
+struct EngineReservationAuth {
+    hold: Hold,
+    /// The account a capture pays. `None` settles as a release.
+    capture_to: Option<AccountId>,
+}
+
+impl AuthEval for EngineReservationAuth {
+    fn authorize(&self, _actor: &PrincipalId, account: &Account, delta: Amount) -> bool {
+        // A release moves no money at all; only a capture writes lines, and it writes
+        // exactly two: the hold's own account debited by the hold's own amount, and
+        // the named beneficiary account credited by the same. Anything else — a third
+        // line, a different account, a different figure — is refused here.
+        let Some(to) = self.capture_to else {
+            return false;
+        };
+        if delta.is_negative() {
+            account.id == self.hold.account && delta.checked_neg() == Some(self.hold.amount)
+        } else {
+            account.id == to && delta == self.hold.amount
+        }
+    }
+
+    fn authorize_hold(&self, _actor: &PrincipalId, hold: &Hold, op: &HoldOp) -> bool {
+        if hold.id != self.hold.id || !is_engine_owned_reservation(&hold.purpose) {
+            return false;
+        }
+        match op {
+            HoldOp::Release { hold: id } => self.capture_to.is_none() && *id == hold.id,
+            HoldOp::Capture { hold: id, amount } => {
+                self.capture_to.is_some() && *id == hold.id && *amount == hold.amount
+            }
+            HoldOp::Place { .. } | HoldOp::Expire { .. } => false,
+        }
+    }
+}
+
+/// **Settle one engine-owned reservation** — the only path a hold in an
+/// [`ENGINE_OWNED_RESERVATIONS`] namespace moves through (E7 cut 9 fold, E2(a)).
+///
+/// `capture_to` is `None` for a release and `Some(account)` for a capture to that
+/// account. The plan is the caller's — its key, cause and description are what the
+/// journal records — but the authority is this crate's, so the placing engine cannot
+/// hand itself any power beyond releasing or capturing the one hold it names.
+///
+/// # Errors
+///
+/// [`EconomyError::Unauthorized`] when the hold is absent, is not live, or is not in
+/// an engine-owned namespace; every other refusal is the ordinary posting error.
+pub fn settle_engine_reservation(
+    ctx: &mut Ctx<'_>,
+    plan: &EconomyPlan,
+    hold: HoldId,
+    capture_to: Option<AccountId>,
+) -> Result<PostOutcome, EconomyError> {
+    let Some(hold) = ctx
+        .w
+        .module_state::<EconomyStore>()
+        .and_then(|s| s.snapshot().hold(hold).cloned())
+        .filter(|h| is_engine_owned_reservation(&h.purpose))
+    else {
+        return Err(EconomyError::Unauthorized);
+    };
+    let auth = EngineReservationAuth { hold, capture_to };
+    post_with(ctx, plan, PostAuth::Injected(&auth))
+}
+
 // ---- the layered-module escalation seam (E5b) ------------------------------
 
 /// **Open (or reuse) one level-2 record on behalf of a module layered on the
@@ -2998,4 +3113,46 @@ fn install_commit(ctx: &mut Ctx<'_>, commit: PreparedEconomyCommit) -> Transacti
     // in RAM and on disk whatever the caller does next.
     ctx.out.pin_deferred();
     txid
+}
+
+#[cfg(test)]
+mod engine_reservation_tests {
+    use super::*;
+
+    /// **E7 cut 9 fold, C2 / decision E2(a).** The engine-owned namespace table is
+    /// exact, and every other purpose is untouched by it. The behavioural half — the
+    /// placer's `@hold/release` and the beneficiary's `@hold/capture` both refused on
+    /// a live campaign bond, with the money still reserved after a reboot and a full
+    /// drain — is `mush-campaign`'s `vf_c2a`, which drives the real commands.
+    #[test]
+    fn vf_c2_the_engine_owned_reservation_table_is_exact_on_every_purpose_arm() {
+        assert_eq!(ENGINE_OWNED_RESERVATIONS, ["campaign.operation"]);
+        let owned = crate::record::HoldPurpose::Reservation {
+            kind: SmolStr::new_static("campaign.operation"),
+            id: 7,
+        };
+        assert!(is_engine_owned_reservation(&owned));
+        // A reservation in any other namespace is an ordinary one: `@hold/release`
+        // and `@hold/capture` keep working exactly as E4a wrote them.
+        for kind in ["housing.deposit", "campaign", "campaign.operations", ""] {
+            assert!(
+                !is_engine_owned_reservation(&crate::record::HoldPurpose::Reservation {
+                    kind: SmolStr::new(kind),
+                    id: 7,
+                }),
+                "{kind} was locked out"
+            );
+        }
+        // …and the other two purpose arms are not reservations at all.
+        assert!(!is_engine_owned_reservation(
+            &crate::record::HoldPurpose::Escrow {
+                contract: crate::ids::ContractId(1)
+            }
+        ));
+        assert!(!is_engine_owned_reservation(
+            &crate::record::HoldPurpose::Manual {
+                reason: SmolStr::new_static("campaign.operation")
+            }
+        ));
+    }
 }

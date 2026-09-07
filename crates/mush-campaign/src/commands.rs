@@ -86,6 +86,105 @@ fn authorized(ctx: &Ctx<'_>, capability: &str, scope: OrgScopeId) -> bool {
     .is_allow()
 }
 
+// ---- E7 cut 9 fold, C1 / decision E1(a): the command predicates -----------
+//
+// `render::lens_for` decides **disclosure** and says so in its own doc comment; it
+// grants `Lens::Plan` to staff, to the issuer, to any named side's principal and to
+// any committed unit's controller, because those are the parties entitled to *see*
+// the plan. Cut 9 then used `lens != Lens::Plan` as the ENTIRE authority on
+// `@op/terms`, `@op/activate`, `@op/join`, `@op/withdraw` and `@op/resolve` — so a
+// named side, a bystander whose object had been joined, or the bond's beneficiary
+// could rewrite the pre-activation surface, reserve the issuer's money and forfeit
+// it to an account they picked themselves.
+//
+// The lens is unchanged and stays the ONE projection predicate. These are separate,
+// local, per-verb questions beside it, each stating its own rule, and each refusing
+// with the same `deny()` so nothing new leaks. Every one lives inside a handler, so
+// no command class moves.
+
+/// **Who may amend an operation's terms**: staff, or whoever acts for the issuer.
+/// The freeze (`state == Declared`) is a *different* question and both apply.
+fn may_amend(ctx: &Ctx<'_>, doc: &OperationDoc) -> bool {
+    render::acts_for(ctx.w, ctx.actor, &doc.terms.attacker)
+}
+
+/// **Who may activate**: the same set. Activation reserves the *issuer's* money, and
+/// `bond::place` posts under `terms.attacker` whoever typed the command.
+fn may_activate(ctx: &Ctx<'_>, doc: &OperationDoc) -> bool {
+    may_amend(ctx, doc)
+}
+
+/// **Who may move the roster**: staff or the issuer. A unit's own commander reaches
+/// the roster through [`may_commit_unit`] instead, which is the C6 half.
+fn may_roster(ctx: &Ctx<'_>, doc: &OperationDoc) -> bool {
+    may_amend(ctx, doc)
+}
+
+/// **Who may commit or release one unit** (E7 cut 9 fold, C6): staff, the unit's own
+/// controller, or whoever holds `force.command` over a formation that unit belongs
+/// to.
+///
+/// Cut 9's bare-unit arm of `@op/join` was `parse_obj(&rhs)` and nothing else — no
+/// existence check, no control check, no `force.*` ask — so any object at all could
+/// be committed. That did two things: it locked that object out of every other
+/// operation (`operation_holding` is a global one-operation index), and it promoted
+/// the object's controller into `lens_for`'s participant clause, which under the old
+/// gate was write authority over somebody else's operation and bond.
+fn may_commit_unit(ctx: &Ctx<'_>, unit: UnitRef) -> bool {
+    if is_staff(ctx.w, ctx.actor) {
+        return true;
+    }
+    if mush_core::perm::controls(ctx.w, ctx.actor, unit.0) {
+        return true;
+    }
+    // The unit's own compartment, when it has one: a unit that is a member of a
+    // formation is commanded by whoever holds `force.command` on that formation's
+    // `OrgScopeId`. Bounded on nodes visited, like every other scan in the crate.
+    let scopes: Vec<OrgScopeId> = ctx
+        .w
+        .module_state::<CampaignStore>()
+        .map(|s| {
+            s.formations()
+                .take(crate::store::MAX_FORMATION_NODES)
+                .filter(|n| n.members.contains(&unit))
+                .map(|n| n.scope)
+                .collect()
+        })
+        .unwrap_or_default();
+    scopes
+        .into_iter()
+        .any(|scope| authorized(ctx, "force.command", scope))
+}
+
+/// **Who may resolve**: staff for every outcome, and the issuer for an outcome that
+/// neither takes a player's money nor abandons the operation.
+///
+/// `forfeit` and `abort` are **staff's alone**. `forfeit` is the only path that moves
+/// a bond to somebody else, and the tick never produces it; `abort` records an
+/// abandonment, which is the one resolution allowed to drain past a broken consent
+/// surface — §4.0g (viii) said it was staff's and only the *branch selection* was
+/// (C7), so a non-staff caller passing the word still reached `enter_resolving` and
+/// switched the mid-drain intactness re-check off for the whole fan-out.
+fn may_resolve(ctx: &Ctx<'_>, doc: &OperationDoc, outcome: &str) -> bool {
+    if is_staff(ctx.w, ctx.actor) {
+        return true;
+    }
+    if settle::outcome_forfeits(outcome) || settle::outcome_abandons(outcome) {
+        return false;
+    }
+    render::acts_for(ctx.w, ctx.actor, &doc.terms.attacker)
+}
+
+/// The **closed** outcome vocabulary `@op/resolve` accepts (E7 cut 9 fold, B7).
+///
+/// Cut 9 took `ctx.args.rhs()` verbatim into the document *and* into canon's
+/// immutable ledger, so the only bound on either was the caller's input line; and
+/// `outcome_forfeits` is `== "forfeit"`, so `Forfeit` silently released. Matching a
+/// closed set case-insensitively fixes both without widening what forfeits: one word,
+/// one rule, still exactly `forfeit`.
+pub const OUTCOME_VOCABULARY: [&str; 6] =
+    ["success", "failure", "partial", "forfeit", "abort", "retry"];
+
 fn parse_obj(text: &str) -> Option<ObjId> {
     let raw = text.trim();
     let raw = raw.strip_prefix('#').unwrap_or(raw);
@@ -224,6 +323,26 @@ fn op_declare(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     if summary.is_empty() {
         return Err(CmdError::msg("Usage: @op/declare <objective>"));
     }
+    // E7 cut 9 fold, B8 / decision E5(a): **what an operation costs.** Declaring
+    // asked for no capability, no bond, no scope and no rate limit, and the only
+    // bound was the global `MAX_OPERATIONS` 512 — so one unprivileged player
+    // permanently exhausted the world's allocator (nothing removes an `op:` document)
+    // and starved the tick's rotation besides. The cap is per-issuer and counts only
+    // operations that are still going somewhere.
+    let mine = actor_principal(ctx.actor);
+    if !is_staff(ctx.w, ctx.actor) {
+        let live = ctx
+            .w
+            .module_state::<CampaignStore>()
+            .map_or(0, |s| s.live_operations_for(&mine));
+        if live >= crate::store::MAX_OPERATIONS_PER_ISSUER {
+            return Err(CmdError::msg(format!(
+                "You are already running {live} operations, which is the limit of \
+                 {}. Resolve or abandon one first.",
+                crate::store::MAX_OPERATIONS_PER_ISSUER
+            )));
+        }
+    }
     let Some(id) = ctx
         .w
         .module_state_mut::<CampaignStore>()
@@ -240,8 +359,7 @@ fn op_declare(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     close.at = open.at.saturating_add(OPERATION_NOTICE_MIN);
     let mut terms = OperationTerms {
         operation: id,
-        attacker: actor_principal(ctx.actor),
-        scope: None,
+        attacker: mine,
         objective: ObjectiveSpec {
             kind: ObjectiveKind::WindowElapsed,
             summary: SmolStr::new(&summary),
@@ -293,7 +411,7 @@ fn op_terms(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let Some((doc, lens)) = visible_operation(ctx.w, id, ctx.actor) else {
         return Err(CmdError::msg(NO_SUCH_OPERATION));
     };
-    if lens != Lens::Plan {
+    if lens != Lens::Plan || !may_amend(ctx, &doc) {
         return Err(deny());
     }
     // **Terms freeze at activation.** Every later state refuses, and the refusal
@@ -304,7 +422,14 @@ fn op_terms(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         ));
     }
     let mut terms = doc.terms.clone();
-    apply_field(&mut terms, field.trim(), &value)?;
+    let field = field.trim();
+    apply_field(&mut terms, field, &value)?;
+    if field.starts_with("bond") {
+        check_bond_accounts(ctx, &terms)?;
+    }
+    if field == "stake.outcome" {
+        check_outcome_stakes(ctx, &terms)?;
+    }
     terms.consent_hash = operation_consent_hash(&terms);
     terms
         .check()
@@ -318,6 +443,118 @@ fn op_terms(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     );
     ctx.out
         .info(ctx.actor, format!("Operation {id}: {field} set."));
+    Ok(())
+}
+
+/// **Resolve a bond's accounts at the edit** (E7 cut 9 fold, C8).
+///
+/// `apply_field` parses `<account>:<minor units>` and `#<obj>:<account>` as bare
+/// `u64`s and stores them; `OperationTerms::check` never looked at them either. The
+/// placement side was saved by the engine (invariants 25/26 refuse a bond on someone
+/// else's account, or an unfunded one) — but the **forfeit** side was validated
+/// nowhere until the capture ran, inside a `Resolving` state that had no exit at all.
+/// A bond whose beneficiary account is nonexistent, closed, or on a different
+/// instrument was an operation that activated normally and could never finish.
+fn check_bond_accounts(ctx: &Ctx<'_>, terms: &OperationTerms) -> Result<(), CmdError> {
+    let Some(bond) = &terms.bond else {
+        return Ok(());
+    };
+    let Some(store) = ctx.w.module_state::<mush_economy::EconomyStore>() else {
+        return Err(CmdError::msg(
+            "The economy is not available, so a bond cannot be checked.",
+        ));
+    };
+    let snapshot = store.snapshot();
+    let Some(account) = snapshot.account(bond.account) else {
+        return Err(CmdError::msg(
+            "That bond names an account that does not exist.",
+        ));
+    };
+    if !matches!(account.status, mush_economy::AccountStatus::Active) {
+        return Err(CmdError::msg(
+            "That bond names an account that is not active.",
+        ));
+    }
+    // The bond is a reservation on the ISSUER's own account, so the refusal arrives
+    // here rather than at `@op/activate`.
+    if account.owner != terms.attacker && !is_staff(ctx.w, ctx.actor) {
+        return Err(CmdError::msg(
+            "A bond is a reservation on the issuer's own account.",
+        ));
+    }
+    if let Some((_, beneficiary)) = &bond.forfeit_to {
+        let Some(paid) = snapshot.account(*beneficiary) else {
+            return Err(CmdError::msg(
+                "That forfeit names an account that does not exist.",
+            ));
+        };
+        if !matches!(paid.status, mush_economy::AccountStatus::Active) {
+            return Err(CmdError::msg(
+                "That forfeit names an account that is not active.",
+            ));
+        }
+        if paid.instrument != account.instrument {
+            return Err(CmdError::msg(
+                "That forfeit account holds a different instrument from the bond's.",
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// **A stake may only promise what something can actually settle** (E7 cut 9 fold,
+/// C9 / decision E6(a)).
+///
+/// `required_consumers` adds `ConsumerId::ContractOutcomes` whenever a
+/// `Consequence::Outcome { contract, row }` is present, and the consumer's arm is one
+/// `root_recorded` call: **nothing anywhere reads `contract` or `row`**. The real
+/// coupling is `mush_economy::attest::on_canon_recorded`, which fires only for a
+/// contract independently authored with an `AttestorSet::Canon` naming this kind and
+/// this operation's own source. So the stake is validated where it is written: the
+/// named contract must exist and must already carry that attestor set.
+fn check_outcome_stakes(ctx: &Ctx<'_>, terms: &OperationTerms) -> Result<(), CmdError> {
+    let source = SmolStr::new(settle::canon_source(terms.operation));
+    for stake in &terms.stakes {
+        let Consequence::Outcome { contract, .. } = stake else {
+            continue;
+        };
+        let Some(store) = ctx.w.module_state::<mush_economy::EconomyStore>() else {
+            return Err(CmdError::msg(
+                "The economy is not available, so that stake cannot be checked.",
+            ));
+        };
+        let Some(record) = store
+            .snapshot()
+            .contract(mush_economy::ContractId(*contract))
+        else {
+            return Err(CmdError::msg(
+                "That stake names a contract that does not exist.",
+            ));
+        };
+        let attests = record
+            .consent
+            .conditions
+            .iter()
+            .filter_map(|c| match c {
+                mush_economy::TypedCondition::Attestation { by } => Some(by),
+                _ => None,
+            })
+            .chain(record.consent.adjudicator.iter())
+            .any(|set| match set {
+                mush_economy::AttestorSet::Canon {
+                    kind,
+                    source: named,
+                } => kind == settle::KIND_OPERATION_RESOLVED && named.as_ref() == Some(&source),
+                _ => false,
+            });
+        if !attests {
+            return Err(CmdError::msg(format!(
+                "Contract #{contract} carries no `{}` attestor naming `{source}`, so this \
+                 operation's resolution could never settle it.",
+                settle::KIND_OPERATION_RESOLVED
+            )));
+        }
+    }
     Ok(())
 }
 
@@ -516,7 +753,7 @@ fn op_activate(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let Some((doc, lens)) = visible_operation(ctx.w, id, ctx.actor) else {
         return Err(CmdError::msg(NO_SUCH_OPERATION));
     };
-    if lens != Lens::Plan {
+    if lens != Lens::Plan || !may_activate(ctx, &doc) {
         return Err(deny());
     }
     if !matches!(doc.runtime.state, OperationState::Declared) {
@@ -595,9 +832,14 @@ fn op_join(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             .module_state::<CampaignStore>()
             .and_then(|s| s.formation(formation).cloned())
         else {
-            return Err(CmdError::msg(NO_SUCH_FORMATION));
+            // B5: a node outside the caller's authority and a node that does not
+            // exist are ONE answer, so the refusal is not an existence oracle.
+            return Err(deny());
         };
-        if !authorized(ctx, "force.command", node.scope) {
+        // The roster question AND the node's own: the issuer moves this operation's
+        // roster, and `force.command` on the node's compartment says whose formation
+        // it is to deploy.
+        if !may_roster(ctx, &doc) || !authorized(ctx, "force.command", node.scope) {
             return Err(deny());
         }
         (node.members.clone(), Some(formation))
@@ -605,7 +847,14 @@ fn op_join(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         let Some(obj) = parse_obj(&rhs) else {
             return Err(CmdError::msg("Usage: @op/join <id>=<#unit|fm<n>>"));
         };
-        (vec![UnitRef(obj)], None)
+        let unit = UnitRef(obj);
+        // C6: the bare-unit arm asks about the UNIT as well as about the operation.
+        // Committing an object nobody asked about locked it out of every other
+        // operation and promoted its controller into the disclosure lens.
+        if !may_roster(ctx, &doc) || !may_commit_unit(ctx, unit) {
+            return Err(deny());
+        }
+        (vec![unit], None)
     };
     let mut runtime = doc.runtime;
     let mut added = 0usize;
@@ -618,10 +867,27 @@ fn op_join(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             .module_state::<CampaignStore>()
             .and_then(|s| s.operation_holding(unit))
         {
-            return Err(CmdError::msg(format!(
-                "#{} is already committed to operation {other}; withdraw it first.",
-                unit.0.0
-            )));
+            // B3: **the refusal goes through the ONE lens too.** `operation_holding`
+            // scans every document regardless of the caller's lens, and naming the
+            // holder handed any player the id of every covert operation and which
+            // units it held — the exact existence-hiding property `@op/show` is
+            // pinned on, defeated through the verb beside it.
+            let visible = ctx
+                .w
+                .module_state::<CampaignStore>()
+                .and_then(|s| s.operation(other))
+                .is_some_and(|held| render::lens_for(ctx.w, held, ctx.actor) != Lens::Hidden);
+            return Err(CmdError::msg(if visible {
+                format!(
+                    "#{} is already committed to operation {other}; withdraw it first.",
+                    unit.0.0
+                )
+            } else {
+                format!(
+                    "#{} is already committed elsewhere; withdraw it first.",
+                    unit.0.0
+                )
+            }));
         }
         if runtime.participants.len() >= MAX_OPERATION_PARTICIPANTS {
             return Err(CmdError::msg(
@@ -679,18 +945,25 @@ fn op_withdraw(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let Some((doc, lens)) = visible_operation(ctx.w, id, ctx.actor) else {
         return Err(CmdError::msg(NO_SUCH_OPERATION));
     };
-    if lens != Lens::Plan {
+    let unit = UnitRef(obj);
+    // C1/C6: the issuer, or the unit's own commander taking it back.
+    if lens != Lens::Plan || !(may_roster(ctx, &doc) || may_commit_unit(ctx, unit)) {
         return Err(deny());
     }
-    let unit = UnitRef(obj);
     let mut runtime = doc.runtime;
     let before = runtime.participants.len();
     runtime.participants.retain(|p| p.unit != unit);
     if runtime.participants.len() == before {
         return Err(CmdError::msg("That unit is not committed to it."));
     }
-    runtime.withdrawals.push(unit);
+    // C3: the audit tail is deduplicated and bounded on the way in, and the write
+    // re-runs the constructor — ordinary play must never store a document the next
+    // boot would refuse and hold, taking a live money bond out of reach.
+    runtime.record_withdrawal(unit);
     runtime.revision = runtime.revision.saturating_add(1);
+    runtime
+        .check()
+        .map_err(|error| CmdError::msg(format!("That roster is refused: {error}")))?;
     put_operation(
         ctx,
         OperationDoc {
@@ -713,11 +986,60 @@ fn op_resolve(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let Some(id) = OperationId::parse(ctx.args.lhs()) else {
         return Err(CmdError::msg(NO_SUCH_OPERATION));
     };
-    let outcome = ctx.args.rhs().unwrap_or_default().trim().to_owned();
+    // B7: a CLOSED vocabulary, matched case-insensitively, so the caller's bytes can
+    // never be the only bound on a document — or on canon's immutable ledger.
+    let raw = ctx
+        .args
+        .rhs()
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+    let outcome = if raw.is_empty() {
+        "success".to_owned()
+    } else {
+        raw
+    };
+    if !OUTCOME_VOCABULARY.contains(&outcome.as_str()) {
+        return Err(CmdError::msg(format!(
+            "Outcomes are {}.",
+            OUTCOME_VOCABULARY.join(", ")
+        )));
+    }
+    // C3: a document the boot REFUSED is held, not deleted — so the operation is not
+    // in `ops`, every `@op` verb answers the existence-hiding refusal, and its bond
+    // is a live reservation nothing campaign-side can reach. Staff get one path to
+    // it, and it releases rather than captures.
+    if is_staff(ctx.w, ctx.actor)
+        && settle::outcome_abandons(&outcome)
+        && ctx
+            .w
+            .module_state::<CampaignStore>()
+            .is_some_and(|s| s.operation(id).is_none() && s.is_held(id))
+    {
+        return match crate::bond::release_held(ctx, id) {
+            Ok(()) => {
+                ctx.out.info(
+                    ctx.actor,
+                    format!(
+                        "Operation {id}'s document is held and could not be decoded; its bond \
+                         has been released. Repair or remove the document and reboot."
+                    ),
+                );
+                Ok(())
+            }
+            Err(BondError::NoHold) => Err(CmdError::msg(format!(
+                "Operation {id}'s document is held and it carries no live bond; repair or \
+                 remove the document and reboot."
+            ))),
+            Err(error) => Err(CmdError::msg(format!(
+                "Operation {id}'s document is held and its bond could not be released: {error}"
+            ))),
+        };
+    }
     let Some((doc, lens)) = visible_operation(ctx.w, id, ctx.actor) else {
         return Err(CmdError::msg(NO_SUCH_OPERATION));
     };
-    if lens != Lens::Plan {
+    if lens != Lens::Plan || !may_resolve(ctx, &doc, &outcome) {
         return Err(deny());
     }
     if outcome == "retry" {
@@ -737,18 +1059,13 @@ fn op_resolve(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         );
         return Ok(());
     }
-    let outcome = if outcome.is_empty() {
-        "success".to_owned()
-    } else {
-        outcome
-    };
-    if matches!(doc.runtime.state, OperationState::Resolved) {
+    if doc.runtime.state.is_terminal() {
         return Err(CmdError::msg("That operation is already resolved."));
     }
-    // **The one path past the intactness gate**, and it is staff's: abandoning a
-    // corrupted operation releases its bond rather than leaving a player's money
-    // reserved to a record nothing can settle.
-    let entered = if outcome == "abort" && is_staff(ctx.w, ctx.actor) {
+    // **The one path past the intactness gate**, and it is staff's — now in the
+    // authority as well as in the branch selection (C7), and reachable from
+    // `Resolving`, which is where a stranded bond actually lives (C4).
+    let entered = if settle::outcome_abandons(&outcome) {
         settle::abandon(ctx, id)
     } else {
         settle::enter_resolving(ctx, id, &outcome)
@@ -848,21 +1165,22 @@ fn force_attach(ctx: &mut Ctx<'_>, attach: bool) -> Result<(), CmdError> {
     let Some(child) = FormationId::parse(ctx.args.lhs()) else {
         return Err(CmdError::msg(NO_SUCH_FORMATION));
     };
-    let Some(node) = ctx
-        .w
-        .module_state::<CampaignStore>()
-        .and_then(|s| s.formation(child).cloned())
-    else {
-        return Err(CmdError::msg(NO_SUCH_FORMATION));
-    };
     let capability = if attach {
         "force.attach"
     } else {
         "force.detach"
     };
-    if !authorized(ctx, capability, node.scope) {
-        return Err(deny());
-    }
+    // B5: the node was looked up BEFORE the capability was asked about, so
+    // `No such formation.` versus `Permission denied.` was an existence oracle for a
+    // stranger. Both answers are now the same bytes.
+    let node = ctx
+        .w
+        .module_state::<CampaignStore>()
+        .and_then(|s| s.formation(child).cloned())
+        .filter(|node| authorized(ctx, capability, node.scope));
+    let Some(node) = node else {
+        return Err(CmdError::msg(NO_SUCH_FORMATION));
+    };
     let mut node = node;
     if attach {
         let rhs = ctx.args.rhs().unwrap_or_default().trim().to_owned();
@@ -880,7 +1198,12 @@ fn force_attach(ctx: &mut Ctx<'_>, attach: bool) -> Result<(), CmdError> {
         {
             return Err(CmdError::msg(NO_SUCH_FORMATION));
         }
-        if depth_of(ctx, parent) >= MAX_FORMATION_DEPTH {
+        // B6: measure the CHILD'S OWN SUBTREE too. Cut 9 measured only the
+        // parent's ancestor chain, so grafting a 3-deep chain's root under a 3-deep
+        // chain's leaf produced a 6-deep tree and walked straight past the bound
+        // §3.9 states as enforced. `FormationNode::check` cannot re-run it either:
+        // depth is a property of the tree, not of a node.
+        if depth_of(ctx, parent).saturating_add(subtree_height(ctx, child)) > MAX_FORMATION_DEPTH {
             return Err(CmdError::msg(format!(
                 "That tree is already {MAX_FORMATION_DEPTH} deep."
             )));
@@ -926,21 +1249,43 @@ fn depth_of(ctx: &Ctx<'_>, id: FormationId) -> usize {
     ancestors_of(ctx, id).len()
 }
 
+/// The height of the subtree rooted at `id`, in nodes, walking **downward** and
+/// bounded on levels *and* on nodes visited (D-LBK-5), exactly as [`ancestors_of`] is
+/// bounded upward. It stops counting one level past [`MAX_FORMATION_DEPTH`], because
+/// the only question asked of it is whether a graft would exceed the cap.
+fn subtree_height(ctx: &Ctx<'_>, id: FormationId) -> usize {
+    let Some(store) = ctx.w.module_state::<CampaignStore>() else {
+        return 1;
+    };
+    let mut frontier = vec![id];
+    let mut height = 0usize;
+    while !frontier.is_empty() && height <= MAX_FORMATION_DEPTH {
+        height = height.saturating_add(1);
+        let next: Vec<FormationId> = store
+            .formations()
+            .take(crate::store::MAX_FORMATION_NODES)
+            .filter(|n| n.parent.is_some_and(|p| frontier.contains(&p)))
+            .map(|n| n.id)
+            .collect();
+        frontier = next;
+    }
+    height.max(1)
+}
+
 fn force_assign(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let Some(id) = FormationId::parse(ctx.args.lhs()) else {
         return Err(CmdError::msg(NO_SUCH_FORMATION));
     };
     let rhs = ctx.args.rhs().unwrap_or_default().trim().to_owned();
-    let Some(node) = ctx
+    // B5: one refusal for "no such node" and "not your node".
+    let node = ctx
         .w
         .module_state::<CampaignStore>()
         .and_then(|s| s.formation(id).cloned())
-    else {
+        .filter(|node| authorized(ctx, "force.assign", node.scope));
+    let Some(node) = node else {
         return Err(CmdError::msg(NO_SUCH_FORMATION));
     };
-    if !authorized(ctx, "force.assign", node.scope) {
-        return Err(deny());
-    }
     let (remove, raw) = match rhs.strip_prefix('-') {
         Some(rest) => (true, rest.to_owned()),
         None => (false, rhs),
@@ -949,6 +1294,12 @@ fn force_assign(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         return Err(CmdError::msg("Usage: @force/assign <id>=[-]#<unit>"));
     };
     let unit = UnitRef(obj);
+    // C6: `force.assign` asked about the NODE and said nothing at all about the
+    // member, so a formation was a second, quieter route to committing an object
+    // nobody asked about. The member is asked about too, on both directions.
+    if !may_commit_unit(ctx, unit) {
+        return Err(deny());
+    }
     let mut node = node;
     if remove {
         node.members.retain(|m| *m != unit);
@@ -970,14 +1321,35 @@ fn force_assign(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     Ok(())
 }
 
+/// Whether `ctx.actor` may read one formation node at all (E7 cut 9 fold, B5).
+///
+/// `@formation/list` and `/show` applied **no lens and no authority**: every node's
+/// `OrgScopeId`, kind, roster size and parent went to any player at all — while the
+/// same crate's operation surface is existence-hiding at three verbosities, and the
+/// compartment id it printed is exactly the token `force.*` authority is asked about.
+/// Reading is asked the same question commanding is, on the node's own scope.
+fn may_read_formation(ctx: &Ctx<'_>, node: &FormationNode) -> bool {
+    authorized(ctx, "force.command", node.scope)
+}
+
 fn cmd_formation(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
-    let Some(store) = ctx.w.module_state::<CampaignStore>() else {
+    if ctx.w.module_state::<CampaignStore>().is_none() {
         return Err(CmdError::msg(NO_SUCH_FORMATION));
-    };
+    }
     if ctx.switches.has("list") {
-        let lines: Vec<String> = store
-            .formations()
-            .take(crate::store::MAX_FORMATION_NODES)
+        let nodes: Vec<FormationNode> = ctx
+            .w
+            .module_state::<CampaignStore>()
+            .map(|s| {
+                s.formations()
+                    .take(crate::store::MAX_FORMATION_NODES)
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default();
+        let lines: Vec<String> = nodes
+            .iter()
+            .filter(|n| may_read_formation(ctx, n))
             .map(|n| {
                 format!(
                     "Formation {}: {} in scope {}, {} member(s).",
@@ -989,6 +1361,7 @@ fn cmd_formation(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             })
             .collect();
         if lines.is_empty() {
+            // The same bytes a world with no formations at all answers.
             ctx.out.info(ctx.actor, "No formations exist.");
             return Ok(());
         }
@@ -1000,10 +1373,18 @@ fn cmd_formation(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let Some(id) = FormationId::parse(ctx.args.lhs()) else {
         return Err(CmdError::msg(NO_SUCH_FORMATION));
     };
-    let Some(node) = store.formation(id) else {
+    let node = ctx
+        .w
+        .module_state::<CampaignStore>()
+        .and_then(|s| s.formation(id).cloned())
+        .filter(|node| may_read_formation(ctx, node));
+    let Some(node) = node else {
         return Err(CmdError::msg(NO_SUCH_FORMATION));
     };
-    let kind = store.kind(&node.kind).cloned();
+    let kind = ctx
+        .w
+        .module_state::<CampaignStore>()
+        .and_then(|s| s.kind(&node.kind).cloned());
     let mut lines = vec![format!(
         "Formation {id}: {} in scope {}, {} member(s), parent {}.",
         node.kind,

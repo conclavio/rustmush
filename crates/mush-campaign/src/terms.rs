@@ -18,7 +18,7 @@ use mush_economy::{
     AccountId, Amount, CONSENT_DOMAIN_CAMPAIGN_OPERATION, EconomicVisibility, canonical_visibility,
     consent_digest, principal_key,
 };
-use mush_org::{OrgScopeId, PrincipalId};
+use mush_org::PrincipalId;
 use serde::Serialize;
 use smol_str::SmolStr;
 
@@ -40,12 +40,19 @@ struct CanonicalBond<'a> {
 /// The field-ordered canonical form of a declared operation's terms. **`domain` is
 /// the first field**, which is what `consent_digest` checks and what separates this
 /// hash space from `"contract.consent.v1"` and from cut 10's `"campaign.seat.v1"`.
+///
+/// It carries **no `scope`** (E7 cut 9 fold, B13 / decision E1). Cut 9 hashed an
+/// `Option<OrgScopeId>` that `@op/declare` set to `None`, `apply_field` had no arm
+/// for and every `force.*` ask ignored in favour of the formation node's own scope —
+/// consented content nothing could set and nothing read. A hashed field with no
+/// writer is a hash-space change waiting for its first one, so it is gone before any
+/// operation is frozen in production; when cut 10's seat work needs a compartment it
+/// arrives as a real field with a real writer, and the hash moves once, visibly.
 #[derive(Serialize)]
 struct CanonicalOperationTerms<'a> {
     domain: &'a str,
     operation: u64,
     attacker: &'a PrincipalId,
-    scope: &'a Option<OrgScopeId>,
     objective: &'a ObjectiveSpec,
     legal_targets: &'a [SmolStr],
     stakes: &'a [Consequence],
@@ -80,7 +87,6 @@ pub fn operation_consent_hash(terms: &OperationTerms) -> [u8; 32] {
         domain: CONSENT_DOMAIN_CAMPAIGN_OPERATION,
         operation: terms.operation.0,
         attacker: &terms.attacker,
-        scope: &terms.scope,
         objective: &terms.objective,
         legal_targets: &terms.legal_targets,
         stakes: &terms.stakes,

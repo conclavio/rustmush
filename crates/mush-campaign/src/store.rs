@@ -33,6 +33,17 @@ pub const NS: &str = "campaign";
 pub const META_KEY: &str = "campaign_meta";
 /// The largest number of operations one world may carry.
 pub const MAX_OPERATIONS: usize = 512;
+/// The largest number of **live** operations one issuer may carry at once (E7 cut 9
+/// independent verify fold, B8; decision E5(a)).
+///
+/// `@op/declare` asked for no capability, no bond, no scope and no rate limit, and
+/// nothing anywhere removes an `op:<id>` document — so the only bound was the global
+/// [`MAX_OPERATIONS`], and one unprivileged player exhausted the world's allocator
+/// permanently and starved the tick's rotation besides (512 documents against
+/// `MAX_VISITED_PER_FIRE` 64 is eight fires per round). Counted over
+/// `terms.attacker` for states that are not terminal, so resolving or abandoning one
+/// frees the slot; staff are not counted.
+pub const MAX_OPERATIONS_PER_ISSUER: usize = 32;
 /// The largest number of formation nodes one world may carry.
 pub const MAX_FORMATION_NODES: usize = 1_024;
 /// The largest number of refused documents kept for `@op/held`-style inspection
@@ -71,6 +82,11 @@ pub struct CampaignStore {
     kinds: BTreeMap<SmolStr, FormationKind>,
     authority: Option<Arc<dyn FormationAuthority>>,
     held: Vec<HeldDoc>,
+    /// How many refused documents did not fit in `held` (E7 cut 9 fold, B14). Past
+    /// [`MAX_HELD_DOCUMENTS`] the 65th was dropped from the list with no counter and
+    /// no log, so staff were told about 64 of them and silently not about the rest —
+    /// the exact failure mode that made a bond-bearing document invisible.
+    held_overflow: usize,
     next_operation: u64,
     next_formation: u64,
     /// The rotation cursor: the tick resumes **past the last visited id**, skipped
@@ -150,6 +166,32 @@ impl CampaignStore {
         &self.held
     }
 
+    /// Whether the boot refused (and is holding) this operation's document. A held
+    /// operation is **not** in `ops`, so every `@op` verb answers the
+    /// existence-hiding refusal — and its bond, if it had one, is a live reservation
+    /// no campaign command can otherwise reach (E7 cut 9 fold, C3).
+    #[must_use]
+    pub fn is_held(&self, id: OperationId) -> bool {
+        let key = operation_key(id);
+        self.held.iter().any(|doc| doc.key == key)
+    }
+
+    /// How many further documents the boot refused past [`MAX_HELD_DOCUMENTS`].
+    #[must_use]
+    pub fn held_overflow(&self) -> usize {
+        self.held_overflow
+    }
+
+    /// How many **live** operations `issuer` is carrying — the per-issuer cap's own
+    /// count (B8). A terminal operation is not one.
+    #[must_use]
+    pub fn live_operations_for(&self, issuer: &mush_org::PrincipalId) -> usize {
+        self.ops
+            .values()
+            .filter(|doc| !doc.runtime.state.is_terminal() && doc.terms.attacker == *issuer)
+            .count()
+    }
+
     /// The last fire's accounting.
     #[must_use]
     pub fn last_fire(&self) -> TickStats {
@@ -213,6 +255,8 @@ impl CampaignStore {
 
     pub(crate) fn hold(&mut self, key: SmolStr, error: String) {
         if self.held.len() >= MAX_HELD_DOCUMENTS {
+            // Counted, not silently dropped: the boot pages the overflow once.
+            self.held_overflow = self.held_overflow.saturating_add(1);
             return;
         }
         self.held.push(HeldDoc { key, error });
@@ -245,13 +289,49 @@ fn push(out: &mut Outbox, op: ModuleWrite) {
 
 /// Install an operation into RAM and queue its document. **The single write path**:
 /// there is no route that writes one without the other.
-pub(crate) fn put_operation(ctx: &mut Ctx<'_>, doc: OperationDoc) {
+/// **The write path is the gate** (E7 cut 9 independent verify fold, C3).
+///
+/// §3.9's rule is "a stored set over any cap refuses on load, never truncates", and
+/// the refused document is *held* — but `@op/withdraw` and the `ForceRetirement`
+/// consumer wrote without ever re-running the constructor, so ordinary play could
+/// store a document the next boot refused. The operation then left the store,
+/// `store.operation(id)` answered `None`, every `@op` verb answered the
+/// existence-hiding `No such operation.`, and the live E4 `Hold` stood against the
+/// attacker's account with no campaign path left to it at all.
+///
+/// So the write re-runs both constructors. A document that would not load is **not
+/// written** — the caller's own validation should have caught it, and reaching here
+/// is a level-2 page with the document left exactly as it was.
+pub(crate) fn put_operation(ctx: &mut Ctx<'_>, doc: OperationDoc) -> bool {
+    if let Err(error) = doc.terms.check() {
+        page_refused_write(ctx, doc.id(), &error.to_string());
+        return false;
+    }
+    if let Err(error) = doc.runtime.check() {
+        page_refused_write(ctx, doc.id(), &error.to_string());
+        return false;
+    }
     let key = operation_key(doc.id());
     let value = serde_json::to_value(&doc).unwrap_or(serde_json::Value::Null);
     if let Some(store) = ctx.w.module_state_mut::<CampaignStore>() {
         store.install_operation(doc);
     }
     push(ctx.out, ModuleWrite::JsonSet { key, value });
+    true
+}
+
+fn page_refused_write(ctx: &mut Ctx<'_>, id: crate::ids::OperationId, error: &str) {
+    crate::settle::page(
+        ctx,
+        SmolStr::new(format!("op:{}:write", id.0)),
+        &format!("a write to operation {id} was refused before it was stored ({error})"),
+        &format!(
+            "operation {id} was about to be written in a shape the next boot would refuse and \
+             hold; the write was dropped and the stored document is unchanged. Inspect it with \
+             `@op/show/full {id}` and, if it cannot go on, abandon it with `@op/resolve \
+             {id}=abort`, which releases its bond"
+        ),
+    );
 }
 
 /// Install a formation node into RAM and queue its document.
@@ -381,5 +461,59 @@ mod tests {
         assert!(store.operation(OperationId(3)).is_none());
         assert!(store.operation(OperationId(4)).is_none());
         assert_eq!(store.held().len(), 1);
+    }
+
+    // ---- E7 cut 9 independent verify fold ----
+
+    /// **B14. A boot with more refused documents than the held list carries counts
+    /// the overflow.** Past `MAX_HELD_DOCUMENTS` cut 9 dropped the 65th with no
+    /// counter and no log, so staff were told about 64 of them and silently not about
+    /// the rest — while every one of them was still on disk and still floored the
+    /// allocator, which is exactly what makes the silence dangerous.
+    #[test]
+    fn vf_b14a_a_boot_with_sixty_seven_refused_documents_counts_the_overflow() {
+        let mut kv = Vec::new();
+        for n in 1..=67u64 {
+            let mut bad = serde_json::to_value(doc(OperationId(n))).expect("serializes");
+            bad["runtime"]["participants"] = serde_json::json!([
+                { "unit": 1, "side": "a", "command_parent": null, "joined_at": 0 },
+                { "unit": 1, "side": "a", "command_parent": null, "joined_at": 0 },
+            ]);
+            kv.push((SmolStr::new(format!("op:{n}")), bad));
+        }
+        let mut store = load(kv);
+        assert_eq!(store.held().len(), MAX_HELD_DOCUMENTS);
+        assert_eq!(store.held_overflow(), 67 - MAX_HELD_DOCUMENTS);
+        // Nothing was installed, nothing was deleted, and the allocator is floored
+        // past every one of them — including the ones the list could not carry.
+        assert_eq!(store.operations().count(), 0);
+        assert_eq!(store.mint_operation(), Some(OperationId(68)));
+    }
+
+    /// **B8. The per-issuer count is over live operations only.**
+    #[test]
+    fn vf_b8b_the_per_issuer_count_ignores_terminal_operations() {
+        let mut store = CampaignStore::default();
+        let issuer = mush_org::PrincipalId::Object(mush_core::ObjId(100));
+        for (n, state) in [
+            crate::record::OperationState::Declared,
+            crate::record::OperationState::Activated,
+            crate::record::OperationState::Running,
+            crate::record::OperationState::Resolved,
+            crate::record::OperationState::Aborted,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let id = OperationId(n as u64 + 1);
+            let mut d = doc(id);
+            d.runtime.state = state;
+            store.install_operation(d);
+        }
+        assert_eq!(store.live_operations_for(&issuer), 3);
+        assert_eq!(
+            store.live_operations_for(&mush_org::PrincipalId::Object(mush_core::ObjId(101))),
+            0
+        );
     }
 }

@@ -37,7 +37,6 @@ pub(crate) fn terms_fixture(operation: OperationId) -> OperationTerms {
     OperationTerms {
         operation,
         attacker: PrincipalId::Object(ObjId(100)),
-        scope: None,
         objective: ObjectiveSpec {
             kind: ObjectiveKind::WindowElapsed,
             summary: SmolStr::new_static("hold the refinery through the window"),

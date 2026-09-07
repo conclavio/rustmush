@@ -77,6 +77,26 @@ pub enum BondError {
     /// A post is needed but the plan would need approval first.
     #[error("the account's approval rule fired")]
     NeedsApproval,
+    /// **A wait, not a refusal** (E7 cut 9 independent verify fold, D8; doc 13 §2).
+    ///
+    /// `RetryShortly` (the W1 gate answering `Unknown` for a key it cannot decide
+    /// from RAM), `JournalUnavailable` and `EconomyFrozen` are exactly the three
+    /// `sweep.rs` classifies as `Disposition::Transient` — "the next fire is the
+    /// retry" — and doc 13 §2's driver rule says a settlement whose post answers
+    /// `RetryShortly` is `NotReady`, **no attempt counted**. Cut 9 folded all three
+    /// into `Refused`, so three of them paused the operation and demanded a human:
+    /// the campaign settlement was the one driver in the tree that counted a wait.
+    #[error("the economy asked to be retried: {0}")]
+    Transient(String),
+}
+
+impl BondError {
+    /// Whether this refusal is a **wait**. The caller defers without counting an
+    /// attempt; the next tick fire is the retry.
+    #[must_use]
+    pub fn is_transient(&self) -> bool {
+        matches!(self, BondError::Transient(_) | BondError::NoEconomy)
+    }
 }
 
 /// The purpose every campaign bond carries. One value, built in one place, so the
@@ -117,7 +137,13 @@ pub fn any_hold(ctx: &Ctx<'_>, operation: OperationId) -> Option<Hold> {
 
 fn refuse(error: EconomyError) -> BondError {
     match error {
+        // A frozen economy is a wait too: it is the tree's own `Transient` set, and
+        // `NoEconomy` is kept as its own arm only because `@op/activate` reports it
+        // differently from an ordinary refusal.
         EconomyError::EconomyFrozen => BondError::NoEconomy,
+        EconomyError::RetryShortly | EconomyError::JournalUnavailable => {
+            BondError::Transient(error.to_string())
+        }
         other => BondError::Refused(other.to_string()),
     }
 }
@@ -161,9 +187,14 @@ pub fn place(ctx: &mut Ctx<'_>, terms: &OperationTerms, bond: &Bond) -> Result<H
         .ok_or(BondError::NoHold)
 }
 
-/// **Release the bond unspent.** Authorized because the plan's actor is the hold's
-/// own placer (`WorldAuth::authorize_hold`'s first clause) — no staff, no
-/// beneficiary, no second authority.
+/// **Release the bond unspent.**
+///
+/// Posted through `mush_economy::settle_engine_reservation`, the engine's own seam
+/// for a reservation in an [`mush_economy::ENGINE_OWNED_RESERVATIONS`] namespace (E7
+/// cut 9 fold, C2 / decision E2(a)). The placer clause of `WorldAuth::authorize_hold`
+/// used to authorize this — and, being a clause about the placer, it also authorized
+/// the *attacker* to `@hold/release` their own stake out from under a live operation,
+/// after which a forfeit paid nobody and the settlement called it settled.
 pub fn release(ctx: &mut Ctx<'_>, terms: &OperationTerms, hold: &Hold) -> Result<(), BondError> {
     let plan = EconomyPlan {
         hold_ops: vec![HoldOp::Release { hold: hold.id }],
@@ -178,7 +209,40 @@ pub fn release(ctx: &mut Ctx<'_>, terms: &OperationTerms, hold: &Hold) -> Result
             Vec::new(),
         )
     };
-    match mush_economy::post(ctx, &plan) {
+    match mush_economy::settle_engine_reservation(ctx, &plan, hold.id, None) {
+        Ok(PostOutcome::Posted(_) | PostOutcome::AlreadyPosted(_)) => Ok(()),
+        Ok(PostOutcome::NeedsApproval(_)) => Err(BondError::NeedsApproval),
+        Err(error) => Err(refuse(error)),
+    }
+}
+
+/// **Release the bond of an operation whose document the boot refused** (E7 cut 9
+/// fold, C3).
+///
+/// A held document is not in `ops`, so `settle::abandon` cannot reach it and every
+/// `@op` verb answers `No such operation.` — while the reservation stands against
+/// the issuer's account. There is no `OperationTerms` to post under, so the plan is
+/// built from the **hold's own** `placed_by`, and the authority is the engine's
+/// (`settle_engine_reservation`), not the actor's. It is staff's alone, at the
+/// command.
+pub fn release_held(ctx: &mut Ctx<'_>, operation: OperationId) -> Result<(), BondError> {
+    let Some(hold) = live_hold(ctx, operation) else {
+        return Err(BondError::NoHold);
+    };
+    let plan = EconomyPlan {
+        hold_ops: vec![HoldOp::Release { hold: hold.id }],
+        description: format!("campaign operation {operation} bond released (held document)"),
+        ..EconomyPlan::new(
+            consumer_key(operation, ConsumerId::BondSettlement),
+            hold.placed_by.clone(),
+            EconomicCause::Internal {
+                kind: SmolStr::new_static("campaign.op.bond"),
+                id: operation.0,
+            },
+            Vec::new(),
+        )
+    };
+    match mush_economy::settle_engine_reservation(ctx, &plan, hold.id, None) {
         Ok(PostOutcome::Posted(_) | PostOutcome::AlreadyPosted(_)) => Ok(()),
         Ok(PostOutcome::NeedsApproval(_)) => Err(BondError::NeedsApproval),
         Err(error) => Err(refuse(error)),
@@ -190,10 +254,10 @@ pub fn release(ctx: &mut Ctx<'_>, terms: &OperationTerms, hold: &Hold) -> Result
 /// `≤ hold.amount` and the uncaptured remainder (zero) is released by the same
 /// effect, exactly as the engine documents.
 ///
-/// The beneficiary is the only principal the engine will let capture a
-/// `Reservation` hold, so the plan posts as them. A beneficiary this actor cannot
-/// act for is a refusal, which pauses and pages rather than falling back to a
-/// release nobody asked for.
+/// It is posted through the engine's own settlement seam, so the *beneficiary* can
+/// no longer take the bond whenever they like through `@hold/capture` — before the
+/// fold they could, at any moment, before the notice window even opened, with no
+/// campaign transition and nothing paged.
 pub fn capture(
     ctx: &mut Ctx<'_>,
     terms: &OperationTerms,
@@ -230,7 +294,7 @@ pub fn capture(
             ],
         )
     };
-    match mush_economy::post(ctx, &plan) {
+    match mush_economy::settle_engine_reservation(ctx, &plan, hold.id, Some(*account)) {
         Ok(PostOutcome::Posted(_) | PostOutcome::AlreadyPosted(_)) => Ok(()),
         Ok(PostOutcome::NeedsApproval(_)) => Err(BondError::NeedsApproval),
         Err(error) => Err(refuse(error)),

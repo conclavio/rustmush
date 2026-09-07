@@ -72,7 +72,7 @@ pub fn is_staff(w: &World, who: ObjId) -> bool {
 /// or staff. Deliberately narrower than the economy's `acts_for`: this decides
 /// disclosure, not money.
 #[must_use]
-fn acts_for(w: &World, who: ObjId, principal: &PrincipalId) -> bool {
+pub(crate) fn acts_for(w: &World, who: ObjId, principal: &PrincipalId) -> bool {
     if is_staff(w, who) {
         return true;
     }
@@ -86,7 +86,17 @@ fn acts_for(w: &World, who: ObjId, principal: &PrincipalId) -> bool {
 }
 
 /// **The one lens function.** Every projection — `@op/show`, `@op/consumers`, the
-/// listing, and any future feed — asks this and nothing else.
+/// listing, `@op/join`'s conflict refusal, and any future feed — asks this and
+/// nothing else.
+///
+/// **It is not the command authority, and after the E7 cut 9 independent verify fold
+/// (C1) nothing treats it as one.** As shipped, five mutating verbs used
+/// `lens != Lens::Plan` as their entire gate, so this function's deliberately wide
+/// membership — any named side, any committed unit's controller — was write access
+/// to somebody else's operation and somebody else's money. `commands.rs` asks its own
+/// `may_amend` / `may_activate` / `may_roster` / `may_commit_unit` / `may_resolve`
+/// beside it now; this predicate is unchanged, and [`acts_for`]'s doc comment below
+/// is true of the code again.
 #[must_use]
 pub fn lens_for(w: &World, doc: &OperationDoc, who: ObjId) -> Lens {
     if is_staff(w, who) {

@@ -59,7 +59,7 @@ use std::sync::Arc;
 
 use mush_core::module::{GameModule, ModError, ModuleBootData, ModuleCtx, Registrar, TickCadence};
 
-pub use commands::CAPABILITIES;
+pub use commands::{CAPABILITIES, OUTCOME_VOCABULARY};
 pub use facts::CampaignFactProvider;
 pub use formation::{
     CategoryId, Composition, FormationAuthority, FormationError, FormationKind, FormationNode,
@@ -78,12 +78,12 @@ pub use render::{
     Lens, NO_SUCH_FORMATION, NO_SUCH_OPERATION, Verbosity, lens_for, visible_operation,
 };
 pub use settle::{
-    KIND_OPERATION_RESOLVED, abandon, advance_one, canon_source, enter_resolving, outcome_abandons,
-    outcome_forfeits, scope_for,
+    KIND_OPERATION_ABANDONED, KIND_OPERATION_RESOLVED, abandon, advance_one, canon_source,
+    enter_resolving, outcome_abandons, outcome_forfeits, scope_for,
 };
 pub use store::{
-    CampaignStore, HeldDoc, MAX_FORMATION_NODES, MAX_HELD_DOCUMENTS, MAX_OPERATIONS, META_KEY, NS,
-    TickStats,
+    CampaignStore, HeldDoc, MAX_FORMATION_NODES, MAX_HELD_DOCUMENTS, MAX_OPERATIONS,
+    MAX_OPERATIONS_PER_ISSUER, META_KEY, NS, TickStats,
 };
 pub use terms::operation_consent_hash;
 pub use tick::{MAX_VISITED_PER_FIRE, MAX_WORKED_PER_FIRE, TICK_PERIOD_SECS, TICK_TAG};
@@ -150,6 +150,7 @@ impl GameModule for CampaignModule {
         store.set_authority(self.formation_kinds.clone());
         store.hydrate_kinds(ctx.w);
         let held: Vec<store::HeldDoc> = store.held().to_vec();
+        let held_overflow = store.held_overflow();
         let unknown: Vec<(OperationId, Vec<String>)> = store
             .operations()
             .filter(|doc| !doc.runtime.unknown_consumers.is_empty())
@@ -185,6 +186,24 @@ impl GameModule for CampaignModule {
                 ),
                 error = %doc.error,
                 "campaign: a document was refused on load and is held (level 2)"
+            );
+        }
+        // B14: past `MAX_HELD_DOCUMENTS` the list stops growing, and cut 9 dropped
+        // the 65th refused document with no counter and no log — so staff were told
+        // about 64 of them and silently not about the rest, which is exactly the
+        // failure mode that can make a bond-bearing document invisible. The overflow
+        // is counted and paged once.
+        if held_overflow > 0 {
+            tracing::error!(
+                target: "campaign",
+                subject = "campaign:held-overflow",
+                runbook = %format!(
+                    "{held_overflow} further campaign document(s) were refused on load beyond \
+                     the {} this build lists; none was deleted and every allocator is still \
+                     floored past them. Repair the listed ones and reboot to see the next batch",
+                    store::MAX_HELD_DOCUMENTS
+                ),
+                "campaign: more documents were refused than the held list carries (level 2)"
             );
         }
         // A stored consumer id this build does not know fails CLOSED: the

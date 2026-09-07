@@ -25,7 +25,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use mush_core::{ClockStamp, ObjId};
 use mush_economy::{AccountId, Amount, EconomicVisibility, HoldId, MAX_AUDIENCE};
-use mush_org::{OrgScopeId, PrincipalId};
+use mush_org::PrincipalId;
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 
@@ -182,10 +182,13 @@ pub struct OperationTerms {
     /// The operation.
     pub operation: OperationId,
     /// Who declared it. Also the principal the bond is placed by, so it is the
-    /// principal a release posts under (`authorize_hold`: the placer may release).
+    /// principal a release posts under.
+    ///
+    /// **It is not the command authority.** `commands::may_amend` / `may_roster` /
+    /// `may_resolve` ask that question (E7 cut 9 fold, C1): the disclosure lens says
+    /// who may *see* an operation, and it deliberately admits parties — a named side,
+    /// a committed unit's controller — who may not *move* it.
     pub attacker: PrincipalId,
-    /// The org compartment `force.*` authority is asked about, when there is one.
-    pub scope: Option<OrgScopeId>,
     /// What it is trying to achieve.
     pub objective: ObjectiveSpec,
     /// What it may lawfully be aimed at (≤ [`MAX_LEGAL_TARGETS`]).
@@ -425,8 +428,6 @@ impl OperationTerms {
 struct OperationTermsWire {
     operation: OperationId,
     attacker: PrincipalId,
-    #[serde(default)]
-    scope: Option<OrgScopeId>,
     objective: ObjectiveSpec,
     legal_targets: Vec<SmolStr>,
     stakes: Vec<Consequence>,
@@ -447,7 +448,6 @@ impl TryFrom<OperationTermsWire> for OperationTerms {
         let terms = OperationTerms {
             operation: w.operation,
             attacker: w.attacker,
-            scope: w.scope,
             objective: w.objective,
             legal_targets: w.legal_targets,
             stakes: w.stakes,
@@ -550,9 +550,20 @@ impl OperationState {
     }
 
     /// Whether the operation is still live enough for the tick to work on it.
+    ///
+    /// `Aborted` is terminal exactly as `Resolved` is (E7 cut 9 fold, D7): before the
+    /// fold nothing ever *constructed* it, so `settle::abandon` routed an abandonment
+    /// through `Resolving` to `Resolved` and `@op/show` reported "resolved" for an
+    /// operation staff had abandoned past a corrupt surface.
     #[must_use]
     pub fn is_live(&self) -> bool {
-        !matches!(self, OperationState::Resolved)
+        !matches!(self, OperationState::Resolved | OperationState::Aborted)
+    }
+
+    /// Whether the operation has finished, either way. Nothing re-opens one.
+    #[must_use]
+    pub fn is_terminal(&self) -> bool {
+        matches!(self, OperationState::Resolved | OperationState::Aborted)
     }
 }
 
@@ -594,6 +605,13 @@ pub struct RootFact {
     /// Wall-clock second the root was recorded.
     pub at: i64,
     /// The outcome row it recorded (≤ [`MAX_OUTCOME_NAME_BYTES`]).
+    ///
+    /// `RootFact` has no strict wire of its own, so that cap is enforced by
+    /// [`OperationRuntime::check`] — which the load wire re-runs. Before the E7 cut 9
+    /// independent verify fold (B7) it was enforced **nowhere**: `op_resolve` took
+    /// `ctx.args.rhs()` verbatim, the same bytes reached canon's immutable ledger,
+    /// and the caller's input line was the only bound on a document that has no size
+    /// cap of its own. The command now matches a closed vocabulary as well.
     pub outcome: SmolStr,
 }
 
@@ -650,12 +668,28 @@ pub struct OperationRuntime {
     /// The consumer set computed **once** at entry to `Resolving`.
     pub required: BTreeSet<ConsumerId>,
     /// Stored consumer ids this build does not know. Non-empty means the operation
-    /// can never reach `Resolved` and has paged (B7).
+    /// can never reach `Resolved` and has paged (B7). It is the union of what the
+    /// stored `required` and `pending` lists carried, so the operation blocks and
+    /// pages however the id arrived.
     pub unknown_consumers: BTreeSet<SmolStr>,
+    /// The half of [`OperationRuntime::unknown_consumers`] the stored **pending**
+    /// list carried, kept separately so a round trip through a build that does not
+    /// know the id **writes back what it read** (E7 cut 9 fold, B11). Unioning one
+    /// set into both lists resurrected an unknown consumer a knowing build had
+    /// already discharged.
+    pub unknown_pending: BTreeSet<SmolStr>,
     /// The applied root marker.
     pub root: Option<RootFact>,
     /// Why it is paused, if it is.
     pub paused: Option<PauseReason>,
+    /// Whether this resolution is an explicit **staff abandonment**, set by
+    /// [`crate::settle::abandon`] and by nothing else (E7 cut 9 fold, C7).
+    ///
+    /// Before the fold the fan-out asked `outcome_abandons(&root.outcome)` — the
+    /// outcome *string* — so any `Lens::Plan` holder could pre-disable the mid-drain
+    /// intactness re-check simply by choosing the word `abort`. The flag is written
+    /// by the transition that took it, so choosing an outcome cannot set it.
+    pub abandoned: bool,
     /// How many times each consumer has refused, durably. A consumer past
     /// [`MAX_CONSUMER_ATTEMPTS`] pauses **this** operation and pages level 2 — it
     /// never freezes the lane, so one operation's wall of refusals cannot starve
@@ -681,6 +715,14 @@ pub enum RuntimeError {
     /// Two participations name one unit.
     #[error("a unit is listed twice in one operation")]
     DuplicateUnit,
+    /// A text is over its byte cap.
+    #[error("{what} is longer than {max} bytes")]
+    TooLong {
+        /// Which text.
+        what: &'static str,
+        /// The cap.
+        max: usize,
+    },
     /// `pending` holds an id the required set does not.
     #[error("a pending consumer is not in the required set")]
     PendingNotRequired,
@@ -701,8 +743,10 @@ impl OperationRuntime {
             state: OperationState::Declared,
             required: BTreeSet::new(),
             unknown_consumers: BTreeSet::new(),
+            unknown_pending: BTreeSet::new(),
             root: None,
             paused: None,
+            abandoned: false,
             attempts: BTreeMap::new(),
             revision: 1,
         }
@@ -734,6 +778,30 @@ impl OperationRuntime {
                 max: crate::formation::MAX_FORMATIONS_PER_OPERATION,
             });
         }
+        // D11: `attempts` is keyed by a CLOSED five-element vocabulary, so the cap
+        // is exact. Every other bounded set in this record refuses on load; before
+        // the fold this one had no bound to refuse against, and a corrupt document
+        // carrying a million attempt entries was accepted at boot and re-serialized
+        // on every write.
+        if self.attempts.len() > ConsumerId::ALL.len() {
+            return Err(RuntimeError::TooMany {
+                what: "consumer attempts",
+                actual: self.attempts.len(),
+                max: ConsumerId::ALL.len(),
+            });
+        }
+        // B7: the outcome row is documented "<= MAX_OUTCOME_NAME_BYTES" and was
+        // bounded nowhere - `RootFact` has no wire of its own, so the caller's input
+        // line was the only limit on a document with no size cap, and the same bytes
+        // reached canon's immutable ledger.
+        if let Some(root) = &self.root
+            && root.outcome.len() > MAX_OUTCOME_NAME_BYTES
+        {
+            return Err(RuntimeError::TooLong {
+                what: "the recorded outcome",
+                max: MAX_OUTCOME_NAME_BYTES,
+            });
+        }
         let mut seen: BTreeSet<UnitRef> = BTreeSet::new();
         for p in &self.participants {
             if !seen.insert(p.unit) {
@@ -746,6 +814,25 @@ impl OperationRuntime {
             return Err(RuntimeError::PendingNotRequired);
         }
         Ok(())
+    }
+
+    /// Record one withdrawal in the audit tail.
+    ///
+    /// **Deduplicated and bounded by construction** (E7 cut 9 fold, C3). A unit
+    /// withdrawn twice is one audit fact, and the tail keeps the most recent
+    /// [`MAX_OPERATION_PARTICIPANTS`] of them - a *stated* choice on the write path,
+    /// which is the half the boot cannot make: the load still refuses an over-cap
+    /// stored set and holds the document. Before the fold `@op/withdraw` pushed
+    /// unconditionally and never re-ran the constructor, so 129 accepted join/withdraw
+    /// commands stored a document the next boot **held**, taking the operation and its
+    /// live money bond out of reach of every command.
+    pub fn record_withdrawal(&mut self, unit: UnitRef) {
+        self.withdrawals.retain(|u| *u != unit);
+        self.withdrawals.push(unit);
+        if self.withdrawals.len() > MAX_OPERATION_PARTICIPANTS {
+            let overflow = self.withdrawals.len() - MAX_OPERATION_PARTICIPANTS;
+            self.withdrawals.drain(..overflow);
+        }
     }
 
     /// Whether `unit` is committed here.
@@ -788,6 +875,8 @@ struct OperationRuntimeWire {
     #[serde(default)]
     paused: Option<PauseReason>,
     #[serde(default)]
+    abandoned: bool,
+    #[serde(default)]
     attempts: BTreeMap<SmolStr, u32>,
     revision: u64,
 }
@@ -807,8 +896,7 @@ impl TryFrom<OperationRuntimeWire> for OperationRuntime {
     type Error = RuntimeError;
 
     fn try_from(w: OperationRuntimeWire) -> Result<Self, Self::Error> {
-        let mut unknown: BTreeSet<SmolStr> = BTreeSet::new();
-        let mut split = |tokens: Vec<SmolStr>| -> BTreeSet<ConsumerId> {
+        fn split(tokens: Vec<SmolStr>, unknown: &mut BTreeSet<SmolStr>) -> BTreeSet<ConsumerId> {
             let mut known = BTreeSet::new();
             for token in tokens {
                 match ConsumerId::parse(&token) {
@@ -821,18 +909,24 @@ impl TryFrom<OperationRuntimeWire> for OperationRuntime {
                 }
             }
             known
-        };
-        let required = split(w.required);
+        }
+        let mut unknown_required: BTreeSet<SmolStr> = BTreeSet::new();
+        let mut unknown_pending: BTreeSet<SmolStr> = BTreeSet::new();
+        let required = split(w.required, &mut unknown_required);
         let state = match w.state {
             OperationStateWire::Declared => OperationState::Declared,
             OperationStateWire::Activated => OperationState::Activated,
             OperationStateWire::Running => OperationState::Running,
+            // B11: the pending half is kept separately, so the write half restores
+            // exactly what the read half saw rather than unioning one set into both.
             OperationStateWire::Resolving { pending } => OperationState::Resolving {
-                pending: split(pending),
+                pending: split(pending, &mut unknown_pending),
             },
             OperationStateWire::Resolved => OperationState::Resolved,
             OperationStateWire::Aborted => OperationState::Aborted,
         };
+        let unknown: BTreeSet<SmolStr> =
+            unknown_required.union(&unknown_pending).cloned().collect();
         let runtime = OperationRuntime {
             operation: w.operation,
             participants: w.participants,
@@ -841,8 +935,10 @@ impl TryFrom<OperationRuntimeWire> for OperationRuntime {
             state,
             required,
             unknown_consumers: unknown,
+            unknown_pending,
             root: w.root,
             paused: w.paused,
+            abandoned: w.abandoned,
             attempts: w.attempts,
             revision: w.revision,
         };
@@ -858,12 +954,12 @@ impl TryFrom<OperationRuntimeWire> for OperationRuntime {
 /// "refuse on load, never truncate", applied to the way out.
 impl From<OperationRuntime> for OperationRuntimeWire {
     fn from(r: OperationRuntime) -> OperationRuntimeWire {
-        let tokens = |known: &BTreeSet<ConsumerId>| -> Vec<SmolStr> {
+        let tokens = |known: &BTreeSet<ConsumerId>, unknown: &BTreeSet<SmolStr>| -> Vec<SmolStr> {
             let mut out: BTreeSet<SmolStr> = known
                 .iter()
                 .map(|c| SmolStr::new_static(c.as_str()))
                 .collect();
-            out.extend(r.unknown_consumers.iter().cloned());
+            out.extend(unknown.iter().cloned());
             out.into_iter().collect()
         };
         let state = match &r.state {
@@ -871,7 +967,7 @@ impl From<OperationRuntime> for OperationRuntimeWire {
             OperationState::Activated => OperationStateWire::Activated,
             OperationState::Running => OperationStateWire::Running,
             OperationState::Resolving { pending } => OperationStateWire::Resolving {
-                pending: tokens(pending),
+                pending: tokens(pending, &r.unknown_pending),
             },
             OperationState::Resolved => OperationStateWire::Resolved,
             OperationState::Aborted => OperationStateWire::Aborted,
@@ -882,9 +978,10 @@ impl From<OperationRuntime> for OperationRuntimeWire {
             force: r.force.clone(),
             withdrawals: r.withdrawals.clone(),
             state,
-            required: tokens(&r.required),
+            required: tokens(&r.required, &r.unknown_consumers),
             root: r.root.clone(),
             paused: r.paused.clone(),
+            abandoned: r.abandoned,
             attempts: r.attempts.clone(),
             revision: r.revision,
         }
@@ -1035,5 +1132,116 @@ mod tests {
         }
         assert_eq!(ConsumerId::parse("orbital_bombardment"), None);
         assert_eq!(ConsumerId::ALL.len(), 5);
+    }
+
+    // ---- E7 cut 9 independent verify fold ----
+
+    /// **D11. `attempts` is bounded on the load wire**, against the closed five-id
+    /// vocabulary that keys it. Cut 9 bounded `participants`, `withdrawals` and
+    /// `force.formations` and left this one with no bound to refuse against, so a
+    /// corrupt document carrying a million entries loaded and was re-serialized on
+    /// every write.
+    #[test]
+    fn vf_d11a_a_runtime_carrying_six_attempt_keys_refuses_on_load() {
+        let runtime = OperationRuntime::declared(OperationId(9));
+        let mut value = serde_json::to_value(&runtime).expect("serializes");
+        let mut attempts = serde_json::Map::new();
+        for (n, consumer) in ConsumerId::ALL.iter().enumerate() {
+            attempts.insert(consumer.as_str().to_owned(), serde_json::json!(n as u32));
+        }
+        // Exactly the vocabulary loads…
+        value["attempts"] = serde_json::Value::Object(attempts.clone());
+        serde_json::from_value::<OperationRuntime>(value.clone()).expect("five keys load");
+        // …and one more does not.
+        attempts.insert("orbital_bombardment".to_owned(), serde_json::json!(1));
+        value["attempts"] = serde_json::Value::Object(attempts);
+        let error = serde_json::from_value::<OperationRuntime>(value)
+            .expect_err("six attempt keys must refuse on load");
+        assert!(error.to_string().contains("over its cap"), "{error}");
+    }
+
+    /// **B7. The recorded outcome is bounded on the wire**, which is where the
+    /// documentation always said it was. `RootFact` has no wire of its own, so the
+    /// bound lives in the runtime's constructor and the load re-runs it.
+    #[test]
+    fn vf_b7a_a_stored_outcome_over_the_byte_cap_refuses_on_load() {
+        let mut runtime = OperationRuntime::declared(OperationId(9));
+        runtime.root = Some(RootFact {
+            canon: Some(1),
+            at: 0,
+            outcome: SmolStr::new("z".repeat(MAX_OUTCOME_NAME_BYTES)),
+        });
+        let value = serde_json::to_value(&runtime).expect("serializes");
+        serde_json::from_value::<OperationRuntime>(value).expect("exactly the cap loads");
+
+        runtime.root = Some(RootFact {
+            canon: Some(1),
+            at: 0,
+            outcome: SmolStr::new("z".repeat(MAX_OUTCOME_NAME_BYTES + 1)),
+        });
+        let value = serde_json::to_value(&runtime).expect("serializes");
+        let error = serde_json::from_value::<OperationRuntime>(value)
+            .expect_err("an over-cap outcome must refuse on load");
+        assert!(error.to_string().contains("longer than"), "{error}");
+    }
+
+    /// **B11. An unknown consumer that had left `pending` does not come back through
+    /// a round trip.** The read half routed unknown tokens from both lists into one
+    /// set and the write half unioned that set into both, so a build that did not
+    /// know an id resurrected one a knowing build had already discharged.
+    #[test]
+    fn vf_b11a_an_unknown_consumer_that_had_left_pending_does_not_come_back_through_a_round_trip() {
+        let runtime = OperationRuntime::declared(OperationId(9));
+        let mut value = serde_json::to_value(&runtime).expect("serializes");
+        value["required"] = serde_json::json!(["campaign_outcome", "orbital_bombardment"]);
+        value["state"] = serde_json::json!({ "state": "resolving", "pending": [] });
+        let back: OperationRuntime = serde_json::from_value(value).expect("loads");
+        assert_eq!(
+            back.unknown_consumers,
+            BTreeSet::from([SmolStr::new_static("orbital_bombardment")])
+        );
+        assert!(back.unknown_pending.is_empty());
+
+        // The write half restores exactly what the read half saw.
+        let again = serde_json::to_value(&back).expect("serializes");
+        assert_eq!(
+            again["state"]["pending"],
+            serde_json::json!([]),
+            "a discharged unknown consumer came back into pending"
+        );
+        assert_eq!(
+            again["required"],
+            serde_json::json!(["campaign_outcome", "orbital_bombardment"]),
+            "the unknown id was dropped from required"
+        );
+        // …and one that really IS pending stays pending.
+        let mut value =
+            serde_json::to_value(OperationRuntime::declared(OperationId(9))).expect("serializes");
+        value["required"] = serde_json::json!(["orbital_bombardment"]);
+        value["state"] =
+            serde_json::json!({ "state": "resolving", "pending": ["orbital_bombardment"] });
+        let back: OperationRuntime = serde_json::from_value(value).expect("loads");
+        let again = serde_json::to_value(&back).expect("serializes");
+        assert_eq!(
+            again["state"]["pending"],
+            serde_json::json!(["orbital_bombardment"])
+        );
+    }
+
+    /// **B13. The terms carry no `scope` field at all**, so a stored one is refused
+    /// rather than silently hashed. A hashed field nothing can set is a hash-space
+    /// change waiting for its first writer; it is gone before production freezes one.
+    #[test]
+    fn vf_b13b_the_stored_terms_carry_no_scope_field() {
+        let terms = terms_fixture(OperationId(1));
+        let value = serde_json::to_value(&terms).expect("serializes");
+        assert!(
+            value.get("scope").is_none(),
+            "the terms still carry a scope: {value}"
+        );
+        let mut with_scope = value;
+        with_scope["scope"] = serde_json::json!(4);
+        serde_json::from_value::<OperationTerms>(with_scope)
+            .expect_err("a stored scope must be refused, never hashed");
     }
 }

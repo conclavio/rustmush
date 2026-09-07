@@ -258,3 +258,73 @@ fn empty_chronicle_is_graceful() {
         .insert(Flags::ROYALTY);
     assert!(texts(&run(&mut engine, alice, "@canon")).contains("empty"));
 }
+
+// ---- E7 cut 9 independent verify fold ----
+
+/// Push a canon event naming `source`, so a bounded per-source read can be pinned.
+fn push_source(engine: &mut Engine, summary: &str, source: &str) -> CanonId {
+    let st = engine.world.module_state_mut::<CanonState>().unwrap();
+    let id = st.alloc_id();
+    let e = CanonEvent {
+        id,
+        kind: "campaign.operation.resolved".into(),
+        summary: summary.into(),
+        entities: Vec::new(),
+        scope: CanonScope::Public,
+        ic_time: 100,
+        at: 1000,
+        source: source.to_owned(),
+        supersedes: None,
+        reason: String::new(),
+        detail: serde_json::Value::Null,
+    };
+    let prepared = st
+        .ledger
+        .prepare_append(LOG, serde_json::to_value(&e).unwrap())
+        .unwrap();
+    st.ledger.apply_prepared(prepared).unwrap();
+    id
+}
+
+/// **D1d (E7 cut 9 fold). `records_for_source` is a WINDOW, and says so.**
+///
+/// E7 cut 9's `settle::root_recorded` used it as "canon's own durable ledger" for a
+/// commit-once check, and `tick::objective_met` asked it for 16 records. It is
+/// neither: it answers from the ledger's open tail plus a boot-time sealed tail, it
+/// is clamped to `MAX_RECORDS_PER_SOURCE` **8** however large a limit is passed, and
+/// it is newest-first — so a record behind the eighth is invisible to it. Pinned here
+/// so no other crate mistakes the seam for the ledger again.
+#[test]
+fn vf_d1d_records_for_source_is_windowed_and_clamped_to_max_records_per_source() {
+    let (mut engine, _alice, _bob) = rig();
+    let mut ids = Vec::new();
+    for n in 0..12 {
+        ids.push(push_source(&mut engine, &format!("op {n}"), "op:1"));
+    }
+    push_source(&mut engine, "another", "op:2");
+    let state = engine.world.module_state::<CanonState>().unwrap();
+
+    // However large the limit, the answer is clamped.
+    for limit in [1, 8, 16, 1_000] {
+        let got = mush_canon::records_for_source(state, "op:1", limit);
+        assert!(
+            got.len() <= mush_canon::MAX_RECORDS_PER_SOURCE.min(limit),
+            "limit {limit} answered {} records",
+            got.len()
+        );
+    }
+    let got = mush_canon::records_for_source(state, "op:1", 16);
+    assert_eq!(got.len(), mush_canon::MAX_RECORDS_PER_SOURCE);
+    // Newest first, so the OLDEST records are the ones that fall out of the answer.
+    assert_eq!(got[0].id, ids[11]);
+    let visible: Vec<CanonId> = got.iter().map(|e| e.id).collect();
+    for old in &ids[..4] {
+        assert!(
+            !visible.contains(old),
+            "{old:?} is behind the window and was still answered"
+        );
+    }
+    // …and the seam is per-source, so another source's traffic is not the reason.
+    assert_eq!(mush_canon::records_for_source(state, "op:2", 16).len(), 1);
+    assert!(mush_canon::records_for_source(state, "op:3", 16).is_empty());
+}

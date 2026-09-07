@@ -4436,6 +4436,7 @@ fn hold_release(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         return Err(CmdError::msg("No such hold."));
     }
     refuse_escrow(ctx, id, "released")?;
+    refuse_engine_reservation(ctx, id, "released")?;
     let mut plan = EconomyPlan::new(
         cmd_key(ctx),
         PrincipalId::Object(ctx.actor),
@@ -4462,6 +4463,7 @@ fn hold_capture(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         return Err(CmdError::msg("No such hold."));
     }
     refuse_escrow(ctx, id, "captured")?;
+    refuse_engine_reservation(ctx, id, "captured")?;
     let rhs = ctx.args.rhs().ok_or_else(|| CmdError::msg(USAGE))?;
     let mut words = rhs.split_whitespace();
     let to = words
@@ -4541,6 +4543,29 @@ fn refuse_escrow(ctx: &Ctx<'_>, id: HoldId, verb: &str) -> Result<(), CmdError> 
         None => Ok(()),
         Some(c) => Err(CmdError::msg(format!(
             "Hold #{id} is contract #{c}'s escrow: it is {verb} by that contract's own settlement              or refund and by nothing else. See @contract/show #{c}."
+        ))),
+    }
+}
+
+/// An **engine-owned reservation** is the engine's, and only the engine's (E7 cut 9
+/// independent verify fold, C2; decision E2(a)). `WorldAuth::authorize_hold` already
+/// refuses every op on one, so this changes no outcome — it replaces "unauthorized"
+/// with the sentence that tells the placer and the beneficiary where the reservation
+/// is actually settled. A viewer who cannot see the hold never reaches this.
+fn refuse_engine_reservation(ctx: &Ctx<'_>, id: HoldId, verb: &str) -> Result<(), CmdError> {
+    let kind = ctx
+        .w
+        .module_state::<EconomyStore>()
+        .and_then(|s| s.snapshot().hold(id).cloned())
+        .filter(|h| crate::is_engine_owned_reservation(&h.purpose))
+        .and_then(|h| match h.purpose {
+            HoldPurpose::Reservation { kind, .. } => Some(kind),
+            HoldPurpose::Escrow { .. } | HoldPurpose::Manual { .. } => None,
+        });
+    match kind {
+        None => Ok(()),
+        Some(kind) => Err(CmdError::msg(format!(
+            "Hold #{id} is a `{kind}` reservation: it is {verb} by that system's own settlement              and by nothing else."
         ))),
     }
 }

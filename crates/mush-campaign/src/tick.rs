@@ -168,8 +168,12 @@ fn step(ctx: &mut Ctx<'_>, id: OperationId, stats: &mut TickStats) -> Step {
     // (ii) the funding check, before anything else moves: an operation whose bond
     // has gone away pauses at its next phase boundary and pages. Never negative,
     // never continuing unfunded.
+    // Deviation (c)'s residual (E7 cut 9 fold): gated on the BOND, not on the stored
+    // `hold` field. `Bond::hold` is unhashed execution bookkeeping that a lost write
+    // can null while the reservation itself stands — and a null `hold` used to skip
+    // the funding check entirely, which is the one place the field was authority.
     if let Some(bond) = &doc.terms.bond
-        && bond.hold.is_some()
+        && !bond.amount.is_zero()
         && crate::bond::live_hold(ctx, id).is_none()
     {
         settle::pause(
@@ -225,6 +229,30 @@ fn step(ctx: &mut Ctx<'_>, id: OperationId, stats: &mut TickStats) -> Step {
             };
         }
         if closed {
+            // D1's second half: a `canon:` objective is answered from a **bounded**
+            // read seam, so "not met" can mean "not in the window" as well as "never
+            // recorded" — and at window close that silently resolves the operation as
+            // a `failure`. It stays a failure (an objective nothing can evidence is
+            // not met), but a person is told the seam was the reason it might not
+            // have been seen.
+            if matches!(
+                doc.terms.objective.kind,
+                ObjectiveKind::CanonRecorded { .. }
+            ) {
+                settle::page(
+                    ctx,
+                    smol_str::SmolStr::new(format!("op:{}:objective", id.0)),
+                    &format!("operation {id}'s canon objective was not met at window close"),
+                    &format!(
+                        "operation {id}'s objective is a canon record, and canon answers it from \
+                         a BOUNDED read seam (at most {} records for one source, from the \
+                         unsealed chunk plus the boot-time sealed tail). It is resolving as a \
+                         failure. If the record exists but is older than that window, resolve it \
+                         by hand with `@op/resolve {id}=success` before the fan-out drains",
+                        mush_canon::MAX_RECORDS_PER_SOURCE
+                    ),
+                );
+            }
             return match settle::enter_resolving(ctx, id, "failure") {
                 true => Step::Worked,
                 false => Step::Paused,
@@ -243,9 +271,16 @@ pub(crate) fn objective_met(ctx: &Ctx<'_>, doc: &OperationDoc, window_closed: bo
         ObjectiveKind::Muster { minimum } => {
             window_closed && doc.runtime.participants.len() >= usize::from(*minimum)
         }
+        // **A bounded read, and it says so.** `records_for_source` is clamped by
+        // `out.truncate(limit.min(MAX_RECORDS_PER_SOURCE))`, so cut 9's `16` was
+        // always **8** (E7 cut 9 fold, D1's second half / B16), and the window it
+        // reads is `CanonState::recent()` plus a boot-time sealed tail rather than
+        // the whole ledger. The constant is cited rather than re-guessed, the kind
+        // filter runs over exactly what the seam can answer, and `step` pages when a
+        // `canon:` objective goes unmet at window close so the bound is visible.
         ObjectiveKind::CanonRecorded { kind, source } => {
             ctx.w.module_state::<CanonState>().is_some_and(|state| {
-                mush_canon::records_for_source(state, source, 16)
+                mush_canon::records_for_source(state, source, mush_canon::MAX_RECORDS_PER_SOURCE)
                     .iter()
                     .any(|event| event.kind == *kind)
             })
