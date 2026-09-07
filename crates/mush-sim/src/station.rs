@@ -267,6 +267,19 @@ fn station_show(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 /// plus its RAM mirror. The declared data is what the immediate controller reads
 /// on a clean switch.
 fn station_fallback(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    // ---- E7c11: B0 (T11's guardrail, call site 2 of 3) ----
+    // **A fallback change.** The staff gate below is an account power, and a
+    // staff account can hold a proxy seat like anyone else; T11 forbids the act
+    // *from the seat*, not from the person. Re-declaring the fallback while
+    // driving would let the driver choose who the station returns to when they
+    // stand down — the give-back T11 exists to keep deterministic.
+    //
+    // It runs **before** the staff gate deliberately: the refusal is about the
+    // actor's own seat, which they already know they hold, so it discloses
+    // nothing, and it names the blocker a driver can actually act on
+    // (`+seat/leave`) instead of the one they cannot ("Permission denied.").
+    crate::focus::seat_restriction(ctx.w, ctx.actor, crate::focus::ProxyAct::FallbackChange)
+        .map_err(CmdError::msg)?;
     if !is_admin(ctx.w, ctx.actor) {
         return Err(CmdError::msg("Permission denied."));
     }

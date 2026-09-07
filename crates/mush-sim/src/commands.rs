@@ -1614,6 +1614,14 @@ fn focus_acquire(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let unit = match_object(ctx.w, ctx.actor, unit_ref.trim())?;
     let station = StationId::new(station_ref)
         .ok_or_else(|| CmdError::msg("Usage: +focus <unit>/<station>"))?;
+    // ---- E7c11: B0 (T11's guardrail, call site 1 of 3) ----
+    // **Assumption of another station.** A proxy driver's `+focus` would
+    // otherwise `claim` over the account's one foreground focus and silently
+    // drop the seat it is driving — the seat's give-back never runs, the NPC's
+    // station stays narrowed and the grant stays `Active`. T11 names this act
+    // outright; the exit is `+seat/leave`.
+    crate::focus::seat_restriction(ctx.w, ctx.actor, crate::focus::ProxyAct::StationAssumption)
+        .map_err(CmdError::msg)?;
     // The immutable account. `None` = unknown = refuse (never a default).
     let account = account_oracle(ctx).account_of(ctx.actor).ok_or_else(|| {
         CmdError::msg(
@@ -2576,10 +2584,29 @@ fn cmd_journey(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     // premise is that the focused station is the live control surface; a
     // bystander gets the byte-identical rule-4 `"No journey."`, so the read
     // leaks nothing.
+    // ---- E7c11: B0 (T11's guardrail, call site 3 of 3) ----
+    // **Departure from the authorized operation.** `/depart` and `/divert` put
+    // the hull and everyone inside it under way; T11 names both. As with
+    // `@station/fallback` the staff gate is an account power and this narrows
+    // the *seat*, so a staff member driving a proxy stands down first and
+    // departs as themselves — and it runs before that gate so the refusal names
+    // the blocker a driver can act on.
     if ctx.switches.has("depart") {
+        crate::focus::seat_restriction(
+            ctx.w,
+            ctx.actor,
+            crate::focus::ProxyAct::OperationDeparture,
+        )
+        .map_err(CmdError::msg)?;
         require_admin(ctx)?;
         journey_depart(ctx)
     } else if ctx.switches.has("divert") {
+        crate::focus::seat_restriction(
+            ctx.w,
+            ctx.actor,
+            crate::focus::ProxyAct::OperationDeparture,
+        )
+        .map_err(CmdError::msg)?;
         require_admin(ctx)?;
         journey_divert(ctx)
     } else if ctx.switches.has("plan") {

@@ -55,7 +55,10 @@ pub use domain::{
     DomainWorkflowError, MAX_ACTIVE_DOMAINS, PromotionTrigger, QUIET_BOUNDARY, activation_key,
     summary_key,
 };
-pub use focus::{AccountOracle, ActiveFocus, FocusState, MAX_BILLETS_LISTED, ReachProof};
+pub use focus::{
+    AccountOracle, ActiveFocus, FocusState, MAX_BILLETS_LISTED, ProxyAct, ProxyDrive, ReachProof,
+    driving_actor, proxy_drive_of, seat_restriction,
+};
 pub use graph::{
     effective_domain, presence, project, space_domain, verify_indexes, verify_projections,
 };

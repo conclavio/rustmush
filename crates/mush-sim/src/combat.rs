@@ -84,6 +84,16 @@ fn info(ctx: &mut Ctx<'_>, line: impl Into<String>) {
 /// is not pulsing, its pulse is anchored on an older world-time generation, or
 /// the actor holds no published grant on the station they are focused on.
 pub(crate) fn resolve_seat(world: &World, actor: ObjId) -> Result<SeatDoc, CmdError> {
+    // ---- E7c11: B0 (the proxy DRIVING ingress) ----
+    // **The one ingress site on the tactical lane.** A proxy driver types as
+    // their own character, whose `FocusState` row does not exist — the proxy
+    // focus is keyed on the NPC. `driving_actor` resolves the account's one
+    // foreground focus and hands back the NPC, so everything below reads the
+    // NPC's billet, the NPC's published (narrowed) `ChannelGrant` and the NPC's
+    // domain. Authority is **not** widened: no grant is minted or copied, so a
+    // `movement`-only seat still cannot fire (`channel_for` refuses), and a
+    // driver with no live seat resolves to themselves and refuses as before.
+    let actor = crate::focus::driving_actor(world, actor);
     let (unit, station) = crate::commands::focused_station_of(world, actor).ok_or_else(|| {
         CmdError::msg("You hold no focused station; +focus a billet before issuing orders.")
     })?;
@@ -221,7 +231,13 @@ fn held_contact(ctx: &Ctx<'_>, token: &str) -> Result<ContactId, CmdError> {
         .w
         .module_state::<ContactLedgerState>()
         .ok_or_else(refusal)?;
-    let holder = mush_core::PrincipalId::Object { id: ctx.actor };
+    // **E7c11 B0.** The contacts a proxy driver may name are the NPC's, not
+    // their own absent character's (T12: "exposes only that NPC station's
+    // observer projection"). Same ingress, same fail-closed answer for a driver
+    // with no seat.
+    let holder = mush_core::PrincipalId::Object {
+        id: crate::focus::driving_actor(ctx.w, ctx.actor),
+    };
     ledger
         .rows()
         .iter()

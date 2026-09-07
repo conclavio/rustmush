@@ -2862,7 +2862,14 @@ impl ScheduleActionAdapter for DomainTickScheduleAdapter {
                 let Some(channel) = mush_core::ChannelId::new(&doc.channel) else {
                     continue;
                 };
-                let actor = intent.invocation().actor();
+                // **E7c11 B0 (the proxy DRIVING ingress).** The window intent's
+                // `actor` is the account's character — the human who typed the
+                // verb — and for a proxy driver that character holds neither the
+                // focus nor the grant. The witness is re-checked against the
+                // DRIVEN actor, the same resolution `combat::resolve_seat` made
+                // at submit, so the pair cannot disagree; for everybody else
+                // `driving_actor` is the identity and this is byte-unchanged.
+                let actor = crate::focus::driving_actor(&engine.world, intent.invocation().actor());
                 let focused = crate::commands::focused_station_of(&engine.world, actor)
                     .is_some_and(|(unit, station)| {
                         unit == doc.unit && station.as_str() == doc.station

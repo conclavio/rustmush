@@ -167,6 +167,24 @@ pub const UNIDENTIFIED_SENDER: &str = "an unidentified sender";
 /// `assignments_by_actor`, re-used rather than re-derived). There is no argument
 /// anywhere that widens it, and no side or world arm at all.
 fn viewable_holders(ctx: &Ctx<'_>, actor: ObjId) -> Vec<PrincipalId> {
+    // ---- E7c11: B0 (the proxy DRIVING ingress; 10b §3.10 deviation (h)) ----
+    // **A proxy driver reads the NPC's picture and ONLY the NPC's** (T12:
+    // "exposes only that NPC station's observer projection"). The substitution
+    // is total — the driver's own character drops out of the roster while the
+    // seat is live — and it is NARROWED to the seat's own unit rather than every
+    // unit the NPC is billeted on, which is the "not a control channel but
+    // reachable through a station" act T11 names. Cut 10's own refutation of
+    // K12 ("a proxy driver today perceives nothing of the unit") is what this
+    // closes; without it `+fire <contact>` has no contact to name.
+    if let Some(drive) = mush_sim::proxy_drive_of(ctx.w, actor) {
+        let mut holders = vec![
+            PrincipalId::Object { id: drive.npc },
+            PrincipalId::Object { id: drive.unit },
+        ];
+        holders.sort();
+        holders.dedup();
+        return holders;
+    }
     let mut holders = vec![PrincipalId::Object { id: actor }];
     if let Some(state) = ctx.w.module_state::<mush_sim::SpatialState>()
         && let Some(units) = state.derived.assignments_by_actor.get(&actor)
@@ -298,7 +316,16 @@ fn cmd_contact(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 /// Cut 7 records **no authority relation**: an order is a message, and who a
 /// unit *obeys* is cut 9's command relation, one predicate away from here.
 fn may_address(ctx: &Ctx<'_>, actor: ObjId, recipient: ObjId) -> bool {
-    if actor == recipient || is_admin(ctx) {
+    // **E7c11 B0, deviation (h) — the order-authority half of the ingress.**
+    // `actor` is the character that TYPED; `acting` is the actor whose reach
+    // answers. For a proxy driver they differ, and the narrowing is real in both
+    // directions: the roster is the seat's own `[npc, unit]` (never the NPC's
+    // other billets — `viewable_holders`' proxy arm), and locality is the NPC's
+    // place, not the absent character's room. Without the ingress `+order` from
+    // a seat was inert; with it and without this narrowing it would be exactly
+    // the unrestricted "reachable through a station" act T11 forbids.
+    let acting = mush_sim::driving_actor(ctx.w, actor);
+    if actor == recipient || acting == recipient || is_admin(ctx) {
         return true;
     }
     if viewable_holders(ctx, actor).contains(&PrincipalId::Object { id: recipient }) {
@@ -308,7 +335,7 @@ fn may_address(ctx: &Ctx<'_>, actor: ObjId, recipient: ObjId) -> bool {
         return false;
     };
     match (
-        crate::context::place_of(state, ctx.w, actor),
+        crate::context::place_of(state, ctx.w, acting),
         crate::context::place_of(state, ctx.w, recipient),
     ) {
         (Some(here), Some(there)) => here == there,
@@ -384,20 +411,30 @@ fn cmd_order(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     // object in the world and a match error for one that did not exist: an
     // existence-and-identity oracle over the whole dbref space, on a tactical
     // verb. Both arms now render the SAME line, byte for byte.
+    // **E7c11 B0 (deviation (h)).** An order issued from a proxy seat is the
+    // NPC's: it is the NPC that is identified to the recipient, the NPC's
+    // reachability that gates the address, and the NPC's revision series the
+    // envelope joins. The account is not IC and never appears in the envelope
+    // (T12/T13); its attribution lives in cut 10's `SeatAudit`.
+    let issuer = mush_sim::driving_actor(ctx.w, ctx.actor);
     let resolved = match_object(ctx.w, ctx.actor, ctx.args.lhs()).ok();
     let Some(recipient) = resolved.filter(|id| may_address(ctx, ctx.actor, *id)) else {
         info(ctx, NO_SUCH_CONTACT);
         return Ok(());
     };
-    if recipient == ctx.actor {
+    if recipient == issuer || recipient == ctx.actor {
         return Err(CmdError::msg("You cannot send yourself an order."));
     }
     let body = rhs(ctx, "+order <recipient>=<order>")?;
     let at = now(ctx);
-    let issuer = ctx.actor;
     let contact = if report_switch {
         let wanted = body.trim().to_lowercase();
-        let holders = viewable_holders(ctx, issuer);
+        // **E7c11 B0.** Keyed on the TYPING actor, so a proxy driver's `/report`
+        // picks from exactly the seat's own narrowed picture (`viewable_holders`'
+        // proxy arm) — the same set `+contacts` renders them. Passing `issuer`
+        // (the NPC) here would widen it to every unit the NPC is billeted on,
+        // which is wider than the seat and wider than what the driver can see.
+        let holders = viewable_holders(ctx, ctx.actor);
         let Some(row) = ledger(ctx).and_then(|ledger| {
             holder_rows(ledger, &holders)
                 .into_iter()

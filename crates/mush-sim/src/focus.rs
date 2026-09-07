@@ -234,6 +234,184 @@ impl FocusState {
     }
 }
 
+// ---- E7c11: B0 (the proxy DRIVING ingress, and T11's guardrail) ----
+
+/// One live OOC **proxy drive**: the account, the character actually typing, the
+/// NPC that account directs, and the seat that authorises it.
+///
+/// Cut 10 shipped the seat's consent, attribution, narrowing, gate and give-back
+/// but **not its driving ingress**: [`ActiveFocus`] for a proxy seat carries
+/// `actor = npc`, so `FocusState::focus_of_actor(driver)` answered `None` and
+/// every station-gated verb the driver typed refused with "you hold no focused
+/// station". The seat was undrivable. This is the missing bind.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProxyDrive {
+    /// The account whose one foreground focus this drive consumes (T12).
+    pub account: AccountId,
+    /// The human character typing the command. It never moves and never acts
+    /// (T13); it is only the identity the ingress resolves *from*.
+    pub driver: ObjId,
+    /// The NPC the account directs — the actor every downstream authority check
+    /// reads (T16: the human adds judgment, never an absent character's stats).
+    pub npc: ObjId,
+    /// The unit the seat is on.
+    pub unit: ObjId,
+    /// The station the seat is on.
+    pub station: StationId,
+}
+
+/// The live proxy drive `actor` is typing through, if any.
+///
+/// **Fails closed on every unknown.** An unwired [`AccountOracle`], an unmapped
+/// character, an account with no foreground focus, a focus that is not a proxy
+/// seat, or a focus whose `actor` *is* the caller (an NPC acting for itself, or
+/// a staged submit under the NPC) all answer `None` — which leaves the caller on
+/// exactly the pre-cut-11 path.
+///
+/// It is **idempotent by construction**: `proxy_drive_of(w, npc)` is `None`
+/// (an NPC maps to no account), so [`driving_actor`] is a fixed point after one
+/// application and no chain of seats can hop from one NPC to another.
+#[must_use]
+pub fn proxy_drive_of(world: &mush_core::World, actor: ObjId) -> Option<ProxyDrive> {
+    let account = world.module_state::<AccountOracle>()?.account_of(actor)?;
+    let focus = world
+        .module_state::<FocusState>()?
+        .focus_of_account(account)?;
+    (focus.proxy && focus.actor != actor).then(|| ProxyDrive {
+        account,
+        driver: actor,
+        npc: focus.actor,
+        unit: focus.unit,
+        station: focus.station.clone(),
+    })
+}
+
+/// **The driving ingress** (E7 cut 11 B0; T16).
+///
+/// The in-world actor whose billet, focused station, published `ChannelGrant`
+/// and held contacts a station-gated command acts *through*. For an ordinary
+/// player this is `actor` itself; for a proxy driver it is the NPC.
+///
+/// **Authority is not widened.** Nothing here mints, publishes or copies a
+/// grant: the NPC's own `ChannelGrant` — narrowed to the seat's channels by
+/// `links::desired_links` — remains the only authority, so a driver who takes a
+/// `movement`-only seat can steer and cannot fire, and a driver with no live
+/// seat resolves to themselves and is refused exactly as before.
+#[must_use]
+pub fn driving_actor(world: &mush_core::World, actor: ObjId) -> ObjId {
+    proxy_drive_of(world, actor).map_or(actor, |drive| drive.npc)
+}
+
+/// T11's nine acts a proxy seat **never** confers.
+///
+/// > "Human-directed NPC control grants tactical discretion, not title,
+/// > administration or an unrestricted possession verb. It does not by default
+/// > permit asset transfer or abandonment, scuttling, fallback changes,
+/// > loadout/crew mutation, organization spending, surrender of unrelated
+/// > assets, departure from the authorized operation, or assumption of another
+/// > station." — doc 10 §19 T11
+///
+/// Six of the nine are refused by *inertness*: they are economy, org and staff
+/// verbs keyed on `ctx.actor`, which the ingress deliberately never rewrites, so
+/// a driver's own authority over them is byte-identical before and after
+/// activation. The remaining three ride the station lane the ingress opens, and
+/// [`seat_restriction`] refuses them explicitly.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum ProxyAct {
+    /// Moving title in an asset (E4b2 `@claim/transfer`, a market sale).
+    AssetTransfer,
+    /// Abandoning an asset (`AssetLifecycle::Abandoned`).
+    Abandonment,
+    /// Destroying the unit or its cargo deliberately.
+    Scuttling,
+    /// Re-declaring a station's fallback controller (`@station/fallback`).
+    FallbackChange,
+    /// Mutating the unit's loadout or crew roster (`@crew/*`).
+    LoadoutOrCrew,
+    /// Spending the commanding organization's money.
+    OrganizationSpending,
+    /// Surrendering an asset the operation does not cover.
+    UnrelatedSurrender,
+    /// Taking the unit out of the authorized operation (`@journey/depart`,
+    /// `@journey/divert`).
+    OperationDeparture,
+    /// Assuming another station (`+focus` onto a different billet).
+    StationAssumption,
+}
+
+impl ProxyAct {
+    /// Every act, in declaration order — the closed vocabulary a test enumerates.
+    pub const ALL: [ProxyAct; 9] = [
+        ProxyAct::AssetTransfer,
+        ProxyAct::Abandonment,
+        ProxyAct::Scuttling,
+        ProxyAct::FallbackChange,
+        ProxyAct::LoadoutOrCrew,
+        ProxyAct::OrganizationSpending,
+        ProxyAct::UnrelatedSurrender,
+        ProxyAct::OperationDeparture,
+        ProxyAct::StationAssumption,
+    ];
+
+    /// The stable token this act is named by in a refusal and in a test name.
+    #[must_use]
+    pub const fn token(self) -> &'static str {
+        match self {
+            ProxyAct::AssetTransfer => "asset transfer",
+            ProxyAct::Abandonment => "abandonment",
+            ProxyAct::Scuttling => "scuttling",
+            ProxyAct::FallbackChange => "a fallback change",
+            ProxyAct::LoadoutOrCrew => "a loadout or crew change",
+            ProxyAct::OrganizationSpending => "organization spending",
+            ProxyAct::UnrelatedSurrender => "surrender of an unrelated asset",
+            ProxyAct::OperationDeparture => "departure from the operation",
+            ProxyAct::StationAssumption => "assumption of another station",
+        }
+    }
+
+    /// Whether this act is refused by [`seat_restriction`] itself rather than by
+    /// the driver's own (unchanged) authority. The three are exactly the acts
+    /// that ride the station lane B0's ingress opens.
+    #[must_use]
+    pub const fn is_guarded(self) -> bool {
+        matches!(
+            self,
+            ProxyAct::FallbackChange | ProxyAct::OperationDeparture | ProxyAct::StationAssumption
+        )
+    }
+}
+
+/// **T11's guardrail** (E7 cut 11 B0, deviation (h)).
+///
+/// `Err(line)` when `actor` is driving a proxy seat right now: a seat is
+/// tactical discretion and nothing else. `Ok(())` for everybody else — an
+/// ordinary billet-holder, staff at their own console, an NPC acting for itself
+/// — so the predicate narrows the *proxy* and changes nothing for anyone else.
+///
+/// It lives in `mush-sim` (never `mush-campaign`) because `mush-propagation` and
+/// `mush-sim` itself are its callers and `mush-campaign` depends on `mush-sim`:
+/// putting it in the campaign crate is the dependency cycle 10b §3.10 deviation
+/// (c) recorded.
+///
+/// # Errors
+///
+/// The player-facing refusal, naming the act and the exit (`+seat/leave`).
+pub fn seat_restriction(
+    world: &mush_core::World,
+    actor: ObjId,
+    act: ProxyAct,
+) -> Result<(), String> {
+    let Some(drive) = proxy_drive_of(world, actor) else {
+        return Ok(());
+    };
+    Err(format!(
+        "A seat grants tactical discretion, not {}: you are directing another crew member on \
+         `{}`. +seat/leave first.",
+        act.token(),
+        drive.station
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
