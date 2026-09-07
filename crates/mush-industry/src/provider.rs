@@ -379,6 +379,37 @@ fn endpoint_field(
         })
 }
 
+/// A **required** endpoint carried as an integer — the shape `project_offer`
+/// declares for `source` and `destination`, and the shape `@wo/draft` stages.
+///
+/// ---- E7r1 fold Z4: `@wo/draft` never resolved on a real server ----
+///
+/// Found by driving Z2's rung, not on the verify's list. `IndustryVerb::WoDraft`'s
+/// projection declares `integer("destination", …)` and the command stages a JSON
+/// **number**, while [`endpoint_field`] reads through [`text_field`]'s
+/// `Value::as_str` — so the prepare answered *"an industry action needs a
+/// destination"* on every submission that actually went through
+/// `resolve_legal_action`. Nothing caught it because every shipped test builds a
+/// `WorkOrder` by hand or stages a submission it never resolves. `source` was
+/// already read numerically by [`optional_endpoint`]; this is its required twin, so
+/// the declaration, the staging and the read are one shape.
+fn required_endpoint(
+    parameters: &serde_json::Map<String, Value>,
+    key: &str,
+) -> Result<EndpointRef, ActionError> {
+    parameters
+        .get(key)
+        .and_then(Value::as_u64)
+        .filter(|id| *id != 0)
+        .map(|id| EndpointRef(VaultId(id)))
+        .ok_or_else(|| {
+            error(
+                ActionErrorCode::InvalidRequest,
+                format!("an industry action needs an endpoint for {key}"),
+            )
+        })
+}
+
 fn work_order_field(
     parameters: &serde_json::Map<String, Value>,
     key: &str,
@@ -741,6 +772,52 @@ pub fn administrable_claims(
     out
 }
 
+/// **This actor's orders that are holding production resources with no live budget
+/// hold** (independent verify fold, D4) — the delivery offer's server-authored
+/// refusal list, rendered as decimal strings so it compares against the same
+/// `order` text the submission carries.
+///
+/// It runs where a world exists and the submitter does not: inside `project_offer`.
+/// `scan_all_claims`' bounded-page shape, filtered to the requester so one player's
+/// projection never walks another's book, and truncated at
+/// [`crate::money::MAX_UNFUNDED_CHOICES`].
+#[must_use]
+fn unfunded_orders(engine: &Engine, families: &IndustryFamilies, actor: ObjId) -> Vec<String> {
+    let requester = PrincipalId::Object(actor);
+    let state = engine.action_state();
+    let mut out: Vec<String> = Vec::new();
+    let mut cursor: Option<String> = None;
+    let mut pages = 0;
+    loop {
+        if pages >= crate::record::MAX_LIST_PAGES || out.len() >= crate::money::MAX_UNFUNDED_CHOICES
+        {
+            break;
+        }
+        pages += 1;
+        let Ok(page) = state.scan_family(
+            &families.work_orders,
+            cursor.as_deref(),
+            crate::record::INDUSTRY_PAGE,
+        ) else {
+            return out;
+        };
+        for entry in page.entries() {
+            let order = entry.value();
+            if order.requester() == &requester
+                && crate::money::budget_missing_in(&engine.world, order)
+                && out.len() < crate::money::MAX_UNFUNDED_CHOICES
+            {
+                out.push(order.id().0.to_string());
+            }
+        }
+        match page.next_after().map(ToString::to_string) {
+            Some(next) => cursor = Some(next),
+            None => break,
+        }
+    }
+    out
+}
+
 /// The transferable claims a non-staff actor may move the **holder** of: those
 /// it holds or `acts_for` the holder of (E7c3 verify fold C4). The authority
 /// half stays E4's `AssetOp::TransferTitle`, posted by the command; this gate
@@ -981,6 +1058,31 @@ impl ActionProvider for IndustryProvider {
                 if self.verb == IndustryVerb::WoRestamp {
                     parameters.push(text("policy", 64)?);
                 }
+                // ---- E7r1 fold Z2: the SUBMIT ingress declares the hold ----
+                //
+                // Found by the fold's own grounding, not on the verify's list, and it
+                // is why B15's "unusable by construction" is only half the story: a
+                // command's submission takes the SAME route as a direct offer
+                // (`Ctx::submit_authoritative` -> `command_offer_submission` ->
+                // `resolve_legal_action`), and `ProjectedParameterSchema::validate`
+                // refuses a supplied key the projection does not declare. `@wo/submit`
+                // stages `{"order":…, "hold":…}` against a projection that declared
+                // only `order`, so on a real server EVERY `@wo/submit` was refused
+                // `InvalidParameters` before it reached the provider — R1's whole
+                // money leg was unreachable outside the tests, which stage the
+                // submission and never resolve it.
+                //
+                // Declaring it makes the verb work. It does NOT make the offer route
+                // a free-production hole, because the id is not the authority:
+                // `money::live_hold` finds the reservation **by purpose**, so a forged
+                // id records a `HoldId` that no hold answers to, `money::budget_missing`
+                // is then true for that order for ever, `wo_deliver` refuses it
+                // through `money::UNFUNDED_ORDERS` below, and the sweep pages it. The
+                // prepare's `hold != 0` check stays exactly what it always was — a
+                // shape assertion — and now says so.
+                if self.verb == IndustryVerb::WoSubmit {
+                    parameters.push(integer("hold", 0, i64::MAX)?);
+                }
             }
             IndustryVerb::WoAdvance => {
                 // The production advance is **not** player-offered: it enters only
@@ -1013,11 +1115,28 @@ impl ActionProvider for IndustryProvider {
                 )
             })?;
         let (label, help) = self.verb.label();
+        // ---- E7r1 fold D4: the delivery offer's unfunded list ----
+        //
+        // Server-authored, computed HERE because this is the only place on the
+        // prepared path that holds a world, and unforgeable because
+        // `merge_parameters` refuses a submitted key that collides with a fixed one.
+        // `wo_deliver` refuses any order it names, so a direct offer submission can no
+        // longer materialise output for an order whose budget reservation vanished —
+        // the hole R1's own comment believed the `hold != 0` check had closed.
+        let mut fixed = json!({ "now": engine.world.world_ic_now() });
+        if self.verb == IndustryVerb::WoDeliver
+            && let Some(map) = fixed.as_object_mut()
+        {
+            map.insert(
+                crate::money::UNFUNDED_ORDERS.to_owned(),
+                json!(unfunded_orders(engine, &self.families, actor)),
+            );
+        }
         Ok(Some(mush_core::ProviderOfferDraft {
             // The IC stamp rides the offer's FIXED parameters, so preparation
             // never reaches for a clock it does not have and two replays of one
             // request stamp the identical marker.
-            fixed_parameters: json!({ "now": engine.world.world_ic_now() }),
+            fixed_parameters: fixed,
             parameters: mush_core::ProjectedParameterSchema::new(parameters).map_err(|_| {
                 error(
                     ActionErrorCode::Integrity,
@@ -1575,7 +1694,8 @@ impl IndustryProvider {
         let account = AccountId(u64_field(parameters, "account", u64::MAX)?);
         let source = optional_endpoint(parameters, "source")?;
         let destination = DeliveryTarget::Endpoint {
-            endpoint: endpoint_field(parameters, "destination")?,
+            // Z4: read as the integer it is declared and staged as, never as text.
+            endpoint: required_endpoint(parameters, "destination")?,
         };
         let beneficiary = principal_field(parameters, "beneficiary")?;
         let pinned: PinnedRecipe = serde_json::from_str(&text_field(parameters, "pinned")?)
@@ -1635,9 +1755,25 @@ impl IndustryProvider {
         // submits, and passes the placed `HoldId` here. A prepare has no world and
         // cannot check that the id is live — the authority on that is
         // `money::live_hold`, found by purpose, which the sweep arm and `@wo/deliver`
-        // both read — but it CAN refuse a submission that names no hold at all, and
-        // that is what keeps the direct-offer ingress from acquiring resources for
-        // free. The refusal is `WO_REFUSED`, byte-identical to an unknown order.
+        // both read. This check is therefore a **shape assertion**, not the ingress
+        // guard, and the fold says so rather than leaving the old sentence
+        // (*"that is what keeps the direct-offer ingress from acquiring resources for
+        // free"*) to be believed (independent verify fold, B15).
+        //
+        // What actually closes the offer route is the **parameter schema**:
+        // `ProjectedParameterSchema::validate` refuses any supplied parameter a
+        // projection does not declare, and `IndustryVerb::WoSubmit`'s projection
+        // declares only `order` — so an offer-route submission can never carry
+        // `hold` at all, always reads 0 here, and always refuses. The corollary,
+        // which nothing recorded: `WoSubmit`'s offer projection is **unusable by
+        // construction**, and an `OfferRouteTable` entry naming it offers an action
+        // that can only ever refuse. If the ingress is ever opened, either project
+        // `hold` and bind it to the purpose in a guard that HAS a world, or have the
+        // command carry the **purpose** rather than the id. `WoDeliver`'s own single
+        // `order` parameter WAS enough to invoke it, which is why the delivery arm
+        // grew `money::UNFUNDED_ORDERS` in the same fold.
+        //
+        // The refusal is `WO_REFUSED`, byte-identical to an unknown order.
         let hold = u64_field(parameters, "hold", u64::MAX).unwrap_or(0);
         if hold == 0 {
             return Err(error(ActionErrorCode::ProviderRejected, WO_REFUSED));
@@ -1834,6 +1970,36 @@ impl IndustryProvider {
         data: &mut BTreeMap<String, Value>,
     ) -> Result<String, ActionError> {
         let id = work_order_field(parameters, "order")?;
+        // ---- E7r1 fold: D4 — the money attestation on the DELIVERY ingress ----
+        //
+        // `wo_deliver` is a prepare: no `&World`, no `Ctx`, no `EconomyStore`, so it
+        // cannot read a hold. Before the fold its whole money story was that nobody
+        // had thought about it — `IndustryVerb::WoDeliver`'s offer projection declares
+        // exactly `order`, which is all this function needs, so an offer-route
+        // invocation consumed every material reservation and materialised the output
+        // lot with no money check at all: production for free on precisely the ingress
+        // R1 guarded on the submit side.
+        //
+        // A *supplied* parameter cannot close it: a command's submission and a direct
+        // offer submission take the same route through `resolve_legal_action`, so an
+        // attestation the command sets is one a hand-built submission sets too. The
+        // gate is therefore `project_offer`'s **fixed** parameter
+        // `money::UNFUNDED_ORDERS`, authored server-side where a world exists and
+        // protected by `merge_parameters`, which refuses a submitted key colliding
+        // with a fixed one. The refusal is `WO_REFUSED`, byte-identical to an unknown
+        // order, so it discloses nothing a stranger did not already type.
+        if parameters
+            .get(crate::money::UNFUNDED_ORDERS)
+            .and_then(Value::as_array)
+            .is_some_and(|unfunded| {
+                unfunded
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .any(|named| named == id.0.to_string())
+            })
+        {
+            return Err(error(ActionErrorCode::ProviderRejected, WO_REFUSED));
+        }
         let order = self
             .families
             .work_order(txn, id)
@@ -1869,7 +2035,8 @@ impl IndustryProvider {
                 .map_err(|source| refuse(&source))?;
             data.insert("order".to_owned(), json!(id.to_string()));
             return Ok(format!(
-                "{id} was started on an earlier world-time generation and is paused;                  `@wo/restamp {id}` re-anchors it and resumes production."
+                "{id} was started on an earlier world-time generation and is paused; \
+                 `@wo/restamp {id}` re-anchors it and resumes production."
             ));
         }
         if !order
@@ -2102,6 +2269,53 @@ impl IndustryProvider {
             WorkOrderState::Running | WorkOrderState::Interrupted { .. } => {}
             _ => return Err(error(ActionErrorCode::ProviderRejected, WO_REFUSED)),
         }
+        // ---- E7r1 fold Z3: the MATERIAL reservations are re-anchored too ----
+        //
+        // Also found by the fold's own grounding while driving C2 end to end, and it
+        // is what kept `@wo/restamp` from being an exit even after the schedule stamp
+        // was rewritten: `mush_inventory::reserve` stamps
+        // `reservation_deadline(now)` with `now`'s generation, and
+        // `ReservationBook::checked_consume` runs `require_future(expires, now)`,
+        // whose `ClockStamp::checked_cmp` refuses two **incomparable** generations
+        // outright. So an order whose recipe has inputs met
+        // `"reservation deadline clock mismatch: WorldIc { generation: 1 } versus
+        // WorldIc { generation: 2 }"` on the very next delivery — a rate change
+        // bricked it one layer below the pause.
+        //
+        // The E-side adapter is release-then-reserve inside this same bundle, using
+        // the seams that already exist: `release` takes no clock, and `reserve`
+        // re-derives the SAME `ReservationId` from the order's holder and resource,
+        // so `order.reservations()` needs no edit and the amount stays the recipe's
+        // own. Contention is re-run by `checked_hold` against the freed stock, so a
+        // restamp that can no longer be funded in materials refuses honestly rather
+        // than resuming an order that cannot deliver. The capacity slot needs no
+        // re-anchor: `release_slot` takes no clock at all.
+        let holder = wo_holder(id).map_err(|source| refuse(&source))?;
+        if !order.pinned().inputs().is_empty()
+            && let Some(source) = order.material_source()
+        {
+            for line in order.pinned().inputs() {
+                let resource = mush_inventory::pool_resource(source, line.commodity())
+                    .map_err(|source| error(ActionErrorCode::Integrity, source.to_string()))?;
+                let rid = ReservationId::derive(&holder, &resource)
+                    .map_err(|_| error(ActionErrorCode::Integrity, WO_REFUSED))?;
+                let Some(record) = self
+                    .families
+                    .inventory
+                    .reservation(txn, source, line.commodity(), rid)
+                    .map_err(|error| refuse(&IndustryError::Inventory(error)))?
+                else {
+                    continue;
+                };
+                if record.state() != mush_core::ReservationState::Held {
+                    continue;
+                }
+                self.families
+                    .inventory
+                    .renew(txn, source, line.commodity(), rid, record.revision(), now)
+                    .map_err(|error| refuse(&IndustryError::Inventory(error)))?;
+            }
+        }
         let schedule_id = production_schedule_id(id)?;
         let prior = txn
             .get(&self.families.schedules, &schedule_id)
@@ -2145,15 +2359,53 @@ impl IndustryProvider {
             txn.insert(&self.families.schedules, &schedule_id, restamped)
         }
         .map_err(|_| error(ActionErrorCode::Integrity, WO_REFUSED))?;
-        // Resume an interrupted order to Running.
-        if *order.state() != WorkOrderState::Running {
-            let next = order
-                .with_state(WorkOrderState::Running)
-                .map_err(|source| error(ActionErrorCode::Integrity, source.to_string()))?;
-            self.families
-                .put_work_order(txn, order.revision(), next)
-                .map_err(|source| refuse(&source))?;
-        }
+        // ---- E7r1 fold: C2 — the restamp REWRITES the stamp the pause reads ----
+        //
+        // `stale_generation` compares `order.schedule().started().clock` — the stamp
+        // on the **`WorkOrder` record's own `ProductionSchedule`** — against `now`.
+        // Its single writer in the tree is `open_schedule`'s
+        // `ProductionSchedule::new(.., now, ..)`, called only from `wo_submit` via
+        // `order.acquired(..)`. Before the fold this arm rebuilt the kernel's
+        // `DurableSchedule` and then only `with_state(Running)`, and `with_state`
+        // clones the record — schedule included — so the predicate was still true on
+        // the very next `@wo/deliver` and the order re-paused: restamp, deliver,
+        // restamp, deliver, for ever, with its budget hold, its material reservations
+        // and its facility slot held the whole time and nothing paging, because
+        // `Interrupted` holds resources and is not terminal. One `@tacsim/time rate=`
+        // bricked every in-flight order, and §15.1 row 8's declared exit did not
+        // exist.
+        //
+        // The predicate is evaluated **per attempt** over an input no other verb
+        // rewrites, so it is a permanent filter unless its exit rewrites that input.
+        // This is that rewrite: a fresh `ProductionSchedule` at `now`'s clock,
+        // carrying the schedule's own `progress_units()` (the fifth argument, which
+        // is exactly what preserves production progress), written back through
+        // `acquired` under the checked revision in the same bundle as the
+        // `DurableSchedule` replace. No field is added and no wire changes.
+        let reanchored = match order.schedule() {
+            Some(schedule) => Some(
+                ProductionSchedule::new(
+                    schedule.schedule(),
+                    now.clone(),
+                    schedule.clock_policy().clone(),
+                    schedule.total_units(),
+                    schedule.progress_units(),
+                )
+                .map_err(|source| error(ActionErrorCode::Integrity, source.to_string()))?,
+            ),
+            None => None,
+        };
+        let next = order
+            .acquired(
+                order.holds().to_vec(),
+                order.reservations().to_vec(),
+                reanchored,
+                WorkOrderState::Running,
+            )
+            .map_err(|source| error(ActionErrorCode::Integrity, source.to_string()))?;
+        self.families
+            .put_work_order(txn, order.revision(), next)
+            .map_err(|source| refuse(&source))?;
         data.insert("order".to_owned(), json!(id.to_string()));
         Ok(format!("Restamped {id} to the current generation."))
     }

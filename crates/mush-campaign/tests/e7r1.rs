@@ -185,11 +185,32 @@ struct Fx {
     pool: AccountId,
     /// The provider's hulls, in id order.
     hulls: Vec<ObjId>,
+    /// The formation every accessible hull is a member of (C7's repair).
+    node: mush_campaign::FormationId,
+}
+
+/// **Make one hull genuinely accessible and operational** (C7): bound as a spatial
+/// participant, placed in the domain, and a member of a formation — the three facts
+/// `mush_campaign::is_accessible_operational` reads beyond title and encumbrance.
+fn place_and_form(tw: &mut TestWorld, hull: ObjId, node: mush_campaign::FormationId) {
+    tw.world_mut()
+        .attach_behavior(
+            hull,
+            mush_core::BehaviorId::new("sim.participant").expect("well-formed"),
+            mush_core::BehaviorBinding {
+                schema_version: 1,
+                attached_by: GOD,
+                attached_at: 0,
+            },
+        )
+        .expect("bind the participant");
+    ok(tw, GOD, &format!("@spatial/place/domain #{}=0", hull.0));
+    ok(tw, GOD, &format!("@force/assign {node}=#{}", hull.0));
 }
 
 /// The whole fixture, through real commands: an instrument, a faucet, the provider's
 /// pool with `funds` in it, the two applicants' accounts, and `hulls` hulls titled to
-/// the provider.
+/// the provider — **placed and formed up, and this time actually so** (C7).
 fn scene(
     cfg_of: impl Fn(AccountId) -> RecoveryConfig,
     funds: i64,
@@ -224,8 +245,48 @@ fn scene(
     if funds > 0 {
         ok(&mut tw, GOD, &format!("@econ/mint {faucet}={pool} {funds}"));
     }
-    // The provider's motor pool: hulls titled to the yard, placed and formed up, so
-    // they read as accessible operational assets.
+    // ---- C7 (independent verify fold): the fixture is REPAIRED ----
+    //
+    // This block used to comment that the hulls were *"placed and formed up, so they
+    // read as accessible operational assets"* while nothing placed them and nothing
+    // formed them up — they were created in `LIMBO` with only `@asset/title`, and
+    // every grant succeeded anyway, because `next_loaner` checked four of the seven
+    // conditions `accessible_operational_assets` checks. The comment was one of the
+    // twenty claims the fold corrects, and the repair is what makes the happy-path
+    // tests mean something: a hull the eligibility side would count is now a hull the
+    // grant side will lease, and `vf_c7a` drives the divergence deliberately.
+    let field = tw
+        .world_mut()
+        .create(ObjKind::Room, "Yard Field", GOD, None)
+        .expect("a field");
+    tw.world_mut()
+        .attach_behavior(
+            field,
+            mush_core::BehaviorId::new("sim.domain").expect("well-formed"),
+            mush_core::BehaviorBinding {
+                schema_version: 1,
+                attached_by: GOD,
+                attached_at: 0,
+            },
+        )
+        .expect("bind the domain host");
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@domain/create #{}=sim.passive", field.0),
+    );
+    ok(&mut tw, GOD, "@org/create Ironhold");
+    let scope = tw
+        .world()
+        .module_state::<mush_org::OrgStore>()
+        .expect("org")
+        .state()
+        .orgs()
+        .next()
+        .expect("one org")
+        .root_scope;
+    ok(&mut tw, GOD, &format!("@force/create lance={}", scope.0));
+    let node = camp(&tw).formations().map(|n| n.id).next().expect("a node");
     let mut fleet = Vec::new();
     for n in 0..hulls {
         let hull = tw
@@ -237,6 +298,7 @@ fn scene(
             GOD,
             &format!("@asset/title #{}=#{}", hull.0, yard.0),
         );
+        place_and_form(&mut tw, hull, node);
         fleet.push(hull);
     }
     (
@@ -247,6 +309,7 @@ fn scene(
             robin,
             pool,
             hulls: fleet,
+            node,
         },
     )
 }
@@ -724,8 +787,10 @@ fn e7r1_r3_returning_ends_the_lease_and_starts_the_cooldown() {
     // **The cooldown bites at GRANT time, not at queue time** (Q7A). Applying again
     // is allowed — the queue is not the gate — and the grant is refused, with the
     // reason visible to the applicant. This fixture's policy is `insurance = none`,
-    // so the cooldown is not waived; under `approved_operations` a loss inside the
-    // restrictions waives it and the same applicant qualifies at once.
+    // which is the NON-default word; it used to be the only reason this test was
+    // green, because the cooldown's whole branch was guarded on the policy word
+    // (independent verify fold, C6/B2). `insurance` now governs debt-versus-writeoff
+    // only, and `vf_c6a` runs this same assertion under **both** words.
     let status = ok(&mut tw, fx.pat, "@recovery/status");
     assert!(
         status.contains("cooldown runs to"),
@@ -779,4 +844,709 @@ fn e7r1_r3_a_system_payer_is_refused() {
         "a System lessor is refused by the economy's own contract gate"
     );
     assert_eq!(ledger_total(&tw), before, "and nothing moved");
+}
+
+// ---- E7 residue pass 1 independent verify fold ----
+
+/// The shipped default insurance word, which the fixture's `enabled` deliberately
+/// does not use.
+fn insured(pool: AccountId) -> RecoveryConfig {
+    RecoveryConfig {
+        insurance: SmolStr::new_static("approved_operations"),
+        ..enabled(pool)
+    }
+}
+
+/// **The cooldown bites under BOTH insurance words** (C6/B2; owner decision
+/// F4(i)(b)).
+///
+/// `eligible` guarded its whole cooldown branch on `!insures_approved_operations()`
+/// and `cooldown_until` returned `None` under the same word — while
+/// `"approved_operations"` is the default in `mush_config`, `ruleset-tacsim` **and**
+/// `mush_campaign::RecoveryConfig::default`. So on every shipped default
+/// `cooldown_days` was dead, `@recovery/status` rendered no cooldown, and the host
+/// nonetheless validated `cooldown_days >= 1` at boot for a value nothing read. The
+/// existing cooldown test is green only because the fixture picks the non-default
+/// word, so this one is parameterised over both and asserts the same three things
+/// each time: the refusal, the rendered cooldown, and an unmoved pool.
+#[test]
+fn vf_c6a_the_cooldown_bites_under_both_insurance_words() {
+    for (word, cfg_of) in [
+        ("none", enabled as fn(AccountId) -> RecoveryConfig),
+        (
+            "approved_operations",
+            insured as fn(AccountId) -> RecoveryConfig,
+        ),
+    ] {
+        let (mut tw, fx) = scene(cfg_of, 1_000, 2);
+        ok(&mut tw, fx.pat, "@recovery/apply");
+        fire(&mut tw);
+        assert!(
+            camp(&tw)
+                .recovery_grant(fx.pat)
+                .is_some_and(|g| g.is_live()),
+            "{word}: the first grant lands"
+        );
+        ok(&mut tw, fx.pat, "@recovery/return");
+        let status = ok(&mut tw, fx.pat, "@recovery/status");
+        assert!(
+            status.contains("cooldown runs to"),
+            "{word}: the cooldown is rendered to its own subject: {status}"
+        );
+        ok(&mut tw, fx.pat, "@recovery/apply");
+        let before = bal(&tw, fx.pool);
+        fire(&mut tw);
+        assert!(
+            camp(&tw)
+                .recovery_grant(fx.pat)
+                .is_some_and(|g| !g.is_live()),
+            "{word}: a cooled-down applicant is not re-granted"
+        );
+        assert_eq!(
+            bal(&tw, fx.pool),
+            before,
+            "{word}: and nothing was spent on them"
+        );
+        assert!(
+            ok(&mut tw, fx.pat, "@recovery/status").contains("cooldown"),
+            "{word}: and they are told why"
+        );
+    }
+}
+
+/// **Return-and-reapply churn draws no second stipend under the shipped default**
+/// (C6/B2's twelve-cycle drain, asserted as the fix).
+///
+/// The probe that found this ran twelve apply/grant/return cycles under
+/// `insurance = "approved_operations"` and took the pool 1 000 to 880 with no
+/// cooldown rendered at any point. Nothing minted — the ledger total held throughout
+/// — which is exactly why the C-lens conservation pins never saw it: what makes the
+/// churn a real denial of service is that a lease **returned inside its first period**
+/// never pays the one `upkeep_per_period` that `upkeep_template` would have credited
+/// back to the pool (see `vf_c14a`).
+#[test]
+fn vf_c6b_a_return_and_re_apply_inside_the_cooldown_draws_no_second_stipend() {
+    let (mut tw, fx) = scene(insured, 1_000, 2);
+    let start = bal(&tw, fx.pool);
+    let total = ledger_total(&tw);
+    let mut cycles = 0;
+    for _ in 0..12 {
+        let _ = tw.run(fx.pat, "@recovery/apply");
+        fire(&mut tw);
+        if camp(&tw)
+            .recovery_grant(fx.pat)
+            .is_some_and(|g| g.is_live())
+        {
+            cycles += 1;
+            ok(&mut tw, fx.pat, "@recovery/return");
+        }
+    }
+    assert_eq!(
+        cycles, 1,
+        "one applicant gets at most one loaner per cooldown"
+    );
+    assert_eq!(
+        bal(&tw, fx.pool),
+        start - 10,
+        "exactly one stipend left the pool, not twelve"
+    );
+    assert_eq!(ledger_total(&tw), total, "and nothing minted either way");
+}
+
+/// **Every configured recovery field has a live reader** (C6's config-honesty pin).
+///
+/// `config_ext::recovery_config` validates `cooldown_days >= 1` at boot. A validated
+/// field nothing reads is worse than an unvalidated one, because the operator is told
+/// their value was accepted. This drives the value all the way to the player-visible
+/// rendering under both words, so a future guard that makes it dead again fails here.
+#[test]
+fn vf_c6c_the_configured_cooldown_is_read_under_every_insurance_word_the_host_accepts() {
+    for word in ["none", "approved_operations"] {
+        let owned = SmolStr::new(word);
+        let cfg_of = move |pool: AccountId| RecoveryConfig {
+            insurance: owned.clone(),
+            cooldown_secs: 4_242,
+            ..enabled(pool)
+        };
+        let (mut tw, fx) = scene(cfg_of, 1_000, 2);
+        ok(&mut tw, fx.pat, "@recovery/apply");
+        fire(&mut tw);
+        ok(&mut tw, fx.pat, "@recovery/return");
+        let ended = camp(&tw)
+            .recovery_grant(fx.pat)
+            .and_then(mush_campaign::RecoveryGrant::ended_at)
+            .expect("the lease ended");
+        let status = ok(&mut tw, fx.pat, "@recovery/status");
+        assert!(
+            status.contains(&format!("cooldown runs to IC second {}", ended + 4_242)),
+            "{word}: the CONFIGURED cooldown is what the player is shown: {status}"
+        );
+    }
+}
+
+/// Bind one object to a spatial behaviour, the way the shared fixtures do.
+fn bind_behavior(tw: &mut TestWorld, obj: ObjId, behavior: &str) {
+    tw.world_mut()
+        .attach_behavior(
+            obj,
+            mush_core::BehaviorId::new(behavior).expect("well-formed"),
+            mush_core::BehaviorBinding {
+                schema_version: 1,
+                attached_by: GOD,
+                attached_at: 0,
+            },
+        )
+        .expect("bind");
+}
+
+/// **`next_loaner` skips an unplaced hull and an unformed hull, and the queue holds**
+/// (C7).
+///
+/// `accessible_operational_assets` — the **eligibility** side — requires titled,
+/// unfrozen, `Active`, unencumbered, **placed and not quarantined**, and
+/// **deployable** (formation membership). `next_loaner` — the **grant** side —
+/// checked only the first four while its own doc comment claimed *"the provider's own
+/// lowest-id accessible operational asset"*, so a hull the predicate would have called
+/// inaccessible was a valid loaner for a wiped-out player. The quarantined arm is the
+/// unplaced arm's sub-case: `SpatialState` records quarantine on an **unplaced**
+/// entry, so `is_placed` already answers false for it.
+///
+/// The assertion order matters: `accessible_operational_assets(yard) == 0` runs
+/// **first**, so the divergence is what is being measured and not an accident of the
+/// fixture.
+#[test]
+fn vf_c7a_next_loaner_skips_an_unplaced_and_an_unformed_hull_and_the_queue_holds() {
+    let (mut tw, fx) = scene(enabled, 1_000, 0);
+    let unplaced = tw
+        .world_mut()
+        .create(ObjKind::Thing, "Unplaced", fx.yard, Some(LIMBO))
+        .expect("a hull");
+    let unformed = tw
+        .world_mut()
+        .create(ObjKind::Thing, "Unformed", fx.yard, Some(LIMBO))
+        .expect("a hull");
+    for hull in [unplaced, unformed] {
+        ok(
+            &mut tw,
+            GOD,
+            &format!("@asset/title #{}=#{}", hull.0, fx.yard.0),
+        );
+    }
+    // The unformed one is placed but in no formation; the unplaced one is neither.
+    bind_behavior(&mut tw, unformed, "sim.participant");
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@spatial/place/domain #{}=0", unformed.0),
+    );
+
+    assert_eq!(
+        mush_campaign::accessible_operational_assets(tw.world(), fx.yard),
+        0,
+        "the eligibility side calls BOTH of them inaccessible"
+    );
+    assert!(
+        mush_campaign::next_loaner(tw.world(), &enabled(fx.pool)).is_none(),
+        "and so, now, does the grant side"
+    );
+    let before = bal(&tw, fx.pool);
+    ok(&mut tw, fx.pat, "@recovery/apply");
+    fire(&mut tw);
+    assert!(
+        camp(&tw).recovery_grant(fx.pat).is_none(),
+        "no defective hull was leased"
+    );
+    assert_eq!(camp(&tw).recovery_queue().len(), 1, "the queue HOLDS");
+    assert_eq!(bal(&tw, fx.pool), before, "and nothing was spent");
+}
+
+/// **A placed, formed hull IS granted** (C7's happy path, on the repaired fixture).
+#[test]
+fn vf_c7b_a_placed_and_formed_hull_is_granted() {
+    let (mut tw, fx) = scene(enabled, 1_000, 1);
+    assert_eq!(
+        mush_campaign::accessible_operational_assets(tw.world(), fx.yard),
+        1,
+        "the fixture's hull really is accessible now"
+    );
+    ok(&mut tw, fx.pat, "@recovery/apply");
+    fire(&mut tw);
+    assert_eq!(
+        camp(&tw)
+            .recovery_grant(fx.pat)
+            .map(mush_campaign::RecoveryGrant::loaner),
+        Some(fx.hulls[0])
+    );
+}
+
+/// **An applicant the provider cannot pay does not block the one behind them**
+/// (C10/B3; owner decision F5(a)).
+///
+/// `try_grant` returned `Held` for eight reasons, three of them per-applicant, and
+/// `sweep` read every one as provider-wide: it paged `recovery:provider` with a
+/// recommendation that fixed none of the three, then `break`. B3's probe queued a
+/// blocker with the highest object id ahead of an eligible applicant and fired five
+/// times; the eligible applicant was never granted, because the rotation's
+/// `position(|id| id.0 >= cursor).unwrap_or(0)` collapsed to the head of a
+/// **claim-ordered** queue and re-visited the blocker first on every fire, for ever.
+#[test]
+fn vf_c10a_an_applicant_the_provider_cannot_pay_does_not_block_the_one_behind_them() {
+    let (mut tw, fx) = scene(enabled, 1_000, 2);
+    // The blocker is spawned LAST, so it holds the highest object id — the shape that
+    // made `unwrap_or(0)` send the rotation back to the head — and never opens an
+    // account, so it is `ApplicantBlocked` and not `Ineligible`.
+    let blocker = tw.spawn_player("Blocker");
+    ok(&mut tw, blocker, "@recovery/apply");
+    ok(&mut tw, fx.robin, "@recovery/apply");
+    assert!(blocker.0 > fx.robin.0, "the blocker holds the higher id");
+
+    fire(&mut tw);
+
+    assert!(
+        camp(&tw).recovery_grant(fx.robin).is_some(),
+        "the applicant behind the blocker was granted on the SAME fire"
+    );
+    assert!(
+        camp(&tw).recovery_grant(blocker).is_none(),
+        "and the blocker was not"
+    );
+    assert_eq!(
+        camp(&tw).recovery_queue().waiting(),
+        vec![blocker],
+        "who keeps their claim-order place rather than being dropped"
+    );
+    // The refusal names THEM and the command that clears it, not the provider's pool.
+    let refusal = err(&mut tw, GOD, &format!("@recovery/grant #{}", blocker.0));
+    assert!(
+        refusal.contains(&format!("#{} cannot be granted", blocker.0))
+            && refusal.contains(&format!("@account/open #{}=gold", blocker.0)),
+        "the applicant is the subject and the exit is named: {refusal}"
+    );
+    assert!(
+        !refusal.contains("Add a hull the provider owns"),
+        "and staff are not handed advice that fixes nothing: {refusal}"
+    );
+    // ...and the exit really works.
+    ok(&mut tw, GOD, &format!("@account/open #{}=gold", blocker.0));
+    fire(&mut tw);
+    assert!(
+        camp(&tw).recovery_grant(blocker).is_some(),
+        "opening the account they were told to open grants them"
+    );
+}
+
+/// **A dry pool still stops the fire and pages the PROVIDER** (C10's other half: the
+/// split must not turn a genuinely provider-wide exhaustion into a per-applicant
+/// note).
+#[test]
+fn vf_c10b_a_dry_pool_still_stops_the_fire_and_pages_the_provider() {
+    let (mut tw, fx) = scene(enabled, 0, 2);
+    ok(&mut tw, fx.pat, "@recovery/apply");
+    ok(&mut tw, fx.robin, "@recovery/apply");
+    fire(&mut tw);
+    assert!(camp(&tw).recovery_grant(fx.pat).is_none());
+    assert!(camp(&tw).recovery_grant(fx.robin).is_none());
+    assert_eq!(camp(&tw).recovery_queue().len(), 2, "both keep their place");
+    let refusal = err(&mut tw, GOD, &format!("@recovery/grant #{}", fx.pat.0));
+    assert!(
+        refusal.contains("The provider cannot grant right now"),
+        "a genuinely provider-wide exhaustion still names the provider: {refusal}"
+    );
+    assert!(
+        !refusal.contains("cannot be granted right now"),
+        "and is not rendered as one applicant's problem: {refusal}"
+    );
+}
+
+/// **The rotation reaches the back of a claim-ordered queue whatever the object ids**
+/// (C10/B3, the `unwrap_or(0)` shape pinned directly).
+#[test]
+fn vf_c10c_the_rotation_reaches_the_back_of_a_claim_ordered_queue_whatever_the_object_ids() {
+    let (mut tw, fx) = scene(enabled, 10_000, 12);
+    // Claim order deliberately DESCENDING in object id, which is the arrangement no
+    // `id >= cursor` search can walk monotonically.
+    let mut applicants = Vec::new();
+    for n in 0..9 {
+        let who = tw.spawn_player(&format!("Late{n}"));
+        ok(&mut tw, GOD, &format!("@account/open #{}=gold", who.0));
+        applicants.push(who);
+    }
+    applicants.reverse();
+    applicants.push(fx.pat);
+    for who in &applicants {
+        ok(&mut tw, *who, "@recovery/apply");
+    }
+    assert_eq!(camp(&tw).recovery_queue().len(), 10);
+    fire(&mut tw);
+    fire(&mut tw);
+    let ungranted: Vec<ObjId> = applicants
+        .iter()
+        .copied()
+        .filter(|who| camp(&tw).recovery_grant(*who).is_none())
+        .collect();
+    assert!(
+        ungranted.is_empty(),
+        "two fires at a budget of {MAX_RECOVERY_PER_FIRE} reach all ten: {ungranted:?}"
+    );
+}
+
+/// **A lost grant document grants nothing twice** (D3; owner decision F6(a)).
+///
+/// `offer_lease` and the stipend `post` are pinned by the economy's `install_commit`;
+/// the three campaign documents are ordinary deferred writes. The crash shape is the
+/// probe's: the economy batch landed and the campaign namespace rolled back. Before
+/// the fix the next fire leased the **same hull** again and posted a **second**
+/// stipend, because the campaign mirror was the only marker and the stipend key was
+/// scoped to the IC second.
+#[test]
+fn vf_d3a_a_lost_grant_document_grants_nothing_twice() {
+    let (mut tw, fx) = scene(enabled, 1_000, 2);
+    ok(&mut tw, fx.pat, "@recovery/apply");
+    let mut pre: Kv = BTreeMap::new();
+    fold_into(&mut tw, &mut pre);
+    fire(&mut tw);
+    let first = camp(&tw)
+        .recovery_grant(fx.pat)
+        .cloned()
+        .expect("the tick granted");
+    assert_eq!(bal(&tw, fx.pool), 990, "one stipend");
+
+    // The tear: everything the fire wrote, except the campaign namespace, which is
+    // rolled back to its pre-grant contents.
+    let mut lost: Kv = {
+        let mut p = pre.clone();
+        fold_into(&mut tw, &mut p);
+        p
+    };
+    lost.insert(SmolStr::new_static("campaign"), pre["campaign"].clone());
+    reboot(&mut tw, &lost);
+    assert!(
+        camp(&tw).recovery_grant(fx.pat).is_none(),
+        "the mirror really is gone"
+    );
+    assert!(
+        snap(&tw)
+            .contract(mush_economy::ContractId(first.contract()))
+            .is_some(),
+        "and the economy's own record really did survive"
+    );
+
+    fire(&mut tw);
+    let second = camp(&tw)
+        .recovery_grant(fx.pat)
+        .cloned()
+        .expect("the mirror was rebuilt");
+    assert_eq!(
+        second.contract(),
+        first.contract(),
+        "ONE contract, reconciled — not a second lease"
+    );
+    assert_eq!(second.loaner(), first.loaner(), "and the same hull");
+    assert_eq!(bal(&tw, fx.pool), 990, "and NO second stipend");
+    let live: Vec<u64> = snap(&tw)
+        .contracts()
+        .filter(|c| !c.state.is_terminal())
+        .map(|c| c.id.0)
+        .collect();
+    assert_eq!(
+        live,
+        vec![first.contract()],
+        "one live contract in the world"
+    );
+}
+
+/// **A lost close document does not strand the hull** (D3's mirror image).
+///
+/// `end_lease` lands, `close_grant`'s two documents do not: the hull was out of the
+/// motor pool and the applicant `LiveLease`-refused for ever, because the campaign
+/// document was the only thing anybody asked. `next_loaner` now asks the economy too.
+#[test]
+fn vf_d3b_a_lost_close_document_does_not_strand_the_hull() {
+    let (mut tw, fx) = scene(enabled, 1_000, 1);
+    ok(&mut tw, fx.pat, "@recovery/apply");
+    fire(&mut tw);
+    let grant = camp(&tw).recovery_grant(fx.pat).cloned().expect("granted");
+    let mut pre: Kv = BTreeMap::new();
+    fold_into(&mut tw, &mut pre);
+
+    ok(&mut tw, fx.pat, "@recovery/return");
+    let mut lost: Kv = {
+        let mut p = pre.clone();
+        fold_into(&mut tw, &mut p);
+        p
+    };
+    lost.insert(SmolStr::new_static("campaign"), pre["campaign"].clone());
+    reboot(&mut tw, &lost);
+    assert!(
+        camp(&tw)
+            .recovery_grant(fx.pat)
+            .is_some_and(|g| g.is_live()),
+        "the stale mirror still says the lease is live"
+    );
+    assert_eq!(
+        mush_campaign::next_loaner(tw.world(), &enabled(fx.pool)),
+        Some(grant.loaner()),
+        "but the hull is back in the motor pool, because the MONEY fact says the \
+         lease ended"
+    );
+}
+
+/// **The recovery cursor survives a reboot with no live operations** (D6).
+///
+/// `recoverycmd::sweep` advances `store.recovery_cursor` in RAM; the only document
+/// carrying it is `campaign_meta`, written by `persist_meta` at the END of the tick —
+/// past the `ids.is_empty()` return and past the `if last.is_some()` guard, both
+/// driven by the **operations** rotation. A world with a recovery queue and no live
+/// operations is exactly the shape a recovery provider exists for and the shape a
+/// fresh deployment has.
+#[test]
+fn vf_d6a_the_recovery_cursor_survives_a_reboot_with_no_operations() {
+    let (mut tw, fx) = scene(enabled, 10_000, 12);
+    let mut applicants = vec![fx.pat, fx.robin];
+    for n in 0..7 {
+        let who = tw.spawn_player(&format!("Applicant{n}"));
+        ok(&mut tw, GOD, &format!("@account/open #{}=gold", who.0));
+        applicants.push(who);
+    }
+    for who in &applicants {
+        ok(&mut tw, *who, "@recovery/apply");
+    }
+    assert!(
+        camp(&tw).operation_ids().is_empty(),
+        "no live operations at all — the shape the cursor was lost in"
+    );
+    let mut kv: Kv = BTreeMap::new();
+    fold_into(&mut tw, &mut kv);
+
+    fire(&mut tw);
+    let persisted = tw.take_module_ops().iter().any(
+        |op| matches!(&op.op, ModuleWrite::JsonSet { key, .. } if key.as_str() == "campaign_meta"),
+    );
+    assert!(
+        persisted,
+        "the fire persisted `campaign_meta`, so the recovery cursor reached disk"
+    );
+}
+
+/// **An unaccepted grant expires and the hull returns to the motor pool** (D7).
+///
+/// `try_grant` completes at `offer_lease`; until the applicant runs
+/// `@contract/accept` no `Encumbrance::Lease` exists and the hull is held out of the
+/// pool by the grant document alone. Nothing aged that: the fourth arm walked only the
+/// **queue**, which a granted applicant has already left.
+#[test]
+fn vf_d7a_an_unaccepted_grant_expires_and_the_hull_returns_to_the_motor_pool() {
+    let (mut tw, fx) = scene(enabled, 1_000, 1);
+    ok(&mut tw, fx.pat, "@recovery/apply");
+    fire(&mut tw);
+    let grant = camp(&tw).recovery_grant(fx.pat).cloned().expect("granted");
+    assert!(
+        mush_campaign::next_loaner(tw.world(), &enabled(fx.pool)).is_none(),
+        "the only hull is out on the unaccepted offer"
+    );
+
+    // Past the TTL, on the ordinary cadence.
+    let then = tw.world().now() + mush_campaign::RECOVERY_ACCEPT_TTL_SECS + 1;
+    tw.set_now(then);
+    fire(&mut tw);
+
+    assert!(
+        snap(&tw)
+            .contract(mush_economy::ContractId(grant.contract()))
+            .is_some_and(|c| c.state.is_terminal()),
+        "the unaccepted lease was unwound"
+    );
+    // **Forgotten, not ended**: an offer nobody took must not leave an `ended_at`
+    // behind, or `cooldown_until` charges the applicant fourteen days for a hull they
+    // never had and the next fire drops them from the queue as `Cooldown`-ineligible.
+    let after = camp(&tw).recovery_grant(fx.pat).cloned();
+    assert!(
+        after
+            .as_ref()
+            .is_none_or(|g| g.contract() != grant.contract()),
+        "the expired grant is gone, not merely ended: {after:?}"
+    );
+    assert!(
+        !ok(&mut tw, fx.pat, "@recovery/status").contains("cooldown"),
+        "and no cooldown was charged for a loaner they never accepted"
+    );
+    // The hull is out of limbo: either back in the motor pool, or freshly offered to
+    // the same applicant on a NEW contract. Never stuck for ever, which is the defect.
+    let free = mush_campaign::next_loaner(tw.world(), &enabled(fx.pool)) == Some(grant.loaner());
+    let reoffered = after.is_some_and(|g| g.loaner() == grant.loaner() && g.is_live());
+    assert!(
+        free || reoffered,
+        "the hull is no longer permanently out of the motor pool"
+    );
+}
+
+/// **An ACCEPTED lease outlives the acceptance TTL** (D7's other arm: the TTL is
+/// about an offer nobody took, never about a loaner somebody is flying).
+#[test]
+fn vf_d7b_an_accepted_lease_outlives_the_acceptance_ttl() {
+    let (mut tw, fx) = scene(enabled, 1_000, 1);
+    ok(&mut tw, fx.pat, "@recovery/apply");
+    fire(&mut tw);
+    let grant = camp(&tw).recovery_grant(fx.pat).cloned().expect("granted");
+    ok(
+        &mut tw,
+        fx.pat,
+        &format!("@contract/accept {}", grant.contract()),
+    );
+    let then = tw.world().now() + mush_campaign::RECOVERY_ACCEPT_TTL_SECS + 1;
+    tw.set_now(then);
+    fire(&mut tw);
+    assert!(
+        camp(&tw)
+            .recovery_grant(fx.pat)
+            .is_some_and(|g| g.is_live()),
+        "an accepted loaner stays theirs until they return it"
+    );
+}
+
+/// **The recovery books are capped and evict the oldest CLOSED record** (B7 — cut
+/// 10's muster ring, one file over).
+///
+/// 10b §15.1 row 5 said *"three bounded whole-document exempt records"*;
+/// `MAX_RECOVERY_QUEUE` bounded only the queue, and a free player verb created one
+/// application and one grant per character who ever applied, with nothing ever
+/// deleting one.
+#[test]
+fn vf_b7a_the_recovery_books_are_capped_and_evict_the_oldest_closed_record() {
+    assert_eq!(mush_campaign::MAX_RETAINED_RECOVERY_RECORDS, 64);
+    let (mut tw, fx) = scene(enabled, 100_000, 1);
+    let scope = tw
+        .world()
+        .module_state::<mush_org::OrgStore>()
+        .expect("org")
+        .state()
+        .orgs()
+        .next()
+        .expect("one org")
+        .root_scope;
+    let mut node = fx.node;
+    let mut in_node = 1usize;
+    let mut applicants = Vec::new();
+    for n in 0..(mush_campaign::MAX_RETAINED_RECOVERY_RECORDS + 4) {
+        let who = tw.spawn_player(&format!("Churn{n}"));
+        ok(&mut tw, GOD, &format!("@account/open #{}=gold", who.0));
+        // Their own accessible hull, so `eligible` refuses them at grant time and the
+        // sweep's `Ineligible` arm CLOSES the application. A formation node caps its
+        // own membership, so the fixture opens another rather than overfilling one.
+        if in_node >= 32 {
+            ok(&mut tw, GOD, &format!("@force/create lance={}", scope.0));
+            node = camp(&tw)
+                .formations()
+                .map(|f| f.id)
+                .max_by_key(|f| f.0)
+                .expect("a fresh node");
+            in_node = 0;
+        }
+        let hull = tw
+            .world_mut()
+            .create(ObjKind::Thing, &format!("Own{n}"), who, Some(LIMBO))
+            .expect("a hull");
+        ok(
+            &mut tw,
+            GOD,
+            &format!("@asset/title #{}=#{}", hull.0, who.0),
+        );
+        place_and_form(&mut tw, hull, node);
+        in_node += 1;
+        applicants.push(who);
+    }
+    for who in &applicants {
+        ok(&mut tw, *who, "@recovery/apply");
+    }
+    for _ in 0..12 {
+        fire(&mut tw);
+    }
+    let kept = applicants
+        .iter()
+        .filter(|who| camp(&tw).recovery_application(**who).is_some())
+        .count();
+    assert!(
+        kept <= mush_campaign::MAX_RETAINED_RECOVERY_RECORDS,
+        "the closed-application book is bounded: {kept} kept"
+    );
+    assert!(kept > 0, "and it is a ring, not a purge");
+}
+
+/// **A store over the cap hydrates bounded** (B7's boot half: the growth cost
+/// boot-time RAM as well as disk, which is what cut 10 fixed for musters).
+#[test]
+fn vf_b7b_a_store_over_the_cap_hydrates_bounded() {
+    let (mut tw, _fx) = scene(enabled, 1_000, 1);
+    let mut kv: Kv = BTreeMap::new();
+    fold_into(&mut tw, &mut kv);
+    let entry = kv.entry(SmolStr::new_static("campaign")).or_default();
+    let over = mush_campaign::MAX_RETAINED_RECOVERY_RECORDS + 200;
+    for n in 1..=over {
+        let id = u32::try_from(n + 10_000).expect("fits");
+        entry.push((
+            SmolStr::new(format!("recovery_app:{id}")),
+            serde_json::json!({
+                "applicant": id, "claimed_at": 1, "tier": "scout",
+                "state": { "kind": "closed" }
+            }),
+        ));
+        entry.push((
+            SmolStr::new(format!("recovery_grant:{id}")),
+            serde_json::json!({
+                "applicant": id, "contract": u64::from(id), "loaner": id, "tier": "scout",
+                "granted_at": 1, "ended_at": 2
+            }),
+        ));
+    }
+    reboot(&mut tw, &kv);
+    let apps = (1..=over)
+        .filter(|n| {
+            camp(&tw)
+                .recovery_application(ObjId(u32::try_from(n + 10_000).expect("fits")))
+                .is_some()
+        })
+        .count();
+    let grants = camp(&tw).recovery_grants().count();
+    assert!(
+        apps <= mush_campaign::MAX_RETAINED_RECOVERY_RECORDS,
+        "closed applications hydrate bounded: {apps}"
+    );
+    assert!(
+        grants <= mush_campaign::MAX_RETAINED_RECOVERY_RECORDS,
+        "ended grants hydrate bounded: {grants}"
+    );
+}
+
+/// **A lease held past its first period returns its own stipend to the pool**
+/// (C14(c), against the refuted B16).
+///
+/// The pass's own reading — *"the pool is strictly one-way"* — is false:
+/// `upkeep_template` sets `credit_account: cfg.pool_account`, `try_grant` hands it to
+/// `offer_lease` as the `LeaseSpec.rent`, and the economy creates and sweeps it at
+/// activation. What is genuinely one-way is a lease **returned inside its first
+/// period, never accepted, or suspended** — which is why C6's churn and D7's
+/// unaccepted grant are real drains and not a missing replenishment mechanism.
+#[test]
+fn vf_c14a_a_lease_held_past_its_first_period_returns_its_own_stipend_to_the_pool() {
+    let (mut tw, fx) = scene(enabled, 1_000, 1);
+    let start = bal(&tw, fx.pool);
+    ok(&mut tw, fx.pat, "@recovery/apply");
+    fire(&mut tw);
+    let grant = camp(&tw).recovery_grant(fx.pat).cloned().expect("granted");
+    assert_eq!(bal(&tw, fx.pool), start - 10, "the stipend went out");
+
+    ok(
+        &mut tw,
+        fx.pat,
+        &format!("@contract/accept {}", grant.contract()),
+    );
+    // The rent obligation is on the campaign cadence; one period is one fire.
+    for _ in 0..3 {
+        fire(&mut tw);
+    }
+    assert_eq!(
+        bal(&tw, fx.pool),
+        start,
+        "one period's upkeep came back: the pool is NOT one-way"
+    );
 }

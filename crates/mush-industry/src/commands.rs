@@ -1188,9 +1188,20 @@ fn cmd_wo(
                                     format!("[staff] the budget was refused: {error}"),
                                 );
                             }
-                            return Err(CmdError::msg(
-                                "That account cannot fund that work order, so it stays drafted.",
-                            ));
+                            // D8/C4 (independent verify fold; owner decision F2(a)):
+                            // three different things used to be one sentence, and the
+                            // sentence blamed the player's wallet for all of them. A
+                            // doc-13 **transient** is a wait (W2's own wording, W-D1's
+                            // `Unknown` verdict); a spent placement key with no live
+                            // hold is a finished attempt and names `@wo/cancel`; only
+                            // a genuine engine refusal is about the money.
+                            return Err(CmdError::msg(match &error {
+                                e if e.is_transient() => crate::money::LEDGER_BUSY,
+                                crate::money::HoldError::NoHold => crate::money::SPENT_ATTEMPT,
+                                _ => {
+                                    "That account cannot fund that work order, so it stays drafted."
+                                }
+                            }));
                         }
                     },
                 }
@@ -1222,7 +1233,15 @@ fn cmd_wo(
         // for free. The sweep arm pages level 1 on the same predicate, and
         // `@wo/cancel` — which releases nothing that is not there — is still open, so
         // the subject has an exit.
+        // B5 (independent verify fold): the refusal is **viewability-gated**. Every
+        // other `@wo` read in this file answers the byte-identical
+        // `NO_SUCH_WORK_ORDER` to a non-viewer; this branch read the record directly,
+        // so a stranger who typed a rendered id learned both that the id names a real
+        // order and that it is holding production resources with no live budget. A
+        // non-viewer now falls through to the provider's own `WO_REFUSED`, which is
+        // already existence-hiding.
         if let Some(record) = wo_by_id(ctx, families, &order)
+            && wo_viewable(ctx, &record)
             && crate::money::budget_missing(ctx, &record)
         {
             return Err(CmdError::msg(
@@ -1230,6 +1249,12 @@ fn cmd_wo(
                  Staff have been paged.",
             ));
         }
+        // D4 (independent verify fold): the offer-route half of this refusal is NOT
+        // here and cannot be — a submitted parameter is forgeable, because a command
+        // submission and a direct offer submission take the **same** route through
+        // `resolve_legal_action`. It is `project_offer`'s server-authored `unfunded`
+        // fixed parameter, which is computed with a world and merged where no
+        // submitter can reach it. See `money::UNFUNDED_ORDERS`.
         return submit(
             ctx,
             IndustryVerb::WoDeliver,

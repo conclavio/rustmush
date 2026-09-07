@@ -90,7 +90,7 @@ pub(crate) fn tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<SceneId>) {
     // makes **no authoritative submission** (its money rides `mush_economy::post`'s
     // own carve-out lane), is bounded on records **visited** and is a no-op past the
     // applied point — an applicant already granted is no longer in the queue.
-    crate::recoverycmd::sweep(ctx, crate::recoverycmd::RECOVERY_BUDGET);
+    let recovered = crate::recoverycmd::sweep(ctx, crate::recoverycmd::RECOVERY_BUDGET);
     let mut stats = TickStats::default();
     let (ids, cursor) = {
         let Some(store) = ctx.w.module_state::<CampaignStore>() else {
@@ -101,6 +101,21 @@ pub(crate) fn tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<SceneId>) {
     if ids.is_empty() {
         if let Some(store) = ctx.w.module_state_mut::<CampaignStore>() {
             store.last_fire = stats;
+        }
+        // ---- D6 (independent verify fold): the recovery cursor reaches disk ----
+        //
+        // `recoverycmd::sweep` advances `store.recovery_cursor` in RAM, and the only
+        // document carrying it is `campaign_meta`, written by `persist_meta` at the
+        // END of this function — past this early return and past the
+        // `if last.is_some()` guard, both of which are driven by the **operations**
+        // rotation and neither by the recovery arm. A world with a recovery queue and
+        // no live operations — which is the shape a recovery provider exists for, and
+        // the shape a fresh deployment has — advanced its cursor in RAM only, so every
+        // reboot restarted the rotation at the head and the back of the queue was
+        // starved across restarts, which is exactly what the rotation was added to
+        // prevent.
+        if recovered > 0 {
+            persist_meta(ctx);
         }
         return;
     }
@@ -138,7 +153,9 @@ pub(crate) fn tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<SceneId>) {
         store.cursor = last.0.saturating_add(1);
     }
     store.last_fire = stats;
-    if last.is_some() {
+    // D6: either rotation moving is a reason to persist the meta document, because
+    // both cursors live in it.
+    if last.is_some() || recovered > 0 {
         persist_meta(ctx);
     }
 }

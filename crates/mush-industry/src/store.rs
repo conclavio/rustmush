@@ -187,6 +187,17 @@ pub struct IndustryStore {
     /// permanently past the cursor. It is RAM-only on purpose: the arm is a no-op
     /// past the applied point (the hold's own status is the marker), so a reboot
     /// re-running it from the head *is* the reconcile.
+    ///
+    /// **Coverage, recorded beside correctness (independent verify fold, D9).** That
+    /// argument is exactly right about the *correctness* of repeats and says nothing
+    /// about *coverage*. Terminal orders are never pruned from the family,
+    /// `MAX_WO_VISITED_PER_FIRE` is 64 and `SWEEP_PERIOD_SECS` is 60, so a world with
+    /// several hundred orders that restarts more often than a full rotation only ever
+    /// settles the first `MAX_WO_SETTLE_PER_FIRE` unsettled orders per boot session.
+    /// It **converges** rather than starving — a settled order is a no-op on the next
+    /// pass, so each boot session advances by the settle budget — which is why this is
+    /// a recorded deferral (§15.3) and not a fix. Promoting it means persisting the
+    /// cursor in the conventional document beside `licence`.
     settle_cursor: Option<String>,
     /// **E7r1 R1** — orders seen once holding a budget reservation they should not
     /// still have (a `Draft` whose submission was refused after the place). The
@@ -194,6 +205,9 @@ pub struct IndustryStore {
     /// first: a hold placed by the command and a submission still in the same drain
     /// are indistinguishable to a walk, and two Coarse fires apart they are not.
     settle_pending: BTreeSet<crate::workorder::WorkOrderId>,
+    /// How many notes were dropped at [`crate::money::MAX_SETTLE_PENDING`] since
+    /// boot — counted rather than silent (D9).
+    settle_pending_dropped: u64,
 }
 
 impl IndustryStore {
@@ -221,8 +235,35 @@ impl IndustryStore {
 
     /// Note one order as carrying an unexpected reservation; `true` once it has been
     /// seen on **two** consecutive fires and the compensating release is due.
+    ///
+    /// Bounded by [`crate::money::MAX_SETTLE_PENDING`] (independent verify fold, D9):
+    /// the set had no declared cap and no constant ceiling, only requesters ×
+    /// `MAX_WORK_ORDERS_PER_REQUESTER`. Past the cap a **fresh** note is dropped and
+    /// counted rather than inserted — an order already noted still promotes — so the
+    /// only cost is that one orphan waits another rotation, which the attempt-scoped
+    /// settle key makes safe.
     pub fn note_settle_pending(&mut self, order: crate::workorder::WorkOrderId) -> bool {
-        !self.settle_pending.insert(order)
+        if self.settle_pending.contains(&order) {
+            return true;
+        }
+        if self.settle_pending.len() >= crate::money::MAX_SETTLE_PENDING {
+            self.settle_pending_dropped = self.settle_pending_dropped.saturating_add(1);
+            return false;
+        }
+        self.settle_pending.insert(order);
+        false
+    }
+
+    /// How many settlement notes were dropped at the cap since boot (D9).
+    #[must_use]
+    pub const fn settle_pending_dropped(&self) -> u64 {
+        self.settle_pending_dropped
+    }
+
+    /// How many orders currently carry a settlement note (D9's observable).
+    #[must_use]
+    pub fn settle_pending_len(&self) -> usize {
+        self.settle_pending.len()
     }
 
     /// Forget one order's pending note (its state moved on, or the release landed).

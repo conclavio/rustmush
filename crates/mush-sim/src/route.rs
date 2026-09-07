@@ -184,12 +184,31 @@ pub struct LegDefWire {
     /// Unladen seconds at nominal thrust.
     pub base_s: u32,
     /// The authored hazard band. `#[serde(default)]`, so every route stored before
-    /// E7 residue pass 1 re-enters as an unhazardous leg rather than being refused.
-    #[serde(default)]
+    /// E7 residue pass 1 re-enters as an unhazardous leg rather than being refused —
+    /// and `skip_serializing_if` (independent verify fold, B14), so an **unauthored**
+    /// leg encodes byte-identically to the pre-pass form.
+    ///
+    /// 10b §15.1 row 7 claimed *"all three are `serde(default)` AND
+    /// `skip_serializing_if`"*; that was true of the **pack** types (`PackLeg`,
+    /// `RouteEntry`), whose skip is `tacsim.corridor@1`'s digest-load-bearing, and
+    /// false of these two sim wires, which gained only the default. So every stored
+    /// route document and every `cjourney:<root>` embedding a [`RouteDefWire`] began
+    /// writing `hazard: 0`, `interdiction: 0` and `controller: null` where it had
+    /// written nothing — no digest covers those documents, so nothing broke, but a
+    /// rollback to the pre-pass build would have failed `deny_unknown_fields` on
+    /// every one written since. The row's sentence is now simply true.
+    #[serde(default, skip_serializing_if = "is_unbanded")]
     pub hazard: u8,
     /// The interdiction threshold; zero means *this leg is never interdicted*.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_unbanded")]
     pub interdiction: u8,
+}
+
+/// An unauthored band, which serializes as absent (B14). The pack types' own
+/// `is_unbanded`, restated here because `route.rs` may take no `ruleset-tacsim` edge.
+#[allow(clippy::trivially_copy_pass_by_ref)]
+fn is_unbanded(band: &u8) -> bool {
+    *band == 0
 }
 
 /// The widest hazard band and interdiction threshold a pack may author
@@ -351,8 +370,10 @@ pub struct RouteDefWire {
     /// Propellant the plan consumes, in the drive class's own units.
     pub propellant: u64,
     /// **E7r1 R2** — the corridor's controller, if any. `#[serde(default)]`, so
-    /// every route stored before the residue pass re-enters uncontrolled.
-    #[serde(default)]
+    /// every route stored before the residue pass re-enters uncontrolled, and
+    /// `skip_serializing_if` (B14) so an uncontrolled route encodes no `controller`
+    /// key at all rather than an explicit `null`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub controller: Option<mush_core::CanonicalId>,
 }
 

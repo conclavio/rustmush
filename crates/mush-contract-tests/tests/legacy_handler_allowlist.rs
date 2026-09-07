@@ -27,11 +27,11 @@
 //! default configuration (`[rulesets].enabled` is the only knob that changes
 //! which verbs exist).
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::sync::Arc;
 
-use mush_core::Engine;
+use mush_core::{CommandCompatibility, Engine};
 use mush_server::config_ext;
 use mush_server::modules;
 use mush_server::staff::{StaffQueue, register_server_commands};
@@ -160,6 +160,198 @@ fn production_commands(ruleset: &str) -> BTreeSet<String> {
         .specs()
         .map(|spec| spec.name.to_string())
         .collect()
+}
+
+/// **The class the production composition actually publishes for each verb**
+/// (independent verify fold, B8; owner decision F10(a)).
+///
+/// `legacy_handler_allowlist.rs` never mentioned `CommandCompatibility` at all, so a
+/// stanza's declared `category` and the class the composed registry publishes could
+/// drift silently — which is precisely how a pass that refreshed two stanzas left
+/// `@wo`, the one verb whose lane changed, carrying cut 4's note and an unchecked
+/// class. The composition is the same one `production_commands` builds; only the
+/// projection differs.
+fn published_classes(ruleset: &str) -> BTreeMap<String, CommandCompatibility> {
+    let config = mush_config::config::Config::default();
+    let enabled = vec![ruleset.to_string()];
+    let staff = Arc::new(StaffQueue::new());
+    let mut registry = base_registry();
+    register_server_commands(&mut registry, &staff)
+        .expect("server command registration must not collide");
+    let llm = Arc::new(
+        mush_llm::LlmService::builder()
+            .global_enabled(false)
+            .build(),
+    );
+    let onboarding = config_ext::onboarding_ruleset(&config.onboarding);
+    let wod_economy =
+        config_ext::wod_economy_config(&config.wod).expect("the default [wod.economy] converts");
+    let wod_selected = enabled.iter().any(|r| r.eq_ignore_ascii_case("wod"));
+    let sr_economy = config_ext::shadowrun_economy_config(&config.shadowrun)
+        .expect("the default [shadowrun.economy] converts");
+    let sr_selected = enabled.iter().any(|r| r.eq_ignore_ascii_case("shadowrun"));
+    let mut mods = modules::server_modules_with(
+        config_ext::weather_config(&config.weather),
+        config_ext::economy_config(&config.economy).expect("the default [economy] converts"),
+        &onboarding,
+        wod_selected.then_some(&wod_economy),
+        sr_selected.then_some(&sr_economy),
+        modules::no_recovery(),
+    );
+    mods.push(modules::worldgen_module_with(
+        Arc::clone(&llm),
+        config_ext::worldgen_config(&config.worldgen),
+    ));
+    mods.push(modules::npc_module(modules::npc_agent_adapter(&enabled)));
+    mods.extend(
+        modules::ruleset_modules(&enabled, &onboarding, &wod_economy, &sr_economy)
+            .expect("a known ruleset composes"),
+    );
+    mods.push(modules::tacsim_module(
+        config_ext::tacsim_config(&config.tacsim).expect("the default [tacsim] converts"),
+    ));
+    let composition = Engine::compose_modules(registry, mods)
+        .expect("the production composition registers without collision");
+    let registry = composition.registry();
+    registry
+        .specs()
+        .filter_map(|spec| {
+            registry
+                .compatibility_of(&spec.name)
+                .map(|class| (spec.name.to_string(), class))
+        })
+        .collect()
+}
+
+/// **Category/class drift this fold FOUND and did not fix** (independent verify fold,
+/// B8) — `(verb, declared category, published class)`.
+///
+/// The cross-check below is the tripwire F10(a) asked for, and the first thing it did
+/// was find two verbs whose stanza and registration have disagreed since before this
+/// pass. Neither is `@wo` and neither belongs to the E7 residue, and this fold's own
+/// rules permit exactly one edit to `legacy-handlers.toml` (the `@wo` note), so they
+/// are **recorded here rather than silently re-categorised**:
+///
+/// * **`@station`** declares `legacy-post-image` and publishes `Authoritative`. The
+///   stanza under-claims: it names a future typed family for a verb the composition
+///   already puts on the authoritative lane, so K8.5's migration would plan work that
+///   is done.
+/// * **`+nuyen`** declares `read-only` and publishes `LegacyPostImage`. This is the
+///   direction that matters: the allowlist asserts the verb persists **nothing**,
+///   while the composition publishes it as a whole-document post-image writer. A
+///   reader auditing the disclosure surface from this file would believe a write path
+///   does not exist.
+///
+/// Each needs its owning cut to decide whether the stanza or the registration is
+/// wrong; the tripwire's job is that neither can drift further, and that a third one
+/// cannot appear unnoticed.
+const KNOWN_CLASS_DRIFT: &[(&str, &str, &str)] = &[
+    ("@station", "legacy-post-image", "authoritative"),
+    ("+nuyen", "read-only", "legacy-post-image"),
+];
+
+/// The category word a published [`CommandCompatibility`] corresponds to.
+fn category_of(class: CommandCompatibility) -> &'static str {
+    match class {
+        CommandCompatibility::ReadOnly => "read-only",
+        CommandCompatibility::LegacyPostImage => "legacy-post-image",
+        CommandCompatibility::Authoritative => "authoritative",
+        CommandCompatibility::EconomyCarveOut => "economy-carve-out",
+    }
+}
+
+/// **Every stanza's `category` equals the class the production composition publishes
+/// for that verb** (B8; F10(a)) — the cross-check that did not exist.
+///
+/// `baseline` is exempt by construction: it is a provenance word, not a class, and
+/// the 157 verbs it covers publish whatever their pre-K8.5 registration published.
+/// Every non-baseline stanza is a deliberate declaration and is checked against the
+/// composition, in **both** single-ruleset compositions, so a class that differs
+/// between them is a problem this names rather than one it averages away.
+#[test]
+fn vf_b8a_every_stanzas_category_matches_the_class_the_composition_publishes() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(ALLOWLIST);
+    let text = std::fs::read_to_string(&path)
+        .unwrap_or_else(|error| panic!("cannot read {}: {error}", path.display()));
+    let list: Allowlist = toml::from_str(&text)
+        .unwrap_or_else(|error| panic!("{} does not parse: {error}", path.display()));
+    let mut problems: Vec<String> = Vec::new();
+    let mut seen_drift: BTreeSet<&str> = BTreeSet::new();
+    for ruleset in RULESETS {
+        let published = published_classes(ruleset);
+        for handler in &list.handler {
+            if handler.category == "baseline" {
+                continue;
+            }
+            let Some(class) = published.get(&handler.name) else {
+                continue;
+            };
+            let expected = category_of(*class);
+            if expected == handler.category {
+                continue;
+            }
+            if let Some(known) = KNOWN_CLASS_DRIFT.iter().find(|(name, declared, actual)| {
+                *name == handler.name && *declared == handler.category && *actual == expected
+            }) {
+                seen_drift.insert(known.0);
+                continue;
+            }
+            problems.push(format!(
+                "[{ruleset}] {:?}: the stanza declares category {:?}, but the composition                  publishes {expected:?} ({class:?}). Either the registration moved lanes                  without the stanza, or the stanza claims a lane the verb does not ride. If                  this is deliberate and cannot be fixed in this commit, add it to                  KNOWN_CLASS_DRIFT with the reason.",
+                handler.name, handler.category
+            ));
+        }
+    }
+    assert!(
+        problems.is_empty(),
+        "{}",
+        problems.join(
+            "
+"
+        )
+    );
+    // The recorded drift is a **ceiling**, not a floor: fixing one must shrink this
+    // list, so a stale exception cannot outlive the defect it excuses.
+    let recorded: BTreeSet<&str> = KNOWN_CLASS_DRIFT.iter().map(|(name, _, _)| *name).collect();
+    assert_eq!(
+        seen_drift, recorded,
+        "KNOWN_CLASS_DRIFT names a verb whose category and published class now AGREE:          remove it from the list in the same commit that fixed it"
+    );
+}
+
+/// **`@wo`'s note records the money leg** (B8's other half: the class ceiling was
+/// right and the note was cut 4's, ending *"money stays an E4 Hold and never grows a
+/// resource field"* while the handler had grown a durable `mush_economy::post`).
+#[test]
+fn vf_b8b_the_wo_note_records_the_money_leg() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(ALLOWLIST);
+    let text = std::fs::read_to_string(&path)
+        .unwrap_or_else(|error| panic!("cannot read {}: {error}", path.display()));
+    let list: Allowlist = toml::from_str(&text)
+        .unwrap_or_else(|error| panic!("{} does not parse: {error}", path.display()));
+    let wo = list
+        .handler
+        .iter()
+        .find(|h| h.name == "@wo")
+        .expect("the @wo stanza");
+    assert_eq!(
+        wo.category, "authoritative",
+        "F10(a): the class does not move"
+    );
+    let note = wo.note.as_deref().unwrap_or_default();
+    for phrase in [
+        "industry.wo.hold/{order}/{n}",
+        "industry.wo.settle/{order}/{n}",
+        "ENGINE_OWNED_RESERVATIONS",
+        "SWEEP_TAG",
+        "carve-out lane",
+        "attempt",
+    ] {
+        assert!(
+            note.contains(phrase),
+            "the @wo note must record {phrase:?}: {note}"
+        );
+    }
 }
 
 /// The union over every single-ruleset production composition.

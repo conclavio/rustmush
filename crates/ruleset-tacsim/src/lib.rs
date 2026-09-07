@@ -80,10 +80,11 @@ pub use config::{
 pub use pack::{
     CommodityDef, FacilityDef, FormationKindDef, FormationRoleDef, LocationDef,
     MAX_FACILITY_CAPABILITIES, MAX_FACILITY_SLOTS, MAX_FORMATION_CATEGORIES, MAX_FORMATION_MEMBERS,
-    MAX_FORMATION_ROLES, MAX_LABEL_BYTES, MAX_LEG_SECS, MAX_PACK_BYTES, MAX_PACK_ENTRIES,
-    MAX_RECIPE_LINES, MAX_RECIPE_UNITS, MAX_REQUIRES, MAX_ROUTE_PROPELLANT, MAX_SEED_OBJECTS,
-    PACK_DIGEST_DOMAIN, PackEntry, PackError, PackKind, PackLeg, PackManifest, PackRequirement,
-    RecipeDef, RecipeLine, RouteEntry, RulesPack, check_requires, load_pack, pack_digest,
+    MAX_FORMATION_ROLES, MAX_HAZARD_BAND, MAX_LABEL_BYTES, MAX_LEG_SECS, MAX_PACK_BYTES,
+    MAX_PACK_ENTRIES, MAX_RECIPE_LINES, MAX_RECIPE_UNITS, MAX_REQUIRES, MAX_ROUTE_PROPELLANT,
+    MAX_SEED_OBJECTS, PACK_DIGEST_DOMAIN, PackEntry, PackError, PackKind, PackLeg, PackManifest,
+    PackRequirement, RecipeDef, RecipeLine, RouteEntry, RulesPack, check_requires, load_pack,
+    pack_digest,
 };
 pub use record::{PackRecord, PinRecord, SeedApplication};
 pub use seed::{PlannedObject, SeedError, SeedPlan};

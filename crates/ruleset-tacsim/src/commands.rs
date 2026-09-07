@@ -96,8 +96,8 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
                    the subject.\n\
                    @tacsim/pin <subject>=              (staff) remove that subject's pin.\n\
                    @tacsim/pin list                    (staff) every pin this world carries.
-                   @tacsim/time show                   the live world-time generation, its                    rate, and each subsystem's declared catch-up policy.
-                   @tacsim/time rate=<n>               (staff) open ONE new world-time rate                    generation at <n> IC seconds per real second, and announce each                    subsystem's declared policy for it. It is one attributed act on the                    kernel's own timeline: no second timeline is created and no earlier fact                    is reinterpreted."
+                   @tacsim/time show                   the live world-time generation, its rate,                    the generations left, and each subsystem's declared catch-up policy.
+                   @tacsim/time rate=<n>               (staff) open ONE new world-time rate                    generation at <n> IC seconds per real second, and announce each subsystem's                    declared policy for it. It is one attributed act on the kernel's own                    timeline: no second timeline is created and no earlier fact is reinterpreted."
                 .into(),
             ..CommandSpec::default()
         },
@@ -119,9 +119,9 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
                 .copied()
                 .map(SmolStr::new)
                 .collect(),
-            help: "@corridor/show <route>              one corridor: its endpoints, its legs                    and their unladen times, and who holds it.
+            help: "@corridor/show <route>              one corridor: its endpoints, its legs and                    their unladen times, and who holds it. Pack-authored navigation data is                    public, deliberately: a corridor is a road, not a secret.
                    @corridor/rules <route>             the corridor's authored hazard bands and                    interdiction thresholds, leg by leg.
-                   @corridor/domain <route>            which of the corridor's legs present into                    a live simulation domain — the places an interception can actually promote.
+                   @corridor/domain <route>            which of the corridor's legs an                    interception can promote at, from the pack's own interdiction thresholds and                    domain host bindings. It never names a live domain: which domains are                    standing up is staff's (`@domain`).
                    An unobserved corridor and one that was never authored answer the same line."
                 .into(),
             ..CommandSpec::default()
@@ -277,6 +277,28 @@ fn time_rate(ctx: &mut Ctx<'_>, rhs: &str) -> Result<(), CmdError> {
     let rate: u32 = rhs
         .parse()
         .map_err(|_| CmdError::msg("Usage: @tacsim/time rate=<ic seconds per real second>"))?;
+    // ---- C9/B10 (independent verify fold; owner decision F9(a)) ----
+    //
+    // The verb parsed a `u32` and validated only that it differed from the live rate,
+    // and neither `Ctx::change_world_time_rate` nor `WorldTimeline::next_rate_epoch`
+    // looked at the rate at all. `rate = 0` therefore stopped every `world_ic_now`
+    // mechanism for ever — recovery cooldowns, production schedules, journey ETAs,
+    // escalation cool-offs — while the compatibility `GameClock`'s two readers both
+    // apply `.max(1)`, so the clock and calendar a player reads in the room kept
+    // advancing at 1:1 against a stopped world. `u32::MAX` was accepted too.
+    //
+    // **Refused, naming the band, never clamped** — the pulse period's precedent next
+    // door clamps, but a silently clamped *time rate* is a campaign act the staffer
+    // did not make. The kernel refuses it as well
+    // (`WorldTimelineError::RateOutOfBand`), so no other caller can install one
+    // either; this arm exists to say so in a sentence a person can act on.
+    if !(mush_core::MIN_WORLD_TIME_RATE..=mush_core::MAX_WORLD_TIME_RATE).contains(&rate) {
+        return Err(CmdError::msg(format!(
+            "The world time rate must be between {} and {} IC seconds per real second; {rate}              is outside that band and nothing was changed. A rate of 0 is not a pause: it              stops every world-IC mechanism while the clock a player reads keeps running.",
+            mush_core::MIN_WORLD_TIME_RATE,
+            mush_core::MAX_WORLD_TIME_RATE
+        )));
+    }
     let live = ctx.w.world_timeline().epochs().last().copied();
     // **One attributed act, and never a generation opened for nothing.** Re-typing
     // the live rate is refused rather than silently opening a second generation that
@@ -302,8 +324,11 @@ fn time_rate(ctx: &mut Ctx<'_>, rhs: &str) -> Result<(), CmdError> {
         .map_err(|error| CmdError::msg(format!("The rate was not changed: {error}")))?;
     // **Each subsystem's declared policy fires exactly once per generation**: one
     // announcement per subsystem, for the one generation this act opened.
+    // Z1 (independent verify fold): the literal was wrapped without a `\`
+    // continuation, so a player read ten spaces mid-sentence.
     let mut rows = vec![format!(
-        "World time generation {} opens at {rate} IC seconds per real second. Nothing already          recorded is reinterpreted; every earlier generation stands.",
+        "World time generation {} opens at {rate} IC seconds per real second. Nothing \
+         already recorded is reinterpreted; every earlier generation stands.",
         opened.generation
     )];
     for (subsystem, word) in policies {
@@ -317,9 +342,22 @@ fn time_rate(ctx: &mut Ctx<'_>, rhs: &str) -> Result<(), CmdError> {
         ));
     }
     rows.push(
-        "Journeys re-anchor and keep their remaining IC duration; a tactical domain refuses a          stale scan and pages per entry; propagation re-anchors and arms its own losses; a work          order started on the old generation pauses as `TimelineChanged` at its next          transition and `@wo/restamp` resumes it."
+        "Journeys re-anchor and keep their remaining IC duration; a tactical domain \
+         refuses a stale scan and pages per entry; propagation re-anchors and arms its \
+         own losses; a work order started on the old generation pauses as \
+         `TimelineChanged` at its next transition, and `@wo/restamp` re-anchors its \
+         production schedule and its material reservations and resumes it."
             .to_owned(),
     );
+    // F9(a): the epoch budget is a LIFETIME one — `MAX_WORLD_TIMELINE_EPOCHS` 4 096
+    // generations, never reclaimed, because every old `ClockStamp` keeps its meaning
+    // for ever. A staffer toggling the rate can exhaust it, so what is left is now
+    // said out loud rather than discovered at 4 096.
+    rows.push(format!(
+        "  {} of {} world-time generations remain for the life of this world.",
+        mush_core::MAX_WORLD_TIMELINE_EPOCHS.saturating_sub(ctx.w.world_timeline().epochs().len()),
+        mush_core::MAX_WORLD_TIMELINE_EPOCHS
+    ));
     lines(ctx, rows);
     Ok(())
 }
@@ -333,6 +371,15 @@ fn time_rate(ctx: &mut Ctx<'_>, rhs: &str) -> Result<(), CmdError> {
 /// a route id no pack declares, and a malformed argument all render this and
 /// nothing else — so the verb is not a corridor-existence oracle.
 pub const NO_SUCH_CORRIDOR: &str = "No such corridor.";
+
+/// The behaviour a place carries when it is authored as a simulation domain's host.
+///
+/// `@corridor/domain` reads **this binding** and never `SpatialState::domain_of_host`
+/// (independent verify fold, C5/B6; owner decision F8(b)): the binding is authored
+/// data the pack and `@tacsim/seed` already publish, while the live domain record is
+/// staff-only state that `mush_sim::commands::cmd_domain` guards with
+/// `require_admin` on every one of its eleven switches.
+pub const DOMAIN_HOST_BEHAVIOR: &str = "sim.domain";
 
 fn corridor_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     require_enabled(ctx)?;
@@ -425,25 +472,45 @@ fn corridor_rules(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 fn corridor_domain(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let raw = ctx.args.raw().trim().to_string();
     let route = corridor_of(ctx, &raw)?;
+    // ---- C5/B6 (independent verify fold; owner decision F8(b)) ----
+    //
+    // This used to read `SpatialState::domain_of_host(leg.to())` and print
+    // *"leg N: #P presents into domain #D"* — the **live** domain's own id, to any
+    // player, from a verb behind nothing but `require_enabled` and a `ReadOnly`
+    // persistence class. `mush_sim::commands::cmd_domain` opens with `require_admin`
+    // on all eleven of its switches, so the existence, id and status of a simulation
+    // domain is staff-only everywhere else in the tree, and after R2 a live domain at
+    // a corridor endpoint is exactly where an interception has just promoted. The
+    // pass's own disclosure test composed no `mush-sim` module, so every leg answered
+    // *"presents into no domain"* and the case was never exercised; the same test
+    // pinned `!out.contains("domain #0")` as a proxy for "never a sentinel", but
+    // `DomainId(0)` is a legitimate **first** domain.
+    //
+    // What the verb now renders is the **pack-derived** answer to the question its
+    // own help text asks — *"the places an interception can actually promote"* —
+    // built from the leg's authored `is_interdicted()` and the presence of a domain
+    // **host binding** on the endpoint. No live `DomainId` crosses to any reader, and
+    // the binding is the same authored fact `@tacsim/seed` and the pack already
+    // publish.
+    let host = mush_core::BehaviorId::new(DOMAIN_HOST_BEHAVIOR);
     let mut rows = Vec::new();
     for (index, leg) in route.legs().iter().enumerate() {
-        // The **existing** `SpatialState` place->domain read; a leg that presents
-        // into no domain says so and names nothing, never a sentinel id.
-        let domain = ctx
-            .w
-            .module_state::<mush_sim::SpatialState>()
-            .and_then(|st| st.domain_of_host(leg.to()).map(|record| record.id));
-        rows.push(match domain {
-            Some(domain) => format!(
-                "  leg {}: #{} presents into domain #{domain}",
-                index.saturating_add(1),
-                leg.to().0
+        let bound = host
+            .as_ref()
+            .is_ok_and(|id| ctx.w.has_behavior(leg.to(), id));
+        let n = index.saturating_add(1);
+        let place = leg.to().0;
+        rows.push(match (bound, leg.is_interdicted()) {
+            (true, true) => {
+                format!("  leg {n}: #{place} is a domain host; an interception here can promote")
+            }
+            (true, false) => format!(
+                "  leg {n}: #{place} is a domain host, but this leg is not interdicted; nothing \
+                 promotes here"
             ),
-            None => format!(
-                "  leg {}: #{} presents into no domain; an interception here raises nothing",
-                index.saturating_add(1),
-                leg.to().0
-            ),
+            (false, _) => {
+                format!("  leg {n}: #{place} hosts no domain; an interception here raises nothing")
+            }
         });
     }
     rows.insert(

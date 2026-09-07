@@ -735,11 +735,21 @@ fn e7r1_r1_the_accounts_are_resolved_at_the_draft_not_at_the_settlement() {
 }
 
 /// **A closed budget account refuses at the edit too**, and a facility owner with
-/// no distinct operating account refuses — the two halves `check_bond_accounts`
-/// checks, in its own order.
+/// no payable account at all refuses — the two halves `check_bond_accounts` checks,
+/// in its own order.
+///
+/// **Amended by the independent verify fold (C1/B9, owner decision F1(b)).** The
+/// payee half used to refuse when the owner held no account *other than* the budget,
+/// which made a one-account owner-operator unable to draft at all while a two-account
+/// owner paid themselves — the same line read from two ends. `payee_of` now falls
+/// back to the budget account when the facility's owner **is** the budget's owner, so
+/// the refusal means what it says: the owner holds nothing payable in that
+/// instrument. Both accounts are closed here to prove it.
 #[test]
 fn e7r1_r1_a_closed_budget_and_a_missing_payee_both_refuse_at_the_draft() {
-    let (mut tw, _families, budget, payee) = scene(100);
+    // Unfunded on purpose: a draft resolves accounts and reserves nothing, and an
+    // account carrying a balance cannot be closed.
+    let (mut tw, _families, budget, payee) = scene(0);
     // A third, empty account, closed: the *budget* half refuses.
     let before = god_accounts(&tw);
     ok(&mut tw, GOD, &format!("@account/open #{}=gold", GOD.0));
@@ -757,18 +767,29 @@ fn e7r1_r1_a_closed_budget_and_a_missing_payee_both_refuse_at_the_draft() {
         refusal.contains("not active"),
         "a closed budget refuses: {refusal}"
     );
-    // With the operating account closed too, the *payee* half refuses: a run that
-    // completes must have somewhere to pay, and that is decided here rather than at
-    // the settlement, where nothing could act on it.
+    // With the second account closed, the owner-operator fall-back still drafts: the
+    // budget account is its own payee and the capture is a recorded self-transfer.
     ok(&mut tw, GOD, &format!("@account/close {payee}"));
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@wo/draft tacsim.core/alloy_smelt/1=7 1 {budget} 500 600"),
+    );
+    assert!(tw.engine_mut().take_authoritative_submit().is_some());
+    // And with the budget closed as well the owner holds nothing payable at all, so
+    // the *budget* half refuses first — as it must, since a budget that is not active
+    // is a stronger and earlier fact than a payee that cannot be found. The genuine
+    // `NoPayee` path needs a facility owner who is not the requester and is exercised
+    // in `vf_c1d_the_draft_is_not_an_account_census_of_a_stranger`.
+    ok(&mut tw, GOD, &format!("@account/close {budget}"));
     let refusal = err(
         &mut tw,
         GOD,
         &format!("@wo/draft tacsim.core/alloy_smelt/1=7 1 {budget} 500 600"),
     );
     assert!(
-        refusal.contains("no operating account"),
-        "the payee half refuses, naming the facility's owner: {refusal}"
+        refusal.contains("not active"),
+        "a closed budget still refuses first: {refusal}"
     );
 }
 
@@ -810,7 +831,10 @@ fn e7r1_r1_a_submission_naming_no_hold_is_refused_by_the_provider() {
     let at = src[..boundary]
         .find("fn wo_submit")
         .expect("the submit prepare");
-    let body = &src[at..at + 2_000];
+    let end = src[at..]
+        .find("\n    fn ")
+        .map_or(src.len(), |offset| at + offset);
+    let body = &src[at..end];
     let refusal = body
         .find("if hold == 0")
         .expect("the nameless-hold refusal");
@@ -946,5 +970,1117 @@ fn e7r1_r5_a_timeline_changed_pause_round_trips_and_names_its_exit() {
             .iter()
             .any(|verb| matches!(verb, mush_industry::IndustryVerb::WoRestamp)),
         "`@wo/restamp` is the declared exit and is still registered"
+    );
+}
+
+// ---- E7 residue pass 1 independent verify fold ----
+//
+// The C (conservation), D (durability) and B (bounds/claims) lenses' confirmed
+// findings, each driving the **real** path and asserting the **observable** outcome.
+
+/// Drive one authoritative submission through the REAL offer route —
+/// `command_offer_submission` + `resolve_and_stage_offer`, exactly as `mush-server`'s
+/// world task does — and install it.
+///
+/// This is the harness the pass never built, and its absence is why **Z2** shipped:
+/// `TestWorld::run` *stages* a submission and never resolves it, so a parameter the
+/// projection does not declare is invisible to every test in the tree while being
+/// fatal on a real server.
+fn land_parts(
+    tw: &mut TestWorld,
+    actor: ObjId,
+    action: &mush_core::DefinitionRef,
+    subject: &mush_core::PerceivedRef,
+    parameters: serde_json::Value,
+    token: u8,
+) -> Result<Vec<mush_core::ModuleOp>, String> {
+    tw.engine_mut().set_offer_keys(
+        mush_core::OfferKeyRing::new(
+            mush_core::OfferSecret::new(2, [2; 32]).map_err(|_| "secret".to_owned())?,
+            [],
+        )
+        .map_err(|_| "key ring".to_owned())?,
+    );
+    let (action, resolved) = {
+        let engine = tw.engine();
+        let query = engine
+            .legal_action_query(
+                mush_core::PrincipalId::Object { id: actor },
+                actor,
+                subject.clone(),
+            )
+            .map_err(|error| error.to_string())?;
+        let offers = engine
+            .project_legal_actions(&query)
+            .map_err(|error| error.to_string())?;
+        let projected = offers
+            .projected_for_action(action)
+            .ok_or_else(|| "that action is not currently available".to_owned())?;
+        let submission = mush_core::OfferSubmission {
+            offer: projected.offer(),
+            subject: projected.subject().clone(),
+            targets: Vec::new(),
+            parameters,
+        };
+        let execution = mush_core::OfferExecutionContext {
+            request: mush_core::RequestUid::from_bytes([token; 16]),
+            principal: mush_core::PrincipalId::Object { id: actor },
+            actor,
+            idempotency: mush_core::ScopedIdempotencyKey::new(
+                mush_core::IdempotencyScope {
+                    principal: mush_core::PrincipalId::Object { id: actor },
+                    owner: action.key().owner.clone(),
+                    namespace: CanonicalId::new(action.key().id.as_str())
+                        .map_err(|_| "namespace".to_owned())?,
+                },
+                1,
+                mush_core::IdempotencyKey::Request(mush_core::RequestUid::from_bytes([token; 16])),
+            ),
+            viewer_scope: query.viewer_scope(),
+            now: None,
+        };
+        let resolved = engine
+            .resolve_legal_action(&offers, execution, submission)
+            .map_err(|error| format!("{error:?}"))?;
+        let (action, resolved, _guards) = resolved.into_authoritative_parts();
+        (action, resolved)
+    };
+    let (prepared, _) = tw
+        .engine_mut()
+        .prepare_registered_resolved_authoritative_action(
+            &action,
+            &resolved,
+            CommitToken::from_bytes([token; 16]),
+        )
+        .map_err(|error| format!("{error:?}"))?;
+    let (ops, installation) = prepared.into_parts();
+    tw.engine_mut().install_prepared_action(installation);
+    Ok(ops)
+}
+
+/// Resolve and install the one submission the last command staged.
+fn land(tw: &mut TestWorld, token: u8) -> Result<Vec<mush_core::ModuleOp>, String> {
+    let submit = tw
+        .engine_mut()
+        .take_authoritative_submit()
+        .ok_or_else(|| "nothing was staged".to_owned())?;
+    land_parts(
+        tw,
+        submit.actor,
+        &submit.action,
+        &submit.subject,
+        submit.parameters.clone(),
+        token,
+    )
+}
+
+/// A staff object that is not `GOD`, so payer and payee can be genuinely distinct
+/// principals. `@facility/open` is staff-only and hardcodes the opener as owner, so a
+/// second staff object is the only way to reach the distinct-principal path in the
+/// shipped tree (C1's own note; the real ownership split is pass 2's).
+fn staff_object(tw: &mut TestWorld, name: &str) -> ObjId {
+    let who = tw.spawn_player(name);
+    tw.world_mut()
+        .get_mut(who)
+        .expect("the spawned staffer")
+        .powers = mush_core::Powers::SIM_ADMIN;
+    who
+}
+
+/// One fresh gold account for `owner`.
+fn open_account(tw: &mut TestWorld, owner: ObjId) -> AccountId {
+    let before: Vec<u64> = snap(tw)
+        .accounts()
+        .filter(|a| a.owner == PrincipalId::Object(owner))
+        .map(|a| a.id.0)
+        .collect();
+    ok(tw, GOD, &format!("@account/open #{}=gold", owner.0));
+    let fresh = snap(tw)
+        .accounts()
+        .filter(|a| a.owner == PrincipalId::Object(owner))
+        .map(|a| a.id.0)
+        .find(|id| !before.contains(id))
+        .expect("a fresh account");
+    AccountId(fresh)
+}
+
+/// The fixture C1's distinct-principal path needs: `boss` (a second staff object)
+/// owns facility #8 and one gold account; `GOD` keeps the budget from `scene`.
+fn two_principals(funds: i64) -> (TestWorld, IndustryFamilies, AccountId, ObjId, AccountId) {
+    let (mut tw, families, budget, _payee) = scene(funds);
+    let boss = staff_object(&mut tw, "Boss");
+    let boss_account = open_account(&mut tw, boss);
+    ok(&mut tw, boss, "@facility/open 8=2 smelt");
+    let _ = tw.engine_mut().take_authoritative_submit();
+    (tw, families, budget, boss, boss_account)
+}
+
+/// Stage a `Draft` order at `facility`, otherwise `seed_order`'s shape.
+fn seed_order_at(
+    tw: &mut TestWorld,
+    families: &IndustryFamilies,
+    id: u64,
+    budget: AccountId,
+    facility: ObjId,
+) -> WorkOrderId {
+    let (recipe, pinned) = alloy_recipe();
+    let order = WorkOrder::draft(
+        WorkOrderId(id),
+        PrincipalId::Object(GOD),
+        PrincipalId::Object(GOD),
+        facility,
+        2,
+        1,
+        1,
+        recipe,
+        pinned,
+        1,
+        budget,
+        Some(endpoint(500)),
+        DeliveryTarget::Endpoint {
+            endpoint: endpoint(600),
+        },
+        EconomicVisibility::Parties,
+    )
+    .expect("draft a work order");
+    let engine = tw.engine_mut();
+    apply(engine, families, |txn| families.open_work_order(txn, order)).expect("seed the order");
+    WorkOrderId(id)
+}
+
+/// Put metals in the source pool so a real submit can reserve them.
+fn seed_metals(tw: &mut TestWorld, families: &IndustryFamilies, units: u64) {
+    let metals = commodity("metals");
+    let engine = tw.engine_mut();
+    apply(engine, families, |txn| {
+        families
+            .inventory
+            .credit(txn, endpoint(500), &metals, units)
+            .map(|_| ())
+            .map_err(IndustryError::Inventory)
+    })
+    .expect("seed metals");
+}
+
+/// The whole order record, read out of the family.
+fn order_record(tw: &mut TestWorld, families: &IndustryFamilies, id: WorkOrderId) -> WorkOrder {
+    let engine = tw.engine_mut();
+    let mut txn = engine
+        .action_transaction(&families.deposits)
+        .expect("industry transaction");
+    families
+        .work_order(&mut txn, id)
+        .expect("read")
+        .expect("the order exists")
+        .clone()
+}
+
+/// The generation stamped on the order's own `ProductionSchedule` — the exact input
+/// `provider::stale_generation` reads.
+fn order_generation(
+    tw: &mut TestWorld,
+    families: &IndustryFamilies,
+    id: WorkOrderId,
+) -> mush_core::ClockRef {
+    order_record(tw, families, id)
+        .schedule()
+        .expect("a live schedule")
+        .started()
+        .clock
+        .clone()
+}
+
+/// Run production to completion, exactly as the schedule's own advances would.
+fn run_production(tw: &mut TestWorld, families: &IndustryFamilies, id: WorkOrderId) {
+    let total = order_record(tw, families, id)
+        .schedule()
+        .expect("a live schedule")
+        .total_units();
+    let engine = tw.engine_mut();
+    apply(engine, families, |txn| {
+        let order = families.work_order(txn, id)?.expect("the order").clone();
+        let next = order.with_progress(total)?;
+        families.put_work_order(txn, order.revision(), next)
+    })
+    .expect("advance production");
+}
+
+/// Every hold this order ever placed, in id order.
+fn holds_of(tw: &TestWorld, order: WorkOrderId) -> Vec<Hold> {
+    snap(tw)
+        .holds()
+        .filter(|h| h.purpose == money::purpose(order))
+        .cloned()
+        .collect()
+}
+
+/// Whether an idempotency key has already been spent.
+fn key_spent(tw: &TestWorld, key: &mush_economy::IdempotencyKey) -> bool {
+    snap(tw).idempotency(key).is_some()
+}
+
+// ---- C1 / B9 (owner decision F1(b)) — what a work order costs the owner ----
+
+/// **An owner-operator's completed order is a recorded self-transfer and moves no
+/// net worth** (C1).
+///
+/// `@facility/open` is staff-only and hardcodes `PrincipalId::Object(ctx.actor)` as
+/// the owner, and `check_wo_accounts` requires the budget to belong to the requester,
+/// so in the shipped tree the drafter, the payer and the payee's owner are one
+/// principal. The capture is a closed loop — and it is now **recorded** as one rather
+/// than presented as a money gate.
+#[test]
+fn vf_c1a_an_owner_operators_completed_order_is_a_recorded_self_transfer_and_moves_no_net_worth() {
+    let (mut tw, families, budget, payee) = scene(100);
+    let id = seed_order(&mut tw, &families, 0xC1, budget, 1);
+    ok(&mut tw, GOD, &format!("@wo/submit {id}"));
+    let net_before = bal(&tw, budget) + bal(&tw, payee);
+    let total_before = ledger_total(&tw);
+    set_state(
+        &mut tw,
+        &families,
+        id,
+        WorkOrderState::Completed {
+            commit: CommitToken::from_bytes([0xC1; 16]),
+        },
+    );
+    fire(&mut tw);
+
+    assert!(
+        matches!(
+            budget_hold(&tw, id).expect("the hold survives").status,
+            HoldStatus::Consumed { .. }
+        ),
+        "the reservation was SPENT, not refunded"
+    );
+    assert_eq!(
+        ledger_total(&tw),
+        total_before,
+        "the ledger total is conserved"
+    );
+    assert_eq!(
+        bal(&tw, budget) + bal(&tw, payee),
+        net_before,
+        "and so is the requester's net worth: payer and payee are one principal"
+    );
+    assert_eq!(held(&tw, budget), 0, "nothing stays reserved");
+}
+
+/// **A facility owner who holds ONE account drafts, submits and settles** (B9, C1's
+/// mirror image; owner decision F1(b)).
+///
+/// Before the fold `payee_of`'s `candidate.id != account.id` clause refused a
+/// one-account owner `NoPayee` — a refusal that never said "open a second account" —
+/// so the only actor who could run a work order in the shipped tree could not draft
+/// one at all.
+#[test]
+fn vf_c1b_a_one_account_owner_drafts_and_settles() {
+    let (mut tw, families, budget, payee) = scene(100);
+    ok(&mut tw, GOD, &format!("@account/close {payee}"));
+    assert_eq!(
+        snap(&tw)
+            .accounts_of(&PrincipalId::Object(GOD))
+            .filter(|a| matches!(a.status, mush_economy::AccountStatus::Active))
+            .count(),
+        1,
+        "a one-account owner-operator"
+    );
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@wo/draft tacsim.core/alloy_smelt/1=7 1 {budget} 500 600"),
+    );
+    let _ = tw.engine_mut().take_authoritative_submit();
+
+    let id = seed_order(&mut tw, &families, 0xC1B, budget, 1);
+    ok(&mut tw, GOD, &format!("@wo/submit {id}"));
+    let before = ledger_total(&tw);
+    set_state(
+        &mut tw,
+        &families,
+        id,
+        WorkOrderState::Completed {
+            commit: CommitToken::from_bytes([0xB1; 16]),
+        },
+    );
+    fire(&mut tw);
+    assert!(
+        matches!(
+            budget_hold(&tw, id).expect("the hold").status,
+            HoldStatus::Consumed { .. }
+        ),
+        "the one-account owner's order SETTLED rather than being refused"
+    );
+    assert_eq!(
+        bal(&tw, budget),
+        100,
+        "a zero-net posting: the balance is unmoved"
+    );
+    assert_eq!(ledger_total(&tw), before);
+}
+
+/// **A distinct requester really pays the facility's owner** — the path pass 2's
+/// ownership split will rely on, pinned now (F1(c)).
+#[test]
+fn vf_c1c_a_distinct_requester_really_pays_the_facility_owner() {
+    let (mut tw, families, budget, _boss, boss_account) = two_principals(100);
+    let id = seed_order_at(&mut tw, &families, 0xC1C, budget, ObjId(8));
+    ok(&mut tw, GOD, &format!("@wo/submit {id}"));
+    let before = ledger_total(&tw);
+    set_state(
+        &mut tw,
+        &families,
+        id,
+        WorkOrderState::Completed {
+            commit: CommitToken::from_bytes([0xC3; 16]),
+        },
+    );
+    fire(&mut tw);
+    assert_eq!(
+        bal(&tw, budget),
+        100 - price(1),
+        "the requester's budget really fell"
+    );
+    assert_eq!(
+        bal(&tw, boss_account),
+        price(1),
+        "and the FACILITY OWNER — a different principal — was paid"
+    );
+    assert_eq!(ledger_total(&tw), before, "conserved across the payment");
+}
+
+/// **A draft is not an account census of a stranger** (B9's disclosure half): a
+/// facility a stranger may not run answers `NO_SUCH_FACILITY` before any account is
+/// resolved, byte-identically to one that does not exist.
+#[test]
+fn vf_c1d_the_draft_is_not_an_account_census_of_a_stranger() {
+    let (mut tw, _families, _budget, _boss, _boss_account) = two_principals(100);
+    let stranger = tw.spawn_player("Pat");
+    let mine = open_account(&mut tw, stranger);
+    let real = err(
+        &mut tw,
+        stranger,
+        &format!("@wo/draft tacsim.core/alloy_smelt/1=8 1 {mine} 500 600"),
+    );
+    let phantom = err(
+        &mut tw,
+        stranger,
+        &format!("@wo/draft tacsim.core/alloy_smelt/1=4242 1 {mine} 500 600"),
+    );
+    assert_eq!(
+        real, phantom,
+        "an unrunnable facility and a nonexistent one are one byte string"
+    );
+}
+
+// ---- C2 / D2 / B1 — `@wo/restamp` is the exit it says it is ----
+
+/// **The tree's first end-to-end pause and recovery**: submit, change the world-time
+/// rate, deliver (pauses), restamp, deliver (**completes**).
+///
+/// Before the fold `stale_generation` read the order's own `ProductionSchedule`,
+/// whose only writer was `wo_submit`, while `wo_restamp` rewrote the kernel's
+/// `DurableSchedule` and then only `with_state(Running)` — which clones the record,
+/// schedule included. The predicate was therefore still true on the very next attempt
+/// and the order re-paused for ever, holding its budget, its materials and its
+/// facility slot, with nothing paging (`Interrupted` holds resources and is not
+/// terminal) and no exit but `@wo/cancel`. Both R5(b) pins were indirect, which is how
+/// three lenses found this independently and no test did.
+#[test]
+fn vf_c2a_a_rate_change_pauses_an_order_and_the_restamp_lets_the_next_deliver_complete() {
+    let (mut tw, families, budget, _payee) = scene(1_000);
+    seed_metals(&mut tw, &families, 40);
+    let id = seed_order(&mut tw, &families, 0xC2A, budget, 1);
+
+    ok(&mut tw, GOD, &format!("@wo/submit {id}"));
+    land(&mut tw, 0x21).expect("the submission resolves and installs");
+    assert_eq!(order_state(&mut tw, &families, id), WorkOrderState::Running);
+    run_production(&mut tw, &families, id);
+
+    // The rate change: exactly the epoch `@tacsim/time rate=` installs.
+    let epoch = tw
+        .world()
+        .next_world_timeline_epoch(2)
+        .expect("a legal rate");
+    tw.world_mut()
+        .append_world_timeline_epoch(epoch)
+        .expect("the generation opens");
+
+    ok(&mut tw, GOD, &format!("@wo/deliver {id}"));
+    land(&mut tw, 0x22).expect("the delivery resolves");
+    assert_eq!(
+        order_state(&mut tw, &families, id),
+        WorkOrderState::Interrupted {
+            cause: mush_industry::InterruptionCause::TimelineChanged
+        },
+        "the generation change PAUSED it rather than delivering"
+    );
+
+    ok(&mut tw, GOD, &format!("@wo/restamp {id}"));
+    land(&mut tw, 0x23).expect("the restamp resolves");
+    assert_eq!(order_state(&mut tw, &families, id), WorkOrderState::Running);
+
+    ok(&mut tw, GOD, &format!("@wo/deliver {id}"));
+    land(&mut tw, 0x24).expect("the second delivery resolves");
+    assert!(
+        matches!(
+            order_state(&mut tw, &families, id),
+            WorkOrderState::Completed { .. }
+        ),
+        "THE RESTAMP IS THE EXIT: the next deliver completes"
+    );
+}
+
+/// **The restamp's post-image carries the LIVE generation on the order's own
+/// production schedule** — the record-level pin under `vf_c2a`.
+#[test]
+fn vf_c2b_the_restamp_post_image_carries_the_live_generation() {
+    let (mut tw, families, budget, _payee) = scene(1_000);
+    seed_metals(&mut tw, &families, 40);
+    let id = seed_order(&mut tw, &families, 0xC2B, budget, 1);
+    ok(&mut tw, GOD, &format!("@wo/submit {id}"));
+    land(&mut tw, 0x31).expect("submitted");
+    let started = order_generation(&mut tw, &families, id);
+
+    let epoch = tw
+        .world()
+        .next_world_timeline_epoch(3)
+        .expect("a legal rate");
+    tw.world_mut()
+        .append_world_timeline_epoch(epoch)
+        .expect("the generation opens");
+    let live = tw.world().world_ic_now().clock;
+    assert_ne!(started, live, "the stamp is stale by construction");
+
+    ok(&mut tw, GOD, &format!("@wo/restamp {id}"));
+    land(&mut tw, 0x32).expect("restamped");
+    assert_eq!(
+        order_generation(&mut tw, &families, id),
+        live,
+        "the restamp REWROTE the stamp `stale_generation` reads"
+    );
+}
+
+/// **A paused order still holds its budget and its facility slot, and cancelling
+/// releases both** (D2's retention half).
+#[test]
+fn vf_c2c_a_paused_order_still_holds_its_budget_and_its_slot_and_releases_them_on_cancel() {
+    let paused = WorkOrderState::Interrupted {
+        cause: mush_industry::InterruptionCause::TimelineChanged,
+    };
+    assert!(paused.holds_resources() && !paused.is_terminal());
+
+    let (mut tw, families, budget, _payee) = scene(100);
+    let id = seed_order(&mut tw, &families, 0xC2C, budget, 1);
+    ok(&mut tw, GOD, &format!("@wo/submit {id}"));
+    let _ = tw.engine_mut().take_authoritative_submit();
+    set_state(&mut tw, &families, id, paused);
+
+    fire(&mut tw);
+    assert_eq!(
+        held(&tw, budget),
+        price(1),
+        "a pause holds the money: the sweep's terminal and orphan arms both skip it"
+    );
+    let alerts = ok(&mut tw, GOD, "@econ/alerts");
+    assert!(
+        !alerts.contains(&format!("work order #{}", id.0)),
+        "and nothing pages, because the hold is live: {alerts}"
+    );
+
+    set_state(&mut tw, &families, id, WorkOrderState::Cancelled);
+    fire(&mut tw);
+    assert_eq!(held(&tw, budget), 0, "cancelling gives it back");
+    assert_eq!(bal(&tw, budget), 100);
+}
+
+// ---- C3 (owner decision F3(a)) — a completed order that cannot pay is REFUSED ----
+
+/// **A completed order whose payee closed holds its budget and pages, rather than
+/// refunding a delivered order** (C3).
+///
+/// `wo_deliver` materialises the output lot at the transition while the capture waits
+/// for the Coarse tick, so the old `None => release(..)` arm handed the requester the
+/// goods **and** every coin back — with the ledger total conserved throughout, which is
+/// exactly why the conservation pins never saw it.
+#[test]
+fn vf_c3a_a_completed_order_whose_payee_closed_holds_its_budget_and_pages_rather_than_refunding() {
+    let (mut tw, families, budget, boss, boss_account) = two_principals(100);
+    let id = seed_order_at(&mut tw, &families, 0xC3A, budget, ObjId(8));
+    ok(&mut tw, GOD, &format!("@wo/submit {id}"));
+    set_state(
+        &mut tw,
+        &families,
+        id,
+        WorkOrderState::Completed {
+            commit: CommitToken::from_bytes([0xC3; 16]),
+        },
+    );
+    ok(&mut tw, GOD, &format!("@account/close {boss_account}"));
+
+    fire(&mut tw);
+    assert!(
+        budget_hold(&tw, id).is_some_and(|h| h.status.is_held()),
+        "the hold is still LIVE: a settlement that cannot pay is refused, not refunded"
+    );
+    assert_eq!(held(&tw, budget), price(1), "the money is still reserved");
+    assert_eq!(bal(&tw, budget), 100, "nothing was captured");
+    let alerts = ok(&mut tw, GOD, "@econ/alerts");
+    assert!(
+        alerts.contains(&format!("work order #{}", id.0))
+            && alerts.contains("no account to be paid into"),
+        "and staff are told what is wrong: {alerts}"
+    );
+    let recommended: Vec<String> = tw
+        .world()
+        .module_state::<EconomyStore>()
+        .expect("economy")
+        .escalations()
+        .filter(|e| e.subject == mush_economy::EscalationSubject::WorkOrder(id.0))
+        .flat_map(|e| e.recommended.clone())
+        .collect();
+    assert!(
+        recommended
+            .iter()
+            .any(|line| line.starts_with(&format!("@account/open #{}=", boss.0))),
+        "with the recommended command filled in: {recommended:?}"
+    );
+}
+
+/// **Reopening a payout account lets the very next fire capture** — the refusal is
+/// not a dead end.
+#[test]
+fn vf_c3b_reopening_a_payout_account_lets_the_next_fire_capture() {
+    let (mut tw, families, budget, boss, boss_account) = two_principals(100);
+    let id = seed_order_at(&mut tw, &families, 0xC3B, budget, ObjId(8));
+    ok(&mut tw, GOD, &format!("@wo/submit {id}"));
+    let before = ledger_total(&tw);
+    set_state(
+        &mut tw,
+        &families,
+        id,
+        WorkOrderState::Completed {
+            commit: CommitToken::from_bytes([0xC4; 16]),
+        },
+    );
+    ok(&mut tw, GOD, &format!("@account/close {boss_account}"));
+    fire(&mut tw);
+    assert!(budget_hold(&tw, id).is_some_and(|h| h.status.is_held()));
+
+    let reopened = open_account(&mut tw, boss);
+    fire(&mut tw);
+    assert!(
+        matches!(
+            budget_hold(&tw, id).expect("the hold").status,
+            HoldStatus::Consumed { .. }
+        ),
+        "the next fire captured"
+    );
+    assert_eq!(bal(&tw, reopened), price(1), "into the reopened account");
+    assert_eq!(ledger_total(&tw), before);
+}
+
+// ---- C4 / D1 / D8 (owner decision F2(a)) — the attempt term ----
+
+/// **A released orphan is resubmittable, with a fresh live hold** (C4/D1).
+///
+/// `industry.wo.hold/{order}` carried no attempt term and doc 13 W-D4 keeps every key
+/// for ever, so after the sweep's orphan release a retyped `@wo/submit` met
+/// `AlreadyPosted` -> no live hold -> `NoHold`, and a **fully funded** player was told
+/// *"That account cannot fund that work order"* until the end of the world.
+#[test]
+fn vf_c4a_a_released_orphan_is_resubmittable_with_a_new_live_hold() {
+    let (mut tw, families, budget, _payee) = scene(100);
+    let id = seed_order(&mut tw, &families, 0xD1, budget, 1);
+    ok(&mut tw, GOD, &format!("@wo/submit {id}"));
+    let _ = tw.engine_mut().take_authoritative_submit(); // the crash shape: never landed
+    fire(&mut tw);
+    fire(&mut tw);
+    assert!(budget_hold(&tw, id).is_some_and(|h| matches!(h.status, HoldStatus::Released)));
+    assert_eq!(held(&tw, budget), 0, "the money came back");
+
+    let events = tw.run(GOD, &format!("@wo/submit {id}"));
+    assert!(
+        !has_error(&events),
+        "a funded, drafted, live order must be resubmittable: {}",
+        texts(&events)
+    );
+    assert_eq!(
+        held(&tw, budget),
+        price(1),
+        "the SECOND attempt reserved the price again"
+    );
+    let holds = holds_of(&tw, id);
+    assert_eq!(holds.len(), 2, "two attempts, two holds");
+    assert!(holds[1].status.is_held(), "and the second one is live");
+}
+
+/// **The second placement's key differs from the first, and so does its settlement
+/// key** — the two shapes move together or D5's refutation expires (F2(a)).
+#[test]
+fn vf_c4b_the_second_placements_key_differs_from_the_first() {
+    let (mut tw, families, budget, _payee) = scene(100);
+    let id = seed_order(&mut tw, &families, 0xD1B, budget, 1);
+    ok(&mut tw, GOD, &format!("@wo/submit {id}"));
+    let _ = tw.engine_mut().take_authoritative_submit();
+    fire(&mut tw);
+    fire(&mut tw);
+    ok(&mut tw, GOD, &format!("@wo/submit {id}"));
+
+    assert!(
+        key_spent(&tw, &mush_industry::wo_hold_key(id, 0)),
+        "attempt 0's placement key is spent"
+    );
+    assert!(
+        key_spent(&tw, &mush_industry::wo_hold_key(id, 1)),
+        "and attempt 1 posted under its OWN key rather than meeting it"
+    );
+    assert!(
+        key_spent(&tw, &mush_industry::wo_settle_key(id, 0)),
+        "attempt 0's settlement key is spent by its release"
+    );
+    assert!(
+        !key_spent(&tw, &mush_industry::wo_settle_key(id, 1)),
+        "attempt 1's settlement key is FRESH — this is what stops the capture \
+         answering AlreadyPosted and shipping the goods free"
+    );
+}
+
+/// **A live hold never coexists with a spent settle key** (D5's first refutation
+/// probe, landed as a standing regression so F2's fix cannot re-open what the
+/// refutation closed).
+#[test]
+fn vf_c4c_a_live_hold_never_coexists_with_a_spent_settle_key() {
+    let (mut tw, families, budget, _payee) = scene(1_000);
+    let id = seed_order(&mut tw, &families, 0xD5, budget, 1);
+    ok(&mut tw, GOD, &format!("@wo/submit {id}"));
+    let _ = tw.engine_mut().take_authoritative_submit();
+    for round in 0..3u32 {
+        for (n, hold) in holds_of(&tw, id).into_iter().enumerate() {
+            let n = u32::try_from(n).expect("a small attempt");
+            if hold.status.is_held() {
+                assert!(
+                    !key_spent(&tw, &mush_industry::wo_settle_key(id, n)),
+                    "round {round}: a LIVE hold met a spent settle key"
+                );
+            }
+        }
+        fire(&mut tw);
+        fire(&mut tw);
+        ok(&mut tw, GOD, &format!("@wo/submit {id}"));
+        let _ = tw.engine_mut().take_authoritative_submit();
+    }
+    set_state(
+        &mut tw,
+        &families,
+        id,
+        WorkOrderState::Completed {
+            commit: CommitToken::from_bytes([0xD5; 16]),
+        },
+    );
+    fire(&mut tw);
+    assert!(
+        holds_of(&tw, id)
+            .iter()
+            .any(|h| matches!(h.status, HoldStatus::Consumed { .. })),
+        "the last attempt's capture LANDED rather than answering AlreadyPosted"
+    );
+}
+
+/// **A payee that changes before the settle posts clean and pages nothing** (D5's
+/// second refutation probe, landed as a standing regression).
+#[test]
+fn vf_c4d_a_payee_that_changes_before_the_settle_posts_clean_and_pages_nothing() {
+    let (mut tw, families, budget, boss, boss_account) = two_principals(100);
+    let id = seed_order_at(&mut tw, &families, 0xD5D, budget, ObjId(8));
+    ok(&mut tw, GOD, &format!("@wo/submit {id}"));
+    let before = ledger_total(&tw);
+    set_state(
+        &mut tw,
+        &families,
+        id,
+        WorkOrderState::Completed {
+            commit: CommitToken::from_bytes([0xD6; 16]),
+        },
+    );
+    // The owner opens a second account and closes the first WHILE the hold is live:
+    // the payee is re-resolved at settlement, so the capture lands on the live one.
+    let second = open_account(&mut tw, boss);
+    ok(&mut tw, GOD, &format!("@account/close {boss_account}"));
+    fire(&mut tw);
+
+    assert_eq!(bal(&tw, second), price(1), "paid into the live account");
+    assert_eq!(ledger_total(&tw), before, "conserved");
+    let alerts = ok(&mut tw, GOD, "@econ/alerts");
+    assert!(
+        !alerts.contains(&format!("work order #{}", id.0)),
+        "and nothing was paged: {alerts}"
+    );
+}
+
+// ---- C13 — the staff bypass on the budget's ownership ----
+
+/// **Staff may not name a player's account as a work order's budget** (C13).
+///
+/// The hold carries `"industry.workorder"`, which is in `ENGINE_OWNED_RESERVATIONS`,
+/// so `authorize_hold` refuses the account's own owner unconditionally: a staff draft
+/// against a player's wallet reserved money the player could not release, with a staff
+/// `@wo/cancel` as their only exit. A consent gap, not an escalation — and the
+/// ownership clause loses its escape.
+#[test]
+fn vf_c13a_staff_may_not_name_a_players_account_as_a_work_orders_budget() {
+    let (mut tw, _families, _budget, _payee) = scene(100);
+    let pat = tw.spawn_player("Pat");
+    let theirs = open_account(&mut tw, pat);
+    let refusal = err(
+        &mut tw,
+        GOD,
+        &format!("@wo/draft tacsim.core/alloy_smelt/1=7 1 {theirs} 500 600"),
+    );
+    assert_eq!(
+        refusal,
+        mush_industry::AccountRefusal::NotYours.public(),
+        "even for staff, a budget is a reservation on the REQUESTER's own account"
+    );
+    assert!(
+        tw.engine_mut().take_authoritative_submit().is_none(),
+        "and nothing at all was drafted"
+    );
+}
+
+// ---- D4 / B5 — the delivery ingress ----
+
+/// **A swept vanished hold pauses the order and the OFFER ingress delivers nothing**
+/// (D4; F3(a) adapted — the gate is `project_offer`'s server-authored fixed
+/// parameter, because a *submitted* attestation would be forgeable: a command
+/// submission and a hand-built offer submission take the same route).
+#[test]
+fn vf_d4a_a_swept_vanished_hold_pauses_the_order_and_the_offer_ingress_delivers_nothing() {
+    let (mut tw, families, budget, _payee) = scene(1_000);
+    seed_metals(&mut tw, &families, 40);
+    let id = seed_order(&mut tw, &families, 0xD4, budget, 1);
+    // A `Running` order with a complete schedule and no hold at all: the shape a lost
+    // placement, a restore, or a forged direct submission leaves.
+    set_state(&mut tw, &families, id, WorkOrderState::Running);
+    assert!(budget_hold(&tw, id).is_none());
+
+    fire(&mut tw);
+    let alerts = ok(&mut tw, GOD, "@econ/alerts");
+    assert!(
+        alerts.contains(&format!("work order #{}", id.0)),
+        "the sweep paged the subject: {alerts}"
+    );
+    // The command refuses…
+    let refusal = err(&mut tw, GOD, &format!("@wo/deliver {id}"));
+    assert!(refusal.contains("budget reservation is missing"));
+    // …and so does the offer route, which is the ingress that used to be open. It is
+    // driven directly here — no command involved — with exactly the one parameter the
+    // projection declares.
+    let action = mush_industry::action_ref(tw.registry(), mush_industry::IndustryVerb::WoDeliver)
+        .expect("the deliver action is composed");
+    let landed = land_parts(
+        &mut tw,
+        GOD,
+        &action,
+        &mush_core::PerceivedRef::SelfActor,
+        serde_json::json!({ "order": id.to_string() }),
+        0x42,
+    );
+    assert!(
+        landed.is_err(),
+        "an offer-route delivery of an unfunded order must not land: {landed:?}"
+    );
+    assert!(
+        !matches!(
+            order_state(&mut tw, &families, id),
+            WorkOrderState::Completed { .. }
+        ),
+        "and nothing was produced"
+    );
+}
+
+/// **A funded order still delivers through the offer route**, so the D4 gate refuses
+/// the unfunded case and nothing else.
+#[test]
+fn vf_d4b_a_funded_order_still_delivers_through_the_offer_route() {
+    let (mut tw, families, budget, _payee) = scene(1_000);
+    seed_metals(&mut tw, &families, 40);
+    let id = seed_order(&mut tw, &families, 0xD4B, budget, 1);
+    ok(&mut tw, GOD, &format!("@wo/submit {id}"));
+    land(&mut tw, 0x43).expect("submitted");
+    run_production(&mut tw, &families, id);
+
+    let action = mush_industry::action_ref(tw.registry(), mush_industry::IndustryVerb::WoDeliver)
+        .expect("the deliver action is composed");
+    land_parts(
+        &mut tw,
+        GOD,
+        &action,
+        &mush_core::PerceivedRef::SelfActor,
+        serde_json::json!({ "order": id.to_string() }),
+        0x44,
+    )
+    .expect("a funded order delivers");
+    assert!(matches!(
+        order_state(&mut tw, &families, id),
+        WorkOrderState::Completed { .. }
+    ));
+}
+
+/// **The vanished-hold refusal is byte-identical to a free id for a stranger** (B5).
+#[test]
+fn vf_b5a_the_vanished_hold_refusal_is_byte_identical_to_a_free_id_for_a_stranger() {
+    let (mut tw, families, budget, _payee) = scene(100);
+    let id = seed_order(&mut tw, &families, 0xB5, budget, 1);
+    set_state(&mut tw, &families, id, WorkOrderState::Running);
+    let stranger = tw.spawn_player("Pat");
+
+    let real = texts(&tw.run(stranger, &format!("@wo/deliver {id}")));
+    let _ = tw.engine_mut().take_authoritative_submit();
+    let phantom = texts(&tw.run(stranger, "@wo/deliver #3735928559"));
+    let _ = tw.engine_mut().take_authoritative_submit();
+    assert_eq!(
+        real, phantom,
+        "a real unfunded order and a free id are one byte string for a non-viewer"
+    );
+    let mine = err(&mut tw, GOD, &format!("@wo/deliver {id}"));
+    assert!(mine.contains("budget reservation is missing"));
+}
+
+// ---- D8 — a transient is a wait ----
+
+/// **A transient placement is a WAIT, not a funding refusal** (D8, doc 13 W2).
+///
+/// The submit arm collapsed every `place` error into *"That account cannot fund that
+/// work order"*, so doc 13 W-D1's `Unknown` verdict told a solvent player their
+/// account was short. `NoEconomy` is `HoldError::is_transient`'s other arm and is the
+/// reachable transient on the command path.
+#[test]
+fn vf_d8a_a_transient_placement_is_a_wait_not_a_funding_refusal() {
+    let cell: InventoryHandleCell = Arc::default();
+    let mut tw = TestWorld::with_modules(vec![
+        Box::new(
+            InventoryModule::new()
+                .with_quantity_delegates(["industry"])
+                .with_handle_cell(Arc::clone(&cell)),
+        ),
+        Box::new(
+            IndustryModule::new()
+                .with_inventory(Arc::clone(&cell))
+                .with_recipes(Arc::new(TestRecipes)),
+        ),
+    ]);
+    let families = tw
+        .world()
+        .module_state::<IndustryHandles>()
+        .expect("handles")
+        .0
+        .clone();
+    ok(&mut tw, GOD, "@facility/open 7=2 smelt");
+    let _ = tw.engine_mut().take_authoritative_submit();
+    let id = seed_order(&mut tw, &families, 0xD8, AccountId(1), 1);
+    let refusal = err(&mut tw, GOD, &format!("@wo/submit {id}"));
+    assert_eq!(
+        refusal,
+        mush_industry::money::LEDGER_BUSY,
+        "a transient is doc 13 W2's retry line, never a verdict on the wallet"
+    );
+    assert_eq!(order_state(&mut tw, &families, id), WorkOrderState::Draft);
+}
+
+/// **The orphan arm continues on a transient BEFORE it burns a settle slot or clears
+/// the two-sighting note** (D8's second half, pinned at the source because the
+/// economy exposes no way to inject a `RetryShortly` through a command).
+///
+/// A transient used to consume one of `MAX_WO_SETTLE_PER_FIRE` and reset the counter,
+/// so each blip cost the orphan two more full rotations at `SWEEP_PERIOD_SECS`.
+#[test]
+fn vf_d8b_the_orphan_arm_continues_on_a_transient_before_the_slot_and_the_note() {
+    let src = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/money.rs"),
+    )
+    .expect("the money source");
+    let boundary = src.find("#[cfg(test)]").unwrap_or(src.len());
+    let arm = src[..boundary]
+        .find("} else if !order.state().holds_resources() {")
+        .expect("the orphan arm");
+    let body = &src[arm..];
+    let end = body.find("\n        } else {").unwrap_or(body.len());
+    let body = &body[..end];
+    // Measured from the compensating release itself: the arm's earlier
+    // `clear_settle_pending` belongs to the no-hold case and is not in question.
+    let release = body
+        .find("match release(ctx, id, &hold)")
+        .expect("the compensating release");
+    let body = &body[release..];
+    let transient = body
+        .find("Err(error) if error.is_transient() => continue")
+        .expect("the transient continue");
+    let slot = body.find("settled += 1").expect("the settle budget");
+    let note = body
+        .find("clear_settle_pending")
+        .expect("the two-sighting note");
+    assert!(
+        transient < slot && transient < note,
+        "a transient must cost neither a settle slot nor the pending note"
+    );
+}
+
+// ---- D9 — the settle note's declared bound ----
+
+/// **`settle_pending` never exceeds its declared cap**, and the cap is encoded
+/// (D9's uncapped half; the coverage half stays a recorded deferral).
+#[test]
+fn vf_d9a_settle_pending_never_exceeds_its_declared_cap() {
+    assert_eq!(mush_industry::money::MAX_SETTLE_PENDING, 256);
+    let mut store = mush_industry::IndustryStore::default();
+    for n in 0..(mush_industry::money::MAX_SETTLE_PENDING as u64 + 64) {
+        let _ = store.note_settle_pending(WorkOrderId(n));
+    }
+    assert_eq!(
+        store.settle_pending_len(),
+        mush_industry::money::MAX_SETTLE_PENDING,
+        "the note set is bounded"
+    );
+    assert_eq!(
+        store.settle_pending_dropped(),
+        64,
+        "and the overflow is COUNTED"
+    );
+    // A note already held still promotes on its second sighting.
+    assert!(store.note_settle_pending(WorkOrderId(0)));
+}
+
+// ---- D11 — the page that acknowledges itself ----
+
+/// **Cancelling a paged order closes its alert on the next fire** (D11).
+///
+/// `money::page_order` recommends `@wo/cancel`; after it the order is terminal with no
+/// live hold, and the sweep's terminal branch used to `continue` past it, leaving a
+/// standing page about a finished order until a staffer ran `@econ/ack` by hand.
+#[test]
+fn vf_d11a_cancelling_a_paged_order_closes_its_alert_on_the_next_fire() {
+    let (mut tw, families, budget, _payee) = scene(100);
+    let id = seed_order(&mut tw, &families, 0xD11, budget, 1);
+    set_state(&mut tw, &families, id, WorkOrderState::Running);
+    fire(&mut tw);
+    let alerts = ok(&mut tw, GOD, "@econ/alerts");
+    assert!(
+        alerts.contains(&format!("work order #{}", id.0)),
+        "the page opened: {alerts}"
+    );
+
+    set_state(&mut tw, &families, id, WorkOrderState::Cancelled);
+    fire(&mut tw);
+    let alerts = ok(&mut tw, GOD, "@econ/alerts");
+    assert!(
+        !alerts.contains(&format!("work order #{}", id.0)),
+        "the operator did what the page recommended, so the page acknowledged \
+         itself: {alerts}"
+    );
+}
+
+// ---- B15 / Z2 — the offer schema is the real gate ----
+
+/// **Every `@wo` command submission resolves through the REAL offer route** (Z2, this
+/// fold's own grounding — not on the verify's list).
+///
+/// `Ctx::submit_authoritative` is turned into an `OfferSubmission` against the actor's
+/// own projection and run through `resolve_legal_action`, whose
+/// `ProjectedParameterSchema::validate` refuses any key the projection does not
+/// declare. `@wo/submit` staged `hold` against a projection that declared only
+/// `order`, so on a real server every submit was refused `InvalidParameters` before it
+/// reached the provider — R1's whole money leg was unreachable outside the tests,
+/// which stage a submission and never resolve it. This is the missing rung.
+#[test]
+fn vf_z2a_every_wo_command_submission_resolves_through_the_real_offer_route() {
+    let (mut tw, families, budget, _payee) = scene(1_000);
+    seed_metals(&mut tw, &families, 40);
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@wo/draft tacsim.core/alloy_smelt/1=7 1 {budget} 500 600"),
+    );
+    land(&mut tw, 0x51).expect("@wo/draft resolves");
+    let id = seed_order(&mut tw, &families, 0xB15, budget, 1);
+    ok(&mut tw, GOD, &format!("@wo/submit {id}"));
+    land(&mut tw, 0x52).expect("@wo/submit resolves — this is the Z2 regression");
+    ok(&mut tw, GOD, &format!("@wo/restamp {id}"));
+    let restamp = land(&mut tw, 0x53);
+    assert!(
+        !format!("{restamp:?}").contains("InvalidParameters"),
+        "the restamp's `policy` parameter is declared: {restamp:?}"
+    );
+    ok(&mut tw, GOD, &format!("@wo/cancel {id}"));
+    land(&mut tw, 0x54).expect("@wo/cancel resolves");
+}
+
+/// **The real submit gate is the hold's PURPOSE, not the id in the parameter**
+/// (B15, narrowed): a forged non-zero `hold` buys nothing, because `live_hold` finds
+/// the reservation by purpose and the order reads `budget_missing` for ever after.
+#[test]
+fn vf_b15a_a_forged_hold_id_buys_no_production_because_the_authority_is_the_purpose() {
+    let (mut tw, families, budget, _payee) = scene(100);
+    let id = seed_order(&mut tw, &families, 0xB15F, budget, 1);
+    set_state(&mut tw, &families, id, WorkOrderState::Running);
+    assert!(budget_hold(&tw, id).is_none());
+    let order = order_record(&mut tw, &families, id);
+    assert!(
+        mush_industry::money::budget_missing_in(tw.world(), &order),
+        "the purpose finds no reservation, so the order is unfunded whatever id it \
+         recorded"
+    );
+    assert!(
+        err(&mut tw, GOD, &format!("@wo/deliver {id}")).contains("budget reservation is missing")
+    );
+}
+
+// ---- Z1 — the wrapped player strings ----
+
+/// **No shipped player-visible string carries a run of spaces mid-sentence.**
+///
+/// A Rust multi-line string literal without a `\` continuation keeps the source
+/// indentation, so strings this pass introduced reached players with 10-18 spaces in
+/// the middle of a sentence — the first thing a player reads after the two verbs the
+/// pass added.
+#[test]
+fn vf_z1a_no_shipped_player_string_carries_a_double_space() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut offenders: Vec<String> = Vec::new();
+    for file in std::fs::read_dir(&dir).expect("src/").flatten() {
+        let path = file.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let boundary = text.find("#[cfg(test)]").unwrap_or(text.len());
+        for (n, line) in text[..boundary].lines().enumerate() {
+            let trimmed = line.trim_start();
+            if trimmed.starts_with("//") || trimmed.starts_with('#') {
+                continue;
+            }
+            // The un-continued-literal shape: a quoted run that both starts with real
+            // words and contains two consecutive spaces, on one physical line.
+            let Some(open) = line.find('"') else {
+                continue;
+            };
+            let tail = &line[open + 1..];
+            if tail.contains("  ")
+                && tail.trim_end().ends_with('"')
+                && tail
+                    .split("  ")
+                    .next()
+                    .is_some_and(|head| head.chars().any(char::is_alphanumeric))
+            {
+                offenders.push(format!("{}:{}: {}", path.display(), n + 1, line.trim()));
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "player-visible literals with a run of spaces mid-sentence:\n{}",
+        offenders.join("\n")
     );
 }

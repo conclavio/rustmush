@@ -122,6 +122,14 @@ pub const MAX_ROUTE_PROPELLANT: u64 = 1_000_000_000;
 /// [`DriveProfile`]: mush_sim::DriveProfile
 pub const MAX_LEG_SECS: u32 = 31_536_000;
 
+/// The widest hazard band and interdiction threshold a pack may author, refused at
+/// **pack validation** (independent verify fold, B11).
+///
+/// It is `mush_sim::MAX_HAZARD_BAND`'s own value, stated here by value rather than
+/// imported for the same no-edge reason [`MAX_LEG_SECS`] is; a unit test pins the two
+/// together, so they cannot drift.
+pub const MAX_HAZARD_BAND: u8 = 5;
+
 /// Which of Q6A's two kinds a pack is.
 ///
 /// The distinction is load-bearing: *a rules pack is re-pinned and diffed, while
@@ -631,6 +639,37 @@ impl PackEntry {
                 if entry.legs.last().map(|leg| &leg.to) != Some(&entry.to) {
                     return Err(PackError::RouteEndpointMismatch);
                 }
+                // ---- B11 (independent verify fold): the band is PACK validation ----
+                //
+                // R2's `MAX_HAZARD_BAND` check lived only on `LegDef::with_hazard`,
+                // which the route refresh loop reaches through `materialize_route` —
+                // and that loop's error arm is a `tracing::warn!` and a `skip`. So a
+                // pack authoring `hazard = 9` parsed, passed digest verification,
+                // seeded green (`@tacsim/seed … commit` answered OK) and the route
+                // simply **disappeared**: `@corridor/show` answered `No such
+                // corridor.` and any journey plan naming it failed, with no held
+                // document, no escalation and no boot refusal. Every other
+                // refused-on-load record in the tree is louder than that — cut 6
+                // quarantines and pages a refused journey, cut 9 holds a refused
+                // operation, and `[tacsim.recovery]` refuses the boot on a typo.
+                // §15.1 row 7's *"refused on load rather than clamped"* was true only
+                // in the weakest sense.
+                //
+                // Here it is the boot, naming the pack file, the route and the band —
+                // the same posture a re-signed pack already gets. The band is stated
+                // by value rather than imported for the same no-edge reason
+                // `MAX_DEPOSIT_RESERVE` is, and `e7r1_r2`'s own materialization guard
+                // stays where it is as defence in depth.
+                if let Some(leg) = entry
+                    .legs
+                    .iter()
+                    .find(|leg| leg.hazard > MAX_HAZARD_BAND || leg.interdiction > MAX_HAZARD_BAND)
+                {
+                    return Err(PackError::HazardBandOutOfRange {
+                        actual: leg.hazard.max(leg.interdiction),
+                        max: MAX_HAZARD_BAND,
+                    });
+                }
             }
         }
         Ok(())
@@ -1018,7 +1057,19 @@ impl RulesPack {
             });
         }
         for (id, entry) in &entries {
-            entry.check()?;
+            // B11: the entry id rides the refusal, so a boot failure names the file
+            // (the host adds that), the ROUTE and the band, rather than leaving an
+            // operator to find one bad leg in a thousand-entry pack.
+            entry.check().map_err(|error| match error {
+                PackError::HazardBandOutOfRange { actual, max } => {
+                    PackError::RouteHazardBandOutOfRange {
+                        route: id.to_string(),
+                        actual,
+                        max,
+                    }
+                }
+                other => other,
+            })?;
             // A rules pack instantiates nothing and a seed pack defines no rules.
             // Q6A's whole distinction is that one is re-pinned and diffed while
             // re-running the other would duplicate a mine, so an entry on the wrong
@@ -1428,6 +1479,27 @@ pub enum PackError {
         actual: u32,
         /// [`MAX_LEG_SECS`].
         max: u32,
+    },
+    /// A leg past [`MAX_HAZARD_BAND`] (independent verify fold, B11). It refuses the
+    /// **boot**, naming the pack file, rather than letting `materialize_route` skip
+    /// the route behind a `tracing::warn` and leave a seed that committed green with
+    /// a corridor that is simply absent.
+    #[error("a route leg declares hazard band {actual}; the maximum is {max}")]
+    HazardBandOutOfRange {
+        /// The band it declared.
+        actual: u8,
+        /// [`MAX_HAZARD_BAND`].
+        max: u8,
+    },
+    /// [`PackError::HazardBandOutOfRange`] with the offending route named (B11).
+    #[error("route {route} declares hazard band {actual}; the maximum is {max}")]
+    RouteHazardBandOutOfRange {
+        /// The route entry's pack-local id.
+        route: String,
+        /// The band it declared.
+        actual: u8,
+        /// [`MAX_HAZARD_BAND`].
+        max: u8,
     },
     /// A propellant plan past [`MAX_ROUTE_PROPELLANT`].
     #[error("a route declares {actual} propellant; the maximum is {max}")]

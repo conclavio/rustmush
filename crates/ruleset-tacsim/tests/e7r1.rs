@@ -67,9 +67,11 @@ fn signed(body: &str) -> String {
     body.replace("DIGEST", &digest)
 }
 
-/// A two-leg corridor seed pack whose FIRST leg is armed, with a controller.
-fn armed_corridor(hazard: u8, interdiction: u8) -> String {
-    signed(&format!(
+/// A two-leg corridor seed pack whose FIRST leg is armed, with a controller —
+/// **unsigned**, because a body past the hazard cap no longer parses and therefore
+/// cannot be signed (independent verify fold, B11).
+fn armed_corridor_source(hazard: u8, interdiction: u8) -> String {
+    format!(
         r#"{{ "manifest": {{ "id": "tacsim.belt", "version": 1, "kind": "campaign_seed",
           "digest": "DIGEST", "requires": [] }},
           "entries": {{
@@ -86,7 +88,12 @@ fn armed_corridor(hazard: u8, interdiction: u8) -> String {
                 "drive_class": "fusion_torch", "propellant": 0,
                 "controller": "belt_authority" }} }}
           }} }}"#
-    ))
+    )
+}
+
+/// The signed form of [`armed_corridor_source`], for every band the pack may author.
+fn armed_corridor(hazard: u8, interdiction: u8) -> String {
+    signed(&armed_corridor_source(hazard, interdiction))
 }
 
 /// The fixture's `[tacsim]` block plus one more seed pack.
@@ -222,24 +229,76 @@ fn e7r1_r2_a_hand_edited_corridor_digest_fails_naming_both_and_a_re_derived_one_
     assert!(refused.contains("<belt>"), "naming the file: {refused}");
 }
 
-/// **A band past the cap is refused on load, never clamped** — and the refusal is the
-/// route's own, so the pack does not half-materialize.
+/// **A pack past the hazard cap fails the BOOT, naming the file, the route and the
+/// band** (independent verify fold, B11 — this test's *before* picture, rewritten in
+/// place).
+///
+/// It used to assert only that the route was not materialized. That was true and it
+/// was the defect: `store`'s refresh loop is `Err(detail) => tracing::warn!(..,
+/// "tacsim: a pack route could not be materialized; skipped")`, so a pack authoring
+/// `hazard = 9` parsed, passed digest verification, seeded **green** — `@tacsim/seed
+/// … commit` answered OK — and the route simply disappeared, with `@corridor/show`
+/// answering `No such corridor.` and any journey plan naming it failing. No held
+/// document, no escalation, no boot refusal; every other refused-on-load record in
+/// the tree is louder (cut 6 quarantines a refused journey and pages, cut 9 holds a
+/// refused operation, `[tacsim.recovery]` refuses the boot on a typo). §15.1 row 7's
+/// *"refused on load rather than clamped"* was true only in the weakest sense.
 #[test]
-fn e7r1_r2_a_band_past_the_cap_refuses_the_materialization() {
+fn vf_b11a_a_pack_past_the_hazard_cap_fails_the_boot_naming_the_file_the_route_and_the_band() {
     assert_eq!(mush_sim::MAX_HAZARD_BAND, 5);
-    let mut tw = boot_with(with_seed(armed_corridor(9, 3)));
-    // The pack itself parses — the band is a `u8` — and the refusal lands where the
-    // route is materialized against `mush-sim`'s own constructor.
-    ok(&mut tw, GOD, "@tacsim/seed tacsim.belt commit");
-    assert!(
-        snap(&tw)
-            .route(&mush_core::CanonicalId::new("belt_run").expect("id"))
-            .is_none(),
-        "an over-band route is NOT materialized: refused, never clamped to 5"
+    // The two constants are stated in two crates for the no-edge reason, so they are
+    // pinned together here rather than left to drift.
+    assert_eq!(
+        ruleset_tacsim::MAX_HAZARD_BAND,
+        mush_sim::MAX_HAZARD_BAND,
+        "the pack's own band and the sim's are one number"
     );
-    // And the corridor read is the one existence-hiding line, not a partial render.
-    let refused = err(&mut tw, GOD, "@corridor/show belt_run");
-    assert!(refused.contains("No such corridor"), "{refused}");
+    // `signed()` cannot be used: the body no longer parses at all, which is the
+    // point — so the declared digest is a well-formed placeholder and the refusal
+    // still lands on the BAND rather than on the signature.
+    let body = armed_corridor_source(9, 3).replace("DIGEST", &"0".repeat(64));
+    let error = ruleset_tacsim::load_pack(&body).expect_err("the pack must not load");
+    let rendered = error.to_string();
+    assert!(
+        rendered.contains("belt_run"),
+        "naming the route: {rendered}"
+    );
+    assert!(rendered.contains('9'), "naming the band: {rendered}");
+    assert!(rendered.contains('5'), "naming the maximum: {rendered}");
+
+    // …and the whole boot refuses, naming the FILE, before any module runs.
+    let mut cfg = fixture::config();
+    cfg.seeds.push(PackSource {
+        name: "<belt>".to_string(),
+        bytes: body,
+    });
+    let refused = ruleset_tacsim::verify_sources(&cfg).expect_err("the boot must refuse");
+    assert!(refused.contains("<belt>"), "naming the file: {refused}");
+    assert!(refused.contains("belt_run"), "and the route: {refused}");
+}
+
+/// **The negative B11 asks for: no composition reaches a state where a seed commits
+/// green while its route is absent.**
+///
+/// A legal band still materializes, and the seed and the corridor read agree — so
+/// "the seed said OK" and "the corridor exists" can no longer disagree.
+#[test]
+fn vf_b11b_a_seed_that_commits_green_always_leaves_its_corridor_readable() {
+    for (hazard, interdiction) in [(0, 0), (1, 1), (5, 5), (4, 3)] {
+        let mut tw = boot_with(with_seed(armed_corridor(hazard, interdiction)));
+        ok(&mut tw, GOD, "@tacsim/seed tacsim.belt commit");
+        let shown = ok(&mut tw, GOD, "@corridor/show belt_run");
+        assert!(
+            shown.contains("belt_run"),
+            "band {hazard}/{interdiction} committed green and reads back: {shown}"
+        );
+        assert!(
+            snap(&tw)
+                .route(&mush_core::CanonicalId::new("belt_run").expect("id"))
+                .is_some(),
+            "band {hazard}/{interdiction} materialized"
+        );
+    }
 }
 
 /// **Disclosure (§4 rule 4): an unobserved corridor and one that was never authored
@@ -272,24 +331,133 @@ fn e7r1_r2_an_unobserved_and_a_nonexistent_corridor_are_byte_identical() {
     assert_eq!(staff, ordinary, "a corridor is public once it exists");
 }
 
-/// **`@corridor/domain` names a real domain or says there is none** — never a
-/// sentinel id. With no `mush-sim` domains composed in this rig, every leg presents
-/// into none, which is exactly the honest answer.
+/// **`@corridor/domain` renders a pack-derived boolean and never a live domain id**
+/// (independent verify fold, C5/B6; owner decision F8(b)) — rewritten in place.
+///
+/// `mush_sim::commands::cmd_domain` opens with `require_admin` on all eleven of its
+/// switches, so the existence, id and status of a simulation domain is staff-only
+/// everywhere else in the tree; `@corridor` is one `ReadOnly` group behind
+/// `require_enabled` with `..CommandSpec::default()` — no power, no role — and it read
+/// `SpatialState::domain_of_host(leg.to())` and printed the live `DomainId` to any
+/// player, which after R2 is exactly where an interception has just promoted.
+///
+/// This test also carried the false pin B6 found: it asserted
+/// `!out.contains("domain #0")` as a proxy for *"never a sentinel id"*, but
+/// `DomainId(0)` is a legitimate **first** domain, so on a world with a real domain
+/// the assertion would have failed for the wrong reason. The phrase is now the pin.
 #[test]
-fn e7r1_r2_corridor_domain_names_no_sentinel_when_a_leg_presents_into_nothing() {
+fn vf_c5a_corridor_domain_renders_the_pack_derived_answer_and_no_live_domain_id() {
     let mut tw = boot_with(with_seed(armed_corridor(4, 3)));
     ok(&mut tw, GOD, "@tacsim/seed tacsim.belt commit");
-    let out = ok(&mut tw, GOD, "@corridor/domain belt_run");
-    assert!(out.contains("2 legs"), "{out}");
+    let player = tw.spawn_player("Pat");
+    let staff = ok(&mut tw, GOD, "@corridor/domain belt_run");
+    let ordinary = ok(&mut tw, player, "@corridor/domain belt_run");
     assert_eq!(
-        out.matches("presents into no domain").count(),
+        staff, ordinary,
+        "and staff learn nothing extra from it either"
+    );
+    assert!(staff.contains("2 legs"), "{staff}");
+    assert!(
+        !staff.contains("presents into domain"),
+        "the live-domain phrase is gone from the verb entirely: {staff}"
+    );
+    // **`DomainId(0)` is a legal domain**, so no rendering may use `#0` as a
+    // sentinel — the pin the old test had backwards (B6).
+    assert!(
+        !staff.contains("domain #"),
+        "no domain id of any value crosses to a reader: {staff}"
+    );
+    assert_eq!(
+        staff.matches("hosts no domain").count(),
         2,
-        "both legs, honestly: {out}"
+        "with no domain host bound, both legs say so honestly: {staff}"
+    );
+}
+
+/// **A leg bound as a domain host says an interception can promote there — and still
+/// names no domain** (C5's positive arm; F8(b)).
+///
+/// The pass's own disclosure test composed **no** `mush-sim` module, so every leg
+/// answered *"presents into no domain"* and the leak was never exercised. This one
+/// composes both modules and binds a real host.
+#[test]
+fn vf_c5b_a_bound_host_reads_as_promotable_without_naming_the_domain() {
+    let mut tw = TestWorld::with_modules(vec![
+        Box::new(mush_sim::SimulationModule::new()),
+        Box::new(TacsimRuleset::with_config(with_seed(armed_corridor(4, 3)))),
+    ]);
+    ok(&mut tw, GOD, "@tacsim/seed tacsim.belt commit");
+    let node = route(&tw, "belt_run").legs()[0].to();
+    tw.world_mut()
+        .attach_behavior(
+            node,
+            mush_core::BehaviorId::new("sim.domain").expect("well-formed"),
+            mush_core::BehaviorBinding {
+                schema_version: 1,
+                attached_by: GOD,
+                attached_at: 0,
+            },
+        )
+        .expect("bind the host");
+    // A real, live domain at that endpoint — `DomainId(0)`, the world's first.
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@domain/create #{}=sim.passive", node.0),
+    );
+    let player = tw.spawn_player("Pat");
+
+    // The staff-only surface is still staff-only…
+    let denied = texts(&tw.run(player, &format!("@domain/status #{}", node.0)));
+    assert!(
+        denied.contains("Permission denied"),
+        "`@domain` is staff's: {denied}"
+    );
+    // …and the corridor read answers the question its help text asks, without it.
+    let leaked = ok(&mut tw, player, "@corridor/domain belt_run");
+    assert!(
+        leaked.contains("an interception here can promote"),
+        "the interdicted, host-bound leg reads as promotable: {leaked}"
     );
     assert!(
-        !out.contains("domain #0"),
-        "and never a sentinel domain id: {out}"
+        !leaked.contains("domain #"),
+        "and no live DomainId — #0 included — crosses to a bystander: {leaked}"
     );
+    assert_eq!(
+        leaked,
+        ok(&mut tw, GOD, "@corridor/domain belt_run"),
+        "staff and a bystander read the same bytes, so nothing is hidden either"
+    );
+}
+
+/// **An uninterdicted leg at a bound host does not read as promotable** (F8(b)'s
+/// third arm: the boolean is `is_interdicted() && host-bound`, and both halves are
+/// driven).
+#[test]
+fn vf_c5c_a_bound_host_on_an_uninterdicted_leg_promotes_nothing() {
+    let mut tw = TestWorld::with_modules(vec![
+        Box::new(mush_sim::SimulationModule::new()),
+        Box::new(TacsimRuleset::with_config(with_seed(armed_corridor(0, 0)))),
+    ]);
+    ok(&mut tw, GOD, "@tacsim/seed tacsim.belt commit");
+    let node = route(&tw, "belt_run").legs()[0].to();
+    tw.world_mut()
+        .attach_behavior(
+            node,
+            mush_core::BehaviorId::new("sim.domain").expect("well-formed"),
+            mush_core::BehaviorBinding {
+                schema_version: 1,
+                attached_by: GOD,
+                attached_at: 0,
+            },
+        )
+        .expect("bind the host");
+    let out = ok(&mut tw, GOD, "@corridor/domain belt_run");
+    assert!(
+        out.contains("is a domain host, but this leg is not interdicted"),
+        "{out}"
+    );
+    assert!(!out.contains("can promote"), "{out}");
 }
 
 /// **V. A `v2` corridor pack re-prices, re-times and re-resolves nothing already
@@ -537,5 +705,197 @@ fn e7r1_r5_the_time_block_still_seeds_no_timeline() {
     assert_eq!(
         callers, 1,
         "exactly one caller of the kernel's own rate change — the verb, and nothing else"
+    );
+}
+
+// ---- E7 residue pass 1 independent verify fold ----
+
+/// **`rate = 0` is refused by the verb AND by the kernel, and opens no generation**
+/// (independent verify fold, C9/B10; owner decision F9(a), band `1..=3_600`).
+///
+/// `time_rate` parsed a `u32` and validated only that it differed from the live rate;
+/// `Ctx::change_world_time_rate` → `World::next_world_timeline_epoch` →
+/// `WorldTimeline::next_rate_epoch` checked the anchor, contiguity and
+/// `MAX_WORLD_TIMELINE_EPOCHS` and **never the rate**. `WorldTimelineEpoch::ic_at`
+/// computes `ic_anchor + delta * rate`, so at zero every `world_ic_now` consumer —
+/// recovery cooldowns, production schedules, journey ETAs, escalation cool-offs —
+/// stops for ever. Boot was protected (`WorldTimeline::from_game_clock` clamps
+/// `ic_ratio.max(1)`); the verb was not.
+#[test]
+fn vf_c9a_rate_zero_is_refused_by_the_verb_and_by_the_kernel_and_opens_no_generation() {
+    assert_eq!(mush_core::MIN_WORLD_TIME_RATE, 1);
+    assert_eq!(mush_core::MAX_WORLD_TIME_RATE, 3_600);
+    const {
+        assert!(mush_core::MIN_WORLD_TIME_RATE >= 1);
+        assert!(mush_core::MAX_WORLD_TIME_RATE > mush_core::MIN_WORLD_TIME_RATE);
+    }
+    let mut tw = boot();
+    let before = tw.world().world_timeline().epochs().len();
+    let refused = err(&mut tw, GOD, "@tacsim/time rate=0");
+    assert!(refused.contains("between 1 and 3600"), "{refused}");
+    assert!(
+        refused.contains("not a pause"),
+        "and it says why a stopped clock is not a legal rate: {refused}"
+    );
+    assert_eq!(
+        tw.world().world_timeline().epochs().len(),
+        before,
+        "no generation was opened for a refused rate"
+    );
+
+    // The KERNEL refuses it too, so no other caller can install one.
+    let timeline = tw.world().world_timeline().clone();
+    let error = timeline
+        .next_rate_epoch(tw.world().now().saturating_add(1), 0)
+        .expect_err("the kernel refuses a stopped clock");
+    assert!(
+        matches!(
+            error,
+            mush_core::WorldTimelineError::RateOutOfBand { rate: 0, .. }
+        ),
+        "{error:?}"
+    );
+}
+
+/// **A rate past the band is refused, naming the band** (C9/B10: `u32::MAX` was
+/// accepted, and at that rate one real second advances the IC calendar by 136 years).
+#[test]
+fn vf_c9b_a_rate_past_the_band_is_refused_naming_the_band() {
+    let mut tw = boot();
+    let before = tw.world().world_timeline().epochs().len();
+    for rate in [mush_core::MAX_WORLD_TIME_RATE.saturating_add(1), u32::MAX] {
+        let refused = err(&mut tw, GOD, &format!("@tacsim/time rate={rate}"));
+        assert!(refused.contains("between 1 and 3600"), "{rate}: {refused}");
+        assert!(refused.contains("nothing was changed"), "{rate}: {refused}");
+    }
+    assert_eq!(tw.world().world_timeline().epochs().len(), before);
+    // The kernel is the backstop for both ends of the band.
+    let timeline = tw.world().world_timeline().clone();
+    assert!(matches!(
+        timeline.next_rate_epoch(tw.world().now().saturating_add(1), u32::MAX),
+        Err(mush_core::WorldTimelineError::RateOutOfBand { .. })
+    ));
+    // …and the edges of the band are legal, so the refusal is a band and not a wall.
+    for rate in [
+        mush_core::MIN_WORLD_TIME_RATE,
+        mush_core::MAX_WORLD_TIME_RATE,
+    ] {
+        assert!(
+            timeline
+                .next_rate_epoch(tw.world().now().saturating_add(1), rate)
+                .is_ok(),
+            "rate {rate} is inside the band"
+        );
+    }
+}
+
+/// **The world clock and the ambient clock advance together across a legal rate
+/// change** (C9, narrowed by the fold's own grounding — the invariant the divergence
+/// broke, asserted positively).
+///
+/// The verify's stated mechanism — *"`world_ic_now` freezes while `game_now_unix`
+/// keeps ticking"* — is wrong on this tree: `World::game_now_unix()` **is**
+/// `self.world_ic_now().at`, so under `rate = 0` both freeze. The real divergence is
+/// one seam over: `game_clock_compatibility(epoch)` stores `GameClock { ic_ratio: 0 }`
+/// whose only two readers — `mush_core::module`'s `AMBIENT_IC_TIME_KEY` projection and
+/// `mush_economy::sweep`'s `ratio` — both apply `.max(1)`, so the IC clock and
+/// calendar a player reads in the room would have kept advancing at 1:1 against a
+/// world in which nothing keyed on `world_ic_now` would ever come due again.
+/// Banding the rate is what makes the two agree by construction.
+#[test]
+fn vf_c9c_the_world_clock_and_the_ambient_clock_advance_together_across_a_legal_rate_change() {
+    let mut tw = boot();
+    ok(&mut tw, GOD, "@tacsim/time rate=4");
+    let ratio = tw.world().game_clock().ic_ratio;
+    assert_eq!(ratio, 4, "the compatibility clock carries the live rate");
+    assert_eq!(
+        ratio.max(1),
+        ratio,
+        "so its two `.max(1)` readers see exactly the rate the timeline runs at"
+    );
+    let start = tw.world().world_ic_now().at;
+    let then = tw.world().now() + 10;
+    tw.set_now(then);
+    let moved = tw.world().world_ic_now().at - start;
+    assert_eq!(moved, 40, "ten real seconds at 4:1 is forty IC seconds");
+    // `game_now_unix` IS `world_ic_now().at` on this tree, so they cannot diverge.
+    assert_eq!(tw.world().game_now_unix(), tw.world().world_ic_now().at);
+}
+
+/// **`/time show` names the remaining epoch budget** (F9(a)'s third part).
+///
+/// `MAX_WORLD_TIMELINE_EPOCHS` is a **lifetime** budget — old generations are never
+/// reclaimed, because every old `ClockStamp` keeps its meaning for ever — so a
+/// staffer toggling the rate can exhaust it. It is now said out loud rather than
+/// discovered at 4 096.
+#[test]
+fn vf_c9d_time_show_names_the_remaining_generation_budget() {
+    let mut tw = boot();
+    let shown = ok(&mut tw, GOD, "@tacsim/time rate=2");
+    assert!(
+        shown.contains(&format!(
+            "{} of {} world-time generations remain",
+            mush_core::MAX_WORLD_TIMELINE_EPOCHS - 2,
+            mush_core::MAX_WORLD_TIMELINE_EPOCHS
+        )),
+        "the budget is named after the act that spent one: {shown}"
+    );
+}
+
+/// **No player-visible string this pass shipped carries a run of spaces**
+/// (Z1, this fold's own grounding — four sites, all in `945e27a`).
+///
+/// Rust multi-line string literals keep every leading space of the continuation line
+/// unless the line ends in `\`, so `"…and is paused;\n                 `@wo/restamp`…"`
+/// reaches a player as ten to eighteen spaces mid-sentence. All four were the first
+/// thing a player read after the two verbs this pass introduced: `wo_deliver`'s pause
+/// line, `time_rate`'s generation announcement and its policy summary, and
+/// `@corridor`'s own help text.
+#[test]
+fn vf_z1a_no_shipped_tacsim_string_carries_a_double_space() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut offenders: Vec<String> = Vec::new();
+    for file in std::fs::read_dir(&dir).expect("src/").flatten() {
+        let path = file.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let boundary = text.find("#[cfg(test)]").unwrap_or(text.len());
+        for (n, line) in text[..boundary].lines().enumerate() {
+            let trimmed = line.trim_start();
+            if trimmed.starts_with("//") || trimmed.starts_with('#') {
+                continue;
+            }
+            // The un-continued-literal shape, `mush-industry`'s own `vf_z1a` verbatim:
+            // a quoted run that opens AND closes on one physical line, starts with
+            // real words, and carries two consecutive spaces inside. A `\`-continued
+            // literal's later lines carry no opening quote and are skipped, so the
+            // deliberately column-aligned help text is not an offender.
+            let Some(open) = line.find('"') else {
+                continue;
+            };
+            let tail = &line[open + 1..];
+            if tail.contains("  ")
+                && tail.trim_end().ends_with('"')
+                && tail
+                    .split("  ")
+                    .next()
+                    .is_some_and(|head| head.chars().any(char::is_alphanumeric))
+            {
+                offenders.push(format!("{}:{}: {}", path.display(), n + 1, line.trim()));
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "player-visible literals with a run of spaces mid-sentence:
+{}",
+        offenders.join(
+            "
+"
+        )
     );
 }

@@ -150,10 +150,10 @@ pub use behavior::{
 };
 pub use clock::{
     CivilDate, ClockArithmeticError, ClockMismatch, ClockRef, ClockStamp, GameClock,
-    MAX_WORLD_TIMELINE_EPOCHS, Season, TimeOfDay, WORLD_TIMELINE_EPOCH_PREFIX,
-    WORLD_TIMELINE_HEAD_KEY, WORLD_TIMELINE_NAMESPACE, WorldTimeline, WorldTimelineChangeError,
-    WorldTimelineEpoch, WorldTimelineError, WorldTimelineHead, WorldTimelinePersistenceError,
-    world_timeline_epoch_key, world_timeline_persistence_ops,
+    MAX_WORLD_TIME_RATE, MAX_WORLD_TIMELINE_EPOCHS, MIN_WORLD_TIME_RATE, Season, TimeOfDay,
+    WORLD_TIMELINE_EPOCH_PREFIX, WORLD_TIMELINE_HEAD_KEY, WORLD_TIMELINE_NAMESPACE, WorldTimeline,
+    WorldTimelineChangeError, WorldTimelineEpoch, WorldTimelineError, WorldTimelineHead,
+    WorldTimelinePersistenceError, world_timeline_epoch_key, world_timeline_persistence_ops,
 };
 pub use clock_provider::{
     ClockProvider, ClockProviderContext, ClockProviderFailure, ClockProviderKey, ClockProviderKind,

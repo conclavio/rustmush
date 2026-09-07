@@ -290,8 +290,11 @@ fn recovery_grant(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         GrantOutcome::Granted { contract, loaner } => {
             info(
                 ctx,
+                // Z1 (independent verify fold): `ObjId`'s own `Display` already writes
+                // the `#`, so `#{applicant}` rendered `##3` at a player.
                 format!(
-                    "Granted loaner #{} to #{applicant} under contract #{contract}. They accept it with `@contract/accept {contract}`.",
+                    "Granted loaner #{} to {applicant} under contract #{contract}. They accept \
+                     it with `@contract/accept {contract}`.",
                     loaner.0
                 ),
             );
@@ -299,10 +302,19 @@ fn recovery_grant(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             Ok(())
         }
         GrantOutcome::Ineligible(refusal) => Err(CmdError::msg(refusal.public())),
-        GrantOutcome::Held(why) => Err(CmdError::msg(format!(
+        GrantOutcome::ProviderExhausted(why) => Err(CmdError::msg(format!(
             "The provider cannot grant right now ({why}); the application stays queued and \
              staff have been paged."
         ))),
+        // F5(a): the staff arm names the applicant's own blocker and the command that
+        // clears it, rather than the provider's.
+        GrantOutcome::ApplicantBlocked(why) => {
+            let instrument = pool_instrument(ctx, &cfg);
+            Err(CmdError::msg(format!(
+                "{applicant} cannot be granted right now ({why}); they keep their place in the \
+                 queue. `@account/open {applicant}={instrument}` clears the usual cause."
+            )))
+        }
     }
 }
 
@@ -391,6 +403,18 @@ fn close_grant(ctx: &mut Ctx<'_>, grant: &RecoveryGrant, now: i64) {
 // ---- the ONE grant path ----------------------------------------------------
 
 /// What one attempt to grant did.
+///
+/// **`Held` split in two** (independent verify fold, C10/B3; owner decision F5(a)).
+/// It used to carry all eight reasons a grant did not happen, three of which are
+/// facts about **one applicant** and not about the provider — and [`sweep`] treated
+/// every one of them as provider-wide: it paged `recovery:provider` with a
+/// recommendation (*"Add a hull the provider owns … or fund its pool account"*) that
+/// fixes none of the three, and then `break`, so **one applicant the provider could
+/// not pay stopped every other grant in the queue**. The rotation that should have
+/// contained the damage was broken independently (see [`sweep`]), so a blocker
+/// holding the highest object id was re-visited first on every fire, for ever.
+/// Applying costs nothing and is not eligibility-gated, so it was reachable on
+/// purpose.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum GrantOutcome {
     /// A lease was offered and the stipend posted.
@@ -402,10 +426,19 @@ pub enum GrantOutcome {
     },
     /// The applicant does not qualify. They leave the queue.
     Ineligible(RecoveryRefusal),
-    /// The **provider** cannot grant: no free hull, or a pool at its floor. The
-    /// applicant **stays queued** and staff are paged level 1 — an empty pool is not
-    /// a decision (Q7A).
-    Held(&'static str),
+    /// **The provider** cannot grant at all: its pool is at its floor, its pool
+    /// account does not resolve, it holds no free hull, or the stipend would not
+    /// fund. Nothing else in the queue can be granted either, so the fire pages
+    /// `recovery:provider` and stops. The applicant **stays queued** — an empty pool
+    /// is not a decision (Q7A).
+    ProviderExhausted(&'static str),
+    /// **This applicant** cannot be granted, for a state they can fix: no account in
+    /// the pool's instrument, a lease that would not offer, a record that would not
+    /// construct. The fire pages `recovery:applicant:{id}` with the command that
+    /// clears it and **continues the rotation**, so nobody behind them is starved.
+    /// They keep their place in claim order, because "you have no account in gold" is
+    /// a fixable state and not an ineligibility.
+    ApplicantBlocked(&'static str),
 }
 
 /// **The one grant seam.** `@recovery/grant` and the tick's fourth arm both call it,
@@ -428,24 +461,77 @@ pub(crate) fn try_grant(
         .module_state::<CampaignStore>()
         .and_then(|store| store.recovery_grant(applicant))
         .cloned();
+    // ---- D3 / F6(a): the MONEY fact is the authority on "already granted" ----
+    //
+    // `offer_lease` and the stipend `post` are durable through the economy's
+    // `install_commit`, which pins its own writes; the three campaign documents are
+    // ordinary **deferred** writes. Lose that batch — a tear, a restore from a
+    // checkpoint predating it, or a `recovery_grant:` document the wire refuses at
+    // `store::load`, which HOLDS it and so leaves it absent — and the next fire used
+    // to lease the SAME hull again and post a SECOND stipend, because the campaign
+    // mirror was the only marker and `grant_key(applicant, now)` was scoped to the IC
+    // second. R1 got this right one crate over by making the live hold found *by
+    // purpose* the marker; this is the same move for a lease, and it runs BEFORE the
+    // campaign document is read for anything.
+    if let Some((contract, loaner)) = crate::recovery::live_recovery_lease(ctx.w, cfg, applicant) {
+        // The mirror already names this very lease: the ordinary "you already hold a
+        // loaner", answered exactly as it always was. Only a mirror that is **absent
+        // or disagrees** — the torn batch, the restore, the held document — reaches
+        // the reconcile below, and it never leases a second hull.
+        if grant
+            .as_ref()
+            .is_some_and(|g| g.is_live() && g.contract() == contract.0)
+        {
+            return GrantOutcome::Ineligible(RecoveryRefusal::LiveLease);
+        }
+        // A lease already stands for this applicant. Reconcile the mirror onto it
+        // rather than leasing a second hull: the stipend re-posts under the SAME
+        // contract-scoped key and answers `AlreadyPosted` with no second effect.
+        let tier = ctx
+            .w
+            .module_state::<CampaignStore>()
+            .and_then(|store| store.recovery_application(applicant))
+            .map_or_else(
+                || cfg.default_tier().cloned().unwrap_or_default(),
+                |app| SmolStr::new(app.tier()),
+            );
+        let granted_at = grant.as_ref().map_or(now, RecoveryGrant::granted_at);
+        let Ok(record) = RecoveryGrant::new(applicant, contract.0, loaner, tier, granted_at, None)
+        else {
+            return GrantOutcome::ApplicantBlocked("the grant record would not construct");
+        };
+        if let Some(account) = applicant_account(ctx, cfg, &PrincipalId::Object(applicant))
+            && let Err(why) = post_stipend(ctx, cfg, applicant, contract, account)
+        {
+            return GrantOutcome::ProviderExhausted(why);
+        }
+        record_grant(ctx, record);
+        return GrantOutcome::Granted {
+            contract: contract.0,
+            loaner,
+        };
+    }
     // **Re-evaluated at GRANT time, not at queue time** (Q7A).
     if let Err(refusal) = eligible(ctx.w, cfg, applicant, grant.as_ref(), now) {
         return GrantOutcome::Ineligible(refusal);
     }
     let Some(lessor) = provider(ctx.w, cfg) else {
-        return GrantOutcome::Held("its pool account does not resolve");
+        return GrantOutcome::ProviderExhausted("its pool account does not resolve");
     };
     // **Funded, never infinite**: both resources are checked before anything is
     // written, and either one being out holds the queue rather than deciding it.
     if !pool_can_fund(ctx.w, cfg) {
-        return GrantOutcome::Held("its budget is at its floor");
+        return GrantOutcome::ProviderExhausted("its budget is at its floor");
     }
     let Some(loaner) = next_loaner(ctx.w, cfg) else {
-        return GrantOutcome::Held("it holds no free hull");
+        return GrantOutcome::ProviderExhausted("it holds no free hull");
     };
     let tenant = PrincipalId::Object(applicant);
     let Some(account) = applicant_account(ctx, cfg, &tenant) else {
-        return GrantOutcome::Held("the applicant holds no account in the pool's instrument");
+        // F5(a): a fact about THIS applicant, and one they can fix in one command.
+        return GrantOutcome::ApplicantBlocked(
+            "the applicant holds no account in the pool's instrument",
+        );
     };
     let tier = ctx
         .w
@@ -470,50 +556,82 @@ pub(crate) fn try_grant(
         },
     ) {
         Ok(contract) => contract,
-        Err(_) => return GrantOutcome::Held("the lease could not be offered"),
+        Err(_) => return GrantOutcome::ApplicantBlocked("the lease could not be offered"),
     };
     let Ok(record) = RecoveryGrant::new(applicant, contract.0, loaner, tier, now, None) else {
-        return GrantOutcome::Held("the grant record would not construct");
+        return GrantOutcome::ApplicantBlocked("the grant record would not construct");
     };
-    // The outfitting stipend: one period's upkeep, out of the pool. Two lines,
-    // exactly zero-sum, so the ledger total does not move — and **nothing mints**:
-    // the money is the provider's own, and when it runs out the provider stops.
-    if cfg.upkeep_per_period > 0 {
-        let amount = Amount::from_minor(cfg.upkeep_per_period);
-        let Some(debit) = amount.checked_neg() else {
-            return GrantOutcome::Held("the stipend does not fit an Amount");
-        };
-        let plan = EconomyPlan {
-            description: format!("recovery outfitting stipend for #{}", applicant.0),
-            ..EconomyPlan::new(
-                grant_key(applicant, now),
-                lessor.clone(),
-                EconomicCause::Internal {
-                    kind: SmolStr::new_static("campaign.recovery.grant"),
-                    id: u64::from(applicant.0),
-                },
-                vec![
-                    RequestedLine {
-                        account: cfg.pool_account,
-                        delta: debit,
-                        memo: SmolStr::new_static("campaign.recovery.stipend"),
-                    },
-                    RequestedLine {
-                        account,
-                        delta: amount,
-                        memo: SmolStr::new_static("campaign.recovery.stipend"),
-                    },
-                ],
-            )
-        };
-        match mush_economy::post(ctx, &plan) {
-            Ok(PostOutcome::Posted(_) | PostOutcome::AlreadyPosted(_)) => {}
-            // The engine's own never-negative gate, or an approval rule: the
-            // provider is out, and out is a wait, not a decision.
-            _ => return GrantOutcome::Held("its budget would not fund the stipend"),
-        }
+    if let Err(why) = post_stipend(ctx, cfg, applicant, contract, account) {
+        return GrantOutcome::ProviderExhausted(why);
     }
     // Past the post nothing is fallible: the three writes are deferred persists.
+    record_grant(ctx, record);
+    GrantOutcome::Granted {
+        contract: contract.0,
+        loaner,
+    }
+}
+
+/// **The outfitting stipend**: one period's upkeep, out of the pool. Two lines,
+/// exactly zero-sum, so the ledger total does not move — and **nothing mints**: the
+/// money is the provider's own, and when it runs out the provider stops.
+///
+/// Keyed by the **contract** (D3; F6(a)), so a re-run after a lost campaign batch
+/// answers `AlreadyPosted` and writes nothing a second time. Under the old IC-second
+/// key a re-run one second later was a genuinely new key and a genuinely second
+/// stipend.
+fn post_stipend(
+    ctx: &mut Ctx<'_>,
+    cfg: &RecoveryConfig,
+    applicant: ObjId,
+    contract: ContractId,
+    account: mush_economy::AccountId,
+) -> Result<(), &'static str> {
+    if cfg.upkeep_per_period <= 0 {
+        return Ok(());
+    }
+    let Some(lessor) = provider(ctx.w, cfg) else {
+        return Err("its pool account does not resolve");
+    };
+    let amount = Amount::from_minor(cfg.upkeep_per_period);
+    let Some(debit) = amount.checked_neg() else {
+        return Err("the stipend does not fit an Amount");
+    };
+    let plan = EconomyPlan {
+        description: format!("recovery outfitting stipend for #{}", applicant.0),
+        ..EconomyPlan::new(
+            grant_key(applicant, contract),
+            lessor,
+            EconomicCause::Internal {
+                kind: SmolStr::new_static("campaign.recovery.grant"),
+                id: u64::from(applicant.0),
+            },
+            vec![
+                RequestedLine {
+                    account: cfg.pool_account,
+                    delta: debit,
+                    memo: SmolStr::new_static("campaign.recovery.stipend"),
+                },
+                RequestedLine {
+                    account,
+                    delta: amount,
+                    memo: SmolStr::new_static("campaign.recovery.stipend"),
+                },
+            ],
+        )
+    };
+    match mush_economy::post(ctx, &plan) {
+        Ok(PostOutcome::Posted(_) | PostOutcome::AlreadyPosted(_)) => Ok(()),
+        // The engine's own never-negative gate, or an approval rule: the provider is
+        // out, and out is a wait, not a decision.
+        _ => Err("its budget would not fund the stipend"),
+    }
+}
+
+/// The three campaign documents a grant writes. Shared by the fresh grant and by
+/// D3's reconcile path, so a rebuilt mirror is byte-identical to a first one.
+fn record_grant(ctx: &mut Ctx<'_>, record: RecoveryGrant) {
+    let applicant = record.applicant();
     put_recovery_grant(ctx, record);
     if let Some(app) = ctx
         .w
@@ -530,21 +648,22 @@ pub(crate) fn try_grant(
     if let Some(queue) = queue {
         put_recovery_queue(ctx, queue);
     }
-    GrantOutcome::Granted {
-        contract: contract.0,
-        loaner,
-    }
 }
 
 /// The deterministic key one grant's stipend posts under —
-/// `recovery.grant/{applicant}/{cycle}`, where the cycle is the IC second the grant
-/// was made. A retry inside the same second is `AlreadyPosted`, which is the same
-/// transaction and no second effect.
+/// `recovery.grant/{applicant}/{contract}`.
+///
+/// **Contract-scoped, not IC-second-scoped** (independent verify fold, D3; owner
+/// decision F6(a)). The cycle used to be the IC second the grant was made, so a
+/// re-run after a lost campaign batch — the very case the key exists for — landed
+/// under a *different* key and posted a *second* stipend. The contract is the money
+/// fact the lease itself is, so a reconcile of the same lease is `AlreadyPosted`:
+/// the same transaction id, no second effect.
 #[must_use]
-pub fn grant_key(applicant: ObjId, cycle: i64) -> IdempotencyKey {
+pub fn grant_key(applicant: ObjId, contract: ContractId) -> IdempotencyKey {
     IdempotencyKey::new(
         SmolStr::new_static("recovery.grant"),
-        SmolStr::new(format!("{}/{cycle}", applicant.0)),
+        SmolStr::new(format!("{}/{}", applicant.0, contract.0)),
     )
 }
 
@@ -584,18 +703,40 @@ pub(crate) fn sweep(ctx: &mut Ctx<'_>, budget: usize) -> usize {
     if !cfg.enabled {
         return 0;
     }
+    // ---- D7 (independent verify fold): age an unaccepted loaner ----
+    //
+    // It runs before the queue, and on every fire including the fires where the queue
+    // is empty, because the applicant it frees is precisely one who has already LEFT
+    // the queue.
+    let expired = expire_unaccepted(ctx, &cfg, budget);
     let (waiting, cursor) = {
         let Some(store) = ctx.w.module_state::<CampaignStore>() else {
-            return 0;
+            return expired;
         };
         (store.recovery_queue().waiting(), store.recovery_cursor)
     };
     if waiting.is_empty() {
-        return 0;
+        return expired;
     }
-    // The rotation: start at the first applicant at or past the cursor, wrap once, so
-    // nobody at the back of a long queue is starved by the front.
-    let start = waiting.iter().position(|id| id.0 >= cursor).unwrap_or(0);
+    // ---- C10/B3 (independent verify fold; owner decision F5(a)): the rotation ----
+    //
+    // `waiting.iter().position(|id| id.0 >= cursor).unwrap_or(0)` ran over a
+    // **claim-ordered** queue, so when nobody satisfied the predicate — which is
+    // exactly what happens once the cursor has passed the largest object id present —
+    // `start` collapsed to 0 and the head of the queue was re-visited first on every
+    // fire, for ever. Combined with the provider-wide `break` below, one applicant the
+    // provider could not pay starved everybody behind them permanently.
+    //
+    // The cursor is still the raw applicant id (it is what `campaign_meta` persists),
+    // but the fallback is now the **position** the cursor names rather than the head:
+    // a cursor past every id wraps to 0 only because the rotation has genuinely
+    // completed a lap, and with `ApplicantBlocked` continuing, a lap now reaches
+    // everybody.
+    let start = waiting
+        .iter()
+        .position(|id| id.0 >= cursor)
+        .unwrap_or(0)
+        .min(waiting.len().saturating_sub(1));
     let order: Vec<ObjId> = waiting[start..]
         .iter()
         .chain(waiting[..start].iter())
@@ -603,7 +744,7 @@ pub(crate) fn sweep(ctx: &mut Ctx<'_>, budget: usize) -> usize {
         .collect();
 
     let now = ctx.w.world_ic_now().at;
-    let mut visited = 0usize;
+    let mut visited = expired;
     let mut last = None;
     for applicant in order {
         if visited >= budget {
@@ -634,7 +775,7 @@ pub(crate) fn sweep(ctx: &mut Ctx<'_>, budget: usize) -> usize {
                     put_recovery_application(ctx, app.with_state(ApplicationState::Closed));
                 }
             }
-            GrantOutcome::Held(why) => {
+            GrantOutcome::ProviderExhausted(why) => {
                 // **An exhausted pool queues and pages level 1** — it is never a
                 // staff decision, and the applicant keeps their place. Paged once per
                 // subject, so a dry provider opens one record and not one per fire.
@@ -650,6 +791,26 @@ pub(crate) fn sweep(ctx: &mut Ctx<'_>, budget: usize) -> usize {
                 // rather than paying for a whole budget of the same answer.
                 break;
             }
+            GrantOutcome::ApplicantBlocked(why) => {
+                // F5(a): a fact about ONE applicant. It pages **their** subject with
+                // the command that clears it, and the rotation **continues** — the
+                // whole point of the split. They keep their claim-order place, because
+                // "you hold no account in the pool's instrument" is a state they can
+                // fix, not an ineligibility.
+                let instrument = pool_instrument(ctx, &cfg);
+                crate::settle::page(
+                    ctx,
+                    SmolStr::new(format!("recovery:applicant:{}", applicant.0)),
+                    &format!("recovery applicant #{}: {why}", applicant.0),
+                    &format!(
+                        "the queue moved past them and everybody behind them was granted \
+                         normally. They keep their place. `@account/open #{}={instrument}` opens \
+                         the account a stipend can be paid into, and `@recovery/grant #{}` then \
+                         grants without waiting for the next fire",
+                        applicant.0, applicant.0
+                    ),
+                );
+            }
         }
     }
     if let Some(last) = last
@@ -660,6 +821,113 @@ pub(crate) fn sweep(ctx: &mut Ctx<'_>, budget: usize) -> usize {
     visited
 }
 
+/// The pool's instrument, for a page that names the command that clears it (F5(a)).
+fn pool_instrument(ctx: &Ctx<'_>, cfg: &RecoveryConfig) -> String {
+    ctx.w
+        .module_state::<EconomyStore>()
+        .and_then(|store| store.snapshot().account(cfg.pool_account).cloned())
+        .map_or_else(
+            || "<instrument>".to_owned(),
+            |account| account.instrument.to_string(),
+        )
+}
+
+/// **D7 — take back a loaner that was offered and never accepted.**
+///
+/// `try_grant` completes at `offer_lease`, which produces a contract the applicant
+/// must still `@contract/accept`; until they do, no `Encumbrance::Lease` exists and
+/// the hull is held out of the motor pool by the grant document alone. Nothing aged
+/// that: the tick's fourth arm walked only the **queue**, and a granted applicant has
+/// already left it, so an applicant who applied, was granted and never accepted held
+/// a hull out of the pool **for ever** and was `LiveLease`-refused themselves — and
+/// with `MAX_RECOVERY_APPLICATIONS_PER_PRINCIPAL` 1 a handful of them dried a small
+/// provider, whose page then recommended adding a hull it already owned.
+///
+/// `SEAT_OFFER_TTL`'s shape: past [`crate::recovery::RECOVERY_ACCEPT_TTL_SECS`] the
+/// lease is `end_lease`d and the grant closed, which frees the hull and lets the
+/// applicant apply again. An **accepted** lease is never touched — the acceptance is
+/// the applicant's consent and the hull is genuinely theirs until they return it.
+fn expire_unaccepted(ctx: &mut Ctx<'_>, cfg: &RecoveryConfig, budget: usize) -> usize {
+    let now = ctx.w.world_ic_now().at;
+    let Some(lessor) = provider(ctx.w, cfg) else {
+        return 0;
+    };
+    let doomed: Vec<RecoveryGrant> = {
+        let Some(store) = ctx.w.module_state::<CampaignStore>() else {
+            return 0;
+        };
+        store
+            .recovery_grants()
+            .filter(|grant| {
+                grant.is_live()
+                    && now.saturating_sub(grant.granted_at())
+                        >= crate::recovery::RECOVERY_ACCEPT_TTL_SECS
+            })
+            .take(budget)
+            .cloned()
+            .collect()
+    };
+    let mut worked = 0usize;
+    for grant in doomed {
+        // Still `Offered` means the tenant never accepted — `offer_lease` records the
+        // lessor's own acceptance at once, so the acceptance LIST is not the test.
+        // Anything past `Offered` is a lease somebody is flying and is left alone.
+        let unaccepted = ctx
+            .w
+            .module_state::<EconomyStore>()
+            .and_then(|store| {
+                store
+                    .snapshot()
+                    .contract(ContractId(grant.contract()))
+                    .cloned()
+            })
+            .is_some_and(|contract| {
+                matches!(
+                    contract.state,
+                    mush_economy::ContractState::Offered | mush_economy::ContractState::Draft
+                )
+            });
+        if !unaccepted {
+            continue;
+        }
+        let key = LeaseKey {
+            lessor: lessor.clone(),
+            premises: grant.loaner(),
+        };
+        match mush_economy::end_lease(ctx, ContractId(grant.contract()), &key) {
+            Ok(LeaseEnd::Ended | LeaseEnd::AlreadyEnded) => {}
+            // A retry or a refusal leaves the lease exactly as it was; the next fire
+            // sees the same grant and tries again. Nothing is written here on either.
+            _ => continue,
+        }
+        // **Forgotten, not ended.** An offer nobody took is not a loan that finished,
+        // so it must not leave an `ended_at` behind — `cooldown_until` would then
+        // charge the applicant a fourteen-day cooldown for a hull they never had, and
+        // the next fire would refuse them `Cooldown` and drop them out of the queue
+        // as ineligible. The record is deleted with the lease it described.
+        crate::store::del_recovery_grant(ctx, grant.applicant());
+        // Their application reopens and they rejoin the queue at the back, so an
+        // expiry costs them their turn and not their access.
+        let queue = ctx
+            .w
+            .module_state::<CampaignStore>()
+            .and_then(|store| store.recovery_queue().joined(grant.applicant()).ok());
+        if let Some(queue) = queue {
+            put_recovery_queue(ctx, queue);
+        }
+        if let Some(app) = ctx
+            .w
+            .module_state::<CampaignStore>()
+            .and_then(|store| store.recovery_application(grant.applicant()))
+            .cloned()
+        {
+            put_recovery_application(ctx, app.with_state(ApplicationState::Queued));
+        }
+        worked = worked.saturating_add(1);
+    }
+    worked
+}
+
 /// The arm's budget, re-exported so the tick can cite it rather than restate it.
 pub(crate) const RECOVERY_BUDGET: usize = MAX_RECOVERY_PER_FIRE;
 
@@ -667,22 +935,44 @@ pub(crate) const RECOVERY_BUDGET: usize = MAX_RECOVERY_PER_FIRE;
 mod tests {
     use super::*;
 
+    /// The key is **contract-scoped** since the fold (D3; owner decision F6(a)): the
+    /// IC second it used to carry made a re-run after a lost campaign batch a
+    /// genuinely new key, which is the whole way a second stipend was posted.
     #[test]
     fn e7r1_r3_the_grant_key_is_deterministic_and_inside_the_kernel_cap() {
-        let key = grant_key(ObjId(7), 1_000);
+        let key = grant_key(ObjId(7), ContractId(1_000));
         assert_eq!(
             (key.namespace.as_str(), key.key.as_str()),
             ("recovery.grant", "7/1000")
         );
-        assert_eq!(key, grant_key(ObjId(7), 1_000));
-        assert_ne!(key, grant_key(ObjId(7), 1_001));
-        assert_ne!(key, grant_key(ObjId(8), 1_000));
-        let widest = grant_key(ObjId(u32::MAX), i64::MAX);
+        assert_eq!(key, grant_key(ObjId(7), ContractId(1_000)));
+        assert_ne!(key, grant_key(ObjId(7), ContractId(1_001)));
+        assert_ne!(key, grant_key(ObjId(8), ContractId(1_000)));
+        // Contract #0 is a legal first lease, and it is a legal key.
+        assert_ne!(
+            grant_key(ObjId(7), ContractId(0)),
+            grant_key(ObjId(7), ContractId(1))
+        );
+        let widest = grant_key(ObjId(u32::MAX), ContractId(u64::MAX));
         let encoded = widest.namespace.len() + 1 + widest.key.len();
         assert!(
             encoded <= mush_core::MAX_IDEMPOTENCY_KEY_BYTES,
             "{encoded} bytes is past the kernel's cap"
         );
+    }
+
+    /// **Every `GrantOutcome` arm is either provider-wide or applicant-scoped, and
+    /// the two are distinct types** (C10/B3; owner decision F5(a)). `Held` carried
+    /// both and [`sweep`] read every one of them as provider-wide.
+    #[test]
+    fn vf_c10d_the_grant_outcome_names_whose_problem_it_is() {
+        let provider_side = GrantOutcome::ProviderExhausted("its budget is at its floor");
+        let applicant_side = GrantOutcome::ApplicantBlocked(
+            "the applicant holds no account in the pool's instrument",
+        );
+        assert_ne!(provider_side, applicant_side);
+        assert!(matches!(provider_side, GrantOutcome::ProviderExhausted(_)));
+        assert!(matches!(applicant_side, GrantOutcome::ApplicantBlocked(_)));
     }
 
     #[test]

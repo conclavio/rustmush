@@ -2762,11 +2762,63 @@ fn journey_plan(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 pub(crate) fn may_command_departure(ctx: &Ctx<'_>, carrier: ObjId) -> bool {
     is_admin(ctx.w, ctx.actor)
         || perm::controls(ctx.w, ctx.actor, carrier)
-        || crews(ctx, ctx.actor, carrier)
+        || drives(ctx, ctx.actor, carrier)
 }
 
+/// **The DRIVE gate** — a billet at a station whose granted channels contain the
+/// movement channel (independent verify fold, C8; owner decision F7(a)).
+///
+/// [`crews`] stays the **read** gate, and this splits the write arm off it. R6 used
+/// `crews` for both and its own comment presented the reuse as a virtue — *"the same
+/// predicate the read gate uses, so 'who may read this ship's journey' and 'who may
+/// depart it' have one answer"* — and that is the defect, not the virtue: `crews` is
+/// *"holds a billet at **any** authored station"*, so a gunner holding
+/// `channels:fire` and nothing else put the hull, and everyone aboard it, under way.
+///
+/// The discriminator was already recorded and simply unused: `@spatial/station <host>
+/// =<station>,<role>[,channels:…]`, [`crate::data::StationSpec::channels`],
+/// [`crate::data::StationAssignment::granted_channels`], and the shipped fixture's
+/// own pilot holding `channels:movement`. The narrowed seat set is honoured, because
+/// `granted_channels` is what is asked — a proxy seat narrowed to `fire` does not
+/// drive a station that grants movement.
+///
+/// The refusal stays the shared [`denied()`], so no disclosure changes and a billeted
+/// pilot still departs with no staff step.
+pub(crate) fn drives(ctx: &Ctx<'_>, actor: ObjId, unit: ObjId) -> bool {
+    let Some(movement) = ChannelId::new(MOVEMENT_CHANNEL) else {
+        return false;
+    };
+    let s = st(ctx);
+    let Some(stations) = s.stations.get(&unit) else {
+        return false;
+    };
+    stations.stations.iter().any(|(id, spec)| {
+        s.assignments
+            .get(&unit)
+            .and_then(|ha| ha.seats.get(id))
+            .is_some_and(|seat| {
+                seat.actor == actor && seat.granted_channels(spec).contains(&movement)
+            })
+    })
+}
+
+/// The channel a station must grant before its holder may put the hull under way.
+/// One name, in one place, so the gate and the intent lane cannot drift: it is the
+/// same word `crate::tick`'s `IntentKind::Eject` arm answers.
+pub(crate) const MOVEMENT_CHANNEL: &str = "movement";
+
 fn journey_depart(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
-    let carrier = match_object(ctx.w, ctx.actor, ctx.args.lhs())?;
+    // ---- B4 (independent verify fold): not an existence oracle ----
+    //
+    // Before R6 this arm ran `require_admin` **before** `journey_depart`, so every
+    // non-staff argument answered `Permission denied.` R6 moved the gate inside, and
+    // `match_object` resolves a `#N` against the whole world with no visibility test —
+    // so an existing object answered `Permission denied.` and a free dbref answered
+    // `I don't see that here.`, which made `@journey/depart` a world-wide dbref
+    // existence oracle for any unprivileged actor and falsified R6's own
+    // byte-identical claim. The resolution failure now wears the same refusal the
+    // authority failure does.
+    let carrier = match_object(ctx.w, ctx.actor, ctx.args.lhs()).map_err(|_| denied())?;
     // ---- E7r1: R6 — the PERMITTING half of crew-driven `@journey/depart` ----
     // It runs **after** `cmd_journey`'s `seat_restriction` and **before** anything
     // is read or written, and its refusal is `require_admin`'s own `denied()`, so a

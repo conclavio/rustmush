@@ -81,9 +81,11 @@ pub use record::{
 };
 pub use recovery::{
     ApplicationState, MAX_RECOVERY_APPLICATIONS_PER_PRINCIPAL, MAX_RECOVERY_PER_FIRE,
-    MAX_RECOVERY_QUEUE, RECOVERY_COOLDOWN_SECS, RECOVERY_QUEUE_KEY, RecoveryApplication,
-    RecoveryConfig, RecoveryGrant, RecoveryPolicy, RecoveryQueue, RecoveryRecordError,
-    RecoveryRefusal, accessible_operational_assets, recovery_application_key, recovery_grant_key,
+    MAX_RECOVERY_QUEUE, MAX_RETAINED_RECOVERY_RECORDS, RECOVERY_ACCEPT_TTL_SECS,
+    RECOVERY_COOLDOWN_SECS, RECOVERY_QUEUE_KEY, RecoveryApplication, RecoveryConfig, RecoveryGrant,
+    RecoveryPolicy, RecoveryQueue, RecoveryRecordError, RecoveryRefusal,
+    accessible_operational_assets, is_accessible_operational, live_lease_on, live_recovery_lease,
+    next_loaner, recovery_application_key, recovery_grant_key,
 };
 pub use recoverycmd::{GrantOutcome, NO_SUCH_APPLICANT, NOT_ENABLED, grant_key};
 pub use render::{

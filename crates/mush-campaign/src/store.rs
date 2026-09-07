@@ -358,6 +358,43 @@ impl CampaignStore {
         doomed
     }
 
+    /// **The recovery application ring** (independent verify fold, B7): keep every
+    /// live application and the newest
+    /// [`crate::recovery::MAX_RETAINED_RECOVERY_RECORDS`] **closed** ones, returning
+    /// the applicants evicted so the caller can `Del` their documents in the same
+    /// bundle. A queued application carries a live claim and is never evicted.
+    pub(crate) fn prune_recovery_apps(&mut self) -> Vec<mush_core::ObjId> {
+        let doomed: Vec<u32> = self
+            .recovery_apps
+            .iter()
+            .filter(|(_, app)| app.state() == crate::recovery::ApplicationState::Closed)
+            .map(|(id, _)| *id)
+            .rev()
+            .skip(crate::recovery::MAX_RETAINED_RECOVERY_RECORDS)
+            .collect();
+        for id in &doomed {
+            self.recovery_apps.remove(id);
+        }
+        doomed.into_iter().map(mush_core::ObjId).collect()
+    }
+
+    /// **The recovery grant ring** (B7), the same shape over **ended** grants: a live
+    /// loaner is a live claim on a hull and is never evicted.
+    pub(crate) fn prune_recovery_grants(&mut self) -> Vec<mush_core::ObjId> {
+        let doomed: Vec<u32> = self
+            .recovery_grants
+            .iter()
+            .filter(|(_, grant)| !grant.is_live())
+            .map(|(id, _)| *id)
+            .rev()
+            .skip(crate::recovery::MAX_RETAINED_RECOVERY_RECORDS)
+            .collect();
+        for id in &doomed {
+            self.recovery_grants.remove(id);
+        }
+        doomed.into_iter().map(mush_core::ObjId).collect()
+    }
+
     pub(crate) fn install_muster(&mut self, report: MusterReport) {
         self.muster_cycle = self.muster_cycle.max(report.cycle);
         self.musters
@@ -488,27 +525,71 @@ pub(crate) fn put_recovery_queue(ctx: &mut Ctx<'_>, queue: crate::recovery::Reco
     );
 }
 
-/// Install one application and queue its document.
+/// Install one application and queue its document, **evicting the oldest CLOSED
+/// applications past [`crate::recovery::MAX_RETAINED_RECOVERY_RECORDS`] in the same
+/// bundle** (independent verify fold, B7 — cut 10's muster ring, one file over).
 pub(crate) fn put_recovery_application(
     ctx: &mut Ctx<'_>,
     app: crate::recovery::RecoveryApplication,
 ) {
     let key = crate::recovery::recovery_application_key(app.applicant());
     let value = serde_json::to_value(&app).unwrap_or(serde_json::Value::Null);
-    if let Some(store) = ctx.w.module_state_mut::<CampaignStore>() {
-        store.recovery_apps.insert(app.applicant().0, app);
-    }
+    let evicted = match ctx.w.module_state_mut::<CampaignStore>() {
+        Some(store) => {
+            store.recovery_apps.insert(app.applicant().0, app);
+            store.prune_recovery_apps()
+        }
+        None => Vec::new(),
+    };
     push(ctx.out, ModuleWrite::JsonSet { key, value });
+    for applicant in evicted {
+        push(
+            ctx.out,
+            ModuleWrite::Del {
+                key: crate::recovery::recovery_application_key(applicant),
+            },
+        );
+    }
 }
 
-/// Install one grant and queue its document.
+/// Install one grant and queue its document, **evicting the oldest ENDED grants past
+/// [`crate::recovery::MAX_RETAINED_RECOVERY_RECORDS`] in the same bundle** (B7).
 pub(crate) fn put_recovery_grant(ctx: &mut Ctx<'_>, grant: crate::recovery::RecoveryGrant) {
     let key = crate::recovery::recovery_grant_key(grant.applicant());
     let value = serde_json::to_value(&grant).unwrap_or(serde_json::Value::Null);
-    if let Some(store) = ctx.w.module_state_mut::<CampaignStore>() {
-        store.recovery_grants.insert(grant.applicant().0, grant);
-    }
+    let evicted = match ctx.w.module_state_mut::<CampaignStore>() {
+        Some(store) => {
+            store.recovery_grants.insert(grant.applicant().0, grant);
+            store.prune_recovery_grants()
+        }
+        None => Vec::new(),
+    };
     push(ctx.out, ModuleWrite::JsonSet { key, value });
+    for applicant in evicted {
+        push(
+            ctx.out,
+            ModuleWrite::Del {
+                key: crate::recovery::recovery_grant_key(applicant),
+            },
+        );
+    }
+}
+
+/// **Forget one grant entirely** (independent verify fold, D7): an offer that expired
+/// unaccepted is not a loan that ended, so it must not leave an `ended_at` behind for
+/// [`crate::recovery::cooldown_until`] to charge the applicant a cooldown for a hull
+/// they never had. The document is `Del`eted in the same bundle the lease is unwound
+/// in, which is the muster ring's own eviction shape.
+pub(crate) fn del_recovery_grant(ctx: &mut Ctx<'_>, applicant: mush_core::ObjId) {
+    if let Some(store) = ctx.w.module_state_mut::<CampaignStore>() {
+        store.recovery_grants.remove(&applicant.0);
+    }
+    push(
+        ctx.out,
+        ModuleWrite::Del {
+            key: crate::recovery::recovery_grant_key(applicant),
+        },
+    );
 }
 
 fn push(out: &mut Outbox, op: ModuleWrite) {
@@ -813,6 +894,25 @@ pub(crate) fn load(kv: Vec<(SmolStr, serde_json::Value)>) -> CampaignStore {
                  disk and not hydrated"
             );
         }
+    }
+    // **B7 (independent verify fold): the recovery books hydrate bounded too**, on
+    // the muster ring's own shape. A store written by a build without the ring — or
+    // simply by a long-lived world, since `@recovery/apply` is a free player verb and
+    // nothing ever `Del`eted a record — carries one application and one grant per
+    // character who ever applied, and cut-11's `load` installed every one it found,
+    // so the growth cost boot-time RAM as well as disk. Live records are always kept;
+    // only closed applications and ended grants past the ring are left on disk, and
+    // the count is **paged into the log** rather than dropped silently.
+    let dropped_apps = store.prune_recovery_apps().len();
+    let dropped_grants = store.prune_recovery_grants().len();
+    if dropped_apps > 0 || dropped_grants > 0 {
+        tracing::warn!(
+            dropped_apps,
+            dropped_grants,
+            retained = crate::recovery::MAX_RETAINED_RECOVERY_RECORDS,
+            "campaign: the recovery books were over their retention ring; the oldest CLOSED \
+             applications and ENDED grants were left on disk and not hydrated"
+        );
     }
     store
 }

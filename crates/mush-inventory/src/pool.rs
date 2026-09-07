@@ -585,6 +585,60 @@ impl InventoryFamilies {
         })
     }
 
+    /// **Re-anchor one live hold's deadline onto `now`'s clock**, keeping its
+    /// amount, its id and its place in the contention set (E7 residue pass 1
+    /// independent verify fold, Z3).
+    ///
+    /// A reservation's deadline is `reservation_deadline(now)`, stamped with the
+    /// generation that placed it, and `ReservationBook::checked_consume` runs
+    /// `require_future(expires, now)` — whose `ClockStamp::checked_cmp` refuses two
+    /// **incomparable** generations outright. So a world-time rate change, which
+    /// opens a new `WorldIc` generation, left every live reservation in the world
+    /// unconsumable: an in-flight work order could be un-paused by `@wo/restamp` and
+    /// still refuse to deliver, one layer below the pause.
+    ///
+    /// This is K's own [`ReservationBook::checked_replace`] — "replace amount and
+    /// deadline for one live hold and re-run contention over the entire proposed
+    /// set" — with the amount left exactly where it was, so no quantity authority
+    /// moves here and contention is re-proved rather than assumed. It is one
+    /// `write_pair`, which is why it is a method rather than a release/re-reserve
+    /// pair in the caller: an `ActionTxn` writes one key once per bundle.
+    ///
+    /// # Errors
+    /// [`InventoryError`] on any refusal; **nothing is written on an error**.
+    pub fn renew(
+        &self,
+        txn: &mut ActionTxn<'_>,
+        endpoint: EndpointRef,
+        commodity: &CanonicalId,
+        reservation: ReservationId,
+        expected_reservation_revision: u64,
+        now: &ClockStamp,
+    ) -> Result<(), InventoryError> {
+        let (key, pair) = self.load_pair(txn, endpoint, commodity)?;
+        let Some((scalar, book)) = pair else {
+            return Err(InventoryError::NoPool);
+        };
+        let amount = book
+            .records()
+            .iter()
+            .find(|record| record.id() == reservation)
+            .map(mush_core::ReservationRecord::amount)
+            .ok_or(InventoryError::NoReservation)?;
+        let book = book.checked_replace(
+            book.revision(),
+            scalar,
+            mush_core::ReservationReplacement {
+                reservation,
+                expected_revision: expected_reservation_revision,
+                amount,
+                expires: reservation_deadline(now)?,
+            },
+            now,
+        )?;
+        self.write_pair(txn, key, true, scalar, book)
+    }
+
     /// Release one live hold. Refused after `consume` — the record is terminal
     /// and `require_held` says so.
     ///
@@ -1207,6 +1261,9 @@ pub enum InventoryError {
     /// No such lot.
     #[error("no such lot")]
     NoLot,
+    /// No live reservation with that id in this pool's book.
+    #[error("no such reservation")]
+    NoReservation,
     /// A request-derived lot id is already in use — the replay guard on the one
     /// verb that creates matter (E7c3's `mint_origin`).
     #[error("that lot already exists")]

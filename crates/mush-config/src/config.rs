@@ -807,6 +807,28 @@ impl Default for TacsimCfg {
 /// and outside the campaign crate (10b §3.11's replenishment row: *the provider's own
 /// production work orders and salvage recovery, funded by its budget — never a mint
 /// into the pool*).
+///
+/// **It does not need `[tacsim].enabled`, and that is deliberate** (independent
+/// verify fold, B12; owner decision F4(ii)(b)). `mushd` passes
+/// `modules::recovery_policy(&tacsim.recovery)` into `server_modules_with`
+/// unconditionally and `config_ext::recovery_config` validates on *this* block's own
+/// `enabled`, so `[tacsim] enabled = false` with `[tacsim.recovery] enabled = true`
+/// composes a live provider on a server with no packs, no corridor and no TacSim
+/// verbs. That is allowed and supported: **the provider is campaign-shaped, not
+/// tacsim-shaped** — it grants against `mush-sim` placement and `mush-campaign`
+/// formations, needs no route, no pack and no domain, and reaches nothing in
+/// `ruleset-tacsim` at all. It lives under `[tacsim.recovery]` because that is where
+/// the campaign layer's operator-facing knobs live, not because it depends on the
+/// layer. A deployment that wants no loaner provider sets **this** block's `enabled`
+/// to `false`, which is already the default.
+///
+/// **The `insurance` word governs debt-versus-writeoff and nothing else**
+/// (independent verify fold, C6/B2; owner decision F4(i)(b)). It used to gate the
+/// whole cooldown, so on every default deployment — `"approved_operations"` is the
+/// default here, in `ruleset-tacsim` and in `mush-campaign` — `cooldown_days` was a
+/// value this host **validated at boot** and nothing ever read. Q7A's *"waived when
+/// the loss was inside the restrictions"* is a per-loss fact, and nothing records
+/// whether any loss was; the per-loss waiver is 10b §15.3's pass-2 item.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct TacsimRecoveryCfg {
@@ -824,13 +846,16 @@ pub struct TacsimRecoveryCfg {
     /// How many live applications one principal may hold.
     pub applications_per_principal: u32,
     /// The per-player cooldown after a lease ends, in days. Defaults to 10b §7's
-    /// `RECOVERY_COOLDOWN` of 14 d, **cited rather than redefined**.
+    /// `RECOVERY_COOLDOWN` of 14 d, **cited rather than redefined**, and **applies
+    /// under every `insurance` word** since the fold (C6; F4(i)(b)).
     pub cooldown_days: u32,
     /// The eligibility threshold: an applicant with **more** than this many
     /// accessible operational assets is not eligible. Zero — the default — is doc 10
     /// S3A's reading: a player whose only hull is an unreachable wreck qualifies.
     pub max_operational_assets: u32,
-    /// The insurance policy word: `approved_operations` or `none`.
+    /// The insurance policy word: `approved_operations` or `none`. It decides whether
+    /// a loss inside the lease's restrictions becomes a **debt** or is written off —
+    /// and, since the fold, nothing else: it no longer switches the cooldown off (C6).
     pub insurance: String,
     /// The lease's upkeep, per campaign cadence period, in minor units.
     pub upkeep_per_period: i64,

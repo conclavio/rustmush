@@ -337,7 +337,7 @@ fn e7r1_r6_the_proxy_guard_runs_ahead_of_the_new_permission_gate() {
     let depart = production
         .find("fn journey_depart")
         .expect("the depart handler");
-    let depart_body = &production[depart..depart + 1_200];
+    let depart_body = &production[depart..depart + 3_000];
     let gate = depart_body
         .find("may_command_departure")
         .expect("the authority gate");
@@ -348,6 +348,16 @@ fn e7r1_r6_the_proxy_guard_runs_ahead_of_the_new_permission_gate() {
     assert!(
         depart_body[gate..].contains("denied()"),
         "and refuses with the one shared refusal"
+    );
+    // **B4 (independent verify fold):** the carrier's own RESOLUTION wears the same
+    // refusal, so an existing dbref and a free one are one byte string. Before this
+    // the arm was a world-wide existence oracle for any unprivileged actor.
+    let resolve = depart_body.find("match_object").expect("the resolution");
+    assert!(
+        depart_body[resolve..]
+            .split_once(';')
+            .is_some_and(|(line, _)| line.contains("map_err(|_| denied())")),
+        "the resolution failure is `denied()` too, not `I don't see that here.`"
     );
 
     // `/divert` keeps its own staff gate, so the two arms have not been conflated.
@@ -874,4 +884,237 @@ fn e7r1_r2_the_leg_wire_round_trips_and_refuses_past_the_hazard_cap() {
     let leg: LegDef = serde_json::from_value(old).expect("an old leg still loads");
     assert_eq!((leg.hazard(), leg.interdiction()), (0, 0));
     assert!(!leg.is_interdicted());
+}
+
+// ---- E7 residue pass 1 independent verify fold ----
+
+/// **A gunner with no movement channel is refused byte-identically, and the hull
+/// stays put** (C8; owner decision F7(a)).
+///
+/// `may_command_departure`'s crew arm was `crews` — the **read** gate, *"holds a
+/// billet at any authored station"* — and R6's own comment presented the reuse as a
+/// virtue: *"the same predicate the read gate uses, so 'who may read this ship's
+/// journey' and 'who may depart it' have one answer"*. That is the defect. The tree
+/// already recorded the discriminator and did not use it: `@spatial/station <host>=
+/// <station>,<role>[,channels:…]`, `StationSpec::channels`,
+/// `StationAssignment::granted_channels`, and this fixture's own pilot holding
+/// `channels:movement`. A gunner holding `channels:fire` and nothing else put the
+/// hull, and everyone aboard it, under way.
+///
+/// Every arm the split gate covers is named and driven: the **gunner** (a billet, no
+/// movement channel) is refused; the **pilot** (a billet with it) still departs; the
+/// **bystander** (no billet at all) is refused; and all three refusals plus the one
+/// for a dbref naming **no object** are one byte string.
+#[test]
+fn vf_c8a_a_gunner_with_no_movement_channel_is_refused_byte_identically_and_the_hull_stays_put() {
+    let (mut tw, fx) = scene();
+    let gunner = tw.spawn_player("Gus");
+    ok(
+        &mut tw,
+        GOD,
+        &format!(
+            "@spatial/station #{}=turret,gunner,channels:fire",
+            fx.carrier.0
+        ),
+    );
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@spatial/assign #{}=turret,#{}", fx.carrier.0, gunner.0),
+    );
+
+    // The gunner genuinely crews the hull: the READ gate still lets them in.
+    let read = run_as(&mut tw, gunner, &format!("@journey/show #{}", fx.carrier.0));
+    assert!(
+        !read.contains("Permission denied"),
+        "a billet is still a billet for reading: {read}"
+    );
+
+    let refused = run_as(
+        &mut tw,
+        gunner,
+        &depart_line(fx.carrier, fx.field, fx.phobos),
+    );
+    assert!(
+        !under_way(&tw, fx.carrier),
+        "the GUNNER did not put the hull under way: {refused}"
+    );
+    assert!(refused.contains("Permission denied"), "{refused}");
+
+    // The refusal discloses nothing the bystander's does not.
+    let bystander = run_as(
+        &mut tw,
+        fx.bystander,
+        &depart_line(fx.carrier, fx.field, fx.phobos),
+    );
+    assert_eq!(refused, bystander, "byte-identical to a total stranger's");
+
+    // …and the pilot, who holds the movement channel, still departs unaided.
+    ok(
+        &mut tw,
+        fx.pilot,
+        &depart_line(fx.carrier, fx.field, fx.phobos),
+    );
+    assert!(under_way(&tw, fx.carrier));
+}
+
+/// **A station that declares NO channels is not a drive gate** (C8's other arm, and
+/// the reason F7(c)'s compatibility hedge was rejected).
+///
+/// F7(c) offered *"require the movement channel only when the station declares any
+/// channels at all"*, which would make the rule depend on how carefully a pack was
+/// written: a loader's deck station with no `channels:` at all would drive the hull.
+/// `StationSpec::channels` is `#[serde(default)]` and empty until authored, so that
+/// is the common case in an unfinished pack, not an exotic one.
+///
+/// It also pins that the gate asks `granted_channels` — the seat's **narrowed** set
+/// intersected with the station's — rather than `StationSpec::channels` directly, so
+/// cut 10's proxy narrowing takes the drive with it exactly as it takes every other
+/// channelled action.
+#[test]
+fn vf_c8b_a_station_declaring_no_channels_is_not_a_drive_gate() {
+    let (mut tw, fx) = scene();
+    let loader = tw.spawn_player("Lou");
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@spatial/station #{}=deck,loader", fx.carrier.0),
+    );
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@spatial/assign #{}=deck,#{}", fx.carrier.0, loader.0),
+    );
+    let refused = run_as(
+        &mut tw,
+        loader,
+        &depart_line(fx.carrier, fx.field, fx.phobos),
+    );
+    assert!(
+        !under_way(&tw, fx.carrier),
+        "an unauthored channel set is not a licence to fly: {refused}"
+    );
+    assert!(refused.contains("Permission denied"), "{refused}");
+
+    // The narrowed seat set is what the gate reads, so a proxy narrowing removes the
+    // drive along with everything else it removes.
+    let src = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/commands.rs"),
+    )
+    .expect("the sim command source");
+    let drives = src.find("pub(crate) fn drives").expect("the drive gate");
+    let body = &src[drives..drives + 900];
+    assert!(
+        body.contains("granted_channels"),
+        "the gate reads the SEAT's granted set, never the station's raw `channels`"
+    );
+}
+
+/// **`@journey/depart` is not a world-wide dbref existence oracle** (B4).
+///
+/// Before R6 the arm ran `require_admin` **before** `journey_depart`, so every
+/// non-staff argument answered `Permission denied.` R6 moved the gate inside, and
+/// `match_object` resolves a `#N` against the whole world with no visibility test —
+/// so an existing object answered `Permission denied.` and a free dbref answered
+/// `I don't see that here.`, and any unprivileged actor could enumerate the world's
+/// object table one command at a time. §15.1 row 10 and the `@journey` allowlist
+/// stanza both claimed the byte-identical refusal that this now makes true.
+///
+/// All four arms in one assertion: an existing hull they may not depart, a hull that
+/// exists and is owned by somebody else, a dbref naming no object at all, and
+/// `/divert` — which behaved correctly only because `require_admin` still precedes
+/// it.
+#[test]
+fn vf_b4a_an_existing_a_foreign_and_a_free_dbref_all_refuse_byte_identically() {
+    let (mut tw, fx) = scene();
+    let missing = ObjId(90_000);
+    assert!(
+        tw.world().get(missing).is_none(),
+        "the fixture's free dbref really names nothing"
+    );
+
+    let exists = run_as(
+        &mut tw,
+        fx.bystander,
+        &depart_line(fx.carrier, fx.field, fx.phobos),
+    );
+    let foreign = run_as(
+        &mut tw,
+        fx.bystander,
+        &depart_line(fx.owned, fx.field, fx.phobos),
+    );
+    let absent = run_as(
+        &mut tw,
+        fx.bystander,
+        &depart_line(missing, fx.field, fx.phobos),
+    );
+    let divert = run_as(
+        &mut tw,
+        fx.bystander,
+        &format!(
+            "@journey/divert #{}=corridor #{}:100",
+            missing.0, fx.phobos.0
+        ),
+    );
+    assert_eq!(exists, absent, "an existing hull and a free dbref");
+    assert_eq!(foreign, absent, "somebody else's hull and a free dbref");
+    assert_eq!(divert, absent, "and `/divert`, which was already correct");
+    assert!(exists.contains("Permission denied"), "{exists}");
+    assert!(
+        !absent.contains("don't see that here"),
+        "the resolution failure no longer leaks: {absent}"
+    );
+}
+
+/// **An unauthored route and journey wire encode no new keys** (B14).
+///
+/// A byte round trip against the pre-pass encoding: an unhazardous, uninterdicted,
+/// uncontrolled route serializes exactly the keys it serialized before E7 residue
+/// pass 1, so a rollback to that build still decodes every document written since
+/// under its `deny_unknown_fields` wires. An **authored** band still encodes, so the
+/// skip is a default-elision and never a data loss.
+#[test]
+fn vf_b14a_an_unauthored_route_and_journey_wire_encode_no_new_keys() {
+    let plain = RouteDef::new(
+        mush_core::CanonicalId::new("plain").expect("id"),
+        (ObjId(10), ObjId(20)),
+        vec![LegDef::new(ObjId(20), 100).expect("leg")],
+        None,
+        mush_core::CanonicalId::new("fusion").expect("class"),
+        7,
+    )
+    .expect("a route");
+    let encoded = serde_json::to_value(&plain).expect("encode");
+    let leg = encoded["legs"][0]
+        .as_object()
+        .expect("the leg encodes as an object");
+    assert_eq!(
+        leg.keys().map(String::as_str).collect::<Vec<_>>(),
+        vec!["base_s", "to"],
+        "an unauthored leg writes exactly the pre-pass keys"
+    );
+    assert!(
+        !encoded
+            .as_object()
+            .expect("object")
+            .contains_key("controller"),
+        "and an uncontrolled route writes no `controller` at all: {encoded}"
+    );
+    // Still round trips, and an AUTHORED band is still written.
+    let back: RouteDef = serde_json::from_value(encoded).expect("decode");
+    assert_eq!(back, plain);
+    let banded = RouteDef::new(
+        mush_core::CanonicalId::new("banded").expect("id"),
+        (ObjId(10), ObjId(20)),
+        vec![LegDef::with_hazard(ObjId(20), 100, 3, 2).expect("a banded leg")],
+        None,
+        mush_core::CanonicalId::new("fusion").expect("class"),
+        7,
+    )
+    .expect("a route");
+    let encoded = serde_json::to_value(&banded).expect("encode");
+    assert_eq!(encoded["legs"][0]["hazard"], serde_json::json!(3));
+    assert_eq!(encoded["legs"][0]["interdiction"], serde_json::json!(2));
+    let back: RouteDef = serde_json::from_value(encoded).expect("decode");
+    assert_eq!(back, banded);
 }

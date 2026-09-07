@@ -52,6 +52,36 @@ pub const MONTH_NAMES: [&str; 12] = [
 /// meaning forever).
 pub const MAX_WORLD_TIMELINE_EPOCHS: usize = 4_096;
 
+/// The slowest world-IC rate any caller may install: **one** IC second per real
+/// second (10b §7; E7 residue pass 1 independent verify fold, C9/B10; owner decision
+/// F9(a) with the band `1..=3_600`).
+///
+/// **Zero is not a rate, it is a stopped clock**, and nothing here checked for it.
+/// `WorldTimelineEpoch::ic_at` computes `ic_anchor + delta * rate`, so at zero every
+/// `world_ic_now` consumer stops for ever — recovery cooldowns, production schedules,
+/// journey ETAs, escalation cool-offs — while `game_clock_compatibility` stores a
+/// `GameClock { ic_ratio: 0 }` whose only two readers (`mush_core::module`'s
+/// `AMBIENT_IC_TIME_KEY` and `mush_economy::sweep`'s `ratio`) both apply `.max(1)`.
+/// So the IC clock and calendar a player reads in the room kept advancing at 1:1
+/// against a world in which nothing keyed on `world_ic_now` would ever come due
+/// again, and a later rate change re-anchored from the frozen `ic_at`, discarding
+/// every elapsed second as a jump. Boot was already protected —
+/// [`WorldTimeline::from_game_clock`] clamps `clock.ic_ratio.max(1)` — and the
+/// mutation path was not.
+///
+/// A deliberate freeze, if one is ever wanted, needs its own verb with explicit
+/// semantics on **both** clock readers, never a rate of zero typed by accident.
+pub const MIN_WORLD_TIME_RATE: u32 = 1;
+
+/// The fastest world-IC rate any caller may install: one IC **hour** per real second
+/// (F9(a)'s band).
+///
+/// Doc 10 S1A's *"≈ one OOC hour per IC day"* is 24 IC seconds per real second, so
+/// the band is three orders of magnitude of headroom over the setting's own pace and
+/// still bounded: `u32::MAX` was accepted before, and at that rate a single real
+/// second advances the IC calendar by 136 years.
+pub const MAX_WORLD_TIME_RATE: u32 = 3_600;
+
 /// Persistence namespace reserved for engine-owned clock state.
 pub const WORLD_TIMELINE_NAMESPACE: &str = "rustmush_kernel_time";
 
@@ -271,6 +301,19 @@ impl WorldTimeline {
         rate: u32,
     ) -> Result<WorldTimelineEpoch, WorldTimelineError> {
         let current = self.current();
+        // **The band, in the kernel** (independent verify fold, C9/B10; owner decision
+        // F9(a)): the verb was not the only caller, and a rate is not something a
+        // caller may be trusted to have checked. `rate == 0` stops every
+        // `world_ic_now` mechanism for ever; anything past the band is a campaign act
+        // nobody meant to make. Refused, never clamped — a silently clamped time rate
+        // is a decision the staffer did not take.
+        if !(MIN_WORLD_TIME_RATE..=MAX_WORLD_TIME_RATE).contains(&rate) {
+            return Err(WorldTimelineError::RateOutOfBand {
+                rate,
+                min: MIN_WORLD_TIME_RATE,
+                max: MAX_WORLD_TIME_RATE,
+            });
+        }
         if real_anchor < current.real_anchor {
             return Err(WorldTimelineError::AnchorMovedBackward {
                 previous: current.real_anchor,
@@ -387,6 +430,20 @@ pub enum WorldTimelineError {
     /// No further generation can be represented.
     #[error("world timeline generation exhausted")]
     GenerationExhausted,
+    /// The proposed rate is outside [`MIN_WORLD_TIME_RATE`]..=[`MAX_WORLD_TIME_RATE`]
+    /// (independent verify fold, C9/B10; owner decision F9(a)). A rate of **zero** is
+    /// the load-bearing case: it stops every `world_ic_now` mechanism for ever while
+    /// the compatibility `GameClock`'s two `.max(1)` readers keep the clock a player
+    /// reads in the room advancing at 1:1.
+    #[error("world time rate {rate} is outside the band {min}..={max}")]
+    RateOutOfBand {
+        /// The rate that was proposed.
+        rate: u32,
+        /// The slowest legal rate.
+        min: u32,
+        /// The fastest legal rate.
+        max: u32,
+    },
 }
 
 /// Small materialized pointer paired atomically with every immutable epoch
@@ -1016,6 +1073,18 @@ mod tests {
         assert_eq!(c.ic_month(one_day_ooc), 1);
     }
 
+    /// A rate change opens a **continuous** new generation, and two generations are
+    /// incomparable.
+    ///
+    /// *Rewritten in place by the E7 residue pass 1 independent verify fold (C9/B10,
+    /// owner decision F9(a)).* This test used to install `rate = 0` and assert that
+    /// the IC clock then stood still for ever — which is precisely the state
+    /// [`MIN_WORLD_TIME_RATE`] now refuses, because it stops every `world_ic_now`
+    /// mechanism in the world while the compatibility [`GameClock`]'s two `.max(1)`
+    /// readers keep the clock a player reads in the room advancing at 1:1. Both
+    /// properties it was really pinning — the anchor's continuity and the two
+    /// generations' incomparability — hold at any legal rate, so they are asserted at
+    /// a **slower** one instead, and the refusal is asserted beside them.
     #[test]
     fn rate_change_opens_a_continuous_new_generation() {
         let mut timeline = WorldTimeline::from_game_clock(GameClock {
@@ -1026,17 +1095,73 @@ mod tests {
         assert_eq!(before.at, 300);
         assert_eq!(before.clock, ClockRef::WorldIc { generation: 1 });
 
-        let paused = timeline.next_rate_epoch(50, 0).unwrap();
-        assert_eq!(paused.ic_anchor, before.at);
-        timeline.append(paused).unwrap();
+        let slowed = timeline.next_rate_epoch(50, 1).unwrap();
+        assert_eq!(
+            slowed.ic_anchor, before.at,
+            "the new generation begins exactly where the old one stood"
+        );
+        timeline.append(slowed).unwrap();
         let after = timeline.stamp_at(5_000);
-        assert_eq!(after.at, 300);
+        assert_eq!(
+            after.at,
+            before.at + 4_950,
+            "and advances at the NEW rate from there"
+        );
         assert_eq!(after.clock, ClockRef::WorldIc { generation: 2 });
 
         assert!(matches!(
             before.checked_cmp(&after),
             Err(ClockMismatch { .. })
         ));
+    }
+
+    /// **A stopped clock is not a legal rate, and neither is one past the band**
+    /// (independent verify fold, C9/B10; owner decision F9(a), band `1..=3_600`).
+    ///
+    /// The band is enforced on the **mutation** path only. Hydration
+    /// ([`WorldTimeline::from_epochs`]) deliberately still accepts any persisted
+    /// epoch: a world that installed an out-of-band rate before this landed must
+    /// still boot and be repairable, and refusing its history would strand it. The
+    /// two ways in are `next_rate_epoch` — every live caller — and
+    /// `from_game_clock`, which already clamped.
+    #[test]
+    fn vf_c9_the_rate_band_is_refused_at_every_mutation_and_the_edges_are_legal() {
+        assert_eq!(MIN_WORLD_TIME_RATE, 1);
+        assert_eq!(MAX_WORLD_TIME_RATE, 3_600);
+        const {
+            assert!(MIN_WORLD_TIME_RATE >= 1);
+            assert!(MAX_WORLD_TIME_RATE > MIN_WORLD_TIME_RATE);
+        }
+        let timeline = WorldTimeline::from_game_clock(GameClock {
+            ic_ratio: 4,
+            epoch_offset: 0,
+        });
+        for rate in [0, MAX_WORLD_TIME_RATE + 1, u32::MAX] {
+            assert!(
+                matches!(
+                    timeline.next_rate_epoch(10, rate),
+                    Err(WorldTimelineError::RateOutOfBand { .. })
+                ),
+                "rate {rate} must be refused, naming the band"
+            );
+        }
+        for rate in [MIN_WORLD_TIME_RATE, 24, MAX_WORLD_TIME_RATE] {
+            assert!(
+                timeline.next_rate_epoch(10, rate).is_ok(),
+                "rate {rate} is inside the band"
+            );
+        }
+        // Boot was always protected, and still is.
+        assert_eq!(
+            WorldTimeline::from_game_clock(GameClock {
+                ic_ratio: 0,
+                epoch_offset: 0,
+            })
+            .current()
+            .rate,
+            1,
+            "`GameClock`'s own `0 is treated as 1` sentinel is honoured at boot"
+        );
     }
 
     #[test]

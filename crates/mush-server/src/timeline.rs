@@ -241,6 +241,13 @@ mod tests {
         assert_eq!(reloaded.current().rate, 9);
     }
 
+    /// Persisted truth beats a changed `[game].ic_ratio`.
+    ///
+    /// *Amended in place by the E7 residue pass 1 independent verify fold (C9/B10,
+    /// owner decision F9(a)).* The second generation used to be installed at
+    /// `rate = 0`, which `WorldTimeline::next_rate_epoch` now refuses — a stopped
+    /// clock is not a legal rate. The property under test is that the **persisted**
+    /// generation wins over the configured one, and it is asserted at a legal rate.
     #[tokio::test]
     async fn persisted_rate_generation_wins_over_changed_config() {
         let store = InMemoryStore::new();
@@ -249,7 +256,7 @@ mod tests {
             epoch_offset: 10,
         };
         let mut timeline = load_or_seed_world_timeline(&store, initial).await.unwrap();
-        let next = timeline.next_rate_epoch(100, 0).unwrap();
+        let next = timeline.next_rate_epoch(100, 1).unwrap();
         store
             .write(WriteBatch {
                 serial: 1,
@@ -274,7 +281,9 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(loaded, timeline);
-        assert_eq!(loaded.stamp_at(10_000).at, 210);
+        // Generation 2 anchors at IC 210 and runs at 1:1 from real second 100, so
+        // real 10 000 is IC 210 + 9 900 — the CONFIGURED 99:1 reaches it never.
+        assert_eq!(loaded.stamp_at(10_000).at, 10_110);
         assert_eq!(
             loaded.stamp_at(10_000).clock,
             mush_core::ClockRef::WorldIc { generation: 2 }

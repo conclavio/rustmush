@@ -70,6 +70,33 @@ pub const MAX_RECOVERY_APPLICATIONS_PER_PRINCIPAL: usize = 1;
 /// settlement lane (10b §15's contradiction (iii)).
 pub const MAX_RECOVERY_PER_FIRE: usize = 8;
 
+/// **The recovery books' retention ring** (independent verify fold, B7): how many
+/// **closed** applications and how many **ended** grants one world keeps.
+///
+/// 10b §15.1 row 5 said *"three bounded whole-document exempt records"*;
+/// [`MAX_RECOVERY_QUEUE`] bounded only the queue, while `recovery_apps` and
+/// `recovery_grants` were `BTreeMap`s with no cap, no ring and no eviction, hydrated
+/// entry by entry at boot, and a free player verb (`@recovery/apply`, deliberately
+/// not eligibility-gated) created one of each. This is cut 10's muster ring, one file
+/// away, applied to the same shape: a `Del` of the oldest closed/ended record in the
+/// same bundle that writes a new one, and a bounded boot hydration that drops and
+/// **counts** the overflow. A live application or a live grant is never evicted —
+/// eviction is by policy over records that carry no claim, never truncation of live
+/// state.
+pub const MAX_RETAINED_RECOVERY_RECORDS: usize = 64;
+
+/// **How long an offered loaner waits for its `@contract/accept`** before the
+/// campaign tick's fourth arm takes it back (independent verify fold, D7).
+///
+/// `try_grant` completes at `offer_lease`, which produces a contract the applicant
+/// must still accept; until they do, no `Encumbrance::Lease` exists and the hull is
+/// held out of the motor pool by the grant document alone. Nothing aged that: the
+/// fourth arm walked only the **queue**, which the applicant has already left, so an
+/// applicant who applied, was granted and never accepted held a hull out of the pool
+/// **for ever** and was `LiveLease`-refused themselves. `SEAT_OFFER_TTL`'s shape, on
+/// the same cadence.
+pub const RECOVERY_ACCEPT_TTL_SECS: i64 = 24 * 60 * 60;
+
 /// The per-player cooldown after a lease ends — 10b §7's `RECOVERY_COOLDOWN` of
 /// **14 days**, cited rather than redefined. `[tacsim.recovery].cooldown_days`
 /// overrides it per deployment and defaults to exactly this.
@@ -177,6 +204,19 @@ impl RecoveryConfig {
 
     /// Whether losses inside the lease's restrictions are written off rather than
     /// becoming a debt (Q7A's insurance row).
+    ///
+    /// **It governs debt-versus-writeoff and nothing else** (independent verify fold,
+    /// C6/B2; owner decision F4(i)(b)). It used to gate the whole cooldown branch of
+    /// [`eligible`] and the whole of [`cooldown_until`], and `"approved_operations"`
+    /// is the shipped default in all three defaulting sites — so on every default
+    /// deployment `cooldown_days` was dead code that the host nonetheless *validated*
+    /// at boot, `@recovery/status` rendered no cooldown, and apply → grant → return →
+    /// apply drew a fresh stipend out of the pool every cycle. Q7A's *"waived when
+    /// the loss was inside the restrictions"* is a **per-loss** fact, and nothing in
+    /// this crate records or reads whether any loss was; implementing it as "waived
+    /// by the policy word, for everybody, always" was the defect. The per-loss
+    /// waiver (a `loss_covered` marker on the grant) waits for the loss path that
+    /// would set it — 10b §15.3's pass-2 item.
     #[must_use]
     pub fn insures_approved_operations(&self) -> bool {
         self.insurance == "approved_operations"
@@ -658,25 +698,47 @@ pub fn accessible_operational_assets(world: &World, who: ObjId) -> u32 {
     };
     let mut count = 0_u32;
     for asset in economy.snapshot().assets() {
-        if asset.title_owner != principal
-            || asset.frozen
-            || !matches!(asset.lifecycle, AssetLifecycle::Active)
-            || !asset.encumbrances.is_empty()
-        {
+        if asset.title_owner != principal {
             continue;
         }
-        let reachable = world
-            .module_state::<mush_sim::SpatialState>()
-            .is_some_and(|st| st.is_placed(asset.object) && !st.is_quarantined(asset.object));
-        if !reachable {
-            continue;
+        if is_accessible_operational(world, asset.object) {
+            count = count.saturating_add(1);
         }
-        if !is_deployable(world, asset.object) {
-            continue;
-        }
-        count = count.saturating_add(1);
     }
     count
+}
+
+/// **The per-asset half of [`accessible_operational_assets`], as one predicate**
+/// (independent verify fold, C7) — everything except *whose* the hull is.
+///
+/// It exists because the eligibility side and the loaner-selection side had drifted
+/// into two different notions of the same phrase: `accessible_operational_assets`
+/// required unencumbered **and reachable and deployable**, while
+/// [`next_loaner`]'s own filter checked only the first four conditions and its doc
+/// comment claimed *"the provider's own lowest-id accessible operational asset"*
+/// anyway. So a hull sitting unplaced in limbo, a quarantined wreck, or a hull in no
+/// formation was a valid loaner for a player whose identical hull would have made
+/// them **ineligible**. One predicate, two callers, and the two notions can no longer
+/// disagree.
+#[must_use]
+pub fn is_accessible_operational(world: &World, object: ObjId) -> bool {
+    let Some(economy) = world.module_state::<EconomyStore>() else {
+        return false;
+    };
+    let Some(asset) = economy.snapshot().asset(object) else {
+        return false;
+    };
+    if asset.frozen
+        || !matches!(asset.lifecycle, AssetLifecycle::Active)
+        || !asset.encumbrances.is_empty()
+    {
+        return false;
+    }
+    // **reachable** — `mush_sim`: placed in the spatial graph and not quarantined.
+    let reachable = world
+        .module_state::<mush_sim::SpatialState>()
+        .is_some_and(|st| st.is_placed(object) && !st.is_quarantined(object));
+    reachable && is_deployable(world, object)
 }
 
 /// **Deployable, answered campaign-side** — the object is a member of a formation
@@ -713,13 +775,15 @@ pub fn eligible(
         if grant.is_live() {
             return Err(RecoveryRefusal::LiveLease);
         }
-        // The cooldown runs from the END of the last lease, and is **waived when the
-        // loss fell inside the lease's restrictions** — which, under the
-        // `approved_operations` insurance policy, is what an insured loss means
-        // (Q7A's insurance and cooldown rows read together).
-        if !cfg.insures_approved_operations()
-            && let Some(ended) = grant.ended_at()
-        {
+        // The cooldown runs from the END of the last lease and **always applies**
+        // (independent verify fold, C6/B2; owner decision F4(i)(b)). The
+        // `!cfg.insures_approved_operations() &&` conjunct that used to guard this
+        // branch made `cooldown_days` dead on every shipped default, which is how
+        // apply → grant → return → apply farmed one stipend per cycle out of a pool
+        // nothing in this crate can mint into. `insurance` now governs
+        // debt-versus-writeoff and nothing else; see
+        // [`RecoveryConfig::insures_approved_operations`].
+        if let Some(ended) = grant.ended_at() {
             let until = ended.saturating_add(cfg.cooldown_secs);
             if now < until {
                 return Err(RecoveryRefusal::Cooldown { until });
@@ -776,38 +840,114 @@ pub fn pool_can_fund(world: &World, cfg: &RecoveryConfig) -> bool {
     balance.saturating_sub(cfg.upkeep_per_period) >= cfg.pool_floor
 }
 
-/// **The next loaner hull** — the provider's own lowest-id accessible operational
-/// asset that is not already out on a live grant.
+/// **The next loaner hull** — the provider's own lowest-id
+/// [`is_accessible_operational`] asset that is not already out on a live grant.
 ///
 /// Deterministic (the asset table is canonically ordered and the choice is the
 /// minimum), so two evaluations agree and a restart picks the same hull. `None` is
 /// an empty motor pool, which **queues and pages** exactly as a dry budget does.
+///
+/// **"Already out" is the MONEY fact** (independent verify fold, D3; owner decision
+/// F6(a)): a live lease this provider offered on the hull, which is durable through
+/// the economy's own `install_commit`. It used to be the live **grant document**, an
+/// ordinary deferred campaign write, and that cut both ways: lose the write and the
+/// next fire leased the same hull twice; lose the *close* write and the hull was out
+/// of the motor pool and its applicant `LiveLease`-refused **for ever**, because the
+/// document was the only thing anybody asked. R1 made the live hold found by purpose
+/// the marker one crate over, for the same reason.
 #[must_use]
 pub fn next_loaner(world: &World, cfg: &RecoveryConfig) -> Option<ObjId> {
     let owner = provider(world, cfg)?;
     let economy = world.module_state::<EconomyStore>()?;
-    let out: BTreeSet<u32> = world
-        .module_state::<crate::store::CampaignStore>()
-        .map(|store| {
-            store
-                .recovery_grants()
-                .filter(|grant| grant.is_live())
-                .map(|grant| grant.loaner().0)
-                .collect()
-        })
-        .unwrap_or_default();
     economy
         .snapshot()
         .assets()
-        .filter(|asset| {
-            asset.title_owner == owner
-                && !asset.frozen
-                && matches!(asset.lifecycle, AssetLifecycle::Active)
-                && asset.encumbrances.is_empty()
-                && !out.contains(&asset.object.0)
-        })
+        .filter(|asset| asset.title_owner == owner)
         .map(|asset| asset.object)
+        .filter(|object| {
+            is_accessible_operational(world, *object)
+                && live_lease_on(world, &owner, *object).is_none()
+        })
         .min_by_key(|object| object.0)
+}
+
+/// **The live lease this provider holds on one hull, if any — the MONEY fact**
+/// (independent verify fold, D3; owner decision F6(a)).
+///
+/// `mush_economy::end_lease`'s `owns_lease` shape, read rather than written: a
+/// non-terminal contract issued by `lessor` that pledges exactly `premises` as the
+/// lessor's collateral and creates an obligation. That is what `offer_lease` builds,
+/// and it is durable through the economy's `install_commit` — unlike the three
+/// campaign documents, which are ordinary deferred writes and can be lost on their
+/// own.
+#[must_use]
+pub fn live_lease_on(
+    world: &World,
+    lessor: &PrincipalId,
+    premises: ObjId,
+) -> Option<mush_economy::ContractId> {
+    let economy = world.module_state::<EconomyStore>()?;
+    economy
+        .snapshot()
+        .contracts()
+        .find(|contract| {
+            !contract.state.is_terminal()
+                && contract.issuer == *lessor
+                && contract.consent.terms.deliverables.iter().any(|d| {
+                    matches!(
+                        d,
+                        mush_economy::Deliverable::Collateral { object, from }
+                            if *object == premises && from == lessor
+                    )
+                })
+                && contract
+                    .consent
+                    .terms
+                    .deliverables
+                    .iter()
+                    .any(|d| matches!(d, mush_economy::Deliverable::Obligation { .. }))
+        })
+        .map(|contract| contract.id)
+}
+
+/// **The live recovery lease one applicant already holds** — the authority on
+/// *"already granted"*, read before any campaign document (D3; F6(a)).
+///
+/// A lost `recovery_grant:` document used to mean the next fire leased the applicant
+/// a **second** hull and posted a **second** stipend, because the campaign mirror was
+/// the only marker and `grant_key(applicant, now)` was scoped to the IC second.
+/// R1 got this right one crate over by making the live hold found *by purpose* the
+/// marker; this is the same move for a lease.
+#[must_use]
+pub fn live_recovery_lease(
+    world: &World,
+    cfg: &RecoveryConfig,
+    applicant: ObjId,
+) -> Option<(mush_economy::ContractId, ObjId)> {
+    let lessor = provider(world, cfg)?;
+    let tenant = PrincipalId::Object(applicant);
+    let economy = world.module_state::<EconomyStore>()?;
+    economy
+        .snapshot()
+        .contracts()
+        .filter(|contract| {
+            !contract.state.is_terminal()
+                && contract.issuer == lessor
+                && contract.consent.parties.contains(&tenant)
+        })
+        .find_map(|contract| {
+            contract
+                .consent
+                .terms
+                .deliverables
+                .iter()
+                .find_map(|d| match d {
+                    mush_economy::Deliverable::Collateral { object, from } if *from == lessor => {
+                        Some((contract.id, *object))
+                    }
+                    _ => None,
+                })
+        })
 }
 
 /// The upkeep obligation one grant's lease carries: the applicant pays the provider
@@ -840,11 +980,12 @@ pub fn upkeep_template(
 }
 
 /// The IC second one applicant's cooldown ends, for `@recovery/status`.
+///
+/// Its early return on [`RecoveryConfig::insures_approved_operations`] was
+/// [`eligible`]'s twin and went with it (independent verify fold, C6; owner decision
+/// F4(i)(b)): a cooldown that bites must also be a cooldown a player can *see*.
 #[must_use]
 pub fn cooldown_until(cfg: &RecoveryConfig, grant: Option<&RecoveryGrant>) -> Option<i64> {
-    if cfg.insures_approved_operations() {
-        return None;
-    }
     grant
         .and_then(RecoveryGrant::ended_at)
         .map(|ended| ended.saturating_add(cfg.cooldown_secs))
