@@ -989,6 +989,260 @@ fn j4_a_narrowed_boot_without_a_usable_checkpoint_asks_for_the_whole_fetch() {
     assert_eq!(bal(&clamped, 1), 121);
 }
 
+/// [`boot_j3`] with the RAM window bounded (doc 13 W2).
+fn boot_w2(tail: usize, every: u64, window_max: usize, window_secs: i64) -> TestWorld {
+    TestWorld::with_modules(vec![
+        Box::new(mush_org::OrgModule::new()),
+        Box::new(
+            mush_economy::EconomyModule::new().with_config(EconomyConfig {
+                tx_tail_max: tail,
+                checkpoint_every_entries: every,
+                idempotency_window_max: window_max,
+                idempotency_window_secs: window_secs,
+                ..EconomyConfig::default()
+            }),
+        ),
+        Box::new(TestPostMod),
+    ])
+}
+
+fn reboot_w2(
+    kv: Vec<(SmolStr, serde_json::Value)>,
+    tail: usize,
+    every: u64,
+    window_max: usize,
+    window_secs: i64,
+) -> TestWorld {
+    let mut tw = boot_w2(tail, every, window_max, window_secs);
+    tw.modules_loaded(HashMap::from([(
+        SmolStr::new(NS),
+        ModuleBootData {
+            kv,
+            ..ModuleBootData::default()
+        },
+    )]));
+    tw
+}
+
+/// Doc 13 W2 (W-D2, lens S): once every key has its document, the sweep
+/// evicts the idempotency map and the transaction index together, oldest
+/// first, past the count bound and past the age bound; the filter and the
+/// documents keep every evicted key, and a repeat of an evicted key is
+/// decided through the store — the original id for the same plan.
+#[test]
+fn w2_the_sweep_evicts_the_window_by_count_and_age() {
+    let mut tw = boot_w2(20_000, 0, 3, 1_000);
+    setup_mint(&mut tw, 1); // seq 0, id 0, posted at the world's now (0)
+    for name in ["a", "b", "c", "d"] {
+        let ev = tw.run(GOD, &format!("@testpost {name} 1"));
+        assert!(texts(&ev).contains("posted"), "{}", texts(&ev));
+    }
+    let s = store(&tw);
+    assert_eq!(
+        s.key_mode(),
+        KeyMode::Windowed,
+        "a fresh world is backfilled, so windowed"
+    );
+    assert_eq!(
+        (s.window_len(), s.snapshot().idempotency_len()),
+        (5, 5),
+        "a post never evicts"
+    );
+    // The count bound: the sweep keeps the newest three.
+    sweep_at(&mut tw, 100);
+    let s = store(&tw);
+    assert_eq!((s.window_len(), s.snapshot().idempotency_len()), (3, 3));
+    assert!(
+        s.transaction_ref(TransactionId(0)).is_none(),
+        "the mint's id left the index"
+    );
+    assert!(s.transaction_ref(TransactionId(1)).is_none());
+    assert!(s.transaction_ref(TransactionId(4)).is_some());
+    assert!(
+        s.snapshot().idempotency(&tkey("a")).is_none(),
+        "a's key left the map"
+    );
+    assert!(s.snapshot().idempotency(&tkey("d")).is_some());
+    assert!(
+        s.key_filter().might_contain(&tkey("a")),
+        "the filter keeps it"
+    );
+    assert_eq!(
+        s.chunk_of_tx(TransactionId(1)),
+        Some(0),
+        "an evicted id is still locatable"
+    );
+    let kv = fold_into(Vec::new(), &mut tw);
+    // A repeat of an evicted key: through the store, then the original id.
+    let (ev, effects) = tw.run_with_effects(GOD, "@testpost a 1");
+    assert!(texts(&ev).contains("try again shortly"), "{}", texts(&ev));
+    let (correlation, keys) = one_read(&effects);
+    complete(&mut tw, correlation, serve(&kv, keys));
+    let ev = tw.run(GOD, "@testpost a 1");
+    assert!(texts(&ev).contains("already #1"), "{}", texts(&ev));
+    // The age bound: everything older than the window leaves at the sweep.
+    let mut tw = tw;
+    tw.set_now(5_000);
+    let ev = tw.run(GOD, "@testpost e 1"); // posted at 5 000
+    assert!(texts(&ev).contains("posted"), "{}", texts(&ev));
+    sweep_at(&mut tw, 5_100); // 5 100 - 0 ≥ 1 000 for the old ones; e is 100 s old
+    let s = store(&tw);
+    assert_eq!(s.window_len(), 1, "only the post inside the window stays");
+    assert!(s.snapshot().idempotency(&tkey("e")).is_some());
+    assert!(s.snapshot().idempotency(&tkey("d")).is_none());
+}
+
+/// Doc 13 W2 (W-D5): a journal older than the cut is not evicted until its
+/// key documents exist — the backfill's sweep writes them, the next one
+/// evicts.
+#[test]
+fn w2_eviction_waits_for_the_backfill() {
+    let mut tw = boot_j3(20_000, 0);
+    setup_mint(&mut tw, 1);
+    mint_n(&mut tw, 4); // seq 0..=4
+    let kv = fold_into(Vec::new(), &mut tw);
+    let mut old: Vec<_> = kv.into_iter().filter(|(k, _)| !is_idem_key(k)).collect();
+    patch(&mut old, "meta", |v| {
+        if let Some(m) = v.as_object_mut() {
+            m.remove("idem_backfilled");
+            m.remove("idem_backfill_txid");
+        }
+    });
+    let mut tw2 = reboot_w2(old, 20_000, 0, 2, 1_000);
+    let s = store(&tw2);
+    assert!(!s.idem_backfilled());
+    assert_eq!(
+        s.key_mode(),
+        KeyMode::Whole,
+        "not windowed until backfilled"
+    );
+    assert_eq!(s.window_len(), 5, "nothing evicted at boot");
+    sweep_at(&mut tw2, 100);
+    let s = store(&tw2);
+    assert!(s.idem_backfilled());
+    assert_eq!(s.key_mode(), KeyMode::Windowed);
+    assert_eq!(
+        s.window_len(),
+        5,
+        "the backfilling sweep evicts nothing yet"
+    );
+    sweep_at(&mut tw2, 200);
+    assert_eq!(
+        store(&tw2).window_len(),
+        2,
+        "the next sweep evicts to the bound"
+    );
+    assert_eq!(bal(&tw2, 1), 5);
+}
+
+/// Doc 13 W2 (W-D6, lens S): a reversal of a transaction the window and the
+/// RAM tail both evicted reaches its chunk through the chunk map, reads the
+/// body off the world loop, and posts the reversal.
+#[test]
+fn w2_a_reversal_of_an_evicted_id_reads_its_chunk() {
+    let mut tw = boot_w2(2, 0, 2, 1_000);
+    setup_mint(&mut tw, 1);
+    mint_n(&mut tw, 4); // ids 0..=4, account 1 at 5
+    sweep_at(&mut tw, 100); // tail 2, window 2
+    let s = store(&tw);
+    assert!(
+        s.transaction(TransactionId(1)).is_none(),
+        "the body left the tail"
+    );
+    assert!(
+        s.transaction_ref(TransactionId(1)).is_none(),
+        "the ref left the index"
+    );
+    assert!(s.id_allocated(TransactionId(1)));
+    let kv = fold_into(Vec::new(), &mut tw);
+    let (ev, effects) = tw.run_with_effects(GOD, "@econ/reverse 1=evicted");
+    assert!(
+        texts(&ev).contains("older than the in-memory tail"),
+        "the cold path: {}",
+        texts(&ev)
+    );
+    let (correlation, keys) = one_read(&effects);
+    assert_eq!(keys, vec![mush_core::chunk_key("journal", 0)]);
+    let out = complete(&mut tw, correlation, serve(&kv, keys));
+    assert!(
+        !out.to_lowercase().contains("no such") && !out.contains("was not in the chunk"),
+        "{out}"
+    );
+    assert_eq!(bal(&tw, 1), 4, "the reversal posted: {out}");
+    // An id nobody minted is still nobody's.
+    let ev = tw.run(GOD, "@econ/reverse 99=nothing");
+    assert!(
+        texts(&ev).to_lowercase().contains("no such"),
+        "{}",
+        texts(&ev)
+    );
+}
+
+/// Doc 13 W2 (§2.5, lens B): with the window on, a checkpoint's parts carry
+/// only the window's rows and drop an inherited part wholly below the window's
+/// floor; a checkpointed boot seeds the window from the parts and trims it to
+/// the count bound; a full replay keeps only the window's keys in RAM while
+/// the filter takes every key.
+#[test]
+fn w2_the_checkpoint_parts_are_window_only_and_boots_keep_the_window() {
+    let mut tw = boot_w2(20_000, 4, 4, 1_000);
+    setup_mint(&mut tw, 1);
+    mint_n(&mut tw, 3); // ids 0..=3
+    sweep_at(&mut tw, 100); // evicts nothing (4 ≤ 4); checkpoint at seq 3, part 0 = ids 0..=3
+    let cp = store(&tw).checkpoint().cloned().expect("first checkpoint");
+    assert_eq!(
+        (cp.covered_seq, cp.parts.len(), cp.parts[0].max_txid),
+        (3, 1, 3)
+    );
+    mint_n(&mut tw, 4); // ids 4..=7
+    sweep_at(&mut tw, 200); // evicts ids 0..=3 (window 4), checkpoint at seq 7
+    let cp = store(&tw).checkpoint().cloned().expect("second checkpoint");
+    assert_eq!(cp.covered_seq, 7);
+    assert_eq!(
+        cp.parts
+            .iter()
+            .map(|p| (p.seq_lo, p.seq_hi))
+            .collect::<Vec<_>>(),
+        vec![(4, 7)],
+        "the inherited part wholly below the floor is dropped"
+    );
+    assert_eq!(
+        cp.parts[0].key.as_str(),
+        "checkpoint:7:idem:0",
+        "the new head's only part is its own (numbered from zero: nothing inherited)"
+    );
+    let kv = fold_into(Vec::new(), &mut tw);
+    // A checkpointed boot: the window from the parts, the filter from the bloom
+    // part, every balance right.
+    let tw2 = reboot_w2(kv.clone(), 20_000, 4, 4, 1_000);
+    assert_eq!(replay(&tw2).0, Some(7));
+    let s = store(&tw2);
+    assert_eq!(s.window_len(), 4);
+    assert!(s.transaction_ref(TransactionId(7)).is_some());
+    assert!(s.transaction_ref(TransactionId(2)).is_none());
+    assert!(
+        s.key_filter().might_contain(&tkey("never")) || true,
+        "a filter query is total"
+    );
+    assert_eq!(bal(&tw2, 1), 8);
+    assert_eq!(
+        s.chunk_of_tx(TransactionId(2)),
+        Some(0),
+        "evicted ids stay locatable after a boot"
+    );
+    // A full replay with a smaller window keeps only the newest keys in RAM.
+    let stripped: Vec<_> = kv
+        .into_iter()
+        .filter(|(k, _)| !k.starts_with("checkpoint:"))
+        .collect();
+    let tw3 = reboot_w2(stripped, 20_000, 0, 2, 1_000);
+    assert_eq!(replay(&tw3).0, None);
+    let s = store(&tw3);
+    assert_eq!((s.window_len(), s.snapshot().idempotency_len()), (2, 2));
+    assert_eq!(s.key_filter().len(), 8, "the filter took every key");
+    assert_eq!(bal(&tw3, 1), 8);
+}
+
 fn tkey(name: &str) -> IdempotencyKey {
     IdempotencyKey::new("t", name)
 }

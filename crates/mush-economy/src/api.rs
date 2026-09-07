@@ -1227,9 +1227,14 @@ pub fn post(ctx: &mut Ctx<'_>, plan: &EconomyPlan) -> Result<PostOutcome, Econom
 /// missing store and a frozen economy all answer `false`.
 #[must_use]
 pub fn idempotency_resolved(ctx: &Ctx<'_>, key: &crate::record::IdempotencyKey) -> bool {
-    ctx.w
-        .module_state::<EconomyStore>()
-        .is_some_and(|s| s.snapshot().idempotency(key).is_some())
+    ctx.w.module_state::<EconomyStore>().is_some_and(|s| {
+        // Doc 13 W2: through the gate — a key outside the window the filter
+        // has seen is not known to be resolved here; the post decides.
+        matches!(
+            crate::engine::KeyGate::verdict(&s.key_gate(), s.snapshot(), key),
+            crate::engine::KeyVerdict::Known(_)
+        )
+    })
 }
 
 /// Which [`AuthEval`] a post is validated against (§4.1).
@@ -1312,7 +1317,7 @@ pub(crate) fn post_with_companions(
             ic_now: ctx.w.game_now_unix(),
             next_hold_id: store.peek_next_hold(),
             spent: spent_for_plan(store, plan, now),
-            keys: Some(&gate),
+            keys: &gate,
         };
         (validate(plan, store.snapshot(), &env), providers)
     };
@@ -1383,7 +1388,9 @@ pub fn reverse(
             // J2: known to the journal but its body has left the RAM tail — the
             // caller reaches it through the store-read seam and re-enters with
             // [`reverse_original`].
-            None if store.transaction_ref(target).is_some() => {
+            // Doc 13 W2: an id the window evicted has no ref either, but the
+            // allocator minted it and the journal has it — the same cold path.
+            None if store.transaction_ref(target).is_some() || store.id_allocated(target) => {
                 return Err(EconomyError::TransactionNotInMemory(target));
             }
             None => return Err(EconomyError::NoSuchTransaction(target)),
@@ -1416,6 +1423,12 @@ pub fn reverse_original(
         // The journal's record of the target must be the record in hand.
         match store.transaction_ref(original.id) {
             Some(r) if r.seq == original.journal_seq && r.idempotency == original.idempotency => {}
+            // Doc 13 W2 (W-D6): an id the window evicted has no ref; the body came
+            // from the journal's own chunk — the one the chunk map names for the
+            // id — and the id is one the allocator minted.
+            None if store.id_allocated(original.id)
+                && store.chunk_of_id(original.id).is_some()
+                && store.chunk_of_id(original.id) == store.chunk_of_seq(original.journal_seq) => {}
             _ => return Err(EconomyError::NoSuchTransaction(original.id)),
         }
         let auth = WorldAuth { w: ctx.w };
@@ -1426,7 +1439,7 @@ pub fn reverse_original(
                 cause,
                 store.snapshot(),
                 &auth,
-                Some(&store.key_gate()),
+                &store.key_gate(),
             ),
             store.providers(),
         )
@@ -2947,7 +2960,7 @@ fn install_commit(ctx: &mut Ctx<'_>, commit: PreparedEconomyCommit) -> Transacti
             );
             store.next_transaction = next_transaction;
             store.snapshot = snapshot;
-            store.note_chunk(chunk_now, applied_seq);
+            store.note_chunk(chunk_now, applied_seq, txid);
             // Doc 13 (W-D4): the key document rides in the same batch as the entry.
             let key_doc = crate::keys::IdemDoc::of(&transaction);
             store.index_transaction(transaction);

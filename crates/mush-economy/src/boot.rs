@@ -85,6 +85,7 @@ pub(crate) fn load_boot(
     providers: &CustodyTable,
     outcomes: &crate::contract::CanonOutcomeKinds,
     tail_max: usize,
+    window_secs: i64,
 ) -> Result<EconomyStore, ModError> {
     let ModuleBootData {
         kv,
@@ -400,6 +401,11 @@ pub(crate) fn load_boot(
     let keep_from: u64 = journal_len.saturating_sub(u64::try_from(tail_max).unwrap_or(u64::MAX));
     let mut tx_index: BTreeMap<TransactionId, TxRef> = BTreeMap::new();
     let mut chunk_firsts: BTreeMap<u64, u64> = BTreeMap::new();
+    let mut chunk_first_ids: BTreeMap<u64, TransactionId> = BTreeMap::new();
+    // Doc 13 W2 (W-D2): the replay keeps only the window's keys in the map and
+    // the index — once every key has its document (W-D5); the count bound is
+    // applied when the store is up. The filter takes every key regardless.
+    let boot_now = ctx.w.now();
 
     // Replay: the journal-authority accumulators (J3, `FoldState`, the one fold
     // the live post path uses too), plus what only boot captures — each
@@ -480,6 +486,7 @@ pub(crate) fn load_boot(
         }
         debit_window = head.body.debit_window;
         chunk_firsts = head.body.chunk_firsts;
+        chunk_first_ids = head.body.chunk_first_ids;
         covered = Some(head.covered_seq);
         // J3-F4: the RAM tail (J2) is the newest `tail_max` bodies whatever the
         // boot seeded from, so the chunks holding `keep_from..` are decoded
@@ -519,6 +526,19 @@ pub(crate) fn load_boot(
     }
     let checkpoint_ms = u64::try_from(checkpoint_started.elapsed().as_millis()).unwrap_or(u64::MAX);
 
+    // Doc 13 (W-D5): the key-document backfill's cursor and flag; an empty
+    // journal has nothing to backfill.
+    let idem_backfill_txid = meta
+        .as_ref()
+        .and_then(|m| m.get("idem_backfill_txid"))
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0);
+    let idem_backfilled = meta
+        .as_ref()
+        .and_then(|m| m.get("idem_backfilled"))
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false)
+        || journal_empty;
     let mut fold = |seq: u64, tx: EconomicTransaction, retain_only: bool| -> Result<(), ModError> {
         // J3-F4: an entry the checkpoint covers is not folded again — only its
         // body is kept when it falls inside the RAM tail.
@@ -586,13 +606,17 @@ pub(crate) fn load_boot(
                 );
             }
         }
-        // Idempotency index (journal-derived — the double-post backstop).
-        snapshot.put_idempotency(IdempotencyRecord {
-            idempotency: tx.idempotency.clone(),
-            plan_hash: tx.plan_hash,
-            transaction: tx.id,
-            posted_at: tx.posted_at,
-        });
+        // Idempotency index (journal-derived — the double-post backstop); doc 13
+        // W2: only the window's, once the window is on.
+        let in_window = !idem_backfilled || boot_now.saturating_sub(tx.posted_at) < window_secs;
+        if in_window {
+            snapshot.put_idempotency(IdempotencyRecord {
+                idempotency: tx.idempotency.clone(),
+                plan_hash: tx.plan_hash,
+                transaction: tx.id,
+                posted_at: tx.posted_at,
+            });
+        }
         if let Some(target) = tx.reverses {
             snapshot.mark_reversed(target);
         }
@@ -600,15 +624,18 @@ pub(crate) fn load_boot(
         // so replay folds every debit and the membership filter runs once at the end
         // — D4's "only windowed accounts are tracked", reached the other way round.
         let _ = crate::module::note_window_debits(&mut debit_window, &tx);
-        // J2: the index keeps every id; the tail keeps the newest bodies, by move.
-        tx_index.insert(
-            tx.id,
-            TxRef {
-                seq,
-                idempotency: tx.idempotency.clone(),
-                posted_at: tx.posted_at,
-            },
-        );
+        // J2: the index keeps every id the window holds (doc 13 W2); the tail
+        // keeps the newest bodies, by move.
+        if in_window {
+            tx_index.insert(
+                tx.id,
+                TxRef {
+                    seq,
+                    idempotency: tx.idempotency.clone(),
+                    posted_at: tx.posted_at,
+                },
+            );
+        }
         if seq >= keep_from {
             transactions.insert(tx.id, tx);
         }
@@ -630,8 +657,9 @@ pub(crate) fn load_boot(
         let text = std::mem::take(&mut ledger_docs[position].1);
         let typed = typed_entries::<EconomicTransaction>(&text)
             .map_err(|err| ModError::msg(format!("economy: bad journal chunk {chunk}: {err}")))?;
-        if let Some((first, _)) = typed.first() {
+        if let Some((first, tx)) = typed.first() {
             chunk_firsts.insert(chunk, *first);
+            chunk_first_ids.insert(chunk, tx.id);
         }
         for (seq, tx) in typed {
             if covered.is_some_and(|c| seq <= c) {
@@ -652,6 +680,11 @@ pub(crate) fn load_boot(
     // inspection are done with.
     drop(ledger_docs);
     drop(history);
+    // Doc 13 W2: boot's gate over the complete filter (no cold cache yet); the
+    // contracts it cannot decide are the sweep's (W-D7).
+    let no_cold: BTreeMap<crate::record::IdempotencyKey, crate::module::ColdKey> = BTreeMap::new();
+    let boot_gate = crate::module::StoreKeyGate::new(&key_filter, &no_cold, idem_backfilled);
+    let mut heal_wanted: BTreeSet<ContractId> = BTreeSet::new();
 
     // J3 (doc 12 §5.5, D-12-2): a document claiming a sequence at or before the
     // checkpoint's is judged only when that sequence is the last the fold
@@ -741,19 +774,6 @@ pub(crate) fn load_boot(
     // alone would come up clean on the very next boot and hand spending authority
     // back without any staff decision. `#[serde(default)]`-style tolerance (an
     // absent field reads `false`) keeps pre-E3 meta docs loading.
-    // Doc 13 (W-D5): the key-document backfill's cursor and flag; an empty
-    // journal has nothing to backfill.
-    let idem_backfill_txid = meta
-        .as_ref()
-        .and_then(|m| m.get("idem_backfill_txid"))
-        .and_then(serde_json::Value::as_u64)
-        .unwrap_or(0);
-    let idem_backfilled = meta
-        .as_ref()
-        .and_then(|m| m.get("idem_backfilled"))
-        .and_then(serde_json::Value::as_bool)
-        .unwrap_or(false)
-        || journal_empty;
     let mut frozen = meta
         .as_ref()
         .and_then(|m| m.get("frozen"))
@@ -1205,8 +1225,20 @@ pub(crate) fn load_boot(
                 // that the journal says is not. The key resolves the question with no
                 // guessing at all.
                 if broken && quarantine.is_none() {
-                    match finished_transition(&c, &snapshot, &tx_index) {
-                        Some(state) => {
+                    match finished_transition(&c, &snapshot, &tx_index, &boot_gate) {
+                        // Doc 13 W2 (W-D7): the keys are outside the RAM window and
+                        // the filter has seen one — the sweep asks the store and
+                        // finishes it exactly as this arm would; not a quarantine.
+                        Finished::Unknown => {
+                            tracing::info!(
+                                contract = c.id.0,
+                                "economy: a contract's escrow is not held in the journal and its \
+                                 terminal keys are outside the RAM window; the sweep resolves it \
+                                 through the store"
+                            );
+                            heal_wanted.insert(c.id);
+                        }
+                        Finished::Yes(state) => {
                             tracing::info!(
                                 contract = c.id.0,
                                 state = ?state.kind(),
@@ -1218,7 +1250,7 @@ pub(crate) fn load_boot(
                             c.revision += 1;
                             healed_contracts.push(c.clone());
                         }
-                        None => {
+                        Finished::No => {
                             quarantine = Some(format!(
                                 "contract #{}'s escrow is not held in the journal, and none of its \
                                  terminal keys resolves to a transaction",
@@ -1238,7 +1270,14 @@ pub(crate) fn load_boot(
                 let claims_another = tx_index
                     .get(transaction)
                     .is_some_and(|r| r.idempotency != mine);
-                if !tx_index.contains_key(transaction) || claims_another {
+                // Doc 13 W2: a settlement older than the RAM window has no index
+                // entry; it is the journal's when the allocator minted its id and
+                // the filter has seen this contract's own settle key.
+                let outside_window = !tx_index.contains_key(transaction)
+                    && idem_backfilled
+                    && transaction.0 <= state.max_txid
+                    && key_filter.might_contain(&mine);
+                if (!tx_index.contains_key(transaction) && !outside_window) || claims_another {
                     tracing::error!(
                         contract = c.id.0,
                         transaction = transaction.0,
@@ -1721,6 +1760,7 @@ pub(crate) fn load_boot(
         tx_index,
         fold: state,
         chunk_firsts,
+        chunk_first_ids,
         escalations,
         checkpoint: checkpoint_meta,
         checkpoint_keys,
@@ -1730,6 +1770,7 @@ pub(crate) fn load_boot(
         key_filter,
         idem_backfill_txid,
         idem_backfilled,
+        heal_wanted,
         next_account,
         next_transaction,
         next_vault,
@@ -1984,18 +2025,27 @@ fn finished_transition(
     c: &EconomicContract,
     snapshot: &EconomySnapshot,
     transactions: &BTreeMap<TransactionId, TxRef>,
-) -> Option<ContractState> {
+    gate: &dyn crate::engine::KeyGate,
+) -> Finished {
+    let mut unknown = false;
     for verb in ["settle", "refund", "forfeit"] {
         let key = crate::contract::contract_op_key(c.id, verb, c.amendments);
-        let Some(record) = snapshot.idempotency(&key) else {
-            continue;
+        // Doc 13 W2: through the gate — a key outside the RAM window that the
+        // filter has seen is the sweep's to ask the store about (W-D7).
+        let record = match gate.verdict(snapshot, &key) {
+            crate::engine::KeyVerdict::Known(record) => record,
+            crate::engine::KeyVerdict::Fresh => continue,
+            crate::engine::KeyVerdict::Unknown => {
+                unknown = true;
+                continue;
+            }
         };
         if !transactions.contains_key(&record.transaction)
             || snapshot.is_reversed(record.transaction)
         {
             continue;
         }
-        return Some(match verb {
+        return Finished::Yes(match verb {
             "settle" => ContractState::Settled {
                 transaction: record.transaction,
             },
@@ -2003,7 +2053,22 @@ fn finished_transition(
             _ => ContractState::Cancelled,
         });
     }
-    None
+    if unknown {
+        Finished::Unknown
+    } else {
+        Finished::No
+    }
+}
+
+/// What [`finished_transition`] found for a contract's terminal keys.
+enum Finished {
+    /// A key resolved: the transition posted, and this is its state.
+    Yes(ContractState),
+    /// No key resolved, but at least one is outside the RAM window and the
+    /// filter has seen it: the store decides, through the sweep (W-D7).
+    Unknown,
+    /// No key resolved and none could have: the transition never posted.
+    No,
 }
 
 /// The depositor of every object a live contract's `DepositInto` condition names,

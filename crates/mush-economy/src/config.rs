@@ -211,6 +211,16 @@ pub struct EconomyConfig {
     /// [`crate::DEFAULT_CHECKPOINT_EVERY_ENTRIES`]; zero disables checkpoints
     /// (boot still honours one it finds).
     pub checkpoint_every_entries: u64,
+    /// How long a posted idempotency key stays in the RAM window, in seconds
+    /// (doc 13 §2.2, W-D2; `[economy] idempotency_window_secs`). A cache,
+    /// never authority: every key is on disk forever and the filter gates the
+    /// lookup past the window. Default [`crate::DEFAULT_IDEMPOTENCY_WINDOW_SECS`];
+    /// zero keeps nothing past the next sweep (a test knob).
+    pub idempotency_window_secs: i64,
+    /// At most this many keys in the RAM window, whichever bound is smaller
+    /// (`[economy] idempotency_window_max`). Default
+    /// [`crate::DEFAULT_IDEMPOTENCY_WINDOW_MAX`]; zero means the default.
+    pub idempotency_window_max: usize,
 }
 
 impl Default for EconomyConfig {
@@ -222,6 +232,8 @@ impl Default for EconomyConfig {
             stale_contract_age_secs: crate::contract::STALE_CONTRACT_AGE_SECS,
             tx_tail_max: crate::module::DEFAULT_TX_TAIL_MAX,
             checkpoint_every_entries: crate::checkpoint::DEFAULT_CHECKPOINT_EVERY_ENTRIES,
+            idempotency_window_secs: crate::module::DEFAULT_IDEMPOTENCY_WINDOW_SECS,
+            idempotency_window_max: crate::module::DEFAULT_IDEMPOTENCY_WINDOW_MAX,
         }
     }
 }

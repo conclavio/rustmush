@@ -398,11 +398,10 @@ pub struct ValidateEnv<'a> {
     /// Not hashed, like the allocator floor: it is a fact about the world at post
     /// time, not about the plan.
     pub spent: BTreeMap<AccountId, Amount>,
-    /// Doc 13 (W-D1): how the plan's idempotency key is decided — the store's
-    /// gate (the RAM window, the cold cache, the key filter), or `None` for the
-    /// snapshot's map alone (every key ever posted is in it while the window
-    /// is whole; W2 makes the gate mandatory).
-    pub keys: Option<&'a dyn KeyGate>,
+    /// Doc 13 (W-D1, W-D9): how the plan's idempotency key is decided — the
+    /// store's gate (the RAM window, the cold cache, the key filter) on every
+    /// live path; [`MapOnlyKeys`] where a rig validates against a bare snapshot.
+    pub keys: &'a dyn KeyGate,
 }
 
 impl ValidateEnv<'_> {
@@ -453,16 +452,6 @@ impl KeyGate for MapOnlyKeys {
     }
 }
 
-static MAP_ONLY: MapOnlyKeys = MapOnlyKeys;
-
-fn key_verdict<'s>(
-    keys: Option<&'s dyn KeyGate>,
-    snapshot: &'s EconomySnapshot,
-    key: &crate::record::IdempotencyKey,
-) -> KeyVerdict<'s> {
-    keys.unwrap_or(&MAP_ONLY).verdict(snapshot, key)
-}
-
 // ---- validate -------------------------------------------------------------
 
 /// The non-`Post` outcomes of the inner validation, so `NeedsApproval` (a plan that
@@ -489,7 +478,7 @@ pub fn validate(
     // Idempotency FIRST: an exact repeat short-circuits to the original id; a reuse
     // with a different plan is an error (never a silent re-post); a key the gate
     // cannot decide from RAM is a transient (doc 13, W-D1).
-    match key_verdict(env.keys, snapshot, &plan.idempotency) {
+    match env.keys.verdict(snapshot, &plan.idempotency) {
         KeyVerdict::Known(rec) => {
             if rec.plan_hash == hash {
                 return PlanResult::AlreadyPosted(rec.transaction);
@@ -2056,7 +2045,7 @@ pub fn plan_reversal(
     cause: crate::record::EconomicCause,
     snapshot: &EconomySnapshot,
     auth: &dyn AuthEval,
-    keys: Option<&dyn KeyGate>,
+    keys: &dyn KeyGate,
 ) -> PlanResult {
     // Invariant 28 extends E3's rule to reservations: money-only compensation would
     // pay the payer back and leave the hold `Consumed`, so the payee's credit
@@ -2101,7 +2090,7 @@ pub fn plan_reversal(
 
     // A clean retry of the SAME reversal returns the original reversal id; a key
     // the gate cannot decide from RAM is a transient (doc 13, W-D1).
-    match key_verdict(keys, snapshot, &plan.idempotency) {
+    match keys.verdict(snapshot, &plan.idempotency) {
         KeyVerdict::Known(rec) => {
             if rec.plan_hash == hash {
                 return PlanResult::AlreadyPosted(rec.transaction);

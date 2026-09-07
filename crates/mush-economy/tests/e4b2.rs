@@ -55,6 +55,162 @@ fn boot() -> TestWorld {
     ])
 }
 
+/// [`boot`] with the idempotency window kept for `secs` (doc 13 W2); zero keeps
+/// nothing past the next sweep and nothing at boot.
+fn boot_windowed(secs: i64) -> TestWorld {
+    TestWorld::with_modules(vec![
+        Box::new(
+            mush_org::OrgModule::new()
+                .with_capabilities(vocabulary())
+                .with_scope_use(vec![Arc::new(mush_economy::EconomyScopeUse)]),
+        ),
+        Box::new(
+            mush_economy::EconomyModule::with_custody(vec![]).with_config(
+                mush_economy::EconomyConfig {
+                    idempotency_window_secs: secs,
+                    ..mush_economy::EconomyConfig::default()
+                },
+            ),
+        ),
+    ])
+}
+
+/// Serve a store read from `kv` and complete it (the J2/W1 seam).
+fn serve_and_complete(
+    tw: &mut TestWorld,
+    kv: &[(SmolStr, serde_json::Value)],
+    correlation: u64,
+    keys: Vec<SmolStr>,
+) {
+    let mut docs = Vec::new();
+    let mut absent = Vec::new();
+    for key in keys {
+        match kv.iter().find(|(k, _)| *k == key) {
+            Some((k, v)) => docs.push((k.clone(), v.clone())),
+            None => absent.push(key),
+        }
+    }
+    let result = mush_core::StoreReadResult::Docs { docs, absent };
+    let _ = tw.apply(mush_core::WorldCommand::StoreReadDone {
+        module: SmolStr::new(NS),
+        actor: GOD,
+        correlation,
+        payload: result.to_payload(),
+    });
+}
+
+/// Doc 13 W2 (W-D7): booted with the transition's key outside the RAM window,
+/// the heal finds no record and leaves `pending`; the live driver retries, the
+/// key is a filter positive, the store is asked, and the next fire finishes the
+/// transition on the original transaction — nothing posts twice, nothing is
+/// paged, the economy is not frozen.
+#[test]
+fn w2_a_lost_transition_older_than_the_window_converges_through_the_store() {
+    for verb in ["settle", "refund"] {
+        let mut tw = boot();
+        let r = run_rig(&mut tw, 3_000);
+        ok(&mut tw, r.johnson, "@contract/draft Lost");
+        let id = only_contract(&tw);
+        ok(
+            &mut tw,
+            r.johnson,
+            &format!("@contract/party {id}=#{}", r.a.0),
+        );
+        ok(
+            &mut tw,
+            r.johnson,
+            &format!("@contract/pay {id}={} 300", r.j_acct),
+        );
+        ok(
+            &mut tw,
+            r.johnson,
+            &format!("@contract/split {id}={} 1000‰", r.a_acct),
+        );
+        ok(
+            &mut tw,
+            r.johnson,
+            &format!("@contract/remainder {id}={}", r.j_acct),
+        );
+        ok(
+            &mut tw,
+            r.johnson,
+            &format!("@contract/condition {id}=attest party:#{}", r.johnson.0),
+        );
+        ok(&mut tw, r.johnson, &format!("@contract/offer {id}"));
+        ok(&mut tw, r.johnson, &format!("@contract/accept {id}"));
+        ok(&mut tw, r.a, &format!("@contract/accept {id}"));
+        let mut kv = fold_kv(&mut tw);
+        let pre = doc_of(&kv, &format!("contract:{id}"));
+        match verb {
+            "settle" => ok(&mut tw, r.johnson, &format!("@contract/attest {id}=0")),
+            _ => ok(&mut tw, GOD, &format!("@contract/cancel {id}")),
+        };
+        assert!(
+            state(&tw, id).is_terminal(),
+            "{verb}: the transition did not land"
+        );
+        let balance_after = |tw: &TestWorld| {
+            (
+                store(tw)
+                    .snapshot()
+                    .account(r.j_acct)
+                    .map(|a| a.posted_balance.minor()),
+                store(tw)
+                    .snapshot()
+                    .account(r.a_acct)
+                    .map(|a| a.posted_balance.minor()),
+            )
+        };
+        let landed = balance_after(&tw);
+        merge(&mut kv, drain(&mut tw));
+        patch(&mut kv, &format!("contract:{id}"), |v| *v = pre.clone());
+
+        // Booted with a zero window: no key is in RAM, the heal finds nothing.
+        let mut tw2 = boot_windowed(0);
+        reboot(&mut tw2, kv.clone());
+        assert!(!store(&tw2).is_frozen(), "{verb}");
+        assert!(
+            contract(&tw2, id).pending.is_some() || !state(&tw2, id).is_terminal(),
+            "{verb}: with no key in the window the transition is left for the driver"
+        );
+        // The driver retries: the key is a filter positive, so the store is asked.
+        sweep_at(&mut tw2, 2_000);
+        let pending = store(&tw2).pending_key_reads();
+        assert_eq!(
+            pending.len(),
+            1,
+            "{verb}: one key read in flight: {pending:?}"
+        );
+        assert!(!store(&tw2).is_frozen(), "{verb}");
+        assert!(
+            !store(&tw2)
+                .escalations()
+                .any(|e| e.subject == mush_economy::EscalationSubject::Contract(id)),
+            "{verb}: a transient is never a page"
+        );
+        let (key, read) = pending[0].clone();
+        serve_and_complete(
+            &mut tw2,
+            &kv,
+            read.correlation,
+            vec![mush_economy::idem_key(&key)],
+        );
+        // The next fire finishes it on the original transaction.
+        sweep_at(&mut tw2, 3_000);
+        assert!(
+            state(&tw2, id).is_terminal(),
+            "{verb}: not finished: {:?}",
+            state(&tw2, id)
+        );
+        assert!(
+            contract(&tw2, id).pending.is_none(),
+            "{verb}: pending survived"
+        );
+        assert_eq!(balance_after(&tw2), landed, "{verb}: nothing posted twice");
+        assert!(!store(&tw2).is_frozen(), "{verb}");
+    }
+}
+
 /// [`boot`] with the RAM tail capped at `max` bodies (J2).
 fn boot_with_tail(max: usize) -> TestWorld {
     TestWorld::with_modules(vec![
@@ -445,7 +601,7 @@ fn the_settlement_key_is_deterministic_and_the_plan_guards_every_escrow_revision
     let plan = {
         let s = snap(&tw);
         let env = mush_economy::ValidateEnv {
-            keys: None,
+            keys: &mush_economy::MapOnlyKeys,
             auth: &mush_economy::AllowAll,
             custody: &mush_economy::NoCustody,
             facts: &mush_economy::NoFacts,

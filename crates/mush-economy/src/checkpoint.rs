@@ -59,7 +59,7 @@ use crate::record::{IdempotencyKey, IdempotencyRecord};
 use crate::snapshot::EconomySnapshot;
 
 /// The document format this code writes and accepts.
-pub const CHECKPOINT_FORMAT: u32 = 2;
+pub const CHECKPOINT_FORMAT: u32 = 3;
 /// Domain separation for [`state_hash`].
 pub const CHECKPOINT_HASH_DOMAIN: &str = "rustmush.economy.checkpoint.v1";
 /// The most rows one immutable part carries (~3 MB of JSON).
@@ -150,6 +150,8 @@ pub struct CheckpointBody {
     pub debit_window: BTreeMap<AccountId, WindowTail>,
     /// Chunk index → first sequence, for every chunk at or below the covered one.
     pub chunk_firsts: BTreeMap<u64, u64>,
+    /// Chunk index → first transaction id (doc 13 W2, W-D6), the same chunks.
+    pub chunk_first_ids: BTreeMap<u64, TransactionId>,
 }
 
 /// The head document.
@@ -499,6 +501,10 @@ fn build(
         });
     }
     let mut parts: Vec<PartRef> = previous.map(|p| p.parts.clone()).unwrap_or_default();
+    // Doc 13 W2 (§2.5): an inherited part wholly below the window's floor is
+    // dropped (and swept), so the parts are O(window) at any journal size.
+    let window_floor = store.tx_index.first_key_value().map_or(0, |(id, _)| id.0);
+    parts.retain(|p| p.max_txid >= window_floor);
     let mut part_docs: Vec<(SmolStr, serde_json::Value)> = Vec::new();
     let inherited = parts.len();
     for (i, run) in rows.chunks(MAX_PART_ROWS).enumerate() {
@@ -544,6 +550,7 @@ fn build(
         fold: store.fold.clone(),
         debit_window: store.debit_window.clone(),
         chunk_firsts: store.chunk_firsts.clone(),
+        chunk_first_ids: store.chunk_first_ids.clone(),
     };
     let body_value = serde_json::to_value(&body).ok()?;
     let state_hash = state_hash(&body_value, &hashed)?;

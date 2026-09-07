@@ -483,6 +483,13 @@ pub struct EconomyCfg {
     /// (doc 12 J3). Defaults to the `mush-economy` crate default (10 000);
     /// zero disables writing checkpoints.
     pub checkpoint_every_entries: u64,
+    /// How long a posted idempotency key stays in RAM, in seconds (doc 13 W2).
+    /// Every key is on disk forever; this is a cache. Defaults to the
+    /// `mush-economy` crate default (30 days).
+    pub idempotency_window_secs: i64,
+    /// At most this many keys in RAM, whichever bound is smaller (doc 13 W2).
+    /// Defaults to the `mush-economy` crate default (1 000 000); zero means that.
+    pub idempotency_window_max: usize,
 }
 
 impl Default for EconomyCfg {
@@ -498,6 +505,9 @@ impl Default for EconomyCfg {
             tx_tail_max: 20_000,
             // Mirrors `mush_economy::DEFAULT_CHECKPOINT_EVERY_ENTRIES`.
             checkpoint_every_entries: 10_000,
+            // Mirrors `mush_economy::DEFAULT_IDEMPOTENCY_WINDOW_SECS` / `_MAX`.
+            idempotency_window_secs: 30 * 86_400,
+            idempotency_window_max: 1_000_000,
         }
     }
 }

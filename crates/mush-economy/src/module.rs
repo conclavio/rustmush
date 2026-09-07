@@ -51,6 +51,14 @@ pub const CHECKPOINT_REVIEW_SECS: u64 = 5;
 /// evicts down to the limit, never the post path.
 pub const DEFAULT_TX_TAIL_MAX: usize = 20_000;
 
+/// How long a posted idempotency key stays in the RAM window by default
+/// (doc 13 §2.2, W-D2; `[economy] idempotency_window_secs`): 30 days.
+pub const DEFAULT_IDEMPOTENCY_WINDOW_SECS: i64 = 30 * 86_400;
+
+/// At most this many keys in the RAM window by default (`[economy]
+/// idempotency_window_max`; 0 means this): ~150 MB at D-12-4's bytes a key.
+pub const DEFAULT_IDEMPOTENCY_WINDOW_MAX: usize = 1_000_000;
+
 /// The replayed-entry count past which the same review is due (08g §12.1 item 5).
 /// Doc 12 §4 derives the entry line from the measured per-entry cost: after J1
 /// (parse once, ~3 µs per entry) the 5 s line is ~1.5 million entries, and this
@@ -143,6 +151,21 @@ pub struct StoreKeyGate<'a> {
     filter: &'a crate::bloom::ScalableBloom,
     cold: &'a BTreeMap<IdempotencyKey, ColdKey>,
     windowed: bool,
+}
+
+impl<'a> StoreKeyGate<'a> {
+    /// A gate over a filter and a cold cache — boot's, before a store exists.
+    pub(crate) fn new(
+        filter: &'a crate::bloom::ScalableBloom,
+        cold: &'a BTreeMap<IdempotencyKey, ColdKey>,
+        windowed: bool,
+    ) -> StoreKeyGate<'a> {
+        StoreKeyGate {
+            filter,
+            cold,
+            windowed,
+        }
+    }
 }
 
 impl crate::engine::KeyGate for StoreKeyGate<'_> {
@@ -245,6 +268,10 @@ pub struct EconomyStore {
     /// The first journal sequence of every chunk (J2): chunk index → first seq,
     /// the map a cold read by sequence needs to name its chunk.
     pub(crate) chunk_firsts: BTreeMap<u64, u64>,
+    /// Doc 13 W2 (W-D6): chunk index → the first transaction id it holds, so
+    /// an id the window evicted is still locatable: ids and sequences advance
+    /// together, and the cold reverse reads that chunk and finds the body.
+    pub(crate) chunk_first_ids: BTreeMap<u64, TransactionId>,
     /// In-flight cold journal reads, one per requesting actor (J2). Transient.
     pub(crate) pending_reads: std::collections::HashMap<ObjId, PendingEconomyRead>,
     /// Doc 13 (W-D3): every key ever posted, as a scalable Bloom filter — built by
@@ -262,6 +289,10 @@ pub struct EconomyStore {
     /// — the next transaction id to write, and whether it is done.
     pub(crate) idem_backfill_txid: u64,
     pub(crate) idem_backfilled: bool,
+    /// Doc 13 W2 (W-D7): contracts whose terminal transition boot could not
+    /// decide because their keys were outside the RAM window — resolved by the
+    /// sweep through the store, one keyed read at a time.
+    pub(crate) heal_wanted: std::collections::BTreeSet<crate::ids::ContractId>,
     /// J3: the checkpoint this store last wrote or booted from, if any.
     pub(crate) checkpoint: Option<crate::checkpoint::CheckpointMeta>,
     /// J3: every checkpoint document key the store knows (booted with or
@@ -500,6 +531,10 @@ pub(crate) struct BootParts {
     pub(crate) tx_index: BTreeMap<TransactionId, TxRef>,
     pub(crate) fold: crate::fold::FoldState,
     pub(crate) chunk_firsts: BTreeMap<u64, u64>,
+    /// Doc 13 W2 (W-D6): chunk index → the first transaction id it holds, so
+    /// an id the window evicted is still locatable: ids and sequences advance
+    /// together, and the cold reverse reads that chunk and finds the body.
+    pub(crate) chunk_first_ids: BTreeMap<u64, TransactionId>,
     pub(crate) escalations: BTreeMap<EscalationId, Escalation>,
     pub(crate) checkpoint: Option<crate::checkpoint::CheckpointMeta>,
     pub(crate) checkpoint_keys: std::collections::BTreeSet<SmolStr>,
@@ -509,6 +544,10 @@ pub(crate) struct BootParts {
     pub(crate) key_filter: crate::bloom::ScalableBloom,
     pub(crate) idem_backfill_txid: u64,
     pub(crate) idem_backfilled: bool,
+    /// Doc 13 W2 (W-D7): contracts whose terminal transition boot could not
+    /// decide because their keys were outside the RAM window — resolved by the
+    /// sweep through the store, one keyed read at a time.
+    pub(crate) heal_wanted: std::collections::BTreeSet<crate::ids::ContractId>,
     pub(crate) next_account: u64,
     pub(crate) next_transaction: u64,
     pub(crate) next_vault: u64,
@@ -542,11 +581,18 @@ impl EconomyStore {
             key_filter: p.key_filter,
             cold_keys: BTreeMap::new(),
             pending_key_reads: BTreeMap::new(),
-            key_mode: KeyMode::Whole,
+            // Doc 13 W2: the window is on once every key document exists.
+            key_mode: if p.idem_backfilled {
+                KeyMode::Windowed
+            } else {
+                KeyMode::Whole
+            },
             idem_backfill_txid: p.idem_backfill_txid,
             idem_backfilled: p.idem_backfilled,
+            heal_wanted: p.heal_wanted,
             fold: p.fold,
             chunk_firsts: p.chunk_firsts,
+            chunk_first_ids: p.chunk_first_ids,
             pending_reads: std::collections::HashMap::new(),
             checkpoint: p.checkpoint,
             checkpoint_keys: p.checkpoint_keys,
@@ -742,8 +788,89 @@ impl EconomyStore {
     }
     /// Record that `seq` opened `chunk` (the first entry a chunk received): the
     /// post path calls it with the open chunk the append went into.
-    pub(crate) fn note_chunk(&mut self, chunk: u64, seq: u64) {
+    pub(crate) fn note_chunk(&mut self, chunk: u64, seq: u64, id: TransactionId) {
         self.chunk_firsts.entry(chunk).or_insert(seq);
+        self.chunk_first_ids.entry(chunk).or_insert(id);
+    }
+    /// Doc 13 W2 (W-D6): the chunk holding transaction `id`, from the chunk map
+    /// the window's eviction never touches.
+    #[must_use]
+    pub fn chunk_of_id(&self, id: TransactionId) -> Option<u64> {
+        self.chunk_first_ids
+            .iter()
+            .rev()
+            .find(|(_, first)| **first <= id)
+            .map(|(chunk, _)| *chunk)
+    }
+    /// Whether the allocator has minted `id`: the journal has it, whether or
+    /// not the RAM index still does.
+    #[must_use]
+    pub fn id_allocated(&self, id: TransactionId) -> bool {
+        id.0 < self.next_transaction
+    }
+    /// The chunk holding transaction `id`'s body: by sequence while the index
+    /// has it, by the chunk map once the window evicted it.
+    #[must_use]
+    pub fn chunk_of_tx(&self, id: TransactionId) -> Option<u64> {
+        match self.tx_index.get(&id) {
+            Some(r) => self.chunk_of_seq(r.seq),
+            None if self.id_allocated(id) => self.chunk_of_id(id),
+            None => None,
+        }
+    }
+    /// The window's count bound (doc 13 W2).
+    #[must_use]
+    pub fn idempotency_window_max(&self) -> usize {
+        if self.config.idempotency_window_max == 0 {
+            DEFAULT_IDEMPOTENCY_WINDOW_MAX
+        } else {
+            self.config.idempotency_window_max
+        }
+    }
+    /// Keys in the RAM window.
+    #[must_use]
+    pub fn window_len(&self) -> usize {
+        self.tx_index.len()
+    }
+    /// **Evict the RAM window** — the idempotency map and the transaction
+    /// index together, oldest first — past the age or the count bound (doc 13
+    /// §2.2, W-D2): the sweep's job (and the end of a boot), never the post
+    /// path's, and never before every key has its document on disk (W-D5).
+    /// The filter and the key documents keep every evicted key.
+    pub(crate) fn evict_window(&mut self, now: i64) -> usize {
+        if !self.idem_backfilled {
+            return 0;
+        }
+        let max = self.idempotency_window_max();
+        let secs = self.config.idempotency_window_secs;
+        let mut evicted = 0usize;
+        while let Some((id, r)) = self.tx_index.first_key_value() {
+            let too_old = now.saturating_sub(r.posted_at) >= secs;
+            let too_many = self.tx_index.len() > max;
+            if !(too_old || too_many) {
+                break;
+            }
+            let id = *id;
+            let key = r.idempotency.clone();
+            self.tx_index.remove(&id);
+            self.snapshot.remove_idempotency(&key);
+            evicted += 1;
+        }
+        evicted
+    }
+    /// Doc 13 W2 (W-D7): the contracts whose lost transition the sweep is
+    /// resolving through the store.
+    #[must_use]
+    pub fn heal_wanted(&self) -> Vec<crate::ids::ContractId> {
+        self.heal_wanted.iter().copied().collect()
+    }
+    /// Doc 13: the keyed reads in flight, for a rig that completes them.
+    #[must_use]
+    pub fn pending_key_reads(&self) -> Vec<(IdempotencyKey, PendingKeyRead)> {
+        self.pending_key_reads
+            .iter()
+            .map(|(k, p)| (k.clone(), *p))
+            .collect()
     }
     /// **Evict the RAM tail down to its limit**, oldest first (J2) — the sweep's
     /// job, never the post path's, so a burst of posts costs no eviction work
@@ -1596,6 +1723,7 @@ impl GameModule for EconomyModule {
             &self.providers,
             &self.canon_outcome_kinds,
             tail_max,
+            self.config.idempotency_window_secs,
         )?;
         // C17 (08g §12.1 item 5): the cold replay is the whole boot cost until a
         // durability checkpoint exists. Say what it cost, every boot, and say loudly
@@ -1645,6 +1773,15 @@ impl GameModule for EconomyModule {
         store.canon_outcome_kinds = self.canon_outcome_kinds.clone();
         store.party_caps = self.party_caps.clone();
         store.canon_evidence = self.canon_evidence.clone();
+        // Doc 13 W2: the window's count bound, now that the config is in.
+        let evicted = store.evict_window(ctx.w.now());
+        if evicted > 0 {
+            tracing::info!(
+                evicted,
+                window = store.window_len(),
+                "economy: idempotency window trimmed at boot"
+            );
+        }
         *ctx.w
             .module_state_mut::<EconomyStore>()
             .expect("economy store slot") = store;

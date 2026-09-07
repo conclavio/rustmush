@@ -1282,6 +1282,8 @@ enum ContractStep {
 ///    id order, so a sixty-fifth contract would never be reached. The cursor makes
 ///    the pass a rotation, so every record is reached within one sweep of the pool.
 fn step_contracts(ctx: &mut Ctx<'_>, now: i64, ic_now: i64) {
+    // Doc 13 W2 (W-D7): what boot left for the store to decide.
+    crate::contract_live::heal_lost_transitions(ctx);
     stamp_observed_conditions(ctx, now, ic_now);
     republish_settlements(ctx, now);
     let clocks = Clocks::new(now, ic_now);
@@ -1299,8 +1301,9 @@ fn step_contracts(ctx: &mut Ctx<'_>, now: i64, ic_now: i64) {
             providers: store.facts(),
         };
         let world = api::WorldAuth { w: ctx.w };
+        let gate = store.key_gate();
         let env = crate::engine::ValidateEnv {
-            keys: None,
+            keys: &gate,
             auth: &world,
             custody: &custody,
             facts: &facts,
@@ -1474,8 +1477,9 @@ fn stamp_observed_conditions(ctx: &mut Ctx<'_>, now: i64, ic_now: i64) {
             providers: store.facts(),
         };
         let world = api::WorldAuth { w: ctx.w };
+        let gate = store.key_gate();
         let env = crate::engine::ValidateEnv {
-            keys: None,
+            keys: &gate,
             auth: &world,
             custody: &custody,
             facts: &facts,
@@ -2055,6 +2059,17 @@ fn collect_garbage(ctx: &mut Ctx<'_>, now: i64) {
         }
         // Doc 13: cold-cache answers and stale key reads age out here.
         store.age_cold_keys(now);
+        // Doc 13 W2 (W-D2): the RAM window — the idempotency map and the
+        // transaction index — evicted by age and count, once the backfill is
+        // done. The filter and the key documents keep every evicted key.
+        let evicted_keys = store.evict_window(now);
+        if evicted_keys > 0 {
+            tracing::debug!(
+                evicted = evicted_keys,
+                window = store.window_len(),
+                "economy: idempotency window evicted"
+            );
+        }
     }
     if approvals.is_empty() && holds.is_empty() && escalations.is_empty() {
         return;

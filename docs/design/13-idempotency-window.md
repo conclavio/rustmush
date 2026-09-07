@@ -249,6 +249,87 @@ positive. Lenses I, S, F. Size: a day.
 window-only idem parts; the boot from parts; the contract heal under a zero window; the RAM and
 parts measurements. Lenses B, S, M, C. Size: a day.
 
+> **W2 as built — 2026-09-06.** §2.2, the rest of §2.5, and W-D6, W-D7, W-D9.
+>
+> 1. **The window** (`[economy] idempotency_window_secs`, default 30 days;
+>    `idempotency_window_max`, default 1 000 000, zero meaning the default): the sweep evicts
+>    the idempotency map and the transaction index **together**, oldest first, past either
+>    bound (`evict_window`), after the garbage collector and never on the post path — and never
+>    before every key has its document (W-D5): the backfilling sweep flags done and switches
+>    the gate to `Windowed`; the next sweep evicts. A boot from a checkpoint or a full replay
+>    keeps only the window's keys in RAM (the replay inserts only entries inside the age bound
+>    once the store is backfilled; the count bound is applied when the store is up) while the
+>    filter takes every key. A fresh world is backfilled at birth and windowed at once.
+> 2. **The chunk map** (W-D6): `chunk_first_ids` beside `chunk_firsts`, maintained at install
+>    and at boot, carried by the checkpoint body (**checkpoint format 3**), never evicted. An id
+>    the window evicted is still one the allocator minted (`id_allocated`) and still locatable
+>    (`chunk_of_tx`): `@econ/reverse` takes the same cold path as a body that left the RAM
+>    tail, reads that chunk, finds the body by id, and `reverse_original` accepts it when the
+>    chunk map and the body's sequence name the same chunk.
+> 3. **Window-only parts** (§2.5): a checkpoint's new rows are the window's (the index is
+>    windowed), and an inherited part wholly below the window's floor — its highest id below
+>    the index's first — is not re-listed and is swept; the parts are O(window) at any journal
+>    size, and a checkpointed boot seeds the window from them and trims it to the count bound.
+> 4. **The gate is mandatory** (W-D9): `ValidateEnv.keys` is `&dyn KeyGate`; every live
+>    validation — the post path, reversals, the sweep's and the contract driver's
+>    environments — hands the store's gate in; the rigs that validate against a bare snapshot
+>    pass `MapOnlyKeys`. `idempotency_resolved` answers through the gate (a key outside the
+>    window the filter has seen is not known to be resolved; the post decides).
+> 5. **Transients in the drivers** (W-D1): a settlement whose post answers `RetryShortly` is
+>    `NotReady` (no attempt counted), and a pending terminal transition whose post answers it
+>    waits for the next fire (nothing counted, nothing paged) — the key read is in flight and
+>    the next fire finishes on the original transaction.
+> 6. **The boot heal under the window** (W-D7, as built — see W2-F1 below): boot's
+>    `finished_transition` asks the gate; a contract whose escrow the journal no longer holds
+>    and whose terminal keys are outside the window (the filter has seen one) is neither
+>    finished nor quarantined at boot but queued (`heal_wanted`), and the sweep's contract step
+>    resolves it through keyed reads — finishing it as boot would, or disputing it as boot would
+>    have quarantined it once the store has answered "absent" for every key.
+>
+> **Measured (lens M).** The from-file boot (`scale_cold_journal_replay_from_file`, release,
+> this dev box) at **1 000 000 synthetic entries** (35 702 chunks, a 643 MB document file),
+> sampled from outside for its peak and its at-rest working set, the world held and leaked so
+> the last sample is the store and not its teardown, the RAM tail at its default 20 000:
+>
+> | window (`idempotency_window_max`) | keys in RAM | at rest | peak |
+> |---:|---:|---:|---:|
+> | 1 000 000 (whole) | 1 000 000 | 422 MB | 1 218 MB |
+> | 100 000 | 100 000 | 82 MB | 1 218 MB |
+> | 1 000 | 1 000 | 41 MB | 1 218 MB |
+>
+> The window is the RAM line D-12-4 wanted: at a million entries the economy at rest goes from
+> 422 MB to 41 MB, about 380 bytes a key across the map, the index and the snapshot — above
+> the review's 150-byte estimate, which counted the map alone. The peak is the harness's own
+> transient (the whole document file parsed into memory before the boot) and is the same in
+> every row; a production boot reads the store in pages and never holds that. The replay took
+> ~3.1 s at a million entries either way (~3 µs an entry, as J1 measured). At 100 000 entries
+> the difference (24 MB versus 33 MB at rest) is inside the sampler's noise.
+>
+> **Verify (lenses S, B, I, C).** S: once backfilled, the sweep evicts the map and the index
+> together — the newest three of five stay, an evicted id is still locatable, the filter keeps
+> its key, and a repeat of an evicted key takes the transient and then the original id; the age
+> bound leaves only the post inside the window; an old journal is not evicted until its
+> documents exist (the backfilling sweep switches the mode, the next sweep evicts). A reversal
+> of a transaction both the tail and the window evicted reads its chunk through the chunk map
+> and posts; an id nobody minted is still nobody's. B: with the window on, a checkpoint's parts
+> carry only the window's rows, an inherited part wholly below the floor is dropped and the new
+> head's part is numbered from zero, a checkpointed boot seeds the window from the parts and
+> trims it, evicted ids stay locatable after a boot, and a full replay keeps only the window's
+> keys in RAM while the filter takes every key. **W-D7, as found (W2-F1):** the lost-transition
+> test with the window at zero showed that boot would have *quarantined* a finished contract
+> whose keys were outside the window — `finished_transition` found no record and the escrow was
+> not held — and that a lost *settle* doc write leaves nothing pending for the live driver to
+> retry, since the restored record predates the attestation. Boot now asks the gate: a key the
+> filter has seen but the window lacks is `Unknown`, the contract goes to the store's queue
+> instead of quarantine, and the sweep resolves it through keyed reads and finishes it exactly
+> as boot would have (or disputes it, as boot would have quarantined it, once the store has
+> answered "absent" for every key). Verified for settle and refund: boot leaves it, the first
+> fire asks for exactly one key (the others are certain negatives), nothing is paged or frozen,
+> and the next fire finishes it on the original transaction with the balances untouched. I: the
+> settled-contract identity check at boot accepts a settlement older than the window when the
+> allocator minted its id and the filter has seen the contract's own settle key, and still
+> freezes on one naming another transaction. C: the cadence-1 workspace pass, again.
+
 ## 7. Open for the owner
 
 1. The window's count cap default: 1 000 000 records (~150 MB) — inside D-12-4 with room; say if

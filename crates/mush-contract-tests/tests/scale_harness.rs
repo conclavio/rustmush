@@ -131,6 +131,9 @@ fn econ_world() -> TestWorld {
                 // full-replay numbers unless the checkpointed boot is asked for.
                 checkpoint_every_entries: u64::try_from(env_usize("SCALE_CHECKPOINT_EVERY", 0))
                     .unwrap_or(0),
+                // `SCALE_IDEM_WINDOW_MAX` (doc 13 W2): the RAM window's count bound;
+                // 0 is the crate default (1 000 000, no eviction at these scales).
+                idempotency_window_max: env_usize("SCALE_IDEM_WINDOW_MAX", 0),
                 ..mush_economy::EconomyConfig::default()
             }),
         ),
@@ -582,18 +585,23 @@ fn scale_cold_journal_replay_from_file() {
         .module_state::<EconomyStore>()
         .expect("economy store");
     println!(
-        "from_file: chunks={entries} entries={} replay_ms={} tail={} tail_max={} journal_len={}",
+        "from_file: chunks={entries} entries={} replay_ms={} tail={} tail_max={} journal_len={} window={} window_max={}",
         stats.entries,
         stats.elapsed_ms,
         store.tail_len(),
         store.tx_tail_max(),
-        store.journal_len()
+        store.journal_len(),
+        store.window_len(),
+        store.idempotency_window_max()
     );
     let hold_ms = env_usize("SCALE_HOLD_MS", 0);
     if hold_ms > 0 {
         std::thread::sleep(Duration::from_millis(u64::try_from(hold_ms).unwrap_or(0)));
     }
-    drop(tw);
+    // Doc 13 W2 (lens M): the world is leaked, not dropped, so the sampler's last
+    // reading is the held store and not its teardown — the process exit reclaims
+    // it all at once.
+    std::mem::forget(tw);
 }
 
 #[test]

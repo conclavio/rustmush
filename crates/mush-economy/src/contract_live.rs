@@ -2476,8 +2476,9 @@ pub(crate) fn promote_and_settle_with(
             providers: store.facts(),
         };
         let world = api::WorldAuth { w: ctx.w };
+        let gate = store.key_gate();
         let env = ValidateEnv {
-            keys: None,
+            keys: &gate,
             auth: &world,
             custody: &custody,
             facts: &facts,
@@ -2546,8 +2547,9 @@ fn settle_with(ctx: &mut Ctx<'_>, id: ContractId, companions: Vec<EconomicContra
             providers: store.facts(),
         };
         let world = api::WorldAuth { w: ctx.w };
+        let gate = store.key_gate();
         let env = ValidateEnv {
-            keys: None,
+            keys: &gate,
             auth: &world,
             custody: &custody,
             facts: &facts,
@@ -2603,6 +2605,15 @@ fn settle_with(ctx: &mut Ctx<'_>, id: ContractId, companions: Vec<EconomicContra
             &[],
             true,
         ),
+        // Doc 13 W2 (W-D1): the key is being read from the store; the next fire
+        // retries, and no attempt is counted.
+        Err(EconomyError::RetryShortly) => {
+            tracing::info!(
+                contract = id.0,
+                "economy: a contract settlement waits on its key document"
+            );
+            Settled::NotReady
+        }
         Err(e) => {
             let named = e.named_resources();
             note_settle_failure(ctx, id, &e.to_string(), &named, false)
@@ -3566,10 +3577,100 @@ pub(crate) fn finish_terminal(ctx: &mut Ctx<'_>, id: ContractId) -> bool {
             );
             false
         }
+        // Doc 13 W2 (W-D1): the key is being read from the store; the next fire
+        // retries, and nothing is counted or paged.
+        Err(EconomyError::RetryShortly) => {
+            tracing::info!(
+                contract = id.0,
+                "economy: a contract's terminal transition waits on its key document"
+            );
+            false
+        }
         Err(e) => {
             note_terminal_failure(ctx, id, &e.to_string());
             false
         }
+    }
+}
+
+/// Doc 13 W2 (W-D7): the transitions boot could not finish because their keys
+/// were outside the RAM window — resolved through the store, one keyed read
+/// per key, and finished exactly as boot would have; a contract none of whose
+/// keys resolves once the store has answered is disputed and paged, as boot
+/// would have quarantined it.
+pub(crate) fn heal_lost_transitions(ctx: &mut Ctx<'_>) {
+    let wanted = match ctx.w.module_state::<EconomyStore>() {
+        Some(store) if !store.heal_wanted.is_empty() => store.heal_wanted(),
+        _ => return,
+    };
+    for id in wanted {
+        let Some(c) = live_contract(ctx, id) else {
+            forget_heal(ctx, id);
+            continue;
+        };
+        let mut finished: Option<ContractState> = None;
+        let mut unknown: Vec<crate::record::IdempotencyKey> = Vec::new();
+        {
+            let Some(store) = ctx.w.module_state::<EconomyStore>() else {
+                return;
+            };
+            let gate = store.key_gate();
+            for verb in ["settle", "refund", "forfeit"] {
+                let key = crate::contract::contract_op_key(c.id, verb, c.amendments);
+                match crate::engine::KeyGate::verdict(&gate, store.snapshot(), &key) {
+                    crate::engine::KeyVerdict::Known(record) => {
+                        if store.id_allocated(record.transaction)
+                            && !store.snapshot().is_reversed(record.transaction)
+                        {
+                            finished = Some(match verb {
+                                "settle" => ContractState::Settled {
+                                    transaction: record.transaction,
+                                },
+                                "forfeit" => ContractState::Expired,
+                                _ => ContractState::Cancelled,
+                            });
+                            break;
+                        }
+                    }
+                    crate::engine::KeyVerdict::Fresh => {}
+                    crate::engine::KeyVerdict::Unknown => unknown.push(key),
+                }
+            }
+        }
+        if let Some(state) = finished {
+            tracing::info!(
+                contract = id.0,
+                state = ?state.kind(),
+                "economy: a contract's terminal transition had posted before the RAM window; \
+                 finished from its key document"
+            );
+            let mut c = c;
+            c.state = state;
+            c.pending = None;
+            c.revision = c.revision.saturating_add(1);
+            api::put_contract(ctx, c);
+            forget_heal(ctx, id);
+        } else if unknown.is_empty() {
+            forget_heal(ctx, id);
+            dispute_with(
+                ctx,
+                id,
+                format!(
+                    "contract #{id}'s escrow is not held in the journal, and none of its terminal \
+                     keys resolves to a transaction"
+                ),
+            );
+        } else {
+            for key in unknown {
+                crate::keys::request_key_read(ctx, &key);
+            }
+        }
+    }
+}
+
+fn forget_heal(ctx: &mut Ctx<'_>, id: ContractId) {
+    if let Some(store) = ctx.w.module_state_mut::<EconomyStore>() {
+        store.heal_wanted.remove(&id);
     }
 }
 

@@ -1037,11 +1037,18 @@ forever and never loaded at boot (the boot manifest's `skip_key_prefixes`).
 Checkpoints are format 2 and carry the key filter as `checkpoint:{seq}:bloom`
 (a few megabytes per million keys). A journal older than the cut is
 backfilled by the sweep, 2 000 documents a fire, and `economy: the key
-documents are backfilled` marks the end. When the RAM window is on (W2) a
-post whose key is neither in RAM nor certainly new is refused with *"that
-request is being checked against the ledger's history; try again shortly"*
-while the document is read off the world loop; the retry a moment later is
-decided. Until W2 every key stays in RAM and the message never appears.
+documents are backfilled` marks the end. The RAM window (W2) keeps a posted key
+for `[economy] idempotency_window_secs` (30 days) and at most
+`idempotency_window_max` keys (1 000 000), whichever bound is smaller; the
+sweep evicts past either, and `economy: idempotency window trimmed at boot`
+says what a boot trimmed. A post whose key is neither in RAM nor certainly new
+is refused with *"that request is being checked against the ledger's history;
+try again shortly"* while the document is read off the world loop; the retry a
+moment later is decided. Sweep-driven settlements and contract transitions
+treat that as a wait, never as a failed attempt. A reversal of a transaction
+older than the window takes the same journal read as one older than the RAM
+tail. A journal older than the cut is not evicted until its key documents are
+backfilled.
 
 **The narrow fetch** (J4, doc 12 §5.6) needs no configuration. Beside every
 checkpoint head the economy writes `boot-manifest`, naming the journal chunk

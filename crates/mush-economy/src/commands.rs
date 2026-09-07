@@ -2644,14 +2644,15 @@ fn econ_reverse(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     // world loop and reversed when the chunk comes back (`EconomyArchiveRead`).
     if let Err(crate::plan::EconomyError::TransactionNotInMemory(target)) = &outcome {
         let target = *target;
-        let seq = ctx
+        // Doc 13 W2 (W-D6): by sequence while the index has the id, by the chunk
+        // map once the window evicted it.
+        let chunk = ctx
             .w
             .module_state::<EconomyStore>()
-            .and_then(|s| s.transaction_ref(target))
-            .map(|r| r.seq)
+            .and_then(|s| s.chunk_of_tx(target))
             .ok_or_else(|| CmdError::msg(format!("no such transaction: {target}")))?;
         let kind = PendingEconomyReadKind::Reverse { target, cause };
-        return request_cold_read(ctx, seq, kind, |chunk| {
+        return request_cold_read(ctx, chunk, kind, |chunk| {
             format!(
                 "Transaction #{target} is older than the in-memory tail; reading it from the journal (chunk {chunk}) …"
             )
@@ -2665,13 +2666,13 @@ fn econ_reverse(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 /// line the actor sees while the read is out.
 fn request_cold_read(
     ctx: &mut Ctx<'_>,
-    seq: u64,
+    chunk: u64,
     kind: PendingEconomyReadKind,
     say: impl FnOnce(u64) -> String,
 ) -> Result<(), CmdError> {
     let actor = ctx.actor;
     let now = ctx.w.now();
-    let chunk = {
+    {
         let store = ctx
             .w
             .module_state::<EconomyStore>()
@@ -2683,10 +2684,7 @@ fn request_cold_read(
                 "A journal read is already in flight for you; wait for it to answer.",
             ));
         }
-        store
-            .chunk_of_seq(seq)
-            .ok_or_else(|| CmdError::msg("That part of the journal cannot be located."))?
-    };
+    }
     let correlation = ctx
         .read_store(vec![mush_core::chunk_key(JOURNAL_LOG, chunk)])
         .map_err(|error| {

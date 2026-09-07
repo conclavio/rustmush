@@ -254,6 +254,8 @@ pub(crate) fn backfill(ctx: &mut Ctx<'_>) {
         }
         if taken < IDEM_BACKFILL_PER_SWEEP {
             store.idem_backfilled = true;
+            // Doc 13 W2: every key has its document; the window may evict.
+            store.key_mode = crate::module::KeyMode::Windowed;
             tracing::info!(
                 documents = store.idem_backfill_txid,
                 "economy: the key documents are backfilled"

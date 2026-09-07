@@ -140,6 +140,12 @@ pub fn economy_config_with(
             cfg.tx_tail_max
         },
         checkpoint_every_entries: cfg.checkpoint_every_entries,
+        idempotency_window_secs: cfg.idempotency_window_secs,
+        idempotency_window_max: if cfg.idempotency_window_max == 0 {
+            mush_economy::DEFAULT_IDEMPOTENCY_WINDOW_MAX
+        } else {
+            cfg.idempotency_window_max
+        },
     };
     config
         .check_declared_cadences()

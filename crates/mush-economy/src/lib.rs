@@ -128,8 +128,8 @@ pub use engine::{
     MAX_CUSTODY_OPS_PER_PLAN, MAX_DESCRIPTION_BYTES, MAX_ENCUMBRANCES_PER_ASSET, MAX_ENTRY_BYTES,
     MAX_HOLD_EXPIRIES_PER_SWEEP, MAX_HOLD_OPS_PER_PLAN, MAX_LINES_PER_TX, MAX_MEMO_BYTES,
     MAX_OBLIGATIONS_PER_SWEEP, MAX_PENDING_PER_ACCOUNT, MAX_PENDING_PER_REQUESTER,
-    MAX_POSTS_PER_SWEEP, MAX_REASON_BYTES, NoCustody, NoFacts, ValidateEnv, apply, plan_reversal,
-    validate,
+    MAX_POSTS_PER_SWEEP, MAX_REASON_BYTES, MapOnlyKeys, NoCustody, NoFacts, ValidateEnv, apply,
+    plan_reversal, validate,
 };
 pub use hash::{PLAN_HASH_DOMAIN, plan_hash};
 pub use ids::{
@@ -167,7 +167,9 @@ pub use contract::{
 pub use contract_live::accept_contract_as;
 pub use fold::FoldState;
 pub use keys::{IDEM_PREFIX, IdemDoc, idem_key, is_idem_key};
-pub use module::{ColdKey, KeyMode};
+pub use module::{
+    ColdKey, DEFAULT_IDEMPOTENCY_WINDOW_MAX, DEFAULT_IDEMPOTENCY_WINDOW_SECS, KeyMode,
+};
 pub use module::{
     DEFAULT_TX_TAIL_MAX, MAX_CANON_ENTITIES, MAX_PARTY_CAPS, MAX_REFUSAL_ACTORS, MAX_REFUSAL_ROWS,
     PartyCapTable, PendingEconomyRead, PendingEconomyReadKind, RefusalTally, ReplayStats, TxRef,
