@@ -1,6 +1,6 @@
 # 02 — Interface programme (I): implementation plan
 
-**Draft 1.2 — 2026-09-07** (the changelog in §10 carries every draft).
+**Draft 1.3 — 2026-09-07** (the changelog in §10 carries every draft).
 Scoped from [01-assessment.md](01-assessment.md)
 against the tree at `a0142e3` (working tree; E7 in flight on main). Every
 symbol named here was opened in that tree; line numbers are deliberately not
@@ -1244,9 +1244,11 @@ deviations:
   "drop on equal" optimisation. The TUI resync always fetches the default
   subject (ring rows carry their object; the before/after filters). The
   pool ladder is a depletion ladder — heat reads inverted until the pack
-  declares thresholds — and the ≤16 vitals cut is alphabetical. The web
-  has no `GameApp` behavioural harness (the coalescer's wiring is pinned
-  by source probes). E7k lane L3 edits `view::unit_source`, the two
+  declares thresholds — and the ≤16 vitals cut is alphabetical. The web's
+  `GameApp` behavioural harness (`game.test.ts`, 2026-09-07) now drives
+  the coalescer, its retry and both reset seams end to end; only the
+  `.svelte` render assertions remain source probes. E7k lane L3 edits
+  `view::unit_source`, the two
   `status.rs` store reads, and adds `query_with_context` overrides on both
   handlers.
 
@@ -1335,7 +1337,9 @@ adjudicators — found every lane holding with fixes; all folded).**
   their HUD keeps the last keyframe until `r` or the next hello (rare,
   staff-driven). (4) The web's contacts pane shows one declaration for
   both "in flight" and "not published by this server"; the retry and
-  guard releases are pinned by source probes (no `GameApp` harness).
+  guard releases are driven end to end by the `GameApp` harness since
+  2026-09-07 (`game.test.ts`; they were source probes when this was
+  written).
 ### 3.9 Cut I9 — The generic semantic-view renderer
 
 **What it is.** The client-side substrate that makes every future
@@ -1531,6 +1535,70 @@ a live command) — deferred so guarding an existing command lands with care,
 not at the tail of this cut; the API and all three clients are proven by the
 tests above. A focused L/B/S adversarial verify of the lifecycle ran on the
 committed code (see the changelog).
+
+**As built — part 3 (2026-09-07, branch `interface-i11`): the residual
+closed, three hardenings folded.**
+
+- **The first real producer already exists.** E6b's scene consent flow
+  (`+timestop/end`, `/rewind`, the outcome seal — `Confirm`s to every player
+  participant — and the turn nudge, a `Choice`) opens requests through
+  `Ctx::open_request` and re-validates every answer in `ConsentDone` (D6,
+  treaty ruling 3). "A first real producer on a live command" was satisfied
+  when E6b landed after part 2 was written; the residual closes by this note.
+  In substance the whole lifecycle runs on live commands (open, deliver,
+  answer, `RequestCompletion`, re-validate, persist); in kind these Confirms
+  are **advisory polls** — the command's effect precedes the ask, and the only
+  effect-bearing answer is the nudge's `pass`. A confirm that *gates* a
+  mutation until answered remains unproduced; that is the `+seat/offer` shape
+  on the tactics side, which has no seat-offer flow to guard yet and stays
+  with E7's residue.
+- **Hardening (a) — one answer order across the clients.** The engine's
+  line-mode `respond` and the web store answer the **oldest** pending
+  request; the TUI overlay kept only the **newest** (a second request
+  replaced the first), so a player's answer to the visible prompt was measured
+  by the engine against the invisible older one and silently lost. The overlay
+  is now a queue (`VecDeque`, oldest first, replace-in-place on a duplicate
+  id, capped at 32 = `MAX_OPEN_REQUESTS_PER_SUBJECT`, titled "the game asks
+  (1 of N)"); answering or cancelling the front reveals the next. Pinned by a
+  TUI test and by a web `requests.test.ts` test that names the contract
+  (D-I-29).
+- **Hardening (b) — the prompt names objects as the subject sees them.**
+  `ask_participants` named the asker with `display_name` whatever the subject
+  could see; it now hands each prompt a **namer** that renders any object as
+  that subject sees it — not perceived (`ctx.can_perceive`, the live typed
+  state attached), or DARK to them by the `look` rule (waived by `SEE_HIDDEN`
+  or control), is "Someone", the clients' unattributed-actor fallback. All
+  three prompts go through it, including the rewind's turn actor (verify
+  fold C1); the nudge names nobody. This is consistency between the ask and
+  what the subject could see, not confidentiality the scene otherwise has:
+  the room announce and the panel keyframe still name actors ungated, and a
+  per-observer projection of participants is a scenes-module question, not
+  this cut's. Pinned by e6b tests with a `Perceive` hook standing in for a
+  concealment ruleset (end and rewind) and with a DARK asker.
+- **Hardening (c) — the cap, pinned.** `mush-core/tests/i10_requests.rs`:
+  opens past `MAX_OPEN_REQUESTS_PER_SUBJECT` are dropped, never queued; an
+  answer frees exactly one slot; a deadline frees every slot it expires; ids
+  are never reused; another subject's cap is their own.
+
+**Verify fold (2026-09-07; nine attackers, adjudicated; the I10 items).** The
+queue had traded one defect for two, both folded: (C5) a **dead front ask
+blocked every later one** — an ask that expired server-side (the engine emits
+nothing to the subject), was answered on another client, or predates a world
+restart sat at the front with no deadline, and the newest-replaces slot it
+replaced had at least self-healed; the TUI entry now keeps `deadline_ms`,
+evicts an expired front before the key gate, before the draw and on every
+arrival (the keystroke that triggers an eviction is spent on it, never handed
+to the ask underneath), and the `Hello` arm — the SSH restart seam; `Resumed`
+never reaches an Ansi sink — clears the queue and any answer in progress.
+(C6) a Target/Text answer **dangled**: `Esc` or an empty `Enter` in the box
+left `answering` set, so the next ask was neither drawn nor keyed and the
+player's next command line was consumed as the answer; both exits now send
+`Cancel` for the ask, as the overlay's own legend promised. Also folded: the
+duplicate-id rule made the same in both clients (D-I-29), and the rewind
+prompt's turn actor named through the subject's view (C1, downgraded to LOW —
+the room announce and panel already name the actor). Recorded: the
+`MAX_OPEN_REQUESTS_PER_SUBJECT` mirror; the DARK arm of the namer follows the
+`look` rule, not a per-observer projection the scenes module does not have.
 
 ### 3.11 Cut I11 — The unified notification surface
 
@@ -1752,6 +1820,88 @@ limitation (a room line may name a second party the recipient perceived at
 send-time) — correct while no concealment renders; a world-side per-observer
 projection when it does.
 
+**As built — TUI + line mode (2026-09-07, branch `interface-i11`).** The
+deferred client halves, on the bridge's existing `narrative.backlog` answer
+(no wire, gateway or world change). The verb is `@history` (with `+history`
+as an alias): §3.12's `+recap` was the *shape*, and `+recap` itself is taken
+by `mush-scenes`.
+
+- **The wire shape, pinned once.** `mush-net-ssh/src/backlog.rs` parses the
+  page (`{backlog:{more, evicted, lines:[{seq, ts, kind, actor?, text}]}}`,
+  newest-first, unknown fields ignored, a malformed line rejecting the whole
+  page) for both halves; a round-trip test over a literal copy of what
+  `narrative_backlog_reply` builds. Hand-rolled rather than a `serde` derive:
+  the crate has no `serde` dependency and adding one rewrites the shared
+  lockfile mid-build.
+- **TUI.** The `Panel` arm intercepts a `narrative` Delta *before* the panel
+  store — that also fixes a live bug: the unknown-feed Delta path asked the
+  world to resync a feed nobody publishes, earned "Unknown query" and lost the
+  page. `entry_queries` primes the first page at `@tui` (the scrollback is
+  empty at entry, which is what makes the design dedup-free); `g` and
+  PgUp-at-top ask for the next; `/history` too; `NARRATIVE_PAGE` = 100 lines,
+  one page in flight behind an **aging** latch (`BACKLOG_LATCH_S` = 5 — a
+  throttled query is dropped silently by the bridge and never answers). Pages
+  prepend oldest-first at the front of the scrollback through the same
+  `render_event` a live line used, so a recalled line and a live one render
+  byte-identically; the cursor is strictly decreasing (the dedup); a late page
+  not older than the cursor is dropped *without* ending the backlog; a page
+  never evicts the live tail (a cap-cut page ends the backlog, silently — the
+  local ring is the floor there, not the server's); `more:false` or an empty
+  page ends it with one dim marker worded from `evicted`; `/clear` re-arms;
+  `Hello` clears the latch only (over SSH a restart does not restart seqs —
+  the web's `beginSegment` is deliberately not ported). No new key binding,
+  so no golden churn; one new golden (`tui_history_120x34.txt`).
+- **Line mode.** A per-connection `HistoryCursor` on the transport;
+  `@history`, `@history <n>` (1..=100, default 20), `@history more`,
+  `+history`, intercepted beside `@tui` **before** `hooks.line`, so the world
+  never sees the verb; a typo answers with a usage line rather than reaching
+  the world and stamping idle. A `Reply{Panel{narrative, Delta}}` while a
+  request is pending renders a header, the page **oldest-first** through
+  `mush_ansi::render` per line, and a footer naming the next step; with no
+  request pending a narrative Panel renders **nothing**. Read-only and
+  transport-side, `@history` does not stamp idle (D-I-3), which the intercept
+  documents. Page size 100 rather than the gateway's 200: one page is one
+  write raced against the SSH write timeout.
+- **Tests (26 + 1 golden).** `backlog.rs` (3); `app.rs` (17, the first being the
+  regression that matters: a backlog reply never reaches the panel store);
+  the golden (1); loopback end to end over real SSH (6: oldest-first with
+  header/footer and the exact `{before_seq, limit}` sent, `more` carrying the
+  cursor and a third refused locally, `+history` the same verb, an
+  unsolicited narrative Panel printing nothing, `@tui` surfacing the primed
+  page, a connection that never asks seeing none of it).
+- **Recorded, not fixed.** `@history` typed in line mode and answered after
+  `@tui` leaves the line cursor's latch armed for one 5 s window (self-heals).
+  Line mode's discoverability is `help tui` only (the world never sees the
+  verb, so `commands.list` cannot list it; a getting-started line is open). The
+  priming
+  page is 100 lines per `@tui`; if that proves heavy the fallback is a smaller
+  prime, never no prime.
+
+**Verify fold (2026-09-07; the I12 items).** (C2, HIGH) **`/clear` duplicated
+history**: it re-armed the cursor, so the next page fetched from the newest
+line again and every line that had arrived live since the clear appeared
+twice — a live SSH entry carries no seq, so nothing could dedup it. `/clear`
+is now a **view floor** (`cleared` hides the held prefix; the ring is intact
+and the cap's eviction shrinks the prefix) and ends history for that view
+(`backlog_more = false`; a page already on the wire is dropped by a guard at
+the top of the apply); `@notui` then `@tui` starts a fresh view. The
+invariant `cleared > 0 ⇒ backlog_more == false` is why no prepend accounting
+exists — a future re-arm after a clear must add it. (C3, MEDIUM) the **priming
+race**: a line delivered between the mode flip and the gateway's ring read
+paints once live and once from the primed page; narrowed (the backlog query is
+now the first entry query, one hook call after the flip) and **recorded, not
+closed** — closing it means carrying the envelope seq to the Ansi sink. (C4,
+LOW) transport verbs (`@tui`, `@history`, `+history`) are read inside an
+active input context (`Mail>`, a chargen question) — recorded in `help tui`
+and pinned by a loopback test. LOW, fixed: `/history` from the box jumped to
+the tail so the page landed off-screen (now scrolls to the top); a full local
+scrollback swallowed the gesture silently (now one client line says so); two
+false comments (the `Hello` arm's "the page will never arrive" — the gateway,
+not the world, answers it — and `Resumed` as an SSH seam). Recorded: the
+line-mode latch can be stolen by a late page under a stalled pump (the
+fixed-id bridge; a per-connection correlation id is the cross-lane fix).
+Tests after the fold: 34 in the SSH crate (+8 net), 175 total there.
+
 ### 3.13 Cut I13 — Live panel deltas (retire the sheet poll)
 
 **What it is.** `PanelFrameKind::Delta` exists in the contract but few
@@ -1881,6 +2031,88 @@ staffer's condition-damage on another subject). Also noted: the `show_staff`
 fingerprint bit is republish-to-republish (a promote → reconnect → demote →
 write sequence yields a stripped delta), and both shipped clients'
 full-replace of `data` is the defence.
+
+**As built — part 2 (2026-09-07, branch `interface-i11`): both residuals
+closed.**
+
+- **The server-side cap.** `MAX_SHEET_DOC_BYTES` = `MAX_VIEW_DATA_BYTES` −
+  256 KiB (768 KiB) in `mush-ruleset/store.rs`, checked in `put_by` on the
+  exact serialized bytes the attribute will hold — so `put`, `put_by` and
+  `put_in` all refuse — with a new `SheetError::TooLarge { bytes, max }` and
+  nothing written or dirtied on refusal. The web transport's 64 KiB
+  `max_frame_bytes` is an *incoming* bound only (tungstenite's
+  `max_message_size`), so a 768 KiB keyframe still reaches the client. Two
+  store tests (under the cap written; over it refused, unwritten).
+- **`ActionStateChanged`, the republish seam.**
+  `PreparedInstallation::touched_families()` (owner, family, encoded keys in
+  key order); `WorldEventKind::ActionStateChanged` and
+  `WorldEvent::ActionStateChanged { owner, family, keys }` (subject GOD, as
+  `CanonRecorded`); `Engine::install_prepared_action_announcing(installation,
+  out, fx)` installs, then emits one event per touched family *after* the
+  images are live so an observer reads post-state; the world task's
+  `complete_pending_commit` calls it on a committed receipt and folds the
+  observers' sends and effects into the commit's own release (a refused
+  receipt installs and announces nothing). An observer of this event **must
+  not persist** — it runs after the commit's own flush, and a legacy module op
+  queued there would make the next prepared action's flush refuse itself as
+  mixed work; a `debug_assert` on the module-op count keeps the republish
+  observers emit-only. `mush-ruleset`:
+  `VitalsSource::state_subject(family, key) -> Option<ObjId>` (default
+  `None` — the ruleset decodes its own key codec) and the republish
+  observer's second subscription — owner-filtered (the filter is the
+  registering module's `OwnerId`; a ruleset id that is not the module's name
+  is refused at boot rather than silently unfiltered), deduplicating, bounded
+  by `MAX_REPUBLISH_SUBJECTS` = 32 (the rest logged, never wrong); wod and
+  shadowrun decode their `roll_state` / `condition_state` decimal-`ObjId`
+  keys. A contract probe (`mush-contract-tests/tests/action_state_republish.rs`)
+  refuses a bare `install_prepared_action(` — the identifier, so a UFCS or
+  path-valued call matches too; only the definition is exempt — on any
+  production path: `tests/` directories and the bodies of `#[cfg(test)]`
+  inline modules are skipped by brace tracking wherever they sit, a
+  `#[cfg(test)] mod name;` declaration ends nothing (verify fold C9: the first
+  cut stopped at `mush-campaign`'s top-of-file test declaration and never read
+  its body), and the two fixture crates' `src/` are excluded by content
+  (`mush-testkit` is linked into the binaries for its text renderer only). It
+  also requires the seam in the world task, and pins its own cutting rules
+  with self-tests.
+  `TestWorld::install_prepared_action_announcing` for tests. The web's
+  interim `refreshSheet()` after the viewer's own receipt is **retired**
+  (pinned negatively by the new `GameApp` harness).
+- **Tests.** The toy ruleset (`mush-ruleset/tests/i13_action_state_republish.rs`:
+  the keyframe reads the committed overlay, a second commit is a delta on
+  the prior revision, a foreign owner's same-named family is ignored, no
+  sheet → no frame, the cap holds and the subject past it is merely later);
+  the shipped schemas' headroom (every wod template schema and the shadowrun
+  schema leave a max-size document its room under the panel bound, so the
+  256 KiB figure is pinned, not assumed); the real rulesets through the
+  coordinator
+  (`mush-server/tests/production_action_migrations.rs`: the Willpower spend
+  republishes `wod.vitals` and `wod.sheet` with `willpower_temp` = 1 to the
+  actor alone; a staffer's Condition damage republishes to the *subject*,
+  never the staffer — the case the interim mitigation could not cover); the
+  world task's commit completion (announced through the gateway on commit;
+  nothing on refusal); the probe; the two decoders' unit tests.
+- **Decision (default taken, D-I-27).** A companion method plus a source
+  probe rather than a signature change on `install_prepared_action`: about
+  ninety-five fixture and test callers install images with no audience, and
+  the probe makes the production distinction load-bearing.
+
+**Verify fold (2026-09-07; the I13 and web items).** The seam's ordering,
+leak and bounds claims all held (thirty-two attempts across two attackers,
+none landed). Folded: (C9) the probe's first cut ended at a `#[cfg(test)] mod
+name;` declaration and left a whole crate body unread — now brace-tracked
+inline modules, the bare identifier, self-tests; the owner filter derived from
+the registering module (loud at boot on drift); the observer-must-not-persist
+contract written down and asserted; the headroom arithmetic pinned against
+every shipped schema. On the web harness: (C7) the test that claimed the
+keyframe clears the retry flag could not see the flag — it now provokes a
+refused *manual* refresh after a frame-answered burst and asserts nothing
+arms, and the answering keyframe rides the real `panel_subscribe` reply path
+(mutant killed); (C8) "registered once across two hellos" is now pinned by a
+spy on `registerFeedScreen` — the duplicate refusal is silent, so the length
+assertion alone could not (mutant killed); the request store replaces a
+duplicate id in place (D-I-29); README drift fixed. The web stays at 373
+tests — every fold edited an existing test.
 
 ---
 
@@ -2115,6 +2347,36 @@ Six standing rules:
   toggle off the legend costs more than the divergence. Recorded cost: I9's
   view screens cannot claim a digit on a tactics server (a digitless-screen
   policy is the follow-up).
+- **D-I-27** (I13) An action-state commit **announces itself through a
+  companion install** (`Engine::install_prepared_action_announcing`) guarded
+  by a **source probe**, not through a signature change on
+  `install_prepared_action`. Rationale: about ninety-five fixture, boot and
+  test callers install images that have no audience; the probe makes
+  "production announces" a contract the compiler could only express by
+  taxing every one of them.
+- **D-I-28** (I13) The `ActionStateChanged` event carries **encoded keys and
+  never a value**, and the **owning ruleset decodes its own keys**
+  (`VitalsSource::state_subject`, owner-filtered). Rationale: the key codec
+  belongs to the family's owner; a value-free seam cannot leak state, and a
+  foreign owner's same-named family is nobody else's business.
+- **D-I-29** (I10) Every client answers the **oldest** pending request first
+  — the engine's line-mode `respond`, the web store's `pending[0]`, and now
+  the TUI overlay (a queue, not a newest-replaces slot; a Target/Text answer
+  in progress holds the keyboard until submitted). Rationale: the engine
+  measures an answer against the request it names; a client showing a
+  different request than the one it answers loses the answer silently. A
+  re-sent id **replaces in place** in both clients (verify fold): a restated
+  ask is the same ask and must not be demoted behind unseen ones, and on a
+  post-restart remint collision the fresh ask replaces a zombie at the front
+  instead of queuing behind it. Recorded cost: the TUI mirrors
+  `MAX_OPEN_REQUESTS_PER_SUBJECT` as a local constant (the transport crate
+  does not depend on `mush-core`).
+- **D-I-30** (I12) Line-mode `@history` is answered **transport-side**, like
+  `@tui`, and **never stamps idle**; the TUI's backlog is a **prepend into the
+  one scrollback** through the live renderer, with **no new key** (`g`,
+  PgUp-at-top, `/history`). Rationale: the ring is gateway-side and per-viewer,
+  so the world has nothing to add; a recalled line must be indistinguishable
+  from the live one it once was; and the scene screen's key budget is spent.
 
 ---
 
@@ -2144,6 +2406,11 @@ Six standing rules:
 | Unit DTO hard bound | `MAX_UNIT_RECORD_BYTES` (existing, 1 MiB) | `view.rs` |
 | `MAX_UNIT_AUDIENCE` | 64 | `view.rs` (I8, D-I8-2) |
 | `MAX_CONTACT_VIEW_ROWS` | 256 | `mush-propagation/src/panel.rs` (I8, D-I8-1) |
+| `MAX_SHEET_DOC_BYTES` | 768 KiB (= `MAX_VIEW_DATA_BYTES` − 256 KiB) | `mush-ruleset/src/store.rs` (I13) |
+| `MAX_REPUBLISH_SUBJECTS` | 32 | `mush-ruleset/src/vitals.rs` (I13) |
+| `MAX_OPEN_REQUESTS_PER_SUBJECT` | 32 | `mush-core/src/request.rs` (I10); the TUI overlay queue mirrors it |
+| `NARRATIVE_PAGE` / `BACKLOG_LATCH_S` | 100 / 5 | TUI (I12) |
+| `HISTORY_DEFAULT` / `HISTORY_MAX` / `HISTORY_LATCH` | 20 / 100 / 5 s | line mode (I12); the gateway's own clamp is 200 |
 
 **Global keys (both clients; a screen may not rebind these).**
 
@@ -2246,6 +2513,29 @@ modal ruling (D-I-17, D-I-18) rather than by its default.**
 
 ## 10. Changelog
 
+- **Draft 1.3 — 2026-09-07.** The remaining slate **built in three lanes**
+  under the owner's standing order (no owner fork surfaced). **I13** (§3.13
+  "As built — part 2"): the server-side sheet cap (`MAX_SHEET_DOC_BYTES`,
+  `SheetError::TooLarge`) and the `ActionStateChanged` republish seam
+  (`PreparedInstallation::touched_families`, the event,
+  `Engine::install_prepared_action_announcing`, the world task's commit
+  completion, `VitalsSource::state_subject`, the owner-filtered bounded second
+  subscription, both rulesets' decoders, the `action_state_republish` probe,
+  `TestWorld::install_prepared_action_announcing`); the web's interim
+  re-request retired. **I12** (§3.12 "As built — TUI + line mode"): the TUI
+  backlog (and the live bogus-resync bug it fixes), line-mode `@history` /
+  `+history`. **I10** (§3.10 "As built — part 3"): the residual closed on
+  E6b's consent producers; the TUI request queue (D-I-29), the perceive-gated
+  asker, the cap pinned. **Web:** `GameAppOptions` and the `GameApp`
+  behavioural harness (`game.test.ts`) replacing I8's source probes; the §3.8
+  harness sentences corrected. §6 D-I-27…30, §7 (`MAX_SHEET_DOC_BYTES`,
+  `MAX_REPUBLISH_SUBJECTS`, `MAX_OPEN_REQUESTS_PER_SUBJECT`, the I12 page and
+  latch constants). Tests: server 17 new (probe 3, toy republish 5, request
+  cap 2, store 2, world task 2, decoders 2, scenes 1) plus the two coordinator
+  tests extended; TUI 26 (+1 golden); web +13 new, −5 retired probes (373
+  total). **Verify fold, same day** (nine attackers, adjudicated; 0 refuted,
+  1 HIGH, 6 MEDIUM confirmed, 2 downgraded, 17 LOW; the seam's ordering, leak
+  and bounds claims all held): recorded per cut under "Verify fold".
 - **Draft 1.2 — 2026-09-07.** I8 **designed and built** on the tree after E7
   completed. §3.8 gains the design pass (six code maps, three independent
   designs, a judge on the P/C/B/S lenses, a completeness critic — the
