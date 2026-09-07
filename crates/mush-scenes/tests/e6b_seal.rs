@@ -15,10 +15,12 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use mush_core::engine::{Effects, Engine, Inbound};
+use mush_core::module::{EventHook, HookPoint, HookReadContext};
 use mush_core::output::Audience;
 use mush_core::{
-    ClockProviderFailure, ClockReadError, ClockRef, GOD, ObjId, ObjKind, Outbox, Registry, World,
-    register_core_commands, register_engine_commands,
+    ClockProviderFailure, ClockReadError, ClockRef, Flags, GOD, GameModule, ModError, ObjId,
+    ObjKind, Outbox, Perceive, Registrar, Registry, World, register_core_commands,
+    register_engine_commands,
 };
 use mush_proto::{OutputEvent, RequestKind, RespondChoice};
 use mush_scenes::{CONSENT_DEADLINE_S, PauseReason, SceneStatus, ScenesModule, ScenesState};
@@ -33,7 +35,40 @@ struct Rig {
     npc: ObjId,
 }
 
+/// A `Perceive` hook that hides one object from everyone — the scene tests'
+/// stand-in for a concealment ruleset.
+struct Veil(ObjId);
+
+impl EventHook for Veil {
+    fn perceives(&self, _ctx: &HookReadContext<'_>, _observer: ObjId, subject: ObjId) -> Perceive {
+        if subject == self.0 {
+            Perceive::Conceal
+        } else {
+            Perceive::Abstain
+        }
+    }
+}
+
+struct VeilModule(ObjId);
+
+impl GameModule for VeilModule {
+    fn name(&self) -> &'static str {
+        "veil"
+    }
+
+    fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
+        reg.hook(HookPoint::Perceive, Arc::new(Veil(self.0)));
+        Ok(())
+    }
+}
+
 fn rig() -> Rig {
+    rig_with(|_nick, _ann| Vec::new())
+}
+
+/// [`rig`] with extra modules composed beside canon and scenes; the closure
+/// receives Nick's and Ann's ids so a module can be pointed at one of them.
+fn rig_with(extra: impl FnOnce(ObjId, ObjId) -> Vec<Box<dyn GameModule>>) -> Rig {
     let mut world = World::new_minimal();
     world.set_now(1_000);
     let bar = world
@@ -58,15 +93,12 @@ fn rig() -> Rig {
     let mut registry = Registry::new();
     register_core_commands(&mut registry).unwrap();
     register_engine_commands(&mut registry).unwrap();
-    let mut engine = Engine::with_modules(
-        world,
-        registry,
-        vec![
-            Box::new(mush_canon::CanonModule::new()),
-            Box::new(ScenesModule::new()),
-        ],
-    )
-    .unwrap();
+    let mut modules: Vec<Box<dyn GameModule>> = vec![
+        Box::new(mush_canon::CanonModule::new()),
+        Box::new(ScenesModule::new()),
+    ];
+    modules.extend(extra(nick, ann));
+    let mut engine = Engine::with_modules(world, registry, modules).unwrap();
     let (mut out, mut fx) = (Outbox::new(), Effects::new());
     engine
         .modules_loaded(HashMap::new(), &mut out, &mut fx)
@@ -1008,6 +1040,94 @@ fn d6_ending_asks_each_player_participant_once_never_the_facilitator_npc_or_obse
     assert!(
         votes(&r).is_empty(),
         "nothing is recorded until someone answers"
+    );
+}
+
+/// The Confirm prompts `out` delivered to `who`, as plain text.
+fn prompts_to(out: &Outbox, who: ObjId) -> Vec<String> {
+    out.events()
+        .iter()
+        .filter_map(|(aud, e)| match (aud, e) {
+            (Audience::Actor(a), OutputEvent::Request { prompt, .. }) if *a == who => {
+                Some(prompt.to_plain_text())
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// I10 hardening (D-I-11): a consent prompt names the asker only as the
+/// subject perceives them — a concealed facilitator ends the scene as
+/// "Someone", and an ordinary one by name.
+#[test]
+fn d6_a_consent_prompt_names_a_concealed_asker_as_someone() {
+    let mut r = rig_with(|nick, _ann| vec![Box::new(VeilModule(nick))]);
+    run(&mut r.engine, r.nick, "+timestop");
+    let out = run(&mut r.engine, r.nick, "+timestop/end");
+    let prompts = prompts_to(&out, r.ann);
+    assert_eq!(prompts.len(), 1, "{prompts:?}");
+    assert!(
+        prompts[0].starts_with("Someone ended scene #"),
+        "{prompts:?}"
+    );
+    assert!(
+        !prompts[0].contains("Nick"),
+        "a concealed asker's name never reaches the prompt: {prompts:?}"
+    );
+
+    let mut r = rig();
+    run(&mut r.engine, r.nick, "+timestop");
+    let out = run(&mut r.engine, r.nick, "+timestop/end");
+    let prompts = prompts_to(&out, r.ann);
+    assert_eq!(prompts.len(), 1, "{prompts:?}");
+    assert!(
+        prompts[0].starts_with("Nick ended scene #"),
+        "a perceivable asker is named: {prompts:?}"
+    );
+}
+
+/// The rewind prompt names two objects — the asker and the turn's actor —
+/// and both go through the subject's own view (verify fold, C1).
+#[test]
+fn d6_a_rewind_prompt_names_the_turns_actor_as_the_subject_sees_them() {
+    let mut r = rig_with(|nick, _ann| vec![Box::new(VeilModule(nick))]);
+    run(&mut r.engine, r.nick, "+timestop");
+    run(&mut r.engine, r.nick, "+timestop/next");
+    let out = run(&mut r.engine, r.nick, "+timestop/rewind");
+    let prompts = prompts_to(&out, r.ann);
+    assert_eq!(prompts.len(), 1, "{prompts:?}");
+    assert!(
+        prompts[0].starts_with("Someone rewound scene #")
+            && prompts[0].contains("to Someone's turn (round 1)"),
+        "{prompts:?}"
+    );
+    assert!(!prompts[0].contains("Nick"), "{prompts:?}");
+
+    let mut r = rig();
+    run(&mut r.engine, r.nick, "+timestop");
+    run(&mut r.engine, r.nick, "+timestop/next");
+    let out = run(&mut r.engine, r.nick, "+timestop/rewind");
+    let prompts = prompts_to(&out, r.ann);
+    assert!(
+        prompts[0].starts_with("Nick rewound scene #")
+            && prompts[0].contains("to Nick's turn (round 1)"),
+        "{prompts:?}"
+    );
+}
+
+/// DARK is part of the gate, as it is for `look` (verify fold): a DARK asker
+/// is "Someone" to a subject without `SEE_HIDDEN`.
+#[test]
+fn d6_a_dark_asker_is_someone_in_the_prompt() {
+    let mut r = rig();
+    run(&mut r.engine, r.nick, "+timestop");
+    r.engine.world.set_flag(r.nick, Flags::DARK, true).unwrap();
+    let out = run(&mut r.engine, r.nick, "+timestop/end");
+    let prompts = prompts_to(&out, r.ann);
+    assert_eq!(prompts.len(), 1, "{prompts:?}");
+    assert!(
+        prompts[0].starts_with("Someone ended scene #"),
+        "{prompts:?}"
     );
 }
 

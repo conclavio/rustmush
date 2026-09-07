@@ -2202,6 +2202,33 @@ impl fmt::Debug for PreparedInstallation {
     }
 }
 
+impl PreparedInstallation {
+    /// The typed records this installation will touch, grouped by owner and
+    /// family in key order — what
+    /// [`Engine::install_prepared_action_announcing`](crate::Engine::install_prepared_action_announcing)
+    /// turns into one
+    /// [`WorldEvent::ActionStateChanged`](crate::WorldEvent::ActionStateChanged)
+    /// per family once the images are live (interface plan I13). Encoded keys
+    /// only: the owning module decodes its own codec, and no value crosses.
+    #[must_use]
+    pub fn touched_families(&self) -> Vec<(OwnerId, StateFamilyId, Vec<SmolStr>)> {
+        let mut out: Vec<(OwnerId, StateFamilyId, Vec<SmolStr>)> = Vec::new();
+        for key in self.mutations.keys() {
+            match out.last_mut() {
+                Some((owner, family, keys)) if owner == key.owner() && family == key.family() => {
+                    keys.push(SmolStr::new(key.encoded()));
+                }
+                _ => out.push((
+                    key.owner().clone(),
+                    key.family().clone(),
+                    vec![SmolStr::new(key.encoded())],
+                )),
+            }
+        }
+        out
+    }
+}
+
 /// Checked action-state refusal. Every variant occurs before live mutation.
 #[derive(Debug, Error)]
 pub enum ActionStateError {

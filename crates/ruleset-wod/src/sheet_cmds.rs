@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use mush_core::{
     ArgShape, CmdError, CommandSpec, Ctx, HookReadContext, ModError, ObjId, QueryHandler,
-    Registrar, Role, World, match_object, perm,
+    Registrar, Role, StateFamilyId, World, match_object, perm,
 };
 use mush_proto::{OutputEvent, RichText, Vital};
 use mush_ruleset::schema::{FieldType, SheetSchema};
@@ -388,6 +388,12 @@ impl VitalsSource for WodVitals {
             subject,
             &doc,
         ))
+    }
+
+    /// A committed `roll_state` record (a Willpower spend or a staff reset)
+    /// republishes the character it belongs to (interface plan I13).
+    fn state_subject(&self, family: &StateFamilyId, key: &str) -> Option<ObjId> {
+        crate::authoritative::state_subject(family, key)
     }
 }
 

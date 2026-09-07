@@ -2753,9 +2753,49 @@ impl Engine {
         }
     }
 
-    /// Install typed post-images after the exact applied receipt.
+    /// Install typed post-images after the exact applied receipt, silently.
+    ///
+    /// Fixtures, boot-time hydration and tests use this; the production commit
+    /// seam uses [`Engine::install_prepared_action_announcing`] so the world's
+    /// observers hear about the change (interface plan I13), and a contract
+    /// probe (`mush-contract-tests` `action_state_republish`) keeps the two
+    /// apart.
     pub fn install_prepared_action(&mut self, installation: PreparedInstallation) {
         self.action_state.install(installation);
+    }
+
+    /// Install typed post-images after the exact applied receipt **and tell
+    /// the world** (interface plan I13): once the images are live, one
+    /// [`WorldEvent::ActionStateChanged`] per touched `(owner, family)` reaches
+    /// the subscribed observers — the `<ruleset>.vitals` republish above all,
+    /// which is how an overlay-only mutation (a Willpower spend, Condition
+    /// damage) becomes a live sheet and vitals frame without a poll. Emitted
+    /// *after* the install so an observer reads post-state. Observer output
+    /// and deferred work land in `out`/`fx` exactly as
+    /// [`Engine::emit_world_event`] describes: the caller releases them with
+    /// the commit they belong to. An observer of this event **must not
+    /// persist** — it runs after the commit's own flush, and a legacy module
+    /// op queued here would make the next prepared action's flush refuse
+    /// itself as mixed work; republishing frames is all the seam is for.
+    pub fn install_prepared_action_announcing(
+        &mut self,
+        installation: PreparedInstallation,
+        out: &mut Outbox,
+        fx: &mut Effects,
+    ) {
+        let touched = installation.touched_families();
+        self.action_state.install(installation);
+        for (owner, family, keys) in touched {
+            self.emit_world_event(
+                &WorldEvent::ActionStateChanged {
+                    owner,
+                    family,
+                    keys,
+                },
+                out,
+                fx,
+            );
+        }
     }
 
     /// Discard typed post-images after an indeterminate/refused receipt.

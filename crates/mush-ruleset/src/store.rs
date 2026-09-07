@@ -25,6 +25,17 @@ use crate::validate::{SheetError, validate};
 /// sanctioned writer and does not go through that gate.
 pub const SHEET_ATTR_NS: &str = "sheet";
 
+/// The largest serialized sheet document a write accepts (interface plan
+/// I13): the 1 MiB [`MAX_VIEW_DATA_BYTES`](mush_proto::MAX_VIEW_DATA_BYTES)
+/// panel bound less 256 KiB of headroom for the keyframe's wrapper (`schema`,
+/// `approved`, `target`, `revision`), so no `<ruleset>.sheet` keyframe **or**
+/// delta — a delta is data-dominant too — can exceed the client-side frame
+/// bound and be dropped. Checked on every write path ([`SheetStore::put`],
+/// [`SheetStore::put_by`], [`SheetStore::put_in`]); an oversized document is
+/// refused with [`SheetError::TooLarge`] and nothing is written. The web
+/// transport's 64 KiB `max_frame_bytes` bounds *incoming* frames only.
+pub const MAX_SHEET_DOC_BYTES: usize = mush_proto::MAX_VIEW_DATA_BYTES - 256 * 1024;
+
 /// A lazy sheet migration: `(from_version, data) -> data` at the current
 /// schema version. Boxed so this crate needs no dependency on the concrete
 /// ruleset; a ruleset supplies one that delegates to
@@ -176,6 +187,15 @@ impl SheetStore {
         validate(&self.schema, &doc.data)?;
         let value = serde_json::to_value(doc)
             .map_err(|e| vec![SheetError::msg(format!("sheet serialize: {e}"))])?;
+        // The whole-document bound (I13): measured on the exact bytes the
+        // attribute will hold, before anything is written.
+        let bytes = value.to_string().len();
+        if bytes > MAX_SHEET_DOC_BYTES {
+            return Err(vec![SheetError::TooLarge {
+                bytes,
+                max: MAX_SHEET_DOC_BYTES,
+            }]);
+        }
         w.set_attr(obj, &self.attr_name(), Attr::json(value, by))
             .map_err(|e| vec![SheetError::msg(e.to_string())])?;
         Ok(())
@@ -441,6 +461,53 @@ mod tests {
         assert!(!err.is_empty());
         // Nothing was written.
         assert!(store.get(&w, bob).is_none());
+    }
+
+    /// A schema whose one text field can legally hold more than the
+    /// whole-document cap, so the cap is the only thing that can refuse.
+    fn roomy_schema() -> Arc<SheetSchema> {
+        Arc::new(
+            SheetSchemaBuilder::new("roomy", 1)
+                .section(
+                    SheetSection::new("core", "Core", SectionLayout::List).field(FieldDef::text(
+                        "bio",
+                        "Biography",
+                        4_000_000,
+                    )),
+                )
+                .unwrap()
+                .build(),
+        )
+    }
+
+    #[test]
+    fn a_document_under_the_byte_cap_is_written() {
+        let store = SheetStore::new(roomy_schema());
+        let (mut w, bob) = world();
+        let mut doc = SheetDoc::new_default(store.schema());
+        doc.set_text("bio", "x".repeat(MAX_SHEET_DOC_BYTES - 4096));
+        store.put(&mut w, bob, &doc).unwrap();
+        assert_eq!(store.get(&w, bob).unwrap(), doc);
+    }
+
+    #[test]
+    fn an_oversized_document_is_refused_without_writing() {
+        let store = SheetStore::new(roomy_schema());
+        let (mut w, bob) = world();
+        let mut doc = SheetDoc::new_default(store.schema());
+        doc.set_text("bio", "x".repeat(MAX_SHEET_DOC_BYTES + 1));
+        let _ = w.take_dirty(); // creation dirt, not the write's
+        let err = store.put(&mut w, bob, &doc).unwrap_err();
+        assert!(
+            matches!(
+                err.as_slice(),
+                [SheetError::TooLarge { bytes, max }]
+                    if *bytes > MAX_SHEET_DOC_BYTES && *max == MAX_SHEET_DOC_BYTES
+            ),
+            "{err:?}"
+        );
+        assert!(store.get(&w, bob).is_none(), "nothing was written");
+        assert!(!w.take_dirty().contains(&bob), "nothing was dirtied");
     }
 
     #[test]

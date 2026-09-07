@@ -12,7 +12,7 @@ use std::sync::Arc;
 use mush_core::output::display_name;
 use mush_core::request::{RequestCompletion, RequestOutcome};
 use mush_core::{
-    ArgShape, CmdError, CommandSpec, Ctx, ModError, ObjId, ObjKind, Registrar, Role,
+    ArgShape, CmdError, CommandSpec, Ctx, Flags, ModError, ObjId, ObjKind, Powers, Registrar, Role,
     StoreReadCompletion, StoreReadResult, World, archive_page_range, chunk_key, perm,
     read_cold_range,
 };
@@ -389,22 +389,19 @@ fn timestop_rewind(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         serde_json::json!({ "round": updated.round }),
     );
     crate::panel::publish(ctx, &updated);
-    let turn = updated
-        .current_actor()
-        .map(|a| display_name(ctx.w, a))
-        .unwrap_or_else(|| "no one".to_string());
-    ask_participants(
-        ctx,
-        &updated,
-        CONSENT_REWIND,
+    let asker = ctx.actor;
+    ask_participants(ctx, &updated, CONSENT_REWIND, asker, |name| {
+        let turn = updated
+            .current_actor()
+            .map(name)
+            .unwrap_or_else(|| "no one".to_string());
         format!(
             "{} rewound scene #{} to {turn}'s turn (round {}). Do you agree?",
-            display_name(ctx.w, ctx.actor),
+            name(asker),
             updated.id,
             updated.round
-        ),
-        ctx.actor,
-    );
+        )
+    });
     Ok(())
 }
 
@@ -470,12 +467,23 @@ pub(crate) const NUDGE_TICK_TAG: &str = "nudge";
 /// never asked (they have no stake in the turn), NPCs cannot answer, and the
 /// asker's own answer is the command. Silence for `CONSENT_DEADLINE_S` is an
 /// abstention. Nothing waits on the answers.
+///
+/// `prompt` builds each subject's text through a namer that renders any
+/// object **as that subject sees it** (interface plan I10 hardening): an
+/// object the subject cannot perceive, or one that is DARK to them (the `look`
+/// rule — waived by `SEE_HIDDEN` or control), is "Someone" — the clients'
+/// unattributed-actor fallback — since a poll must still reach the subject
+/// where a room line would simply be withheld. Every object a prompt names
+/// (the asker, the turn's actor) goes through it. The scene's own room
+/// announce and panel keyframe still name actors ungated, so this is
+/// consistency between the ask and what the subject could see, not
+/// confidentiality the scene otherwise lacks.
 fn ask_participants(
     ctx: &mut Ctx<'_>,
     rec: &SceneRecord,
     about: &str,
-    prompt: String,
     asker: ObjId,
+    prompt: impl Fn(&dyn Fn(ObjId) -> String) -> String,
 ) {
     let subjects: Vec<ObjId> = rec
         .participants
@@ -485,11 +493,28 @@ fn ask_participants(
         .filter(|&p| ctx.w.get(p).is_some_and(|o| o.kind == ObjKind::Player))
         .collect();
     for subject in subjects {
+        let text = {
+            let see_hidden = perm::has_power(ctx.w, subject, Powers::SEE_HIDDEN);
+            let name = |obj: ObjId| -> String {
+                let dark = ctx
+                    .w
+                    .get(obj)
+                    .is_some_and(|o| o.flags.contains(Flags::DARK));
+                let visible = ctx.can_perceive(subject, obj)
+                    && (!dark || see_hidden || perm::controls(ctx.w, subject, obj));
+                if visible {
+                    display_name(ctx.w, obj)
+                } else {
+                    "Someone".to_string()
+                }
+            };
+            prompt(&name)
+        };
         let payload = consent_payload(rec, about, subject);
         ctx.open_request(
             subject,
             RequestKind::Confirm,
-            RichText::plain(prompt.clone()),
+            RichText::plain(text),
             Vec::new(),
             CONSENT_DEADLINE_S * 1000,
             payload,
@@ -854,17 +879,14 @@ fn timestop_end(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     crate::panel::publish(ctx, &updated);
     // D6: an advisory poll — the scene is already over; the answers are the
     // record of who agreed with ending it here.
-    ask_participants(
-        ctx,
-        &updated,
-        CONSENT_END,
+    let asker = ctx.actor;
+    ask_participants(ctx, &updated, CONSENT_END, asker, |name| {
         format!(
             "{} ended scene #{}. Do you agree with ending it here?",
-            display_name(ctx.w, ctx.actor),
+            name(asker),
             updated.id
-        ),
-        ctx.actor,
-    );
+        )
+    });
     Ok(())
 }
 
@@ -1825,17 +1847,13 @@ fn scene_outcome(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     );
     // D6: an advisory poll on the sealed outcome. A request is a deferred
     // open, not a world mutation, and nothing after it can fail.
-    ask_participants(
-        ctx,
-        &rec,
-        CONSENT_OUTCOME,
+    ask_participants(ctx, &rec, CONSENT_OUTCOME, actor, |namer| {
         format!(
             "{} sealed the outcome of scene #{} as \"{name}\". Do you agree?",
-            display_name(ctx.w, actor),
+            namer(actor),
             rec.id
-        ),
-        actor,
-    );
+        )
+    });
     // Terminal, and therefore last (`mush_canon::commit` pins the deferred
     // prefix; nothing mutating may follow it on a path that can still fail).
     crate::emit_scene_outcome(ctx, &rec, &outcome);

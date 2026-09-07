@@ -1008,3 +1008,29 @@ pub(crate) fn register(
     )?;
     Ok(state)
 }
+
+/// The sheet subject a `roll_state` record key names (interface plan I13): the
+/// family's key codec is the decimal `ObjId`, so the vitals republish can map an
+/// announced key back to the character whose temporary-Willpower overlay
+/// changed. A foreign family is nobody's business here.
+pub(crate) fn state_subject(family: &StateFamilyId, key: &str) -> Option<ObjId> {
+    if family.as_str() != STATE_FAMILY {
+        return None;
+    }
+    key.parse::<u32>().ok().map(ObjId)
+}
+
+#[cfg(test)]
+mod i13_tests {
+    use super::*;
+
+    #[test]
+    fn state_subject_decodes_only_this_familys_decimal_keys() {
+        let ours = StateFamilyId::new(STATE_FAMILY).unwrap();
+        assert_eq!(state_subject(&ours, "12"), Some(ObjId(12)));
+        assert_eq!(state_subject(&ours, "not-a-key"), None);
+        assert_eq!(state_subject(&ours, "-1"), None);
+        let foreign = StateFamilyId::new("condition_state").unwrap();
+        assert_eq!(state_subject(&foreign, "12"), None);
+    }
+}

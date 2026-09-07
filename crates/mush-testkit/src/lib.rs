@@ -30,8 +30,8 @@ use std::collections::HashMap;
 
 use mush_core::{
     Audience, Effect, Effects, Engine, GOD, GameModule, Inbound, LIMBO, ModuleBootData, ModuleOp,
-    ObjId, ObjKind, Outbox, Registry, World, WorldCommand, WorldEvent, can_perceive, event_subject,
-    register_core_commands,
+    ObjId, ObjKind, Outbox, PreparedInstallation, Registry, World, WorldCommand, WorldEvent,
+    can_perceive, event_subject, register_core_commands,
 };
 use mush_proto::{NarrativeKind, ObjRef, OutputEvent, RichText, RoomView, WhoEntry};
 use smol_str::SmolStr;
@@ -249,6 +249,24 @@ impl TestWorld {
         let mut out = Outbox::new();
         let mut fx = Effects::new();
         self.engine.step(Inbound::Apply(cmd), &mut out, &mut fx);
+        out.take()
+    }
+
+    /// Install a prepared action-state image the way the world task does after
+    /// an exact commit receipt (interface plan I13): the images go live, then
+    /// every touched family is announced as a
+    /// [`WorldEvent::ActionStateChanged`] and the observers' output is
+    /// returned — the `<ruleset>.vitals` and `<ruleset>.sheet` republish above
+    /// all. The bare [`Engine::install_prepared_action`] stays for fixtures
+    /// that want the images and no audience.
+    pub fn install_prepared_action_announcing(
+        &mut self,
+        installation: PreparedInstallation,
+    ) -> Vec<(Audience, OutputEvent)> {
+        let mut out = Outbox::new();
+        let mut fx = Effects::new();
+        self.engine
+            .install_prepared_action_announcing(installation, &mut out, &mut fx);
         out.take()
     }
 

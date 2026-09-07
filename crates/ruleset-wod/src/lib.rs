@@ -620,3 +620,27 @@ impl Ruleset for WodRuleset {
         Ok(format!("Gave the NPC a {id} sheet."))
     }
 }
+
+#[cfg(test)]
+mod i13_headroom {
+    use super::*;
+
+    /// Interface plan I13: `MAX_SHEET_DOC_BYTES` leaves the sheet keyframe's
+    /// wrapper (`schema`, `approved`, `target`, `revision`) its headroom under
+    /// the 1 MiB panel bound for every shipped template schema — the cap's
+    /// arithmetic, pinned against the real schemas rather than a comment.
+    #[test]
+    fn every_template_schema_fits_the_keyframe_headroom() {
+        let dispatch = Dispatch::build("wod", all_splats(DEFAULT_TEMPLATES));
+        const WRAPPER_SLACK: usize = 512;
+        for id in dispatch.schemas.ids() {
+            let schema = dispatch.schemas.schema_for_id(id);
+            let described = schema.describe().to_string().len();
+            assert!(
+                mush_ruleset::MAX_SHEET_DOC_BYTES + described + WRAPPER_SLACK
+                    <= mush_proto::MAX_VIEW_DATA_BYTES,
+                "template {id}: a {described}-byte schema leaves a max-size sheet no room"
+            );
+        }
+    }
+}

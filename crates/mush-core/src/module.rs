@@ -698,6 +698,12 @@ pub enum WorldEventKind {
     CanonRecorded,
     /// H2b: a turn-based scene handed its turn to an NPC.
     SceneTurn,
+    /// Interface plan I13: typed authoritative state (an action-state family)
+    /// went live after an exact commit receipt — the seam the
+    /// `<ruleset>.vitals` republish subscribes to beside `AttrSet`, since an
+    /// overlay-only mutation (a Willpower spend, Condition-Monitor damage)
+    /// never touches the sheet attribute.
+    ActionStateChanged,
 }
 
 /// A world mutation, delivered to subscribed observers **post-mutation** in
@@ -823,6 +829,23 @@ pub enum WorldEvent {
         /// The round the turn belongs to.
         round: u32,
     },
+    /// Interface plan I13: the records of one action-state family changed and
+    /// are live. Emitted by
+    /// [`Engine::install_prepared_action_announcing`](crate::Engine::install_prepared_action_announcing)
+    /// **after** the post-images are installed, once per touched
+    /// `(owner, family)`, so an observer reads post-state. `keys` are the
+    /// family's **encoded** record keys in key order — the owning module
+    /// decodes its own codec (`VitalsSource::state_subject` in `mush-ruleset`);
+    /// no value and no foreign decoding crosses this seam. Bounded by the
+    /// transaction's own operation cap.
+    ActionStateChanged {
+        /// The module that owns the family.
+        owner: crate::mechanics::OwnerId,
+        /// The family whose records changed.
+        family: crate::action_state::StateFamilyId,
+        /// The encoded keys of the changed records, in key order.
+        keys: Vec<SmolStr>,
+    },
 }
 
 impl WorldEvent {
@@ -841,6 +864,7 @@ impl WorldEvent {
             WorldEvent::Rolled { .. } => WorldEventKind::Rolled,
             WorldEvent::CanonRecorded { .. } => WorldEventKind::CanonRecorded,
             WorldEvent::SceneTurn { .. } => WorldEventKind::SceneTurn,
+            WorldEvent::ActionStateChanged { .. } => WorldEventKind::ActionStateChanged,
         }
     }
 
@@ -859,6 +883,9 @@ impl WorldEvent {
             WorldEvent::ObjDestroyed { obj } | WorldEvent::AttrSet { obj, .. } => *obj,
             // A system consequence — no single actor; observers run as GOD.
             WorldEvent::CanonRecorded { entities, .. } => entities.first().copied().unwrap_or(GOD),
+            // Typed state names no actor either: observers run as GOD and
+            // decode their own subjects from the carried keys.
+            WorldEvent::ActionStateChanged { .. } => GOD,
         }
     }
 }

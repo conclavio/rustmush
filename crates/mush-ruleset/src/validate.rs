@@ -86,6 +86,17 @@ pub enum SheetError {
         /// The bad slot index.
         index: usize,
     },
+    /// A whole document larger than
+    /// [`MAX_SHEET_DOC_BYTES`](crate::store::MAX_SHEET_DOC_BYTES) once
+    /// serialized (interface plan I13): refused before the write, so no sheet
+    /// keyframe or delta can ever exceed the client-side frame bound.
+    #[error("sheet document is {bytes} bytes; the maximum is {max}")]
+    TooLarge {
+        /// The serialized size seen.
+        bytes: usize,
+        /// The cap.
+        max: usize,
+    },
     /// A structural/migration error carrying a free-form message.
     #[error("{0}")]
     Msg(String),

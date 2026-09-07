@@ -16,7 +16,13 @@
 //! - an [`AttrSet`](WorldEventKind::AttrSet) subscription on the ruleset's
 //!   sheet attribute, so every [`SheetStore::put_in`](crate::SheetStore::put_in)
 //!   republishes the subject's vitals frame **and** their sheet keyframe to the
-//!   subject only — never to the room.
+//!   subject only — never to the room;
+//! - an [`ActionStateChanged`](WorldEventKind::ActionStateChanged)
+//!   subscription (interface plan I13), so an overlay-only mutation — a typed
+//!   Willpower spend, Condition-Monitor damage, anything that writes the
+//!   ruleset's authoritative state family and never the sheet attribute —
+//!   republishes the same two frames to every subject the ruleset decodes from
+//!   the announced keys ([`VitalsSource::state_subject`]).
 //!
 //! Frames are always whole and carry a per-subject `revision` that is
 //! monotonic within a process ([`VitalsRevisions`], a module state slot), so a
@@ -26,8 +32,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use mush_core::{
-    Audience, Ctx, HookReadContext, ModError, ObjId, PanelFeedHandle, QueryHandler, Registrar,
-    World, WorldEvent, WorldEventKind, WorldObserver, match_object, perm,
+    Audience, Ctx, HookReadContext, ModError, ObjId, OwnerId, PanelFeedHandle, QueryHandler,
+    Registrar, StateFamilyId, World, WorldEvent, WorldEventKind, WorldObserver, match_object, perm,
 };
 use mush_proto::{
     MAX_VITAL_DETAIL_BYTES, MAX_VITALS_PER_FEED, ObjRef, OutputEvent, PanelFrameKind, RichText,
@@ -148,7 +154,27 @@ pub trait VitalsSource: Send + Sync {
     /// This crate turns it into a keyframe or a delta (interface plan I13,
     /// replacing the former prebuilt-keyframe return).
     fn sheet_view(&self, ctx: &Ctx<'_>, subject: ObjId) -> Option<SheetView>;
+
+    /// The sheet subject whose vitals a change to record `key` of this
+    /// ruleset's state family `family` affects (interface plan I13): the
+    /// ruleset decodes its own key codec (the families it registered with
+    /// [`Registrar::state_family`]) and answers `None` for a family it does
+    /// not overlay onto sheets. Called once per announced key after an
+    /// authoritative commit installs; the default overlays nothing, so a
+    /// ruleset without typed state keeps today's behaviour exactly.
+    fn state_subject(&self, family: &StateFamilyId, key: &str) -> Option<ObjId> {
+        let _ = (family, key);
+        None
+    }
 }
+
+/// The most subjects one announced action-state commit republishes (interface
+/// plan I13): a transaction touching more records than this republishes the
+/// first `MAX_REPUBLISH_SUBJECTS` in key order and logs the rest — a subject
+/// past the cap sees its next frame on its next write or query, never a wrong
+/// one. Matches the per-subject request cap and the unit audience cap by
+/// value so the "one commit, many recipients" bounds read alike.
+pub const MAX_REPUBLISH_SUBJECTS: usize = 32;
 
 /// The vitals a sheet declares, in schema order: every field with a
 /// [`vital`](crate::schema::FieldDef::vital) role that is not staff-only.
@@ -335,15 +361,28 @@ pub fn register_vitals(
             source: Arc::clone(&source),
         }),
     )?;
-    reg.subscribe(
-        WorldEventKind::AttrSet,
-        Arc::new(VitalsRepublish {
-            feed,
-            sheet_feed: SmolStr::new(format!("{ruleset}.sheet")),
-            sheet_attr: sheet_attr.to_string(),
-            source,
-        }),
-    );
+    // The republish filters `ActionStateChanged` on the family's owner, and a
+    // family's owner is the registering module — so the ruleset id handed in
+    // here must be that module's name, or the I13 republish would be silently
+    // off for a ruleset whose `name()` drifted from its feed prefix. Loud at
+    // boot instead (verify fold).
+    let owner = OwnerId::new(ruleset).map_err(|e| ModError::msg(e.to_string()))?;
+    let registering = OwnerId::new(reg.module()).map_err(|e| ModError::msg(e.to_string()))?;
+    if owner != registering {
+        return Err(ModError::msg(format!(
+            "register_vitals: ruleset id {ruleset:?} is not the registering module {:?}",
+            reg.module()
+        )));
+    }
+    let republish: Arc<dyn WorldObserver> = Arc::new(VitalsRepublish {
+        owner,
+        feed,
+        sheet_feed: SmolStr::new(format!("{ruleset}.sheet")),
+        sheet_attr: sheet_attr.to_string(),
+        source,
+    });
+    reg.subscribe(WorldEventKind::AttrSet, Arc::clone(&republish));
+    reg.subscribe(WorldEventKind::ActionStateChanged, republish);
     Ok(())
 }
 
@@ -408,12 +447,17 @@ impl QueryHandler for VitalsQuery {
     }
 }
 
-/// The `AttrSet` observer: a write to the ruleset's sheet attribute bumps the
+/// The republish observer: a write to the ruleset's sheet attribute
+/// (`AttrSet`), or a committed change to one of the ruleset's own
+/// action-state families (`ActionStateChanged`, interface plan I13), bumps the
 /// subject's revision and republishes their vitals frame and sheet frame to
 /// them alone. The sheet frame is a delta unless the schema fingerprint
 /// changed (a template swap) or this is the first write after boot, in which
-/// case it is a fresh keyframe (interface plan I13).
+/// case it is a fresh keyframe.
 struct VitalsRepublish {
+    /// The ruleset's module identity: a foreign owner's family that happens to
+    /// share a name is not ours to decode.
+    owner: OwnerId,
     feed: PanelFeedHandle,
     sheet_feed: SmolStr,
     sheet_attr: String,
@@ -422,13 +466,50 @@ struct VitalsRepublish {
 
 impl WorldObserver for VitalsRepublish {
     fn on_event(&self, ctx: &mut Ctx<'_>, ev: &WorldEvent) {
-        let WorldEvent::AttrSet { obj, name, .. } = ev else {
-            return;
-        };
-        if !name.eq_ignore_ascii_case(&self.sheet_attr) {
-            return;
+        match ev {
+            WorldEvent::AttrSet { obj, name, .. } => {
+                if name.eq_ignore_ascii_case(&self.sheet_attr) {
+                    self.republish(ctx, *obj);
+                }
+            }
+            WorldEvent::ActionStateChanged {
+                owner,
+                family,
+                keys,
+            } => {
+                if *owner != self.owner {
+                    return;
+                }
+                let mut subjects: Vec<ObjId> = Vec::new();
+                for key in keys.iter().take(MAX_REPUBLISH_SUBJECTS) {
+                    if let Some(subject) = self.source.state_subject(family, key)
+                        && !subjects.contains(&subject)
+                    {
+                        subjects.push(subject);
+                    }
+                }
+                if keys.len() > MAX_REPUBLISH_SUBJECTS {
+                    tracing::warn!(
+                        %family,
+                        keys = keys.len(),
+                        cap = MAX_REPUBLISH_SUBJECTS,
+                        "vitals: an action-state commit touched more records than the republish cap"
+                    );
+                }
+                for subject in subjects {
+                    self.republish(ctx, subject);
+                }
+            }
+            _ => {}
         }
-        let subject = *obj;
+    }
+}
+
+impl VitalsRepublish {
+    /// One republish for `subject`: bump their revision, then their vitals
+    /// keyframe and their sheet frame (a delta unless the fingerprint moved),
+    /// to them alone.
+    fn republish(&self, ctx: &mut Ctx<'_>, subject: ObjId) {
         let revision = match ctx.state_mut::<VitalsRevisions>() {
             Some(r) => {
                 let slot = r.0.entry(subject).or_insert(0);

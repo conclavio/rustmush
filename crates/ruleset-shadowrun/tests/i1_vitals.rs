@@ -130,3 +130,19 @@ fn vitals_query_answers_for_the_viewer_and_refuses_a_sheetless_target() {
         "no sheet, no frame"
     );
 }
+
+/// Interface plan I13: `MAX_SHEET_DOC_BYTES` leaves the sheet keyframe's
+/// wrapper (`schema`, `approved`, `target`, `revision`) its headroom under the
+/// 1 MiB panel bound for the shipped schema — the cap's arithmetic, pinned
+/// against the real schema rather than a comment.
+#[test]
+fn the_schema_fits_the_keyframe_headroom() {
+    let schema = ruleset_shadowrun::schema::build_schema("shadowrun");
+    let described = schema.describe().to_string().len();
+    const WRAPPER_SLACK: usize = 512;
+    assert!(
+        mush_ruleset::MAX_SHEET_DOC_BYTES + described + WRAPPER_SLACK
+            <= mush_proto::MAX_VIEW_DATA_BYTES,
+        "a {described}-byte schema leaves a max-size sheet no room"
+    );
+}

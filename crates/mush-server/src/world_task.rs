@@ -8029,8 +8029,8 @@ fn complete_pending_commit(
     store: &Arc<dyn ObjectStore>,
 ) -> CompletedPending {
     let PendingCommit {
-        sends,
-        effects,
+        mut sends,
+        mut effects,
         failure_actor,
         create,
         mut action,
@@ -8056,8 +8056,35 @@ fn complete_pending_commit(
         if outcome == DeliveryOutcome::Committed {
             // The exact applied receipt is the only transition that makes the
             // prepared typed post-images live. No provider, validator, codec,
-            // serializer, or readiness callback runs here.
-            engine.install_prepared_action(installation);
+            // serializer, or readiness callback runs here — but the world's
+            // observers hear about it (interface plan I13): one
+            // `ActionStateChanged` per touched family, emitted after the
+            // images are live, whose output and external effects ride this
+            // commit's release exactly like the step's own. An observer of
+            // this event must NOT persist: a legacy module op queued here
+            // would make the next prepared action's flush refuse itself as
+            // mixed work (`has_legacy_persistence_work`). The republish
+            // observers only emit; the assertion keeps it that way.
+            let ops_before = engine.module_ops().len();
+            let mut announce_out = Outbox::new();
+            let mut announce_fx = Effects::new();
+            engine.install_prepared_action_announcing(
+                installation,
+                &mut announce_out,
+                &mut announce_fx,
+            );
+            debug_assert_eq!(
+                engine.module_ops().len(),
+                ops_before,
+                "an ActionStateChanged observer queued persistence"
+            );
+            sends.extend(resolve_classified_sends(
+                &engine.registry,
+                &engine.world,
+                &mut announce_out,
+                Some(engine.action_state()),
+            ));
+            effects.extend(announce_fx.drain_classified());
         } else {
             engine.abort_prepared_action(installation);
         }
@@ -12359,6 +12386,24 @@ mod tests {
         }
     }
 
+    /// The I13 seam's audience in this fixture: an observer that reports every
+    /// announced family to GOD, so a test can tell which install path ran.
+    struct PreparedLaneAnnounce;
+
+    impl mush_core::WorldObserver for PreparedLaneAnnounce {
+        fn on_event(&self, ctx: &mut mush_core::Ctx<'_>, ev: &WorldEvent) {
+            if let WorldEvent::ActionStateChanged {
+                owner,
+                family,
+                keys,
+            } = ev
+            {
+                ctx.out
+                    .info(GOD, format!("announced {owner}/{family} {keys:?}"));
+            }
+        }
+    }
+
     struct PreparedLaneModule {
         captured: Arc<Mutex<Option<PreparedLaneHandle>>>,
     }
@@ -12394,6 +12439,10 @@ mod tests {
                 |value: &PreparedLaneState| Ok(serde_json::json!({ "amount": value.amount })),
             )?;
             *self.captured.lock().expect("capture mutex poisoned") = Some(handle);
+            registrar.subscribe(
+                mush_core::WorldEventKind::ActionStateChanged,
+                Arc::new(PreparedLaneAnnounce),
+            );
             Ok(())
         }
 
@@ -13582,6 +13631,161 @@ mod tests {
             Some(&PreparedLaneState { amount: 7 })
         );
         assert!(!persistence_integrity.is_latched());
+    }
+
+    /// Interface plan I13: the exact receipt not only installs the typed
+    /// post-images, it announces them — the fixture's observer hears one
+    /// `ActionStateChanged` for the touched family and its line reaches the
+    /// gateway with the commit's own release.
+    #[tokio::test]
+    async fn committed_prepared_action_announces_the_touched_family_to_observers() {
+        let (mut engine, handle) = prepared_lane_fixture();
+        let mut transaction = engine
+            .action_transaction(&handle)
+            .expect("test transaction begins");
+        transaction
+            .insert(&handle, &41, PreparedLaneState { amount: 7 })
+            .expect("test state is valid");
+        let prepared = transaction.prepare().expect("test transaction prepares");
+        let guards = empty_guards(&engine);
+        engine
+            .stage_prepared_action(prepared, guards)
+            .expect("clean engine accepts prepared action");
+
+        let (writer, mut writer_rx) = persist::test_store_writer_channel(Arc::new(Metrics::new()));
+        let mut serial = 0;
+        let mut health = StoreHealth::new();
+        let metrics = Metrics::new();
+        let mut retained = RetainedSeals::new();
+        let high_water = AtomicU64::new(0);
+        let outcome = flush_prepared_action(
+            &mut engine,
+            &writer,
+            &mut serial,
+            &mut health,
+            &metrics,
+            &mut retained,
+            &high_water,
+        )
+        .await;
+        let FlushOutcome::Queued {
+            receipt: Some(receipt),
+            prepared_installation: Some(installation),
+        } = outcome
+        else {
+            panic!("prepared action must queue with its receipt and install image");
+        };
+        let StoreJob::Write {
+            batch,
+            notify: Some(notify),
+        } = writer_rx.recv().await.expect("prepared write was queued")
+        else {
+            panic!("prepared lane must request an exact writer receipt");
+        };
+        notify
+            .send(Ok(batch.serial))
+            .expect("world still owns the exact receipt");
+        let mut receipt = receipt;
+        let ack = receipt.receive().await;
+        let pending = pending_with_prepared_installation(batch.serial, installation);
+        let recorder = Arc::new(RecordingGateway {
+            sends: Mutex::new(Vec::new()),
+        });
+        let gateway: Gateway = recorder.clone();
+        let persistence_integrity = PersistenceIntegrityLatch::new();
+        let (tx, _rx) = mpsc::channel(1);
+        let completed = complete_pending_commit(
+            pending,
+            ack,
+            &mut engine,
+            &gateway,
+            &mut health,
+            &persistence_integrity,
+            &tx.downgrade(),
+            None,
+            &test_effect_store(),
+        );
+        assert_eq!(completed.outcome, DeliveryOutcome::Committed);
+        assert_eq!(
+            engine
+                .action_state()
+                .get(&handle, &41)
+                .expect("state lookup succeeds"),
+            Some(&PreparedLaneState { amount: 7 })
+        );
+        let announced: Vec<String> = recorder
+            .sends
+            .lock()
+            .expect("recording gateway poisoned")
+            .iter()
+            .filter_map(|(target, event)| match (target, event.as_ref()) {
+                (SendTarget::Char(1), OutputEvent::Sys(text)) => Some(text.to_plain_text()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            announced,
+            vec!["announced prepared_lane_test/receipt_state [\"41\"]".to_string()],
+            "one announcement per touched family, released with the commit"
+        );
+    }
+
+    /// The other half of the seam: a refused receipt installs nothing and
+    /// announces nothing — observers never hear about images that never went
+    /// live.
+    #[test]
+    fn refused_prepared_action_announces_nothing() {
+        let (mut engine, handle) = prepared_lane_fixture();
+        let mut transaction = engine
+            .action_transaction(&handle)
+            .expect("test transaction begins");
+        transaction
+            .insert(&handle, &43, PreparedLaneState { amount: 2 })
+            .expect("test state is valid");
+        let prepared = transaction.prepare().expect("test transaction prepares");
+        let (_, installation) = prepared.into_parts();
+        let pending = pending_with_prepared_installation(7, installation);
+        let recorder = Arc::new(RecordingGateway {
+            sends: Mutex::new(Vec::new()),
+        });
+        let gateway: Gateway = recorder.clone();
+        let mut health = StoreHealth::new();
+        let persistence_integrity = PersistenceIntegrityLatch::new();
+        let (tx, _rx) = mpsc::channel(1);
+        let completed = complete_pending_commit(
+            pending,
+            Err(AuthoritativeCommitFailure::Refused(
+                "test refusal".to_owned(),
+            )),
+            &mut engine,
+            &gateway,
+            &mut health,
+            &persistence_integrity,
+            &tx.downgrade(),
+            None,
+            &test_effect_store(),
+        );
+        assert_eq!(completed.outcome, DeliveryOutcome::Aborted);
+        assert!(
+            engine
+                .action_state()
+                .get(&handle, &43)
+                .expect("state lookup succeeds")
+                .is_none(),
+            "a refused receipt installs nothing"
+        );
+        let heard = recorder
+            .sends
+            .lock()
+            .expect("recording gateway poisoned")
+            .iter()
+            .any(|(_, event)| {
+                matches!(event.as_ref(), OutputEvent::Sys(text) if text.to_plain_text().starts_with("announced "))
+            });
+        assert!(
+            !heard,
+            "nothing is announced for images that never went live"
+        );
     }
 
     #[tokio::test]

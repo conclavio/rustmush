@@ -70,11 +70,11 @@ pub use schema::{
     DamageLevelDef, DerivedExpr, FieldDef, FieldType, SchemaError, SectionLayout, SheetSchema,
     SheetSchemaBuilder, SheetSection, TrackSize,
 };
-pub use store::{MigrateFn, SHEET_ATTR_NS, SheetStore, sheet_attr_name};
+pub use store::{MAX_SHEET_DOC_BYTES, MigrateFn, SHEET_ATTR_NS, SheetStore, sheet_attr_name};
 pub use validate::{SheetError, validate};
 pub use vitals::{
-    SheetSchemaFps, SheetView, VitalsRevisions, VitalsSource, frame as vitals_frame, from_sheet,
-    pool, pool_state, register_vitals, vitals_feed,
+    MAX_REPUBLISH_SUBJECTS, SheetSchemaFps, SheetView, VitalsRevisions, VitalsSource,
+    frame as vitals_frame, from_sheet, pool, pool_state, register_vitals, vitals_feed,
 };
 
 /// A ruleset identifier — the interned short id (`"wod"`, `"tacsim"`), also

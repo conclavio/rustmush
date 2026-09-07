@@ -15,7 +15,7 @@ use std::sync::Arc;
 
 use mush_core::{
     ArgShape, CmdError, CommandSpec, Ctx, HookReadContext, ModError, ObjId, QueryHandler,
-    Registrar, Role, World, match_object, perm,
+    Registrar, Role, StateFamilyId, World, match_object, perm,
 };
 use mush_proto::{OutputEvent, RichText, Vital, VitalRole, VitalState, VitalValue};
 use mush_ruleset::schema::{FieldType, SheetSchema};
@@ -399,6 +399,13 @@ impl VitalsSource for SrVitals {
             subject,
             &doc,
         ))
+    }
+
+    /// A committed `condition_state` record (damage or healing) republishes the
+    /// character it belongs to (interface plan I13) — the subject, not the
+    /// staffer who dealt it.
+    fn state_subject(&self, family: &StateFamilyId, key: &str) -> Option<ObjId> {
+        crate::authoritative::state_subject(family, key)
     }
 }
 

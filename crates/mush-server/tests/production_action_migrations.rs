@@ -1,13 +1,13 @@
 use mush_core::{
-    ActionStateBootRecord, AuthoritativeBundle, CanonicalId, Effects, GOD, IdempotencyKey,
-    IdempotencyScope, Inbound, IngressEnvelope, IngressPayload, IngressSurfaceVersion,
-    LegalActionQuery, OfferExecutionContext, OfferKeyRing, OfferSecret, OfferSubmission, Outbox,
-    OwnerId, PerceivedRef, PrincipalId, ReplayWrite, RequestUid, ResolutionKeyRing,
-    ResolutionSecret, ScopedIdempotencyKey, StagedActionPersistence,
+    ActionStateBootRecord, Audience, AuthoritativeBundle, CanonicalId, Effects, GOD,
+    IdempotencyKey, IdempotencyScope, Inbound, IngressEnvelope, IngressPayload,
+    IngressSurfaceVersion, LegalActionQuery, OfferExecutionContext, OfferKeyRing, OfferSecret,
+    OfferSubmission, Outbox, OwnerId, PerceivedRef, PrincipalId, ReplayWrite, RequestUid,
+    ResolutionKeyRing, ResolutionSecret, ScopedIdempotencyKey, StagedActionPersistence,
     is_action_state_persistence_key,
 };
 use mush_jobs::JobsModule;
-use mush_proto::ProjectedActionStatus;
+use mush_proto::{OutputEvent, PanelFrameKind, ProjectedActionStatus, VitalValue, VitalsFrame};
 use mush_server::action_coordinator::{ActionCoordinator, ActionPreflight};
 use mush_store::{AuthoritativeStore, InMemoryStore};
 use mush_testkit::TestWorld;
@@ -70,6 +70,35 @@ fn query_panel(world: &mut TestWorld, actor: mush_core::ObjId, name: &str) -> Va
         .expect("query returned a panel keyframe")
 }
 
+/// Every `Panel` frame on `feed` addressed to `who`, as `(kind, data)`.
+fn panels_to(
+    events: &[(Audience, OutputEvent)],
+    who: mush_core::ObjId,
+    feed: &str,
+) -> Vec<(PanelFrameKind, Value)> {
+    events
+        .iter()
+        .filter_map(|(aud, ev)| match (aud, ev) {
+            (
+                Audience::Actor(a),
+                OutputEvent::Panel {
+                    feed: f,
+                    kind,
+                    data,
+                },
+            ) if *a == who && f.as_str() == feed => Some((*kind, data.clone())),
+            _ => None,
+        })
+        .collect()
+}
+
+fn any_to(events: &[(Audience, OutputEvent)], who: mush_core::ObjId) -> bool {
+    events
+        .iter()
+        .any(|(aud, _)| matches!(aud, Audience::Actor(a) if *a == who))
+}
+
+/// [`execute_offer_announcing`] for the tests that assert on the receipt alone.
 async fn execute_offer(
     world: &mut TestWorld,
     store: &InMemoryStore,
@@ -79,6 +108,23 @@ async fn execute_offer(
     parameters: Value,
     byte: u8,
 ) -> AuthoritativeBundle {
+    execute_offer_announcing(world, store, query, owner, verb, parameters, byte)
+        .await
+        .0
+}
+
+/// Drive one projected offer through the coordinator to its exact receipt and
+/// install it the way the world task does (interface plan I13: announcing),
+/// returning the bundle and everything the announcement made observers say.
+async fn execute_offer_announcing(
+    world: &mut TestWorld,
+    store: &InMemoryStore,
+    query: LegalActionQuery,
+    owner: &str,
+    verb: &str,
+    parameters: Value,
+    byte: u8,
+) -> (AuthoritativeBundle, Vec<(Audience, OutputEvent)>) {
     let offer = world
         .engine()
         .project_legal_actions(&query)
@@ -147,7 +193,7 @@ async fn execute_offer(
         .await
         .unwrap();
     assert!(receipt.matches_bundle(&bundle));
-    world.engine_mut().install_prepared_action(installation);
+    let announced = world.install_prepared_action_announcing(installation);
     store
         .checkpoint_authoritative(bundle.token(), bundle.bundle_hash())
         .await
@@ -175,7 +221,7 @@ async fn execute_offer(
             .kind(),
         verb.replace('-', "_")
     );
-    bundle
+    (bundle, announced)
 }
 
 #[tokio::test]
@@ -202,7 +248,7 @@ async fn wod_willpower_roll_spends_once_and_records_resolution() {
             PerceivedRef::SelfActor,
         )
         .unwrap();
-    let first = execute_offer(
+    let (first, announced) = execute_offer_announcing(
         &mut world,
         &store,
         query,
@@ -222,6 +268,26 @@ async fn wod_willpower_roll_spends_once_and_records_resolution() {
         query_panel(&mut world, actor, "wod.sheet")["data"]["willpower_temp"],
         1
     );
+    // Interface plan I13: the commit itself republished the actor's vitals and
+    // sheet through the overlay — no poll, no client re-request — to the actor
+    // alone. This is the overlay-only mutation the `AttrSet` path never saw.
+    let vitals = panels_to(&announced, actor, "wod.vitals");
+    assert_eq!(vitals.len(), 1, "{announced:?}");
+    assert_eq!(vitals[0].0, PanelFrameKind::Keyframe);
+    let frame = VitalsFrame::from_panel_data(&vitals[0].1).expect("a vitals frame");
+    let temp = frame
+        .vitals
+        .iter()
+        .find(|v| v.id == "wod.willpower_temp")
+        .expect("temporary Willpower is a declared vital");
+    assert!(
+        matches!(temp.value, VitalValue::Bounded { current: 1, .. }),
+        "the spend is live in the frame: {temp:?}"
+    );
+    let sheet = panels_to(&announced, actor, "wod.sheet");
+    assert_eq!(sheet.len(), 1, "{announced:?}");
+    assert_eq!(sheet[0].1["data"]["willpower_temp"], 1);
+    assert!(!any_to(&announced, GOD), "the republish is subject-only");
 
     let query = world
         .engine()
@@ -320,7 +386,7 @@ async fn shadowrun_condition_damage_and_heal_preserve_old_semantics() {
         .engine()
         .legal_action_query(PrincipalId::Object { id: GOD }, GOD, perceived.clone())
         .unwrap();
-    let damage = execute_offer(
+    let (damage, announced) = execute_offer_announcing(
         &mut world,
         &store,
         query,
@@ -330,6 +396,27 @@ async fn shadowrun_condition_damage_and_heal_preserve_old_semantics() {
         0x41,
     )
     .await;
+    // Interface plan I13: a staffer's damage on another character republishes
+    // that character's vitals and sheet — the case no client-side re-request
+    // after one's own receipt could cover.
+    let vitals = panels_to(&announced, target, "shadowrun.vitals");
+    assert_eq!(vitals.len(), 1, "{announced:?}");
+    let sheet = panels_to(&announced, target, "shadowrun.sheet");
+    assert_eq!(sheet.len(), 1, "{announced:?}");
+    assert_eq!(
+        sheet[0].1["data"]["condition_stun"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|mark| !mark.is_null())
+            .count(),
+        10,
+        "the Condition Monitor overlay rides the republished sheet"
+    );
+    assert!(
+        !any_to(&announced, GOD),
+        "the staffer who dealt the damage is not the subject"
+    );
     assert_eq!(damage.outcome().data()["revision"], 1);
     assert_eq!(damage.outcome().data()["report"]["stun_filled"], 10);
     assert_eq!(damage.outcome().data()["report"]["physical_filled"], 2);
