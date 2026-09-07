@@ -72,6 +72,8 @@ src/
 │   ├── GenericViewScreen.svelte # a screen backed by a `.view` feed (I9)
 │   ├── RollBuilder.svelte    # trait pickers from the schema's categories -> one `+roll` line (I6)
 │   ├── VitalsBoard.svelte    # every `.vitals` frame as widgets + recent rolls (I6)
+│   ├── UnitScreen.svelte     # the unit screen: damage / unit layouts over the `.unit` frame (I8, probed)
+│   ├── UnitSectionMap.svelte # one block per section: state glyph + condition word + cell gauges (I8, probed)
 │   ├── widgets/              # Gauge, TrackBoxes, KeyValue, Table — ruleset-blind (I6, probed)
 │   ├── ChannelView.svelte    # one channel's backlog/live view + alias input
 │   ├── WhoRail.svelte        # who table, idle ticking, refresh
@@ -98,17 +100,20 @@ src/
     ├── auth.ts               # /api/auth/* wrappers + friendly error mapping
     ├── theme.ts, storage.ts, history.ts
     └── stores/               # rune stores: scrollback, channels, who, mail, session, sheet, rolls, worldgen,
-                              #   screens, commands, vitals, presence (I4)
+                              #   screens, commands, vitals, presence (I4), unit (I8)
 ```
 
 ## Screens and keys (interface cut I4)
 
 The browser is a set of **numbered screens** (`$lib/stores/screens.svelte.ts`)
 sharing names and digits with the SSH TUI: 1 scene, 2 sheet, 3 mail, 4 chan,
-5 rolls, 7 actions, 8 build, 9 llm (6 is the TUI's intel screen). Each is
-gated on the hello's manifest; a ruleset screen registers by a panel-feed
-suffix (`registerFeedScreen`) and appears only when the server publishes
-that feed. One binding table per screen — `local` / `prefill` / `run` — with
+5 rolls, 7 actions, 8 build, 9 llm (6 is the TUI's intel screen). 6 is the
+one digit the built-ins leave free, and since interface cut I8 a server that
+publishes a `.unit` feed claims it for the **unit** screen (see below). Each
+screen is gated on the hello's manifest; a ruleset screen registers by a
+panel-feed suffix (`registerFeedScreen`) and appears only when the server
+publishes that feed. One binding table per screen — `local` / `prefill` /
+`run` (plus `local: "toggle"` for a screen with two layouts) — with
 `run` held to a read-only verb list by `validateScreens` (D-I-18), so a bare
 key never sends a mutating command; the one carve-out is walking an exit on
 the scene screen (D-I-19).
@@ -169,8 +174,10 @@ sheet schema, not a proto type, so it adds no wire and never touches the
 authoritative `ViewEnvelope` payload. `GenericView.svelte` renders it (a
 table, or a key/value list); `GenericViewStore` holds one per feed;
 `ScreensStore.registerViewScreen` auto-registers the screen on the next free
-hotkey digit (only 6 is free today — a fuller digit policy is a later
-question). A row's action is always a Prefill (D-I-18): a click opens the
+hotkey digit (only 6 is free, and on a server carrying a `.unit` feed the
+I8 unit screen has already taken it — see the recorded cost below; a
+digitless-screen policy is the follow-up). A row's action is always a
+Prefill (D-I-18): a click opens the
 composer with the line ready. The SSH TUI walks the identical convention in
 `render_view_rows`.
 
@@ -187,6 +194,103 @@ frame through the shared widgets in `src/components/widgets/` (`Gauge`
 clamps every input. `v` re-subscribes the vitals feeds. No screen digit
 was free for a separate combat screen (the plan's I8 wants 8 and 9 on the
 TUI and the web has only 6 left), so the board lives on 5.
+
+**How that prediction resolved (I8, D-I8-4)**: the web ships ONE screen on
+digit 6 hosting both of the TUI's two, with `t` flipping damage/unit — the
+TUI keeps 8 damage and 9 unit. The cost is recorded rather than hidden: on
+a server publishing both a `.unit` feed and a `.view` feed,
+`registerViewScreen` is now refused with "no free hotkey digit"
+(deterministically — the unit screen registers synchronously in the hello
+pass, before any `.view` keyframe can arrive), and `screens.test.ts` pins
+exactly that. The follow-up is a digitless-screen policy (a tab with no
+hotkey), not a re-shuffle of the built-in digits, which would break
+established muscle memory and the TUI parity the digit table exists for.
+
+## Tactical unit screen (interface cut I8)
+
+One screen on digit 6 (`UnitScreen.svelte`), gated on a `.unit` feed in the
+hello manifest and registered exactly once from `GameApp.#hydrate` —
+`registerFeedScreen` has no idempotency guard and `ScreensStore.clear()`
+keeps `feedScreens`, so a second hello would otherwise be refused with
+"screen unit declared twice". Keys: `r` refresh, `t` flip layout, `c` run
+`+contacts`, `d` prefill `@unit/damage `. `@unit/*` is staff-gated and
+mutating, so it is a Prefill and never on `RUN_ALLOWLIST` (D-I-18);
+`validateScreens` would refuse the whole screen otherwise.
+
+**Two layouts, one screen** (D-I8-4). `damage` is the journal read as a
+screen: the section map, a before/after table of the newest revision, and
+the ring. `unit` is the piloting side: a compact section list, the object's
+own gauges plus one mobility line, its components grouped by install
+section, its capabilities, and the contacts table. `t` flips them through
+`localAction("toggle")` — which needs its own arm, since the `refresh`
+switch falls through to `refreshWho()` for anything it does not name.
+
+**Contract** (`$lib/stores/unit.svelte.ts`'s `parseUnitView` /
+`journalRows`; a payload convention, not a proto type — I8 adds no wire):
+
+```jsonc
+// keyframe — `data: null` is the honest "you have no unit" frame
+{ "object": { "id": "#7", "name": "…" },
+  "schema": "owner:kind:id@version#<64 hex>",   // an identity, never a body
+  "revision": 3, "state": "active", "record": null,
+  "mobility": { "mode": "…", "switching": null, "modes": [ … ] },
+  "sections":   [ { "id": "…", "condition": "…", "state": "ok",
+                    "facets": [ { "id": "…", "cells": ["…"] } ], "slots": ["…"] } ],
+  "cells":      [ { "addr": "facet/<s>/<f>/<cell>", "label": "…",
+                    "current": 1, "min": 0, "max": 6, "state": "crit" } ],
+  "components": [ { "id": "…", "definition": "…", "install": "slot/<s>/<slot>",
+                    "condition": "…", "state": "ok", "asset": false } ],
+  "capabilities": [ { "id": "…", "source": null } ],
+  "counts": { … }, "truncated": false }
+
+// delta — the projected journal one mutating command publishes
+{ "object": { … }, "from_revision": 3, "to_revision": 4,
+  "now": 1757000000, "cause": "…"|null,
+  "entries": [ { "kind": "cell"|"section"|"component"|"asset"
+                        |"capability_granted"|"capability_revoked", … } ] }
+```
+
+**Rule 1 — rulesets judge, clients render** (docs/design/10b §4). A `state`
+word (`ok` / `warn` / `crit` / `down`) is the ONLY thing that picks a glyph
+or a colour; a `condition` is the ruleset's own judgement and is printed
+verbatim, never mapped. An unknown `state` falls back to neutral and an
+unknown entry `kind` prints its kind and nothing else, so the server can
+add either without a client release. `vitalsboard.test.ts` greps the store
+and both components for tactical vocabulary alongside the I6 sheet words —
+every label, id and word on this screen comes from the frame.
+
+**Revision protocol.** A keyframe replaces the whole view and seeds the
+watermark (an equal revision replaces too: some mutations publish no
+delta); a keyframe for a different object clears the journal ring. A delta
+ALWAYS rings its rows — newest first, `JOURNAL_RING` 200 rows total,
+`JOURNAL_ROWS_PER_DELTA` 50 per delta (49 plus a client-internal `elided`
+row) — and then reports `foreign` (another object), `stale` (at or behind
+the watermark) or `resync`. On `resync`, `GameApp` arms ONE
+`setTimeout(UNIT_RESYNC_MS = 250)` behind the store's boolean storm guard,
+so a damage burst of many deltas costs a single `panel_subscribe`; ANY
+reply to a unit Req releases the guard before classification, and the timer
+is disarmed on `#resetGameState` and `onFullRehydrate` (a timer left armed
+across a disconnect would latch the guard forever).
+
+**Contacts** ride `tactics.contacts` as an I9-convention list keyframe,
+held in `GenericViewStore` (which keys on the feed name, not the `.view`
+suffix) and rendered by an EMBEDDED `GenericView` — so the table costs no
+bespoke code and claims no second screen digit. Its rows are Prefills
+(`+contact <id>`), like every generic row.
+
+**Panes with no producer yet** (grid, weapons, comms, and contacts until
+its feed lands) render as titled placeholders naming what is missing.
+`unitPaneOrder` puts them LAST, and the narrow-width rule hides from the
+end — so a phone drops the empty panes before it drops anything real. That
+degrade order is a pure function, which is how it is tested: there is no
+component-render harness on this client (vitest runs `environment: "node"`,
+no jsdom), so every I8 assertion is a store/lib test or a source probe.
+
+**The web can never name a subject.** `Query::PanelSubscribe` carries only
+a feed, so the browser always gets the server's default subject (its own
+object, or the unit it is stationed on) or a polite refusal, which renders
+inside the panel. Targeting `#n` needs a new `Query` variant and a proto
+regeneration — out of I8's no-wire-change boundary.
 
 ## WsClient (`src/lib/ws.ts`)
 
@@ -293,18 +397,19 @@ strictly, ts-rs is still an option then; today's hand-written types cover
 every shape the base sheet + Vampire/Mage/Werewolf schemas actually produce
 and degrade gracefully (never throw) on anything malformed.
 
-**Known gap — not fixable from `web/`**: `crates/mushd/src/web_bridge.rs`'s
-`Query::Sheet` arm still answers with a hardcoded "Character sheets are not
-available yet." `Sys` fallback — a pre-M6 stub that was never updated to
-route to the ruleset's registered `wod.sheet` query handler (the way
-`Query::Who`/`MailList`/`ChannelBacklog` already do; `Query::PanelSubscribe`
-has the same gap for any feed other than `"comsys"`/`"who"`/`"mail"`). Until
-that's fixed, the Sheet tab (feature-gated on `hasPanel("*.sheet")`, so it
-*does* show up — `ruleset-wod` registers the panel feed at boot) will always
-land in the graceful "sheet query isn't wired up on this server yet." state
-this client renders for exactly that fallback. No client change is needed
-once the bridge is fixed — `refreshSheet()`/the panel's poll already speak
-the real `Query::Sheet` contract described above.
+**The bridge (was a "known gap", closed in interface cut I1)**: the web
+bridge lives at `crates/mush-gateway/src/web_bridge.rs` (there is no
+`crates/mushd/src/web_bridge.rs` — `mushd/src` holds only `inprocess.rs`,
+`lib.rs`, `main.rs`, `repl.rs`). Its `Query::Sheet` arm routes to whichever
+`.sheet`-suffixed query handler the ruleset registered, and falls back to a
+polite `Sys` only when no such feed exists; `Query::PanelSubscribe` checks
+manifest membership, remaps four named feeds (`comsys`, `who`,
+`legal.actions`, `mail`) and forwards **every other feed under its own
+name** with empty params (D-I-3). So a new module feed needs no bridge arm
+at all — `llm.dashboard`, `wod.vitals`, `scenes`, `tactics.unit` and
+`tactics.contacts` all ride that catch-all, and interface cut I8 depends on
+it directly. (An earlier revision of this file described both halves as
+broken and named a file that does not exist; the paragraph was stale.)
 
 **Live since interface cut I1** (`docs/interface/02-implementation-plan.md`
 §3.1): every command-side sheet write (`+harm`, `+heal`, splat pool spends,
@@ -394,14 +499,20 @@ fields) or omitted entirely when left blank.
 
 On every `hello` — and on a full rehydrate after a resume gap — the app
 issues the `Req`s `hydrationQueries` lists (`game.svelte.ts`, pinned by
-`hydration.test.ts`): `who`, `panel_subscribe {feed: "comsys"}` (the ack IS
-the `comsys.state` keyframe), `mail_list`, `sheet`, `commands` (the
-command table, once), a `panel_subscribe` for every `.vitals` feed and for
-`scenes` — each gated on the hello's features/panels (a screen hides when
-its module/panel is absent; `sheet` is gated on `sheetFeed` — see the Sheet
-+ Rolls section above). Replies route by correlation id; reply errors
-arrive as `Sys` and land in scrollback (a `sheet` reply's `Sys` fallback
-also flips `SheetStore.unavailable` — see above).
+`hydration.test.ts`), in this order: `who`, `panel_subscribe {feed:
+"comsys"}` (the ack IS the `comsys.state` keyframe), `mail_list`, `sheet`,
+`commands` (the command table, once), a `panel_subscribe` for every
+`.vitals` feed and every `.view` feed, then — since interface cut I8, as
+two discrete arms deliberately outside that suffix loop — the `.unit` feed
+and `tactics.contacts`, and finally `scenes`. Each is gated on the hello's
+features/panels (a screen hides when its module/panel is absent; `sheet` is
+gated on `sheetFeed` — see the Sheet + Rolls section above). The suffix
+loop's order is asserted byte-for-byte, which is why the I8 feeds are
+separate arms rather than two more suffixes inside it. Replies route by
+correlation id; reply errors arrive as `Sys` and land in scrollback (a
+`sheet` reply's `Sys` fallback also flips `SheetStore.unavailable`, and a
+`unit` reply's fills `UnitStore.unavailable` — both render in the panel
+rather than cluttering scrollback).
 
 Design notes / deliberate simplifications:
 

@@ -54,6 +54,29 @@ describe("VitalsStore", () => {
     expect(s.loaded).toBe(false);
   });
 
+  it("replaces on a new subject or a reset watermark (interface cut I8)", () => {
+    // One feed can follow a viewer from subject to subject, and a subject
+    // recreated in place keeps its id while its revision resets to 0.
+    // Neither may be dropped as stale, or the group latches forever.
+    const other = (revision: number) => ({
+      ...frame(revision),
+      subject: { id: "#9", name: "Other" },
+    });
+    const s = new VitalsStore();
+    expect(s.apply("tactics.vitals", frame(7), 10)).toBe(true);
+    // A lower revision naming a DIFFERENT subject replaces.
+    expect(s.apply("tactics.vitals", other(2), 11)).toBe(true);
+    expect(s.groups["tactics.vitals"]?.frame.subject.id).toBe("#9");
+    expect(s.groups["tactics.vitals"]?.frame.revision).toBe(2);
+    // Revision 0 with the SAME subject (recreated in place) replaces.
+    expect(s.apply("tactics.vitals", other(0), 12)).toBe(true);
+    expect(s.groups["tactics.vitals"]?.frame.revision).toBe(0);
+    // A lower non-zero revision with the same subject is still dropped.
+    expect(s.apply("tactics.vitals", other(5), 13)).toBe(true);
+    expect(s.apply("tactics.vitals", other(4), 14)).toBe(false);
+    expect(s.groups["tactics.vitals"]?.frame.revision).toBe(5);
+  });
+
   it("gauge helpers", () => {
     const parsed = parseVitalsFrame(frame(1))!;
     const wp = parsed.vitals.find((v) => v.id === "wod.willpower")!;

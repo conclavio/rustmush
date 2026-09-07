@@ -22,6 +22,7 @@
   import RollsPanel from "./RollsPanel.svelte";
   import SceneScreen from "./SceneScreen.svelte";
   import SheetPanel from "./SheetPanel.svelte";
+  import UnitScreen from "./UnitScreen.svelte";
   import WhoRail from "./WhoRail.svelte";
   import WorldgenPanel from "./WorldgenPanel.svelte";
 
@@ -67,6 +68,8 @@
         return app.rolls.entries.length;
       case "build":
         return app.worldgen.draft !== null ? 1 : 0;
+      case "unit":
+        return app.unit.journal.length;
       default:
         return 0;
     }
@@ -171,6 +174,8 @@
           <WorldgenPanel {app} />
         {:else if active.id === "llm"}
           <LlmPanel {app} />
+        {:else if active.id === "unit"}
+          <UnitScreen {app} />
         {:else if active.viewFeed}
           <GenericViewScreen {app} feed={active.viewFeed} />
         {:else}

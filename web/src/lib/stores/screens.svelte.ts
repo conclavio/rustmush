@@ -10,9 +10,10 @@
 
 import { GLOBAL_KEYS, JUMP_KEYS, RESERVED_EXIT_KEYS } from "../keys";
 
-/** What a bound key does (D-I-18). */
+/** What a bound key does (D-I-18). `toggle` flips the active screen's own
+ * layout where it has two (interface cut I8, D-I8-4). */
 export type KeyAction =
-  | { kind: "local"; action: "refresh" | "clear" | "who" }
+  | { kind: "local"; action: "refresh" | "clear" | "who" | "toggle" }
   | { kind: "prefill"; line: string }
   | { kind: "run"; cmd: string };
 
@@ -151,6 +152,42 @@ export interface FeedScreen {
   suffix: string;
   def: ScreenDef;
 }
+
+/**
+ * The tactical unit screen (interface cut I8, D-I8-4): ONE screen on the
+ * one free web digit, hosting both layouts — `t` flips damage/unit, where
+ * the TUI has room for two screens (8 and 9). Registered by `GameApp`
+ * exactly once, on a hello whose manifest carries a `.unit` feed.
+ *
+ * `@unit/damage` is staff-gated and mutating, so it is a Prefill and never
+ * a Run — `validateScreens` would refuse the whole screen otherwise
+ * (D-I-18). `+contacts` is already on `RUN_ALLOWLIST`.
+ *
+ * The cost of taking digit 6 here is recorded: on a server that publishes
+ * both a `.unit` feed and a `.view` feed, `registerViewScreen` will be
+ * refused with "no free hotkey digit". It is deterministic rather than
+ * racy — this screen registers synchronously in the hello pass, before any
+ * `.view` keyframe can arrive — and the follow-up is a digitless-screen
+ * policy, not a re-shuffle of the built-in digits.
+ */
+export const UNIT_SCREEN: FeedScreen = {
+  suffix: ".unit",
+  def: {
+    id: "unit",
+    digit: 6,
+    label: "unit",
+    keys: [
+      { key: "r", label: "refresh", action: { kind: "local", action: "refresh" } },
+      { key: "t", label: "damage / unit", action: { kind: "local", action: "toggle" } },
+      { key: "c", label: "contacts", action: { kind: "run", cmd: "+contacts" } },
+      { key: "d", label: "damage cmd", action: { kind: "prefill", line: "@unit/damage " } },
+    ],
+    exitsAreKeys: false,
+    // A FeedScreen's own gate is never consulted (`available` filters by
+    // suffix alone); the manifest feed IS the gate.
+    gate: () => true,
+  },
+};
 
 /**
  * The binding-table probe (D-I-18, D-I-19): every `run` verb is on the

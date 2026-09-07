@@ -128,14 +128,23 @@ export function boxGlyph(mark: string | null): string {
 export class VitalsStore {
   groups = $state<Record<string, VitalsGroup>>({});
 
-  /** Apply a `.vitals` frame for `feed`; `false` when malformed or stale. */
+  /** Apply a `.vitals` frame for `feed`; `false` when malformed or stale.
+   *
+   * The monotonic guard holds only WITHIN one subject's own history. A
+   * frame naming a different subject REPLACES the held group — one feed
+   * can follow a viewer from subject to subject (interface cut I8: a
+   * `tactics.vitals` feed follows the station), and so does a frame whose
+   * revision is `0`, which is what a subject recreated in place publishes
+   * (same id, watermark reset). Without both carve-outs the group would
+   * latch on the old subject's higher revision forever. */
   apply(feed: string, raw: unknown, atMs = Date.now()): boolean {
     const frame = parseVitalsFrame(raw);
     if (!frame) {
       return false;
     }
     const current = this.groups[feed];
-    if (current && current.frame.revision > frame.revision) {
+    const sameSubject = current?.frame.subject.id === frame.subject.id;
+    if (current && sameSubject && frame.revision !== 0 && current.frame.revision > frame.revision) {
       return false;
     }
     this.groups = { ...this.groups, [feed]: { feed, frame, at: atMs } };

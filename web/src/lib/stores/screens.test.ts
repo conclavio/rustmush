@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 import {
   BUILTIN_SCREENS,
   ScreensStore,
+  UNIT_SCREEN,
   validateScreens,
   type GateInput,
   type ScreenDef,
@@ -128,5 +129,38 @@ describe("registerViewScreen (interface plan I9)", () => {
     const s = new ScreensStore();
     expect(s.registerViewScreen("jobs.view")).toBeNull();
     expect(s.registerViewScreen("staff.view")).toContain("no free hotkey digit");
+  });
+});
+
+describe("the tactical unit screen (interface cut I8)", () => {
+  it("takes digit 6, refuses a second registration, and closes the digit", () => {
+    // D-I8-4: ONE screen hosting both layouts, `t` flipping them. The cost
+    // is recorded here rather than discovered in production — on a server
+    // publishing both a `.unit` and a `.view` feed, the view screen has
+    // nowhere to go.
+    const s = new ScreensStore();
+    expect(validateScreens([...BUILTIN_SCREENS, UNIT_SCREEN.def])).toBeNull();
+    expect(UNIT_SCREEN.suffix).toBe(".unit");
+    expect(s.registerFeedScreen(UNIT_SCREEN)).toBeNull();
+    const withUnit: GateInput = { ...full, panels: [...full.panels, "tactics.unit"] };
+    const def = s.available(withUnit).find((d) => d.id === "unit");
+    expect(def?.digit).toBe(6);
+    expect(def?.label).toBe("unit");
+    expect(def?.keys.map((b) => b.key)).toEqual(["r", "t", "c", "d"]);
+    // `@unit/damage` mutates and is staff-gated: a Prefill, never a Run.
+    expect(def?.keys.find((b) => b.key === "d")?.action).toEqual({
+      kind: "prefill",
+      line: "@unit/damage ",
+    });
+    expect(def?.keys.find((b) => b.key === "t")?.action).toEqual({
+      kind: "local",
+      action: "toggle",
+    });
+    // Absent from the manifest, absent from the list.
+    expect(s.available(full).some((d) => d.id === "unit")).toBe(false);
+    expect(s.switchDigit(6, withUnit)).toBe(true);
+    // `registerFeedScreen` is not idempotent — GameApp registers exactly once.
+    expect(s.registerFeedScreen(UNIT_SCREEN)).toContain("declared twice");
+    expect(s.registerViewScreen("jobs.view")).toContain("no free hotkey digit");
   });
 });

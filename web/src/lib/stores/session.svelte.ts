@@ -38,6 +38,13 @@ export class SessionStore {
     return this.panels.find((p) => p.endsWith(".roll")) ?? null;
   }
 
+  /** The tactical unit panel feed (e.g. `"tactics.unit"`); same
+   * suffix-derived convention as `sheetFeed`/`rollFeed`. Gates the unit
+   * screen's registration and the hydration subscribe (interface cut I8). */
+  get unitFeed(): string | null {
+    return this.panels.find((p) => p.endsWith(".unit")) ?? null;
+  }
+
   /** Whether the worldgen draft-preview panel is available: `hello`
    * advertises the `"worldgen"` feature and/or the `"worldgen.draft"` panel
    * (fixed ids, unlike `sheetFeed`/`rollFeed` — the worldgen module isn't

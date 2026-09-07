@@ -45,4 +45,39 @@ describe("hydrationQueries", () => {
       "commands",
     ]);
   });
+
+  it("subscribes the unit feed and the contacts list once each, after the vitals loop", () => {
+    // Interface cut I8: two DISCRETE arms, deliberately outside the suffix
+    // loop above (whose order the first test pins byte-for-byte) and ahead
+    // of `scenes`.
+    const qs = hydrationQueries(
+      session(["comsys", "tactics.vitals", "tactics.unit", "tactics.contacts", "scenes"]),
+    );
+    const feeds = qs
+      .map((q) => q.q)
+      .flatMap((q) => (q.t === "panel_subscribe" ? [q.d.feed] : []));
+    expect(feeds).toEqual([
+      "comsys",
+      "tactics.vitals",
+      "tactics.unit",
+      "tactics.contacts",
+      "scenes",
+    ]);
+    expect(qs.map((q) => q.pending.kind)).toEqual([
+      "who",
+      "comsys.state",
+      "commands",
+      "vitals",
+      "unit",
+      "contacts",
+      "scenes",
+    ]);
+    expect(qs.find((q) => q.pending.kind === "unit")?.pending).toEqual({
+      kind: "unit",
+      feed: "tactics.unit",
+    });
+    // A manifest without them asks for neither.
+    const bare = hydrationQueries(session(["comsys"]));
+    expect(bare.map((q) => q.pending.kind)).toEqual(["who", "comsys.state", "commands"]);
+  });
 });

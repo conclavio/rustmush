@@ -47,10 +47,11 @@ import { LlmDashboardStore } from "./stores/llm.svelte";
 import { MailStore } from "./stores/mail.svelte";
 import { PresenceStore } from "./stores/presence.svelte";
 import { RollsStore } from "./stores/rolls.svelte";
-import { ScreensStore, type GateInput } from "./stores/screens.svelte";
+import { ScreensStore, UNIT_SCREEN, type GateInput } from "./stores/screens.svelte";
 import { ScrollbackStore, type SbOlderBlock } from "./stores/scrollback.svelte";
 import { SessionStore } from "./stores/session.svelte";
 import { SheetStore } from "./stores/sheet.svelte";
+import { CONTACTS_FEED, UNIT_RESYNC_MS, UnitStore } from "./stores/unit.svelte";
 import { VitalsStore } from "./stores/vitals.svelte";
 import { WhoStore } from "./stores/who.svelte";
 import { WorldgenStore } from "./stores/worldgen.svelte";
@@ -90,6 +91,8 @@ type PendingReq =
   | { kind: "commands" }
   | { kind: "vitals"; feed: string }
   | { kind: "view"; feed: string }
+  | { kind: "unit"; feed: string }
+  | { kind: "contacts" }
   | { kind: "scenes" };
 
 const HELP_LINES = [
@@ -122,7 +125,7 @@ export interface ComposerHandle {
  * Pure, so the seam is pinned without a socket.
  */
 export function hydrationQueries(
-  session: Pick<SessionStore, "hasPanel" | "hasFeature" | "sheetFeed" | "panels">,
+  session: Pick<SessionStore, "hasPanel" | "hasFeature" | "sheetFeed" | "unitFeed" | "panels">,
 ): Array<{ pending: PendingReq; q: Query }> {
   const out: Array<{ pending: PendingReq; q: Query }> = [{ pending: { kind: "who" }, q: { t: "who" } }];
   if (session.hasPanel("comsys") || session.hasFeature("channels")) {
@@ -142,6 +145,21 @@ export function hydrationQueries(
       out.push({ pending: { kind: "view", feed }, q: { t: "panel_subscribe", d: { feed } } });
     }
   }
+  // Two discrete arms (interface cut I8), deliberately AFTER the suffix loop
+  // and BEFORE `scenes`: the loop's order is pinned byte-for-byte, so a
+  // `.unit` feed must never interleave into it.
+  if (session.unitFeed !== null) {
+    out.push({
+      pending: { kind: "unit", feed: session.unitFeed },
+      q: { t: "panel_subscribe", d: { feed: session.unitFeed } },
+    });
+  }
+  if (session.hasPanel(CONTACTS_FEED)) {
+    out.push({
+      pending: { kind: "contacts" },
+      q: { t: "panel_subscribe", d: { feed: CONTACTS_FEED } },
+    });
+  }
   if (session.hasPanel("scenes")) {
     out.push({ pending: { kind: "scenes" }, q: { t: "panel_subscribe", d: { feed: "scenes" } } });
   }
@@ -156,6 +174,7 @@ export class GameApp {
   who = new WhoStore();
   mail = new MailStore();
   sheet = new SheetStore();
+  unit = new UnitStore();
   rolls = new RollsStore();
   worldgen = new WorldgenStore();
   llm = new LlmDashboardStore();
@@ -190,6 +209,10 @@ export class GameApp {
   readonly client: WsClient;
   #token: string | null = null;
   #pending = new Map<number, PendingReq>();
+  /** The armed unit-resync coalescer (interface cut I8); see
+   * `#scheduleUnitResync`. Cleared on every reset seam — a timer left armed
+   * across a disconnect would latch `UnitStore.resyncPending` forever. */
+  #unitResyncTimer: ReturnType<typeof setTimeout> | null = null;
   #nextToast = 1;
   #seenActionCommits = new Set<string>();
   #actionCommitOrder: string[] = [];
@@ -213,6 +236,11 @@ export class GameApp {
         this.scrollback.pushText("ev-sys ev-local", "— Reconnected (some history skipped) —");
         this.composer?.blur();
         this.screens.paletteOpen = false;
+        // The unit panel is revision state against a subject that may have
+        // changed while we were away: drop the view, the journal ring and
+        // any armed resync, and let the hello pass re-subscribe (I8).
+        this.#clearUnitResync();
+        this.unit.clear();
         // The server's request registry is RAM-only (I10, D-I-22), so a full
         // re-attach means any pending request is gone server-side and its id
         // may be reminted for something else — drop it so a stale answer is
@@ -333,12 +361,14 @@ export class GameApp {
   }
 
   #resetGameState(): void {
+    this.#clearUnitResync();
     this.scrollback.clear();
     this.channels.clear();
     this.actions.clear();
     this.who.clear();
     this.mail.clear();
     this.sheet.clear();
+    this.unit.clear();
     this.rolls.clear();
     this.worldgen.clear();
     this.llm.clear();
@@ -500,6 +530,18 @@ export class GameApp {
     // Likewise a backlog page requested on a previous socket never arrives
     // (I12): release the in-flight latch on every hello.
     this.scrollback.fetchingBacklog = false;
+    // The tactical unit screen (I8) registers here, ONCE: `registerFeedScreen`
+    // has no idempotency guard of its own and `ScreensStore.clear()` keeps
+    // `feedScreens`, so a second hello would otherwise be refused with
+    // "screen unit declared twice". Registering only where the manifest
+    // carries a `.unit` feed keeps digit 6 free for I9's view screens on
+    // every other server.
+    if (
+      this.session.unitFeed !== null &&
+      !this.screens.feedScreens.some((f) => f.def.id === UNIT_SCREEN.def.id)
+    ) {
+      this.screens.registerFeedScreen(UNIT_SCREEN);
+    }
     for (const { pending, q } of hydrationQueries(this.session)) {
       this.#req(pending, q);
     }
@@ -526,6 +568,12 @@ export class GameApp {
       // classification — a keyframe re-seeds, and a refusal/odd reply must
       // not leave every later gap delta dropped silently.
       this.sheet.resyncPending = false;
+    }
+    if (pending?.kind === "unit") {
+      // Same rule for the unit feed's coalesced resync (I8): ANY reply
+      // releases the guard before classification, so a refusal can never
+      // leave every later journal delta dropped silently.
+      this.unit.resyncPending = false;
     }
     switch (event.t) {
       case "who":
@@ -569,6 +617,21 @@ export class GameApp {
           this.llm.markRefused(plainText(event.d));
           return;
         }
+        if (pending?.kind === "unit") {
+          // The unit feed is in every viewer's manifest, so a viewer with no
+          // station gets the refusal here — it belongs in the panel, not in
+          // scrollback (the llm.dashboard precedent above). While a view IS
+          // held, a transient Sys is ignored rather than blanking it.
+          if (!this.unit.loaded) {
+            this.unit.markUnavailable(plainText(event.d));
+          }
+          return;
+        }
+        if (pending?.kind === "contacts") {
+          // The embedded contacts table renders its own empty state; an
+          // unwired propagation layer is not scrollback clutter.
+          return;
+        }
         this.scrollback.push("ev-sys", [renderRich(event.d)], ts);
         return;
       default:
@@ -608,6 +671,23 @@ export class GameApp {
         this.sheet.resyncPending = true;
         this.refreshSheet();
       }
+    } else if (d.feed === this.session.unitFeed) {
+      // The `<module>.unit` feed (interface cut I8): a keyframe replaces the
+      // whole view and seeds the watermark; a journal delta always rings,
+      // and asks for a fresh keyframe only when it runs ahead of the
+      // watermark — coalesced at UNIT_RESYNC_MS so a damage burst costs ONE
+      // request, and storm-guarded so an armed one is never doubled.
+      if (d.kind === "keyframe") {
+        this.unit.applyKeyframe(d.data);
+      } else if (this.unit.applyJournal(d.data) === "resync" && !this.unit.resyncPending) {
+        this.unit.resyncPending = true;
+        this.#scheduleUnitResync();
+      }
+    } else if (d.feed === CONTACTS_FEED) {
+      // An I9-convention list embedded in the unit screen rather than owning
+      // a `.view` feed — `GenericViewStore` keys on the feed name, not the
+      // suffix, so holding it here claims no screen digit.
+      this.genericViews.apply(d.feed, d.data);
     } else if (d.feed === this.session.rollFeed) {
       // The roller's own roll also lands inline as a dice card (I5); the
       // room's one-line narration is what everyone else reads.
@@ -841,13 +921,19 @@ export class GameApp {
   }
 
   /** A screen's local action. */
-  localAction(action: "refresh" | "clear" | "who"): void {
+  localAction(action: "refresh" | "clear" | "who" | "toggle"): void {
     switch (action) {
       case "clear":
         this.scrollback.clear();
         return;
       case "who":
         this.refreshWho();
+        return;
+      case "toggle":
+        // The unit screen hosts two layouts on one digit (D-I8-4). This
+        // needs its own arm: the `refresh` switch below falls through to
+        // `refreshWho()` for anything it does not name.
+        this.unit.toggleLayout();
         return;
       case "refresh":
         switch (this.screens.active) {
@@ -868,6 +954,10 @@ export class GameApp {
             return;
           case "rolls":
             this.refreshVitals();
+            return;
+          case "unit":
+            this.refreshUnit();
+            this.refreshContacts();
             return;
           default:
             this.refreshWho();
@@ -1082,6 +1172,54 @@ export class GameApp {
       return;
     }
     this.#req({ kind: "sheet" }, { t: "sheet" });
+  }
+
+  // -- tactical unit (interface cut I8) ---------------------------------------
+
+  /**
+   * Coalesce a burst of journal deltas into ONE keyframe request. The
+   * boolean guard on the store stops a second arming; this timer turns the
+   * whole burst into a single `panel_subscribe` UNIT_RESYNC_MS after the
+   * first delta of it. A `@unit/damage` plan can publish many deltas in a
+   * row, and every one of them would otherwise cost a round trip.
+   */
+  #scheduleUnitResync(): void {
+    if (this.#unitResyncTimer !== null) {
+      return;
+    }
+    this.#unitResyncTimer = setTimeout(() => {
+      this.#unitResyncTimer = null;
+      this.refreshUnit();
+    }, UNIT_RESYNC_MS);
+  }
+
+  /** Disarm the coalescer (every reset seam). */
+  #clearUnitResync(): void {
+    if (this.#unitResyncTimer !== null) {
+      clearTimeout(this.#unitResyncTimer);
+      this.#unitResyncTimer = null;
+    }
+  }
+
+  /** Re-request the unit keyframe: the screen's `r`, and the self-heal
+   * after a journal delta ran ahead of the watermark. `panel_subscribe`
+   * carries only a feed, so this is always the viewer's DEFAULT subject —
+   * a browser can never name one. No-op before a unit feed is known. */
+  refreshUnit(): void {
+    const feed = this.session.unitFeed;
+    if (feed === null) {
+      return;
+    }
+    this.#req({ kind: "unit", feed }, { t: "panel_subscribe", d: { feed } });
+  }
+
+  /** Re-request the contacts list the unit screen embeds. No-op when the
+   * manifest does not carry it (the pane shows its placeholder instead). */
+  refreshContacts(): void {
+    if (!this.session.hasPanel(CONTACTS_FEED)) {
+      return;
+    }
+    this.#req({ kind: "contacts" }, { t: "panel_subscribe", d: { feed: CONTACTS_FEED } });
   }
 
   // -- llm dashboard ----------------------------------------------------------
