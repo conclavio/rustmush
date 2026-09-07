@@ -3,7 +3,7 @@
     "id": "tacsim.core",
     "version": 1,
     "kind": "rules_definition",
-    "digest": "25dd2279206de1ffa32e45714b0e57f89fda2ba543eebec703821bf749855cad",
+    "digest": "940dab492e7c1bae4c51b0230149a6668dceb1d46aa4a2863a29ea52ce463759",
     "requires": []
   },
   "entries": {
@@ -21,13 +21,58 @@
         "work_units": 3
       }
     },
+    "assault_star": {
+      "kind": "formation",
+      "def": {
+        "label": "Assault star",
+        "branch": "mech",
+        "echelon": 1,
+        "minimum": 5,
+        "maximum": 5,
+        "preferred": 5,
+        "command_roles": [
+          { "role": "star_commander", "minimum": 1 }
+        ]
+      }
+    },
     "carbon_feedstock": {
       "kind": "commodity",
       "def": { "label": "Carbon feedstock", "in_use": false }
     },
+    "combat_lance": {
+      "kind": "formation",
+      "def": {
+        "label": "Combat lance",
+        "branch": "mech",
+        "echelon": 1,
+        "minimum": 4,
+        "maximum": 4,
+        "preferred": 4,
+        "command_roles": [
+          { "role": "lance_commander", "minimum": 1 }
+        ]
+      }
+    },
     "composites": {
       "kind": "commodity",
       "def": { "label": "Composites", "in_use": false }
+    },
+    "cutter_wing": {
+      "kind": "formation",
+      "def": {
+        "label": "Cutter wing",
+        "branch": "aero",
+        "echelon": 2,
+        "minimum": 2,
+        "maximum": 6,
+        "preferred": 4,
+        "command_roles": [
+          { "role": "wing_commander", "minimum": 1 }
+        ],
+        "required_support": [
+          { "role": "crew_chief", "minimum": 1 }
+        ]
+      }
     },
     "electronics": {
       "kind": "commodity",

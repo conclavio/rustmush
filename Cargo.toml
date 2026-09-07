@@ -178,6 +178,13 @@ mush-industry = { path = "crates/mush-industry" }
 # contact family and NO contact guard validator, because `mush-tactics` is the
 # sole `ContactState` authority (08i answer 1, D-E7-36).
 mush-propagation = { path = "crates/mush-propagation" }
+# E7 cut 9 (10b §3.9): declared operations, formations, the funded bond and
+# idempotent terminal resolution. `mush-campaign -> {core, economy, canon, org}`
+# only — deliberately NO faction edge (the front consequence is discharged by the
+# ONE root canon record through `mush-faction`'s existing `on_canon_recorded`),
+# no sim, tactics, propagation or ruleset edge. It registers exactly one
+# `FactProvider` namespace, `campaign.*` (D-E7-30's fifth crate).
+mush-campaign = { path = "crates/mush-campaign" }
 ruleset-shadowrun = { path = "crates/ruleset-shadowrun" }
 # E7 cut 1 (10b §3.1): TacSim's packs, seed latch and corridor fixture. It is a
 # LAYER, not a `[rulesets].enabled` id — doc 10 §20 keeps ruleset metaphysics and

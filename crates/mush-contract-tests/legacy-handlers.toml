@@ -639,6 +639,17 @@ category = "baseline"
 note = "baseline pinned at b0e3b52 (core/engine registry)"
 
 [[handler]]
+name = "@force"
+category = "legacy-post-image"
+family = "campaign.formation"
+note = "E7 cut 9 (10b 3.9, Q9A/D-E7-19, doc 10 T8/R2). The persistent order of battle: /create, /attach, /detach and /assign write the exempt whole-document FormationNode at the deterministic key formation:<id>, with a strict TryFrom wire re-running MAX_FORMATION_MEMBERS 64, the no-duplicate-member and no-self-parent rules, and the label caps; MAX_FORMATION_DEPTH 5 and the cycle check are enforced on the attach path by a walk BOUNDED ON NODES VISITED. Each node names EXACTLY ONE owning OrgScopeId -- the field is not an Option, so a node with no scope is unconstructible -- and force.create/attach/detach/assign/command resolve through mush_org::authorize_in_world against that scope, which is why the five ids are added to org_capability_vocabulary() in the same commit (an unlisted id fails LOUDLY at @org/grant). Composition is a CONSTRAINT SET and `exact` is the derived predicate minimum == maximum, never a mode, so a four-unit lance and a five-unit star share an echelon and stay distinct kinds; strictness is scoped to creation, doctrine qualification or an operation's requirement and NEVER to a formation's existence or its ability to deploy -- an understrength formation exists, deploys, and says so. Kinds are pack-authored (PackEntry::Formation) and reach the crate through CampaignModule::with_formation_kinds at the composition root, so mush-campaign gains no ruleset edge; unwired, @force/create refuses every kind. No typed family, no validator, no schedule source, no authoritative submit."
+
+[[handler]]
+name = "@formation"
+category = "read-only"
+note = "E7 cut 9 (10b 3.9). @formation/show and @formation/list READ the order of battle and write NOTHING -- no document, no typed family, no submission -- so they declare no future family: there is nothing to migrate. /show reports the node's membership against its kind's constraint set under each of the three strictness scopes (creation, doctrine qualification, operation requirement), which is a report and never a refusal: an understrength formation still exists and still deploys. It is registered in its own ReadOnly group, before @op and @force restore LegacyPostImage (K8.5: classify per registration group)."
+
+[[handler]]
 name = "@front"
 category = "baseline"
 note = "baseline pinned at b0e3b52 (module, every composition)"
@@ -739,6 +750,12 @@ note = "baseline pinned at b0e3b52 (server staff commands)"
 name = "@obligation"
 category = "baseline"
 note = "baseline pinned at b0e3b52 (module, every composition)"
+
+[[handler]]
+name = "@op"
+category = "legacy-post-image"
+family = "campaign.operation"
+note = "E7 cut 9 (10b 3.9, Q5D/Q17A, D-E7-18/-20). Declared operations. ONE CommandSpec, therefore ONE registration, taking the CEILING class of its eleven switches: /show, /consumers and /list are reads (a non-audience viewer's refusal is byte-identical to a nonexistent id, at every verbosity, and /consumers is staff-only under the same bytes), while /declare, /terms, /activate, /join, /withdraw and /resolve write the exempt whole-document OperationDoc at the deterministic key op:<id> -- one document with two SEPARATELY VERSIONED halves, the OperationTerms frozen at activation and hashed by mush_economy::consent_digest under 'campaign.operation.v1', and the mutable OperationRuntime. A roster edit therefore never moves the terms hash, and consent_intact is re-derived at EVERY transition: a mutated surface disputes and pages rather than settling. The strict TryFrom wire re-runs every constructor invariant (MAX_OPERATION_PARTICIPANTS 128, mush_economy::MAX_AUDIENCE 32, MAX_STAKES 8, MAX_SIDES 8, MAX_LEGAL_TARGETS 16 and the OPERATION_NOTICE_MIN/MAX 24h/72h band on ONE clock generation) -- a stored set over any cap is refused ON LOAD, never truncated, and a refused document is HELD not deleted with its subject paged, because an operation may be the only record of a live money hold's purpose. It takes NO part in authority or prepared mechanics: no typed state family, no revision_validator, no schedule_source, no AuthorityGuardKind validator, no WorldEvent variant, and NO Ctx::submit_authoritative anywhere in the crate. The category is legacy-post-image and NOT authoritative because /activate's bond is an E4 money Hold posted through mush_economy::post -- the economy's own carve-out lane (a prepare_authoritative provider has no world and cannot place a hold: cut 4's deviation (a), cut 3's precedent) -- and the never-negative gate is the engine's own invariant-26 InsufficientAvailable, so an attacker without funds cannot activate and the operation stays Declared. The terminal settlement writes ONE root: the applied campaign.* FactProvider marker plus one mush_canon::commit(kind campaign.operation.resolved, source op:<id>) which pins the deferred prefix, with the commit-once check being canon's own records_for_source rather than this crate's document; the required consumer set is computed ONCE at entry to Resolving from the frozen terms and stored, and a stored consumer id this build does not know is KEPT, blocks Resolved, and pages level 2. A stored consumer id this build does not know is KEPT, blocks Resolved, and pages level 2. /resolve carries ONE authority the rest do not: a STAFF `@op/resolve <id>=abort` is the only path past the intactness gate, and it exists because a mutated surface that merely disputes would leave the attacker's money reserved to a record nothing could ever settle (E4b2's M2/M3 shape) -- an abandonment RELEASES the bond and never captures it. The future family is the campaign.operation record K8.5 replaces this allowlist with."
 
 [[handler]]
 name = "@open"

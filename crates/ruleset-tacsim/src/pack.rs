@@ -397,6 +397,17 @@ pub enum PackEntry {
     /// owns the capacity state machine and never reads a pack; instantiating a
     /// facility binds this definition to the seeded object.
     Facility(FacilityDef),
+    /// One formation kind a rules pack authors (E7 cut 9, 10b §3.9, doc 10 §19 T8).
+    ///
+    /// A **rules definition**, like a commodity or a recipe: the engine
+    /// (`mush-campaign`) stores the generic shape — branch, echelon, the
+    /// constraint set, the command roles — and the *ruleset* supplies the names
+    /// and the doctrine, so a four-unit lance and a five-unit star share an
+    /// echelon and remain distinct kinds. `mush-campaign` never reads a pack and
+    /// `ruleset-tacsim` never gains a campaign edge: the definitions reach the
+    /// campaign layer through `CampaignModule::with_formation_kinds` at the
+    /// composition root, exactly as a recipe reaches `mush-industry`.
+    Formation(FormationKindDef),
 }
 
 impl PackEntry {
@@ -410,6 +421,7 @@ impl PackEntry {
             PackEntry::Location(_) => "location",
             PackEntry::Deposit(_) => "deposit",
             PackEntry::Facility(_) => "facility",
+            PackEntry::Formation(_) => "formation",
         }
     }
 
@@ -556,6 +568,35 @@ impl PackEntry {
                     });
                 }
             }
+            PackEntry::Formation(def) => {
+                if too_long(&def.label) {
+                    return Err(PackError::LabelTooLong {
+                        max: MAX_LABEL_BYTES,
+                    });
+                }
+                // Magnitudes AND shape (cut 1's P3 pattern): these are the
+                // authored numbers `mush-campaign` qualifies every node against,
+                // so a composition that is not a range, or one past the engine's
+                // membership cap, is refused ON LOAD rather than at first use.
+                // The caps are stated here by value rather than imported, for the
+                // same no-edge reason `MAX_DEPOSIT_RESERVE` is.
+                if def.maximum == 0
+                    || def.minimum > def.maximum
+                    || def.preferred < def.minimum
+                    || def.preferred > def.maximum
+                {
+                    return Err(PackError::FormationCompositionInvalid);
+                }
+                if usize::from(def.maximum) > MAX_FORMATION_MEMBERS {
+                    return Err(PackError::FormationCompositionInvalid);
+                }
+                if def.allowed.len() > MAX_FORMATION_CATEGORIES
+                    || def.command_roles.len() > MAX_FORMATION_ROLES
+                    || def.required_support.len() > MAX_FORMATION_ROLES
+                {
+                    return Err(PackError::FormationCompositionInvalid);
+                }
+            }
             PackEntry::Route(entry) => {
                 if entry.legs.is_empty() {
                     return Err(PackError::EmptyRoute);
@@ -687,6 +728,60 @@ pub struct FacilityDef {
     pub capabilities: std::collections::BTreeSet<CanonicalId>,
     /// The concurrent-run slot cap.
     pub slots: u32,
+}
+
+/// The largest membership a formation kind may declare (E7 cut 9). Matches
+/// `mush_campaign::MAX_FORMATION_MEMBERS` by value and is stated here rather than
+/// imported, for the same no-edge reason as [`MAX_DEPOSIT_RESERVE`].
+pub const MAX_FORMATION_MEMBERS: usize = 64;
+/// The largest role list a formation kind may declare. Matches
+/// `mush_campaign::MAX_COMMAND_ROLES` by value.
+pub const MAX_FORMATION_ROLES: usize = 16;
+/// The largest allowed-category set a formation kind may declare. Matches
+/// `mush_campaign::MAX_ALLOWED_CATEGORIES` by value.
+pub const MAX_FORMATION_CATEGORIES: usize = 32;
+
+/// One command or support role a formation kind requires.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FormationRoleDef {
+    /// The role's id.
+    pub role: CanonicalId,
+    /// How many of it the kind wants.
+    pub minimum: u8,
+}
+
+/// A formation kind a rules pack authors (E7 cut 9, 10b §3.9, doc 10 §19 T8).
+///
+/// `composition` is a **constraint set, not one enum**, and **`exact` is
+/// `minimum == maximum`** — there is no third field for it, here or in the engine.
+/// Strictness is scoped by the *consumer* (creation, doctrine qualification, or an
+/// operation's requirement) and **never** to a formation's existence or its ability
+/// to deploy.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FormationKindDef {
+    /// The human-facing name.
+    pub label: String,
+    /// The branch or domain (`mech`, `aero`, `naval`).
+    pub branch: CanonicalId,
+    /// The echelon. A lance and a star share one.
+    pub echelon: u8,
+    /// The fewest members the kind wants.
+    pub minimum: u8,
+    /// The most it admits.
+    pub maximum: u8,
+    /// What it is normally fielded at.
+    pub preferred: u8,
+    /// Which unit categories may fill it (empty admits any).
+    #[serde(default)]
+    pub allowed: std::collections::BTreeSet<CanonicalId>,
+    /// The command roles it requires.
+    #[serde(default)]
+    pub command_roles: Vec<FormationRoleDef>,
+    /// The support roles it requires.
+    #[serde(default)]
+    pub required_support: Vec<FormationRoleDef>,
 }
 
 /// One point of an authored depletion curve: cumulative extraction, and the
@@ -1236,6 +1331,9 @@ pub enum PackError {
         /// The digest the loaded dependency actually has.
         actual: String,
     },
+    /// A formation kind's composition is not a range, or is past a cap (E7 cut 9).
+    #[error("a formation kind's composition is not a usable range")]
+    FormationCompositionInvalid,
     /// Past [`MAX_PACK_ENTRIES`].
     #[error("a pack declares {actual} entries; the maximum is {max}")]
     TooManyEntries {

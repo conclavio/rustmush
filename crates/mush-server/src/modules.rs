@@ -262,10 +262,17 @@ pub fn server_modules_with(
             // E7 cut 3 (D-E7-30, §10): `industry.*` joins them. One provider
             // per crate; `industry.workorder.completed` is **cut 4's arm on
             // this same provider**, never a second registration.
+            // E7 cut 9 (D-E7-30, §10): `campaign.*` joins them as the FIFTH and
+            // last namespace on that list. One provider per crate, and
+            // `campaign.operation.resolved` is answered from the operation's own
+            // applied root marker — never from its `Resolving` status, so a
+            // contract gated on it cannot settle from a resolution that merely
+            // started (08c §6.2).
             .with_facts(vec![
                 Arc::new(mush_jobs::JobsFactProvider),
                 Arc::new(mush_inventory::InventoryFactProvider),
                 Arc::new(mush_industry::IndustryFactProvider),
+                Arc::new(mush_campaign::CampaignFactProvider),
             ])
             // E5b: housing's exact-mode mirror joins the canon bridge. It hears the
             // obligation and contract transitions a lease is made of; abstract mode
@@ -292,7 +299,20 @@ pub fn server_modules_with(
             // no `detail`, so the economy checks kind + source + party intersection
             // and nothing else. Every other `canon:` attestor set is still refused at
             // `@contract/offer`.
-            .with_canon_outcome_kinds(vec![SmolStr::new_static(mush_scenes::KIND_SCENE_OUTCOME)])
+            //
+            // E7 cut 9 (10b §3.9 OPEN 3) registers the table's SECOND entry,
+            // `campaign.operation.resolved`, which `mush-campaign` writes exactly
+            // once per operation, from the terminal settlement, under
+            // `source: "op:{id}"`. It is an outcome and not a lifecycle record: an
+            // operation reaches it only through `enter_resolving`, which is gated
+            // on the frozen consent surface still hashing, and no participant can
+            // produce one for an operation they do not command.
+            // `AttestorSet::Canon { kind, source }` still requires the specific
+            // source, so a contract cites ONE operation and never "any resolution".
+            .with_canon_outcome_kinds(vec![
+                SmolStr::new_static(mush_scenes::KIND_SCENE_OUTCOME),
+                SmolStr::new_static(mush_campaign::KIND_OPERATION_RESOLVED),
+            ])
             // E6b (DL-09): the bounded canon read seam. The economy's canon
             // evidence is edge-triggered and its RAM tail dies with the process, so
             // a seal committed while the economy was frozen — or before a restart —
@@ -340,6 +360,27 @@ pub fn server_modules_with(
                 // E7c4 B2: the recipe authority reaches industry by composition,
                 // not by an edge — the impl reads `TacsimStore` at the root.
                 .with_recipes(Arc::new(crate::industry_recipes::TacsimRecipeAuthority)),
+        ),
+        // E7 cut 9 (10b §3.9, D-E7-18/-19/-20/-30/-32): the campaign layer. It
+        // composes **after `mush-economy`, `mush-org` and `mush-canon`** — its
+        // bond is an E4 hold on the economy's own carve-out lane, its `force.*`
+        // authority resolves through `mush_org::authorize`, and its terminal root
+        // is one `mush_canon::commit` — and it needs no ordering of its own
+        // beyond that: its boot reads only its own documents and the
+        // composition-frozen formation authority. `mush-campaign -> {core,
+        // economy, canon, org}`, and deliberately **no `mush-faction` edge**: the
+        // front consequence is discharged by that one root canon record, which
+        // `mush-faction`'s pre-existing `on_canon_recorded` observer already turns
+        // into a `Clock::advance` and an `on_complete_control` flip.
+        Box::new(
+            mush_campaign::CampaignModule::new()
+                // OPEN 4: formation KINDS reach the campaign layer by
+                // composition, not by an edge — the impl reads `TacsimStore` at
+                // the root, exactly as `TacsimRecipeAuthority` does for
+                // `mush-industry`. Unwired, `@force/create` refuses every kind.
+                .with_formation_kinds(Arc::new(
+                    crate::campaign_formations::TacsimFormationAuthority,
+                )),
         ),
         Box::new(mush_mail::MailModule),
         Box::new(mush_jobs::JobsModule::new()),
@@ -533,6 +574,11 @@ pub fn org_capability_vocabulary() -> std::collections::BTreeSet<mush_org::Capab
         .iter()
         .copied()
         .chain(mush_housing::CAPABILITIES.iter().copied())
+        // E7 cut 9 (OPEN 5, D-E7-19): the five `force.*` ids `mush-campaign` asks
+        // `mush_org::authorize` about. Without them `@org/grant <who>=force.create/...`
+        // fails LOUDLY at the command instead of storing a grant that authorizes
+        // nothing — which is exactly what this non-empty set is for.
+        .chain(mush_campaign::CAPABILITIES.iter().copied())
         .chain(["org.role.manage", "org.grant.delegate"])
         .map(|c| mush_org::CapabilityId::new(c).expect("a built-in capability id is well-formed"))
         .collect()
@@ -2260,6 +2306,30 @@ mod tests {
                     "the propagation lane {name} must publish {class:?}"
                 );
             }
+            // E7 cut 9: THREE verbs in TWO registration groups, each with its own
+            // `reg.classify_commands(..)` before its first `reg.command`, and
+            // `LegacyPostImage` restored last so the module ends in the class its
+            // own documents ride. A `CommandSpec` is one PRIMARY VERB, so each
+            // takes the CEILING class of its switches — the rule the tree already
+            // states for `@station`, `@journey`, `@prop` and `@domain`.
+            // `@formation` reads only. `@op` and `@force` write the exempt
+            // `campaign.operation` / `campaign.formation` documents, and
+            // `@op/activate` additionally posts an E4 `HoldOp::Place` through
+            // `mush_economy::post` — the economy's OWN carve-out lane, never
+            // `Ctx::submit_authoritative` — so the ceiling is `LegacyPostImage`
+            // and NOT `Authoritative`.
+            for (name, class) in [
+                ("@formation", mush_core::CommandCompatibility::ReadOnly),
+                ("@op", mush_core::CommandCompatibility::LegacyPostImage),
+                ("@force", mush_core::CommandCompatibility::LegacyPostImage),
+            ] {
+                assert!(
+                    registrations.iter().any(|(spec, owner, published)| {
+                        spec.name == name && *owner == Some("campaign") && *published == class
+                    }),
+                    "the campaign lane {name} must publish {class:?}"
+                );
+            }
             assert!(registrations.iter().any(|(_, owner, class)| {
                 *owner == Some("economy")
                     && *class == mush_core::CommandCompatibility::EconomyCarveOut
@@ -2530,6 +2600,10 @@ mod tests {
                 // and family delegation it needs, and before `mush-market`,
                 // which it does not touch.
                 "industry",
+                // E7 cut 9: the campaign layer, after economy/org/canon — its
+                // bond, its `force.*` authority and its root canon record are
+                // theirs — and before the player-facing subsystems.
+                "campaign",
                 "mail",
                 "jobs",
                 "housing",
@@ -2588,6 +2662,8 @@ mod tests {
                     // and family delegation it needs, and before `mush-market`,
                     // which it does not touch.
                     "industry",
+                    // E7 cut 9: the campaign layer, after economy/org/canon.
+                    "campaign",
                     "mail",
                     "jobs",
                     "housing",
@@ -2638,9 +2714,13 @@ mod tests {
         // `@org/grant` would refuse the very grant that module needs — so this is a
         // real coupling, pinned here.
         let vocab = org_capability_vocabulary();
+        // E7 cut 9 (OPEN 5): `mush_campaign::CAPABILITIES` joins them. A `force.*`
+        // id missing here fails at REGISTRATION — `@org/grant` refuses it — rather
+        // than silently at use, which is the whole point of the typo catcher.
         for c in mush_economy::CAPABILITIES
             .iter()
             .chain(mush_housing::CAPABILITIES)
+            .chain(mush_campaign::CAPABILITIES)
         {
             let id = mush_org::CapabilityId::new(c).expect("well-formed");
             assert!(vocab.contains(&id), "the wiring vocabulary omits {c}");
@@ -2653,7 +2733,15 @@ mod tests {
         }
         assert_eq!(
             vocab.len(),
-            mush_economy::CAPABILITIES.len() + mush_housing::CAPABILITIES.len() + 2
+            mush_economy::CAPABILITIES.len()
+                + mush_housing::CAPABILITIES.len()
+                + mush_campaign::CAPABILITIES.len()
+                + 2
+        );
+        // …and a `force.*` id that is NOT declared is absent, so a typo'd grant
+        // still fails loudly rather than becoming an inert record.
+        assert!(
+            !vocab.contains(&mush_org::CapabilityId::new("force.comand").expect("well-formed"))
         );
         assert!(
             !vocab.contains(
@@ -2805,6 +2893,10 @@ mod tests {
                 // and family delegation it needs, and before `mush-market`,
                 // which it does not touch.
                 "industry",
+                // E7 cut 9: the campaign layer, after economy/org/canon — its
+                // bond, its `force.*` authority and its root canon record are
+                // theirs — and before the player-facing subsystems.
+                "campaign",
                 "mail",
                 "jobs",
                 "housing",
@@ -2944,6 +3036,10 @@ mod tests {
                 // and family delegation it needs, and before `mush-market`,
                 // which it does not touch.
                 "industry",
+                // E7 cut 9: the campaign layer, after economy/org/canon — its
+                // bond, its `force.*` authority and its root canon record are
+                // theirs — and before the player-facing subsystems.
+                "campaign",
                 "mail",
                 "jobs",
                 "housing",

@@ -819,7 +819,11 @@ fn e7c1_fixture_the_corridor_exists_after_commit_and_nowhere_else() {
         );
     }
     assert!(core.pack.entry(&cid(fixture::RECIPE)).is_some());
-    assert_eq!(core.pack.entries().len(), 11);
+    // E7 cut 9 added THREE `PackEntry::Formation` rules definitions — a lance, a
+    // star and a wing — so the core pack carries 14 entries and its digest moved
+    // (re-derived, never hand-edited: `load_pack` recomputes and compares, so the
+    // move is its own test).
+    assert_eq!(core.pack.entries().len(), 14);
     let corridor = snap(&tw)
         .pack(&cid(fixture::CORRIDOR_PACK), 1)
         .expect("loaded")

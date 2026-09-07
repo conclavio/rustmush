@@ -192,7 +192,8 @@ pub use clock::{
     advance_cadence_manual, cadence_elapsed, due_periods, reanchor,
 };
 pub use contract::{
-    Acceptance, Attestation, AttestorRef, AttestorSet, CanonOutcomeKinds, ConsentSurface,
+    Acceptance, Attestation, AttestorRef, AttestorSet, CONSENT_DOMAIN_CAMPAIGN_OPERATION,
+    CONSENT_DOMAIN_CAMPAIGN_SEAT, CONSENT_DOMAIN_CONTRACT, CanonOutcomeKinds, ConsentSurface,
     Consideration, ContractAuth, ContractError, ContractPurpose, ContractRoles, ContractState,
     ContractTerms, DISPUTE_TTL_SECS, DRAFT_TTL_SECS, Deliverable, DepositRecord, EconomicContract,
     EvidenceKind, ExpenseTreatment, Expiry, MAX_AGREEMENTS, MAX_AMENDMENTS, MAX_CONDITIONS,
@@ -202,11 +203,11 @@ pub use contract::{
     PayoutShare, PendingKind, PendingTerminal, QualifyingEscrow, Readiness, Resolution,
     STALE_CONTRACT_AGE_SECS, Share, TypedCondition, activate_key, activation_asset_ops,
     apply_outcome, apply_split, canon_set_accepts, canonical_visibility, check_offerable,
-    check_structure, condition_holds, conditions_met, consent_hash, contract_encumbrance,
-    contract_op_key, forfeit_key, forfeit_plan, outcome_conditions, party_escrow_backed,
-    principal_key, qualifying_claims, qualifying_escrow, readiness, refund_key, refund_plan,
-    refund_plan_except, release_asset_ops, resolve_outcome, reverify, settle_key, settlement_plan,
-    stamp_observed,
+    check_structure, condition_holds, conditions_met, consent_digest, consent_hash,
+    contract_encumbrance, contract_op_key, forfeit_key, forfeit_plan, outcome_conditions,
+    party_escrow_backed, principal_key, qualifying_claims, qualifying_escrow, readiness,
+    refund_key, refund_plan, refund_plan_except, release_asset_ops, resolve_outcome, reverify,
+    settle_key, settlement_plan, stamp_observed,
 };
 pub use obligation::{
     DEFAULT_GRACE_PERIODS, ForgiveCause, GracePolicy, MAX_GRACE_PERIODS, MAX_OBLIGATION_HISTORY,

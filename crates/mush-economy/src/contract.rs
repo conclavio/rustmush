@@ -1091,6 +1091,76 @@ struct CanonicalConsent<'a> {
     evidence: &'a [EvidenceKind],
 }
 
+// ---- E7c9: B1 — the shared consent digest (D-E7-32; 10b §3.9, §10 ask 3) ----
+
+/// The **grandfathered** consent domain: E4a's contract consent surface.
+///
+/// It is the one domain whose canonical struct ([`CanonicalConsent`]) predates
+/// domain separation and therefore carries **no `domain` field**. Its bytes are
+/// pinned golden (`e7c9_b1_consent_hash_bytes_are_byte_identical_to_e4a`) because
+/// [`EconomicContract::consent_intact`] re-derives every live contract's hash at
+/// every transition: a domain moved *into* the hashed bytes would make every stored
+/// contract non-intact at once and void every acceptance on the server.
+pub const CONSENT_DOMAIN_CONTRACT: &str = "contract.consent.v1";
+
+/// The consent domain a declared campaign operation's terms hash under (10b §3.9).
+/// `mush-campaign` builds its own field-ordered canonical struct whose **first
+/// field** is this string.
+pub const CONSENT_DOMAIN_CAMPAIGN_OPERATION: &str = "campaign.operation.v1";
+
+/// The consent domain cut 10's seat offer hashes under (10b §3.10). Named here, with
+/// the other two, so the "no two domains collide" pin is one test over one list and a
+/// later cut cannot quietly reuse a live domain string.
+pub const CONSENT_DOMAIN_CAMPAIGN_SEAT: &str = "campaign.seat.v1";
+
+/// **The one consent-hashing discipline** (D-E7-32): sort any principal vector by
+/// [`principal_key`], build a field-ordered canonical struct, `serde_json::to_vec`,
+/// `Sha256::digest`. Every consent surface in the tree — a contract's, an operation's
+/// terms, cut 10's seat offer — hashes through this function and never forks it.
+///
+/// ## Why the domain is not length-prefixed into the bytes
+///
+/// 10b §3.9 reads "`consent_hash` becomes a two-line wrapper over `consent_digest`
+/// with `domain = "contract.consent.v1"`", and a naive reading prefixes the domain
+/// into the hashed bytes. That is **unbuildable**: [`consent_hash`]'s output would
+/// move, [`EconomicContract::consent_intact`] re-derives it at every transition, and
+/// every live contract on a running server would go non-intact in one deploy — while
+/// §10's own ask requires the contract domain's output to be byte-unchanged. So the
+/// domain is carried **as the first field of each caller's own canonical struct**
+/// instead: same separation (an operation hash can never be replayed as a contract
+/// hash), no migration, and one implementation.
+///
+/// `domain` is therefore a **declaration, checked here, not hashed here**. Every
+/// domain but [`CONSENT_DOMAIN_CONTRACT`] must be self-describing: the serialized
+/// canonical form has to begin `{"domain":"<domain>"`. A caller that gets that wrong
+/// has a shape bug, not a data bug — the struct is fixed at compile time — so it
+/// panics loudly at the first call rather than silently producing an unseparated
+/// digest that a later domain could collide with. The panic arm is itself pinned
+/// (`e7c9_b1_a_domain_not_first_in_the_canonical_struct_panics`).
+///
+/// # Panics
+/// When `domain` is not [`CONSENT_DOMAIN_CONTRACT`] and `canonical` does not carry
+/// that exact domain as its first serialized field.
+#[must_use]
+pub fn consent_digest(domain: &str, canonical: &impl Serialize) -> [u8; 32] {
+    let bytes = serde_json::to_vec(canonical).expect("canonical consent serializes");
+    assert!(
+        domain == CONSENT_DOMAIN_CONTRACT || domain_is_first_field(&bytes, domain),
+        "consent_digest: the canonical struct for domain {domain:?} must carry that domain \
+         as its FIRST serialized field (domain separation is in the bytes, never a prefix)"
+    );
+    Sha256::digest(&bytes).into()
+}
+
+/// Whether `bytes` (a serialized JSON object) opens with `{"domain":"<domain>"`.
+fn domain_is_first_field(bytes: &[u8], domain: &str) -> bool {
+    let mut wanted = Vec::with_capacity(domain.len() + 12);
+    wanted.extend_from_slice(br#"{"domain":""#);
+    wanted.extend_from_slice(domain.as_bytes());
+    wanted.push(b'"');
+    bytes.starts_with(&wanted)
+}
+
 /// The canonical SHA-256 of a consent surface — **everything** an acceptance binds
 /// to (B5): the issuer, parties, terms, conditions, deadline, visibility, and scope.
 ///
@@ -1105,6 +1175,11 @@ struct CanonicalConsent<'a> {
 /// [`TypedCondition::After`], and the split's order decides who is floored first).
 /// Deterministic for the same reason [`crate::plan_hash`] is: field-ordered structs,
 /// no floats, no maps.
+///
+/// **E7c9 B1:** the last three lines are now [`consent_digest`] under
+/// [`CONSENT_DOMAIN_CONTRACT`], shared verbatim with `mush-campaign`'s operation
+/// terms. The bytes this returns are **unchanged** — the domain is not in them (see
+/// [`consent_digest`]) — and a golden pin asserts it.
 #[must_use]
 pub fn consent_hash(issuer: &PrincipalId, consent: &ConsentSurface) -> [u8; 32] {
     let mut parties: Vec<&PrincipalId> = consent.parties.iter().collect();
@@ -1120,8 +1195,7 @@ pub fn consent_hash(issuer: &PrincipalId, consent: &ConsentSurface) -> [u8; 32] 
         adjudicator: &consent.adjudicator,
         evidence: &consent.evidence,
     };
-    let bytes = serde_json::to_vec(&canonical).expect("canonical consent serializes");
-    Sha256::digest(&bytes).into()
+    consent_digest(CONSENT_DOMAIN_CONTRACT, &canonical)
 }
 
 /// One of a contract's deterministic idempotency keys, at a **generation** (§12's C8
@@ -3304,6 +3378,208 @@ mod tests {
         assert_eq!(
             apply_split(Amount::from_minor(100), &bad),
             Err(ContractError::SplitInfeasible)
+        );
+    }
+
+    // ---- E7c9: B1 — consent_digest and the byte-frozen consent_hash ----
+
+    /// The fixed contract surface both golden pins hash. Every field is populated
+    /// (a pin over an empty surface would not notice a field dropping out of
+    /// [`CanonicalConsent`]), and none of it is time- or id-allocator-dependent.
+    fn golden_surface() -> (PrincipalId, ConsentSurface) {
+        let issuer = PrincipalId::Organization(mush_org::OrgId(7));
+        let consent = ConsentSurface {
+            // Deliberately NOT in `principal_key` order: the sort is part of what
+            // the pin freezes.
+            parties: vec![
+                PrincipalId::Object(ObjId(42)),
+                PrincipalId::Organization(mush_org::OrgId(7)),
+            ],
+            terms: ContractTerms {
+                consideration: vec![Consideration {
+                    from: PrincipalId::Object(ObjId(42)),
+                    account: AccountId(3),
+                    amount: Amount::from_minor(500),
+                }],
+                deliverables: Vec::new(),
+                split: vec![PayoutShare {
+                    to: AccountId(4),
+                    share: Share::Permille(1_000),
+                }],
+                remainder_to: AccountId(4),
+                on_expiry: Expiry::Refund,
+                outcomes: Vec::new(),
+            },
+            conditions: vec![TypedCondition::Attestation {
+                by: AttestorSet::Staff,
+            }],
+            deadline: None,
+            visibility: EconomicVisibility::Audience {
+                // Also out of order — `canonical_visibility` sorts it, and that is
+                // hashed content.
+                members: vec![PrincipalId::Object(ObjId(9)), PrincipalId::Object(ObjId(2))],
+                announce_issuer: false,
+            },
+            scope: Some(mush_org::OrgScopeId(11)),
+            adjudicator: Some(AttestorSet::Staff),
+            evidence: vec![EvidenceKind::Attestation],
+        };
+        (issuer, consent)
+    }
+
+    fn hex32(bytes: &[u8; 32]) -> String {
+        bytes.iter().map(|b| format!("{b:02x}")).collect()
+    }
+
+    /// **OPEN 1's golden pin.** `consent_hash`'s output for a fixed surface is
+    /// byte-identical to what E4a produced before `consent_digest` existed.
+    ///
+    /// This is the whole reason the domain is a *field of the caller's canonical
+    /// struct* rather than a length-prefix into the hashed bytes: `consent_intact`
+    /// re-derives this hash at every contract transition, so a moved byte here voids
+    /// every acceptance on every live contract in one deploy.
+    #[test]
+    fn e7c9_b1_consent_hash_bytes_are_byte_identical_to_e4a() {
+        let (issuer, consent) = golden_surface();
+        let now = consent_hash(&issuer, &consent);
+        assert_eq!(
+            hex32(&now),
+            "150c6cc1cf1a8da1a24f0904ece90c964ee9c8d1069f35d4e55cdfb255497879",
+            "consent_hash moved: every live contract just went non-intact"
+        );
+        // …and the value is not merely stable, it is still **E4a's own two lines**:
+        // re-run them here, inline, with no `consent_digest` in the path at all. If a
+        // future change ever put a domain (or anything else) into the hashed bytes,
+        // this comparison fails even if someone had re-pinned the hex above.
+        let mut parties: Vec<&PrincipalId> = consent.parties.iter().collect();
+        parties.sort_by(|a, b| principal_key(a).cmp(&principal_key(b)));
+        let canonical = CanonicalConsent {
+            issuer: &issuer,
+            parties,
+            terms: &consent.terms,
+            conditions: &consent.conditions,
+            deadline: &consent.deadline,
+            visibility: canonical_visibility(&consent.visibility),
+            scope: &consent.scope,
+            adjudicator: &consent.adjudicator,
+            evidence: &consent.evidence,
+        };
+        let e4a_bytes = serde_json::to_vec(&canonical).expect("canonical consent serializes");
+        let e4a: [u8; 32] = Sha256::digest(&e4a_bytes).into();
+        assert_eq!(now, e4a, "consent_digest changed the hashed bytes");
+        // The grandfathered surface is deliberately NOT self-describing: the domain
+        // is absent from the bytes, which is the whole reason the output could stay
+        // put. (Every other domain is checked by `consent_digest` itself.)
+        assert!(e4a_bytes.starts_with(br#"{"issuer":"#));
+    }
+
+    /// The same fixture through the shared helper, proving `consent_hash` really is
+    /// a wrapper and not a second implementation that happens to agree today.
+    #[test]
+    fn e7c9_b1_consent_hash_is_exactly_the_shared_digest_under_the_contract_domain() {
+        let (issuer, consent) = golden_surface();
+        let mut parties: Vec<&PrincipalId> = consent.parties.iter().collect();
+        parties.sort_by(|a, b| principal_key(a).cmp(&principal_key(b)));
+        let canonical = CanonicalConsent {
+            issuer: &issuer,
+            parties,
+            terms: &consent.terms,
+            conditions: &consent.conditions,
+            deadline: &consent.deadline,
+            visibility: canonical_visibility(&consent.visibility),
+            scope: &consent.scope,
+            adjudicator: &consent.adjudicator,
+            evidence: &consent.evidence,
+        };
+        assert_eq!(
+            consent_hash(&issuer, &consent),
+            consent_digest(CONSENT_DOMAIN_CONTRACT, &canonical)
+        );
+    }
+
+    /// A stand-in for a *domain-separated* caller's canonical struct — the shape
+    /// `mush-campaign` uses: the domain is the **first serialized field**.
+    #[derive(Serialize)]
+    struct DomainedFixture<'a> {
+        domain: &'a str,
+        subject: u64,
+        parties: Vec<&'a PrincipalId>,
+    }
+
+    /// **The collision pin.** Two domains over otherwise identical content never
+    /// produce the same digest, and neither is ever the contract domain's digest of
+    /// the same payload — which is exactly what a length-prefix would have bought,
+    /// without the migration.
+    #[test]
+    fn e7c9_b1_the_consent_domains_never_collide() {
+        let a = PrincipalId::Object(ObjId(42));
+        let b = PrincipalId::Organization(mush_org::OrgId(7));
+        fn body<'a>(
+            domain: &'a str,
+            a: &'a PrincipalId,
+            b: &'a PrincipalId,
+        ) -> DomainedFixture<'a> {
+            DomainedFixture {
+                domain,
+                subject: 900,
+                parties: vec![a, b],
+            }
+        }
+        let operation = consent_digest(
+            CONSENT_DOMAIN_CAMPAIGN_OPERATION,
+            &body(CONSENT_DOMAIN_CAMPAIGN_OPERATION, &a, &b),
+        );
+        let seat = consent_digest(
+            CONSENT_DOMAIN_CAMPAIGN_SEAT,
+            &body(CONSENT_DOMAIN_CAMPAIGN_SEAT, &a, &b),
+        );
+        assert_ne!(operation, seat, "two campaign domains collided");
+        // And the contract domain over the SAME payload shape is a third value: the
+        // grandfathered domain carries no `domain` field, so its bytes differ by
+        // construction, and the digest cannot be replayed across the boundary.
+        let contract = consent_digest(
+            CONSENT_DOMAIN_CONTRACT,
+            &serde_json::json!({ "subject": 900 }),
+        );
+        assert_ne!(contract, operation);
+        assert_ne!(contract, seat);
+        // Every declared domain string is distinct, so a later cut cannot silently
+        // re-use a live one.
+        let domains = [
+            CONSENT_DOMAIN_CONTRACT,
+            CONSENT_DOMAIN_CAMPAIGN_OPERATION,
+            CONSENT_DOMAIN_CAMPAIGN_SEAT,
+        ];
+        let unique: std::collections::BTreeSet<&str> = domains.into_iter().collect();
+        assert_eq!(unique.len(), domains.len());
+    }
+
+    /// The guard covers **the caller-declared arm**: a non-grandfathered domain whose
+    /// canonical struct does not carry it first is a shape bug and says so, rather
+    /// than returning an unseparated digest.
+    #[test]
+    #[should_panic(expected = "must carry that domain")]
+    fn e7c9_b1_a_domain_not_first_in_the_canonical_struct_panics() {
+        let _ = consent_digest(
+            CONSENT_DOMAIN_CAMPAIGN_OPERATION,
+            &serde_json::json!({ "subject": 900 }),
+        );
+    }
+
+    /// …and the **mismatched-domain** arm: the right shape under the wrong name is
+    /// refused too, so a copy-pasted canonical struct cannot borrow another domain's
+    /// separation.
+    #[test]
+    #[should_panic(expected = "must carry that domain")]
+    fn e7c9_b1_a_domain_that_disagrees_with_the_canonical_struct_panics() {
+        let a = PrincipalId::Object(ObjId(1));
+        let _ = consent_digest(
+            CONSENT_DOMAIN_CAMPAIGN_SEAT,
+            &DomainedFixture {
+                domain: CONSENT_DOMAIN_CAMPAIGN_OPERATION,
+                subject: 1,
+                parties: vec![&a],
+            },
         );
     }
 }

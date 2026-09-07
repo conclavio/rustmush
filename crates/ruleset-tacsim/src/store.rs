@@ -248,6 +248,32 @@ impl TacsimStore {
         }
     }
 
+    /// **Every formation kind this world's PUBLISHED packs author**, in
+    /// `(pack, version, id)` order (E7 cut 9's `FormationAuthority` seam, read at
+    /// the composition root).
+    ///
+    /// A retired version contributes nothing — `published_digest` answers `None`
+    /// for one — which is the same fail-closed rule [`TacsimStore::recipe`] uses.
+    /// The walk is bounded by the pack cap on both axes.
+    #[must_use]
+    pub fn formation_kinds(&self) -> Vec<(CanonicalId, crate::pack::FormationKindDef)> {
+        let mut out = Vec::new();
+        for (pack, version) in self.published.keys() {
+            if self.published_digest(pack, *version).is_none() {
+                continue;
+            }
+            let Some(loaded) = self.pack(pack, *version) else {
+                continue;
+            };
+            for (id, entry) in loaded.pack.entries() {
+                if let crate::pack::PackEntry::Formation(def) = entry {
+                    out.push((id.clone(), def.clone()));
+                }
+            }
+        }
+        out
+    }
+
     /// The seed latch for one `(pack, version)`.
     #[must_use]
     pub fn seed(&self, pack: &CanonicalId, version: u32) -> Option<&SeedApplication> {

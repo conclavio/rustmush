@@ -1,0 +1,52 @@
+[package]
+name = "mush-campaign"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "mush-campaign (E7 cut 9): declared operations with terms frozen at activation, formations and task forces, the funded bond as an E4 money hold, and idempotent terminal resolution over a closed consumer set."
+
+# 10b §3.9 / D-E7-18, -19, -20, -30, -32: `mush-campaign -> {mush-core,
+# mush-economy, mush-canon, mush-org}` and NOTHING else. `cargo tree -p
+# mush-campaign` is the test.
+#
+# There is deliberately **no `mush-faction` edge** (OPEN 2): the front/control
+# consequence is discharged by committing the ONE root canon record, which
+# `mush-faction`'s pre-existing `on_canon_recorded` observer already turns into a
+# `Clock::advance` and an `on_complete_control` flip. `cargo tree -p mush-faction`
+# is byte-identical to cut 8's.
+#
+# There is no `mush-sim`, `mush-tactics`, `mush-propagation` or `ruleset-tacsim`
+# edge either: a unit is an opaque `ObjId` here, and formation KINDS arrive
+# through the `FormationAuthority` composition seam at the server root
+# (`IndustryModule::with_recipes`' shape), never by depending on a ruleset.
+[dependencies]
+mush-core.workspace = true
+# The bond is an E4 money `Hold` posted through `mush_economy::post` from the
+# COMMAND (a `prepare_authoritative` provider has no world and cannot place one),
+# the terms hash is `mush_economy::consent_digest`, the audience class is
+# `EconomicVisibility::Audience`, and the `campaign.*` boundary facts ride
+# `mush_economy::FactProvider`. Cut 9 reaches NO mint path.
+mush-economy.workspace = true
+# The terminal root fact is one `mush_canon::commit(ctx, CanonDraft { kind:
+# "campaign.operation.resolved", .. })`, and the commit-once check reads canon's
+# own `records_for_source`.
+mush-canon.workspace = true
+# `force.*` authority resolves through `mush_org::authorize_in_world`, and every
+# economy seam is typed in `mush_org::{PrincipalId, OrgScopeId}`.
+mush-org.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+smol_str.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+mush-testkit.workspace = true
+mush-faction.workspace = true
+mush-proto.workspace = true
+serde_json.workspace = true
+smol_str.workspace = true
+
+[lints]
+workspace = true

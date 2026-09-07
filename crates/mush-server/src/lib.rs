@@ -60,6 +60,7 @@ pub mod accounts;
 pub mod accounts_identity;
 pub mod action_coordinator;
 pub mod archive;
+pub mod campaign_formations;
 pub mod config_ext;
 // E4c: the economy -> canon evidence bridge (08c §6.1 item 3).
 pub mod decision_dispatch;

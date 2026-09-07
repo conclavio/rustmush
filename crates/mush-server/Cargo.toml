@@ -33,6 +33,7 @@ mush-industry.workspace = true
 # The M22 durable scenes + timestop driver, and the canon event ledger.
 mush-scenes.workspace = true
 mush-propagation.workspace = true
+mush-campaign.workspace = true
 mush-sim.workspace = true
 mush-tactics.workspace = true
 mush-canon.workspace = true

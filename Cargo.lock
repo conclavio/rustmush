@@ -1976,6 +1976,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "mush-campaign"
+version = "0.1.0"
+dependencies = [
+ "mush-canon",
+ "mush-core",
+ "mush-economy",
+ "mush-faction",
+ "mush-org",
+ "mush-proto",
+ "mush-testkit",
+ "serde",
+ "serde_json",
+ "smol_str",
+ "thiserror 2.0.20",
+ "tracing",
+]
+
+[[package]]
 name = "mush-canon"
 version = "0.1.0"
 dependencies = [
@@ -2481,6 +2499,7 @@ version = "0.1.0"
 dependencies = [
  "fred",
  "futures",
+ "mush-campaign",
  "mush-canon",
  "mush-comsys",
  "mush-config",

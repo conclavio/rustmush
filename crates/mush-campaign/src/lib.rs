@@ -1,0 +1,206 @@
+//! # mush-campaign (E7 cut 9)
+//!
+//! **Declared operations, formations, the funded bond and idempotent terminal
+//! resolution** (10b §3.9; doc 10 §13 T6, §19 T8, §12 item 7A).
+//!
+//! ## The two binding constraints
+//!
+//! **A campaign is FUNDED, never infinite, and this crate owns no mint path.** The
+//! bond is an E4 money `Hold` on the attacker's own account, placed from the
+//! **command** through `mush_economy::post` (a `prepare_authoritative` provider has
+//! no world and cannot place one — cut 4's As-built deviation (a)). The
+//! never-negative gate is the engine's own `EconomyError::InsufficientAvailable`;
+//! this crate writes no `Amount` arithmetic, no `create_system_obligation`, no
+//! credit line and no faucet. Funds exhausted ⇒ the operation **pauses at its next
+//! phase boundary and pages** (level 2, command filled in, subject-only stop).
+//!
+//! **Every reaction to durable state is a `Coarse` pull-tick.** A
+//! `schedule_source`-fired action has no `&World`, `Ctx` or `Outbox` and cannot emit
+//! a `WorldEvent`, and there is no world-side seam on a scheduled authoritative
+//! commit (the kernel fact cut 6 established). So [`tick`] is a
+//! `reg.tick(.., TickCadence::Coarse(..), ..)` on `crates/mush-housing/src/tick.rs`'s
+//! exact shape — **never** an observer on a family change, **never** a
+//! `schedule_source`, **never** a `WorldEvent` subscription.
+//!
+//! ## What it registers, and what it deliberately does not
+//!
+//! One `reg.state`, one `reg.tick`, three commands in three classified groups, and
+//! **exactly one `FactProvider` namespace** — `campaign.*`, D-E7-30's fifth and last
+//! crate. It registers **no** `schedule_source`, no `clock_provider` or
+//! `domain_clock_provider`, no `state_family`, no `AuthorityGuardKind` validator, no
+//! `revision_validator`, no `WorldEvent` variant and no second fact provider, and it
+//! performs **no `Ctx`-level authoritative submit**: it writes exempt workflow
+//! documents and posts to the economy from the command.
+//!
+//! It builds no second clock or pulse (cut 8's), no placement or journey mechanism
+//! (cut 6's), no station control (cut 5's), no contact family (cut 7's) and no
+//! minting path (cut 11's). Its edge set is `{mush-core, mush-economy, mush-canon,
+//! mush-org}` and there is deliberately **no `mush-faction` edge**: the front
+//! consequence is discharged by the ONE root canon record, which `mush-faction`'s
+//! own `on_canon_recorded` observer already turns into a `Clock::advance` and an
+//! `on_complete_control` flip.
+
+pub mod bond;
+pub mod commands;
+pub mod facts;
+pub mod formation;
+pub mod ids;
+pub mod record;
+pub mod render;
+pub mod settle;
+pub mod store;
+pub mod terms;
+pub mod tick;
+
+#[cfg(test)]
+mod testfix;
+
+use std::sync::Arc;
+
+use mush_core::module::{GameModule, ModError, ModuleBootData, ModuleCtx, Registrar, TickCadence};
+
+pub use commands::CAPABILITIES;
+pub use facts::CampaignFactProvider;
+pub use formation::{
+    CategoryId, Composition, FormationAuthority, FormationError, FormationKind, FormationNode,
+    MAX_ALLOWED_CATEGORIES, MAX_COMMAND_ROLES, MAX_FORMATION_DEPTH, MAX_FORMATION_MEMBERS,
+    MAX_FORMATIONS_PER_OPERATION, Qualification, RoleSpec, Strictness,
+};
+pub use ids::{FormationId, OperationId, formation_key, operation_key};
+pub use record::{
+    AudienceSpec, Bond, Consequence, ConsumerId, MAX_CONSUMER_ATTEMPTS, MAX_LABEL_BYTES,
+    MAX_LEGAL_TARGETS, MAX_OBJECTIVE_BYTES, MAX_OPERATION_PARTICIPANTS, MAX_OUTCOME_NAME_BYTES,
+    MAX_SIDES, MAX_STAKES, OPERATION_NOTICE_MAX, OPERATION_NOTICE_MIN, ObjectiveKind,
+    ObjectiveSpec, OperationDoc, OperationRuntime, OperationState, OperationTerms, Participation,
+    PauseReason, RootFact, RuntimeError, SideSpec, TaskForce, TermsError, UnitRef,
+};
+pub use render::{
+    Lens, NO_SUCH_FORMATION, NO_SUCH_OPERATION, Verbosity, lens_for, visible_operation,
+};
+pub use settle::{
+    KIND_OPERATION_RESOLVED, abandon, advance_one, canon_source, enter_resolving, outcome_abandons,
+    outcome_forfeits, scope_for,
+};
+pub use store::{
+    CampaignStore, HeldDoc, MAX_FORMATION_NODES, MAX_HELD_DOCUMENTS, MAX_OPERATIONS, META_KEY, NS,
+    TickStats,
+};
+pub use terms::operation_consent_hash;
+pub use tick::{MAX_VISITED_PER_FIRE, MAX_WORKED_PER_FIRE, TICK_PERIOD_SECS, TICK_TAG};
+
+/// The campaign module. Hand one to the composition root.
+#[derive(Default)]
+pub struct CampaignModule {
+    formation_kinds: Option<Arc<dyn FormationAuthority>>,
+}
+
+impl CampaignModule {
+    /// A fresh module with no formation authority wired — which makes
+    /// `@force/create` refuse every kind, the fail-closed default.
+    #[must_use]
+    pub fn new() -> CampaignModule {
+        CampaignModule::default()
+    }
+
+    /// **The composition seam formation kinds arrive through** (OPEN 4), on
+    /// `IndustryModule::with_recipes`' shape: the implementation lives at the
+    /// composition root and reads the ruleset's own store, so `mush-campaign`
+    /// gains no ruleset edge and `ruleset-tacsim` gains no campaign edge.
+    #[must_use]
+    pub fn with_formation_kinds(
+        mut self,
+        authority: Arc<dyn FormationAuthority>,
+    ) -> CampaignModule {
+        self.formation_kinds = Some(authority);
+        self
+    }
+}
+
+impl GameModule for CampaignModule {
+    fn name(&self) -> &'static str {
+        NS
+    }
+
+    fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
+        // K8.5: classify BEFORE the first `reg.command`. `commands::register`
+        // opens with its own `classify_commands` per group and restores
+        // `LegacyPostImage` last; this one covers the module's own first call and
+        // makes the requirement local rather than remembered.
+        reg.classify_commands(mush_core::CommandCompatibility::LegacyPostImage);
+        let mut store = CampaignStore::default();
+        store.set_authority(self.formation_kinds.clone());
+        reg.state(store);
+        // ONE Coarse pull-tick, on housing's shape. No `schedule_source`, no
+        // observer, no `WorldEvent` subscription — see the crate header.
+        reg.tick(
+            TICK_TAG,
+            TickCadence::Coarse(std::time::Duration::from_secs(TICK_PERIOD_SECS)),
+            Arc::new(tick::tick),
+        )?;
+        commands::register(reg)?;
+        Ok(())
+    }
+
+    fn on_world_loaded(
+        &mut self,
+        ctx: &mut ModuleCtx<'_>,
+        data: ModuleBootData,
+    ) -> Result<(), ModError> {
+        let mut store = store::load(data.kv);
+        store.set_authority(self.formation_kinds.clone());
+        store.hydrate_kinds(ctx.w);
+        let held: Vec<store::HeldDoc> = store.held().to_vec();
+        let unknown: Vec<(OperationId, Vec<String>)> = store
+            .operations()
+            .filter(|doc| !doc.runtime.unknown_consumers.is_empty())
+            .map(|doc| {
+                (
+                    doc.id(),
+                    doc.runtime
+                        .unknown_consumers
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect(),
+                )
+            })
+            .collect();
+        {
+            let slot = ctx
+                .w
+                .module_state_mut::<CampaignStore>()
+                .ok_or_else(|| ModError::msg("campaign: state slot missing"))?;
+            *slot = store;
+        }
+        // The world still boots. A document that could not be decoded is HELD, not
+        // deleted — it may be the only record of a live money hold's purpose — and
+        // its subject is marked with a level-2 page carrying the command.
+        for doc in held {
+            tracing::error!(
+                target: "campaign",
+                subject = %doc.key,
+                runbook = %format!(
+                    "the campaign document {} could not be decoded and is held, not deleted; \
+                     inspect it in the store and repair or remove it, then reboot",
+                    doc.key
+                ),
+                error = %doc.error,
+                "campaign: a document was refused on load and is held (level 2)"
+            );
+        }
+        // A stored consumer id this build does not know fails CLOSED: the
+        // operation keeps it, can never reach `Resolved`, and pages once.
+        for (id, ids) in unknown {
+            tracing::error!(
+                target: "campaign",
+                subject = %format!("op:{}", id.0),
+                runbook = %format!(
+                    "operation {id} stores consumer id(s) {} that this build does not know; run \
+                     the build that knows them, or abandon it with `@op/resolve {id}=abort`",
+                    ids.join(", ")
+                ),
+                "campaign: an operation stores an unknown consumer id (level 2)"
+            );
+        }
+        Ok(())
+    }
+}

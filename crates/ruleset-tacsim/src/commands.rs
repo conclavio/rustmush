@@ -351,6 +351,23 @@ fn pack_show(ctx: &mut Ctx<'_>, arg: &str, cursor: &str) -> Result<(), CmdError>
                 def.slots,
                 def.capabilities.len()
             ),
+            // E7 cut 9: the authored constraint set. `exact` is a DERIVED
+            // predicate (`minimum == maximum`), rendered as such rather than
+            // stored as a mode.
+            PackEntry::Formation(def) => format!(
+                "{} — {} echelon {}, {}",
+                def.label,
+                def.branch,
+                def.echelon,
+                if def.minimum == def.maximum {
+                    format!("exactly {}", def.minimum)
+                } else {
+                    format!(
+                        "{}-{} (prefers {})",
+                        def.minimum, def.maximum, def.preferred
+                    )
+                }
+            ),
         };
         rows.push(format!("  {entry_id} ({}) {detail}", entry.label()));
     }
