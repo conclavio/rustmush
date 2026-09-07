@@ -86,6 +86,18 @@ impl PaneRows {
             rows: vec![PaneRow::plain(Line::from(dim_span_owned(text)))],
         }
     }
+
+    /// The single dim row a declared placeholder pane shows (interface plan
+    /// I8): a pane whose producer does not exist yet says so, rather than
+    /// waiting forever on a feed that will never arrive.
+    #[must_use]
+    pub fn placeholder(text: &str) -> PaneRows {
+        let mut rows = PaneRows::default();
+        for line in text.lines() {
+            rows.rows.extend(PaneRows::one(line).rows);
+        }
+        rows
+    }
 }
 
 /// What a pane renderer may read.
@@ -1206,37 +1218,38 @@ pub fn render_vitals_rows(frames: &[(mush_proto::SmolStr, VitalsFrame)], utf8: b
     PaneRows { rows }
 }
 
+/// Gauge cells the vitals pane and strip use.
+const VITAL_GAUGE_W: usize = 8;
+
+/// A `▰▱` gauge `cells` wide for `current` within `min..=max` (`#-` without
+/// UTF-8), rounded to the nearest cell. Reversed bounds are tolerated and
+/// `current` is clamped, so a malformed frame draws an empty or full bar
+/// rather than panicking (invariant T6).
+fn gauge_bar(current: i64, min: i64, max: i64, cells: usize, utf8: bool) -> String {
+    let (lo, hi) = if min <= max { (min, max) } else { (max, min) };
+    let span = hi - lo;
+    let width = i64::try_from(cells).unwrap_or(0);
+    let filled = if span <= 0 {
+        0
+    } else {
+        usize::try_from(((current.clamp(lo, hi) - lo) * width + span / 2) / span).unwrap_or(0)
+    };
+    let (on, off) = if utf8 {
+        ('\u{25b0}', '\u{25b1}')
+    } else {
+        ('#', '-')
+    };
+    (0..cells)
+        .map(|i| if i < filled { on } else { off })
+        .collect()
+}
+
 /// One vital's widget text: gauge, grouped boxes with the level, or text.
 fn vital_widget(v: &mush_proto::Vital, utf8: bool) -> String {
     match &v.value {
         VitalValue::Bounded { current, min, max } => {
-            let (lo, hi) = if min <= max {
-                (*min, *max)
-            } else {
-                (*max, *min)
-            };
-            let span = hi - lo;
-            let cells = 8i64;
-            let filled = if span <= 0 {
-                0
-            } else {
-                usize::try_from((((*current).clamp(lo, hi) - lo) * cells + span / 2) / span)
-                    .unwrap_or(0)
-            };
-            let (on, off) = if utf8 {
-                ('\u{25b0}', '\u{25b1}')
-            } else {
-                ('#', '-')
-            };
-            let bar: String = (0..cells)
-                .map(|i| {
-                    if usize::try_from(i).unwrap_or(usize::MAX) < filled {
-                        on
-                    } else {
-                        off
-                    }
-                })
-                .collect();
+            let hi = (*min).max(*max);
+            let bar = gauge_bar(*current, *min, *max, VITAL_GAUGE_W, utf8);
             format!("{bar} {current}/{hi}")
         }
         VitalValue::Track { boxes, level } => {
@@ -1268,6 +1281,660 @@ fn vital_widget(v: &mush_proto::Vital, utf8: bool) -> String {
         }
         VitalValue::Text { text } => clean(text),
     }
+}
+
+// ---------------------------------------------------------------------------
+// The tactical unit panes (interface plan I8).
+//
+// Nothing here names a ruleset, a unit kind, a section, a component or a
+// trait: every label, id and word is read out of the frame. Colour and glyph
+// come ONLY from a `state` word (`ok | warn | crit | down`); the ruleset's
+// own `condition` word is printed verbatim and never mapped, which is rule 1
+// — rulesets judge, clients render. A `null` frame is the honest no-unit
+// state, an unknown `state` word is drawn unjudged, an unknown journal
+// `kind` renders as an opaque row, and every missing or malformed field
+// degrades rather than panicking (invariant T6).
+// ---------------------------------------------------------------------------
+
+/// What a unit pane shows when the held frame is `null`: the viewer holds no
+/// station and controls no unit. Defined once; both unit screens use it.
+pub const NO_UNIT_LINE: &str =
+    "No tactical unit: take a station, or @unit/show #n if you control one.";
+
+/// Gauge cells a unit pane's bar uses. Narrower than the vitals gauge: these
+/// stack several to a row in a 24-column rail.
+const UNIT_GAUGE_W: usize = 5;
+
+/// The glyph and style a `state` word earns — the only word-to-colour map in
+/// the unit panes. Only the four states the contract fixes are judged;
+/// anything else (a newer server's word) is drawn dim and unjudged.
+fn state_mark(state: Option<&str>, utf8: bool) -> (char, Style) {
+    match state {
+        Some("ok") => (if utf8 { '\u{2713}' } else { '+' }, Style::default()),
+        Some("warn") => (
+            if utf8 { '\u{25d0}' } else { '~' },
+            Style::default().fg(Color::Indexed(3)),
+        ),
+        Some("crit") => (
+            if utf8 { '\u{2717}' } else { '!' },
+            Style::default().fg(Color::Indexed(1)),
+        ),
+        Some("down") => (
+            'X',
+            Style::default()
+                .fg(Color::Indexed(1))
+                .add_modifier(Modifier::BOLD),
+        ),
+        _ => (
+            if utf8 { '\u{00b7}' } else { '.' },
+            Style::default().add_modifier(Modifier::DIM),
+        ),
+    }
+}
+
+fn unit_sep(utf8: bool) -> &'static str {
+    if utf8 { " \u{00b7} " } else { " | " }
+}
+
+fn unit_arrow(utf8: bool) -> &'static str {
+    if utf8 { "\u{2192}" } else { "->" }
+}
+
+fn unit_bullet(utf8: bool) -> char {
+    if utf8 { '\u{00b7}' } else { '-' }
+}
+
+/// One cell of a unit frame, read defensively.
+struct UnitCell<'a> {
+    addr: &'a str,
+    label: &'a str,
+    current: i64,
+    min: i64,
+    max: i64,
+    state: Option<&'a str>,
+}
+
+/// Every cell of a frame that carries an `addr`, in the frame's own order.
+fn unit_cells(data: &Value) -> Vec<UnitCell<'_>> {
+    data.get("cells")
+        .and_then(Value::as_array)
+        .map(|cells| {
+            cells
+                .iter()
+                .filter_map(|c| {
+                    Some(UnitCell {
+                        addr: c.get("addr").and_then(Value::as_str)?,
+                        label: c.get("label").and_then(Value::as_str).unwrap_or(""),
+                        current: c.get("current").and_then(Value::as_i64).unwrap_or(0),
+                        min: c.get("min").and_then(Value::as_i64).unwrap_or(0),
+                        max: c.get("max").and_then(Value::as_i64).unwrap_or(0),
+                        state: c.get("state").and_then(Value::as_str),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The held unit's `(id, name)`, or `None` when the frame is the no-unit one
+/// (`null`) or carries no subject at all.
+fn unit_object(data: &Value) -> Option<(&str, &str)> {
+    let object = data.get("object")?;
+    let id = object.get("id").and_then(Value::as_str)?;
+    let name = object.get("name").and_then(Value::as_str).unwrap_or(id);
+    Some((id, name))
+}
+
+/// The section an `addr` is scoped to and the label to print for it:
+/// `section/<s>/<cell>` → `(s, "<cell>")`, `facet/<s>/<f>/<cell>` →
+/// `(s, "<f>/<cell>")`. Any other scope belongs to no section.
+fn cell_scope(addr: &str) -> Option<(&str, String)> {
+    let mut parts = addr.split('/');
+    match parts.next()? {
+        "section" => {
+            let section = parts.next()?;
+            let cell = parts.next()?;
+            parts.next().is_none().then(|| (section, cell.to_string()))
+        }
+        "facet" => {
+            let section = parts.next()?;
+            let facet = parts.next()?;
+            let cell = parts.next()?;
+            parts
+                .next()
+                .is_none()
+                .then(|| (section, format!("{facet}/{cell}")))
+        }
+        _ => None,
+    }
+}
+
+/// The group a component installs into, from its own `install` path.
+fn component_scope(component: &Value) -> &str {
+    install_scope(
+        component
+            .get("install")
+            .and_then(Value::as_str)
+            .unwrap_or(""),
+    )
+}
+
+/// The group an `install` path belongs to: `unit` stays `unit`,
+/// `section/<s>` and `slot/<s>/<slot>` group under `<s>`.
+fn install_scope(install: &str) -> &str {
+    let mut parts = install.split('/');
+    match parts.next() {
+        Some("section" | "slot") => parts.next().unwrap_or("unit"),
+        _ => "unit",
+    }
+}
+
+/// One cell as `label ▰▰▰▱▱ cur/max`.
+fn cell_gauge(label: &str, cell: &UnitCell<'_>, utf8: bool) -> String {
+    let hi = cell.min.max(cell.max);
+    format!(
+        "{} {} {}/{}",
+        truncate_chars(&clean(label), 14),
+        gauge_bar(cell.current, cell.min, cell.max, UNIT_GAUGE_W, utf8),
+        cell.current,
+        hi
+    )
+}
+
+/// The label a cell prints: its own, else the last segment of its address.
+fn cell_label<'a>(cell: &'a UnitCell<'a>) -> &'a str {
+    if cell.label.is_empty() {
+        cell.addr.rsplit('/').next().unwrap_or(cell.addr)
+    } else {
+        cell.label
+    }
+}
+
+/// The subject header the two `sections` panes carry: name, id, revision,
+/// and — when the frame is a held record rather than a live unit — the
+/// server's own words for that, printed verbatim.
+fn unit_header(data: &Value) -> Option<Vec<PaneRow>> {
+    let (id, name) = unit_object(data)?;
+    let mut head = format!("{} {}", truncate_chars(&clean(name), 24), clean(id));
+    if let Some(revision) = data.get("revision").and_then(Value::as_u64) {
+        head.push_str(&format!("  rev {revision}"));
+    }
+    if let Some(state) = data.get("state").and_then(Value::as_str)
+        && state != "active"
+    {
+        head.push_str(&format!("  {}", truncate_chars(&clean(state), 16)));
+    }
+    if let Some(record) = data.get("record").and_then(Value::as_str) {
+        head.push_str(&format!("  held {}", truncate_chars(&clean(record), 24)));
+    }
+    Some(vec![PaneRow::plain(Line::from(Span::styled(
+        head,
+        Style::default().add_modifier(Modifier::BOLD),
+    )))])
+}
+
+/// The footer a byte-budgeted view earns: what its walk left out, from the
+/// frame's own true `counts`.
+fn push_truncation(rows: &mut Vec<PaneRow>, data: &Value) {
+    if data.get("truncated").and_then(Value::as_bool) != Some(true) {
+        return;
+    }
+    let total = |key: &str| {
+        data.get("counts")
+            .and_then(|c| c.get(key))
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+    };
+    let shown = |key: &str| {
+        data.get(key)
+            .and_then(Value::as_array)
+            .map_or(0, |a| u64::try_from(a.len()).unwrap_or(0))
+    };
+    rows.push(PaneRow::plain(Line::from(dim_span_owned(&format!(
+        "(view truncated: {} cells, {} components not shown)",
+        total("cells").saturating_sub(shown("cells")),
+        total("components").saturating_sub(shown("components")),
+    )))));
+}
+
+/// The damage screen's `sections` pane: the subject, then one block per
+/// section — its id, its `condition` word, a glyph from its `state` — and
+/// under it a gauge for every cell scoped to that section, each coloured by
+/// the CELL's own state.
+#[must_use]
+pub fn render_unit_sections_rows(data: &Value, ctx: &RenderCtx<'_>) -> PaneRows {
+    let Some(mut rows) = unit_header(data) else {
+        return PaneRows::one(NO_UNIT_LINE);
+    };
+    let cells = unit_cells(data);
+    let empty = Vec::new();
+    let sections = data
+        .get("sections")
+        .and_then(Value::as_array)
+        .unwrap_or(&empty);
+    if sections.is_empty() {
+        rows.push(PaneRow::plain(Line::from(dim_span_owned("(no sections)"))));
+    }
+    for section in sections {
+        let Some(id) = section.get("id").and_then(Value::as_str) else {
+            continue;
+        };
+        rows.push(section_head(id, section, ctx.utf8));
+        let mut any = false;
+        for cell in &cells {
+            let Some((scope, label)) = cell_scope(cell.addr) else {
+                continue;
+            };
+            if scope != id {
+                continue;
+            }
+            any = true;
+            let (_, style) = state_mark(cell.state, ctx.utf8);
+            rows.push(PaneRow::plain(Line::from(vec![
+                Span::raw("    "),
+                Span::styled(cell_gauge(&label, cell, ctx.utf8), style),
+            ])));
+        }
+        if !any {
+            rows.push(PaneRow::plain(Line::from(dim_span_owned("    (no cells)"))));
+        }
+    }
+    push_truncation(&mut rows, data);
+    PaneRows { rows }
+}
+
+/// The unit screen's `sections` pane: the same map one line to a section —
+/// glyph, id, `condition` word, then its cells' gauges inline.
+#[must_use]
+pub fn render_unit_sections_compact_rows(data: &Value, ctx: &RenderCtx<'_>) -> PaneRows {
+    let Some(mut rows) = unit_header(data) else {
+        return PaneRows::one(NO_UNIT_LINE);
+    };
+    let cells = unit_cells(data);
+    let empty = Vec::new();
+    let sections = data
+        .get("sections")
+        .and_then(Value::as_array)
+        .unwrap_or(&empty);
+    if sections.is_empty() {
+        rows.push(PaneRow::plain(Line::from(dim_span_owned("(no sections)"))));
+    }
+    for section in sections {
+        let Some(id) = section.get("id").and_then(Value::as_str) else {
+            continue;
+        };
+        let (mark, style) = state_mark(section.get("state").and_then(Value::as_str), ctx.utf8);
+        let condition = section
+            .get("condition")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        let mut spans = vec![
+            Span::styled(format!("{mark} "), style),
+            Span::raw(format!("{:<14}", truncate_chars(&clean(id), 14))),
+            dim_span_owned(&format!("{:<12}", truncate_chars(&clean(condition), 12))),
+        ];
+        for cell in &cells {
+            let Some((scope, label)) = cell_scope(cell.addr) else {
+                continue;
+            };
+            if scope != id {
+                continue;
+            }
+            let (_, cell_style) = state_mark(cell.state, ctx.utf8);
+            spans.push(Span::styled(
+                format!("  {}", cell_gauge(&label, cell, ctx.utf8)),
+                cell_style,
+            ));
+        }
+        rows.push(PaneRow::plain(Line::from(spans)));
+    }
+    push_truncation(&mut rows, data);
+    PaneRows { rows }
+}
+
+fn section_head(id: &str, section: &Value, utf8: bool) -> PaneRow {
+    let (mark, style) = state_mark(section.get("state").and_then(Value::as_str), utf8);
+    let condition = section
+        .get("condition")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    PaneRow::plain(Line::from(vec![
+        Span::styled(format!("{mark} "), style),
+        Span::raw(truncate_chars(&clean(id), 24)),
+        dim_span_owned(&format!("  {}", truncate_chars(&clean(condition), 16))),
+    ]))
+}
+
+/// The unit screen's `plant` pane: every unit-level cell as a gauge, then one
+/// mobility line read from the frame's safe mobility subset.
+#[must_use]
+pub fn render_unit_plant_rows(data: &Value, ctx: &RenderCtx<'_>) -> PaneRows {
+    if unit_object(data).is_none() {
+        return PaneRows::one(NO_UNIT_LINE);
+    }
+    let cells = unit_cells(data);
+    let mut rows = Vec::new();
+    for cell in cells.iter().filter(|c| c.addr.starts_with("unit/")) {
+        let (mark, style) = state_mark(cell.state, ctx.utf8);
+        rows.push(PaneRow::plain(Line::from(vec![
+            Span::styled(format!("{mark} "), style),
+            Span::styled(cell_gauge(cell_label(cell), cell, ctx.utf8), style),
+        ])));
+    }
+    if rows.is_empty() {
+        rows.push(PaneRow::plain(Line::from(dim_span_owned(
+            "(no unit-level cells)",
+        ))));
+    }
+    rows.push(PaneRow::plain(Line::from(Span::raw(mobility_line(
+        data, ctx.utf8,
+    )))));
+    PaneRows { rows }
+}
+
+/// `mobility <mode>`, `mobility <from> → <to> (ready <at>)` while a switch is
+/// in flight, or `mobility none` when the unit declares no profile.
+fn mobility_line(data: &Value, utf8: bool) -> String {
+    let none = "mobility none".to_string();
+    let Some(mobility) = data.get("mobility").filter(|m| !m.is_null()) else {
+        return none;
+    };
+    let arrow = unit_arrow(utf8);
+    if let Some(switching) = mobility.get("switching").filter(|s| !s.is_null()) {
+        let from = switching.get("from").and_then(Value::as_str).unwrap_or("?");
+        let to = switching.get("to").and_then(Value::as_str).unwrap_or("?");
+        let ready = switching
+            .get("ready_at")
+            .map(view_scalar_text)
+            .unwrap_or_default();
+        return clean(&format!(
+            "mobility {} {arrow} {} (ready {ready})",
+            truncate_chars(from, 20),
+            truncate_chars(to, 20)
+        ));
+    }
+    match mobility.get("mode").and_then(Value::as_str) {
+        Some(mode) => clean(&format!("mobility {}", truncate_chars(mode, 24))),
+        None => none,
+    }
+}
+
+/// The unit screen's `components` pane: components grouped by the section
+/// they install into (the unit's own group first, which also carries the
+/// capabilities no component sources), each row a glyph from the component's
+/// `state`, its `condition` word verbatim, and `·asset` when it is one; the
+/// capabilities a component sources are indented under it.
+#[must_use]
+pub fn render_unit_components_rows(data: &Value, ctx: &RenderCtx<'_>) -> PaneRows {
+    if unit_object(data).is_none() {
+        return PaneRows::one(NO_UNIT_LINE);
+    }
+    let bullet = unit_bullet(ctx.utf8);
+    let system = ctx.tag("system");
+    let cells = unit_cells(data);
+    let empty = Vec::new();
+    let components = data
+        .get("components")
+        .and_then(Value::as_array)
+        .unwrap_or(&empty);
+    let capabilities = data
+        .get("capabilities")
+        .and_then(Value::as_array)
+        .unwrap_or(&empty);
+    let mut groups: Vec<&str> = vec!["unit"];
+    for c in components {
+        let scope = component_scope(c);
+        if !groups.contains(&scope) {
+            groups.push(scope);
+        }
+    }
+    let mut rows = Vec::new();
+    for group in groups {
+        let mine: Vec<&Value> = components
+            .iter()
+            .filter(|c| component_scope(c) == group)
+            .collect();
+        let unsourced: Vec<&Value> = if group == "unit" {
+            capabilities
+                .iter()
+                .filter(|k| k.get("source").is_none_or(Value::is_null))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        if mine.is_empty() && unsourced.is_empty() {
+            continue;
+        }
+        rows.push(PaneRow::plain(Line::from(Span::styled(
+            truncate_chars(&clean(group), 24),
+            system,
+        ))));
+        for capability in unsourced {
+            rows.push(capability_row(capability, bullet, 2));
+        }
+        for component in mine {
+            let id = component.get("id").and_then(Value::as_str).unwrap_or("?");
+            let (mark, style) =
+                state_mark(component.get("state").and_then(Value::as_str), ctx.utf8);
+            let condition = component
+                .get("condition")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            let asset = if component.get("asset").and_then(Value::as_bool) == Some(true) {
+                format!("  {bullet}asset")
+            } else {
+                String::new()
+            };
+            rows.push(PaneRow::plain(Line::from(vec![
+                Span::raw("  "),
+                Span::styled(format!("{mark} "), style),
+                Span::raw(format!("{:<20}", truncate_chars(&clean(id), 20))),
+                dim_span_owned(&format!("{}{asset}", truncate_chars(&clean(condition), 14))),
+            ])));
+            // The component's own cells, so no scope of the frame renders
+            // nowhere: `unit/*` is the plant pane, `section`/`facet` the
+            // sections pane, and `component/*` is here.
+            let prefix = format!("component/{id}/");
+            for cell in cells.iter().filter(|c| c.addr.starts_with(&prefix)) {
+                let (_, style) = state_mark(cell.state, ctx.utf8);
+                rows.push(PaneRow::plain(Line::from(vec![
+                    Span::raw("      "),
+                    Span::styled(cell_gauge(cell_label(cell), cell, ctx.utf8), style),
+                ])));
+            }
+            for capability in capabilities
+                .iter()
+                .filter(|k| k.get("source").and_then(Value::as_str) == Some(id))
+            {
+                rows.push(capability_row(capability, bullet, 4));
+            }
+        }
+    }
+    if rows.is_empty() {
+        rows.push(PaneRow::plain(Line::from(dim_span_owned(
+            "(no components)",
+        ))));
+    }
+    push_truncation(&mut rows, data);
+    PaneRows { rows }
+}
+
+fn capability_row(capability: &Value, bullet: char, indent: usize) -> PaneRow {
+    let id = capability.get("id").and_then(Value::as_str).unwrap_or("?");
+    PaneRow::plain(Line::from(dim_span_owned(&format!(
+        "{}{bullet} {}",
+        " ".repeat(indent),
+        truncate_chars(&clean(id), 28)
+    ))))
+}
+
+/// `… N more entries` — a delta the ring had to cut, saying so.
+fn elided_text(entry: &Value, utf8: bool) -> String {
+    let omitted = entry.get("omitted").and_then(Value::as_u64).unwrap_or(0);
+    let ellipsis = if utf8 { "\u{2026}" } else { "..." };
+    format!("{ellipsis} {omitted} more entries")
+}
+
+/// One journal entry as text. An unknown `kind` prints its kind and nothing
+/// else: a newer server's entry becomes an opaque row rather than a lie or a
+/// dropped line.
+fn journal_entry_text(entry: &Value, utf8: bool) -> String {
+    let arrow = unit_arrow(utf8);
+    let at = |key: &str| entry.get(key).map(view_scalar_text).unwrap_or_default();
+    match entry.get("kind").and_then(Value::as_str).unwrap_or("") {
+        "cell" => format!("cell {} {}{arrow}{}", at("addr"), at("from"), at("to")),
+        "section" => format!(
+            "section {} {}{arrow}{}",
+            at("section"),
+            at("from"),
+            at("to")
+        ),
+        "component" => format!(
+            "component {} {}{arrow}{}",
+            at("component"),
+            at("from"),
+            at("to")
+        ),
+        "asset" => format!(
+            "asset {} {}",
+            at("component"),
+            match entry.get("attached").and_then(Value::as_bool) {
+                Some(true) => "attached",
+                Some(false) => "detached",
+                None => "?",
+            }
+        ),
+        kind @ ("capability_granted" | "capability_revoked") => {
+            match entry.get("source").and_then(Value::as_str) {
+                Some(source) => format!("{kind} {} ({})", at("id"), clean(source)),
+                None => format!("{kind} {}", at("id")),
+            }
+        }
+        "elided" => elided_text(entry, utf8),
+        other => clean(other),
+    }
+}
+
+/// One entry as a before/after table row: a cell by its address, a section or
+/// component transition by name; anything else falls back to the journal's
+/// own wording.
+fn delta_entry_text(entry: &Value, utf8: bool) -> String {
+    let arrow = unit_arrow(utf8);
+    let at = |key: &str| entry.get(key).map(view_scalar_text).unwrap_or_default();
+    match entry.get("kind").and_then(Value::as_str).unwrap_or("") {
+        "cell" => format!("{}  {} {arrow} {}", at("addr"), at("from"), at("to")),
+        "section" => format!(
+            "section {}  {} {arrow} {}",
+            at("section"),
+            at("from"),
+            at("to")
+        ),
+        "component" => format!(
+            "component {}  {} {arrow} {}",
+            at("component"),
+            at("from"),
+            at("to")
+        ),
+        _ => journal_entry_text(entry, utf8),
+    }
+}
+
+/// The damage screen's `journal` pane: the after-action ring, newest first —
+/// `rev N · cause · <entry>`. A row about another subject than the one held
+/// prints that subject first (the resync always asks for the viewer's own
+/// default subject, so the ring may carry both).
+#[must_use]
+pub fn render_unit_journal_rows(data: &Value, ctx: &RenderCtx<'_>) -> PaneRows {
+    let Some((held, _)) = unit_object(data) else {
+        return PaneRows::one(NO_UNIT_LINE);
+    };
+    let ring = ctx.store.unit_journal();
+    if ring.is_empty() {
+        return PaneRows::one("(no journal entries yet)");
+    }
+    let sep = unit_sep(ctx.utf8);
+    let dash = if ctx.utf8 { "\u{2014}" } else { "-" };
+    let null = Value::Null;
+    let mut rows = Vec::new();
+    for row in ring.iter().rev() {
+        let entry = row.get("entry").unwrap_or(&null);
+        if entry.get("kind").and_then(Value::as_str) == Some("elided") {
+            rows.push(PaneRow::plain(Line::from(dim_span_owned(&elided_text(
+                entry, ctx.utf8,
+            )))));
+            continue;
+        }
+        let mut text = String::new();
+        if let Some(object) = row.get("object").and_then(Value::as_str)
+            && object != held
+        {
+            text.push_str(&clean(object));
+            text.push(' ');
+        }
+        match row.get("rev").and_then(Value::as_u64) {
+            Some(rev) => text.push_str(&format!("rev {rev}")),
+            None => text.push_str("rev ?"),
+        }
+        text.push_str(sep);
+        text.push_str(&clean(
+            row.get("cause").and_then(Value::as_str).unwrap_or(dash),
+        ));
+        text.push_str(sep);
+        text.push_str(&journal_entry_text(entry, ctx.utf8));
+        rows.push(PaneRow::plain(Line::from(Span::raw(truncate_chars(
+            &text, 160,
+        )))));
+    }
+    PaneRows { rows }
+}
+
+/// The damage screen's `before / after` pane: the newest revision in the ring
+/// for the subject actually held, one row per entry with both sides. The
+/// delta carries `from` and `to` itself, so no second keyframe is kept.
+#[must_use]
+pub fn render_unit_delta_rows(data: &Value, ctx: &RenderCtx<'_>) -> PaneRows {
+    let Some((held, _)) = unit_object(data) else {
+        return PaneRows::one(NO_UNIT_LINE);
+    };
+    let ring = ctx.store.unit_journal();
+    let mine = |row: &&Value| row.get("object").and_then(Value::as_str) == Some(held);
+    let Some(newest) = ring
+        .iter()
+        .filter(mine)
+        .filter_map(|row| row.get("rev").and_then(Value::as_u64))
+        .max()
+    else {
+        return PaneRows::one("no after-action entries yet");
+    };
+    let null = Value::Null;
+    let mut rows = Vec::new();
+    let mut cause: Option<String> = None;
+    for row in ring
+        .iter()
+        .filter(mine)
+        .filter(|row| row.get("rev").and_then(Value::as_u64) == Some(newest))
+    {
+        if cause.is_none() {
+            cause = row.get("cause").and_then(Value::as_str).map(clean);
+        }
+        let entry = row.get("entry").unwrap_or(&null);
+        rows.push(PaneRow::plain(Line::from(Span::raw(truncate_chars(
+            &delta_entry_text(entry, ctx.utf8),
+            160,
+        )))));
+    }
+    let head = match &cause {
+        Some(cause) => format!("rev {newest}  {}", truncate_chars(cause, 24)),
+        None => format!("rev {newest}"),
+    };
+    rows.insert(
+        0,
+        PaneRow::plain(Line::from(Span::styled(
+            head,
+            Style::default().add_modifier(Modifier::BOLD),
+        ))),
+    );
+    PaneRows { rows }
 }
 
 // ---------------------------------------------------------------------------
@@ -1414,6 +2081,13 @@ pub fn status_line(
 
 /// The tab strip: `rustmush  1 scene  2 sheet  3 mail 2 …` with the active
 /// screen reversed and unread badges, then `right` flush right in `width`.
+///
+/// Nine named tabs need about ninety-eight columns, so when the tabs alone
+/// would not fit the strip elides: every INACTIVE tab drops its name and
+/// keeps its digit (and its unread badge, which is the only place unread is
+/// shown at all), and the active tab keeps its name, since answering "where
+/// am I" is what the strip is for. The right-hand block's own drop rule is
+/// unchanged, so a strip that fits looks exactly as it did.
 #[must_use]
 pub fn tab_strip(
     screens: &[(u8, &str, usize)],
@@ -1421,17 +2095,25 @@ pub fn tab_strip(
     right: &str,
     width: usize,
 ) -> Line<'static> {
+    let label_of = |digit: u8, name: &str, badge: usize, named: bool| match (named, badge > 0) {
+        (true, true) => format!(" {digit} {name} {badge} "),
+        (true, false) => format!(" {digit} {name} "),
+        (false, true) => format!(" {digit} {badge} "),
+        (false, false) => format!(" {digit} "),
+    };
+    let full: usize = "rustmush".len()
+        + screens
+            .iter()
+            .map(|&(d, n, b)| label_of(d, n, b, true).chars().count() + 1)
+            .sum::<usize>();
+    let named = full <= width;
     let mut spans: Vec<Span<'static>> = vec![Span::styled(
         "rustmush".to_string(),
         Style::default().add_modifier(Modifier::BOLD),
     )];
     let mut used = "rustmush".len();
     for &(digit, name, badge) in screens {
-        let label = if badge > 0 {
-            format!(" {digit} {name} {badge} ")
-        } else {
-            format!(" {digit} {name} ")
-        };
+        let label = label_of(digit, name, badge, named || digit == active);
         used += label.chars().count() + 1;
         spans.push(Span::raw(" "));
         let style = if digit == active {
@@ -1956,5 +2638,356 @@ mod tests {
         assert_eq!(hhmm(0), "00:00");
         assert_eq!(hhmm(86_399), "23:59");
         assert_eq!(hhmm(-60), "23:59");
+    }
+
+    // ---- I8: the tactical unit panes -------------------------------------
+
+    /// The contract's F1 keyframe, verbatim.
+    fn f1() -> Value {
+        serde_json::json!({
+            "object": { "id": "#7", "name": "Atlas" },
+            "schema": "tacsim:unit:atlas@1#0000000000000000000000000000000000000000000000000000000000000000",
+            "revision": 3, "state": "active", "record": null,
+            "mobility": { "mode": "ground.biped", "switching": null, "modes": [
+                { "id": "ground.biped", "locomotion": "legged", "mediums": ["ground"], "tags": [],
+                  "nominal_speed_cms": 640, "transition_s": 0 } ] },
+            "sections": [ { "id": "center_torso", "condition": "ok", "state": "crit",
+                "facets": [ { "id": "rear", "cells": ["armor"] } ], "slots": ["torso_hardpoint"] } ],
+            "cells": [
+                { "addr": "unit/heat",                      "label": "heat",      "current": 20, "min": 0, "max": 30, "state": "ok"   },
+                { "addr": "section/center_torso/structure", "label": "structure", "current": 8,  "min": 0, "max": 8,  "state": "ok"   },
+                { "addr": "facet/center_torso/rear/armor",  "label": "armor",     "current": 1,  "min": 0, "max": 6,  "state": "crit" },
+                { "addr": "component/gauss/ammo",           "label": "ammo",      "current": 9,  "min": 0, "max": 12, "state": "ok"   }
+            ],
+            "components": [ { "id": "gauss",
+                "definition": "tacsim:component:gauss@1#0000000000000000000000000000000000000000000000000000000000000000",
+                "install": "slot/center_torso/torso_hardpoint", "condition": "ok", "state": "ok", "asset": false } ],
+            "capabilities": [ { "id": "tactics.mobility", "source": null } ],
+            "counts": { "sections": 1, "cells": 4, "components": 1, "capabilities": 1 },
+            "truncated": false
+        })
+    }
+
+    /// The contract's F3 delta, verbatim, for `object`.
+    fn f3(object: &str) -> Value {
+        serde_json::json!({
+            "object": { "id": object, "name": "Atlas" },
+            "from_revision": 3, "to_revision": 4, "now": 1_757_000_000, "cause": "gauss",
+            "entries": [
+                { "kind": "cell",               "addr": "facet/center_torso/rear/armor", "from": 6, "to": 1 },
+                { "kind": "section",            "section": "center_torso", "from": "ok", "to": "damaged" },
+                { "kind": "component",          "component": "gauss", "from": "ok", "to": "destroyed" },
+                { "kind": "asset",              "component": "gauss", "attached": false },
+                { "kind": "capability_granted", "id": "tactics.mobility", "source": "gauss", "replaced": false },
+                { "kind": "capability_revoked", "id": "tactics.mobility", "source": "gauss", "was_present": true }
+            ]
+        })
+    }
+
+    fn ringed(deltas: &[Value]) -> PanelStore {
+        let mut store = PanelStore::new();
+        for d in deltas {
+            store.apply_panel(
+                &mush_proto::SmolStr::new("tactics.unit"),
+                mush_proto::PanelFrameKind::Delta,
+                d,
+                0,
+            );
+        }
+        store
+    }
+
+    fn texts(rows: &PaneRows) -> Vec<String> {
+        rows.rows.iter().map(|r| line_text(&r.line)).collect()
+    }
+
+    /// I8 / rule 1: every unit pane renders labels, ids and words straight out
+    /// of the frame — the client names no section, component, trait or unit
+    /// kind — and the only word it ever maps to a colour is a `state`. A
+    /// `condition` word is printed and never judged.
+    #[test]
+    fn unit_panes_render_the_frame_and_colour_only_from_state() {
+        let theme = AnsiTheme::classic();
+        let store = PanelStore::new();
+        let ctx = RenderCtx {
+            theme: &theme,
+            depth: ColorDepth::Ansi16,
+            utf8: true,
+            store: &store,
+            selected_channel: None,
+        };
+        let data = f1();
+
+        let sections = texts(&render_unit_sections_rows(&data, &ctx));
+        assert_eq!(sections[0], "Atlas #7  rev 3");
+        assert_eq!(sections[1], "\u{2717} center_torso  ok", "{sections:?}");
+        assert_eq!(
+            sections[2],
+            "    structure \u{25b0}\u{25b0}\u{25b0}\u{25b0}\u{25b0} 8/8"
+        );
+        assert_eq!(
+            sections[3], "    rear/armor \u{25b0}\u{25b1}\u{25b1}\u{25b1}\u{25b1} 1/6",
+            "a facet cell keeps its facet in the label"
+        );
+        // The section is `condition: ok` but `state: crit`: the glyph and the
+        // colour follow the STATE, and the word is printed as the ruleset
+        // wrote it. Mapping `ok` to green here would be the client judging.
+        let head = &render_unit_sections_rows(&data, &ctx).rows[1];
+        assert_eq!(head.line.spans[0].style.fg, Some(Color::Indexed(1)));
+        assert!(line_text(&head.line).contains("ok"));
+
+        let compact = texts(&render_unit_sections_compact_rows(&data, &ctx));
+        assert_eq!(compact.len(), 2, "one line per section: {compact:?}");
+        assert!(compact[1].contains("center_torso"));
+        assert!(compact[1].contains("structure") && compact[1].contains("rear/armor"));
+
+        let plant = texts(&render_unit_plant_rows(&data, &ctx));
+        assert_eq!(
+            plant[0], "\u{2713} heat \u{25b0}\u{25b0}\u{25b0}\u{25b1}\u{25b1} 20/30",
+            "only unit-scoped cells"
+        );
+        assert_eq!(plant[1], "mobility ground.biped");
+        assert_eq!(plant.len(), 2);
+
+        let components = texts(&render_unit_components_rows(&data, &ctx));
+        assert_eq!(components[0], "unit", "the unit's own group leads");
+        assert_eq!(
+            components[1], "  \u{b7} tactics.mobility",
+            "a capability no component sources hangs off the unit"
+        );
+        assert_eq!(components[2], "center_torso", "grouped by install section");
+        assert!(components[3].starts_with("  \u{2713} gauss"));
+        assert!(components[3].contains("ok"));
+        assert!(
+            !components[3].contains("asset"),
+            "asset: false says nothing: {:?}",
+            components[3]
+        );
+        assert_eq!(
+            components[4], "      ammo \u{25b0}\u{25b0}\u{25b0}\u{25b0}\u{25b1} 9/12",
+            "a component's own cells render under it"
+        );
+
+        // ASCII terminals get the fallback glyphs, never a UTF-8 byte.
+        let ascii = RenderCtx { utf8: false, ..ctx };
+        let all = texts(&render_unit_sections_rows(&data, &ascii)).join("\n")
+            + &texts(&render_unit_plant_rows(&data, &ascii)).join("\n")
+            + &texts(&render_unit_components_rows(&data, &ascii)).join("\n");
+        assert!(all.is_ascii(), "{all:?}");
+        assert!(all.contains("! center_torso") && all.contains("+ heat #"));
+    }
+
+    /// I8: a `null` frame is the honest no-unit state on every pane, and a
+    /// garbage payload degrades to the same line rather than panicking or
+    /// claiming to be loading (invariant T6).
+    #[test]
+    fn a_null_or_garbage_unit_frame_is_the_no_unit_line_on_every_pane() {
+        let theme = AnsiTheme::classic();
+        let store = ringed(&[f3("#7")]);
+        let ctx = RenderCtx {
+            theme: &theme,
+            depth: ColorDepth::Ansi16,
+            utf8: true,
+            store: &store,
+            selected_channel: None,
+        };
+        let renderers: [(&str, super::super::screen::PanelRenderer); 6] = [
+            ("sections", render_unit_sections_rows),
+            ("compact", render_unit_sections_compact_rows),
+            ("plant", render_unit_plant_rows),
+            ("components", render_unit_components_rows),
+            ("journal", render_unit_journal_rows),
+            ("delta", render_unit_delta_rows),
+        ];
+        for bad in [
+            Value::Null,
+            serde_json::json!({}),
+            serde_json::json!([1, 2]),
+            serde_json::json!("nope"),
+            serde_json::json!({ "object": { "name": "no id" } }),
+        ] {
+            for (name, render) in renderers {
+                let rows = render(&bad, &ctx);
+                assert_eq!(rows.rows.len(), 1, "{name} on {bad}");
+                assert_eq!(line_text(&rows.rows[0].line), NO_UNIT_LINE, "{name}");
+            }
+        }
+        // A frame with a subject but nothing else still renders, honestly.
+        let bare = serde_json::json!({ "object": { "id": "#7", "name": "Atlas" } });
+        for (name, render) in renderers {
+            let rows = render(&bare, &ctx);
+            assert!(!rows.rows.is_empty(), "{name}");
+            for r in &rows.rows {
+                assert_ne!(line_text(&r.line), "(loading...)", "{name}");
+            }
+        }
+    }
+
+    /// I8: the journal reads the ring newest first and renders an unknown
+    /// entry kind as an opaque row; the before/after table takes the newest
+    /// revision of the subject actually HELD, and a row about another subject
+    /// (a staffer's `@unit/damage #n`, which the client's empty-params resync
+    /// cannot follow) is kept out of the table and named in the journal.
+    #[test]
+    fn the_before_after_pane_ignores_a_ring_row_for_another_object_and_prints_its_object_in_the_journal()
+     {
+        let theme = AnsiTheme::classic();
+        let mut store = ringed(&[f3("#7")]);
+        // A foreign delta, and a newer revision for it, arriving after ours.
+        let mut foreign = f3("#8");
+        foreign["to_revision"] = serde_json::json!(9);
+        foreign["entries"] = serde_json::json!([
+            { "kind": "cell", "addr": "unit/heat", "from": 1, "to": 2 },
+            { "kind": "meteor_strike", "note": "from a newer server" }
+        ]);
+        store.apply_panel(
+            &mush_proto::SmolStr::new("tactics.unit"),
+            mush_proto::PanelFrameKind::Delta,
+            &foreign,
+            0,
+        );
+        let ctx = RenderCtx {
+            theme: &theme,
+            depth: ColorDepth::Ansi16,
+            utf8: true,
+            store: &store,
+            selected_channel: None,
+        };
+        let data = f1();
+
+        let journal = texts(&render_unit_journal_rows(&data, &ctx));
+        assert_eq!(journal.len(), 8, "{journal:?}");
+        assert_eq!(
+            journal[0], "#8 rev 9 \u{b7} gauss \u{b7} meteor_strike",
+            "an unknown kind is an opaque row, and the foreign subject is named"
+        );
+        assert!(journal[1].starts_with("#8 rev 9 \u{b7} gauss \u{b7} cell unit/heat 1"));
+        assert_eq!(
+            journal[2], "rev 4 \u{b7} gauss \u{b7} capability_revoked tactics.mobility (gauss)",
+            "the held subject is not repeated on every row"
+        );
+        assert!(journal[7].contains("cell facet/center_torso/rear/armor 6\u{2192}1"));
+
+        let delta = texts(&render_unit_delta_rows(&data, &ctx));
+        assert_eq!(delta[0], "rev 4  gauss", "rev 9 belongs to #8, not to us");
+        assert_eq!(delta[1], "facet/center_torso/rear/armor  6 \u{2192} 1");
+        assert_eq!(delta[2], "section center_torso  ok \u{2192} damaged");
+        assert_eq!(delta[3], "component gauss  ok \u{2192} destroyed");
+        assert_eq!(delta[4], "asset gauss detached");
+        assert_eq!(delta.len(), 7);
+        assert!(
+            !delta.iter().any(|r| r.contains("unit/heat")),
+            "no foreign row in the table: {delta:?}"
+        );
+
+        // With nothing of ours in the ring the table says so, not "loading".
+        let mine_only = ringed(&[foreign.clone()]);
+        let ctx = RenderCtx {
+            store: &mine_only,
+            ..ctx
+        };
+        assert_eq!(
+            texts(&render_unit_delta_rows(&data, &ctx)),
+            vec!["no after-action entries yet".to_string()]
+        );
+        let empty = PanelStore::new();
+        let ctx = RenderCtx {
+            store: &empty,
+            ..ctx
+        };
+        assert_eq!(
+            texts(&render_unit_journal_rows(&data, &ctx)),
+            vec!["(no journal entries yet)".to_string()]
+        );
+    }
+
+    /// I8: a delta the ring had to cut says so rather than lying by omission,
+    /// and a truncated view names what the byte budget left out.
+    #[test]
+    fn an_elided_delta_and_a_truncated_view_both_say_what_is_missing() {
+        let theme = AnsiTheme::classic();
+        let mut huge = f3("#7");
+        huge["entries"] = Value::Array(
+            (0..80)
+                .map(|i| serde_json::json!({ "kind": "cell", "addr": format!("unit/c{i}"), "from": 2, "to": 1 }))
+                .collect(),
+        );
+        let store = ringed(&[huge]);
+        let ctx = RenderCtx {
+            theme: &theme,
+            depth: ColorDepth::Ansi16,
+            utf8: true,
+            store: &store,
+            selected_channel: None,
+        };
+        let journal = texts(&render_unit_journal_rows(&f1(), &ctx));
+        assert_eq!(journal[0], "\u{2026} 31 more entries");
+        assert_eq!(journal.len(), 50);
+
+        let mut cut = f1();
+        cut["truncated"] = serde_json::json!(true);
+        cut["counts"] = serde_json::json!({ "sections": 1, "cells": 900, "components": 40,
+            "capabilities": 1 });
+        let rows = texts(&render_unit_sections_rows(&cut, &ctx));
+        assert_eq!(
+            rows.last().unwrap(),
+            "(view truncated: 896 cells, 39 components not shown)"
+        );
+    }
+
+    /// I8: nine named tabs need about ninety-eight columns. At eighty the
+    /// strip elides — inactive tabs keep their digit and their unread badge,
+    /// the active tab keeps its name — and at one-twenty nothing changes.
+    #[test]
+    fn the_tab_strip_elides_names_at_eighty_columns_and_keeps_them_at_one_twenty() {
+        let tabs: Vec<(u8, &str, usize)> = vec![
+            (1, "scene", 0),
+            (2, "sheet", 0),
+            (3, "mail", 3),
+            (4, "chan", 7),
+            (5, "rolls", 0),
+            (6, "intel", 0),
+            (7, "actions", 0),
+            (8, "damage", 0),
+            (9, "unit", 0),
+        ];
+        let wide = line_text(&tab_strip(&tabs, 8, "Nick \u{25cf} 3 on 14:30", 120));
+        assert!(
+            wide.contains(" 1 scene ") && wide.contains(" 9 unit "),
+            "{wide}"
+        );
+        assert!(wide.contains(" 3 mail 3 ") && wide.contains(" 4 chan 7 "));
+        assert!(wide.ends_with("Nick \u{25cf} 3 on 14:30"));
+        assert_eq!(wide.chars().count(), 120);
+
+        let narrow = line_text(&tab_strip(&tabs, 8, "Nick \u{25cf} 3 on 14:30", 80));
+        assert!(
+            narrow.contains(" 8 damage "),
+            "the active tab keeps its name: {narrow}"
+        );
+        assert!(
+            !narrow.contains("scene") && !narrow.contains("actions"),
+            "{narrow}"
+        );
+        assert!(
+            narrow.contains(" 3 3 ") && narrow.contains(" 4 7 "),
+            "unread survives the elision: {narrow}"
+        );
+        assert!(
+            narrow.starts_with("rustmush  1   2   3 3   4 7   5   6   7   8 damage   9 "),
+            "{narrow:?}"
+        );
+        assert_eq!(narrow.chars().count(), 80);
+
+        // The seven-screen strip fits eighty columns, so it is untouched:
+        // the elision is what the two new tabs cost, not a new rule for
+        // everyone. (Unread badges widen it, and a strip that overflows for
+        // that reason now elides too, where before it was cut mid-tab.)
+        let plain: Vec<(u8, &str, usize)> = tabs[..7].iter().map(|&(d, n, _)| (d, n, 0)).collect();
+        let seven = line_text(&tab_strip(&plain, 1, "", 80));
+        assert!(
+            seven.contains(" 1 scene ") && seven.contains(" 7 actions "),
+            "{seven}"
+        );
     }
 }

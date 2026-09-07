@@ -167,6 +167,60 @@ fn fixture_app() -> TuiApp {
     app
 }
 
+/// The I8 contract's F1 fixture: a `tactics.unit` keyframe, verbatim.
+fn unit_keyframe() -> serde_json::Value {
+    serde_json::json!({
+        "object": { "id": "#7", "name": "Atlas" },
+        "schema": "tacsim:unit:atlas@1#0000000000000000000000000000000000000000000000000000000000000000",
+        "revision": 3,
+        "state": "active",
+        "record": null,
+        "mobility": {
+            "mode": "ground.biped",
+            "switching": null,
+            "modes": [
+                { "id": "ground.biped", "locomotion": "legged", "mediums": ["ground"], "tags": [],
+                  "nominal_speed_cms": 640, "transition_s": 0 }
+            ]
+        },
+        "sections": [
+            { "id": "center_torso", "condition": "ok", "state": "crit",
+              "facets": [ { "id": "rear", "cells": ["armor"] } ],
+              "slots": ["torso_hardpoint"] }
+        ],
+        "cells": [
+            { "addr": "unit/heat",                      "label": "heat",      "current": 20, "min": 0, "max": 30, "state": "ok"   },
+            { "addr": "section/center_torso/structure", "label": "structure", "current": 8,  "min": 0, "max": 8,  "state": "ok"   },
+            { "addr": "facet/center_torso/rear/armor",  "label": "armor",     "current": 1,  "min": 0, "max": 6,  "state": "crit" },
+            { "addr": "component/gauss/ammo",           "label": "ammo",      "current": 9,  "min": 0, "max": 12, "state": "ok"   }
+        ],
+        "components": [
+            { "id": "gauss",
+              "definition": "tacsim:component:gauss@1#0000000000000000000000000000000000000000000000000000000000000000",
+              "install": "slot/center_torso/torso_hardpoint", "condition": "ok", "state": "ok", "asset": false }
+        ],
+        "capabilities": [ { "id": "tactics.mobility", "source": null } ],
+        "counts": { "sections": 1, "cells": 4, "components": 1, "capabilities": 1 },
+        "truncated": false
+    })
+}
+
+/// The I8 contract's F3 fixture: the projected `@unit/damage` delta.
+fn unit_delta() -> serde_json::Value {
+    serde_json::json!({
+        "object": { "id": "#7", "name": "Atlas" },
+        "from_revision": 3, "to_revision": 4, "now": 1_757_000_000, "cause": "gauss",
+        "entries": [
+            { "kind": "cell",               "addr": "facet/center_torso/rear/armor", "from": 6, "to": 1 },
+            { "kind": "section",            "section": "center_torso", "from": "ok", "to": "damaged" },
+            { "kind": "component",          "component": "gauss", "from": "ok", "to": "destroyed" },
+            { "kind": "asset",              "component": "gauss", "attached": false },
+            { "kind": "capability_granted", "id": "tactics.mobility", "source": "gauss", "replaced": false },
+            { "kind": "capability_revoked", "id": "tactics.mobility", "source": "gauss", "was_present": true }
+        ]
+    })
+}
+
 fn golden_path(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests")
@@ -289,6 +343,42 @@ fn every_screen_has_a_golden_at_the_budget_size() {
             ]
         }),
     });
+    // The I8 tactical unit feed: one keyframe (the contract's F1 fixture),
+    // then the projected `@unit/damage` delta (F3) that feeds the journal
+    // ring and the before/after table. Neither is a `.vitals` feed, so no
+    // other screen's frame moves because of them.
+    app.apply_event(&OutputEvent::Panel {
+        feed: SmolStr::new_static("tactics.unit"),
+        kind: PanelFrameKind::Keyframe,
+        data: unit_keyframe(),
+    });
+    app.apply_event(&OutputEvent::Panel {
+        feed: SmolStr::new_static("tactics.unit"),
+        kind: PanelFrameKind::Delta,
+        data: unit_delta(),
+    });
+    // The contacts table (the contract's F5 fixture): two rows, one real and
+    // one phantom-backed, identical apart from the id and its prefill.
+    app.apply_event(&OutputEvent::Panel {
+        feed: SmolStr::new_static("tactics.contacts"),
+        kind: PanelFrameKind::Keyframe,
+        data: serde_json::json!({
+            "schema": { "id": "tactics.contacts", "version": 1, "shape": "list",
+                "columns": [ { "key": "id", "label": "contact", "align": "left" },
+                             { "key": "gen", "label": "gen", "align": "right" },
+                             { "key": "rev", "label": "rev", "align": "right" },
+                             { "key": "state", "label": "state", "align": "left" },
+                             { "key": "age", "label": "age", "align": "right" },
+                             { "key": "band", "label": "band", "align": "left" },
+                             { "key": "source", "label": "source", "align": "left" } ],
+                "fields": [], "actionKey": "prefill" },
+            "rows": [
+                { "id": "aabbccddeeff", "gen": 1, "rev": 3, "state": "held", "age": "12s", "band": "close", "source": "local", "prefill": "+contact aabbccddeeff" },
+                { "id": "001122334455", "gen": 1, "rev": 3, "state": "held", "age": "12s", "band": "close", "source": "local", "prefill": "+contact 001122334455" }
+            ],
+            "truncated": false
+        }),
+    });
     for (digit, name) in [
         (b'2', "sheet"),
         (b'3', "mail"),
@@ -296,6 +386,8 @@ fn every_screen_has_a_golden_at_the_budget_size() {
         (b'5', "rolls"),
         (b'6', "intel"),
         (b'7', "actions"),
+        (b'8', "damage"),
+        (b'9', "unit"),
     ] {
         app.feed_input(&[digit]);
         let text = frame_text(&mut app, 120, 34);

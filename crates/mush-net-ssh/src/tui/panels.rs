@@ -24,6 +24,20 @@ pub const MAX_TUI_FEEDS: usize = 32;
 pub const ROLLS_RING: usize = 100;
 /// The most messages kept per channel.
 pub const BACKLOG_RING: usize = 200;
+/// The most `tactics.unit` journal rows the ring keeps (interface plan I8;
+/// the web client keeps the same number, so the two read alike).
+pub const JOURNAL_RING: usize = 200;
+/// The most rows one delta may contribute to the journal ring. A delta with
+/// more entries than this contributes its first `JOURNAL_ROWS_PER_DELTA - 1`
+/// and one `elided` row carrying the count omitted, so a 1024-entry burst can
+/// never flood the ring or hide that it was cut.
+pub const JOURNAL_ROWS_PER_DELTA: usize = 50;
+/// The feed whose deltas are kept as an after-action journal.
+pub const UNIT_FEED: &str = "tactics.unit";
+/// The contacts table (interface plan I8, D-I8-1): a generic-view keyframe
+/// the unit screen renders with the I9 renderer, subscribed only when the
+/// manifest carries it.
+pub const CONTACTS_FEED: &str = "tactics.contacts";
 
 /// One feed's latest state.
 #[derive(Clone, Debug)]
@@ -65,6 +79,7 @@ pub struct PanelStore {
     view_cursors: HashMap<SmolStr, ViewCursor>,
     resync_pending: HashSet<SmolStr>,
     rolls: VecDeque<Value>,
+    unit_journal: VecDeque<Value>,
     backlog: HashMap<String, VecDeque<ChanMsg>>,
 }
 
@@ -133,6 +148,18 @@ impl PanelStore {
         &self.rolls
     }
 
+    /// The `tactics.unit` journal ring, oldest first (interface plan I8).
+    ///
+    /// One row per projected delta entry:
+    /// `{ object, rev, cause, at, entry }` — `object` is the delta's own
+    /// subject id, which need not be the subject of the held keyframe (the
+    /// resync path always asks for the viewer's default subject), so a
+    /// renderer must read each row's `object` rather than assume it.
+    #[must_use]
+    pub fn unit_journal(&self) -> &VecDeque<Value> {
+        &self.unit_journal
+    }
+
     /// The messages kept for `channel`, oldest first.
     #[must_use]
     pub fn backlog(&self, channel: &str) -> Vec<&ChanMsg> {
@@ -184,6 +211,19 @@ impl PanelStore {
         }
         match kind {
             PanelFrameKind::Keyframe => {
+                if feed.as_str() == UNIT_FEED {
+                    // A keyframe for another subject makes the journal rows of
+                    // the one we held meaningless: drop them. Nothing held yet
+                    // is NOT a change — the after-action fan-out delivers the
+                    // delta first and the keyframe only after the resync, so
+                    // clearing there would throw away the very rows the
+                    // before/after pane exists to show. A `null` keyframe
+                    // (the viewer lost the station) is a change, and clears.
+                    let held = self.get(feed).and_then(unit_object_id);
+                    if held.is_some() && held != unit_object_id(data) {
+                        self.unit_journal.clear();
+                    }
+                }
                 self.resync_pending.remove(feed);
                 self.store(feed, data.clone(), now)
             }
@@ -213,8 +253,65 @@ impl PanelStore {
                     };
                     self.store(feed, merged, now)
                 }
+                // The after-action journal (interface plan I8). The delta is
+                // the only place the before/after sides are ever carried, so
+                // it is kept in the ring BEFORE asking for a keyframe: the
+                // storm guard answers `Ignored` for the 2nd..nth delta while
+                // one request is outstanding, and every one of those still
+                // belongs in the ring.
+                UNIT_FEED => {
+                    self.push_unit_journal(data);
+                    self.resync(feed)
+                }
                 _ => self.resync(feed),
             },
+        }
+    }
+
+    /// Fold one projected `tactics.unit` delta into the journal ring: one row
+    /// per entry, tagged with the delta's own subject, revision, cause and
+    /// clock. A delta longer than [`JOURNAL_ROWS_PER_DELTA`] contributes its
+    /// first `JOURNAL_ROWS_PER_DELTA - 1` entries and one `elided` row.
+    fn push_unit_journal(&mut self, delta: &Value) {
+        let object = delta
+            .get("object")
+            .and_then(|o| o.get("id"))
+            .and_then(Value::as_str)
+            .map_or(Value::Null, |id| Value::String(id.to_string()));
+        let rev = delta
+            .get("to_revision")
+            .and_then(Value::as_u64)
+            .map_or(Value::Null, Value::from);
+        let cause = delta.get("cause").cloned().unwrap_or(Value::Null);
+        let at = delta.get("now").cloned().unwrap_or(Value::Null);
+        let empty = Vec::new();
+        let entries = delta
+            .get("entries")
+            .and_then(Value::as_array)
+            .unwrap_or(&empty);
+        let total = entries.len();
+        let keep = if total > JOURNAL_ROWS_PER_DELTA {
+            JOURNAL_ROWS_PER_DELTA - 1
+        } else {
+            total
+        };
+        let mut row = |entry: Value| {
+            self.unit_journal.push_back(serde_json::json!({
+                "object": object.clone(),
+                "rev": rev.clone(),
+                "cause": cause.clone(),
+                "at": at.clone(),
+                "entry": entry,
+            }));
+        };
+        for entry in entries.iter().take(keep) {
+            row(entry.clone());
+        }
+        if total > keep {
+            row(serde_json::json!({ "kind": "elided", "omitted": total - keep }));
+        }
+        while self.unit_journal.len() > JOURNAL_RING {
+            self.unit_journal.pop_front();
         }
     }
 
@@ -361,6 +458,16 @@ pub fn rich_plain(v: &Value) -> String {
         _ => String::new(),
     };
     raw.chars().filter(|c| !c.is_control()).collect()
+}
+
+/// The `object.id` of a unit frame, if it carries one. A `null` frame (the
+/// viewer holds no station) has none, and that is a held frame, not an error.
+fn unit_object_id(frame: &Value) -> Option<String> {
+    frame
+        .get("object")
+        .and_then(|o| o.get("id"))
+        .and_then(Value::as_str)
+        .map(str::to_string)
 }
 
 fn within_bounds(data: &Value) -> bool {
@@ -598,6 +705,112 @@ mod tests {
             st.get("wod.sheet").unwrap().get("data").unwrap(),
             &serde_json::json!({ "strength": 4 })
         );
+    }
+
+    /// The I8 contract's F3 delta: `n` cell entries about `object`.
+    fn unit_delta(object: &str, to_revision: u64, n: usize) -> Value {
+        let entries: Vec<Value> = (0..n)
+            .map(|i| {
+                serde_json::json!({ "kind": "cell", "addr": format!("unit/c{i}"),
+                    "from": 6, "to": 1 })
+            })
+            .collect();
+        serde_json::json!({
+            "object": { "id": object, "name": "Atlas" },
+            "from_revision": to_revision - 1, "to_revision": to_revision,
+            "now": 1_757_000_000, "cause": "gauss", "entries": entries
+        })
+    }
+
+    fn unit_keyframe(object: &str, revision: u64) -> Value {
+        serde_json::json!({
+            "object": { "id": object, "name": "Atlas" }, "revision": revision,
+            "state": "active", "record": null, "mobility": null,
+            "sections": [], "cells": [], "components": [], "capabilities": [],
+            "counts": { "sections": 0, "cells": 0, "components": 0, "capabilities": 0 },
+            "truncated": false
+        })
+    }
+
+    /// I8: a `tactics.unit` delta is kept BEFORE the resync is asked for, so
+    /// the storm guard (which answers `Ignored` for the 2nd..nth delta while
+    /// one keyframe request is outstanding) never costs the ring a row. A
+    /// delta longer than `JOURNAL_ROWS_PER_DELTA` says how much it cut.
+    #[test]
+    fn a_tactics_unit_delta_rings_at_most_fifty_rows_and_asks_for_exactly_one_keyframe() {
+        let mut st = PanelStore::new();
+        let f = SmolStr::new(UNIT_FEED);
+        assert_eq!(
+            st.apply_panel(&f, PanelFrameKind::Delta, &unit_delta("#7", 4, 3), 0),
+            PanelOutcome::NeedsResync(f.clone())
+        );
+        assert_eq!(
+            st.apply_panel(&f, PanelFrameKind::Delta, &unit_delta("#7", 5, 2), 0),
+            PanelOutcome::Ignored,
+            "one keyframe request outstanding, no storm"
+        );
+        assert_eq!(
+            st.unit_journal().len(),
+            5,
+            "both deltas ringed, coalesced or not"
+        );
+        let row = st.unit_journal().front().unwrap();
+        assert_eq!(row["object"], serde_json::json!("#7"));
+        assert_eq!(row["rev"], serde_json::json!(4));
+        assert_eq!(row["cause"], serde_json::json!("gauss"));
+        assert_eq!(row["at"], serde_json::json!(1_757_000_000u64));
+        assert_eq!(row["entry"]["kind"], serde_json::json!("cell"));
+
+        let mut st = PanelStore::new();
+        st.apply_panel(&f, PanelFrameKind::Delta, &unit_delta("#7", 4, 1024), 0);
+        assert_eq!(st.unit_journal().len(), JOURNAL_ROWS_PER_DELTA);
+        let last = st.unit_journal().back().unwrap();
+        assert_eq!(last["entry"]["kind"], serde_json::json!("elided"));
+        assert_eq!(
+            last["entry"]["omitted"],
+            serde_json::json!(1024 - (JOURNAL_ROWS_PER_DELTA - 1))
+        );
+    }
+
+    /// I8: a keyframe clears the resync latch; the ring is capped; a keyframe
+    /// for another subject drops rows that no longer describe what is held,
+    /// while the FIRST keyframe after a delta keeps them (the fan-out sends
+    /// the delta first, and those rows are the after-action report); and a
+    /// `null` keyframe — the viewer holds no station — is a held frame.
+    #[test]
+    fn a_keyframe_clears_the_latch_and_the_ring_caps_at_two_hundred() {
+        let mut st = PanelStore::new();
+        let f = SmolStr::new(UNIT_FEED);
+        st.apply_panel(&f, PanelFrameKind::Delta, &unit_delta("#7", 4, 3), 0);
+        assert!(st.resync_pending(UNIT_FEED));
+        st.apply_panel(&f, PanelFrameKind::Keyframe, &unit_keyframe("#7", 4), 1);
+        assert!(!st.resync_pending(UNIT_FEED));
+        assert_eq!(
+            st.unit_journal().len(),
+            3,
+            "the first keyframe keeps the rows that provoked it"
+        );
+
+        for rev in 5..40 {
+            st.apply_panel(&f, PanelFrameKind::Delta, &unit_delta("#7", rev, 10), 1);
+        }
+        assert_eq!(st.unit_journal().len(), JOURNAL_RING);
+        let oldest = st.unit_journal().front().unwrap()["rev"].as_u64().unwrap();
+        assert!(oldest > 5, "the ring dropped from the front: {oldest}");
+
+        // A keyframe for another subject clears it; so does losing the unit.
+        st.apply_panel(&f, PanelFrameKind::Keyframe, &unit_keyframe("#8", 1), 2);
+        assert!(st.unit_journal().is_empty());
+        st.apply_panel(&f, PanelFrameKind::Delta, &unit_delta("#8", 2, 2), 2);
+        assert_eq!(st.unit_journal().len(), 2);
+        st.apply_panel(&f, PanelFrameKind::Keyframe, &Value::Null, 3);
+        assert!(st.unit_journal().is_empty(), "the unit went away");
+        assert_eq!(
+            st.get(UNIT_FEED),
+            Some(&Value::Null),
+            "a null keyframe is a held frame, not an error"
+        );
+        assert!(!st.resync_pending(UNIT_FEED));
     }
 
     #[test]

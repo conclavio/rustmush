@@ -39,7 +39,7 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use serde_json::Value;
 
 use super::keys::{Key, KeyParser};
-use super::panels::{ChanMsg, PanelOutcome, PanelStore, rich_plain};
+use super::panels::{ChanMsg, PanelOutcome, PanelStore, UNIT_FEED, rich_plain};
 use super::render::{
     Entry, GUTTER_W, PaneRows, RenderCtx, dim_span_owned, legend_line, render_backlog_rows,
     render_channels_rows, render_event, render_rolls_rows, render_sheet_rows, render_vitals_rows,
@@ -469,6 +469,19 @@ impl TuiApp {
             .iter()
             .map(|(n, a)| ((*n).to_string(), a.clone()))
             .collect();
+        // Interface plan I8: a pane over a module feed (a dotted name) the
+        // manifest carries is subscribed on entry — the contacts table — and
+        // an absent feed is never asked for, so a server without its producer
+        // prints nothing. A feed `on_enter` already names is not doubled.
+        for p in &screen.panes {
+            if let PaneContent::Panel { feed, .. } = p.content
+                && feed.contains('.')
+                && manifest_has(&self.manifest, feed)
+                && !q.iter().any(|(n, _)| n == feed)
+            {
+                q.push((feed.to_string(), Value::Object(serde_json::Map::new())));
+            }
+        }
         if screen
             .panes
             .iter()
@@ -1458,6 +1471,22 @@ impl TuiApp {
             PaneContent::Scrollback | PaneContent::Who => PaneRows::default(),
             PaneContent::Panel { feed, render } => match self.panels.get(feed) {
                 Some(data) => render(data, &ctx),
+                // A feed whose first keyframe is still in flight is honestly
+                // loading — except the unit feed (interface plan I8), whose
+                // frame may never come: a server without the tactical module
+                // has no such query, and a refusal lands in the scrollback,
+                // which neither tactical screen shows. Its renderers have an
+                // honest empty state, so hand them the empty frame.
+                None if feed == UNIT_FEED => render(&Value::Null, &ctx),
+                // A module feed this server does not publish at all (the
+                // contacts table on a server without the propagation layer)
+                // is declared-empty, not loading: nothing will ever arrive.
+                None if feed.contains('.')
+                    && !self.manifest.panels.is_empty()
+                    && !manifest_has(&self.manifest, feed) =>
+                {
+                    PaneRows::placeholder("(not published by this server)")
+                }
                 None => loading(),
             },
             PaneContent::View { view, render } => match self.panels.get(view) {
@@ -1485,6 +1514,7 @@ impl TuiApp {
                 render_rolls_rows(&rolls)
             }
             PaneContent::Vitals => render_vitals_rows(&self.panels.vitals(), self.caps.utf8),
+            PaneContent::Placeholder(text) => PaneRows::placeholder(text),
         }
     }
 
@@ -2621,7 +2651,7 @@ mod tests {
             data: serde_json::json!({ "secret": "never-shown-\u{7}text" }),
         });
         assert!(app.panels().get("mystery.feed").is_some());
-        for screen in 1..=7u8 {
+        for screen in 1..=9u8 {
             app.feed_input(&[b'0' + screen]);
             let text = super::super::frame_text(&mut app, 120, 34);
             assert!(!text.contains("never-shown"), "screen {screen}");
@@ -2729,7 +2759,7 @@ mod tests {
             here: true,
             doing: None,
         }]));
-        for screen in 1..=7u8 {
+        for screen in 1..=9u8 {
             app.feed_input(&[b'0' + screen]);
             for (w, h) in [
                 (1u16, 1u16),
@@ -2756,6 +2786,163 @@ mod tests {
         let short = super::super::frame_text(&mut app, 80, 8);
         assert!(!short.contains("Enter type"), "no chrome below 12 rows");
         assert!(short.contains("input"));
+    }
+
+    /// I8: the unit screen's four declared placeholders say what they wait
+    /// on rather than sitting on `(loading...)` forever, and they are the
+    /// first four panes to go when the terminal narrows — a live pane never
+    /// loses its place to one that has no producer yet.
+    #[test]
+    fn placeholders_render_their_declared_text_and_degrade_before_every_live_pane() {
+        let mut app = app();
+        app.feed_input(b"9");
+        assert_eq!(app.active_screen(), ScreenId(9));
+
+        // The body area of a 120x34 terminal (tabs, status, input, legend).
+        let survivors = |app: &TuiApp, w: u16, h: u16| -> Vec<&'static str> {
+            app.visible_panes(Rect::new(0, 0, w, h))
+                .iter()
+                .map(|p| p.id.0)
+                .collect()
+        };
+        assert_eq!(
+            survivors(&app, 120, 28),
+            vec![
+                "sections",
+                "components",
+                "plant",
+                "grid",
+                "contacts",
+                "weapons",
+                "comms"
+            ],
+            "all seven at 120x34"
+        );
+        assert_eq!(
+            survivors(&app, 80, 18),
+            vec!["sections", "components", "plant"],
+            "at 80x24 the placeholders and contacts go, the live panes stay"
+        );
+        // Narrowing further keeps dropping in the declared order.
+        assert_eq!(survivors(&app, 60, 18), vec!["sections", "components"]);
+        assert_eq!(
+            survivors(&app, 30, 18),
+            vec!["sections"],
+            "narrower than the main pane's minimum: the first pane alone"
+        );
+
+        // The damage screen keeps all three panes down to eighty columns.
+        app.feed_input(b"8");
+        assert_eq!(
+            survivors(&app, 80, 18),
+            vec!["sections", "delta", "journal"]
+        );
+        assert_eq!(survivors(&app, 60, 18), vec!["sections"]);
+
+        // The declared text paints, and no unit pane ever says "loading":
+        // a placeholder shows its two-row declaration, the contacts pane on
+        // a server whose manifest lacks the feed says so, and the unit panes
+        // read the no-unit line.
+        app.set_manifest(TuiManifest {
+            panels: vec!["tactics.unit".into()],
+            character: None,
+        });
+        app.feed_input(b"9");
+        let text = super::super::frame_text(&mut app, 120, 34);
+        assert_eq!(
+            text.matches("projection (plan").count(),
+            3,
+            "one declaration per placeholder:\n{text}"
+        );
+        for row in [
+            "awaiting a geometry",
+            "awaiting a weapons-cycle",
+            "awaiting a station comms",
+        ] {
+            assert!(text.contains(row), "{row} missing:\n{text}");
+        }
+        for title in ["grid", "weapons", "comms", "contacts"] {
+            assert!(text.contains(title), "{title} missing:\n{text}");
+        }
+        assert!(
+            text.contains("(not published by this server)"),
+            "a feed the manifest lacks is declared empty, never loading:\n{text}"
+        );
+        assert!(
+            text.contains("No tactical unit"),
+            "no keyframe held is the no-unit line, never a spinner:\n{text}"
+        );
+        assert!(!text.contains("(loading...)"), "{text}");
+    }
+
+    /// I8 (D-I8-1): the contacts pane's feed is asked for on entry only when
+    /// the manifest carries it (a server without the propagation layer never
+    /// prints an unknown-query line), `r` replays it, the damage screen never
+    /// asks for it, and the table renders through the generic-view renderer
+    /// with the row's `+contact` prefill ready on Enter.
+    #[test]
+    fn the_unit_screen_subscribes_the_contacts_feed_only_when_the_manifest_carries_it() {
+        let names =
+            |r: &InputResult| -> Vec<String> { r.queries.iter().map(|(n, _)| n.clone()).collect() };
+        let mut app = app();
+        app.set_manifest(TuiManifest {
+            panels: vec!["tactics.unit".into()],
+            character: None,
+        });
+        app.feed_input(b"1");
+        assert_eq!(names(&app.feed_input(b"9")), vec!["tactics.unit"]);
+        app.set_manifest(TuiManifest {
+            panels: vec!["tactics.unit".into(), "tactics.contacts".into()],
+            character: None,
+        });
+        app.feed_input(b"1");
+        let r = app.feed_input(b"9");
+        assert_eq!(names(&r), vec!["tactics.unit", "tactics.contacts"]);
+        let refresh = app.feed_input(b"r");
+        assert_eq!(refresh.queries, r.queries, "r replays both");
+        assert_eq!(names(&app.feed_input(b"8")), vec!["tactics.unit"]);
+        app.apply_event(&OutputEvent::Panel {
+            feed: "tactics.contacts".into(),
+            kind: PanelFrameKind::Keyframe,
+            data: serde_json::json!({
+                "schema": { "id": "tactics.contacts", "version": 1, "shape": "list",
+                    "columns": [ { "key": "id", "label": "contact", "align": "left" },
+                                 { "key": "state", "label": "state", "align": "left" } ],
+                    "fields": [], "actionKey": "prefill" },
+                "rows": [ { "id": "aabbccddeeff", "state": "held", "prefill": "+contact aabbccddeeff" } ],
+                "truncated": false
+            }),
+        });
+        app.feed_input(b"9");
+        let text = super::super::frame_text(&mut app, 120, 34);
+        assert!(text.contains("aabbccddeeff"), "{text}");
+        assert!(!text.contains("(loading...)"), "{text}");
+        // Tab to the contacts pane (the fifth), Enter prefills the row's line.
+        for _ in 0..4 {
+            app.feed_input(b"\t");
+        }
+        app.feed_input(b"\r");
+        assert_eq!(app.input_text(), "+contact aabbccddeeff");
+    }
+
+    /// I8: both tactical screens hydrate the one feed they read, with the
+    /// empty params that mean "the viewer's own subject"; `r` replays it.
+    #[test]
+    fn the_tactical_screens_ask_for_the_unit_feed_on_entry_and_on_refresh() {
+        let mut app = app();
+        for digit in *b"89" {
+            app.feed_input(b"1");
+            let r = app.feed_input(&[digit]);
+            assert_eq!(
+                r.queries,
+                vec![(
+                    "tactics.unit".to_string(),
+                    Value::Object(serde_json::Map::new())
+                )]
+            );
+            let refresh = app.feed_input(b"r");
+            assert_eq!(refresh.queries, r.queries, "r re-requests the keyframe");
+        }
     }
 
     #[test]

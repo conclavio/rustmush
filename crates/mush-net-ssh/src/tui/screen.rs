@@ -16,6 +16,7 @@
 
 use serde_json::Value;
 
+use super::panels::{CONTACTS_FEED, UNIT_FEED};
 use super::render::{PaneRows, RenderCtx};
 
 /// The most screens a TUI can register (the hotkey digits `1`–`9`).
@@ -56,6 +57,16 @@ pub const RUN_ALLOWLIST: &[&str] = &[
     "help",
     "@mail",
 ];
+
+/// The body of a declared-but-unproduced pane (interface plan I8), two rows
+/// that fit the narrowest pane. Each names the PRODUCER that is missing,
+/// never a cut number, so the pane says what would fill it and a reader can
+/// tell "nothing yet" from "broken". The pane's title is its plain name.
+pub const AWAITING_GRID: &str = "awaiting a geometry\nprojection (plan \u{a7}9)";
+/// The weapons pane's declaration.
+pub const AWAITING_WEAPONS: &str = "awaiting a weapons-cycle\nprojection (plan \u{a7}9)";
+/// The comms pane's declaration.
+pub const AWAITING_COMMS: &str = "awaiting a station comms\nprojection (plan \u{a7}9)";
 
 /// A screen's hotkey digit, `1..=9`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -131,6 +142,11 @@ pub enum PaneContent {
     /// in threes with the level, pools as gauges, readouts with a condition
     /// mark.
     Vitals,
+    /// A pane whose producer does not exist yet (interface plan I8): a
+    /// declared, titled placeholder that names what is missing and degrades
+    /// before every live pane. A `Panel` on an absent feed would instead
+    /// wait on `(loading...)` forever, which is a lie.
+    Placeholder(&'static str),
 }
 
 /// One pane of a screen.
@@ -225,13 +241,21 @@ impl Screen {
     }
 }
 
-/// The seven built-in screens: 1 scene, 2 sheet, 3 mail, 4 chan, 5 rolls,
-/// 6 intel, 7 actions.
+/// The nine built-in screens: 1 scene, 2 sheet, 3 mail, 4 chan, 5 rolls,
+/// 6 intel, 7 actions, 8 damage, 9 unit.
+///
+/// Screens 8 and 9 read one feed, `tactics.unit`, and name nothing in it:
+/// every label, id and word on them comes out of the frame, so a ruleset that
+/// publishes the feed gets both screens without a client change.
 #[must_use]
 pub fn builtin_screens() -> Vec<Screen> {
     use super::render::{
         render_actions_rows, render_intel_rows, render_mail_rows, render_scene_rows,
+        render_unit_components_rows, render_unit_delta_rows, render_unit_journal_rows,
+        render_unit_plant_rows, render_unit_sections_compact_rows, render_unit_sections_rows,
+        render_view_rows,
     };
+    let unit_query = || vec![(UNIT_FEED, Value::Object(serde_json::Map::new()))];
     vec![
         Screen {
             id: ScreenId(1),
@@ -525,6 +549,200 @@ pub fn builtin_screens() -> Vec<Screen> {
             exits_are_keys: false,
             on_enter: vec![("legal.actions", Value::Object(serde_json::Map::new()))],
         },
+        // 8 damage — the after-action report (interface plan I8): the unit as
+        // the ruleset judged it, the newest `@unit/damage` before/after table
+        // beside it, and the journal those tables come from.
+        Screen {
+            id: ScreenId(8),
+            name: "damage",
+            panes: vec![
+                PaneSpec {
+                    id: PaneId("sections"),
+                    title: "sections",
+                    role: BorderRole::Unit,
+                    slot: PaneSlot::Main,
+                    content: PaneContent::Panel {
+                        feed: UNIT_FEED,
+                        render: render_unit_sections_rows,
+                    },
+                    min_w: 40,
+                    min_h: 6,
+                    selectable: false,
+                },
+                PaneSpec {
+                    id: PaneId("delta"),
+                    title: "before / after",
+                    role: BorderRole::Danger,
+                    slot: PaneSlot::Right,
+                    content: PaneContent::Panel {
+                        feed: UNIT_FEED,
+                        render: render_unit_delta_rows,
+                    },
+                    min_w: 34,
+                    min_h: 5,
+                    selectable: false,
+                },
+                PaneSpec {
+                    id: PaneId("journal"),
+                    title: "journal",
+                    role: BorderRole::Neutral,
+                    slot: PaneSlot::Right,
+                    content: PaneContent::Panel {
+                        feed: UNIT_FEED,
+                        render: render_unit_journal_rows,
+                    },
+                    min_w: 34,
+                    min_h: 4,
+                    selectable: false,
+                },
+            ],
+            keys: vec![
+                // Refresh replays `on_enter`, which IS the keyframe
+                // re-request; `@unit` is staff-gated and mutating, so it is
+                // never a bare key — only a line waiting on Enter (D-I-18).
+                KeyBinding {
+                    key: 'r',
+                    label: "refresh",
+                    action: KeyAction::Local(LocalAction::Refresh),
+                },
+                KeyBinding {
+                    key: 'd',
+                    label: "damage",
+                    action: KeyAction::Prefill("@unit/damage "),
+                },
+                KeyBinding {
+                    key: 'u',
+                    label: "show unit",
+                    action: KeyAction::Prefill("@unit/show "),
+                },
+            ],
+            degrade: vec![PaneId("journal"), PaneId("delta")],
+            exits_are_keys: false,
+            on_enter: unit_query(),
+        },
+        // 9 unit — the unit at a glance. Four panes read the feed; the other
+        // three are declared placeholders naming the projection each waits on
+        // (plan §9), and they degrade before any live pane does.
+        Screen {
+            id: ScreenId(9),
+            name: "unit",
+            panes: vec![
+                PaneSpec {
+                    id: PaneId("sections"),
+                    title: "sections",
+                    role: BorderRole::Unit,
+                    slot: PaneSlot::Main,
+                    content: PaneContent::Panel {
+                        feed: UNIT_FEED,
+                        render: render_unit_sections_compact_rows,
+                    },
+                    min_w: 40,
+                    min_h: 4,
+                    selectable: false,
+                },
+                PaneSpec {
+                    id: PaneId("components"),
+                    title: "components",
+                    role: BorderRole::Neutral,
+                    slot: PaneSlot::Main,
+                    content: PaneContent::Panel {
+                        feed: UNIT_FEED,
+                        render: render_unit_components_rows,
+                    },
+                    min_w: 40,
+                    min_h: 4,
+                    selectable: false,
+                },
+                PaneSpec {
+                    id: PaneId("plant"),
+                    title: "plant",
+                    role: BorderRole::Unit,
+                    slot: PaneSlot::Left,
+                    content: PaneContent::Panel {
+                        feed: UNIT_FEED,
+                        render: render_unit_plant_rows,
+                    },
+                    min_w: 24,
+                    min_h: 4,
+                    selectable: false,
+                },
+                PaneSpec {
+                    id: PaneId("grid"),
+                    title: "grid",
+                    role: BorderRole::Neutral,
+                    slot: PaneSlot::Left,
+                    content: PaneContent::Placeholder(AWAITING_GRID),
+                    min_w: 24,
+                    min_h: 3,
+                    selectable: false,
+                },
+                // The contacts table (D-I8-1): the I9 generic-view renderer
+                // over the `tactics.contacts` keyframe; a row's Enter prefills
+                // `+contact <id>`. Subscribed on entry only when the manifest
+                // carries the feed (`screen_queries`), so a server without
+                // the propagation layer never prints an unknown-query line.
+                PaneSpec {
+                    id: PaneId("contacts"),
+                    title: "contacts",
+                    role: BorderRole::Neutral,
+                    slot: PaneSlot::Right,
+                    content: PaneContent::Panel {
+                        feed: CONTACTS_FEED,
+                        render: render_view_rows,
+                    },
+                    min_w: 34,
+                    min_h: 4,
+                    selectable: true,
+                },
+                PaneSpec {
+                    id: PaneId("weapons"),
+                    title: "weapons",
+                    role: BorderRole::Neutral,
+                    slot: PaneSlot::Right,
+                    content: PaneContent::Placeholder(AWAITING_WEAPONS),
+                    min_w: 20,
+                    min_h: 2,
+                    selectable: false,
+                },
+                PaneSpec {
+                    id: PaneId("comms"),
+                    title: "comms",
+                    role: BorderRole::Neutral,
+                    slot: PaneSlot::Right,
+                    content: PaneContent::Placeholder(AWAITING_COMMS),
+                    min_w: 20,
+                    min_h: 2,
+                    selectable: false,
+                },
+            ],
+            keys: vec![
+                KeyBinding {
+                    key: 'r',
+                    label: "refresh",
+                    action: KeyAction::Local(LocalAction::Refresh),
+                },
+                KeyBinding {
+                    key: 'c',
+                    label: "contacts",
+                    action: KeyAction::Run("+contacts"),
+                },
+                KeyBinding {
+                    key: 'd',
+                    label: "damage",
+                    action: KeyAction::Prefill("@unit/damage "),
+                },
+            ],
+            degrade: vec![
+                PaneId("comms"),
+                PaneId("weapons"),
+                PaneId("grid"),
+                PaneId("contacts"),
+                PaneId("plant"),
+                PaneId("components"),
+            ],
+            exits_are_keys: false,
+            on_enter: unit_query(),
+        },
     ]
 }
 
@@ -618,6 +836,69 @@ mod tests {
         // Another screen may use those letters.
         let mail = screens.iter().find(|s| s.id == ScreenId(3)).unwrap();
         assert!(mail.binding('s').is_some() && mail.binding('d').is_some());
+    }
+
+    /// I8: nine screens is the cap, and the two tactical ones sit inside every
+    /// bound the probe enforces — pane count, unique pane ids, a `degrade`
+    /// order that names only panes it has, and no `Run` off the read-only
+    /// list (`@unit` is staff-gated and mutating: it is only ever a prefill).
+    #[test]
+    fn nine_screens_validate_and_the_tactical_two_stay_inside_every_cap() {
+        let screens = builtin_screens();
+        assert_eq!(screens.len(), 9);
+        validate_screens(&screens).expect("nine built-ins are valid");
+        assert_eq!(
+            screens.len(),
+            MAX_SCREENS,
+            "the hotkey digits are now spent"
+        );
+        for id in [ScreenId(8), ScreenId(9)] {
+            let screen = screens.iter().find(|s| s.id == id).expect("a screen");
+            assert!(screen.panes.len() <= MAX_PANES_PER_SCREEN);
+            for d in &screen.degrade {
+                assert!(
+                    screen.pane(*d).is_some(),
+                    "{} degrades {}",
+                    screen.name,
+                    d.0
+                );
+            }
+            assert_eq!(
+                screen.on_enter,
+                vec![(UNIT_FEED, Value::Object(serde_json::Map::new()))],
+                "the TUI asks for the default subject, never a named one"
+            );
+            assert!(!screen.exits_are_keys);
+            for b in &screen.keys {
+                assert!(
+                    !matches!(b.action, KeyAction::Run(cmd) if cmd.starts_with('@')),
+                    "{:?} runs a mutating verb",
+                    b.key
+                );
+            }
+        }
+        // Every placeholder pane degrades before any live one (plan §3.8).
+        let unit = screens.iter().find(|s| s.id == ScreenId(9)).unwrap();
+        let placeholders: Vec<PaneId> = unit
+            .panes
+            .iter()
+            .filter(|p| matches!(p.content, PaneContent::Placeholder(_)))
+            .map(|p| p.id)
+            .collect();
+        assert_eq!(placeholders.len(), 3);
+        // The contacts pane is live (D-I8-1): the generic-view renderer over
+        // its own feed, selectable so Enter prefills the row's `+contact`.
+        let contacts = unit.pane(PaneId("contacts")).expect("contacts pane");
+        assert!(
+            matches!(contacts.content, PaneContent::Panel { feed, .. } if feed == CONTACTS_FEED)
+        );
+        assert!(contacts.selectable);
+        let live_first = unit
+            .degrade
+            .iter()
+            .position(|d| !placeholders.contains(d))
+            .expect("some live pane degrades too");
+        assert_eq!(live_first, placeholders.len());
     }
 
     #[test]

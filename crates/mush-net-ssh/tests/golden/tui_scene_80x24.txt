@@ -1,4 +1,4 @@
-rustmush  1 scene   2 sheet   3 mail   4 chan   5 rolls   6 intel   7 actions
+rustmush  1 scene   2   3   4   5   6   7   8   9              Nick ● 3 on 14:30
 The Hall #2 · Downtown · rain · IC 21:15 · n·North  e·East  quai
 ┌ rustmush ────────────────────────────────────────────────────────────────────┐
 │     14:30 The Hall #2                                                        │

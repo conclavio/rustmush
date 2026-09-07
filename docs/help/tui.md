@@ -7,9 +7,10 @@ the **default** and is not going anywhere.
 `@tui` is an optional full-screen alternative for terminal clients, rendered
 server-side over your SSH connection. It is built from **numbered screens**
 of titled panes: a scene screen with your scrollback, the room and who is
-about; a sheet screen; mail; channels; rolls; intel; actions. Everything you
-type still runs the same commands and reaches the same world; the TUI is
-only a different way to *see* it.
+about; a sheet screen; mail; channels; rolls; intel; actions; and, when you
+hold a station on a tactical unit, a damage screen and a unit screen for it.
+Everything you type still runs the same commands and reaches the same world;
+the TUI is only a different way to *see* it.
 
 ## Launching and leaving
 
@@ -124,6 +125,30 @@ slash: `/clear` empties the scrollback, `/help` opens the key help,
              sheet (`+roll str` → `+roll strength`, `+br` → `+brawl`).
   6 intel    Your own informant intel, newest first.
   7 actions  The actions currently offered to you; Enter prefills `+act`.
+  8 damage   The after-action report, when you hold a station on a tactical
+             unit: your unit's sections with a condition mark and a gauge for
+             every part the ruleset tracks, the newest damage report's
+             before/after table beside it, and the journal those tables come
+             from — one line per thing that changed, newest first. `r` asks
+             for a fresh reading; `d` opens the box with `@unit/damage ` and
+             `u` with `@unit/show ` ready (neither sends until you press
+             Enter, and both are staff commands).
+  9 unit     The same unit at a glance: its sections one line each, its
+             components grouped by where they are installed with the
+             capabilities each one gives, and its unit-wide readings with
+             the current mobility mode. `r` refreshes, `c` runs `+contacts`,
+             `d` opens `@unit/damage `.
+
+The two tactical screens are always in the tab strip, and they are honest
+when there is nothing to show: with no station and no unit of your own they
+read `No tactical unit: take a station, or @unit/show #n if you control
+one.` Screen 9's contacts pane is the table `+contacts` prints, when the
+server publishes it (Enter on a row prefills `+contact <id>`); it also
+carries panes for things no server publishes yet — a grid, weapons, comms —
+each saying what it is waiting for. Those are the first panes to go when the
+window narrows, so a real pane never loses its place to an empty one. Colour and condition marks on both
+screens come from the ruleset's own judgement, never from the client's
+reading of a word.
 
 Above the input box, when your ruleset publishes vitals, a strip of gauges
 shows your health track, pools and readouts; without one the prompt shows
