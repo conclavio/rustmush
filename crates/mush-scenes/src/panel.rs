@@ -71,6 +71,13 @@ pub(crate) fn keyframe(w: &World, rec: &SceneRecord) -> serde_json::Value {
             "ended_at".into(),
             serde_json::to_value(rec.ended_at).unwrap_or_default(),
         );
+        // D6: the consent tally as counts per subject — never who voted what
+        // (that is the facilitator's, in `+timestop/who`).
+        object.insert("consent".into(), rec.consent_summary());
+        object.insert(
+            "nudge_after_s".into(),
+            serde_json::to_value(rec.nudge_after_s).unwrap_or_default(),
+        );
     }
     value
 }

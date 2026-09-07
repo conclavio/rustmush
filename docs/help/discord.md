@@ -88,7 +88,10 @@ Buttons:
 
   Turns: when a scene's turn comes to you (`+timestop/next`, or the scene
   resuming on your turn), you get a notice on every interface — the DM
-  included.
+  included. When the facilitator ends the scene, rewinds a turn, or seals
+  its outcome, the "do you agree?" question arrives here as Yes/No buttons;
+  when a nudge is set and your turn has sat idle, "Pass / Hold" does too
+  (`help timestop`, Consent).
 
 Relayed channels:
 

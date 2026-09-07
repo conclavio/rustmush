@@ -15,12 +15,13 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use mush_core::engine::{Effects, Engine, Inbound};
+use mush_core::output::Audience;
 use mush_core::{
     ClockProviderFailure, ClockReadError, ClockRef, GOD, ObjId, ObjKind, Outbox, Registry, World,
     register_core_commands, register_engine_commands,
 };
-use mush_proto::OutputEvent;
-use mush_scenes::{PauseReason, SceneStatus, ScenesModule, ScenesState};
+use mush_proto::{OutputEvent, RequestKind, RespondChoice};
+use mush_scenes::{CONSENT_DEADLINE_S, PauseReason, SceneStatus, ScenesModule, ScenesState};
 
 // ---- rig ------------------------------------------------------------------
 
@@ -904,4 +905,346 @@ fn d3_the_player_whose_turn_it_is_gets_a_notice_on_next_and_resume_not_pause() {
         vec![current],
         "resume re-announces the turn"
     );
+}
+
+// ---------------------------------------------------------------------------
+// D6 — consent: the requests a scene opens and what their answers do
+// ---------------------------------------------------------------------------
+
+/// Every `Request` in `out`: (subject, id, kind).
+fn requests(out: &Outbox) -> Vec<(ObjId, u64, RequestKind)> {
+    out.events()
+        .iter()
+        .filter_map(|(aud, e)| match (aud, e) {
+            (Audience::Actor(a), OutputEvent::Request { id, kind, .. }) => Some((*a, *id, *kind)),
+            _ => None,
+        })
+        .collect()
+}
+
+fn respond(engine: &mut Engine, actor: ObjId, id: u64, choice: RespondChoice) -> Outbox {
+    let (mut out, mut fx) = (Outbox::new(), Effects::new());
+    engine.step(
+        Inbound::Respond {
+            conn: 1,
+            actor,
+            id,
+            choice,
+        },
+        &mut out,
+        &mut fx,
+    );
+    out
+}
+
+/// The recorded votes as (about, participant, choice).
+fn votes(r: &Rig) -> Vec<(String, ObjId, String)> {
+    scene(r)
+        .consent
+        .iter()
+        .map(|v| (v.about.to_string(), v.participant, v.choice.to_string()))
+        .collect()
+}
+
+/// Drive the scheduler to `unix_seconds` (the world clock first, so handlers
+/// read the same time the timers fire at).
+fn advance_to(r: &mut Rig, unix_seconds: i64) -> Outbox {
+    r.engine.set_now(unix_seconds);
+    let (mut out, mut fx) = (Outbox::new(), Effects::new());
+    r.engine.fire_due(unix_seconds * 1000, &mut out, &mut fx);
+    out
+}
+
+/// The `Sys` lines addressed to `who`.
+fn sys_to(out: &Outbox, who: ObjId) -> String {
+    out.events()
+        .iter()
+        .filter_map(|(aud, e)| match (aud, e) {
+            (Audience::Actor(a), OutputEvent::Sys(t)) if *a == who => Some(t.to_plain_text()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Ending asks each **player participant** exactly once — never the
+/// facilitator whose command it is, never the NPC, never an observer.
+#[test]
+fn d6_ending_asks_each_player_participant_once_never_the_facilitator_npc_or_observer() {
+    let mut r = rig();
+    run(&mut r.engine, r.nick, "+timestop");
+    let uid = scene(&r).id;
+    let watcher = r
+        .engine
+        .world
+        .create(ObjKind::Player, "Watcher", GOD, Some(r.bar))
+        .unwrap();
+    r.engine.world.set_connected(watcher, true);
+    r.engine
+        .world
+        .module_state_mut::<ScenesState>()
+        .unwrap()
+        .scenes
+        .get_mut(&uid)
+        .unwrap()
+        .observers
+        .push(watcher);
+    r.engine.world.set_exclusive_scene_member(watcher);
+
+    let out = run(&mut r.engine, r.nick, "+timestop/end");
+    let asked = requests(&out);
+    assert_eq!(
+        asked.len(),
+        1,
+        "one request per player participant: {asked:?}"
+    );
+    assert_eq!(asked[0].0, r.ann, "Ann, the only other player participant");
+    assert_eq!(asked[0].2, RequestKind::Confirm);
+    assert_eq!(
+        scene(&r).status,
+        SceneStatus::Closed,
+        "the end waited for no one"
+    );
+    assert!(
+        votes(&r).is_empty(),
+        "nothing is recorded until someone answers"
+    );
+}
+
+/// Silence for `CONSENT_DEADLINE_S` is recorded as an abstention, in the record
+/// and in the scene's log.
+#[test]
+fn d6_silence_abstains_at_the_deadline() {
+    let mut r = rig();
+    run(&mut r.engine, r.nick, "+timestop");
+    let out = run(&mut r.engine, r.nick, "+timestop/end");
+    assert_eq!(requests(&out).len(), 1);
+    // Not yet.
+    advance_to(&mut r, 1_000 + CONSENT_DEADLINE_S - 1);
+    assert!(votes(&r).is_empty(), "the deadline has not passed");
+    advance_to(&mut r, 1_000 + CONSENT_DEADLINE_S + 1);
+    assert_eq!(
+        votes(&r),
+        vec![("end".to_string(), r.ann, "abstain".to_string())]
+    );
+    let log = texts(&run(&mut r.engine, r.nick, "+timestop/log"));
+    assert!(log.contains("Ann on end: abstain."), "{log}");
+}
+
+/// A disagreement is recorded and blocks nothing; the facilitator is told the
+/// answer and the running tally.
+#[test]
+fn d6_a_disagree_is_recorded_and_blocks_nothing() {
+    let mut r = rig();
+    run(&mut r.engine, r.nick, "+timestop");
+    let out = run(&mut r.engine, r.nick, "+timestop/end");
+    let (_, id, _) = requests(&out)[0];
+    let out = respond(&mut r.engine, r.ann, id, RespondChoice::Confirm(false));
+    assert_eq!(
+        votes(&r),
+        vec![("end".to_string(), r.ann, "disagree".to_string())]
+    );
+    assert_eq!(scene(&r).status, SceneStatus::Closed, "a veto this is not");
+    let to_nick = sys_to(&out, r.nick);
+    assert!(
+        to_nick.contains("Ann on end")
+            && to_nick.contains("disagree")
+            && to_nick.contains("1 disagree"),
+        "the facilitator hears the answer and the tally: {to_nick}"
+    );
+    assert!(
+        sys_to(&out, r.ann).contains("Recorded: disagree"),
+        "the participant sees their answer land: {}",
+        sys_to(&out, r.ann)
+    );
+    // A second answer to the same request is ignored by the engine (resolved).
+    let out = respond(&mut r.engine, r.ann, id, RespondChoice::Confirm(true));
+    assert!(out.is_empty());
+    assert_eq!(votes(&r).len(), 1);
+}
+
+/// The seal asks the participants whether they agree with the outcome; the
+/// `scenes` keyframe carries the tally as counts.
+#[test]
+fn d6_the_seal_asks_the_participants_and_the_keyframe_counts_the_answers() {
+    let mut r = rig();
+    let nick = r.nick;
+    scened(&mut r, nick);
+    run(&mut r.engine, r.nick, "+timestop/end");
+    let out = run(&mut r.engine, r.nick, "+scene/outcome success=Nick run=7");
+    assert!(texts(&out).contains("is sealed"), "{}", texts(&out));
+    let asked = requests(&out);
+    assert_eq!(asked.len(), 1, "{asked:?}");
+    assert_eq!((asked[0].0, asked[0].2), (r.ann, RequestKind::Confirm));
+    let out = respond(
+        &mut r.engine,
+        r.ann,
+        asked[0].1,
+        RespondChoice::Confirm(true),
+    );
+    assert_eq!(
+        votes(&r),
+        vec![("outcome".to_string(), r.ann, "agree".to_string())]
+    );
+    let keyframe = out
+        .events()
+        .iter()
+        .find_map(|(aud, e)| match (aud, e) {
+            (Audience::Actor(a), OutputEvent::Panel { feed, data, .. })
+                if *a == r.nick && feed == "scenes" =>
+            {
+                Some(data.clone())
+            }
+            _ => None,
+        })
+        .expect("a keyframe to the facilitator");
+    assert_eq!(keyframe["consent"]["outcome"]["agree"], 1, "{keyframe}");
+    assert!(
+        keyframe["consent"]["end"].is_null(),
+        "an unanswered question has no tally yet: {keyframe}"
+    );
+    assert!(
+        !keyframe["consent"].to_string().contains("Ann"),
+        "the keyframe counts, it never names: {keyframe}"
+    );
+}
+
+/// `+timestop/rewind` steps the turn back (into the previous round when
+/// needed), asks the participants, and the tally names no one but to the
+/// facilitator and staff (lens P).
+#[test]
+fn d6_rewind_steps_the_turn_back_asks_and_the_tally_names_no_one_but_to_the_facilitator() {
+    let mut r = rig();
+    run(&mut r.engine, r.nick, "+timestop");
+    assert_eq!(scene(&r).current_actor(), Some(r.nick));
+    let out = run(&mut r.engine, r.nick, "+timestop/rewind");
+    assert!(
+        texts(&out).contains("no earlier turn"),
+        "the first turn of round one has nothing before it: {}",
+        texts(&out)
+    );
+    run(&mut r.engine, r.nick, "+timestop/next");
+    assert_eq!(scene(&r).current_actor(), Some(r.ann));
+    let out = run(&mut r.engine, r.nick, "+timestop/rewind");
+    assert!(
+        texts(&out).contains("The turn goes back"),
+        "{}",
+        texts(&out)
+    );
+    assert_eq!(scene(&r).current_actor(), Some(r.nick));
+    assert_eq!(scene(&r).round, 1);
+    let asked = requests(&out);
+    assert_eq!(asked.len(), 1, "{asked:?}");
+    assert_eq!((asked[0].0, asked[0].2), (r.ann, RequestKind::Confirm));
+    respond(
+        &mut r.engine,
+        r.ann,
+        asked[0].1,
+        RespondChoice::Confirm(true),
+    );
+    assert_eq!(
+        votes(&r),
+        vec![("rewind".to_string(), r.ann, "agree".to_string())]
+    );
+
+    // The facilitator sees who; a participant sees only counts; staff see who.
+    let who = texts(&run(&mut r.engine, r.nick, "+timestop/who"));
+    assert!(
+        who.contains("rewind: 1 agree") && who.contains("Ann — agree"),
+        "{who}"
+    );
+    let who = texts(&run(&mut r.engine, r.ann, "+timestop/who"));
+    assert!(
+        who.contains("rewind: 1 agree") && !who.contains("Ann — agree"),
+        "{who}"
+    );
+    let who = texts(&run(&mut r.engine, GOD, "+timestop/who"));
+    assert!(who.contains("Ann — agree"), "{who}");
+
+    // Across a round boundary: three advances reach round 2, a rewind returns
+    // to the last participant of round 1.
+    run(&mut r.engine, r.nick, "+timestop/next");
+    run(&mut r.engine, r.nick, "+timestop/next");
+    run(&mut r.engine, r.nick, "+timestop/next");
+    assert_eq!(
+        (scene(&r).round, scene(&r).current_actor()),
+        (2, Some(r.nick))
+    );
+    run(&mut r.engine, r.nick, "+timestop/rewind");
+    assert_eq!(
+        (scene(&r).round, scene(&r).current_actor()),
+        (1, Some(r.npc))
+    );
+    let log = texts(&run(&mut r.engine, r.nick, "+timestop/log"));
+    assert!(log.contains("rewound the turn"), "{log}");
+}
+
+/// A nudge asks the idle current actor once per turn; `pass` advances the
+/// turn; a pass answered after the facilitator already advanced is ignored
+/// (lens S).
+#[test]
+fn d6_a_nudge_asks_the_idle_actor_once_a_pass_advances_and_a_late_pass_is_ignored() {
+    let mut r = rig();
+    run(&mut r.engine, r.nick, "+timestop");
+    let out = run(&mut r.engine, r.nick, "+timestop/nudge 99999");
+    assert!(texts(&out).contains("1 to 1440"), "{}", texts(&out));
+    let out = run(&mut r.engine, r.nick, "+timestop/nudge 5");
+    assert!(texts(&out).contains("Nudging on"), "{}", texts(&out));
+    assert_eq!(scene(&r).nudge_after_s, Some(300));
+
+    // Four minutes in: nothing. Five minutes in: Nick is asked, once.
+    let out = advance_to(&mut r, 1_000 + 240);
+    assert!(requests(&out).is_empty(), "{:?}", requests(&out));
+    let out = advance_to(&mut r, 1_000 + 301);
+    let asked = requests(&out);
+    assert_eq!(asked.len(), 1, "{asked:?}");
+    assert_eq!((asked[0].0, asked[0].2), (r.nick, RequestKind::Choice));
+    let out = advance_to(&mut r, 1_000 + 340);
+    assert!(
+        requests(&out).is_empty(),
+        "a turn is nudged once: {:?}",
+        requests(&out)
+    );
+
+    // Pass: the turn moves to Ann and the pass is on the record.
+    respond(
+        &mut r.engine,
+        r.nick,
+        asked[0].1,
+        RespondChoice::Choose("pass".into()),
+    );
+    assert_eq!(scene(&r).current_actor(), Some(r.ann));
+    assert_eq!(
+        votes(&r),
+        vec![("nudge".to_string(), r.nick, "pass".to_string())]
+    );
+
+    // Ann idles into a nudge; the facilitator advances by hand first; Ann's
+    // late pass is ignored — the turn does not skip the Barkeep.
+    let out = advance_to(&mut r, 1_000 + 340 + 301);
+    let asked = requests(&out);
+    assert_eq!(asked.len(), 1, "{asked:?}");
+    assert_eq!(asked[0].0, r.ann);
+    run(&mut r.engine, r.nick, "+timestop/next");
+    assert_eq!(scene(&r).current_actor(), Some(r.npc));
+    respond(
+        &mut r.engine,
+        r.ann,
+        asked[0].1,
+        RespondChoice::Choose("pass".into()),
+    );
+    assert_eq!(
+        scene(&r).current_actor(),
+        Some(r.npc),
+        "a late pass moves nothing"
+    );
+    assert_eq!(votes(&r).len(), 1, "and records nothing: {:?}", votes(&r));
+
+    // Off: no further nudges.
+    run(&mut r.engine, r.nick, "+timestop/next");
+    assert_eq!(scene(&r).current_actor(), Some(r.nick));
+    let out = run(&mut r.engine, r.nick, "+timestop/nudge off");
+    assert!(texts(&out).contains("Nudging off"), "{}", texts(&out));
+    let out = advance_to(&mut r, 1_000 + 340 + 301 + 600);
+    assert!(requests(&out).is_empty(), "{:?}", requests(&out));
 }

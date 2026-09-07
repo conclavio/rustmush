@@ -54,11 +54,12 @@ use mush_proto::{NarrativeKind, OutputEvent, RichText};
 use smol_str::SmolStr;
 
 pub use data::{
-    ArrivalFloorRefusal, KIND_TIMESTOP, MAX_IC_FLOOR_LEAD_SECS, MAX_OUTCOME_NAME_BYTES,
-    MAX_OUTCOME_NOTE_BYTES, MAX_OUTCOME_SUBJECTS, MAX_PENDING_STORE_READS_PER_ACTOR, NS,
-    PauseReason, PendingArchiveRead, SceneAdvanceError, SceneEvent, SceneEventKind, SceneMode,
-    SceneOutcome, SceneRecord, SceneStatus, SceneUid, ScenesState, SealerGateSlot,
-    persist_scene_record, scene_key,
+    ArrivalFloorRefusal, CONSENT_DEADLINE_S, CONSENT_END, CONSENT_NUDGE, CONSENT_OUTCOME,
+    CONSENT_REWIND, ConsentVote, KIND_TIMESTOP, MAX_IC_FLOOR_LEAD_SECS, MAX_NUDGE_MINUTES,
+    MAX_OUTCOME_NAME_BYTES, MAX_OUTCOME_NOTE_BYTES, MAX_OUTCOME_SUBJECTS,
+    MAX_PENDING_STORE_READS_PER_ACTOR, NS, NUDGE_TICK_S, PauseReason, PendingArchiveRead,
+    SceneAdvanceError, SceneEvent, SceneEventKind, SceneMode, SceneOutcome, SceneRecord,
+    SceneStatus, SceneUid, ScenesState, SealerGateSlot, persist_scene_record, scene_key,
 };
 
 /// The canon kind a **sealed scene outcome** is recorded under (E6b, 08f §4.1).
@@ -196,6 +197,15 @@ impl GameModule for ScenesModule {
         // H1: the archive — cold pages of a scene's log come back through the
         // module store-read seam and render here.
         reg.store_read_completion(Arc::new(commands::ScenesArchiveRead))?;
+        // D6: consent — the answers to the scene's requests (end, seal, rewind,
+        // nudge) come back here, and the nudge tick asks an idle current actor
+        // to pass or hold.
+        reg.request_completion(Arc::new(commands::ConsentDone))?;
+        reg.tick(
+            commands::NUDGE_TICK_TAG,
+            mush_core::module::TickCadence::Coarse(std::time::Duration::from_secs(NUDGE_TICK_S)),
+            Arc::new(commands::nudge_tick),
+        )?;
         commands::register(reg)?;
         Ok(())
     }

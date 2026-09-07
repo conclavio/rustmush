@@ -922,6 +922,10 @@ fn open_scene(tw: &mut TestWorld, room: ObjId, ic_floor: i64, rounds: u32) -> Sc
             outcome: None,
             ic_floor,
             log_chunks: None,
+            consent: Vec::new(),
+            nudge_after_s: None,
+            turn_started_at: 0,
+            nudged: None,
         },
     );
     id

@@ -327,6 +327,20 @@ pub struct SceneRecord {
     /// by probing forward from chunk 0.
     #[serde(default)]
     pub log_chunks: Option<u64>,
+    /// Consent answers so far (D6), newest last.
+    #[serde(default)]
+    pub consent: Vec<ConsentVote>,
+    /// `+timestop/nudge <minutes>`: after this long without the current actor
+    /// acting, they are asked to pass or hold (D6). `None` = no nudging.
+    #[serde(default)]
+    pub nudge_after_s: Option<u32>,
+    /// When the current turn began, Unix seconds (start, `/next`, `/resume`,
+    /// `/rewind`), for the nudge clock.
+    #[serde(default)]
+    pub turn_started_at: i64,
+    /// The `(round, turn_index)` already nudged, so a turn is nudged once.
+    #[serde(default)]
+    pub nudged: Option<(u32, usize)>,
 }
 
 impl SceneRecord {
@@ -543,6 +557,49 @@ impl SceneRecord {
         self.round = round;
         Ok((self.round, self.current_actor()))
     }
+
+    /// Step the turn back one participant (D6 `+timestop/rewind`): to the
+    /// previous index, or to the last participant of the previous round.
+    /// `None` when there is nothing before the first turn of round one. The
+    /// monotonic `turn` counter is not decremented (it counts advances).
+    pub fn rewind_turn(&mut self) -> Option<(u32, Option<ObjId>)> {
+        if self.participants.is_empty() {
+            return None;
+        }
+        if self.turn_index > 0 {
+            self.turn_index -= 1;
+        } else if self.round > 1 {
+            self.round -= 1;
+            self.turn_index = self.participants.len() - 1;
+        } else {
+            return None;
+        }
+        Some((self.round, self.current_actor()))
+    }
+
+    /// The consent tally for `about`: choice → count, in a stable order (D6).
+    #[must_use]
+    pub fn consent_tally(&self, about: &str) -> BTreeMap<SmolStr, usize> {
+        let mut tally = BTreeMap::new();
+        for vote in self.consent.iter().filter(|v| v.about == about) {
+            *tally.entry(vote.choice.clone()).or_insert(0) += 1;
+        }
+        tally
+    }
+
+    /// Every consent tally, keyed by subject (for the keyframe).
+    #[must_use]
+    pub fn consent_summary(&self) -> serde_json::Value {
+        let mut subjects: BTreeMap<SmolStr, BTreeMap<SmolStr, usize>> = BTreeMap::new();
+        for vote in &self.consent {
+            *subjects
+                .entry(vote.about.clone())
+                .or_default()
+                .entry(vote.choice.clone())
+                .or_insert(0) += 1;
+        }
+        serde_json::to_value(subjects).unwrap_or(serde_json::Value::Null)
+    }
 }
 
 /// A scene turn counter reached its fixed durable representation limit.
@@ -595,6 +652,48 @@ pub enum SceneEventKind {
     Left,
     /// The scene's outcome was **sealed** (E6b): terminal, written once.
     Sealed,
+    /// A participant answered (or let expire) a consent request (interface
+    /// programme D6): `detail` carries `about` (`end`, `outcome`, `rewind`,
+    /// `nudge`) and `choice` (`agree`, `disagree`, `abstain`, `pass`, `hold`).
+    /// Advisory — recorded, never a veto.
+    Consent,
+    /// The facilitator rewound the turn (D6).
+    Rewound,
+}
+
+/// How long a consent request stays open before silence is recorded as an
+/// abstention (interface programme D6, `CONSENT_DEADLINE_S`).
+pub const CONSENT_DEADLINE_S: i64 = 900;
+
+/// The nudge tick's period: how often idle turns are checked (D6). A nudge is
+/// therefore late by at most this much.
+pub const NUDGE_TICK_S: u64 = 30;
+
+/// The longest `+timestop/nudge` interval, in minutes (a day).
+pub const MAX_NUDGE_MINUTES: u32 = 1440;
+
+/// Consent subjects (D6): what a request was about, as recorded on the vote
+/// and in the `Consent` scene event.
+pub const CONSENT_END: &str = "end";
+pub const CONSENT_OUTCOME: &str = "outcome";
+pub const CONSENT_REWIND: &str = "rewind";
+pub const CONSENT_NUDGE: &str = "nudge";
+
+/// One participant's answer to a consent request (D6), kept on the record so
+/// the facilitator can see the tally and the keyframe can count it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConsentVote {
+    /// What was asked about: `end`, `outcome`, `rewind`, `nudge`.
+    pub about: SmolStr,
+    /// Who answered.
+    pub participant: ObjId,
+    /// `agree`, `disagree`, `abstain` (silence or a decline), or for a nudge
+    /// `pass` / `hold`.
+    pub choice: SmolStr,
+    /// The round the question was asked in.
+    pub round: u32,
+    /// When the answer landed, Unix seconds.
+    pub at: i64,
 }
 
 /// One immutable entry in a scene's event log — a **semantic** record of what
@@ -863,6 +962,10 @@ mod tests {
             outcome: None,
             ic_floor: 0,
             log_chunks: None,
+            consent: Vec::new(),
+            nudge_after_s: None,
+            turn_started_at: 0,
+            nudged: None,
         }
     }
 

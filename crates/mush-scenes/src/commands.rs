@@ -1,5 +1,6 @@
 //! The timestop command surface: `+timestop` (+ `/who /next /pause /resume
-//! /end`) and the read-only `+scene`.
+//! /rewind /nudge /release /end`), the read-only `+scene` (+ `/outcome`), and
+//! the consent requests they open (interface programme D6).
 //!
 //! Any connected player may `+timestop` their room (becoming its facilitator);
 //! driving the scene (`/next /pause /resume /end`) is the facilitator's or
@@ -9,17 +10,21 @@
 use std::sync::Arc;
 
 use mush_core::output::display_name;
+use mush_core::request::{RequestCompletion, RequestOutcome};
 use mush_core::{
     ArgShape, CmdError, CommandSpec, Ctx, ModError, ObjId, ObjKind, Registrar, Role,
     StoreReadCompletion, StoreReadResult, World, archive_page_range, chunk_key, perm,
     read_cold_range,
 };
+use mush_proto::{RequestKind, RequestOption, RespondChoice, RichText};
 use smol_str::SmolStr;
 
 use crate::data::{
-    DEFAULT_ROUND_SECONDS, KIND_TIMESTOP, MAX_IC_FLOOR_LEAD_SECS, MAX_OUTCOME_NOTE_BYTES,
-    MAX_OUTCOME_SUBJECTS, PauseReason, PendingArchiveRead, SceneEvent, SceneEventKind, SceneMode,
-    SceneOutcome, SceneRecord, SceneStatus, SceneUid, ScenesState, persist_meta, persist_scene,
+    CONSENT_DEADLINE_S, CONSENT_END, CONSENT_NUDGE, CONSENT_OUTCOME, CONSENT_REWIND, ConsentVote,
+    DEFAULT_ROUND_SECONDS, KIND_TIMESTOP, MAX_IC_FLOOR_LEAD_SECS, MAX_NUDGE_MINUTES,
+    MAX_OUTCOME_NOTE_BYTES, MAX_OUTCOME_SUBJECTS, PauseReason, PendingArchiveRead, SceneEvent,
+    SceneEventKind, SceneMode, SceneOutcome, SceneRecord, SceneStatus, SceneUid, ScenesState,
+    persist_meta, persist_scene,
 };
 
 /// Record one lifecycle event into `s`'s log (stamped with the current wall
@@ -118,6 +123,10 @@ fn cmd_timestop(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         timestop_pause(ctx)
     } else if ctx.switches.has("resume") {
         timestop_resume(ctx)
+    } else if ctx.switches.has("rewind") {
+        timestop_rewind(ctx)
+    } else if ctx.switches.has("nudge") {
+        timestop_nudge(ctx)
     } else if ctx.switches.has("release") {
         timestop_release(ctx)
     } else if ctx.switches.has("end") {
@@ -202,6 +211,10 @@ fn timestop_start(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             outcome: None,
             ic_floor: 0,
             log_chunks: None,
+            consent: Vec::new(),
+            nudge_after_s: None,
+            turn_started_at: now,
+            nudged: None,
         };
         st.scenes.insert(id, rec.clone());
         rec
@@ -294,11 +307,26 @@ fn timestop_next(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     if s.status != SceneStatus::Active {
         return Err(CmdError::msg("The scene is not active (resume it first)."));
     }
+    advance_scene_turn(ctx, s.id).map_err(CmdError::msg)
+}
+
+/// Advance `scene`'s turn — the body of `+timestop/next`, and what a nudge's
+/// `pass` does (D6): mutate, persist, announce, the your-turn notice, the log
+/// entry, the panel keyframe, and the NPC turn event.
+fn advance_scene_turn(ctx: &mut Ctx<'_>, scene: SceneUid) -> Result<(), String> {
+    let now = ctx.w.now();
     let (anchor, updated) = {
         let st = state(ctx);
-        let rec = st.scenes.get_mut(&s.id).expect("resolved above");
-        rec.advance_turn()
-            .map_err(|error| CmdError::msg(error.to_string()))?;
+        let rec = st
+            .scenes
+            .get_mut(&scene)
+            .ok_or_else(|| "That scene no longer exists.".to_string())?;
+        if rec.status != SceneStatus::Active {
+            return Err("The scene is not active.".to_string());
+        }
+        rec.advance_turn().map_err(|error| error.to_string())?;
+        rec.turn_started_at = now;
+        rec.nudged = None;
         (rec.anchor, rec.clone())
     };
     persist_scene(ctx.out, &updated);
@@ -326,6 +354,342 @@ fn timestop_next(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         });
     }
     Ok(())
+}
+
+/// `+timestop/rewind` (D6) — the facilitator steps the turn back one
+/// participant (into the previous round if need be). The participants are
+/// asked whether they agree; the rewind does not wait for them.
+fn timestop_rewind(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    let s = driver_scene(ctx)?;
+    if s.status != SceneStatus::Active {
+        return Err(CmdError::msg("The scene is not active (resume it first)."));
+    }
+    let now = ctx.w.now();
+    let (anchor, updated) = {
+        let st = state(ctx);
+        let rec = st.scenes.get_mut(&s.id).expect("resolved above");
+        rec.rewind_turn()
+            .ok_or_else(|| CmdError::msg("There is no earlier turn to go back to."))?;
+        rec.turn_started_at = now;
+        rec.nudged = None;
+        (rec.anchor, rec.clone())
+    };
+    persist_scene(ctx.out, &updated);
+    announce(
+        ctx,
+        anchor,
+        format!("The turn goes back. {}", turn_line(ctx.w, &updated)),
+    );
+    your_turn_notice(ctx, &updated);
+    log_event(
+        ctx,
+        &updated,
+        SceneEventKind::Rewound,
+        Some(ctx.actor),
+        serde_json::json!({ "round": updated.round }),
+    );
+    crate::panel::publish(ctx, &updated);
+    let turn = updated
+        .current_actor()
+        .map(|a| display_name(ctx.w, a))
+        .unwrap_or_else(|| "no one".to_string());
+    ask_participants(
+        ctx,
+        &updated,
+        CONSENT_REWIND,
+        format!(
+            "{} rewound scene #{} to {turn}'s turn (round {}). Do you agree?",
+            display_name(ctx.w, ctx.actor),
+            updated.id,
+            updated.round
+        ),
+        ctx.actor,
+    );
+    Ok(())
+}
+
+/// `+timestop/nudge <minutes>|off` (D6) — after that long on their turn, the
+/// current actor is asked to pass or hold; a pass advances the turn.
+fn timestop_nudge(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    let s = driver_scene(ctx)?;
+    let arg = ctx.args.raw().trim().to_ascii_lowercase();
+    let after = match arg.as_str() {
+        "off" | "0" | "none" => None,
+        "" => {
+            return Err(CmdError::msg(
+                "Usage: +timestop/nudge <minutes>  (or +timestop/nudge off)",
+            ));
+        }
+        n => {
+            let minutes: u32 = n
+                .parse()
+                .ok()
+                .filter(|m| (1..=MAX_NUDGE_MINUTES).contains(m))
+                .ok_or_else(|| {
+                    CmdError::msg(format!(
+                        "Nudge after how many minutes? 1 to {MAX_NUDGE_MINUTES}, or off."
+                    ))
+                })?;
+            Some(minutes * 60)
+        }
+    };
+    let now = ctx.w.now();
+    let updated = {
+        let st = state(ctx);
+        let rec = st.scenes.get_mut(&s.id).expect("resolved above");
+        rec.nudge_after_s = after;
+        rec.turn_started_at = now;
+        rec.nudged = None;
+        rec.clone()
+    };
+    persist_scene(ctx.out, &updated);
+    match after {
+        Some(secs) => to_actor(
+            ctx,
+            format!(
+                "Nudging on: after {} minutes on their turn, the current actor is asked to \
+                 pass or hold.",
+                secs / 60
+            ),
+        ),
+        None => to_actor(ctx, "Nudging off."),
+    }
+    crate::panel::publish(ctx, &updated);
+    Ok(())
+}
+
+// ----------------------------------------------------------------------
+// D6 — consent: the requests a scene opens, and their answers
+// ----------------------------------------------------------------------
+
+/// The nudge tick's tag (registered in `lib`).
+pub(crate) const NUDGE_TICK_TAG: &str = "nudge";
+
+/// Open one consent request (`Confirm`) to every **player** participant of
+/// `rec` other than `asker` (the one whose command this is). Observers are
+/// never asked (they have no stake in the turn), NPCs cannot answer, and the
+/// asker's own answer is the command. Silence for `CONSENT_DEADLINE_S` is an
+/// abstention. Nothing waits on the answers.
+fn ask_participants(
+    ctx: &mut Ctx<'_>,
+    rec: &SceneRecord,
+    about: &str,
+    prompt: String,
+    asker: ObjId,
+) {
+    let subjects: Vec<ObjId> = rec
+        .participants
+        .iter()
+        .copied()
+        .filter(|&p| p != asker)
+        .filter(|&p| ctx.w.get(p).is_some_and(|o| o.kind == ObjKind::Player))
+        .collect();
+    for subject in subjects {
+        let payload = consent_payload(rec, about, subject);
+        ctx.open_request(
+            subject,
+            RequestKind::Confirm,
+            RichText::plain(prompt.clone()),
+            Vec::new(),
+            CONSENT_DEADLINE_S * 1000,
+            payload,
+        );
+    }
+}
+
+/// The JSON continuation a consent request carries back to `ConsentDone`.
+fn consent_payload(rec: &SceneRecord, about: &str, participant: ObjId) -> String {
+    serde_json::json!({
+        "scene": rec.id.0,
+        "about": about,
+        "participant": participant.0,
+        "round": rec.round,
+        "turn_index": rec.turn_index,
+    })
+    .to_string()
+}
+
+/// The re-entry point for every consent request this module opens (D6). The
+/// answer is re-validated against the scene as it is now (treaty ruling 3):
+/// the scene must still exist and the subject must still be a participant; a
+/// nudge's `pass` additionally requires that the turn it was asked about is
+/// still the current one — a late pass after the facilitator advanced is
+/// ignored entirely.
+pub(crate) struct ConsentDone;
+
+impl RequestCompletion for ConsentDone {
+    fn on_respond(&self, ctx: &mut Ctx<'_>, payload: &str, outcome: RequestOutcome) {
+        let Ok(payload) = serde_json::from_str::<serde_json::Value>(payload) else {
+            return;
+        };
+        let scene = SceneUid(payload["scene"].as_u64().unwrap_or_default());
+        let about = payload["about"].as_str().unwrap_or_default().to_string();
+        let Some(participant) = payload["participant"]
+            .as_u64()
+            .and_then(|id| u32::try_from(id).ok())
+            .map(ObjId)
+        else {
+            return;
+        };
+        let round =
+            u32::try_from(payload["round"].as_u64().unwrap_or_default()).unwrap_or(u32::MAX);
+        let turn_index = usize::try_from(payload["turn_index"].as_u64().unwrap_or_default())
+            .unwrap_or(usize::MAX);
+        if participant != ctx.actor || ctx.w.get(participant).is_none() {
+            return;
+        }
+        let Some(rec) = state_ref(ctx).scenes.get(&scene).cloned() else {
+            return;
+        };
+        if !rec.participants.contains(&participant) {
+            return;
+        }
+        let choice: &str = match (about.as_str(), &outcome) {
+            (CONSENT_NUDGE, RequestOutcome::Answered(RespondChoice::Choose(id))) => {
+                match id.as_str() {
+                    "pass" => "pass",
+                    "hold" => "hold",
+                    _ => return,
+                }
+            }
+            (CONSENT_NUDGE, RequestOutcome::Answered(_) | RequestOutcome::Expired) => "abstain",
+            (_, RequestOutcome::Answered(RespondChoice::Confirm(true))) => "agree",
+            (_, RequestOutcome::Answered(RespondChoice::Confirm(false))) => "disagree",
+            (_, RequestOutcome::Answered(_) | RequestOutcome::Expired) => "abstain",
+        };
+        if about == CONSENT_NUDGE {
+            // Only the turn that was asked about may be answered.
+            let current = rec.status == SceneStatus::Active
+                && rec.round == round
+                && rec.turn_index == turn_index
+                && rec.current_actor() == Some(participant);
+            if !current {
+                return;
+            }
+        }
+        record_consent(ctx, &rec, &about, participant, choice, round);
+        if about == CONSENT_NUDGE
+            && choice == "pass"
+            && let Err(error) = advance_scene_turn(ctx, rec.id)
+        {
+            tracing::debug!(scene = rec.id.0, %error, "nudge pass could not advance");
+        }
+    }
+}
+
+/// Append one vote to the record and the log, tell the participant and the
+/// facilitator, refresh the keyframe.
+fn record_consent(
+    ctx: &mut Ctx<'_>,
+    rec: &SceneRecord,
+    about: &str,
+    participant: ObjId,
+    choice: &str,
+    round: u32,
+) {
+    let now = ctx.w.now();
+    let updated = {
+        let st = state(ctx);
+        let Some(live) = st.scenes.get_mut(&rec.id) else {
+            return;
+        };
+        live.consent.push(ConsentVote {
+            about: SmolStr::new(about),
+            participant,
+            choice: SmolStr::new(choice),
+            round,
+            at: now,
+        });
+        live.clone()
+    };
+    persist_scene(ctx.out, &updated);
+    log_event(
+        ctx,
+        &updated,
+        SceneEventKind::Consent,
+        Some(participant),
+        serde_json::json!({ "about": about, "choice": choice, "round": round }),
+    );
+    if choice != "abstain" {
+        to_actor(
+            ctx,
+            format!("Recorded: {choice} ({about}, scene #{}).", updated.id),
+        );
+    }
+    let facilitator = updated.facilitator;
+    if facilitator != participant && ctx.w.get(facilitator).is_some() {
+        let tally = updated.consent_tally(about);
+        let counts: Vec<String> = tally.iter().map(|(c, n)| format!("{n} {c}")).collect();
+        ctx.out.sys_to_actor(
+            facilitator,
+            "scene",
+            format!(
+                "{} on {about} (scene #{}): {choice}. Tally: {}.",
+                display_name(ctx.w, participant),
+                updated.id,
+                counts.join(", ")
+            ),
+        );
+    }
+    crate::panel::publish(ctx, &updated);
+}
+
+/// The `Coarse` nudge tick (D6): for every active scene with a nudge interval,
+/// once the current actor has had the turn that long, ask them — once per
+/// turn — to pass or hold. Only players are asked (an NPC's turn is the NPC
+/// module's, H2b).
+pub(crate) fn nudge_tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<mush_core::SceneId>) {
+    let now = ctx.w.now();
+    let due: Vec<SceneRecord> = state_ref(ctx)
+        .scenes
+        .values()
+        .filter(|rec| rec.status == SceneStatus::Active)
+        .filter(|rec| {
+            rec.nudge_after_s
+                .is_some_and(|after| now.saturating_sub(rec.turn_started_at) >= i64::from(after))
+        })
+        .filter(|rec| rec.nudged != Some((rec.round, rec.turn_index)))
+        .filter(|rec| {
+            rec.current_actor()
+                .is_some_and(|a| ctx.w.get(a).is_some_and(|o| o.kind == ObjKind::Player))
+        })
+        .cloned()
+        .collect();
+    for rec in due {
+        let Some(actor) = rec.current_actor() else {
+            continue;
+        };
+        let updated = {
+            let st = state(ctx);
+            let Some(live) = st.scenes.get_mut(&rec.id) else {
+                continue;
+            };
+            live.nudged = Some((rec.round, rec.turn_index));
+            live.clone()
+        };
+        persist_scene(ctx.out, &updated);
+        let minutes = updated.nudge_after_s.unwrap_or_default() / 60;
+        ctx.open_request(
+            actor,
+            RequestKind::Choice,
+            RichText::plain(format!(
+                "It has been your turn in scene #{} for {minutes} minutes. Pass, or hold it?",
+                updated.id
+            )),
+            vec![
+                RequestOption {
+                    id: "pass".into(),
+                    label: "Pass".into(),
+                },
+                RequestOption {
+                    id: "hold".into(),
+                    label: "Hold".into(),
+                },
+            ],
+            CONSENT_DEADLINE_S * 1000,
+            consent_payload(&updated, CONSENT_NUDGE, actor),
+        );
+    }
 }
 
 fn timestop_pause(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
@@ -362,11 +726,14 @@ fn timestop_resume(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     if s.status == SceneStatus::Active {
         return Err(CmdError::msg("The scene is already active."));
     }
+    let now = ctx.w.now();
     let (anchor, updated) = {
         let st = state(ctx);
         let rec = st.scenes.get_mut(&s.id).expect("resolved above");
         rec.status = SceneStatus::Active;
         rec.pause_reason = None;
+        rec.turn_started_at = now;
+        rec.nudged = None;
         (rec.anchor, rec.clone())
     };
     persist_scene(ctx.out, &updated);
@@ -485,6 +852,19 @@ fn timestop_end(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     );
     crate::emit_scene_concluded(ctx, &updated);
     crate::panel::publish(ctx, &updated);
+    // D6: an advisory poll — the scene is already over; the answers are the
+    // record of who agreed with ending it here.
+    ask_participants(
+        ctx,
+        &updated,
+        CONSENT_END,
+        format!(
+            "{} ended scene #{}. Do you agree with ending it here?",
+            display_name(ctx.w, ctx.actor),
+            updated.id
+        ),
+        ctx.actor,
+    );
     Ok(())
 }
 
@@ -803,6 +1183,8 @@ fn render_event(w: &World, ev: &SceneEvent) -> String {
         SceneEventKind::Joined => format!("{who} arrives."),
         SceneEventKind::Left => format!("{who} leaves."),
         SceneEventKind::Sealed => format!("{who} sealed the outcome: {}.", s("outcome")),
+        SceneEventKind::Consent => format!("{who} on {}: {}.", s("about"), s("choice")),
+        SceneEventKind::Rewound => format!("{who} rewound the turn (round {}).", s("round")),
     }
 }
 
@@ -895,8 +1277,13 @@ fn recap_line(ctx: &Ctx<'_>, ev: &SceneEvent) -> Option<String> {
         SceneEventKind::Left => Some(format!("{who} departs.")),
         SceneEventKind::Ended => Some("The scene ends.".to_string()),
         SceneEventKind::Sealed => Some(format!("The outcome is sealed: {}.", s("outcome"))),
-        // Pause/resume/release are operational, not narrative.
-        SceneEventKind::Paused | SceneEventKind::Resumed | SceneEventKind::Released => None,
+        SceneEventKind::Rewound => Some("-- the turn goes back --".to_string()),
+        // Pause/resume/release and consent answers are operational, not
+        // narrative.
+        SceneEventKind::Paused
+        | SceneEventKind::Resumed
+        | SceneEventKind::Released
+        | SceneEventKind::Consent => None,
     }
 }
 
@@ -986,10 +1373,45 @@ fn show_scene(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             "  (paused by a server restart — the facilitator must +timestop/resume)".to_string(),
         );
     }
+    if let Some(minutes) = s.nudge_after_s.map(|n| n / 60) {
+        lines.push(format!(
+            "Nudge: the current actor is asked to pass or hold after {minutes} min on their turn."
+        ));
+    }
+    lines.extend(consent_lines(ctx, &s));
     for line in lines {
         to_actor(ctx, line);
     }
     Ok(())
+}
+
+/// The consent tally for `+timestop/who` (D6): everyone sees counts; the
+/// facilitator and staff also see who answered what.
+fn consent_lines(ctx: &Ctx<'_>, s: &SceneRecord) -> Vec<String> {
+    let mut subjects: Vec<&str> = s.consent.iter().map(|v| v.about.as_str()).collect();
+    subjects.sort_unstable();
+    subjects.dedup();
+    if subjects.is_empty() {
+        return Vec::new();
+    }
+    let privileged = ctx.actor == s.facilitator || is_staff(ctx.w, ctx.actor);
+    let mut lines = vec!["Consent:".to_string()];
+    for about in subjects {
+        let tally = s.consent_tally(about);
+        let counts: Vec<String> = tally.iter().map(|(c, n)| format!("{n} {c}")).collect();
+        lines.push(format!("  {about}: {}", counts.join(", ")));
+        if privileged {
+            for vote in s.consent.iter().filter(|v| v.about == about) {
+                lines.push(format!(
+                    "    {} — {} (round {})",
+                    display_name(ctx.w, vote.participant),
+                    vote.choice,
+                    vote.round
+                ));
+            }
+        }
+    }
+    lines
 }
 
 // ----------------------------------------------------------------------
@@ -1401,6 +1823,19 @@ fn scene_outcome(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         anchor,
         format!("The outcome of scene #{} is sealed: {name}.", rec.id),
     );
+    // D6: an advisory poll on the sealed outcome. A request is a deferred
+    // open, not a world mutation, and nothing after it can fail.
+    ask_participants(
+        ctx,
+        &rec,
+        CONSENT_OUTCOME,
+        format!(
+            "{} sealed the outcome of scene #{} as \"{name}\". Do you agree?",
+            display_name(ctx.w, actor),
+            rec.id
+        ),
+        actor,
+    );
     // Terminal, and therefore last (`mush_canon::commit` pins the deferred
     // prefix; nothing mutating may follow it on a path that can still fail).
     crate::emit_scene_outcome(ctx, &rec, &outcome);
@@ -1423,6 +1858,8 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
                 "next".into(),
                 "pause".into(),
                 "resume".into(),
+                "rewind".into(),
+                "nudge".into(),
                 "release".into(),
                 "end".into(),
             ],
@@ -1439,6 +1876,15 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
                    +timestop/next  --  (facilitator/staff) Advance to the next turn; wrapping \
                    past the last starts a new round.\n\
                    +timestop/pause , +timestop/resume  --  Freeze / unfreeze turn advancement.\n\
+                   +timestop/rewind  --  (facilitator/staff) Step the turn back one participant \
+                   (into the previous round if need be); the participants are asked whether they \
+                   agree.\n\
+                   +timestop/nudge <minutes>|off  --  (facilitator/staff) After that long on their \
+                   turn, the current actor is asked to pass or hold; a pass advances the turn.\n\
+                   Consent: ending a scene, sealing its outcome and rewinding ask every player \
+                   participant to agree or disagree (15 minutes to answer; silence abstains). \
+                   Nothing waits on the answers — they are the record, shown in +timestop/who and \
+                   the log.\n\
                    +timestop/release <who>  --  (facilitator/staff) Release one participant from \
                    the freeze without ending the scene (the way to free a stuck player).\n\
                    +timestop/end   --  End the scene and release everyone.\n\

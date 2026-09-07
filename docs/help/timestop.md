@@ -56,7 +56,17 @@ themselves across a restart.
   +timestop/pause     (facilitator/staff) Freeze turn advancement.
   +timestop/resume    (facilitator/staff) Resume — also how you restart a scene
                       that came back paused after a server restart.
+  +timestop/rewind    (facilitator/staff) Step the turn back one participant —
+                      into the previous round if it was the first turn. The
+                      participants are asked whether they agree (below).
+  +timestop/nudge <minutes>
+                      (facilitator/staff) After that long on their turn, the
+                      current player is asked to pass or hold. A pass advances
+                      the turn as +timestop/next would; a hold, or no answer,
+                      leaves it. Each turn is nudged once. `+timestop/nudge off`
+                      stops it.
   +timestop/end       (facilitator/staff) End the scene and release everyone.
+                      The participants are asked whether they agree (below).
 
   +scene              Show the scene you are in: its status, the round and whose
                       turn it is, and the participants in turn order (your own
@@ -64,6 +74,27 @@ themselves across a restart.
 
 The facilitator is whoever started the timestop; staff (Royalty and up) can
 drive or end any scene.
+
+## Consent
+
+Some rulings ask the table. When the facilitator **ends** the scene, **rewinds**
+the turn, or the sealer **seals the outcome** (`+scene/outcome`), every other
+player participant is asked, as a question with Yes and No (`respond`, or the
+buttons on Discord and the web), whether they agree. You have fifteen minutes;
+silence is recorded as an abstention, and so is "Decline".
+
+Nothing waits on the answers. The scene ends, the turn moves, the outcome
+seals, exactly when the command runs — the answers are the **record** of how
+the table felt about it: each one goes into the scene's log (`+timestop/log`
+shows `Ann on end: agree.`), the facilitator is told each answer as it lands,
+and `+timestop/who` shows the tally. Everyone sees the counts (`end: 2 agree,
+1 disagree`); who answered what is shown only to the facilitator and staff.
+A disagreement changes nothing by itself: it is there for the facilitator and
+for staff reviewing the scene afterwards. `+timestop/pause` remains the
+immediate tool when something needs to stop now.
+
+Observers are not asked (they have no stake in the turn), NPCs cannot answer,
+and the person whose command it is is not asked to agree with themselves.
 
 ## Not yet
 
@@ -76,4 +107,5 @@ scene next.
 
 ## See also
 
-  +timestop, +scene
+  +timestop, +scene, help discord (the same questions arrive as buttons in a
+  Discord follow)

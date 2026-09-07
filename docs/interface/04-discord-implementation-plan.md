@@ -839,6 +839,72 @@ disagree is recorded and does not block; the tally in the keyframe; an observer 
 **Verify lenses.** **S** — a late answer after the facilitator proceeded is ignored; **P** — the tally
 names no one but to the facilitator.
 
+**As built (2026-09-06, branch `z`).** The producers, the event, the tally and the nudge landed in
+`mush-scenes` alone (no wire change, no new module seam — I10's `Ctx::open_request` and
+`RequestCompletion` carried it), with these deviations recorded rather than assumed:
+
+- **The rewind is `+timestop/rewind`, not `+scene/rewind`.** Every verb that *drives* a scene lives
+  under `+timestop/` (`/next /pause /resume /release /end`); `+scene` is the read plus the seal.
+  `SceneRecord::rewind_turn` steps `turn_index` back, or to the last participant of the previous
+  round; the first turn of round one refuses ("no earlier turn"). The monotonic `turn` counter is not
+  decremented (it counts advances; the clock never re-clocks). A new `SceneEventKind::Rewound` is
+  logged and rendered ("-- the turn goes back --" in the room's transcript).
+- **The seal asks a Confirm on the sealed name, not a Choice over outcome names.** E6b's seal is one
+  name, written once; by the time anyone is asked there is nothing left to choose between. The
+  question is "X sealed the outcome of scene #n as "success". Do you agree?" — asked *before* the
+  terminal `emit_scene_outcome` (a request is a deferred open, not a mutation that can fail, so the
+  canon pin holds).
+- **Who is asked.** Every *player* participant other than the one whose command it is — never the
+  facilitator answering their own ruling, never an NPC (cannot answer), never an observer (no stake
+  in the turn). Disconnected players are asked and abstain at the deadline like anyone silent.
+- **`Consent` is a scene event with `detail {about, choice, round}`**, not an enum with fields —
+  `SceneEventKind` is a bare enum serialized by name across the ledger and the archive pages; a
+  tuple variant would have been a wire-shape change to every renderer. Choices: `agree`, `disagree`,
+  `abstain` (silence *or* Decline); for a nudge `pass`, `hold`, `abstain`. Votes are also kept on
+  the record (`SceneRecord::consent: Vec<ConsentVote>`) so `+timestop/who` and the keyframe need no
+  ledger walk.
+- **The nudge clock is time-on-turn, not time-since-last-act.** `turn_started_at` is stamped at
+  start, `/next`, `/resume`, `/rewind` and `/nudge`; a `Coarse` tick every `NUDGE_TICK_S = 30` s asks
+  the current *player* actor once per `(round, turn_index)` (`nudged`) when `now − turn_started_at ≥
+  nudge_after_s`. Interval 1–1440 minutes, `off` clears. A speaking-but-not-acting player is still
+  nudged — the question is "pass or hold?", which is the right question for them too. A `pass`
+  advances through the same helper `+timestop/next` uses (`advance_scene_turn`, extracted); a `hold`
+  is recorded and nothing moves; expiry records `abstain`.
+- **Lens S, mechanically.** The payload carries `(scene, about, participant, round, turn_index)`; a
+  nudge answer is honoured only while the scene is active and that exact turn is still current and
+  the subject is still its actor — a pass after the facilitator advanced by hand is dropped entirely,
+  not recorded. Every consent answer also requires the scene to exist and the subject to still be a
+  participant.
+- **The facilitator hears each answer** as a `scene` Sys line ("Ann on end (scene #3): disagree.
+  Tally: 1 disagree.") — not in the plan, but the tally is useless if the facilitator has to poll
+  for it. The participant sees "Recorded: disagree (end, scene #3)."; an abstention prints nothing.
+- **Lens P.** The keyframe carries `consent` as `{about: {choice: count}}` and `nudge_after_s`; names
+  appear only in `+timestop/who` for the facilitator and Royalty+.
+- **No migration.** The four new fields are `#[serde(default)]`; a rollback drops advisory votes and
+  a nudge setting, not a terminal record, so unlike E6b no version stamp was spent.
+- **Nothing blocks, as designed.** The end closes, the seal seals, the rewind moves before anyone is
+  asked; `+timestop/pause` stays the immediate tool.
+
+Landed: `data.rs` (`ConsentVote`, `CONSENT_DEADLINE_S = 900`, `NUDGE_TICK_S`, `MAX_NUDGE_MINUTES`,
+the `CONSENT_*` subjects, `rewind_turn`, `consent_tally`, `consent_summary`, the record fields,
+`SceneEventKind::{Consent, Rewound}`), `commands.rs` (`advance_scene_turn`, `timestop_rewind`,
+`timestop_nudge`, `ask_participants`, `ConsentDone`, `record_consent`, `nudge_tick`, `consent_lines`,
+the two renderer arms, the switches and help), `lib.rs` (`request_completion`, the `nudge` tick,
+exports), `panel.rs` (`consent`, `nudge_after_s`); `help timestop` (the verbs and a Consent
+section), `help discord` (Buttons), this paragraph, the README row. `legacy-handlers.toml` lists
+commands, not switches, so no entry changed.
+
+Tests: `mush-scenes/tests/e6b_seal.rs` **6** D6 tests — ending asks each player participant once and
+never the facilitator, the NPC or an observer; silence abstains at the deadline (record and log);
+a disagree is recorded, blocks nothing, reaches the facilitator with the tally, and a second answer
+is ignored; the seal asks and the keyframe counts without naming; rewind refuses at the first turn,
+steps back (across a round boundary too), asks, and the tally names no one but to the facilitator
+and staff; a nudge asks the idle actor once, a pass advances, a late pass after a manual advance
+moves and records nothing, `off` stops it. The `SceneRecord` literals in `data.rs` and
+`mush-sim/tests/e7c6.rs` gained the fields. Whole workspace: **243 binaries, 3 977 tests, 0
+failures**; clippy `-D warnings` and `fmt --check` clean. Not live-tested on Discord (D3's buttons
+carry it; the request is an ordinary `Confirm`/`Choice`).
+
 ---
 
 ## 4. Build discipline
@@ -1009,3 +1075,8 @@ None blocks D1; q1 and q6 are the owner's, the rest are defaults the build takes
   notices posted to the staff channel as the bot), the on-call `DiscordDmAdapter` on the durable
   outbox with `ServerDeps::outbox_adapters`, the on-call seams written up in ops; deviations recorded
   (the gate is the bridge's, no `components` in the payload yet, the message id logged not stored).
+- **Draft 0.7 — 2026-09-06.** D6 built (§3.6 "As built"): consent requests on end, seal and the new
+  `+timestop/rewind`, the `+timestop/nudge` pass/hold question on a 30 s tick, `Consent` and
+  `Rewound` scene events, votes on the record with the tally in `+timestop/who` and the keyframe;
+  deviations recorded (`+timestop/rewind` not `+scene/rewind`, a Confirm on the sealed name, the
+  time-on-turn nudge clock, the facilitator's per-answer line, no migration). **D1–D6 complete.**
