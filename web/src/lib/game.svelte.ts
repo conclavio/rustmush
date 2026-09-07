@@ -63,7 +63,7 @@ import {
   type ThemeChoice,
 } from "./theme";
 import { genAcceptLine, genDiscardLine, genRetryLine } from "./worldgen";
-import { WsClient, type EnvelopeOf } from "./ws";
+import { WsClient, type EnvelopeOf, type WebSocketLike } from "./ws";
 import { parseResolutionOutcome } from "./view";
 
 const TOKEN_KEY = "rustmush.token";
@@ -166,6 +166,22 @@ export function hydrationQueries(
   return out;
 }
 
+/**
+ * Construction seams. Production passes nothing (`App.svelte` builds a bare
+ * `new GameApp()`); the vitest harness passes a fake socket factory so the
+ * controller can be driven without a browser or a server — the transport's
+ * own seams are `WsClientOptions`, and every field here is forwarded to it
+ * unchanged, including `undefined` (WsClient reads all three with `??`).
+ */
+export interface GameAppOptions {
+  /** WS endpoint override; defaults to same-origin `/ws` (see WsClient). */
+  url?: string;
+  /** Test seam: WebSocket constructor. Defaults to the DOM `WebSocket`. */
+  webSocketFactory?: (url: string, protocols?: string[]) => WebSocketLike;
+  /** Test seam: RNG for reconnect backoff jitter. */
+  random?: () => number;
+}
+
 export class GameApp {
   session = new SessionStore();
   scrollback = new ScrollbackStore();
@@ -220,8 +236,11 @@ export class GameApp {
   #seenActionCommits = new Set<string>();
   #actionCommitOrder: string[] = [];
 
-  constructor() {
+  constructor(opts: GameAppOptions = {}) {
     this.client = new WsClient({
+      url: opts.url,
+      webSocketFactory: opts.webSocketFactory,
+      random: opts.random,
       caps: () => this.#caps(),
       onStatus: (s) => {
         this.session.status = s;
@@ -812,14 +831,6 @@ export class GameApp {
       // and accepted into client state. A failed send leaves the gateway copy
       // live, so reconnect re-emits it and this same idempotent path retries.
       this.client.ackCommit(receipt.commit);
-      // Interface plan I13 interim mitigation: an authoritative action may
-      // mutate overlay-only state (a typed Willpower spend, condition damage)
-      // that writes no sheet attribute and so never republishes. Re-request
-      // the viewer's own sheet after their own commit; the server-side
-      // ActionStateChanged republish seam retires this (§3.13 residual).
-      if (this.session.sheetFeed) {
-        this.refreshSheet();
-      }
       return;
     }
     if (view.view !== "legal.actions") {

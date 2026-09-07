@@ -26,6 +26,47 @@ npm run test:watch # vitest watch mode
 `web/dist` and `node_modules` are gitignored; `src/lib/proto/` is **committed**
 (see below), so building the SPA never requires cargo.
 
+## Tests
+
+`vitest` runs with `environment: "node"` — no jsdom, no setup file. Pure
+libs and rune stores are tested directly; the two layers above them have
+their own conventions:
+
+**The transport** (`ws.test.ts`) injects a `MockWebSocket` through
+`WsClientOptions.webSocketFactory` and drives framing, resume, ping/pong,
+backoff and the close codes with `vi.useFakeTimers()`.
+
+**The controller** (`game.test.ts`) does the same one level up:
+`new GameApp({ url, webSocketFactory, random })` (`GameAppOptions` forwards
+all three to `WsClient` unchanged) plus `app.client.connect(token, char)`
+drives the real hello → hydrate → route path against an inlined
+`FakeSocket`. The outbound `sent` array is the assertion surface for
+everything `#req` does, and the public stores (`app.unit`, `app.sheet`,
+`app.screens`, `app.scrollback`, …) for everything the frames land in. Four
+things the harness will bite you with:
+
+- `FakeSocket.open()` MUST set `readyState = 1`. `WsClient.send` drops every
+  frame silently otherwise, so `#req` returns `false` and the storm guards
+  release themselves — the test then passes while asserting the opposite of
+  the truth.
+- `url` and `webSocketFactory` travel together. Node defines a global
+  `WebSocket`, so threading only `url` attempts a real connection instead of
+  throwing.
+- Correlation ids are never reset (`WsClient.#nextReqId` climbs across
+  reconnects). Read the id back off the last `{t:"req"}` frame; never
+  hardcode one.
+- Never `vi.runAllTimers()`: toasts arm 6 s, the mail helpers 400 ms and the
+  reconnect backoff 500 ms+, so it mints fresh sockets. Advance to the exact
+  boundary (`UNIT_RESYNC_MS - 1`, then `1`).
+
+**Not covered by it**: the auth calls (`login`/`register`/`logout` need a
+`fetch` stub) and everything that renders a `.svelte` file, which needs a
+jsdom environment and a component-testing dependency — those assertions are
+still `readFileSync` source probes (`unit.test.ts`'s widget block,
+`vitalsboard.test.ts`'s vocabulary lint). The credentialled reset seam
+(`enterGame` → `#resetGameState`) needs a `localStorage` stub, which
+`game.test.ts` puts in with `vi.stubGlobal` for that one test only.
+
 ## Generated protocol types — `src/lib/proto/`
 
 Every file in `src/lib/proto/` is generated from the `mush-proto` crate via
@@ -309,10 +350,12 @@ declaring what is missing, the same bytes the TUI prints. They carry the
 `placeholder` class and the narrow-width rule hides them BY CLASS wherever
 they sit, so a phone drops the empty panes before anything real;
 `unitPaneOrder` puts them last so the wide layout reads the real panes
-first. That order is a pure function, which is how it is tested: there is
-no component-render harness on this client (vitest runs
-`environment: "node"`, no jsdom), so every I8 assertion is a store/lib
-test or a source probe.
+first. That order is a pure function, which is how it is tested. The
+coalescer, its bounded retry and both reset seams are driven end to end
+through the `GameApp` harness (`game.test.ts` — see Tests above); only the
+`.svelte` render assertions are still source probes, because there is no
+component-render harness on this client (vitest runs
+`environment: "node"`, no jsdom).
 
 **The web can never name a subject.** `Query::PanelSubscribe` carries only
 a feed, so the browser always gets the server's default subject (its own
@@ -457,6 +500,17 @@ on a matching `base_revision`, ignores a stale frame, and on a gap asks
 `GameApp` for a fresh keyframe (rule-3 self-heal, storm-guarded). A template
 swap or a staff-visibility change forces a keyframe server-side, so the
 client never applies a schema-mismatched delta.
+
+**Overlay-only state republishes too.** An authoritative action can mutate
+state that writes no sheet attribute (a typed Willpower spend, condition
+damage); the server now republishes the subject's sheet on an action-state
+commit, so that path is as live as an ordinary sheet write. The client's
+interim compensation — a `refreshSheet()` fired from `#routeView` after the
+viewer's own `resolution.outcome` receipt — is **retired**: the viewer's own
+commit costs no extra round trip, and `game.test.ts` pins that no `sheet`
+Req follows a receipt. The panel's Refresh and Try-again buttons, the sheet
+screen's `r`, the hello-pass hydration and the rule-3 self-heal are the only
+things that ask for a sheet.
 
 ## Worldgen draft panel — Build tab (M7)
 

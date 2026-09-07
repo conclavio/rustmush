@@ -62,13 +62,20 @@ export class RequestStore {
     return this.pending[0] ?? null;
   }
 
-  /** Enqueue a parsed request; a duplicate id replaces the old one. */
+  /** Enqueue a parsed request; a duplicate id replaces the old one IN PLACE
+   * (D-I-29 — the rule the SSH TUI overlay already follows). Position is
+   * part of the contract: a re-sent id is the same ask restated, so it must
+   * not be demoted behind asks the player has not seen yet, and after a
+   * world restart the id counter remints from 1, where a collision means the
+   * front entry is a zombie the fresh ask should REPLACE, not queue behind. */
   push(d: unknown): boolean {
     const req = parseRequest(d);
     if (!req) {
       return false;
     }
-    this.pending = [...this.pending.filter((r) => r.id !== req.id), req];
+    this.pending = this.pending.some((r) => r.id === req.id)
+      ? this.pending.map((r) => (r.id === req.id ? req : r))
+      : [...this.pending, req];
     return true;
   }
 

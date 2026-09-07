@@ -552,11 +552,12 @@ describe("UnitStore guards and reset", () => {
   });
 
   it("coalesces a burst of deltas into ONE refresh after UNIT_RESYNC_MS", () => {
-    // The timer itself lives in GameApp (`#scheduleUnitResync`), which has
-    // no constructible test harness (no jsdom, no socket seam on the app) —
-    // so this drives the exact rule that file implements over the real
-    // store: arm once while the guard is down, never while it is up. The
-    // wiring in game.svelte.ts is pinned by the source probe below.
+    // This pins the STORE's half of the rule, independently of the
+    // controller: arm once while the guard is down, never while it is up.
+    // The timer itself lives in GameApp (`#scheduleUnitResync`); it is
+    // driven end to end — through a real socket, at the real boundaries —
+    // by `src/lib/game.test.ts`, which replaced the source probes that used
+    // to stand in for a harness here.
     vi.useFakeTimers();
     try {
       const s = new UnitStore();
@@ -928,60 +929,6 @@ describe("the unit panel leaks no definition body", () => {
     ].join("\n");
     expect(rendered).not.toContain(MARK);
     expect(rendered.toLowerCase()).not.toContain("rules");
-  });
-});
-
-describe("the coalesced unit resync is wired in GameApp", () => {
-  // No component/app harness exists (vitest runs `environment: "node"` and
-  // GameApp owns its WsClient), so the wiring the store cannot see is
-  // pinned by source probe — the convention vitalsboard.test.ts already
-  // uses on this tree.
-  const src = readFileSync(resolve(process.cwd(), "src/lib/game.svelte.ts"), "utf8");
-
-  it("arms one timeout at UNIT_RESYNC_MS and never doubles it", () => {
-    expect(src).toContain("#scheduleUnitResync");
-    expect(src).toMatch(/#unitResyncTimer\s*!==\s*null\)\s*\{\s*return;/);
-    expect(src).toMatch(/setTimeout\([\s\S]{0,200}?\},\s*UNIT_RESYNC_MS\)/);
-    expect(src).toMatch(/applyJournal\(d\.data\)\s*===\s*"resync"\s*&&\s*!this\.unit\.resyncPending/);
-  });
-
-  it("disarms the timer and clears the store on both reset seams", () => {
-    // `#resetGameState` and `onFullRehydrate` — a timer left armed across a
-    // disconnect would latch the storm guard forever.
-    expect(src.match(/this\.#clearUnitResync\(\);/g) ?? []).toHaveLength(2);
-    expect(src.match(/this\.unit\.clear\(\);/g) ?? []).toHaveLength(2);
-    expect(src).toMatch(/pending\?\.kind === "unit"[\s\S]{0,400}?resyncPending = false/);
-  });
-
-  it("gives the layout toggle its own arm and the screen its refresh arm", () => {
-    expect(src).toMatch(/case "toggle":[\s\S]{0,400}?toggleLayout\(\)/);
-    expect(src).toMatch(/case "unit":\s*this\.refreshUnit\(\);\s*this\.refreshContacts\(\);/);
-  });
-
-  it("releases the storm guard when the request never went out, and on every hello", () => {
-    // `#req` returns false on a closed socket: nothing will answer, so the
-    // guard must not stay latched with no request in flight. A hello is the
-    // same rule as the I12 backlog latch — a request armed on a previous
-    // socket never resolves.
-    expect(src).toMatch(
-      /if \(!this\.#req\(\{ kind: "unit", feed \}[\s\S]{0,400}?this\.unit\.resyncPending = false;/,
-    );
-    expect(src).toMatch(
-      /this\.scrollback\.fetchingBacklog = false;\s*this\.unit\.resyncPending = false;/,
-    );
-  });
-
-  it("retries a throttled coalesced resync exactly once, further out", () => {
-    // A Sys answering a delta-driven resync would otherwise leave the pane
-    // behind its own journal until the next damage.
-    expect(src).toMatch(/#unitResyncFromDelta = true;\s*this\.refreshUnit\(\);/);
-    expect(src).toMatch(/#scheduleUnitRetry\(\)[\s\S]{0,600}?4 \* UNIT_RESYNC_MS/);
-    // Read-once: the flag is cleared before the retry is armed, so a second
-    // refusal cannot arm a third request.
-    expect(src).toMatch(
-      /if \(!this\.#unitResyncFromDelta\) \{\s*return;\s*\}\s*this\.#unitResyncFromDelta = false;/,
-    );
-    expect(src.match(/this\.#scheduleUnitRetry\(\);/g) ?? []).toHaveLength(1);
   });
 });
 

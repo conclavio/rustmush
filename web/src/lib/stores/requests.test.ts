@@ -52,12 +52,33 @@ describe("RequestStore", () => {
     expect(s.current).toBeNull();
   });
 
-  it("replaces a duplicate id rather than stacking it", () => {
+  it("keeps the oldest as current when a second arrives, and advances on answer", () => {
+    // The cross-client contract (interface plan I10): a second request never
+    // displaces the one the player is already looking at, and answering the
+    // first promotes the next in line. The SSH TUI's request overlay is being
+    // changed to match this; pinned here so the web half cannot drift.
+    const s = new RequestStore();
+    s.push(choice(1));
+    s.push(choice(2));
+    expect(s.current?.id).toBe(1);
+    s.remove(1);
+    expect(s.current?.id).toBe(2);
+  });
+
+  it("replaces a duplicate id IN PLACE rather than stacking or demoting it", () => {
+    // D-I-29's position rule, shared with the SSH TUI overlay: a re-sent id
+    // is the same ask restated, so it keeps its place in the queue — the
+    // player looking at request 1 sees the new prompt, not request 2. (The
+    // rule earns its keep on a remint collision after a world restart: the
+    // fresh ask replaces the zombie at the front instead of queueing behind
+    // it.) The web store used to demote to the back — `[2, 1]` — which is
+    // the drift this pin exists to stop.
     const s = new RequestStore();
     s.push(choice(1));
     s.push(choice(2));
     s.push({ ...choice(1), prompt: [{ text: "again" }] });
-    expect(s.pending.map((r) => r.id)).toEqual([2, 1]);
+    expect(s.pending.map((r) => r.id)).toEqual([1, 2]);
+    expect(s.current?.prompt).toEqual([{ text: "again" }]);
   });
 
   it("ignores a malformed push", () => {
