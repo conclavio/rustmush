@@ -107,6 +107,7 @@ mod observer;
 // self-heal). E3b1 adds the custody seam, asset/vault persistence + boot, the
 // destroy gate, and the `@asset`/`@vault` surface.
 mod api;
+pub mod bloom;
 mod boot;
 pub mod checkpoint;
 mod commands;
@@ -114,6 +115,7 @@ mod config;
 mod custody;
 mod declared;
 pub mod fold;
+pub mod keys;
 mod module;
 mod notice;
 mod render;
@@ -121,8 +123,8 @@ mod render;
 pub use amount::{Amount, MAX_SCALE};
 pub use engine::{
     APPROVAL_GC_AFTER_SECS, APPROVAL_TTL_SECS, AllowAll, AuthEval, CAPABILITIES, CustodyEval,
-    ESCALATION_RENOTIFY_SECS, ESCALATION_WINDOW_SECS, FactEval, HOLD_GC_AFTER_SECS,
-    MAX_ACTIVE_HOLDS_PER_ACCOUNT, MAX_APPROVERS_PER_REQUEST, MAX_ASSET_OPS_PER_PLAN,
+    ESCALATION_RENOTIFY_SECS, ESCALATION_WINDOW_SECS, FactEval, HOLD_GC_AFTER_SECS, KeyGate,
+    KeyVerdict, MAX_ACTIVE_HOLDS_PER_ACCOUNT, MAX_APPROVERS_PER_REQUEST, MAX_ASSET_OPS_PER_PLAN,
     MAX_CUSTODY_OPS_PER_PLAN, MAX_DESCRIPTION_BYTES, MAX_ENCUMBRANCES_PER_ASSET, MAX_ENTRY_BYTES,
     MAX_HOLD_EXPIRIES_PER_SWEEP, MAX_HOLD_OPS_PER_PLAN, MAX_LINES_PER_TX, MAX_MEMO_BYTES,
     MAX_OBLIGATIONS_PER_SWEEP, MAX_PENDING_PER_ACCOUNT, MAX_PENDING_PER_REQUESTER,
@@ -155,6 +157,7 @@ pub use attest::{
     CanonEvidence, CanonEvidenceSeam, CanonRecord, MAX_CANON_RECORDS_PER_SOURCE,
     MAX_CANON_SOURCE_LOOKUPS,
 };
+pub use bloom::ScalableBloom;
 pub use checkpoint::{
     CHECKPOINT_FORMAT, CheckpointMeta, DEFAULT_CHECKPOINT_EVERY_ENTRIES, is_checkpoint_key,
 };
@@ -163,6 +166,8 @@ pub use contract::{
 };
 pub use contract_live::accept_contract_as;
 pub use fold::FoldState;
+pub use keys::{IDEM_PREFIX, IdemDoc, idem_key, is_idem_key};
+pub use module::{ColdKey, KeyMode};
 pub use module::{
     DEFAULT_TX_TAIL_MAX, MAX_CANON_ENTITIES, MAX_PARTY_CAPS, MAX_REFUSAL_ACTORS, MAX_REFUSAL_ROWS,
     PartyCapTable, PendingEconomyRead, PendingEconomyReadKind, RefusalTally, ReplayStats, TxRef,

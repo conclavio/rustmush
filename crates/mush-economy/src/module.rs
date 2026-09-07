@@ -36,7 +36,7 @@ use crate::ids::{
     AccountId, ApprovalRequestId, CadenceId, ContractId, EscalationId, HoldId, ObligationId,
     TransactionId, VaultId,
 };
-use crate::record::{Account, EconomicTransaction, IdempotencyKey, Vault};
+use crate::record::{Account, EconomicTransaction, IdempotencyKey, IdempotencyRecord, Vault};
 use crate::snapshot::EconomySnapshot;
 
 /// The cold-replay wall time past which the durability checkpoint becomes the next
@@ -104,6 +104,72 @@ pub struct TxRef {
     pub idempotency: IdempotencyKey,
     /// When it was posted (wall-clock seconds).
     pub posted_at: i64,
+}
+
+/// Doc 13: how the store decides a post's idempotency key.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum KeyMode {
+    /// The RAM map holds every key ever posted; a miss is certain (W1, and any
+    /// store whose key documents are not yet backfilled).
+    #[default]
+    Whole,
+    /// The RAM map is a window; a miss asks the cold cache, then the filter, and
+    /// a positive outside both is the store's to answer (W2).
+    Windowed,
+}
+
+/// Doc 13: what the store learned about a key outside the RAM window from its
+/// `idem:` document — the record, or that there is none.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ColdKey {
+    /// The record, or `None` for a key the store has no document for.
+    pub record: Option<IdempotencyRecord>,
+    /// When the answer arrived (world seconds); aged out by the sweep.
+    pub at: i64,
+}
+
+/// Doc 13: one `idem:` read in flight.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PendingKeyRead {
+    /// The correlation `Ctx::read_store` returned.
+    pub correlation: u64,
+    /// When it was requested (world seconds).
+    pub requested_at: i64,
+}
+
+/// The store's idempotency gate (doc 13 §2.4): the window first, then the
+/// cold cache, then the filter — a negative from the filter is certain.
+pub struct StoreKeyGate<'a> {
+    filter: &'a crate::bloom::ScalableBloom,
+    cold: &'a BTreeMap<IdempotencyKey, ColdKey>,
+    windowed: bool,
+}
+
+impl crate::engine::KeyGate for StoreKeyGate<'_> {
+    fn verdict<'s>(
+        &'s self,
+        snapshot: &'s EconomySnapshot,
+        key: &IdempotencyKey,
+    ) -> crate::engine::KeyVerdict<'s> {
+        use crate::engine::KeyVerdict;
+        if let Some(record) = snapshot.idempotency(key) {
+            return KeyVerdict::Known(record);
+        }
+        if !self.windowed {
+            return KeyVerdict::Fresh;
+        }
+        if let Some(cold) = self.cold.get(key) {
+            return match &cold.record {
+                Some(record) => KeyVerdict::Known(record),
+                None => KeyVerdict::Fresh,
+            };
+        }
+        if self.filter.might_contain(key) {
+            KeyVerdict::Unknown
+        } else {
+            KeyVerdict::Fresh
+        }
+    }
 }
 
 /// One cold journal read a command is waiting on (J2; the H1 pattern): the
@@ -181,6 +247,21 @@ pub struct EconomyStore {
     pub(crate) chunk_firsts: BTreeMap<u64, u64>,
     /// In-flight cold journal reads, one per requesting actor (J2). Transient.
     pub(crate) pending_reads: std::collections::HashMap<ObjId, PendingEconomyRead>,
+    /// Doc 13 (W-D3): every key ever posted, as a scalable Bloom filter — built by
+    /// the replay, seeded from the checkpoint's bloom part, maintained on every
+    /// post.
+    pub(crate) key_filter: crate::bloom::ScalableBloom,
+    /// Doc 13: the gate's cold cache — what the `idem:` documents said about keys
+    /// outside the RAM window; aged out by the sweep.
+    pub(crate) cold_keys: BTreeMap<IdempotencyKey, ColdKey>,
+    /// Doc 13: the `idem:` reads in flight, one per key.
+    pub(crate) pending_key_reads: BTreeMap<IdempotencyKey, PendingKeyRead>,
+    /// Doc 13: whether the gate consults the filter. `Whole` until W2.
+    pub(crate) key_mode: KeyMode,
+    /// Doc 13 (W-D5): the key-document backfill for a journal older than the cut
+    /// — the next transaction id to write, and whether it is done.
+    pub(crate) idem_backfill_txid: u64,
+    pub(crate) idem_backfilled: bool,
     /// J3: the checkpoint this store last wrote or booted from, if any.
     pub(crate) checkpoint: Option<crate::checkpoint::CheckpointMeta>,
     /// J3: every checkpoint document key the store knows (booted with or
@@ -425,6 +506,9 @@ pub(crate) struct BootParts {
     pub(crate) boot_from_checkpoint: Option<u64>,
     pub(crate) boot_replayed: usize,
     pub(crate) boot_checkpoint_ms: u64,
+    pub(crate) key_filter: crate::bloom::ScalableBloom,
+    pub(crate) idem_backfill_txid: u64,
+    pub(crate) idem_backfilled: bool,
     pub(crate) next_account: u64,
     pub(crate) next_transaction: u64,
     pub(crate) next_vault: u64,
@@ -455,6 +539,12 @@ impl EconomyStore {
             journal: p.journal,
             transactions: p.transactions,
             tx_index: p.tx_index,
+            key_filter: p.key_filter,
+            cold_keys: BTreeMap::new(),
+            pending_key_reads: BTreeMap::new(),
+            key_mode: KeyMode::Whole,
+            idem_backfill_txid: p.idem_backfill_txid,
+            idem_backfilled: p.idem_backfilled,
             fold: p.fold,
             chunk_firsts: p.chunk_firsts,
             pending_reads: std::collections::HashMap::new(),
@@ -555,6 +645,75 @@ impl EconomyStore {
     #[must_use]
     pub fn checkpoint(&self) -> Option<&crate::checkpoint::CheckpointMeta> {
         self.checkpoint.as_ref()
+    }
+    /// Doc 13: the key filter — every key ever posted.
+    #[must_use]
+    pub fn key_filter(&self) -> &crate::bloom::ScalableBloom {
+        &self.key_filter
+    }
+    /// Doc 13: how the gate decides keys.
+    #[must_use]
+    pub fn key_mode(&self) -> KeyMode {
+        self.key_mode
+    }
+    /// Doc 13 (W-D5): whether every journal transaction has its key document.
+    #[must_use]
+    pub fn idem_backfilled(&self) -> bool {
+        self.idem_backfilled
+    }
+    /// Doc 13: what the cold cache holds for a key, if anything.
+    #[must_use]
+    pub fn cold_key(&self, key: &IdempotencyKey) -> Option<&ColdKey> {
+        self.cold_keys.get(key)
+    }
+    /// Doc 13: whether an `idem:` read is in flight for a key.
+    #[must_use]
+    pub fn key_read_pending(&self, key: &IdempotencyKey) -> bool {
+        self.pending_key_reads.contains_key(key)
+    }
+    /// The gate the planner asks (doc 13 §2.4).
+    pub(crate) fn key_gate(&self) -> StoreKeyGate<'_> {
+        StoreKeyGate {
+            filter: &self.key_filter,
+            cold: &self.cold_keys,
+            windowed: self.key_mode == KeyMode::Windowed,
+        }
+    }
+    /// A keyed read's answer, into the cold cache.
+    pub(crate) fn note_cold_key(
+        &mut self,
+        key: IdempotencyKey,
+        record: Option<IdempotencyRecord>,
+        now: i64,
+    ) {
+        self.cold_keys.insert(key, ColdKey { record, at: now });
+    }
+    /// Age the cold cache and forget stale key reads (the sweep's job): an
+    /// answer older than [`crate::keys::COLD_KEY_TTL_SECS`] goes, and a read
+    /// older than the store-read stale bound may be asked again.
+    pub(crate) fn age_cold_keys(&mut self, now: i64) -> usize {
+        let before = self.cold_keys.len();
+        self.cold_keys
+            .retain(|_, c| now.saturating_sub(c.at) < crate::keys::COLD_KEY_TTL_SECS);
+        self.pending_key_reads
+            .retain(|_, p| now.saturating_sub(p.requested_at) < mush_core::STORE_READ_STALE_SECS);
+        before - self.cold_keys.len()
+    }
+    /// Test rig (doc 13 W1): decide keys as the window will in W2.
+    #[doc(hidden)]
+    pub fn set_key_mode_for_tests(&mut self, mode: KeyMode) {
+        self.key_mode = mode;
+    }
+    /// Test rig (doc 13 W1): drop a key from the RAM window as the sweep's
+    /// eviction will in W2.
+    #[doc(hidden)]
+    pub fn forget_key_for_tests(&mut self, key: &IdempotencyKey) -> bool {
+        self.snapshot.remove_idempotency(key).is_some()
+    }
+    /// Test rig (doc 13 W1): the filter, to force a positive.
+    #[doc(hidden)]
+    pub fn key_filter_mut_for_tests(&mut self) -> &mut crate::bloom::ScalableBloom {
+        &mut self.key_filter
     }
     /// The limit the sweep evicts the tail down to.
     #[must_use]
@@ -915,6 +1074,8 @@ impl EconomyStore {
             "last_sweep_ic": self.last_sweep_ic,
             "last_boot_real": self.last_boot_real,
             "boot_frozen": self.boot_frozen.iter().map(|a| a.0).collect::<Vec<u64>>(),
+            "idem_backfill_txid": self.idem_backfill_txid,
+            "idem_backfilled": self.idem_backfilled,
             "frozen": self.frozen,
         })
     }
@@ -937,6 +1098,10 @@ impl EconomyStore {
                 posted_at: tx.posted_at,
             },
         );
+        // Doc 13: the filter remembers every key ever; a cold-cache answer for
+        // this key (a confirmed absence, typically) is superseded by the post.
+        self.key_filter.insert(&tx.idempotency);
+        self.cold_keys.remove(&tx.idempotency);
         // J3: the journal-authority shadow, folded by the one function boot uses.
         self.fold.fold_entry(tx.journal_seq, &tx);
         // E6a step 1 (D-E6-21): the rolling-window tail, the same fold boot replays.

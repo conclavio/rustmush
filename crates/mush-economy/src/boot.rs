@@ -374,6 +374,9 @@ pub(crate) fn load_boot(
         } else if crate::checkpoint::is_checkpoint_key(key) {
             // J3: selected and validated below, once the journal is inspected.
             checkpoint_keys.insert(key.clone());
+        } else if crate::keys::is_idem_key(key) {
+            // Doc 13: read on demand through the store-read seam, never at boot;
+            // the loader skips the prefix, a test rig may hand them over.
         } else if key == mush_core::BOOT_MANIFEST_KEY {
             // J4: loader-owned; the production loader strips it, a test rig
             // may hand it over with the rest.
@@ -412,6 +415,9 @@ pub(crate) fn load_boot(
     let mut hold_at_stored: BTreeMap<HoldId, Hold> = BTreeMap::new();
     let mut held_at_stored: BTreeMap<AccountId, i128> = BTreeMap::new();
     let mut transactions: BTreeMap<TransactionId, EconomicTransaction> = BTreeMap::new();
+    // Doc 13 (W-D3): every key ever posted — replayed whole, or seeded from the
+    // checkpoint's bloom part and extended by the tail.
+    let mut key_filter = crate::bloom::ScalableBloom::new();
     let mut snapshot = EconomySnapshot::new();
     for def in instruments.values() {
         snapshot.put_instrument(def.clone());
@@ -454,8 +460,10 @@ pub(crate) fn load_boot(
         head,
         head_key,
         rows,
+        filter,
     }) = checkpoint
     {
+        key_filter = filter;
         for row in &rows {
             let Some((record, tx_ref)) = ValidCheckpoint::record_of(row) else {
                 return Err(ModError::msg(format!(
@@ -498,6 +506,7 @@ pub(crate) fn load_boot(
         checkpoint_meta = Some(CheckpointMeta {
             covered_seq: head.covered_seq,
             head_key,
+            bloom_key: head.bloom.key.clone(),
             parts: head.parts,
             max_txid: head.max_txid,
         });
@@ -538,6 +547,7 @@ pub(crate) fn load_boot(
             }
         }
         state.fold_entry(seq, &tx);
+        key_filter.insert(&tx.idempotency);
         // The drift detectors: each projection's journal value at the sequence
         // its stored doc claims (E4b1 verify fold, B3/B5).
         for line in &tx.lines {
@@ -731,6 +741,19 @@ pub(crate) fn load_boot(
     // alone would come up clean on the very next boot and hand spending authority
     // back without any staff decision. `#[serde(default)]`-style tolerance (an
     // absent field reads `false`) keeps pre-E3 meta docs loading.
+    // Doc 13 (W-D5): the key-document backfill's cursor and flag; an empty
+    // journal has nothing to backfill.
+    let idem_backfill_txid = meta
+        .as_ref()
+        .and_then(|m| m.get("idem_backfill_txid"))
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0);
+    let idem_backfilled = meta
+        .as_ref()
+        .and_then(|m| m.get("idem_backfilled"))
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false)
+        || journal_empty;
     let mut frozen = meta
         .as_ref()
         .and_then(|m| m.get("frozen"))
@@ -1704,6 +1727,9 @@ pub(crate) fn load_boot(
         boot_from_checkpoint: covered,
         boot_replayed: replayed,
         boot_checkpoint_ms: checkpoint_ms,
+        key_filter,
+        idem_backfill_txid,
+        idem_backfilled,
         next_account,
         next_transaction,
         next_vault,

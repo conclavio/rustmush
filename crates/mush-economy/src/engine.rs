@@ -398,6 +398,11 @@ pub struct ValidateEnv<'a> {
     /// Not hashed, like the allocator floor: it is a fact about the world at post
     /// time, not about the plan.
     pub spent: BTreeMap<AccountId, Amount>,
+    /// Doc 13 (W-D1): how the plan's idempotency key is decided — the store's
+    /// gate (the RAM window, the cold cache, the key filter), or `None` for the
+    /// snapshot's map alone (every key ever posted is in it while the window
+    /// is whole; W2 makes the gate mandatory).
+    pub keys: Option<&'a dyn KeyGate>,
 }
 
 impl ValidateEnv<'_> {
@@ -406,6 +411,56 @@ impl ValidateEnv<'_> {
     pub fn clocks(&self) -> Clocks {
         Clocks::new(self.now, self.ic_now)
     }
+}
+
+/// What the gate says about a plan's idempotency key (doc 13 §2.4).
+#[derive(Clone, Copy, Debug)]
+pub enum KeyVerdict<'a> {
+    /// The key was posted before: its record.
+    Known(&'a crate::record::IdempotencyRecord),
+    /// The key was never posted: certain.
+    Fresh,
+    /// The key may have been posted before the RAM window and the store has to
+    /// be asked — [`crate::EconomyError::RetryShortly`].
+    Unknown,
+}
+
+/// The idempotency gate the planner asks (doc 13 §2.4, W-D1).
+pub trait KeyGate {
+    /// The verdict for `key` against `snapshot`'s window.
+    fn verdict<'s>(
+        &'s self,
+        snapshot: &'s EconomySnapshot,
+        key: &crate::record::IdempotencyKey,
+    ) -> KeyVerdict<'s>;
+}
+
+/// The gate before the window exists: the snapshot's map is every key ever
+/// posted, so a miss is `Fresh`.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct MapOnlyKeys;
+
+impl KeyGate for MapOnlyKeys {
+    fn verdict<'s>(
+        &'s self,
+        snapshot: &'s EconomySnapshot,
+        key: &crate::record::IdempotencyKey,
+    ) -> KeyVerdict<'s> {
+        match snapshot.idempotency(key) {
+            Some(record) => KeyVerdict::Known(record),
+            None => KeyVerdict::Fresh,
+        }
+    }
+}
+
+static MAP_ONLY: MapOnlyKeys = MapOnlyKeys;
+
+fn key_verdict<'s>(
+    keys: Option<&'s dyn KeyGate>,
+    snapshot: &'s EconomySnapshot,
+    key: &crate::record::IdempotencyKey,
+) -> KeyVerdict<'s> {
+    keys.unwrap_or(&MAP_ONLY).verdict(snapshot, key)
 }
 
 // ---- validate -------------------------------------------------------------
@@ -432,12 +487,17 @@ pub fn validate(
     let hash = plan_hash(plan);
 
     // Idempotency FIRST: an exact repeat short-circuits to the original id; a reuse
-    // with a different plan is an error (never a silent re-post).
-    if let Some(rec) = snapshot.idempotency(&plan.idempotency) {
-        if rec.plan_hash == hash {
-            return PlanResult::AlreadyPosted(rec.transaction);
+    // with a different plan is an error (never a silent re-post); a key the gate
+    // cannot decide from RAM is a transient (doc 13, W-D1).
+    match key_verdict(env.keys, snapshot, &plan.idempotency) {
+        KeyVerdict::Known(rec) => {
+            if rec.plan_hash == hash {
+                return PlanResult::AlreadyPosted(rec.transaction);
+            }
+            return PlanResult::Refused(EconomyError::IdempotencyConflict);
         }
-        return PlanResult::Refused(EconomyError::IdempotencyConflict);
+        KeyVerdict::Unknown => return PlanResult::Refused(EconomyError::RetryShortly),
+        KeyVerdict::Fresh => {}
     }
 
     match validate_inner(plan, snapshot, env, hash, false) {
@@ -1996,6 +2056,7 @@ pub fn plan_reversal(
     cause: crate::record::EconomicCause,
     snapshot: &EconomySnapshot,
     auth: &dyn AuthEval,
+    keys: Option<&dyn KeyGate>,
 ) -> PlanResult {
     // Invariant 28 extends E3's rule to reservations: money-only compensation would
     // pay the payer back and leave the hold `Consumed`, so the payee's credit
@@ -2038,12 +2099,17 @@ pub fn plan_reversal(
     // re-reverse with a different staff reason still resolves to AlreadyPosted.
     let hash = crate::hash::reversal_hash(original.id);
 
-    // A clean retry of the SAME reversal returns the original reversal id.
-    if let Some(rec) = snapshot.idempotency(&plan.idempotency) {
-        if rec.plan_hash == hash {
-            return PlanResult::AlreadyPosted(rec.transaction);
+    // A clean retry of the SAME reversal returns the original reversal id; a key
+    // the gate cannot decide from RAM is a transient (doc 13, W-D1).
+    match key_verdict(keys, snapshot, &plan.idempotency) {
+        KeyVerdict::Known(rec) => {
+            if rec.plan_hash == hash {
+                return PlanResult::AlreadyPosted(rec.transaction);
+            }
+            return PlanResult::Refused(EconomyError::IdempotencyConflict);
         }
-        return PlanResult::Refused(EconomyError::IdempotencyConflict);
+        KeyVerdict::Unknown => return PlanResult::Refused(EconomyError::RetryShortly),
+        KeyVerdict::Fresh => {}
     }
     // At-most-once backstop: refuse if the target is already reversed by any path.
     if snapshot.is_reversed(original.id) {
@@ -2058,6 +2124,7 @@ pub fn plan_reversal(
         next_hold_id: 0,
         // Invariant 17 is skipped on this path, so no window is ever consulted.
         spent: BTreeMap::new(),
+        keys,
     };
     match validate_inner(&plan, snapshot, &env, hash, true) {
         Ok(mut prepared) => {

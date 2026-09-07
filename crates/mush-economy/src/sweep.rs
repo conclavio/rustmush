@@ -133,6 +133,9 @@ pub(crate) fn sweep(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<SceneId>) {
     forgive_suspended(ctx, evidence);
     step_contracts(ctx, now, ic_now);
     collect_garbage(ctx, now);
+    // Doc 13 (W-D5): key documents for a journal older than the cut, at the
+    // sweep's pace.
+    crate::keys::backfill(ctx);
     // J3: the checkpoint, after the write-time drift check, at its cadence.
     crate::checkpoint::maybe_write(ctx, now);
     renotify(ctx, now);
@@ -440,7 +443,9 @@ fn disposition(e: &EconomyError) -> Disposition {
             Disposition::Short
         }
         // Transient by construction — the next fire is the retry.
-        EconomyError::JournalUnavailable | EconomyError::EconomyFrozen => Disposition::Transient,
+        EconomyError::JournalUnavailable
+        | EconomyError::EconomyFrozen
+        | EconomyError::RetryShortly => Disposition::Transient,
         // A settlement refusal only a human can fix (§4.3): a closed/missing/frozen
         // account, a retired instrument, an inactive org compartment, an approval rule
         // the sweep cannot satisfy, or a deterministic-key conflict (doc 09 C8's
@@ -1295,6 +1300,7 @@ fn step_contracts(ctx: &mut Ctx<'_>, now: i64, ic_now: i64) {
         };
         let world = api::WorldAuth { w: ctx.w };
         let env = crate::engine::ValidateEnv {
+            keys: None,
             auth: &world,
             custody: &custody,
             facts: &facts,
@@ -1469,6 +1475,7 @@ fn stamp_observed_conditions(ctx: &mut Ctx<'_>, now: i64, ic_now: i64) {
         };
         let world = api::WorldAuth { w: ctx.w };
         let env = crate::engine::ValidateEnv {
+            keys: None,
             auth: &world,
             custody: &custody,
             facts: &facts,
@@ -2046,6 +2053,8 @@ fn collect_garbage(ctx: &mut Ctx<'_>, now: i64) {
                 "economy: RAM tail evicted"
             );
         }
+        // Doc 13: cold-cache answers and stale key reads age out here.
+        store.age_cold_keys(now);
     }
     if approvals.is_empty() && holds.is_empty() && escalations.is_empty() {
         return;

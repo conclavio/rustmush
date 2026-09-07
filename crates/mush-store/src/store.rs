@@ -275,15 +275,53 @@ pub struct ModuleDocs {
     /// id, the chunk index below which no chunk document was fetched (primary
     /// or archive). Empty for a whole listing.
     pub omitted: std::collections::BTreeMap<String, u64>,
+    /// Doc 13 W1: the key prefixes this listing fetched nothing under.
+    pub skipped_prefixes: Vec<String>,
 }
 
 /// Per ledger log id, the chunk index below which a boot listing need not
 /// fetch (J4, doc 12 §5.6): the module's boot manifest, as the loader read it.
 pub type ChunkFloors = std::collections::BTreeMap<String, u64>;
 
-/// No floors: the whole listing (a `static`, so a backend's whole listing can
+/// What a boot listing need not fetch (J4 + doc 13 W1): ledger chunks below a
+/// per-log floor, and every key under a prefix — the module's boot manifest,
+/// as the loader read it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct BootSkip {
+    /// Per log id, chunks below this index are not fetched.
+    pub floors: ChunkFloors,
+    /// Keys starting with any of these are not fetched.
+    pub prefixes: Vec<String>,
+}
+
+impl BootSkip {
+    /// Whether `key` is one this listing does not fetch: a `log:{id}:{n}` key
+    /// below its log's floor, or any key under a skipped prefix.
+    #[must_use]
+    pub fn skips(&self, key: &str) -> bool {
+        if self
+            .prefixes
+            .iter()
+            .any(|p| !p.is_empty() && key.starts_with(p.as_str()))
+        {
+            return true;
+        }
+        below_floor(key, &self.floors)
+    }
+
+    /// Nothing to skip.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.floors.is_empty() && self.prefixes.is_empty()
+    }
+}
+
+/// No skip: the whole listing (a `static`, so a backend's whole listing can
 /// borrow it for the future it returns).
-pub static NO_FLOORS: ChunkFloors = ChunkFloors::new();
+pub static NO_SKIP: BootSkip = BootSkip {
+    floors: ChunkFloors::new(),
+    prefixes: Vec::new(),
+};
 
 /// Whether a `log:{id}:{n}` key falls below its log's floor — the one test a
 /// narrowed listing applies, to primary keys and archived chunks alike.
@@ -563,21 +601,25 @@ pub trait ObjectStore: Send + Sync {
         Box::pin(async move { Ok(ModuleDocs::split(self.module_json_list(ns).await?)) })
     }
 
-    /// [`ObjectStore::module_docs`] **narrowed** (J4, doc 12 §5.6): a ledger
-    /// chunk below its log's floor is neither fetched from the primary nor
-    /// merged from the archive, and the floors come back in
-    /// [`ModuleDocs::omitted`]. With empty floors this is the whole listing.
-    /// The default lists whole and drops what the floors exclude — correct,
-    /// never narrow; a real backend overrides it to skip the fetch itself.
+    /// [`ObjectStore::module_docs`] **narrowed** (J4, doc 12 §5.6; doc 13 W1):
+    /// a ledger chunk below its log's floor is neither fetched from the
+    /// primary nor merged from the archive, a key under a skipped prefix is
+    /// not fetched at all, and what was skipped comes back in
+    /// [`ModuleDocs::omitted`] and [`ModuleDocs::skipped_prefixes`]. With
+    /// nothing to skip this is the whole listing. The default lists whole and
+    /// drops what the skip excludes — correct, never narrow; a real backend
+    /// overrides it to skip the fetch itself.
     fn module_docs_from<'a>(
         &'a self,
         ns: &'a str,
-        floors: &'a ChunkFloors,
+        skip: &'a BootSkip,
     ) -> BoxFuture<'a, Result<ModuleDocs, StoreError>> {
         Box::pin(async move {
             let mut docs = self.module_docs(ns).await?;
-            docs.ledger.retain(|(key, _)| !below_floor(key, floors));
-            docs.omitted = floors.clone();
+            docs.ledger.retain(|(key, _)| !skip.skips(key));
+            docs.docs.retain(|(key, _)| !skip.skips(key));
+            docs.omitted = skip.floors.clone();
+            docs.skipped_prefixes = skip.prefixes.clone();
             Ok(docs)
         })
     }

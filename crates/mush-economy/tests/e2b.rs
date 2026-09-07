@@ -16,8 +16,8 @@ use mush_core::{
     WorldEvent,
 };
 use mush_economy::{
-    AccountId, EconomicCause, EconomyConfig, EconomyPlan, EconomyStore, IdempotencyKey,
-    PostOutcome, RequestedLine, TransactionId,
+    AccountId, EconomicCause, EconomyConfig, EconomyPlan, EconomyStore, IdemDoc, IdempotencyKey,
+    KeyMode, PostOutcome, RequestedLine, TransactionId, idem_key, is_idem_key,
 };
 use mush_org::PrincipalId;
 use mush_proto::OutputEvent;
@@ -989,6 +989,298 @@ fn j4_a_narrowed_boot_without_a_usable_checkpoint_asks_for_the_whole_fetch() {
     assert_eq!(bal(&clamped, 1), 121);
 }
 
+fn tkey(name: &str) -> IdempotencyKey {
+    IdempotencyKey::new("t", name)
+}
+
+fn store_mut(tw: &mut TestWorld) -> &mut EconomyStore {
+    tw.world_mut()
+        .module_state_mut::<EconomyStore>()
+        .expect("economy store")
+}
+
+/// The key documents `kv` holds, decoded.
+fn idem_docs(kv: &[(SmolStr, serde_json::Value)]) -> Vec<IdemDoc> {
+    kv.iter()
+        .filter(|(k, _)| is_idem_key(k))
+        .map(|(_, v)| serde_json::from_value(v.clone()).expect("a key document"))
+        .collect()
+}
+
+/// Doc 13 W1 (W-D4): every post writes its key document in the same batch,
+/// under the hash of its key, carrying the record and the sequence; the
+/// documents are ignored at boot; a fresh world needs no backfill.
+#[test]
+fn w1_every_post_writes_its_key_document() {
+    let mut tw = boot_j3(20_000, 4);
+    setup_mint(&mut tw, 1); // seq 0
+    let ev = tw.run(GOD, "@testpost alpha 1"); // seq 1
+    assert!(texts(&ev).contains("posted #1"), "{}", texts(&ev));
+    mint_n(&mut tw, 2); // seq 2, 3
+    assert!(
+        store(&tw).idem_backfilled(),
+        "a fresh world has nothing to backfill"
+    );
+    let kv = fold_into(Vec::new(), &mut tw);
+    let mut docs = idem_docs(&kv);
+    docs.sort_by_key(|d| d.seq);
+    assert_eq!(docs.len(), 4, "one document per post");
+    assert_eq!(
+        docs.iter().map(|d| d.seq).collect::<Vec<_>>(),
+        vec![0, 1, 2, 3]
+    );
+    let alpha = docs
+        .iter()
+        .find(|d| d.key == "alpha")
+        .expect("alpha's document");
+    assert_eq!(
+        (alpha.ns.as_str(), alpha.tx, alpha.seq),
+        ("t", TransactionId(1), 1)
+    );
+    let (key, _) = kv
+        .iter()
+        .find(|(k, _)| is_idem_key(k) && k == &idem_key(&tkey("alpha")))
+        .expect("stored under the key's hash");
+    assert_eq!(key.len(), "idem:".len() + 64);
+    let record = alpha.record().expect("the record decodes");
+    assert_eq!(
+        store(&tw).snapshot().idempotency(&tkey("alpha")),
+        Some(&record),
+        "the document is the RAM record"
+    );
+    // Handed over with the rest (a test rig, or a loader without the manifest),
+    // the documents are ignored at boot and the world is the same.
+    let tw2 = reboot_j3(kv, 20_000, 4);
+    assert!(!store(&tw2).is_frozen());
+    assert_eq!(bal(&tw2, 1), 4);
+    assert!(store(&tw2).snapshot().idempotency(&tkey("alpha")).is_some());
+}
+
+/// Doc 13 W1 (W-D3): the filter knows every key posted and never a fresh one;
+/// a checkpoint carries it as a hashed part, a checkpointed boot seeds from it
+/// and the tail extends it; a tampered bloom part rejects the checkpoint whole
+/// and the full replay rebuilds the filter.
+#[test]
+fn w1_the_filter_knows_every_key_and_a_checkpoint_carries_it() {
+    let mut tw = boot_j3(20_000, 4);
+    setup_mint(&mut tw, 1);
+    for name in ["a", "b", "c"] {
+        let ev = tw.run(GOD, &format!("@testpost {name} 1"));
+        assert!(texts(&ev).contains("posted"), "{}", texts(&ev));
+    }
+    sweep_at(&mut tw, 100); // a checkpoint at seq 3
+    let cp = store(&tw).checkpoint().cloned().expect("written");
+    assert_eq!(cp.bloom_key.as_str(), "checkpoint:3:bloom");
+    {
+        let f = store(&tw).key_filter();
+        assert_eq!(f.len(), 4, "the mint's key and three posts");
+        for name in ["a", "b", "c"] {
+            assert!(f.might_contain(&tkey(name)));
+        }
+        assert!(!f.might_contain(&tkey("never")));
+    }
+    let kv = fold_into(Vec::new(), &mut tw);
+    assert!(kv.iter().any(|(k, _)| k == "checkpoint:3:bloom"));
+
+    // Two more posts past the checkpoint: the boot seeds the filter from the
+    // part and the replayed tail adds the rest.
+    let mut tw = tw;
+    for name in ["d", "e"] {
+        let ev = tw.run(GOD, &format!("@testpost {name} 1"));
+        assert!(texts(&ev).contains("posted"), "{}", texts(&ev));
+    }
+    let kv = fold_into(kv, &mut tw);
+    let tw2 = reboot_j3(kv.clone(), 20_000, 4);
+    assert_eq!(replay(&tw2), (Some(3), 2, 6));
+    let f = store(&tw2).key_filter();
+    assert_eq!(f.len(), 6);
+    for name in ["a", "b", "c", "d", "e"] {
+        assert!(
+            f.might_contain(&tkey(name)),
+            "{name} after a checkpointed boot"
+        );
+    }
+    assert!(!f.might_contain(&tkey("never")));
+
+    // A tampered bloom part: the checkpoint is rejected whole, the journal
+    // replayed, and the filter rebuilt from every entry.
+    let mut tampered = kv.clone();
+    patch(&mut tampered, "checkpoint:3:bloom", |v| {
+        v["filter"]["slices"][0]["count"] = serde_json::json!(0);
+    });
+    let tw3 = reboot_j3(tampered, 20_000, 4);
+    assert_eq!(replay(&tw3).0, None, "rejected: a full replay");
+    assert!(!store(&tw3).is_frozen());
+    let f = store(&tw3).key_filter();
+    assert_eq!(f.len(), 6);
+    for name in ["a", "b", "c", "d", "e"] {
+        assert!(f.might_contain(&tkey(name)), "{name} after a full replay");
+    }
+    // A bloom part that is missing: the same.
+    let stripped: Vec<_> = kv
+        .into_iter()
+        .filter(|(k, _)| k != "checkpoint:3:bloom")
+        .collect();
+    let tw4 = reboot_j3(stripped, 20_000, 4);
+    assert_eq!(replay(&tw4).0, None);
+    assert_eq!(bal(&tw4, 1), 6);
+}
+
+/// Doc 13 W1 (W-D1, lens I): with the gate deciding keys as the window will,
+/// a key outside the RAM map that the filter has seen is a transient — the
+/// store is asked once, the answer warms the cold cache, and the same request
+/// is then decided from it: the original id for the same plan, a conflict for
+/// a different one; a never-posted key posts at once; a never-posted key the
+/// filter is wrong about takes the transient and then posts.
+#[test]
+fn w1_the_gate_takes_the_transient_path_for_a_positive_outside_the_window() {
+    let mut tw = boot_j3(20_000, 4);
+    setup_mint(&mut tw, 1);
+    let ev = tw.run(GOD, "@testpost alpha 1");
+    assert!(texts(&ev).contains("posted #1"), "{}", texts(&ev));
+    let kv = fold_into(Vec::new(), &mut tw);
+    // Evict alpha from the window, as W2's sweep will, and switch the gate on.
+    {
+        let s = store_mut(&mut tw);
+        assert!(s.forget_key_for_tests(&tkey("alpha")));
+        s.set_key_mode_for_tests(KeyMode::Windowed);
+    }
+    let (ev, effects) = tw.run_with_effects(GOD, "@testpost alpha 1");
+    assert!(
+        texts(&ev).contains("try again shortly"),
+        "a positive outside the window is a transient: {}",
+        texts(&ev)
+    );
+    let (correlation, keys) = one_read(&effects);
+    assert_eq!(
+        keys,
+        vec![idem_key(&tkey("alpha"))],
+        "the key's document is asked for"
+    );
+    assert!(store(&tw).key_read_pending(&tkey("alpha")));
+    // The same request while the read is in flight asks nothing twice.
+    let (ev, effects) = tw.run_with_effects(GOD, "@testpost alpha 1");
+    assert!(texts(&ev).contains("try again shortly"), "{}", texts(&ev));
+    assert!(
+        effects.is_empty(),
+        "one read in flight per key: {effects:?}"
+    );
+    // The answer arrives: the cold cache decides the next attempts.
+    complete(&mut tw, correlation, serve(&kv, keys));
+    assert!(!store(&tw).key_read_pending(&tkey("alpha")));
+    assert!(
+        store(&tw)
+            .cold_key(&tkey("alpha"))
+            .is_some_and(|c| c.record.is_some())
+    );
+    let ev = tw.run(GOD, "@testpost alpha 1");
+    assert!(
+        texts(&ev).contains("already #1"),
+        "the same plan: {}",
+        texts(&ev)
+    );
+    let ev = tw.run(GOD, "@testpost alpha 2");
+    assert!(
+        texts(&ev).contains("refused") && texts(&ev).to_lowercase().contains("idempotency"),
+        "a different plan under a used key: {}",
+        texts(&ev)
+    );
+    // A never-posted key: the filter says never, and it posts at once.
+    let (ev, effects) = tw.run_with_effects(GOD, "@testpost beta 1");
+    assert!(texts(&ev).contains("posted #2"), "{}", texts(&ev));
+    assert!(effects.is_empty());
+    // A never-posted key the filter is wrong about: the transient, the store
+    // answers "absent", and the next attempt posts the real record.
+    store_mut(&mut tw)
+        .key_filter_mut_for_tests()
+        .insert(&tkey("gamma"));
+    let (ev, effects) = tw.run_with_effects(GOD, "@testpost gamma 1");
+    assert!(texts(&ev).contains("try again shortly"), "{}", texts(&ev));
+    let (correlation, keys) = one_read(&effects);
+    complete(&mut tw, correlation, serve(&kv, keys)); // kv has no gamma: absent
+    assert!(
+        store(&tw)
+            .cold_key(&tkey("gamma"))
+            .is_some_and(|c| c.record.is_none())
+    );
+    let ev = tw.run(GOD, "@testpost gamma 1");
+    assert!(texts(&ev).contains("posted #3"), "{}", texts(&ev));
+    assert!(
+        store(&tw).cold_key(&tkey("gamma")).is_none(),
+        "the post supersedes the cold answer"
+    );
+    // A failed read is forgotten, so the next attempt asks again.
+    store_mut(&mut tw)
+        .key_filter_mut_for_tests()
+        .insert(&tkey("delta"));
+    let (_, effects) = tw.run_with_effects(GOD, "@testpost delta 1");
+    let (correlation, _) = one_read(&effects);
+    complete(
+        &mut tw,
+        correlation,
+        StoreReadResult::Failed("the store went away".into()),
+    );
+    assert!(!store(&tw).key_read_pending(&tkey("delta")));
+    let (ev, effects) = tw.run_with_effects(GOD, "@testpost delta 1");
+    assert!(texts(&ev).contains("try again shortly"), "{}", texts(&ev));
+    assert_eq!(one_read(&effects).1, vec![idem_key(&tkey("delta"))]);
+    // The cold cache ages out on the sweep.
+    sweep_at(&mut tw, 100_000);
+    assert!(store(&tw).cold_key(&tkey("alpha")).is_none(), "aged out");
+}
+
+/// Doc 13 W1 (W-D5, lens S): a journal older than the cut has no key
+/// documents; the sweep backfills them from the RAM index at its pace and
+/// records that it is done; a world booted from the result needs nothing.
+#[test]
+fn w1_the_sweep_backfills_key_documents_for_an_old_journal() {
+    let mut tw = boot_j3(20_000, 0);
+    setup_mint(&mut tw, 1);
+    mint_n(&mut tw, 4); // seq 0..=4
+    let kv = fold_into(Vec::new(), &mut tw);
+    // The world as the cut finds it: no key documents, no backfill flag.
+    let mut old: Vec<_> = kv.into_iter().filter(|(k, _)| !is_idem_key(k)).collect();
+    patch(&mut old, "meta", |v| {
+        if let Some(m) = v.as_object_mut() {
+            m.remove("idem_backfilled");
+            m.remove("idem_backfill_txid");
+        }
+    });
+    let mut tw2 = reboot_j3(old.clone(), 20_000, 0);
+    assert!(
+        !store(&tw2).idem_backfilled(),
+        "an old journal is not backfilled"
+    );
+    assert!(
+        idem_docs(&fold_into(Vec::new(), &mut tw2)).is_empty(),
+        "boot writes none"
+    );
+    sweep_at(&mut tw2, 100);
+    assert!(
+        store(&tw2).idem_backfilled(),
+        "five documents fit one sweep"
+    );
+    let kv2 = fold_into(old, &mut tw2);
+    let mut docs = idem_docs(&kv2);
+    docs.sort_by_key(|d| d.seq);
+    assert_eq!(
+        docs.iter().map(|d| d.seq).collect::<Vec<_>>(),
+        vec![0, 1, 2, 3, 4]
+    );
+    let meta = kv2
+        .iter()
+        .find(|(k, _)| k == "meta")
+        .expect("meta")
+        .1
+        .clone();
+    assert_eq!(meta["idem_backfilled"], serde_json::json!(true));
+    // Booted from the result: done, and a second sweep writes nothing more.
+    let mut tw3 = reboot_j3(kv2.clone(), 20_000, 0);
+    assert!(store(&tw3).idem_backfilled());
+    sweep_at(&mut tw3, 200);
+    assert!(idem_docs(&fold_into(Vec::new(), &mut tw3)).is_empty());
+}
+
 /// J3-F3 (cadence-1 verify fold): sequence 0 is both the journal's first
 /// sequence and the never-touched sentinel, and the boot's checkpoint rule
 /// first excluded every claim of 0 — so an account whose only touch was the
@@ -1097,6 +1389,7 @@ fn j3_the_sweep_writes_a_checkpoint_and_boot_resumes_from_it() {
         checkpoint_keys(&kv),
         vec![
             "checkpoint:5".to_string(),
+            "checkpoint:5:bloom".to_string(),
             "checkpoint:5:idem:0".to_string()
         ]
     );
@@ -1139,8 +1432,10 @@ fn j3_the_sweep_writes_a_checkpoint_and_boot_resumes_from_it() {
         checkpoint_keys(&kv3),
         vec![
             "checkpoint:5".to_string(),
+            "checkpoint:5:bloom".to_string(),
             "checkpoint:5:idem:0".to_string(),
             "checkpoint:9".to_string(),
+            "checkpoint:9:bloom".to_string(),
             "checkpoint:9:idem:1".to_string(),
         ]
     );
@@ -1152,9 +1447,11 @@ fn j3_the_sweep_writes_a_checkpoint_and_boot_resumes_from_it() {
         checkpoint_keys(&kv4),
         vec![
             "checkpoint:13".to_string(),
+            "checkpoint:13:bloom".to_string(),
             "checkpoint:13:idem:2".to_string(),
             "checkpoint:5:idem:0".to_string(),
             "checkpoint:9".to_string(),
+            "checkpoint:9:bloom".to_string(),
             "checkpoint:9:idem:1".to_string(),
         ]
     );
@@ -1174,7 +1471,7 @@ fn j3_an_invalid_checkpoint_is_ignored_and_the_journal_replayed_whole() {
     mint_n(&mut tw, 3);
     sweep_at(&mut tw, 100);
     let kv = fold_into(Vec::new(), &mut tw);
-    assert_eq!(checkpoint_keys(&kv).len(), 2);
+    assert_eq!(checkpoint_keys(&kv).len(), 3, "head, bloom part, idem part");
     let full = (None, 4, 4);
 
     let mut missing_part = kv.clone();

@@ -2210,13 +2210,13 @@ impl ObjectStore for InMemoryStore {
     }
 
     fn module_docs<'a>(&'a self, ns: &'a str) -> BoxFuture<'a, Result<ModuleDocs, StoreError>> {
-        self.module_docs_from(ns, &crate::store::NO_FLOORS)
+        self.module_docs_from(ns, &crate::store::NO_SKIP)
     }
 
     fn module_docs_from<'a>(
         &'a self,
         ns: &'a str,
-        floors: &'a crate::store::ChunkFloors,
+        skip: &'a crate::store::BootSkip,
     ) -> BoxFuture<'a, Result<ModuleDocs, StoreError>> {
         Box::pin(async move {
             validate_module_ns(ns)?;
@@ -2227,12 +2227,12 @@ impl ObjectStore for InMemoryStore {
                     if doc_ns != ns {
                         continue;
                     }
+                    // J4 / W1: below the floor or under a skipped prefix, not even read.
+                    if skip.skips(key) {
+                        continue;
+                    }
                     // J1: the store holds text; a ledger chunk is handed over as is.
                     if key.starts_with(mush_core::ledger::LOG_PREFIX) {
-                        // J4: below the floor, not even read.
-                        if crate::store::below_floor(key, floors) {
-                            continue;
-                        }
                         out.ledger.push((key.clone(), doc.clone()));
                     } else {
                         out.docs.push((key.clone(), serde_json::from_str(doc)?));
@@ -2240,8 +2240,9 @@ impl ObjectStore for InMemoryStore {
                 }
             }
             // J5: what the primary has been purged of comes from the archive.
-            crate::archive::merge_archived(self.ledger_archive(), ns, &mut out.ledger, floors)?;
-            out.omitted = floors.clone();
+            crate::archive::merge_archived(self.ledger_archive(), ns, &mut out.ledger, skip)?;
+            out.omitted = skip.floors.clone();
+            out.skipped_prefixes = skip.prefixes.clone();
             Ok(out)
         })
     }

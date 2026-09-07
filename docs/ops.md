@@ -1031,6 +1031,18 @@ doc 12 J3 as built). Two heads are kept; the
 next write sweeps older ones. A document lagging a version older than the
 checkpoint heals without a drift verdict, said at `info` (doc 12 D-12-2).
 
+**Key documents and the idempotency gate** (doc 13 W1). Every post also
+writes `idem:{sha256}` beside its journal entry — the key's record, kept
+forever and never loaded at boot (the boot manifest's `skip_key_prefixes`).
+Checkpoints are format 2 and carry the key filter as `checkpoint:{seq}:bloom`
+(a few megabytes per million keys). A journal older than the cut is
+backfilled by the sweep, 2 000 documents a fire, and `economy: the key
+documents are backfilled` marks the end. When the RAM window is on (W2) a
+post whose key is neither in RAM nor certainly new is refused with *"that
+request is being checked against the ledger's history; try again shortly"*
+while the document is read off the world loop; the retry a moment later is
+decided. Until W2 every key stays in RAM and the message never appears.
+
 **The narrow fetch** (J4, doc 12 §5.6) needs no configuration. Beside every
 checkpoint head the economy writes `boot-manifest`, naming the journal chunk
 below which the next boot need not fetch; the loader reads it first and lists

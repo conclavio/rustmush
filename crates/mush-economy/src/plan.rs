@@ -646,6 +646,12 @@ pub enum EconomyError {
     /// dropped durable write) — no posting until staff clear it.
     #[error("the economy is frozen")]
     EconomyFrozen,
+    /// Doc 13 (W-D1): the key is neither in the RAM window nor certainly new, and
+    /// the store is being asked for its document off the world loop; the same
+    /// request a moment later is decided from the answer. Transient by
+    /// construction — never a refusal of the money.
+    #[error("that request is being checked against the ledger's history; try again shortly")]
+    RetryShortly,
 
     // ---- E3a: assets, vaults, approvals ----------------------------------
     /// A referenced asset has no title record.

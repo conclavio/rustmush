@@ -2477,6 +2477,7 @@ pub(crate) fn promote_and_settle_with(
         };
         let world = api::WorldAuth { w: ctx.w };
         let env = ValidateEnv {
+            keys: None,
             auth: &world,
             custody: &custody,
             facts: &facts,
@@ -2546,6 +2547,7 @@ fn settle_with(ctx: &mut Ctx<'_>, id: ContractId, companions: Vec<EconomicContra
         };
         let world = api::WorldAuth { w: ctx.w };
         let env = ValidateEnv {
+            keys: None,
             auth: &world,
             custody: &custody,
             facts: &facts,

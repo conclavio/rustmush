@@ -2906,25 +2906,26 @@ impl ObjectStore for RedisStore {
     }
 
     fn module_docs<'a>(&'a self, ns: &'a str) -> BoxFuture<'a, Result<ModuleDocs, StoreError>> {
-        self.module_docs_from(ns, &crate::store::NO_FLOORS)
+        self.module_docs_from(ns, &crate::store::NO_SKIP)
     }
 
     fn module_docs_from<'a>(
         &'a self,
         ns: &'a str,
-        floors: &'a crate::store::ChunkFloors,
+        skip: &'a crate::store::BootSkip,
     ) -> BoxFuture<'a, Result<ModuleDocs, StoreError>> {
         Box::pin(async move {
             validate_module_ns(ns)?;
             let prefix = format!("{MOD_PREFIX}{ns}:");
             let keys = self.scan_keys(&module_scan_pattern(ns)).await?;
-            // J4: a chunk below its floor is not fetched at all.
+            // J4 / W1: a chunk below its floor, or a key under a skipped
+            // prefix, is not fetched at all.
             let keys: Vec<String> = keys
                 .into_iter()
                 .filter(|full_key| {
                     full_key
                         .strip_prefix(&prefix)
-                        .is_none_or(|key| !crate::store::below_floor(key, floors))
+                        .is_none_or(|key| !skip.skips(key))
                 })
                 .collect();
             let mut out = ModuleDocs::default();
@@ -2961,8 +2962,9 @@ impl ObjectStore for RedisStore {
                 }
             }
             // J5: what the primary has been purged of comes from the archive.
-            crate::archive::merge_archived(self.ledger_archive(), ns, &mut out.ledger, floors)?;
-            out.omitted = floors.clone();
+            crate::archive::merge_archived(self.ledger_archive(), ns, &mut out.ledger, skip)?;
+            out.omitted = skip.floors.clone();
+            out.skipped_prefixes = skip.prefixes.clone();
             Ok(out)
         })
     }

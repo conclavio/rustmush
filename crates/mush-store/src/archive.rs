@@ -561,7 +561,7 @@ pub fn merge_archived(
     archive: Option<&LedgerArchive>,
     ns: &str,
     ledger: &mut Vec<(String, String)>,
-    floors: &crate::store::ChunkFloors,
+    skip: &crate::store::BootSkip,
 ) -> Result<(), StoreError> {
     let Some(archive) = archive else {
         return Ok(());
@@ -575,7 +575,7 @@ pub fn merge_archived(
         for (chunk, loc) in archive.chunks_of(ns, &log_id) {
             let key = mush_core::chunk_key(&log_id, chunk);
             // J4: a narrowed listing does not read below the floor here either.
-            if crate::store::below_floor(&key, floors) {
+            if skip.skips(&key) {
                 continue;
             }
             if let Some(primary) = present.get(key.as_str()) {
@@ -770,7 +770,7 @@ mod tests {
             Some(&archive),
             "economy",
             &mut ledger,
-            &crate::store::NO_FLOORS,
+            &crate::store::NO_SKIP,
         )
         .unwrap();
         ledger.sort();
@@ -782,10 +782,12 @@ mod tests {
             ]
         );
         // J4: a narrowed listing merges nothing below the floor.
-        let floors: crate::store::ChunkFloors =
-            [("journal".to_string(), 1u64)].into_iter().collect();
+        let skip = crate::store::BootSkip {
+            floors: [("journal".to_string(), 1u64)].into_iter().collect(),
+            prefixes: Vec::new(),
+        };
         let mut narrowed = Vec::new();
-        merge_archived(Some(&archive), "economy", &mut narrowed, &floors).unwrap();
+        merge_archived(Some(&archive), "economy", &mut narrowed, &skip).unwrap();
         assert_eq!(narrowed, vec![("log:journal:1".to_string(), c1)]);
         let _ = fs::remove_dir_all(&root);
         let _ = c0;

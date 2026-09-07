@@ -314,6 +314,16 @@ impl EconomySnapshot {
     pub fn put_idempotency(&mut self, record: IdempotencyRecord) {
         self.idempotency.insert(record.idempotency.clone(), record);
     }
+    /// Doc 13: drop a key from the RAM window (the sweep's eviction in W2; a test
+    /// rig's in W1). The key stays on disk and in the filter.
+    pub(crate) fn remove_idempotency(&mut self, key: &IdempotencyKey) -> Option<IdempotencyRecord> {
+        self.idempotency.remove(key)
+    }
+    /// Keys in the RAM window.
+    #[must_use]
+    pub fn idempotency_len(&self) -> usize {
+        self.idempotency.len()
+    }
     /// Mark a transaction reversed (at-most-once guard).
     pub fn mark_reversed(&mut self, tx: TransactionId) {
         self.reversed.insert(tx);

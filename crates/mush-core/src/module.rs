@@ -240,6 +240,12 @@ pub struct BootManifest {
     /// for nothing.
     #[serde(default)]
     pub skip_log_chunks_below: std::collections::BTreeMap<SmolStr, u64>,
+    /// Key prefixes the loader need not fetch at all (doc 13 W1): documents
+    /// the module reads through the store-read seam on demand and never at
+    /// boot — the economy's `idem:` key documents. Applies to every key,
+    /// ledger or not; an empty prefix is ignored.
+    #[serde(default)]
+    pub skip_key_prefixes: Vec<SmolStr>,
 }
 
 impl BootManifest {
@@ -249,7 +255,22 @@ impl BootManifest {
         BootManifest {
             format: BOOT_MANIFEST_FORMAT,
             skip_log_chunks_below: std::collections::BTreeMap::new(),
+            skip_key_prefixes: Vec::new(),
         }
+    }
+
+    /// The key prefixes the loader skips: every non-empty one of a manifest
+    /// at a format this code knows; nothing otherwise.
+    #[must_use]
+    pub fn prefixes(&self) -> Vec<SmolStr> {
+        if self.format != BOOT_MANIFEST_FORMAT {
+            return Vec::new();
+        }
+        self.skip_key_prefixes
+            .iter()
+            .filter(|p| !p.is_empty())
+            .cloned()
+            .collect()
     }
 
     /// The floors the loader applies: every non-zero entry of a manifest at a

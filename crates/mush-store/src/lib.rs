@@ -40,7 +40,9 @@ pub use migrate::{
     CURRENT_SCHEMA_VERSION, Migration, MigrationFn, core_migrations, run_migrations,
 };
 pub use redis::RedisStore;
-pub use store::{AuthoritativeStore, ChunkFloors, ModuleDocs, ObjectStore, below_floor};
+pub use store::{
+    AuthoritativeStore, BootSkip, ChunkFloors, ModuleDocs, NO_SKIP, ObjectStore, below_floor,
+};
 pub use types::{
     AccountRec, AuthoritativeCheckpointReceipt, AuthoritativeDiscardReceipt,
     AuthoritativeEpochRetirement, AuthoritativeIntentPage, AuthoritativeOutboxAttemptResult,

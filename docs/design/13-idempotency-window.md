@@ -177,6 +177,73 @@ cache, the sweep disposition; the backfill cursor. Nothing evicted yet: after W1
 `Known` or `Fresh` in practice, and the transient path is exercised only by tests that force a
 positive. Lenses I, S, F. Size: a day.
 
+> **W1 as built — 2026-09-06.** §2.1, §2.3, §2.4 and §2.6, and the checkpoint's bloom part
+> from §2.5 — everything but the eviction, so that a checkpointed boot can never gate on a
+> filter with a key missing: the filter is complete from the first boot after the cut.
+>
+> 1. **Key documents** (`mush_economy::keys`): `idem:{h}` written by `install_commit` beside
+>    the journal append, carrying namespace, key, plan hash, transaction, posted-at and
+>    sequence; ignored at boot; the boot manifest (J4) grew **`skip_key_prefixes`**
+>    (`mush_store::BootSkip` replaces the floors alone; the J4 retry now rewrites the manifest
+>    with its floors cleared and its prefixes kept, instead of deleting it), so the loader
+>    fetches nothing under `idem:` even on a whole fetch.
+> 2. **The filter** (`mush_economy::bloom::ScalableBloom`, W-D3 as designed but the bytes as
+>    **hex**, not base64 — no base64 dependency in the workspace; 5 MB per million keys in the
+>    document, 2.5 MB in RAM): built by the full replay from every entry, maintained by
+>    `index_transaction`, carried as `checkpoint:{seq}:bloom` — a hashed part the head lists
+>    beside the idem parts and the state hash covers (**checkpoint format 2**; a format-1 head
+>    is rejected and replayed). A checkpointed boot seeds from the part and the replayed tail
+>    extends it; a tampered or missing bloom part rejects the checkpoint whole.
+> 3. **The gate** (`KeyGate` / `KeyVerdict` in the planner's `ValidateEnv`, the store's
+>    `StoreKeyGate`): the window's map first, then the cold cache, then the filter. **W-D9:**
+>    the environment's `keys` is an `Option` in W1 — `post_with` and `reverse` hand the store's
+>    gate in; the sweep- and contract-driven `validate` calls and the test rigs pass `None`
+>    (the map alone, today's semantics), which W2 makes mandatory when it switches the window
+>    on. **`KeyMode::Whole`** is the only production mode in W1: the map holds every key, so a
+>    miss is `Fresh`; `Windowed` decides as W2 will and is reachable through test hooks.
+> 4. **The transient** (`EconomyError::RetryShortly`, W-D1): a verdict of `Unknown` refuses the
+>    attempt with *"that request is being checked against the ledger's history; try again
+>    shortly"* and asks the store for the key's document through the H1 seam — one read in
+>    flight per key, keyed by the key; **W-D8:** the read is issued under the economy's own
+>    module identity whichever module's command posted, so the completion routes to the
+>    economy's handler (`Ctx.module` is swapped for the call and restored). The completion
+>    warms the cold cache — the record, or a confirmed absence — and the same request is then
+>    decided from it; a failed or oversized read is forgotten and asked again. The cold cache
+>    ages out after ten minutes and stale reads after the store-read bound, on the sweep. The
+>    sweep's disposition maps the transient to `Transient` — the next fire retries.
+> 5. **The backfill** (W-D5): `meta.idem_backfill_txid` / `idem_backfilled`; the sweep writes
+>    up to 2 000 key documents a fire from the RAM index and flags done when the cursor passes
+>    the newest id; a fresh world is done at boot. W2's eviction waits for it.
+> 6. **W1-F1 (owner-facing, pre-existing):** `apply` **clones the whole `EconomySnapshot` for
+>    every post** (`let mut next = snapshot.clone()`), which is every account, title and
+>    reservation and the entire idempotency map — O(records + keys) per post today. The window
+>    (W2) shrinks the map's share; the rest is a cost this programme did not create and does
+>    not fix. Worth its own look before the design rate is real.
+>
+> **Verify (lenses I, B, S, F, C).** I: with the gate deciding as W2 will, a key evicted from
+> the RAM map that the filter has seen is a transient — the store is asked once (one read in
+> flight per key, a second attempt asks nothing twice), the answer warms the cold cache, and
+> the same request is then decided from it: the original id for the same plan, a conflict for
+> a different one; a never-posted key posts at once; a never-posted key the filter is wrong
+> about takes the transient, the store answers "absent", and the next attempt posts the real
+> record, which supersedes the cold answer; a failed read is forgotten and asked again; the
+> cold cache ages out on the sweep. B: the filter knows every key posted and never a fresh one;
+> a checkpoint carries it as a hashed part; a checkpointed boot seeds from it and the replayed
+> tail extends it; a tampered or missing bloom part rejects the checkpoint whole and the full
+> replay rebuilds the filter; the key documents handed over by a rig are ignored at boot. S:
+> every post writes its key document beside its entry, under the hash of its key, with the
+> record and the sequence; a fresh world needs no backfill; a journal older than the cut is
+> backfilled by the sweep and flagged done, and a world booted from the result writes nothing
+> more; the sweep's disposition maps the transient to `Transient`. F: a key inserted is always
+> positive; the false-positive rate over 100 000 never-inserted keys against 100 000 inserted
+> (two slices) is at most 3 in 10 000 (asserted ≤ 30 hits); the filter round-trips through
+> JSON with the same hashes; a malformed filter is rejected. The loader's and the store suite's
+> narrowed listings skip a key prefix on both fetch shapes and report it, the J4 retry keeps
+> the prefixes, and the J4 end-to-end drive is unchanged. C: the cadence-1 workspace pass,
+> repeated for the checkpoint's new shape. Not measured in W1: the post path's added cost (a
+> SHA-256, a filter insert and one more document a post); W2's RAM measurement is the number
+> this design is for. The Redis suite is `REDIS_URL`-gated and was not run on this box.
+
 **W2 — the window.** Eviction of the map and `tx_index` by age and count, gated on the backfill;
 `chunk_first_ids` and the cold reverse of an evicted id; the checkpoint's bloom part and
 window-only idem parts; the boot from parts; the contract heal under a zero window; the RAM and

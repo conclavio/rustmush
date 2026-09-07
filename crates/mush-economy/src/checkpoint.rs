@@ -51,6 +51,7 @@ use smol_str::SmolStr;
 
 use crate::amount::Amount;
 use crate::api::{delete_key, push_op};
+use crate::bloom::ScalableBloom;
 use crate::fold::FoldState;
 use crate::ids::{AccountId, TransactionId};
 use crate::module::{EconomyStore, JOURNAL_LOG, TxRef, WindowTail};
@@ -58,7 +59,7 @@ use crate::record::{IdempotencyKey, IdempotencyRecord};
 use crate::snapshot::EconomySnapshot;
 
 /// The document format this code writes and accepts.
-pub const CHECKPOINT_FORMAT: u32 = 1;
+pub const CHECKPOINT_FORMAT: u32 = 2;
 /// Domain separation for [`state_hash`].
 pub const CHECKPOINT_HASH_DOMAIN: &str = "rustmush.economy.checkpoint.v1";
 /// The most rows one immutable part carries (~3 MB of JSON).
@@ -77,6 +78,21 @@ pub fn head_key(seq: u64) -> SmolStr {
 #[must_use]
 pub fn part_key(seq: u64, n: usize) -> SmolStr {
     SmolStr::new(format!("checkpoint:{seq}:idem:{n}"))
+}
+
+/// The key filter part's key: `checkpoint:{seq}:bloom` (doc 13, W-D3).
+#[must_use]
+pub fn bloom_key(seq: u64) -> SmolStr {
+    SmolStr::new(format!("checkpoint:{seq}:bloom"))
+}
+
+pub(crate) fn parse_bloom_key(key: &str) -> Option<u64> {
+    let rest = key.strip_prefix("checkpoint:")?;
+    let (seq, tail) = rest.split_once(':')?;
+    if tail != "bloom" {
+        return None;
+    }
+    seq.parse().ok()
 }
 
 /// Whether `key` is any checkpoint document (head or part).
@@ -151,7 +167,10 @@ pub struct CheckpointHead {
     pub max_txid: u64,
     /// The parts, in sequence order.
     pub parts: Vec<PartRef>,
-    /// [`state_hash`] over the body and the parts.
+    /// Doc 13 (W-D3): the key filter's part — every key ever posted, as of
+    /// `covered_seq`.
+    pub bloom: PartRef,
+    /// [`state_hash`] over the body and the parts, the bloom part last.
     pub state_hash: String,
     /// The mutable body.
     pub body: CheckpointBody,
@@ -187,6 +206,15 @@ pub struct IdemPart {
     pub rows: Vec<IdemRow>,
 }
 
+/// The key filter's part document (doc 13, W-D3).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct BloomPart {
+    /// [`CHECKPOINT_FORMAT`].
+    pub format: u32,
+    /// The filter at the covered sequence.
+    pub filter: ScalableBloom,
+}
+
 /// What the store remembers about the checkpoint it last wrote or booted from.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct CheckpointMeta {
@@ -194,6 +222,8 @@ pub struct CheckpointMeta {
     pub covered_seq: u64,
     /// Its head's key.
     pub head_key: SmolStr,
+    /// Its bloom part's key (doc 13).
+    pub bloom_key: SmolStr,
     /// Its parts.
     pub parts: Vec<PartRef>,
     /// The highest transaction id its parts carry.
@@ -384,6 +414,8 @@ pub(crate) fn maybe_write(ctx: &mut Ctx<'_>, now: i64) {
         skip_log_chunks_below: [(SmolStr::new(JOURNAL_LOG), manifest_floor)]
             .into_iter()
             .collect(),
+        // Doc 13: the key documents are read on demand, never at boot.
+        skip_key_prefixes: vec![SmolStr::new_static(crate::keys::IDEM_PREFIX)],
     };
     push_op(
         ctx.out,
@@ -397,11 +429,13 @@ pub(crate) fn maybe_write(ctx: &mut Ctx<'_>, now: i64) {
     for p in &meta.parts {
         keep.insert(p.key.clone());
     }
+    keep.insert(meta.bloom_key.clone());
     if let Some(prev) = &previous {
         keep.insert(prev.head_key.clone());
         for p in &prev.parts {
             keep.insert(p.key.clone());
         }
+        keep.insert(prev.bloom_key.clone());
     }
     let Some(store) = ctx.w.module_state_mut::<EconomyStore>() else {
         return;
@@ -489,13 +523,30 @@ fn build(
         part_docs.push((key, value));
     }
     let max_txid = parts.last().map_or(0, |p| p.max_txid);
+    // Doc 13 (W-D3): the key filter, whole, as its own hashed part.
+    let bloom_doc = BloomPart {
+        format: CHECKPOINT_FORMAT,
+        filter: store.key_filter.clone(),
+    };
+    let bloom_value = serde_json::to_value(&bloom_doc).ok()?;
+    let bloom = PartRef {
+        key: bloom_key(covered_seq),
+        sha256: canonical_hash(&bloom_value)?,
+        seq_lo: 0,
+        seq_hi: covered_seq,
+        rows: usize::try_from(store.key_filter.len()).unwrap_or(usize::MAX),
+        max_txid: 0,
+    };
+    part_docs.push((bloom.key.clone(), bloom_value));
+    let mut hashed = parts.clone();
+    hashed.push(bloom.clone());
     let body = CheckpointBody {
         fold: store.fold.clone(),
         debit_window: store.debit_window.clone(),
         chunk_firsts: store.chunk_firsts.clone(),
     };
     let body_value = serde_json::to_value(&body).ok()?;
-    let state_hash = state_hash(&body_value, &parts)?;
+    let state_hash = state_hash(&body_value, &hashed)?;
     let head = CheckpointHead {
         format: CHECKPOINT_FORMAT,
         covered_seq,
@@ -503,6 +554,7 @@ fn build(
         written_at: now,
         max_txid,
         parts: parts.clone(),
+        bloom: bloom.clone(),
         state_hash,
         body,
     };
@@ -514,6 +566,7 @@ fn build(
         meta: CheckpointMeta {
             covered_seq,
             head_key: head_key(covered_seq),
+            bloom_key: bloom.key,
             parts,
             max_txid,
         },
@@ -528,6 +581,8 @@ pub(crate) struct ValidCheckpoint {
     pub head_key: SmolStr,
     /// Every part's rows, in sequence order.
     pub rows: Vec<IdemRow>,
+    /// The key filter its bloom part carried.
+    pub filter: ScalableBloom,
 }
 
 impl ValidCheckpoint {
@@ -577,7 +632,7 @@ pub(crate) fn select(
                 )),
                 Err(error) => notes.push(format!("{key}: undecodable head: {error}")),
             }
-        } else if parse_part_key(key).is_some() {
+        } else if parse_part_key(key).is_some() || parse_bloom_key(key).is_some() {
             parts.insert(key.as_str(), value);
         }
     }
@@ -585,12 +640,13 @@ pub(crate) fn select(
     let chunks: BTreeSet<u64> = history.chunk_docs(JOURNAL_LOG).map(|(c, _)| c).collect();
     for (seq, key, head) in heads {
         match validate(&head, seq, &parts, journal_max, &chunks) {
-            Ok(rows) => {
+            Ok((rows, filter)) => {
                 return (
                     Some(ValidCheckpoint {
                         head,
                         head_key: key,
                         rows,
+                        filter,
                     }),
                     notes,
                 );
@@ -607,7 +663,7 @@ fn validate(
     parts: &BTreeMap<&str, &serde_json::Value>,
     journal_max: Option<u64>,
     chunks: &BTreeSet<u64>,
-) -> Result<Vec<IdemRow>, String> {
+) -> Result<(Vec<IdemRow>, ScalableBloom), String> {
     if head.covered_seq != seq {
         return Err(format!(
             "covers {} under a key naming {seq}",
@@ -669,12 +725,33 @@ fn validate(
         expected_lo = Some(decoded.seq_hi.saturating_add(1));
         rows.extend(decoded.rows);
     }
+    // Doc 13 (W-D3): the bloom part, hashed and well formed, or the whole
+    // checkpoint is rejected — a filter with a key missing would let a repeat
+    // post twice.
+    let Some(bloom_value) = parts.get(head.bloom.key.as_str()) else {
+        return Err(format!("bloom part {} is missing", head.bloom.key));
+    };
+    let bloom_hash = canonical_hash(bloom_value)
+        .ok_or_else(|| format!("bloom part {} cannot be hashed", head.bloom.key))?;
+    if bloom_hash != head.bloom.sha256 {
+        return Err(format!(
+            "bloom part {} does not hash to what the head lists",
+            head.bloom.key
+        ));
+    }
+    let bloom: BloomPart = serde_json::from_value((*bloom_value).clone())
+        .map_err(|e| format!("bloom part {} is undecodable: {e}", head.bloom.key))?;
+    if bloom.format != CHECKPOINT_FORMAT || !bloom.filter.is_well_formed() {
+        return Err(format!("bloom part {} is malformed", head.bloom.key));
+    }
     let body_value = serde_json::to_value(&head.body).map_err(|e| format!("body: {e}"))?;
-    let recomputed = state_hash(&body_value, &head.parts).ok_or("the body cannot be hashed")?;
+    let mut hashed = head.parts.clone();
+    hashed.push(head.bloom.clone());
+    let recomputed = state_hash(&body_value, &hashed).ok_or("the body cannot be hashed")?;
     if recomputed != head.state_hash {
         return Err("the state hash does not recompute".to_owned());
     }
-    Ok(rows)
+    Ok((rows, bloom.filter))
 }
 
 #[cfg(test)]
@@ -692,6 +769,10 @@ mod tests {
         assert!(!is_checkpoint_key("account:1"));
         assert_eq!(head_key(7).as_str(), "checkpoint:7");
         assert_eq!(part_key(7, 2).as_str(), "checkpoint:7:idem:2");
+        assert_eq!(bloom_key(7).as_str(), "checkpoint:7:bloom");
+        assert_eq!(parse_bloom_key("checkpoint:7:bloom"), Some(7));
+        assert_eq!(parse_bloom_key("checkpoint:7:idem:0"), None);
+        assert_eq!(parse_part_key("checkpoint:7:bloom"), None);
         assert_eq!(unhex32(&"ab".repeat(32)), Some([0xab; 32]));
         assert_eq!(unhex32("zz"), None);
     }

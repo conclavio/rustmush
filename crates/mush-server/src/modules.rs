@@ -805,37 +805,42 @@ enum Fetch {
     Whole,
 }
 
-/// The floors a namespace's boot manifest asks for, or none: no manifest,
-/// an unreadable one (said at `warn`), or a format this loader does not know.
-async fn manifest_floors(
-    store: &dyn ObjectStore,
-    ns: &str,
-) -> Result<mush_store::ChunkFloors, String> {
+/// What a namespace's boot manifest lets the loader skip (the chunk floors
+/// and the key prefixes, doc 13 W1), or nothing: no manifest, an unreadable
+/// one (said at `warn`), or a format this loader does not know.
+async fn manifest_skip(store: &dyn ObjectStore, ns: &str) -> Result<mush_store::BootSkip, String> {
     let Some(doc) = store
         .module_json_get(ns, BOOT_MANIFEST_KEY)
         .await
         .map_err(|e| format!("reading {ns} boot manifest: {e}"))?
     else {
-        return Ok(mush_store::ChunkFloors::new());
+        return Ok(mush_store::BootSkip::default());
     };
     match serde_json::from_value::<BootManifest>(doc) {
         Ok(manifest) => {
-            let floors = manifest.floors();
-            if floors.is_empty() && !manifest.skip_log_chunks_below.is_empty() {
+            if manifest.format != mush_core::BOOT_MANIFEST_FORMAT {
                 tracing::warn!(
                     ns,
                     format = manifest.format,
                     "boot manifest at an unknown format; fetching the namespace whole"
                 );
             }
-            Ok(floors
-                .into_iter()
-                .map(|(log, below)| (log.to_string(), below))
-                .collect())
+            Ok(mush_store::BootSkip {
+                floors: manifest
+                    .floors()
+                    .into_iter()
+                    .map(|(log, below)| (log.to_string(), below))
+                    .collect(),
+                prefixes: manifest
+                    .prefixes()
+                    .into_iter()
+                    .map(|p| p.to_string())
+                    .collect(),
+            })
         }
         Err(error) => {
             tracing::warn!(ns, %error, "boot manifest unreadable; fetching the namespace whole");
-            Ok(mush_store::ChunkFloors::new())
+            Ok(mush_store::BootSkip::default())
         }
     }
 }
@@ -849,12 +854,15 @@ async fn load_one_namespace(
     // its data — the part of a boot the replay timer never saw.
     let started = std::time::Instant::now();
     // J4: the manifest first, then a listing that never fetches what it names.
-    let floors = match fetch {
-        Fetch::Narrowed => manifest_floors(store, ns).await?,
-        Fetch::Whole => mush_store::ChunkFloors::new(),
-    };
+    // A whole fetch (the retry) still honours the manifest's key prefixes
+    // (doc 13 W1): those documents are read on demand and never at boot,
+    // whatever the checkpoint's state.
+    let mut skip = manifest_skip(store, ns).await?;
+    if fetch == Fetch::Whole {
+        skip.floors.clear();
+    }
     let documents = store
-        .module_docs_from(ns, &floors)
+        .module_docs_from(ns, &skip)
         .await
         .map_err(|e| format!("listing module namespace {ns:?}: {e}"))?;
     let fetch_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
@@ -881,8 +889,14 @@ async fn load_one_namespace(
         .into_iter()
         .map(|(log, below)| (SmolStr::new(log), below))
         .collect();
-    if !floors.is_empty() {
-        tracing::info!(ns, floors = ?floors, fetch_ms, "namespace fetched narrowed to its boot manifest");
+    if !skip.is_empty() {
+        tracing::info!(
+            ns,
+            floors = ?skip.floors,
+            prefixes = ?skip.prefixes,
+            fetch_ms,
+            "namespace fetched narrowed to its boot manifest"
+        );
     }
     Ok((
         ModuleBootData {
@@ -1147,15 +1161,26 @@ pub async fn boot_modules(engine: &mut Engine, store: &dyn ObjectStore) -> Resul
                     %reason,
                     "module cannot boot from its narrowed namespace; fetching it whole and delivering again"
                 );
-                // The manifest is loader-owned and stood for a checkpoint that
-                // did not hold: clear it, so the next boot fetches whole until
-                // the module writes a new one beside its next checkpoint.
+                // The manifest is loader-owned and its floors stood for a
+                // checkpoint that did not hold: clear the floors, so the next
+                // boot fetches the ledger whole until the module writes a new
+                // manifest beside its next checkpoint. The key prefixes stay
+                // (doc 13 W1): they name documents the module never loads at
+                // boot.
+                let kept = manifest_skip(store, &name).await?;
+                let cleared = BootManifest {
+                    format: mush_core::BOOT_MANIFEST_FORMAT,
+                    skip_log_chunks_below: std::collections::BTreeMap::new(),
+                    skip_key_prefixes: kept.prefixes.iter().map(SmolStr::new).collect(),
+                };
                 write_ops(
                     store,
                     vec![ModuleOp {
                         ns: name.clone(),
-                        op: ModuleWrite::Del {
+                        op: ModuleWrite::JsonSet {
                             key: SmolStr::new(BOOT_MANIFEST_KEY),
+                            value: serde_json::to_value(&cleared)
+                                .expect("a boot manifest serializes"),
                         },
                     }],
                 )
@@ -1713,11 +1738,13 @@ mod tests {
                 set("log:s:1", chunk(1, true)),
                 set("log:s:2", chunk(2, false)),
                 set("log:t:0", chunk(0, false)),
+                set("idem:aa", serde_json::json!({ "tx": 1 })),
                 set(
                     BOOT_MANIFEST_KEY,
                     serde_json::to_value(BootManifest {
                         format: mush_core::BOOT_MANIFEST_FORMAT,
                         skip_log_chunks_below: [(SmolStr::new("s"), 2u64)].into_iter().collect(),
+                        skip_key_prefixes: vec![SmolStr::new("idem:")],
                     })
                     .unwrap(),
                 ),
@@ -1731,7 +1758,7 @@ mod tests {
         assert_eq!(
             data.kv.iter().map(|(k, _)| k.as_str()).collect::<Vec<_>>(),
             vec!["doc:1"],
-            "the manifest is loader-owned and never a module document"
+            "the manifest is loader-owned and never a module document; the prefixed key is not fetched"
         );
         let mut ledger: Vec<&str> = data.ledger.iter().map(|(k, _)| k.as_str()).collect();
         ledger.sort_unstable();
@@ -1743,8 +1770,17 @@ mod tests {
         let (whole, _) = load_one_namespace(&store, "toy", Fetch::Whole)
             .await
             .unwrap();
-        assert_eq!(whole.ledger.len(), 4, "a whole fetch ignores the manifest");
+        assert_eq!(
+            whole.ledger.len(),
+            4,
+            "a whole fetch ignores the manifest's floors"
+        );
         assert!(whole.omitted.is_empty());
+        assert_eq!(
+            whole.kv.iter().map(|(k, _)| k.as_str()).collect::<Vec<_>>(),
+            vec!["doc:1"],
+            "a whole fetch still honours the manifest's key prefixes"
+        );
         // An unreadable manifest is a whole fetch, not a failed boot.
         write_ops(
             &store,
@@ -1840,6 +1876,7 @@ mod tests {
                     serde_json::to_value(BootManifest {
                         format: mush_core::BOOT_MANIFEST_FORMAT,
                         skip_log_chunks_below: [(SmolStr::new("s"), 1u64)].into_iter().collect(),
+                        skip_key_prefixes: vec![SmolStr::new("idem:")],
                     })
                     .unwrap(),
                 ),
@@ -1867,9 +1904,14 @@ mod tests {
             store
                 .module_json_get("picky", BOOT_MANIFEST_KEY)
                 .await
-                .unwrap(),
-            None,
-            "the manifest that stood for nothing is cleared by the loader"
+                .unwrap()
+                .map(|doc| serde_json::from_value::<BootManifest>(doc).unwrap()),
+            Some(BootManifest {
+                format: mush_core::BOOT_MANIFEST_FORMAT,
+                skip_log_chunks_below: std::collections::BTreeMap::new(),
+                skip_key_prefixes: vec![SmolStr::new("idem:")],
+            }),
+            "the floors that stood for nothing are cleared by the loader; the key prefixes are kept"
         );
 
         // The whole fetch refused too: the boot fails with the module's reason.
@@ -1881,6 +1923,7 @@ mod tests {
                 serde_json::to_value(BootManifest {
                     format: mush_core::BOOT_MANIFEST_FORMAT,
                     skip_log_chunks_below: [(SmolStr::new("s"), 1u64)].into_iter().collect(),
+                    skip_key_prefixes: Vec::new(),
                 })
                 .unwrap(),
             )],
