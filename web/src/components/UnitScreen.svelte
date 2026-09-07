@@ -12,15 +12,26 @@
   // glyph and colour comes from a `state`; a `condition` word is printed.
   //
   // Panes render in `unitPaneOrder`, which puts what has no producer yet
-  // LAST — so the narrow-width rule below drops the placeholders first and
-  // the real panes survive on a phone.
+  // LAST. The narrow-width rule below hides a placeholder by its CLASS,
+  // wherever it sits; the order is what makes the wide layout read the real
+  // panes first and the declarations after them.
+  //
+  // Three states before the panes, in this order: a refusal the server sent
+  // instead of a frame, "not answered yet" (nothing has come back since the
+  // last reset — the panel must not assert the pilot has no unit before the
+  // server has said so), and the honest no-subject frame. Even then the
+  // journal and before/after panes render if the ring holds anything: the
+  // one actor who can produce an after-action report is a staffer, who
+  // often holds no station at all.
   import type { GameApp } from "$lib/game.svelte";
   import {
     afterAction,
+    afterActionSubject,
     beforeAfterRows,
     capabilityRows,
     componentGroups,
     CONTACTS_FEED,
+    CONTACTS_PLACEHOLDER,
     journalTableRows,
     mobilityLine,
     NO_UNIT_LINE,
@@ -30,6 +41,7 @@
     unitCells,
     unitPaneOrder,
     type UnitGroupRow,
+    type UnitPlaceholder,
   } from "$lib/stores/unit.svelte";
   import type { TableColumn } from "$lib/widgets";
 
@@ -56,13 +68,17 @@
   const view = $derived(app.unit.view);
   const contacts = $derived(app.genericViews.get(CONTACTS_FEED));
   const panes = $derived(unitPaneOrder(app.unit.layout, contacts !== null));
+  /** The panes that read from the ring alone, so they still fill when the
+   * server says the viewer has no subject of their own. */
+  const ringPanes = $derived(app.unit.journal.length > 0 ? ["afteraction", "journal"] : []);
 
-  /** The title of a pane with no producer yet, or `null` for a real one. */
-  function placeholderTitle(pane: string): string | null {
-    if (pane === "contacts" && contacts !== null) {
-      return null;
+  /** The declaration a pane with nothing to show carries, or `null` for a
+   * pane with real data. */
+  function placeholder(pane: string): UnitPlaceholder | null {
+    if (pane === CONTACTS_PLACEHOLDER.id) {
+      return contacts !== null ? null : CONTACTS_PLACEHOLDER;
     }
-    return UNIT_PLACEHOLDERS.find((p) => p.id === pane)?.title ?? null;
+    return UNIT_PLACEHOLDERS.find((p) => p.id === pane) ?? null;
   }
 
   /** A grouped row for `KeyValue`. Its `condition` prop is the glyph/colour
@@ -81,8 +97,29 @@
 <div class="unitscreen">
   {#if app.unit.unavailable !== null}
     <p class="muted pad">{app.unit.unavailable}</p>
+  {:else if !app.unit.answered}
+    <p class="muted pad">Loading…</p>
   {:else if view === null}
     <p class="muted pad">{NO_UNIT_LINE}</p>
+    {#if ringPanes.length > 0}
+      {@const rows = afterAction(null, app.unit.journal)}
+      <div class="panes">
+        {#each ringPanes as pane (pane)}
+          <section class="pane" aria-label={pane}>
+            <h4 class="pt">{UNIT_PANE_TITLES[pane] ?? pane}</h4>
+            {#if pane === "afteraction"}
+              <p class="grp">{afterActionSubject(rows)}</p>
+              <Table columns={BEFORE_AFTER_COLUMNS} rows={beforeAfterRows(rows)} />
+            {:else}
+              <Table
+                columns={JOURNAL_COLUMNS}
+                rows={journalTableRows(app.unit.journal, null)}
+              />
+            {/if}
+          </section>
+        {/each}
+      </div>
+    {/if}
   {:else}
     {@const footer = truncatedFooter(view)}
     <header class="head">
@@ -99,10 +136,11 @@
 
     <div class="panes">
       {#each panes as pane (pane)}
-        {@const missing = placeholderTitle(pane)}
+        {@const missing = placeholder(pane)}
         <section class="pane" class:placeholder={missing !== null} aria-label={pane}>
           {#if missing !== null}
-            <p class="muted">{missing}</p>
+            <h4 class="pt">{missing.title}</h4>
+            <p class="muted">{missing.body}</p>
           {:else}
             <h4 class="pt">{UNIT_PANE_TITLES[pane] ?? pane}</h4>
             {#if pane === "sectionmap"}
@@ -252,8 +290,10 @@
     padding: 0.8rem;
   }
 
-  /* A phone drops what has no producer yet before it drops anything real —
-   * the degrade order the pane list already encodes. */
+  /* A phone drops what has no producer yet before it drops anything real.
+   * The rule is by CLASS, not by position: a placeholder is hidden wherever
+   * it sits, and `unitPaneOrder` puts them last so the wide layout reads
+   * the real panes first. */
   @media (max-width: 800px) {
     .pane.placeholder {
       display: none;

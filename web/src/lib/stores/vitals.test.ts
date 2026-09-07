@@ -77,6 +77,27 @@ describe("VitalsStore", () => {
     expect(s.groups["tactics.vitals"]?.frame.revision).toBe(5);
   });
 
+  it("a null keyframe drops the feed's group (interface cut I8)", () => {
+    // `data: null` is the feed saying there is no subject — an answer, not
+    // a malformed frame. Without this arm a dead or de-stationed subject's
+    // gauges stay on the strip forever, presented as live.
+    const s = new VitalsStore();
+    expect(s.apply("tactics.vitals", frame(3), 10)).toBe(true);
+    expect(s.apply("wod.vitals", frame(3), 10)).toBe(true);
+    expect(s.apply("tactics.vitals", null, 11)).toBe(true);
+    expect(s.groups["tactics.vitals"]).toBeUndefined();
+    // Another feed's group is untouched.
+    expect(s.groups["wod.vitals"]?.frame.revision).toBe(3);
+    expect(s.loaded).toBe(true);
+    // A null on a feed nothing was held for is a no-op that still answers.
+    expect(s.apply("sr.vitals", null, 12)).toBe(true);
+    expect(s.list.map((g) => g.feed)).toEqual(["wod.vitals"]);
+    // A malformed NON-null payload is still a refusal that keeps the group.
+    expect(s.apply("wod.vitals", { subject: {}, revision: 1, vitals: [] }, 13)).toBe(false);
+    expect(s.apply("wod.vitals", "nope", 13)).toBe(false);
+    expect(s.groups["wod.vitals"]?.frame.revision).toBe(3);
+  });
+
   it("gauge helpers", () => {
     const parsed = parseVitalsFrame(frame(1))!;
     const wp = parsed.vitals.find((v) => v.id === "wod.willpower")!;

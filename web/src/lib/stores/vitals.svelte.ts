@@ -136,8 +136,22 @@ export class VitalsStore {
    * `tactics.vitals` feed follows the station), and so does a frame whose
    * revision is `0`, which is what a subject recreated in place publishes
    * (same id, watermark reset). Without both carve-outs the group would
-   * latch on the old subject's higher revision forever. */
+   * latch on the old subject's higher revision forever.
+   *
+   * A `null` payload is the feed's no-subject keyframe (interface cut I8):
+   * an ANSWER, not a malformed frame — the feed is saying there is nothing
+   * to show — so the group is dropped and `true` returned. Without that arm
+   * a dead or de-stationed subject's gauges stay on the strip forever,
+   * presented as live. */
   apply(feed: string, raw: unknown, atMs = Date.now()): boolean {
+    if (raw === null) {
+      if (feed in this.groups) {
+        const rest = { ...this.groups };
+        delete rest[feed];
+        this.groups = rest;
+      }
+      return true;
+    }
     const frame = parseVitalsFrame(raw);
     if (!frame) {
       return false;

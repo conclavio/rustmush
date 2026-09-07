@@ -15,7 +15,11 @@
 </script>
 
 <dl class="kv">
-  {#each rows as r (r.key)}
+  <!-- Keyed by INDEX, like Table.svelte: the keys are producer-chosen ids,
+       and a repeat is legal upstream (one id granted from two sources), so
+       keying on them would throw the whole block out on a duplicate. Rows
+       are replaced wholesale on every frame, so nothing is lost. -->
+  {#each rows as r, i (i)}
     <div class="row state-{r.condition ?? 'ok'}" title={r.detail ?? r.key}>
       <span class="glyph" aria-hidden="true">{conditionGlyph(r.condition ?? "ok", glyphs)}</span>
       <dt>{r.key}</dt>

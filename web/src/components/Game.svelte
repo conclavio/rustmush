@@ -69,7 +69,10 @@
       case "build":
         return app.worldgen.draft !== null ? 1 : 0;
       case "unit":
-        return app.unit.journal.length;
+        // Count only what the panel can actually open: until the server has
+        // answered, the screen is a loading line and no rows (the ring does
+        // render under the no-subject line, so that case still counts).
+        return app.unit.answered ? app.unit.journal.length : 0;
       default:
         return 0;
     }

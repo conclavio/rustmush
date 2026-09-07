@@ -39,9 +39,20 @@
         {/if}
         {#each view.rows as row, i (i)}
           {@const line = rowActionLine(row, schema)}
+          <!-- An actionable row is reachable from the keyboard too: this
+               client's model is keyboard-first, and a mouse-only Prefill
+               puts the row's action out of a keyboard pilot's reach. -->
           <tr
             class:actionable={line !== null}
+            tabindex={line !== null ? 0 : undefined}
+            role={line !== null ? "button" : undefined}
             onclick={() => line !== null && onPrefill(line)}
+            onkeydown={(e) => {
+              if (line !== null && (e.key === "Enter" || e.key === " ")) {
+                e.preventDefault();
+                onPrefill(line);
+              }
+            }}
             title={line ?? undefined}
           >
             {#each schema.columns as c (c.key)}
@@ -97,6 +108,11 @@
 
   tr.actionable {
     cursor: pointer;
+  }
+
+  tr.actionable:focus-visible {
+    outline: 2px solid var(--accent, currentcolor);
+    outline-offset: -2px;
   }
 
   tr.actionable:hover td {

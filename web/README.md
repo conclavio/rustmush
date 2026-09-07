@@ -19,7 +19,7 @@ npm run dev          # vite dev server; proxies /api and /ws to mushd
 ```
 npm run build      # typecheck (svelte-check) + vite build -> web/dist
 npm run check      # svelte-check only
-npm test           # vitest run (158 tests: ws, render, stores, auth, sheet, roll, worldgen, ...)
+npm test           # vitest run (ws, render, stores, auth, sheet, roll, worldgen, unit, ...)
 npm run test:watch # vitest watch mode
 ```
 
@@ -218,12 +218,24 @@ mutating, so it is a Prefill and never on `RUN_ALLOWLIST` (D-I-18);
 `validateScreens` would refuse the whole screen otherwise.
 
 **Two layouts, one screen** (D-I8-4). `damage` is the journal read as a
-screen: the section map, a before/after table of the newest revision, and
-the ring. `unit` is the piloting side: a compact section list, the object's
-own gauges plus one mobility line, its components grouped by install
-section, its capabilities, and the contacts table. `t` flips them through
-`localAction("toggle")` — which needs its own arm, since the `refresh`
-switch falls through to `refreshWho()` for anything it does not name.
+screen: the section map, a before/after table of the newest-arrived
+revision, and the ring. `unit` is the piloting side: a compact section
+list, the object's own gauges plus one mobility line, its components
+grouped by install section, and its capabilities. Both layouts are
+followed by the contacts table when its feed is live and by the declared
+placeholders. `t` flips them through `localAction("toggle")` — which needs
+its own arm, since the `refresh` switch falls through to `refreshWho()`
+for anything it does not name.
+
+**Three states before the panes.** A refusal the server sent instead of a
+frame renders in the panel; `UnitStore.answered` is false until the server
+has answered at all, and the screen says `Loading…` rather than asserting
+the pilot has no unit before anything came back; then the no-subject line.
+Even under that line the journal and before/after panes render whenever
+the ring holds rows — the only actor who can produce an after-action
+report is a staffer, who often holds no station, and each row names its
+own object. A prefill (`d`, or a contacts row) switches to the scene
+screen, where the composer lives.
 
 **Contract** (`$lib/stores/unit.svelte.ts`'s `parseUnitView` /
 `journalRows`; a payload convention, not a proto type — I8 adds no wire):
@@ -261,16 +273,29 @@ every label, id and word on this screen comes from the frame.
 
 **Revision protocol.** A keyframe replaces the whole view and seeds the
 watermark (an equal revision replaces too: some mutations publish no
-delta); a keyframe for a different object clears the journal ring. A delta
-ALWAYS rings its rows — newest first, `JOURNAL_RING` 200 rows total,
-`JOURNAL_ROWS_PER_DELTA` 50 per delta (49 plus a client-internal `elided`
-row) — and then reports `foreign` (another object), `stale` (at or behind
-the watermark) or `resync`. On `resync`, `GameApp` arms ONE
-`setTimeout(UNIT_RESYNC_MS = 250)` behind the store's boolean storm guard,
-so a damage burst of many deltas costs a single `panel_subscribe`; ANY
-reply to a unit Req releases the guard before classification, and the timer
-is disarmed on `#resetGameState` and `onFullRehydrate` (a timer left armed
-across a disconnect would latch the guard forever).
+delta). A SUBJECT change clears the journal ring — including losing one:
+held → the no-subject frame clears it, while a frame arriving over nothing
+held never does, because the fanned delta legitimately beats the resync's
+keyframe. A delta ALWAYS rings its rows — newest DELTA first, entries in
+the producer's own order within a delta with the `elided` marker last,
+`JOURNAL_RING` 200 rows total, `JOURNAL_ROWS_PER_DELTA` 50 per delta (49
+plus that client-internal row) — and then reports `foreign` (another
+object, or any delta while the server has said there is no subject at all:
+a keyframe request could only come back `null` again), `stale` (at or
+behind the watermark) or `resync`. A `from_revision` of 0 is always a
+`resync`: it is a subject's first apply after being recreated in place,
+and its restarted watermark would otherwise read as stale. On `resync`,
+`GameApp` arms ONE `setTimeout(UNIT_RESYNC_MS = 250)` behind the store's
+boolean storm guard, so a damage burst of many deltas costs a single
+`panel_subscribe`; ANY reply to a unit Req releases the guard before
+classification, a refusal to a burst-driven request earns ONE bounded
+retry at `4 × UNIT_RESYNC_MS`, a request that never went out (a closed
+socket) releases the guard on the spot, and both the timer and the guard
+are dropped on `#resetGameState`, `onFullRehydrate` and every hello (a
+request armed on a previous socket never answers). The before/after table
+takes the NEWEST-ARRIVED ring row's `(object, revision)`, never the
+highest revision — a recreated subject restarts at 0, and the maximum
+would report the dead one's damage forever.
 
 **Contacts** ride `tactics.contacts` as an I9-convention list keyframe,
 held in `GenericViewStore` (which keys on the feed name, not the `.view`
@@ -278,13 +303,16 @@ suffix) and rendered by an EMBEDDED `GenericView` — so the table costs no
 bespoke code and claims no second screen digit. Its rows are Prefills
 (`+contact <id>`), like every generic row.
 
-**Panes with no producer yet** (grid, weapons, comms, and contacts until
-its feed lands) render as titled placeholders naming what is missing.
-`unitPaneOrder` puts them LAST, and the narrow-width rule hides from the
-end — so a phone drops the empty panes before it drops anything real. That
-degrade order is a pure function, which is how it is tested: there is no
-component-render harness on this client (vitest runs `environment: "node"`,
-no jsdom), so every I8 assertion is a store/lib test or a source probe.
+**Panes with no producer yet** (grid, weapons, comms — and contacts until
+its feed answers) render as a plain pane name over one muted line
+declaring what is missing, the same bytes the TUI prints. They carry the
+`placeholder` class and the narrow-width rule hides them BY CLASS wherever
+they sit, so a phone drops the empty panes before anything real;
+`unitPaneOrder` puts them last so the wide layout reads the real panes
+first. That order is a pure function, which is how it is tested: there is
+no component-render harness on this client (vitest runs
+`environment: "node"`, no jsdom), so every I8 assertion is a store/lib
+test or a source probe.
 
 **The web can never name a subject.** `Query::PanelSubscribe` carries only
 a feed, so the browser always gets the server's default subject (its own

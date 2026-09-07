@@ -53,6 +53,17 @@ const SLOT_SCOPE = "slot";
 /** An em dash for an absent value. */
 const DASH = "—";
 
+/** The only `state` words this client interprets (rule 1). Anything else is
+ * neutral: an unknown word must never reach a class name, because the app's
+ * global stylesheet is unscoped and a value carrying whitespace would land
+ * a second, attacker-chosen class token on the element. */
+const GAUGE_STATES: readonly string[] = ["ok", "warn", "crit", "down"];
+
+/** A `state` word, or `""` for anything this client does not know. */
+export function gaugeState(v: unknown): string {
+  return typeof v === "string" && GAUGE_STATES.includes(v) ? v : "";
+}
+
 /** Which half of the screen is showing (D-I8-4: one screen, two layouts). */
 export type UnitLayout = "unit" | "damage";
 
@@ -70,7 +81,7 @@ export interface UnitCell {
   current: number;
   min: number;
   max: number;
-  /** One of the four gauge states, or an unknown word passed through. */
+  /** One of the four gauge states, or `""` for anything else. */
   state: string;
 }
 
@@ -123,6 +134,16 @@ export interface UnitCapability {
   source: string | null;
 }
 
+/** The frame's TRUE totals — exactly these four keys, so a producer's extra
+ * key cannot ride into the store unread (the byte-budget walk reports what
+ * it could not carry through the gaps between these and the held lists). */
+export interface UnitCounts {
+  sections: number;
+  cells: number;
+  components: number;
+  capabilities: number;
+}
+
 export interface UnitView {
   object: UnitObject;
   /** A definition identity (`owner:kind:id@version#<hash>`), never a body —
@@ -136,7 +157,7 @@ export interface UnitView {
   cells: UnitCell[];
   components: UnitComponent[];
   capabilities: UnitCapability[];
-  counts: Record<string, number>;
+  counts: UnitCounts;
   truncated: boolean;
 }
 
@@ -201,7 +222,7 @@ function parseCell(raw: unknown): UnitCell | null {
   if (addr === null || current === null || min === null || max === null) {
     return null;
   }
-  return { addr, label: str(raw.label) ?? addr, current, min, max, state: str(raw.state) ?? "" };
+  return { addr, label: str(raw.label) ?? addr, current, min, max, state: gaugeState(raw.state) };
 }
 
 function parseFacet(raw: unknown): UnitFacet | null {
@@ -223,7 +244,7 @@ function parseSection(raw: unknown): UnitSection | null {
   return {
     id,
     condition: str(raw.condition) ?? "",
-    state: str(raw.state) ?? "",
+    state: gaugeState(raw.state),
     facets: Array.isArray(raw.facets) ? raw.facets.flatMap((f) => parseFacet(f) ?? []) : [],
     slots: strList(raw.slots),
   };
@@ -242,7 +263,7 @@ function parseComponent(raw: unknown): UnitComponent | null {
     definition: str(raw.definition) ?? "",
     install: str(raw.install) ?? "",
     condition: str(raw.condition) ?? "",
-    state: str(raw.state) ?? "",
+    state: gaugeState(raw.state),
     asset: raw.asset === true,
   };
 }
@@ -297,18 +318,14 @@ function parseCapability(raw: unknown): UnitCapability | null {
   return id === null ? null : { id, source: str(raw.source) };
 }
 
-function parseCounts(raw: unknown): Record<string, number> {
-  if (!isObj(raw)) {
-    return {};
-  }
-  const out: Record<string, number> = {};
-  for (const [k, v] of Object.entries(raw)) {
-    const n = num(v);
-    if (n !== null) {
-      out[k] = n;
-    }
-  }
-  return out;
+function parseCounts(raw: unknown): UnitCounts {
+  const o = isObj(raw) ? raw : {};
+  return {
+    sections: num(o.sections) ?? 0,
+    cells: num(o.cells) ?? 0,
+    components: num(o.components) ?? 0,
+    capabilities: num(o.capabilities) ?? 0,
+  };
 }
 
 /**
@@ -349,6 +366,9 @@ export function parseUnitView(raw: unknown): UnitView | null {
 /** The delta header the ring rows are tagged with. */
 interface DeltaHeader {
   object: string;
+  /** The revision the delta applied ON TOP of; `0` means it is the first
+   * apply against a freshly created subject, whose watermark restarted. */
+  fromRevision: number | null;
   toRevision: number;
   cause: string | null;
   at: number;
@@ -363,7 +383,13 @@ function deltaHeader(raw: unknown): DeltaHeader | null {
   if (object === null || toRevision === null) {
     return null;
   }
-  return { object: object.id, toRevision, cause: str(raw.cause), at: num(raw.now) ?? 0 };
+  return {
+    object: object.id,
+    fromRevision: num(raw.from_revision),
+    toRevision,
+    cause: str(raw.cause),
+    at: num(raw.now) ?? 0,
+  };
 }
 
 /** A parsed delta: its header and the ring rows it contributes. */
@@ -405,14 +431,30 @@ export function journalRows(raw: unknown): JournalRow[] | null {
 
 // -- pane helpers ------------------------------------------------------------
 
-/** The ring rows of the newest revision belonging to the held object. */
+/**
+ * The rows of the NEWEST-ARRIVED delta the pane can report on: the ring is
+ * newest first, so that is simply its first matching row's `(object, rev)`.
+ *
+ * Newest-ARRIVED, never the highest revision: a subject recreated in place
+ * restarts at revision 0, and picking the maximum would keep reporting the
+ * dead subject's last damage forever. With nothing held (an unstationed
+ * staffer reading their own after-action report) the newest row's own
+ * object is the subject, so the pane still fills.
+ */
 export function afterAction(view: UnitView | null, ring: readonly JournalRow[]): JournalRow[] {
-  if (view === null) {
+  const mine = view === null ? ring : ring.filter((r) => r.object === view.object.id);
+  const newest = mine[0];
+  if (newest === undefined) {
     return [];
   }
-  const mine = ring.filter((r) => r.object === view.object.id);
-  const newest = mine.reduce((best, r) => (r.rev > best ? r.rev : best), Number.NEGATIVE_INFINITY);
-  return mine.filter((r) => r.rev === newest);
+  return mine.filter((r) => r.object === newest.object && r.rev === newest.rev);
+}
+
+/** What the before/after pane heads with when the rows are not the held
+ * subject's: the object they belong to, their revision and the cause. */
+export function afterActionSubject(rows: readonly JournalRow[]): string {
+  const head = rows[0];
+  return head === undefined ? "" : join([head.object, `rev ${head.rev}`, head.cause ?? DASH]);
 }
 
 /** Cells addressed under one section (its own and its facets') or one
@@ -554,14 +596,27 @@ export function mobilityLine(mobility: UnitMobility | null): string {
   return mobility.mode === null ? "mobility none" : `mobility ${mobility.mode}`;
 }
 
-/** The footer a byte-budgeted frame carries, or `null` when it is whole. */
+/**
+ * The footer a frame that could not carry everything gets, or `null` when
+ * what is held matches what the frame says it counted.
+ *
+ * Two ways a member goes missing, and both are reported: the producer's
+ * byte-budget walk stopped (`truncated`, and it stops on the CAPABILITY
+ * list last, so a capability-only cut is the common case), or a member was
+ * dropped here for being unreadable — in which case the frame calls itself
+ * whole and only the count gap knows better, so the footer says
+ * "incomplete" rather than claiming the producer truncated it.
+ */
 export function truncatedFooter(view: UnitView): string | null {
-  if (!view.truncated) {
+  const gap = (counted: number, held: number): number => Math.max(0, counted - held);
+  const cells = gap(view.counts.cells, view.cells.length);
+  const components = gap(view.counts.components, view.components.length);
+  const capabilities = gap(view.counts.capabilities, view.capabilities.length);
+  if (!view.truncated && cells === 0 && components === 0 && capabilities === 0) {
     return null;
   }
-  const cells = Math.max(0, (view.counts.cells ?? 0) - view.cells.length);
-  const components = Math.max(0, (view.counts.components ?? 0) - view.components.length);
-  return `view truncated: ${cells} cells, ${components} components not shown`;
+  const how = view.truncated ? "truncated" : "incomplete";
+  return `view ${how}: ${cells} cells, ${components} components, ${capabilities} capabilities not shown`;
 }
 
 /** One key/value row of a grouped list. `state` drives the glyph and the
@@ -635,27 +690,68 @@ export function componentGroups(view: UnitView): UnitGroup[] {
     if (rows.length === 0) {
       return [];
     }
-    return [{ id: section ?? UNIT_SCOPE, label: section ?? UNIT_SCOPE, rows }];
+    // The group id is what the render loop keys on, so it is SCOPED: a
+    // section is free to be named `unit`, and an id collision with the
+    // object's own group would throw out of the keyed block.
+    return [
+      {
+        id: section === null ? UNIT_SCOPE : `${SECTION_SCOPE}/${section}`,
+        label: section ?? UNIT_SCOPE,
+        rows,
+      },
+    ];
   });
 }
 
-/** The capability pane's rows: the capability and what sources it. */
+/**
+ * The capability pane's rows: ONE row per capability id, listing every
+ * source that grants it in frame order (`—` for one the object carries in
+ * its own right). The same id may legitimately arrive twice with different
+ * sources, and the list is keyed on the id — so this must both collapse
+ * the duplicate and keep the second source, which is the only thing the
+ * pane prints besides the id.
+ */
 export function capabilityRows(view: UnitView): UnitGroupRow[] {
-  return view.capabilities.map((c) => ({
-    key: c.id,
-    value: c.source ?? DASH,
+  const bySource = new Map<string, string[]>();
+  for (const c of view.capabilities) {
+    const sources = bySource.get(c.id);
+    if (sources === undefined) {
+      bySource.set(c.id, [c.source ?? DASH]);
+    } else {
+      sources.push(c.source ?? DASH);
+    }
+  }
+  return [...bySource].map(([key, sources]) => ({
+    key,
+    value: sources.join(", "),
     state: "",
     detail: null,
   }));
 }
 
-/** A pane that has no producer yet: the title names what is missing. */
-export const UNIT_PLACEHOLDERS: readonly { id: string; title: string }[] = [
-  { id: "grid", title: "grid: awaiting a geometry projection (plan §9)" },
-  { id: "weapons", title: "weapons: awaiting a weapons-cycle projection (plan §9)" },
-  { id: "comms", title: "comms: awaiting a station comms projection (plan §9)" },
-  { id: "contacts", title: "contacts: awaiting tactics.contacts (plan §9)" },
+/** A pane with no producer at all yet: the title is the pane's name and the
+ * body declares what is missing (the same bytes the TUI prints). */
+export interface UnitPlaceholder {
+  id: string;
+  title: string;
+  body: string;
+}
+
+export const UNIT_PLACEHOLDERS: readonly UnitPlaceholder[] = [
+  { id: "grid", title: "grid", body: "awaiting a geometry projection (plan §9)" },
+  { id: "weapons", title: "weapons", body: "awaiting a weapons-cycle projection (plan §9)" },
+  { id: "comms", title: "comms", body: "awaiting a station comms projection (plan §9)" },
 ];
+
+/** The contacts pane while its feed has not answered. It is not one of the
+ * declared placeholders above: that list is the panes with no producer
+ * anywhere, and this one's producer exists — the server either has not
+ * answered yet or does not publish the feed. */
+export const CONTACTS_PLACEHOLDER: UnitPlaceholder = {
+  id: "contacts",
+  title: "contacts",
+  body: "awaiting tactics.contacts (plan §9)",
+};
 
 /** The headings of the panes that have a producer. */
 export const UNIT_PANE_TITLES: Readonly<Record<string, string>> = {
@@ -670,20 +766,24 @@ export const UNIT_PANE_TITLES: Readonly<Record<string, string>> = {
 };
 
 /**
- * The panes of a layout, in render order. Placeholders always come LAST,
- * because the narrow-width rule hides from the end: what has no producer
- * yet is the first thing a phone drops. A live contacts table takes the
- * place of its own placeholder, still ahead of the remaining ones.
+ * The panes of a layout, in render order, placeholders LAST.
+ *
+ * The narrow-width rule hides a placeholder by its `placeholder` CLASS,
+ * wherever it sits — so this order is not what makes a phone drop them.
+ * What it does is set the wide layout's reading sequence: the panes with
+ * real data first, the declarations of what is still missing after them. A
+ * live contacts table is a real pane and sits with them; without its frame
+ * it joins the declarations at the end.
  */
 export function unitPaneOrder(layout: UnitLayout, contactsLive: boolean): string[] {
   const core =
     layout === "damage"
       ? ["sectionmap", "afteraction", "journal"]
       : ["sections", "plant", "components", "capabilities"];
-  const placeholders = UNIT_PLACEHOLDERS.filter(
-    (p) => !(contactsLive && p.id === "contacts"),
-  ).map((p) => p.id);
-  return [...core, ...(contactsLive ? ["contacts"] : []), ...placeholders];
+  const declared = UNIT_PLACEHOLDERS.map((p) => p.id);
+  return contactsLive
+    ? [...core, CONTACTS_PLACEHOLDER.id, ...declared]
+    : [...core, ...declared, CONTACTS_PLACEHOLDER.id];
 }
 
 export class UnitStore {
@@ -696,6 +796,16 @@ export class UnitStore {
   journal = $state<JournalRow[]>([]);
   /** A keyframe has been applied and a view is held. */
   loaded = $state(false);
+  /** The server has answered the subscribe at least once since the last
+   * `clear()` — with a view, with the honest no-subject frame, or with a
+   * refusal. Until it has, the panel knows nothing and must say so rather
+   * than asserting the viewer has no unit. */
+  answered = $state(false);
+  /** The server's last answer was the honest no-subject frame. A delta
+   * arriving now is somebody else's history: ring it, but do not spend a
+   * round trip on a keyframe request that can only come back `null` again.
+   * Cleared by any keyframe that names a subject. */
+  noSubject = $state(false);
   /** A keyframe re-request is armed or in flight — the storm guard that
    * bounds a burst of deltas to one request. Released by ANY reply. */
   resyncPending = $state(false);
@@ -713,14 +823,25 @@ export class UnitStore {
    * view is dropped and the panel says so, without an error. Returns
    * whether the frame was understood — `false` only for a payload that is
    * neither `null` nor a unit view, which leaves state untouched.
+   *
+   * The ring is cleared whenever the SUBJECT changes, and losing a subject
+   * is a change: held → none clears, so an intervening no-subject frame
+   * cannot smuggle one object's rows into the next object's journal. A
+   * first keyframe over nothing held clears nothing — the fanned delta
+   * legitimately arrives before the resync's keyframe.
    */
   applyKeyframe(raw: unknown): boolean {
     if (raw === null || raw === undefined) {
+      if (this.view !== null) {
+        this.journal = [];
+      }
       this.view = null;
       this.loaded = false;
       this.revision = 0;
       this.unavailable = null;
       this.resyncPending = false;
+      this.answered = true;
+      this.noSubject = true;
       return true;
     }
     const parsed = parseUnitView(raw);
@@ -736,6 +857,8 @@ export class UnitStore {
     this.loaded = true;
     this.unavailable = null;
     this.resyncPending = false;
+    this.answered = true;
+    this.noSubject = false;
     return true;
   }
 
@@ -744,10 +867,15 @@ export class UnitStore {
    * another object, or one that arrives before any keyframe, is still real
    * history — and the outcome says what the caller should do:
    * - `"malformed"` — not a delta; nothing ringed, nothing to do;
-   * - `"foreign"` — tagged with another object; ringed only;
+   * - `"foreign"` — tagged with another object, or arriving while the
+   *   server has told us there is no subject at all; ringed only;
    * - `"stale"` — at or behind the watermark; ringed only;
    * - `"resync"` — ahead of the watermark, or nothing held: ask for a
    *   fresh keyframe (the caller coalesces and storm-guards that).
+   *
+   * Rows keep the delta's own order (entry 0 first) and each delta is
+   * prepended whole, so the ring reads newest DELTA first with the entries
+   * of one delta in the order the producer applied them.
    */
   applyJournal(raw: unknown): JournalOutcome {
     const delta = parseDelta(raw);
@@ -757,11 +885,23 @@ export class UnitStore {
     if (delta.rows.length > 0) {
       this.journal = [...delta.rows, ...this.journal].slice(0, JOURNAL_RING);
     }
+    if (this.noSubject) {
+      // The last answer was "you have no subject"; a keyframe request would
+      // only be answered `null` again. The rows are still real history and
+      // the panes render them from the ring, each named by its object.
+      return "foreign";
+    }
     if (!this.loaded || this.view === null) {
       return "resync";
     }
     if (delta.head.object !== this.view.object.id) {
       return "foreign";
+    }
+    if (delta.head.fromRevision === 0) {
+      // A from-zero delta is a subject's FIRST apply: it was recreated in
+      // place and its watermark restarted, so the held one is meaningless
+      // and the comparison below would read the new frame as stale.
+      return "resync";
     }
     return delta.head.toRevision <= this.revision ? "stale" : "resync";
   }
@@ -773,12 +913,18 @@ export class UnitStore {
 
   /** The query answered with a refusal instead of a frame. Releases the
    * storm guard, so a later delta can ask again rather than being dropped
-   * forever. */
+   * forever. Losing a held subject clears the ring here for the same
+   * reason it does in `applyKeyframe` (unreachable in practice: the caller
+   * only refuses into a panel that holds nothing). */
   markUnavailable(reason: string): void {
+    if (this.view !== null) {
+      this.journal = [];
+    }
     this.view = null;
     this.loaded = false;
     this.unavailable = reason;
     this.resyncPending = false;
+    this.answered = true;
   }
 
   clear(): void {
@@ -787,6 +933,8 @@ export class UnitStore {
     this.revision = 0;
     this.journal = [];
     this.loaded = false;
+    this.answered = false;
+    this.noSubject = false;
     this.resyncPending = false;
     this.unavailable = null;
   }

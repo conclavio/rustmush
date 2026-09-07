@@ -213,6 +213,9 @@ export class GameApp {
    * `#scheduleUnitResync`. Cleared on every reset seam — a timer left armed
    * across a disconnect would latch `UnitStore.resyncPending` forever. */
   #unitResyncTimer: ReturnType<typeof setTimeout> | null = null;
+  /** The in-flight unit request was armed by the coalescer, not by `r` — so
+   * a refusal answering it earns ONE bounded retry. */
+  #unitResyncFromDelta = false;
   #nextToast = 1;
   #seenActionCommits = new Set<string>();
   #actionCommitOrder: string[] = [];
@@ -528,8 +531,11 @@ export class GameApp {
   #hydrate(): void {
     this.#pending.clear(); // ids from a previous socket never resolve
     // Likewise a backlog page requested on a previous socket never arrives
-    // (I12): release the in-flight latch on every hello.
+    // (I12): release the in-flight latch on every hello. Same rule for the
+    // unit feed's coalesced resync (I8) — a request armed on a previous
+    // socket is never answered, and its guard would drop every later delta.
     this.scrollback.fetchingBacklog = false;
+    this.unit.resyncPending = false;
     // The tactical unit screen (I8) registers here, ONCE: `registerFeedScreen`
     // has no idempotency guard of its own and `ScreensStore.clear()` keeps
     // `feedScreens`, so a second hello would otherwise be refused with
@@ -625,6 +631,10 @@ export class GameApp {
           if (!this.unit.loaded) {
             this.unit.markUnavailable(plainText(event.d));
           }
+          // A refusal that answered a COALESCED resync (a throttle at the
+          // end of a burst) would otherwise leave the pane behind the
+          // journal until the next delta: retry once, further out.
+          this.#scheduleUnitRetry();
           return;
         }
         if (pending?.kind === "contacts") {
@@ -679,6 +689,8 @@ export class GameApp {
       // request, and storm-guarded so an armed one is never doubled.
       if (d.kind === "keyframe") {
         this.unit.applyKeyframe(d.data);
+        // The burst was answered with a frame; there is nothing to retry.
+        this.#unitResyncFromDelta = false;
       } else if (this.unit.applyJournal(d.data) === "resync" && !this.unit.resyncPending) {
         this.unit.resyncPending = true;
         this.#scheduleUnitResync();
@@ -1187,14 +1199,36 @@ export class GameApp {
     if (this.#unitResyncTimer !== null) {
       return;
     }
+    // The request the timer sends answers a BURST, so a refusal to it earns
+    // one bounded retry (`#scheduleUnitRetry`) rather than leaving the pane
+    // behind its own journal until the next delta.
     this.#unitResyncTimer = setTimeout(() => {
       this.#unitResyncTimer = null;
+      this.#unitResyncFromDelta = true;
       this.refreshUnit();
     }, UNIT_RESYNC_MS);
   }
 
+  /** Retry ONCE, further out, when a delta-driven resync came back a Sys
+   * (a throttle). Bounded to a single retry per burst: the flag is set only
+   * by the coalescer's own callback and cleared as soon as it is read. */
+  #scheduleUnitRetry(): void {
+    if (!this.#unitResyncFromDelta) {
+      return;
+    }
+    this.#unitResyncFromDelta = false;
+    if (this.#unitResyncTimer !== null) {
+      return;
+    }
+    this.#unitResyncTimer = setTimeout(() => {
+      this.#unitResyncTimer = null;
+      this.refreshUnit();
+    }, 4 * UNIT_RESYNC_MS);
+  }
+
   /** Disarm the coalescer (every reset seam). */
   #clearUnitResync(): void {
+    this.#unitResyncFromDelta = false;
     if (this.#unitResyncTimer !== null) {
       clearTimeout(this.#unitResyncTimer);
       this.#unitResyncTimer = null;
@@ -1210,7 +1244,12 @@ export class GameApp {
     if (feed === null) {
       return;
     }
-    this.#req({ kind: "unit", feed }, { t: "panel_subscribe", d: { feed } });
+    if (!this.#req({ kind: "unit", feed }, { t: "panel_subscribe", d: { feed } })) {
+      // Nothing went out (a closed socket), so nothing will answer and
+      // release the guard — drop it here or every later delta is discarded
+      // by the `!resyncPending` test with no request in flight.
+      this.unit.resyncPending = false;
+    }
   }
 
   /** Re-request the contacts list the unit screen embeds. No-op when the

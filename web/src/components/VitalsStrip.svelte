@@ -12,6 +12,10 @@
 <div class="strip" aria-label="vitals">
   {#each app.vitals.list as group (group.feed)}
     <span class="group" title={group.frame.subject.name}>
+      <!-- The subject is legible, not just a tooltip: one feed can follow a
+           viewer from subject to subject, and a strip that repoints without
+           saying so reads as the old subject's gauges. -->
+      <span class="subject">{group.frame.subject.name}</span>
       {#each orderedVitals(group.frame) as v (v.id)}
         <span class="vital state-{v.state} role-{v.role}" title={v.detail ?? v.label}>
           <span class="label">{v.label}</span>
@@ -51,7 +55,13 @@
   .group {
     display: inline-flex;
     flex-wrap: wrap;
+    align-items: center;
     gap: 0.35rem 0.8rem;
+  }
+
+  .subject {
+    color: var(--fg-faint);
+    font-weight: 600;
   }
 
   .vital {

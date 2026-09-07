@@ -10,10 +10,12 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   afterAction,
+  afterActionSubject,
   beforeAfterRows,
   capabilityRows,
   cellsUnder,
   componentGroups,
+  CONTACTS_PLACEHOLDER,
   ELIDED_KIND,
   installSection,
   journalEntryText,
@@ -227,7 +229,29 @@ describe("parseUnitView", () => {
     expect(v.sections).toHaveLength(1);
     expect(v.components).toHaveLength(1);
     expect(v.capabilities).toHaveLength(1);
-    expect(v.counts).toEqual({ cells: 4 });
+    // `counts` is exactly the four numbers, whatever the producer sent.
+    expect(v.counts).toEqual({ sections: 0, cells: 4, components: 0, capabilities: 0 });
+  });
+
+  it("keeps only the four gauge state words, and never a class-bearing one", () => {
+    // `state` reaches a `class="state-{…}"` attribute, and the app's global
+    // stylesheet is unscoped — a word carrying whitespace would land a
+    // second, producer-chosen class token on the element.
+    const v = parseUnitView({
+      ...F1,
+      sections: [{ ...F1.sections[0], state: "x ansi-1" }],
+      cells: F1.cells.map((c) => ({ ...c, state: "x ansi-1" })),
+      components: [{ ...F1.components[0], state: "x ansi-1" }],
+    })!;
+    expect(v.sections[0]!.state).toBe("");
+    expect(v.cells.map((c) => c.state)).toEqual(["", "", "", ""]);
+    expect(v.components[0]!.state).toBe("");
+    // The ruleset's own opaque `condition` word is untouched by the rule.
+    expect(v.sections[0]!.condition).toBe("ok");
+    for (const word of ["ok", "warn", "crit", "down"]) {
+      expect(parseUnitView({ ...F1, cells: [{ ...F1.cells[0], state: word }] })!.cells[0]!.state)
+        .toBe(word);
+    }
   });
 });
 
@@ -324,6 +348,65 @@ describe("UnitStore keyframes", () => {
     expect(s.view?.state).toBe("frozen");
     expect(s.revision).toBe(3);
   });
+
+  it("a null keyframe after a held object clears the ring; before any object it does not", () => {
+    // Losing a subject IS a subject change, so the rows go with it —
+    // otherwise a no-subject frame between two objects smuggles the first
+    // one's history into the second's journal pane.
+    const held = new UnitStore();
+    held.applyKeyframe(F1);
+    held.applyJournal(F3);
+    expect(held.journal).toHaveLength(6);
+    held.applyKeyframe(null);
+    expect(held.journal).toEqual([]);
+
+    // Nothing held: the fanned delta legitimately beats the resync's
+    // keyframe, so neither the null nor the first real frame may clear it.
+    const fresh = new UnitStore();
+    fresh.applyJournal(F3);
+    expect(fresh.journal).toHaveLength(6);
+    fresh.applyKeyframe(null);
+    expect(fresh.journal).toHaveLength(6);
+    fresh.applyKeyframe(F1);
+    expect(fresh.journal).toHaveLength(6);
+
+    // The trace the hole named: an intervening null must not defeat the
+    // object-changed rule.
+    const trace = new UnitStore();
+    trace.applyKeyframe(F1);
+    trace.applyJournal(F3);
+    trace.applyKeyframe(null);
+    trace.applyKeyframe({ ...F1, object: { id: "#9", name: "Other" } });
+    expect(trace.journal).toEqual([]);
+    expect(trace.objectId).toBe("#9");
+  });
+
+  it("markUnavailable drops a held object's ring the same way", () => {
+    const s = new UnitStore();
+    s.applyKeyframe(F1);
+    s.applyJournal(F3);
+    s.markUnavailable("You have no station on that unit.");
+    expect(s.journal).toEqual([]);
+  });
+
+  it("a fresh store is unanswered; a view, the null and a refusal all answer", () => {
+    // Until the server has answered, the panel knows nothing — it must not
+    // state as fact that the pilot has no unit.
+    const s = new UnitStore();
+    expect(s.answered).toBe(false);
+    expect(s.applyKeyframe({ nonsense: true })).toBe(false);
+    expect(s.answered).toBe(false); // an unreadable payload is not an answer
+    s.applyKeyframe(null);
+    expect(s.answered).toBe(true);
+    s.clear();
+    expect(s.answered).toBe(false);
+    s.applyKeyframe(F1);
+    expect(s.answered).toBe(true);
+    s.clear();
+    s.markUnavailable("You have no station on that unit.");
+    expect(s.answered).toBe(true);
+    expect(s.noSubject).toBe(false);
+  });
 });
 
 describe("UnitStore journal outcomes", () => {
@@ -373,6 +456,62 @@ describe("UnitStore journal outcomes", () => {
     expect(s.journal).toHaveLength(JOURNAL_RING);
     expect(s.journal[0]?.rev).toBe(8); // the newest delta is at the front
   });
+
+  it("the ring reads newest DELTA first, entries in wire order, elided last", () => {
+    // The order both clients render: a delta's entries stay in the order
+    // the producer applied them (cause before effect), and the elided
+    // marker stands for the entries AFTER the ones kept, so it goes last
+    // within its own delta — carrying that delta's object, rev and cause.
+    const s = new UnitStore();
+    s.applyKeyframe(F1);
+    s.applyJournal(F3); // 6 entries, rev 4
+    s.applyJournal(delta(5, 1024)); // 49 entries + the elided marker
+    const first = s.journal.slice(0, JOURNAL_ROWS_PER_DELTA);
+    expect(first.every((r) => r.rev === 5)).toBe(true);
+    expect(first[0]!.entry.addr).toBe("unit/c0");
+    expect(first[48]!.entry.addr).toBe("unit/c48");
+    expect(first[49]!.entry).toEqual({ kind: ELIDED_KIND, omitted: 1024 - 49 });
+    expect(first[49]).toMatchObject({ object: "#7", rev: 5, cause: null });
+    // Then the older delta, also in wire order.
+    expect(s.journal.slice(JOURNAL_ROWS_PER_DELTA).map((r) => r.entry.kind)).toEqual([
+      "cell",
+      "section",
+      "component",
+      "asset",
+      "capability_granted",
+      "capability_revoked",
+    ]);
+  });
+
+  it("a delta arriving after the no-subject frame is foreign, ringed but never resynced", () => {
+    // The server has said there is no subject; another keyframe request can
+    // only be answered `null` again, so the round trip is wasted. The rows
+    // are still real history and the panes render them from the ring.
+    const s = new UnitStore();
+    s.applyKeyframe(null);
+    expect(s.noSubject).toBe(true);
+    expect(s.applyJournal(F3)).toBe("foreign");
+    expect(s.journal).toHaveLength(6);
+    // A subject arriving clears it, and the rule reverts.
+    s.applyKeyframe(F1);
+    expect(s.noSubject).toBe(false);
+    expect(s.applyJournal({ ...F3, to_revision: 5 })).toBe("resync");
+    // Nothing held and no null answer yet is still a resync (the fanned
+    // delta beat the keyframe of a viewer who has just taken a station).
+    const fresh = new UnitStore();
+    expect(fresh.applyJournal(F3)).toBe("resync");
+  });
+
+  it("a from-zero delta is a resync even below the watermark", () => {
+    // A subject recreated in place restarts at revision 0, so its first
+    // apply looks stale against the dead one's watermark and would wedge
+    // the pane until the new subject passed the old revision.
+    const s = new UnitStore();
+    s.applyKeyframe({ ...F1, revision: 7 });
+    expect(s.applyJournal({ ...F3, from_revision: 0, to_revision: 1 })).toBe("resync");
+    // A from-nonzero delta at or behind the watermark is still stale.
+    expect(s.applyJournal({ ...F3, from_revision: 1, to_revision: 2 })).toBe("stale");
+  });
 });
 
 describe("UnitStore guards and reset", () => {
@@ -405,6 +544,8 @@ describe("UnitStore guards and reset", () => {
     expect(s.revision).toBe(0);
     expect(s.journal).toEqual([]);
     expect(s.loaded).toBe(false);
+    expect(s.answered).toBe(false);
+    expect(s.noSubject).toBe(false);
     expect(s.resyncPending).toBe(false);
     expect(s.unavailable).toBeNull();
     expect(s.layout).toBe("unit");
@@ -474,8 +615,40 @@ describe("pane helpers", () => {
       { object: "#7", rev: 4, cause: null, at: 0, entry: { kind: "cell", addr: "c", from: 2, to: 1 } },
     ];
     expect(afterAction(view, ring).map((r) => r.entry.addr)).toEqual(["a"]);
-    expect(afterAction(null, ring)).toEqual([]);
     expect(afterAction(view, [])).toEqual([]);
+  });
+
+  it("afterAction picks the newest-ARRIVED group, not the highest revision", () => {
+    // A subject recreated in place restarts at revision 0, so its first
+    // damage rings a LOWER revision than the dead one's last. Picking the
+    // maximum would report the dead subject's damage forever.
+    const ring: JournalRow[] = [
+      { object: "#7", rev: 1, cause: "b", at: 20, entry: { kind: "cell", addr: "new", from: 4, to: 3 } },
+      { object: "#7", rev: 7, cause: "a", at: 10, entry: { kind: "cell", addr: "old", from: 2, to: 1 } },
+    ];
+    expect(afterAction(view, ring).map((r) => r.entry.addr)).toEqual(["new"]);
+    expect(afterActionSubject(afterAction(view, ring))).toBe("#7 rev 1 b");
+  });
+
+  it("afterAction reads the ring alone when nothing is held, newest arrival first", () => {
+    // The one actor who can produce an after-action report is a staffer,
+    // who often holds no station: the pane takes the newest ring row's own
+    // object as its subject rather than going blank.
+    const ring: JournalRow[] = [
+      { object: "#9", rev: 2, cause: null, at: 30, entry: { kind: "cell", addr: "b1", from: 2, to: 1 } },
+      { object: "#9", rev: 2, cause: null, at: 30, entry: { kind: "cell", addr: "b2", from: 2, to: 1 } },
+      { object: "#7", rev: 4, cause: "c", at: 20, entry: { kind: "cell", addr: "a", from: 2, to: 1 } },
+    ];
+    expect(afterAction(null, ring).map((r) => r.entry.addr)).toEqual(["b1", "b2"]);
+    expect(afterActionSubject(afterAction(null, ring))).toBe("#9 rev 2 —");
+    expect(afterAction(null, [])).toEqual([]);
+    expect(afterActionSubject([])).toBe("");
+    // Every row names its object when nothing is held.
+    expect(journalTableRows(ring, null).map((r) => r.entry)).toEqual([
+      "#9 cell b1 2→1",
+      "#9 cell b2 2→1",
+      "#7 cell a 2→1",
+    ]);
   });
 
   it("beforeAfterRows carries both sides of a cell, a section and a component", () => {
@@ -526,8 +699,38 @@ describe("pane helpers", () => {
 
   it("a truncated frame footers what it could not carry", () => {
     expect(truncatedFooter(view)).toBeNull();
-    const cut: UnitView = { ...view, truncated: true, counts: { cells: 9, components: 4 } };
-    expect(truncatedFooter(cut)).toBe("view truncated: 5 cells, 3 components not shown");
+    const cut: UnitView = {
+      ...view,
+      truncated: true,
+      counts: { sections: 1, cells: 9, components: 4, capabilities: 1 },
+    };
+    expect(truncatedFooter(cut)).toBe(
+      "view truncated: 5 cells, 3 components, 0 capabilities not shown",
+    );
+  });
+
+  it("the footer counts capabilities, and names a member dropped by the parser", () => {
+    // The producer's byte-budget walk cuts the CAPABILITY list last, so a
+    // capability-only truncation is the common shape — and the old footer
+    // read "0 cells, 0 components not shown" beside a short list.
+    const capsCut: UnitView = {
+      ...view,
+      truncated: true,
+      counts: { ...view.counts, capabilities: 3 },
+    };
+    expect(truncatedFooter(capsCut)).toContain("2 capabilities");
+    expect(truncatedFooter(capsCut)).toContain("truncated");
+    // Nothing was truncated upstream, but a member was unreadable here: the
+    // count gap is the only witness, and the frame must not be called
+    // truncated when it was the client that dropped the member.
+    const dropped = parseUnitView({
+      ...F1,
+      cells: [{ ...F1.cells[0], current: "x" }, ...F1.cells.slice(1)],
+    })!;
+    expect(dropped.cells).toHaveLength(3);
+    expect(truncatedFooter(dropped)).toBe(
+      "view incomplete: 1 cells, 0 components, 0 capabilities not shown",
+    );
   });
 
   it("components group by install section, the object's own group first", () => {
@@ -549,7 +752,8 @@ describe("pane helpers", () => {
         { id: "tactics.action", source: "gauss" },
       ],
     });
-    expect(groups.map((g) => g.id)).toEqual(["unit", "center_torso"]);
+    expect(groups.map((g) => g.id)).toEqual(["unit", "section/center_torso"]);
+    expect(groups.map((g) => g.label)).toEqual(["unit", "center_torso"]);
     expect(groups[0]!.rows).toEqual([
       { key: "core", value: "ok", state: "warn", detail: "asset" },
       { key: "tactics.mobility", value: "", state: "", detail: null },
@@ -561,6 +765,42 @@ describe("pane helpers", () => {
     expect(capabilityRows(view)).toEqual([
       { key: "tactics.mobility", value: "—", state: "", detail: null },
     ]);
+  });
+
+  it("capabilityRows never yields two rows with one key", () => {
+    // The same capability id sourced twice is legal upstream; the pane's
+    // list is keyed on that id, so a second row would throw the block out
+    // of the render — and dedupe alone would hide the second source, which
+    // is the only thing besides the id the pane prints.
+    const rows = capabilityRows({
+      ...view,
+      capabilities: [
+        { id: "tactics.mobility", source: null },
+        { id: "tactics.mobility", source: "gauss" },
+        { id: "tactics.action", source: "gauss" },
+      ],
+    });
+    expect(rows).toHaveLength(2);
+    expect(new Set(rows.map((r) => r.key)).size).toBe(2);
+    expect(rows[0]).toEqual({ key: "tactics.mobility", value: "—, gauss", state: "", detail: null });
+    expect(rows[1]!.value).toBe("gauss");
+  });
+
+  it("componentGroups group ids are unique when a section is named unit", () => {
+    // Section ids are canonical `[a-z0-9_.]`, so `unit` is a legal one and
+    // would collide with the object's own group. The id is scoped; only the
+    // label is the bare name.
+    const groups = componentGroups({
+      ...view,
+      sections: [...view.sections, { id: "unit", condition: "ok", state: "ok", facets: [], slots: ["x"] }],
+      components: [
+        ...view.components,
+        { id: "aux", definition: "", install: "slot/unit/x", condition: "ok", state: "ok", asset: false },
+      ],
+    });
+    expect(groups.map((g) => g.id)).toEqual(["unit", "section/center_torso", "section/unit"]);
+    expect(new Set(groups.map((g) => g.id)).size).toBe(groups.length);
+    expect(groups.map((g) => g.label)).toEqual(["unit", "center_torso", "unit"]);
   });
 
   it("installSection reads the flat install path", () => {
@@ -576,7 +816,7 @@ describe("unitPaneOrder", () => {
 
   it("puts the panes with no producer last in both layouts", () => {
     for (const layout of ["unit", "damage"] as const) {
-      const panes = unitPaneOrder(layout, false);
+      const panes = unitPaneOrder(layout, true);
       expect(panes.slice(-placeholders.length)).toEqual(placeholders);
       expect(panes.slice(0, -placeholders.length).length).toBeGreaterThan(0);
     }
@@ -593,27 +833,39 @@ describe("unitPaneOrder", () => {
     ]);
   });
 
-  it("a live contacts table takes its own placeholder's slot, still ahead of the rest", () => {
-    const panes = unitPaneOrder("unit", true);
-    expect(panes.filter((p) => p === "contacts")).toHaveLength(1);
-    const rest = placeholders.filter((p) => p !== "contacts");
-    expect(panes.slice(-rest.length)).toEqual(rest);
-    expect(panes.indexOf("contacts")).toBeLessThan(panes.indexOf(rest[0]!));
+  it("a live contacts table sits with the real panes; without a frame it joins the rest", () => {
+    const live = unitPaneOrder("unit", true);
+    expect(live.filter((p) => p === CONTACTS_PLACEHOLDER.id)).toHaveLength(1);
+    expect(live.indexOf(CONTACTS_PLACEHOLDER.id)).toBeLessThan(live.indexOf(placeholders[0]!));
+    const dark = unitPaneOrder("unit", false);
+    expect(dark.filter((p) => p === CONTACTS_PLACEHOLDER.id)).toHaveLength(1);
+    expect(dark.indexOf(CONTACTS_PLACEHOLDER.id)).toBeGreaterThan(dark.indexOf(placeholders[0]!));
+    expect(dark.at(-1)).toBe(CONTACTS_PLACEHOLDER.id);
   });
 
-  it("every pane has a title", () => {
+  it("every pane has a title, and the declarations are byte-for-byte the frozen ones", () => {
     for (const layout of ["unit", "damage"] as const) {
       for (const pane of unitPaneOrder(layout, true)) {
-        const title = UNIT_PANE_TITLES[pane] ?? UNIT_PLACEHOLDERS.find((p) => p.id === pane)?.title;
+        const title =
+          UNIT_PANE_TITLES[pane] ?? UNIT_PLACEHOLDERS.find((p) => p.id === pane)?.title;
         expect(title, pane).toBeTruthy();
       }
     }
-    expect(UNIT_PLACEHOLDERS.map((p) => p.title)).toEqual([
-      "grid: awaiting a geometry projection (plan §9)",
-      "weapons: awaiting a weapons-cycle projection (plan §9)",
-      "comms: awaiting a station comms projection (plan §9)",
-      "contacts: awaiting tactics.contacts (plan §9)",
+    // Title = the pane's own name; body = the declaration of the missing
+    // producer. Both clients print these bytes (the TUI breaks the body
+    // over two rows at the space); a drift here is a parity break.
+    expect(UNIT_PLACEHOLDERS.map((p) => p.id)).toEqual(["grid", "weapons", "comms"]);
+    expect(UNIT_PLACEHOLDERS.map((p) => p.title)).toEqual(["grid", "weapons", "comms"]);
+    expect(UNIT_PLACEHOLDERS.map((p) => p.body)).toEqual([
+      "awaiting a geometry projection (plan §9)",
+      "awaiting a weapons-cycle projection (plan §9)",
+      "awaiting a station comms projection (plan §9)",
     ]);
+    expect(CONTACTS_PLACEHOLDER).toEqual({
+      id: "contacts",
+      title: "contacts",
+      body: "awaiting tactics.contacts (plan §9)",
+    });
   });
 });
 
@@ -636,6 +888,10 @@ describe("the unit panel leaks no definition body", () => {
     sections: [{ ...F1.sections[0], rules: { hidden: MARK } }],
     cells: F1.cells.map((c) => ({ ...c, rules: { hidden: MARK } })),
     components: [{ ...F1.components[0], definition: MARK, rules: { hidden: MARK } }],
+    // `counts` was the one passthrough: every finite number rode through
+    // under whatever key the producer chose, so a marker in a KEY reached
+    // the store. It now reads exactly the four it names.
+    counts: { ...F1.counts, [MARK]: 1 },
   };
 
   it("the parser carries no key it does not name", () => {
@@ -666,7 +922,9 @@ describe("the unit panel leaks no definition body", () => {
       mobilityLine(v.mobility),
       truncatedFooter(v) ?? "",
       ...Object.values(UNIT_PANE_TITLES),
-      ...UNIT_PLACEHOLDERS.map((p) => p.title),
+      ...UNIT_PLACEHOLDERS.flatMap((p) => [p.title, p.body]),
+      CONTACTS_PLACEHOLDER.title,
+      CONTACTS_PLACEHOLDER.body,
     ].join("\n");
     expect(rendered).not.toContain(MARK);
     expect(rendered.toLowerCase()).not.toContain("rules");
@@ -698,5 +956,84 @@ describe("the coalesced unit resync is wired in GameApp", () => {
   it("gives the layout toggle its own arm and the screen its refresh arm", () => {
     expect(src).toMatch(/case "toggle":[\s\S]{0,400}?toggleLayout\(\)/);
     expect(src).toMatch(/case "unit":\s*this\.refreshUnit\(\);\s*this\.refreshContacts\(\);/);
+  });
+
+  it("releases the storm guard when the request never went out, and on every hello", () => {
+    // `#req` returns false on a closed socket: nothing will answer, so the
+    // guard must not stay latched with no request in flight. A hello is the
+    // same rule as the I12 backlog latch — a request armed on a previous
+    // socket never resolves.
+    expect(src).toMatch(
+      /if \(!this\.#req\(\{ kind: "unit", feed \}[\s\S]{0,400}?this\.unit\.resyncPending = false;/,
+    );
+    expect(src).toMatch(
+      /this\.scrollback\.fetchingBacklog = false;\s*this\.unit\.resyncPending = false;/,
+    );
+  });
+
+  it("retries a throttled coalesced resync exactly once, further out", () => {
+    // A Sys answering a delta-driven resync would otherwise leave the pane
+    // behind its own journal until the next damage.
+    expect(src).toMatch(/#unitResyncFromDelta = true;\s*this\.refreshUnit\(\);/);
+    expect(src).toMatch(/#scheduleUnitRetry\(\)[\s\S]{0,600}?4 \* UNIT_RESYNC_MS/);
+    // Read-once: the flag is cleared before the retry is armed, so a second
+    // refusal cannot arm a third request.
+    expect(src).toMatch(
+      /if \(!this\.#unitResyncFromDelta\) \{\s*return;\s*\}\s*this\.#unitResyncFromDelta = false;/,
+    );
+    expect(src.match(/this\.#scheduleUnitRetry\(\);/g) ?? []).toHaveLength(1);
+  });
+});
+
+describe("the widgets and the screen are keyed and branched as the panes need", () => {
+  // Same source-probe convention: no component harness exists on this
+  // client (vitest runs `environment: "node"`, no jsdom).
+  const read = (p: string): string => readFileSync(resolve(process.cwd(), p), "utf8");
+
+  it("KeyValue keys its rows by index, so no producer id can throw the block", () => {
+    // Svelte throws `each_key_duplicate` out of the whole flush on a
+    // repeated key, and these keys are producer-chosen ids.
+    const src = read("src/components/widgets/KeyValue.svelte");
+    expect(src).toMatch(/\{#each rows as r, i \(i\)\}/);
+    expect(src).not.toMatch(/\{#each rows as r \(r\.key\)\}/);
+    // The convention it follows.
+    expect(read("src/components/widgets/Table.svelte")).toMatch(/\(i\)\}/);
+  });
+
+  it("UnitScreen branches refusal, then unanswered, then no-subject, then the panes", () => {
+    const src = read("src/components/UnitScreen.svelte");
+    expect(src).toMatch(
+      /\{#if app\.unit\.unavailable !== null\}[\s\S]{0,200}?\{:else if !app\.unit\.answered\}[\s\S]{0,200}?Loading…[\s\S]{0,200}?\{:else if view === null\}[\s\S]{0,200}?NO_UNIT_LINE/,
+    );
+  });
+
+  it("UnitScreen renders the ring under the no-subject line", () => {
+    // The one actor who can produce an after-action report is a staffer,
+    // who often holds no station at all.
+    const src = read("src/components/UnitScreen.svelte");
+    expect(src).toMatch(/ringPanes = \$derived\(app\.unit\.journal\.length > 0/);
+    expect(src).toMatch(/\{#if ringPanes\.length > 0\}/);
+    expect(src).toMatch(/afterAction\(null, app\.unit\.journal\)/);
+    expect(src).toMatch(/journalTableRows\(app\.unit\.journal, null\)/);
+  });
+
+  it("the tab badge counts only rows the panel can open", () => {
+    expect(read("src/components/Game.svelte")).toMatch(
+      /case "unit":[\s\S]{0,300}?app\.unit\.answered \? app\.unit\.journal\.length : 0/,
+    );
+  });
+
+  it("an actionable generic-view row is reachable from the keyboard", () => {
+    const src = read("src/components/GenericView.svelte");
+    expect(src).toMatch(/tabindex=\{line !== null \? 0 : undefined\}/);
+    expect(src).toMatch(/role=\{line !== null \? "button" : undefined\}/);
+    expect(src).toMatch(/onkeydown=[\s\S]{0,200}?e\.key === "Enter" \|\| e\.key === " "/);
+    expect(src).toMatch(/onPrefill\(line\)/);
+  });
+
+  it("the vitals strip names its subject visibly, not only as a tooltip", () => {
+    expect(read("src/components/VitalsStrip.svelte")).toMatch(
+      /<span class="subject">\{group\.frame\.subject\.name\}<\/span>/,
+    );
   });
 });
