@@ -50,19 +50,22 @@ impl AccountIdentity for MapOracle {
 
 /// The server's own `SeatAuditLog`, re-implemented here so this crate's tests
 /// need no `mush-server` edge. Identical contract: process-local, boolean
-/// answers, never a world document.
+/// answers, never a world document — and, after the E7 cut 10 verify fold
+/// (K5/E7(a)), the OPAQUE MINT: the token is minted here, where the account row
+/// lives, with a process nonce folded in, so the world cannot recompute it from
+/// the seat's public coordinates.
+static TEST_NONCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
 #[derive(Debug, Default)]
 struct TestAudit(std::sync::Mutex<BTreeMap<String, AccountId>>);
 
 impl SeatAudit for TestAudit {
-    fn record(&self, token: &str, account: AccountId) -> bool {
-        match self.0.lock() {
-            Ok(mut rows) => {
-                rows.insert(token.to_owned(), account);
-                true
-            }
-            Err(_) => false,
-        }
+    fn record(&self, seed: &str, account: AccountId) -> Option<String> {
+        let n = TEST_NONCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let token = format!("{n:016x}{:016x}", seed.len() as u64);
+        let mut rows = self.0.lock().ok()?;
+        rows.insert(token.clone(), account);
+        Some(token)
     }
     fn knows(&self, token: &str) -> bool {
         self.0
@@ -86,8 +89,8 @@ impl SeatAudit for TestAudit {
 struct DeadAudit;
 
 impl SeatAudit for DeadAudit {
-    fn record(&self, _token: &str, _account: AccountId) -> bool {
-        false
+    fn record(&self, _seed: &str, _account: AccountId) -> Option<String> {
+        None
     }
     fn knows(&self, _token: &str) -> bool {
         false
@@ -303,6 +306,14 @@ fn scene(audit: Arc<dyn SeatAudit>) -> (TestWorld, Fx) {
     for who in [commander, driver, bystander] {
         tw.world_mut().move_to(who, field).unwrap();
     }
+    // **Warm the world-owned lease mirror** (fold B5 / decision E5(a)). Leg (2)
+    // fails CLOSED on a mirror that has not yet seen the whole `control_leases`
+    // family, because between boot and the first Coarse fire the mirror is empty
+    // and self-declared incomplete while `control_leases` is durable K state that
+    // survived the reboot — reading that absence as "nobody holds this" is the
+    // fail-open cut 10 shipped. `mush-sim` refreshes it from its OWN owner-scoped
+    // contexts, so one fire is what a live server does in its first 15 seconds.
+    fire(&mut tw);
     (
         tw,
         Fx {
@@ -362,8 +373,11 @@ fn offer(
         tw,
         fx.commander,
         &format!(
-            "+seat/offer {}/#{}/pilot=#{},{channels}",
-            op.0, unit.0, npc.0
+            // A1: the seat's audience is the operation's own attacking side plus
+            // whoever `to:` names. The driver is a third party with no unit and
+            // no capability, so a seat they may take must SAY so.
+            "+seat/offer {}/#{}/pilot=#{},{channels},to:#{}",
+            op.0, unit.0, npc.0, fx.driver.0
         ),
     );
     camp(tw)
@@ -1055,7 +1069,12 @@ fn e7c10_a1_no_account_id_reaches_a_record_or_a_projection() {
             fx.commander,
             &format!("@crew/complement #{}", fx.atlas.0),
         ),
-        ok(&mut tw, GOD, &format!("@seat/audit {}", "deadbeef")),
+        ok(&mut tw, GOD, &format!("@seat/audit {}/{}", op.0, seat.0)),
+        ok(
+            &mut tw,
+            GOD,
+            &format!("@seat/audit {}/{}=#{}", op.0, seat.0, fx.driver.0),
+        ),
         err(
             &mut tw,
             fx.bystander,
@@ -1111,12 +1130,16 @@ fn e7c10_a2_two_seats_for_one_player_produce_two_uncorrelated_tokens() {
     // Nothing in either record names the other, and nothing names an account.
     let ra = serde_json::to_string(camp(&tw).seat_grant(op, a).expect("a")).expect("ser");
     assert!(!ra.contains(&tb));
-    // The staff verb answers a boolean and prints no identity.
-    let shown = ok(&mut tw, GOD, &format!("@seat/audit {ta}"));
+    // The staff verb answers a verdict, names the seat by its own public
+    // coordinates and prints no identity — and no token, which is why the fold
+    // reshaped it (K6): no render, page, log or journal ever printed one, so the
+    // old `@seat/audit <token>` had no reachable input at all.
+    let shown = ok(&mut tw, GOD, &format!("@seat/audit {}/{}", op.0, a.0));
     assert!(shown.contains("attributed"), "{shown}");
-    assert!(!shown.contains(&ta) || shown.contains("attributed"));
+    assert!(!shown.contains(&ta), "the verb prints no token: {shown}");
+    assert!(!shown.contains(&tb));
     // And it is staff-only.
-    err(&mut tw, fx.driver, &format!("@seat/audit {ta}"));
+    err(&mut tw, fx.driver, &format!("@seat/audit {}/{}", op.0, a.0));
 }
 
 /// **A3. `+seat/list` shows nothing about an operation the viewer is not in the
@@ -1406,7 +1429,10 @@ fn e7c10_t4_station_service_answers_only_after_the_seat_is_given_back() {
         &format!("+seat/accept {}/{}", op.0, seat.0),
     );
     let provider = mush_sim::SimFactProvider;
-    let id = format!("{}/pilot/{}", fx.atlas.0, fx.ace.0);
+    // K4 (fold): the fact id carries the instant service BEGAN as a fourth term,
+    // which is published nowhere — so a party who does not hold the grant cannot
+    // name the fact at all. `0` is the "never served" probe.
+    let id = format!("{}/pilot/{}/0", fx.atlas.0, fx.ace.0);
     assert_eq!(
         provider.resolve(tw.world(), "sim.station.served", &id, None),
         None,
@@ -1423,26 +1449,37 @@ fn e7c10_t4_station_service_answers_only_after_the_seat_is_given_back() {
         None,
         "a sortie that merely STARTED must not answer the fact"
     );
+    let began = tw
+        .world()
+        .module_state::<mush_sim::FocusState>()
+        .and_then(|state| state.focus_of_actor(fx.ace).map(|f| f.acquired_at.at))
+        .expect("the seat is live");
     tw.set_now(tw.world().now() + 600);
     drain(&mut tw);
     ok(&mut tw, fx.driver, "+seat/leave");
     drain(&mut tw);
+    assert_eq!(
+        provider.resolve(tw.world(), "sim.station.served", &id, None),
+        None,
+        "the three public coordinates alone still name nothing"
+    );
+    let named = format!("{}/pilot/{}/{began}", fx.atlas.0, fx.ace.0);
     let state = provider
-        .resolve(tw.world(), "sim.station.served", &id, None)
+        .resolve(tw.world(), "sim.station.served", &named, None)
         .expect("completed service answers");
     assert!(state.satisfied);
     assert_eq!(state.actor, Some(fx.ace));
     // An unknown kind, and an id for service that never happened, both answer
     // `None` — unknown is unsatisfied, everywhere.
     assert_eq!(
-        provider.resolve(tw.world(), "sim.station.flown", &id, None),
+        provider.resolve(tw.world(), "sim.station.flown", &named, None),
         None
     );
     assert_eq!(
         provider.resolve(
             tw.world(),
             "sim.station.served",
-            &format!("{}/pilot/{}", fx.locust.0, fx.duce.0),
+            &format!("{}/pilot/{}/{began}", fx.locust.0, fx.duce.0),
             None
         ),
         None
@@ -1672,8 +1709,8 @@ fn e7c10_g7_a_seat_outside_its_permitted_area_refuses() {
         &mut tw,
         fx.commander,
         &format!(
-            "+seat/offer {}/#{}/pilot=#{},movement,area:#{}",
-            op.0, fx.atlas.0, fx.ace.0, elsewhere.0
+            "+seat/offer {}/#{}/pilot=#{},movement,to:#{},area:#{}",
+            op.0, fx.atlas.0, fx.ace.0, fx.driver.0, elsewhere.0
         ),
     );
     let seat = camp(&tw)
@@ -1698,7 +1735,9 @@ fn e7c10_g7_a_seat_outside_its_permitted_area_refuses() {
         fx.driver,
         &format!("+seat/activate {}/{}", op.0, seat.0),
     );
-    assert!(refused.contains("not authorized where"), "{refused}");
+    // K7 (fold): the area refusal is byte-identical to the existence-hiding one,
+    // so a grant-holder polling it learns nothing about where the unit is.
+    assert_eq!(refused.trim(), mush_campaign::NO_SUCH_SEAT, "{refused}");
     // Nothing moved: the incumbent still holds the whole station.
     assert_eq!(granted(&tw, fx.ace, fx.atlas, "pilot").len(), 2);
     assert_eq!(grant_state(&tw, op, seat), Some(GrantState::Dormant));
@@ -1804,5 +1843,1489 @@ fn e7c10_k6_an_llm_driven_seat_is_k7_gated_and_cut_ten_mints_no_decision() {
     assert!(
         !tw.engine().has_decision_capture(),
         "cut 10 mints no PendingDecision; an LLM driver stays K7-gated"
+    );
+}
+
+// ---- E7 cut 10 independent verify fold ----
+//
+// Every test below asserts the OBSERVABLE outcome through the real command path
+// — the channels a resolver publishes for the driven NPC, the bytes a stranger
+// receives, whose account the focus names after a contested activation, whether
+// a grant is still re-activatable after a reboot, how many `muster:` keys
+// survive a fold — and names every arm the guard it exercises covers.
+
+/// Run a line and report which way it went, asserting nothing. For a test whose
+/// point is *which* way it went.
+fn run(tw: &mut TestWorld, actor: ObjId, line: &str) -> (bool, String) {
+    let ev = tw.run(actor, line);
+    (!has_error(&ev), texts(&ev))
+}
+
+/// A declared, public operation with **no committed units**. R1 forbids a second
+/// operation joining a unit the first holds, and `+seat/offer` does not require
+/// participation — so this is how a second operation exists at all.
+fn operation_bare(tw: &mut TestWorld, fx: &Fx) -> OperationId {
+    let before: BTreeSet<u64> = camp(tw).operations().map(|d| d.id().0).collect();
+    ok(tw, fx.commander, "@op/declare screen the approach");
+    let id = camp(tw)
+        .operations()
+        .map(|d| d.id())
+        .find(|id| !before.contains(&id.0))
+        .expect("one new operation");
+    ok(tw, fx.commander, &format!("@op/terms {}/notice=24", id.0));
+    ok(
+        tw,
+        fx.commander,
+        &format!("@op/terms {}/visibility=public", id.0),
+    );
+    id
+}
+
+/// The token on one grant, as the record carries it.
+fn token_of(tw: &TestWorld, op: OperationId, id: SeatOfferId) -> String {
+    camp(tw)
+        .seat_grant(op, id)
+        .expect("a grant")
+        .driver
+        .0
+        .to_string()
+}
+
+/// Whether the audit row for `token` names `who`'s account (A2's helper, from
+/// the test's own side of the seam).
+fn audit_is(audit: &TestAudit, oracle: &MapOracle, token: &str, who: ObjId) -> bool {
+    let account = oracle.0.lock().ok().and_then(|m| m.get(&who).copied());
+    account.is_some() && audit.account_for(token) == account
+}
+
+/// Rewrite one stored `seat_offer:` document and RE-HASH it, so the offer stays
+/// self-consistent — the shape a future edit verb, a held-document repair or a
+/// hand-edited key produces.
+fn patch_offer(
+    kv: &mut BTreeMap<SmolStr, Vec<(SmolStr, serde_json::Value)>>,
+    op: OperationId,
+    id: SeatOfferId,
+    patch: impl FnOnce(&mut mush_campaign::SeatOffer),
+) {
+    let key = mush_campaign::seat_offer_key(op, id);
+    let entry = kv
+        .get_mut("campaign")
+        .and_then(|entries| entries.iter_mut().find(|(k, _)| *k == key))
+        .expect("the offer document");
+    let mut offer: mush_campaign::SeatOffer =
+        serde_json::from_value(entry.1.clone()).expect("decodes");
+    patch(&mut offer);
+    offer.consent_hash = mush_campaign::seat_consent_hash(&offer);
+    entry.1 = serde_json::to_value(&offer).expect("serializes");
+}
+
+/// Rewrite one stored `seat_grant:` document's state to `Active { epoch }`.
+fn patch_grant_state(
+    kv: &mut BTreeMap<SmolStr, Vec<(SmolStr, serde_json::Value)>>,
+    op: OperationId,
+    id: SeatOfferId,
+    epoch: u64,
+) {
+    let key = mush_campaign::seat_grant_key(op, id);
+    let entry = kv
+        .get_mut("campaign")
+        .and_then(|entries| entries.iter_mut().find(|(k, _)| *k == key))
+        .expect("the grant document");
+    entry.1["state"] = serde_json::json!({ "state": "active", "epoch": epoch });
+}
+
+/// Name `who` as the operation's declared defending side — a *named side
+/// principal*, which `render::lens_for` hands `Lens::Plan`.
+fn name_defender(tw: &mut TestWorld, fx: &Fx, op: OperationId, who: ObjId) {
+    ok(
+        tw,
+        fx.commander,
+        &format!("@op/terms {}/side=defence:#{}", op.0, who.0),
+    );
+}
+
+/// **A1a. A seat offer is invisible and untakeable outside its audience — on a
+/// PUBLIC operation, which is the whole blast radius.**
+///
+/// `visible_offer` gated on `render::visible_operation(..) != Lens::Hidden` and
+/// nothing else, and `lens_for` hands `Lens::Notice` to EVERY actor in the world
+/// for an `EconomicVisibility::Public` operation — which is exactly what the rig
+/// builds. `SeatOffer.audience`/`.eligibility` had no reader anywhere, so a
+/// stranger with no side, no audience membership, no unit and no capability
+/// listed the commander's seat, accepted it and activated it. The arms: list,
+/// accept, activate, and the byte-identity of the refusal.
+#[test]
+fn vf_a1a_a_seat_offer_is_invisible_and_untakeable_outside_its_audience() {
+    let (mut tw, fx) = scene(Arc::new(TestAudit::default()));
+    let op = operation(&mut tw, &fx);
+    let seat = offer(&mut tw, &fx, op, fx.atlas, fx.ace, "movement");
+    // The bystander is a total stranger: no side, no unit, no capability.
+    let listed = ok(&mut tw, fx.bystander, "+seat/list");
+    assert_eq!(
+        listed.trim(),
+        "No seats are offered to you.",
+        "a stranger is shown the seat itself, station name included: {listed}"
+    );
+    let real = err(
+        &mut tw,
+        fx.bystander,
+        &format!("+seat/accept {}/{}", op.0, seat.0),
+    );
+    let absent = err(
+        &mut tw,
+        fx.bystander,
+        &format!("+seat/accept {}/9999", op.0),
+    );
+    assert_eq!(real, absent, "the refusal must be existence-hiding");
+    let (activated, _) = run(
+        &mut tw,
+        fx.bystander,
+        &format!("+seat/activate {}/{}", op.0, seat.0),
+    );
+    assert!(!activated);
+    // Nothing moved: the commander's own station is NOT narrowed and no focus
+    // was consumed on the commander's own NPC.
+    drain(&mut tw);
+    assert_eq!(
+        granted(&tw, fx.ace, fx.atlas, "pilot"),
+        vec!["fire".to_owned(), "movement".to_owned()],
+        "a stranger's seat narrowed the commander's own station"
+    );
+    assert_eq!(
+        tw.world()
+            .module_state::<mush_sim::FocusState>()
+            .map(mush_sim::FocusState::len),
+        Some(0)
+    );
+    // …and the driver, who IS in the audience, still succeeds on every arm.
+    let listed = ok(&mut tw, fx.driver, "+seat/list");
+    assert!(listed.contains("station `pilot`"), "{listed}");
+    ok(
+        &mut tw,
+        fx.driver,
+        &format!("+seat/accept {}/{}", op.0, seat.0),
+    );
+    ok(
+        &mut tw,
+        fx.driver,
+        &format!("+seat/activate {}/{}", op.0, seat.0),
+    );
+    drain(&mut tw);
+    assert_eq!(granted(&tw, fx.ace, fx.atlas, "pilot"), vec!["movement"]);
+}
+
+/// **A1b. A named defender — a Plan-lens principal — is refused the attacker's
+/// seat byte-identically to an id that never existed.**
+#[test]
+fn vf_a1b_a_named_defender_is_refused_the_attackers_seat_byte_identically() {
+    let (mut tw, fx) = scene(Arc::new(TestAudit::default()));
+    let op = operation(&mut tw, &fx);
+    name_defender(&mut tw, &fx, op, fx.bystander);
+    let seat = offer(&mut tw, &fx, op, fx.atlas, fx.ace, "movement");
+    // The defender sees the PLAN (that is what `lens_for` is for) and still may
+    // not take the attacker's seat.
+    let plan = ok(&mut tw, fx.bystander, &format!("@op/show/full {}", op.0));
+    assert!(plan.contains("Participants"), "{plan}");
+    let real = err(
+        &mut tw,
+        fx.bystander,
+        &format!("+seat/accept {}/{}", op.0, seat.0),
+    );
+    let absent = err(
+        &mut tw,
+        fx.bystander,
+        &format!("+seat/accept {}/9999", op.0),
+    );
+    assert_eq!(real, absent);
+    assert!(camp(&tw).seat_grant(op, seat).is_none());
+}
+
+/// **A1c. A grant taken before an audience narrowing cannot be driven after
+/// it** — the predicate is asked again at activation, not only at acceptance.
+#[test]
+fn vf_a1c_a_grant_taken_before_an_audience_narrowing_cannot_be_driven() {
+    let (mut tw, fx) = scene(Arc::new(TestAudit::default()));
+    let op = operation(&mut tw, &fx);
+    let seat = offer(&mut tw, &fx, op, fx.atlas, fx.ace, "movement");
+    ok(
+        &mut tw,
+        fx.driver,
+        &format!("+seat/accept {}/{}", op.0, seat.0),
+    );
+    // Narrow the audience under the accepted grant, through the stored document
+    // and a reboot: the offer now names only the operation's own attacker, and
+    // it is re-hashed so it is self-consistent (this is the AUDIENCE arm, not
+    // A12's frozen-hash arm).
+    let mut kv = BTreeMap::new();
+    fold_kv(&mut tw, &mut kv);
+    patch_offer(&mut kv, op, seat, |offer| {
+        offer
+            .audience
+            .members
+            .retain(|p| *p != mush_org::PrincipalId::Object(fx.driver));
+    });
+    reboot(&mut tw, &kv);
+    assert!(
+        camp(&tw)
+            .seat_offer(op, seat)
+            .is_some_and(mush_campaign::SeatOffer::consent_intact)
+    );
+    let refused = err(
+        &mut tw,
+        fx.driver,
+        &format!("+seat/activate {}/{}", op.0, seat.0),
+    );
+    assert_eq!(refused.trim(), mush_campaign::NO_SUCH_SEAT, "{refused}");
+    assert_eq!(
+        granted(&tw, fx.ace, fx.atlas, "pilot"),
+        vec!["fire".to_owned(), "movement".to_owned()],
+        "nothing was narrowed"
+    );
+}
+
+/// **A2. Only the accepter may activate, and the audit row still names them.**
+///
+/// `seat_activate`'s attribution check was `audit_knows(token)` — "does ANY row
+/// exist" — so account B drove a grant whose only `token -> account` row named
+/// account A, and R7/T9's dual attribution resolved to somebody who was not
+/// driving. Arms: the accepter succeeds; a second audience member is refused
+/// byte-identically; the focus is untouched; and the row is unchanged.
+#[test]
+fn vf_a2_only_the_accepter_may_activate_and_the_audit_row_still_names_them() {
+    let audit = Arc::new(TestAudit::default());
+    let (mut tw, fx) = scene(audit.clone());
+    let op = operation(&mut tw, &fx);
+    // The offer names BOTH would-be drivers, so the audience predicate cannot be
+    // what refuses here: only the attribution can.
+    ok(
+        &mut tw,
+        fx.commander,
+        &format!(
+            "+seat/offer {}/#{}/pilot=#{},movement,to:#{},to:#{}",
+            op.0, fx.atlas.0, fx.ace.0, fx.driver.0, fx.bystander.0
+        ),
+    );
+    let seat = camp(&tw)
+        .seat_offers()
+        .map(|o| o.id)
+        .max()
+        .expect("an offer");
+    ok(
+        &mut tw,
+        fx.driver,
+        &format!("+seat/accept {}/{}", op.0, seat.0),
+    );
+    let token = token_of(&tw, op, seat);
+    assert!(audit_is(&audit, &fx.oracle, &token, fx.driver));
+    let real = err(
+        &mut tw,
+        fx.bystander,
+        &format!("+seat/activate {}/{}", op.0, seat.0),
+    );
+    let absent = err(
+        &mut tw,
+        fx.bystander,
+        &format!("+seat/activate {}/9999", op.0),
+    );
+    assert_eq!(real, absent, "the refusal must be existence-hiding");
+    drain(&mut tw);
+    assert!(
+        tw.world()
+            .module_state::<mush_sim::FocusState>()
+            .and_then(|s| s.focus_of_actor(fx.ace))
+            .is_none(),
+        "the seat was driven by an account the one attribution row does not name"
+    );
+    assert!(
+        audit_is(&audit, &fx.oracle, &token, fx.driver),
+        "the one attribution row still names the accepter"
+    );
+    // …and the accepter themselves still activates.
+    ok(
+        &mut tw,
+        fx.driver,
+        &format!("+seat/activate {}/{}", op.0, seat.0),
+    );
+    drain(&mut tw);
+    assert_eq!(
+        tw.world()
+            .module_state::<mush_sim::FocusState>()
+            .and_then(|s| s.focus_of_actor(fx.ace))
+            .map(|f| f.account),
+        fx.oracle
+            .0
+            .lock()
+            .ok()
+            .and_then(|m| m.get(&fx.driver).copied()),
+    );
+}
+
+/// **A3. A second proxy seat on the same NPC refuses, and the live driver is
+/// untouched.**
+///
+/// K6 leg (1) was `Some(seat.actor) != fallback && seat.actor != npc` — and
+/// after ANY activation the billet's actor **is** the npc, so the third conjunct
+/// was false for a second seat on the same NPC and `FocusState::claim` silently
+/// evicted the first account's focus. §3.10 says "a live human operator is never
+/// evicted" and "a test pins that E7 ships no eviction path at all"; `e7c10_k1`
+/// exercised only the human-billet arm. Arms: the refusal bytes, the incumbent's
+/// focus, their grant state, and their narrowed set.
+#[test]
+fn vf_a3_a_second_seat_on_the_same_npc_refuses_and_the_live_driver_is_untouched() {
+    let (mut tw, fx) = scene(Arc::new(TestAudit::default()));
+    let op = operation(&mut tw, &fx);
+    let mine = offer(&mut tw, &fx, op, fx.atlas, fx.ace, "movement");
+    ok(
+        &mut tw,
+        fx.commander,
+        &format!(
+            "+seat/offer {}/#{}/pilot=#{},movement,fire,to:#{}",
+            op.0, fx.atlas.0, fx.ace.0, fx.bystander.0
+        ),
+    );
+    let theirs = camp(&tw)
+        .seat_offers()
+        .map(|o| o.id)
+        .max()
+        .expect("an offer");
+    ok(
+        &mut tw,
+        fx.driver,
+        &format!("+seat/accept {}/{}", op.0, mine.0),
+    );
+    ok(
+        &mut tw,
+        fx.bystander,
+        &format!("+seat/accept {}/{}", op.0, theirs.0),
+    );
+    ok(
+        &mut tw,
+        fx.driver,
+        &format!("+seat/activate {}/{}", op.0, mine.0),
+    );
+    drain(&mut tw);
+    let account = tw
+        .world()
+        .module_state::<mush_sim::FocusState>()
+        .and_then(|s| s.focus_of_actor(fx.ace))
+        .map(|f| f.account);
+    assert!(account.is_some());
+    let refused = err(
+        &mut tw,
+        fx.bystander,
+        &format!("+seat/activate {}/{}", op.0, theirs.0),
+    );
+    assert!(
+        refused.contains("seats are never taken by force"),
+        "{refused}"
+    );
+    drain(&mut tw);
+    assert_eq!(
+        tw.world()
+            .module_state::<mush_sim::FocusState>()
+            .and_then(|s| s.focus_of_actor(fx.ace))
+            .map(|f| f.account),
+        account,
+        "the live human driver was evicted with no message at all"
+    );
+    assert_eq!(
+        tw.world()
+            .module_state::<mush_sim::FocusState>()
+            .map(mush_sim::FocusState::len),
+        Some(1)
+    );
+    assert_eq!(
+        granted(&tw, fx.ace, fx.atlas, "pilot"),
+        vec!["movement".to_owned()],
+        "the newcomer's wider set replaced the incumbent's"
+    );
+    assert_eq!(grant_state(&tw, op, theirs), Some(GrantState::Dormant));
+}
+
+/// **A4. A terminal operation stands a live seat down BEFORE expiring it.**
+///
+/// `expire_grants` wrote `Expired` and called `audit_forget` while the billet,
+/// the narrowing, the proxy focus and the K6 lease all survived — after which
+/// `+seat/leave` answered "You are driving no seat" and `@seat/revoke` refused
+/// on `is_terminal()`, so control persisted un-attributed with **no exit but a
+/// disconnect**, and the `token -> account` row was deleted while the human was
+/// still driving. Arms: the grant is terminal, the focus is gone, the station
+/// publishes its whole set again, and the row is forgotten only after release.
+#[test]
+fn vf_a4_a_terminal_operation_stands_a_live_seat_down_before_expiring_it() {
+    let audit = Arc::new(TestAudit::default());
+    let (mut tw, fx) = scene(audit.clone());
+    let op = operation(&mut tw, &fx);
+    let seat = offer(&mut tw, &fx, op, fx.atlas, fx.ace, "movement");
+    ok(
+        &mut tw,
+        fx.driver,
+        &format!("+seat/accept {}/{}", op.0, seat.0),
+    );
+    let token = token_of(&tw, op, seat);
+    ok(
+        &mut tw,
+        fx.driver,
+        &format!("+seat/activate {}/{}", op.0, seat.0),
+    );
+    drain(&mut tw);
+    assert_eq!(granted(&tw, fx.ace, fx.atlas, "pilot"), vec!["movement"]);
+    ok(&mut tw, GOD, &format!("@op/resolve {}=abort", op.0));
+    for _ in 0..4 {
+        fire(&mut tw);
+        drain(&mut tw);
+    }
+    assert_eq!(grant_state(&tw, op, seat), Some(GrantState::Expired));
+    assert!(
+        tw.world()
+            .module_state::<mush_sim::FocusState>()
+            .and_then(|s| s.focus_of_actor(fx.ace))
+            .is_none(),
+        "the driver kept an un-attributable seat with no exit but a disconnect"
+    );
+    assert_eq!(
+        granted(&tw, fx.ace, fx.atlas, "pilot"),
+        vec!["fire".to_owned(), "movement".to_owned()],
+        "the station goes back to its own channel set"
+    );
+    assert!(
+        !audit.knows(&token),
+        "the row is forgotten — but only after the release"
+    );
+}
+
+/// **A5. Leaving revokes only your OWN grant, and forgets only your own row.**
+///
+/// `active_grant_of` resolved the caller's proxy focus to `(unit, station)` and
+/// then took the first non-terminal grant on that station in key order, never
+/// comparing the driver token — so `+seat/leave` revoked the LOWEST-numbered
+/// grant, another player's, and forgot *their* row while the leaver's own grant
+/// stayed re-activatable.
+#[test]
+fn vf_a5_leaving_revokes_only_your_own_grant_and_forgets_only_your_own_row() {
+    let audit = Arc::new(TestAudit::default());
+    let (mut tw, fx) = scene(audit.clone());
+    let op = operation(&mut tw, &fx);
+    // Offer #1 goes to the bystander (lower id), #2 to the driver — same station.
+    ok(
+        &mut tw,
+        fx.commander,
+        &format!(
+            "+seat/offer {}/#{}/pilot=#{},movement,to:#{}",
+            op.0, fx.atlas.0, fx.ace.0, fx.bystander.0
+        ),
+    );
+    let victim = camp(&tw)
+        .seat_offers()
+        .map(|o| o.id)
+        .max()
+        .expect("an offer");
+    let mine = offer(&mut tw, &fx, op, fx.atlas, fx.ace, "movement");
+    assert!(victim.0 < mine.0, "the victim's grant must sort first");
+    ok(
+        &mut tw,
+        fx.bystander,
+        &format!("+seat/accept {}/{}", op.0, victim.0),
+    );
+    ok(
+        &mut tw,
+        fx.driver,
+        &format!("+seat/accept {}/{}", op.0, mine.0),
+    );
+    let victim_token = token_of(&tw, op, victim);
+    ok(
+        &mut tw,
+        fx.driver,
+        &format!("+seat/activate {}/{}", op.0, mine.0),
+    );
+    drain(&mut tw);
+    ok(&mut tw, fx.driver, "+seat/leave");
+    drain(&mut tw);
+    assert_eq!(grant_state(&tw, op, mine), Some(GrantState::Revoked));
+    assert_eq!(
+        grant_state(&tw, op, victim),
+        Some(GrantState::Dormant),
+        "another player's grant was revoked by this leave"
+    );
+    assert!(
+        audit.knows(&victim_token),
+        "another player's audit row was forgotten by this leave"
+    );
+    assert!(audit_is(&audit, &fx.oracle, &victim_token, fx.bystander));
+}
+
+/// **A6. A restart returns an orphaned seat to the station's own channels.**
+///
+/// `granted` is persisted in the exempt `assignment:<unit>` document and
+/// re-hydrated; `FocusState` is never hydrated (D-E7-34) and the audit log is
+/// process-local, so the AI NPC came back on the SEAT's narrowed set for ever,
+/// with no grant anybody could re-activate to clear it. Arms: the republished
+/// channel set, `channel_grant_is_current` per channel, and the document's bytes.
+#[test]
+fn vf_a6_a_restart_returns_an_orphaned_seat_to_the_stations_own_channels() {
+    let (mut tw, fx) = scene(Arc::new(TestAudit::default()));
+    let op = operation(&mut tw, &fx);
+    let seat = offer(&mut tw, &fx, op, fx.atlas, fx.ace, "movement");
+    ok(
+        &mut tw,
+        fx.driver,
+        &format!("+seat/accept {}/{}", op.0, seat.0),
+    );
+    ok(
+        &mut tw,
+        fx.driver,
+        &format!("+seat/activate {}/{}", op.0, seat.0),
+    );
+    drain(&mut tw);
+    assert_eq!(granted(&tw, fx.ace, fx.atlas, "pilot"), vec!["movement"]);
+    let mut kv = BTreeMap::new();
+    fold_kv(&mut tw, &mut kv);
+    // A restart: `FocusState` is a RAM slot boot never hydrates, so a fresh
+    // process is exactly "that slot empty, the documents on disk".
+    *tw.world_mut()
+        .module_state_mut::<mush_sim::FocusState>()
+        .expect("focus state") = mush_sim::FocusState::default();
+    reboot(&mut tw, &kv);
+    assert_eq!(
+        granted(&tw, fx.ace, fx.atlas, "pilot"),
+        vec!["fire".to_owned(), "movement".to_owned()],
+        "the station came back permanently narrowed with nobody driving it"
+    );
+    let epoch = epoch_of(&tw, fx.ace, fx.atlas, "pilot").expect("a grant");
+    assert!(is_current(&tw, fx.ace, fx.atlas, "pilot", epoch, "fire"));
+    // …and the persisted document itself carries no narrowing any more.
+    let mut after = BTreeMap::new();
+    fold_kv(&mut tw, &mut after);
+    let doc = after
+        .get("sim")
+        .and_then(|entries| {
+            entries
+                .iter()
+                .find(|(k, _)| k.as_str() == format!("assignment:{}", fx.atlas.0))
+        })
+        .map(|(_, v)| v.clone())
+        .expect("the assignment document");
+    assert!(
+        doc["seats"]["pilot"].get("granted").is_none(),
+        "the cleared narrowing must be persisted, not only repaired in RAM: {doc}"
+    );
+    // A further fire changes nothing.
+    fire(&mut tw);
+    assert_eq!(
+        granted(&tw, fx.ace, fx.atlas, "pilot"),
+        vec!["fire".to_owned(), "movement".to_owned()]
+    );
+}
+
+/// **A9a. The distinctness oracle answers the muster.**
+/// `AccountOracle::all_accounts_distinct` had no production caller at all;
+/// `take_muster` re-implemented distinctness over ids it collected itself.
+#[test]
+fn vf_a9a_two_characters_on_one_account_cannot_lock_a_roster_on_both_sides() {
+    let (mut tw, fx) = scene(Arc::new(TestAudit::default()));
+    let op = operation(&mut tw, &fx);
+    // Two player-held billets resolving to ONE account: the oracle says `false`.
+    let alt = tw.spawn_player("Alt");
+    tw.world_mut().move_to(alt, fx.field).unwrap();
+    if let Ok(mut map) = fx.oracle.0.lock() {
+        let same = map.get(&fx.driver).copied().expect("mapped");
+        map.insert(alt, same);
+    }
+    for (unit, who) in [(fx.atlas, fx.driver), (fx.locust, alt)] {
+        ok(
+            &mut tw,
+            GOD,
+            &format!("@spatial/unassign #{}=pilot", unit.0),
+        );
+        ok(
+            &mut tw,
+            GOD,
+            &format!("@spatial/assign #{}=pilot,#{}", unit.0, who.0),
+        );
+    }
+    let refused = err(&mut tw, fx.commander, &format!("+muster/lock {}", op.0));
+    assert!(refused.contains("one account"), "{refused}");
+    assert!(
+        camp(&tw)
+            .latest_muster(op)
+            .is_none_or(|report| !report.locked),
+        "a failed distinctness gate must not lock the roster"
+    );
+}
+
+/// **A9b. A locked roster refuses a further seat accept AND activate** —
+/// `MusterReport.locked` had no reader anywhere in production, so nothing
+/// re-checked after `+muster/lock` and C23A/C24A were enforced nowhere.
+#[test]
+fn vf_a9b_a_locked_roster_refuses_a_further_seat_accept_and_activate() {
+    let (mut tw, fx) = scene(Arc::new(TestAudit::default()));
+    let op = operation(&mut tw, &fx);
+    // One live seat (so every human-directed slot resolves to a known account,
+    // which is what the distinctness gate needs) and one dormant grant beside it.
+    let live = offer(&mut tw, &fx, op, fx.atlas, fx.ace, "movement");
+    ok(
+        &mut tw,
+        fx.driver,
+        &format!("+seat/accept {}/{}", op.0, live.0),
+    );
+    ok(
+        &mut tw,
+        fx.driver,
+        &format!("+seat/activate {}/{}", op.0, live.0),
+    );
+    drain(&mut tw);
+    // The Locust's billet is vacated, so its slot contributes no account and the
+    // distinctness verdict stays answerable with a dormant grant standing on it.
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@spatial/unassign #{}=pilot", fx.locust.0),
+    );
+    let dormant = offer(&mut tw, &fx, op, fx.locust, fx.duce, "movement");
+    ok(
+        &mut tw,
+        fx.driver,
+        &format!("+seat/accept {}/{}", op.0, dormant.0),
+    );
+    ok(&mut tw, fx.commander, &format!("+muster/lock {}", op.0));
+    assert!(camp(&tw).latest_muster(op).expect("a report").locked);
+    // The ACCEPT arm: a seat offered after the lock cannot be taken.
+    let late = offer(&mut tw, &fx, op, fx.atlas, fx.ace, "movement");
+    let refused = err(
+        &mut tw,
+        fx.driver,
+        &format!("+seat/accept {}/{}", op.0, late.0),
+    );
+    assert!(refused.contains("roster is locked"), "{refused}");
+    assert!(camp(&tw).seat_grant(op, late).is_none());
+    // The ACTIVATE arm: a grant taken before the lock cannot be driven after it.
+    let refused = err(
+        &mut tw,
+        fx.driver,
+        &format!("+seat/activate {}/{}", op.0, dormant.0),
+    );
+    assert!(refused.contains("roster is locked"), "{refused}");
+    assert_eq!(grant_state(&tw, op, dormant), Some(GrantState::Dormant));
+}
+
+/// **A12. A grant accepted against older terms refuses to activate.**
+///
+/// The grant copies the offer's `consent_hash` at acceptance and cut 10 then
+/// checked only `offer.consent_intact()` — the offer's self-consistency with
+/// itself, which any re-hash satisfies. "All freeze in the accepted invitation"
+/// was unenforced.
+#[test]
+fn vf_a12_a_grant_accepted_against_older_terms_refuses_to_activate() {
+    let (mut tw, fx) = scene(Arc::new(TestAudit::default()));
+    let op = operation(&mut tw, &fx);
+    let seat = offer(&mut tw, &fx, op, fx.atlas, fx.ace, "movement");
+    ok(
+        &mut tw,
+        fx.driver,
+        &format!("+seat/accept {}/{}", op.0, seat.0),
+    );
+    // A widened scope in the STORED document, re-hashed so the offer is
+    // self-consistent again — exactly what a future edit verb, a held-document
+    // repair or a hand-edited `seat_offer:` key produces.
+    let mut kv = BTreeMap::new();
+    fold_kv(&mut tw, &mut kv);
+    patch_offer(&mut kv, op, seat, |offer| {
+        offer.scope.channels.insert(SmolStr::new_static("fire"));
+    });
+    reboot(&mut tw, &kv);
+    assert!(
+        camp(&tw)
+            .seat_offer(op, seat)
+            .is_some_and(mush_campaign::SeatOffer::consent_intact),
+        "the offer re-hashes to itself, which is all cut 10 ever checked"
+    );
+    let refused = err(
+        &mut tw,
+        fx.driver,
+        &format!("+seat/activate {}/{}", op.0, seat.0),
+    );
+    assert_eq!(refused.trim(), mush_campaign::NO_SUCH_SEAT, "{refused}");
+    assert_eq!(
+        granted(&tw, fx.ace, fx.atlas, "pilot"),
+        vec!["fire".to_owned(), "movement".to_owned()],
+        "the widened scope was never applied"
+    );
+}
+
+/// **A15. An offer naming no station, or no channel the station publishes,
+/// refuses at PUBLISH** — both arms. Cut 10 published, consent-hashed and let a
+/// driver accept a dead seat, discovering it only at activation where the
+/// refusal collapses to the existence-hiding line.
+#[test]
+fn vf_a15_an_offer_naming_no_station_or_no_published_channel_refuses_at_publish() {
+    let (mut tw, fx) = scene(Arc::new(TestAudit::default()));
+    let op = operation(&mut tw, &fx);
+    let before = camp(&tw).seat_offers().count();
+    let (took_station, refused) = run(
+        &mut tw,
+        fx.commander,
+        &format!(
+            "+seat/offer {}/#{}/gunner=#{},movement,to:#{}",
+            op.0, fx.atlas.0, fx.ace.0, fx.driver.0
+        ),
+    );
+    assert!(
+        !took_station,
+        "a station the unit does not carry: {refused}"
+    );
+    assert_eq!(refused.trim(), mush_campaign::NO_SUCH_SEAT);
+    let (took_channel, refused) = run(
+        &mut tw,
+        fx.commander,
+        &format!(
+            "+seat/offer {}/#{}/pilot=#{},scuttle,to:#{}",
+            op.0, fx.atlas.0, fx.ace.0, fx.driver.0
+        ),
+    );
+    assert!(!took_channel, "a channel the station does not publish");
+    assert_eq!(refused.trim(), mush_campaign::NO_SUCH_SEAT);
+    assert_eq!(
+        camp(&tw).seat_offers().count(),
+        before,
+        "no dead seat was published or consent-hashed"
+    );
+}
+
+/// **K2a. A defender musters only its OWN units and learns no proxy seat.**
+///
+/// `cmd_muster` gated on `lens == Lens::Plan` and nothing else, and `lens_for`
+/// grants `Plan` to any named side principal — the declared defender — while
+/// `take_muster` walks BOTH sides' participants and classifies each slot from
+/// `ActiveFocus.proxy`. So cut 10 handed the enemy which of your ships were on a
+/// skeleton crew and which stations were empty, at the same lens where
+/// `render::render` publishes only `Participants: N of M` and names no unit.
+#[test]
+fn vf_k2a_a_defender_musters_only_its_own_units_and_learns_no_proxy_seat() {
+    let (mut tw, fx) = scene(Arc::new(TestAudit::default()));
+    let op = operation(&mut tw, &fx);
+    name_defender(&mut tw, &fx, op, fx.bystander);
+    let seat = offer(&mut tw, &fx, op, fx.atlas, fx.ace, "movement");
+    ok(
+        &mut tw,
+        fx.driver,
+        &format!("+seat/accept {}/{}", op.0, seat.0),
+    );
+    ok(
+        &mut tw,
+        fx.driver,
+        &format!("+seat/activate {}/{}", op.0, seat.0),
+    );
+    drain(&mut tw);
+    // What the operation's own Plan render gives the defender: a count.
+    let plan = ok(&mut tw, fx.bystander, &format!("@op/show/full {}", op.0));
+    assert!(plan.contains("Participants: 2 of"), "{plan}");
+    assert!(!plan.contains("Atlas"), "{plan}");
+    // The muster must not widen that by one word.
+    let shown = ok(&mut tw, fx.bystander, &format!("+muster {}", op.0));
+    for leak in [
+        "Atlas",
+        "Locust",
+        "human-directed",
+        "AI-controlled",
+        "VACANT",
+    ] {
+        assert!(
+            !shown.contains(leak),
+            "the defender learned {leak:?}: {shown}"
+        );
+    }
+    // …while the commander, who may command both, still sees the whole thing.
+    let mine = ok(&mut tw, fx.commander, &format!("+muster {}", op.0));
+    assert!(mine.contains("Atlas"), "{mine}");
+    assert!(mine.contains("a human-directed NPC"), "{mine}");
+}
+
+/// **K2b. A defender cannot lock the attacker's roster** — the write gate is a
+/// command predicate, not the disclosure lens (cut 9's fold C1, one cut on).
+#[test]
+fn vf_k2b_a_defender_cannot_lock_the_attackers_roster() {
+    let (mut tw, fx) = scene(Arc::new(TestAudit::default()));
+    let op = operation(&mut tw, &fx);
+    name_defender(&mut tw, &fx, op, fx.bystander);
+    let before = camp(&tw).latest_muster(op).map(|r| r.cycle);
+    let refused = err(&mut tw, fx.bystander, &format!("+muster/lock {}", op.0));
+    assert_eq!(
+        refused.trim(),
+        mush_campaign::NO_SUCH_OPERATION,
+        "{refused}"
+    );
+    assert_eq!(camp(&tw).latest_muster(op).map(|r| r.cycle), before);
+    assert!(
+        camp(&tw)
+            .latest_muster(op)
+            .is_none_or(|report| !report.locked)
+    );
+}
+
+/// **K4. `sim.station.served` cannot be named from public coordinates.** The
+/// three object ids alone answer `None`; only the grant's own fourth coordinate
+/// — the instant service began, published nowhere — names the fact.
+#[test]
+fn vf_k4_station_served_cannot_be_named_from_public_coordinates() {
+    use mush_economy::FactProvider;
+    let (mut tw, fx) = scene(Arc::new(TestAudit::default()));
+    let op = operation(&mut tw, &fx);
+    let seat = offer(&mut tw, &fx, op, fx.atlas, fx.ace, "movement");
+    ok(
+        &mut tw,
+        fx.driver,
+        &format!("+seat/accept {}/{}", op.0, seat.0),
+    );
+    ok(
+        &mut tw,
+        fx.driver,
+        &format!("+seat/activate {}/{}", op.0, seat.0),
+    );
+    drain(&mut tw);
+    let began = tw
+        .world()
+        .module_state::<mush_sim::FocusState>()
+        .and_then(|s| s.focus_of_actor(fx.ace).map(|f| f.acquired_at.at))
+        .expect("the seat is live");
+    tw.set_now(tw.world().now() + 600);
+    ok(&mut tw, fx.driver, "+seat/leave");
+    drain(&mut tw);
+    let provider = mush_sim::SimFactProvider;
+    // Three guessable public object ids: nothing.
+    assert_eq!(
+        provider.resolve(
+            tw.world(),
+            "sim.station.served",
+            &format!("{}/pilot/{}", fx.atlas.0, fx.ace.0),
+            None
+        ),
+        None,
+        "an existence-and-timing oracle from three public ids"
+    );
+    // A guessed fourth term: still nothing.
+    assert_eq!(
+        provider.resolve(
+            tw.world(),
+            "sim.station.served",
+            &format!("{}/pilot/{}/{}", fx.atlas.0, fx.ace.0, began + 1),
+            None
+        ),
+        None
+    );
+    // The grant's own coordinates: the fact.
+    assert!(
+        provider
+            .resolve(
+                tw.world(),
+                "sim.station.served",
+                &format!("{}/pilot/{}/{began}", fx.atlas.0, fx.ace.0),
+                None
+            )
+            .is_some_and(|state| state.satisfied)
+    );
+}
+
+/// **K6. A staff verb can actually attribute a live seat** — SAME for the
+/// driver's own character, DIFFERENT for another, UNKNOWN with no row, and no
+/// account id and no token in any of the three renders.
+#[test]
+fn vf_k6_a_staff_verb_can_actually_attribute_a_live_seat() {
+    let audit = Arc::new(TestAudit::default());
+    let (mut tw, fx) = scene(audit.clone());
+    let op = operation(&mut tw, &fx);
+    let seat = offer(&mut tw, &fx, op, fx.atlas, fx.ace, "movement");
+    ok(
+        &mut tw,
+        fx.driver,
+        &format!("+seat/accept {}/{}", op.0, seat.0),
+    );
+    let token = token_of(&tw, op, seat);
+    let hex = fx
+        .oracle
+        .0
+        .lock()
+        .ok()
+        .and_then(|m| m.get(&fx.driver).copied())
+        .map(|id| serde_json::to_string(&id).expect("ser"))
+        .map(|s| s.trim_matches('"').to_owned())
+        .expect("mapped");
+    let same = ok(
+        &mut tw,
+        GOD,
+        &format!("@seat/audit {}/{}=#{}", op.0, seat.0, fx.driver.0),
+    );
+    assert!(same.contains("SAME"), "{same}");
+    let different = ok(
+        &mut tw,
+        GOD,
+        &format!("@seat/audit {}/{}=#{}", op.0, seat.0, fx.bystander.0),
+    );
+    assert!(different.contains("DIFFERENT"), "{different}");
+    assert!(audit.forget(&token));
+    let unknown = ok(
+        &mut tw,
+        GOD,
+        &format!("@seat/audit {}/{}=#{}", op.0, seat.0, fx.driver.0),
+    );
+    assert!(unknown.contains("UNKNOWN"), "{unknown}");
+    for render in [&same, &different, &unknown] {
+        assert!(
+            !render.contains(&hex),
+            "an account id was printed: {render}"
+        );
+        assert!(!render.contains(&token), "a token was printed: {render}");
+    }
+}
+
+/// **K7. The permitted-area refusal is byte-identical to the existence-hiding
+/// refusal**, so a grant-holder polling it learns nothing about where the unit
+/// is. Cut 10 answered with a distinct line that flipped at the instant of
+/// arrival — a fogged-position bit about a unit the driver may not perceive.
+#[test]
+fn vf_k7_the_area_refusal_is_byte_identical_to_the_existence_hiding_refusal() {
+    let (mut tw, fx) = scene(Arc::new(TestAudit::default()));
+    let op = operation(&mut tw, &fx);
+    let elsewhere = tw
+        .world_mut()
+        .create(ObjKind::Room, "Elsewhere", GOD, None)
+        .unwrap();
+    ok(
+        &mut tw,
+        fx.commander,
+        &format!(
+            "+seat/offer {}/#{}/pilot=#{},movement,to:#{},area:#{}",
+            op.0, fx.atlas.0, fx.ace.0, fx.driver.0, elsewhere.0
+        ),
+    );
+    let seat = camp(&tw)
+        .seat_offers()
+        .map(|o| o.id)
+        .max()
+        .expect("an offer");
+    ok(
+        &mut tw,
+        fx.driver,
+        &format!("+seat/accept {}/{}", op.0, seat.0),
+    );
+    let area = err(
+        &mut tw,
+        fx.driver,
+        &format!("+seat/activate {}/{}", op.0, seat.0),
+    );
+    let absent = err(&mut tw, fx.driver, &format!("+seat/activate {}/9999", op.0));
+    assert_eq!(area, absent, "the area refusal is a position oracle");
+}
+
+/// **K8a. `+seat/list` shows only your own audience, and a revoked seat reads as
+/// FREE.** `taken` was `grant.is_some()`, true for `Revoked` and `Expired` too,
+/// so a freed seat read as taken for ever and a revocation was invisible to the
+/// crew call it frees.
+#[test]
+fn vf_k8a_seat_list_shows_only_your_own_audience_and_a_revoked_seat_reads_as_free() {
+    let (mut tw, fx) = scene(Arc::new(TestAudit::default()));
+    let op = operation(&mut tw, &fx);
+    let seat = offer(&mut tw, &fx, op, fx.atlas, fx.ace, "movement");
+    assert!(
+        ok(&mut tw, fx.driver, "+crewcall/list").contains("station `pilot`"),
+        "the crew call is the same listing"
+    );
+    ok(
+        &mut tw,
+        fx.driver,
+        &format!("+seat/accept {}/{}", op.0, seat.0),
+    );
+    assert!(ok(&mut tw, fx.driver, "+seat/list").contains("(taken)"));
+    ok(
+        &mut tw,
+        fx.driver,
+        &format!("+seat/activate {}/{}", op.0, seat.0),
+    );
+    drain(&mut tw);
+    ok(
+        &mut tw,
+        fx.commander,
+        &format!("@seat/revoke {}/{}", op.0, seat.0),
+    );
+    drain(&mut tw);
+    let listed = ok(&mut tw, fx.driver, "+seat/list");
+    assert!(listed.contains("station `pilot`"), "{listed}");
+    assert!(
+        !listed.contains("(taken)"),
+        "a revoked seat still reads as taken: {listed}"
+    );
+    // …and the stranger still sees nothing at all.
+    assert_eq!(
+        ok(&mut tw, fx.bystander, "+seat/list").trim(),
+        "No seats are offered to you."
+    );
+}
+
+/// **K8b. Offers the viewer may not see do not hide a visible one.**
+///
+/// `seat_list` took a global 256-row prefix in KEY ORDER and only then asked the
+/// lens, so invisible offers consumed a visible viewer's budget and, past the
+/// prefix, a viewer's own operation's offers fell outside it entirely and the
+/// listing answered "No seats are offered to you." for a seat they held.
+#[test]
+fn vf_k8b_offers_the_viewer_may_not_see_do_not_hide_a_visible_one() {
+    let (mut tw, fx) = scene(Arc::new(TestAudit::default()));
+    // A covert operation whose offers sort FIRST, filling the old prefix.
+    let hidden = operation_bare(&mut tw, &fx);
+    ok(
+        &mut tw,
+        fx.commander,
+        &format!("@op/terms {}/visibility=covert", hidden.0),
+    );
+    for _ in 0..mush_campaign::MAX_SEAT_OFFERS_PER_OPERATION {
+        ok(
+            &mut tw,
+            fx.commander,
+            &format!(
+                "+seat/offer {}/#{}/pilot=#{},movement",
+                hidden.0, fx.atlas.0, fx.ace.0
+            ),
+        );
+    }
+    // …then the viewer's own operation, whose offers sort after all of them.
+    let op = operation(&mut tw, &fx);
+    ok(
+        &mut tw,
+        fx.commander,
+        &format!(
+            "+seat/offer {}/#{}/pilot=#{},movement,to:#{}",
+            op.0, fx.atlas.0, fx.ace.0, fx.driver.0
+        ),
+    );
+    let seat = camp(&tw)
+        .seat_offers()
+        .filter(|o| o.operation == op)
+        .map(|o| o.id)
+        .max()
+        .expect("an offer");
+    let listed = ok(&mut tw, fx.driver, "+seat/list");
+    assert!(
+        listed.contains(&format!("{seat} — operation {op}")),
+        "the viewer's own seat fell outside a prefix of seats they may not see: {listed}"
+    );
+    assert_eq!(
+        listed.lines().filter(|l| l.contains("station")).count(),
+        1,
+        "and none of the covert operation's own seats are listed: {listed}"
+    );
+}
+
+/// **B1. The muster book is a RING** (ENCODED through the real command path).
+///
+/// `install_muster` inserted at `(operation, cycle)` with no cap, no ring and no
+/// eviction; `muster_cycle` incremented per call, nothing ever deleted one, and
+/// `store::load` hydrated every one it found — so any Plan-lens viewer grew the
+/// durable store and boot-time RAM without limit. Only `latest_muster` ever
+/// reads the collection.
+#[test]
+fn vf_b1_the_muster_book_is_a_ring() {
+    let (mut tw, fx) = scene(Arc::new(TestAudit::default()));
+    let op = operation(&mut tw, &fx);
+    for _ in 0..(mush_campaign::MAX_RETAINED_MUSTERS + 5) {
+        ok(&mut tw, fx.commander, &format!("+muster {}", op.0));
+    }
+    let newest = camp(&tw).latest_muster(op).expect("a report").cycle;
+    let mut kv = BTreeMap::new();
+    fold_kv(&mut tw, &mut kv);
+    let keys: Vec<SmolStr> = kv
+        .get("campaign")
+        .map(|entries| {
+            entries
+                .iter()
+                .map(|(k, _)| k.clone())
+                .filter(|k| k.starts_with("muster:"))
+                .collect()
+        })
+        .unwrap_or_default();
+    assert_eq!(
+        keys.len(),
+        mush_campaign::MAX_RETAINED_MUSTERS,
+        "the superseded reports were orphaned rather than Deleted: {keys:?}"
+    );
+    assert!(keys.contains(&mush_campaign::muster_key(op, newest)));
+    // A reboot hydrates exactly those, and the newest still answers.
+    reboot(&mut tw, &kv);
+    assert_eq!(camp(&tw).latest_muster(op).map(|r| r.cycle), Some(newest));
+}
+
+/// **B2. A stale grant past the seat budget still expires** (ENCODED).
+///
+/// `expire_grants` read `.filter(!is_terminal).take(budget).filter(stale)` with
+/// no cursor, so with `MAX_SEATS_PER_FIRE` healthy grants ahead of it a grant on
+/// an aborted operation never expired and the reaper re-visited the same prefix
+/// for ever — and its audit row was never forgotten either.
+#[test]
+fn vf_b2_a_stale_grant_past_the_seat_budget_still_expires() {
+    let audit = Arc::new(TestAudit::default());
+    let (mut tw, fx) = scene(audit.clone());
+    // A live operation carrying a full budget of healthy dormant grants…
+    let live = operation(&mut tw, &fx);
+    for _ in 0..mush_campaign::MAX_SEATS_PER_FIRE {
+        let seat = offer(&mut tw, &fx, live, fx.atlas, fx.ace, "movement");
+        ok(
+            &mut tw,
+            fx.driver,
+            &format!("+seat/accept {}/{}", live.0, seat.0),
+        );
+    }
+    // …and one grant on an ABORTED operation, sorted last.
+    let doomed = operation_bare(&mut tw, &fx);
+    assert!(doomed.0 > live.0, "the stale grant must sort last");
+    ok(
+        &mut tw,
+        fx.commander,
+        &format!(
+            "+seat/offer {}/#{}/pilot=#{},movement,to:#{}",
+            doomed.0, fx.locust.0, fx.duce.0, fx.driver.0
+        ),
+    );
+    let seat = camp(&tw)
+        .seat_offers()
+        .filter(|o| o.operation == doomed)
+        .map(|o| o.id)
+        .max()
+        .expect("an offer");
+    ok(
+        &mut tw,
+        fx.driver,
+        &format!("+seat/accept {}/{}", doomed.0, seat.0),
+    );
+    let token = token_of(&tw, doomed, seat);
+    ok(&mut tw, GOD, &format!("@op/resolve {}=abort", doomed.0));
+    for _ in 0..6 {
+        fire(&mut tw);
+        drain(&mut tw);
+    }
+    assert!(
+        camp(&tw)
+            .operation(doomed)
+            .is_some_and(|doc| doc.runtime.state.is_terminal())
+    );
+    assert_eq!(
+        grant_state(&tw, doomed, seat),
+        Some(GrantState::Expired),
+        "the reaper starved for ever behind a full budget of healthy grants"
+    );
+    assert!(!audit.knows(&token));
+}
+
+/// **B5a. An incomplete lease mirror refuses rather than answering "vacant".**
+///
+/// `channel_lease_holder` read `ControlLeaseView.holders` and never `complete`
+/// (`is_complete()` had ZERO production callers tree-wide), so between boot and
+/// the first Coarse fire leg (2) read a mirror that had never run as
+/// authoritative ABSENCE — while `control_leases` is durable K state that
+/// survived the reboot.
+#[test]
+fn vf_b5a_an_incomplete_lease_mirror_refuses_rather_than_answering_vacant() {
+    let (mut tw, fx) = scene(Arc::new(TestAudit::default()));
+    let op = operation(&mut tw, &fx);
+    let seat = offer(&mut tw, &fx, op, fx.atlas, fx.ace, "movement");
+    ok(
+        &mut tw,
+        fx.driver,
+        &format!("+seat/accept {}/{}", op.0, seat.0),
+    );
+    // A freshly booted process: the mirror has not run yet, though the durable
+    // `control_leases` family it mirrors survived the reboot.
+    tw.world_mut()
+        .module_state_mut::<mush_sim::ControlLeaseView>()
+        .expect("the lease mirror")
+        .note_unread();
+    let refused = err(
+        &mut tw,
+        fx.driver,
+        &format!("+seat/activate {}/{}", op.0, seat.0),
+    );
+    assert!(refused.contains("try again in a moment"), "{refused}");
+    assert_eq!(grant_state(&tw, op, seat), Some(GrantState::Dormant));
+    assert_eq!(
+        granted(&tw, fx.ace, fx.atlas, "pilot").len(),
+        2,
+        "the command must not mutate the world and then discover it should not have"
+    );
+    // One Coarse fire and the same activation succeeds.
+    fire(&mut tw);
+    ok(
+        &mut tw,
+        fx.driver,
+        &format!("+seat/activate {}/{}", op.0, seat.0),
+    );
+    drain(&mut tw);
+    assert_eq!(granted(&tw, fx.ace, fx.atlas, "pilot"), vec!["movement"]);
+}
+
+/// **B5c. The leg-(2) refusal names no holder**, whoever the conflicting holder
+/// is — an AI NPC's, another player's, or an unknown principal's.
+#[test]
+fn vf_b5c_the_leg_two_refusal_names_no_holder() {
+    let mut seen: Vec<String> = Vec::new();
+    for holder in 0..3usize {
+        let (mut tw, fx) = scene(Arc::new(TestAudit::default()));
+        let op = operation(&mut tw, &fx);
+        let seat = offer(&mut tw, &fx, op, fx.atlas, fx.ace, "movement");
+        ok(
+            &mut tw,
+            fx.driver,
+            &format!("+seat/accept {}/{}", op.0, seat.0),
+        );
+        let who = [fx.duce, fx.bystander, ObjId(9999)][holder];
+        tw.world_mut()
+            .module_state_mut::<mush_sim::ControlLeaseView>()
+            .expect("the lease mirror")
+            .note_holder(
+                fx.atlas,
+                ChannelId::new("movement").unwrap(),
+                mush_core::PrincipalId::Object { id: who },
+            );
+        seen.push(err(
+            &mut tw,
+            fx.driver,
+            &format!("+seat/activate {}/{}", op.0, seat.0),
+        ));
+    }
+    assert_eq!(seen[0], seen[1], "the refusal distinguishes holders");
+    assert_eq!(seen[1], seen[2]);
+    for text in &seen {
+        assert!(
+            !text.contains("Duce") && !text.contains("Bystander"),
+            "{text}"
+        );
+    }
+}
+
+/// **B7. A grant whose audit row is lost can be re-accepted** — the runbook's
+/// own first instruction. `seat_accept`'s third check refused whenever a grant
+/// existed at all, whatever its state, so the page's `+seat/accept {op}/{id}`
+/// could never succeed, and it failed with the existence-hiding line so the
+/// driver could not tell why.
+#[test]
+fn vf_b7_a_grant_whose_audit_row_is_lost_can_be_re_accepted() {
+    let audit = Arc::new(TestAudit::default());
+    let (mut tw, fx) = scene(audit.clone());
+    let op = operation(&mut tw, &fx);
+    let seat = offer(&mut tw, &fx, op, fx.atlas, fx.ace, "movement");
+    ok(
+        &mut tw,
+        fx.driver,
+        &format!("+seat/accept {}/{}", op.0, seat.0),
+    );
+    let old = token_of(&tw, op, seat);
+    assert!(audit.forget(&old), "the restart the runbook is written for");
+    // The runbook's own instruction, verbatim.
+    ok(
+        &mut tw,
+        fx.driver,
+        &format!("+seat/accept {}/{}", op.0, seat.0),
+    );
+    let fresh = token_of(&tw, op, seat);
+    assert_ne!(fresh, old, "the token is re-minted");
+    assert!(!audit.knows(&old));
+    assert!(audit_is(&audit, &fx.oracle, &fresh, fx.driver));
+    ok(
+        &mut tw,
+        fx.driver,
+        &format!("+seat/activate {}/{}", op.0, seat.0),
+    );
+    drain(&mut tw);
+    assert_eq!(granted(&tw, fx.ace, fx.atlas, "pilot"), vec!["movement"]);
+    // …and an ACTIVE grant with a live row is still refused flatly.
+    let refused = err(
+        &mut tw,
+        fx.driver,
+        &format!("+seat/accept {}/{}", op.0, seat.0),
+    );
+    assert_eq!(refused.trim(), mush_campaign::NO_SUCH_SEAT);
+}
+
+/// **B10. A grant past the per-operation cap is refused** (ENCODED through the
+/// real command path). `MAX_SEAT_GRANTS_PER_OPERATION` was declared,
+/// re-exported and enforced nowhere.
+#[test]
+fn vf_b10_a_grant_past_the_per_operation_cap_is_refused() {
+    let (mut tw, fx) = scene(Arc::new(TestAudit::default()));
+    let op = operation(&mut tw, &fx);
+    // The offer cap and the grant cap are the same number, and the offer cap is
+    // enforced at mint — so the structural bound and the counted one agree, and
+    // the counted one now has its own refusal.
+    for _ in 0..mush_campaign::MAX_SEAT_OFFERS_PER_OPERATION {
+        let seat = offer(&mut tw, &fx, op, fx.atlas, fx.ace, "movement");
+        ok(
+            &mut tw,
+            fx.driver,
+            &format!("+seat/accept {}/{}", op.0, seat.0),
+        );
+    }
+    assert_eq!(
+        camp(&tw).seat_grant_count(op),
+        mush_campaign::MAX_SEAT_GRANTS_PER_OPERATION
+    );
+    let refused = err(
+        &mut tw,
+        fx.commander,
+        &format!(
+            "+seat/offer {}/#{}/pilot=#{},movement,to:#{}",
+            op.0, fx.atlas.0, fx.ace.0, fx.driver.0
+        ),
+    );
+    assert!(refused.contains("seat offers"), "{refused}");
+}
+
+/// **B11. A grant recorded under a stale epoch is refused.** §3.10 B7 justified
+/// `Active { epoch }` as "the exact value `World::channel_grant_is_current`
+/// compares, so a revocation's bump makes it stale by construction" — and no
+/// such comparison existed anywhere in the tree.
+#[test]
+fn vf_b11_a_grant_recorded_under_a_stale_epoch_is_refused() {
+    let (mut tw, fx) = scene(Arc::new(TestAudit::default()));
+    let op = operation(&mut tw, &fx);
+    let seat = offer(&mut tw, &fx, op, fx.atlas, fx.ace, "movement");
+    ok(
+        &mut tw,
+        fx.driver,
+        &format!("+seat/accept {}/{}", op.0, seat.0),
+    );
+    ok(
+        &mut tw,
+        fx.driver,
+        &format!("+seat/activate {}/{}", op.0, seat.0),
+    );
+    drain(&mut tw);
+    let now = tw
+        .world()
+        .module_state::<mush_sim::SpatialState>()
+        .map(|state| state.control_generation(fx.atlas))
+        .expect("a control generation");
+    // The `Dormant -> Active` promotion is the tick's own pull over a live
+    // lease; what B11 is about is the RECORD, so it is written through the
+    // grant's own strict wire and re-read at boot.
+    let mut kv = BTreeMap::new();
+    fold_kv(&mut tw, &mut kv);
+    patch_grant_state(&mut kv, op, seat, now);
+    reboot(&mut tw, &kv);
+    assert!(matches!(
+        grant_state(&tw, op, seat),
+        Some(GrantState::Active { .. })
+    ));
+    // A grant whose epoch IS the unit's current control generation is live…
+    let live = err(
+        &mut tw,
+        fx.driver,
+        &format!("+seat/activate {}/{}", op.0, seat.0),
+    );
+    assert!(live.contains("already driving"), "{live}");
+    // …and the same record under a generation the unit has bumped past is
+    // STALE, which is exactly what §3.10 B7 claimed and nothing compared.
+    patch_grant_state(&mut kv, op, seat, now.saturating_sub(1));
+    reboot(&mut tw, &kv);
+    let stale = err(
+        &mut tw,
+        fx.driver,
+        &format!("+seat/activate {}/{}", op.0, seat.0),
+    );
+    assert_eq!(stale.trim(), mush_campaign::NO_SUCH_SEAT, "{stale}");
+}
+
+/// **B14. A second activate before the tick is a no-op.** `Active` is written
+/// only by the 15 s campaign tick, so for up to one whole period a second
+/// `+seat/activate` passed every check and re-ran the focus bump — and `cgen` is
+/// per UNIT, so each re-run staled every OTHER crew member's captured intents as
+/// well as the driver's own.
+#[test]
+fn vf_b14_a_second_activate_before_the_tick_is_a_no_op() {
+    let (mut tw, fx) = scene(Arc::new(TestAudit::default()));
+    let op = operation(&mut tw, &fx);
+    let seat = offer(&mut tw, &fx, op, fx.atlas, fx.ace, "movement");
+    ok(
+        &mut tw,
+        fx.driver,
+        &format!("+seat/accept {}/{}", op.0, seat.0),
+    );
+    ok(
+        &mut tw,
+        fx.driver,
+        &format!("+seat/activate {}/{}", op.0, seat.0),
+    );
+    let epoch = epoch_of(&tw, fx.ace, fx.atlas, "pilot").expect("a grant");
+    let staged = drain(&mut tw).len();
+    assert!(staged > 0);
+    // No fire between: the grant is still `Dormant`, which is the whole window.
+    assert_eq!(grant_state(&tw, op, seat), Some(GrantState::Dormant));
+    ok(
+        &mut tw,
+        fx.driver,
+        &format!("+seat/activate {}/{}", op.0, seat.0),
+    );
+    assert_eq!(
+        epoch_of(&tw, fx.ace, fx.atlas, "pilot"),
+        Some(epoch),
+        "the second activate re-bumped the whole unit's control generation"
+    );
+    assert!(
+        drain(&mut tw).is_empty(),
+        "the second activate staged a fresh submission"
+    );
+}
+
+/// **A11. A proxy driver is refused the unit's own channel, and the refusal is
+/// recorded as INERTNESS rather than narrowness** (decision E6(b)).
+///
+/// Every station-gated verb resolves through the **typing** actor
+/// (`focused_station_of(w, ctx.actor)`, `holds_billet(ctx, ctx.actor, ..)`,
+/// `station::actor_grant_epoch(ctx, ctx.actor, ..)`,
+/// `World::command_subjects_of(ctx.actor)`), and a proxy's `ctx.actor` is their
+/// own character, which holds no billet and no `ChannelGrant` on the seat's unit
+/// — `links::desired_links` keys the grant on `assignment.actor`, i.e. the NPC.
+/// Nothing in `mush-session`/`mush-server` maps an account's proxy focus onto its
+/// command actor, so **cut 10 ships the seat's consent, attribution, narrowing,
+/// gate and give-back, but NOT its driving ingress**. That is what `e7c10_g6`'s
+/// byte-identical refusal actually proves, and this test pins the *tell*: after
+/// activation the driver's own command-subject set is still **empty**, so the
+/// nine T11 refusals fall on an actor that never had the authority. The day cut
+/// 11's ingress lands — together with deviation (h)'s order predicate, never one
+/// without the other — this assertion must flip and `e7c10_g6` must be re-run.
+#[test]
+fn vf_a11_the_driver_is_refused_the_units_own_channel_and_the_refusal_is_inertness() {
+    let (mut tw, fx) = scene(Arc::new(TestAudit::default()));
+    let op = operation(&mut tw, &fx);
+    let seat = offer(&mut tw, &fx, op, fx.atlas, fx.ace, "movement");
+    let before = tw.world().command_subjects_of(fx.driver).len();
+    ok(
+        &mut tw,
+        fx.driver,
+        &format!("+seat/accept {}/{}", op.0, seat.0),
+    );
+    ok(
+        &mut tw,
+        fx.driver,
+        &format!("+seat/activate {}/{}", op.0, seat.0),
+    );
+    drain(&mut tw);
+    // The seat is real: the NPC publishes exactly the granted channel.
+    assert_eq!(granted(&tw, fx.ace, fx.atlas, "pilot"), vec!["movement"]);
+    // …and the human who took it holds nothing at all — not the GRANTED channel
+    // and not the withheld one, which is why the two explanations are
+    // indistinguishable today.
+    assert_eq!(
+        tw.world().command_subjects_of(fx.driver).len(),
+        before,
+        "an ingress binds the driver to the NPC now: re-scope deviation (c) and re-run e7c10_g6"
+    );
+    assert!(granted(&tw, fx.driver, fx.atlas, "pilot").is_empty());
+    let epoch = epoch_of(&tw, fx.ace, fx.atlas, "pilot").expect("a grant");
+    assert!(!is_current(
+        &tw, fx.driver, fx.atlas, "pilot", epoch, "movement"
+    ));
+    assert!(!is_current(
+        &tw, fx.driver, fx.atlas, "pilot", epoch, "fire"
+    ));
+    // The character stays put, present and unable to act (T13).
+    assert_eq!(
+        tw.world().get(fx.driver).and_then(|o| o.location),
+        Some(fx.field)
     );
 }

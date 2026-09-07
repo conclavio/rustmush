@@ -22,22 +22,46 @@
 //! the runbook telling the driver to re-take the seat. A dormant grant across a
 //! reboot is therefore re-accepted, never silently activated un-attributed.
 
+//! **Where the opaque driver token is minted** (E7 cut 10 independent verify
+//! fold, decision E7(a)). Cut 10 derived the token from four public-or-near-
+//! public coordinates under a fixed domain, so it inverted: a token identified
+//! its seat exactly and could be forged for a seat the forger did not hold.
+//! The mint moved *here*, where the account row lives: [`SeatAuditLog::record`]
+//! folds a **process-scoped nonce** (a per-log salt and a monotonic counter)
+//! into the caller's seed, so the world cannot recompute the token. Nothing
+//! about consent moves — the token sits in the grant, never in the hashed offer.
+
 use std::collections::BTreeMap;
 use std::sync::RwLock;
+use std::sync::atomic::{AtomicU64, Ordering};
 
-use mush_core::{AccountId, SeatAudit};
+use mush_core::{AccountId, CanonicalHash, SeatAudit};
+
+/// The process-scoped nonce source. It is minted once per process and never
+/// rendered; two servers, and two logs in one process, mint disjoint tokens.
+static NONCE: AtomicU64 = AtomicU64::new(0);
 
 /// The in-process token → account log.
 #[derive(Debug, Default)]
 pub struct SeatAuditLog {
     rows: RwLock<BTreeMap<String, AccountId>>,
+    /// The per-log half of the nonce, minted at construction from the process
+    /// clock and the global counter. Never rendered, never persisted.
+    salt: u64,
 }
 
 impl SeatAuditLog {
     /// A fresh, empty log.
     #[must_use]
     pub fn new() -> SeatAuditLog {
-        SeatAuditLog::default()
+        let clock = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos() as u64)
+            .unwrap_or(0);
+        SeatAuditLog {
+            rows: RwLock::new(BTreeMap::new()),
+            salt: clock ^ NONCE.fetch_add(0x9E37_79B9_7F4A_7C15, Ordering::Relaxed),
+        }
     }
 
     /// How many rows it carries (diagnostics only; never rendered in-world).
@@ -56,14 +80,22 @@ impl SeatAuditLog {
 /// A poisoned lock is a refusal, never a panic and never a default: a seat that
 /// cannot be attributed is a seat that is not taken.
 impl SeatAudit for SeatAuditLog {
-    fn record(&self, token: &str, account: AccountId) -> bool {
-        match self.rows.write() {
-            Ok(mut rows) => {
-                rows.insert(token.to_owned(), account);
-                true
-            }
-            Err(_) => false,
-        }
+    fn record(&self, seed: &str, account: AccountId) -> Option<String> {
+        // The nonce is folded into the canonical body, so the token is opaque
+        // to every party that holds only the seat's public coordinates.
+        let n = NONCE.fetch_add(1, Ordering::Relaxed);
+        let body = serde_json::json!({
+            "salt": format!("{:016x}", self.salt),
+            "n": n,
+            "seed": seed,
+        });
+        let token = CanonicalHash::for_canonical_value("server.seat.driver.v1", 1, &body, 4096)
+            .ok()?
+            .to_hex();
+        let token = token[..token.len().min(32)].to_owned();
+        let mut rows = self.rows.write().ok()?;
+        rows.insert(token.clone(), account);
+        Some(token)
     }
 
     fn knows(&self, token: &str) -> bool {
@@ -94,12 +126,36 @@ mod tests {
         let log = SeatAuditLog::new();
         let account = AccountId::mint("Nick", 1).expect("mints");
         assert!(!log.knows("abc"), "an unknown token is not attributed");
-        assert!(log.record("abc", account));
-        assert!(log.knows("abc"));
-        assert_eq!(log.account_for("abc"), Some(account));
-        assert!(log.forget("abc"));
-        assert!(!log.knows("abc"), "a forgotten token is unattributed again");
-        assert!(!log.forget("abc"), "forgetting twice is not an error");
+        let token = log.record("abc", account).expect("mints a token");
+        assert!(log.knows(&token));
+        assert_eq!(log.account_for(&token), Some(account));
+        assert!(log.forget(&token));
+        assert!(
+            !log.knows(&token),
+            "a forgotten token is unattributed again"
+        );
+        assert!(!log.forget(&token), "forgetting twice is not an error");
+    }
+
+    // ---- E7 cut 10 independent verify fold ----
+
+    /// **K5. The driver token is minted where the account row lives, so it is
+    /// not derivable from the seat's public coordinates.** The same seed, in two
+    /// logs (two processes), mints two different tokens, and neither is the seed
+    /// itself — the property cut 10 claimed ("opaque") and did not have.
+    #[test]
+    fn vf_k5_a_driver_token_is_not_derivable_from_the_seats_public_coordinates() {
+        let account = AccountId::mint("Nick", 1).expect("mints");
+        let a = SeatAuditLog::new();
+        let b = SeatAuditLog::new();
+        let seed = "7.3.50.1200";
+        let one = a.record(seed, account).expect("mints");
+        let two = b.record(seed, account).expect("mints");
+        assert_ne!(one, two, "the same coordinates mint two unrelated tokens");
+        assert_ne!(one, seed);
+        assert!(!one.contains(seed), "the token never carries its seed");
+        // …and twice in ONE process, too: the counter moves under the salt.
+        assert_ne!(one, a.record(seed, account).expect("mints"));
     }
 
     /// **Two seats for one player produce two rows nothing correlates.** The log
@@ -109,11 +165,11 @@ mod tests {
     fn e7c10_b3_two_tokens_for_one_account_are_independent_rows() {
         let log = SeatAuditLog::new();
         let account = AccountId::mint("Nick", 1).expect("mints");
-        assert!(log.record("aaa", account));
-        assert!(log.record("bbb", account));
-        assert!(log.forget("aaa"));
+        let a = log.record("aaa", account).expect("mints");
+        let b = log.record("bbb", account).expect("mints");
+        assert!(log.forget(&a));
         assert!(
-            log.knows("bbb"),
+            log.knows(&b),
             "revoking one seat leaves the other attributed"
         );
     }

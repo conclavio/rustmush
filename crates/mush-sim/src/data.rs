@@ -793,6 +793,19 @@ pub struct SpatialState {
     /// with an object. Retained only as bounded in-memory diagnostics; the raw
     /// authoritative values remain in the store.
     pub unbound_placement_docs: BTreeMap<SmolStr, String>,
+    /// **Assignment documents the boot REFUSED, held rather than dropped** (E7
+    /// cut 10 independent verify fold, B4).
+    ///
+    /// [`MAX_SEATS_PER_UNIT`] was a load refusal with no write-side counterpart,
+    /// and unlike `placement:` (which goes to `held_placements`) and unlike the
+    /// campaign lane (`CampaignStore::hold`) the over-cap assignment document was
+    /// only `tracing::error!`ed - so it was held NOWHERE, and the very next
+    /// ordinary `@spatial/assign` rebuilt the document from the empty RAM map and
+    /// overwrote a 65-seat document with a one-seat one. §4.1's "a stored set over
+    /// a cap refuses on load and is HELD, never truncated" was false of exactly
+    /// this document. A host held here refuses every seat write until staff repair
+    /// it, so an ordinary write can never clobber it.
+    pub held_assignments: BTreeMap<ObjId, HeldPlacement>,
     /// Interior spaces by object.
     pub spaces: BTreeMap<ObjId, InteriorSpaceRecord>,
     /// Mount definitions by host.
@@ -831,6 +844,7 @@ impl Default for SpatialState {
             placements: BTreeMap::new(),
             held_placements: BTreeMap::new(),
             unbound_placement_docs: BTreeMap::new(),
+            held_assignments: BTreeMap::new(),
             spaces: BTreeMap::new(),
             mounts: BTreeMap::new(),
             stations: BTreeMap::new(),
@@ -853,6 +867,7 @@ impl PartialEq for SpatialState {
             && self.placements == other.placements
             && self.held_placements == other.held_placements
             && self.unbound_placement_docs == other.unbound_placement_docs
+            && self.held_assignments == other.held_assignments
             && self.spaces == other.spaces
             && self.mounts == other.mounts
             && self.stations == other.stations
@@ -955,6 +970,13 @@ impl SpatialState {
     #[must_use]
     pub fn held_placement(&self, obj: ObjId) -> Option<&HeldPlacement> {
         self.held_placements.get(&obj)
+    }
+
+    /// Why a refused `assignment:<host>` document is held, if one is (B4).
+    /// **A held host refuses every seat write** until staff repair it.
+    #[must_use]
+    pub fn held_assignment(&self, host: ObjId) -> Option<&HeldPlacement> {
+        self.held_assignments.get(&host)
     }
 
     /// Whether `obj` is bound into the simulation in ANY way: placed,

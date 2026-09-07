@@ -53,6 +53,19 @@ pub const MAX_MUSTER_SLOTS: usize = 64;
 pub const MAX_SEAT_GRANTS_PER_OPERATION: usize = MAX_SEAT_OFFERS_PER_OPERATION;
 /// The largest number of bytes in a free-text seat label (mission order, ROE).
 pub const MAX_SEAT_LABEL_BYTES: usize = 240;
+/// **How many muster reports one operation retains** (E7 cut 10 independent
+/// verify fold, B1 / decision E2(a)).
+///
+/// [`MAX_MUSTER_SLOTS`] bounds one report's slots; cut 10 bounded the **number
+/// of reports** at nothing at all — `+muster` minted `cycle + 1` and inserted a
+/// durable `muster:<op>:<cycle>` document on every invocation, nothing ever
+/// deleted one, and `store::load` hydrated every one it found, so any Plan-lens
+/// viewer grew the durable store and boot-time RAM without limit. Only
+/// `latest_muster` reads the collection, so no history is needed at all; the
+/// ring is cut 8's `MAX_RETAINED_TICK_COMMITS` shape, and a superseded report is
+/// `ModuleWrite::Del`eted in the same bundle (eviction by policy, never
+/// truncation on load).
+pub const MAX_RETAINED_MUSTERS: usize = 8;
 
 // ---- ids and keys ----
 
@@ -402,10 +415,16 @@ impl SeatOffer {
 
 /// The opaque per-grant decision-driver token (Q19A/T9/R7).
 ///
-/// Derived from the seat's own coordinates — operation, offer, the driven NPC and
-/// the acceptance instant — and **never from the account**, so a projection can
-/// carry it safely and two seats taken by one player produce two tokens nothing
-/// correlates. The token → account row lives outside the world behind
+/// **Where it is minted, after the cut-10 independent verify fold (K5, decision
+/// E7(a)).** The token's *seed* is the seat's own coordinates — operation, offer,
+/// the driven NPC and the acceptance instant — and **never the account**. But a
+/// seed alone inverts: every one of those four values is public or near-public,
+/// so cut 10's token identified its seat exactly and could be forged for a seat
+/// the forger did not hold. So [`DriverToken::seed`] mints only the seed, and the
+/// token itself is minted by `mush_core::SeatAudit::record`, **server-side**,
+/// with a process-scoped nonce folded in — the world cannot recompute it. The
+/// token lives in the *grant*, never in the hashed offer, so `campaign.seat.v1`
+/// does not move. The token → account row lives outside the world behind
 /// `mush_core::SeatAudit` and is reachable only by one staff verb.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -418,15 +437,21 @@ impl std::fmt::Display for DriverToken {
 }
 
 impl DriverToken {
-    /// Mint the token for one grant. Deterministic (no RNG anywhere in E7's
-    /// non-tick paths — `provider_rng_policy`), and account-free by construction.
+    /// Mint the **seed** the server-side audit log folds its nonce into.
+    /// Deterministic (no RNG anywhere in E7's non-tick paths —
+    /// `provider_rng_policy`), and account-free by construction.
+    ///
+    /// **A hash failure refuses the grant** (K5): cut 10 fell back to the literal
+    /// `"{op}.{offer}"`, which is the seat's coordinates in plaintext and
+    /// collides across actors, so the failure path published exactly what the
+    /// token exists to hide.
     #[must_use]
-    pub fn mint(
+    pub fn seed(
         operation: OperationId,
         offer: SeatOfferId,
         actor: UnitRef,
         accepted_at: &ClockStamp,
-    ) -> DriverToken {
+    ) -> Option<SmolStr> {
         let body = serde_json::json!({
             "operation": operation.0,
             "offer": offer.0,
@@ -434,9 +459,9 @@ impl DriverToken {
             "at": accepted_at.at,
         });
         let hash = CanonicalHash::for_canonical_value("campaign.seat.driver.v1", 1, &body, 1024)
-            .map(|h| h.to_hex())
-            .unwrap_or_else(|_| format!("{}.{}", operation.0, offer.0));
-        DriverToken(SmolStr::new(&hash[..hash.len().min(32)]))
+            .ok()?
+            .to_hex();
+        Some(SmolStr::new(&hash[..hash.len().min(32)]))
     }
 }
 
@@ -859,23 +884,25 @@ mod tests {
 
     #[test]
     fn e7c10_b3_two_seats_for_one_player_mint_two_uncorrelated_tokens() {
-        let a = DriverToken::mint(
+        let a = DriverToken::seed(
             OperationId(3),
             SeatOfferId(1),
             UnitRef(ObjId(50)),
             &stamp(1),
-        );
-        let b = DriverToken::mint(
+        )
+        .expect("seeds");
+        let b = DriverToken::seed(
             OperationId(3),
             SeatOfferId(2),
             UnitRef(ObjId(51)),
             &stamp(1),
-        );
+        )
+        .expect("seeds");
         assert_ne!(a, b);
-        // Neither token carries anything that could reach an account: the mint's
+        // Neither seed carries anything that could reach an account: the mint's
         // whole input is the seat's own coordinates.
-        assert!(a.0.chars().all(|c| c.is_ascii_hexdigit()));
-        assert!(b.0.chars().all(|c| c.is_ascii_hexdigit()));
+        assert!(a.chars().all(|c| c.is_ascii_hexdigit()));
+        assert!(b.chars().all(|c| c.is_ascii_hexdigit()));
     }
 
     #[test]
@@ -884,11 +911,14 @@ mod tests {
             operation: OperationId(3),
             offer: SeatOfferId(1),
             actor: UnitRef(ObjId(50)),
-            driver: DriverToken::mint(
-                OperationId(3),
-                SeatOfferId(1),
-                UnitRef(ObjId(50)),
-                &stamp(1),
+            driver: DriverToken(
+                DriverToken::seed(
+                    OperationId(3),
+                    SeatOfferId(1),
+                    UnitRef(ObjId(50)),
+                    &stamp(1),
+                )
+                .expect("seeds"),
             ),
             accepted_at: stamp(1),
             consent_hash: [7; 32],
@@ -955,5 +985,70 @@ mod tests {
         };
         assert!(report.check().is_ok());
         assert_eq!(report.vacancies(), 1);
+    }
+
+    // ---- E7 cut 10 independent verify fold ----
+
+    /// **B6. The golden digest of `campaign.seat.v1`.**
+    ///
+    /// `mush-economy/src/hash.rs` pins its own two consent spaces with a literal
+    /// hex exactly so a serde rename, a field reorder or a change in ANY nested
+    /// type is caught in CI. Cut 10 opened a third space and pinned nothing: its
+    /// hash tests compared the function against itself, so they moved with the
+    /// hash. A deploy touching `SeatScope`, `RevocationTerms`, `FallbackSpec`,
+    /// `EligibilitySpec`, `AudienceSpec` or `ClockStamp` silently invalidated
+    /// every stored offer — `consent_intact()` goes false and both `+seat/accept`
+    /// and `+seat/activate` answer the existence-hiding `No such seat.`, so every
+    /// live grant died with no diagnosis anywhere. This is the third pin.
+    #[test]
+    fn vf_b6a_the_seat_consent_domain_is_pinned() {
+        let mut offer = offer();
+        offer.audience.members = vec![
+            PrincipalId::Object(ObjId(200)),
+            PrincipalId::Organization(mush_org::OrgId(7)),
+        ];
+        offer.eligibility = EligibilitySpec {
+            side: SmolStr::new_static("attack"),
+            certification: SmolStr::new_static("mechwarrior"),
+        };
+        offer.scope.permitted_area = Some(UnitRef(ObjId(77)));
+        offer.scope.channels =
+            BTreeSet::from([SmolStr::new_static("fire"), SmolStr::new_static("movement")]);
+        assert_eq!(
+            crate::seat::seat_consent_hash(&offer)
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect::<String>(),
+            SEAT_CONSENT_PIN,
+            "the `campaign.seat.v1` canonical surface moved; every stored offer's \
+             consent_hash is now stale and every live grant is unusable. If the move is \
+             intended, say so in 10b §4 and re-pin here in the same edit."
+        );
+    }
+
+    /// The frozen golden digest of the fixture above.
+    const SEAT_CONSENT_PIN: &str =
+        "9b4356068e8d6a06c03d42ceb6fc93fa058944880c844f3445417738f9e21016";
+
+    /// **B6b. The seat domain and the operation domain never collide for the
+    /// same bytes** — the domain is the canonical struct's FIRST field.
+    #[test]
+    fn vf_b6b_the_operation_and_seat_domains_differ_for_the_same_bytes() {
+        // The domain is the canonical struct's FIRST field, so one body cannot be
+        // digested under two domains at all — the digest refuses outright. That
+        // separation is in the bytes rather than in a prefix, which is why a seat
+        // hash can never be replayed as an operation hash.
+        let seat = consent_digest(
+            CONSENT_DOMAIN_CAMPAIGN_SEAT,
+            &serde_json::json!({ "domain": CONSENT_DOMAIN_CAMPAIGN_SEAT, "operation": 3u64 }),
+        );
+        let operation = consent_digest(
+            mush_economy::CONSENT_DOMAIN_CAMPAIGN_OPERATION,
+            &serde_json::json!({
+                "domain": mush_economy::CONSENT_DOMAIN_CAMPAIGN_OPERATION,
+                "operation": 3u64,
+            }),
+        );
+        assert_ne!(seat, operation);
     }
 }

@@ -131,16 +131,32 @@ pub trait AccountIdentity: Send + Sync {
 /// projection, render or export can reverse it. Exactly one staff verb resolves
 /// it, and even that verb prints no account id.
 ///
+/// **Corrected by the E7 cut 10 independent verify fold (K6/A2/A5).** As shipped,
+/// [`SeatAudit::account_for`] had **no production caller at all** — the staff
+/// verb asked [`SeatAudit::knows`], a boolean — so the attribution the cut
+/// claims had neither an input nor an output. It has two now, and neither
+/// renders an id: `@seat/audit <op>/<id>=<character>` answers SAME / DIFFERENT /
+/// UNKNOWN, and `mush_campaign::seatstate::audit_is` answers "is that row *this
+/// caller's*", which is what `+seat/activate` and `+seat/leave` must ask.
+///
 /// The implementation lives at the composition root beside `AccountIdentity`'s
 /// (`mush-server`), and reaches the campaign layer through
 /// `CampaignModule::with_seat_audit` on the `with_accounts` builder shape.
 /// **Unwired, every consumer fails closed**: a grant with no audit row refuses
 /// activation and pages rather than activating un-attributed.
 pub trait SeatAudit: Send + Sync {
-    /// Record that `token` was minted for `account`. Returns `false` when the
-    /// row could not be stored — the caller must then refuse the grant rather
-    /// than proceed un-attributed.
-    fn record(&self, token: &str, account: AccountId) -> bool;
+    /// **Mint the opaque driver token and record it against `account`** (E7 cut
+    /// 10 independent verify fold, E7(a)/K5).
+    ///
+    /// `seed` is the seat's own deterministic coordinates; the implementation
+    /// folds a **process-scoped nonce** into them, so the returned token is a
+    /// value the world cannot recompute from public coordinates and cannot be
+    /// forged for a seat the forger does not hold. The token lives in the
+    /// *grant*, never in the hashed offer, so `campaign.seat.v1` does not move.
+    ///
+    /// `None` = the row could not be stored, and the caller must then refuse the
+    /// grant rather than proceed un-attributed.
+    fn record(&self, seed: &str, account: AccountId) -> Option<String>;
 
     /// Whether a row exists for `token`. This is the *only* question ordinary
     /// (non-staff) code may ask, and it answers a boolean, never an identity.
@@ -148,6 +164,10 @@ pub trait SeatAudit: Send + Sync {
 
     /// The account behind `token` — **staff only**, and never rendered. `None`
     /// when no row exists.
+    ///
+    /// Its production callers are `mush_campaign::seatstate::audit_is` (which
+    /// answers "is this row *this caller's*", never an identity) and
+    /// `@seat/audit`, which answers SAME / DIFFERENT / UNKNOWN and prints no id.
     fn account_for(&self, token: &str) -> Option<AccountId>;
 
     /// Forget a row (a terminal grant's attribution is retained only as long as

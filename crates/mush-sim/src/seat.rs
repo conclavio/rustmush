@@ -74,6 +74,13 @@ pub struct ControlLeaseView {
     /// Whether the last refresh completed (`false` = the family scan was
     /// unavailable or hit its bound; a caller that must fail closed asks this).
     complete: bool,
+    /// **The stored cursor** (E7 cut 10 fold, B5). `refresh_control_lease_view`
+    /// reset a LOCAL `after` on every call, so the doc comment's "a deployment
+    /// with more live leases than this refreshes the rest on the next fire" was
+    /// false: the same first [`MAX_LEASE_VIEW_RECORDS`] were re-scanned at 1 Hz
+    /// for ever and the rest were never mirrored at all. The scan resumes here,
+    /// and `complete` is set only when a whole pass has wrapped.
+    cursor: Option<SmolStr>,
 }
 
 impl std::fmt::Debug for ControlLeaseView {
@@ -95,6 +102,7 @@ impl ControlLeaseView {
             handle: Some(handle),
             holders: BTreeMap::new(),
             complete: false,
+            cursor: None,
         }
     }
 
@@ -108,8 +116,33 @@ impl ControlLeaseView {
     /// writer, exported so a test can seed the mirror the K6 gate's leg (2)
     /// reads without driving a whole scheduled apply. It is a MIRROR, never
     /// authority: writing here changes no lease and grants nothing.
+    ///
+    /// **B12: fenced.** `World::module_state_mut::<T>()` is generic and not
+    /// owner-scoped, so while this was an unconditional `pub fn` any crate could
+    /// write false holders into the sole input of [`channel_lease_holder`] — the
+    /// K6 gate's leg (2) and `observe_activations`' promotion predicate. The
+    /// production surface of this type is now the read alone.
+    #[cfg(any(test, feature = "testkit"))]
     pub fn note_holder(&mut self, unit: ObjId, channel: ChannelId, holder: PrincipalId) {
         self.holders.insert((unit, channel), holder);
+    }
+
+    /// Mark the mirror complete without a scan — the seeding counterpart of
+    /// [`ControlLeaseView::note_holder`], and fenced with it.
+    #[cfg(any(test, feature = "testkit"))]
+    pub fn note_complete(&mut self) {
+        self.complete = true;
+    }
+
+    /// Return the mirror to its just-booted state — empty, self-declared
+    /// incomplete — while KEEPING the family handle, so the next Coarse fire
+    /// refreshes it exactly as a live server's first fire does. Fenced with the
+    /// other seeders.
+    #[cfg(any(test, feature = "testkit"))]
+    pub fn note_unread(&mut self) {
+        self.holders.clear();
+        self.cursor = None;
+        self.complete = false;
     }
 
     /// How many live lease holders the mirror carries.
@@ -136,23 +169,39 @@ pub fn channel_lease_holder(w: &World, unit: ObjId, channel: &ChannelId) -> Opti
 /// Refresh the mirror from `mush-sim`'s own owner-scoped typed-state reader.
 /// Bounded on records **visited** ([`MAX_LEASE_VIEW_RECORDS`]); a partial pass
 /// marks the mirror incomplete rather than publishing a half view as whole.
+///
+/// **What the E7 cut 10 verify fold changed (B5).** Two edges made the mirror
+/// answer *ignorance* as *vacancy*: a `scan_family` `Err` on the **first** page
+/// replaced `holders` with an empty map (W2's rule is that a transient is a
+/// WAIT, not a miss), and the scan cursor was a local reset on every call, so a
+/// deployment past the page bound never mirrored the rest at all. The previous
+/// holders now survive a transient, and the cursor is stored on the view.
 pub(crate) fn refresh_control_lease_view(ctx: &mut Ctx<'_>) {
-    let Some(handle) = ctx
-        .w
-        .module_state::<ControlLeaseView>()
-        .and_then(|view| view.handle.clone())
+    let Some((handle, mut holders, mut after)) =
+        ctx.w.module_state::<ControlLeaseView>().and_then(|view| {
+            view.handle
+                .clone()
+                .map(|handle| (handle, view.holders.clone(), view.cursor.clone()))
+        })
     else {
         return;
     };
-    let mut holders = BTreeMap::new();
+    let resuming = after.is_some();
+    if !resuming {
+        // A fresh pass rebuilds from the top; a resumed one adds to what the
+        // earlier pages already mirrored.
+        holders.clear();
+    }
     let mut complete = false;
-    let mut after: Option<SmolStr> = None;
+    let mut wrapped = false;
     let mut visited = 0usize;
+    let mut progressed = false;
     while let Ok(page) = ctx.typed_state.scan_family(
         &handle,
         after.as_ref().map(SmolStr::as_str),
         MAX_LEASE_VIEW_RECORDS.min(256),
     ) {
+        progressed = true;
         for entry in page.entries() {
             let lease = entry.value();
             visited += 1;
@@ -165,16 +214,30 @@ pub(crate) fn refresh_control_lease_view(ctx: &mut Ctx<'_>) {
         }
         match page.next_after() {
             Some(next) if visited < MAX_LEASE_VIEW_RECORDS => after = Some(next.clone()),
-            Some(_) => break,
+            // The bound stopped us mid-family: keep the cursor so the NEXT fire
+            // resumes past here rather than re-scanning the same prefix for ever.
+            Some(next) => {
+                after = Some(next.clone());
+                break;
+            }
             None => {
-                complete = true;
+                complete = !resuming;
+                wrapped = true;
                 break;
             }
         }
     }
+    if !progressed {
+        // A transient is a WAIT: the previous view stands, still flagged with
+        // whatever completeness it had, and the cursor is untouched.
+        return;
+    }
     if let Some(view) = ctx.w.module_state_mut::<ControlLeaseView>() {
         view.holders = holders;
-        view.complete = complete;
+        view.cursor = if wrapped { None } else { after };
+        // A resumed pass that finally wraps has seen the whole family across
+        // fires, which is what `is_complete` promises.
+        view.complete = complete || (wrapped && resuming);
     }
 }
 
@@ -287,6 +350,13 @@ pub enum SeatError {
     /// The station is not seated by that actor (release/revoke).
     #[error("that seat is not held by that actor")]
     NotSeated,
+    /// **The lease mirror does not yet know the whole family** (E7 cut 10 fold,
+    /// B5 / decision E5(a)). Leg (2) must not read ignorance as vacancy: between
+    /// boot and the first Coarse fire the mirror is empty and self-declared
+    /// incomplete while `control_leases` is durable K state that survived the
+    /// reboot. Neutral by construction — it names no holder and no station.
+    #[error("control state unknown")]
+    ControlUnknown,
     /// The module is composed without the K6 handoff actions.
     #[error("station control is unavailable")]
     Unavailable,
@@ -365,6 +435,37 @@ fn activate(
         && seat.actor != npc
     {
         return Err(SeatError::StationHeld);
+    }
+    // **Leg (1) is a FOCUS check as well as a billet check** (E7 cut 10
+    // independent verify fold, A3). The billet test above admits a station whose
+    // occupant is the seat's own NPC — and after ANY activation the billet's
+    // actor **is** the npc, so the third conjunct is false for a second proxy
+    // seat on the same NPC, `FocusState::claim` then removed `by_actor[npc]`,
+    // and the first account's focus was silently evicted with no message, its
+    // grant left non-terminal and re-activatable and its narrowing replaced by
+    // the newcomer's wider set. §3.10's own words are "a live human operator is
+    // **never** evicted by a seat activation" and "a test pins that E7 ships
+    // **no eviction path at all**"; `e7c10_k1` exercised only the human-billet
+    // arm, so the proxy-vs-proxy arm shipped untested.
+    let claiming = oracle_account(ctx, ctx.actor);
+    if let Some(live) = ctx
+        .w
+        .module_state::<FocusState>()
+        .and_then(|state| state.focus_of_actor(npc))
+        && live.proxy
+        && Some(live.account) != claiming
+    {
+        return Err(SeatError::StationHeld);
+    }
+    // Leg (2) **fails closed on an unknown mirror** (B5/E5(a)): an absent row
+    // means "nobody holds this" only when the mirror has actually seen the
+    // family.
+    if !ctx
+        .w
+        .module_state::<ControlLeaseView>()
+        .is_some_and(ControlLeaseView::is_complete)
+    {
+        return Err(SeatError::ControlUnknown);
     }
     // Leg (2): no channel in the seat's set is under a live lease held by
     // anyone but that fallback. Cut 10's own policy — the kernel's
@@ -548,6 +649,11 @@ fn seat_billet(
     now: i64,
     granted: Option<BTreeSet<ChannelId>>,
 ) {
+    // B4: a held host takes no seat write at all, so an ordinary write can never
+    // clobber a document staff have yet to repair.
+    if crate::commands::st(ctx).held_assignment(unit).is_some() {
+        return;
+    }
     let record = {
         let state = match ctx.w.module_state_mut::<SpatialState>() {
             Some(state) => state,
@@ -721,8 +827,13 @@ impl mush_core::EventHook for SeatDisconnectHook {
 /// Rule 1: **exempt** — workflow, legacy-post-image, future family
 /// `sim.station_service`. It takes no part in authority or prepared mechanics:
 /// nothing in the control path reads it.
+/// **B9: it has a strict `TryFrom` wire now.** §4.1's cut-10 row says all five
+/// records are "each behind a strict `TryFrom` wire re-running its caps"; this
+/// one carried only `deny_unknown_fields`, so `from` and `to` were unbounded
+/// `i64`s decoded straight from disk and a forged marker with `to == i64::MAX`
+/// answered `satisfied: true` at an arbitrary instant.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
+#[serde(try_from = "StationServiceWire", deny_unknown_fields)]
 pub struct StationService {
     /// The unit served.
     pub unit: ObjId,
@@ -734,6 +845,48 @@ pub struct StationService {
     pub from: i64,
     /// When it ended.
     pub to: i64,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StationServiceWire {
+    unit: ObjId,
+    station: StationId,
+    actor: ObjId,
+    from: i64,
+    to: i64,
+}
+
+impl TryFrom<StationServiceWire> for StationService {
+    type Error = String;
+    fn try_from(wire: StationServiceWire) -> Result<Self, Self::Error> {
+        let service = StationService {
+            unit: wire.unit,
+            station: wire.station,
+            actor: wire.actor,
+            from: wire.from,
+            to: wire.to,
+        };
+        service.check()?;
+        Ok(service)
+    }
+}
+
+impl StationService {
+    /// Re-run the one invariant the provider assumes (§4 rule 1): an interval
+    /// ends at or after it began, and neither end is an insane instant.
+    pub fn check(&self) -> Result<(), String> {
+        if self.from < 0 || self.to < 0 {
+            return Err("a station-service marker carries a negative instant".to_owned());
+        }
+        if self.to < self.from {
+            return Err(format!(
+                "a station-service marker ends at {} before it began at {}",
+                self.to, self.from
+            ));
+        }
+        Ok(())
+    }
 }
 
 /// Load-refusing bound on the service book (D-LBK-5): a bounded world-owned
@@ -754,7 +907,8 @@ impl ServiceBook {
     }
 
     /// Record one completed interval. Returns `false` (without inserting) when a
-    /// NEW row would exceed [`MAX_STATION_SERVICE_ROWS`].
+    /// NEW row would exceed [`MAX_STATION_SERVICE_ROWS`] — the load path's arm,
+    /// which leaves the extra markers on disk and logs once.
     #[must_use]
     pub fn record(&mut self, service: StationService) -> bool {
         let key = (service.unit, service.station.clone(), service.actor);
@@ -763,6 +917,41 @@ impl ServiceBook {
         }
         self.0.insert(key, service);
         true
+    }
+
+    /// **Record one completed interval, evicting the oldest row when the book is
+    /// full** (E7 cut 10 fold, B8). Returns the evicted key, if any.
+    ///
+    /// Cut 10's runtime path called [`ServiceBook::record`] and simply
+    /// **returned** on `false`, with no `tracing` line at all: on a long-lived
+    /// world the 4 097th distinct `(unit, station, actor)` triple — ordinary play
+    /// across many units, stations and NPCs — stopped recording completed
+    /// service for ever, `SimFactProvider::resolve` answered `None` (unknown =
+    /// unsatisfied) and a settlement gated on `sim.station.served` silently
+    /// stopped paying with no signal anywhere. Only the LATEST interval per
+    /// triple is ever read, so evicting the oldest is lossless for the fact and
+    /// bounded by construction.
+    pub fn record_evicting(
+        &mut self,
+        service: StationService,
+    ) -> Option<(ObjId, StationId, ObjId)> {
+        let key = (service.unit, service.station.clone(), service.actor);
+        let mut evicted = None;
+        if !self.0.contains_key(&key) && self.0.len() >= MAX_STATION_SERVICE_ROWS {
+            // Oldest by the instant service ENDED, which is the only ordering the
+            // fact cares about.
+            if let Some(oldest) = self
+                .0
+                .iter()
+                .min_by_key(|(_, row)| (row.to, row.from))
+                .map(|(k, _)| k.clone())
+            {
+                self.0.remove(&oldest);
+                evicted = Some(oldest);
+            }
+        }
+        self.0.insert(key, service);
+        evicted
     }
 
     /// How many rows the book carries.
@@ -791,30 +980,70 @@ pub fn service_key(unit: ObjId, station: &StationId, actor: ObjId) -> SmolStr {
 /// Write one completed service interval: the RAM mirror and its durable exempt
 /// record, refusing past the cap before either is touched.
 fn record_service(ctx: &mut Ctx<'_>, service: StationService) {
+    if service.check().is_err() {
+        return;
+    }
     let key = service_key(service.unit, &service.station, service.actor);
     let value = match serde_json::to_value(&service) {
         Ok(value) => value,
         Err(_) => return,
     };
-    let accepted = ctx
-        .w
-        .module_state_mut::<ServiceBook>()
-        .is_some_and(|book| book.record(service));
-    if !accepted {
+    let Some(book) = ctx.w.module_state_mut::<ServiceBook>() else {
         return;
-    }
+    };
+    // B8: the book is a bounded ring on `to`, not a silent drop.
+    let full = book.len() >= MAX_STATION_SERVICE_ROWS;
+    let evicted = book.record_evicting(service);
     ctx.out
         .defer(mush_core::Deferred::Persist(mush_core::ModuleOp {
             ns: SmolStr::new_static(crate::NS),
             op: mush_core::ModuleWrite::JsonSet { key, value },
         }));
+    if let Some((unit, station, actor)) = evicted {
+        ctx.out
+            .defer(mush_core::Deferred::Persist(mush_core::ModuleOp {
+                ns: SmolStr::new_static(crate::NS),
+                op: mush_core::ModuleWrite::Del {
+                    key: service_key(unit, &station, actor),
+                },
+            }));
+    }
+    if full {
+        // The census is reached: page once per fill, subject-deduped, on the
+        // `station-fallback census reached` precedent — never a silent return.
+        tracing::error!(
+            target: "sim",
+            subject = "sim:station-service-census",
+            runbook = %format!(
+                "the station-service book reached its {MAX_STATION_SERVICE_ROWS}-row census; the \
+                 oldest completed-service marker was evicted to make room. A settlement gated on \
+                 `sim.station.served` reads only the latest interval per (unit, station, actor), \
+                 so nothing live was lost — but if this recurs, raise the census or retire the \
+                 markers of resolved operations"
+            ),
+            "sim: the station-service census was reached and the oldest marker was evicted"
+        );
+    }
 }
 
 /// **`mush-sim`'s one `FactProvider` namespace** (D-E7-30: five crates, one
 /// namespace each; `with_facts` PANICS on a duplicate). It answers exactly one
-/// kind today — `sim.station.served`, keyed `"<unit>/<station>/<actor>"` — from
-/// the applied marker above, and `None` (unknown, and therefore unsatisfied) for
-/// everything else.
+/// kind today — `sim.station.served`, keyed
+/// `"<unit>/<station>/<actor>/<from>"` — from the applied marker above, and
+/// `None` (unknown, and therefore unsatisfied) for everything else.
+///
+/// **K4: the id is not nameable from public coordinates.** Cut 10 keyed the fact
+/// `"<unit>/<station>/<actor>"` — three *guessable public object ids* — and
+/// answered `satisfied`, `actor` and `at: service.to`, the exact IC second
+/// service ended, with no visibility, perception, operation-scope or covert
+/// guard anywhere in the path. `CampaignFactProvider::resolve` carries precisely
+/// that guard (cut 9's own fold B12: "a covert operation answers `None` … so a
+/// `fact` condition cannot be an existence and timing oracle") and cut 10
+/// registered `sim.*` as the fifth namespace re-using none of it. `mush-sim` has
+/// no campaign edge and cannot ask about an operation's visibility, so the guard
+/// is the **key**: the fourth term is the instant service BEGAN, which is
+/// published nowhere, so a party who does not hold the grant cannot name the
+/// fact at all.
 #[derive(Debug, Default)]
 pub struct SimFactProvider;
 
@@ -837,12 +1066,14 @@ impl mush_economy::FactProvider for SimFactProvider {
         let unit = ObjId(parts.next()?.trim_start_matches('#').parse::<u32>().ok()?);
         let station = StationId::new(parts.next()?)?;
         let actor = ObjId(parts.next()?.trim_start_matches('#').parse::<u32>().ok()?);
+        let from = parts.next()?.parse::<i64>().ok()?;
         if parts.next().is_some() {
             return None;
         }
         let service = w
             .module_state::<ServiceBook>()?
-            .get(unit, &station, actor)?;
+            .get(unit, &station, actor)
+            .filter(|service| service.from == from)?;
         Some(mush_economy::FactState {
             satisfied: service.to >= service.from,
             actor: Some(service.actor),

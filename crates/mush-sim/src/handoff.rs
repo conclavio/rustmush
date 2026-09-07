@@ -655,6 +655,21 @@ impl HandoffProvider {
                 //   * HELD by another -> a non-holder cannot relieve; no offer.
                 match holder {
                     None => actor_principal.clone(),
+                    // **E7 cut 10 independent verify fold, A10: a PROXY seat's
+                    // activation is not a relief.** This branch is reached with
+                    // `driving = true` for the new proxy focus as well as for the
+                    // manual `@station/handoff`, and cut 10 shared it — so when
+                    // the NPC ALREADY held the lease (the ordinary state after AI
+                    // control or a prior sortie) the activation was projected as
+                    // a relief handing `next_holder = declared_fallback`, moving
+                    // control *away* from the seat the human had just taken; and
+                    // when the fallback IS the NPC — the shape `+seat/offer`
+                    // always writes — it returned `Ok(None)` and the whole staged
+                    // submit was refused **after** the world had been mutated.
+                    // Neither is what activation means. Keeping the acting NPC as
+                    // `next_holder` makes `checked_request_handoff` answer
+                    // `NoControlChange`: no relief, and no refusal.
+                    Some(holder) if *holder == actor_principal && proxy => actor_principal.clone(),
                     Some(holder) if *holder == actor_principal => {
                         let Some(fallback) = declared_fallback(engine, unit, &station) else {
                             return Ok(None);

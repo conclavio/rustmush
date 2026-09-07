@@ -51,6 +51,11 @@ thiserror.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
+# Not a new crate edge: `mush-sim` is already a normal dependency (above). The
+# test build additionally turns on its `testkit` feature so the seat tests may
+# seed the world-owned lease MIRROR (fold B12 fences that writer out of the
+# production surface).
+mush-sim = { workspace = true, features = ["testkit"] }
 mush-testkit.workspace = true
 mush-faction.workspace = true
 mush-canon.workspace = true

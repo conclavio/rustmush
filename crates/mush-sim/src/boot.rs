@@ -361,7 +361,20 @@ pub(crate) fn load_boot(
                     match ha.check() {
                         Ok(()) => raw_assignments.push(ha),
                         Err(error) => {
-                            tracing::error!(%key, host = %ha.host, %error, "sim: over-cap assignment doc refused on load")
+                            // B4: HELD, never merely logged. The document stays on
+                            // disk and its host refuses every seat write, so the
+                            // next ordinary `@spatial/assign` cannot rebuild a
+                            // one-seat document over a 65-seat one staff have yet
+                            // to repair.
+                            tracing::error!(%key, host = %ha.host, %error, "sim: over-cap assignment doc refused on load and HELD");
+                            let reason = bounded_hold_reason(&error);
+                            st.held_assignments.insert(
+                                ha.host,
+                                crate::data::HeldPlacement {
+                                    key: key.clone(),
+                                    reason,
+                                },
+                            );
                         }
                     }
                 }
@@ -647,10 +660,35 @@ pub(crate) fn load_boot(
             .is_some_and(|o| !o.flags.contains(Flags::GOING))
     };
     let mut assigned_actors: BTreeSet<ObjId> = BTreeSet::new();
+    // **E7 cut 10 independent verify fold, A6 (decision E4(a)): no focus survives
+    // a boot, so no NARROWING may.**
+    //
+    // `StationAssignment.granted` is persisted in the exempt `assignment:<unit>`
+    // document and re-hydrated here, then republished through
+    // `refresh_actor_links` -> `desired_links` -> `granted_channels(spec)`.
+    // `FocusState` is deliberately never hydrated (D-E7-34) and `SeatAuditLog` is
+    // process-local (deviation (d)), so cut 10 brought every live proxy seat's
+    // station back **permanently narrowed with nobody driving it**: no focus, no
+    // re-activatable grant (the audit row is gone, so `+seat/activate` pages and
+    // refuses), and nothing anywhere reconciled the two — the withheld channels
+    // were simply missing from the whole crew chain for ever. It is the exact
+    // hazard `e7c10_g2` found and fixed for a *displaced* proxy focus, re-created
+    // by every restart. Boot is the one moment where "no focus is live" is
+    // provably true, so the narrowing is cleared here, before the derived indexes
+    // are rebuilt, and the cleared documents are persisted.
+    let mut repaired: Vec<ObjId> = Vec::new();
     for mut ha in raw_assignments {
         if !live(ha.host) {
             persist_del(ctx.out, crate::data::assignment_key(ha.host));
             continue;
+        }
+        let narrowed = ha.seats.values().any(|seat| seat.granted.is_some());
+        if narrowed {
+            for seat in ha.seats.values_mut() {
+                seat.granted = None;
+            }
+            repaired.push(ha.host);
+            persist_assignments(ctx.out, &ha);
         }
         let host = ha.host;
         let before = ha.seats.len();
@@ -669,6 +707,18 @@ pub(crate) fn load_boot(
         }
         assigned_actors.extend(ha.seats.values().map(|seat| seat.actor));
         st.assignments.insert(ha.host, ha);
+    }
+    if !repaired.is_empty() {
+        tracing::info!(
+            target: "sim",
+            units = %repaired
+                .iter()
+                .map(|id| format!("#{}", id.0))
+                .collect::<Vec<_>>()
+                .join(", "),
+            "sim: cleared orphaned proxy-seat channel narrowings at boot (no focus survives a \
+             restart, so no narrowing may)"
+        );
     }
     st.derived = rebuild(&st);
 

@@ -87,7 +87,7 @@ fn desired_links(st: &SpatialState, w: &World, actor: ObjId) -> Vec<ChannelGrant
 
 /// Recompute and republish `actor`'s `sim` control links from the current
 /// assignments. Idempotent.
-pub(crate) fn refresh_actor_links(w: &mut World, actor: ObjId) {
+pub fn refresh_actor_links(w: &mut World, actor: ObjId) {
     let desired = {
         let st = w
             .module_state::<SpatialState>()

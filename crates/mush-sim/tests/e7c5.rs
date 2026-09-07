@@ -1444,7 +1444,12 @@ fn vf_b3_stations_scan_is_bounded() {
             fx.locust.0
         ),
     );
-    for n in 0..80u32 {
+    // 60, not 80: the E7 cut 10 verify fold (B4) gives `MAX_SEATS_PER_UNIT` a
+    // WRITE-side refusal, so a host can no longer be crowded past its own
+    // load-refusing census. The property under test is unchanged — the `+stations`
+    // scan is bounded by the caller's OWN billets, not by the host's seat count —
+    // and 60 crowding seats plus `zpilot` still proves it.
+    for n in 0..60u32 {
         let crew = tw.spawn_player(&format!("Crew{n}"));
         let sid = format!("seat{n:03}");
         ok(
@@ -1468,7 +1473,7 @@ fn vf_b3_stations_scan_is_bounded() {
     );
     let out = ok(&mut tw, fx.pilot, "+stations");
     // Pilot sees their Atlas pilot billet and the Locust zpilot billet, and none
-    // of the 80 other-actor seats — the scan is bounded by Pilot's own billets.
+    // of the 60 other-actor seats — the scan is bounded by Pilot's own billets.
     assert!(out.contains("`pilot`"), "{out}");
     assert!(out.contains("`zpilot`"), "{out}");
     assert!(

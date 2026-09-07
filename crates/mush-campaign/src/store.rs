@@ -265,6 +265,14 @@ impl CampaignStore {
     }
 
     /// Every seat grant, in (operation, offer) order.
+    /// How many grants one operation carries (B10's counted cap).
+    #[must_use]
+    pub fn seat_grant_count(&self, operation: OperationId) -> usize {
+        self.seat_grants
+            .range((operation.0, 0)..=(operation.0, u64::MAX))
+            .count()
+    }
+
     pub fn seat_grants(&self) -> impl Iterator<Item = &SeatGrant> {
         self.seat_grants.values()
     }
@@ -315,6 +323,25 @@ impl CampaignStore {
 
     pub(crate) fn install_crew(&mut self, crew: CrewComplement) {
         self.crews.insert(crew.unit.0.0, crew);
+    }
+
+    /// **The muster ring** (E7 cut 10 fold, B1): keep this operation's newest
+    /// [`MAX_RETAINED_MUSTERS`] reports and return the cycles evicted, so the
+    /// caller can `Del` their documents in the same bundle. Only
+    /// [`CampaignStore::latest_muster`] reads the collection, so no history is
+    /// needed at all.
+    pub(crate) fn prune_musters(&mut self, operation: OperationId) -> Vec<u64> {
+        let doomed: Vec<u64> = self
+            .musters
+            .range((operation.0, 0)..=(operation.0, u64::MAX))
+            .rev()
+            .skip(crate::seat::MAX_RETAINED_MUSTERS)
+            .map(|((_, cycle), _)| *cycle)
+            .collect();
+        for cycle in &doomed {
+            self.musters.remove(&(operation.0, *cycle));
+        }
+        doomed
     }
 
     pub(crate) fn install_muster(&mut self, report: MusterReport) {
@@ -471,8 +498,20 @@ pub(crate) fn put_seat_offer(ctx: &mut Ctx<'_>, offer: SeatOffer) -> bool {
 }
 
 /// Install a seat grant into RAM and queue its document (the same discipline).
+///
+/// **B10: `MAX_SEAT_GRANTS_PER_OPERATION` has a refusal now.** It was declared,
+/// re-exported and enforced nowhere — the bound was achieved structurally (a
+/// grant is keyed `(operation, offer)` and offers are capped at mint), which is
+/// exactly the "documentation only" shape cut 9's fold struck. A NEW grant past
+/// the cap is refused here, at the one write path.
 pub(crate) fn put_seat_grant(ctx: &mut Ctx<'_>, grant: SeatGrant) -> bool {
     if grant.check().is_err() {
+        return false;
+    }
+    if let Some(store) = ctx.w.module_state::<CampaignStore>()
+        && store.seat_grant(grant.operation, grant.offer).is_none()
+        && store.seat_grant_count(grant.operation) >= crate::seat::MAX_SEAT_GRANTS_PER_OPERATION
+    {
         return false;
     }
     let key = seat_grant_key(grant.operation, grant.offer);
@@ -498,17 +537,33 @@ pub(crate) fn put_crew(ctx: &mut Ctx<'_>, crew: CrewComplement) -> bool {
     true
 }
 
-/// Install a muster report into RAM and queue its document.
+/// Install a muster report into RAM and queue its document, **evicting this
+/// operation's oldest reports past [`MAX_RETAINED_MUSTERS`] in the same bundle**
+/// (E7 cut 10 fold, B1). A superseded report is `Del`eted by policy — it is not
+/// a stored set truncated on load, which §4 rule 1 forbids.
 pub(crate) fn put_muster(ctx: &mut Ctx<'_>, report: MusterReport) -> bool {
     if report.check().is_err() {
         return false;
     }
+    let operation = report.operation;
     let key = muster_key(report.operation, report.cycle);
     let value = serde_json::to_value(&report).unwrap_or(serde_json::Value::Null);
-    if let Some(store) = ctx.w.module_state_mut::<CampaignStore>() {
-        store.install_muster(report);
-    }
+    let evicted = match ctx.w.module_state_mut::<CampaignStore>() {
+        Some(store) => {
+            store.install_muster(report);
+            store.prune_musters(operation)
+        }
+        None => Vec::new(),
+    };
     push(ctx.out, ModuleWrite::JsonSet { key, value });
+    for cycle in evicted {
+        push(
+            ctx.out,
+            ModuleWrite::Del {
+                key: muster_key(operation, cycle),
+            },
+        );
+    }
     true
 }
 
@@ -611,6 +666,27 @@ pub(crate) fn load(kv: Vec<(SmolStr, serde_json::Value)>) -> CampaignStore {
             }
         } else {
             tracing::warn!(%key, "campaign: unknown persisted key ignored");
+        }
+    }
+    // **B1: the boot hydration is bounded too.** A store written by a build
+    // without the ring can carry an unbounded muster book, and cut 10 installed
+    // every one it found — so the growth cost boot-time RAM as well as disk.
+    let operations: Vec<OperationId> = store
+        .musters
+        .keys()
+        .map(|(operation, _)| OperationId(*operation))
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    for operation in operations {
+        let dropped = store.prune_musters(operation).len();
+        if dropped > 0 {
+            tracing::warn!(
+                %operation,
+                dropped,
+                "campaign: muster book over the retention ring; the oldest reports were left on \
+                 disk and not hydrated"
+            );
         }
     }
     store

@@ -56,12 +56,20 @@ impl SeatAuditHolder {
     }
 }
 
-/// Record `token -> account` outside the world. `false` = refuse the grant.
-pub(crate) fn audit_record(ctx: &mut mush_core::Ctx<'_>, token: &str, account: AccountId) -> bool {
+/// **Mint the opaque driver token and record `token -> account` outside the
+/// world.** `None` = refuse the grant; the token itself is minted server-side
+/// from `seed` plus a process-scoped nonce, so the world cannot recompute it
+/// (fold E7(a)/K5).
+pub(crate) fn audit_record(
+    ctx: &mut mush_core::Ctx<'_>,
+    seed: &str,
+    account: AccountId,
+) -> Option<SmolStr> {
     ctx.w
         .module_state::<SeatAuditHolder>()
         .and_then(|holder| holder.0.clone())
-        .is_some_and(|audit| audit.record(token, account))
+        .and_then(|audit| audit.record(seed, account))
+        .map(|token| SmolStr::new(&token))
 }
 
 /// Whether an attribution row exists — a boolean, never an identity.
@@ -70,6 +78,52 @@ pub(crate) fn audit_knows(ctx: &mush_core::Ctx<'_>, token: &str) -> bool {
         .module_state::<SeatAuditHolder>()
         .and_then(|holder| holder.0.as_ref())
         .is_some_and(|audit| audit.knows(token))
+}
+
+/// **Whether the row for `token` names `account`** (fold A2/A5).
+///
+/// Cut 10's only attribution question was [`audit_knows`] — "does ANY row
+/// exist" — so a second account activated a grant somebody else accepted and the
+/// one attribution row named a person who was not driving, and `+seat/leave`
+/// stood down whichever grant sorted first on the station rather than the
+/// caller's own. This is the identity question, asked **inside** the seam: the
+/// account id never leaves this function and is never rendered.
+pub(crate) fn audit_is(ctx: &mush_core::Ctx<'_>, token: &str, account: AccountId) -> bool {
+    ctx.w
+        .module_state::<SeatAuditHolder>()
+        .and_then(|holder| holder.0.as_ref())
+        .and_then(|audit| audit.account_for(token))
+        == Some(account)
+}
+
+/// **The staff attribution answer** (fold K6): whether `token`'s row names the
+/// same account as `who`'s character, without either id leaving this function.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub(crate) enum AuditVerdict {
+    /// The row names that character's account.
+    Same,
+    /// The row names a different account.
+    Different,
+    /// There is no row, or the character's account cannot be resolved.
+    Unknown,
+}
+
+/// Resolve one attribution question for the staff verb. Prints nothing, returns
+/// no id.
+pub(crate) fn audit_verdict(ctx: &mush_core::Ctx<'_>, token: &str, who: ObjId) -> AuditVerdict {
+    let Some(row) = ctx
+        .w
+        .module_state::<SeatAuditHolder>()
+        .and_then(|holder| holder.0.as_ref())
+        .and_then(|audit| audit.account_for(token))
+    else {
+        return AuditVerdict::Unknown;
+    };
+    match account_of(ctx, who) {
+        Some(account) if account == row => AuditVerdict::Same,
+        Some(_) => AuditVerdict::Different,
+        None => AuditVerdict::Unknown,
+    }
 }
 
 /// Forget a terminal grant's row.
@@ -144,6 +198,8 @@ pub(crate) fn take_muster(
     doc: &OperationDoc,
     lock: bool,
 ) -> MusterReport {
+    // `take_muster` is called **only** from `+muster`; the tick's two arms are
+    // `observe_activations` and `expire_grants` (fold correction (4)).
     let cycle = ctx
         .w
         .module_state::<CampaignStore>()
@@ -168,6 +224,12 @@ pub(crate) fn take_muster(
         .unwrap_or_default();
     let mut slots: Vec<MusterSlot> = Vec::new();
     let mut accounts: Vec<Option<AccountId>> = Vec::new();
+    // A9: the player-held slots DO name characters, so the distinctness oracle
+    // itself answers over them — `AccountOracle::all_accounts_distinct` had no
+    // production caller at all before this fold. A proxy slot names no character
+    // (the focus is keyed by account), so its half still compares accounts, and
+    // neither id ever leaves this function.
+    let mut characters: Vec<ObjId> = Vec::new();
     let mut visited = 0usize;
     for participant in &doc.runtime.participants {
         if visited >= MAX_MUSTER_SLOTS {
@@ -198,6 +260,7 @@ pub(crate) fn take_muster(
                 Some(actor) => match ctx.w.get(actor).map(|object| object.kind) {
                     Some(mush_core::ObjKind::Player) => {
                         accounts.push(account_of(ctx, actor));
+                        characters.push(actor);
                         SlotFill::Player
                     }
                     Some(mush_core::ObjKind::Npc) => SlotFill::AiNpc,
@@ -213,11 +276,18 @@ pub(crate) fn take_muster(
     }
     // **Only the verdict is stored** (Q11A/R3/C23A/C24A). An unknown account
     // makes the verdict `None`, which **fails closed** at roster lock.
-    let accounts_distinct = if accounts.iter().any(Option::is_none) {
-        None
-    } else {
-        let mut seen = std::collections::BTreeSet::new();
-        Some(accounts.iter().flatten().all(|id| seen.insert(*id)))
+    let players_distinct = ctx
+        .w
+        .module_state::<mush_sim::AccountOracle>()
+        .and_then(|oracle| oracle.all_accounts_distinct(&characters));
+    let accounts_distinct = match players_distinct {
+        None => None,
+        Some(false) => Some(false),
+        Some(true) if accounts.iter().any(Option::is_none) => None,
+        Some(true) => {
+            let mut seen = std::collections::BTreeSet::new();
+            Some(accounts.iter().flatten().all(|id| seen.insert(*id)))
+        }
     };
     MusterReport {
         operation: doc.id(),
@@ -238,7 +308,10 @@ pub(crate) fn take_muster(
 /// world-side seam on a scheduled authoritative commit (the cut-6 kernel fact).
 /// The epoch recorded is the unit's control generation the seat was observed
 /// live under — the exact value `World::channel_grant_is_current` compares, so a
-/// revocation's bump makes it stale by construction.
+/// revocation's bump makes it stale by construction. **B11 (fold):** that was
+/// the justification and there was no comparison anywhere — the only match on
+/// the variant discarded the payload. `seatcmd::seat_activate` compares it now,
+/// and a grant recorded under a generation the unit has bumped past is stale.
 ///
 /// Bounded on grants **visited**; a re-run past the applied point is a no-op, so
 /// a reboot re-running the sweep changes nothing.
@@ -298,18 +371,39 @@ pub(crate) fn observe_activations(ctx: &mut mush_core::Ctx<'_>, budget: usize) -
 
 /// Expire every dormant grant whose offer has lapsed, and every grant on a
 /// terminal operation. **A `Dormant` grant on an aborted operation expires
-/// rather than surviving to a later one.** Bounded on grants visited.
+/// rather than surviving to a later one.** Bounded on grants **worked**.
+///
+/// ## What the fold changed
+///
+/// **B2 — the budget bounds work, not the scan.** Cut 10 read
+/// `.filter(!is_terminal).take(budget).filter(stale)`, so the staleness
+/// predicate ran *after* the take and the arm kept no cursor: with 32 healthy
+/// non-terminal grants ahead of it, a grant on an aborted operation never
+/// expired and the reaper re-visited the same prefix for ever. The predicate now
+/// runs inside the same `filter`, and `.take(budget)` is last.
+///
+/// **A4 — a LIVE seat is stood down before it is expired.** Cut 10 wrote
+/// `Expired` and called `audit_forget` while the billet, the narrowing, the
+/// proxy focus and the K6 lease all survived — after which `+seat/leave`
+/// answered "You are driving no seat" and `@seat/revoke` refused on
+/// `is_terminal()`, so control persisted un-attributed with no exit but a
+/// disconnect. The sweep now stands the seat down **through the one seam**
+/// (`request_seat_activation(&SeatRequest::Revoke { .. })`) before writing
+/// `Expired` and before forgetting the row, at most one staged submit per actor
+/// per fire (cut 2's fold C4), and **when the revoke itself refuses the grant is
+/// left non-terminal and staff are paged** rather than expired anyway.
 pub(crate) fn expire_grants(ctx: &mut mush_core::Ctx<'_>, budget: usize) -> usize {
     let now = ctx.w.world_ic_now();
-    let stale: Vec<crate::seat::SeatGrant> = {
+    let stale: Vec<(crate::seat::SeatGrant, Option<(ObjId, SmolStr)>)> = {
         let Some(store) = ctx.w.module_state::<CampaignStore>() else {
             return 0;
         };
         store
             .seat_grants()
-            .filter(|grant| !grant.state.is_terminal())
-            .take(budget)
             .filter(|grant| {
+                if grant.state.is_terminal() {
+                    return false;
+                }
                 let operation_over = store
                     .operation(grant.operation)
                     .is_none_or(|doc| doc.runtime.state.is_terminal());
@@ -318,11 +412,28 @@ pub(crate) fn expire_grants(ctx: &mut mush_core::Ctx<'_>, budget: usize) -> usiz
                     .is_none_or(|offer| offer.is_expired(&now));
                 operation_over || (matches!(grant.state, GrantState::Dormant) && offer_lapsed)
             })
-            .cloned()
+            .take(budget)
+            .map(|grant| {
+                let target = store
+                    .seat_offer(grant.operation, grant.offer)
+                    .map(|offer| (offer.scope.unit.0, offer.scope.station.clone()));
+                (grant.clone(), target)
+            })
             .collect()
     };
     let mut expired = 0usize;
-    for grant in stale {
+    let mut stood_down: std::collections::BTreeSet<ObjId> = std::collections::BTreeSet::new();
+    for (grant, target) in stale {
+        if seat_is_live(ctx, &grant) {
+            // One staged submit per actor per drain: a second live seat on the
+            // same NPC waits for the next fire rather than voiding this one.
+            if !stood_down.insert(grant.actor.0) {
+                continue;
+            }
+            if !release_expiring_seat(ctx, &grant, target) {
+                continue;
+            }
+        }
         let token = grant.driver.0.to_string();
         let mut done = grant;
         done.state = GrantState::Expired;
@@ -332,6 +443,66 @@ pub(crate) fn expire_grants(ctx: &mut mush_core::Ctx<'_>, budget: usize) -> usiz
         }
     }
     expired
+}
+
+/// Whether a grant is somebody's live seat right now: `Active`, or its NPC
+/// carries a proxy focus (an `Active` grant across a restart has the billet and
+/// the narrowing but no focus, and must still be stood down).
+fn seat_is_live(ctx: &mush_core::Ctx<'_>, grant: &crate::seat::SeatGrant) -> bool {
+    if matches!(grant.state, GrantState::Active { .. }) {
+        return true;
+    }
+    ctx.w
+        .module_state::<mush_sim::FocusState>()
+        .and_then(|state| state.focus_of_actor(grant.actor.0))
+        .is_some_and(|focus| focus.proxy)
+}
+
+/// Stand one expiring seat down through the ONE seam. `false` = the revoke
+/// refused, staff were paged, and the caller must leave the grant non-terminal.
+fn release_expiring_seat(
+    ctx: &mut mush_core::Ctx<'_>,
+    grant: &crate::seat::SeatGrant,
+    target: Option<(ObjId, SmolStr)>,
+) -> bool {
+    let target = target.or_else(|| {
+        ctx.w
+            .module_state::<mush_sim::FocusState>()
+            .and_then(|state| state.focus_of_actor(grant.actor.0))
+            .filter(|focus| focus.proxy)
+            .map(|focus| (focus.unit, SmolStr::new(focus.station.as_str())))
+    });
+    let refused = match target {
+        Some((unit, station)) => match mush_sim::StationId::new(station.as_str()) {
+            Some(station) => mush_sim::request_seat_activation(
+                ctx,
+                &mush_sim::SeatRequest::Revoke {
+                    unit,
+                    station,
+                    npc: grant.actor.0,
+                },
+            )
+            .is_err(),
+            None => true,
+        },
+        None => true,
+    };
+    if refused {
+        crate::settle::page(
+            ctx,
+            SmolStr::new(format!("seat:{}:{}", grant.operation.0, grant.offer.0)),
+            "an operation ended while a seat was still being driven and the seat could not be \
+             stood down",
+            &format!(
+                "seat {} on operation {} is still live after its operation ended, and the \
+                 automatic stand-down refused. The grant is deliberately left NON-TERMINAL so it \
+                 still has an exit: end it with `@seat/revoke {}/{}`",
+                grant.offer, grant.operation, grant.operation.0, grant.offer.0
+            ),
+        );
+        return false;
+    }
+    true
 }
 
 /// The unit a seat drives, for the muster's own bounded scan.

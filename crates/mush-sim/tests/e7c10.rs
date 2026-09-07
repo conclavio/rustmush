@@ -185,6 +185,39 @@ fn is_current(tw: &TestWorld, actor: ObjId, unit: ObjId, station: &str, channel:
     )
 }
 
+/// Seed one seat's `granted` narrowing directly into live state and republish.
+///
+/// **Why not through a reboot any more.** The E7 cut 10 verify fold (A6) makes
+/// boot CLEAR every `granted` set: `FocusState` is never hydrated (D-E7-34) and
+/// the audit log is process-local, so a narrowing that survived a restart left
+/// its station permanently narrowed with nobody driving it and no grant anybody
+/// could re-activate to clear it. Boot is the one moment where "no focus is
+/// live" is provably true, so it is where the narrowing is reconciled — and
+/// these tests therefore install one the way an activation does, in RAM,
+/// followed by the one production republish.
+fn seed_narrowing(tw: &mut TestWorld, unit: ObjId, station: &str, granted: Option<Vec<&str>>) {
+    let id = mush_sim::StationId::new(station).expect("a station id");
+    let actor = {
+        let state = tw
+            .world_mut()
+            .module_state_mut::<SpatialState>()
+            .expect("sim state");
+        let seat = state
+            .assignments
+            .get_mut(&unit)
+            .and_then(|ha| ha.seats.get_mut(&id))
+            .expect("the fixture seated that station");
+        seat.granted = granted.map(|channels| {
+            channels
+                .into_iter()
+                .filter_map(ChannelId::new)
+                .collect::<std::collections::BTreeSet<_>>()
+        });
+        seat.actor
+    };
+    mush_sim::links::refresh_actor_links(tw.world_mut(), actor);
+}
+
 /// Patch one seat of the folded `assignment:<unit>` document.
 fn patch_seat(
     kv: &mut [(SmolStr, serde_json::Value)],
@@ -216,11 +249,8 @@ fn e7c10_b1_a_narrower_granted_set_limits_the_seat_exactly() {
         granted_channels(&tw, fx.pilot, fx.atlas, "pilot"),
         vec!["fire".to_owned(), "movement".to_owned()]
     );
-    let mut kv = fold_kv(&mut tw);
-    patch_seat(&mut kv, fx.atlas, "pilot", |seat| {
-        seat["granted"] = serde_json::json!(["movement"]);
-    });
-    let (tw2, fx2) = reboot_with(kv);
+    seed_narrowing(&mut tw, fx.atlas, "pilot", Some(vec!["movement"]));
+    let (tw2, fx2) = (tw, fx);
     // The OBSERVABLE outcome: the republished grant a resolver reads carries
     // exactly the intersection, and `channel_grant_is_current` — the one
     // predicate every stale-intent and offer check consults — answers true for
@@ -274,11 +304,8 @@ fn e7c10_b1_a_granted_set_disjoint_from_the_station_grants_nothing() {
     // The intersection is the whole rule: a seat cannot be handed a channel its
     // station does not carry, so a forged document buys no authority.
     let (mut tw, fx) = scene();
-    let mut kv = fold_kv(&mut tw);
-    patch_seat(&mut kv, fx.atlas, "pilot", |seat| {
-        seat["granted"] = serde_json::json!(["scuttle"]);
-    });
-    let (tw2, fx2) = reboot_with(kv);
+    seed_narrowing(&mut tw, fx.atlas, "pilot", Some(vec!["scuttle"]));
+    let (tw2, fx2) = (tw, fx);
     assert!(
         granted_channels(&tw2, fx2.pilot, fx2.atlas, "pilot").is_empty(),
         "a channel the station does not carry is not granted by naming it"
@@ -622,11 +649,8 @@ fn e7c10_p5_the_sim_export_surface_is_exactly_two_seam_functions() {
 #[test]
 fn e7c10_b1_a_going_unit_publishes_no_seat_grant_however_narrow() {
     let (mut tw, fx) = scene();
-    let mut kv = fold_kv(&mut tw);
-    patch_seat(&mut kv, fx.atlas, "pilot", |seat| {
-        seat["granted"] = serde_json::json!(["movement"]);
-    });
-    let (mut tw2, fx2) = reboot_with(kv);
+    seed_narrowing(&mut tw, fx.atlas, "pilot", Some(vec!["movement"]));
+    let (mut tw2, fx2) = (tw, fx);
     assert_eq!(
         granted_channels(&tw2, fx2.pilot, fx2.atlas, "pilot"),
         vec!["movement".to_owned()]
@@ -643,5 +667,320 @@ fn e7c10_b1_a_going_unit_publishes_no_seat_grant_however_narrow() {
     assert!(
         granted_channels(&tw2, fx2.pilot, fx2.atlas, "pilot").is_empty(),
         "a GOING unit publishes nothing at all"
+    );
+}
+
+// ---- E7 cut 10 independent verify fold ----
+
+/// **A6. Boot clears an orphaned proxy-seat narrowing, and persists it.**
+///
+/// `granted` is persisted in the exempt `assignment:<unit>` document and
+/// re-hydrated, then republished through `refresh_actor_links` ->
+/// `desired_links` -> `granted_channels(spec)`. `FocusState` is deliberately
+/// never hydrated (D-E7-34) and the audit log is process-local, so a restart
+/// brought every live proxy seat's station back **permanently narrowed with
+/// nobody driving it**, and nothing anywhere reconciled the two. The observable
+/// is the republished grant, `channel_grant_is_current` per channel, and the
+/// document's own re-persisted bytes.
+#[test]
+fn vf_a6_boot_clears_an_orphaned_seat_narrowing_and_persists_the_repair() {
+    let (mut tw, fx) = scene();
+    seed_narrowing(&mut tw, fx.atlas, "pilot", Some(vec!["movement"]));
+    assert_eq!(
+        granted_channels(&tw, fx.pilot, fx.atlas, "pilot"),
+        vec!["movement".to_owned()]
+    );
+    // Persist the narrowed document, then boot on it.
+    let mut kv = fold_kv(&mut tw);
+    patch_seat(&mut kv, fx.atlas, "pilot", |seat| {
+        seat["granted"] = serde_json::json!(["movement"]);
+    });
+    let (mut tw2, fx2) = reboot_with(kv);
+    assert_eq!(
+        granted_channels(&tw2, fx2.pilot, fx2.atlas, "pilot"),
+        vec!["fire".to_owned(), "movement".to_owned()],
+        "the station came back narrowed with no focus and no grant to clear it"
+    );
+    assert!(is_current(&tw2, fx2.pilot, fx2.atlas, "pilot", "fire"));
+    // The repair is PERSISTED, not only made in RAM: the next boot must not have
+    // to make it again.
+    let after = fold_kv(&mut tw2);
+    let doc = after
+        .iter()
+        .find(|(k, _)| k.as_str() == format!("assignment:{}", fx2.atlas.0))
+        .map(|(_, v)| v.clone())
+        .expect("the repaired assignment document was persisted");
+    assert!(
+        doc["seats"]["pilot"].get("granted").is_none(),
+        "the cleared narrowing must reach the store: {doc}"
+    );
+}
+
+/// **B4a. A seat past `MAX_SEATS_PER_UNIT` is refused at the WRITE** (ENCODED
+/// through the real command path).
+///
+/// The cap was enforced only by `boot.rs`'s decode, and neither production
+/// writer counted seats — so `MAX_SEATS_PER_UNIT + 1` `@spatial/station` +
+/// `@spatial/assign` pairs stored a document the next boot refused **whole**,
+/// dropping every billet on the unit and every `ChannelGrant` they published.
+#[test]
+fn vf_b4a_a_sixty_fifth_seat_is_refused_at_the_write() {
+    let (mut tw, fx) = scene();
+    // One seat already exists (`pilot`), so this fills the census exactly.
+    for n in 1..MAX_SEATS_PER_UNIT {
+        let crew = tw.spawn_player(&format!("Crew{n}"));
+        let sid = format!("seat{n:03}");
+        ok(
+            &mut tw,
+            &format!(
+                "@spatial/station #{}={sid},gunner,channels:fire",
+                fx.atlas.0
+            ),
+        );
+        ok(
+            &mut tw,
+            &format!("@spatial/assign #{}={sid},#{}", fx.atlas.0, crew.0),
+        );
+    }
+    assert_eq!(
+        state(&tw).assignments[&fx.atlas].seats.len(),
+        MAX_SEATS_PER_UNIT
+    );
+    let crew = tw.spawn_player("OneTooMany");
+    ok(
+        &mut tw,
+        &format!(
+            "@spatial/station #{}=spare,gunner,channels:fire",
+            fx.atlas.0
+        ),
+    );
+    let events = tw.run(
+        GOD,
+        &format!("@spatial/assign #{}=spare,#{}", fx.atlas.0, crew.0),
+    );
+    assert!(
+        has_error(&events),
+        "the write path stored what the load refuses: {}",
+        texts(&events)
+    );
+    assert_eq!(
+        state(&tw).assignments[&fx.atlas].seats.len(),
+        MAX_SEATS_PER_UNIT,
+        "the refused write must leave the stored census exactly at the cap"
+    );
+    // …and what IS stored is a document the load path accepts, which is the
+    // whole point: the write path can never store what the load refuses.
+    assert!(state(&tw).assignments[&fx.atlas].check().is_ok());
+}
+
+/// **B4b. A refused assignment document is HELD and not overwritten** (ENCODED).
+///
+/// Unlike `placement:` (which goes to `held_placements`) and unlike the campaign
+/// lane (`CampaignStore::hold`), the over-cap assignment document was only
+/// `tracing::error!`ed — held nowhere — so the very next ordinary
+/// `@spatial/assign` rebuilt the document from the empty RAM map and overwrote a
+/// full-crew document with a one-seat one. §4.1's "refuses on load and is held"
+/// was false of exactly this record.
+#[test]
+fn vf_b4b_a_refused_assignment_document_is_held_and_not_overwritten() {
+    let (mut tw, fx) = scene();
+    let mut kv = fold_kv(&mut tw);
+    let key = SmolStr::new(format!("assignment:{}", fx.atlas.0));
+    let doc = kv
+        .iter_mut()
+        .find(|(k, _)| *k == key)
+        .map(|(_, v)| v)
+        .expect("assignment doc");
+    let seats = doc["seats"].as_object_mut().expect("seats object");
+    let template = seats["pilot"].clone();
+    for n in 0..=MAX_SEATS_PER_UNIT {
+        seats.insert(format!("seat{n}"), template.clone());
+    }
+    let (mut tw2, fx2) = reboot_with(kv);
+    assert!(
+        !state(&tw2).assignments.contains_key(&fx2.atlas),
+        "the over-cap document is refused whole"
+    );
+    assert!(
+        state(&tw2).held_assignment(fx2.atlas).is_some(),
+        "…and HELD, so staff can repair it"
+    );
+    // An ordinary write on the held host refuses, and writes NOTHING.
+    let events = tw2.run(
+        GOD,
+        &format!("@spatial/assign #{}=pilot,#{}", fx2.atlas.0, fx2.pilot.0),
+    );
+    assert!(has_error(&events), "{}", texts(&events));
+    let after = fold_kv(&mut tw2);
+    assert!(
+        !after.iter().any(|(k, _)| *k == key),
+        "an ordinary write clobbered a document staff have yet to repair"
+    );
+}
+
+/// **B8. A full service book EVICTS the oldest marker rather than dropping the
+/// new one.** `record_service` called `ServiceBook::record` and simply
+/// **returned** on `false`, with no `tracing` line at all — so past 4 096
+/// distinct `(unit, station, actor)` triples completed service stopped being
+/// recorded for ever, `sim.station.served` answered `None` (unknown =
+/// unsatisfied) and a settlement gated on it silently stopped paying.
+#[test]
+fn vf_b8_a_full_service_book_evicts_the_oldest_rather_than_dropping_the_newest() {
+    use mush_sim::{MAX_STATION_SERVICE_ROWS, ServiceBook, StationService};
+    let station = mush_sim::StationId::new("pilot").expect("a station id");
+    let mut book = ServiceBook::default();
+    for n in 0..MAX_STATION_SERVICE_ROWS {
+        let service = StationService {
+            unit: ObjId(1),
+            station: station.clone(),
+            actor: ObjId(n as u32 + 1),
+            from: n as i64,
+            to: n as i64 + 1,
+        };
+        assert!(book.record(service));
+    }
+    assert_eq!(book.len(), MAX_STATION_SERVICE_ROWS);
+    // Cut 10's arm: the new marker is simply lost.
+    assert!(
+        !book.clone().record(StationService {
+            unit: ObjId(1),
+            station: station.clone(),
+            actor: ObjId(999_999),
+            from: 10_000,
+            to: 10_001,
+        }),
+        "the load-path arm still refuses, which is what boot wants"
+    );
+    // The runtime arm: the oldest goes, the newest is present, and the caller
+    // learns which key to `Del`.
+    let evicted = book.record_evicting(StationService {
+        unit: ObjId(1),
+        station: station.clone(),
+        actor: ObjId(999_999),
+        from: 10_000,
+        to: 10_001,
+    });
+    assert_eq!(
+        evicted,
+        Some((ObjId(1), station.clone(), ObjId(1))),
+        "the oldest completed interval is the one evicted"
+    );
+    assert_eq!(book.len(), MAX_STATION_SERVICE_ROWS);
+    assert!(book.get(ObjId(1), &station, ObjId(999_999)).is_some());
+    assert!(book.get(ObjId(1), &station, ObjId(1)).is_none());
+}
+
+/// **B9. A malformed `station_service` marker refuses on load.** §4.1's cut-10
+/// row says all five records are "each behind a strict `TryFrom` wire re-running
+/// its caps"; this one carried only `deny_unknown_fields`, so `from` and `to`
+/// were unbounded `i64`s decoded straight from disk and a forged marker with
+/// `to == i64::MAX` answered `satisfied: true` at an arbitrary instant.
+#[test]
+fn vf_b9_a_malformed_station_service_marker_refuses_on_load() {
+    use mush_sim::StationService;
+    let good = serde_json::json!({
+        "unit": 1, "station": "pilot", "actor": 2, "from": 10, "to": 20,
+    });
+    assert!(serde_json::from_value::<StationService>(good).is_ok());
+    for bad in [
+        serde_json::json!({ "unit": 1, "station": "pilot", "actor": 2, "from": 10, "to": 0 }),
+        serde_json::json!({ "unit": 1, "station": "pilot", "actor": 2, "from": -1, "to": 5 }),
+    ] {
+        assert!(
+            serde_json::from_value::<StationService>(bad.clone()).is_err(),
+            "an insane interval must refuse on load: {bad}"
+        );
+    }
+}
+
+/// **B12. `ControlLeaseView` exposes no unfenced writer.**
+/// `World::module_state_mut::<T>()` is generic and not owner-scoped, so while
+/// `note_holder` was an unconditional `pub fn` any crate could write false
+/// holders into the sole input of `channel_lease_holder` — the K6 gate's leg (2)
+/// and `observe_activations`' promotion predicate.
+#[test]
+fn vf_b12_the_lease_mirror_exposes_no_unfenced_writer() {
+    let seat = production_sources()
+        .into_iter()
+        .find(|(path, _)| path.ends_with("mush-sim/src/seat.rs"))
+        .map(|(_, text)| text)
+        .expect("seat.rs");
+    // Only the mirror's own `impl` block, which is what the K6 gate reads.
+    let start = seat
+        .find("impl ControlLeaseView {")
+        .expect("the mirror's impl block");
+    let body = &seat[start..];
+    let end = body
+        .find(
+            "
+}
+",
+        )
+        .map_or(body.len(), |at| at + 2);
+    let lines: Vec<&str> = body[..end].lines().collect();
+    let mut offenders: Vec<&str> = Vec::new();
+    for (n, line) in lines.iter().enumerate() {
+        let code = line.trim_start();
+        // A `&mut self` method on the mirror must sit behind the testkit fence.
+        if !code.starts_with("pub fn ") || !code.contains("&mut self") {
+            continue;
+        }
+        let fenced = lines[..n]
+            .iter()
+            .rev()
+            .take(3)
+            .any(|prior| prior.contains("#[cfg(any(test, feature = \"testkit\"))]"));
+        if !fenced {
+            offenders.push(line);
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "an unfenced mirror writer is a production write path into the K6 gate: {offenders:?}"
+    );
+}
+
+/// **Deviation (m)'s standing probe** (added by the E7 cut 10 independent verify
+/// fold, which re-confirmed the deviation sound and attached this constraint):
+/// **the seat lane names no `HoldPurpose` and posts nothing to the economy.**
+///
+/// `CrewComplement.obligation` is a slot with a render-only reader and no
+/// writer, and §4.0h's "the engine-owned reservation rule does not bind cut 10"
+/// is exactly true *because* cut 10 places no hold. The day a readiness
+/// obligation lands, its kind must join `ENGINE_OWNED_RESERVATIONS` — so this
+/// probe forces the carve-out question rather than letting one appear quietly.
+#[test]
+fn vf_m_the_seat_lane_names_no_hold_purpose_and_posts_nothing() {
+    let lane = [
+        "mush-campaign/src/seat.rs",
+        "mush-campaign/src/seatcmd.rs",
+        "mush-campaign/src/seatstate.rs",
+        "mush-sim/src/seat.rs",
+    ];
+    let banned = [
+        "HoldPurpose",
+        "mush_economy::post",
+        "Reservation {",
+        "HoldOp::",
+    ];
+    let mut offenders: Vec<String> = Vec::new();
+    for (path, text) in production_sources() {
+        if !lane.iter().any(|tail| path.ends_with(tail)) {
+            continue;
+        }
+        for line in text.lines() {
+            let code = line.trim_start();
+            if code.starts_with("//") || code.starts_with("///") {
+                continue;
+            }
+            if banned.iter().any(|needle| code.contains(needle)) {
+                offenders.push(format!("{path}: {code}"));
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "the seat lane reached the economy; the ENGINE_OWNED_RESERVATIONS carve-out question is \
+         now open (10b §3.10 deviation (m)): {offenders:?}"
     );
 }

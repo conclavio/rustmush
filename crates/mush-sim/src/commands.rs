@@ -1345,6 +1345,25 @@ fn spatial_assign(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             "That host has no such station (@spatial/station first).",
         ));
     }
+    // **B4: the write path can never store what the load refuses.**
+    // `MAX_SEATS_PER_UNIT` was enforced only in `boot.rs`'s decode, and neither
+    // production writer counted seats — so 65 `@spatial/station`+`@spatial/assign`
+    // pairs stored a document the next boot refused WHOLE, dropping all 65 billets
+    // and every `ChannelGrant` they published.
+    if st(ctx).held_assignment(host).is_some() {
+        return Err(CmdError::msg(
+            "That host's seat document was refused on load and is held for repair; staff must \
+             repair it before its stations can be re-crewed.",
+        ));
+    }
+    if st(ctx).assignments.get(&host).is_some_and(|ha| {
+        !ha.seats.contains_key(&station) && ha.seats.len() >= crate::data::MAX_SEATS_PER_UNIT
+    }) {
+        return Err(CmdError::msg(format!(
+            "That host already carries {} seats, the most one unit may hold.",
+            crate::data::MAX_SEATS_PER_UNIT
+        )));
+    }
     if let Some(a) = st(ctx).assignments.get(&host)
         && a.seats
             .get(&station)

@@ -82,10 +82,10 @@ pub use render::{
 };
 pub use seat::{
     CrewComplement, DriverToken, EligibilitySpec, FallbackSpec, GrantState, MAX_CREW_NAMED,
-    MAX_MUSTER_SLOTS, MAX_SEAT_CHANNELS, MAX_SEAT_GRANTS_PER_OPERATION, MAX_SEAT_LABEL_BYTES,
-    MAX_SEAT_OFFERS_PER_OPERATION, MusterReport, MusterSlot, RevocationTerms, SEAT_OFFER_TTL_SECS,
-    SeatGrant, SeatOffer, SeatOfferId, SeatRecordError, SeatScope, SlotFill, crew_key, muster_key,
-    seat_consent_hash, seat_grant_key, seat_offer_key,
+    MAX_MUSTER_SLOTS, MAX_RETAINED_MUSTERS, MAX_SEAT_CHANNELS, MAX_SEAT_GRANTS_PER_OPERATION,
+    MAX_SEAT_LABEL_BYTES, MAX_SEAT_OFFERS_PER_OPERATION, MusterReport, MusterSlot, RevocationTerms,
+    SEAT_OFFER_TTL_SECS, SeatGrant, SeatOffer, SeatOfferId, SeatRecordError, SeatScope, SlotFill,
+    crew_key, muster_key, seat_consent_hash, seat_grant_key, seat_offer_key,
 };
 pub use seatcmd::{NO_SUCH_CREW, NO_SUCH_SEAT};
 pub use seatstate::SeatAuditHolder;
@@ -98,7 +98,9 @@ pub use store::{
     MAX_OPERATIONS_PER_ISSUER, META_KEY, NS, TickStats,
 };
 pub use terms::operation_consent_hash;
-pub use tick::{MAX_VISITED_PER_FIRE, MAX_WORKED_PER_FIRE, TICK_PERIOD_SECS, TICK_TAG};
+pub use tick::{
+    MAX_SEATS_PER_FIRE, MAX_VISITED_PER_FIRE, MAX_WORKED_PER_FIRE, TICK_PERIOD_SECS, TICK_TAG,
+};
 
 /// The campaign module. Hand one to the composition root.
 #[derive(Default)]

@@ -26,6 +26,14 @@ smol_str.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 
+[features]
+# E7 cut 10 independent verify fold, B12: `ControlLeaseView::note_holder` is a
+# MIRROR seeder, never authority, and `World::module_state_mut::<T>()` is generic
+# and not owner-scoped - so an unconditional `pub fn` let any crate write false
+# holders into the sole input of the K6 gate's leg (2). It is fenced behind this
+# feature; only test compositions turn it on.
+testkit = []
+
 [dev-dependencies]
 futures.workspace = true
 mush-org.workspace = true
