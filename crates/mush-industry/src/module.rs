@@ -607,6 +607,17 @@ impl GameModule for IndustryModule {
             Arc::new(
                 move |ctx: &mut ModuleCtx<'_>, _tag: &str, _scene: Option<mush_core::SceneId>| {
                     crate::store::reconcile(ctx, &sweep_families);
+                    // ---- E7r1: R1 — the budget settlement arm ----
+                    //
+                    // A SECOND ARM on this EXISTING Coarse tick, never a second
+                    // tick, clock, pulse or schedule source: `wo_deliver` runs in
+                    // `prepare_authoritative` with no `Ctx`, so the terminal capture
+                    // cannot happen at the transition. It stages no authoritative
+                    // submission — every post rides the economy's own carve-out lane
+                    // — so the tick-cadence rule cannot bind this tick, and it
+                    // carries its own visit/settle budgets so it can never starve
+                    // the reconcile above.
+                    crate::money::sweep(ctx, &sweep_families);
                 },
             ),
         )?;

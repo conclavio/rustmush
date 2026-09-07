@@ -169,6 +169,10 @@ pub struct LegDef {
     to: ObjId,
     /// Unladen seconds at nominal thrust; at least one.
     base_s: u32,
+    /// **E7r1 R2** — the leg's authored hazard **band**, `0..=MAX_HAZARD_BAND`.
+    hazard: u8,
+    /// **E7r1 R2** — the interdiction **threshold**, `0..=MAX_HAZARD_BAND`.
+    interdiction: u8,
 }
 
 /// The strict wire form of [`LegDef`].
@@ -179,7 +183,21 @@ pub struct LegDefWire {
     pub to: ObjId,
     /// Unladen seconds at nominal thrust.
     pub base_s: u32,
+    /// The authored hazard band. `#[serde(default)]`, so every route stored before
+    /// E7 residue pass 1 re-enters as an unhazardous leg rather than being refused.
+    #[serde(default)]
+    pub hazard: u8,
+    /// The interdiction threshold; zero means *this leg is never interdicted*.
+    #[serde(default)]
+    pub interdiction: u8,
 }
+
+/// The widest hazard band and interdiction threshold a pack may author
+/// (**E7r1 R2**). Bands are a small ordered vocabulary, not a scale: a pack that
+/// wants finer resolution is authoring a damage model, which is post-E7 (§15.3
+/// item 18). A stored or pack-authored leg past it is **refused on load, never
+/// clamped**.
+pub const MAX_HAZARD_BAND: u8 = 5;
 
 impl LegDef {
     /// The one constructor, and therefore the one place the invariants live.
@@ -188,12 +206,39 @@ impl LegDef {
     ///
     /// [`RouteDefError::ZeroLeg`] when `base_s` is zero — a leg that takes no time
     /// is an instantaneous relocation, which is exactly what design 07 §9's route
-    /// invariant forbids.
+    /// invariant forbids — and [`RouteDefError::HazardBand`] for a band or a
+    /// threshold past [`MAX_HAZARD_BAND`].
     pub fn new(to: ObjId, base_s: u32) -> Result<LegDef, RouteDefError> {
+        LegDef::with_hazard(to, base_s, 0, 0)
+    }
+
+    /// [`LegDef::new`] with the corridor's authored hazard band and interdiction
+    /// threshold (**E7r1 R2**).
+    ///
+    /// # Errors
+    ///
+    /// [`RouteDefError::ZeroLeg`], or [`RouteDefError::HazardBand`] past
+    /// [`MAX_HAZARD_BAND`].
+    pub fn with_hazard(
+        to: ObjId,
+        base_s: u32,
+        hazard: u8,
+        interdiction: u8,
+    ) -> Result<LegDef, RouteDefError> {
         if base_s == 0 {
             return Err(RouteDefError::ZeroLeg);
         }
-        Ok(LegDef { to, base_s })
+        if hazard > MAX_HAZARD_BAND || interdiction > MAX_HAZARD_BAND {
+            return Err(RouteDefError::HazardBand {
+                max: MAX_HAZARD_BAND,
+            });
+        }
+        Ok(LegDef {
+            to,
+            base_s,
+            hazard,
+            interdiction,
+        })
     }
 
     /// The place reached at the end of this leg.
@@ -207,6 +252,29 @@ impl LegDef {
     pub fn base_s(&self) -> u32 {
         self.base_s
     }
+
+    /// The authored hazard band (**E7r1 R2**).
+    #[must_use]
+    pub fn hazard(&self) -> u8 {
+        self.hazard
+    }
+
+    /// The interdiction threshold; zero is *never interdicted* (**E7r1 R2**).
+    #[must_use]
+    pub fn interdiction(&self) -> u8 {
+        self.interdiction
+    }
+
+    /// **Whether crossing this leg's boundary raises an interception.**
+    ///
+    /// A pure function of two authored numbers and of nothing else: no clock, no
+    /// world, no draw. Two evaluations of one leg always agree, which is what lets
+    /// the journey tick's boundary be idempotent under a replay (the leg cursor is
+    /// the key, and this predicate cannot disagree with itself between fires).
+    #[must_use]
+    pub fn is_interdicted(&self) -> bool {
+        self.interdiction > 0 && self.hazard >= self.interdiction
+    }
 }
 
 impl From<LegDef> for LegDefWire {
@@ -214,6 +282,8 @@ impl From<LegDef> for LegDefWire {
         LegDefWire {
             to: value.to,
             base_s: value.base_s,
+            hazard: value.hazard,
+            interdiction: value.interdiction,
         }
     }
 }
@@ -222,7 +292,7 @@ impl TryFrom<LegDefWire> for LegDef {
     type Error = RouteDefError;
 
     fn try_from(value: LegDefWire) -> Result<LegDef, RouteDefError> {
-        LegDef::new(value.to, value.base_s)
+        LegDef::with_hazard(value.to, value.base_s, value.hazard, value.interdiction)
     }
 }
 
@@ -253,6 +323,14 @@ pub struct RouteDef {
     alignment_band: Option<CadenceId>,
     drive_class: mush_core::CanonicalId,
     propellant: u64,
+    /// **E7r1 R2** — who holds the corridor, as a pack-authored symbolic id.
+    ///
+    /// `None` is an uncontrolled corridor. It is deliberately a `CanonicalId` and
+    /// not an `ObjId` or an `OrgScopeId`: a route definition is pinned by a
+    /// published pack (T1), and a definition that carried a world id could not be
+    /// pinned across a re-seed. Nothing in `mush-sim` resolves it — it is a name
+    /// this crate renders and never interprets.
+    controller: Option<mush_core::CanonicalId>,
 }
 
 /// The strict wire form of [`RouteDef`].
@@ -272,6 +350,10 @@ pub struct RouteDefWire {
     pub drive_class: mush_core::CanonicalId,
     /// Propellant the plan consumes, in the drive class's own units.
     pub propellant: u64,
+    /// **E7r1 R2** — the corridor's controller, if any. `#[serde(default)]`, so
+    /// every route stored before the residue pass re-enters uncontrolled.
+    #[serde(default)]
+    pub controller: Option<mush_core::CanonicalId>,
 }
 
 impl RouteDef {
@@ -290,6 +372,33 @@ impl RouteDef {
         alignment_band: Option<CadenceId>,
         drive_class: mush_core::CanonicalId,
         propellant: u64,
+    ) -> Result<RouteDef, RouteDefError> {
+        RouteDef::controlled(
+            id,
+            endpoints,
+            legs,
+            alignment_band,
+            drive_class,
+            propellant,
+            None,
+        )
+    }
+
+    /// [`RouteDef::new`] with the corridor's pack-authored controller
+    /// (**E7r1 R2**).
+    ///
+    /// # Errors
+    ///
+    /// Exactly [`RouteDef::new`]'s.
+    #[allow(clippy::too_many_arguments)]
+    pub fn controlled(
+        id: mush_core::CanonicalId,
+        endpoints: (ObjId, ObjId),
+        legs: Vec<LegDef>,
+        alignment_band: Option<CadenceId>,
+        drive_class: mush_core::CanonicalId,
+        propellant: u64,
+        controller: Option<mush_core::CanonicalId>,
     ) -> Result<RouteDef, RouteDefError> {
         if legs.is_empty() {
             return Err(RouteDefError::NoLegs);
@@ -316,6 +425,7 @@ impl RouteDef {
             alignment_band,
             drive_class,
             propellant,
+            controller,
         })
     }
 
@@ -354,6 +464,20 @@ impl RouteDef {
     pub fn propellant(&self) -> u64 {
         self.propellant
     }
+
+    /// The corridor's pack-authored controller, if any (**E7r1 R2**). A name this
+    /// crate renders and never resolves.
+    #[must_use]
+    pub fn controller(&self) -> Option<&mush_core::CanonicalId> {
+        self.controller.as_ref()
+    }
+
+    /// Whether any leg of this corridor is interdicted (**E7r1 R2**) — the one
+    /// question `@corridor/rules` answers without disclosing a leg's own band.
+    #[must_use]
+    pub fn is_interdicted(&self) -> bool {
+        self.legs.iter().any(LegDef::is_interdicted)
+    }
 }
 
 impl From<RouteDef> for RouteDefWire {
@@ -365,6 +489,7 @@ impl From<RouteDef> for RouteDefWire {
             alignment_band: value.alignment_band,
             drive_class: value.drive_class,
             propellant: value.propellant,
+            controller: value.controller,
         }
     }
 }
@@ -385,13 +510,14 @@ impl TryFrom<RouteDefWire> for RouteDef {
         for leg in value.legs {
             legs.push(LegDef::try_from(leg)?);
         }
-        RouteDef::new(
+        RouteDef::controlled(
             value.id,
             value.endpoints,
             legs,
             value.alignment_band,
             value.drive_class,
             value.propellant,
+            value.controller,
         )
     }
 }
@@ -601,6 +727,13 @@ pub enum RouteDefError {
     /// A leg that takes no time is an instantaneous relocation.
     #[error("a route leg needs a positive traversal time")]
     ZeroLeg,
+    /// **E7r1 R2** — a hazard band or interdiction threshold past
+    /// [`MAX_HAZARD_BAND`]. Refused on load, never clamped.
+    #[error("a route leg's hazard band and interdiction threshold are at most {max}")]
+    HazardBand {
+        /// [`MAX_HAZARD_BAND`].
+        max: u8,
+    },
     /// The legs do not arrive where the route says it goes.
     #[error("a route definition's last leg does not reach its declared destination")]
     EndpointMismatch,

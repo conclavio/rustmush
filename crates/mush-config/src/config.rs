@@ -54,6 +54,15 @@
 //! | `[tacsim].space_pulse_ms` | `6000` | parsed, **inert** until E7 cut 8 |
 //! | `[tacsim.time].rate` | `0` | parsed, **inert** until E7 cuts 4/8/11 — campaign rate *policy*. It **never seeds the world timeline**: generation 1 comes from `[game]` |
 //! | `[tacsim.time].catch_up_*` | `""` | parsed, **inert** — the per-subsystem catch-up policies of cuts 4/6/8/9 |
+//! | `[tacsim.recovery].enabled` | `false` | E7 residue pass 1 (R4): the recovery provider. Disabled, `@recovery` still registers and answers "not enabled" |
+//! | `[tacsim.recovery].pool_account` | `0` | the provider's budget account. **Never minted into** — a subsidy is an ordinary staff-authored system obligation, outside this block |
+//! | `[tacsim.recovery].pool_floor` | `0` | the balance the pool may not be granted below: *funded, never infinite* |
+//! | `[tacsim.recovery].tiers` | `[]` | the loaner tier table, cheapest first |
+//! | `[tacsim.recovery].applications_per_principal` | `1` | live applications one principal may hold |
+//! | `[tacsim.recovery].cooldown_days` | `14` | 10b §7's `RECOVERY_COOLDOWN`, cited not redefined |
+//! | `[tacsim.recovery].max_operational_assets` | `0` | the eligibility threshold, over **accessible** assets |
+//! | `[tacsim.recovery].insurance` | `"approved_operations"` | the insurance policy word; `none` is the other |
+//! | `[tacsim.recovery].upkeep_per_period` | `0` | the lease's rent obligation, per campaign cadence period |
 //! | `[llm]` | `enabled = false` | M7 LLM layer (providers, routes, budgets); into [`mush_llm::LlmConfig`] |
 //!
 //! The `[web]` table deserializes straight into
@@ -738,6 +747,8 @@ pub struct TacsimCfg {
     pub space_pulse_ms: u32,
     /// `[tacsim.time]`.
     pub time: TacsimTimeCfg,
+    /// `[tacsim.recovery]` — **E7 residue pass 1, R4**.
+    pub recovery: TacsimRecoveryCfg,
 }
 
 /// `[npc]` — the NPC agent layer's world-task knobs (H2a/H2b). A new
@@ -770,6 +781,74 @@ impl Default for TacsimCfg {
             ground_pulse_ms: 2_000,
             space_pulse_ms: 6_000,
             time: TacsimTimeCfg::default(),
+            recovery: TacsimRecoveryCfg::default(),
+        }
+    }
+}
+
+/// `[tacsim.recovery]` — the recovery provider's policy (**E7 residue pass 1, R4**;
+/// 10b §15.1 item 9, doc 10 §12 Q7A / §13 T7).
+///
+/// Cut 11 did not add this block at all, and said so for a reason a knob deserves:
+/// *a knob that parses and configures nothing is a promise*. It is added here in the
+/// same pass that builds the provider it configures, so every field below has a
+/// reader (10b §15.1 item 5).
+///
+/// **`deny_unknown_fields`, on [`TacsimCfg`]'s own precedent.** This block decides
+/// whether a player who has lost everything can get a hull back and on what terms; a
+/// mistyped key that silently took a default would be a policy the operator believes
+/// is in force and is not. A typo **refuses the boot**.
+///
+/// **The pool is never minted into.** `pool_account` names an ordinary account the
+/// provider organization already holds; nothing in `mush-campaign` mints, and there
+/// is no faucet field here on purpose. A deployment that wants to subsidize the
+/// provider does it the ordinary way — a staff-authored system obligation through
+/// `@account/system` and the economy's own `[economy].mint_cap` — outside this block
+/// and outside the campaign crate (10b §3.11's replenishment row: *the provider's own
+/// production work orders and salvage recovery, funded by its budget — never a mint
+/// into the pool*).
+#[derive(Clone, Debug, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct TacsimRecoveryCfg {
+    /// Whether the provider grants at all. `false` (the default) leaves `@recovery`
+    /// registered and answering "not enabled on this server" — E5c deviation 1.
+    pub enabled: bool,
+    /// The provider's budget account id. Zero is unwired, and an unwired provider
+    /// **queues and pages** rather than granting.
+    pub pool_account: u64,
+    /// The floor the pool may not be granted below, in the instrument's minor units.
+    /// The provider stops granting at it: *funded, never infinite* (doc 10 §7 7A).
+    pub pool_floor: i64,
+    /// The loaner tier table, cheapest first. A grant names one of these.
+    pub tiers: Vec<String>,
+    /// How many live applications one principal may hold.
+    pub applications_per_principal: u32,
+    /// The per-player cooldown after a lease ends, in days. Defaults to 10b §7's
+    /// `RECOVERY_COOLDOWN` of 14 d, **cited rather than redefined**.
+    pub cooldown_days: u32,
+    /// The eligibility threshold: an applicant with **more** than this many
+    /// accessible operational assets is not eligible. Zero — the default — is doc 10
+    /// S3A's reading: a player whose only hull is an unreachable wreck qualifies.
+    pub max_operational_assets: u32,
+    /// The insurance policy word: `approved_operations` or `none`.
+    pub insurance: String,
+    /// The lease's upkeep, per campaign cadence period, in minor units.
+    pub upkeep_per_period: i64,
+}
+
+impl Default for TacsimRecoveryCfg {
+    fn default() -> Self {
+        TacsimRecoveryCfg {
+            enabled: false,
+            pool_account: 0,
+            pool_floor: 0,
+            tiers: Vec::new(),
+            applications_per_principal: 1,
+            // 10b §7's `RECOVERY_COOLDOWN` 14 d.
+            cooldown_days: 14,
+            max_operational_assets: 0,
+            insurance: "approved_operations".to_string(),
+            upkeep_per_period: 0,
         }
     }
 }

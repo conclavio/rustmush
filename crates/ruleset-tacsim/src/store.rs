@@ -574,15 +574,22 @@ fn materialize_route(
     let mut legs = Vec::with_capacity(route.legs.len());
     for leg in &route.legs {
         let leg_to = place(&leg.to)?;
-        legs.push(LegDef::new(leg_to, leg.base_s).map_err(|e| e.to_string())?);
+        // E7r1 R2: the pack's authored hazard band and interdiction threshold ride
+        // the materialization. `LegDef::with_hazard` re-runs the bound, so a pack
+        // past `MAX_HAZARD_BAND` is **refused on load, never clamped**.
+        legs.push(
+            LegDef::with_hazard(leg_to, leg.base_s, leg.hazard, leg.interdiction)
+                .map_err(|e| e.to_string())?,
+        );
     }
-    RouteDef::new(
+    RouteDef::controlled(
         id.clone(),
         (from, to),
         legs,
         route.alignment_band.map(mush_sim::CadenceId),
         route.drive_class.clone(),
         route.propellant,
+        route.controller.clone(),
     )
     .map_err(|e| e.to_string())
 }

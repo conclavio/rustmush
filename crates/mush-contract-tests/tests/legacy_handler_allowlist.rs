@@ -126,6 +126,10 @@ fn production_commands(ruleset: &str) -> BTreeSet<String> {
         &onboarding,
         wod_selected.then_some(&wod_economy),
         sr_selected.then_some(&sr_economy),
+        // E7r1 R4: this composition carries no `[tacsim.recovery]`, so the provider
+        // is disabled — `@recovery` still registers, which is exactly what lets this
+        // tripwire see it.
+        modules::no_recovery(),
     );
     mods.push(modules::worldgen_module_with(
         Arc::clone(&llm),

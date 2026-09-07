@@ -70,8 +70,8 @@ pub use journey::{
 };
 pub use route::{
     CadenceId, DriveProfile, DriveProfileWire, Journey, JourneyStatus, Leg, LegDef, LegDefWire,
-    MAX_LEGS, MAX_ROUTE_ID_BYTES, RouteCatalog, RouteCatalogState, RouteDef, RouteDefError,
-    RouteDefWire, RouteState, route_duration,
+    MAX_HAZARD_BAND, MAX_LEGS, MAX_ROUTE_ID_BYTES, RouteCatalog, RouteCatalogState, RouteDef,
+    RouteDefError, RouteDefWire, RouteState, route_duration,
 };
 pub use seat::{
     ControlLeaseView, MAX_LEASE_VIEW_RECORDS, MAX_STATION_SERVICE_ROWS, SeatError, SeatRequest,

@@ -181,6 +181,19 @@ pub struct IndustryStore {
     /// intents are two requests; one submission driven twice is still one.
     attempt_at: i64,
     attempt_seq: u32,
+    /// **E7r1 R1** — the budget sweep's rotation cursor: the encoded work-order key
+    /// the next fire resumes *after*. `None` restarts at the head, which is both the
+    /// boot state and what running off the end means, so no order is ever
+    /// permanently past the cursor. It is RAM-only on purpose: the arm is a no-op
+    /// past the applied point (the hold's own status is the marker), so a reboot
+    /// re-running it from the head *is* the reconcile.
+    settle_cursor: Option<String>,
+    /// **E7r1 R1** — orders seen once holding a budget reservation they should not
+    /// still have (a `Draft` whose submission was refused after the place). The
+    /// compensating release runs on the **second** consecutive sighting, never the
+    /// first: a hold placed by the command and a submission still in the same drain
+    /// are indistinguishable to a walk, and two Coarse fires apart they are not.
+    settle_pending: BTreeSet<crate::workorder::WorkOrderId>,
 }
 
 impl IndustryStore {
@@ -193,6 +206,28 @@ impl IndustryStore {
     #[must_use]
     pub const fn licence(&self) -> Option<&InstrumentId> {
         self.licence.as_ref()
+    }
+
+    /// **E7r1 R1** — where the budget sweep resumes.
+    #[must_use]
+    pub fn settle_cursor(&self) -> Option<&str> {
+        self.settle_cursor.as_deref()
+    }
+
+    /// Advance the budget sweep past the last work order it **visited**.
+    pub fn set_settle_cursor(&mut self, cursor: Option<String>) {
+        self.settle_cursor = cursor;
+    }
+
+    /// Note one order as carrying an unexpected reservation; `true` once it has been
+    /// seen on **two** consecutive fires and the compensating release is due.
+    pub fn note_settle_pending(&mut self, order: crate::workorder::WorkOrderId) -> bool {
+        !self.settle_pending.insert(order)
+    }
+
+    /// Forget one order's pending note (its state moved on, or the release landed).
+    pub fn clear_settle_pending(&mut self, order: crate::workorder::WorkOrderId) {
+        self.settle_pending.remove(&order);
     }
 
     /// Whether one body is quarantined.

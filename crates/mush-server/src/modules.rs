@@ -83,6 +83,9 @@ pub fn server_modules() -> Vec<Box<dyn GameModule>> {
         // [`server_modules_with`]).
         Some(&ruleset_wod::WodEconomyConfig::default()),
         None,
+        // E7r1 R4: the default composition composes no TacSim layer, so the provider
+        // is disabled — `@recovery` registers and answers "not enabled".
+        mush_campaign::RecoveryConfig::default(),
     )
 }
 
@@ -106,6 +109,7 @@ pub fn server_modules_with(
     onboarding: &ruleset_wod::OnboardingConfig,
     wod: Option<&ruleset_wod::WodEconomyConfig>,
     shadowrun: Option<&ruleset_shadowrun::SrEconomyConfig>,
+    recovery: mush_campaign::RecoveryConfig,
 ) -> Vec<Box<dyn GameModule>> {
     // The issuer is registered when the WoD ruleset is configured **and** its housing
     // knob is on. `issue_title` refuses an issuer that is not on both the economy's
@@ -394,7 +398,14 @@ pub fn server_modules_with(
                 // world document, a journal line or a canon record; one
                 // staff verb asks whether a token is attributed, and it
                 // prints no id. Unwired is fail-closed.
-                .with_seat_audit(Arc::new(crate::seat_audit::SeatAuditLog::new())),
+                .with_seat_audit(Arc::new(crate::seat_audit::SeatAuditLog::new()))
+                // E7 residue pass 1, R4/R3: `[tacsim.recovery]`, mapped from the
+                // ruleset's frozen block by [`recovery_policy`] on this same
+                // composition seam. The campaign crate takes no `ruleset-tacsim`
+                // edge; `cargo tree -p mush-campaign` is the test. Unwired (the
+                // `mush-server` bootstrap path, which composes no TacSim layer) is
+                // the disabled default — fail closed.
+                .with_recovery(recovery),
         ),
         Box::new(mush_mail::MailModule),
         Box::new(mush_jobs::JobsModule::new()),
@@ -698,6 +709,39 @@ pub fn ruleset_modules(
 #[must_use]
 pub fn tacsim_module(cfg: ruleset_tacsim::TacsimConfig) -> Box<dyn GameModule> {
     Box::new(ruleset_tacsim::TacsimRuleset::with_config(cfg))
+}
+
+/// The **disabled** recovery policy, for a composition that carries no TacSim layer.
+///
+/// It exists so a caller outside this crate can build the module list without naming
+/// `mush_campaign`'s type — and therefore without taking an edge on `mush-campaign`
+/// merely to say "no recovery here". Fail-closed by construction.
+#[must_use]
+pub fn no_recovery() -> mush_campaign::RecoveryConfig {
+    mush_campaign::RecoveryConfig::default()
+}
+
+/// **E7 residue pass 1, R4 — the `[tacsim.recovery]` block, mapped for the campaign
+/// layer.**
+///
+/// The composition root does the mapping so neither crate takes an edge on the other:
+/// `ruleset-tacsim` owns the frozen block, `mush-campaign` owns the provider, and
+/// this is the one line between them (`IndustryModule::with_recipes`' exact shape).
+#[must_use]
+pub fn recovery_policy(
+    cfg: &ruleset_tacsim::TacsimRecoveryConfig,
+) -> mush_campaign::RecoveryConfig {
+    mush_campaign::RecoveryConfig {
+        enabled: cfg.enabled,
+        pool_account: mush_economy::AccountId(cfg.pool_account),
+        pool_floor: cfg.pool_floor,
+        tiers: cfg.tiers.iter().map(SmolStr::new).collect(),
+        applications_per_principal: cfg.applications_per_principal,
+        cooldown_secs: cfg.cooldown_secs,
+        max_operational_assets: cfg.max_operational_assets,
+        insurance: SmolStr::new(&cfg.insurance),
+        upkeep_per_period: cfg.upkeep_per_period,
+    }
 }
 
 /// The M7 worldgen module, backed by the shared [`LlmService`] handle.
@@ -2181,6 +2225,7 @@ mod tests {
                 &onboarding,
                 (ruleset == "wod").then_some(&wod),
                 (ruleset == "shadowrun").then_some(&shadowrun),
+                mush_campaign::RecoveryConfig::default(),
             );
             modules.extend(
                 ruleset_modules(&[ruleset.to_owned()], &onboarding, &wod, &shadowrun)
@@ -2207,6 +2252,18 @@ mod tests {
                         && *class == mush_core::CommandCompatibility::LegacyPostImage
                 }),
                 "the TacSim layer must publish its compatibility lane"
+            );
+            // E7 residue pass 1, R2: `@corridor` is a SECOND registration group in the
+            // same module, declared `ReadOnly` before its own `reg.command` and with
+            // `LegacyPostImage` restored immediately after — the K8.5 discipline that
+            // failed `mush-market`'s 140 tests at the K merge, applied per group.
+            assert!(
+                registrations.iter().any(|(spec, owner, class)| {
+                    spec.name == "@corridor"
+                        && *owner == Some("tacsim")
+                        && *class == mush_core::CommandCompatibility::ReadOnly
+                }),
+                "the corridor read surface must publish `ReadOnly`"
             );
             // E7 cut 2: the FIRST `Authoritative` command registration on the
             // tree. `@inv` is one `CommandSpec`, so it is one registration and
@@ -2336,6 +2393,16 @@ mod tests {
                 ("@formation", mush_core::CommandCompatibility::ReadOnly),
                 ("@op", mush_core::CommandCompatibility::LegacyPostImage),
                 ("@force", mush_core::CommandCompatibility::LegacyPostImage),
+                // E7 residue pass 1, R3: `@recovery` is its own registration group,
+                // classified before its own `reg.command` and restored after. Its
+                // ceiling is `LegacyPostImage` for `@op`'s exact reason — the three
+                // `recovery.queue` documents are exempt workflow records and the
+                // outfitting stipend rides `mush_economy::post`'s carve-out lane
+                // from the command, never `Ctx::submit_authoritative`.
+                (
+                    "@recovery",
+                    mush_core::CommandCompatibility::LegacyPostImage,
+                ),
             ] {
                 assert!(
                     registrations.iter().any(|(spec, owner, published)| {
@@ -2405,6 +2472,7 @@ mod tests {
             &onboarding,
             None,
             None,
+            mush_campaign::RecoveryConfig::default(),
         ));
         // The economy composed at all, and the industry store came with it —
         // which is the composition this test is really about.
@@ -2443,6 +2511,7 @@ mod tests {
             &onboarding,
             None,
             None,
+            mush_campaign::RecoveryConfig::default(),
         ));
         let families = tw
             .engine()
@@ -2484,6 +2553,7 @@ mod tests {
             &onboarding,
             Some(&wod),
             None,
+            mush_campaign::RecoveryConfig::default(),
         ));
         let store = tw
             .world()
@@ -2518,6 +2588,7 @@ mod tests {
             &onboarding,
             None,
             None,
+            mush_campaign::RecoveryConfig::default(),
         ));
         let store = tw
             .world()
@@ -2552,6 +2623,7 @@ mod tests {
             &onboarding,
             Some(&wod),
             None,
+            mush_campaign::RecoveryConfig::default(),
         );
         mods.extend(
             ruleset_modules(
@@ -2676,6 +2748,7 @@ mod tests {
                 &onboarding,
                 (ruleset == "wod").then_some(&wod),
                 (ruleset == "shadowrun").then_some(&shadowrun),
+                mush_campaign::RecoveryConfig::default(),
             );
             mods.extend(
                 ruleset_modules(&[ruleset.to_owned()], &onboarding, &wod, &shadowrun)

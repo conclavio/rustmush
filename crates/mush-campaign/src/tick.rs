@@ -82,6 +82,15 @@ pub(crate) fn tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<SceneId>) {
     // applied point, so a reboot re-running the sweep changes nothing.
     crate::seatstate::observe_activations(ctx, MAX_SEATS_PER_FIRE);
     crate::seatstate::expire_grants(ctx, MAX_SEATS_PER_FIRE);
+    // ---- E7r1: R3 — the FOURTH arm (10b §15's contradiction (iii)) ----
+    //
+    // Cut 9's tick already carried three independently budgeted arms; this is the
+    // fourth, with its own `MAX_RECOVERY_PER_FIRE` so the recovery lane can never
+    // starve the settlement lane. Like the two above it is a PULL over durable state,
+    // makes **no authoritative submission** (its money rides `mush_economy::post`'s
+    // own carve-out lane), is bounded on records **visited** and is a no-op past the
+    // applied point — an applicant already granted is no longer in the queue.
+    crate::recoverycmd::sweep(ctx, crate::recoverycmd::RECOVERY_BUDGET);
     let mut stats = TickStats::default();
     let (ids, cursor) = {
         let Some(store) = ctx.w.module_state::<CampaignStore>() else {

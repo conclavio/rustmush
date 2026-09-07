@@ -19,9 +19,15 @@
 //! | `active_domain_limit` | parsed, **inert** | cut 6's `MAX_ACTIVE_DOMAINS` |
 //! | `ground_pulse_ms`, `space_pulse_ms` | parsed, **inert** | cut 8's pulse periods |
 //! | all of `[tacsim.time]` | parsed, **inert** | cuts 4/8/11's rate and catch-up policy |
+//! | all of `[tacsim.recovery]` | **live** (E7r1 R4) | the recovery provider's pool, tiers, cap, thresholds, cooldown and insurance policy |
 //!
-//! `[tacsim.recovery]` is cut 11's and is **not added at all** — a knob that parses
-//! and configures nothing is a promise, and cut 11 has not made it yet.
+//! `[tacsim.recovery]` was cut 11's and was **not added at all** — *a knob that parses
+//! and configures nothing is a promise, and cut 11 has not made it yet*. **E7 residue
+//! pass 1 (R4) adds it, in the same pass that builds the provider it configures**
+//! (10b §15.1 items 5 and 9), so every field has a reader: [`TacsimRecoveryConfig`]
+//! reaches `mush-campaign` through `mush_server::modules`' `with_recovery` seam, and
+//! `@recovery` reads it. It is **live**, not inert, and a typo in it refuses the boot
+//! for [`TacsimConfig`]'s own reason.
 //!
 //! # `[tacsim.time]` never seeds the world timeline
 //!
@@ -72,6 +78,65 @@ pub struct TacsimTimeConfig {
     pub catch_up_domains: String,
 }
 
+/// The recovery provider's policy (**E7 residue pass 1, R4**; 10b §15.1 item 9,
+/// doc 10 Q7A / T7 / S3A).
+///
+/// Every field is **live**: it is added in the same pass that builds the provider,
+/// so there is no inert knob here. The host validates it before the module sees it
+/// (`mush_server::config_ext::tacsim_config`), so a nonsense policy refuses the boot
+/// rather than being discovered at the first grant.
+///
+/// **There is no faucet field, deliberately.** 10b §3.11's replenishment row is *the
+/// provider's own production work orders and salvage recovery, funded by its budget —
+/// never a mint into the pool*, and this struct is where that would have to be
+/// written down to be true.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TacsimRecoveryConfig {
+    /// Whether the provider grants at all.
+    pub enabled: bool,
+    /// The provider's budget account id; zero is unwired.
+    pub pool_account: u64,
+    /// The balance the pool may not be granted below.
+    pub pool_floor: i64,
+    /// The loaner tier table, cheapest first.
+    pub tiers: Vec<String>,
+    /// Live applications one principal may hold.
+    pub applications_per_principal: u32,
+    /// The per-player cooldown after a lease ends, in seconds (10b §7's
+    /// `RECOVERY_COOLDOWN` 14 d by default — cited, never redefined).
+    pub cooldown_secs: i64,
+    /// The eligibility threshold, over **accessible** operational assets.
+    pub max_operational_assets: u32,
+    /// The insurance policy word.
+    pub insurance: String,
+    /// The lease's upkeep per campaign cadence period.
+    pub upkeep_per_period: i64,
+}
+
+impl Default for TacsimRecoveryConfig {
+    fn default() -> Self {
+        TacsimRecoveryConfig {
+            enabled: false,
+            pool_account: 0,
+            pool_floor: 0,
+            tiers: Vec::new(),
+            applications_per_principal: 1,
+            cooldown_secs: 14 * 24 * 60 * 60,
+            max_operational_assets: 0,
+            insurance: "approved_operations".to_string(),
+            upkeep_per_period: 0,
+        }
+    }
+}
+
+/// The most tiers one deployment may declare. A tier table is a small ordered
+/// vocabulary an operator writes by hand, and the grant walks it.
+pub const MAX_RECOVERY_TIERS: usize = 8;
+
+/// The insurance policy words `[tacsim.recovery].insurance` admits. A word outside
+/// this set **refuses the boot**: an unrecognised policy is a policy nothing applies.
+pub const RECOVERY_INSURANCE_WORDS: [&str; 2] = ["approved_operations", "none"];
+
 /// One pack file the host has already read, as `(name, bytes)`.
 ///
 /// **OPEN 1, taken as written: the host reads, the ruleset parses.** The name is
@@ -105,6 +170,8 @@ pub struct TacsimConfig {
     pub space_pulse_ms: u32,
     /// Cuts 4/8/11's rate and catch-up policy. **Parsed, inert.**
     pub time: TacsimTimeConfig,
+    /// **E7 residue pass 1, R4** — the recovery provider's policy. **Live.**
+    pub recovery: TacsimRecoveryConfig,
 }
 
 impl TacsimConfig {

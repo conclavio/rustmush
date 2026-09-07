@@ -83,9 +83,24 @@ fn vf_g16_timeline_changed_is_declared_and_constructed_nowhere() {
          the variant was DELETED, which is a different failure from a producer \
          appearing"
     );
+    // **DELIBERATELY FLIPPED by E7 residue pass 1, R5(b)** (10b §15.1 item 8).
+    //
+    // Cut 11's fold pinned this at ZERO and said so precisely: *declared and
+    // constructed nowhere*, with the tripwire's whole point being that **deletion**
+    // and **first production use** fail differently. This is the first production
+    // use, and it is one site: `provider::wo_deliver` pauses an order whose
+    // production was started on a world-time generation that is no longer live,
+    // which is the D-E7-8 default the variant was declared for. The pin moves from
+    // "nowhere" to "exactly one place, and here it is", so a SECOND producer — two
+    // places deciding when production pauses — still fails this test.
+    assert_eq!(
+        constructed.len(),
+        1,
+        "exactly one producer, in `wo_deliver`: {constructed:?}"
+    );
     assert!(
-        constructed.is_empty(),
-        "the qualified path appears nowhere in production: {constructed:?}"
+        constructed[0].contains("mush-industry") && constructed[0].contains("provider.rs"),
+        "and it is the provider's own transition, never a command's: {constructed:?}"
     );
 }
 
@@ -122,10 +137,14 @@ fn vf_g13_l4_the_work_order_writer_census_is_pinned() {
         1,
         "one opener (`wo_open`'s prepare)"
     );
+    // **Six since E7 residue pass 1, R5(b)**: the sixth is `wo_deliver`'s
+    // `Interrupted { TimelineChanged }` pause, which is the one writer that variant
+    // never had. Still all from an industry-owned action's prepare, still under a
+    // checked revision, and still no site outside `provider.rs`.
     assert_eq!(
         provider.matches(".put_work_order(").count(),
-        5,
-        "five checked-revision replacements, all from an industry-owned action's \
+        6,
+        "six checked-revision replacements, all from an industry-owned action's \
          prepare"
     );
     // No other crate writes the family at all: the lane is `mush-industry`'s.

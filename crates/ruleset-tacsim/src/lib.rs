@@ -74,7 +74,8 @@ use mush_core::module::{GameModule, ModError, ModuleBootData, ModuleCtx, Registr
 
 pub use config::{
     DEFAULT_ACTIVE_DOMAIN_LIMIT, DEFAULT_GROUND_PULSE_MS, DEFAULT_SPACE_PULSE_MS, LoadedPack,
-    MAX_CONFIGURED_PACKS, PackSource, TacsimConfig, TacsimTimeConfig,
+    MAX_CONFIGURED_PACKS, MAX_RECOVERY_TIERS, PackSource, RECOVERY_INSURANCE_WORDS, TacsimConfig,
+    TacsimRecoveryConfig, TacsimTimeConfig,
 };
 pub use pack::{
     CommodityDef, FacilityDef, FormationKindDef, FormationRoleDef, LocationDef,

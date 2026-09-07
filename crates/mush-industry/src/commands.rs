@@ -45,8 +45,8 @@ use crate::record::{
 };
 use crate::store::IndustryStore;
 use crate::workorder::{
-    MAX_WORK_ORDERS_PER_REQUESTER, RecipeAuthority, WorkOrder, WorkOrderId, quote_duration,
-    quote_price,
+    MAX_WORK_ORDERS_PER_REQUESTER, RecipeAuthority, WorkOrder, WorkOrderId, WorkOrderState,
+    quote_duration, quote_price,
 };
 
 /// The one line an unknown, unreadable or unsurveyed ore body renders.
@@ -1067,6 +1067,23 @@ fn cmd_wo(
         if !facility_rec.offers(pinned.requires()) {
             return Err(CmdError::msg("That facility cannot run that recipe."));
         }
+        // ---- E7r1: R1 — the money accounts, validated at the EDIT ----
+        //
+        // `check_bond_accounts`' exact shape (E7 cut 9 fold, C8) and for the same
+        // reason: the *placement* side is saved by the engine (invariants 25/26
+        // refuse a hold on somebody else's account, or an unfunded one), but the
+        // *capture* side was validated nowhere, so an order could run all the way to
+        // `Completed` and then have nowhere to pay. Both ends resolve here, before
+        // anything is drafted.
+        if let Err(refusal) = crate::money::check_wo_accounts(
+            ctx,
+            ctx.actor,
+            &PrincipalId::Object(ctx.actor),
+            mush_economy::AccountId(account),
+            facility_rec.owner(),
+        ) {
+            return Err(CmdError::msg(refusal.public()));
+        }
         // C2/D2 (m2): a per-requester cap. Terminal orders are never pruned, so
         // without this a single actor could grow the family (and hold a rival's
         // slots) without bound with cheap drafts.
@@ -1097,6 +1114,7 @@ fn cmd_wo(
     }
     if ctx.switches.has("submit") {
         let order_arg = ctx.args.lhs().trim().to_owned();
+        let mut placed: Option<(WorkOrderId, mush_economy::HoldId)> = None;
         // B4: revalidate the pinned recipe digest and the facility revisions
         // against the live world before submitting — a drift makes the draft
         // stale and refuses (fail-closed). The reservations themselves happen in
@@ -1140,16 +1158,78 @@ fn cmd_wo(
                     "that work order's recipe has drifted; redraft it.",
                 ));
             }
+            // ---- E7r1: R1 — the budget hold, placed BEFORE the submit ----
+            //
+            // A `prepare_authoritative` provider has no `&World`, `Ctx` or `Outbox`
+            // and cannot place a hold, so the money leg is the command's (cut 4
+            // deviation (a); `bond.rs`'s whole opening argument). It is placed
+            // **first** because a hold placed after the submit cannot refuse an
+            // unfunded order: this way the engine's own `InsufficientAvailable`
+            // (invariant 26) refuses before anything at all is reserved, and the
+            // order stays `Draft`. `mush_economy::post` is the economy's own
+            // carve-out lane, not a second `Ctx::submit_authoritative`, so `@wo`'s
+            // declared class does not move.
+            //
+            // Every early return **after** this point compensates with a release;
+            // the sweep arm on `SWEEP_TAG` is the backstop for the ones a refused
+            // submission causes, which the command never sees.
+            if *order.state() == WorkOrderState::Draft {
+                match crate::money::live_hold(ctx, order.id()) {
+                    // A retype after a refused submission: the reservation stands,
+                    // and `industry.wo.hold/{order}` would answer `AlreadyPosted`
+                    // anyway. Reuse it rather than posting again.
+                    Some(hold) => placed = Some((order.id(), hold.id)),
+                    None => match crate::money::place(ctx, &order) {
+                        Ok(hold) => placed = Some((order.id(), hold)),
+                        Err(error) => {
+                            if crate::store::is_staff(ctx.w, ctx.actor) {
+                                ctx.out.info(
+                                    ctx.actor,
+                                    format!("[staff] the budget was refused: {error}"),
+                                );
+                            }
+                            return Err(CmdError::msg(
+                                "That account cannot fund that work order, so it stays drafted.",
+                            ));
+                        }
+                    },
+                }
+            }
         }
-        return submit(
+        let hold_param = placed.map_or(0, |(_, hold)| hold.0);
+        let outcome = submit(
             ctx,
             IndustryVerb::WoSubmit,
-            json!({ "order": order_arg }),
+            json!({ "order": order_arg, "hold": hold_param }),
             "wo.submit",
         );
+        // The compensating release: `submit` is the only fallible call left after
+        // the place, and an `Err` from it means nothing at all was staged.
+        if outcome.is_err()
+            && let Some((id, _)) = placed
+            && let Some(hold) = crate::money::live_hold(ctx, id)
+        {
+            let _ = crate::money::release(ctx, id, &hold);
+        }
+        return outcome;
     }
     if ctx.switches.has("deliver") {
         let order = ctx.args.lhs().trim().to_owned();
+        // ---- E7r1: R1 — a vanished budget hold is a PAUSE, never a replay hit ----
+        //
+        // Stop **only this order** (08c §4.6): an order holding production resources
+        // with no reservation may not materialize output, because that is production
+        // for free. The sweep arm pages level 1 on the same predicate, and
+        // `@wo/cancel` — which releases nothing that is not there — is still open, so
+        // the subject has an exit.
+        if let Some(record) = wo_by_id(ctx, families, &order)
+            && crate::money::budget_missing(ctx, &record)
+        {
+            return Err(CmdError::msg(
+                "That work order's budget reservation is missing; it cannot deliver. \
+                 Staff have been paged.",
+            ));
+        }
         return submit(
             ctx,
             IndustryVerb::WoDeliver,

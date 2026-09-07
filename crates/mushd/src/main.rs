@@ -322,12 +322,20 @@ async fn serve(config: Config, mut quarantine_spool: QuarantineSpool) -> Result<
         .iter()
         .map(|(n, d)| (n.as_str(), d.clone()))
         .collect();
+    // E7 cut 1: the TacSim layer's frozen block, read **host-side** so an unreadable,
+    // oversized or digest-mismatched pack fails the boot naming the file before any
+    // module runs (invariant (iv)). E7 residue pass 1 (R4) reads it here, before the
+    // module list is built, because `[tacsim.recovery]` reaches `mush-campaign` —
+    // which composes inside `server_modules_with` — through the composition root's
+    // own mapping and never through a crate edge.
+    let tacsim = tacsim_config(&config.tacsim)?;
     let mut mods = modules::server_modules_with(
         weather_config(&config.weather),
         economy_config_with(&config.economy, &contributed)?,
         &onboarding,
         wod_selected.then_some(&wod_economy),
         sr_selected.then_some(&sr_economy),
+        modules::recovery_policy(&tacsim.recovery),
     );
     mods.push(modules::worldgen_module_with(
         Arc::clone(&llm),
@@ -352,10 +360,8 @@ async fn serve(config: Config, mut quarantine_spool: QuarantineSpool) -> Result<
     // E7 cut 1: the TacSim layer, **after** the character ruleset (doc 10 §20, 10b
     // §3.1). It is not a `[rulesets]` id — `[tacsim].enabled` switches it, independently
     // of which single character ruleset is loaded — and it composes last so its boot
-    // can read that ruleset's facts. `tacsim_config` reads every configured pack file
-    // here, host-side, so an unreadable, oversized or digest-mismatched pack fails the
-    // boot naming the file before any module runs (invariant (iv)).
-    let tacsim = tacsim_config(&config.tacsim)?;
+    // can read that ruleset's facts. Its config was read above, before the module list,
+    // for `[tacsim.recovery]`'s sake.
     if tacsim.enabled {
         tracing::info!(
             packs = tacsim.packs.len(),

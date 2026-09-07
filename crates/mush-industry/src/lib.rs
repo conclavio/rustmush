@@ -60,6 +60,7 @@ pub mod facts;
 pub mod families;
 pub mod licence;
 pub mod module;
+pub mod money;
 pub mod provider;
 pub mod record;
 pub mod store;
@@ -76,6 +77,10 @@ pub use licence::{ExtractionRefusal, extraction_authorized, licence_accounts};
 pub use module::{
     CLAIM_CATALOG_CODE, CLAIM_CATALOG_RULESET, IndustryHandles, IndustryModule, SWEEP_PERIOD_SECS,
     SWEEP_TAG, industry_title_issuer,
+};
+pub use money::{
+    AccountRefusal, HoldError, MAX_WO_SETTLE_PER_FIRE, MAX_WO_VISITED_PER_FIRE, WORK_ORDER_PURPOSE,
+    wo_hold_key, wo_settle_key,
 };
 pub use provider::{IndustryVerb, action_ref, deposit_backing, deposit_of_backing};
 pub use record::{

@@ -320,6 +320,9 @@ async fn build_engine(
         &onboarding,
         wod_selected.then_some(&wod_economy),
         sr_selected.then_some(&sr_economy),
+        // E7r1 R4: this bootstrap composes no TacSim layer, so the recovery provider
+        // is disabled here — fail closed, and `@recovery` says so out loud.
+        mush_campaign::RecoveryConfig::default(),
     );
     mods.push(modules::worldgen_module_with(
         Arc::clone(&llm),

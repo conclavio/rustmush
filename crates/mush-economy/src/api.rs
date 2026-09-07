@@ -2654,7 +2654,15 @@ pub(crate) fn contract_principal() -> PrincipalId {
 /// a namespace any caller could stamp on a purpose is not a lockout, it is a hole.
 /// A hold in one of these namespaces moves only through
 /// [`settle_engine_reservation`], which is the seam the placing engine settles under.
-pub const ENGINE_OWNED_RESERVATIONS: &[&str] = &["campaign.operation"];
+///
+/// **E7 residue pass 1, R1** adds `"industry.workorder"` — the work-order budget
+/// hold `mush-industry`'s `@wo/submit` places on `WorkOrder::budget_account` before
+/// it submits. It is a **money hold on an account**, which is the only thing this
+/// table can guard (10b §15.5, G2): a K4b inventory `ReservationRecord` is locked
+/// out structurally by the `(OwnerId, AuthorityGuardKind::Reservation)` registry and
+/// never belongs here. Without the entry, an order's own owner could `@hold/release`
+/// the reservation out from under a running order and produce for free.
+pub const ENGINE_OWNED_RESERVATIONS: &[&str] = &["campaign.operation", "industry.workorder"];
 
 /// Whether `purpose` is a reservation in an [`ENGINE_OWNED_RESERVATIONS`] namespace.
 #[must_use]
@@ -3126,7 +3134,21 @@ mod engine_reservation_tests {
     /// drain — is `mush-campaign`'s `vf_c2a`, which drives the real commands.
     #[test]
     fn vf_c2_the_engine_owned_reservation_table_is_exact_on_every_purpose_arm() {
-        assert_eq!(ENGINE_OWNED_RESERVATIONS, ["campaign.operation"]);
+        // E7 residue pass 1, R1: `"industry.workorder"` joined the table in the same
+        // commit that first places a work-order budget hold. The table is a money
+        // table (10b §15.5, G2) — a lot reservation never enters it.
+        assert_eq!(
+            ENGINE_OWNED_RESERVATIONS,
+            ["campaign.operation", "industry.workorder"]
+        );
+        for kind in ENGINE_OWNED_RESERVATIONS {
+            assert!(is_engine_owned_reservation(
+                &crate::record::HoldPurpose::Reservation {
+                    kind: SmolStr::new(*kind),
+                    id: 3,
+                }
+            ));
+        }
         let owned = crate::record::HoldPurpose::Reservation {
             kind: SmolStr::new_static("campaign.operation"),
             id: 7,

@@ -715,6 +715,35 @@ fn boot_with_recipes() -> (TestWorld, IndustryFamilies) {
     (world, families)
 }
 
+/// **E7r1 R1** — the two accounts a work order needs at draft: GOD's budget (which
+/// the submit reserves against) and GOD's operating account (which a completed run's
+/// capture pays). Returns `(budget, payee)` as raw ids.
+fn wo_accounts(world: &mut TestWorld) -> (u64, u64) {
+    world.run(GOD, "@instrument/register gold=0");
+    let before: Vec<u64> = mine_accounts(world);
+    world.run(GOD, &format!("@account/open #{}=gold", GOD.0));
+    world.run(GOD, &format!("@account/open #{}=gold", GOD.0));
+    let after = mine_accounts(world);
+    let fresh: Vec<u64> = after
+        .into_iter()
+        .filter(|id| !before.contains(id))
+        .collect();
+    assert_eq!(fresh.len(), 2, "two fresh accounts");
+    (fresh[0], fresh[1])
+}
+
+fn mine_accounts(world: &TestWorld) -> Vec<u64> {
+    world
+        .world()
+        .module_state::<mush_economy::EconomyStore>()
+        .expect("economy store")
+        .snapshot()
+        .accounts()
+        .filter(|a| a.owner == PrincipalId::Object(GOD))
+        .map(|a| a.id.0)
+        .collect()
+}
+
 /// Build a live production schedule + job for one order id, due at `due_at`.
 fn seed_schedule(
     engine: &mut Engine,
@@ -796,8 +825,16 @@ fn vf_c2_a_non_owner_cannot_hold_a_facilitys_slots() {
     let (mut world, _families) = boot_with_recipes();
     world.run(GOD, "@facility/open 7=2 smelt"); // GOD-owned facility
     let _ = world.engine_mut().take_authoritative_submit();
+    // E7r1 R1: a draft now resolves its money accounts at the edit (the budget it
+    // reserves and the operating account a completed run pays), so the fixture
+    // opens both. The C2 authorization question this test asks is unchanged: a
+    // stranger is still refused BEFORE any account is looked at.
+    let (budget, _payee) = wo_accounts(&mut world);
     let alice = world.spawn_player("alice"); // a stranger
-    let ev = world.run(alice, "@wo/draft tacsim.core/alloy_smelt/1=7 1 0 500 600");
+    let ev = world.run(
+        alice,
+        &format!("@wo/draft tacsim.core/alloy_smelt/1=7 1 {budget} 500 600"),
+    );
     let stranger = world.seen_by(&ev, alice).join("\n");
     assert!(
         stranger.contains("No such facility"),
@@ -808,7 +845,10 @@ fn vf_c2_a_non_owner_cannot_hold_a_facilitys_slots() {
         "a refused draft queues no submission"
     );
     // The owner (GOD is staff) reaches draft and queues a submission.
-    let ev = world.run(GOD, "@wo/draft tacsim.core/alloy_smelt/1=7 1 0 500 600");
+    let ev = world.run(
+        GOD,
+        &format!("@wo/draft tacsim.core/alloy_smelt/1=7 1 {budget} 500 600"),
+    );
     let owner = world.seen_by(&ev, GOD).join("\n");
     assert!(
         !owner.contains("No such facility"),

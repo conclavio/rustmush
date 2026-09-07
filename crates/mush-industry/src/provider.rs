@@ -56,7 +56,7 @@ use crate::record::{
     OreDepositId, RunState, Transferability, YieldCurve,
 };
 use crate::workorder::{
-    DeliveryTarget, PRODUCTION_CADENCE_SECS, PRODUCTION_MAX_CATCH_UP,
+    DeliveryTarget, InterruptionCause, PRODUCTION_CADENCE_SECS, PRODUCTION_MAX_CATCH_UP,
     PRODUCTION_UNITS_PER_OCCURRENCE, PinnedRecipe, ProductionJob, ProductionSchedule, RecipeRef,
     WorkOrder, WorkOrderId, WorkOrderMarker, WorkOrderState, derive_work_order_id, wo_holder,
 };
@@ -1629,11 +1629,24 @@ impl IndustryProvider {
         if *order.state() != WorkOrderState::Draft {
             return Err(error(ActionErrorCode::ProviderRejected, WO_REFUSED));
         }
+        // ---- E7r1: R1 — the money leg is not optional ----
+        //
+        // The submit command places the hold through `mush_economy::post` before it
+        // submits, and passes the placed `HoldId` here. A prepare has no world and
+        // cannot check that the id is live — the authority on that is
+        // `money::live_hold`, found by purpose, which the sweep arm and `@wo/deliver`
+        // both read — but it CAN refuse a submission that names no hold at all, and
+        // that is what keeps the direct-offer ingress from acquiring resources for
+        // free. The refusal is `WO_REFUSED`, byte-identical to an unknown order.
+        let hold = u64_field(parameters, "hold", u64::MAX).unwrap_or(0);
+        if hold == 0 {
+            return Err(error(ActionErrorCode::ProviderRejected, WO_REFUSED));
+        }
         let holder = wo_holder(id).map_err(|source| refuse(&source))?;
         let mut reservations = Vec::new();
         // money Hold → materials → capacity → destination (the fixed order). The
         // Hold is the submit command's E4b1 economy post; its id is recorded on
-        // the order (kept empty here when no hold was supplied).
+        // the order below.
         if !order.pinned().inputs().is_empty() {
             let source = order.material_source().ok_or_else(|| {
                 error(
@@ -1666,9 +1679,17 @@ impl IndustryProvider {
             .checked_mul(u64::from(order.quantity()))
             .ok_or_else(|| error(ActionErrorCode::BoundsExceeded, WO_REFUSED))?;
         let production = self.open_schedule(txn, &order, now, actor, total_units)?;
+        // The placed hold, denormalized onto the record. It is an INDEX, never the
+        // authority: `money::live_hold` finds the reservation by purpose, so an
+        // `AlreadyPosted` retry and a lost document both converge.
+        let mut holds = order.holds().to_vec();
+        let hold = mush_economy::HoldId(hold);
+        if !holds.contains(&hold) {
+            holds.push(hold);
+        }
         let next = order
             .acquired(
-                order.holds().to_vec(),
+                holds,
                 reservations,
                 Some(production),
                 WorkOrderState::Running,
@@ -1824,6 +1845,32 @@ impl IndustryProvider {
         match order.state() {
             WorkOrderState::Running | WorkOrderState::AwaitingDelivery => {}
             _ => return Err(error(ActionErrorCode::ProviderRejected, WO_REFUSED)),
+        }
+        // ---- E7r1: R5(b) — `InterruptionCause::TimelineChanged`'s ONE writer ----
+        //
+        // 10b §15.1 item 8: the variant was declared at cut 4 and **set nowhere**, so
+        // the D-E7-8 default it names — *a new rate generation with no registered
+        // restamp pauses the order* — was a promise with no producer. This is it.
+        //
+        // It lives here rather than on the production schedule's own advance for a
+        // reason the tree already decided: cut 8's `schedule_scan_clock_is_skippable`
+        // makes the kernel **skip** a stale-generation schedule, so `wo_advance`
+        // never fires to notice. The next thing that touches the order does, and
+        // `@wo/restamp` — which already exists, and already resumes an `Interrupted`
+        // order to `Running` — is the exit.
+        if stale_generation(&order, now) {
+            let paused = order
+                .with_state(WorkOrderState::Interrupted {
+                    cause: InterruptionCause::TimelineChanged,
+                })
+                .map_err(|source| error(ActionErrorCode::Integrity, source.to_string()))?;
+            self.families
+                .put_work_order(txn, order.revision(), paused)
+                .map_err(|source| refuse(&source))?;
+            data.insert("order".to_owned(), json!(id.to_string()));
+            return Ok(format!(
+                "{id} was started on an earlier world-time generation and is paused;                  `@wo/restamp {id}` re-anchors it and resumes production."
+            ));
         }
         if !order
             .schedule()
@@ -2128,6 +2175,20 @@ impl IndustryProvider {
             revision: Some(1),
         }
     }
+}
+
+/// **Whether this order's production was started on a world-time generation that is
+/// no longer live** (E7r1 R5(b)).
+///
+/// A pure comparison of two recorded stamps: the schedule's own `started` clock and
+/// the `now` the prepare was handed. No world is read, nothing is drawn, so two
+/// evaluations of one order agree — which is what lets the pause be idempotent.
+/// An order with no schedule is not stale; it is not producing.
+#[must_use]
+fn stale_generation(order: &WorkOrder, now: &ClockStamp) -> bool {
+    order
+        .schedule()
+        .is_some_and(|schedule| schedule.started().clock != now.clock)
 }
 
 fn obj_field(parameters: &serde_json::Map<String, Value>, key: &str) -> Result<ObjId, ActionError> {

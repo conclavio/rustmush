@@ -1084,11 +1084,85 @@ fn step(ctx: &mut Ctx<'_>, root: ObjId, now: &ClockStamp, source: Source) -> Ste
     }
     // An intermediate boundary changes no placement: a cruising root is not
     // placed anywhere, so only the durable cursor moves.
+    //
+    // ---- E7r1: R2 — the corridor as a LIVE domain ----
+    // The leg just crossed is `legs[target - 1]`; if its pack-authored
+    // interdiction threshold is met, this boundary raises a
+    // `DomainActivation { trigger: Interception }` — `PromotionTrigger::Interception`
+    // finally fired, through the ONE request seam (`domain::raise`). It is a
+    // **request**: cut 8's authority applies it, no `DomainClock` variant is added
+    // and the composition-frozen `ClockProviderRegistry` is not touched. **The
+    // cursor is the idempotency key** — it moves exactly once per boundary and never
+    // returns, so re-running the tick, and a reboot re-running it, raises nothing
+    // twice, and this branch still moves exactly one cursor.
+    let crossed = usize::try_from(target.saturating_sub(1))
+        .ok()
+        .and_then(|index| advanced.route.legs().get(index).copied());
     persist_journey(ctx.out, &advanced);
     if let Some(book) = ctx.w.module_state_mut::<JourneyBook>() {
         book.journeys.insert(root, advanced);
     }
+    if let Some(leg) = crossed {
+        raise_interception(ctx, root, &leg, now);
+    }
     Step::Worked
+}
+
+/// **Raise the corridor's interception at a leg boundary** (E7r1 R2).
+///
+/// The domain is resolved from the leg's own **place**, through the existing
+/// `SpatialState` place→domain read — never from the carrier, whose placement is
+/// `Unplaced` for the whole passage, and never from a sentinel `DomainId`. A leg
+/// that presents into no domain, or into one that is not `Active`, raises nothing
+/// and **records why**.
+fn raise_interception(
+    ctx: &mut Ctx<'_>,
+    root: ObjId,
+    leg: &crate::route::LegDef,
+    now: &ClockStamp,
+) {
+    if !leg.is_interdicted() {
+        return;
+    }
+    let place = leg.to();
+    let Some(domain) = ctx
+        .w
+        .module_state::<SpatialState>()
+        .and_then(|st| st.domain_of_host(place).map(|record| record.id))
+    else {
+        tracing::warn!(
+            target: "sim",
+            root = %root,
+            place = place.0,
+            "sim: an interdicted corridor leg presents into NO domain; no activation was \
+             raised. Recommended: @domain/create the leg's place, or re-author the leg's \
+             interdiction threshold in the pack"
+        );
+        return;
+    };
+    match crate::domain::raise(
+        ctx,
+        domain,
+        crate::domain::PromotionTrigger::Interception,
+        now.clone(),
+    ) {
+        Ok(raised) => tracing::info!(
+            target: "sim",
+            root = %root,
+            %domain,
+            outcome = ?raised.outcome,
+            "sim: a corridor leg boundary raised an interception REQUEST (cut 8's authority \
+             applies it; the clock registry is untouched)"
+        ),
+        Err(error) => tracing::error!(
+            target: "sim",
+            root = %root,
+            %domain,
+            %error,
+            "sim: a corridor interception could not be recorded; the journey continues and \
+             the domain stays as it was. Recommended: @domain/promote the domain by hand"
+        ),
+    }
 }
 
 /// Latch a stopped journey's root into the recovery room (E7 cut 6 fold, D1),

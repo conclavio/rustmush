@@ -5795,7 +5795,12 @@ fn econ_ack(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                  regardless. Nothing else is stopped."
                     .to_string(),
             ),
-            EscalationSubject::Obligation(_) | EscalationSubject::Hold(_) => {}
+            // E7 residue pass 1, R1: a work order whose budget hold vanished is
+            // stopped at `@wo/deliver` by `mush-industry` itself; acknowledging the
+            // page decides nothing about the money, so the economy says nothing.
+            EscalationSubject::Obligation(_)
+            | EscalationSubject::Hold(_)
+            | EscalationSubject::WorkOrder(_) => {}
         },
     }
     ctx.gate_on_durable_ack();

@@ -46,6 +46,8 @@ pub mod facts;
 pub mod formation;
 pub mod ids;
 pub mod record;
+pub mod recovery;
+pub mod recoverycmd;
 pub mod render;
 pub mod seat;
 pub mod seatcmd;
@@ -77,6 +79,13 @@ pub use record::{
     ObjectiveSpec, OperationDoc, OperationRuntime, OperationState, OperationTerms, Participation,
     PauseReason, RootFact, RuntimeError, SideSpec, TaskForce, TermsError, UnitRef,
 };
+pub use recovery::{
+    ApplicationState, MAX_RECOVERY_APPLICATIONS_PER_PRINCIPAL, MAX_RECOVERY_PER_FIRE,
+    MAX_RECOVERY_QUEUE, RECOVERY_COOLDOWN_SECS, RECOVERY_QUEUE_KEY, RecoveryApplication,
+    RecoveryConfig, RecoveryGrant, RecoveryPolicy, RecoveryQueue, RecoveryRecordError,
+    RecoveryRefusal, accessible_operational_assets, recovery_application_key, recovery_grant_key,
+};
+pub use recoverycmd::{GrantOutcome, NO_SUCH_APPLICANT, NOT_ENABLED, grant_key};
 pub use render::{
     Lens, NO_SUCH_FORMATION, NO_SUCH_OPERATION, Verbosity, lens_for, visible_operation,
 };
@@ -111,6 +120,11 @@ pub struct CampaignModule {
     /// closed — a seat cannot be taken un-attributed, and a grant with no row
     /// refuses activation and pages.
     seat_audit: Option<Arc<dyn mush_core::SeatAudit>>,
+    /// **E7r1 R4** — the composed `[tacsim.recovery]` block. `None` is the disabled
+    /// default: `@recovery` still registers and answers "not enabled on this server"
+    /// (E5c deviation 1), which is also what keeps the rule-1 allowlist tripwire able
+    /// to see the verb in a default composition.
+    recovery: Option<recovery::RecoveryConfig>,
 }
 
 impl CampaignModule {
@@ -132,6 +146,18 @@ impl CampaignModule {
     #[must_use]
     pub fn with_seat_audit(mut self, audit: Arc<dyn mush_core::SeatAudit>) -> CampaignModule {
         self.seat_audit = Some(audit);
+        self
+    }
+
+    /// Hand in the composed `[tacsim.recovery]` policy (**E7r1 R4**).
+    ///
+    /// The composition root maps `ruleset_tacsim::TacsimRecoveryConfig` into this
+    /// crate's own type, exactly as `IndustryModule::with_recipes` and
+    /// `with_formation_kinds` do — `mush-campaign` takes no ruleset edge, and
+    /// `cargo tree -p mush-campaign` is the test.
+    #[must_use]
+    pub fn with_recovery(mut self, cfg: recovery::RecoveryConfig) -> CampaignModule {
+        self.recovery = Some(cfg);
         self
     }
 
@@ -168,10 +194,20 @@ impl GameModule for CampaignModule {
         )?;
         // E7c10 B3: the audit holder, carried in world state so the seat
         // commands reach it synchronously. Unwired = fail closed.
+        // E7r1 R4/R3: the composed `[tacsim.recovery]` block, carried in world state
+        // so `@recovery` and the tick arm reach it synchronously. Unwired is the
+        // disabled default — **fail closed**: an unwired provider grants nothing and
+        // says so out loud.
+        reg.state(recovery::RecoveryPolicy::new(
+            self.recovery.clone().unwrap_or_default(),
+        ));
         reg.state(match self.seat_audit.clone() {
             Some(audit) => seatstate::SeatAuditHolder::new(audit),
             None => seatstate::SeatAuditHolder::unwired(),
         });
+        // E7r1 R3: `@recovery`, in its own classified group (K8.5), and the module
+        // default restored after it.
+        recoverycmd::register(reg)?;
         commands::register(reg)?;
         // E7c10 B8: cut 10's five verbs, in two classified groups, with
         // `LegacyPostImage` restored last (K8.5).

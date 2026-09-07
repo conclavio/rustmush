@@ -71,7 +71,7 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
         CommandSpec {
             name: "@tacsim".into(),
             shape: ArgShape::EqPair,
-            switches: ["pack", "seed", "pin"]
+            switches: ["pack", "seed", "pin", "time"]
                 .iter()
                 .copied()
                 .map(SmolStr::new)
@@ -95,12 +95,40 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
                    version, so publishing a newer version cannot move it. The pack must declare \
                    the subject.\n\
                    @tacsim/pin <subject>=              (staff) remove that subject's pin.\n\
-                   @tacsim/pin list                    (staff) every pin this world carries."
+                   @tacsim/pin list                    (staff) every pin this world carries.
+                   @tacsim/time show                   the live world-time generation, its                    rate, and each subsystem's declared catch-up policy.
+                   @tacsim/time rate=<n>               (staff) open ONE new world-time rate                    generation at <n> IC seconds per real second, and announce each                    subsystem's declared policy for it. It is one attributed act on the                    kernel's own timeline: no second timeline is created and no earlier fact                    is reinterpreted."
                 .into(),
             ..CommandSpec::default()
         },
         Arc::new(tacsim_cmd),
     )?;
+    // ---- E7r1: R2 — `@corridor`, a ReadOnly group of its own (10b §15.1 item 7) ----
+    //
+    // K8.5: the class is declared **before** the `reg.command` it applies to, and the
+    // module default is restored immediately after, so a later registration in this
+    // crate keeps `LegacyPostImage`. Every switch is a pure read of the materialized
+    // route projection: no document, no post, no submission.
+    reg.classify_commands(mush_core::CommandCompatibility::ReadOnly);
+    reg.command(
+        CommandSpec {
+            name: "@corridor".into(),
+            shape: ArgShape::EqPair,
+            switches: ["show", "rules", "domain"]
+                .iter()
+                .copied()
+                .map(SmolStr::new)
+                .collect(),
+            help: "@corridor/show <route>              one corridor: its endpoints, its legs                    and their unladen times, and who holds it.
+                   @corridor/rules <route>             the corridor's authored hazard bands and                    interdiction thresholds, leg by leg.
+                   @corridor/domain <route>            which of the corridor's legs present into                    a live simulation domain — the places an interception can actually promote.
+                   An unobserved corridor and one that was never authored answer the same line."
+                .into(),
+            ..CommandSpec::default()
+        },
+        Arc::new(corridor_cmd),
+    )?;
+    reg.classify_commands(mush_core::CommandCompatibility::LegacyPostImage);
     Ok(())
 }
 
@@ -163,9 +191,267 @@ fn tacsim_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         seed_cmd(ctx)
     } else if ctx.switches.has("pin") {
         pin_cmd(ctx)
+    } else if ctx.switches.has("time") {
+        time_cmd(ctx)
     } else {
         pack_cmd(ctx)
     }
+}
+
+// ---- E7r1: R5(a) — `@tacsim/time`, the rate policy's caller ---------------
+//
+// 10b §15.1 item 8, re-scoped: `Ctx::change_world_time_rate` existed with **zero
+// callers** and `[tacsim.time]` was parsed and inert. This is the caller, and it is
+// the whole of what was missing on this side — *journeys, tactical domains and
+// propagation are already correct* (cut 6's `reanchor`, cut 8's
+// `schedule_scan_clock_is_skippable`, cut 7's re-anchor + `clock_generation`
+// Losses), so this pass pins them rather than rebuilding them.
+//
+// **`[tacsim.time]` still reaches `load_or_seed_world_timeline` never.** Generation
+// one comes from `[game].ic_ratio`/`ic_epoch` and persisted truth wins thereafter;
+// this verb opens a **later** generation on the kernel's own timeline, through the
+// kernel's own call, and constructs no `GameClock` and no `WorldTimelineEpoch` of its
+// own. §3.1's pinned `mush-server` test is untouched.
+
+/// The four subsystems `[tacsim.time]` declares a catch-up policy for, in the order
+/// they are announced. The words themselves are configuration, never constants here.
+pub const CATCH_UP_SUBSYSTEMS: [&str; 4] = ["journeys", "production", "fronts", "domains"];
+
+fn time_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    require_enabled(ctx)?;
+    let lhs = ctx.args.lhs().trim().to_owned();
+    let rhs = ctx
+        .args
+        .rhs()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(ToOwned::to_owned);
+    match rhs {
+        // `@tacsim/time rate=<n>` — the one write.
+        Some(rhs) if lhs.eq_ignore_ascii_case("rate") => time_rate(ctx, &rhs),
+        _ => time_show(ctx),
+    }
+}
+
+/// The declared policy words, paired with their subsystem, in announcement order.
+fn declared_policies(ctx: &Ctx<'_>) -> Result<Vec<(&'static str, String)>, CmdError> {
+    let time = store(ctx)?.config().time.clone();
+    Ok(vec![
+        ("journeys", time.catch_up_journeys),
+        ("production", time.catch_up_production),
+        ("fronts", time.catch_up_fronts),
+        ("domains", time.catch_up_domains),
+    ])
+}
+
+fn time_show(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    let epoch = ctx
+        .w
+        .world_timeline()
+        .epochs()
+        .last()
+        .copied()
+        .ok_or_else(|| CmdError::msg("This world has no time generation."))?;
+    let mut rows = vec![format!(
+        "World time: generation {}, {} IC seconds per real second (anchored at IC {}).",
+        epoch.generation, epoch.rate, epoch.ic_anchor
+    )];
+    for (subsystem, word) in declared_policies(ctx)? {
+        rows.push(format!(
+            "  {subsystem}: {}",
+            if word.trim().is_empty() {
+                "(no policy declared)".to_owned()
+            } else {
+                word
+            }
+        ));
+    }
+    lines(ctx, rows);
+    Ok(())
+}
+
+fn time_rate(ctx: &mut Ctx<'_>, rhs: &str) -> Result<(), CmdError> {
+    if !is_staff(ctx.w, ctx.actor) {
+        return Err(CmdError::msg("Only staff change the world's time rate."));
+    }
+    let rate: u32 = rhs
+        .parse()
+        .map_err(|_| CmdError::msg("Usage: @tacsim/time rate=<ic seconds per real second>"))?;
+    let live = ctx.w.world_timeline().epochs().last().copied();
+    // **One attributed act, and never a generation opened for nothing.** Re-typing
+    // the live rate is refused rather than silently opening a second generation that
+    // every subsystem would then have to react to.
+    if live.is_some_and(|epoch| epoch.rate == rate) {
+        return Err(CmdError::msg(format!(
+            "The world already runs at {rate} IC seconds per real second."
+        )));
+    }
+    // Read the policies BEFORE the change: `change_world_time_rate` is the last
+    // fallible call this handler makes, and nothing after it may fail.
+    let policies = declared_policies(ctx)?;
+    let epoch = ctx
+        .w
+        .world_timeline()
+        .epochs()
+        .last()
+        .copied()
+        .ok_or_else(|| CmdError::msg("This world has no time generation."))?;
+    let _ = epoch;
+    let opened = ctx
+        .change_world_time_rate(rate)
+        .map_err(|error| CmdError::msg(format!("The rate was not changed: {error}")))?;
+    // **Each subsystem's declared policy fires exactly once per generation**: one
+    // announcement per subsystem, for the one generation this act opened.
+    let mut rows = vec![format!(
+        "World time generation {} opens at {rate} IC seconds per real second. Nothing already          recorded is reinterpreted; every earlier generation stands.",
+        opened.generation
+    )];
+    for (subsystem, word) in policies {
+        rows.push(format!(
+            "  {subsystem}: {}",
+            if word.trim().is_empty() {
+                "no policy declared — the subsystem's own default applies".to_owned()
+            } else {
+                word
+            }
+        ));
+    }
+    rows.push(
+        "Journeys re-anchor and keep their remaining IC duration; a tactical domain refuses a          stale scan and pages per entry; propagation re-anchors and arms its own losses; a work          order started on the old generation pauses as `TimelineChanged` at its next          transition and `@wo/restamp` resumes it."
+            .to_owned(),
+    );
+    lines(ctx, rows);
+    Ok(())
+}
+
+// ---- E7r1: R2 — @corridor (ReadOnly) ---------------------------------------
+
+/// The one existence-hiding refusal every `@corridor` switch answers with.
+///
+/// **Byte-identical for an unobserved corridor and one that was never authored**
+/// (§4 rule 4): a route materialized from a seed pack this world has not applied,
+/// a route id no pack declares, and a malformed argument all render this and
+/// nothing else — so the verb is not a corridor-existence oracle.
+pub const NO_SUCH_CORRIDOR: &str = "No such corridor.";
+
+fn corridor_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    require_enabled(ctx)?;
+    if ctx.switches.has("rules") {
+        corridor_rules(ctx)
+    } else if ctx.switches.has("domain") {
+        corridor_domain(ctx)
+    } else {
+        corridor_show(ctx)
+    }
+}
+
+/// Resolve the argument to a materialized route, or the one refusal.
+fn corridor_of(ctx: &Ctx<'_>, raw: &str) -> Result<mush_sim::RouteDef, CmdError> {
+    let (id, version) = parse_ref(raw).ok_or_else(|| CmdError::msg(NO_SUCH_CORRIDOR))?;
+    let store = store(ctx)?;
+    let found = match version {
+        // A version was named: it must be that pack's own route, not whichever pack
+        // `resolve` would have chosen.
+        Some(version) => store
+            .routes()
+            .find(|(_, v, def)| *v == version && def.id() == &id)
+            .map(|(_, _, def)| def),
+        None => store.route(&id),
+    };
+    found
+        .cloned()
+        .ok_or_else(|| CmdError::msg(NO_SUCH_CORRIDOR))
+}
+
+fn corridor_show(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    let raw = ctx.args.raw().trim().to_string();
+    let route = corridor_of(ctx, &raw)?;
+    let (from, to) = route.endpoints();
+    let controller = route
+        .controller()
+        .map_or_else(|| "unclaimed".to_owned(), |c| c.as_str().to_owned());
+    let mut rows = vec![format!(
+        "Corridor {}: #{} -> #{}, {} legs, drive class {}, propellant {}. Held by {controller}.",
+        route.id(),
+        from.0,
+        to.0,
+        route.legs().len(),
+        route.drive_class(),
+        route.propellant()
+    )];
+    // Bounded by `mush_sim::MAX_LEGS`, which the wire re-checks on load, so the walk
+    // is bounded on records the definition could possibly hold.
+    for (index, leg) in route.legs().iter().enumerate() {
+        rows.push(format!(
+            "  leg {}: -> #{} ({}s unladen)",
+            index.saturating_add(1),
+            leg.to().0,
+            leg.base_s()
+        ));
+    }
+    lines(ctx, rows);
+    Ok(())
+}
+
+fn corridor_rules(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    let raw = ctx.args.raw().trim().to_string();
+    let route = corridor_of(ctx, &raw)?;
+    let mut rows = vec![format!(
+        "Corridor {}: {}.",
+        route.id(),
+        if route.is_interdicted() {
+            "interdicted"
+        } else {
+            "no leg is interdicted"
+        }
+    )];
+    for (index, leg) in route.legs().iter().enumerate() {
+        rows.push(format!(
+            "  leg {}: hazard {}, interdiction {}{}",
+            index.saturating_add(1),
+            leg.hazard(),
+            leg.interdiction(),
+            if leg.is_interdicted() {
+                " — crossing this boundary raises an interception"
+            } else {
+                ""
+            }
+        ));
+    }
+    lines(ctx, rows);
+    Ok(())
+}
+
+fn corridor_domain(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    let raw = ctx.args.raw().trim().to_string();
+    let route = corridor_of(ctx, &raw)?;
+    let mut rows = Vec::new();
+    for (index, leg) in route.legs().iter().enumerate() {
+        // The **existing** `SpatialState` place->domain read; a leg that presents
+        // into no domain says so and names nothing, never a sentinel id.
+        let domain = ctx
+            .w
+            .module_state::<mush_sim::SpatialState>()
+            .and_then(|st| st.domain_of_host(leg.to()).map(|record| record.id));
+        rows.push(match domain {
+            Some(domain) => format!(
+                "  leg {}: #{} presents into domain #{domain}",
+                index.saturating_add(1),
+                leg.to().0
+            ),
+            None => format!(
+                "  leg {}: #{} presents into no domain; an interception here raises nothing",
+                index.saturating_add(1),
+                leg.to().0
+            ),
+        });
+    }
+    rows.insert(
+        0,
+        format!("Corridor {}: {} legs.", route.id(), route.legs().len()),
+    );
+    lines(ctx, rows);
+    Ok(())
 }
 
 // ---- @tacsim/pack ----------------------------------------------------------

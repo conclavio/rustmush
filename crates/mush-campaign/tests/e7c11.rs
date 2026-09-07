@@ -1320,6 +1320,15 @@ fn vf_b8_every_station_lane_verb_has_a_recorded_proxy_disposition() {
             "@station/fallback",
             Guarded(mush_sim::ProxyAct::FallbackChange),
         ),
+        // **E7 residue pass 1, R6** (10b §15.1 item 10). `@journey/depart` is no
+        // longer staff-only: the *permitting* half is now a billet/command test
+        // (`mush_sim::commands::may_command_departure`), so the pilot billeted on a
+        // hull departs it with no staff step. The disposition below is unchanged and
+        // that is the point — the proxy guard runs **in front of** the new
+        // permission, so widening who may depart never widens what a proxy seat may
+        // do. `@journey/divert` keeps `require_admin` deliberately: it re-writes a
+        // route already under way, and cut 6's `fail` path names it as the staff
+        // recovery route for a stopped hull.
         (
             "@journey/depart",
             Guarded(mush_sim::ProxyAct::OperationDeparture),

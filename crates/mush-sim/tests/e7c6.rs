@@ -2146,14 +2146,37 @@ fn vf_c9_a_billeted_pilot_may_read_its_own_journey() {
     let absent = run_as(&mut tw, bystander, "@journey/show Nowhere-At-All");
     assert_eq!(stranger, absent, "rule 4: byte-identical");
 
-    for actor in [fx.pilot, bystander] {
-        let refused = run_as(
-            &mut tw,
-            actor,
-            &format!("@journey/depart #{}=x #{}:10", fx.carrier.0, fx.phobos.0),
-        );
-        assert!(refused.contains("Permission denied"), "{refused}");
-    }
+    // **Amended by E7 residue pass 1, R6** (10b §15.1 item 10; cut 6 D5). Cut 6
+    // recorded `@journey/depart` as staff-only *because crew authority was cut
+    // 10's*, and cut 11 B0 landed the refusing half of it. The permitting half is
+    // now here: the ship's own **billeted pilot** may depart it, and gets past the
+    // authority gate to fail on the route spec instead. A **bystander** is still
+    // refused with the byte-identical `Permission denied.`, and `/divert` is still
+    // staff-only for everybody.
+    let crewed = run_as(
+        &mut tw,
+        fx.pilot,
+        &format!("@journey/depart #{}=x #{}:10", fx.carrier.0, fx.phobos.0),
+    );
+    assert!(
+        !crewed.contains("Permission denied"),
+        "the ship's own pilot is past the authority gate: {crewed}"
+    );
+    let refused = run_as(
+        &mut tw,
+        bystander,
+        &format!("@journey/depart #{}=x #{}:10", fx.carrier.0, fx.phobos.0),
+    );
+    assert!(refused.contains("Permission denied"), "{refused}");
+    let diverted = run_as(
+        &mut tw,
+        fx.pilot,
+        &format!("@journey/divert #{}=x #{}:10", fx.carrier.0, fx.phobos.0),
+    );
+    assert!(
+        diverted.contains("Permission denied"),
+        "a divert re-writes a committed route and stays staff's: {diverted}"
+    );
 }
 
 // ---- C10: an incoherent hydrated record is repaired ----------------------

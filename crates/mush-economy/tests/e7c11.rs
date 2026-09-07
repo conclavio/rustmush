@@ -28,12 +28,24 @@
 /// being added without re-reading §15.5.
 #[test]
 fn vf_g2_engine_owned_reservations_is_a_money_table() {
+    // E7 residue pass 1, R1 added the second entry — the work order's budget hold
+    // on `WorkOrder::budget_account`, which is a MONEY hold and so belongs here.
+    // The tripwire's point is unchanged: every entry must be a money hold, and a
+    // lot reservation may never be named.
     assert_eq!(
         mush_economy::ENGINE_OWNED_RESERVATIONS,
-        ["campaign.operation"],
-        "one entry: the campaign operation's MONEY hold. A lot reservation is a \
-         K4b `ReservationRecord` and cannot be named here (10b §15.5, fold G2)"
+        ["campaign.operation", "industry.workorder"],
+        "two entries, both MONEY holds: the campaign operation's bond and the work \
+         order's budget. A lot reservation is a K4b `ReservationRecord` and cannot \
+         be named here (10b §15.5, fold G2)"
     );
+    for kind in mush_economy::ENGINE_OWNED_RESERVATIONS {
+        assert!(
+            !kind.contains("market") && !kind.contains("listing") && !kind.contains("lot"),
+            "{kind} names the lot lane; §15.5 step (b′) says the table is not what \
+             guards it"
+        );
+    }
     // The table's only matcher is over a money hold's purpose, which is what
     // makes the entry above the only kind of thing that can appear in it.
     let src = std::fs::read_to_string(

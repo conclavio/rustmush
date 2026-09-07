@@ -97,6 +97,17 @@ pub struct CampaignStore {
     next_seat_offer: BTreeMap<u64, u64>,
     /// The muster sweep's own monotonic cycle (the tick arm's cursor).
     pub(crate) muster_cycle: u64,
+    /// **E7r1 R3** — the recovery lane's three documents, keyed exactly as they
+    /// persist. All three are EXEMPT workflow records (`recovery.queue`): no
+    /// legality check reads one, they take no part in authority or prepared
+    /// mechanics, and the lease itself is an ordinary E4b2 contract the economy owns.
+    recovery_queue: crate::recovery::RecoveryQueue,
+    recovery_apps: BTreeMap<u32, crate::recovery::RecoveryApplication>,
+    recovery_grants: BTreeMap<u32, crate::recovery::RecoveryGrant>,
+    /// The recovery arm's own rotation cursor — the raw applicant id it resumes
+    /// **past**, so a queue longer than one fire's budget is worked round-robin and
+    /// nobody at the back is starved by the front.
+    pub(crate) recovery_cursor: u32,
     held: Vec<HeldDoc>,
     /// How many refused documents did not fit in `held` (E7 cut 9 fold, B14). Past
     /// [`MAX_HELD_DOCUMENTS`] the 65th was dropped from the list with no counter and
@@ -141,6 +152,9 @@ struct Meta {
     /// sweep is a no-op past the applied point rather than a re-write.
     #[serde(default)]
     muster_cycle: u64,
+    /// **E7r1 R3** — the recovery arm's rotation cursor.
+    #[serde(default)]
+    recovery_cursor: u32,
 }
 
 impl CampaignStore {
@@ -356,6 +370,7 @@ impl CampaignStore {
             next_formation: self.next_formation,
             cursor: self.cursor,
             muster_cycle: self.muster_cycle,
+            recovery_cursor: self.recovery_cursor,
         })
         .unwrap_or(serde_json::Value::Null)
     }
@@ -415,6 +430,85 @@ impl CampaignStore {
             .map(|k| (k.id.clone(), k))
             .collect();
     }
+}
+
+impl CampaignStore {
+    /// **E7r1 R3** — the recovery queue, in claim order.
+    #[must_use]
+    pub fn recovery_queue(&self) -> &crate::recovery::RecoveryQueue {
+        &self.recovery_queue
+    }
+
+    /// One applicant's application.
+    #[must_use]
+    pub fn recovery_application(
+        &self,
+        applicant: mush_core::ObjId,
+    ) -> Option<&crate::recovery::RecoveryApplication> {
+        self.recovery_apps.get(&applicant.0)
+    }
+
+    /// One applicant's grant, live or ended.
+    #[must_use]
+    pub fn recovery_grant(
+        &self,
+        applicant: mush_core::ObjId,
+    ) -> Option<&crate::recovery::RecoveryGrant> {
+        self.recovery_grants.get(&applicant.0)
+    }
+
+    /// Every grant, in applicant order.
+    pub fn recovery_grants(&self) -> impl Iterator<Item = &crate::recovery::RecoveryGrant> {
+        self.recovery_grants.values()
+    }
+
+    /// How many live loaners are out — the one aggregate `@recovery/status` may show
+    /// everybody, because it names nobody.
+    #[must_use]
+    pub fn recovery_live_grants(&self) -> usize {
+        self.recovery_grants
+            .values()
+            .filter(|grant| grant.is_live())
+            .count()
+    }
+}
+
+/// Install the recovery queue and queue its document. **The single write path.**
+pub(crate) fn put_recovery_queue(ctx: &mut Ctx<'_>, queue: crate::recovery::RecoveryQueue) {
+    let value = serde_json::to_value(&queue).unwrap_or(serde_json::Value::Null);
+    if let Some(store) = ctx.w.module_state_mut::<CampaignStore>() {
+        store.recovery_queue = queue;
+    }
+    push(
+        ctx.out,
+        ModuleWrite::JsonSet {
+            key: SmolStr::new_static(crate::recovery::RECOVERY_QUEUE_KEY),
+            value,
+        },
+    );
+}
+
+/// Install one application and queue its document.
+pub(crate) fn put_recovery_application(
+    ctx: &mut Ctx<'_>,
+    app: crate::recovery::RecoveryApplication,
+) {
+    let key = crate::recovery::recovery_application_key(app.applicant());
+    let value = serde_json::to_value(&app).unwrap_or(serde_json::Value::Null);
+    if let Some(store) = ctx.w.module_state_mut::<CampaignStore>() {
+        store.recovery_apps.insert(app.applicant().0, app);
+    }
+    push(ctx.out, ModuleWrite::JsonSet { key, value });
+}
+
+/// Install one grant and queue its document.
+pub(crate) fn put_recovery_grant(ctx: &mut Ctx<'_>, grant: crate::recovery::RecoveryGrant) {
+    let key = crate::recovery::recovery_grant_key(grant.applicant());
+    let value = serde_json::to_value(&grant).unwrap_or(serde_json::Value::Null);
+    if let Some(store) = ctx.w.module_state_mut::<CampaignStore>() {
+        store.recovery_grants.insert(grant.applicant().0, grant);
+    }
+    push(ctx.out, ModuleWrite::JsonSet { key, value });
 }
 
 fn push(out: &mut Outbox, op: ModuleWrite) {
@@ -598,6 +692,7 @@ pub(crate) fn load(kv: Vec<(SmolStr, serde_json::Value)>) -> CampaignStore {
                     store.next_formation = meta.next_formation;
                     store.cursor = meta.cursor;
                     store.muster_cycle = meta.muster_cycle;
+                    store.recovery_cursor = meta.recovery_cursor;
                 }
                 Err(error) => {
                     tracing::warn!(%key, %error, "campaign: the meta document was ignored");
@@ -662,6 +757,36 @@ pub(crate) fn load(kv: Vec<(SmolStr, serde_json::Value)>) -> CampaignStore {
                     store.install_muster(report)
                 }
                 Ok(_) => store.hold(key, "the report's key disagrees with itself".to_owned()),
+                Err(error) => store.hold(key, error.to_string()),
+            }
+        } else if key == crate::recovery::RECOVERY_QUEUE_KEY {
+            // E7r1 R3: a queue past `MAX_RECOVERY_QUEUE` is REFUSED on load and
+            // **held**, never truncated — a silently dropped applicant is a player
+            // who was told they were in the queue and is not.
+            match serde_json::from_value::<crate::recovery::RecoveryQueue>(value) {
+                Ok(queue) => store.recovery_queue = queue,
+                Err(error) => store.hold(key, error.to_string()),
+            }
+        } else if key.starts_with("recovery_app:") {
+            match serde_json::from_value::<crate::recovery::RecoveryApplication>(value) {
+                Ok(app) if crate::recovery::recovery_application_key(app.applicant()) == key => {
+                    store.recovery_apps.insert(app.applicant().0, app);
+                }
+                Ok(_) => store.hold(
+                    key,
+                    "the application's applicant disagrees with its key".to_owned(),
+                ),
+                Err(error) => store.hold(key, error.to_string()),
+            }
+        } else if key.starts_with("recovery_grant:") {
+            match serde_json::from_value::<crate::recovery::RecoveryGrant>(value) {
+                Ok(grant) if crate::recovery::recovery_grant_key(grant.applicant()) == key => {
+                    store.recovery_grants.insert(grant.applicant().0, grant);
+                }
+                Ok(_) => store.hold(
+                    key,
+                    "the grant's applicant disagrees with its key".to_owned(),
+                ),
                 Err(error) => store.hold(key, error.to_string()),
             }
         } else {

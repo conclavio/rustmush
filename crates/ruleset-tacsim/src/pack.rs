@@ -835,6 +835,27 @@ pub struct PackLeg {
     pub to: CanonicalId,
     /// Unladen seconds at nominal thrust.
     pub base_s: u32,
+    /// **E7r1 R2** — the leg's authored hazard **band**, `0..=MAX_HAZARD_BAND`.
+    ///
+    /// A band, not a scale: a pack wanting finer resolution is authoring a damage
+    /// model, which is post-E7 (10b §15.3 item 18). `#[serde(default)]`, so every
+    /// pack authored before the residue pass loads byte-identically and is
+    /// **unhazardous** — the version rule (T1/Q18A) holds without re-authoring
+    /// anything.
+    ///
+    /// `skip_serializing_if` matters as much as `default`: the pack digest is taken
+    /// over the **serialized entry table**, so a field that always encodes would
+    /// move every published pack's digest and re-price, re-time and re-resolve
+    /// everything already pinned to it. An unauthored band encodes nothing, so the
+    /// shipped corridor's digest is byte-identical to the one cut 1 published.
+    #[serde(default, skip_serializing_if = "is_unbanded")]
+    pub hazard: u8,
+    /// **E7r1 R2** — the interdiction **threshold**. Zero (the default) means *this
+    /// leg is never interdicted*; otherwise the leg's boundary raises an
+    /// interception when `hazard >= interdiction`. Skipped when unauthored, for
+    /// [`PackLeg::hazard`]'s digest reason.
+    #[serde(default, skip_serializing_if = "is_unbanded")]
+    pub interdiction: u8,
 }
 
 /// A route definition as a pack authors it.
@@ -863,6 +884,23 @@ pub struct RouteEntry {
     /// departure window, not a duration term.
     #[serde(default)]
     pub alignment_band: Option<u64>,
+    /// **E7r1 R2** — who holds the corridor, as a symbolic id.
+    ///
+    /// `None` (the default) is an uncontrolled corridor. It is deliberately a
+    /// `CanonicalId` and never an object or org id: a route definition is pinned by
+    /// a published pack (T1), and a definition carrying a world id could not be
+    /// pinned across a re-seed. Nothing resolves it — it is a name `@corridor/show`
+    /// renders and no code interprets. Skipped when unauthored, for
+    /// [`PackLeg::hazard`]'s digest reason.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub controller: Option<CanonicalId>,
+}
+
+/// Whether a hazard band or interdiction threshold was authored at all
+/// (**E7r1 R2**). An unauthored one is skipped, so it never enters a pack digest.
+#[allow(clippy::trivially_copy_pass_by_ref)]
+fn is_unbanded(value: &u8) -> bool {
+    *value == 0
 }
 
 /// A loaded, digest-verified pack.

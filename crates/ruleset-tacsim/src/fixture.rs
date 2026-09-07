@@ -87,5 +87,9 @@ pub fn config() -> TacsimConfig {
         ground_pulse_ms: crate::config::DEFAULT_GROUND_PULSE_MS,
         space_pulse_ms: crate::config::DEFAULT_SPACE_PULSE_MS,
         time: crate::config::TacsimTimeConfig::default(),
+        // E7r1 R4: the fixture leaves the provider **disabled**. A fixture that
+        // granted hulls would be a policy nobody wrote, and doc 10 §11's proving
+        // loop is item 11's, not this pass's.
+        recovery: crate::config::TacsimRecoveryConfig::default(),
     }
 }

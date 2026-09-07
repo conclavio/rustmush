@@ -139,6 +139,17 @@ pub enum EscalationSubject {
     /// its own subject; the ladder's per-subject dedupe still means a runaway chain
     /// opens one record and not a thousand.
     DroppedPage,
+    /// One **work order** whose budget reservation is gone (E7 residue pass 1, R1).
+    ///
+    /// Like [`EscalationSubject::HousingProperty`], the economy neither resolves nor
+    /// interprets it: it is the id of a record belonging to a module layered on top
+    /// of the economy, and it lives here rather than in a ladder of `mush-industry`'s
+    /// own for exactly the reason that variant gives — the dedupe, the reopen, the
+    /// acknowledgement and `@econ/alerts` are all here. A vanished work-order hold is
+    /// a **pause and a page, never a replay hit** (E7 cut 9 fold, E2(a)), and this is
+    /// the page. The `u64` is the raw `WorkOrderId`, because the dependency runs
+    /// industry → economy and must keep running that way.
+    WorkOrder(u64),
     /// The whole economy — the level-3 case, and the only one that is not local.
     Economy,
 }
@@ -156,6 +167,7 @@ impl EscalationSubject {
             EscalationSubject::HousingRoom(id) => format!("housing room #{id}"),
             EscalationSubject::DeclaredCadence(id) => format!("declared cadence #{id}"),
             EscalationSubject::DroppedPage => "a dropped economy announcement".to_string(),
+            EscalationSubject::WorkOrder(id) => format!("work order #{id}"),
             EscalationSubject::Economy => "the economy".to_string(),
         }
     }

@@ -400,12 +400,106 @@ pub fn tacsim_config(cfg: &TacsimCfg) -> Result<ruleset_tacsim::TacsimConfig, St
             catch_up_fronts: cfg.time.catch_up_fronts.clone(),
             catch_up_domains: cfg.time.catch_up_domains.clone(),
         },
+        // ---- E7r1: R4 — `[tacsim.recovery]`, LIVE and therefore VALIDATED ----
+        //
+        // Unlike `[tacsim.time]`, this block has a reader in the same pass that adds
+        // it, so *the cut that reads a field is the cut that validates it* applies:
+        // a nonsense policy refuses the boot here, at the host, rather than being
+        // discovered at a player's first application.
+        recovery: recovery_config(&cfg.recovery)?,
     };
     // Verify here, at the host, so the boot fails with the file's name in the message.
     // The check is pure and the module repeats it at wiring; two evaluations of a pure
     // function over the same bytes cannot disagree.
     ruleset_tacsim::verify_sources(&typed)?;
     Ok(typed)
+}
+
+/// **E7r1 R4 — `[tacsim.recovery]`, validated at the host.**
+///
+/// A disabled provider validates nothing but its own disabled-ness: the block may
+/// then be as empty as it likes, which is what keeps a server that has never heard of
+/// recovery bit-identical to one built before the residue pass. An **enabled** one
+/// must name a pool account, at least one tier, a positive application cap, a
+/// positive cooldown and a known insurance word — because each of those is read at a
+/// grant, and a grant is not the place to discover the policy is nonsense.
+///
+/// # Errors
+///
+/// A message naming `[tacsim.recovery]` and the exact key, so the boot failure is
+/// actionable without reading this function.
+fn recovery_config(
+    cfg: &mush_config::config::TacsimRecoveryCfg,
+) -> Result<ruleset_tacsim::TacsimRecoveryConfig, String> {
+    let insurance = cfg.insurance.trim().to_string();
+    let tiers: Vec<String> = cfg
+        .tiers
+        .iter()
+        .map(|tier| tier.trim().to_string())
+        .filter(|tier| !tier.is_empty())
+        .collect();
+    if cfg.enabled {
+        if cfg.pool_account == 0 {
+            return Err(
+                "[tacsim.recovery]: an enabled provider needs `pool_account` — a pool that \
+                 names no account can never be exhausted OR funded, and 'funded, never \
+                 infinite' is the whole rule"
+                    .to_owned(),
+            );
+        }
+        if tiers.is_empty() {
+            return Err(
+                "[tacsim.recovery]: an enabled provider needs at least one entry in `tiers`; \
+                 a grant names one"
+                    .to_owned(),
+            );
+        }
+        if cfg.applications_per_principal == 0 {
+            return Err(
+                "[tacsim.recovery]: `applications_per_principal` is at least 1; zero would \
+                 refuse every applicant silently"
+                    .to_owned(),
+            );
+        }
+        if cfg.cooldown_days == 0 {
+            return Err(
+                "[tacsim.recovery]: `cooldown_days` is at least 1 (10b §7's RECOVERY_COOLDOWN \
+                 is 14)"
+                    .to_owned(),
+            );
+        }
+        if cfg.upkeep_per_period < 0 {
+            return Err("[tacsim.recovery]: `upkeep_per_period` is not negative".to_owned());
+        }
+        if cfg.pool_floor < 0 {
+            return Err("[tacsim.recovery]: `pool_floor` is not negative".to_owned());
+        }
+    }
+    if tiers.len() > ruleset_tacsim::MAX_RECOVERY_TIERS {
+        return Err(format!(
+            "[tacsim.recovery]: `tiers` declares {} entries; this server takes at most {}",
+            tiers.len(),
+            ruleset_tacsim::MAX_RECOVERY_TIERS
+        ));
+    }
+    if !ruleset_tacsim::RECOVERY_INSURANCE_WORDS.contains(&insurance.as_str()) {
+        return Err(format!(
+            "[tacsim.recovery]: `insurance` is one of {}; `{insurance}` is a policy nothing \
+             applies",
+            ruleset_tacsim::RECOVERY_INSURANCE_WORDS.join(" | ")
+        ));
+    }
+    Ok(ruleset_tacsim::TacsimRecoveryConfig {
+        enabled: cfg.enabled,
+        pool_account: cfg.pool_account,
+        pool_floor: cfg.pool_floor,
+        tiers,
+        applications_per_principal: cfg.applications_per_principal,
+        cooldown_secs: i64::from(cfg.cooldown_days).saturating_mul(24 * 60 * 60),
+        max_operational_assets: cfg.max_operational_assets,
+        insurance,
+        upkeep_per_period: cfg.upkeep_per_period,
+    })
 }
 
 /// The most pack files this host will read for one `[tacsim]` path list.

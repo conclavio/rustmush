@@ -15,8 +15,7 @@ use crate::data::{
     persist_mounts, persist_space, persist_stations, space_key,
 };
 use crate::domain::{
-    self, ActivationBook, DomainActivation, DomainSummary, MAX_ACTIVE_DOMAINS, PromotionTrigger,
-    QUIET_BOUNDARY,
+    self, ActivationBook, DomainSummary, MAX_ACTIVE_DOMAINS, PromotionTrigger, QUIET_BOUNDARY,
 };
 use crate::focus::{AccountOracle, ActiveFocus, FocusState, MAX_BILLETS_LISTED, ReachProof};
 use crate::graph::{effective_domain, presence, project, verify_indexes, verify_projections};
@@ -34,11 +33,17 @@ pub(crate) fn is_admin(w: &mush_core::World, who: ObjId) -> bool {
     perm::has_power(w, who, Powers::SIM_ADMIN) || perm::has_role(w, who, Role::Royalty)
 }
 
+/// The one refusal every authority gate in this file answers with, so a gate that
+/// widens who may act can never also widen what the refusal discloses (E7r1 R6).
+fn denied() -> CmdError {
+    CmdError::msg("Permission denied.")
+}
+
 fn require_admin(ctx: &Ctx<'_>) -> Result<(), CmdError> {
     if is_admin(ctx.w, ctx.actor) {
         Ok(())
     } else {
-        Err(CmdError::msg("Permission denied."))
+        Err(denied())
     }
 }
 
@@ -373,7 +378,7 @@ fn release_activation(ctx: &mut Ctx<'_>, id: DomainId, why: &str) {
              Recommended: @domain/demote the domain by hand"
         ),
     }
-    for other in flush_dequeued(ctx) {
+    for other in domain::flush_dequeued(ctx) {
         info(ctx, format!("Domain #{other} came off the queue."));
     }
 }
@@ -2641,10 +2646,22 @@ fn may_read_journey(ctx: &Ctx<'_>, carrier: ObjId) -> bool {
 }
 
 fn cmd_journey(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
-    // **The write half stays staff-only for cut 6** (D5(b)): `/depart` and
-    // `/divert` put a ship and everyone inside it under way, and crew authority
-    // — seats, proxies, musters, consent — is cut 10's (`force.assign`). The
-    // READS are open to an actor who crews the carrier, because cut 5's whole
+    // **`/depart` is crew-driven since E7 residue pass 1 (R6; 10b §15.1 item 10).**
+    // Cut 6 D5(b) made the whole write half staff-only because crew authority —
+    // seats, proxies, musters, consent — was cut 10's, and cut 11 B0 landed the
+    // *refusing* half (`seat_restriction`). The *permitting* half is here, and it
+    // lives inside `journey_depart` because the carrier is resolved there:
+    // `may_command_departure` answers staff, an owner/controller, or a billet
+    // holder, and everybody else gets the byte-identical `denied()`.
+    //
+    // **`/divert` stays staff-only, deliberately.** A divert re-writes a route
+    // that is already under way with everyone aboard committed to it; doc 10 §11's
+    // proving loop needs *departure* without a staff step and asks nothing about
+    // diversion, and cut 6's `fail` path names `@journey/divert` as the staff
+    // recovery route for a stopped hull (§15.1 item 4's "the interim is not a
+    // stall"). Widening it would remove the only recovery a staffer has.
+    //
+    // The READS are open to an actor who crews the carrier, because cut 5's whole
     // premise is that the focused station is the live control surface; a
     // bystander gets the byte-identical rule-4 `"No journey."`, so the read
     // leaks nothing.
@@ -2662,7 +2679,9 @@ fn cmd_journey(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             crate::focus::ProxyAct::OperationDeparture,
         )
         .map_err(CmdError::msg)?;
-        require_admin(ctx)?;
+        // The authority gate is inside `journey_depart`, where the carrier the
+        // billet is *over* has been resolved. The proxy guard above stays in front
+        // of it, so widening who may depart never widens what a proxy seat may do.
         journey_depart(ctx)
     } else if ctx.switches.has("divert") {
         crate::focus::seat_restriction(
@@ -2731,8 +2750,31 @@ fn journey_plan(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     Ok(())
 }
 
+/// **Who may put this hull under way** (E7r1 R6; 10b §15.1 item 10, cut 6 D5).
+///
+/// Staff, an owner or controller of the carrier, or an actor who holds a billet on
+/// it — `crews`, which is cut 5's `holds_billet` rolled up over the unit's authored
+/// stations, so "who may read this ship's journey" and "who may depart it" have one
+/// answer and one implementation. Nothing here reads an org capability or a campaign
+/// formation: `mush-sim`'s edges are `{core, economy, scenes, proto}` and a command
+/// relation that needed `mush_org::authorize_in_world` would be a new edge, which
+/// this pass does not add (§4.1's "no new crate and no new edge").
+pub(crate) fn may_command_departure(ctx: &Ctx<'_>, carrier: ObjId) -> bool {
+    is_admin(ctx.w, ctx.actor)
+        || perm::controls(ctx.w, ctx.actor, carrier)
+        || crews(ctx, ctx.actor, carrier)
+}
+
 fn journey_depart(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let carrier = match_object(ctx.w, ctx.actor, ctx.args.lhs())?;
+    // ---- E7r1: R6 — the PERMITTING half of crew-driven `@journey/depart` ----
+    // It runs **after** `cmd_journey`'s `seat_restriction` and **before** anything
+    // is read or written, and its refusal is `require_admin`'s own `denied()`, so a
+    // bystander cannot tell a carrier they may not depart from one that refused for
+    // any other reason.
+    if !may_command_departure(ctx, carrier) {
+        return Err(denied());
+    }
     if let Some(why) = journey_ineligible(ctx, carrier) {
         return Err(CmdError::msg(why));
     }
@@ -3031,40 +3073,13 @@ fn resolve_domain_opt(ctx: &Ctx<'_>, s: &str) -> Option<DomainId> {
 /// How many objects the domain currently holds — the one observable count cut 6
 /// can put in a request or a summary.
 fn domain_units(ctx: &Ctx<'_>, id: DomainId) -> u32 {
-    u32::try_from(
-        st(ctx)
-            .derived
-            .local_objects
-            .get(&id)
-            .map_or(0, BTreeSet::len),
-    )
-    .unwrap_or(u32::MAX)
-}
-
-/// Persist every request `drain_queue` promoted off the queue.
-fn flush_dequeued(ctx: &mut Ctx<'_>) -> Vec<DomainId> {
-    let promoted = match ctx.w.module_state_mut::<ActivationBook>() {
-        Some(book) => domain::drain_queue(book),
-        None => Vec::new(),
-    };
-    let records: Vec<DomainActivation> = promoted
-        .iter()
-        .filter_map(|id| ab(ctx).activations.get(id).cloned())
-        .collect();
-    for record in &records {
-        domain::persist_activation(ctx.out, record);
-    }
-    promoted
+    // E7r1 R2: one implementation, in `domain.rs`, so the journey tick's request
+    // and a staffer's request count the same thing.
+    domain::units_in(ctx, id)
 }
 
 fn domain_promote(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let id = resolve_domain(ctx, ctx.args.lhs())?;
-    let status = st(ctx).domains.get(&id).map(|d| d.status);
-    if status != Some(DomainStatus::Active) {
-        return Err(CmdError::msg(format!(
-            "Domain #{id} is not active; only an active domain promotes."
-        )));
-    }
     let token = ctx.args.rhs().map(str::trim).filter(|s| !s.is_empty());
     let trigger = match token {
         None => PromotionTrigger::PlayerPresent,
@@ -3074,37 +3089,39 @@ fn domain_promote(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             )
         })?,
     };
-    // A fifth trigger on an already-promoted domain does NOT re-promote: the
-    // request that promoted it stands, with its original trigger and stamp.
-    if ab(ctx).is_promoted(id) {
-        info(
-            ctx,
-            format!("Domain #{id} is already promoted; the standing request is unchanged."),
-        );
-        return Ok(());
-    }
+    // ---- E7r1: R2 — through the ONE request seam ----
+    // Every step this used to perform inline — the `Active` gate, the
+    // already-promoted short-circuit, the queue decision, the record, the persist,
+    // the insert and the queue drain — is now `domain::raise`, which the journey
+    // tick's leg boundary calls as well. A second copy of those steps would be a
+    // second seam: two places deciding what "already promoted" means. The command
+    // owns only what a command owns — the argument, the trigger word, and what a
+    // staffer is told.
+    let units = domain::units_in(ctx, id);
     let at = ctx.w.world_ic_now();
-    let units = domain_units(ctx, id);
-    // At the limit the trigger QUEUES and is re-evaluated — never dropped.
-    let queued = ab(ctx).live() >= MAX_ACTIVE_DOMAINS;
-    let record = DomainActivation::new(id, trigger, at, units, queued)
-        .map_err(|e| CmdError::msg(e.to_string()))?;
-    domain::persist_activation(ctx.out, &record);
-    if let Some(book) = ctx.w.module_state_mut::<ActivationBook>() {
-        book.activations.insert(id, record);
-    }
-    let promoted = flush_dequeued(ctx);
-    if queued && !promoted.contains(&id) {
-        info(
+    let raised = domain::raise(ctx, id, trigger, at).map_err(|e| CmdError::msg(e.to_string()))?;
+    match raised.outcome {
+        domain::RaiseOutcome::NotActive => {
+            return Err(CmdError::msg(format!(
+                "Domain #{id} is not active; only an active domain promotes."
+            )));
+        }
+        domain::RaiseOutcome::AlreadyPromoted => {
+            info(
+                ctx,
+                format!("Domain #{id} is already promoted; the standing request is unchanged."),
+            );
+            return Ok(());
+        }
+        domain::RaiseOutcome::Queued => info(
             ctx,
             format!(
                 "Domain #{id} is QUEUED behind the {MAX_ACTIVE_DOMAINS} active-domain limit \
                  (trigger `{}`); it re-evaluates when a slot frees.",
                 trigger.token()
             ),
-        );
-    } else {
-        info(
+        ),
+        domain::RaiseOutcome::Requested => info(
             ctx,
             format!(
                 "Domain #{id} requested promotion (trigger `{}`, {units} local). The \
@@ -3112,9 +3129,9 @@ fn domain_promote(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                  nothing about the clock registry changed.",
                 trigger.token()
             ),
-        );
+        ),
     }
-    for other in promoted.into_iter().filter(|d| *d != id) {
+    for other in raised.dequeued.into_iter().filter(|d| *d != id) {
         info(ctx, format!("Domain #{other} came off the queue."));
     }
     Ok(())
@@ -3211,7 +3228,7 @@ fn domain_demote(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         book.summaries.insert(id, summary);
         book.activations.remove(&id);
     }
-    let promoted = flush_dequeued(ctx);
+    let promoted = domain::flush_dequeued(ctx);
     info(
         ctx,
         format!(

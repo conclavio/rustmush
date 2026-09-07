@@ -403,6 +403,135 @@ impl ActivationBook {
     }
 }
 
+// ---- E7r1: R2 — the ONE activation-request seam ---------------------------
+//
+// Before the residue pass the request→apply seam existed exactly once, inline in
+// `commands::domain_promote`, and `flush_dequeued` was private to that file. R2's
+// journey-tick interception needs the identical five steps, and a second copy of
+// them is a second seam: two places deciding what "already promoted" means, two
+// places choosing whether a trigger queues, two places persisting. So the five
+// steps moved here and BOTH callers go through them. Cut 6/8's contract is
+// untouched: what this writes is a **request**, cut 8's authority is the only
+// applier, and nothing here constructs a `DomainClock::Pulse` or touches the
+// composition-frozen `ClockProviderRegistry`.
+
+/// What one [`raise`] did.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RaiseOutcome {
+    /// The domain is not `Active`; only an active domain promotes.
+    NotActive,
+    /// It is already promoted. **The standing request is unchanged** — its
+    /// original trigger and stamp stand, so a fifth trigger promotes nothing twice.
+    AlreadyPromoted,
+    /// Requested, but queued behind [`MAX_ACTIVE_DOMAINS`]. Re-evaluated, never
+    /// dropped (§9 q1).
+    Queued,
+    /// Requested and live.
+    Requested,
+}
+
+/// One raise's outcome, plus whatever else came off the queue with it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Raised {
+    /// What happened to the domain that was raised.
+    pub outcome: RaiseOutcome,
+    /// Other domains a freed slot promoted in the same call.
+    pub dequeued: Vec<DomainId>,
+}
+
+/// How many objects a domain currently holds — the one observable count a request
+/// or a summary may carry. Total: an absent state answers zero.
+#[must_use]
+pub(crate) fn units_in(ctx: &mush_core::Ctx<'_>, id: DomainId) -> u32 {
+    let Some(state) = ctx.w.module_state::<crate::data::SpatialState>() else {
+        return 0;
+    };
+    u32::try_from(
+        state
+            .derived
+            .local_objects
+            .get(&id)
+            .map_or(0, std::collections::BTreeSet::len),
+    )
+    .unwrap_or(u32::MAX)
+}
+
+/// Persist every request [`drain_queue`] promoted off the queue.
+pub(crate) fn flush_dequeued(ctx: &mut mush_core::Ctx<'_>) -> Vec<DomainId> {
+    let promoted = match ctx.w.module_state_mut::<ActivationBook>() {
+        Some(book) => drain_queue(book),
+        None => Vec::new(),
+    };
+    let records: Vec<DomainActivation> = promoted
+        .iter()
+        .filter_map(|id| {
+            ctx.w
+                .module_state::<ActivationBook>()
+                .and_then(|book| book.activations.get(id).cloned())
+        })
+        .collect();
+    for record in &records {
+        persist_activation(ctx.out, record);
+    }
+    promoted
+}
+
+/// **Raise one promotion request.** The ONE seam `@domain/promote` and the journey
+/// tick's leg boundary both go through.
+///
+/// # Errors
+///
+/// [`DomainWorkflowError::NotWorldIc`] for a stamp on any clock but the world IC
+/// timeline — the same refusal `DomainActivation::new` has always given.
+pub(crate) fn raise(
+    ctx: &mut mush_core::Ctx<'_>,
+    id: DomainId,
+    trigger: PromotionTrigger,
+    at: mush_core::ClockStamp,
+) -> Result<Raised, DomainWorkflowError> {
+    let active = ctx
+        .w
+        .module_state::<crate::data::SpatialState>()
+        .and_then(|state| state.domains.get(&id).map(|d| d.status))
+        == Some(crate::data::DomainStatus::Active);
+    if !active {
+        return Ok(Raised {
+            outcome: RaiseOutcome::NotActive,
+            dequeued: Vec::new(),
+        });
+    }
+    // A fifth trigger on an already-promoted domain does NOT re-promote: the
+    // request that promoted it stands, with its original trigger and stamp.
+    if ctx
+        .w
+        .module_state::<ActivationBook>()
+        .is_some_and(|book| book.is_promoted(id))
+    {
+        return Ok(Raised {
+            outcome: RaiseOutcome::AlreadyPromoted,
+            dequeued: Vec::new(),
+        });
+    }
+    let units = units_in(ctx, id);
+    // At the limit the trigger QUEUES and is re-evaluated — never dropped.
+    let queued = ctx
+        .w
+        .module_state::<ActivationBook>()
+        .is_some_and(|book| book.live() >= MAX_ACTIVE_DOMAINS);
+    let record = DomainActivation::new(id, trigger, at, units, queued)?;
+    persist_activation(ctx.out, &record);
+    if let Some(book) = ctx.w.module_state_mut::<ActivationBook>() {
+        book.activations.insert(id, record);
+    }
+    let dequeued = flush_dequeued(ctx);
+    let outcome = if queued && !dequeued.contains(&id) {
+        RaiseOutcome::Queued
+    } else {
+        RaiseOutcome::Requested
+    };
+    Ok(Raised { outcome, dequeued })
+}
+
 /// Re-evaluate the queue: while a slot is free, promote the lowest-id queued
 /// request. Returns the domains that came off the queue, so the caller persists
 /// exactly those. Bounded by [`MAX_ACTIVE_DOMAINS`] iterations — a queue can
