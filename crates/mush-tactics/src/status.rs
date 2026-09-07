@@ -165,6 +165,38 @@ fn compose(world: &World, viewer: ObjId, unit: &TacticalUnit) -> UnitStatus {
     }
 }
 
+/// The viewer's highest-priority `sim` station whose subject is an ACTIVE
+/// unit — the default subject of the `tactics.unit` and `tactics.vitals`
+/// queries (interface plan I8) when the viewer's own object carries no unit.
+/// K5a's grant list is already priority-descending, so the first hit is the
+/// station a cut-5 focus would narrow to. `None` when the viewer holds none.
+#[must_use]
+pub fn primary_stationed_unit(world: &World, viewer: ObjId) -> Option<ObjId> {
+    let store = world.module_state::<UnitStore>()?;
+    world
+        .command_subjects_of(viewer)
+        .iter()
+        .filter(|grant| grant.owner == SIM_OWNER)
+        .map(|grant| grant.subject)
+        .find(|subject| store.units.contains_key(subject))
+}
+
+/// Every CONNECTED actor holding a `sim` station on `unit`, in id order, at
+/// most `cap` — the after-action audience of `@unit/damage` (interface plan
+/// I8, D-I8-2). The world keeps no subject→actor index, so this is an honest
+/// walk of the connected set; a per-tick caller would want a reverse accessor
+/// instead of this.
+#[must_use]
+pub fn stationed_viewers(world: &World, unit: ObjId, cap: usize) -> Vec<ObjId> {
+    let mut viewers: Vec<ObjId> = world
+        .connected()
+        .filter(|viewer| viewer_is_stationed(world, *viewer, unit))
+        .collect();
+    viewers.sort();
+    viewers.truncate(cap);
+    viewers
+}
+
 /// This module's owner, for a caller that needs to name it.
 ///
 /// # Errors

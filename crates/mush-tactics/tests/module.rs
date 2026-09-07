@@ -14,10 +14,11 @@ use mush_core::{
 use mush_proto::{OutputEvent, PanelFrameKind};
 use mush_tactics::{
     CapabilityId, CapabilityInit, CapabilityKey, CellId, CellSpec, ComponentId, ComponentSpec,
-    ConditionId, FacetId, FacetSpec, InstallPoint, LocomotionId, MAX_UNIT_BINDING_REPAIRS,
-    MediumId, MobilityMode, MobilityModeId, MobilityProfile, MobilityVocabulary, ModeRules,
-    RulesValue, SectionId, SectionSpec, TacticalUnit, TacticsModule, UNIT_BINDING_VERSION,
-    UNIT_RECORD_VERSION, UnitCatalog, UnitCatalogBuilder, UnitSpec, UnitSpecBody, UnitStore,
+    ConditionId, FacetId, FacetSpec, InstallPoint, InstallSlotId, LocomotionId,
+    MAX_UNIT_BINDING_REPAIRS, MediumId, MobilityMode, MobilityModeId, MobilityProfile,
+    MobilityVocabulary, ModeRules, RulesValue, SectionId, SectionSpec, TacticalUnit, TacticsModule,
+    UNIT_BINDING_VERSION, UNIT_RECORD_VERSION, UnitCatalog, UnitCatalogBuilder, UnitSpec,
+    UnitSpecBody, UnitStore,
 };
 use mush_testkit::{TestWorld, text_of};
 use serde_json::{Value, json};
@@ -1863,4 +1864,1088 @@ fn vf_a12b_the_unit_status_verb_exists_and_hides_existence_for_an_ordinary_viewe
         text(&nonexistent),
         "a stationed viewer sees the unit, so the identity above is a fog rule"
     );
+}
+
+// ---- Interface plan I8: the unit view ----------------------------------
+
+/// A kitted, mobile, capability-bearing unit whose rule bodies carry MARKERS,
+/// so a projection that leaks any of them is caught by a text scan.
+fn i8_spec() -> UnitSpec {
+    let mut definitions = DefinitionRegistryBuilder::new();
+    let opaque = register_ref(
+        &mut definitions,
+        "tacsim",
+        "schema",
+        "tacsim.i8x",
+        json!({}),
+    );
+    let kinematics = register_ref(
+        &mut definitions,
+        "tacsim",
+        "schema",
+        "tacsim.i8kin",
+        json!({}),
+    );
+    let gauss = register_ref(
+        &mut definitions,
+        "tacsim",
+        "component",
+        "tacsim.weapon.i8gauss",
+        json!({}),
+    );
+    let vocabulary = MobilityVocabulary::base().freeze();
+    let biped = MobilityModeId::new("ground.biped").unwrap();
+    let profile = MobilityProfile::new(
+        vec![
+            MobilityMode::new(
+                biped.clone(),
+                [MediumId::new("ground").unwrap()],
+                LocomotionId::new("legged").unwrap(),
+                ModeRules::new(kinematics.clone(), json!({"kin": "kin-marker"})).unwrap(),
+            ),
+            MobilityMode::new(
+                MobilityModeId::new("ground.quad").unwrap(),
+                [MediumId::new("ground").unwrap()],
+                LocomotionId::new("legged").unwrap(),
+                ModeRules::new(kinematics, json!({"kin": "kin-marker-2"})).unwrap(),
+            ),
+        ],
+        biped,
+        &vocabulary,
+    )
+    .unwrap();
+    let body = UnitSpecBody {
+        sections: vec![SectionSpec {
+            id: SectionId::new("center_torso").unwrap(),
+            condition: ConditionId::new("ok").unwrap(),
+            facets: vec![FacetSpec {
+                id: FacetId::new("rear").unwrap(),
+                cells: vec![CellSpec {
+                    id: CellId::new("armor").unwrap(),
+                    min: 0,
+                    max: 6,
+                    init: 6,
+                }],
+            }],
+            slots: vec![InstallSlotId::new("torso_hardpoint").unwrap()],
+            cells: vec![CellSpec {
+                id: CellId::new("structure").unwrap(),
+                min: 0,
+                max: 8,
+                init: 8,
+            }],
+        }],
+        unit_cells: vec![CellSpec {
+            id: CellId::new("heat").unwrap(),
+            min: 0,
+            max: 30,
+            init: 20,
+        }],
+        components: vec![ComponentSpec {
+            id: ComponentId::new("gauss").unwrap(),
+            definition: gauss,
+            install: InstallPoint::Slot {
+                section: SectionId::new("center_torso").unwrap(),
+                slot: InstallSlotId::new("torso_hardpoint").unwrap(),
+            },
+            condition: ConditionId::new("ok").unwrap(),
+            cells: vec![CellSpec {
+                id: CellId::new("ammo").unwrap(),
+                min: 0,
+                max: 12,
+                init: 9,
+            }],
+            asset: None,
+        }],
+        capabilities: vec![CapabilityInit {
+            key: CapabilityKey {
+                id: CapabilityId::new("tactics.mobility").unwrap(),
+                source: None,
+            },
+            rules: RulesValue::new(opaque.clone(), json!({"cap": "cap-rules-marker"})).unwrap(),
+        }],
+        mobility: Some(profile),
+        rules: RulesValue::new(opaque, json!({"secret": "rules-body-marker"})).unwrap(),
+    };
+    let descriptor = body
+        .descriptor(
+            DefinitionKind::new("unit").unwrap(),
+            DefinitionId::new("tacsim.mech.i8").unwrap(),
+            1,
+        )
+        .unwrap();
+    let definition = definitions
+        .register(OwnerId::new("tacsim").unwrap(), descriptor)
+        .unwrap();
+    body.with_definition(definition)
+}
+
+fn boot_i8() -> TestWorld {
+    let vocabulary = MobilityVocabulary::base().freeze();
+    let specs = vec![example_spec(), kitted_spec(), i8_spec()];
+    let mut catalog = UnitCatalogBuilder::new();
+    for spec in &specs {
+        catalog.add(spec.clone(), &vocabulary).unwrap();
+    }
+    let modules: Vec<Box<dyn GameModule>> = vec![
+        Box::new(TestRulesModule {
+            owner: "tacsim",
+            specs,
+        }),
+        Box::new(TacticsModule::with_catalog(catalog.freeze())),
+    ];
+    TestWorld::with_modules(modules)
+}
+
+fn i8_player(tw: &mut TestWorld, name: &str) -> ObjId {
+    tw.world_mut()
+        .create(ObjKind::Player, name, GOD, None)
+        .unwrap()
+}
+
+fn i8_unit_owned_by(tw: &mut TestWorld, owner: ObjId) -> ObjId {
+    let object = tw
+        .world_mut()
+        .create(ObjKind::Thing, "Halberd", owner, None)
+        .unwrap();
+    let output = tw.run(GOD, &format!("@unit/create #{}=tacsim.mech.i8", object.0));
+    assert!(!has_error(&output), "create refused: {}", texts(&output));
+    object
+}
+
+fn i8_unit(tw: &mut TestWorld) -> ObjId {
+    i8_unit_owned_by(tw, GOD)
+}
+
+fn i8_grant(tw: &mut TestWorld, viewer: ObjId, unit: ObjId, priority: u16) {
+    tw.world_mut()
+        .publish_command_subject(mush_core::CommandSubjectLink {
+            actor: viewer,
+            subject: unit,
+            owner: SmolStr::new("sim"),
+            station: SmolStr::new(format!("station-{priority}")),
+            relation: SmolStr::new("gunner"),
+            priority,
+            channels: Default::default(),
+            epoch: 1,
+        });
+}
+
+fn i8_query(
+    tw: &TestWorld,
+    feed: &str,
+    actor: ObjId,
+    params: Value,
+) -> Result<OutputEvent, mush_proto::RichText> {
+    let (_, handler) = tw
+        .registry()
+        .query_handler(feed)
+        .unwrap_or_else(|| panic!("{feed} has a registered query handler"));
+    handler.query(tw.world(), actor, &params)
+}
+
+fn i8_keyframe(result: Result<OutputEvent, mush_proto::RichText>, feed: &str) -> Value {
+    match result {
+        Ok(OutputEvent::Panel {
+            feed: f,
+            kind: PanelFrameKind::Keyframe,
+            data,
+        }) if f == feed => data,
+        other => panic!("expected a {feed} keyframe, got {other:?}"),
+    }
+}
+
+fn i8_frames_to(
+    events: &[(Audience, OutputEvent)],
+    feed: &str,
+    kind: PanelFrameKind,
+    who: ObjId,
+) -> Vec<Value> {
+    events
+        .iter()
+        .filter_map(|(aud, event)| match event {
+            OutputEvent::Panel {
+                feed: f,
+                kind: k,
+                data,
+            } if f == feed && *k == kind && *aud == Audience::Actor(who) => Some(data.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+fn i8_assert_clean(surface: &str, text: &str, forbidden: &[&str]) {
+    for fragment in forbidden {
+        assert!(
+            !text.contains(fragment),
+            "{surface} leaks {fragment:?}: {text}"
+        );
+    }
+}
+
+const I8_FORBIDDEN: &[&str] = &[
+    "rules-body-marker",
+    "kin-marker",
+    "cap-rules-marker",
+    "\"rules\"",
+    "offer",
+    "commit",
+    "incident",
+];
+
+fn i8_damage(tw: &mut TestWorld, unit: ObjId, ops: &str) -> Vec<(Audience, OutputEvent)> {
+    let ev = tw.run(
+        GOD,
+        &format!(r#"@unit/damage #{}={{"ops":[{ops}]}}"#, unit.0),
+    );
+    assert!(!has_error(&ev), "{}", texts(&ev));
+    ev
+}
+
+fn i8_frame_of(tw: &TestWorld, feed: &str, who: ObjId, unit: ObjId) -> Value {
+    i8_keyframe(
+        i8_query(tw, feed, who, json!({ "object": format!("#{}", unit.0) })),
+        feed,
+    )
+}
+
+#[test]
+fn i8_p1_the_keyframe_carries_no_rules_no_definition_body_and_no_foreign_object_id() {
+    let mut tw = boot_i8();
+    let unit = i8_unit(&mut tw);
+    let rifle = tw
+        .world_mut()
+        .create(ObjKind::Thing, "Rifle", GOD, None)
+        .unwrap();
+    i8_damage(
+        &mut tw,
+        unit,
+        &format!(
+            r#"{{"SetComponentAsset":{{"component":"gauss","asset":{}}}}}"#,
+            rifle.0
+        ),
+    );
+    let frame = i8_frame_of(&tw, "tactics.unit", GOD, unit);
+    let text = frame.to_string();
+    i8_assert_clean("tactics.unit keyframe", &text, I8_FORBIDDEN);
+    assert!(
+        !text.contains(&format!("#{}", rifle.0)),
+        "the asset dbref leaked: {text}"
+    );
+    assert_eq!(frame["components"][0]["asset"], json!(true));
+    assert_eq!(frame["components"][0]["id"], json!("gauss"));
+    assert_eq!(
+        frame["components"][0]["install"],
+        json!("slot/center_torso/torso_hardpoint")
+    );
+    assert!(
+        frame["schema"]
+            .as_str()
+            .unwrap()
+            .starts_with("tacsim:unit:tacsim.mech.i8@1#")
+    );
+    assert_eq!(
+        frame["capabilities"],
+        json!([{ "id": "tactics.mobility", "source": null }])
+    );
+    assert_eq!(frame["mobility"]["mode"], json!("ground.biped"));
+    assert_eq!(frame["mobility"]["switching"], Value::Null);
+    assert_eq!(frame["mobility"]["modes"][0]["locomotion"], json!("legged"));
+    assert!(frame["mobility"]["modes"][0].get("rules").is_none());
+    // The old `project` serialized the whole UnitRepr; the fixture's markers
+    // would have been on the wire.
+    let raw = serde_json::to_value(store(&tw).units.get(&unit).unwrap())
+        .unwrap()
+        .to_string();
+    assert!(
+        raw.contains("rules-body-marker"),
+        "the fixture really carries the marker"
+    );
+}
+
+#[test]
+fn i8_p2_the_delta_projection_carries_no_asset_object_id_and_keeps_to_revision_at_the_root() {
+    let mut tw = boot_i8();
+    let unit = i8_unit(&mut tw);
+    let rifle = tw
+        .world_mut()
+        .create(ObjKind::Thing, "Rifle", GOD, None)
+        .unwrap();
+    let ev = i8_damage(
+        &mut tw,
+        unit,
+        &format!(
+            r#"{{"SetComponentAsset":{{"component":"gauss","asset":{}}}}},{{"AdjustCell":{{"addr":{{"Facet":{{"section":"center_torso","facet":"rear","cell":"armor"}}}},"delta":-5}}}},{{"SetSectionCondition":{{"section":"center_torso","condition":"damaged"}}}}"#,
+            rifle.0
+        ),
+    );
+    let deltas = frames(&ev, PanelFrameKind::Delta);
+    assert_eq!(deltas.len(), 1);
+    let delta = &deltas[0];
+    assert_eq!(delta["to_revision"], json!(1));
+    assert_eq!(delta["from_revision"], json!(0));
+    assert_eq!(delta["object"]["id"], json!(format!("#{}", unit.0)));
+    let entries = delta["entries"].as_array().unwrap();
+    assert_eq!(entries.len(), 3);
+    assert_eq!(
+        entries[0],
+        json!({ "kind": "asset", "component": "gauss", "attached": true })
+    );
+    assert_eq!(
+        entries[1],
+        json!({ "kind": "cell", "addr": "facet/center_torso/rear/armor", "from": 6, "to": 1 })
+    );
+    assert_eq!(
+        entries[2],
+        json!({ "kind": "section", "section": "center_torso", "from": "ok", "to": "damaged" })
+    );
+    let text = delta.to_string();
+    assert!(!text.contains(&format!("#{}", rifle.0)));
+    assert!(!text.contains(&format!("\"asset\":{}", rifle.0)));
+    i8_assert_clean("tactics.unit delta", &text, I8_FORBIDDEN);
+}
+
+#[test]
+fn i8_p3_named_refusals_are_byte_identical_for_stranger_nonexistent_non_unit_malformed_and_staff() {
+    let mut tw = boot_i8();
+    let unit = i8_unit(&mut tw);
+    let stranger = i8_player(&mut tw, "Stranger");
+    let brick = tw
+        .world_mut()
+        .create(ObjKind::Thing, "Brick", GOD, None)
+        .unwrap();
+    let refusal = mush_tactics::ViewRefusal.render();
+    assert_eq!(refusal, "You have no station on that unit.");
+    let cases: Vec<(ObjId, Value)> = vec![
+        (stranger, json!({ "object": format!("#{}", unit.0) })),
+        (stranger, json!({ "object": "#999" })),
+        (stranger, json!({ "object": format!("#{}", brick.0) })),
+        (stranger, json!({ "object": "#x" })),
+        (stranger, json!({ "object": 7 })),
+        (GOD, json!({ "object": "#999" })),
+        (GOD, json!({ "object": format!("#{}", brick.0) })),
+    ];
+    for feed in ["tactics.unit", "tactics.vitals"] {
+        let mut seen = Vec::new();
+        for (who, params) in &cases {
+            let err = i8_query(&tw, feed, *who, params.clone())
+                .expect_err("a named failure is a refusal");
+            seen.push(format!("{err:?}"));
+        }
+        assert!(
+            seen.iter().all(|s| s == &seen[0]),
+            "{feed} refusals differ: {seen:#?}"
+        );
+        assert!(seen[0].contains(&refusal));
+    }
+}
+
+#[test]
+fn i8_p4_a_held_record_answers_state_frozen_with_the_record_key_and_no_incident() {
+    let spec = example_spec();
+    let object = ObjId(2);
+    let unit = TacticalUnit::from_spec(&spec, object).unwrap();
+    let mut tw = boot_with_provider(false);
+    let actual = tw
+        .world_mut()
+        .create(ObjKind::Thing, "Atlas", GOD, None)
+        .unwrap();
+    assert_eq!(actual, object);
+    attach_current_binding(&mut tw, object);
+    tw.take_module_ops();
+    let document = current_document(&tw, &unit);
+    load_tactics(
+        &mut tw,
+        vec![(SmolStr::new(format!("unit:{}", object.0)), document)],
+    );
+    assert!(matches!(
+        store(&tw).records[0].state,
+        MechanicalState::Frozen { .. }
+    ));
+    let frame = i8_keyframe(
+        i8_query(&tw, "tactics.unit", GOD, json!({ "object": "#2" })),
+        "tactics.unit",
+    );
+    assert_eq!(frame["state"], json!("frozen"));
+    assert_eq!(frame["record"], json!("unit:2"));
+    assert_eq!(frame["sections"], json!([]));
+    assert_eq!(frame["cells"], json!([]));
+    assert_eq!(frame["components"], json!([]));
+    assert_eq!(frame["mobility"], Value::Null);
+    assert_eq!(frame["counts"]["cells"], json!(0));
+    assert_eq!(frame["truncated"], json!(false));
+    assert_eq!(frame["revision"], json!(unit.revision()));
+    assert_eq!(frame["schema"], json!(unit.schema().to_string()));
+    i8_assert_clean(
+        "held keyframe",
+        &frame.to_string(),
+        &["incident", "Migrating", "\"rules\""],
+    );
+    let shown = texts(&tw.run(GOD, "@unit/show #2"));
+    assert!(
+        shown.contains("tactical record unit:2 is frozen; mechanics are disabled"),
+        "{shown}"
+    );
+    assert!(!shown.contains("incident"), "{shown}");
+    // An active frame carries the same key with `null`.
+    let mut live = boot_i8();
+    let live_unit = i8_unit(&mut live);
+    let frame = i8_frame_of(&live, "tactics.unit", GOD, live_unit);
+    assert_eq!(frame["record"], Value::Null);
+    assert_eq!(frame["state"], json!("active"));
+}
+
+#[test]
+fn i8_c1_the_dto_and_at_unit_show_name_the_same_sections_cells_components_and_capabilities() {
+    let mut tw = boot_i8();
+    let unit = i8_unit(&mut tw);
+    let frame = i8_frame_of(&tw, "tactics.unit", GOD, unit);
+    let shown = texts(&tw.run(GOD, &format!("@unit/show #{}", unit.0)));
+    let lines: Vec<&str> = shown.lines().collect();
+    let mut expected: Vec<String> = Vec::new();
+    for s in frame["sections"].as_array().unwrap() {
+        expected.push(format!(
+            "  section {}: {}",
+            s["id"].as_str().unwrap(),
+            s["condition"].as_str().unwrap()
+        ));
+    }
+    for c in frame["cells"].as_array().unwrap() {
+        expected.push(format!(
+            "  cell {}: {}/{}",
+            c["addr"].as_str().unwrap(),
+            c["current"],
+            c["max"]
+        ));
+    }
+    for c in frame["components"].as_array().unwrap() {
+        expected.push(format!(
+            "  component {}: {} ({})",
+            c["id"].as_str().unwrap(),
+            c["condition"].as_str().unwrap(),
+            c["definition"].as_str().unwrap()
+        ));
+    }
+    for k in frame["capabilities"].as_array().unwrap() {
+        expected.push(format!(
+            "  capability {} (source {})",
+            k["id"].as_str().unwrap(),
+            k["source"].as_str().unwrap_or("none")
+        ));
+    }
+    assert_eq!(expected.len(), 1 + 4 + 1 + 1);
+    for line in &expected {
+        assert!(
+            lines.contains(&line.as_str()),
+            "missing {line:?} in:\n{shown}"
+        );
+    }
+    // ... and nothing the DTO does not name.
+    let named = lines.iter().filter(|l| l.starts_with("  ")).count();
+    assert_eq!(named, expected.len());
+    assert!(lines[0].contains(&format!("schema {}", frame["schema"].as_str().unwrap())));
+    assert!(lines[0].contains("mobility ground.biped"));
+}
+
+#[test]
+fn i8_c2_a_params_less_subscribe_with_no_unit_answers_a_null_keyframe_not_a_sys() {
+    let mut tw = boot_i8();
+    let viewer = i8_player(&mut tw, "Nobody");
+    for feed in ["tactics.unit", "tactics.vitals"] {
+        let data = i8_keyframe(i8_query(&tw, feed, viewer, json!({})), feed);
+        assert_eq!(data, Value::Null, "{feed}");
+        let data = i8_keyframe(i8_query(&tw, feed, viewer, json!({ "object": null })), feed);
+        assert_eq!(data, Value::Null, "{feed}");
+    }
+}
+
+#[test]
+fn i8_c3_the_default_subject_is_the_viewers_own_object_then_its_highest_priority_station() {
+    let mut tw = boot_i8();
+    let low = i8_unit(&mut tw);
+    let high = i8_unit(&mut tw);
+    let pilot = i8_player(&mut tw, "Pilot");
+    i8_grant(&mut tw, pilot, low, 5);
+    i8_grant(&mut tw, pilot, high, 10);
+    let frame = i8_keyframe(
+        i8_query(&tw, "tactics.unit", pilot, json!({})),
+        "tactics.unit",
+    );
+    assert_eq!(frame["object"]["id"], json!(format!("#{}", high.0)));
+    let vitals = i8_keyframe(
+        i8_query(&tw, "tactics.vitals", pilot, json!({})),
+        "tactics.vitals",
+    );
+    assert_eq!(vitals["subject"]["id"], json!(format!("#{}", high.0)));
+    // A station on a nonexistent or non-unit subject is skipped.
+    let ghost = i8_player(&mut tw, "Ghost");
+    i8_grant(&mut tw, ghost, ObjId(999), 50);
+    i8_grant(&mut tw, ghost, low, 1);
+    let frame = i8_keyframe(
+        i8_query(&tw, "tactics.unit", ghost, json!({})),
+        "tactics.unit",
+    );
+    assert_eq!(frame["object"]["id"], json!(format!("#{}", low.0)));
+    // A player who IS a unit reads themself first, whatever they hold.
+    let output = tw.run(GOD, &format!("@unit/create #{}=tacsim.mech.i8", pilot.0));
+    assert!(!has_error(&output), "{}", texts(&output));
+    let frame = i8_keyframe(
+        i8_query(&tw, "tactics.unit", pilot, json!({})),
+        "tactics.unit",
+    );
+    assert_eq!(frame["object"]["id"], json!(format!("#{}", pilot.0)));
+}
+
+#[test]
+fn i8_c4_stationed_non_controller_owner_and_royalty_read_and_a_stranger_does_not() {
+    let mut tw = boot_i8();
+    let owner = i8_player(&mut tw, "Owner");
+    let unit = i8_unit_owned_by(&mut tw, owner);
+    let gunner = i8_player(&mut tw, "Gunner");
+    let stranger = i8_player(&mut tw, "Stranger");
+    i8_grant(&mut tw, gunner, unit, 10);
+    for who in [gunner, owner, GOD] {
+        let frame = i8_frame_of(&tw, "tactics.unit", who, unit);
+        assert_eq!(
+            frame["object"]["id"],
+            json!(format!("#{}", unit.0)),
+            "#{}",
+            who.0
+        );
+    }
+    let params = json!({ "object": format!("#{}", unit.0) });
+    assert!(i8_query(&tw, "tactics.unit", stranger, params.clone()).is_err());
+    assert!(i8_query(&tw, "tactics.vitals", stranger, params).is_err());
+    // The owner holds no station and is not a unit: the unnamed default is
+    // null for them — authority is not the default subject.
+    assert_eq!(
+        i8_keyframe(
+            i8_query(&tw, "tactics.unit", owner, json!({})),
+            "tactics.unit"
+        ),
+        Value::Null
+    );
+}
+
+#[test]
+fn i8_c5_the_two_queries_write_nothing_and_stamp_no_idle() {
+    let mut tw = boot_i8();
+    let unit = i8_unit(&mut tw);
+    let pilot = i8_player(&mut tw, "Pilot");
+    i8_grant(&mut tw, pilot, unit, 10);
+    tw.connect(pilot);
+    tw.take_module_ops();
+    let before = tw.world().session_stat(pilot).expect("connected");
+    for feed in ["tactics.unit", "tactics.vitals"] {
+        i8_keyframe(i8_query(&tw, feed, pilot, json!({})), feed);
+        i8_frame_of(&tw, feed, pilot, unit);
+    }
+    assert_eq!(tw.world().session_stat(pilot), Some(before));
+    assert!(tw.take_module_ops().is_empty(), "a query queued a write");
+}
+
+#[test]
+fn i8_c6_view_rs_opens_no_grant_read() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/view.rs");
+    let text = std::fs::read_to_string(path).expect("mush-tactics/src/view.rs");
+    for needle in [
+        "command_subjects_of(",
+        ".channel_grant(",
+        "channel_grant_is_current(",
+    ] {
+        assert!(
+            !text.contains(needle),
+            "view.rs reads a grant directly ({needle}); go through status.rs"
+        );
+    }
+    assert!(text.contains("viewer_is_stationed("));
+    assert!(
+        !text.contains("to_value(unit"),
+        "the view must be accessor-built"
+    );
+}
+
+fn i8_big_spec(sections: usize, cells_per_section: usize, unit_cells: usize) -> UnitSpec {
+    let mut definitions = DefinitionRegistryBuilder::new();
+    let opaque = register_ref(
+        &mut definitions,
+        "tacsim",
+        "schema",
+        "tacsim.big",
+        json!({}),
+    );
+    let body = UnitSpecBody {
+        sections: (0..sections)
+            .map(|i| SectionSpec {
+                id: SectionId::new(format!("sec_{i:03}")).unwrap(),
+                condition: ConditionId::new("ok").unwrap(),
+                facets: vec![],
+                slots: vec![],
+                cells: (0..cells_per_section)
+                    .map(|j| CellSpec {
+                        id: CellId::new(format!("cell_{j:02}")).unwrap(),
+                        min: 0,
+                        max: 10,
+                        init: 10,
+                    })
+                    .collect(),
+            })
+            .collect(),
+        unit_cells: (0..unit_cells)
+            .map(|j| CellSpec {
+                id: CellId::new(format!("pool_{j}")).unwrap(),
+                min: 0,
+                max: 30,
+                init: 15,
+            })
+            .collect(),
+        components: vec![],
+        capabilities: vec![],
+        mobility: None,
+        rules: RulesValue::new(opaque, json!({})).unwrap(),
+    };
+    let descriptor = body
+        .descriptor(
+            DefinitionKind::new("unit").unwrap(),
+            DefinitionId::new("tacsim.mech.big").unwrap(),
+            1,
+        )
+        .unwrap();
+    let definition = definitions
+        .register(OwnerId::new("tacsim").unwrap(), descriptor)
+        .unwrap();
+    body.with_definition(definition)
+}
+
+#[test]
+fn i8_b1_the_keyframe_at_max_unit_cells_stays_under_the_view_budget_and_the_record_bound() {
+    let unit_cells = 2;
+    let spec = i8_big_spec(130, 63, unit_cells);
+    let mut tw = boot_i8();
+    let object = tw
+        .world_mut()
+        .create(ObjKind::Thing, "Leviathan", GOD, None)
+        .unwrap();
+    let unit = TacticalUnit::from_spec(&spec, object).unwrap();
+    assert_eq!(unit.cells().count(), 130 * 63 + unit_cells);
+    let view = mush_tactics::UnitView::of(
+        tw.world(),
+        object,
+        &mush_tactics::UnitSource::Active(&unit),
+        0,
+    );
+    let frame = view.to_frame();
+    let bytes = frame.to_string().len();
+    assert!(
+        bytes <= mush_tactics::MAX_UNIT_VIEW_BYTES + 512,
+        "{bytes} bytes over the view budget"
+    );
+    assert!(
+        mush_core::canonical_json_bytes_with_limit(&frame, mush_tactics::MAX_UNIT_RECORD_BYTES)
+            .is_ok()
+    );
+    assert_eq!(frame["truncated"], json!(true));
+    assert_eq!(frame["counts"]["cells"], json!(130 * 63 + unit_cells));
+    assert_eq!(frame["counts"]["sections"], json!(130));
+    assert_eq!(
+        frame["sections"].as_array().unwrap().len(),
+        130,
+        "sections are never cut"
+    );
+    let cells = frame["cells"].as_array().unwrap();
+    assert!(cells.len() < 130 * 63 + unit_cells);
+    // b3: the unit-level pools survive the cut, first.
+    assert_eq!(cells[0]["addr"], json!("unit/pool_0"));
+    assert_eq!(cells[1]["addr"], json!("unit/pool_1"));
+    assert!(cells[2]["addr"].as_str().unwrap().starts_with("section/"));
+    let vitals = view.vitals_value();
+    assert_eq!(vitals["vitals"].as_array().unwrap().len(), unit_cells);
+}
+
+#[test]
+fn i8_b2_truncated_is_false_and_counts_match_for_the_ordinary_unit() {
+    let mut tw = boot_i8();
+    let unit = i8_unit(&mut tw);
+    let frame = i8_frame_of(&tw, "tactics.unit", GOD, unit);
+    assert_eq!(frame["truncated"], json!(false));
+    assert_eq!(
+        frame["counts"],
+        json!({ "sections": 1, "cells": 4, "components": 1, "capabilities": 1 })
+    );
+    let keys: Vec<&str> = frame
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    assert_eq!(
+        keys,
+        vec![
+            "capabilities",
+            "cells",
+            "components",
+            "counts",
+            "mobility",
+            "object",
+            "record",
+            "revision",
+            "schema",
+            "sections",
+            "state",
+            "truncated",
+        ]
+    );
+    let cells: Vec<&str> = frame["cells"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["addr"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        cells,
+        vec![
+            "unit/heat",
+            "section/center_torso/structure",
+            "facet/center_torso/rear/armor",
+            "component/gauss/ammo",
+        ]
+    );
+    assert_eq!(
+        frame["sections"][0]["facets"],
+        json!([{ "id": "rear", "cells": ["armor"] }])
+    );
+    assert_eq!(frame["sections"][0]["slots"], json!(["torso_hardpoint"]));
+    assert_eq!(frame["sections"][0]["state"], json!("ok"));
+    assert_eq!(frame["components"][0]["state"], json!("ok"));
+}
+
+#[test]
+fn i8_v1_tactics_vitals_projects_only_unit_level_cells_with_the_unit_revision() {
+    let mut tw = boot_i8();
+    let unit = i8_unit(&mut tw);
+    let ev = i8_damage(
+        &mut tw,
+        unit,
+        r#"{"SetCell":{"addr":{"Unit":{"cell":"heat"}},"value":3}}"#,
+    );
+    let frame = i8_frame_of(&tw, "tactics.vitals", GOD, unit);
+    assert_eq!(frame["subject"]["id"], json!(format!("#{}", unit.0)));
+    assert_eq!(frame["revision"], json!(1));
+    assert_eq!(
+        frame["vitals"],
+        json!([{
+            "id": "tactics.heat", "label": "heat", "role": "pool",
+            "value": { "kind": "bounded", "current": 3, "min": 0, "max": 30 },
+            "state": "crit"
+        }])
+    );
+    // ... and the same frame rode the damage output to the staffer.
+    let pushed = i8_frames_to(&ev, "tactics.vitals", PanelFrameKind::Keyframe, GOD);
+    assert_eq!(pushed, vec![frame]);
+}
+
+#[test]
+fn i8_v2_a_cell_id_over_the_name_cap_is_skipped_and_the_frame_still_ships() {
+    let mut definitions = DefinitionRegistryBuilder::new();
+    let opaque = register_ref(
+        &mut definitions,
+        "tacsim",
+        "schema",
+        "tacsim.long",
+        json!({}),
+    );
+    let long = "l".repeat(60);
+    let body = UnitSpecBody {
+        sections: vec![SectionSpec {
+            id: SectionId::new("hull").unwrap(),
+            condition: ConditionId::new("ok").unwrap(),
+            facets: vec![],
+            slots: vec![],
+            cells: vec![],
+        }],
+        unit_cells: vec![
+            CellSpec {
+                id: CellId::new(&long).unwrap(),
+                min: 0,
+                max: 5,
+                init: 5,
+            },
+            CellSpec {
+                id: CellId::new("heat").unwrap(),
+                min: 0,
+                max: 30,
+                init: 20,
+            },
+        ],
+        components: vec![],
+        capabilities: vec![],
+        mobility: None,
+        rules: RulesValue::new(opaque, json!({})).unwrap(),
+    };
+    let descriptor = body
+        .descriptor(
+            DefinitionKind::new("unit").unwrap(),
+            DefinitionId::new("tacsim.mech.long").unwrap(),
+            1,
+        )
+        .unwrap();
+    let definition = definitions
+        .register(OwnerId::new("tacsim").unwrap(), descriptor)
+        .unwrap();
+    let spec = body.with_definition(definition);
+    let mut tw = boot_i8();
+    let object = tw
+        .world_mut()
+        .create(ObjKind::Thing, "Longboat", GOD, None)
+        .unwrap();
+    let unit = TacticalUnit::from_spec(&spec, object).unwrap();
+    let view = mush_tactics::UnitView::of(
+        tw.world(),
+        object,
+        &mush_tactics::UnitSource::Active(&unit),
+        0,
+    );
+    let vitals = view.vitals_value();
+    let list = vitals["vitals"].as_array().unwrap();
+    assert_eq!(list.len(), 1);
+    assert_eq!(list[0]["id"], json!("tactics.heat"));
+    // The keyframe still carries the long cell — only the gauge is skipped.
+    assert_eq!(view.to_frame()["counts"]["cells"], json!(2));
+}
+
+#[test]
+fn i8_v3_dto_cell_state_and_vital_state_agree_with_pool_state() {
+    use mush_proto::VitalState;
+    let table = [
+        (0, VitalState::Down),
+        (3, VitalState::Crit),
+        (7, VitalState::Crit),
+        (8, VitalState::Warn),
+        (15, VitalState::Warn),
+        (16, VitalState::Ok),
+        (30, VitalState::Ok),
+    ];
+    for (current, expected) in table {
+        assert_eq!(
+            mush_ruleset::pool_state(current, 0, 30),
+            expected,
+            "{current}/30"
+        );
+    }
+    assert_eq!(
+        mush_ruleset::pool_state(5, 5, 5),
+        VitalState::Ok,
+        "an empty span is ok"
+    );
+    let mut tw = boot_i8();
+    let unit = i8_unit(&mut tw);
+    let frame = i8_frame_of(&tw, "tactics.unit", GOD, unit);
+    let vitals = i8_frame_of(&tw, "tactics.vitals", GOD, unit);
+    for cell in frame["cells"].as_array().unwrap() {
+        let expected = mush_ruleset::pool_state(
+            cell["current"].as_i64().unwrap(),
+            cell["min"].as_i64().unwrap(),
+            cell["max"].as_i64().unwrap(),
+        );
+        assert_eq!(
+            cell["state"],
+            serde_json::to_value(expected).unwrap(),
+            "{cell}"
+        );
+    }
+    assert_eq!(vitals["vitals"][0]["state"], frame["cells"][0]["state"]);
+    // A section's state is the worst of its own and its facets' cells; a
+    // component's the worst of its own.
+    i8_damage(
+        &mut tw,
+        unit,
+        r#"{"SetCell":{"addr":{"Facet":{"section":"center_torso","facet":"rear","cell":"armor"}},"value":1}}"#,
+    );
+    let frame = i8_frame_of(&tw, "tactics.unit", GOD, unit);
+    assert_eq!(frame["sections"][0]["state"], json!("crit"));
+    assert_eq!(frame["components"][0]["state"], json!("ok"));
+}
+
+#[test]
+fn i8_s1_a_switching_profile_projects_from_to_ready_at_and_the_text_says_so() {
+    let spec = i8_spec();
+    let quad = MobilityModeId::new("ground.quad").unwrap();
+    let mut body = spec.body();
+    let mut profile = body.mobility.clone().unwrap();
+    profile.begin_switch(&quad, 100, 10).unwrap();
+    body.mobility = Some(profile);
+    let spec = body.with_definition(spec.definition.clone());
+    let mut tw = boot_i8();
+    let object = tw
+        .world_mut()
+        .create(ObjKind::Thing, "Walker", GOD, None)
+        .unwrap();
+    let unit = TacticalUnit::from_spec(&spec, object).unwrap();
+    let mid = mush_tactics::UnitView::of(
+        tw.world(),
+        object,
+        &mush_tactics::UnitSource::Active(&unit),
+        105,
+    );
+    let frame = mid.to_frame();
+    assert_eq!(frame["mobility"]["mode"], Value::Null);
+    assert_eq!(
+        frame["mobility"]["switching"],
+        json!({ "from": "ground.biped", "to": "ground.quad", "ready_at": 110 })
+    );
+    let line = &mid.render_lines("Walker")[0];
+    assert!(
+        line.contains("mobility ground.biped -> ground.quad (ready 110)"),
+        "{line}"
+    );
+    let due = mush_tactics::UnitView::of(
+        tw.world(),
+        object,
+        &mush_tactics::UnitSource::Active(&unit),
+        120,
+    );
+    assert_eq!(due.to_frame()["mobility"]["mode"], json!("ground.quad"));
+    assert!(due.render_lines("Walker")[0].contains("mobility ground.quad"));
+}
+
+#[test]
+fn i8_s2_the_create_keyframe_is_exactly_one_frame_to_the_actor_and_carries_no_rules() {
+    let mut tw = boot_i8();
+    let object = tw
+        .world_mut()
+        .create(ObjKind::Thing, "Halberd", GOD, None)
+        .unwrap();
+    let ev = tw.run(GOD, &format!("@unit/create #{}=tacsim.mech.i8", object.0));
+    assert!(!has_error(&ev), "{}", texts(&ev));
+    let all: Vec<&(Audience, OutputEvent)> = ev
+        .iter()
+        .filter(|(_, e)| matches!(e, OutputEvent::Panel { feed, .. } if feed == "tactics.unit"))
+        .collect();
+    assert_eq!(all.len(), 1);
+    assert_eq!(all[0].0, Audience::Actor(GOD));
+    let frames = i8_frames_to(&ev, "tactics.unit", PanelFrameKind::Keyframe, GOD);
+    assert_eq!(frames.len(), 1);
+    i8_assert_clean("create keyframe", &frames[0].to_string(), I8_FORBIDDEN);
+    assert_eq!(frames[0]["revision"], json!(0));
+    assert!(i8_frames_to(&ev, "tactics.vitals", PanelFrameKind::Keyframe, GOD).is_empty());
+}
+
+#[test]
+fn i8_s3_the_damage_delta_leads_with_the_staffers_frame() {
+    let mut tw = boot_i8();
+    let unit = i8_unit(&mut tw);
+    let pilot = i8_player(&mut tw, "Pilot");
+    i8_grant(&mut tw, pilot, unit, 10);
+    tw.connect(pilot);
+    let ev = i8_damage(
+        &mut tw,
+        unit,
+        r#"{"AdjustCell":{"addr":{"Facet":{"section":"center_torso","facet":"rear","cell":"armor"}},"delta":-1}}"#,
+    );
+    let first = ev
+        .iter()
+        .find(|(_, e)| {
+            matches!(e, OutputEvent::Panel { feed, kind: PanelFrameKind::Delta, .. } if feed == "tactics.unit")
+        })
+        .expect("a delta");
+    assert_eq!(first.0, Audience::Actor(GOD));
+    assert_eq!(
+        frames(&ev, PanelFrameKind::Delta)[0]["to_revision"],
+        json!(1)
+    );
+}
+
+#[test]
+fn i8_f1_a_damage_delta_and_a_vitals_keyframe_reach_each_connected_stationed_viewer_once_and_the_unit_keyframe_is_not_fanned()
+ {
+    let mut tw = boot_i8();
+    let unit = i8_unit(&mut tw);
+    let ann = i8_player(&mut tw, "Ann");
+    let bob = i8_player(&mut tw, "Bob");
+    let offline = i8_player(&mut tw, "Offline");
+    let bystander = i8_player(&mut tw, "Bystander");
+    for who in [ann, bob, offline] {
+        i8_grant(&mut tw, who, unit, 10);
+    }
+    for who in [ann, bob, bystander] {
+        tw.connect(who);
+    }
+    let ev = i8_damage(
+        &mut tw,
+        unit,
+        r#"{"AdjustCell":{"addr":{"Unit":{"cell":"heat"}},"delta":5}}"#,
+    );
+    for who in [GOD, ann, bob] {
+        assert_eq!(
+            i8_frames_to(&ev, "tactics.unit", PanelFrameKind::Delta, who).len(),
+            1,
+            "#{}",
+            who.0
+        );
+        let vitals = i8_frames_to(&ev, "tactics.vitals", PanelFrameKind::Keyframe, who);
+        assert_eq!(vitals.len(), 1, "#{}", who.0);
+        assert_eq!(vitals[0]["vitals"][0]["value"]["current"], json!(25));
+        assert_eq!(vitals[0]["revision"], json!(1));
+        assert!(i8_frames_to(&ev, "tactics.unit", PanelFrameKind::Keyframe, who).is_empty());
+    }
+    for who in [offline, bystander] {
+        assert!(
+            i8_frames_to(&ev, "tactics.unit", PanelFrameKind::Delta, who).is_empty(),
+            "#{}",
+            who.0
+        );
+        assert!(
+            i8_frames_to(&ev, "tactics.vitals", PanelFrameKind::Keyframe, who).is_empty(),
+            "#{}",
+            who.0
+        );
+    }
+    assert_eq!(frames(&ev, PanelFrameKind::Delta).len(), 3);
+    assert!(ev.iter().all(|(aud, _)| matches!(aud, Audience::Actor(_))));
+}
+
+#[test]
+fn i8_f2_the_after_action_audience_caps_at_max_unit_audience() {
+    let mut tw = boot_i8();
+    let unit = i8_unit(&mut tw);
+    let n = mush_tactics::MAX_UNIT_AUDIENCE + 3;
+    for i in 0..n {
+        let who = i8_player(&mut tw, &format!("Crew{i}"));
+        i8_grant(&mut tw, who, unit, 10);
+        tw.connect(who);
+    }
+    let ev = i8_damage(
+        &mut tw,
+        unit,
+        r#"{"AdjustCell":{"addr":{"Unit":{"cell":"heat"}},"delta":1}}"#,
+    );
+    assert_eq!(
+        frames(&ev, PanelFrameKind::Delta).len(),
+        1 + mush_tactics::MAX_UNIT_AUDIENCE
+    );
+}
+
+#[test]
+fn i8_r1_unit_show_is_still_staff_only() {
+    let mut tw = boot_i8();
+    let unit = i8_unit(&mut tw);
+    let pilot = i8_player(&mut tw, "Pilot");
+    i8_grant(&mut tw, pilot, unit, 10);
+    let ev = tw.run(pilot, &format!("@unit/show #{}", unit.0));
+    assert!(has_error(&ev), "{}", texts(&ev));
+    assert!(texts(&ev).contains("Permission denied"));
+    // ... while the projection is theirs.
+    i8_frame_of(&tw, "tactics.unit", pilot, unit);
+}
+
+#[test]
+fn i8_p5_every_surface_of_the_view_is_clean() {
+    let mut tw = boot_i8();
+    let unit = i8_unit(&mut tw);
+    let keyframe = i8_frame_of(&tw, "tactics.unit", GOD, unit);
+    let vitals = i8_frame_of(&tw, "tactics.vitals", GOD, unit);
+    let shown = texts(&tw.run(GOD, &format!("@unit/show #{}", unit.0)));
+    i8_assert_clean("tactics.unit keyframe", &keyframe.to_string(), I8_FORBIDDEN);
+    i8_assert_clean("tactics.vitals keyframe", &vitals.to_string(), I8_FORBIDDEN);
+    i8_assert_clean("@unit/show", &shown, I8_FORBIDDEN);
 }

@@ -19,10 +19,14 @@
 //! - **Boot is observational.** Binding/document disagreements become bounded
 //!   recovery incidents and repair previews. Boot never rewrites a legacy
 //!   record, deletes a corrupt record, or silently attaches/detaches a marker.
-//! - **Panel: staff/self only, always [`Audience::Actor`].** No crew fan-out and
-//!   no `SpatialState` read; every payload routes through [`project`], whose M33
-//!   body ignores the observer and returns full state, so the epistemic
-//!   projector later swaps the body without touching emit topology.
+//! - **Panel: always [`Audience::Actor`], never the room.** No `SpatialState`
+//!   read; every payload routes through [`project`] = the unit view
+//!   (`view.rs`, interface plan I8), so the keyframe, `@unit/show` and the
+//!   `tactics.vitals` frame derive from one projection. The create keyframe
+//!   goes to the acting staffer only; the `@unit/damage` delta and the
+//!   vitals keyframe reach the staffer and then every connected viewer
+//!   stationed on the unit (D-I8-2) — the crew re-requests the unit keyframe
+//!   through the `tactics.unit` query.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -54,6 +58,7 @@ use smol_str::SmolStr;
 use crate::unit::{
     self, TacticalUnit, UnitCatalog, UnitMutationOp, UnitMutationPlan, decode_legacy_unit_v1,
 };
+use crate::view;
 
 /// The module id and persistence namespace.
 pub const NS: &str = "tactics";
@@ -130,7 +135,7 @@ pub struct UnitRecordStatus {
 }
 
 impl UnitRecordStatus {
-    fn claims_object(&self, object: ObjId) -> bool {
+    pub(crate) fn claims_object(&self, object: ObjId) -> bool {
         self.key_object == Some(object) || self.object == Some(object)
     }
 }
@@ -998,6 +1003,15 @@ impl GameModule for TacticsModule {
         );
 
         let feed = reg.panel_feed(UNIT_FEED)?;
+        // Interface plan I8: a subscribe to the unit feed answers with the
+        // viewer's unit view, and the unit's pools ride the `.vitals`
+        // convention on a feed of their own (both handlers in `view.rs`).
+        reg.query_handler(UNIT_FEED, Arc::new(view::UnitQuery::new(UNIT_FEED)))?;
+        let vitals = reg.panel_feed(view::VITALS_FEED)?;
+        reg.query_handler(
+            view::VITALS_FEED,
+            Arc::new(view::UnitVitalsQuery::new(view::VITALS_FEED)),
+        )?;
         let catalog = self.catalog.clone();
         let current_record_definition = v2;
         reg.command(
@@ -1021,7 +1035,7 @@ impl GameModule for TacticsModule {
                 ..CommandSpec::default()
             },
             Arc::new(move |ctx: &mut Ctx<'_>| {
-                cmd_unit(&catalog, &feed, &current_record_definition, ctx)
+                cmd_unit(&catalog, &feed, &vitals, &current_record_definition, ctx)
             }),
         )?;
         Ok(())
@@ -1084,11 +1098,15 @@ fn persist_key_del(out: &mut Outbox, key: SmolStr) {
 
 // ---- the panel projection (epistemic seam) ----------------------------
 
-/// Project `unit` for `observer` at `now` into a panel payload. The M33 body
-/// ignores `observer`/`now` and returns full state; the future epistemic
-/// projector swaps this body per-observer without touching emit topology.
-fn project(unit: &TacticalUnit, _observer: ObjId, _now: i64) -> serde_json::Value {
-    serde_json::to_value(unit).unwrap_or(serde_json::Value::Null)
+/// Project `unit` for `observer` at `now` into a panel payload — the unit
+/// view (interface plan I8, `view.rs`): structure, cells, conditions,
+/// capabilities and mobility, never `rules`. The M33 body serialized the
+/// whole unit; the observer is still unused because authority is decided
+/// before this is reached and the view is the same for every authorized
+/// reader. The seam survives so an epistemic projector can still swap this
+/// body per-observer without touching emit topology.
+fn project(w: &World, unit: &TacticalUnit, _observer: ObjId, now: i64) -> serde_json::Value {
+    view::UnitView::of(w, unit.object(), &view::UnitSource::Active(unit), now).to_frame()
 }
 
 // ---- lifecycle --------------------------------------------------------
@@ -2136,7 +2154,7 @@ fn boot_units(
 
 // ---- commands ---------------------------------------------------------
 
-fn is_admin(w: &World, who: ObjId) -> bool {
+pub(crate) fn is_admin(w: &World, who: ObjId) -> bool {
     perm::has_power(w, who, Powers::SIM_ADMIN) || perm::has_role(w, who, Role::Royalty)
 }
 fn require_admin(ctx: &Ctx<'_>) -> Result<(), CmdError> {
@@ -2226,6 +2244,7 @@ fn rhs_required(ctx: &Ctx<'_>, usage: &str) -> Result<String, CmdError> {
 fn cmd_unit(
     catalog: &UnitCatalog,
     feed: &PanelFeedHandle,
+    vitals: &PanelFeedHandle,
     current_record_definition: &DefinitionRef,
     ctx: &mut Ctx<'_>,
 ) -> Result<(), CmdError> {
@@ -2247,7 +2266,7 @@ fn cmd_unit(
     } else if ctx.switches.has("show") {
         unit_show(ctx)
     } else if ctx.switches.has("damage") {
-        unit_damage(feed, current_record_definition, ctx)
+        unit_damage(feed, vitals, current_record_definition, ctx)
     } else if ctx.switches.has("remove") {
         unit_remove(ctx)
     } else {
@@ -2353,7 +2372,7 @@ fn unit_create(
             },
         )
         .map_err(|e| CmdError::msg(format!("cannot mark unit: {e}")))?;
-    let frame = project(&u, ctx.actor, now);
+    let frame = project(ctx.w, &u, ctx.actor, now);
     persist_encoded_unit(ctx.out, obj, document);
     ctx.w
         .module_state_mut::<UnitStore>()
@@ -2371,62 +2390,16 @@ fn unit_create(
     Ok(())
 }
 
+/// `@unit/show <obj>` — the unit view as text (interface plan I8: the same
+/// [`view::UnitView`] the panel keyframe is built from, so the two cannot
+/// name different sections, cells or components).
 fn unit_show(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let obj = match_object(ctx.w, ctx.actor, ctx.args.lhs())?;
     let lines: Vec<String> = {
-        let store = ctx.w.module_state::<UnitStore>().expect("unit store");
-        let u = if let Some(unit) = store.units.get(&obj) {
-            unit
-        } else if let Some(record) = store
-            .records
-            .iter()
-            .find(|record| record.claims_object(obj))
-        {
-            let mut lines = vec![format!(
-                "{} — tactical record {} is {:?}; mechanics are disabled",
-                display_name(ctx.w, obj),
-                record.key,
-                record.state
-            )];
-            if let Some(unit) = &record.unit {
-                lines.push(format!(
-                    "  schema {}; revision {}",
-                    unit.schema(),
-                    unit.revision()
-                ));
-            }
-            return lines.into_iter().try_for_each(|line| {
-                info(ctx, line);
-                Ok::<(), CmdError>(())
-            });
-        } else {
+        let Some(source) = view::unit_source(ctx.w, obj) else {
             return Err(CmdError::msg("It is not a tactical unit."));
         };
-        let mut v = vec![format!(
-            "{} — schema {}, revision {}, mobility {}",
-            display_name(ctx.w, obj),
-            u.schema(),
-            u.revision(),
-            u.mobility()
-                .and_then(|m| m.effective_mode(ctx.w.now()).map(|id| id.to_string()))
-                .unwrap_or_else(|| "none".into()),
-        )];
-        for (id, s) in u.sections() {
-            v.push(format!("  section {id}: {}", s.condition));
-        }
-        for (addr, cell) in u.cells() {
-            v.push(format!("  cell {addr:?}: {}/{}", cell.current, cell.max));
-        }
-        for (id, c) in u.components() {
-            v.push(format!(
-                "  component {id}: {} ({})",
-                c.condition, c.definition
-            ));
-        }
-        for k in u.capabilities() {
-            v.push(format!("  capability {} (source {:?})", k.id, k.source));
-        }
-        v
+        view::UnitView::of(ctx.w, obj, &source, ctx.w.now()).render_lines(&display_name(ctx.w, obj))
     };
     for l in lines {
         info(ctx, l);
@@ -2488,6 +2461,7 @@ fn unit_recovery(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 
 fn unit_damage(
     feed: &PanelFeedHandle,
+    vitals: &PanelFeedHandle,
     current_record_definition: &DefinitionRef,
     ctx: &mut Ctx<'_>,
 ) -> Result<(), CmdError> {
@@ -2521,7 +2495,12 @@ fn unit_damage(
         journal.to_revision,
         journal.entries.len(),
     );
-    let delta = serde_json::to_value(&journal).expect("journal serializes");
+    // Interface plan I8: the delta is PROJECTED (flat addresses, `kind` tags,
+    // the asset pointer reduced to a presence bit), and the unit's pools go
+    // out as a vitals keyframe beside it.
+    let delta = view::journal_frame(ctx.w, &journal);
+    let vitals_frame =
+        view::UnitView::of(ctx.w, obj, &view::UnitSource::Active(&post), now).vitals_value();
     let (document, payload_digest) =
         encode_unit_document(current_record_definition, &post).map_err(CmdError::msg)?;
     persist_encoded_unit(ctx.out, obj, document);
@@ -2529,7 +2508,20 @@ fn unit_damage(
         .module_state_mut::<UnitStore>()
         .expect("unit store")
         .update_active(post, payload_digest);
-    feed.delta_to(ctx, Audience::Actor(ctx.actor), delta);
+    // D-I8-2: the after-action surface reaches the staffer FIRST, then every
+    // connected viewer stationed on the unit. The unit KEYFRAME is not fanned
+    // — each client re-requests it through the unit query on its own
+    // JOURNAL_RING / UNIT_RESYNC_MS loop.
+    let mut audience = vec![ctx.actor];
+    audience.extend(
+        crate::status::stationed_viewers(ctx.w, obj, view::MAX_UNIT_AUDIENCE)
+            .into_iter()
+            .filter(|who| *who != ctx.actor),
+    );
+    for who in audience {
+        feed.delta_to(ctx, Audience::Actor(who), delta.clone());
+        vitals.keyframe_to(ctx, Audience::Actor(who), vitals_frame.clone());
+    }
     info(
         ctx,
         format!(

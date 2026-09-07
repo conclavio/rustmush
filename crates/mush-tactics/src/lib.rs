@@ -51,6 +51,7 @@ pub mod module;
 pub mod sensor;
 pub mod status;
 pub mod unit;
+pub mod view;
 
 pub use contact::{
     CONTACT_CHANGED_OUTCOME_ID, CONTACT_LOSS_ACTION_ID, CONTACT_OBSERVE_ACTION_ID,
@@ -83,6 +84,11 @@ pub use unit::{
     MAX_UNIT_SECTIONS, MAX_UNIT_SLOTS, MAX_UNIT_SPEC_BYTES, RulesValue, ScalarCell, SectionId,
     SectionSpec, SectionState, TacticalUnit, UnitCatalog, UnitCatalogBuilder, UnitError,
     UnitMutationOp, UnitMutationPlan, UnitSpec, UnitSpecBody, apply, decode_legacy_unit_v1,
+};
+pub use view::{
+    MAX_UNIT_AUDIENCE, MAX_UNIT_VIEW_BYTES, UnitQuery, UnitSource, UnitView, UnitVitalsQuery,
+    VITALS_FEED, ViewRefusal, cell_addr_path, install_path, journal_frame, resolve_subject,
+    unit_for_view, unit_source,
 };
 
 /// The module id (also its persistence namespace).

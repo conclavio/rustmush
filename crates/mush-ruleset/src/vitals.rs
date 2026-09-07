@@ -220,6 +220,39 @@ pub fn from_sheet(schema: &SheetSchema, doc: &SheetDoc, store: &SheetStore) -> V
     out
 }
 
+/// The generic pool ladder, in one place (interface plan I8 lifted it out of
+/// [`bounded`] so the tactical unit view judges a cell exactly as a sheet
+/// pool is judged): an empty span is `Ok`, an empty pool `Down`, a quarter or
+/// less `Crit`, half or less `Warn`. Bounds are righted and `current` clamped
+/// first. It is a **depletion** ladder — right for armor, structure, ammo and
+/// blood; an accumulator (heat) reads inverted until a rules pack declares its
+/// own `warn`/`crit` thresholds (plan §9).
+#[must_use]
+pub fn pool_state(current: i64, min: i64, max: i64) -> VitalState {
+    let (min, max) = if min <= max { (min, max) } else { (max, min) };
+    let current = current.clamp(min, max);
+    let span = max.saturating_sub(min);
+    let rel = current.saturating_sub(min);
+    if span <= 0 {
+        VitalState::Ok
+    } else if rel <= 0 {
+        VitalState::Down
+    } else if rel.saturating_mul(4) <= span {
+        VitalState::Crit
+    } else if rel.saturating_mul(2) <= span {
+        VitalState::Warn
+    } else {
+        VitalState::Ok
+    }
+}
+
+/// A `Pool` gauge over [`pool_state`] — the shape a tactical unit's
+/// unit-level cells take on the `tactics.vitals` feed (interface plan I8).
+#[must_use]
+pub fn pool(id: SmolStr, label: String, current: i64, min: i64, max: i64) -> Vital {
+    bounded(id, label, mush_proto::VitalRole::Pool, current, min, max)
+}
+
 /// A bounded gauge with the generic pool thresholds, clamped into its bounds.
 fn bounded(
     id: SmolStr,
@@ -231,19 +264,7 @@ fn bounded(
 ) -> Vital {
     let (min, max) = if min <= max { (min, max) } else { (max, min) };
     let current = current.clamp(min, max);
-    let span = max - min;
-    let rel = current - min;
-    let state = if span <= 0 {
-        VitalState::Ok
-    } else if rel <= 0 {
-        VitalState::Down
-    } else if rel * 4 <= span {
-        VitalState::Crit
-    } else if rel * 2 <= span {
-        VitalState::Warn
-    } else {
-        VitalState::Ok
-    };
+    let state = pool_state(current, min, max);
     Vital {
         id,
         label,
