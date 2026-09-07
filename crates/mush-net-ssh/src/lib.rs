@@ -35,6 +35,7 @@
 //!
 //! [`ClientCaps`]: mush_proto::ClientCaps
 
+mod backlog;
 mod caps;
 mod editor;
 mod hooks;

@@ -47,7 +47,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use mush_ansi::AnsiTheme;
-use mush_proto::{ClientCaps, InputMode, OutputEvent};
+use mush_proto::{ClientCaps, InputMode, OutputEvent, PanelFrameKind, RichText};
 use mush_session::{FloodBucket, FloodVerdict, sanitize_line};
 use russh::server::{Auth, Config, Handler, Msg, Response, Server as _, Session};
 use russh::{Channel, ChannelId, Disconnect, MethodKind, MethodSet};
@@ -84,6 +84,20 @@ const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 /// active (design M15 D5: a read-only 3-5 s refresh that does *not* stamp
 /// idle — the pump submits the query, it never types the WHO command).
 const WHO_REFRESH: Duration = Duration::from_secs(4);
+
+/// How long an `@history` page in flight is waited for before the request
+/// re-arms (interface plan I12). It has to *age* rather than latch: the
+/// gateway drops a throttled `narrative.backlog` query in silence — no
+/// reply, no error — so a plain in-flight flag would wedge `@history` for
+/// the rest of the connection.
+const HISTORY_LATCH: Duration = Duration::from_secs(5);
+/// Lines `@history` asks for when given no count.
+const HISTORY_DEFAULT: u32 = 20;
+/// The most `@history` asks for at once — deliberately under the gateway's
+/// own 1..=200 clamp, because a page is one `handle.data` write raced
+/// against [`WRITE_TIMEOUT`] and is rendered under the connection lock.
+const HISTORY_MAX: u32 = 100;
+const HISTORY_USAGE: &str = "Usage: @history [<1-100>] [more]";
 
 const WELCOME_HELP: &str = "\
   connect <account> <password>   connect to an existing account\n\
@@ -272,6 +286,7 @@ impl russh::server::Server for Ingress {
                 tui: None,
                 manifest: TuiManifest::default(),
                 repaint: Arc::new(Notify::new()),
+                history: HistoryCursor::default(),
             })),
             route: Route::PreAuth,
             channel: None,
@@ -352,6 +367,34 @@ struct Shared {
     /// (resize, input edit). Only pulsed while `Mode::Tui`, so line mode is
     /// never woken by it (invariant T1).
     repaint: Arc<Notify>,
+    /// Where line mode's `@history` has read back to (interface plan I12).
+    history: HistoryCursor,
+}
+
+/// Per-connection `@history` paging state. The resume ring is per-session;
+/// the cursor is per-connection, so two connections attached to one session
+/// page through it independently.
+#[derive(Debug)]
+struct HistoryCursor {
+    /// `before_seq` for the next page; `None` asks from the newest.
+    before: Option<u64>,
+    /// The server may hold older lines below the last page shown.
+    more: bool,
+    /// A page is in flight, and when it was asked for — an aging latch (see
+    /// [`HISTORY_LATCH`]), never a plain flag.
+    pending: Option<Instant>,
+}
+
+impl Default for HistoryCursor {
+    fn default() -> HistoryCursor {
+        // `more: true` — nothing has been read yet, so everything the ring
+        // holds is still askable. `#[derive(Default)]` would say `false`.
+        HistoryCursor {
+            before: None,
+            more: true,
+            pending: None,
+        }
+    }
 }
 
 impl Shared {
@@ -423,6 +466,41 @@ fn strip_verb<'a>(line: &'a str, verb: &str) -> Option<&'a str> {
     } else {
         None
     }
+}
+
+/// What an `@history` line asks for (interface plan I12).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HistoryReq {
+    /// A page of `limit` lines; `more` continues from this connection's
+    /// cursor instead of starting again from the newest.
+    Page { limit: u32, more: bool },
+    /// The verb with a tail that could not be read.
+    Usage,
+}
+
+/// Parse `@history`, `@history <n>`, `@history more` — with `+history`
+/// accepted as an alias, since half the players will reach for the `+` verb
+/// family first and this way there is no wrong guess. Case-insensitive, the
+/// words in either order. `None` for any other line, which then forwards to
+/// the world untouched (invariant T1).
+fn parse_history(line: &str) -> Option<HistoryReq> {
+    let line = line.trim();
+    let rest = strip_verb(line, "@history").or_else(|| strip_verb(line, "+history"))?;
+    let mut limit = HISTORY_DEFAULT;
+    let mut more = false;
+    for word in rest.split_whitespace() {
+        if word.eq_ignore_ascii_case("more") {
+            more = true;
+        } else if let Ok(n) = word.parse::<u32>() {
+            if n == 0 || n > HISTORY_MAX {
+                return Some(HistoryReq::Usage);
+            }
+            limit = n;
+        } else {
+            return Some(HistoryReq::Usage);
+        }
+    }
+    Some(HistoryReq::Page { limit, more })
 }
 
 /// Split an account-path SSH username into its account and optional
@@ -544,6 +622,19 @@ impl ConnHandler {
                 if line.trim().eq_ignore_ascii_case("@tui") {
                     return self.enter_tui(session).await;
                 }
+                // Interface plan I12: `@history [n|more]` is answered from
+                // the gateway's per-viewer resume ring through the read-only
+                // query seam, intercepted here exactly like `@tui`. The
+                // world never sees it — which also means, as a consequence
+                // and not an oversight, that it does NOT stamp idle
+                // (`Core::query` deliberately skips `record_input`;
+                // D-I-3, M15 D5). A player reading a scene back therefore
+                // reads as idle in WHO, the same as one sitting in the TUI.
+                // If staff ever want it otherwise the fix is a
+                // `record_input` here, never a change to the query seam.
+                if let Some(req) = parse_history(&line) {
+                    return self.history_line(session, req).await;
+                }
                 self.hooks.line(self.conn_id, line).await;
                 Ok(())
             }
@@ -661,6 +752,95 @@ impl ConnHandler {
             self.fire_repaint();
         }
         Ok(())
+    }
+
+    // ---- line-mode scene history (interface plan I12) --------------------
+
+    /// Write one transport-side system line the way a world `Sys` line
+    /// looks (this connection's caps and the shared theme), around the line
+    /// editor exactly as the pump does.
+    fn write_sys(&self, session: &mut Session, text: &str) -> Result<(), russh::Error> {
+        let Some(ch) = self.channel else {
+            return Ok(());
+        };
+        let bytes = {
+            let sh = self.lock();
+            let mut bytes = Vec::new();
+            let interrupted = sh.editor.has_visible_line();
+            if interrupted {
+                bytes.extend_from_slice(b"\r\x1b[K");
+            }
+            mush_ansi::render(
+                &OutputEvent::Sys(RichText::tag("system", text)),
+                &sh.caps,
+                &AnsiTheme::default(),
+                &mut bytes,
+            );
+            if interrupted {
+                sh.editor.redraw(&mut bytes);
+            }
+            bytes
+        };
+        session.data(ch, bytes)
+    }
+
+    /// `@history [n|more]`: ask the gateway for a page of this viewer's own
+    /// resume ring. The page itself arrives asynchronously as a
+    /// `Reply{Panel{narrative, Delta}}` and is rendered by the output pump
+    /// (see `render_history_page`); only the refusals are written here.
+    async fn history_line(
+        &mut self,
+        session: &mut Session,
+        req: HistoryReq,
+    ) -> Result<(), russh::Error> {
+        let HistoryReq::Page { limit, more } = req else {
+            return self.write_sys(session, HISTORY_USAGE);
+        };
+        /// Either ask, or say why not — decided under the lock, acted on
+        /// after it drops (the hooks call is `async`).
+        enum Next {
+            Ask(Option<u64>),
+            Say(&'static str),
+        }
+        let next = {
+            let mut sh = self.lock();
+            if sh
+                .history
+                .pending
+                .is_some_and(|at| at.elapsed() < HISTORY_LATCH)
+            {
+                Next::Say("Your last history request is still on its way.")
+            } else if more && !sh.history.more {
+                Next::Say("There is no older history.")
+            } else {
+                if !more {
+                    // A bare `@history` starts again from the newest.
+                    sh.history.before = None;
+                    sh.history.more = true;
+                }
+                sh.history.pending = Some(Instant::now());
+                Next::Ask(sh.history.before)
+            }
+        };
+        match next {
+            Next::Say(msg) => self.write_sys(session, msg),
+            Next::Ask(before) => {
+                // An explicit, non-zero limit: the gateway does
+                // `.unwrap_or(0).clamp(1, 200)`, so an absent or zero limit
+                // would silently yield a ONE-line page with `more: true`.
+                self.hooks
+                    .query(
+                        self.conn_id,
+                        "narrative.backlog".to_owned(),
+                        serde_json::json!({
+                            "before_seq": before,
+                            "limit": limit.clamp(1, HISTORY_MAX),
+                        }),
+                    )
+                    .await;
+                Ok(())
+            }
+        }
     }
 
     async fn welcome_line(
@@ -1402,6 +1582,32 @@ fn render_line_event(sh: &mut Shared, ev: &OutputEvent, theme: &AnsiTheme, bytes
             }
             sh.editor.redraw(bytes);
         }
+        // Interface plan I12: a `narrative` Delta reply is a page of this
+        // viewer's own resume ring, not a panel frame. `mush-ansi` drops
+        // every `Panel` (one arm per `OutputEvent` variant is its contract),
+        // so the transport renders the page itself — each line through the
+        // SAME `mush_ansi::render` that drew it live.
+        OutputEvent::Reply { event, .. }
+            if matches!(&**event, OutputEvent::Panel { feed, kind, .. }
+                if feed.as_str() == "narrative" && *kind == PanelFrameKind::Delta) =>
+        {
+            let OutputEvent::Panel { data, .. } = &**event else {
+                return;
+            };
+            // Only a page this connection asked for is printed: an
+            // unsolicited narrative frame renders NOTHING.
+            if sh.history.pending.take().is_none() {
+                return;
+            }
+            let interrupted = sh.editor.has_visible_line();
+            if interrupted {
+                bytes.extend_from_slice(b"\r\x1b[K");
+            }
+            render_history_page(sh, data, theme, bytes);
+            if interrupted {
+                sh.editor.redraw(bytes);
+            }
+        }
         _ => {
             let interrupted = sh.editor.has_visible_line();
             if interrupted {
@@ -1413,6 +1619,72 @@ fn render_line_event(sh: &mut Shared, ev: &OutputEvent, theme: &AnsiTheme, bytes
             }
         }
     }
+}
+
+/// Render one system line the way a world `Sys` line renders.
+fn sys_line(sh: &Shared, theme: &AnsiTheme, out: &mut Vec<u8>, text: &str) {
+    mush_ansi::render(
+        &OutputEvent::Sys(RichText::tag("system", text)),
+        &sh.caps,
+        theme,
+        out,
+    );
+}
+
+/// Render one `@history` page: a header, the lines OLDEST FIRST (the wire
+/// carries them newest first), and a footer naming the next step. Advances
+/// the connection's cursor, which is the only state it touches.
+fn render_history_page(
+    sh: &mut Shared,
+    data: &serde_json::Value,
+    theme: &AnsiTheme,
+    out: &mut Vec<u8>,
+) {
+    let Some(page) = crate::backlog::parse(data) else {
+        // Nothing truthful to say about a page we could not read, and no
+        // cursor to advance: stop, rather than loop on it.
+        sh.history.more = false;
+        sys_line(sh, theme, out, "--- history is unavailable right now ---");
+        return;
+    };
+    if page.lines.is_empty() {
+        // An empty page is TERMINAL, never an error: a reaped session gives
+        // one, and so does a ring with nothing older left in it.
+        sh.history.more = false;
+        sys_line(sh, theme, out, "--- no older history ---");
+        return;
+    }
+    sys_line(
+        sh,
+        theme,
+        out,
+        &format!(
+            "--- older history: {} line(s), oldest first ---",
+            page.lines.len()
+        ),
+    );
+    for line in page.lines.iter().rev() {
+        mush_ansi::render(
+            &OutputEvent::Narrative {
+                kind: line.kind,
+                actor: line.actor.clone(),
+                text: line.text.clone(),
+            },
+            &sh.caps,
+            theme,
+            out,
+        );
+    }
+    sh.history.before = page.oldest_seq().or(sh.history.before);
+    sh.history.more = page.more;
+    let footer = if page.more {
+        "--- @history more for older ---"
+    } else if page.evicted {
+        "--- older history has rolled off the server's buffer ---"
+    } else {
+        "--- that is the oldest history the server holds ---"
+    };
+    sys_line(sh, theme, out, footer);
 }
 
 /// Consume the binary's event queue for one connection. In line mode each

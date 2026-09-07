@@ -451,6 +451,47 @@ fn the_before_after_pane_shows_both_sides_at_one_twenty() {
     }
 }
 
+/// I12: a page of scene history prepends ABOVE the live tail, oldest first,
+/// and each recalled line renders through the same `render_event` a live one
+/// did — same speaker gutter, same hanging indent. The floor marker sits at
+/// the very top. The existing goldens must not move: no key was bound.
+#[test]
+fn narrative_history_golden_frame() {
+    let mut app = fixture_app();
+    // Exactly the reply `narrative_backlog_reply` builds: newest first, with
+    // the correlation id 0 SSH always gets.
+    app.apply_event(&OutputEvent::Reply {
+        id: 0,
+        event: Box::new(OutputEvent::Panel {
+            feed: SmolStr::new_static("narrative"),
+            kind: PanelFrameKind::Delta,
+            data: serde_json::json!({ "backlog": {
+                "before_seq": serde_json::Value::Null,
+                "more": false,
+                "evicted": true,
+                "lines": [
+                    { "seq": 44, "ts": 1_756_300_002_000i64, "kind": "pose",
+                      "actor": { "id": "#5", "name": "Mireille" },
+                      "text": RichText::plain("shuts the door on the weather and leans against it.") },
+                    { "seq": 43, "ts": 1_756_300_001_000i64, "kind": "emit",
+                      "actor": serde_json::Value::Null,
+                      "text": RichText::plain("The lanterns gutter as the doors swing wide.") },
+                    { "seq": 42, "ts": 1_756_300_000_000i64, "kind": "say",
+                      "actor": { "id": "#5", "name": "Mireille" },
+                      "text": RichText::plain(
+                          "You are late, and the quai is already ankle deep in it — I told them \
+                           on Tuesday and I will tell them again tonight.") },
+                ],
+            } }),
+        }),
+    });
+    let text = frame_text(&mut app, 120, 34);
+    for line in text.lines() {
+        assert!(line.chars().count() <= 120, "row too wide: {line:?}");
+    }
+    check("tui_history_120x34.txt", &text);
+}
+
 /// I8: screen 9's compact section map puts every cell after the first on its
 /// own row, so nothing is clipped off the right of the pane.
 #[test]

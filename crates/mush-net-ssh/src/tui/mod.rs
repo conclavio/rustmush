@@ -60,10 +60,11 @@ impl TuiSession {
     }
 
     /// The queries the transport should submit right after entering the
-    /// TUI (WHO, the command table, channels, vitals, the active screen's
-    /// own feeds), through the read-only query seam.
+    /// TUI (WHO, the command table, channels, vitals, the first page of
+    /// scene history, the active screen's own feeds), through the read-only
+    /// query seam. `&mut` because the history page arms its own latch.
     #[must_use]
-    pub fn entry_queries(&self) -> Vec<(String, serde_json::Value)> {
+    pub fn entry_queries(&mut self) -> Vec<(String, serde_json::Value)> {
         self.app.entry_queries()
     }
 

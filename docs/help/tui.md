@@ -59,7 +59,9 @@ Nav mode (the box is closed):
   Tab / Shift-Tab   Move focus between panes.
   Up / Down    Scroll the focused pane, or move its highlight.
   PgUp / PgDn  Scroll a page.
-  g / G        Jump to the top / bottom of the focused pane.
+  g / G        Jump to the top / bottom of the focused pane. On the
+               scrollback, `g` (or PgUp already at the top) also asks the
+               server for the scene history above it.
   ?            The help overlay for the current screen (Esc closes).
   n e s w u d o   On the scene screen, walk the room's one-letter exits.
                The status line prints each exit with its key (`n·north`).
@@ -101,8 +103,35 @@ command you may use, your channel aliases and the room's exits, filtered as
 you type after the slash. Enter (or Tab) puts the highlighted entry in the
 box — a game command's usage line, ready to edit — and Esc closes the
 palette keeping your text. A few commands are the TUI's own and keep their
-slash: `/clear` empties the scrollback, `/help` opens the key help,
-`/notui` detaches.
+slash: `/clear` hides what is on screen, `/help` opens the key help,
+`/history` loads older scene history, `/notui` detaches.
+
+## Scene history
+
+Entering the TUI fills the scrollback with the last of the scene you were
+in, so a reconnect drops you into the conversation rather than a blank
+frame. `/history` — or `g`, or PgUp once you are already at the top — asks
+for the page above what you are reading; older lines appear above your
+place without moving it, and a dim line at the very top says when there is
+nothing more (`no older history`, or `older history has rolled off the
+server's buffer` when the server has dropped it).
+
+`/clear` draws a floor under what you have read rather than throwing it
+away: the screen empties and new lines appear below the floor, but nothing
+older is loaded into that view again — `@notui` then `@tui` gives you a
+fresh one, primed from the newest as usual. It has to work that way: the
+client cannot tell a line it has already shown from the same line coming
+back inside a page, so a cleared view that went on asking would paint your
+last few minutes twice.
+
+In line mode the same history is `@history` (or `+history`): `@history`
+prints the last 20 lines oldest first, `@history 50` asks for that many (up
+to 100), and `@history more` continues from where the last page stopped.
+Like `@tui`, it is answered by your connection rather than the world, so it
+never counts as activity — reading history back leaves you idle in WHO.
+That is also why it is read wherever you type it, including inside a prompt
+the game is waiting on: `@history` at a `Mail>` prompt or a chargen question
+reads the scene back, and is not taken as the line you were composing.
 
 ## The screens
 

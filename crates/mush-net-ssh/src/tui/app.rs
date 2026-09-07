@@ -72,6 +72,20 @@ const PAGE: usize = 10;
 const MAX_PALETTE_ROWS: usize = 8;
 /// Backlog rows requested per `b`.
 const BACKLOG_LIMIT: u32 = 50;
+/// Narrative-history rows asked for per page (interface plan I12). The
+/// gateway clamps `limit` to 1..=200 and cuts a page at 256 KB; an absent or
+/// zero `limit` yields a ONE-line page, so it is always sent explicitly.
+const NARRATIVE_PAGE: u32 = 100;
+/// Seconds after which a narrative-history page in flight is assumed lost
+/// and the request re-arms. It has to *age* rather than latch: the gateway
+/// drops a throttled `narrative.backlog` query in silence — no reply, no
+/// error — so a plain in-flight flag would wedge history for the whole
+/// connection (the `RESYNC_LATCH_S` precedent in `panels.rs`).
+const BACKLOG_LATCH_S: i64 = 5;
+/// The most open server-initiated asks held at once (interface plan I10) —
+/// `mush_core::request::MAX_OPEN_REQUESTS_PER_SUBJECT`. Past it the newest
+/// is dropped, as the engine refuses to open one.
+const MAX_OPEN_REQUESTS_PER_SUBJECT: usize = 32;
 
 /// Nav or input (D-I-17).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -158,6 +172,11 @@ struct TuiRequest {
     kind: RequestKind,
     prompt: RichText,
     options: Vec<RequestOption>,
+    /// When the engine stops accepting an answer, Unix MILLISECONDS. It
+    /// expires the ask server-side and tells the subject nothing, so this is
+    /// the only thing a queue has to keep a dead ask from blocking the live
+    /// ones behind it.
+    deadline_ms: Option<u64>,
 }
 
 /// One command from the `commands.list` keyframe.
@@ -193,10 +212,12 @@ struct PaneUi {
     selected: usize,
 }
 
-/// A client-local command (`/clear`, `/help`, `/notui`) the palette lists.
-const LOCAL_COMMANDS: [(&str, &str); 3] = [
+/// A client-local command (`/clear`, `/help`, `/history`, `/notui`) the
+/// palette lists.
+const LOCAL_COMMANDS: [(&str, &str); 4] = [
     ("/clear", "empty the scrollback"),
     ("/help", "the key help"),
+    ("/history", "load older scene history"),
     ("/notui", "return to line mode"),
 ];
 
@@ -220,6 +241,27 @@ pub struct TuiApp {
     scrollback: VecDeque<Entry>,
     /// Rows scrolled up from the bottom (0 = following the tail).
     scroll_off: usize,
+    /// Front entries `/clear` hid. It is a VIEW floor, not a data clear: the
+    /// ring is kept so [`TuiApp::backlog_cursor`] can stay where it is. The
+    /// old clear re-armed the cursor, and the next page then came back with
+    /// every line that had arrived live since — painted a second time,
+    /// because an SSH scrollback entry carries no seq to dedup against.
+    cleared: usize,
+    /// `before_seq` for the next narrative-history page; `None` asks from
+    /// the newest (interface plan I12). It only ever moves DOWN, and that is
+    /// the whole dedup: an SSH connection is a `Sink::Ansi` and never sees an
+    /// `Envelope`, so a live scrollback entry carries no seq to compare a
+    /// page against.
+    backlog_cursor: Option<u64>,
+    /// The server may hold older narrative below what has been prepended.
+    backlog_more: bool,
+    /// A page is in flight, and when it was asked for — an aging latch, not
+    /// a flag (see [`BACKLOG_LATCH_S`]).
+    backlog_pending: Option<i64>,
+    /// Whether the "that is all there is" marker has been prepended already.
+    backlog_floored: bool,
+    /// Rows the last paint could scroll: the scroll-to-top trigger.
+    last_max_scroll: usize,
     who: Vec<WhoEntry>,
     room: Option<RoomView>,
     exit_keys: Vec<(char, String)>,
@@ -233,8 +275,11 @@ pub struct TuiApp {
     channel_aliases: Vec<String>,
     palette: Option<Palette>,
     help: bool,
-    /// The server-initiated request shown as an overlay, if any (I10).
-    request: Option<TuiRequest>,
+    /// Server-initiated asks still open, OLDEST FIRST (I10). A queue, not a
+    /// slot: the engine's `respond` answers the lowest open id and the web
+    /// store answers `pending[0]`, so an overlay showing the newest would
+    /// measure the player's answer against an ask they cannot see.
+    requests: VecDeque<TuiRequest>,
     /// The request id whose free-text answer the input box is capturing (I10).
     answering: Option<u64>,
     thinking: Vec<(String, i64)>,
@@ -284,6 +329,12 @@ impl TuiApp {
             parser: KeyParser::new(),
             scrollback: VecDeque::new(),
             scroll_off: 0,
+            cleared: 0,
+            backlog_cursor: None,
+            backlog_more: true,
+            backlog_pending: None,
+            backlog_floored: false,
+            last_max_scroll: 0,
             who: Vec::new(),
             room: None,
             exit_keys: Vec::new(),
@@ -295,7 +346,7 @@ impl TuiApp {
             channel_aliases: Vec::new(),
             palette: None,
             help: false,
-            request: None,
+            requests: VecDeque::new(),
             answering: None,
             thinking: Vec::new(),
             composing: Vec::new(),
@@ -386,7 +437,8 @@ impl TuiApp {
         self.help
     }
 
-    /// The scrollback entries, oldest first.
+    /// Entries held in the scrollback ring, oldest first — including any a
+    /// `/clear` floor is hiding (it hides a prefix, it does not drop it).
     #[must_use]
     pub fn scrollback_len(&self) -> usize {
         self.scrollback.len()
@@ -443,10 +495,32 @@ impl TuiApp {
     // ---- events -----------------------------------------------------------
 
     /// The queries to submit right after entering the TUI.
+    ///
+    /// Takes `&mut self` because one of them — the first narrative-history
+    /// page — arms the backlog latch (interface plan I12); everything else
+    /// here is a read of state.
     #[must_use]
-    pub fn entry_queries(&self) -> Vec<(String, Value)> {
+    pub fn entry_queries(&mut self) -> Vec<(String, Value)> {
         let empty = || Value::Object(serde_json::Map::new());
+        // Interface plan I12: prime the first page of scene history — the
+        // player value of the whole feature (reconnect into a scene and read
+        // the last few minutes without pressing anything).
+        //
+        // It goes FIRST, and `enter_tui` awaits these in order. The
+        // scrollback is empty when the `TuiApp` is BUILT, not when the page
+        // lands: the gateway answers `narrative.backlog` synchronously from
+        // the session ring, but every query ahead of it is another awaited
+        // bridge send, and a narrative line delivered in that window is
+        // push_back'd live AND carried in the page (an SSH entry has no seq
+        // to dedup against). Asking first narrows the window to one hook
+        // call; it does not close it — a line already queued at the mode flip
+        // is still painted twice, and that residue is recorded, not fixed.
+        self.backlog_pending = Some(self.now());
         let mut q: Vec<(String, Value)> = vec![
+            (
+                "narrative.backlog".to_string(),
+                serde_json::json!({ "before_seq": self.backlog_cursor, "limit": NARRATIVE_PAGE }),
+            ),
             ("who".to_string(), empty()),
             ("commands.list".to_string(), empty()),
             ("comsys.state".to_string(), empty()),
@@ -561,6 +635,17 @@ impl TuiApp {
                 self.exit_keys = exit_keys(&view.exits);
             }
             OutputEvent::Panel { feed, kind, data } => {
+                // Interface plan I12: a `narrative` Delta is not a panel
+                // frame at all — it is a page of this viewer's own resume
+                // ring, answering a `narrative.backlog` query. It must never
+                // reach the `PanelStore`: an unknown-feed Delta there falls
+                // to the resync catch-all and asks the world to re-send a
+                // feed no producer publishes, which comes back as an
+                // "Unknown query" line in the scrollback and loses the page.
+                if feed.as_str() == "narrative" && *kind == PanelFrameKind::Delta {
+                    self.apply_narrative_backlog(data);
+                    return queries;
+                }
                 match self.panels.apply_panel(feed, *kind, data, now) {
                     PanelOutcome::NeedsResync(f) => {
                         queries.push((f.to_string(), Value::Object(serde_json::Map::new())));
@@ -628,20 +713,58 @@ impl TuiApp {
                 kind,
                 prompt,
                 options,
-                ..
+                deadline_ms,
             } => {
-                // Interface plan I10: show the ask as an overlay (the newest
-                // replaces any showing). The answer goes back via `responds`.
-                self.request = Some(TuiRequest {
+                // Interface plan I10: queue the ask, oldest first, and show
+                // the front one. A repeat of an id replaces in place (the
+                // producer re-sent it — a deadline moved, options changed);
+                // past the subject cap the newest is dropped, because the
+                // engine would not have opened it either. Expired fronts go
+                // first, so an ask that died while the player was away does
+                // not spend the cap or the front slot.
+                self.evict_expired_requests(now);
+                let req = TuiRequest {
                     id: *id,
                     kind: *kind,
                     prompt: prompt.clone(),
                     options: options.clone(),
-                });
+                    deadline_ms: *deadline_ms,
+                };
+                match self.requests.iter().position(|q| q.id == req.id) {
+                    Some(at) => self.requests[at] = req,
+                    None if self.requests.len() < MAX_OPEN_REQUESTS_PER_SUBJECT => {
+                        self.requests.push_back(req);
+                    }
+                    None => {}
+                }
                 return queries;
             }
             OutputEvent::Hello { panels, .. } => {
                 self.manifest.panels.clone_from(panels);
+                // Interface plan I12: a world restarted behind the gateway
+                // re-sends its hello. Clearing the LATCH here is belt and
+                // braces that costs nothing — `narrative.backlog` is answered
+                // by the GATEWAY from the session ring, not by the world, so
+                // a page in flight across a restart does arrive; if it lands
+                // after this re-arm, the cursor filter drops the duplicate.
+                // The cursor itself is never re-armed: the session and its
+                // resume ring outlive the world, so seqs do not restart.
+                // (This is why the web's `beginSegment` is not ported — over
+                // SSH nothing remints them, and re-arming here would re-fetch
+                // the newest page and paint it twice.)
+                self.backlog_pending = None;
+                // Interface plan I10: over SSH the hello IS the world-restart
+                // seam (`Resumed` is the web pump's, below). The request
+                // registry is RAM-only and `next_request_id` remints from 1,
+                // so every open ask died with the world: drop the queue
+                // rather than let zombies stand in front of the asks the new
+                // world opens. A box capturing an answer to one of them goes
+                // back to nav with its text kept as a draft, so nothing typed
+                // for a dead ask is sent to the new world as a command.
+                self.requests.clear();
+                if self.answering.take().is_some() {
+                    self.leave_input(true);
+                }
                 let empty = || Value::Object(serde_json::Map::new());
                 for feed in panels {
                     if feed.ends_with(".vitals") {
@@ -663,8 +786,13 @@ impl TuiApp {
                 // The mode resets on a resume (D-I-17). A pending request is
                 // gone server-side after a full re-attach (I10 is RAM-only),
                 // and its id may be reminted, so drop the overlay too.
+                //
+                // This is the WEB pump's seam, kept here for parity and
+                // unreachable over SSH: nothing in the tree sends `Resumed`
+                // to an Ansi sink. The SSH restart seam is the `Hello` arm
+                // above; the only other eviction is the deadline.
                 self.leave_input(true);
-                self.request = None;
+                self.requests.clear();
                 self.answering = None;
                 return queries;
             }
@@ -683,8 +811,180 @@ impl TuiApp {
     fn push_entry(&mut self, entry: Entry) {
         if self.scrollback.len() == SCROLLBACK_CAP {
             self.scrollback.pop_front();
+            // A `/clear` floor is a count of hidden FRONT entries, and the
+            // cap evicts from the front: the floor tracks the eviction down,
+            // so it never starts hiding live text.
+            self.cleared = self.cleared.saturating_sub(1);
         }
         self.scrollback.push_back(entry);
+    }
+
+    // ---- narrative history (interface plan I12) ---------------------------
+
+    /// Ask the gateway for the next older page of this viewer's own scene
+    /// history. One page is in flight at a time, and the latch AGES: a
+    /// throttled `narrative.backlog` is dropped by the bridge without any
+    /// reply, so a permanent in-flight flag would wedge history for the rest
+    /// of the connection. Read-only, so it never stamps idle (D-I-3).
+    fn request_backlog(&mut self, r: &mut InputResult) {
+        if !self.backlog_more {
+            return;
+        }
+        let now = self.now();
+        if let Some(armed) = self.backlog_pending
+            && (0..BACKLOG_LATCH_S).contains(&now.saturating_sub(armed))
+        {
+            return;
+        }
+        self.backlog_pending = Some(now);
+        r.queries.push((
+            "narrative.backlog".to_string(),
+            serde_json::json!({ "before_seq": self.backlog_cursor, "limit": NARRATIVE_PAGE }),
+        ));
+    }
+
+    /// Splice one page of history in above the live tail, oldest first.
+    ///
+    /// The page arrives newest-first (the ring is walked in reverse), so
+    /// walking it in wire order and pushing each rendered event onto the
+    /// FRONT leaves the scrollback reading oldest → newest again. Each line
+    /// goes through the same [`render_event`] a live one did, so a recalled
+    /// line is byte-identical to how it first appeared.
+    fn apply_narrative_backlog(&mut self, data: &Value) {
+        self.backlog_pending = None;
+        if !self.backlog_more {
+            // Nothing is being asked for any more: the server's floor, a full
+            // local ring, or a `/clear` view floor. `request_backlog` refuses
+            // while `backlog_more` is false and only one page is ever in
+            // flight, so the only page that can arrive here is one that was
+            // already on the wire when the flag went down — and prepending it
+            // over a `/clear` floor (a count of hidden FRONT entries) would
+            // push cleared lines back into view. Drop it.
+            return;
+        }
+        let Some(page) = crate::backlog::parse(data) else {
+            // Nothing truthful to say about a page we could not read, and no
+            // cursor to advance: stop asking rather than loop on it.
+            self.backlog_more = false;
+            return;
+        };
+        if page.lines.is_empty() {
+            // An empty page is TERMINAL, never an error: a session reaped
+            // out from under the query answers this way, and so does a ring
+            // with nothing older left in it.
+            self.backlog_more = false;
+            self.mark_backlog_floor(page.evicted);
+            return;
+        }
+        // The dedup: only lines strictly older than the cursor. An SSH
+        // scrollback entry can carry no seq of its own, so this is all there
+        // is — and all there needs to be, because entry primes the first
+        // page into an EMPTY scrollback.
+        let cursor = self.backlog_cursor;
+        let kept: Vec<_> = page
+            .lines
+            .iter()
+            .filter(|l| cursor.is_none_or(|c| l.seq < c))
+            .collect();
+        if kept.is_empty() {
+            // A stale page: every line in it is one already held (a second
+            // priming page, or one that raced a re-armed latch). Drop it
+            // and leave the cursor and `more` alone — the next ask carries
+            // the current cursor and gets the right page.
+            return;
+        }
+        // Never evict the live tail. `push_entry` pops the FRONT at the cap,
+        // so a prepend that ran past it would have to pop the BACK — live
+        // scene text. Keep the NEWEST lines that fit instead and stop asking,
+        // or the same page is re-fetched on every scroll to the top forever.
+        let mut oldest_pushed: Option<u64> = None;
+        let mut truncated = false;
+        for line in kept {
+            let ev = OutputEvent::Narrative {
+                kind: line.kind,
+                actor: line.actor.clone(),
+                text: line.text.clone(),
+            };
+            // `Envelope.ts` is Unix MILLISECONDS; `Entry.at` is seconds.
+            let entries = render_event(&ev, &self.caps, &self.theme, line.ts / 1000);
+            if self.scrollback.len() + entries.len() > SCROLLBACK_CAP {
+                truncated = true;
+                break;
+            }
+            // Reversed, so a multi-row event keeps its own row order.
+            for entry in entries.into_iter().rev() {
+                self.scrollback.push_front(entry);
+            }
+            oldest_pushed = Some(line.seq);
+        }
+        self.backlog_cursor = oldest_pushed.or(self.backlog_cursor);
+        if truncated {
+            // The local ring is the floor here, not the server's buffer, so
+            // no marker: it would say something untrue about the world.
+            self.backlog_more = false;
+            self.backlog_floored = true;
+            if oldest_pushed.is_none() {
+                // The cut fell before the page's FIRST line, so nothing at
+                // all was painted. Say why, as a client line: a gesture that
+                // silently does nothing reads as a broken key. `/clear` is
+                // not the remedy any more — it hides the ring, it does not
+                // empty it — so name the one that is.
+                self.push_local_line(
+                    "The scrollback is full; nothing older fits. \
+                     @notui then @tui starts a fresh one.",
+                );
+            }
+            return;
+        }
+        self.backlog_more = page.more;
+        if !page.more {
+            self.mark_backlog_floor(page.evicted);
+        }
+        // `scroll_off` is measured up from the TAIL, so a prepend does not
+        // move the reader and nothing here touches it (no `prependGen`).
+    }
+
+    /// One dim line at the very top saying why nothing older will appear.
+    fn mark_backlog_floor(&mut self, evicted: bool) {
+        if self.backlog_floored || self.scrollback.len() >= SCROLLBACK_CAP {
+            return;
+        }
+        self.backlog_floored = true;
+        let dash = if self.caps.utf8 { "\u{2014}" } else { "--" };
+        let what = if evicted {
+            "older history has rolled off the server's buffer"
+        } else {
+            "no older history"
+        };
+        self.scrollback.push_front(Entry {
+            gutter: None,
+            body: vec![dim_span_owned(&format!("{dash} {what} {dash}"))],
+            at: self.now(),
+        });
+    }
+
+    // ---- server-initiated asks (interface plan I10) -----------------------
+
+    /// Drop asks whose deadline has passed, front first; `true` if any went.
+    ///
+    /// The engine removes an expired request and emits NOTHING to the
+    /// subject, so the clock is all a client has. Without this a dead front
+    /// ask blocks every later one for the rest of the connection: the player
+    /// answers a request the engine has already dropped (silently discarded
+    /// server-side) and only then sees the next. Only the front is popped —
+    /// one further back is evicted when it reaches the front, which is the
+    /// first moment it could matter.
+    fn evict_expired_requests(&mut self, now_s: i64) -> bool {
+        let now_ms = u64::try_from(now_s.saturating_mul(1000)).unwrap_or(0);
+        let before = self.requests.len();
+        while self
+            .requests
+            .front()
+            .is_some_and(|req| req.deadline_ms.is_some_and(|d| d <= now_ms))
+        {
+            self.requests.pop_front();
+        }
+        self.requests.len() != before
     }
 
     fn push_local_line(&mut self, text: &str) {
@@ -791,7 +1091,19 @@ impl TuiApp {
             }
             _ => {}
         }
-        if self.request.is_some() {
+        // The overlay owns the keyboard while an ask is showing — but not
+        // while the box is capturing a free-text answer to one (I10): the
+        // next ask waits its turn rather than eating what is being typed
+        // (which is also why the eviction below runs only when the overlay
+        // has the keys — it must never swallow a typed character).
+        if self.answering.is_none() && !self.requests.is_empty() {
+            // A dead ask never eats a key and never hides the ones behind it.
+            // The keystroke that finds one is SPENT on the eviction: the ask
+            // underneath is drawn before it can be answered by a player who
+            // has not seen it yet.
+            if self.evict_expired_requests(self.now()) {
+                return;
+            }
             self.request_key(key, r);
             return;
         }
@@ -822,12 +1134,12 @@ impl TuiApp {
             Key::Esc => self.palette = None,
             Key::Tab => self.move_focus(1),
             Key::BackTab => self.move_focus(-1),
-            Key::Up => self.scroll_focused(-1),
-            Key::Down => self.scroll_focused(1),
-            Key::PgUp => self.scroll_focused(-(PAGE as isize)),
-            Key::PgDn => self.scroll_focused(PAGE as isize),
-            Key::Char('g') => self.jump_focused(false),
-            Key::Char('G') => self.jump_focused(true),
+            Key::Up => self.scroll_focused(-1, r),
+            Key::Down => self.scroll_focused(1, r),
+            Key::PgUp => self.scroll_focused(-(PAGE as isize), r),
+            Key::PgDn => self.scroll_focused(PAGE as isize, r),
+            Key::Char('g') => self.jump_focused(false, r),
+            Key::Char('G') => self.jump_focused(true, r),
             Key::Char('?') | Key::Alt('?') => self.help = true,
             Key::Alt(c @ '1'..='9') => self.switch_screen(c as u8 - b'0', r),
             Key::Char(c) | Key::Alt(c) => self.screen_key(c, r),
@@ -875,8 +1187,18 @@ impl TuiApp {
                 }
             }
             LocalAction::ClearScrollback => {
-                self.scrollback.clear();
+                // A VIEW floor, not a data clear (interface plan I12). The
+                // entries stay in the ring and the history cursor stays where
+                // it is: re-arming it here asked the gateway for the NEWEST
+                // page again, and every line that had arrived live since the
+                // clear came back in it and was painted a second time (an SSH
+                // scrollback entry carries no seq to dedup against). Older
+                // history is not loaded into a cleared view either — it is
+                // exhausted for THIS view; `@notui` then `@tui` builds a
+                // fresh one, which primes from the newest again.
+                self.cleared = self.scrollback.len();
                 self.scroll_off = 0;
+                self.backlog_more = false;
             }
         }
     }
@@ -926,13 +1248,21 @@ impl TuiApp {
         match key {
             Key::Enter => {
                 if self.line.is_empty() {
+                    // An empty line IS the cancel `submit_line` documents —
+                    // it never reaches `submit_line`, so send it here.
+                    self.cancel_answer(r);
                     self.leave_input(false);
                     return;
                 }
                 let line = self.line.submit(self.input_mode == InputMode::Normal);
                 self.submit_line(line, r);
             }
-            Key::Esc => self.leave_input(true),
+            Key::Esc => {
+                // The overlay's own printed contract: "Esc cancels (the game
+                // decides for you)".
+                self.cancel_answer(r);
+                self.leave_input(true);
+            }
             Key::Char('/') if self.line.is_empty() => {
                 self.line.insert('/');
                 self.open_palette();
@@ -981,7 +1311,15 @@ impl TuiApp {
                     self.line.history_down();
                 }
             }
-            Key::PgUp => self.scroll_off = self.scroll_off.saturating_add(PAGE),
+            Key::PgUp => {
+                // The box-mode page keys scroll the scrollback whatever pane
+                // has focus (they always have); paging past its top asks for
+                // older history exactly as nav-mode PgUp does (I12).
+                self.scroll_off = self.scroll_off.saturating_add(PAGE);
+                if self.scroll_off >= self.last_max_scroll {
+                    self.request_backlog(r);
+                }
+            }
             Key::PgDn => self.scroll_off = self.scroll_off.saturating_sub(PAGE),
             Key::Tab => self.complete(),
             _ => r.redraw = false,
@@ -995,8 +1333,10 @@ impl TuiApp {
     /// D-I-21): `y`/`n` for a confirm, a digit for a choice, Enter to type a
     /// target/text answer in the box, Esc to cancel (the server then applies
     /// its default). Only the subject sees this, so nothing here idle-stamps.
+    /// Answers go to the OLDEST open ask, which is the one the overlay shows
+    /// and the one the engine's `respond` resolves.
     fn request_key(&mut self, key: Key, r: &mut InputResult) {
-        let (id, kind) = match self.request.as_ref() {
+        let (id, kind) = match self.requests.front() {
             Some(req) => (req.id, req.kind),
             None => return,
         };
@@ -1010,8 +1350,8 @@ impl TuiApp {
             RequestKind::Choice => match key {
                 Key::Char(c @ '1'..='9') => {
                     let idx = (c as usize) - ('1' as usize);
-                    self.request
-                        .as_ref()
+                    self.requests
+                        .front()
                         .and_then(|req| req.options.get(idx))
                         .map(|o| RespondChoice::Choose(o.id.clone()))
                 }
@@ -1020,9 +1360,11 @@ impl TuiApp {
             },
             RequestKind::Target | RequestKind::Text => match key {
                 Key::Enter => {
-                    // Capture the free-text answer in the box.
+                    // Capture the free-text answer in the box. The ask
+                    // leaves the queue here (`answering` carries its id), so
+                    // the box is not fighting its own overlay for keys.
                     self.answering = Some(id);
-                    self.request = None;
+                    self.requests.pop_front();
                     self.enter_input(None);
                     return;
                 }
@@ -1033,7 +1375,9 @@ impl TuiApp {
         match choice {
             Some(c) => {
                 r.responds.push((id, c));
-                self.request = None;
+                // Answered or cancelled, the front ask is done — and the
+                // next one, if any, is now showing.
+                self.requests.pop_front();
             }
             None => r.redraw = false,
         }
@@ -1049,7 +1393,6 @@ impl TuiApp {
                 RespondChoice::Text(line)
             };
             r.responds.push((id, choice));
-            self.request = None;
             return;
         }
         self.scroll_off = 0;
@@ -1057,6 +1400,14 @@ impl TuiApp {
             match local.trim() {
                 "clear" => self.local_action(LocalAction::ClearScrollback, r),
                 "help" => self.help = true,
+                "history" => {
+                    self.request_backlog(r);
+                    // `submit_line` pinned the view to the tail above, and
+                    // the page prepends at the TOP: without this the command
+                    // loads a page the player cannot see and looks like it
+                    // did nothing. The paint clamps it, exactly as `g` does.
+                    self.scroll_off = usize::MAX / 2;
+                }
                 "notui" => r.detach = true,
                 other => self.push_local_line(&format!("Unknown client command: /{other}")),
             }
@@ -1077,6 +1428,21 @@ impl TuiApp {
             StickyMode::Ooc => format!("ooc {line}"),
         };
         r.submit.push(out);
+    }
+
+    /// Cancel the ask the box is capturing a free-text answer for, if any.
+    ///
+    /// Every exit from that box goes through here. `answering` gates both the
+    /// key routing in [`TuiApp::handle_key`] and the overlay in
+    /// [`TuiApp::draw`], so one left dangling wedges the whole queue: the next
+    /// ask is neither drawn nor keyed, and the player's next command line is
+    /// eaten as an answer to an ask that is no longer on screen.
+    /// [`TuiApp::leave_input`] cannot do it — `Resumed` calls that too, and
+    /// there no answer should ride the wire.
+    fn cancel_answer(&mut self, r: &mut InputResult) {
+        if let Some(id) = self.answering.take() {
+            r.responds.push((id, RespondChoice::Cancel));
+        }
     }
 
     /// Enter input mode: with `prefill`, or restoring a kept draft, or
@@ -1130,7 +1496,9 @@ impl TuiApp {
     }
 
     /// Scroll or move the highlight of the focused pane by `delta` rows.
-    fn scroll_focused(&mut self, delta: isize) {
+    /// Takes the [`InputResult`] because scrolling up off the top of the
+    /// scrollback asks the server for older history (interface plan I12).
+    fn scroll_focused(&mut self, delta: isize, r: &mut InputResult) {
         let Some(spec) = self.screen().panes.get(self.focus).copied() else {
             return;
         };
@@ -1138,6 +1506,11 @@ impl TuiApp {
             PaneContent::Scrollback => {
                 let off = self.scroll_off as isize - delta;
                 self.scroll_off = off.max(0) as usize;
+                // Already at the top of the local buffer and still going up:
+                // that is the ask for the page above it (§3.12).
+                if delta < 0 && self.scroll_off >= self.last_max_scroll {
+                    self.request_backlog(r);
+                }
             }
             _ if spec.selectable => {
                 let rows = self.pane_rows(&spec);
@@ -1167,13 +1540,19 @@ impl TuiApp {
         }
     }
 
-    fn jump_focused(&mut self, bottom: bool) {
+    /// Jump the focused pane to its top or bottom. `g` on the scrollback is
+    /// also the plan's explicit "load older history" gesture (§3.12) — it is
+    /// a JUMP key, so no room exit can ever shadow it.
+    fn jump_focused(&mut self, bottom: bool, r: &mut InputResult) {
         let Some(spec) = self.screen().panes.get(self.focus).copied() else {
             return;
         };
         match spec.content {
             PaneContent::Scrollback => {
                 self.scroll_off = if bottom { 0 } else { usize::MAX / 2 };
+                if !bottom {
+                    self.request_backlog(r);
+                }
             }
             _ if spec.selectable => {
                 let rows = self.pane_rows(&spec);
@@ -1658,7 +2037,10 @@ impl TuiApp {
         if self.help {
             self.draw_help(frame, area);
         }
-        if self.request.is_some() {
+        // An ask the engine has already expired is never painted: it would
+        // stand in front of every live one behind it (I10).
+        self.evict_expired_requests(now);
+        if self.answering.is_none() && !self.requests.is_empty() {
             self.draw_request(frame, area);
         }
     }
@@ -1918,7 +2300,8 @@ impl TuiApp {
         let gutter = width > GUTTER_W + 12;
         let body_w = if gutter { width - GUTTER_W - 1 } else { width };
         let mut rows = Vec::new();
-        for entry in &self.scrollback {
+        // `/clear` hides a prefix rather than dropping it (see `cleared`).
+        for entry in self.scrollback.iter().skip(self.cleared) {
             let wrapped = wrap_spans(&entry.body, body_w);
             for (i, body) in wrapped.into_iter().enumerate() {
                 let mut spans: Vec<Span<'static>> = Vec::new();
@@ -1944,6 +2327,10 @@ impl TuiApp {
         let rows = self.scrollback_rows(usize::from(inner.width));
         let h = usize::from(inner.height);
         let max_scroll = rows.len().saturating_sub(h);
+        // Remembered for the scroll-to-top trigger: a key handler cannot
+        // measure the buffer (it does not know the pane's height), and the
+        // draw path can never issue a query (it returns nothing).
+        self.last_max_scroll = max_scroll;
         self.scroll_off = self.scroll_off.min(max_scroll);
         let start = max_scroll - self.scroll_off;
         let shown: Vec<Line<'static>> = rows.into_iter().skip(start).take(h).collect();
@@ -2040,7 +2427,7 @@ impl TuiApp {
     /// The server-initiated request overlay (interface plan I10): the prompt,
     /// the options (a confirm as `y`/`n`, a choice numbered), and the keys.
     fn draw_request(&self, frame: &mut Frame<'_>, area: Rect) {
-        let Some(req) = self.request.as_ref() else {
+        let Some(req) = self.requests.front() else {
             return;
         };
         let mut lines: Vec<Line<'static>> = vec![Line::from(Span::styled(
@@ -2079,9 +2466,13 @@ impl TuiApp {
             height: h,
         };
         frame.render_widget(Clear, rect);
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .title("the game asks");
+        // With more than one ask open, say so: the answer goes to THIS one,
+        // and the next takes its place when it does.
+        let title = match self.requests.len() {
+            0 | 1 => "the game asks".to_string(),
+            n => format!("the game asks (1 of {n})"),
+        };
+        let block = Block::default().borders(Borders::ALL).title(title);
         frame.render_widget(Paragraph::new(Text::from(lines)).block(block), rect);
     }
 
@@ -2092,6 +2483,8 @@ impl TuiApp {
                 Style::default().add_modifier(Modifier::BOLD),
             )),
             Line::from("1-9 screens   Tab focus   Up/Down PgUp/PgDn scroll   g/G top/bottom"),
+            Line::from("g (or /history) at the top loads older scene history from the server"),
+            Line::from("/clear hides what is on screen; @notui then @tui starts a fresh view"),
             Line::from(
                 "Enter type   \" : ; \\ speak   / palette   ^K palette   ^P mode   ^] leave",
             ),
@@ -2556,7 +2949,10 @@ mod tests {
         app.feed_input(b"\r");
         let r = app.feed_input(b"/clear\r");
         assert!(r.submit.is_empty());
-        assert_eq!(app.scrollback_len(), 0);
+        // A view floor, not a data clear (I12): the entry stays in the ring
+        // so the history cursor can stay where it is.
+        assert!(rows_of(&app).is_empty());
+        assert_eq!(app.scrollback_len(), 1);
         let r = app.feed_input(b"/notui\r");
         assert!(r.detach);
         let r = app.feed_input(&[0x1d]);
@@ -2564,7 +2960,7 @@ mod tests {
         let r = app.feed_input(b"/bogus\r");
         assert!(r.submit.is_empty());
         assert_eq!(
-            app.scrollback_len(),
+            rows_of(&app).len(),
             1,
             "an unknown local command explains itself"
         );
@@ -3298,5 +3694,771 @@ mod tests {
         app.feed_input(b"+roll strength+brawl vs 7");
         let r = app.feed_input(b"\r");
         assert_eq!(r.submit, vec!["+roll strength+brawl vs 7".to_string()]);
+    }
+
+    // ---- I12: the narrative-history backlog -------------------------------
+
+    /// One `narrative.backlog` reply exactly as the gateway sends it
+    /// (`bridge_common.rs`, `narrative_backlog_reply`): a `Reply` with the
+    /// hard-coded id 0 wrapping a `narrative` Delta panel frame.
+    fn backlog_reply(lines: Value, more: bool, evicted: bool) -> OutputEvent {
+        OutputEvent::Reply {
+            id: 0,
+            event: Box::new(OutputEvent::Panel {
+                feed: SmolStr::new_static("narrative"),
+                kind: PanelFrameKind::Delta,
+                data: serde_json::json!({ "backlog": {
+                    "before_seq": Value::Null, "more": more,
+                    "evicted": evicted, "lines": lines } }),
+            }),
+        }
+    }
+
+    /// One line of a page. `ts` is Unix MILLISECONDS, as `Envelope.ts` is.
+    fn hline(seq: u64, name: &str, text: &str) -> Value {
+        serde_json::json!({
+            "seq": seq, "ts": 1_700_000_000_000i64, "kind": "say",
+            "actor": { "id": "#5", "name": name },
+            "text": RichText::plain(text),
+        })
+    }
+
+    fn rows_of(app: &TuiApp) -> Vec<String> {
+        app.scrollback_rows(70)
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect()
+    }
+
+    /// A clock ten seconds past the fixture's, for the aging latch.
+    fn clock_ten_s_later() -> i64 {
+        3600 * 14 + 60 * 30 + 10
+    }
+
+    /// I12, the regression that matters most: a narrative-backlog page is
+    /// NOT a panel frame. Before the interception it fell through to the
+    /// `PanelStore`'s unknown-feed Delta catch-all, which asked the world to
+    /// resync a feed no producer publishes — earning an "Unknown query" line
+    /// and losing the page. It must reach neither the store nor the wire.
+    #[test]
+    fn a_narrative_backlog_reply_never_reaches_the_panel_store() {
+        let mut app = app();
+        let q = app.apply_event(&backlog_reply(
+            serde_json::json!([hline(9, "Mireille", "the rain again")]),
+            true,
+            false,
+        ));
+        assert!(q.is_empty(), "no resync may be asked for: {q:?}");
+        assert!(app.panels().get("narrative").is_none());
+        assert_eq!(app.scrollback_len(), 1, "the page was painted, not dropped");
+    }
+
+    /// The wire carries a page newest-first; the scrollback must read
+    /// oldest-first above whatever is already there, and never below it.
+    #[test]
+    fn a_backlog_page_prepends_oldest_first_above_the_live_tail() {
+        let mut app = app();
+        app.apply_event(&OutputEvent::Narrative {
+            kind: NarrativeKind::Say,
+            actor: Some(ObjRef::new("#1", "Nick")),
+            text: RichText::plain("live one"),
+        });
+        app.apply_event(&backlog_reply(
+            serde_json::json!([
+                hline(9, "Mireille", "seq nine"),
+                hline(8, "Mireille", "seq eight"),
+                hline(7, "Mireille", "seq seven"),
+            ]),
+            true,
+            false,
+        ));
+        let rows = rows_of(&app);
+        assert_eq!(rows.len(), 4, "{rows:?}");
+        for (row, want) in rows
+            .iter()
+            .zip(["seq seven", "seq eight", "seq nine", "live one"])
+        {
+            assert!(row.contains(want), "{rows:?}");
+        }
+    }
+
+    /// The next page is asked for `before` the OLDEST seq of the last one,
+    /// and the limit is always explicit (the gateway reads an absent or zero
+    /// limit as one line).
+    #[test]
+    fn paging_uses_the_oldest_seq_as_the_next_cursor() {
+        let mut app = app();
+        app.apply_event(&backlog_reply(
+            serde_json::json!([hline(9, "M", "a"), hline(7, "M", "b")]),
+            true,
+            false,
+        ));
+        let r = app.feed_input(b"g");
+        assert_eq!(r.queries.len(), 1, "{:?}", r.queries);
+        assert_eq!(r.queries[0].0, "narrative.backlog");
+        assert_eq!(
+            r.queries[0].1,
+            serde_json::json!({ "before_seq": 7, "limit": 100 })
+        );
+    }
+
+    /// One page in flight at a time — and the latch AGES, because the
+    /// gateway drops a throttled `narrative.backlog` in silence and a plain
+    /// flag would wedge history for the rest of the connection.
+    #[test]
+    fn one_page_in_flight_and_the_latch_ages() {
+        let mut app = app();
+        assert_eq!(app.feed_input(b"g").queries.len(), 1);
+        assert!(
+            app.feed_input(b"g").queries.is_empty(),
+            "a second ask while one is in flight"
+        );
+        app.set_clock(clock_ten_s_later);
+        assert_eq!(
+            app.feed_input(b"g").queries.len(),
+            1,
+            "past the latch it asks again"
+        );
+    }
+
+    /// The cursor is the dedup (an SSH scrollback entry can carry no seq):
+    /// a page that races a re-armed latch, or a second priming page, is
+    /// dropped rather than painted twice.
+    #[test]
+    fn a_late_page_that_is_not_older_than_the_cursor_is_dropped() {
+        let mut app = app();
+        let page = || {
+            backlog_reply(
+                serde_json::json!([hline(9, "M", "a"), hline(7, "M", "b")]),
+                true,
+                false,
+            )
+        };
+        app.apply_event(&page());
+        let after_first = app.scrollback_len();
+        assert_eq!(after_first, 2);
+        app.apply_event(&page());
+        assert_eq!(app.scrollback_len(), after_first, "the same page again");
+        // …and a stale page does not end the backlog either: the next ask
+        // still carries the cursor.
+        let r = app.feed_input(b"g");
+        assert_eq!(r.queries[0].1["before_seq"], 7, "{:?}", r.queries);
+    }
+
+    /// `more: false` ends the backlog: nothing more is asked for, and one
+    /// dim line at the very top says why — worded from `evicted`.
+    #[test]
+    fn more_false_stops_asking_and_marks_the_floor() {
+        let mut app = app();
+        app.apply_event(&backlog_reply(
+            serde_json::json!([hline(9, "M", "the oldest line")]),
+            false,
+            true,
+        ));
+        let rows = rows_of(&app);
+        assert!(rows[0].contains("rolled off"), "{rows:?}");
+        assert!(rows[1].contains("the oldest line"), "{rows:?}");
+        assert!(
+            app.feed_input(b"g").queries.is_empty(),
+            "an exhausted backlog asks nothing"
+        );
+        // The marker is emitted once, not on every later page.
+        app.apply_event(&backlog_reply(serde_json::json!([]), false, true));
+        assert_eq!(rows_of(&app).len(), 2);
+    }
+
+    /// With nothing evicted the floor is worded the other way: the scene
+    /// simply has no more history, which is not the same as losing it.
+    #[test]
+    fn an_unevicted_floor_says_there_is_simply_no_more() {
+        let mut app = app();
+        app.apply_event(&backlog_reply(
+            serde_json::json!([hline(9, "M", "the first line ever")]),
+            false,
+            false,
+        ));
+        let rows = rows_of(&app);
+        assert!(rows[0].contains("no older history"), "{rows:?}");
+        assert!(!rows[0].contains("rolled off"), "{rows:?}");
+    }
+
+    /// A prepend must never evict the live tail — `push_entry` pops the
+    /// FRONT at the cap, so running past it would delete live scene text.
+    /// The page is cut instead, and a cut page ends the backlog (otherwise
+    /// the same one is re-fetched on every scroll, forever).
+    #[test]
+    fn a_page_never_evicts_the_live_tail_and_a_truncated_page_ends_the_backlog() {
+        let mut app = app();
+        for i in 0..(SCROLLBACK_CAP - 2) {
+            app.apply_event(&OutputEvent::Sys(RichText::plain(format!("live {i}"))));
+        }
+        assert_eq!(app.scrollback_len(), SCROLLBACK_CAP - 2);
+        let lines: Vec<Value> = (0..10)
+            .map(|i| hline(20 - i, "M", &format!("old {i}")))
+            .collect();
+        app.apply_event(&backlog_reply(Value::Array(lines), true, false));
+        assert_eq!(app.scrollback_len(), SCROLLBACK_CAP);
+        let rows = rows_of(&app);
+        assert!(
+            rows[rows.len() - 1].contains(&format!("live {}", SCROLLBACK_CAP - 3)),
+            "the live tail survived: {:?}",
+            rows[rows.len() - 1]
+        );
+        assert!(
+            app.feed_input(b"g").queries.is_empty(),
+            "a cut page ends the backlog"
+        );
+    }
+
+    /// `scroll_off` counts up from the TAIL, so prepending preserves the
+    /// reader's place for free — nothing in the apply path may touch it.
+    #[test]
+    fn prepending_does_not_move_the_reader() {
+        let mut app = app();
+        for i in 0..60 {
+            app.apply_event(&OutputEvent::Sys(RichText::plain(format!("line {i}"))));
+        }
+        let _ = super::super::frame_text(&mut app, 120, 34);
+        app.feed_input(b"\x1b[5~");
+        let _ = super::super::frame_text(&mut app, 120, 34);
+        let before = app.scroll_off();
+        assert_eq!(before, PAGE, "the paint kept the reader where they were");
+        app.apply_event(&backlog_reply(
+            serde_json::json!([hline(9, "M", "a"), hline(8, "M", "b")]),
+            true,
+            false,
+        ));
+        assert_eq!(app.scroll_off(), before);
+    }
+
+    /// Entering the TUI primes the first page. That moment — a fresh
+    /// `TuiApp`, an EMPTY scrollback — is what makes the whole design
+    /// dedup-free, and it is the player value besides.
+    #[test]
+    fn entry_queries_prime_the_first_narrative_page() {
+        let mut app = app();
+        let q = app.entry_queries();
+        let asked: Vec<&Value> = q
+            .iter()
+            .filter(|(n, _)| n == "narrative.backlog")
+            .map(|(_, a)| a)
+            .collect();
+        assert_eq!(asked.len(), 1, "{q:?}");
+        assert_eq!(
+            *asked[0],
+            serde_json::json!({ "before_seq": Value::Null, "limit": 100 })
+        );
+        // FIRST, because `enter_tui` awaits these in order and every query
+        // ahead of it widens the window in which a live line is painted both
+        // by the pump and by the page (C3: narrowed here, not closed).
+        assert_eq!(q[0].0, "narrative.backlog", "{q:?}");
+        // The priming request arms the latch, so an immediate `g` does not
+        // ask for the same page twice.
+        assert!(app.feed_input(b"g").queries.is_empty());
+    }
+
+    /// `/clear` is a VIEW floor, not a data clear: the entries stay in the
+    /// ring (so the history cursor can stay honest), the draw hides them, and
+    /// live text lands below the floor and shows at once.
+    #[test]
+    fn clear_hides_the_view_without_dropping_the_ring() {
+        let mut app = app();
+        app.apply_event(&backlog_reply(
+            serde_json::json!([hline(9, "M", "recalled")]),
+            true,
+            false,
+        ));
+        app.apply_event(&OutputEvent::Sys(RichText::plain("live one")));
+        let held = app.scrollback_len();
+        assert_eq!(held, 2);
+        app.feed_input(b"\r");
+        app.feed_input(b"/clear\r");
+        app.feed_input(b"\x1b"); // back to nav, where `g` is a key again
+        assert!(rows_of(&app).is_empty(), "the view is empty");
+        assert_eq!(app.scrollback_len(), held, "the ring is not");
+        app.apply_event(&OutputEvent::Sys(RichText::plain("after the clear")));
+        let rows = rows_of(&app);
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert!(rows[0].contains("after the clear"), "{rows:?}");
+    }
+
+    /// The C2 regression. `/clear` used to re-arm the cursor, so the next
+    /// history gesture asked for the NEWEST page — which came back holding
+    /// every line that had arrived live since the clear, and painted each of
+    /// them a second time (an SSH entry carries no seq to dedup against).
+    /// A cleared view now asks for nothing at all, and a page that was
+    /// already in flight when the clear happened cannot uncover it either.
+    #[test]
+    fn a_clear_never_re_fetches_the_lines_that_arrived_after_it() {
+        let mut app = app();
+        app.apply_event(&backlog_reply(
+            serde_json::json!([hline(9, "M", "primed")]),
+            true,
+            false,
+        ));
+        app.feed_input(b"\r");
+        app.feed_input(b"/clear\r");
+        app.feed_input(b"\x1b");
+        for i in 0..3 {
+            app.apply_event(&OutputEvent::Sys(RichText::plain(format!("live {i}"))));
+        }
+        assert!(
+            app.feed_input(b"g").queries.is_empty(),
+            "a cleared view asks for nothing"
+        );
+        // The page the old re-arm would have fetched, delivered anyway (a
+        // page in flight at clear time): the kept cursor drops every line.
+        app.apply_event(&backlog_reply(
+            serde_json::json!([
+                hline(12, "M", "live 2"),
+                hline(11, "M", "live 1"),
+                hline(10, "M", "live 0"),
+            ]),
+            true,
+            false,
+        ));
+        // …and so is a page of genuinely OLDER lines: prepending one over a
+        // floor counted from the front would push cleared lines back up.
+        app.apply_event(&backlog_reply(
+            serde_json::json!([hline(8, "M", "older still")]),
+            true,
+            false,
+        ));
+        let rows = rows_of(&app);
+        assert_eq!(rows.len(), 3, "each live line exactly once: {rows:?}");
+        for (row, want) in rows.iter().zip(["live 0", "live 1", "live 2"]) {
+            assert!(row.contains(want), "{rows:?}");
+        }
+        assert!(
+            !rows.iter().any(|r| r.contains("primed")),
+            "the cleared line stays cleared: {rows:?}"
+        );
+    }
+
+    /// A page cut before its FIRST line paints nothing at all, and a gesture
+    /// that silently does nothing reads as a broken key: say why, as a client
+    /// line, and name the remedy that still works (`/clear` hides the ring
+    /// now, it does not empty it).
+    #[test]
+    fn a_full_scrollback_says_so_instead_of_swallowing_the_gesture() {
+        let mut app = app();
+        for i in 0..SCROLLBACK_CAP {
+            app.apply_event(&OutputEvent::Sys(RichText::plain(format!("live {i}"))));
+        }
+        assert_eq!(app.scrollback_len(), SCROLLBACK_CAP);
+        app.apply_event(&backlog_reply(
+            serde_json::json!([hline(9, "M", "never fits")]),
+            true,
+            false,
+        ));
+        let rows = rows_of(&app);
+        assert!(
+            rows.iter().any(|r| r.contains("The scrollback is full")),
+            "{:?}",
+            &rows[rows.len().saturating_sub(3)..]
+        );
+        assert!(
+            !rows.iter().any(|r| r.contains("never fits")),
+            "nothing was prepended"
+        );
+        assert!(
+            app.feed_input(b"g").queries.is_empty(),
+            "and it stays quiet afterwards"
+        );
+    }
+
+    /// `/history` is the discoverable form of the same gesture — and the page
+    /// it loads lands where the player can see it.
+    #[test]
+    fn the_history_local_command_asks_for_a_page() {
+        let mut app = app();
+        // Enough live text that the top of the buffer is off screen.
+        for i in 0..60 {
+            app.apply_event(&OutputEvent::Sys(RichText::plain(format!("live {i}"))));
+        }
+        app.feed_input(b"\r");
+        let r = app.feed_input(b"/history\r");
+        assert!(r.submit.is_empty(), "it never reaches the world");
+        assert_eq!(r.queries.len(), 1);
+        assert_eq!(r.queries[0].0, "narrative.backlog");
+        assert!(
+            LOCAL_COMMANDS.iter().any(|(c, _)| *c == "/history"),
+            "the palette lists it"
+        );
+        // `submit_line` pins the view to the tail before the local command
+        // runs; without the jump the page prepends off-screen and nothing
+        // visible happens.
+        app.apply_event(&backlog_reply(
+            serde_json::json!([hline(9, "M", "the recalled line")]),
+            true,
+            false,
+        ));
+        let frame = super::super::frame_text(&mut app, 120, 34);
+        assert!(frame.contains("the recalled line"), "{frame}");
+        // …and the `?` crib names the gesture, whole and unclipped.
+        app.feed_input(b"\x1b?");
+        let help = super::super::frame_text(&mut app, 120, 34);
+        assert!(help.contains("loads older scene history"), "{help}");
+        assert!(help.contains("/clear hides what is on screen"), "{help}");
+    }
+
+    /// A page we cannot read stops the backlog rather than panicking or
+    /// looping on a cursor that never advanced.
+    #[test]
+    fn a_malformed_page_stops_the_backlog_without_panicking() {
+        let mut app = app();
+        let q = app.apply_event(&OutputEvent::Reply {
+            id: 0,
+            event: Box::new(OutputEvent::Panel {
+                feed: SmolStr::new_static("narrative"),
+                kind: PanelFrameKind::Delta,
+                data: serde_json::json!({ "backlog": { "lines": [ { "seq": "x" } ] } }),
+            }),
+        });
+        assert!(q.is_empty());
+        assert_eq!(app.scrollback_len(), 0);
+        assert!(app.feed_input(b"g").queries.is_empty());
+    }
+
+    /// A world restarted behind the gateway re-sends its hello. Clearing the
+    /// LATCH there is belt and braces that costs nothing — the page is
+    /// answered by the gateway from the session ring, so it arrives whatever
+    /// the world does, and the cursor filter drops it as a duplicate. The
+    /// CURSOR must not re-arm: the session and its ring outlive the world,
+    /// seqs do not restart, and re-arming would re-fetch and duplicate the
+    /// newest page. (This is why the web's `beginSegment` is not ported.)
+    #[test]
+    fn hello_keeps_the_cursor_but_clears_the_latch() {
+        let mut app = app();
+        app.apply_event(&backlog_reply(
+            serde_json::json!([hline(9, "M", "a"), hline(7, "M", "b")]),
+            true,
+            false,
+        ));
+        let first = app.feed_input(b"g");
+        assert_eq!(first.queries[0].1["before_seq"], 7);
+        assert!(app.feed_input(b"g").queries.is_empty(), "latched");
+        app.apply_event(&OutputEvent::Hello {
+            proto: 1,
+            server: "rustmush".into(),
+            features: vec![],
+            panels: vec![],
+        });
+        let after = app.feed_input(b"g");
+        assert_eq!(after.queries.len(), 1, "the latch cleared");
+        assert_eq!(
+            after.queries[0].1["before_seq"], 7,
+            "the cursor did NOT re-arm"
+        );
+    }
+
+    /// I10 parity: asks QUEUE oldest-first. The engine's `respond` resolves
+    /// the lowest open id and the web store answers `pending[0]`; a TUI that
+    /// replaced the showing ask with the newest measured the player's answer
+    /// against one they could not see, and lost the older one silently.
+    #[test]
+    fn request_overlay_queues_and_answers_oldest_first() {
+        let mut app = app();
+        let choice = OutputEvent::Request {
+            id: 7,
+            kind: RequestKind::Choice,
+            prompt: RichText::plain("which door?"),
+            options: vec![
+                RequestOption {
+                    id: "left".into(),
+                    label: "Left".into(),
+                },
+                RequestOption {
+                    id: "right".into(),
+                    label: "Right".into(),
+                },
+            ],
+            deadline_ms: None,
+        };
+        let confirm = OutputEvent::Request {
+            id: 9,
+            kind: RequestKind::Confirm,
+            prompt: RichText::plain("end the scene?"),
+            options: vec![],
+            deadline_ms: None,
+        };
+        app.apply_event(&choice);
+        app.apply_event(&confirm);
+        let frame = super::super::frame_text(&mut app, 120, 34);
+        assert!(
+            frame.contains("which door?"),
+            "the OLDER ask shows: {frame}"
+        );
+        assert!(!frame.contains("end the scene?"));
+        assert!(frame.contains("the game asks (1 of 2)"), "{frame}");
+
+        assert_eq!(
+            app.feed_input(b"1").responds,
+            vec![(7, RespondChoice::Choose("left".into()))]
+        );
+        let frame = super::super::frame_text(&mut app, 120, 34);
+        assert!(frame.contains("end the scene?"), "the next ask: {frame}");
+        assert!(frame.contains("the game asks"), "{frame}");
+        assert!(!frame.contains("1 of"), "one left: {frame}");
+        assert_eq!(
+            app.feed_input(b"y").responds,
+            vec![(9, RespondChoice::Confirm(true))]
+        );
+        assert!(!super::super::frame_text(&mut app, 120, 34).contains("end the scene?"));
+
+        // Esc on the front one cancels it and reveals the next.
+        app.apply_event(&choice);
+        app.apply_event(&confirm);
+        assert_eq!(
+            app.feed_input(b"\x1b").responds,
+            vec![(7, RespondChoice::Cancel)]
+        );
+        assert!(super::super::frame_text(&mut app, 120, 34).contains("end the scene?"));
+
+        // A repeat of an open id replaces it in place — it does not queue
+        // twice and does not jump the line.
+        app.apply_event(&OutputEvent::Request {
+            id: 9,
+            kind: RequestKind::Confirm,
+            prompt: RichText::plain("end the scene now?"),
+            options: vec![],
+            deadline_ms: None,
+        });
+        let frame = super::super::frame_text(&mut app, 120, 34);
+        assert!(frame.contains("end the scene now?"), "{frame}");
+        assert!(!frame.contains("1 of"), "still one ask: {frame}");
+
+        // The position rule, where it is observable: a re-send of the FRONT
+        // id while another waits behind it keeps the front slot. (The web
+        // store demoted it to the back and showed the other one; in-place is
+        // the rule that behaves on a remint collision, and the web is moving
+        // to match — D-I-29.)
+        app.apply_event(&choice);
+        let frame = super::super::frame_text(&mut app, 120, 34);
+        assert!(
+            frame.contains("end the scene now?"),
+            "still the front: {frame}"
+        );
+        assert!(frame.contains("the game asks (1 of 2)"), "{frame}");
+        app.apply_event(&OutputEvent::Request {
+            id: 9,
+            kind: RequestKind::Confirm,
+            prompt: RichText::plain("end it here?"),
+            options: vec![],
+            deadline_ms: None,
+        });
+        let frame = super::super::frame_text(&mut app, 120, 34);
+        assert!(
+            frame.contains("end it here?"),
+            "the front was replaced in place: {frame}"
+        );
+        assert!(
+            !frame.contains("which door?"),
+            "it did not go to the back: {frame}"
+        );
+        assert!(
+            frame.contains("the game asks (1 of 2)"),
+            "still two: {frame}"
+        );
+    }
+
+    /// One `Confirm` ask, with a deadline.
+    fn timed_ask(id: u64, prompt: &str, deadline_ms: Option<u64>) -> OutputEvent {
+        OutputEvent::Request {
+            id,
+            kind: RequestKind::Confirm,
+            prompt: RichText::plain(prompt),
+            options: vec![],
+            deadline_ms,
+        }
+    }
+
+    /// C5: the engine expires a request and emits NOTHING to the subject, so
+    /// the deadline is all a client has. A dead front ask must not be drawn,
+    /// must not eat the key that finds it, and must not hide the live ask
+    /// queued behind it. (HEAD's single slot self-healed — the newest ask
+    /// replaced the zombie; a queue makes every zombie a blocker.)
+    #[test]
+    fn an_expired_front_ask_is_evicted_before_it_can_eat_a_key() {
+        let mut app = app();
+        // The fixture clock is 52 200 s; `clock_ten_s_later` is 52 210 s.
+        app.apply_event(&timed_ask(1, "the stale ask", Some(52_205_000)));
+        app.apply_event(&timed_ask(2, "the live ask", Some(52_260_000)));
+        let frame = super::super::frame_text(&mut app, 120, 34);
+        assert!(frame.contains("the stale ask"), "{frame}");
+        assert!(frame.contains("the game asks (1 of 2)"), "{frame}");
+
+        app.set_clock(clock_ten_s_later);
+        let r = app.feed_input(b"y");
+        assert!(
+            r.responds.is_empty(),
+            "no answer rides for an ask the engine already dropped: {:?}",
+            r.responds
+        );
+        let frame = super::super::frame_text(&mut app, 120, 34);
+        assert!(
+            frame.contains("the live ask"),
+            "the next one shows: {frame}"
+        );
+        assert!(!frame.contains("the stale ask"), "{frame}");
+        assert!(!frame.contains("1 of"), "one left: {frame}");
+        assert_eq!(
+            app.feed_input(b"y").responds,
+            vec![(2, RespondChoice::Confirm(true))],
+            "and it answers normally"
+        );
+    }
+
+    /// The draw path evicts too, so a dead ask cannot be painted by a repaint
+    /// the player never caused.
+    #[test]
+    fn an_expired_ask_is_never_painted() {
+        let mut app = app();
+        app.apply_event(&timed_ask(1, "the stale ask", Some(52_205_000)));
+        app.set_clock(clock_ten_s_later);
+        let frame = super::super::frame_text(&mut app, 120, 34);
+        assert!(!frame.contains("the game asks"), "{frame}");
+        assert!(app.requests.is_empty(), "and it left the queue");
+    }
+
+    /// Over SSH the `Hello` IS the world-restart seam (`Resumed` reaches no
+    /// Ansi sink). The request registry is RAM-only and ids remint from 1, so
+    /// every open ask died with the world: the queue goes, and a box that was
+    /// capturing an answer to one of them hands its text back as a draft
+    /// rather than sending it to the new world as a command.
+    #[test]
+    fn a_hello_drops_every_open_ask() {
+        let mut app = app();
+        app.apply_event(&OutputEvent::Request {
+            id: 1,
+            kind: RequestKind::Text,
+            prompt: RichText::plain("name them"),
+            options: vec![],
+            deadline_ms: None,
+        });
+        app.apply_event(&timed_ask(2, "sure?", None));
+        assert!(app.feed_input(b"\r").responds.is_empty(), "the box opens");
+        app.feed_input(b"Fenr");
+        app.apply_event(&OutputEvent::Hello {
+            proto: 1,
+            server: "rustmush".into(),
+            features: vec![],
+            panels: vec![],
+        });
+        assert!(app.requests.is_empty(), "the queue is empty");
+        assert!(app.answering.is_none(), "and nothing is being answered");
+        assert_eq!(app.mode(), Mode::Nav);
+        assert_eq!(app.draft(), Some("Fenr"), "the typing is kept as a draft");
+        let frame = super::super::frame_text(&mut app, 120, 34);
+        assert!(!frame.contains("the game asks"), "{frame}");
+        assert!(
+            app.feed_input(b"y").responds.is_empty(),
+            "no answer can ride for a dead ask"
+        );
+    }
+
+    /// C6: Esc out of the box that is capturing a free-text answer cancels
+    /// that ask — the overlay's own printed contract. A dangling `answering`
+    /// wedges BOTH gates (key routing and the overlay), so the next ask would
+    /// be invisible and unkeyed until the player happened to submit a line —
+    /// which would then be eaten as an answer to an ask no longer on screen.
+    #[test]
+    fn esc_out_of_the_answer_box_cancels_the_ask_and_frees_the_queue() {
+        let mut app = app();
+        app.apply_event(&OutputEvent::Request {
+            id: 1,
+            kind: RequestKind::Text,
+            prompt: RichText::plain("name them"),
+            options: vec![],
+            deadline_ms: None,
+        });
+        app.apply_event(&timed_ask(2, "sure?", None));
+        assert!(app.feed_input(b"\r").responds.is_empty(), "the box opens");
+        assert_eq!(
+            app.feed_input(b"\x1b").responds,
+            vec![(1, RespondChoice::Cancel)]
+        );
+        assert!(app.answering.is_none());
+        let frame = super::super::frame_text(&mut app, 120, 34);
+        assert!(frame.contains("sure?"), "ask 2 shows at once: {frame}");
+        assert_eq!(
+            app.feed_input(b"y").responds,
+            vec![(2, RespondChoice::Confirm(true))]
+        );
+    }
+
+    /// The same for the other exit: an empty line in the box IS the cancel
+    /// `submit_line` documents, and it never reaches `submit_line`.
+    #[test]
+    fn an_empty_line_in_the_answer_box_cancels_the_ask() {
+        let mut app = app();
+        app.apply_event(&OutputEvent::Request {
+            id: 1,
+            kind: RequestKind::Text,
+            prompt: RichText::plain("name them"),
+            options: vec![],
+            deadline_ms: None,
+        });
+        assert!(app.feed_input(b"\r").responds.is_empty(), "the box opens");
+        assert_eq!(
+            app.feed_input(b"\r").responds,
+            vec![(1, RespondChoice::Cancel)]
+        );
+        assert!(app.answering.is_none());
+        assert_eq!(app.mode(), Mode::Nav);
+    }
+
+    /// Past the engine's own per-subject cap the newest ask is dropped, and
+    /// the ones already open still answer oldest-first.
+    #[test]
+    fn the_request_queue_is_capped_at_the_engine_s_own_limit() {
+        let mut app = app();
+        for id in 0..(MAX_OPEN_REQUESTS_PER_SUBJECT as u64 + 5) {
+            app.apply_event(&OutputEvent::Request {
+                id,
+                kind: RequestKind::Confirm,
+                prompt: RichText::plain(format!("ask {id}")),
+                options: vec![],
+                deadline_ms: None,
+            });
+        }
+        assert_eq!(app.requests.len(), MAX_OPEN_REQUESTS_PER_SUBJECT);
+        assert_eq!(
+            app.feed_input(b"y").responds,
+            vec![(0, RespondChoice::Confirm(true))],
+            "the oldest is still the one answered"
+        );
+    }
+
+    /// A free-text ask hands the keyboard to the box: the ask behind it must
+    /// not steal the keys, and must be showing again once the line is sent.
+    #[test]
+    fn a_text_ask_keeps_the_box_while_the_next_ask_waits() {
+        let mut app = app();
+        app.apply_event(&OutputEvent::Request {
+            id: 1,
+            kind: RequestKind::Text,
+            prompt: RichText::plain("name them"),
+            options: vec![],
+            deadline_ms: None,
+        });
+        app.apply_event(&OutputEvent::Request {
+            id: 2,
+            kind: RequestKind::Confirm,
+            prompt: RichText::plain("sure?"),
+            options: vec![],
+            deadline_ms: None,
+        });
+        assert!(
+            app.feed_input(b"\r").responds.is_empty(),
+            "Enter opens the box"
+        );
+        let frame = super::super::frame_text(&mut app, 120, 34);
+        assert!(!frame.contains("sure?"), "the next ask waits: {frame}");
+        assert_eq!(
+            app.feed_input(b"Fenris\r").responds,
+            vec![(1, RespondChoice::Text("Fenris".into()))]
+        );
+        assert!(super::super::frame_text(&mut app, 120, 34).contains("sure?"));
     }
 }

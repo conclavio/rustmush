@@ -17,7 +17,10 @@ use std::time::Duration;
 
 use futures::future::BoxFuture;
 use mush_net_ssh::{AuthResult, CharSummary, CreateErr, NewConn, SshConfig, SshHooks, SshServer};
-use mush_proto::{NarrativeKind, ObjRef, OutputEvent, PanelFrameKind, RichText, SmolStr, WhoEntry};
+use mush_proto::{
+    InputMode, NarrativeKind, ObjRef, OutputEvent, PanelFrameKind, PromptSpec, RichText, SmolStr,
+    WhoEntry,
+};
 use russh::ChannelMsg;
 use tokio::sync::mpsc;
 
@@ -34,6 +37,9 @@ struct MockHooks {
     /// Output queues by conn id (dropping one closes that connection).
     txs: Mutex<HashMap<u64, mpsc::Sender<Arc<OutputEvent>>>>,
     lines: Mutex<Vec<(u64, String)>>,
+    /// Every read-only query the transport submitted, with its arguments —
+    /// the I12 tests assert the `before_seq`/`limit` actually sent.
+    queries: Mutex<Vec<(u64, String, serde_json::Value)>>,
     disconnects: Mutex<Vec<u64>>,
     /// (conn id, character key) for each character actually connected — lets a
     /// test prove which character `account+char` direct-entered.
@@ -63,6 +69,42 @@ impl MockHooks {
 
     fn tx_of(&self, conn: u64) -> Option<mpsc::Sender<Arc<OutputEvent>>> {
         self.txs.lock().unwrap().get(&conn).cloned()
+    }
+
+    /// Every `narrative.backlog` query seen so far, with its arguments.
+    fn backlog_queries(&self) -> Vec<serde_json::Value> {
+        self.queries
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(_, name, _)| name == "narrative.backlog")
+            .map(|(_, _, args)| args.clone())
+            .collect()
+    }
+}
+
+/// One narrative line of a `narrative.backlog` page, shaped exactly as
+/// `mush-gateway`'s `narrative_backlog_reply` builds it.
+fn backlog_line(seq: u64, text: &str) -> serde_json::Value {
+    serde_json::json!({
+        "seq": seq, "ts": 1_756_300_000_000i64, "kind": "say",
+        "actor": { "id": "#5", "name": "Mireille" },
+        "text": [ { "text": text } ],
+    })
+}
+
+/// The reply the gateway sends for a `narrative.backlog` query: a `Reply`
+/// with the hard-coded id 0 wrapping a `narrative` Delta panel frame.
+fn backlog_reply(lines: serde_json::Value, more: bool, evicted: bool) -> OutputEvent {
+    OutputEvent::Reply {
+        id: 0,
+        event: Box::new(OutputEvent::Panel {
+            feed: SmolStr::new_static("narrative"),
+            kind: PanelFrameKind::Delta,
+            data: serde_json::json!({ "backlog": {
+                "before_seq": serde_json::Value::Null, "more": more,
+                "evicted": evicted, "lines": lines } }),
+        }),
     }
 }
 
@@ -194,8 +236,12 @@ impl SshHooks for MockHooks {
         })
     }
 
-    fn query(&self, conn: u64, name: String, _args: serde_json::Value) -> BoxFuture<'_, ()> {
+    fn query(&self, conn: u64, name: String, args: serde_json::Value) -> BoxFuture<'_, ()> {
         Box::pin(async move {
+            self.queries
+                .lock()
+                .unwrap()
+                .push((conn, name.clone(), args.clone()));
             let Some(tx) = self.tx_of(conn) else {
                 return;
             };
@@ -233,6 +279,25 @@ impl SshHooks for MockHooks {
                               "room": "Bar", "ts": 0 }
                         ],
                     }),
+                },
+                // Interface plan I12: the per-viewer resume ring, paged.
+                // The mock keeps two pages so `@history more` has somewhere
+                // to go, and the second one is the floor.
+                "narrative.backlog" => match args.get("before_seq").and_then(|v| v.as_u64()) {
+                    None => backlog_reply(
+                        serde_json::json!([
+                            backlog_line(42, "second words"),
+                            backlog_line(41, "older words"),
+                        ]),
+                        true,
+                        false,
+                    ),
+                    Some(41) => backlog_reply(
+                        serde_json::json!([backlog_line(30, "oldest words")]),
+                        false,
+                        true,
+                    ),
+                    Some(_) => backlog_reply(serde_json::json!([]), false, true),
                 },
                 _ => return,
             };
@@ -1132,6 +1197,294 @@ async fn tui_enter_shows_frame_then_notui_restores_line_mode() {
         term.seen[before_notui..].contains("\u{1b}[?1049l"),
         "expected the alternate-screen leave sequence after @notui"
     );
+
+    term.send_line("QUIT").await;
+    term.expect_close().await;
+    let _ = handle
+        .disconnect(russh::Disconnect::ByApplication, "", "")
+        .await;
+}
+
+// ---- I12: scene history over the line, and into the TUI -----------------
+
+/// Front-door connect, create, and land in game — the preamble every I12
+/// test shares.
+async fn play_session(
+    tag: &str,
+    hooks: &Arc<MockHooks>,
+) -> (russh::client::Handle<AcceptAll>, Term) {
+    let addr = start_server(tag, Arc::clone(hooks)).await;
+    let config = Arc::new(russh::client::Config::default());
+    let mut handle = russh::client::connect(config, addr, AcceptAll)
+        .await
+        .expect("connect");
+    assert!(
+        handle
+            .authenticate_none("play")
+            .await
+            .expect("auth-none")
+            .success()
+    );
+    let mut term = Term {
+        channel: open_shell_sized(&handle, 120, 34).await,
+        seen: String::new(),
+    };
+    term.expect("Welcome to rustmush!").await;
+    term.send_line("create nick s3cretpw").await;
+    term.expect("Welcome, nick!").await;
+    (handle, term)
+}
+
+/// `@history` is answered from the viewer's own resume ring through the
+/// read-only query seam: a header, the page OLDEST FIRST (the wire carries
+/// it newest first), and a footer naming the next step. It is intercepted
+/// transport-side, so the world never sees the verb — the same bargain
+/// `@tui` makes, and the reason it never stamps idle.
+#[tokio::test]
+async fn line_mode_history_prints_the_page_oldest_first() {
+    let hooks = Arc::new(MockHooks::default());
+    let (handle, mut term) = play_session("hist", &hooks).await;
+    assert!(
+        hooks.backlog_queries().is_empty(),
+        "nothing is asked for until the player asks"
+    );
+
+    term.send_line("@history").await;
+    term.expect("older words").await;
+    term.expect("@history more for older").await;
+    let seen = strip_ansi(&term.seen);
+    assert!(
+        seen.contains("older history: 2 line(s), oldest first"),
+        "{seen:?}"
+    );
+    assert!(
+        seen.find("older words") < seen.find("second words"),
+        "oldest first: {seen:?}"
+    );
+    assert_eq!(
+        hooks.backlog_queries(),
+        vec![serde_json::json!({ "before_seq": serde_json::Value::Null, "limit": 20 })],
+        "an explicit, non-zero limit: the gateway reads an absent one as ONE line"
+    );
+    assert!(
+        hooks
+            .lines
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|(_, l)| !l.eq_ignore_ascii_case("@history")),
+        "the world never sees the verb"
+    );
+
+    // A tail we cannot read is answered here too, not forwarded.
+    term.send_line("@history banana").await;
+    term.expect("Usage: @history").await;
+    assert_eq!(hooks.backlog_queries().len(), 1, "usage asks nothing");
+
+    term.send_line("QUIT").await;
+    term.expect_close().await;
+    let _ = handle
+        .disconnect(russh::Disconnect::ByApplication, "", "")
+        .await;
+}
+
+/// `@history more` carries the cursor — the OLDEST seq of the last page —
+/// and stops when the server says there is nothing below it.
+#[tokio::test]
+async fn line_mode_history_more_pages_from_the_cursor() {
+    let hooks = Arc::new(MockHooks::default());
+    let (handle, mut term) = play_session("histmore", &hooks).await;
+
+    term.send_line("@history").await;
+    term.expect("@history more for older").await;
+    term.send_line("@history more").await;
+    term.expect("oldest words").await;
+    term.expect("older history has rolled off the server").await;
+    let q = hooks.backlog_queries();
+    assert_eq!(q.len(), 2, "{q:?}");
+    assert_eq!(
+        q[1],
+        serde_json::json!({ "before_seq": 41, "limit": 20 }),
+        "the second page continues from the first page's oldest line"
+    );
+
+    // Exhausted: a further `more` is refused here rather than re-asked.
+    term.send_line("@history more").await;
+    term.expect("There is no older history.").await;
+    assert_eq!(hooks.backlog_queries().len(), 2);
+
+    term.send_line("QUIT").await;
+    term.expect_close().await;
+    let _ = handle
+        .disconnect(russh::Disconnect::ByApplication, "", "")
+        .await;
+}
+
+/// `+history <n>` is the same command for the players who reach for the `+`
+/// family first, and the count is honoured.
+#[tokio::test]
+async fn line_mode_plus_history_is_the_same_command() {
+    let hooks = Arc::new(MockHooks::default());
+    let (handle, mut term) = play_session("histplus", &hooks).await;
+
+    term.send_line("+history 5").await;
+    term.expect("older words").await;
+    assert_eq!(
+        hooks.backlog_queries(),
+        vec![serde_json::json!({ "before_seq": serde_json::Value::Null, "limit": 5 })]
+    );
+
+    term.send_line("QUIT").await;
+    term.expect_close().await;
+    let _ = handle
+        .disconnect(russh::Disconnect::ByApplication, "", "")
+        .await;
+}
+
+/// A `narrative` Delta nobody asked for prints NOTHING: the page renderer is
+/// armed by the request, never by the frame. (A marker event pushed behind
+/// it proves the pump really did process the page and drop it.)
+#[tokio::test]
+async fn an_unsolicited_narrative_panel_prints_nothing_in_line_mode() {
+    let hooks = Arc::new(MockHooks::default());
+    let (handle, mut term) = play_session("histunsol", &hooks).await;
+
+    let conn = *hooks
+        .txs
+        .lock()
+        .unwrap()
+        .keys()
+        .next()
+        .expect("a connected character");
+    let tx = hooks.tx_of(conn).expect("its queue");
+    tx.send(Arc::new(backlog_reply(
+        serde_json::json!([backlog_line(99, "phantom words")]),
+        true,
+        false,
+    )))
+    .await
+    .expect("queue open");
+    tx.send(Arc::new(OutputEvent::Sys(RichText::plain("marker line"))))
+        .await
+        .expect("queue open");
+    term.expect("marker line").await;
+    assert!(
+        !strip_ansi(&term.seen).contains("phantom words"),
+        "{:?}",
+        term.seen
+    );
+
+    // The test's clone of the queue would keep the pump alive past QUIT.
+    drop(tx);
+    term.send_line("QUIT").await;
+    term.expect_close().await;
+    let _ = handle
+        .disconnect(russh::Disconnect::ByApplication, "", "")
+        .await;
+}
+
+/// `@tui` primes the first page of history at entry, so a player who
+/// reconnects into a running scene reads the last few minutes of it without
+/// pressing anything.
+#[tokio::test]
+async fn tui_entry_surfaces_the_primed_history_page() {
+    let hooks = Arc::new(MockHooks::default());
+    let (handle, mut term) = play_session("histtui", &hooks).await;
+
+    term.send_line("@tui").await;
+    // The frame writer moves the cursor between words, so match one word at
+    // a time rather than the phrase.
+    term.expect("older").await;
+    term.expect("second").await;
+    assert_eq!(
+        hooks.backlog_queries(),
+        vec![serde_json::json!({ "before_seq": serde_json::Value::Null, "limit": 100 })]
+    );
+
+    term.send_bytes(b"\r").await;
+    term.send_line("@notui").await;
+    term.send_line("QUIT").await;
+    term.expect_close().await;
+    let _ = handle
+        .disconnect(russh::Disconnect::ByApplication, "", "")
+        .await;
+}
+
+/// The transport verbs (`@tui`, `@history`, `+history`) are intercepted
+/// whatever input context the world has open — a mail body, a chargen
+/// answer, a draft edit — exactly as `@tui` has always been. Recorded as a
+/// decision, not a bug: `@history` typed at a `Mail>` prompt reads the scene
+/// back and is NOT appended to the body. Gating it on the editor's prompt
+/// would have to gate `@tui` with it, or the two verbs diverge.
+#[tokio::test]
+async fn line_mode_history_is_read_inside_a_world_prompt() {
+    let hooks = Arc::new(MockHooks::default());
+    let (handle, mut term) = play_session("histprompt", &hooks).await;
+
+    let conn = *hooks
+        .txs
+        .lock()
+        .unwrap()
+        .keys()
+        .next()
+        .expect("a connected character");
+    let tx = hooks.tx_of(conn).expect("its queue");
+    tx.send(Arc::new(OutputEvent::Prompt(PromptSpec {
+        mode: InputMode::Normal,
+        text: Some(RichText::plain("Mail>")),
+    })))
+    .await
+    .expect("queue open");
+    term.expect("Mail>").await;
+
+    term.send_line("@history").await;
+    term.expect("older words").await;
+    term.expect("@history more for older").await;
+    assert_eq!(
+        hooks.backlog_queries(),
+        vec![serde_json::json!({ "before_seq": serde_json::Value::Null, "limit": 20 })],
+        "the page was fetched by the transport"
+    );
+    assert!(
+        hooks
+            .lines
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|(_, l)| !l.to_ascii_lowercase().starts_with("@history")),
+        "the line never reached the world's input stack: {:?}",
+        hooks.lines.lock().unwrap()
+    );
+
+    // The test's clone of the queue would keep the pump alive past QUIT.
+    drop(tx);
+    term.send_line("QUIT").await;
+    term.expect_close().await;
+    let _ = handle
+        .disconnect(russh::Disconnect::ByApplication, "", "")
+        .await;
+}
+
+/// Invariant T1 restated for I12: a connection that never types `@history`
+/// sees nothing of it — no chrome, no query, no change to the classic line
+/// flow.
+#[tokio::test]
+async fn a_connection_that_never_asks_for_history_sees_none_of_it() {
+    let hooks = Arc::new(MockHooks::default());
+    let (handle, mut term) = play_session("histnone", &hooks).await;
+
+    term.send_line("say hello").await;
+    term.expect("Nick says, \"hello\"").await;
+    let seen = strip_ansi(&term.seen);
+    for absent in [
+        "older history",
+        "oldest first",
+        "@history more",
+        "no older history",
+    ] {
+        assert!(!seen.contains(absent), "{absent:?} in {seen:?}");
+    }
+    assert!(hooks.backlog_queries().is_empty());
 
     term.send_line("QUIT").await;
     term.expect_close().await;
