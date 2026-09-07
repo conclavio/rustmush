@@ -1249,6 +1249,93 @@ deviations:
   by source probes). E7k lane L3 edits `view::unit_source`, the two
   `status.rs` store reads, and adds `query_with_context` overrides on both
   handlers.
+
+**Verify fold (2026-09-07; an independent adversarial verify — eight
+attackers over projection, authority, bounds, TUI apply/render, web
+store/render, staleness end-to-end and contract conformance; four
+adjudicators — found every lane holding with fixes; all folded).**
+
+- **Server.** The hard 1 MiB invariant was FALSE as shipped: the header,
+  sections and unit-level cells were charged but never admitted, so a unit
+  at `MAX_UNIT_CELLS` with 64-byte ids projected to 1.6 MiB (its document
+  persists under 1 MiB — the projected cell is 198 bytes to the persisted
+  118) and the TUI would have dropped it forever; the always-emitted lane
+  is now admitted against `MAX_UNIT_RECORD_BYTES` less headroom and
+  `truncated` reports an over-budget uncut lane (vf_b4/b5). A mis-keyed
+  record served one dbref's schema under another's identity and shipped
+  the raw discovered key (a foreign dbref) as `record`: the held frame now
+  names the subject's own key and adopts a decoded unit only when it IS the
+  subject (vf_p6). The after-action audience omitted the unit's own object
+  (a player-unit never received its own damage) and repointed a two-seat
+  viewer's gauge strip to the lower seat: the delta reaches the actor, the
+  stationed crew and the connected unit; the vitals keyframe only where the
+  unit is the viewer's default subject (vf_f5/f6). The unit feed had ONE
+  producer: `@unit/create` now fans the revision-0 keyframes (the web's
+  revision-0 carve-out had nothing to fire on; a remove+create wedged its
+  watermark), `@unit/remove` refreshes each stationed viewer's default
+  frames, and the destroy hook refreshes a repaired unit's viewers after an
+  asset scrub (vf_f3/f4). A live station outranks a held record of one's
+  own for the default subject (vf_r2); `switching` is reported only while
+  a switch is in progress; one vitals warning per build and the effective
+  40-byte cell-id budget (vf_v4); the contacts cut is a fair share per
+  holder (cut 7's fold O6 at the view layer); the audience/seat cap tie
+  and a provenance tripwire pinned in mush-propagation; a caller census of
+  the three grant helpers (vf_c8).
+- **Web.** Two capabilities with one id (different sources) threw Svelte's
+  duplicate-key error and killed the client: one row per id with the
+  sources joined, scoped component-group ids, index-keyed `KeyValue`. A
+  `null` vitals keyframe now drops the feed's group (a dead or de-stationed
+  unit's gauges persisted; the strip names its subject visibly); a `null`
+  unit keyframe over a held view clears the ring; an `answered` flag gives
+  the screen a Loading state instead of asserting "no unit" before the
+  server has answered; the after-action panes render from the ring under
+  the no-unit line when no view is held (the staffer's own report was
+  blank) and a delta arriving with no subject is `foreign` (no wasted
+  round trip); the before/after table takes the newest-ARRIVED revision
+  (a remove+create showed the dead unit's last damage) and a from-zero
+  delta resyncs; the storm guard is released when a request never went
+  out and on every hello, with one bounded retry after a throttled
+  resync; the truncated footer counts capabilities and names
+  parser-dropped members; gauge classes come only from the four state
+  words; `counts` is parsed exactly; placeholders are the frozen
+  title/body pairs; contacts rows are keyboard-actionable. 21 tests (365).
+- **TUI.** The before/after table could never show its "after" value: the
+  Right column was a fixed 34 columns at every width with no wrap; the
+  two tactical screens now give it half the surplus (`Screen.right_shares_surplus`,
+  off for the scene screen's WHO rail, so the nine non-tactical goldens
+  are byte-identical). The staffer's own after-action report was blank
+  (every renderer short-circuited on the null keyframe): the journal and
+  before/after panes render from the ring, every row naming its object;
+  the before/after subject is the newest-ARRIVED row's revision. The
+  resync latch ages (`RESYNC_LATCH_S` 5 s — a throttled SSH query is
+  dropped silently, and the latch froze screens 8/9 for the session). The
+  ring order agrees with the web within a delta; compact sections keep
+  every cell (continuation rows); `gauge_bar` computes in i128; the
+  generic list prints `(more rows than shown)`; orphan capabilities render
+  under `(other)` and the footer counts capabilities; a Hello re-hydrates
+  the active screen; an `on_enter` entry naming one of the screen's own
+  panel feeds is asked for only when the manifest carries it (a server
+  without the tactical module printed "Unknown query"). 12 tests (140) and
+  two golden-harness assertions.
+- **Deferred from the verify, recorded:** (1) a **proxy driver** (E7 cut
+  11) reads the NPC's contacts through `viewable_holders` but gets a null
+  unit/vitals keyframe and no after-action — the sim grant sits on the
+  NPC, mush-tactics has no mush-sim edge, and the engine's query dispatch
+  passes the connection's actor unchanged; a driver's HUD is contacts-only
+  until a core "driving actor" seam exists (owner fork, option (c) taken).
+  (2) The **contact id** (E7 cut 7, exposed by `+contacts` before I8) is an
+  unkeyed hash chain over guessable inputs — the observer dbref, the
+  subject dbref, the tick, small counters — so a subject's dbref is
+  recoverable offline and a phantom is distinguishable by elimination; a
+  per-world secret in `derive_id` is the kernel-side fix and changes the
+  action kernel's replay-stability contract, so it is handed to E7/K, not
+  taken here. (3) A **destroyed unit's** stationed viewers cannot be
+  refreshed by the destroy hook: the world drops the grants on the
+  destroyed subject before the event fires, so nobody can be enumerated;
+  their HUD keeps the last keyframe until `r` or the next hello (rare,
+  staff-driven). (4) The web's contacts pane shows one declaration for
+  both "in flight" and "not published by this server"; the retry and
+  guard releases are pinned by source probes (no `GameApp` harness).
 ### 3.9 Cut I9 — The generic semantic-view renderer
 
 **What it is.** The client-side substrate that makes every future
@@ -2006,6 +2093,10 @@ Six standing rules:
   the nine-file grant census admits). No new `module_state_mut::<UnitStore>`
   site (the pinned writer census stays at seven). E7 is complete, so the
   "agreed with E7" clause has no counterparty; the agreement is recorded here.
+  *Verify note:* the `perm::controls` arm of the view's authority includes
+  zone delegation and shared ownership — wider than the station fog
+  `@unit/status` applies — and is reachable only by in-process callers until
+  a client can name a subject (the web never can; the TUI passes `{}`).
 - **D-I-23** (= §3.8 D-I8-1) The **contacts table ships in I8** as a
   `tactics.contacts` generic-view keyframe owned by `mush-propagation`, built
   by the same `contact_cells` `+contacts` prints; its Cargo fence gains
@@ -2166,14 +2257,26 @@ modal ruling (D-I-17, D-I-18) rather than by its default.**
   standing order (the contacts table now, owned by propagation; the
   after-action fan-out to the stationed crew; the asset as a presence bit;
   one web screen at digit 6), and the as-built for the four commits
-  (`2c92a51` the unit view + `tactics.vitals` + the fan-out; `137ee09` the
-  `tactics.contacts` table; `049039b` the web unit screen; `d1534e3` the
+  (`1742dae` the unit view + `tactics.vitals` + the fan-out; `f6406b0` the
+  `tactics.contacts` table; `3957cc4` the web unit screen; `ae148e3` the
   TUI screens 8 and 9). §3's table row, §5's timing bullet (stale), §6
   (D-I-15 as built, D-I-23…26), §7 (`MAX_UNIT_VIEW_BYTES`,
   `JOURNAL_ROWS_PER_DELTA`, `MAX_UNIT_AUDIENCE`, `MAX_CONTACT_VIEW_ROWS`;
   `MAX_VITALS_FRAME_BYTES` struck as never implemented), §8 (q8 closed, q9
   moot), §9 (the E7 asks restated as outstanding, plus the kernel's
   subject→actor index). Tests: 29 server, 12 TUI + eleven goldens, 43 web.
+  **Verify fold, same day:** an independent adversarial verify (eight
+  attackers, four adjudicators) found every lane holding with fixes, all
+  folded (§3.8 "Verify fold"): the frame's hard 1 MiB bound made real, the
+  mis-keyed record, the after-action audience (the unit itself; vitals
+  only to default-subject viewers), producers for create/remove/destroy,
+  the fair contacts share; the web's duplicate-key crash, null vitals,
+  loading state, after-action-from-the-ring, newest-arrived before/after;
+  the TUI's column share, after-action-from-the-ring, aging resync latch,
+  ring order. Four items deferred and recorded (the proxy-driver seam, the
+  cut-7 contact-id derivation handed to E7/K, a destroyed unit's viewers,
+  the web contacts loading idiom). Tests after the fold: 41 server, 140 in
+  the TUI crate, 365 web.
 - **Draft 1.1 — 2026-09-06.** I11's typed server producers **built** (§3.11
   as-built updated): a new notice seam — `Outbox::notice_to_actor` (+ the
   severity-named twins) and the `Ctx::notice{,_info,_warn,_urgent}`
