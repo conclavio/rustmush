@@ -36,7 +36,7 @@ use mush_proto::{
 use serde_json::{Value, json};
 use smol_str::SmolStr;
 
-use crate::module::{UnitStore, is_admin};
+use crate::module::{MAX_UNIT_RECORD_BYTES, UnitStore, is_admin};
 use crate::status::{UnitStatus, primary_stationed_unit, viewer_is_stationed};
 use crate::unit::{CellAddr, InstallPoint, Journal, JournalEntry, TacticalUnit};
 
@@ -96,10 +96,21 @@ pub fn unit_source(w: &World, object: ObjId) -> Option<UnitSource<'_>> {
     if let Some(unit) = store.units.get(&object) {
         return Some(UnitSource::Active(unit));
     }
+    // A held record answers first for the object its BODY names, then for
+    // the object its KEY names (a mis-keyed document claims both, so staff
+    // can see the held record from either dbref) — and `UnitView::of`
+    // adopts the decoded unit's schema and revision only when that unit IS
+    // the subject, so one record never serves two dbrefs' worth of state.
     store
         .records
         .iter()
-        .find(|record| record.claims_object(object))
+        .find(|record| record.object == Some(object))
+        .or_else(|| {
+            store
+                .records
+                .iter()
+                .find(|record| record.key_object == Some(object))
+        })
         .map(|record| UnitSource::Held {
             key: &record.key,
             state: &record.state,
@@ -134,8 +145,9 @@ pub fn unit_for_view(
 
 /// Which object a query is about. A named `object` is parsed as a dbref only
 /// (never `match_object`, which would leak name visibility); absent, the
-/// viewer's own object when it carries a unit record, else the viewer's
-/// highest-priority `sim` station on an active unit, else `None`.
+/// viewer's own object when it is an ACTIVE unit, else the viewer's
+/// highest-priority `sim` station on an active unit, else the viewer's own
+/// held record, else `None`.
 ///
 /// # Errors
 ///
@@ -147,10 +159,16 @@ pub fn resolve_subject(
 ) -> Result<Option<ObjId>, ViewRefusal> {
     match params.get("object") {
         None | Some(Value::Null) => {
-            if unit_source(w, viewer).is_some() {
-                return Ok(Some(viewer));
+            // Own ACTIVE unit first, then the highest-priority station on an
+            // active unit, then a held record of one's own (mechanics
+            // disabled - a live seat outranks it), then nothing.
+            match unit_source(w, viewer) {
+                Some(UnitSource::Active(_)) => Ok(Some(viewer)),
+                Some(UnitSource::Held { .. }) => {
+                    Ok(primary_stationed_unit(w, viewer).or(Some(viewer)))
+                }
+                None => Ok(primary_stationed_unit(w, viewer)),
             }
-            Ok(primary_stationed_unit(w, viewer))
         }
         Some(named) => {
             let raw = named.as_str().ok_or(ViewRefusal)?;
@@ -349,16 +367,24 @@ impl UnitView {
     /// The view of `object` from `source`, at `now` (unix seconds).
     #[must_use]
     pub fn of(w: &World, object: ObjId, source: &UnitSource<'_>, now: i64) -> UnitView {
-        let object = obj_ref(w, object);
+        let subject = obj_ref(w, object);
         match source {
-            UnitSource::Active(unit) => UnitView::from_unit(object, unit, now),
-            UnitSource::Held { key, state, unit } => {
+            UnitSource::Active(unit) => UnitView::from_unit(subject, unit, now),
+            UnitSource::Held {
+                key: _,
+                state,
+                unit,
+            } => {
+                // The frame names the SUBJECT's own record key, never the raw
+                // discovered key (a mis-keyed document's key is another
+                // object's dbref), and adopts a decoded unit's schema and
+                // revision only when that unit IS the subject.
                 let mut view = UnitView {
-                    object,
+                    object: subject,
                     schema: String::new(),
                     revision: 0,
                     state: state_word(state),
-                    record: Some(key.to_string()),
+                    record: Some(format!("unit:{}", object.0)),
                     mobility: None,
                     sections: Vec::new(),
                     cells: Vec::new(),
@@ -366,7 +392,9 @@ impl UnitView {
                     capabilities: Vec::new(),
                     held_unit: false,
                 };
-                if let Some(unit) = unit {
+                if let Some(unit) = unit
+                    && unit.object() == object
+                {
                     view.schema = unit.schema().to_string();
                     view.revision = unit.revision();
                     view.held_unit = true;
@@ -479,11 +507,13 @@ impl UnitView {
             .collect();
         let mobility = unit.mobility().map(|m| MobilityView {
             mode: m.effective_mode(now).map(ToString::to_string),
-            switching: m.switch_parts().map(|(from, to, ready_at)| SwitchView {
-                from: from.to_string(),
-                to: to.to_string(),
-                ready_at,
-            }),
+            switching: m.is_switching(now).then(|| m.switch_parts()).flatten().map(
+                |(from, to, ready_at)| SwitchView {
+                    from: from.to_string(),
+                    to: to.to_string(),
+                    ready_at,
+                },
+            ),
             modes: m
                 .modes()
                 .iter()
@@ -512,15 +542,20 @@ impl UnitView {
         }
     }
 
-    /// The `tactics.unit` keyframe payload, inside [`MAX_UNIT_VIEW_BYTES`]:
-    /// the header, every section and every unit-level cell always; then
-    /// components, the remaining cells and the capabilities until the budget
-    /// is spent, with `truncated` set and `counts` still the true totals.
+    /// The `tactics.unit` keyframe payload. Two limits: the header, every
+    /// section and every unit-level cell are admitted against the HARD
+    /// limit (`MAX_UNIT_RECORD_BYTES` less headroom - the TUI drops any frame
+    /// past 1 MiB, so a frame is never allowed to reach it); then components,
+    /// the remaining cells and the capabilities are admitted against the
+    /// SOFT budget [`MAX_UNIT_VIEW_BYTES`]. `truncated` is set whenever any
+    /// list stopped early OR the always-emitted lane alone passed the soft
+    /// budget; `counts` stay the true totals.
     #[must_use]
     pub fn to_frame(&self) -> Value {
         let mut budget = Budget {
             used: 0,
-            limit: MAX_UNIT_VIEW_BYTES,
+            soft: MAX_UNIT_VIEW_BYTES,
+            hard: MAX_UNIT_RECORD_BYTES.saturating_sub(FRAME_HEADROOM_BYTES),
         };
         let header = json!({
             "object": self.object,
@@ -538,42 +573,61 @@ impl UnitView {
             "truncated": false,
         });
         budget.charge(&header);
-        let sections: Vec<Value> = self.sections.iter().map(section_json).collect();
-        for s in &sections {
-            budget.charge(s);
+        let mut truncated = false;
+        let mut sections = Vec::new();
+        for s in &self.sections {
+            let v = section_json(s);
+            if !budget.admit_hard(&v) {
+                truncated = true;
+                break;
+            }
+            sections.push(v);
         }
         let mut cells = Vec::new();
-        for c in self.cells.iter().filter(|c| c.scope == Scope::Unit) {
-            let v = cell_json(c);
-            budget.charge(&v);
-            cells.push(v);
+        if !truncated {
+            for c in self.cells.iter().filter(|c| c.scope == Scope::Unit) {
+                let v = cell_json(c);
+                if !budget.admit_hard(&v) {
+                    truncated = true;
+                    break;
+                }
+                cells.push(v);
+            }
         }
-        let mut truncated = false;
+        if budget.used > budget.soft {
+            truncated = true;
+        }
         let mut components = Vec::new();
-        for c in &self.components {
-            let v = component_json(c);
-            if !budget.admit(&v) {
-                truncated = true;
-                break;
+        if !truncated {
+            for c in &self.components {
+                let v = component_json(c);
+                if !budget.admit(&v) {
+                    truncated = true;
+                    break;
+                }
+                components.push(v);
             }
-            components.push(v);
         }
-        for c in self.cells.iter().filter(|c| c.scope != Scope::Unit) {
-            let v = cell_json(c);
-            if !budget.admit(&v) {
-                truncated = true;
-                break;
+        if !truncated {
+            for c in self.cells.iter().filter(|c| c.scope != Scope::Unit) {
+                let v = cell_json(c);
+                if !budget.admit(&v) {
+                    truncated = true;
+                    break;
+                }
+                cells.push(v);
             }
-            cells.push(v);
         }
         let mut capabilities = Vec::new();
-        for k in &self.capabilities {
-            let v = json!({ "id": k.id, "source": k.source });
-            if !budget.admit(&v) {
-                truncated = true;
-                break;
+        if !truncated {
+            for k in &self.capabilities {
+                let v = json!({ "id": k.id, "source": k.source });
+                if !budget.admit(&v) {
+                    truncated = true;
+                    break;
+                }
+                capabilities.push(v);
             }
-            capabilities.push(v);
         }
         let Value::Object(mut frame) = header else {
             return Value::Null;
@@ -640,17 +694,21 @@ impl UnitView {
     }
 
     /// The unit-level pools as `Pool` vitals, in cell order. A cell whose
-    /// prefixed id or label would exceed the wire's name cap is skipped (one
-    /// authored id costs one gauge, never the feed).
+    /// prefixed id (`tactics.<cell>`, so the effective cell-id budget is
+    /// `MAX_VITAL_NAME_BYTES - 8` = 40 bytes) would exceed the wire's name
+    /// cap is skipped - one authored id costs one gauge, never the feed -
+    /// and one warning per build says how many.
     #[must_use]
     pub fn pool_vitals(&self) -> Vec<Vital> {
-        self.cells
+        let mut skipped = 0_usize;
+        let vitals: Vec<Vital> = self
+            .cells
             .iter()
             .filter(|c| c.scope == Scope::Unit)
             .filter_map(|c| {
                 let id = format!("tactics.{}", c.label);
-                if id.len() > MAX_VITAL_NAME_BYTES || c.label.len() > MAX_VITAL_NAME_BYTES {
-                    tracing::warn!(cell = %c.label, "tactics.vitals: cell id over the vital name cap; skipped");
+                if id.len() > MAX_VITAL_NAME_BYTES {
+                    skipped += 1;
                     return None;
                 }
                 Some(mush_ruleset::pool(
@@ -661,7 +719,15 @@ impl UnitView {
                     c.max,
                 ))
             })
-            .collect()
+            .collect();
+        if skipped > 0 {
+            tracing::warn!(
+                subject = %self.object.id,
+                skipped,
+                "tactics.vitals: unit cell ids over the vital name cap were skipped"
+            );
+        }
+        vitals
     }
 
     /// The `tactics.vitals` frame: `revision` is the unit revision — the same
@@ -680,9 +746,14 @@ impl UnitView {
     }
 }
 
+/// The bytes a frame keeps clear of the hard bound for the array brackets,
+/// commas and the header's own re-serialization.
+const FRAME_HEADROOM_BYTES: usize = 4096;
+
 struct Budget {
     used: usize,
-    limit: usize,
+    soft: usize,
+    hard: usize,
 }
 
 impl Budget {
@@ -696,13 +767,21 @@ impl Budget {
         self.used = self.used.saturating_add(Self::size(v));
     }
 
-    fn admit(&mut self, v: &Value) -> bool {
+    fn admit_within(&mut self, v: &Value, limit: usize) -> bool {
         let n = Self::size(v);
-        if self.used.saturating_add(n) > self.limit {
+        if self.used.saturating_add(n) > limit {
             return false;
         }
         self.used += n;
         true
+    }
+
+    fn admit(&mut self, v: &Value) -> bool {
+        self.admit_within(v, self.soft)
+    }
+
+    fn admit_hard(&mut self, v: &Value) -> bool {
+        self.admit_within(v, self.hard)
     }
 }
 
@@ -842,6 +921,18 @@ fn subject_frame(
         Err(refusal) if named => Err(refusal.rich()),
         Err(_) => Ok(Value::Null),
     }
+}
+
+/// A viewer's DEFAULT-subject frames - `(tactics.unit, tactics.vitals)`
+/// keyframe payloads, `null` when they hold no subject - for a producer that
+/// must refresh a viewer after a state change with no delta (a unit
+/// removed). Exactly what an unnamed subscribe would answer.
+#[must_use]
+pub fn default_frames(w: &World, viewer: ObjId) -> (Value, Value) {
+    let params = Value::Object(serde_json::Map::new());
+    let unit = subject_frame(w, viewer, &params, UnitView::to_frame).unwrap_or(Value::Null);
+    let vitals = subject_frame(w, viewer, &params, UnitView::vitals_value).unwrap_or(Value::Null);
+    (unit, vitals)
 }
 
 /// The `tactics.unit` query: a keyframe of the subject's view.

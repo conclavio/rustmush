@@ -3576,11 +3576,19 @@ fn i8_the_table_caps_at_max_contact_view_rows_says_truncated_and_is_deterministi
     assert_eq!(rows.len(), 3 * mush_core::MAX_CONTACTS_PER_OBSERVER);
     install_ledger(&mut tw, rows);
     let first = i8_table(&tw, fx.ann, serde_json::json!({}));
-    assert_eq!(
-        first["rows"].as_array().unwrap().len(),
-        mush_propagation::MAX_CONTACT_VIEW_ROWS
-    );
+    let rows = first["rows"].as_array().unwrap();
+    assert_eq!(rows.len(), mush_propagation::MAX_CONTACT_VIEW_ROWS);
     assert_eq!(first["truncated"], serde_json::json!(true));
+    // Verify fold: the cut is a FAIR share per holder (cut 7 fold O6 at the
+    // view layer): every holder keeps at least its share; none is starved.
+    let share = mush_propagation::MAX_CONTACT_VIEW_ROWS / 3;
+    for tag in ["10", "20", "30"] {
+        let mine = rows
+            .iter()
+            .filter(|r| r["id"].as_str().unwrap().starts_with(tag))
+            .count();
+        assert!(mine >= share, "holder {tag} kept {mine} < {share}");
+    }
     let second = i8_table(&tw, fx.ann, serde_json::json!({}));
     assert_eq!(first, second, "two reads of one ledger are byte-identical");
     // Bob, on one platform, sees his platform's rows and no cut.
@@ -3622,4 +3630,42 @@ fn i8_the_contacts_feed_is_registered_under_its_literal_name() {
     );
     assert!(tw.registry().query_handler("tactics.contacts").is_some());
     assert!(tw.registry().query_handler("Tactics.Contacts").is_none());
+}
+
+/// The after-action audience cap mirrors the seat cap by value (mush-tactics
+/// has no mush-sim edge); this is where the two are tied.
+#[test]
+fn vf_the_after_action_audience_cap_ties_to_the_seat_cap() {
+    assert_eq!(
+        mush_tactics::MAX_UNIT_AUDIENCE,
+        mush_sim::MAX_SEATS_PER_UNIT,
+        "MAX_UNIT_AUDIENCE mirrors MAX_SEATS_PER_UNIT by value: move them together"
+    );
+}
+
+/// The contacts row's `band`/`source` cells are a two-cell fingerprint of
+/// "has a provenance record". Today NO production path writes one, so a
+/// phantom-backed row and a real row render alike by construction; the first
+/// writer must record provenance for phantom-backed contacts too, and extend
+/// `i8_k2` to prove it. This tripwire fires the day a writer appears.
+#[test]
+fn vf_provenance_tripwire_no_production_writer_yet() {
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut calls = 0_usize;
+    for entry in std::fs::read_dir(&src).expect("src") {
+        let path = entry.expect("entry").path();
+        let text = std::fs::read_to_string(&path).expect("read");
+        let boundary = text.find("#[cfg(test)]").unwrap_or(text.len());
+        calls += text[..boundary]
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .filter(|l| l.contains("record_provenance(") && !l.contains("fn record_provenance("))
+            .count();
+    }
+    assert_eq!(
+        calls, 0,
+        "a production provenance writer exists now: it must record provenance \
+         for phantom-backed contacts too (the row's band/source would otherwise \
+         tell a phantom from a real contact) — extend i8_k2 to prove it"
+    );
 }

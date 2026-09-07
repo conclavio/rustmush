@@ -193,7 +193,15 @@ pub fn stationed_viewers(world: &World, unit: ObjId, cap: usize) -> Vec<ObjId> {
         .filter(|viewer| viewer_is_stationed(world, *viewer, unit))
         .collect();
     viewers.sort();
-    viewers.truncate(cap);
+    if viewers.len() > cap {
+        tracing::warn!(
+            unit = unit.0,
+            connected = viewers.len(),
+            cap,
+            "tactics: after-action audience truncated"
+        );
+        viewers.truncate(cap);
+    }
     viewers
 }
 

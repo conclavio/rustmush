@@ -87,8 +87,8 @@ pub use unit::{
 };
 pub use view::{
     MAX_UNIT_AUDIENCE, MAX_UNIT_VIEW_BYTES, UnitQuery, UnitSource, UnitView, UnitVitalsQuery,
-    VITALS_FEED, ViewRefusal, cell_addr_path, install_path, journal_frame, resolve_subject,
-    unit_for_view, unit_source,
+    VITALS_FEED, ViewRefusal, cell_addr_path, default_frames, install_path, journal_frame,
+    resolve_subject, unit_for_view, unit_source,
 };
 
 /// The module id (also its persistence namespace).

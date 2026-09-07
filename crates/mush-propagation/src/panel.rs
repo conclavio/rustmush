@@ -77,11 +77,32 @@ impl QueryHandler for ContactsQuery {
         };
         let at = w.world_ic_now();
         let holders = viewable_holders_of(w, actor);
-        let rows = holder_rows(ledger, &holders);
-        let truncated = rows.len() > MAX_CONTACT_VIEW_ROWS;
-        let rows: Vec<Value> = rows
+        // A FAIR share per holder (cut 7 fold O6, at the view layer too): a
+        // flat cut over holder-sorted rows would starve every holder after
+        // the first. Each holder keeps up to its share, then the remainder
+        // fills in holder order; `truncated` says a row was cut.
+        let per_holder: Vec<Vec<&mush_core::ContactLedgerRow>> = holders
             .iter()
-            .take(MAX_CONTACT_VIEW_ROWS)
+            .map(|holder| holder_rows(ledger, std::slice::from_ref(holder)))
+            .collect();
+        let total: usize = per_holder.iter().map(Vec::len).sum();
+        let truncated = total > MAX_CONTACT_VIEW_ROWS;
+        let share = (MAX_CONTACT_VIEW_ROWS / holders.len().max(1)).max(1);
+        let mut kept: Vec<&mush_core::ContactLedgerRow> = Vec::new();
+        for rows in &per_holder {
+            kept.extend(rows.iter().take(share));
+        }
+        for rows in &per_holder {
+            for row in rows.iter().skip(share) {
+                if kept.len() >= MAX_CONTACT_VIEW_ROWS {
+                    break;
+                }
+                kept.push(row);
+            }
+        }
+        kept.truncate(MAX_CONTACT_VIEW_ROWS);
+        let rows: Vec<Value> = kept
+            .iter()
             .map(|row| {
                 let provenance = store.provenance_of(row.contact);
                 let source = match provenance.map(ContactProvenance::provenance) {

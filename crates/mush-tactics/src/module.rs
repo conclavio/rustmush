@@ -994,13 +994,6 @@ impl GameModule for TacticsModule {
         reg.behavior(spec)?;
         reg.destroy_gate(Arc::new(TacticsDestroyGate));
         reg.detach_gate(Arc::new(TacticsDetachGate));
-        let destroy_record_definition = v2.clone();
-        reg.subscribe(
-            WorldEventKind::ObjDestroyed,
-            Arc::new(move |ctx: &mut Ctx<'_>, event: &WorldEvent| {
-                on_obj_destroyed(&destroy_record_definition, ctx, event);
-            }),
-        );
 
         let feed = reg.panel_feed(UNIT_FEED)?;
         // Interface plan I8: a subscribe to the unit feed answers with the
@@ -1012,6 +1005,22 @@ impl GameModule for TacticsModule {
             view::VITALS_FEED,
             Arc::new(view::UnitVitalsQuery::new(view::VITALS_FEED)),
         )?;
+
+        let destroy_record_definition = v2.clone();
+        let (destroy_feed, destroy_vitals) = (feed.clone(), vitals.clone());
+        reg.subscribe(
+            WorldEventKind::ObjDestroyed,
+            Arc::new(move |ctx: &mut Ctx<'_>, event: &WorldEvent| {
+                on_obj_destroyed(
+                    &destroy_record_definition,
+                    &destroy_feed,
+                    &destroy_vitals,
+                    ctx,
+                    event,
+                );
+            }),
+        );
+
         let catalog = self.catalog.clone();
         let current_record_definition = v2;
         reg.command(
@@ -1126,7 +1135,13 @@ fn project(w: &World, unit: &TacticalUnit, _observer: ObjId, now: i64) -> serde_
 /// veto the core object's prior `GOING` transition. It removes the unit from the
 /// active index but preserves its authoritative module record in Frozen state;
 /// references from other units are still scrubbed when their asset object dies.
-fn on_obj_destroyed(current_record_definition: &DefinitionRef, ctx: &mut Ctx<'_>, ev: &WorldEvent) {
+fn on_obj_destroyed(
+    current_record_definition: &DefinitionRef,
+    feed: &PanelFeedHandle,
+    vitals: &PanelFeedHandle,
+    ctx: &mut Ctx<'_>,
+    ev: &WorldEvent,
+) {
     let WorldEvent::ObjDestroyed { obj } = ev else {
         return;
     };
@@ -1178,9 +1193,26 @@ fn on_obj_destroyed(current_record_definition: &DefinitionRef, ctx: &mut Ctx<'_>
             Ok((document, digest)) => {
                 tracing::warn!(unit = %unit.object(), dead = %obj, "tactics: component asset pointer scrubbed (object destroyed)");
                 persist_encoded_unit(ctx.out, unit.object(), document);
+                // Interface plan I8 (verify fold): a scrub bumps the
+                // revision with no delta, so the repaired unit's stationed
+                // viewers get a fresh keyframe and vitals frame — the state
+                // change would otherwise reach nobody until a manual refresh.
+                let repaired_obj = unit.object();
+                let unit_frame =
+                    view::UnitView::of(ctx.w, repaired_obj, &view::UnitSource::Active(&unit), now);
+                let (unit_value, vitals_value) = (unit_frame.to_frame(), unit_frame.vitals_value());
                 if let Some(store) = ctx.w.module_state_mut::<UnitStore>() {
                     store.update_active(unit, digest);
                 }
+                fan_state(
+                    ctx,
+                    feed,
+                    vitals,
+                    repaired_obj,
+                    None,
+                    unit_value,
+                    vitals_value,
+                );
             }
             Err(error) => {
                 tracing::error!(unit = %unit.object(), dead = %obj, %error, "tactics: could not encode component asset repair; live state left untouched");
@@ -2260,7 +2292,7 @@ fn cmd_unit(
     }
     require_admin(ctx)?;
     if ctx.switches.has("create") {
-        unit_create(catalog, feed, current_record_definition, ctx)
+        unit_create(catalog, feed, vitals, current_record_definition, ctx)
     } else if ctx.switches.has("recovery") {
         unit_recovery(ctx)
     } else if ctx.switches.has("show") {
@@ -2268,7 +2300,7 @@ fn cmd_unit(
     } else if ctx.switches.has("damage") {
         unit_damage(feed, vitals, current_record_definition, ctx)
     } else if ctx.switches.has("remove") {
-        unit_remove(ctx)
+        unit_remove(feed, vitals, ctx)
     } else {
         Err(CmdError::msg(
             "Usage: @unit/create|show|status|damage|remove <obj>[=...] or @unit/recovery",
@@ -2322,6 +2354,7 @@ fn unit_ineligible(ctx: &Ctx<'_>, obj: ObjId) -> Option<String> {
 fn unit_create(
     catalog: &UnitCatalog,
     feed: &PanelFeedHandle,
+    vitals: &PanelFeedHandle,
     current_record_definition: &DefinitionRef,
     ctx: &mut Ctx<'_>,
 ) -> Result<(), CmdError> {
@@ -2373,12 +2406,18 @@ fn unit_create(
         )
         .map_err(|e| CmdError::msg(format!("cannot mark unit: {e}")))?;
     let frame = project(ctx.w, &u, ctx.actor, now);
+    let vitals_frame =
+        view::UnitView::of(ctx.w, obj, &view::UnitSource::Active(&u), now).vitals_value();
     persist_encoded_unit(ctx.out, obj, document);
     ctx.w
         .module_state_mut::<UnitStore>()
         .expect("unit store")
         .install_active(u, payload_digest);
-    feed.keyframe_to(ctx, Audience::Actor(ctx.actor), frame);
+    // Interface plan I8 (verify fold): the revision-0 keyframe and vitals
+    // frame reach the actor and every connected viewer already stationed on
+    // the object (seats survive a remove/create), so a recreated unit resets
+    // both clients' watermarks instead of wedging them on the old revision.
+    fan_state(ctx, feed, vitals, obj, Some(ctx.actor), frame, vitals_frame);
     info(
         ctx,
         format!(
@@ -2508,19 +2547,18 @@ fn unit_damage(
         .module_state_mut::<UnitStore>()
         .expect("unit store")
         .update_active(post, payload_digest);
-    // D-I8-2: the after-action surface reaches the staffer FIRST, then every
-    // connected viewer stationed on the unit. The unit KEYFRAME is not fanned
-    // — each client re-requests it through the unit query on its own
-    // JOURNAL_RING / UNIT_RESYNC_MS loop.
-    let mut audience = vec![ctx.actor];
-    audience.extend(
-        crate::status::stationed_viewers(ctx.w, obj, view::MAX_UNIT_AUDIENCE)
-            .into_iter()
-            .filter(|who| *who != ctx.actor),
-    );
-    for who in audience {
+    // D-I8-2 (as folded): the after-action DELTA reaches the staffer FIRST,
+    // then every connected viewer stationed on the unit, then the unit's own
+    // object when it is connected (a player or NPC unit); the VITALS keyframe
+    // reaches only those whose DEFAULT subject is this unit, so a multi-seat
+    // viewer's gauge strip never repoints to a lower seat. The unit KEYFRAME
+    // is not fanned — each client re-requests it through the unit query on
+    // its own JOURNAL_RING / UNIT_RESYNC_MS loop.
+    for (who, default_here) in after_action_audience(ctx.w, ctx.actor, obj) {
         feed.delta_to(ctx, Audience::Actor(who), delta.clone());
-        vitals.keyframe_to(ctx, Audience::Actor(who), vitals_frame.clone());
+        if default_here {
+            vitals.keyframe_to(ctx, Audience::Actor(who), vitals_frame.clone());
+        }
     }
     info(
         ctx,
@@ -2532,7 +2570,63 @@ fn unit_damage(
     Ok(())
 }
 
-fn unit_remove(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+/// The `@unit/damage` after-action audience (D-I8-2 as folded): the actor
+/// first, then every connected stationed viewer, then the unit's own object
+/// when connected; each with whether this unit is their DEFAULT subject
+/// (the actor and the unit itself always; a stationed viewer only when this
+/// is their highest-priority station), which decides who gets the vitals
+/// keyframe beside the delta.
+fn after_action_audience(w: &World, actor: ObjId, obj: ObjId) -> Vec<(ObjId, bool)> {
+    let mut audience = vec![actor];
+    audience.extend(
+        crate::status::stationed_viewers(w, obj, view::MAX_UNIT_AUDIENCE)
+            .into_iter()
+            .filter(|who| *who != actor),
+    );
+    if obj != actor && w.is_connected(obj) && !audience.contains(&obj) {
+        audience.push(obj);
+    }
+    audience
+        .into_iter()
+        .map(|who| {
+            let default_here = who == actor
+                || who == obj
+                || crate::status::primary_stationed_unit(w, who) == Some(obj);
+            (who, default_here)
+        })
+        .collect()
+}
+
+/// Push a unit's fresh STATE (a unit keyframe and its vitals frame) to the
+/// connected viewers stationed on it — and to `also`, the acting staffer,
+/// when given (interface plan I8, verify fold): the producers for state
+/// changes that carry no delta (create, the destroy hook's asset scrub).
+fn fan_state(
+    ctx: &mut Ctx<'_>,
+    feed: &PanelFeedHandle,
+    vitals: &PanelFeedHandle,
+    obj: ObjId,
+    also: Option<ObjId>,
+    unit_frame: serde_json::Value,
+    vitals_frame: serde_json::Value,
+) {
+    let mut audience: Vec<ObjId> = also.into_iter().collect();
+    audience.extend(
+        crate::status::stationed_viewers(ctx.w, obj, view::MAX_UNIT_AUDIENCE)
+            .into_iter()
+            .filter(|who| Some(*who) != also),
+    );
+    for who in audience {
+        feed.keyframe_to(ctx, Audience::Actor(who), unit_frame.clone());
+        vitals.keyframe_to(ctx, Audience::Actor(who), vitals_frame.clone());
+    }
+}
+
+fn unit_remove(
+    feed: &PanelFeedHandle,
+    vitals: &PanelFeedHandle,
+    ctx: &mut Ctx<'_>,
+) -> Result<(), CmdError> {
     let obj = match_object(ctx.w, ctx.actor, ctx.args.lhs())?;
     let unit = ctx
         .w
@@ -2541,6 +2635,10 @@ fn unit_remove(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         .cloned()
         .ok_or_else(|| CmdError::msg("It is not a tactical unit."))?;
     require_unit_ready(ctx.reg, &unit)?;
+    // The viewers to refresh are read BEFORE the removal: their grants
+    // outlive the unit record, and each gets the frames their own default
+    // subject answers once it is gone (another seat's unit, or null).
+    let viewers = crate::status::stationed_viewers(ctx.w, obj, view::MAX_UNIT_AUDIENCE);
     let removed = ctx
         .w
         .module_state_mut::<UnitStore>()
@@ -2552,6 +2650,11 @@ fn unit_remove(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let _ = ctx
         .w
         .detach_behavior(obj, &BehaviorId::new(UNIT_BEHAVIOR).unwrap());
+    for who in viewers {
+        let (unit_frame, vitals_frame) = view::default_frames(ctx.w, who);
+        feed.keyframe_to(ctx, Audience::Actor(who), unit_frame);
+        vitals.keyframe_to(ctx, Audience::Actor(who), vitals_frame);
+    }
     info(
         ctx,
         format!("{} is no longer a tactical unit.", display_name(ctx.w, obj)),

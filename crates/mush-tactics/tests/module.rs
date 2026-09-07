@@ -15,10 +15,10 @@ use mush_proto::{OutputEvent, PanelFrameKind};
 use mush_tactics::{
     CapabilityId, CapabilityInit, CapabilityKey, CellId, CellSpec, ComponentId, ComponentSpec,
     ConditionId, FacetId, FacetSpec, InstallPoint, InstallSlotId, LocomotionId,
-    MAX_UNIT_BINDING_REPAIRS, MediumId, MobilityMode, MobilityModeId, MobilityProfile,
-    MobilityVocabulary, ModeRules, RulesValue, SectionId, SectionSpec, TacticalUnit, TacticsModule,
-    UNIT_BINDING_VERSION, UNIT_RECORD_VERSION, UnitCatalog, UnitCatalogBuilder, UnitSpec,
-    UnitSpecBody, UnitStore,
+    MAX_UNIT_BINDING_REPAIRS, MAX_UNIT_CELLS, MAX_UNIT_SECTIONS, MediumId, MobilityMode,
+    MobilityModeId, MobilityProfile, MobilityVocabulary, ModeRules, RulesValue, SectionId,
+    SectionSpec, TacticalUnit, TacticsModule, UNIT_BINDING_VERSION, UNIT_RECORD_VERSION,
+    UnitCatalog, UnitCatalogBuilder, UnitSpec, UnitSpecBody, UnitStore,
 };
 use mush_testkit::{TestWorld, text_of};
 use serde_json::{Value, json};
@@ -2805,6 +2805,9 @@ fn i8_s1_a_switching_profile_projects_from_to_ready_at_and_the_text_says_so() {
         120,
     );
     assert_eq!(due.to_frame()["mobility"]["mode"], json!("ground.quad"));
+    // A due-but-unsettled switch reports the mode only (verify fold): a
+    // frame never carries both halves.
+    assert_eq!(due.to_frame()["mobility"]["switching"], Value::Null);
     assert!(due.render_lines("Walker")[0].contains("mobility ground.quad"));
 }
 
@@ -2827,7 +2830,12 @@ fn i8_s2_the_create_keyframe_is_exactly_one_frame_to_the_actor_and_carries_no_ru
     assert_eq!(frames.len(), 1);
     i8_assert_clean("create keyframe", &frames[0].to_string(), I8_FORBIDDEN);
     assert_eq!(frames[0]["revision"], json!(0));
-    assert!(i8_frames_to(&ev, "tactics.vitals", PanelFrameKind::Keyframe, GOD).is_empty());
+    // Verify fold: the revision-0 vitals frame reaches the actor too (and any
+    // stationed viewer), so a recreate resets every client's watermark.
+    let vitals = i8_frames_to(&ev, "tactics.vitals", PanelFrameKind::Keyframe, GOD);
+    assert_eq!(vitals.len(), 1);
+    assert_eq!(vitals[0]["revision"], json!(0));
+    assert_eq!(vitals[0]["vitals"][0]["id"], json!("tactics.heat"));
 }
 
 #[test]
@@ -2948,4 +2956,517 @@ fn i8_p5_every_surface_of_the_view_is_clean() {
     i8_assert_clean("tactics.unit keyframe", &keyframe.to_string(), I8_FORBIDDEN);
     i8_assert_clean("tactics.vitals keyframe", &vitals.to_string(), I8_FORBIDDEN);
     i8_assert_clean("@unit/show", &shown, I8_FORBIDDEN);
+}
+
+// ---- Interface plan I8: the verify fold (vf_) ---------------------------
+
+/// A spec whose weight is all in the ALWAYS-EMITTED lane: one section, no
+/// section cells, `unit_cells` unit-level pools with `id_len`-byte ids.
+fn i8_wide_spec(unit_cells: usize, id_len: usize) -> UnitSpec {
+    let mut definitions = DefinitionRegistryBuilder::new();
+    let opaque = register_ref(
+        &mut definitions,
+        "tacsim",
+        "schema",
+        "tacsim.wide",
+        json!({}),
+    );
+    let body = UnitSpecBody {
+        sections: vec![SectionSpec {
+            id: SectionId::new("hull").unwrap(),
+            condition: ConditionId::new("ok").unwrap(),
+            facets: vec![],
+            slots: vec![],
+            cells: vec![],
+        }],
+        unit_cells: (0..unit_cells)
+            .map(|j| CellSpec {
+                id: CellId::new(format!("{j:0>4}{:p<width$}", "", width = id_len - 4)).unwrap(),
+                min: 0,
+                max: 10,
+                init: 10,
+            })
+            .collect(),
+        components: vec![],
+        capabilities: vec![],
+        mobility: None,
+        rules: RulesValue::new(opaque, json!({})).unwrap(),
+    };
+    let descriptor = body
+        .descriptor(
+            DefinitionKind::new("unit").unwrap(),
+            DefinitionId::new("tacsim.mech.wide").unwrap(),
+            1,
+        )
+        .unwrap();
+    let definition = definitions
+        .register(OwnerId::new("tacsim").unwrap(), descriptor)
+        .unwrap();
+    body.with_definition(definition)
+}
+
+/// A spec at the facet and slot caps with long ids: 256 sections, four
+/// facets each (= `MAX_UNIT_FACETS`), eight slots each (= `MAX_UNIT_SLOTS`),
+/// one cell per facet.
+fn i8_wide_sections_spec() -> UnitSpec {
+    let mut definitions = DefinitionRegistryBuilder::new();
+    let opaque = register_ref(
+        &mut definitions,
+        "tacsim",
+        "schema",
+        "tacsim.facets",
+        json!({}),
+    );
+    let long = |prefix: &str, i: usize| format!("{prefix}{i:0>60}");
+    let body = UnitSpecBody {
+        sections: (0..MAX_UNIT_SECTIONS)
+            .map(|i| SectionSpec {
+                id: SectionId::new(long("s", i)).unwrap(),
+                condition: ConditionId::new("ok").unwrap(),
+                facets: (0..4)
+                    .map(|f| FacetSpec {
+                        id: FacetId::new(long("f", f)).unwrap(),
+                        cells: vec![CellSpec {
+                            id: CellId::new(long("c", f)).unwrap(),
+                            min: 0,
+                            max: 10,
+                            init: 10,
+                        }],
+                    })
+                    .collect(),
+                slots: (0..8)
+                    .map(|k| InstallSlotId::new(long("k", k)).unwrap())
+                    .collect(),
+                cells: vec![],
+            })
+            .collect(),
+        unit_cells: vec![],
+        components: vec![],
+        capabilities: vec![],
+        mobility: None,
+        rules: RulesValue::new(opaque, json!({})).unwrap(),
+    };
+    let descriptor = body
+        .descriptor(
+            DefinitionKind::new("unit").unwrap(),
+            DefinitionId::new("tacsim.mech.facets").unwrap(),
+            1,
+        )
+        .unwrap();
+    let definition = definitions
+        .register(OwnerId::new("tacsim").unwrap(), descriptor)
+        .unwrap();
+    body.with_definition(definition)
+}
+
+#[test]
+fn vf_b4_the_always_emitted_lane_is_admitted_against_the_hard_bound() {
+    let spec = i8_wide_spec(MAX_UNIT_CELLS, 64);
+    let mut tw = boot_i8();
+    let object = tw
+        .world_mut()
+        .create(ObjKind::Thing, "Behemoth", GOD, None)
+        .unwrap();
+    let unit = TacticalUnit::from_spec(&spec, object).unwrap();
+    // The persisted shape fits the record bound — the frame's per-cell cost
+    // is what does not — so this is the divergence the fold closes.
+    let persisted = serde_json::to_value(&unit).unwrap();
+    assert!(
+        mush_core::canonical_json_bytes_with_limit(&persisted, mush_tactics::MAX_UNIT_RECORD_BYTES)
+            .is_ok(),
+        "the unit itself persists under the record bound"
+    );
+    let view = mush_tactics::UnitView::of(
+        tw.world(),
+        object,
+        &mush_tactics::UnitSource::Active(&unit),
+        0,
+    );
+    let frame = view.to_frame();
+    let bytes = frame.to_string().len();
+    assert!(
+        bytes <= mush_tactics::MAX_UNIT_RECORD_BYTES,
+        "{bytes} bytes: the frame crossed the hard bound"
+    );
+    assert!(
+        mush_core::canonical_json_bytes_with_limit(&frame, mush_tactics::MAX_UNIT_RECORD_BYTES)
+            .is_ok()
+    );
+    assert_eq!(frame["truncated"], json!(true));
+    assert_eq!(frame["counts"]["cells"], json!(MAX_UNIT_CELLS));
+    assert!(frame["cells"].as_array().unwrap().len() < MAX_UNIT_CELLS);
+    assert!(!frame["cells"].as_array().unwrap().is_empty());
+    // Sixty-four-byte ids exceed the forty-byte vitals budget, so this unit
+    // has no gauges — the frame still shipped, which is the point.
+    assert!(view.vitals_value()["vitals"].as_array().unwrap().is_empty());
+}
+
+#[test]
+fn vf_b5_a_facet_and_slot_heavy_unit_stays_under_the_hard_bound() {
+    let spec = i8_wide_sections_spec();
+    let mut tw = boot_i8();
+    let object = tw
+        .world_mut()
+        .create(ObjKind::Thing, "Fortress", GOD, None)
+        .unwrap();
+    let unit = TacticalUnit::from_spec(&spec, object).unwrap();
+    assert_eq!(unit.sections().count(), MAX_UNIT_SECTIONS);
+    let frame = mush_tactics::UnitView::of(
+        tw.world(),
+        object,
+        &mush_tactics::UnitSource::Active(&unit),
+        0,
+    )
+    .to_frame();
+    let bytes = frame.to_string().len();
+    assert!(
+        bytes <= mush_tactics::MAX_UNIT_RECORD_BYTES,
+        "{bytes} bytes over the hard bound"
+    );
+    assert_eq!(frame["counts"]["sections"], json!(MAX_UNIT_SECTIONS));
+    // Over the soft budget, the frame says so even though the always-emitted
+    // lane is what carried it there.
+    if bytes > mush_tactics::MAX_UNIT_VIEW_BYTES {
+        assert_eq!(frame["truncated"], json!(true));
+    }
+}
+
+#[test]
+fn vf_p6_a_mis_keyed_record_never_names_the_other_object() {
+    let mut tw = boot_i8();
+    let key_object = tw
+        .world_mut()
+        .create(ObjKind::Thing, "Key shell", GOD, None)
+        .unwrap();
+    let embedded = i8_player(&mut tw, "Embedded");
+    attach_current_binding(&mut tw, key_object);
+    let unit = TacticalUnit::from_spec(&example_spec(), embedded).unwrap();
+    let key = SmolStr::new(format!("unit:{}", key_object.0));
+    let document = current_document(&tw, &unit);
+    load_tactics(&mut tw, vec![(key, document)]);
+    let record = &store(&tw).records[0];
+    assert_eq!(record.key_object, Some(key_object));
+    assert_eq!(record.object, Some(embedded));
+
+    // Named by its KEY object: the frame carries the key object's own record
+    // name, no schema and revision 0 — nothing of the embedded unit.
+    let by_key = i8_keyframe(
+        i8_query(
+            &tw,
+            "tactics.unit",
+            GOD,
+            json!({ "object": format!("#{}", key_object.0) }),
+        ),
+        "tactics.unit",
+    );
+    assert_eq!(by_key["object"]["id"], json!(format!("#{}", key_object.0)));
+    assert_eq!(by_key["record"], json!(format!("unit:{}", key_object.0)));
+    assert_eq!(by_key["schema"], json!(""));
+    assert_eq!(by_key["revision"], json!(0));
+    let text = by_key.to_string();
+    assert!(!text.contains(&format!("#{}", embedded.0)), "{text}");
+    assert!(!text.contains(&format!("unit:{}", embedded.0)), "{text}");
+
+    // Named by its EMBEDDED object — and as that object's own unnamed
+    // default — the frame carries that object's record name and the decoded
+    // unit's schema, never the key object's dbref.
+    for params in [json!({ "object": format!("#{}", embedded.0) }), json!({})] {
+        let frame = i8_keyframe(
+            i8_query(&tw, "tactics.unit", embedded, params),
+            "tactics.unit",
+        );
+        assert_eq!(frame["object"]["id"], json!(format!("#{}", embedded.0)));
+        assert_eq!(frame["record"], json!(format!("unit:{}", embedded.0)));
+        assert_eq!(frame["schema"], json!(unit.schema().to_string()));
+        assert_eq!(frame["state"], json!("quarantined"));
+        let text = frame.to_string();
+        assert!(!text.contains(&format!("#{}", key_object.0)), "{text}");
+        assert!(!text.contains(&format!("unit:{}", key_object.0)), "{text}");
+    }
+}
+
+#[test]
+fn vf_r2_an_active_station_outranks_a_held_own_record_for_the_default_subject() {
+    let mut tw = boot_i8();
+    let pilot = i8_player(&mut tw, "Pilot");
+    // The pilot's own object carries a document with no binding: Frozen.
+    let own = TacticalUnit::from_spec(&example_spec(), pilot).unwrap();
+    let document = current_document(&tw, &own);
+    load_tactics(
+        &mut tw,
+        vec![(SmolStr::new(format!("unit:{}", pilot.0)), document)],
+    );
+    assert!(matches!(
+        store(&tw).records[0].state,
+        MechanicalState::Frozen { .. }
+    ));
+    let held = i8_keyframe(
+        i8_query(&tw, "tactics.unit", pilot, json!({})),
+        "tactics.unit",
+    );
+    assert_eq!(held["object"]["id"], json!(format!("#{}", pilot.0)));
+    assert_eq!(held["state"], json!("frozen"));
+    // A live seat outranks the held record of one's own.
+    let unit = i8_unit(&mut tw);
+    i8_grant(&mut tw, pilot, unit, 10);
+    let live = i8_keyframe(
+        i8_query(&tw, "tactics.unit", pilot, json!({})),
+        "tactics.unit",
+    );
+    assert_eq!(live["object"]["id"], json!(format!("#{}", unit.0)));
+    assert_eq!(live["state"], json!("active"));
+}
+
+#[test]
+fn vf_f3_remove_then_create_refreshes_the_stationed_pilot_and_resets_the_revision() {
+    let mut tw = boot_i8();
+    let unit = i8_unit(&mut tw);
+    let pilot = i8_player(&mut tw, "Pilot");
+    i8_grant(&mut tw, pilot, unit, 10);
+    tw.connect(pilot);
+    i8_damage(
+        &mut tw,
+        unit,
+        r#"{"AdjustCell":{"addr":{"Unit":{"cell":"heat"}},"delta":1}}"#,
+    );
+    let ev = tw.run(GOD, &format!("@unit/remove #{}", unit.0));
+    assert!(!has_error(&ev), "{}", texts(&ev));
+    // The pilot's default subject is gone: null on both feeds, once each.
+    assert_eq!(
+        i8_frames_to(&ev, "tactics.unit", PanelFrameKind::Keyframe, pilot),
+        vec![Value::Null]
+    );
+    assert_eq!(
+        i8_frames_to(&ev, "tactics.vitals", PanelFrameKind::Keyframe, pilot),
+        vec![Value::Null]
+    );
+    // The staffer, unstationed, gets nothing on the feeds (their HUD was not
+    // showing this unit).
+    assert!(i8_frames_to(&ev, "tactics.unit", PanelFrameKind::Keyframe, GOD).is_empty());
+    let ev = tw.run(GOD, &format!("@unit/create #{}=tacsim.mech.i8", unit.0));
+    assert!(!has_error(&ev), "{}", texts(&ev));
+    for who in [GOD, pilot] {
+        let frames = i8_frames_to(&ev, "tactics.unit", PanelFrameKind::Keyframe, who);
+        assert_eq!(frames.len(), 1, "#{}", who.0);
+        assert_eq!(frames[0]["revision"], json!(0));
+        let vitals = i8_frames_to(&ev, "tactics.vitals", PanelFrameKind::Keyframe, who);
+        assert_eq!(vitals.len(), 1, "#{}", who.0);
+        assert_eq!(vitals[0]["revision"], json!(0));
+    }
+}
+
+#[test]
+fn vf_f4_a_destroyed_asset_refreshes_the_repaired_unit_for_its_stationed_viewers() {
+    let mut tw = boot_i8();
+    let unit = i8_unit(&mut tw);
+    let rifle = tw
+        .world_mut()
+        .create(ObjKind::Thing, "Rifle", GOD, None)
+        .unwrap();
+    i8_damage(
+        &mut tw,
+        unit,
+        &format!(
+            r#"{{"SetComponentAsset":{{"component":"gauss","asset":{}}}}}"#,
+            rifle.0
+        ),
+    );
+    let before = i8_frame_of(&tw, "tactics.unit", GOD, unit);
+    assert_eq!(before["components"][0]["asset"], json!(true));
+    let pilot = i8_player(&mut tw, "Pilot");
+    i8_grant(&mut tw, pilot, unit, 10);
+    tw.connect(pilot);
+    tw.world_mut().destroy(rifle).unwrap();
+    let mut out = Outbox::new();
+    let mut effects = Effects::new();
+    tw.engine_mut().emit_world_event(
+        &WorldEvent::ObjDestroyed { obj: rifle },
+        &mut out,
+        &mut effects,
+    );
+    let ev = out.take();
+    let frames = i8_frames_to(&ev, "tactics.unit", PanelFrameKind::Keyframe, pilot);
+    assert_eq!(frames.len(), 1, "{}", texts(&ev));
+    assert_eq!(frames[0]["components"][0]["asset"], json!(false));
+    assert_eq!(
+        frames[0]["revision"],
+        json!(before["revision"].as_u64().unwrap() + 1)
+    );
+    assert_eq!(
+        i8_frames_to(&ev, "tactics.vitals", PanelFrameKind::Keyframe, pilot).len(),
+        1
+    );
+    let text = frames[0].to_string();
+    assert!(!text.contains(&format!("#{}", rifle.0)), "{text}");
+}
+
+#[test]
+fn vf_f5_a_unit_that_is_its_own_viewer_receives_its_after_action() {
+    let mut tw = boot_i8();
+    let pilot = i8_player(&mut tw, "Pilot");
+    let output = tw.run(GOD, &format!("@unit/create #{}=tacsim.mech.i8", pilot.0));
+    assert!(!has_error(&output), "{}", texts(&output));
+    tw.connect(pilot);
+    let ev = i8_damage(
+        &mut tw,
+        pilot,
+        r#"{"AdjustCell":{"addr":{"Unit":{"cell":"heat"}},"delta":1}}"#,
+    );
+    assert_eq!(
+        i8_frames_to(&ev, "tactics.unit", PanelFrameKind::Delta, pilot).len(),
+        1
+    );
+    assert_eq!(
+        i8_frames_to(&ev, "tactics.vitals", PanelFrameKind::Keyframe, pilot).len(),
+        1
+    );
+    // Not connected: nothing.
+    let drone = tw
+        .world_mut()
+        .create(ObjKind::Npc, "Drone", GOD, None)
+        .unwrap();
+    let output = tw.run(GOD, &format!("@unit/create #{}=tacsim.mech.i8", drone.0));
+    assert!(!has_error(&output), "{}", texts(&output));
+    let ev = i8_damage(
+        &mut tw,
+        drone,
+        r#"{"AdjustCell":{"addr":{"Unit":{"cell":"heat"}},"delta":1}}"#,
+    );
+    assert!(i8_frames_to(&ev, "tactics.unit", PanelFrameKind::Delta, drone).is_empty());
+}
+
+#[test]
+fn vf_f6_the_vitals_keyframe_follows_the_viewers_default_subject_only() {
+    let mut tw = boot_i8();
+    let low = i8_unit(&mut tw);
+    let high = i8_unit(&mut tw);
+    let pilot = i8_player(&mut tw, "Pilot");
+    i8_grant(&mut tw, pilot, low, 5);
+    i8_grant(&mut tw, pilot, high, 10);
+    tw.connect(pilot);
+    let ev = i8_damage(
+        &mut tw,
+        low,
+        r#"{"AdjustCell":{"addr":{"Unit":{"cell":"heat"}},"delta":1}}"#,
+    );
+    assert_eq!(
+        i8_frames_to(&ev, "tactics.unit", PanelFrameKind::Delta, pilot).len(),
+        1,
+        "the delta reaches every stationed viewer"
+    );
+    assert!(
+        i8_frames_to(&ev, "tactics.vitals", PanelFrameKind::Keyframe, pilot).is_empty(),
+        "the lower seat never repoints the gauge strip"
+    );
+    let ev = i8_damage(
+        &mut tw,
+        high,
+        r#"{"AdjustCell":{"addr":{"Unit":{"cell":"heat"}},"delta":1}}"#,
+    );
+    assert_eq!(
+        i8_frames_to(&ev, "tactics.unit", PanelFrameKind::Delta, pilot).len(),
+        1
+    );
+    assert_eq!(
+        i8_frames_to(&ev, "tactics.vitals", PanelFrameKind::Keyframe, pilot).len(),
+        1
+    );
+}
+
+#[test]
+fn vf_v4_the_effective_cell_id_budget_is_forty_bytes() {
+    let forty = "a".repeat(40);
+    let forty_one = "b".repeat(41);
+    let mut definitions = DefinitionRegistryBuilder::new();
+    let opaque = register_ref(
+        &mut definitions,
+        "tacsim",
+        "schema",
+        "tacsim.forty",
+        json!({}),
+    );
+    let body = UnitSpecBody {
+        sections: vec![SectionSpec {
+            id: SectionId::new("hull").unwrap(),
+            condition: ConditionId::new("ok").unwrap(),
+            facets: vec![],
+            slots: vec![],
+            cells: vec![],
+        }],
+        unit_cells: vec![
+            CellSpec {
+                id: CellId::new(&forty).unwrap(),
+                min: 0,
+                max: 5,
+                init: 5,
+            },
+            CellSpec {
+                id: CellId::new(&forty_one).unwrap(),
+                min: 0,
+                max: 5,
+                init: 5,
+            },
+        ],
+        components: vec![],
+        capabilities: vec![],
+        mobility: None,
+        rules: RulesValue::new(opaque, json!({})).unwrap(),
+    };
+    let descriptor = body
+        .descriptor(
+            DefinitionKind::new("unit").unwrap(),
+            DefinitionId::new("tacsim.mech.forty").unwrap(),
+            1,
+        )
+        .unwrap();
+    let definition = definitions
+        .register(OwnerId::new("tacsim").unwrap(), descriptor)
+        .unwrap();
+    let spec = body.with_definition(definition);
+    let mut tw = boot_i8();
+    let object = tw
+        .world_mut()
+        .create(ObjKind::Thing, "Forty", GOD, None)
+        .unwrap();
+    let unit = TacticalUnit::from_spec(&spec, object).unwrap();
+    let vitals = mush_tactics::UnitView::of(
+        tw.world(),
+        object,
+        &mush_tactics::UnitSource::Active(&unit),
+        0,
+    )
+    .vitals_value();
+    let ids: Vec<&str> = vitals["vitals"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids, vec![format!("tactics.{forty}").as_str()]);
+}
+
+#[test]
+fn vf_c8_the_grant_helpers_are_called_only_from_view_module_and_status() {
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let allowed = ["status.rs", "view.rs", "module.rs"];
+    for entry in std::fs::read_dir(&src).expect("src") {
+        let path = entry.expect("entry").path();
+        let name = path.file_name().unwrap().to_string_lossy().to_string();
+        let text = std::fs::read_to_string(&path).expect("read");
+        for needle in [
+            "viewer_is_stationed(",
+            "primary_stationed_unit(",
+            "stationed_viewers(",
+        ] {
+            let calls = text
+                .lines()
+                .filter(|l| !l.trim_start().starts_with("//"))
+                .filter(|l| l.contains(needle) && !l.contains("pub fn "))
+                .count();
+            assert!(
+                calls == 0 || allowed.contains(&name.as_str()),
+                "{name} calls {needle} — a new authority consumer outside the census"
+            );
+        }
+    }
 }
