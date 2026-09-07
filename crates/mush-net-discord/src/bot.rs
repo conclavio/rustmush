@@ -13,7 +13,7 @@ use crate::api::{
 use crate::config::DiscordConfig;
 use crate::hooks::{
     DetachOutcome, DiscordHooks, FollowOutcome, Interaction, LineOutcome, LinkOutcome,
-    UnlinkOutcome,
+    RelayLineOutcome, UnlinkOutcome,
 };
 
 /// The window the `/link` attempt limiter counts over.
@@ -136,11 +136,43 @@ impl LinkLimiter {
     }
 }
 
-/// Per-user state the loop keeps: the link limiter and the "use `/follow`"
-/// hint's last time.
+/// Per-user state the loop keeps: the link limiter and the last time a user
+/// was hinted (the "use `/follow`" reminder, the relay's "not linked" and
+/// refusal notes share one clock per user).
 struct Loop {
     limiter: LinkLimiter,
     hinted: HashMap<u64, Instant>,
+}
+
+impl Loop {
+    /// Whether `user` may be hinted now; records the hint if so.
+    fn hint_due(&mut self, user: u64) -> bool {
+        let now = Instant::now();
+        let due = self
+            .hinted
+            .get(&user)
+            .is_none_or(|t| now.duration_since(*t) >= HINT_INTERVAL);
+        if due {
+            self.hinted.insert(user, now);
+        }
+        due
+    }
+}
+
+/// The relay's note to an unlinked author, sent as a DM.
+pub const RELAY_NOT_LINKED: &str = "Your message was not relayed into the game: this Discord user is not linked to a game account. In the game, `@discord/link` mints a code; then `/link <code>` here.";
+
+/// DM `user_id` a short note (a hint or a refusal); failures are debug-level
+/// (closed DMs are the user's choice).
+async fn dm_user(api: &dyn DiscordApi, user_id: u64, text: &str) {
+    match api.create_dm(user_id).await {
+        Ok(channel) => {
+            if let Err(error) = api.send(channel, Outgoing::plain(text)).await {
+                tracing::debug!(%error, "discord bot: note not delivered");
+            }
+        }
+        Err(error) => tracing::debug!(%error, "discord bot: DM for a note not opened"),
+    }
 }
 
 /// The bot: registers the commands, then serves events until `shutdown`
@@ -421,24 +453,36 @@ async fn handle_event(
                 chars = content.chars().count(),
                 "discord bot: message event"
             );
-            if guild_id.is_some() || content.trim().is_empty() {
+            if content.trim().is_empty() {
+                return;
+            }
+            if guild_id.is_some() {
+                // D4: a line in a relayed channel speaks on the game channel;
+                // an unlinked author is hinted once per interval, a refusal is
+                // told once per interval, everything else is silent.
+                match hooks.relay_line(user_id, channel_id, &content).await {
+                    RelayLineOutcome::Ignored | RelayLineOutcome::Accepted => {}
+                    RelayLineOutcome::NotLinked => {
+                        if state.hint_due(user_id) {
+                            dm_user(api, user_id, RELAY_NOT_LINKED).await;
+                        }
+                    }
+                    RelayLineOutcome::Refused(why) => {
+                        if state.hint_due(user_id) {
+                            dm_user(api, user_id, &format!("Not relayed: {why}.")).await;
+                        }
+                    }
+                }
                 return;
             }
             match hooks.dm_line(user_id, &content).await {
                 LineOutcome::Accepted | LineOutcome::Closed => {}
                 LineOutcome::NotFollowing => {
-                    let now = Instant::now();
-                    let due = state
-                        .hinted
-                        .get(&user_id)
-                        .is_none_or(|t| now.duration_since(*t) >= HINT_INTERVAL);
-                    if due {
-                        state.hinted.insert(user_id, now);
-                        if let Err(error) =
+                    if state.hint_due(user_id)
+                        && let Err(error) =
                             api.send(channel_id, Outgoing::plain(NOT_FOLLOWING)).await
-                        {
-                            tracing::debug!(%error, "discord bot: follow hint failed");
-                        }
+                    {
+                        tracing::debug!(%error, "discord bot: follow hint failed");
                     }
                 }
             }
@@ -465,6 +509,7 @@ mod tests {
         following: Mutex<Vec<u64>>,
         lines: Mutex<Vec<(u64, String)>>,
         interactions: Mutex<Vec<(u64, Interaction)>>,
+        relayed: Mutex<Vec<(u64, u64, String)>>,
     }
 
     impl DiscordHooks for FakeHooks {
@@ -572,6 +617,26 @@ mod tests {
                     .unwrap()
                     .push((user_id, interaction));
                 reply
+            })
+        }
+
+        fn relay_line<'a>(
+            &'a self,
+            user_id: u64,
+            channel_id: u64,
+            content: &'a str,
+        ) -> BoxFuture<'a, RelayLineOutcome> {
+            Box::pin(async move {
+                self.relayed
+                    .lock()
+                    .unwrap()
+                    .push((user_id, channel_id, content.to_string()));
+                match (user_id, content) {
+                    (2, _) => RelayLineOutcome::NotLinked,
+                    (_, "gag me") => RelayLineOutcome::Refused("you are gagged".into()),
+                    (_, c) if channel_id == 777 && !c.is_empty() => RelayLineOutcome::Accepted,
+                    _ => RelayLineOutcome::Ignored,
+                }
             })
         }
     }
@@ -769,6 +834,46 @@ mod tests {
             .collect();
         assert_eq!(answers.len(), 3, "every interaction is answered once");
         assert!(matches!(&answers[0], InteractionReply::Ephemeral(t) if t == "routed d:req:9:yes"));
+    }
+
+    #[tokio::test]
+    async fn guild_lines_route_to_the_relay_and_only_the_unlinked_or_refused_are_told() {
+        let guild = |user: u64, channel: u64, text: &str| DiscordEvent::Message {
+            user_id: user,
+            channel_id: channel,
+            guild_id: Some(42),
+            content: text.to_string(),
+        };
+        let (api, hooks) = run_events(vec![
+            guild(1, 777, "hello all"),
+            guild(1, 777, "gag me"),
+            guild(1, 777, "gag me"),
+            guild(2, 777, "who am i"),
+            guild(1, 555, "unmapped"),
+        ])
+        .await;
+        let relayed = hooks.relayed.lock().unwrap();
+        assert_eq!(relayed.len(), 5, "every guild line reaches the hook");
+        assert_eq!(relayed[0], (1, 777, "hello all".to_string()));
+        assert!(hooks.lines.lock().unwrap().is_empty(), "never a DM line");
+        // One DM per user per interval: the first refusal, the unlinked hint.
+        let dms: Vec<(u64, String)> = api
+            .calls()
+            .into_iter()
+            .filter_map(|c| match c {
+                Call::Send { channel_id, msg } => Some((channel_id, msg.content)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(dms.len(), 2, "{dms:?}");
+        assert!(dms[0].1.contains("Not relayed: you are gagged"));
+        assert_eq!(dms[1].1, RELAY_NOT_LINKED);
+        let opened = api
+            .calls()
+            .iter()
+            .filter(|c| matches!(c, Call::CreateDm { .. }))
+            .count();
+        assert_eq!(opened, 2);
     }
 
     #[test]

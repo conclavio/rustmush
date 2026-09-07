@@ -345,8 +345,13 @@ async fn build_engine(
     // with the boot-hydrated map, so cut 5's `+focus` consults it synchronously
     // inside a world command. If the sim did not compose the slot the oracle
     // stays absent and every consumer fails closed.
+    let account_identity: std::sync::Arc<dyn mush_core::AccountIdentity> =
+        std::sync::Arc::new(account_identity);
+    // Programme D4: the relay's `(account, actor)` re-validation reads the
+    // same oracle from the engine.
+    engine.set_account_identity(std::sync::Arc::clone(&account_identity));
     if let Some(slot) = engine.world.module_state_mut::<mush_sim::AccountOracle>() {
-        *slot = mush_sim::AccountOracle::new(std::sync::Arc::new(account_identity));
+        *slot = mush_sim::AccountOracle::new(account_identity);
     }
     modules::boot_modules(&mut engine, &**store).await?;
     Ok((engine, staff, llm))
@@ -1425,6 +1430,11 @@ async fn handle_request(world: &WorldHandle, req: ServiceReq) -> ServiceResp {
                 Err(WorldReadError::Unavailable) => ServiceResp::Unavailable,
             }
         }
+        ServiceReq::RelaySpeak(req) => match world.relay_speak(req).await {
+            Ok(result) => ServiceResp::RelaySpeak(result),
+            Err(WorldReadError::Busy) => ServiceResp::Busy,
+            Err(WorldReadError::Unavailable) => ServiceResp::Unavailable,
+        },
     }
 }
 

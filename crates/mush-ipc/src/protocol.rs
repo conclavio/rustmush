@@ -7,11 +7,12 @@
 //! pairs matched by a `u64` request id.
 
 use mush_core::{
-    ActionOfferId, CommitToken, DisconnectKind, Inbound, ObjId, PerceivedRef, ProjectedLegalAction,
-    RequestUid,
+    AccountId, ActionOfferId, CommitToken, DisconnectKind, Inbound, ObjId, PerceivedRef,
+    ProjectedLegalAction, RequestUid,
 };
 use mush_proto::{
-    ActionStatusId, OutputEvent, ProjectedActionReceipt, ProjectedActionStatus, RespondChoice,
+    ActionStatusId, NarrativeKind, OutputEvent, ProjectedActionReceipt, ProjectedActionStatus,
+    RespondChoice,
 };
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
@@ -619,6 +620,61 @@ pub enum ServiceReq {
     /// dispatches it by `custom_id` prefix to the handler a module registered
     /// at wiring. Additive (same `IPC_VERSION`).
     DiscordInteraction(DiscordInteraction),
+    /// A line a linked Discord user typed in a relayed Discord channel
+    /// (interface programme D4): spoken on the mapped comsys channel as the
+    /// user's character, after the server re-checks the `(account, actor)`
+    /// claim against its boot-hydrated oracle and comsys runs membership, gag
+    /// and speak-lock. Additive (same `IPC_VERSION`).
+    RelaySpeak(RelaySpeak),
+}
+
+/// A relayed line forwarded to the server (D4). The bridge authenticated the
+/// Discord user (the Gateway asserts `user_id`), resolved the linked account
+/// and chose the character; the server trusts none of the pairing until its
+/// own oracle agrees.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RelaySpeak {
+    /// The Discord user's snowflake. Never rendered; `Debug` redacts it.
+    pub user_id: u64,
+    /// The account the user is linked to, as the store's minted id.
+    pub account: AccountId,
+    /// The character to speak as (followed, else the relay character, else
+    /// the account's first).
+    pub actor: ObjId,
+    /// The comsys channel name the Discord channel maps to.
+    pub channel: String,
+    /// Say, pose or semipose (the Discord line's leading `:` / `;`).
+    pub kind: NarrativeKind,
+    /// The line, already trimmed and bounded by the bridge.
+    pub text: String,
+}
+
+impl std::fmt::Debug for RelaySpeak {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RelaySpeak")
+            .field("user_id", &"<redacted>")
+            .field("actor", &self.actor)
+            .field("channel", &self.channel)
+            .field("kind", &self.kind)
+            .field("chars", &self.text.chars().count())
+            .finish()
+    }
+}
+
+/// Why a [`ServiceReq::RelaySpeak`] was not spoken. Every arm is bounded and
+/// viewer-safe; the bridge may show it to the Discord author.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, thiserror::Error)]
+pub enum RelayError {
+    /// The server's oracle does not pair the character with the account (a
+    /// stale or forged claim, or a character created since boot).
+    #[error("that character is not on your account as far as the game knows")]
+    AccountMismatch,
+    /// The line is over the relay's length cap.
+    #[error("that line is too long for the relay")]
+    TooLong,
+    /// Comsys refused, with its reason.
+    #[error("{0}")]
+    Refused(String),
 }
 
 /// A Discord interaction forwarded to the server (D3). The bridge has already
@@ -704,6 +760,8 @@ pub enum ServiceResp {
     /// Result of a [`ServiceReq::DiscordInteraction`]: the handler's bounded
     /// reply text, or why there is none.
     DiscordInteraction(Result<String, DiscordInteractionError>),
+    /// Result of a [`ServiceReq::RelaySpeak`]: spoken, or why not.
+    RelaySpeak(Result<(), RelayError>),
     /// The boundary has reached its fixed correlated-request custody limit.
     ///
     /// This is a refusal *before* the request enters world-task custody. A

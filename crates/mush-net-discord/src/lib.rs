@@ -33,9 +33,9 @@ pub use api::{
     ApiError, Button, ButtonStyle, DiscordApi, DiscordEvent, DiscordRest, EventSource,
     InteractionHandle, InteractionReply, MAX_BUTTON_LABEL_CHARS, MAX_BUTTONS_PER_ROW,
     MAX_CUSTOM_ID_BYTES, MAX_ROWS, MAX_SELECT_OPTIONS, ModalSpec, Outgoing, Row, Select,
-    SlashCommand, SlashOption, TextField, TwilightEvents, testing,
+    SlashCommand, SlashOption, TextField, TwilightEvents, WEBHOOK_NAME, testing,
 };
-pub use bot::{LINK_REFUSED, NOT_FOLLOWING, ServeError, commands, serve};
+pub use bot::{LINK_REFUSED, NOT_FOLLOWING, RELAY_NOT_LINKED, ServeError, commands, serve};
 pub use config::{DiscordConfig, RelayMap};
 pub use dm::{
     DmPolicy, FollowState, Interactive, MAX_NOTICE_ACTIONS, Rendered, RequestMessage, render,
@@ -43,6 +43,6 @@ pub use dm::{
 };
 pub use hooks::{
     DetachOutcome, DiscordHooks, FollowOutcome, Interaction, LineOutcome, LinkOutcome,
-    UnlinkOutcome, WhoAmI,
+    RelayLineOutcome, UnlinkOutcome, WhoAmI,
 };
 pub use twilight_gateway::Intents;

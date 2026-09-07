@@ -660,6 +660,11 @@ pub struct Engine {
     modules: Vec<Box<dyn GameModule>>,
     /// Engine-owned authoritative state for registered action families.
     action_state: ActionStateStore,
+    /// The boot-hydrated character → account oracle (E7c5), when the server
+    /// installed it: what a relayed line's `(account, actor)` claim is checked
+    /// against (programme D4). Absent in tests and tools; consumers fail
+    /// closed.
+    account_identity: Option<Arc<dyn crate::AccountIdentity>>,
     /// Process-local durable key ring for opaque legal-action offers. The
     /// deployment loader installs it before module boot; it is never part of
     /// world persistence or a projected DTO.
@@ -743,6 +748,7 @@ impl Engine {
             sched: Scheduler::new(),
             modules: Vec::new(),
             action_state,
+            account_identity: None,
             offer_keys: None,
             resolution_keys: None,
             decision_keys: None,
@@ -768,6 +774,51 @@ impl Engine {
     /// valid while their key version is retained by the new ring.
     pub fn set_offer_keys(&mut self, keys: crate::offer::OfferKeyRing) {
         self.offer_keys = Some(keys);
+    }
+
+    /// Install the boot-hydrated character → account oracle (programme D4's
+    /// relay re-validation reads it; the sim's own slot keeps its copy).
+    pub fn set_account_identity(&mut self, identity: Arc<dyn crate::AccountIdentity>) {
+        self.account_identity = Some(identity);
+    }
+
+    /// The account `character` belongs to, per the installed oracle — `None`
+    /// when no oracle is installed or the character is unmapped (both fail
+    /// closed for a caller checking a claim).
+    #[must_use]
+    pub fn account_of(&self, character: ObjId) -> Option<crate::AccountId> {
+        self.account_identity
+            .as_ref()
+            .and_then(|oracle| oracle.account_of(character))
+    }
+
+    /// Speak a relayed line as `actor` on the channel named `channel`
+    /// (programme D4): the registered [`RelaySpeaker`](crate::RelaySpeaker)
+    /// (comsys) runs membership, gag and speak-lock and marks the origin so the
+    /// line is never relayed back out. The caller has already verified the
+    /// `(account, actor)` claim.
+    ///
+    /// # Errors
+    ///
+    /// The refusal the relay may show the author.
+    pub fn relay_speak(
+        &mut self,
+        actor: ObjId,
+        channel: &str,
+        kind: mush_proto::NarrativeKind,
+        text: &str,
+        out: &mut Outbox,
+    ) -> Result<(), crate::RelayRefusal> {
+        crate::module::apply_relay_speak_with_action_state(
+            &self.registry,
+            &mut self.world,
+            out,
+            actor,
+            channel,
+            kind,
+            text,
+            Some(&self.action_state),
+        )
     }
 
     /// Install or atomically replace the process-local resolution key ring.

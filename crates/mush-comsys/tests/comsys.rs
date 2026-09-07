@@ -1682,3 +1682,118 @@ fn a_channel_line_naming_a_member_lands_a_mention_notice_on_them_alone() {
     assert!(mention_notices(&run(&mut engine, nick, "pub Nick was here")).is_empty());
     assert!(mention_notices(&run(&mut engine, nick, "pub the Annex is closed")).is_empty());
 }
+
+/// Programme D4: a channel flagged `relay` publishes each spoken line to the
+/// named relay sink exactly once (beside the members' copies); an unflagged
+/// channel never does; a line that *came in* from the relay is spoken to the
+/// members but never mirrored back (the loop guard) and carries its origin in
+/// history; and the relay speaker refuses exactly what the alias stage would.
+#[test]
+fn d4_relay_flag_mirrors_lines_once_and_the_relay_speaker_keeps_the_gates() {
+    use mush_core::RelayRefusal;
+    use mush_core::output::Audience;
+    use mush_proto::NarrativeKind;
+
+    fn relay_sends(out: &Outbox) -> Vec<(String, String)> {
+        out.events()
+            .iter()
+            .filter_map(|(aud, e)| match (aud, e) {
+                (Audience::Relay(name), OutputEvent::Channel { text, .. }) => {
+                    Some((name.to_string(), text.to_plain_text()))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+    fn member_copies(out: &Outbox) -> usize {
+        out.events()
+            .iter()
+            .filter(|(aud, e)| {
+                matches!(aud, Audience::Actor(_)) && matches!(e, OutputEvent::Channel { .. })
+            })
+            .count()
+    }
+
+    let (mut engine, nick, _ann) = setup();
+    // Unflagged: members hear it, the relay does not.
+    let out = run(&mut engine, nick, "pub hello");
+    assert!(member_copies(&out) >= 1);
+    assert!(
+        relay_sends(&out).is_empty(),
+        "an unflagged channel is never relayed"
+    );
+    // Staff flag it: one relay copy per line, beside the members' copies.
+    let out = run(&mut engine, GOD, "@channel/set Public=relay");
+    assert!(
+        sys_texts(&out).iter().any(|t| t.contains("relay set")),
+        "{:?}",
+        sys_texts(&out)
+    );
+    assert!(
+        state(&engine)
+            .channel_by_name("Public")
+            .unwrap()
+            .flags
+            .relay
+    );
+    let out = run(&mut engine, nick, "pub hello again");
+    assert_eq!(
+        relay_sends(&out),
+        vec![("Public".to_string(), "hello again".to_string())]
+    );
+    assert!(member_copies(&out) >= 1);
+
+    // The relay speaker: spoken to members, origin marked, never mirrored back.
+    let (mut out, _fx) = (Outbox::new(), Effects::new());
+    assert_eq!(
+        engine.relay_speak(
+            nick,
+            "Public",
+            NarrativeKind::Say,
+            "  from discord  ",
+            &mut out
+        ),
+        Ok(())
+    );
+    assert!(member_copies(&out) >= 1, "members hear a relayed line");
+    assert!(
+        relay_sends(&out).is_empty(),
+        "a relayed line is never mirrored back out"
+    );
+    let public = state(&engine).channel_by_name("Public").unwrap().id;
+    let last = state(&engine).rings[&public]
+        .back()
+        .cloned()
+        .expect("logged");
+    assert_eq!(last.text, "from discord");
+    assert_eq!(last.origin.as_deref(), Some("discord"));
+    let mut sink = Outbox::new();
+    // Refusals mirror the alias stage's.
+    assert_eq!(
+        engine.relay_speak(nick, "Nowhere", NarrativeKind::Say, "x", &mut sink),
+        Err(RelayRefusal::NoSuchChannel)
+    );
+    assert_eq!(
+        engine.relay_speak(nick, "Public", NarrativeKind::Say, "   ", &mut sink),
+        Err(RelayRefusal::Empty)
+    );
+    run(&mut engine, nick, "@channel/gag pub");
+    assert_eq!(
+        engine.relay_speak(nick, "Public", NarrativeKind::Say, "muffled", &mut sink),
+        Err(RelayRefusal::Gagged)
+    );
+    run(&mut engine, nick, "@channel/ungag pub");
+    run(&mut engine, GOD, "@channel/create Private");
+    run(&mut engine, GOD, "@channel/set Private=relay");
+    assert_eq!(
+        engine.relay_speak(nick, "Private", NarrativeKind::Say, "psst", &mut sink),
+        Err(RelayRefusal::NotMember)
+    );
+    run(&mut engine, GOD, "@channel/set Public=!relay");
+    assert_eq!(
+        engine.relay_speak(nick, "Public", NarrativeKind::Say, "quiet now", &mut sink),
+        Err(RelayRefusal::NotRelay)
+    );
+    let out = run(&mut engine, nick, "pub unflagged again");
+    assert!(relay_sends(&out).is_empty());
+}

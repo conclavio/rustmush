@@ -121,6 +121,10 @@ use crate::staff::{StaffOp, StaffOpKind, StaffQueue};
 /// binary passes an in-process sink (routes to the shared `SessionManager`); the
 /// forked server passes the socket sink (serializes `ToGateway` frames).
 pub type Gateway = std::sync::Arc<dyn GatewaySink>;
+
+/// The longest relayed line the server speaks (programme D4), characters. The
+/// bridge bounds its lines the same way; this is the server's own guard.
+pub const MAX_RELAY_LINE_CHARS: usize = 1_000;
 use mush_config::{unix_now_ms, unix_now_s};
 
 /// Capacity of the world task's inbound channel.
@@ -270,6 +274,16 @@ pub enum WorldMsg {
     /// a world mutation; the reply carries its bounded text (or why none) and
     /// is sent as soon as the handler returns — what it changed rides this
     /// step's ordinary commit.
+    RelaySpeak {
+        /// The forwarded line (the bridge authenticated the user and chose the
+        /// character; the oracle re-checks the pairing here).
+        req: mush_ipc::RelaySpeak,
+        /// Spoken, or why not; the outer error is the world busy or gone.
+        reply: oneshot::Sender<Result<Result<(), mush_ipc::RelayError>, WorldReadError>>,
+    },
+    /// A Discord component interaction the gateway bridge forwarded
+    /// (programme D3, 03 §7a.4): dispatched by `custom_id` prefix to the
+    /// module handler registered at wiring.
     DiscordInteraction {
         /// The forwarded interaction (the bridge authenticated the user).
         interaction: mush_ipc::DiscordInteraction,
@@ -864,7 +878,8 @@ fn classify_world_msg(msg: &WorldMsg) -> IngressClass {
         WorldMsg::ReAttach { .. } => IngressClass::TransportBookkeeping,
         WorldMsg::CreatePlayer { .. }
         | WorldMsg::AuthoritativeAction(_)
-        | WorldMsg::DiscordInteraction { .. } => IngressClass::WorldMutation,
+        | WorldMsg::DiscordInteraction { .. }
+        | WorldMsg::RelaySpeak { .. } => IngressClass::WorldMutation,
         WorldMsg::NameFree { .. }
         | WorldMsg::InInputContext { .. }
         | WorldMsg::ConnectionReady { .. }
@@ -1080,6 +1095,26 @@ impl WorldHandle {
         if self
             .tx
             .send(WorldMsg::InInputContext { actor, reply })
+            .await
+            .is_err()
+        {
+            return Err(WorldReadError::Unavailable);
+        }
+        rx.await.unwrap_or(Err(WorldReadError::Unavailable))
+    }
+
+    /// Speak a relayed line (programme D4) as the character the bridge chose,
+    /// after the oracle re-checks the `(account, actor)` pairing. The inner
+    /// result is spoken-or-why-not; the outer error is the world being busy or
+    /// gone.
+    pub async fn relay_speak(
+        &self,
+        req: mush_ipc::RelaySpeak,
+    ) -> Result<Result<(), mush_ipc::RelayError>, WorldReadError> {
+        let (reply, rx) = oneshot::channel();
+        if self
+            .tx
+            .send(WorldMsg::RelaySpeak { req, reply })
             .await
             .is_err()
         {
@@ -3662,6 +3697,34 @@ async fn run(
                             let _ = reply.send(Ok(engine.world.input_depth(actor) > 0));
                             StepOutcome::Continue
                         }
+                        WorldMsg::RelaySpeak { req, reply } => {
+                            // The bridge's `(account, actor)` claim is checked
+                            // against the boot-hydrated oracle (fail closed: no
+                            // oracle, no match); comsys runs its own gates.
+                            let result = if engine.account_of(req.actor) != Some(req.account) {
+                                Err(mush_ipc::RelayError::AccountMismatch)
+                            } else if req.text.chars().count() > MAX_RELAY_LINE_CHARS {
+                                Err(mush_ipc::RelayError::TooLong)
+                            } else {
+                                engine
+                                    .relay_speak(
+                                        req.actor,
+                                        &req.channel,
+                                        req.kind,
+                                        &req.text,
+                                        &mut out,
+                                    )
+                                    .map_err(|why| mush_ipc::RelayError::Refused(why.to_string()))
+                            };
+                            tracing::debug!(
+                                actor = %req.actor,
+                                channel = %req.channel,
+                                ok = result.is_ok(),
+                                "relay speak dispatched"
+                            );
+                            let _ = reply.send(Ok(result));
+                            StepOutcome::Continue
+                        }
                         WorldMsg::DiscordInteraction { interaction, reply } => {
                             let core = mush_core::DiscordInteraction {
                                 account: interaction.account.clone(),
@@ -5280,6 +5343,14 @@ fn refuse_world_msg(msg: WorldMsg, reason: RefusalReason, gateway: &Gateway) {
             let _ = reply.send(Err(error));
         }
         WorldMsg::DiscordInteraction { reply, .. } => {
+            let error = if reason == RefusalReason::CommitPending {
+                WorldReadError::Busy
+            } else {
+                WorldReadError::Unavailable
+            };
+            let _ = reply.send(Err(error));
+        }
+        WorldMsg::RelaySpeak { reply, .. } => {
             let error = if reason == RefusalReason::CommitPending {
                 WorldReadError::Busy
             } else {
@@ -7685,6 +7756,10 @@ fn resolve_classified_sends(
                 }
             }
             Audience::All => sends.push((class, SendTarget::All, ev)),
+            // A relay sink is not a character: no recipient gate. The flag on
+            // the channel is the staff's declaration that its lines may leave
+            // the world (programme D4).
+            Audience::Relay(name) => sends.push((class, SendTarget::Relay(name), ev)),
         }
     }
     sends
@@ -12774,6 +12849,22 @@ mod tests {
         assert_eq!(
             classify_world_msg(&WorldMsg::InInputContext { actor: GOD, reply }),
             IngressClass::WorldRead
+        );
+        // A relayed line speaks on a channel: a world mutation.
+        let (reply, _rx) = oneshot::channel();
+        assert_eq!(
+            classify_world_msg(&WorldMsg::RelaySpeak {
+                req: mush_ipc::RelaySpeak {
+                    user_id: 1,
+                    account: mush_core::AccountId::mint("nick", 1).unwrap(),
+                    actor: GOD,
+                    channel: "Public".to_string(),
+                    kind: mush_proto::NarrativeKind::Say,
+                    text: "hi".to_string(),
+                },
+                reply,
+            }),
+            IngressClass::WorldMutation
         );
         // A forwarded Discord interaction runs a module handler that may
         // mutate: a world mutation, never a read.

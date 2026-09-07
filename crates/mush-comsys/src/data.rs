@@ -126,6 +126,12 @@ pub struct ChannelFlags {
     /// otherwise.
     #[serde(default)]
     pub ic: bool,
+    /// Mirrored to a Discord channel and back (interface programme D4): each
+    /// line also goes to the named relay sink, and linked Discord users may
+    /// speak on it as their characters. Staff set it; off by default — a
+    /// channel's lines never leave the world unless someone says so.
+    #[serde(default)]
+    pub relay: bool,
 }
 
 /// How much history a LOGGED channel keeps and whether it survives reboot.
@@ -232,6 +238,11 @@ pub struct ChanMsg {
     pub text: String,
     /// Send time, Unix milliseconds.
     pub ts: i64,
+    /// Where the line came from when not from a connection of the speaker:
+    /// `"discord"` for a relayed line (programme D4). Absent for the game's
+    /// own lines; such a line is never mirrored back out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<SmolStr>,
 }
 
 /// The live comsys state, held in a module state slot on the `World`.

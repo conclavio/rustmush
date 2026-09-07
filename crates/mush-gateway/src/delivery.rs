@@ -105,6 +105,11 @@ pub fn transmit_and_police(
                 let report = sessions.broadcast_all(ev);
                 slow.extend(report.dropped);
             }
+            SendTarget::Relay(channel) => {
+                // Relay lines are split off before this point
+                // ([`split_relay`]); one reaching here has no sink to go to.
+                tracing::debug!(%channel, "relay line reached the session fan-out; dropped");
+            }
         }
     }
     slow.sort_unstable();
@@ -115,6 +120,28 @@ pub fn transmit_and_police(
     slow.into_iter()
         .filter_map(|conn| police_slow_client(sessions, conn, &mut spawn_reaper))
         .collect()
+}
+
+/// One relay line: the comsys channel name and the event to mirror (D4).
+pub type RelaySend = (smol_str::SmolStr, Arc<OutputEvent>);
+
+/// One session-bound send: a resolved target and the event.
+pub type SessionSend = (SendTarget, Arc<OutputEvent>);
+
+/// Split a delivery batch into its relay lines (programme D4: `(channel name,
+/// event)` for the Discord bridge's relay sink) and everything else, which the
+/// session fan-out handles. Order within each half is preserved.
+#[must_use]
+pub fn split_relay(sends: Vec<SessionSend>) -> (Vec<RelaySend>, Vec<SessionSend>) {
+    let mut relay = Vec::new();
+    let mut rest = Vec::with_capacity(sends.len());
+    for (target, ev) in sends {
+        match target {
+            SendTarget::Relay(channel) => relay.push((channel, ev)),
+            other => rest.push((other, ev)),
+        }
+    }
+    (relay, rest)
 }
 
 /// Detach one overflowed connection as a slow client and return the engine's
@@ -224,6 +251,14 @@ impl SessionDelivery {
     /// overflowed connections (D5), and post each policed `ConnDown` back to the
     /// server over the boundary in the deterministic sorted order.
     pub fn transmit(&self, sends: Vec<(SendTarget, Arc<OutputEvent>)>) {
+        // Relay lines (programme D4) go to the Discord bridge, not to sessions.
+        let (relay, sends) = split_relay(sends);
+        for (channel, ev) in relay {
+            match &self.controls {
+                Some(c) => c.relay(&channel, ev),
+                None => tracing::debug!(%channel, "relay line with no registry; dropped"),
+            }
+        }
         let reaper_sessions = Arc::clone(&self.sessions);
         let reaper_boundary = self.boundary.clone();
         let posts = transmit_and_police(&self.sessions, sends, move |grace| {

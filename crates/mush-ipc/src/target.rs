@@ -23,7 +23,7 @@ use serde::{Deserialize, Serialize};
 /// The `u64` payloads are opaque routing keys. `Char` is a widened
 /// `mush_core::ObjId` (the session layer's character fan-out key); `Conn` is a
 /// single physical connection id (`mush_session::ConnId`'s inner value).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum SendTarget {
     /// Every live connection of one character (widened `ObjId`).
     Char(u64),
@@ -31,4 +31,8 @@ pub enum SendTarget {
     Conn(u64),
     /// Every connection on the server.
     All,
+    /// A named relay sink outside the world (interface programme D4): the
+    /// gateway's Discord bridge mirrors it to the mapped Discord channel. The
+    /// name is the comsys channel's. Additive (same `IPC_VERSION`).
+    Relay(smol_str::SmolStr),
 }

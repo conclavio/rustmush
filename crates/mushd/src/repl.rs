@@ -99,6 +99,7 @@ fn print_gods_view(engine: &mush_core::Engine, out: &mut Outbox) {
         let reaches = match &audience {
             Audience::Actor(a) => *a == GOD,
             Audience::All => true,
+            Audience::Relay(_) => false,
             Audience::Room {
                 room,
                 exclude,

@@ -29,7 +29,9 @@ use mush_session::{CharKey, ConnId, DetachReason, SessionManager};
 use tokio::sync::mpsc::WeakSender;
 
 use mush_gateway::controls::GatewayControls;
-use mush_gateway::delivery::{ConnDownPost, spawn_linkdead_reaper, transmit_and_police};
+use mush_gateway::delivery::{
+    ConnDownPost, spawn_linkdead_reaper, split_relay, transmit_and_police,
+};
 
 /// The all-in-one in-process [`GatewaySink`]: the shared session manager plus a
 /// WEAK sender into the world loop's own inbound queue for policing feedback.
@@ -90,6 +92,14 @@ impl InProcessSink {
 
 impl GatewaySink for InProcessSink {
     fn transmit(&self, sends: Vec<(SendTarget, Arc<OutputEvent>)>) {
+        // Relay lines (programme D4) go to the Discord bridge, not to sessions.
+        let (relay, sends) = split_relay(sends);
+        for (channel, ev) in relay {
+            match &self.controls {
+                Some(c) => c.relay(&channel, ev),
+                None => tracing::debug!(%channel, "relay line with no registry; dropped"),
+            }
+        }
         // The world loop owns this sink, so the reaper (and its `SessionGone`
         // feedback) must go through a WEAK sender it upgrades only transiently —
         // a live sender would keep the loop's own inbound queue alive forever.

@@ -107,6 +107,11 @@ impl GatewayLink for WorldHandle {
                         Err(WorldReadError::Unavailable) => ServiceResp::Unavailable,
                     }
                 }
+                ServiceReq::RelaySpeak(req) => match self.relay_speak(req).await {
+                    Ok(result) => ServiceResp::RelaySpeak(result),
+                    Err(WorldReadError::Busy) => ServiceResp::Busy,
+                    Err(WorldReadError::Unavailable) => ServiceResp::Unavailable,
+                },
             })
         })
     }

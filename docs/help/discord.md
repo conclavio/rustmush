@@ -90,6 +90,25 @@ Buttons:
   resuming on your turn), you get a notice on every interface — the DM
   included.
 
+Relayed channels:
+
+  Staff can mirror a comsys channel to a Discord channel and back
+  (`@channel/set Public=relay`, plus the mapping in the server's config).
+  Every line spoken on such a channel appears in the Discord channel under
+  the speaker's character name; every message a linked Discord user posts
+  in that Discord channel is spoken on the game channel as their character
+  — the one they are following, else their relay character
+  (`@discord/set relay=<character>`), else their first. The same rules as
+  typing it apply: you must be on the channel, ungagged, and allowed to
+  speak there; `:waves` and `;grins` pose as they do in game. A line from
+  Discord is never mirrored back to Discord, and a channel is never relayed
+  unless staff flagged it. Unlinked Discord users are told once in a while
+  that their line was not relayed; banned users are ignored.
+
+  Lines you type here run as your character exactly as in the game, so what
+  you say in a relayed Discord channel is in the game's history like any
+  other channel line.
+
 Rules:
 
 - One Discord user per account and one account per Discord user. To move a

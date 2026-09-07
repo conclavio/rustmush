@@ -30,7 +30,7 @@
 //! text, so the bot is never an oracle on which accounts exist or are linked.
 //! The bridge logs the reason class at `info`, never the code.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::net::{IpAddr, Ipv4Addr};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, Weak};
@@ -41,18 +41,21 @@ use mush_config::config::Config;
 use mush_config::discord::link_code_hash;
 use mush_config::ipguard::IpGuard;
 use mush_config::unix_now_s;
-use mush_core::ObjId;
+use mush_core::{AccountId, ObjId};
 use mush_ipc::{
-    DiscordControlOp, DiscordInteraction, DiscordInteractionError, GatewayLink, ServiceReq,
-    ServiceResp,
+    DiscordControlOp, DiscordInteraction, DiscordInteractionError, GatewayLink, RelaySpeak,
+    ServiceReq, ServiceResp,
 };
+use mush_net_discord::dm::escape_md;
 use mush_net_discord::{
     ApiError, DetachOutcome, DiscordApi, DiscordConfig, DiscordHooks, DiscordRest, DmPolicy,
     FollowOutcome, FollowState, Intents, Interaction, InteractionReply, LineOutcome, LinkOutcome,
-    ModalSpec, Outgoing, TextField, TwilightEvents, UnlinkOutcome, WhoAmI, run_dm_writer,
+    ModalSpec, Outgoing, RelayLineOutcome, RelayMap, TextField, TwilightEvents, UnlinkOutcome,
+    WhoAmI, run_dm_writer,
 };
 use mush_proto::{
-    ClientCaps, ClientKind, ColorDepth, Envelope, OutputEvent, RespondChoice, RichText,
+    ClientCaps, ClientKind, ColorDepth, Envelope, NarrativeKind, OutputEvent, RespondChoice,
+    RichText,
 };
 use mush_session::{CharKey, ConnId, ConnectionHandle, SessionManager};
 use mush_store::{AccountRec, CharacterRef, DiscordLinkRec, ObjectStore};
@@ -62,7 +65,7 @@ use tokio::task::JoinHandle;
 
 use crate::accounts::AuthBackend;
 use crate::bridge_common::{GameBridge, LineOutcome as CoreLine};
-use crate::controls::{DiscordControl, GatewayControls};
+use crate::controls::{DiscordControl, GatewayControls, RelaySink};
 use crate::delivery::{char_key, char_key_obj};
 
 /// Discord connection ids start here: disjoint from SSH (allocated from 1)
@@ -165,7 +168,15 @@ pub fn spawn_bot<A: AuthBackend + 'static>(
     // D2 needs DIRECT_MESSAGES for the DM lines. The content of a DM to the
     // bot is delivered without the privileged Message Content intent (that
     // gates guild messages — D4's relay). Slash commands arrive regardless.
-    let events = Box::new(TwilightEvents::new(token, Intents::DIRECT_MESSAGES));
+    // D4: an inbound relay mapping needs guild message events and their
+    // content — the privileged Message Content intent (D-D-13, a portal
+    // toggle). Without one, the shard stays DM-only.
+    let relay = RelayMapper::new(&dc.relay);
+    let mut intents = Intents::DIRECT_MESSAGES;
+    if relay.accepts_inbound() {
+        intents |= Intents::GUILD_MESSAGES | Intents::MESSAGE_CONTENT;
+    }
+    let events = Box::new(TwilightEvents::new(token, intents));
     let bridge = Arc::new(DiscordBridge::with_link(
         accounts,
         sessions,
@@ -179,6 +190,9 @@ pub fn spawn_bot<A: AuthBackend + 'static>(
     // The server's `ToGateway::DiscordControl` (the in-game `@discord/follow`
     // family) reaches the bridge through the process's control registry.
     controls.set_discord(Arc::new(BridgeControl(Arc::downgrade(&bridge))));
+    // D4: relay-flagged channel lines the world publishes reach the bridge
+    // through the same registry.
+    controls.set_relay(Arc::new(BridgeRelay(Arc::downgrade(&bridge))));
     let sweeper = tokio::spawn(idle_sweeper(Arc::clone(&bridge)));
     let hooks: Arc<dyn DiscordHooks> = bridge;
     let (stop, stop_rx) = oneshot::channel::<()>();
@@ -243,6 +257,70 @@ pub struct DiscordBridge<A: AuthBackend + 'static> {
     /// Discord user → the one follow (D-D-6). Never held across an await.
     follows: Arc<Mutex<HashMap<u64, Follow>>>,
     next_conn: AtomicU64,
+    /// The `[discord.relay]` map, both ways (D4).
+    relay: RelayMapper,
+    /// Per-author inbound relay limiter (D4): at most [`RELAY_PER_USER`]
+    /// lines per [`RELAY_WINDOW`]; over the limit is silently dropped.
+    relay_limiter: Mutex<HashMap<u64, VecDeque<Instant>>>,
+}
+
+/// The inbound relay limiter's window.
+pub const RELAY_WINDOW: Duration = Duration::from_secs(10);
+/// Lines one Discord author may relay per [`RELAY_WINDOW`].
+pub const RELAY_PER_USER: usize = 5;
+/// The longest line the bridge relays into the game, characters (the server
+/// guards the same bound).
+pub const MAX_RELAY_LINE_CHARS: usize = 1_000;
+
+/// The `[discord.relay]` entries indexed both ways (D4).
+#[derive(Debug, Default)]
+pub struct RelayMapper {
+    by_name: HashMap<String, RelayMap>,
+    by_discord: HashMap<u64, RelayMap>,
+}
+
+impl RelayMapper {
+    /// Index the configured mappings; entries with a blank channel name or a
+    /// zero Discord channel id are skipped (logged).
+    #[must_use]
+    pub fn new(maps: &[RelayMap]) -> RelayMapper {
+        let mut m = RelayMapper::default();
+        for map in maps {
+            if map.channel.trim().is_empty() || map.discord_channel_id == 0 {
+                tracing::warn!("[discord.relay] entry with no channel name or id ignored");
+                continue;
+            }
+            m.by_name
+                .insert(map.channel.trim().to_ascii_lowercase(), map.clone());
+            m.by_discord.insert(map.discord_channel_id, map.clone());
+        }
+        m
+    }
+
+    /// The mapping a game channel's line goes out through, if any.
+    #[must_use]
+    pub fn outbound(&self, channel: &str) -> Option<&RelayMap> {
+        self.by_name
+            .get(&channel.trim().to_ascii_lowercase())
+            .filter(|m| matches!(m.direction.as_str(), "both" | "to_discord"))
+    }
+
+    /// The mapping a Discord channel's line comes in through, if any.
+    #[must_use]
+    pub fn inbound(&self, discord_channel_id: u64) -> Option<&RelayMap> {
+        self.by_discord
+            .get(&discord_channel_id)
+            .filter(|m| matches!(m.direction.as_str(), "both" | "to_game"))
+    }
+
+    /// Whether any mapping accepts Discord → game lines (the intents the
+    /// shard needs).
+    #[must_use]
+    pub fn accepts_inbound(&self) -> bool {
+        self.by_discord
+            .values()
+            .any(|m| matches!(m.direction.as_str(), "both" | "to_game"))
+    }
 }
 
 impl<A: AuthBackend + 'static> DiscordBridge<A> {
@@ -271,6 +349,8 @@ impl<A: AuthBackend + 'static> DiscordBridge<A> {
                 .then(|| Duration::from_secs(config.follow_idle_detach_s)),
             follows: Arc::new(Mutex::new(HashMap::new())),
             next_conn: AtomicU64::new(DISCORD_CONN_ID_BASE),
+            relay: RelayMapper::new(&config.relay),
+            relay_limiter: Mutex::new(HashMap::new()),
         }
     }
 
@@ -1120,6 +1200,190 @@ impl<A: AuthBackend + 'static> DiscordBridge<A> {
     }
 }
 
+/// The bridge as the boundary's [`RelaySink`] (programme D4): held weakly by
+/// the process's control registry; each line is mirrored on its own task.
+struct BridgeRelay<A: AuthBackend + 'static>(Weak<DiscordBridge<A>>);
+
+impl<A: AuthBackend + 'static> RelaySink for BridgeRelay<A> {
+    fn relay(&self, channel: &str, event: Arc<OutputEvent>) {
+        let Some(bridge) = self.0.upgrade() else {
+            return;
+        };
+        let Ok(rt) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        let channel = channel.to_string();
+        rt.spawn(async move {
+            bridge.relay_out(&channel, &event).await;
+        });
+    }
+}
+
+/// How a relayed game line reads on Discord: the speaker is the webhook's
+/// name (or a bold prefix without one), so a say is just its text and a pose
+/// is italic.
+fn relay_content(kind: NarrativeKind, name: &str, text: &str, impersonated: bool) -> String {
+    let text = escape_md(text);
+    let name = escape_md(name);
+    match (kind, impersonated) {
+        (NarrativeKind::Pose, true) => format!("_{name} {text}_"),
+        (NarrativeKind::SemiPose, true) => format!("_{name}{text}_"),
+        (_, true) => text,
+        (NarrativeKind::Pose, false) => format!("_{name} {text}_"),
+        (NarrativeKind::SemiPose, false) => format!("_{name}{text}_"),
+        (_, false) => format!("**{name}**: {text}"),
+    }
+}
+
+/// The TinyMUX pose forms a Discord line may use: `:waves` → pose,
+/// `;grins` → semipose, anything else is said.
+fn relay_kind(line: &str) -> (NarrativeKind, &str) {
+    if let Some(t) = line.strip_prefix(':') {
+        (NarrativeKind::Pose, t)
+    } else if let Some(t) = line.strip_prefix(';') {
+        (NarrativeKind::SemiPose, t)
+    } else {
+        (NarrativeKind::Say, line)
+    }
+}
+
+impl<A: AuthBackend + 'static> DiscordBridge<A> {
+    /// The relay map (for the wiring's intents and tests).
+    #[must_use]
+    pub fn relay_map(&self) -> &RelayMapper {
+        &self.relay
+    }
+
+    /// Whether `user` may relay another line now; records the line if so.
+    fn relay_admit(&self, user: u64) -> bool {
+        let now = Instant::now();
+        let mut limiter = self.relay_limiter.lock().expect("relay limiter poisoned");
+        let window = limiter.entry(user).or_default();
+        while window
+            .front()
+            .is_some_and(|t| now.duration_since(*t) >= RELAY_WINDOW)
+        {
+            window.pop_front();
+        }
+        if window.len() >= RELAY_PER_USER {
+            return false;
+        }
+        window.push_back(now);
+        true
+    }
+
+    /// Game → Discord (D4): a relay-flagged channel's line, mirrored to its
+    /// mapped Discord channel under the character's name.
+    pub async fn relay_out(&self, channel: &str, event: &OutputEvent) {
+        let Some(map) = self.relay.outbound(channel) else {
+            tracing::debug!(channel, "relay line for an unmapped channel dropped");
+            return;
+        };
+        let OutputEvent::Channel {
+            actor, kind, text, ..
+        } = event
+        else {
+            return;
+        };
+        let content = relay_content(*kind, &actor.name, &text.to_plain_text(), map.webhook);
+        let result = if map.webhook {
+            self.api
+                .webhook_send(map.discord_channel_id, &actor.name, &content)
+                .await
+        } else {
+            self.api
+                .send(map.discord_channel_id, Outgoing::plain(content))
+                .await
+        };
+        match result {
+            Ok(_) => tracing::debug!(channel, "relay line mirrored"),
+            Err(e) => tracing::warn!(channel, error = %e, "relay line not mirrored"),
+        }
+    }
+
+    /// Discord → game (D4): a line in a mapped Discord channel, spoken on the
+    /// game channel as the author's character after the server re-checks the
+    /// pairing and comsys its gates.
+    pub async fn relay_in(&self, user_id: u64, channel_id: u64, content: &str) -> RelayLineOutcome {
+        let Some(map) = self.relay.inbound(channel_id) else {
+            return RelayLineOutcome::Ignored;
+        };
+        let (kind, text) = relay_kind(content.trim());
+        let text = text.trim();
+        if text.is_empty() {
+            return RelayLineOutcome::Ignored;
+        }
+        if !self.relay_admit(user_id) {
+            tracing::debug!("relay line over the per-author limit dropped");
+            return RelayLineOutcome::Ignored;
+        }
+        let account = match self.store.account_by_discord_user(user_id).await {
+            Ok(Some(a)) => a,
+            Ok(None) => return RelayLineOutcome::NotLinked,
+            Err(e) => {
+                tracing::warn!(error = %e, "relay: account lookup failed");
+                return RelayLineOutcome::Refused("the account store is unavailable".to_string());
+            }
+        };
+        match self.store.discord_ban_get(user_id).await {
+            Ok(None) => {}
+            // A banned author is ignored silently — no oracle for the ban.
+            Ok(Some(_)) => return RelayLineOutcome::Ignored,
+            Err(e) => {
+                tracing::warn!(error = %e, "relay: ban lookup failed");
+                return RelayLineOutcome::Refused("the account store is unavailable".to_string());
+            }
+        }
+        if text.chars().count() > MAX_RELAY_LINE_CHARS {
+            return RelayLineOutcome::Refused(format!(
+                "that line is over the relay's {MAX_RELAY_LINE_CHARS}-character limit"
+            ));
+        }
+        let Some(account_id) = account
+            .id
+            .or_else(|| AccountId::mint(&account.name, account.created).ok())
+        else {
+            return RelayLineOutcome::Refused("your account has no id yet".to_string());
+        };
+        let actor = self
+            .follow_of(user_id)
+            .map(|(_, character, _)| character)
+            .or_else(|| {
+                account
+                    .discord
+                    .as_ref()
+                    .and_then(|l| l.relay_character)
+                    .filter(|c| account.characters.iter().any(|ch| ch.id == *c))
+            })
+            .or_else(|| account.characters.first().map(|c| c.id));
+        let Some(actor) = actor else {
+            return RelayLineOutcome::Refused("your account has no character yet".to_string());
+        };
+        let req = RelaySpeak {
+            user_id,
+            account: account_id,
+            actor,
+            channel: map.channel.clone(),
+            kind,
+            text: text.to_string(),
+        };
+        match self.core.link.request(ServiceReq::RelaySpeak(req)).await {
+            Some(ServiceResp::RelaySpeak(Ok(()))) => RelayLineOutcome::Accepted,
+            Some(ServiceResp::RelaySpeak(Err(e))) => RelayLineOutcome::Refused(e.to_string()),
+            Some(ServiceResp::Busy) => {
+                RelayLineOutcome::Refused("the game is busy; try again in a moment".to_string())
+            }
+            Some(ServiceResp::Unavailable) | None => {
+                RelayLineOutcome::Refused("the game is not reachable right now".to_string())
+            }
+            Some(other) => {
+                tracing::error!(?other, "relay speak: wrong response type");
+                RelayLineOutcome::Refused("the game gave an unexpected answer".to_string())
+            }
+        }
+    }
+}
+
 /// The periodic idle sweep ([`IDLE_SWEEP_INTERVAL`]).
 async fn idle_sweeper<A: AuthBackend + 'static>(bridge: Arc<DiscordBridge<A>>) {
     let mut tick = tokio::time::interval(IDLE_SWEEP_INTERVAL);
@@ -1257,6 +1521,15 @@ impl<A: AuthBackend + 'static> DiscordHooks for DiscordBridge<A> {
     ) -> BoxFuture<'_, InteractionReply> {
         Box::pin(async move { self.route_interaction(user_id, interaction).await })
     }
+
+    fn relay_line<'a>(
+        &'a self,
+        user_id: u64,
+        channel_id: u64,
+        content: &'a str,
+    ) -> BoxFuture<'a, RelayLineOutcome> {
+        Box::pin(async move { self.relay_in(user_id, channel_id, content).await })
+    }
 }
 
 #[cfg(test)]
@@ -1312,6 +1585,18 @@ mod tests {
                             .unwrap()
                             .push(ServiceReq::DiscordInteraction(ix));
                         ServiceResp::DiscordInteraction(Ok(reply))
+                    }
+                    ServiceReq::RelaySpeak(req) => {
+                        let result = if req.text == "gag me" {
+                            Err(mush_ipc::RelayError::Refused("you are gagged".to_string()))
+                        } else {
+                            Ok(())
+                        };
+                        self.requests
+                            .lock()
+                            .unwrap()
+                            .push(ServiceReq::RelaySpeak(req));
+                        ServiceResp::RelaySpeak(result)
                     }
                     _ => ServiceResp::Unavailable,
                 })
@@ -1411,15 +1696,19 @@ mod tests {
     }
 
     async fn rig(edit: impl FnOnce(&mut DiscordConfig)) -> Rig {
-        let store = store_with("Nick").await;
-        let api = FakeApi::new();
-        let link = Arc::new(AutoLink::default());
-        let sessions = Arc::new(SessionManager::with_config(SessionConfig::default()));
         let mut config = DiscordConfig {
             dm_coalesce_ms: 50,
             ..DiscordConfig::default()
         };
         edit(&mut config);
+        rig_with(config).await
+    }
+
+    async fn rig_with(config: DiscordConfig) -> Rig {
+        let store = store_with("Nick").await;
+        let api = FakeApi::new();
+        let link = Arc::new(AutoLink::default());
+        let sessions = Arc::new(SessionManager::with_config(SessionConfig::default()));
         let bridge = Arc::new(DiscordBridge::with_link(
             Arc::new(FakeAuth),
             Arc::clone(&sessions),
@@ -2148,6 +2437,239 @@ mod tests {
             waited += 1;
         }
         assert_eq!(r.bridge.following(USER), Some((NICKY, "Nicky".to_string())));
+    }
+
+    fn relay_config() -> DiscordConfig {
+        DiscordConfig {
+            dm_coalesce_ms: 50,
+            relay: vec![
+                RelayMap {
+                    channel: "Public".into(),
+                    discord_channel_id: 4242,
+                    direction: "both".into(),
+                    webhook: true,
+                },
+                RelayMap {
+                    channel: "Staff".into(),
+                    discord_channel_id: 5151,
+                    direction: "to_discord".into(),
+                    webhook: false,
+                },
+                RelayMap {
+                    channel: "Intake".into(),
+                    discord_channel_id: 6161,
+                    direction: "to_game".into(),
+                    webhook: true,
+                },
+            ],
+            ..DiscordConfig::default()
+        }
+    }
+
+    fn channel_line(name: &str, kind: NarrativeKind, text: &str) -> OutputEvent {
+        OutputEvent::Channel {
+            channel: mush_proto::SmolStr::new(name),
+            seq: 7,
+            actor: ObjRef::new("#9", "Zoe"),
+            title: None,
+            kind,
+            text: RichText::plain(text),
+            ts: 0,
+        }
+    }
+
+    #[test]
+    fn the_relay_map_honours_directions() {
+        let m = RelayMapper::new(&relay_config().relay);
+        assert_eq!(
+            m.outbound("public").map(|r| r.discord_channel_id),
+            Some(4242)
+        );
+        assert_eq!(
+            m.outbound("Staff").map(|r| r.discord_channel_id),
+            Some(5151)
+        );
+        assert!(m.outbound("Intake").is_none(), "to_game never goes out");
+        assert!(m.inbound(4242).is_some());
+        assert!(m.inbound(5151).is_none(), "to_discord never comes in");
+        assert!(m.inbound(6161).is_some());
+        assert!(m.inbound(9).is_none());
+        assert!(m.accepts_inbound());
+        assert!(
+            !RelayMapper::new(&relay_config().relay[1..2]).accepts_inbound(),
+            "an outbound-only map needs no message intents"
+        );
+        // Blank or zero entries are skipped.
+        let none = RelayMapper::new(&[RelayMap {
+            channel: String::new(),
+            discord_channel_id: 1,
+            ..RelayMap::default()
+        }]);
+        assert!(none.outbound("").is_none());
+    }
+
+    #[tokio::test]
+    async fn game_lines_go_out_through_the_webhook_or_as_the_bot() {
+        let r = rig_with(relay_config()).await;
+        let b = &r.bridge;
+        b.relay_out(
+            "Public",
+            &channel_line("Public", NarrativeKind::Say, "hi *all*"),
+        )
+        .await;
+        b.relay_out(
+            "Public",
+            &channel_line("Public", NarrativeKind::Pose, "waves."),
+        )
+        .await;
+        b.relay_out("Staff", &channel_line("Staff", NarrativeKind::Say, "ping"))
+            .await;
+        b.relay_out(
+            "Intake",
+            &channel_line("Intake", NarrativeKind::Say, "nope"),
+        )
+        .await;
+        b.relay_out(
+            "Public",
+            &OutputEvent::Sys(RichText::tag("channel", "not a channel line")),
+        )
+        .await;
+        let calls = r.api.calls();
+        assert_eq!(
+            calls,
+            vec![
+                Call::WebhookSend {
+                    channel_id: 4242,
+                    username: "Zoe".into(),
+                    content: "hi \\*all\\*".into(),
+                },
+                Call::WebhookSend {
+                    channel_id: 4242,
+                    username: "Zoe".into(),
+                    content: "_Zoe waves._".into(),
+                },
+                Call::Send {
+                    channel_id: 5151,
+                    msg: Outgoing::plain("**Zoe**: ping"),
+                },
+            ],
+            "the to_game map and a non-channel event go nowhere"
+        );
+    }
+
+    #[tokio::test]
+    async fn discord_lines_come_in_as_the_linked_character_under_the_gates() {
+        let r = rig_with(relay_config()).await;
+        r.store.link_character("Nick", ALT, "Alt").await.unwrap();
+        let b = &r.bridge;
+        // Unmapped channel and outbound-only channel: ignored, no lookup.
+        assert_eq!(b.relay_in(USER, 9, "hi").await, RelayLineOutcome::Ignored);
+        assert_eq!(
+            b.relay_in(USER, 5151, "hi").await,
+            RelayLineOutcome::Ignored
+        );
+        // Unlinked: told (once, by the bot).
+        assert_eq!(
+            b.relay_in(OTHER, 4242, "hi").await,
+            RelayLineOutcome::NotLinked
+        );
+        assert!(r.link.requests().is_empty());
+        // Linked, relay character set: spoken as it, kind from the prefix.
+        linked(&r.store, "Nick", USER, |l| l.relay_character = Some(ALT)).await;
+        assert_eq!(
+            b.relay_in(USER, 4242, "  hello ").await,
+            RelayLineOutcome::Accepted
+        );
+        assert_eq!(
+            b.relay_in(USER, 4242, ":waves").await,
+            RelayLineOutcome::Accepted
+        );
+        let reqs = r.link.requests();
+        assert_eq!(reqs.len(), 2);
+        let ServiceReq::RelaySpeak(first) = &reqs[0] else {
+            panic!()
+        };
+        assert_eq!(first.actor, ALT);
+        assert_eq!(first.channel, "Public");
+        assert_eq!(first.kind, NarrativeKind::Say);
+        assert_eq!(first.text, "hello");
+        assert_eq!(first.user_id, USER);
+        assert_eq!(
+            first.account,
+            AccountId::mint("Nick", 1).unwrap(),
+            "the account id the server's oracle minted"
+        );
+        assert!(!format!("{first:?}").contains(&USER.to_string()));
+        let ServiceReq::RelaySpeak(second) = &reqs[1] else {
+            panic!()
+        };
+        assert_eq!(
+            (second.kind, second.text.as_str()),
+            (NarrativeKind::Pose, "waves")
+        );
+        // A follow wins over the relay character.
+        assert!(matches!(
+            b.follow(USER, Some("Nicky")).await,
+            FollowOutcome::Following { attached: true, .. }
+        ));
+        assert_eq!(
+            b.relay_in(USER, 4242, "as nicky").await,
+            RelayLineOutcome::Accepted
+        );
+        let ServiceReq::RelaySpeak(third) = &r.link.requests()[2] else {
+            panic!()
+        };
+        assert_eq!(third.actor, NICKY);
+        // The server's refusal reaches the author.
+        assert_eq!(
+            b.relay_in(USER, 4242, "gag me").await,
+            RelayLineOutcome::Refused("you are gagged".into())
+        );
+        // Empty and over-long lines never cross; a banned author is silent.
+        assert_eq!(
+            b.relay_in(USER, 4242, "   ").await,
+            RelayLineOutcome::Ignored
+        );
+        assert!(matches!(
+            b.relay_in(USER, 4242, &"x".repeat(MAX_RELAY_LINE_CHARS + 1)).await,
+            RelayLineOutcome::Refused(t) if t.contains("limit")
+        ));
+        let before = r.link.requests().len();
+        // The limiter: five in ten seconds, then silence.
+        for _ in 0..RELAY_PER_USER {
+            let _ = b.relay_in(USER, 4242, "burst").await;
+        }
+        assert_eq!(
+            b.relay_in(USER, 4242, "burst").await,
+            RelayLineOutcome::Ignored
+        );
+        assert!(r.link.requests().len() <= before + RELAY_PER_USER);
+        r.store
+            .discord_ban_put(DiscordBanRec {
+                user_id: OTHER,
+                by_account: "wiz".into(),
+                reason: "spam".into(),
+                at: 1,
+            })
+            .await
+            .unwrap();
+        r.store
+            .create_account(AccountRec {
+                id: None,
+                name: "Zoe".to_string(),
+                argon2_hash: "$argon2id$x".to_string(),
+                created: 1,
+                characters: vec![],
+                ssh_keys: vec![],
+                discord: None,
+            })
+            .await
+            .unwrap();
+        linked(&r.store, "Zoe", OTHER, |_| {}).await;
+        assert_eq!(
+            b.relay_in(OTHER, 4242, "hi").await,
+            RelayLineOutcome::Ignored
+        );
     }
 
     #[tokio::test]

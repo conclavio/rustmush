@@ -98,6 +98,12 @@ pub enum Audience {
     },
     /// Every connection on the game (`@wall`, shutdown notices).
     All,
+    /// A named relay sink outside the world (interface programme D4): a
+    /// comsys channel flagged `relay` publishes each line here as well, and
+    /// the gateway's Discord bridge mirrors it to the mapped Discord channel.
+    /// Not a character, so no perception gate applies — the flag is the
+    /// staff's declaration that the channel is public to the relay.
+    Relay(mush_proto::SmolStr),
 }
 
 /// An ordered queue of `(Audience, OutputEvent)` pairs collected while a

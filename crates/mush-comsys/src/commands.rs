@@ -601,7 +601,8 @@ fn channel_set(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     if !chan_admin(ctx.w, actor, &c) {
         return Err(CmdError::msg("Permission denied."));
     }
-    let usage = "Usage: @channel/set <channel>=[!]loud|no_titles|logged|persist|ic  or  =cap=<n>";
+    let usage =
+        "Usage: @channel/set <channel>=[!]loud|no_titles|logged|persist|ic|relay  or  =cap=<n>";
     let rhs = ctx
         .args
         .rhs()
@@ -642,6 +643,10 @@ fn channel_set(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 "no_titles" => ch.flags.no_titles = on,
                 "logged" => ch.flags.logged = on,
                 "ic" => ch.flags.ic = on,
+                // Programme D4: the staff's declaration that this channel's
+                // lines may leave the world for the mapped Discord channel,
+                // and that linked Discord users may speak on it.
+                "relay" => ch.flags.relay = on,
                 "persist" => ch.history.persist = on,
                 _ => return Err(CmdError::msg(usage)),
             }
@@ -942,9 +947,11 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
                    @channel/perm <channel>=<join|speak|see|admin>=<lock> -- set a \
                    lock gate, classic lock syntax (flag^WIZARD, *Nick, #1, ...).\n\
                    @channel/color <channel>=<ansi name>,<#rrggbb> -- set colors.\n\
-                   @channel/set <channel>=[!]loud|no_titles|logged|persist|ic \
+                   @channel/set <channel>=[!]loud|no_titles|logged|persist|ic|relay \
                    or =cap=<n> -- flags and history policy; `ic` marks the \
-                   channel in-character (listed apart, set as prose).\n\
+                   channel in-character (listed apart, set as prose); `relay` \
+                   mirrors the channel to its mapped Discord channel and back \
+                   (see `help discord`).\n\
                    @channel/who <channel> -- list members.\n\
                    @channel/recall <alias>[=<n>] -- replay logged history.\n\
                    @channel/gag <alias>, @channel/ungag <alias> -- stop/resume \

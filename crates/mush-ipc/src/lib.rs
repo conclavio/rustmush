@@ -65,8 +65,8 @@ pub use protocol::{
     GatewayRequestDisposition, IPC_VERSION, LegalActionsError, MAX_GATEWAY_INPUT_BYTES,
     MAX_IN_FLIGHT_GATEWAY_INPUT_BYTES, MAX_IN_FLIGHT_GATEWAY_INPUT_BYTES_PER_CONNECTION,
     MAX_IN_FLIGHT_GATEWAY_INPUTS, MAX_IN_FLIGHT_GATEWAY_INPUTS_PER_CONNECTION,
-    MAX_IN_FLIGHT_LIFECYCLE_OBLIGATIONS, MAX_IN_FLIGHT_SERVICE_REQUESTS, ServiceReq, ServiceResp,
-    ToGateway, ToServer, WireInbound, WireInboundError,
+    MAX_IN_FLIGHT_LIFECYCLE_OBLIGATIONS, MAX_IN_FLIGHT_SERVICE_REQUESTS, RelayError, RelaySpeak,
+    ServiceReq, ServiceResp, ToGateway, ToServer, WireInbound, WireInboundError,
 };
 pub use target::SendTarget;
 

@@ -337,6 +337,17 @@ pub trait DiscordApi: Send + Sync {
         reply: InteractionReply,
     ) -> BoxFuture<'a, Result<(), ApiError>>;
 
+    /// Post `content` into a channel under `username` through the bot's
+    /// webhook for that channel (D4: a relayed line appears as the character,
+    /// not as the bot). The implementation finds or creates the webhook and
+    /// caches it. Returns the message id.
+    fn webhook_send<'a>(
+        &'a self,
+        channel_id: u64,
+        username: &'a str,
+        content: &'a str,
+    ) -> BoxFuture<'a, Result<u64, ApiError>>;
+
     /// Open (or find) the DM channel with a user. [`ApiError::CannotDm`] when
     /// the user does not accept DMs from the bot.
     fn create_dm(&self, user_id: u64) -> BoxFuture<'_, Result<u64, ApiError>>;
@@ -371,6 +382,9 @@ fn id<M>(n: u64, what: &str) -> Result<Id<M>, ApiError> {
 pub struct DiscordRest {
     client: Arc<Client>,
     application_id: u64,
+    /// The relay webhooks found or created per channel (D4): channel id →
+    /// `(webhook id, token)`. A token is a capability; it stays in memory.
+    webhooks: Arc<std::sync::Mutex<std::collections::HashMap<u64, (u64, String)>>>,
 }
 
 impl fmt::Debug for DiscordRest {
@@ -381,13 +395,66 @@ impl fmt::Debug for DiscordRest {
     }
 }
 
+/// The name of the webhook the bot creates in a relayed channel.
+pub const WEBHOOK_NAME: &str = "rustmush";
+
 impl DiscordRest {
+    /// The relay webhook for `channel`: cached, else an existing one of ours
+    /// with a token, else a new one.
+    async fn webhook_for(&self, channel_id: u64) -> Result<(u64, String), ApiError> {
+        if let Some(found) = self
+            .webhooks
+            .lock()
+            .expect("webhook cache poisoned")
+            .get(&channel_id)
+            .cloned()
+        {
+            return Ok(found);
+        }
+        let channel: Id<ChannelMarker> = id(channel_id, "channel")?;
+        let existing = self
+            .client
+            .channel_webhooks(channel)
+            .await
+            .map_err(|e| ApiError::from_http(&e))?
+            .models()
+            .await
+            .map_err(|e| ApiError::Permanent(format!("decoding webhooks: {e}")))?;
+        let ours = existing.into_iter().find_map(|w| {
+            (w.name.as_deref() == Some(WEBHOOK_NAME))
+                .then_some(())
+                .and(w.token.map(|t| (w.id.get(), t)))
+        });
+        let hook = match ours {
+            Some(h) => h,
+            None => {
+                let created = self
+                    .client
+                    .create_webhook(channel, WEBHOOK_NAME)
+                    .await
+                    .map_err(|e| ApiError::from_http(&e))?
+                    .model()
+                    .await
+                    .map_err(|e| ApiError::Permanent(format!("decoding the webhook: {e}")))?;
+                let token = created.token.ok_or_else(|| {
+                    ApiError::Permanent("the created webhook carried no token".to_string())
+                })?;
+                (created.id.get(), token)
+            }
+        };
+        self.webhooks
+            .lock()
+            .expect("webhook cache poisoned")
+            .insert(channel_id, hook.clone());
+        Ok(hook)
+    }
     /// A client for the bot `token` acting as `application_id`.
     #[must_use]
     pub fn new(token: String, application_id: u64) -> DiscordRest {
         DiscordRest {
             client: Arc::new(Client::new(token)),
             application_id,
+            webhooks: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
         }
     }
 
@@ -502,6 +569,48 @@ impl DiscordApi for DiscordRest {
                 .await
                 .map(|_| ())
                 .map_err(|e| ApiError::from_http(&e))
+        })
+    }
+
+    fn webhook_send<'a>(
+        &'a self,
+        channel_id: u64,
+        username: &'a str,
+        content: &'a str,
+    ) -> BoxFuture<'a, Result<u64, ApiError>> {
+        Box::pin(async move {
+            let (hook_id, token) = self.webhook_for(channel_id).await?;
+            let hook: Id<twilight_model::id::marker::WebhookMarker> = id(hook_id, "webhook")?;
+            let none = twilight_model::channel::message::AllowedMentions::default();
+            let sent = self
+                .client
+                .execute_webhook(hook, &token)
+                .allowed_mentions(Some(&none))
+                .username(username)
+                .content(content)
+                .wait()
+                .await;
+            match sent {
+                Ok(response) => {
+                    let message = response
+                        .model()
+                        .await
+                        .map_err(|e| ApiError::Permanent(format!("decoding the message: {e}")))?;
+                    Ok(message.id.get())
+                }
+                Err(e) => {
+                    // A webhook someone deleted is forgotten so the next line
+                    // makes a new one.
+                    let error = ApiError::from_http(&e);
+                    if matches!(error, ApiError::Permanent(_)) {
+                        self.webhooks
+                            .lock()
+                            .expect("webhook cache poisoned")
+                            .remove(&channel_id);
+                    }
+                    Err(error)
+                }
+            }
         })
     }
 
@@ -863,6 +972,15 @@ pub mod testing {
             /// The reply.
             reply: InteractionReply,
         },
+        /// `webhook_send`.
+        WebhookSend {
+            /// The channel.
+            channel_id: u64,
+            /// The impersonated name.
+            username: String,
+            /// The text.
+            content: String,
+        },
         /// `create_dm`.
         CreateDm {
             /// The user.
@@ -976,6 +1094,22 @@ pub mod testing {
                     interaction_id: handle.id,
                     reply,
                 })
+            })
+        }
+
+        fn webhook_send<'a>(
+            &'a self,
+            channel_id: u64,
+            username: &'a str,
+            content: &'a str,
+        ) -> BoxFuture<'a, Result<u64, ApiError>> {
+            Box::pin(async move {
+                self.record(Call::WebhookSend {
+                    channel_id,
+                    username: username.to_string(),
+                    content: content.to_string(),
+                })?;
+                Ok(self.alloc())
             })
         }
 

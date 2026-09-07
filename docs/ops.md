@@ -1064,7 +1064,7 @@ Two operational tradeoffs of the file appender are **deliberate**:
   prunes `<data_dir>/logs/`. Add external rotation — e.g. `logrotate`, or a cron
   sweep like `find <data_dir>/logs -name 'mushd.log.*' -mtime +14 -delete`.
 
-## Discord bot (D1–D3): `[discord]`
+## Discord bot (D1–D4): `[discord]`
 
 The Discord transport (`mush-net-discord`, plan `docs/interface/04-discord-implementation-plan.md`)
 runs **inside the gateway process** (`mushd` all-in-one, or `mush-gateway` in the split deploy)
@@ -1107,6 +1107,29 @@ the gateway's delivery transport hands it to the process's `GatewayControls` reg
 Discord bridge — which registered itself there at start-up — answers the character with a
 `discord`-tagged system line on every connection. Without a running bridge the control is dropped
 at debug level; the character then hears nothing beyond the world task's "asked the bot" line.
+
+**The channel relay (D4).** Two switches, both required: staff flag the comsys channel
+(`@channel/set Public=relay`, channel admins or `COMSYS_ADMIN`) **and** the operator maps it in
+`[[discord.relay]]` (`channel`, `discord_channel_id`, `direction = both | to_discord | to_game`,
+`webhook = true`). Game → Discord: every line on a flagged channel is published to
+`SendTarget::Relay(name)` (no perception gate — the flag is the staff's declaration that the channel
+is public to the relay) and the bridge posts it through a webhook named `rustmush` it finds or
+creates in the channel, so it appears under the character's name (`webhook = false` posts as the bot
+with a bold name prefix). Discord → game: a non-bot message in a mapped channel from a **linked**
+user is spoken on the game channel as their character (followed, else relay, else first) through
+`ServiceReq::RelaySpeak`; the server re-checks the `(account, character)` pairing against its
+boot-hydrated oracle and comsys runs membership, gag and speak-lock as for a typed line. Lines are
+capped at 1 000 characters and 5 per author per 10 seconds; unlinked authors get one DM hint per ten
+minutes, refusals one note per ten minutes, banned authors are ignored. A relayed line carries
+`origin = "discord"` in history and is never mirrored back (the loop guard); webhook posts come back
+as bot-authored messages and are dropped by the reducer.
+
+Portal and permissions for the relay: an inbound mapping needs the **Message Content** privileged
+intent toggled on (Bot → Privileged Gateway Intents; a review above Discord's threshold) — the bot
+subscribes to `GUILD_MESSAGES | MESSAGE_CONTENT` only when some mapping accepts inbound; the bot's
+role needs **Manage Webhooks** in each mapped channel (or a pre-created webhook named `rustmush`),
+and **View Channel** + **Send Messages** there. The oracle is hydrated at boot: a character created
+since the last restart relays nothing until a restart (fail closed, `RelayError::AccountMismatch`).
 
 Setup, once, in the Discord developer portal:
 

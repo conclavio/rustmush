@@ -18,9 +18,11 @@
 use mush_core::lock::MAX_LOCK_DEPTH;
 use mush_core::output::obj_ref;
 use mush_core::{
-    AliasOutcome, AliasStage, Audience, ModuleWrite, ObjId, Outbox, World, eval_lock, is_ignoring,
+    AliasOutcome, AliasStage, Audience, Ctx, ModuleWrite, ObjId, Outbox, RelayRefusal,
+    RelaySpeaker, World, eval_lock, is_ignoring,
 };
 use mush_proto::{NarrativeKind, OutputEvent, RichText};
+use smol_str::SmolStr;
 
 use crate::data::{ChanMsg, ChannelId, ComsysState, chan_key, hist_key, member_key, push_op};
 
@@ -74,7 +76,7 @@ impl AliasStage for ComsysAliases {
             out.error(actor, format!("What do you want to say on {chan_name}?"));
             return AliasOutcome::Handled;
         }
-        channel_speak(w, out, actor, chan, kind, text);
+        channel_speak(w, out, actor, chan, kind, text, None);
         AliasOutcome::Handled
     }
 }
@@ -112,6 +114,7 @@ pub(crate) fn channel_speak(
     chan: ChannelId,
     kind: NarrativeKind,
     text: &str,
+    origin: Option<&str>,
 ) {
     let now_ms = w.now().saturating_mul(1000);
     let actor_ref = obj_ref(w, actor);
@@ -176,7 +179,7 @@ pub(crate) fn channel_speak(
 
     // Phase 3: emit, advance cursors, record history.
     let ev = OutputEvent::Channel {
-        channel: chan_name,
+        channel: chan_name.clone(),
         seq,
         actor: actor_ref.clone(),
         title: title.clone(),
@@ -184,6 +187,12 @@ pub(crate) fn channel_speak(
         text: RichText::plain(text),
         ts: now_ms,
     };
+    // Programme D4: a relay-flagged channel publishes the line to its named
+    // relay sink as well — unless the line came in from the relay (the loop
+    // guard: a Discord user's own line is never mirrored back to Discord).
+    if flags.relay && origin != Some("discord") {
+        out.push(Audience::Relay(chan_name), ev.clone());
+    }
     for &p in &deliver {
         out.push(Audience::Actor(p), ev.clone());
         // Interface plan I11: a line that names a recipient (a whole word,
@@ -216,6 +225,7 @@ pub(crate) fn channel_speak(
         kind,
         text: text.to_string(),
         ts: now_ms,
+        origin: origin.map(SmolStr::new),
     };
     let st = w.module_state_mut::<ComsysState>().expect("comsys state");
     for &p in &deliver {
@@ -333,5 +343,53 @@ pub(crate) fn render_recall(msg: &ChanMsg) -> String {
         NarrativeKind::Pose => format!("{name} {}", msg.text),
         NarrativeKind::SemiPose => format!("{name}{}", msg.text),
         _ => format!("{name}: {}", msg.text),
+    }
+}
+
+/// The relay's way onto a channel (interface programme D4): a linked Discord
+/// user's line, forwarded by the gateway and re-validated by the server,
+/// passes the same gates as a typed line — the channel must be flagged
+/// `relay`, the character a member, ungagged, and admitted by the speak lock —
+/// and is spoken with its origin marked so it is never mirrored back out.
+pub struct RelaySpeak;
+
+impl RelaySpeaker for RelaySpeak {
+    fn relay_speak(
+        &self,
+        ctx: &mut Ctx<'_>,
+        channel: &str,
+        kind: NarrativeKind,
+        text: &str,
+    ) -> Result<(), RelayRefusal> {
+        let actor = ctx.actor;
+        let text = text.trim();
+        if text.is_empty() {
+            return Err(RelayRefusal::Empty);
+        }
+        let (chan, gagged, speak) = {
+            let st = ctx
+                .w
+                .module_state::<ComsysState>()
+                .ok_or(RelayRefusal::NoSpeaker)?;
+            let c = st
+                .channel_by_name(channel)
+                .ok_or(RelayRefusal::NoSuchChannel)?;
+            if !c.flags.relay {
+                return Err(RelayRefusal::NotRelay);
+            }
+            let m = st
+                .members
+                .get(&(actor, c.id))
+                .ok_or(RelayRefusal::NotMember)?;
+            (c.id, m.gagged, c.perms.speak.clone())
+        };
+        if gagged {
+            return Err(RelayRefusal::Gagged);
+        }
+        if !eval_lock(ctx.w, &speak, actor, MAX_LOCK_DEPTH) {
+            return Err(RelayRefusal::SpeakLock);
+        }
+        channel_speak(ctx.w, ctx.out, actor, chan, kind, text, Some("discord"));
+        Ok(())
     }
 }

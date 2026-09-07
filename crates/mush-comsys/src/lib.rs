@@ -104,6 +104,9 @@ impl GameModule for ComsysModule {
         reg.classify_commands(mush_core::CommandCompatibility::LegacyPostImage);
         reg.state(ComsysState::default());
         reg.alias_stage(Arc::new(ComsysAliases))?;
+        // Programme D4: relayed lines (a linked Discord user in a mapped
+        // channel) come onto channels through this, under the same gates.
+        reg.relay_speaker(Arc::new(speak::RelaySpeak))?;
         reg.hook(HookPoint::Connected, Arc::new(LoudNotice));
         reg.subscribe(WorldEventKind::ObjCreated, Arc::new(on_obj_created));
         reg.subscribe(WorldEventKind::ObjDestroyed, Arc::new(on_obj_destroyed));
@@ -379,6 +382,7 @@ fn seed_default_channel(ctx: &mut ModuleCtx<'_>) {
             no_titles: false,
             logged: true,
             ic: false,
+            relay: false,
         };
         c.history = HistoryPolicy {
             persist: true,

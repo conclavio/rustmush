@@ -315,6 +315,8 @@ impl TestWorld {
             .filter(|(aud, ev)| match aud {
                 Audience::Actor(a) => *a == viewer,
                 Audience::All => self.world().is_connected(viewer),
+                // A relay sink is outside the world; no viewer sees it here.
+                Audience::Relay(_) => false,
                 Audience::Room {
                     room,
                     exclude,

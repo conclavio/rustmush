@@ -97,6 +97,21 @@ pub enum DetachOutcome {
     NotFollowing,
 }
 
+/// The result of a line typed in a relayed Discord channel (D4).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RelayLineOutcome {
+    /// Nothing to do: an unmapped channel, an outbound-only mapping, a banned
+    /// or rate-limited author, an empty line. Silent.
+    Ignored,
+    /// Spoken on the game channel as the author's character.
+    Accepted,
+    /// The author's Discord user is not linked to an account; the bot may
+    /// hint once in a while.
+    NotLinked,
+    /// The game refused, with a bounded reason the author may be told.
+    Refused(String),
+}
+
 /// The result of a DM line.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LineOutcome {
@@ -146,4 +161,14 @@ pub trait DiscordHooks: Send + Sync {
         user_id: u64,
         interaction: Interaction,
     ) -> BoxFuture<'_, InteractionReply>;
+
+    /// A message a non-bot author posted in a guild channel (D4): if the
+    /// channel is mapped inbound, speak it on the game channel as the
+    /// author's character.
+    fn relay_line<'a>(
+        &'a self,
+        user_id: u64,
+        channel_id: u64,
+        content: &'a str,
+    ) -> BoxFuture<'a, RelayLineOutcome>;
 }

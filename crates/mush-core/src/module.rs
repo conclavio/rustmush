@@ -1443,6 +1443,9 @@ pub struct ModuleTables {
     /// Discord interaction handlers by `custom_id` prefix (programme D3, 03
     /// §7a.4): `(prefix, module, handler)`, longest prefix wins.
     discord_interactions: Vec<(SmolStr, SmolStr, Arc<dyn DiscordInteractionHandler>)>,
+    /// The one module that speaks relayed lines onto channels (programme D4):
+    /// `(module, handler)`.
+    relay_speaker: Option<(SmolStr, Arc<dyn RelaySpeaker>)>,
     /// module name → its store-read completion handler (the H1 read seam).
     store_read_completions: HashMap<SmolStr, Arc<dyn StoreReadCompletion>>,
     /// module name → its capture action and decision capture sink (the H2a
@@ -1916,6 +1919,15 @@ impl Registry {
         module: &str,
     ) -> Option<Arc<dyn crate::request::RequestCompletion>> {
         self.mods.request_completions.get(module).map(Arc::clone)
+    }
+
+    /// The module that speaks relayed lines, with its handler (programme D4).
+    #[must_use]
+    pub fn relay_speaker(&self) -> Option<(SmolStr, Arc<dyn RelaySpeaker>)> {
+        self.mods
+            .relay_speaker
+            .as_ref()
+            .map(|(m, h)| (m.clone(), Arc::clone(h)))
     }
 
     /// The Discord interaction handler whose prefix is the longest match for
@@ -3137,6 +3149,22 @@ impl<'a> Registrar<'a> {
     /// re-entry point for server-initiated requests it opens with
     /// [`Ctx::open_request`](crate::cmd::Ctx::open_request) (interface plan
     /// I10). A module registers at most one; a second is a conflict.
+    /// Register this module as the one that speaks relayed lines onto its
+    /// channels (programme D4). Exactly one module may.
+    pub fn relay_speaker(&mut self, handler: Arc<dyn RelaySpeaker>) -> Result<(), ModError> {
+        let tables = self.reg.tables_mut();
+        if let Some((owner, _)) = &tables.relay_speaker {
+            return Err(ModError::Conflict {
+                module: self.module.clone(),
+                what: "relay speaker",
+                name: SmolStr::new_static("relay"),
+                owner: owner.clone(),
+            });
+        }
+        tables.relay_speaker = Some((self.module.clone(), handler));
+        Ok(())
+    }
+
     /// Register the handler for Discord component interactions whose
     /// `custom_id` starts with `prefix` (programme D3, 03 §7a.4). Prefixes are
     /// owner namespaces — `oncall:` — and the gateway keeps `d:` for itself;
@@ -3620,6 +3648,89 @@ pub trait DiscordInteractionHandler: Send + Sync {
     /// A bounded, viewer-safe reason the interaction was refused.
     fn handle(&self, ctx: &mut Ctx<'_>, interaction: &DiscordInteraction)
     -> Result<String, String>;
+}
+
+/// Why a relayed line was not spoken (programme D4). Every arm is a bounded,
+/// viewer-safe reason the bridge may show the Discord author.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RelayRefusal {
+    /// No module speaks relayed lines.
+    NoSpeaker,
+    /// No channel of that name.
+    NoSuchChannel,
+    /// The channel is not flagged for the relay.
+    NotRelay,
+    /// The character is not on the channel.
+    NotMember,
+    /// The character has the channel gagged.
+    Gagged,
+    /// The channel's speak lock refuses the character.
+    SpeakLock,
+    /// Nothing to say.
+    Empty,
+}
+
+impl std::fmt::Display for RelayRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            RelayRefusal::NoSpeaker => "the game has no channel relay",
+            RelayRefusal::NoSuchChannel => "no such channel",
+            RelayRefusal::NotRelay => "that channel is not relayed",
+            RelayRefusal::NotMember => "your character is not on that channel",
+            RelayRefusal::Gagged => "your character has that channel gagged",
+            RelayRefusal::SpeakLock => "your character cannot speak on that channel",
+            RelayRefusal::Empty => "nothing to say",
+        })
+    }
+}
+
+/// The handler a module registers to speak relayed lines
+/// ([`Registrar::relay_speaker`], programme D4): the comsys module, which runs
+/// membership, gag and speak-lock exactly as its alias stage does and marks
+/// the line's origin so it is never relayed back out.
+pub trait RelaySpeaker: Send + Sync {
+    /// Speak `text` as `ctx.actor` on the channel named `channel`.
+    ///
+    /// # Errors
+    ///
+    /// The refusal the Discord author may be shown.
+    fn relay_speak(
+        &self,
+        ctx: &mut Ctx<'_>,
+        channel: &str,
+        kind: mush_proto::NarrativeKind,
+        text: &str,
+    ) -> Result<(), RelayRefusal>;
+}
+
+/// Run the registered relay speaker as `actor` (programme D4).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn apply_relay_speak_with_action_state(
+    reg: &Registry,
+    w: &mut World,
+    out: &mut Outbox,
+    actor: ObjId,
+    channel: &str,
+    kind: mush_proto::NarrativeKind,
+    text: &str,
+    action_state: Option<&crate::action_state::ActionStateStore>,
+) -> Result<(), RelayRefusal> {
+    let Some((module, handler)) = reg.relay_speaker() else {
+        return Err(RelayRefusal::NoSpeaker);
+    };
+    let typed_state =
+        crate::action_state::ModuleActionState::for_module(action_state, Some(module.as_str()));
+    let mut ctx = Ctx {
+        w,
+        actor,
+        switches: SwitchSet::default(),
+        args: ParsedArgs::default(),
+        out,
+        reg,
+        module: Some(module),
+        typed_state,
+    };
+    handler.relay_speak(&mut ctx, channel, kind, text)
 }
 
 /// Dispatch a forwarded Discord interaction to the module handler with the

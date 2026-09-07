@@ -673,6 +673,84 @@ relay by default; **A** — a Discord user cannot speak as anyone but their own 
 speak while gagged, cannot exceed the limiter; **S** — a replayed `RelaySpeak` (the gateway's custody
 replay) does not double-post.
 
+**As built (2026-09-06, branch `z`, uncommitted — the owner commits).** The relay landed as designed
+— `ChannelFlags.relay`, `ChanMsg.origin`, `Audience::Relay` → `SendTarget::Relay`, `RelaySpeak`,
+the `[discord.relay]` map, webhooks — with these deviations recorded rather than assumed:
+
+- **Inbound lines re-enter comsys through a `RelaySpeaker` seam, not `AsyncCompletion`.** The plan's
+  typed apply cannot return a refusal, and a Discord author deserves one ("your character is not on
+  that channel"). So mush-core gained `RelaySpeaker` (`Registrar::relay_speaker`, one module may
+  claim it), `RelayRefusal` (`NoSpeaker | NoSuchChannel | NotRelay | NotMember | Gagged | SpeakLock |
+  Empty`) and `Engine::relay_speak`; comsys registers `speak::RelaySpeak`, which runs the alias
+  stage's gates in the alias stage's order and calls `channel_speak(…, origin = Some("discord"))`. The
+  world task handles `WorldMsg::RelaySpeak` (a `WorldMutation`) the way it handles the D3 interaction:
+  the oracle check first — `Engine::account_of(actor) == Some(account)`, with the boot-hydrated
+  `AccountMap` now installed on the engine as well as in the sim's slot (`Engine::set_account_identity`)
+  — then a 1 000-character cap, then the speaker; the reply is sent when the speaker returns.
+- **`RelaySpeak` carries the account as its minted `AccountId`**, not a name: the bridge mints it the
+  way `accounts_identity::hydrate` does (`rec.id` else `AccountId::mint(name, created)`), so the
+  server's comparison is exact and a renamed account cannot be confused with another. Its `Debug`
+  redacts the snowflake and logs a character count, never the text.
+- **`SendTarget` lost `Copy`** (a name is not `Copy`); no caller depended on it. Relay sends are split
+  off before the session fan-out (`delivery::split_relay`) in both the split transport and the
+  in-process sink and handed to the process's `GatewayControls` registry, which gained a `RelaySink`
+  slot the bridge fills at start-up (`BridgeRelay`, held weakly). `transmit_and_police` drops a relay
+  target that somehow reaches it, at debug.
+- **Webhooks are found or created per channel and cached in `DiscordRest`** (`GET
+  /channels/{id}/webhooks` for one named `rustmush` with a token, else `POST`), so no store surface
+  was added — the plan's default. A permanent failure evicts the cache entry so a deleted webhook is
+  recreated on the next line. Posts carry no allowed mentions; a say is the text, a pose is italic
+  (`_Zoe waves._`); `webhook = false` posts as the bot with a bold name prefix.
+- **The inbound limiter is a per-author sliding window in the bridge** (`RELAY_PER_USER` 5 per
+  `RELAY_WINDOW` 10 s) rather than `governor`; over the limit is dropped silently. Unlinked authors and
+  refusals are told by DM (the bot opens the DM) at most once per `HINT_INTERVAL`, sharing the
+  `/follow` hint's per-user clock; banned authors are ignored silently. A Discord line may use `:` /
+  `;` for pose / semipose like a typed line.
+- **Intents follow the map:** `GUILD_MESSAGES | MESSAGE_CONTENT` are requested only when some mapping
+  accepts inbound (`both` or `to_game`); an outbound-only deployment keeps the DM-only shard and needs
+  no portal toggle.
+- **The character a Discord line speaks as** is the followed one if any, else the relay character
+  (only if still on the account), else the account's first; an account with none is refused.
+- **The AccountIdentity staleness stands** (03 §6, §8 q6): a character created since boot fails
+  closed (`RelayError::AccountMismatch`) until a restart; the refresh on `link_character` is left for
+  the owner's call.
+
+Landed: `Audience::Relay` (core `output.rs`), `RelaySpeaker`/`RelayRefusal`/`apply_relay_speak…`/
+`Registrar::relay_speaker`/`Registry::relay_speaker`, `Engine::{relay_speak, account_of,
+set_account_identity}` (core); `SendTarget::Relay`, `RelaySpeak`, `RelayError`, the two `ServiceReq`/
+`Resp` arms (ipc); `ChannelFlags.relay`, `ChanMsg.origin`, `channel_speak(origin)`, the relay
+publish, `speak::RelaySpeak`, `@channel/set relay` + help (comsys); `WorldMsg::RelaySpeak` +
+classification + refusal arm + `WorldHandle::relay_speak`, both dispatchers, the oracle on the engine
+at boot, `MAX_RELAY_LINE_CHARS`, the `Audience::Relay` arm in `resolve_classified_sends` (server);
+`RelaySink` + `GatewayControls::{set_relay, relay}`, `delivery::split_relay`, the transports' split,
+`RelayMapper`, `relay_out`/`relay_in`, `BridgeRelay`, the intents (gateway, mushd); `DiscordApi::
+webhook_send` (+ `DiscordRest` cache, `FakeApi` `Call::WebhookSend`), `RelayLineOutcome`,
+`DiscordHooks::relay_line`, the bot's guild-line routing with DM notes (transport); testkit and repl
+`Audience::Relay` arms; `help discord` (Relayed channels), `help @channel`, `docs/ops.md` (D4
+paragraph: switches, webhooks, intents, permissions, staleness), the README row.
+
+Tests: comsys **`d4_relay_flag_mirrors_lines_once_and_the_relay_speaker_keeps_the_gates`** (an
+unflagged channel never relays; the flag makes exactly one relay copy beside the members' copies; a
+relayed-in line reaches members, carries `origin = discord` in history and is never mirrored back;
+the speaker refuses `NoSuchChannel`, `Empty`, `Gagged`, `NotMember`, `NotRelay` in the alias stage's
+terms); gateway lib **14 bridge tests** (the map honours directions and skips blank entries; game
+lines go out through the webhook — say as text, pose in italics, markdown escaped — or as the bot
+with a bold name, never for a `to_game` map or a non-channel event; Discord lines come in as the
+linked character — relay character, then a follow wins — with the minted `AccountId`, the pose
+prefix, the server's refusal reaching the author, empty and over-long lines stopped, the per-author
+limiter, a banned author silent, an unlinked author `NotLinked`); transport **22** (guild lines route
+to `relay_line`, a refusal and the unlinked hint are DM'd once per interval); `mush-server` the
+classifier covers `RelaySpeak`. Whole workspace: **243 binaries, 3 965 tests, 0 failures**; clippy
+`-D warnings` and `fmt --check` clean. Not live-tested: the first relay smoke test needs the Message
+Content intent toggled in the portal and Manage Webhooks on a mapped channel. The L/A/S lenses were
+argued: **L** — the `see` lock and `@ignore` leak is documented (a relay copy is one line for the
+whole Discord channel; the flag is staff's declaration that the channel is public to it), and no
+channel is `relay` by default; **A** — the speaker is always the linked account's own character, the
+server's oracle rejects any other pairing, gag and speak-lock hold, and the limiter is per author;
+**S** — the gateway's custody replay does not touch `ServiceReq` (correlated requests are answered
+once), and a duplicate `RelaySpeak` would be two lines, not one line twice — the author's own
+retries are the only source.
+
 ### 3.5 Cut D5 — Staff channel and the on-call seams
 
 - **Producers.** `+request` creation (`mush-jobs`) and staff `Notice`s with category `alert` /
@@ -871,3 +949,8 @@ None blocks D1; q1 and q6 are the owner's, the rest are defaults the build takes
   `ServiceReq::DiscordInteraction` seam with `Registrar::discord_interaction` (the on-call hook), the
   "your turn" notice in scenes, and the gateway-control arm carrying `@discord/follow|unfollow` and a
   live `quiet`; deviations recorded (20-button ceiling, the advisory reply, `actor` on the seam).
+- **Draft 0.5 — 2026-09-06.** D4 built (§3.4 "As built"): the relay flag and origin, `Audience::Relay`
+  → `SendTarget::Relay` through a `RelaySink` on the control registry, webhook impersonation with a
+  found-or-created cached webhook, inbound lines through `ServiceReq::RelaySpeak` and a new
+  `RelaySpeaker` seam (a refusal reaches the author), the oracle installed on the engine; deviations
+  recorded (`RelaySpeaker` over `AsyncCompletion`, `AccountId` on the wire, a bridge-side limiter).

@@ -8,6 +8,7 @@
 use std::sync::{Arc, OnceLock};
 
 use mush_ipc::DiscordControlOp;
+use mush_proto::OutputEvent;
 
 /// What the Discord bridge exposes to the boundary: one fire-and-forget
 /// control per character. The bridge answers the character itself.
@@ -16,13 +17,44 @@ pub trait DiscordControl: Send + Sync {
     fn control(&self, char: u64, op: DiscordControlOp);
 }
 
+/// What the Discord bridge exposes as a relay sink (programme D4): the world
+/// publishes a relay-flagged channel's line to `SendTarget::Relay(name)` and
+/// the bridge mirrors it to the mapped Discord channel.
+pub trait RelaySink: Send + Sync {
+    /// Mirror one channel line.
+    fn relay(&self, channel: &str, event: Arc<OutputEvent>);
+}
+
 /// The registry the transports consult. Empty until a bridge registers.
 #[derive(Default)]
 pub struct GatewayControls {
     discord: OnceLock<Arc<dyn DiscordControl>>,
+    relay: OnceLock<Arc<dyn RelaySink>>,
 }
 
 impl GatewayControls {
+    /// Register the relay sink (the Discord bridge). A second registration is
+    /// ignored and logged.
+    pub fn set_relay(&self, sink: Arc<dyn RelaySink>) {
+        if self.relay.set(sink).is_err() {
+            tracing::warn!("a relay sink was already registered; keeping the first");
+        }
+    }
+
+    /// Mirror one relayed channel line, or drop it (debug) when no sink runs.
+    pub fn relay(&self, channel: &str, event: Arc<OutputEvent>) {
+        match self.relay.get() {
+            Some(sink) => sink.relay(channel, event),
+            None => tracing::debug!(channel, "relay line with no sink; dropped"),
+        }
+    }
+
+    /// Whether a relay sink is registered.
+    #[must_use]
+    pub fn has_relay(&self) -> bool {
+        self.relay.get().is_some()
+    }
+
     /// Register the Discord bridge. A second registration is ignored (one bot
     /// per process) and logged.
     pub fn set_discord(&self, control: Arc<dyn DiscordControl>) {
@@ -52,6 +84,7 @@ impl std::fmt::Debug for GatewayControls {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("GatewayControls")
             .field("discord", &self.has_discord())
+            .field("relay", &self.has_relay())
             .finish()
     }
 }
