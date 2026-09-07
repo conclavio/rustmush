@@ -225,6 +225,17 @@ pub struct Screen {
     pub exits_are_keys: bool,
     /// Queries to submit when the screen is entered (`(name, args)`).
     pub on_enter: Vec<(&'static str, Value)>,
+    /// Whether the Right column takes half the surplus width instead of
+    /// staying at its panes' `max(min_w)` (interface plan I8).
+    ///
+    /// A rail — the WHO list, the channel list — is designed at a fixed
+    /// width and reads worse stretched. A table is not: the tactical
+    /// screens' before/after and journal panes carry whole rows, and
+    /// `draw_pane` neither wraps nor scrolls sideways, so at a fixed 34 they
+    /// clipped their one job at every terminal size. The screen declares
+    /// which it is; `visible_panes` never reads this, so no survivor set
+    /// depends on it.
+    pub right_shares_surplus: bool,
 }
 
 impl Screen {
@@ -340,6 +351,9 @@ pub fn builtin_screens() -> Vec<Screen> {
             degrade: vec![PaneId("actions"), PaneId("scene"), PaneId("who")],
             exits_are_keys: true,
             on_enter: vec![("legal.actions", Value::Object(serde_json::Map::new()))],
+            // The WHO rail and its neighbours are rails, designed at their
+            // own width: Main takes the surplus, as it always has.
+            right_shares_surplus: false,
         },
         Screen {
             id: ScreenId(2),
@@ -362,6 +376,7 @@ pub fn builtin_screens() -> Vec<Screen> {
             degrade: vec![],
             exits_are_keys: false,
             on_enter: vec![],
+            right_shares_surplus: false,
         },
         Screen {
             id: ScreenId(3),
@@ -399,6 +414,7 @@ pub fn builtin_screens() -> Vec<Screen> {
             degrade: vec![],
             exits_are_keys: false,
             on_enter: vec![("mail.list", Value::Object(serde_json::Map::new()))],
+            right_shares_surplus: false,
         },
         Screen {
             id: ScreenId(4),
@@ -450,6 +466,7 @@ pub fn builtin_screens() -> Vec<Screen> {
             degrade: vec![PaneId("ic"), PaneId("ooc")],
             exits_are_keys: false,
             on_enter: vec![("comsys.state", Value::Object(serde_json::Map::new()))],
+            right_shares_surplus: false,
         },
         Screen {
             id: ScreenId(5),
@@ -491,6 +508,7 @@ pub fn builtin_screens() -> Vec<Screen> {
             degrade: vec![PaneId("vitals")],
             exits_are_keys: false,
             on_enter: vec![],
+            right_shares_surplus: false,
         },
         Screen {
             id: ScreenId(6),
@@ -516,6 +534,7 @@ pub fn builtin_screens() -> Vec<Screen> {
             degrade: vec![],
             exits_are_keys: false,
             on_enter: vec![("intel.list", Value::Object(serde_json::Map::new()))],
+            right_shares_surplus: false,
         },
         Screen {
             id: ScreenId(7),
@@ -548,6 +567,7 @@ pub fn builtin_screens() -> Vec<Screen> {
             degrade: vec![],
             exits_are_keys: false,
             on_enter: vec![("legal.actions", Value::Object(serde_json::Map::new()))],
+            right_shares_surplus: false,
         },
         // 8 damage — the after-action report (interface plan I8): the unit as
         // the ruleset judged it, the newest `@unit/damage` before/after table
@@ -619,6 +639,10 @@ pub fn builtin_screens() -> Vec<Screen> {
             degrade: vec![PaneId("journal"), PaneId("delta")],
             exits_are_keys: false,
             on_enter: unit_query(),
+            // The before/after table is this screen's whole point and its
+            // rows are whole lines: it takes the width the section map, which
+            // is one short line per part, does not need.
+            right_shares_surplus: true,
         },
         // 9 unit — the unit at a glance. Four panes read the feed; the other
         // three are declared placeholders naming the projection each waits on
@@ -742,6 +766,9 @@ pub fn builtin_screens() -> Vec<Screen> {
             ],
             exits_are_keys: false,
             on_enter: unit_query(),
+            // The contacts table's own header is 49 columns wide; the compact
+            // section map is one short line per section.
+            right_shares_surplus: true,
         },
     ]
 }

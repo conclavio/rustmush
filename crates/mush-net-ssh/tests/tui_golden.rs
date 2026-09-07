@@ -221,6 +221,23 @@ fn unit_delta() -> serde_json::Value {
     })
 }
 
+/// The fixture app with the I8 tactical frames applied, ready to paint
+/// screen 8 or 9.
+fn tactical_app() -> TuiApp {
+    let mut app = fixture_app();
+    app.apply_event(&OutputEvent::Panel {
+        feed: SmolStr::new_static("tactics.unit"),
+        kind: PanelFrameKind::Keyframe,
+        data: unit_keyframe(),
+    });
+    app.apply_event(&OutputEvent::Panel {
+        feed: SmolStr::new_static("tactics.unit"),
+        kind: PanelFrameKind::Delta,
+        data: unit_delta(),
+    });
+    app
+}
+
 fn golden_path(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests")
@@ -393,4 +410,62 @@ fn every_screen_has_a_golden_at_the_budget_size() {
         let text = frame_text(&mut app, 120, 34);
         check(&format!("tui_{name}_120x34.txt"), &text);
     }
+}
+
+/// I8 (the layout hole): the before/after table's job is to show both sides
+/// of a change, and at a fixed 34-column right column it could show neither
+/// — the contract's own reference row is 36 characters, and `draw_pane`
+/// neither wraps nor scrolls sideways. With the Right column sharing the
+/// surplus, screen 8 at 120 columns reads whole rows.
+#[test]
+fn the_before_after_pane_shows_both_sides_at_one_twenty() {
+    let mut app = tactical_app();
+    app.feed_input(b"8");
+    let text = frame_text(&mut app, 120, 34);
+    for row in [
+        "facet/center_torso/rear/armor  6 \u{2192} 1",
+        "section center_torso  ok \u{2192} damaged",
+        "component gauss  ok \u{2192} destroyed",
+    ] {
+        assert!(text.contains(row), "missing {row:?}:\n{text}");
+    }
+    assert!(
+        text.contains("rev 4 \u{b7} gauss \u{b7} cell facet/center_torso/rear/armor 6\u{2192}1"),
+        "the journal reads whole rows too:\n{text}"
+    );
+    // Narrower terminals keep the same three panes; the share only ever
+    // moves columns Main was not using.
+    let narrow = frame_text(&mut app, 80, 24);
+    assert!(
+        narrow.contains("before / after") && narrow.contains("journal"),
+        "{narrow}"
+    );
+    for (w, h) in [(80u16, 24u16), (120, 34), (160, 44)] {
+        let text = frame_text(&mut app, w, h);
+        for line in text.lines() {
+            assert!(
+                line.chars().count() <= usize::from(w),
+                "{w}x{h}: row too wide: {line:?}"
+            );
+        }
+    }
+}
+
+/// I8: screen 9's compact section map puts every cell after the first on its
+/// own row, so nothing is clipped off the right of the pane.
+#[test]
+fn the_unit_screen_keeps_every_section_cell_on_screen() {
+    let mut app = tactical_app();
+    app.feed_input(b"9");
+    let text = frame_text(&mut app, 120, 34);
+    assert!(
+        text.contains(
+            "\u{2717} center_torso  ok  structure \u{25b0}\u{25b0}\u{25b0}\u{25b0}\u{25b0} 8/8"
+        ),
+        "{text}"
+    );
+    assert!(
+        text.contains("    rear/armor \u{25b0}\u{25b1}\u{25b1}\u{25b1}\u{25b1} 1/6"),
+        "the second cell is a continuation row, not clipped:\n{text}"
+    );
 }

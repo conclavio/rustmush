@@ -6,11 +6,14 @@
 //! shallow-merges — and a delta for any other feed asks for one resync (a
 //! keyframe query under the feed's name) with the same storm guard the
 //! legal-actions view already had: a second delta before the replacement
-//! arrives asks nothing. At most [`MAX_TUI_FEEDS`] feeds are kept, each at
-//! most `MAX_VIEW_DATA_BYTES` serialized; an unknown feed is stored,
-//! bounded and never painted.
+//! arrives asks nothing. The guard AGES ([`RESYNC_LATCH_S`]): the SSH query
+//! seam answers a throttled query with no reply at all, so a latch that only
+//! a keyframe could clear would freeze a pane for the rest of the session.
+//! At most [`MAX_TUI_FEEDS`] feeds are kept, each at most
+//! `MAX_VIEW_DATA_BYTES` serialized; an unknown feed is stored, bounded and
+//! never painted.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, VecDeque};
 
 use mush_proto::{
     MAX_VIEW_DATA_BYTES, PanelFrameKind, SmolStr, ViewCursor, ViewEnvelope, ViewFrameDisposition,
@@ -38,6 +41,12 @@ pub const UNIT_FEED: &str = "tactics.unit";
 /// the unit screen renders with the I9 renderer, subscribed only when the
 /// manifest carries it.
 pub const CONTACTS_FEED: &str = "tactics.contacts";
+/// How long a resync request stays latched before another delta may ask
+/// again. The SSH bridge drops a throttled query silently (no reply, not
+/// even an error), so a latch cleared only by the replacement keyframe is
+/// permanent for the session once a flood bucket is hit. Five whole seconds
+/// is well outside a healthy round trip and still coalesces a damage burst.
+pub const RESYNC_LATCH_S: i64 = 5;
 
 /// One feed's latest state.
 #[derive(Clone, Debug)]
@@ -77,7 +86,9 @@ pub struct ChanMsg {
 pub struct PanelStore {
     feeds: HashMap<SmolStr, PanelState>,
     view_cursors: HashMap<SmolStr, ViewCursor>,
-    resync_pending: HashSet<SmolStr>,
+    /// Feeds with a keyframe request outstanding, and the whole second it
+    /// was armed at — see [`RESYNC_LATCH_S`].
+    resync_pending: HashMap<SmolStr, i64>,
     rolls: VecDeque<Value>,
     unit_journal: VecDeque<Value>,
     backlog: HashMap<String, VecDeque<ChanMsg>>,
@@ -213,14 +224,20 @@ impl PanelStore {
             PanelFrameKind::Keyframe => {
                 if feed.as_str() == UNIT_FEED {
                     // A keyframe for another subject makes the journal rows of
-                    // the one we held meaningless: drop them. Nothing held yet
-                    // is NOT a change — the after-action fan-out delivers the
-                    // delta first and the keyframe only after the resync, so
-                    // clearing there would throw away the very rows the
-                    // before/after pane exists to show. A `null` keyframe
-                    // (the viewer lost the station) is a change, and clears.
-                    let held = self.get(feed).and_then(unit_object_id);
-                    if held.is_some() && held != unit_object_id(data) {
+                    // the one we held meaningless: drop them. "Held" is the
+                    // STORED frame, not its object id — a `null` keyframe is
+                    // a frame (the viewer lost the station), so null → #5
+                    // clears just as #7 → #5 does, while null → null (a
+                    // resync answered for a viewer with no station) keeps the
+                    // rows the after-action panes render. Nothing STORED yet
+                    // is not a change: the fan-out delivers the delta first
+                    // and the keyframe only after the resync, so clearing
+                    // there would throw away the very rows the before/after
+                    // pane exists to show.
+                    let stored = self.get(feed);
+                    let changed =
+                        stored.is_some() && stored.and_then(unit_object_id) != unit_object_id(data);
+                    if changed {
                         self.unit_journal.clear();
                     }
                 }
@@ -236,7 +253,7 @@ impl PanelStore {
                         self.merge_backlog(backlog);
                         PanelOutcome::Stored
                     } else {
-                        self.resync(feed)
+                        self.resync(feed, now)
                     }
                 }
                 "weather" => {
@@ -249,7 +266,7 @@ impl PanelStore {
                             Value::Object(m)
                         }
                         (None, Value::Object(_)) => data.clone(),
-                        _ => return self.resync(feed),
+                        _ => return self.resync(feed, now),
                     };
                     self.store(feed, merged, now)
                 }
@@ -261,9 +278,9 @@ impl PanelStore {
                 // belongs in the ring.
                 UNIT_FEED => {
                     self.push_unit_journal(data);
-                    self.resync(feed)
+                    self.resync(feed, now)
                 }
-                _ => self.resync(feed),
+                _ => self.resync(feed, now),
             },
         }
     }
@@ -325,7 +342,7 @@ impl PanelStore {
     fn apply_sheet_delta(&mut self, feed: &SmolStr, data: &Value, now: i64) -> PanelOutcome {
         let Some(base_frame) = self.feeds.get(feed).map(|p| p.data.clone()) else {
             // No held keyframe to base the delta on: fail closed, rehydrate.
-            return self.resync(feed);
+            return self.resync(feed, now);
         };
         // A delta for a different subject than the held keyframe (a future
         // view-another's-sheet reuse of this feed) must never merge.
@@ -351,10 +368,10 @@ impl PanelStore {
                     }
                     self.store(feed, Value::Object(merged), now)
                 }
-                _ => self.resync(feed),
+                _ => self.resync(feed, now),
             },
             // A gap (base != cur), or a malformed frame: rehydrate, once.
-            _ => self.resync(feed),
+            _ => self.resync(feed, now),
         }
     }
 
@@ -377,7 +394,7 @@ impl PanelStore {
             // rehydrate, once.
             ViewFrameDisposition::ApplyDelta | ViewFrameDisposition::ResyncRequired => {
                 self.feeds.remove(&name);
-                self.resync(&name)
+                self.resync(&name, now)
             }
         }
     }
@@ -385,7 +402,7 @@ impl PanelStore {
     /// Whether a resync is outstanding for `feed`.
     #[must_use]
     pub fn resync_pending(&self, feed: &str) -> bool {
-        self.resync_pending.contains(feed)
+        self.resync_pending.contains_key(feed)
     }
 
     fn store(&mut self, feed: &SmolStr, data: Value, now: i64) -> PanelOutcome {
@@ -409,12 +426,20 @@ impl PanelStore {
         PanelOutcome::Stored
     }
 
-    fn resync(&mut self, feed: &SmolStr) -> PanelOutcome {
-        if self.resync_pending.insert(feed.clone()) {
-            PanelOutcome::NeedsResync(feed.clone())
-        } else {
-            PanelOutcome::Ignored
+    /// Ask for one keyframe, at most once per [`RESYNC_LATCH_S`]. A latch
+    /// younger than that answers `Ignored` (the storm guard); an older one —
+    /// or a clock that went backwards — re-arms and asks again, so a query
+    /// the bridge threw away silently costs one stale window, not the
+    /// session.
+    fn resync(&mut self, feed: &SmolStr, now: i64) -> PanelOutcome {
+        if let Some(&armed) = self.resync_pending.get(feed) {
+            let age = now.saturating_sub(armed);
+            if (0..RESYNC_LATCH_S).contains(&age) {
+                return PanelOutcome::Ignored;
+            }
         }
+        self.resync_pending.insert(feed.clone(), now);
+        PanelOutcome::NeedsResync(feed.clone())
     }
 
     fn merge_backlog(&mut self, backlog: &Value) {
@@ -811,6 +836,101 @@ mod tests {
             "a null keyframe is a held frame, not an error"
         );
         assert!(!st.resync_pending(UNIT_FEED));
+
+        // "Held" is the STORED frame, not its object id. On a fresh store
+        // nothing is stored, so neither a `null` keyframe nor the first real
+        // one throws the fan-out's rows away; once a frame IS stored, every
+        // change of subject clears — including null → #5, which the old
+        // `Option<String>` test could not see.
+        let mut st = PanelStore::new();
+        st.apply_panel(&f, PanelFrameKind::Delta, &unit_delta("#7", 4, 6), 0);
+        assert_eq!(st.unit_journal().len(), 6);
+        st.apply_panel(&f, PanelFrameKind::Keyframe, &Value::Null, 0);
+        assert_eq!(
+            st.unit_journal().len(),
+            6,
+            "nothing was stored: the honest null keeps the rows the panes show"
+        );
+        st.apply_panel(&f, PanelFrameKind::Delta, &unit_delta("#7", 5, 6), 0);
+        st.apply_panel(&f, PanelFrameKind::Keyframe, &Value::Null, 0);
+        assert_eq!(
+            st.unit_journal().len(),
+            12,
+            "null over null is not a change of subject"
+        );
+        st.apply_panel(&f, PanelFrameKind::Keyframe, &unit_keyframe("#5", 1), 0);
+        assert!(
+            st.unit_journal().is_empty(),
+            "a frame was held (the null) and the subject changed"
+        );
+
+        // The first keyframe after a delta on a truly fresh store keeps them.
+        let mut st = PanelStore::new();
+        st.apply_panel(&f, PanelFrameKind::Delta, &unit_delta("#7", 4, 6), 0);
+        st.apply_panel(&f, PanelFrameKind::Keyframe, &unit_keyframe("#7", 4), 0);
+        assert_eq!(st.unit_journal().len(), 6);
+    }
+
+    /// I8 (cross must_fix 2): the storm guard ages. A throttled SSH query is
+    /// dropped with no reply of any kind, so a latch only a keyframe can
+    /// clear would freeze the section map for the session while the journal
+    /// kept filling. After `RESYNC_LATCH_S` the next delta asks again.
+    #[test]
+    #[allow(non_snake_case, reason = "the constant is named in the test's name")]
+    fn a_stale_resync_latch_re_arms_after_RESYNC_LATCH_S() {
+        let mut st = PanelStore::new();
+        let f = SmolStr::new(UNIT_FEED);
+        assert_eq!(
+            st.apply_panel(&f, PanelFrameKind::Delta, &unit_delta("#7", 4, 1), 0),
+            PanelOutcome::NeedsResync(f.clone())
+        );
+        assert_eq!(
+            st.apply_panel(&f, PanelFrameKind::Delta, &unit_delta("#7", 5, 1), 1),
+            PanelOutcome::Ignored,
+            "still one request outstanding"
+        );
+        assert_eq!(
+            st.apply_panel(
+                &f,
+                PanelFrameKind::Delta,
+                &unit_delta("#7", 6, 1),
+                RESYNC_LATCH_S - 1
+            ),
+            PanelOutcome::Ignored
+        );
+        assert_eq!(
+            st.apply_panel(
+                &f,
+                PanelFrameKind::Delta,
+                &unit_delta("#7", 7, 1),
+                RESYNC_LATCH_S
+            ),
+            PanelOutcome::NeedsResync(f.clone()),
+            "the reply never came: ask again"
+        );
+        assert_eq!(
+            st.unit_journal().len(),
+            4,
+            "every delta rings, latched or not"
+        );
+        assert!(st.resync_pending(UNIT_FEED));
+        st.apply_panel(
+            &f,
+            PanelFrameKind::Keyframe,
+            &unit_keyframe("#7", 7),
+            RESYNC_LATCH_S,
+        );
+        assert!(!st.resync_pending(UNIT_FEED), "a keyframe clears the latch");
+        // A clock that jumped backwards re-arms rather than latching forever.
+        let mut st = PanelStore::new();
+        assert_eq!(
+            st.apply_panel(&f, PanelFrameKind::Delta, &unit_delta("#7", 4, 1), 100),
+            PanelOutcome::NeedsResync(f.clone())
+        );
+        assert_eq!(
+            st.apply_panel(&f, PanelFrameKind::Delta, &unit_delta("#7", 5, 1), 20),
+            PanelOutcome::NeedsResync(f.clone())
+        );
     }
 
     #[test]

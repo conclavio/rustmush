@@ -42,10 +42,11 @@ characters. See "help sshkey".
 A full-screen option (SSH): if you connect over SSH with a normal terminal,
 "@tui" switches to an optional full-screen dashboard of numbered screens —
 the scene with your scrollback, the room and who is about; your sheet;
-mail; channels; rolls; intel; actions, and — if you hold a station on a
-tactical unit — a damage report and a unit screen for it — with single-key
-navigation and an input box you open with Enter. "@notui" (or Ctrl-])
-returns to the classic line view, which stays the default. See "help tui".
+mail; channels; rolls; intel; actions, and two tactical screens — a damage
+report and a unit view — that show your unit whenever you hold a station on
+one (they are always in the strip) — with single-key navigation and an
+input box you open with Enter. "@notui" (or Ctrl-]) returns to the classic
+line view, which stays the default. See "help tui".
 
 In the web client, a bell collects notices — new mail, a page, an alert —
 first as a brief toast, then in a tray you can open any time; a notice's

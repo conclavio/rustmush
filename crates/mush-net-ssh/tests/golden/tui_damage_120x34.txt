@@ -1,32 +1,32 @@
 rustmush  1 scene   2 sheet   3 mail   4 chan 1   5 rolls   6 intel   7 actions   8 damage   9 unit    Nick ● 3 on 14:30
 The Hall #2 · Downtown · rain · IC 21:15 · North  East  quai
-┌ sections ──────────────────────────────────────────────────────────────────────────┐┌before / after──────────────────┐
-│Atlas #7  rev 3                                                                     ││rev 4  gauss                    │
-│✗ center_torso  ok                                                                  ││facet/center_torso/rear/armor  6│
-│    structure ▰▰▰▰▰ 8/8                                                             ││section center_torso  ok → damag│
-│    rear/armor ▰▱▱▱▱ 1/6                                                            ││component gauss  ok → destroyed │
-│                                                                                    ││asset gauss detached            │
-│                                                                                    ││capability_granted tactics.mobil│
-│                                                                                    ││capability_revoked tactics.mobil│
-│                                                                                    ││                                │
-│                                                                                    ││                                │
-│                                                                                    ││                                │
-│                                                                                    ││                                │
-│                                                                                    ││                                │
-│                                                                                    │└────────────────────────────────┘
-│                                                                                    │┌journal─────────────────────────┐
-│                                                                                    ││rev 4 · gauss · capability_revok│
-│                                                                                    ││rev 4 · gauss · capability_grant│
-│                                                                                    ││rev 4 · gauss · asset gauss deta│
-│                                                                                    ││rev 4 · gauss · component gauss │
-│                                                                                    ││rev 4 · gauss · section center_t│
-│                                                                                    ││rev 4 · gauss · cell facet/cente│
-│                                                                                    ││                                │
-│                                                                                    ││                                │
-│                                                                                    ││                                │
-│                                                                                    ││                                │
-│                                                                                    ││                                │
-└────────────────────────────────────────────────────────────────────────────────────┘└────────────────────────────────┘
+┌ sections ───────────────────────────────────────────────────┐┌before / after─────────────────────────────────────────┐
+│Atlas #7  rev 3                                              ││rev 4  gauss                                           │
+│✗ center_torso  ok                                           ││facet/center_torso/rear/armor  6 → 1                   │
+│    structure ▰▰▰▰▰ 8/8                                      ││section center_torso  ok → damaged                     │
+│    rear/armor ▰▱▱▱▱ 1/6                                     ││component gauss  ok → destroyed                        │
+│                                                             ││asset gauss detached                                   │
+│                                                             ││capability_granted tactics.mobility (gauss)            │
+│                                                             ││capability_revoked tactics.mobility (gauss)            │
+│                                                             ││                                                       │
+│                                                             ││                                                       │
+│                                                             ││                                                       │
+│                                                             ││                                                       │
+│                                                             ││                                                       │
+│                                                             │└───────────────────────────────────────────────────────┘
+│                                                             │┌journal────────────────────────────────────────────────┐
+│                                                             ││rev 4 · gauss · cell facet/center_torso/rear/armor 6→1 │
+│                                                             ││rev 4 · gauss · section center_torso ok→damaged        │
+│                                                             ││rev 4 · gauss · component gauss ok→destroyed           │
+│                                                             ││rev 4 · gauss · asset gauss detached                   │
+│                                                             ││rev 4 · gauss · capability_granted tactics.mobility (ga│
+│                                                             ││rev 4 · gauss · capability_revoked tactics.mobility (ga│
+│                                                             ││                                                       │
+│                                                             ││                                                       │
+│                                                             ││                                                       │
+│                                                             ││                                                       │
+│                                                             ││                                                       │
+└─────────────────────────────────────────────────────────────┘└───────────────────────────────────────────────────────┘
 [ Health /X□□□□□ Hurt ]  [ Willpower ▰▰▰▰▱▱▱▱ 6/10 ]  [ Blood ▰▰▱▱▱▱▱▱ 3/13 ]  [ Wound -1 ]
 ┌input ‹nav› Enter to type─────────────────────────────────────────────────────────────────────────────────────────────┐
 │                                                                                                                      │

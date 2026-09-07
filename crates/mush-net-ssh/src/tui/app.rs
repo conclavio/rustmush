@@ -464,9 +464,26 @@ impl TuiApp {
     /// The active screen's own hydration queries.
     fn screen_queries(&self) -> Vec<(String, Value)> {
         let screen = self.screen();
+        // An `on_enter` that names one of the screen's own PANEL feeds is
+        // gated on the manifest exactly as the pane's subscribe is (below):
+        // asking a server that does not publish the feed earns an `Unknown
+        // query` reply in a scrollback neither tactical screen shows. An
+        // EMPTY manifest means the hello has not landed yet, not that the
+        // feed is absent, so it still asks. A semantic VIEW (`legal.actions`)
+        // is not a panel feed and `Hello.panels` never lists one, so it is
+        // never gated.
+        let panel_feed = |name: &str| {
+            screen
+                .panes
+                .iter()
+                .any(|p| matches!(p.content, PaneContent::Panel { feed, .. } if feed == name))
+        };
         let mut q: Vec<(String, Value)> = screen
             .on_enter
             .iter()
+            .filter(|(n, _)| {
+                !panel_feed(n) || self.manifest.panels.is_empty() || manifest_has(&self.manifest, n)
+            })
             .map(|(n, a)| ((*n).to_string(), a.clone()))
             .collect();
         // Interface plan I8: a pane over a module feed (a dotted name) the
@@ -631,6 +648,13 @@ impl TuiApp {
                         queries.push((feed.clone(), empty()));
                     }
                 }
+                // A server restarted behind the gateway re-sends its hello to
+                // a live TUI. Re-fetch what the ACTIVE screen reads too, not
+                // just the vitals: otherwise a tactical screen sits on the
+                // frame from before the restart until the player presses `r`.
+                // The replacement keyframe replaces the held frame and the
+                // object-change rule takes care of the ring.
+                queries.extend(self.screen_queries());
             }
             OutputEvent::SessionInfo { character, .. } => {
                 self.manifest.character = Some(sanitize(&character.name));
@@ -1473,10 +1497,12 @@ impl TuiApp {
                 Some(data) => render(data, &ctx),
                 // A feed whose first keyframe is still in flight is honestly
                 // loading — except the unit feed (interface plan I8), whose
-                // frame may never come: a server without the tactical module
-                // has no such query, and a refusal lands in the scrollback,
-                // which neither tactical screen shows. Its renderers have an
-                // honest empty state, so hand them the empty frame.
+                // frame may never come: a refusal lands in the scrollback,
+                // which neither tactical screen shows, and a composition
+                // without the tactical module answers nothing at all. Its
+                // renderers have an honest empty state (the no-unit line, or
+                // the after-action ring when one has arrived), so hand them
+                // the empty frame rather than a spinner that never stops.
                 None if feed == UNIT_FEED => render(&Value::Null, &ctx),
                 // A module feed this server does not publish at all (the
                 // contacts table on a server without the propagation layer)
@@ -1751,6 +1777,27 @@ impl TuiApp {
         };
         let left_w = col_w(PaneSlot::Left);
         let right_w = col_w(PaneSlot::Right);
+        // The Right column shares the surplus with Main rather than staying
+        // at `max(min_w)` at every width (interface plan I8): the tactical
+        // screens' right column carries whole table rows — a before/after
+        // line is 36 columns for the reference frame — and `draw_pane`
+        // neither wraps nor scrolls sideways, so a fixed 34 clipped the pane
+        // at 160 columns just as at 80. `visible_panes` is unchanged, so no
+        // survivor set moves; only screens that DECLARE the split take it,
+        // which keeps the rails (the WHO rail, the channel list) at the width
+        // they were designed for.
+        let right_w = if right_w > 0 && self.screen().right_shares_surplus {
+            let main_min = panes
+                .iter()
+                .filter(|p| p.slot == PaneSlot::Main)
+                .map(|p| p.min_w)
+                .max()
+                .unwrap_or(0);
+            let surplus = area.width.saturating_sub(left_w + main_min + right_w);
+            right_w + surplus / 2
+        } else {
+            right_w
+        };
         let [left, main, right] = Layout::horizontal([
             Constraint::Length(left_w),
             Constraint::Min(1),
@@ -2930,6 +2977,10 @@ mod tests {
     #[test]
     fn the_tactical_screens_ask_for_the_unit_feed_on_entry_and_on_refresh() {
         let mut app = app();
+        app.set_manifest(TuiManifest {
+            panels: vec!["tactics.unit".into()],
+            character: None,
+        });
         for digit in *b"89" {
             app.feed_input(b"1");
             let r = app.feed_input(&[digit]);
@@ -2943,6 +2994,83 @@ mod tests {
             let refresh = app.feed_input(b"r");
             assert_eq!(refresh.queries, r.queries, "r re-requests the keyframe");
         }
+        // An EMPTY manifest is "the hello has not landed", not "the feed is
+        // absent", so the screens still ask.
+        let mut unheard = TuiApp::new(caps());
+        unheard.feed_input(b"1");
+        assert_eq!(unheard.feed_input(b"8").queries.len(), 1);
+    }
+
+    /// I8 (cross PARTIAL low): a screen's `on_enter` is gated on the manifest
+    /// exactly as its pane feeds are. On a composition without the tactical
+    /// module the query does not exist, and its `Unknown query` reply would
+    /// land in a scrollback neither tactical screen shows.
+    #[test]
+    fn the_tactical_screens_ask_nothing_on_a_manifest_without_the_unit_feed() {
+        let mut app = app();
+        app.set_manifest(TuiManifest {
+            panels: vec!["wod.vitals".into()],
+            character: None,
+        });
+        for digit in *b"89" {
+            app.feed_input(b"1");
+            assert!(
+                app.feed_input(&[digit]).queries.is_empty(),
+                "screen {} asked for a feed the server does not publish",
+                char::from(digit)
+            );
+            assert!(app.feed_input(b"r").queries.is_empty(), "nor does `r`");
+        }
+        // The screens are still there, and still honest.
+        let text = super::super::frame_text(&mut app, 120, 34);
+        assert!(text.contains("No tactical unit"), "{text}");
+        assert!(!text.contains("(loading...)"), "{text}");
+    }
+
+    /// I8 (hole 11): a server restarted behind the gateway re-sends its hello
+    /// to a live TUI. The vitals feeds were always re-fetched; the active
+    /// screen's own feeds are now too, so a tactical screen does not sit on
+    /// the frame from before the restart until someone presses `r`.
+    #[test]
+    fn a_hello_rehydrates_the_active_screen() {
+        let mut app = app();
+        app.set_manifest(TuiManifest {
+            panels: vec!["tactics.unit".into(), "tactics.contacts".into()],
+            character: None,
+        });
+        app.feed_input(b"9");
+        let names: Vec<String> = app
+            .apply_event(&OutputEvent::Hello {
+                proto: mush_proto::PROTO_VERSION,
+                server: "rustmush 0.1".into(),
+                features: vec![],
+                panels: vec![
+                    "wod.vitals".to_string(),
+                    "tactics.unit".to_string(),
+                    "tactics.contacts".to_string(),
+                ],
+            })
+            .into_iter()
+            .map(|(n, _)| n)
+            .collect();
+        for expected in ["wod.vitals", "tactics.unit", "tactics.contacts"] {
+            assert!(names.contains(&expected.to_string()), "{names:?}");
+        }
+        // A hello whose manifest drops the feed asks for nothing tactical.
+        let names: Vec<String> = app
+            .apply_event(&OutputEvent::Hello {
+                proto: mush_proto::PROTO_VERSION,
+                server: "rustmush 0.1".into(),
+                features: vec![],
+                panels: vec!["wod.vitals".to_string()],
+            })
+            .into_iter()
+            .map(|(n, _)| n)
+            .collect();
+        assert!(
+            !names.iter().any(|n| n.starts_with("tactics.")),
+            "{names:?}"
+        );
     }
 
     #[test]

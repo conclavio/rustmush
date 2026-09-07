@@ -11,6 +11,8 @@
 //! Panel data is read defensively: a missing or malformed field degrades to
 //! a placeholder rather than panicking (invariant T6).
 
+use std::collections::VecDeque;
+
 use mush_ansi::{AnsiTheme, fmt_duration, merge_styles};
 use mush_proto::{
     ClientCaps, Color as MushColor, ColorDepth, NarrativeKind, NoticeSeverity, ObjRef, OutputEvent,
@@ -1067,6 +1069,14 @@ pub fn render_view_rows(data: &Value, ctx: &RenderCtx<'_>) -> PaneRows {
                     None => rows.push(PaneRow::plain(line)),
                 }
             }
+            // A view that says its walk was cut says so here, so every
+            // generic list inherits the honesty the unit panes have (I8: the
+            // contacts table is the first producer to reach the row cap).
+            if data.get("truncated").and_then(Value::as_bool) == Some(true) {
+                rows.push(PaneRow::plain(Line::from(dim_span_owned(
+                    "(more rows than shown)",
+                ))));
+            }
             PaneRows { rows }
         }
         "detail" | "form" => {
@@ -1222,17 +1232,20 @@ pub fn render_vitals_rows(frames: &[(mush_proto::SmolStr, VitalsFrame)], utf8: b
 const VITAL_GAUGE_W: usize = 8;
 
 /// A `▰▱` gauge `cells` wide for `current` within `min..=max` (`#-` without
-/// UTF-8), rounded to the nearest cell. Reversed bounds are tolerated and
-/// `current` is clamped, so a malformed frame draws an empty or full bar
-/// rather than panicking (invariant T6).
+/// UTF-8), rounded to the nearest cell. Reversed bounds AND extreme
+/// magnitudes are tolerated — the arithmetic is done in `i128`, so a frame
+/// declaring `i64::MIN..=i64::MAX` draws a bar instead of overflowing the
+/// render path — and `current` is clamped, so a malformed frame draws an
+/// empty or full bar rather than panicking (invariant T6).
 fn gauge_bar(current: i64, min: i64, max: i64, cells: usize, utf8: bool) -> String {
     let (lo, hi) = if min <= max { (min, max) } else { (max, min) };
-    let span = hi - lo;
-    let width = i64::try_from(cells).unwrap_or(0);
+    let span = i128::from(hi) - i128::from(lo);
+    let rel = i128::from(current.clamp(lo, hi)) - i128::from(lo);
+    let width = i128::try_from(cells).unwrap_or(0);
     let filled = if span <= 0 {
         0
     } else {
-        usize::try_from(((current.clamp(lo, hi) - lo) * width + span / 2) / span).unwrap_or(0)
+        usize::try_from((rel * width + span / 2) / span).unwrap_or(0)
     };
     let (on, off) = if utf8 {
         ('\u{25b0}', '\u{25b1}')
@@ -1491,9 +1504,10 @@ fn push_truncation(rows: &mut Vec<PaneRow>, data: &Value) {
             .map_or(0, |a| u64::try_from(a.len()).unwrap_or(0))
     };
     rows.push(PaneRow::plain(Line::from(dim_span_owned(&format!(
-        "(view truncated: {} cells, {} components not shown)",
+        "(view truncated: {} cells, {} components, {} capabilities not shown)",
         total("cells").saturating_sub(shown("cells")),
         total("components").saturating_sub(shown("components")),
+        total("capabilities").saturating_sub(shown("capabilities")),
     )))));
 }
 
@@ -1543,8 +1557,14 @@ pub fn render_unit_sections_rows(data: &Value, ctx: &RenderCtx<'_>) -> PaneRows 
     PaneRows { rows }
 }
 
-/// The unit screen's `sections` pane: the same map one line to a section —
-/// glyph, id, `condition` word, then its cells' gauges inline.
+/// The unit screen's `sections` pane: the same map, compact — glyph, id,
+/// `condition` word and the section's FIRST cell on one line, every further
+/// cell on a four-column continuation row.
+///
+/// A renderer cannot see its pane's width (nothing in [`RenderCtx`] carries
+/// it) and `draw_pane` neither wraps nor scrolls sideways, so a row must be
+/// narrow by construction or it is silently clipped: the head is at most
+/// 2 + 14 + 12 + 2 + a gauge, a continuation at most 4 + a gauge.
 #[must_use]
 pub fn render_unit_sections_compact_rows(data: &Value, ctx: &RenderCtx<'_>) -> PaneRows {
     let Some(mut rows) = unit_header(data) else {
@@ -1568,11 +1588,12 @@ pub fn render_unit_sections_compact_rows(data: &Value, ctx: &RenderCtx<'_>) -> P
             .get("condition")
             .and_then(Value::as_str)
             .unwrap_or("");
-        let mut spans = vec![
+        let mut head = vec![
             Span::styled(format!("{mark} "), style),
             Span::raw(format!("{:<14}", truncate_chars(&clean(id), 14))),
-            dim_span_owned(&format!("{:<12}", truncate_chars(&clean(condition), 12))),
+            dim_span_owned(&truncate_chars(&clean(condition), 12)),
         ];
+        let mut more: Vec<PaneRow> = Vec::new();
         for cell in &cells {
             let Some((scope, label)) = cell_scope(cell.addr) else {
                 continue;
@@ -1581,12 +1602,20 @@ pub fn render_unit_sections_compact_rows(data: &Value, ctx: &RenderCtx<'_>) -> P
                 continue;
             }
             let (_, cell_style) = state_mark(cell.state, ctx.utf8);
-            spans.push(Span::styled(
-                format!("  {}", cell_gauge(&label, cell, ctx.utf8)),
-                cell_style,
-            ));
+            let gauge = cell_gauge(&label, cell, ctx.utf8);
+            if head.len() == 3 {
+                // The first cell shares the section's line; the rest hang
+                // under it, so no cell is ever pushed off the right edge.
+                head.push(Span::styled(format!("  {gauge}"), cell_style));
+            } else {
+                more.push(PaneRow::plain(Line::from(vec![
+                    Span::raw("    "),
+                    Span::styled(gauge, cell_style),
+                ])));
+            }
         }
-        rows.push(PaneRow::plain(Line::from(spans)));
+        rows.push(PaneRow::plain(Line::from(head)));
+        rows.extend(more);
     }
     push_truncation(&mut rows, data);
     PaneRows { rows }
@@ -1663,7 +1692,8 @@ fn mobility_line(data: &Value, utf8: bool) -> String {
 /// they install into (the unit's own group first, which also carries the
 /// capabilities no component sources), each row a glyph from the component's
 /// `state`, its `condition` word verbatim, and `·asset` when it is one; the
-/// capabilities a component sources are indented under it.
+/// capabilities a component sources are indented under it, and any whose
+/// source is not in this frame at all follow in a trailing `(other)` group.
 #[must_use]
 pub fn render_unit_components_rows(data: &Value, ctx: &RenderCtx<'_>) -> PaneRows {
     if unit_object(data).is_none() {
@@ -1748,6 +1778,27 @@ pub fn render_unit_components_rows(data: &Value, ctx: &RenderCtx<'_>) -> PaneRow
             {
                 rows.push(capability_row(capability, bullet, 4));
             }
+        }
+    }
+    // A capability whose source names no component IN THIS FRAME — the walk
+    // admits components before capabilities, so a byte-budgeted frame can
+    // carry one — would otherwise render nowhere at all. It gets a trailing
+    // group of its own rather than being silently dropped or hung off the
+    // unit, which would claim it is intrinsic.
+    let orphans: Vec<&Value> = capabilities
+        .iter()
+        .filter(|k| {
+            k.get("source").and_then(Value::as_str).is_some_and(|s| {
+                !components
+                    .iter()
+                    .any(|c| c.get("id").and_then(Value::as_str) == Some(s))
+            })
+        })
+        .collect();
+    if !orphans.is_empty() {
+        rows.push(PaneRow::plain(Line::from(Span::styled("(other)", system))));
+        for capability in orphans {
+            rows.push(capability_row(capability, bullet, 2));
         }
     }
     if rows.is_empty() {
@@ -1839,80 +1890,120 @@ fn delta_entry_text(entry: &Value, utf8: bool) -> String {
     }
 }
 
-/// The damage screen's `journal` pane: the after-action ring, newest first —
-/// `rev N · cause · <entry>`. A row about another subject than the one held
-/// prints that subject first (the resync always asks for the viewer's own
-/// default subject, so the ring may carry both).
+/// The ring split into its deltas: rows sharing an `(object, rev, at)` are
+/// contiguous by construction of `push_unit_journal`, so one pass groups
+/// them. Oldest delta first, entries in wire order within each.
+fn journal_runs(ring: &VecDeque<Value>) -> Vec<Vec<&Value>> {
+    let mut runs: Vec<Vec<&Value>> = Vec::new();
+    for row in ring {
+        let same = runs.last().and_then(|r| r.last()).is_some_and(|prev| {
+            prev.get("object") == row.get("object")
+                && prev.get("rev") == row.get("rev")
+                && prev.get("at") == row.get("at")
+        });
+        if same {
+            runs.last_mut().expect("a run to extend").push(row);
+        } else {
+            runs.push(vec![row]);
+        }
+    }
+    runs
+}
+
+/// `rev N` for a ring row, or `rev ?` when the delta carried no usable one.
+fn journal_rev_text(rev: Option<&Value>) -> String {
+    match rev.and_then(Value::as_u64) {
+        Some(rev) => format!("rev {rev}"),
+        None => "rev ?".to_string(),
+    }
+}
+
+/// The damage screen's `journal` pane: the after-action ring, newest DELTA
+/// first and each delta's entries in the order the server wrote them (so the
+/// `elided` marker lands last within its own delta, where the entries it
+/// stands for are) — `rev N · cause · <entry>`. A row about another subject
+/// than the one held prints that subject first; with NO view held (an
+/// unstationed staffer's own `@unit/damage`, answered with the honest `null`
+/// keyframe) every row is prefixed, and the ring is still the report. The
+/// NO-UNIT line is for the case where there is nothing at all to show.
 #[must_use]
 pub fn render_unit_journal_rows(data: &Value, ctx: &RenderCtx<'_>) -> PaneRows {
-    let Some((held, _)) = unit_object(data) else {
-        return PaneRows::one(NO_UNIT_LINE);
-    };
+    let held = unit_object(data).map(|(id, _)| id);
     let ring = ctx.store.unit_journal();
     if ring.is_empty() {
-        return PaneRows::one("(no journal entries yet)");
+        return PaneRows::one(if held.is_none() {
+            NO_UNIT_LINE
+        } else {
+            "(no journal entries yet)"
+        });
     }
     let sep = unit_sep(ctx.utf8);
     let dash = if ctx.utf8 { "\u{2014}" } else { "-" };
     let null = Value::Null;
     let mut rows = Vec::new();
-    for row in ring.iter().rev() {
-        let entry = row.get("entry").unwrap_or(&null);
-        if entry.get("kind").and_then(Value::as_str) == Some("elided") {
-            rows.push(PaneRow::plain(Line::from(dim_span_owned(&elided_text(
-                entry, ctx.utf8,
-            )))));
-            continue;
+    for run in journal_runs(ring).iter().rev() {
+        for row in run {
+            let entry = row.get("entry").unwrap_or(&null);
+            let mut text = String::new();
+            if let Some(object) = row.get("object").and_then(Value::as_str)
+                && held != Some(object)
+            {
+                text.push_str(&clean(object));
+                text.push(' ');
+            }
+            text.push_str(&journal_rev_text(row.get("rev")));
+            text.push_str(sep);
+            text.push_str(&clean(
+                row.get("cause").and_then(Value::as_str).unwrap_or(dash),
+            ));
+            text.push_str(sep);
+            text.push_str(&journal_entry_text(entry, ctx.utf8));
+            let text = truncate_chars(&text, 160);
+            // The elision marker is the one row that is not a fact about the
+            // unit, so it stays dim — but it keeps its delta's object,
+            // revision and cause like any other row, or a mixed ring could
+            // not say which volley was cut.
+            let span = if entry.get("kind").and_then(Value::as_str) == Some("elided") {
+                dim_span_owned(&text)
+            } else {
+                Span::raw(text)
+            };
+            rows.push(PaneRow::plain(Line::from(span)));
         }
-        let mut text = String::new();
-        if let Some(object) = row.get("object").and_then(Value::as_str)
-            && object != held
-        {
-            text.push_str(&clean(object));
-            text.push(' ');
-        }
-        match row.get("rev").and_then(Value::as_u64) {
-            Some(rev) => text.push_str(&format!("rev {rev}")),
-            None => text.push_str("rev ?"),
-        }
-        text.push_str(sep);
-        text.push_str(&clean(
-            row.get("cause").and_then(Value::as_str).unwrap_or(dash),
-        ));
-        text.push_str(sep);
-        text.push_str(&journal_entry_text(entry, ctx.utf8));
-        rows.push(PaneRow::plain(Line::from(Span::raw(truncate_chars(
-            &text, 160,
-        )))));
     }
     PaneRows { rows }
 }
 
-/// The damage screen's `before / after` pane: the newest revision in the ring
-/// for the subject actually held, one row per entry with both sides. The
+/// The damage screen's `before / after` pane: the newest-ARRIVED delta in the
+/// ring for the subject actually held, one row per entry with both sides. The
 /// delta carries `from` and `to` itself, so no second keyframe is kept.
+///
+/// Newest-arrived, never the highest revision: a remove-and-recreate resets a
+/// unit to revision 0, and the highest revision in the ring would then be the
+/// dead unit's last damage report shown as the current one. With NO view held
+/// the newest-arrived row names the subject, and the head says whose it is.
 #[must_use]
 pub fn render_unit_delta_rows(data: &Value, ctx: &RenderCtx<'_>) -> PaneRows {
-    let Some((held, _)) = unit_object(data) else {
-        return PaneRows::one(NO_UNIT_LINE);
-    };
+    let held = unit_object(data).map(|(id, _)| id);
     let ring = ctx.store.unit_journal();
-    let mine = |row: &&Value| row.get("object").and_then(Value::as_str) == Some(held);
-    let Some(newest) = ring
-        .iter()
-        .filter(mine)
-        .filter_map(|row| row.get("rev").and_then(Value::as_u64))
-        .max()
-    else {
-        return PaneRows::one("no after-action entries yet");
+    let mine = |row: &&Value| match held {
+        Some(held) => row.get("object").and_then(Value::as_str) == Some(held),
+        None => true,
     };
+    let Some(newest) = ring.iter().rev().find(mine) else {
+        return PaneRows::one(if held.is_none() && ring.is_empty() {
+            NO_UNIT_LINE
+        } else {
+            "no after-action entries yet"
+        });
+    };
+    let (object, rev) = (newest.get("object"), newest.get("rev"));
     let null = Value::Null;
     let mut rows = Vec::new();
     let mut cause: Option<String> = None;
     for row in ring
         .iter()
-        .filter(mine)
-        .filter(|row| row.get("rev").and_then(Value::as_u64) == Some(newest))
+        .filter(|row| row.get("object") == object && row.get("rev") == rev)
     {
         if cause.is_none() {
             cause = row.get("cause").and_then(Value::as_str).map(clean);
@@ -1923,10 +2014,20 @@ pub fn render_unit_delta_rows(data: &Value, ctx: &RenderCtx<'_>) -> PaneRows {
             160,
         )))));
     }
-    let head = match &cause {
-        Some(cause) => format!("rev {newest}  {}", truncate_chars(cause, 24)),
-        None => format!("rev {newest}"),
-    };
+    // With a view held the head names only the revision (the pane sits beside
+    // the subject's own section map); with none, the subject is the news.
+    let mut head = String::new();
+    if held.is_none()
+        && let Some(object) = object.and_then(Value::as_str)
+    {
+        head.push_str(&clean(object));
+        head.push(' ');
+    }
+    head.push_str(&journal_rev_text(rev));
+    if let Some(cause) = &cause {
+        head.push_str("  ");
+        head.push_str(&truncate_chars(cause, 24));
+    }
     rows.insert(
         0,
         PaneRow::plain(Line::from(Span::styled(
@@ -2737,9 +2838,16 @@ mod tests {
         assert!(line_text(&head.line).contains("ok"));
 
         let compact = texts(&render_unit_sections_compact_rows(&data, &ctx));
-        assert_eq!(compact.len(), 2, "one line per section: {compact:?}");
-        assert!(compact[1].contains("center_torso"));
-        assert!(compact[1].contains("structure") && compact[1].contains("rear/armor"));
+        assert_eq!(
+            compact,
+            vec![
+                "Atlas #7  rev 3".to_string(),
+                "\u{2717} center_torso  ok  structure \u{25b0}\u{25b0}\u{25b0}\u{25b0}\u{25b0} 8/8"
+                    .to_string(),
+                "    rear/armor \u{25b0}\u{25b1}\u{25b1}\u{25b1}\u{25b1} 1/6".to_string(),
+            ],
+            "the first cell shares the section's line, the rest hang under it"
+        );
 
         let plant = texts(&render_unit_plant_rows(&data, &ctx));
         assert_eq!(
@@ -2748,6 +2856,31 @@ mod tests {
         );
         assert_eq!(plant[1], "mobility ground.biped");
         assert_eq!(plant.len(), 2);
+        // A frame carries at most ONE of `mode` / `switching` — the server
+        // reports a switch only while it is in progress, and a due-but-
+        // unsettled one reports its new mode — so the pane and the server's
+        // own `@unit/show` text agree by construction, whichever the pane
+        // reads first.
+        let mut mid = data.clone();
+        mid["mobility"] = serde_json::json!({ "mode": null, "modes": [],
+            "switching": { "from": "ground.biped", "to": "ground.quad", "ready_at": 110 } });
+        assert_eq!(
+            texts(&render_unit_plant_rows(&mid, &ctx))[1],
+            "mobility ground.biped \u{2192} ground.quad (ready 110)"
+        );
+        let mut settled = data.clone();
+        settled["mobility"] =
+            serde_json::json!({ "mode": "ground.quad", "switching": null, "modes": [] });
+        assert_eq!(
+            texts(&render_unit_plant_rows(&settled, &ctx))[1],
+            "mobility ground.quad"
+        );
+        let mut none = data.clone();
+        none["mobility"] = Value::Null;
+        assert_eq!(
+            texts(&render_unit_plant_rows(&none, &ctx))[1],
+            "mobility none"
+        );
 
         let components = texts(&render_unit_components_rows(&data, &ctx));
         assert_eq!(components[0], "unit", "the unit's own group leads");
@@ -2779,9 +2912,68 @@ mod tests {
 
     /// I8: a `null` frame is the honest no-unit state on every pane, and a
     /// garbage payload degrades to the same line rather than panicking or
-    /// claiming to be loading (invariant T6).
+    /// claiming to be loading (invariant T6). The journal and before/after
+    /// panes are judged against an EMPTY store: with nothing held AND nothing
+    /// ringed there is genuinely nothing to say, which is what the NO-UNIT
+    /// line says. (With a ring they render it — the test below.)
     #[test]
     fn a_null_or_garbage_unit_frame_is_the_no_unit_line_on_every_pane() {
+        let theme = AnsiTheme::classic();
+        let store = ringed(&[f3("#7")]);
+        let empty = PanelStore::new();
+        let ctx = RenderCtx {
+            theme: &theme,
+            depth: ColorDepth::Ansi16,
+            utf8: true,
+            store: &store,
+            selected_channel: None,
+        };
+        let unringed = RenderCtx {
+            store: &empty,
+            ..ctx
+        };
+        let renderers: [(&str, super::super::screen::PanelRenderer, bool); 6] = [
+            ("sections", render_unit_sections_rows, false),
+            ("compact", render_unit_sections_compact_rows, false),
+            ("plant", render_unit_plant_rows, false),
+            ("components", render_unit_components_rows, false),
+            ("journal", render_unit_journal_rows, true),
+            ("delta", render_unit_delta_rows, true),
+        ];
+        for bad in [
+            Value::Null,
+            serde_json::json!({}),
+            serde_json::json!([1, 2]),
+            serde_json::json!("nope"),
+            serde_json::json!({ "object": { "name": "no id" } }),
+        ] {
+            for (name, render, reads_ring) in renderers {
+                let rows = render(&bad, if reads_ring { &unringed } else { &ctx });
+                assert_eq!(rows.rows.len(), 1, "{name} on {bad}");
+                assert_eq!(line_text(&rows.rows[0].line), NO_UNIT_LINE, "{name}");
+            }
+        }
+        // A frame with a subject but nothing else still renders, honestly.
+        let bare = serde_json::json!({ "object": { "id": "#7", "name": "Atlas" } });
+        for (name, render, _) in renderers {
+            let rows = render(&bare, &ctx);
+            assert!(!rows.rows.is_empty(), "{name}");
+            for r in &rows.rows {
+                assert_ne!(line_text(&r.line), "(loading...)", "{name}");
+            }
+        }
+    }
+
+    /// I8 (cross must_fix 3): the actor who PRODUCES an after-action report
+    /// is the one least likely to hold a station on its subject — `@unit/damage`
+    /// is staff-gated, the fan-out puts the staffer first, and their own
+    /// resync can only ask for their own default subject, which answers
+    /// `null`. So with a `null` frame held and a non-empty ring the journal
+    /// and before/after panes render the ring, naming the object of every
+    /// row; the panes that describe a unit's own state keep the NO-UNIT line,
+    /// because there is no unit to describe.
+    #[test]
+    fn a_null_keyframe_still_shows_the_after_action_ring() {
         let theme = AnsiTheme::classic();
         let store = ringed(&[f3("#7")]);
         let ctx = RenderCtx {
@@ -2791,36 +2983,77 @@ mod tests {
             store: &store,
             selected_channel: None,
         };
-        let renderers: [(&str, super::super::screen::PanelRenderer); 6] = [
-            ("sections", render_unit_sections_rows),
+        let journal = texts(&render_unit_journal_rows(&Value::Null, &ctx));
+        assert_eq!(journal.len(), 6, "{journal:?}");
+        for row in &journal {
+            assert!(
+                row.starts_with("#7 rev 4 \u{b7} gauss \u{b7} "),
+                "every row names its own subject: {row:?}"
+            );
+        }
+        let delta = texts(&render_unit_delta_rows(&Value::Null, &ctx));
+        assert_eq!(
+            delta[0], "#7 rev 4  gauss",
+            "the head says whose report it is"
+        );
+        assert_eq!(delta[1], "facet/center_torso/rear/armor  6 \u{2192} 1");
+        assert_eq!(delta.len(), 7);
+        for (name, render) in [
+            (
+                "sections",
+                render_unit_sections_rows as super::super::screen::PanelRenderer,
+            ),
             ("compact", render_unit_sections_compact_rows),
             ("plant", render_unit_plant_rows),
             ("components", render_unit_components_rows),
-            ("journal", render_unit_journal_rows),
-            ("delta", render_unit_delta_rows),
-        ];
-        for bad in [
-            Value::Null,
-            serde_json::json!({}),
-            serde_json::json!([1, 2]),
-            serde_json::json!("nope"),
-            serde_json::json!({ "object": { "name": "no id" } }),
         ] {
-            for (name, render) in renderers {
-                let rows = render(&bad, &ctx);
-                assert_eq!(rows.rows.len(), 1, "{name} on {bad}");
-                assert_eq!(line_text(&rows.rows[0].line), NO_UNIT_LINE, "{name}");
-            }
+            let rows = texts(&render(&Value::Null, &ctx));
+            assert_eq!(rows, vec![NO_UNIT_LINE.to_string()], "{name}");
         }
-        // A frame with a subject but nothing else still renders, honestly.
-        let bare = serde_json::json!({ "object": { "id": "#7", "name": "Atlas" } });
-        for (name, render) in renderers {
-            let rows = render(&bare, &ctx);
-            assert!(!rows.rows.is_empty(), "{name}");
-            for r in &rows.rows {
-                assert_ne!(line_text(&r.line), "(loading...)", "{name}");
-            }
-        }
+    }
+
+    /// I8 (the plan's promised fan-out-order test): the delta arrives BEFORE
+    /// any keyframe — D-I8-2 sends it first and the keyframe only answers the
+    /// resync — so the before/after table must read the same rows either way,
+    /// losing only the object prefix once the subject is known.
+    #[test]
+    fn a_delta_before_any_keyframe_then_the_keyframe_leaves_the_before_after_table_consistent() {
+        let theme = AnsiTheme::classic();
+        let mut store = PanelStore::new();
+        let feed = mush_proto::SmolStr::new("tactics.unit");
+        store.apply_panel(&feed, mush_proto::PanelFrameKind::Delta, &f3("#7"), 0);
+        let ctx = RenderCtx {
+            theme: &theme,
+            depth: ColorDepth::Ansi16,
+            utf8: true,
+            store: &store,
+            selected_channel: None,
+        };
+        let before = texts(&render_unit_delta_rows(&Value::Null, &ctx));
+        assert_eq!(before[0], "#7 rev 4  gauss");
+        assert_eq!(before[1], "facet/center_torso/rear/armor  6 \u{2192} 1");
+        let journal_before = texts(&render_unit_journal_rows(&Value::Null, &ctx));
+        assert!(journal_before[0].starts_with("#7 rev 4"));
+
+        store.apply_panel(&feed, mush_proto::PanelFrameKind::Keyframe, &f1(), 1);
+        assert_eq!(
+            store.unit_journal().len(),
+            6,
+            "the first keyframe never throws the rows away"
+        );
+        let ctx = RenderCtx {
+            theme: &theme,
+            depth: ColorDepth::Ansi16,
+            utf8: true,
+            store: &store,
+            selected_channel: None,
+        };
+        let after = texts(&render_unit_delta_rows(&f1(), &ctx));
+        assert_eq!(after[0], "rev 4  gauss", "the subject is held: no prefix");
+        assert_eq!(after[1..], before[1..], "the same table, either way");
+        let journal_after = texts(&render_unit_journal_rows(&f1(), &ctx));
+        assert!(journal_after[0].starts_with("rev 4 \u{b7} gauss \u{b7} cell "));
+        assert_eq!(journal_after.len(), 6);
     }
 
     /// I8: the journal reads the ring newest first and renders an unknown
@@ -2855,18 +3088,27 @@ mod tests {
         };
         let data = f1();
 
+        // Newest DELTA first, entries within a delta in the order the server
+        // wrote them (cell → section → component → asset → capability), so
+        // this pane and the before/after table beside it read the same way.
         let journal = texts(&render_unit_journal_rows(&data, &ctx));
         assert_eq!(journal.len(), 8, "{journal:?}");
-        assert_eq!(
-            journal[0], "#8 rev 9 \u{b7} gauss \u{b7} meteor_strike",
-            "an unknown kind is an opaque row, and the foreign subject is named"
+        assert!(
+            journal[0].starts_with("#8 rev 9 \u{b7} gauss \u{b7} cell unit/heat 1"),
+            "the newer delta leads, and the foreign subject is named: {journal:?}"
         );
-        assert!(journal[1].starts_with("#8 rev 9 \u{b7} gauss \u{b7} cell unit/heat 1"));
         assert_eq!(
-            journal[2], "rev 4 \u{b7} gauss \u{b7} capability_revoked tactics.mobility (gauss)",
+            journal[1], "#8 rev 9 \u{b7} gauss \u{b7} meteor_strike",
+            "an unknown kind is an opaque row"
+        );
+        assert!(
+            journal[2].contains("cell facet/center_torso/rear/armor 6\u{2192}1"),
+            "{journal:?}"
+        );
+        assert_eq!(
+            journal[7], "rev 4 \u{b7} gauss \u{b7} capability_revoked tactics.mobility (gauss)",
             "the held subject is not repeated on every row"
         );
-        assert!(journal[7].contains("cell facet/center_torso/rear/armor 6\u{2192}1"));
 
         let delta = texts(&render_unit_delta_rows(&data, &ctx));
         assert_eq!(delta[0], "rev 4  gauss", "rev 9 belongs to #8, not to us");
@@ -2899,6 +3141,177 @@ mod tests {
             texts(&render_unit_journal_rows(&data, &ctx)),
             vec!["(no journal entries yet)".to_string()]
         );
+
+        // The table takes the newest-ARRIVED delta for the held object, never
+        // the highest revision: a remove-and-recreate resets a unit to
+        // revision 0, and the dead unit's rev 7 must not be reported as the
+        // current damage.
+        let mut old = f3("#7");
+        old["to_revision"] = serde_json::json!(7);
+        old["cause"] = serde_json::json!("laser");
+        let mut fresh = f3("#7");
+        fresh["from_revision"] = serde_json::json!(0);
+        fresh["to_revision"] = serde_json::json!(1);
+        let recreated = ringed(&[old, fresh]);
+        let ctx = RenderCtx {
+            store: &recreated,
+            ..ctx
+        };
+        assert_eq!(
+            texts(&render_unit_delta_rows(&data, &ctx))[0],
+            "rev 1  gauss",
+            "the newest arrival wins, not the highest revision"
+        );
+    }
+
+    /// I8 (hole 4): the compact map has no width to spend — a renderer cannot
+    /// see its pane and `draw_pane` neither wraps nor scrolls sideways — so
+    /// every cell after the first gets its own indented row instead of being
+    /// appended to a line that silently clips.
+    #[test]
+    fn the_compact_sections_pane_never_drops_a_cell() {
+        let theme = AnsiTheme::classic();
+        let store = PanelStore::new();
+        let ctx = RenderCtx {
+            theme: &theme,
+            depth: ColorDepth::Ansi16,
+            utf8: true,
+            store: &store,
+            selected_channel: None,
+        };
+        assert_eq!(
+            texts(&render_unit_sections_compact_rows(&f1(), &ctx)).len(),
+            3,
+            "the header, the section, and its second cell"
+        );
+
+        let mut wide = f1();
+        wide["cells"] = Value::Array(
+            (0..8)
+                .map(|i| {
+                    serde_json::json!({ "addr": format!("section/center_torso/cell_{i}"),
+                        "label": format!("cell_{i}"), "current": 3, "min": 0, "max": 9,
+                        "state": "warn" })
+                })
+                .collect(),
+        );
+        let rows = texts(&render_unit_sections_compact_rows(&wide, &ctx));
+        let all = rows.join("\n");
+        for i in 0..8 {
+            assert!(
+                all.contains(&format!("cell_{i}")),
+                "cell_{i} dropped: {rows:?}"
+            );
+        }
+        for row in &rows {
+            assert!(
+                row.chars().count() <= 60,
+                "a row wider than the narrowest pane it must fit: {row:?}"
+            );
+        }
+    }
+
+    /// I8 (hole 6): a frame may declare any bounds an `i64` can hold. The
+    /// gauge computes in `i128`, so `i64::MIN..=i64::MAX` draws a bar rather
+    /// than overflowing inside the render path (a debug build panics on
+    /// overflow, and `cargo test` is a debug build).
+    #[test]
+    fn gauge_bar_tolerates_extreme_bounds() {
+        assert_eq!(
+            gauge_bar(i64::MAX, i64::MIN, i64::MAX, 5, true),
+            "\u{25b0}\u{25b0}\u{25b0}\u{25b0}\u{25b0}"
+        );
+        assert_eq!(
+            gauge_bar(0, i64::MIN, i64::MAX, 5, true),
+            "\u{25b0}\u{25b0}\u{25b0}\u{25b1}\u{25b1}"
+        );
+        assert_eq!(gauge_bar(i64::MAX, 0, i64::MAX, 5, false), "#####");
+        assert_eq!(
+            gauge_bar(i64::MIN, i64::MIN, i64::MAX, 5, true),
+            "\u{25b1}\u{25b1}\u{25b1}\u{25b1}\u{25b1}"
+        );
+        // Reversed bounds and a span of nothing still draw, as before.
+        assert_eq!(gauge_bar(3, 10, 0, 5, false), "##---");
+        assert_eq!(gauge_bar(5, 4, 4, 5, false), "-----");
+    }
+
+    /// I9 / I8 (hole 7): a generic list whose producer capped its rows says
+    /// so, the way the unit panes say what their byte budget cut. The
+    /// contacts table is the first producer to reach the cap.
+    #[test]
+    fn a_truncated_generic_list_says_so() {
+        let theme = AnsiTheme::classic();
+        let store = PanelStore::new();
+        let ctx = RenderCtx {
+            theme: &theme,
+            depth: ColorDepth::Ansi16,
+            utf8: true,
+            store: &store,
+            selected_channel: None,
+        };
+        let view = |truncated: Option<bool>| {
+            let mut v = serde_json::json!({
+                "schema": { "id": "tactics.contacts", "version": 1, "shape": "list",
+                    "columns": [ { "key": "id", "label": "contact", "align": "left" } ],
+                    "fields": [], "actionKey": "prefill" },
+                "rows": [ { "id": "aabbccddeeff", "prefill": "+contact aabbccddeeff" } ]
+            });
+            if let Some(t) = truncated {
+                v["truncated"] = serde_json::json!(t);
+            }
+            v
+        };
+        let cut = texts(&render_view_rows(&view(Some(true)), &ctx));
+        assert_eq!(cut.last().unwrap(), "(more rows than shown)");
+        assert_eq!(cut.len(), 3, "header, row, footer: {cut:?}");
+        for whole in [view(Some(false)), view(None)] {
+            let rows = texts(&render_view_rows(&whole, &ctx));
+            assert_eq!(rows.len(), 2, "{rows:?}");
+            assert!(!rows.iter().any(|r| r.contains("more rows")));
+        }
+    }
+
+    /// I8 (the components-pane gap): the byte-budget walk admits components
+    /// before capabilities, so a truncated frame can carry a capability whose
+    /// source is not in the frame. It renders under a trailing `(other)`
+    /// group rather than nowhere, and the footer counts capabilities too.
+    #[test]
+    fn a_capability_whose_source_is_not_in_the_frame_still_renders() {
+        let theme = AnsiTheme::classic();
+        let store = PanelStore::new();
+        let ctx = RenderCtx {
+            theme: &theme,
+            depth: ColorDepth::Ansi16,
+            utf8: true,
+            store: &store,
+            selected_channel: None,
+        };
+        let mut cut = f1();
+        cut["capabilities"] = serde_json::json!([
+            { "id": "tactics.mobility", "source": null },
+            { "id": "tactics.targeting", "source": "gauss" },
+            { "id": "tactics.jump", "source": "missing_component" }
+        ]);
+        cut["truncated"] = serde_json::json!(true);
+        cut["counts"] =
+            serde_json::json!({ "sections": 1, "cells": 4, "components": 3, "capabilities": 5 });
+        let rows = texts(&render_unit_components_rows(&cut, &ctx));
+        let other = rows
+            .iter()
+            .position(|r| r == "(other)")
+            .unwrap_or_else(|| panic!("an (other) group: {rows:?}"));
+        assert_eq!(rows[other + 1], "  \u{b7} tactics.jump");
+        assert!(
+            rows.iter().any(|r| r == "    \u{b7} tactics.targeting"),
+            "a sourced capability still hangs off its component: {rows:?}"
+        );
+        assert_eq!(
+            rows.last().unwrap(),
+            "(view truncated: 0 cells, 2 components, 2 capabilities not shown)"
+        );
+        // A whole frame grows no (other) group.
+        let rows = texts(&render_unit_components_rows(&f1(), &ctx));
+        assert!(!rows.iter().any(|r| r == "(other)"), "{rows:?}");
     }
 
     /// I8: a delta the ring had to cut says so rather than lying by omission,
@@ -2920,18 +3333,54 @@ mod tests {
             store: &store,
             selected_channel: None,
         };
+        // The elision marker is an ordinary ring row: it keeps its delta's
+        // object, revision and cause, and it sits LAST within its own delta,
+        // where the entries it stands for are.
         let journal = texts(&render_unit_journal_rows(&f1(), &ctx));
-        assert_eq!(journal[0], "\u{2026} 31 more entries");
         assert_eq!(journal.len(), 50);
+        assert_eq!(
+            journal[49],
+            "rev 4 \u{b7} gauss \u{b7} \u{2026} 31 more entries"
+        );
+        assert!(journal[0].starts_with("rev 4 \u{b7} gauss \u{b7} cell unit/c0"));
+
+        // In a mixed ring the marker still says which volley was cut.
+        let mut later = f3("#8");
+        later["to_revision"] = serde_json::json!(9);
+        later["cause"] = serde_json::json!("laser");
+        later["entries"] = Value::Array(
+            (0..60)
+                .map(|i| serde_json::json!({ "kind": "cell", "addr": format!("unit/d{i}"), "from": 2, "to": 1 }))
+                .collect(),
+        );
+        let mut mixed = ringed(&[f3("#7")]);
+        mixed.apply_panel(
+            &mush_proto::SmolStr::new("tactics.unit"),
+            mush_proto::PanelFrameKind::Delta,
+            &later,
+            0,
+        );
+        let ctx2 = RenderCtx {
+            store: &mixed,
+            ..ctx
+        };
+        let journal = texts(&render_unit_journal_rows(&f1(), &ctx2));
+        assert_eq!(
+            journal[49],
+            "#8 rev 9 \u{b7} laser \u{b7} \u{2026} 11 more entries",
+            "{:?}",
+            &journal[..3]
+        );
+        assert!(journal[50].starts_with("rev 4 \u{b7} gauss \u{b7} cell "));
 
         let mut cut = f1();
         cut["truncated"] = serde_json::json!(true);
         cut["counts"] = serde_json::json!({ "sections": 1, "cells": 900, "components": 40,
-            "capabilities": 1 });
+            "capabilities": 4 });
         let rows = texts(&render_unit_sections_rows(&cut, &ctx));
         assert_eq!(
             rows.last().unwrap(),
-            "(view truncated: 896 cells, 39 components not shown)"
+            "(view truncated: 896 cells, 39 components, 3 capabilities not shown)"
         );
     }
 

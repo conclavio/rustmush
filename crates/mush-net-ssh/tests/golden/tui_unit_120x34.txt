@@ -1,32 +1,32 @@
 rustmush  1 scene   2 sheet   3 mail   4 chan 1   5 rolls   6 intel   7 actions   8 damage   9 unit    Nick ● 3 on 14:30
 The Hall #2 · Downtown · rain · IC 21:15 · North  East  quai
-┌plant─────────────────┐┌ sections ──────────────────────────────────────────────────┐┌contacts────────────────────────┐
-│✓ heat ▰▰▰▱▱ 20/30    ││Atlas #7  rev 3                                             ││contact       gen  rev  state  a│
-│mobility ground.biped ││✗ center_torso  ok            structure ▰▰▰▰▰ 8/8  rear/armo││aabbccddeeff    1    3  held   1│
-│                      ││                                                            ││001122334455    1    3  held   1│
-│                      ││                                                            ││                                │
-│                      ││                                                            ││                                │
-│                      ││                                                            ││                                │
-│                      ││                                                            ││                                │
-│                      ││                                                            │└────────────────────────────────┘
-│                      ││                                                            │┌weapons─────────────────────────┐
-│                      ││                                                            ││awaiting a weapons-cycle        │
-│                      ││                                                            ││projection (plan §9)            │
-│                      ││                                                            ││                                │
-└──────────────────────┘└────────────────────────────────────────────────────────────┘│                                │
-┌grid──────────────────┐┌components──────────────────────────────────────────────────┐│                                │
-│awaiting a geometry   ││unit                                                        ││                                │
-│projection (plan §9)  ││  · tactics.mobility                                        ││                                │
-│                      ││center_torso                                                │└────────────────────────────────┘
-│                      ││  ✓ gauss               ok                                  │┌comms───────────────────────────┐
-│                      ││      ammo ▰▰▰▰▱ 9/12                                       ││awaiting a station comms        │
-│                      ││                                                            ││projection (plan §9)            │
-│                      ││                                                            ││                                │
-│                      ││                                                            ││                                │
-│                      ││                                                            ││                                │
-│                      ││                                                            ││                                │
-│                      ││                                                            ││                                │
-└──────────────────────┘└────────────────────────────────────────────────────────────┘└────────────────────────────────┘
+┌plant─────────────────┐┌ sections ───────────────────────────────────────┐┌contacts───────────────────────────────────┐
+│✓ heat ▰▰▰▱▱ 20/30    ││Atlas #7  rev 3                                  ││contact       gen  rev  state  age  band   │
+│mobility ground.biped ││✗ center_torso  ok  structure ▰▰▰▰▰ 8/8          ││aabbccddeeff    1    3  held   12s  close  │
+│                      ││    rear/armor ▰▱▱▱▱ 1/6                         ││001122334455    1    3  held   12s  close  │
+│                      ││                                                 ││                                           │
+│                      ││                                                 ││                                           │
+│                      ││                                                 ││                                           │
+│                      ││                                                 ││                                           │
+│                      ││                                                 │└───────────────────────────────────────────┘
+│                      ││                                                 │┌weapons────────────────────────────────────┐
+│                      ││                                                 ││awaiting a weapons-cycle                   │
+│                      ││                                                 ││projection (plan §9)                       │
+│                      ││                                                 ││                                           │
+└──────────────────────┘└─────────────────────────────────────────────────┘│                                           │
+┌grid──────────────────┐┌components───────────────────────────────────────┐│                                           │
+│awaiting a geometry   ││unit                                             ││                                           │
+│projection (plan §9)  ││  · tactics.mobility                             ││                                           │
+│                      ││center_torso                                     │└───────────────────────────────────────────┘
+│                      ││  ✓ gauss               ok                       │┌comms──────────────────────────────────────┐
+│                      ││      ammo ▰▰▰▰▱ 9/12                            ││awaiting a station comms                   │
+│                      ││                                                 ││projection (plan §9)                       │
+│                      ││                                                 ││                                           │
+│                      ││                                                 ││                                           │
+│                      ││                                                 ││                                           │
+│                      ││                                                 ││                                           │
+│                      ││                                                 ││                                           │
+└──────────────────────┘└─────────────────────────────────────────────────┘└───────────────────────────────────────────┘
 [ Health /X□□□□□ Hurt ]  [ Willpower ▰▰▰▰▱▱▱▱ 6/10 ]  [ Blood ▰▰▱▱▱▱▱▱ 3/13 ]  [ Wound -1 ]
 ┌input ‹nav› Enter to type─────────────────────────────────────────────────────────────────────────────────────────────┐
 │                                                                                                                      │

@@ -7,8 +7,9 @@ the **default** and is not going anywhere.
 `@tui` is an optional full-screen alternative for terminal clients, rendered
 server-side over your SSH connection. It is built from **numbered screens**
 of titled panes: a scene screen with your scrollback, the room and who is
-about; a sheet screen; mail; channels; rolls; intel; actions; and, when you
-hold a station on a tactical unit, a damage screen and a unit screen for it.
+about; a sheet screen; mail; channels; rolls; intel; actions; and two
+tactical screens — a damage report and a unit view — that show your unit
+whenever you hold a station on one (they are always in the strip).
 Everything you type still runs the same commands and reaches the same world;
 the TUI is only a different way to *see* it.
 
@@ -67,7 +68,7 @@ Nav mode (the box is closed):
 
 Input mode (the box is open):
 
-  Enter        Send the line and stay in the box; on an empty box, back to nav.
+  Enter        Send the line and stay in the box; an empty box returns to nav.
   Esc          Back to nav mode, keeping the line as a draft for next time.
   Left/Right, Home/End, Ctrl-A/E, Backspace, Delete, Ctrl-W (kill word),
   Ctrl-U (kill to start), Up/Down (history), Tab (complete a command name).
@@ -125,11 +126,11 @@ slash: `/clear` empties the scrollback, `/help` opens the key help,
              sheet (`+roll str` → `+roll strength`, `+br` → `+brawl`).
   6 intel    Your own informant intel, newest first.
   7 actions  The actions currently offered to you; Enter prefills `+act`.
-  8 damage   The after-action report, when you hold a station on a tactical
-             unit: your unit's sections with a condition mark and a gauge for
-             every part the ruleset tracks, the newest damage report's
-             before/after table beside it, and the journal those tables come
-             from — one line per thing that changed, newest first. `r` asks
+  8 damage   The after-action report for the unit you hold a station on:
+             its sections with a condition mark and a gauge for every part
+             the ruleset tracks, the newest damage report's before/after
+             table beside it, and the journal those tables come from — one
+             line per thing that changed, newest report first. `r` asks
              for a fresh reading; `d` opens the box with `@unit/damage ` and
              `u` with `@unit/show ` ready (neither sends until you press
              Enter, and both are staff commands).
@@ -142,13 +143,16 @@ slash: `/clear` empties the scrollback, `/help` opens the key help,
 The two tactical screens are always in the tab strip, and they are honest
 when there is nothing to show: with no station and no unit of your own they
 read `No tactical unit: take a station, or @unit/show #n if you control
-one.` Screen 9's contacts pane is the table `+contacts` prints, when the
-server publishes it (Enter on a row prefills `+contact <id>`); it also
-carries panes for things no server publishes yet — a grid, weapons, comms —
-each saying what it is waiting for. Those are the first panes to go when the
-window narrows, so a real pane never loses its place to an empty one. Colour and condition marks on both
-screens come from the ruleset's own judgement, never from the client's
-reading of a word.
+one.` A damage report that reaches you about a unit you hold no station on
+— staff damaging someone else's — still fills the journal and the
+before/after table, with each line naming the unit it is about. Screen 9's
+contacts pane is the table `+contacts` prints, when the server publishes it
+(Enter on a row prefills `+contact <id>`); it also carries panes for things
+no server publishes yet — a grid, weapons, comms — each saying what it is
+waiting for. Those are the first panes to go when the window narrows, so a
+real pane never loses its place to an empty one. Colour and condition marks
+on both screens come from the ruleset's own judgement, never from the
+client's reading of a word.
 
 Above the input box, when your ruleset publishes vitals, a strip of gauges
 shows your health track, pools and readouts; without one the prompt shows
