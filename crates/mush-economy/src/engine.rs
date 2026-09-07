@@ -1886,18 +1886,24 @@ fn entry_probe(p: &Prepared) -> EconomicTransaction {
 
 // ---- apply ----------------------------------------------------------------
 
-/// Apply a validated [`Prepared`] to `snapshot`, returning the advanced snapshot and
-/// the immutable transaction. The module supplies the allocated `txid`, monotonic
+/// Apply a validated [`Prepared`] against `snapshot`, returning **what changes**
+/// — the touched records as their post-images ([`Delta`]) — and the immutable
+/// transaction. The module supplies the allocated `txid`, monotonic
 /// `journal_seq`, and `posted_at`. Infallible: validation proved every checked op.
+///
+/// Doc 13 W1-F1: this used to clone the whole snapshot per post — every account,
+/// title and reservation and the entire idempotency map — to build the post-image
+/// in. The delta is O(touched records); the post path applies it to the live
+/// snapshot at install, and the pure [`apply`] applies it to a clone for the rigs.
 #[must_use]
-pub fn apply(
+pub fn apply_delta(
     snapshot: &EconomySnapshot,
     prepared: &Prepared,
     txid: TransactionId,
     journal_seq: u64,
     posted_at: i64,
-) -> (EconomySnapshot, EconomicTransaction) {
-    let mut next = snapshot.clone();
+) -> (Delta, EconomicTransaction) {
+    let mut next = DeltaBuilder::new(snapshot);
 
     // Fold the reservation effects first: each carries the FULL post-state, and the
     // one thing only `apply` knows - which transaction consumed a capture - is
@@ -2013,7 +2019,143 @@ pub fn apply(
     if let Some(request) = prepared.consumed_approval {
         next.consume_approval(request, txid);
     }
+    (next.finish(), tx)
+}
+
+/// [`apply_delta`] applied to a **clone** of `snapshot`: the pure form the rigs
+/// and the boot-time probes use. The post path never takes this — it applies the
+/// delta to the live snapshot at install (W1-F1).
+#[must_use]
+pub fn apply(
+    snapshot: &EconomySnapshot,
+    prepared: &Prepared,
+    txid: TransactionId,
+    journal_seq: u64,
+    posted_at: i64,
+) -> (EconomySnapshot, EconomicTransaction) {
+    let (delta, tx) = apply_delta(snapshot, prepared, txid, journal_seq, posted_at);
+    let mut next = snapshot.clone();
+    delta.apply_to(&mut next);
     (next, tx)
+}
+
+/// What one post changes (doc 13 W1-F1): the touched records as their
+/// post-images, in the order [`apply_delta`] produced them, plus the three
+/// index facts a post records. Applied whole to a snapshot by
+/// [`Delta::apply_to`]; never a clone of anything it does not touch.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Delta {
+    /// Every reservation the post placed, captured, released or expired.
+    pub holds: Vec<crate::record::Hold>,
+    /// Every account whose balance or held projection moved.
+    pub accounts: Vec<crate::record::Account>,
+    /// Every title the post created, transferred or otherwise changed.
+    pub assets: Vec<crate::record::EconomicAsset>,
+    /// The post's idempotency record.
+    pub idempotency: Option<crate::record::IdempotencyRecord>,
+    /// The transaction this post reverses, if any.
+    pub reversed: Option<TransactionId>,
+    /// The approval request this post consumed, if any, and by which transaction.
+    pub consumed_approval: Option<(crate::ids::ApprovalRequestId, TransactionId)>,
+}
+
+impl Delta {
+    /// Apply to `snapshot`, in the order the records were produced.
+    pub fn apply_to(self, snapshot: &mut EconomySnapshot) {
+        for hold in self.holds {
+            snapshot.put_hold(hold);
+        }
+        for account in self.accounts {
+            snapshot.put_account(account);
+        }
+        for asset in self.assets {
+            snapshot.put_asset(asset);
+        }
+        if let Some(record) = self.idempotency {
+            snapshot.put_idempotency(record);
+        }
+        if let Some(target) = self.reversed {
+            snapshot.mark_reversed(target);
+        }
+        if let Some((request, transaction)) = self.consumed_approval {
+            snapshot.consume_approval(request, transaction);
+        }
+    }
+}
+
+/// The post-image under construction: reads fall through to the base snapshot
+/// until a record is touched, then to its copy here — the same six calls
+/// `apply_delta` made against a cloned snapshot, answered without the clone.
+struct DeltaBuilder<'a> {
+    base: &'a EconomySnapshot,
+    holds: BTreeMap<crate::ids::HoldId, crate::record::Hold>,
+    accounts: BTreeMap<AccountId, crate::record::Account>,
+    assets: BTreeMap<mush_core::ObjId, crate::record::EconomicAsset>,
+    idempotency: Option<crate::record::IdempotencyRecord>,
+    reversed: Option<TransactionId>,
+    consumed_approval: Option<(crate::ids::ApprovalRequestId, TransactionId)>,
+}
+
+impl<'a> DeltaBuilder<'a> {
+    fn new(base: &'a EconomySnapshot) -> DeltaBuilder<'a> {
+        DeltaBuilder {
+            base,
+            holds: BTreeMap::new(),
+            accounts: BTreeMap::new(),
+            assets: BTreeMap::new(),
+            idempotency: None,
+            reversed: None,
+            consumed_approval: None,
+        }
+    }
+
+    fn put_hold(&mut self, hold: crate::record::Hold) {
+        self.holds.insert(hold.id, hold);
+    }
+
+    /// The account's post-image so far — copied from the base on first touch.
+    fn account_mut(&mut self, id: AccountId) -> Option<&mut crate::record::Account> {
+        if !self.accounts.contains_key(&id) {
+            let account = self.base.account(id)?.clone();
+            self.accounts.insert(id, account);
+        }
+        self.accounts.get_mut(&id)
+    }
+
+    fn asset(&self, object: mush_core::ObjId) -> Option<&crate::record::EconomicAsset> {
+        self.assets.get(&object).or_else(|| self.base.asset(object))
+    }
+
+    fn put_asset(&mut self, asset: crate::record::EconomicAsset) {
+        self.assets.insert(asset.object, asset);
+    }
+
+    fn put_idempotency(&mut self, record: crate::record::IdempotencyRecord) {
+        self.idempotency = Some(record);
+    }
+
+    fn mark_reversed(&mut self, target: TransactionId) {
+        self.reversed = Some(target);
+    }
+
+    fn consume_approval(
+        &mut self,
+        request: crate::ids::ApprovalRequestId,
+        transaction: TransactionId,
+    ) {
+        self.consumed_approval = Some((request, transaction));
+    }
+
+    fn finish(self) -> Delta {
+        Delta {
+            holds: self.holds.into_values().collect(),
+            accounts: self.accounts.into_values().collect(),
+            assets: self.assets.into_values().collect(),
+            idempotency: self.idempotency,
+            reversed: self.reversed,
+            consumed_approval: self.consumed_approval,
+        }
+    }
 }
 
 // ---- reversal -------------------------------------------------------------

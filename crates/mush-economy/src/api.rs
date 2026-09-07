@@ -25,7 +25,7 @@ use smol_str::SmolStr;
 
 use crate::amount::Amount;
 use crate::custody::{CustodyError, WorldCustody};
-use crate::engine::{APPROVAL_TTL_SECS, AuthEval, ValidateEnv, apply, plan_reversal, validate};
+use crate::engine::{APPROVAL_TTL_SECS, AuthEval, ValidateEnv, plan_reversal, validate};
 use crate::ids::{
     AccountId, ApprovalRequestId, CadenceId, HoldId, InstrumentId, ObligationId, TransactionId,
     VaultId,
@@ -38,7 +38,6 @@ use crate::record::{
     Account, ApprovalRequest, ApprovalStatus, CustodyDirection, EconomicAsset, EconomicCause,
     EconomicTransaction, Hold, InstrumentDef, Vault,
 };
-use crate::snapshot::EconomySnapshot;
 
 /// The kv key of the allocator meta document.
 pub const META_KEY: &str = "meta";
@@ -2923,12 +2922,12 @@ struct PreparedEconomyCommit {
     next_transaction: u64,
     journal_seq: u64,
     journal: PreparedLedgerAppend,
-    snapshot: EconomySnapshot,
+    /// What the post changes (W1-F1): applied to the live snapshot at install.
+    delta: crate::engine::Delta,
     transaction: EconomicTransaction,
     account_docs: Vec<Account>,
     asset_docs: Vec<EconomicAsset>,
     hold_docs: Vec<Hold>,
-    approval_doc: Option<ApprovalRequest>,
     /// Caller-supplied container docs that must be durable with this post (B2).
     contract_docs: Vec<crate::contract::EconomicContract>,
 }
@@ -2946,12 +2945,11 @@ fn prepare_commit(
         .checked_add(1)
         .ok_or(EconomyError::Overflow)?;
     let journal_seq = store.journal.next_seq(JOURNAL_LOG);
-    let (mut snapshot, transaction) = apply(store.snapshot(), prepared, txid, journal_seq, now);
-    // The companion docs go into the SAME post-image, before it is handed to
-    // `install_commit`, so RAM and the batch carry one state (B2).
-    for c in &companions {
-        snapshot.put_contract(c.clone());
-    }
+    // W1-F1: what the post changes, not a clone of the whole snapshot; the live
+    // snapshot takes it at install, with the companion docs in the same step,
+    // so RAM and the batch carry one state (B2).
+    let (delta, transaction) =
+        crate::engine::apply_delta(store.snapshot(), prepared, txid, journal_seq, now);
     let journal = store
         .journal
         .prepare_append(
@@ -2964,41 +2962,23 @@ fn prepare_commit(
         })?;
     // Every account whose `posted_balance`/`last_journal_seq` moved — AND (E4b1)
     // every account whose `held_amount`/`last_hold_seq` moved, which an effect-only
-    // placement does without touching a single money line (D11).
-    let touched_accounts: std::collections::BTreeSet<AccountId> = prepared
-        .touched_accounts()
-        .chain(prepared.hold_effects.iter().map(|e| e.hold.account))
-        .collect();
-    let account_docs = touched_accounts
-        .into_iter()
-        .filter_map(|id| snapshot.account(id).cloned())
-        .collect();
-    let asset_docs = prepared
-        .asset_effects
-        .iter()
-        .filter_map(|effect| snapshot.asset(effect.object).cloned())
-        .collect();
-    // Every touched `hold:{id}` projection (§4.2). The post-state is already in the
-    // journal entry; this is the read-side doc, healed from the journal at boot.
-    let hold_docs = prepared
-        .hold_effects
-        .iter()
-        .filter_map(|effect| snapshot.hold(effect.hold.id).cloned())
-        .collect();
-    let approval_doc = prepared
-        .consumed_approval
-        .and_then(|id| snapshot.approval(id).cloned());
+    // placement does without touching a single money line (D11) — and every
+    // touched title and `hold:{id}` projection (§4.2): exactly the delta's records.
+    // The post-state of a hold is already in the journal entry; the doc is the
+    // read side, healed from the journal at boot.
+    let account_docs = delta.accounts.clone();
+    let asset_docs = delta.assets.clone();
+    let hold_docs = delta.holds.clone();
     Ok(PreparedEconomyCommit {
         txid,
         next_transaction,
         journal_seq,
         journal,
-        snapshot,
+        delta,
         transaction,
         account_docs,
         asset_docs,
         hold_docs,
-        approval_doc,
         contract_docs: companions,
     })
 }
@@ -3046,15 +3026,14 @@ fn install_commit(ctx: &mut Ctx<'_>, commit: PreparedEconomyCommit) -> Transacti
         next_transaction,
         journal_seq,
         journal,
-        snapshot,
+        delta,
         transaction,
         account_docs,
         asset_docs,
         hold_docs,
-        approval_doc,
         contract_docs,
     } = commit;
-    let (journal_op, meta, key_doc) =
+    let (journal_op, meta, key_doc, approval_doc) =
         {
             let store = ctx
                 .w
@@ -3082,12 +3061,20 @@ fn install_commit(ctx: &mut Ctx<'_>, commit: PreparedEconomyCommit) -> Transacti
                 "economy: prepared journal seq is exact"
             );
             store.next_transaction = next_transaction;
-            store.snapshot = snapshot;
+            // W1-F1: the delta lands on the live snapshot, the companion docs
+            // with it (B2), and the consumed approval's post-image is read back
+            // for its own doc.
+            let consumed = delta.consumed_approval;
+            delta.apply_to(&mut store.snapshot);
+            for c in &contract_docs {
+                store.snapshot.put_contract(c.clone());
+            }
+            let approval_doc = consumed.and_then(|(id, _)| store.snapshot.approval(id).cloned());
             store.note_chunk(chunk_now, applied_seq, txid);
             // Doc 13 (W-D4): the key document rides in the same batch as the entry.
             let key_doc = crate::keys::IdemDoc::of(&transaction);
             store.index_transaction(transaction);
-            (journal_op, store.meta_doc(), key_doc)
+            (journal_op, store.meta_doc(), key_doc, approval_doc)
         };
     persist_journal(ctx.out, journal_op);
     crate::keys::persist_idem(ctx.out, &key_doc);

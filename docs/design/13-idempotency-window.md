@@ -218,7 +218,7 @@ positive. Lenses I, S, F. Size: a day.
 >    every post** (`let mut next = snapshot.clone()`), which is every account, title and
 >    reservation and the entire idempotency map — O(records + keys) per post today. The window
 >    (W2) shrinks the map's share; the rest is a cost this programme did not create and does
->    not fix. Worth its own look before the design rate is real.
+>    not fix. Worth its own look before the design rate is real. *Closed by F1, below.*
 >
 > **Verify (lenses I, B, S, F, C).** I: with the gate deciding as W2 will, a key evicted from
 > the RAM map that the filter has seen is a transient — the store is asked once (one read in
@@ -329,6 +329,35 @@ parts measurements. Lenses B, S, M, C. Size: a day.
 > settled-contract identity check at boot accepts a settlement older than the window when the
 > allocator minted its id and the filter has seen the contract's own settle key, and still
 > freezes on one naming another transaction. C: the cadence-1 workspace pass, again.
+
+> **F1 as built — 2026-09-06 (W1-F1 closed).** `apply` cloned the whole `EconomySnapshot`
+> per post to build the post-image in. Now `engine::apply_delta` runs the same body against a
+> `DeltaBuilder` — reads fall through to the base snapshot until a record is touched, then to
+> its copy — and returns a **`Delta`**: the touched holds, accounts and titles as post-images,
+> the idempotency record, the reversed target and the consumed approval. The pure `apply` the
+> rigs use is `apply_delta` applied to a clone (one source of truth). `prepare_commit` carries
+> the delta; `install_commit` applies it to the live snapshot, puts the companion contract docs
+> in the same step (B2), and reads the consumed approval's post-image back for its document.
+> Nothing between prepare and install read the post-image (the custody moves read the world),
+> so a refusal before install still leaves the live snapshot untouched — nothing was applied.
+>
+> **Measured (lens M).** The scale harness's seeder — real posts through `@econ/mint` on a test
+> world with 100 accounts, release build, this dev box — before and after:
+>
+> | posts | before | per post | after | per post |
+> |---:|---:|---:|---:|---:|
+> | 20 000 | 9.5 s | 477 µs | 3.7 s | 183 µs |
+> | 40 000 | 34.8 s | 870 µs | 7.5 s | 186 µs |
+>
+> Before, doubling the posts more than tripled the time: the clone grew with the map. After,
+> the cost per post is flat at ~185 µs, which is the rest of the path — validation, the
+> journal append's serialization, the persist ops through the rig — and no longer a function
+> of how much the economy holds.
+>
+> **Verify.** The whole economy suite (every rig posts through the same path), the loader and
+> the end-to-end driver tests, and the cadence-1 workspace pass — the write-time drift check
+> compares the live projections with the journal-authority shadow at every checkpoint, so a
+> delta that applied differently from the old post-image would have frozen there.
 
 ## 7. Open for the owner
 
