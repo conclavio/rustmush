@@ -1,6 +1,7 @@
 # 02 — Interface programme (I): implementation plan
 
-**Draft 0.3 — 2026-09-05.** Scoped from [01-assessment.md](01-assessment.md)
+**Draft 1.2 — 2026-09-07** (the changelog in §10 carries every draft).
+Scoped from [01-assessment.md](01-assessment.md)
 against the tree at `a0142e3` (working tree; E7 in flight on main). Every
 symbol named here was opened in that tree; line numbers are deliberately not
 cited (08i's confirm-by-symbol discipline).
@@ -206,7 +207,7 @@ tests stay green.
 | I5 | Web scene typography (direction 1a) | 2 | I4 | web |
 | I6 | Ruleset screens on existing data: SR combat screen, WoD vitals and roll builder, shared widgets | 2 to 3 | I1, I2, I4 | web, mush-net-ssh, ruleset-shadowrun, ruleset-wod |
 | I7 | Comms IC/OOC | 1 | I2, I4 | mush-comsys, web, mush-net-ssh |
-| I8 | Tactical unit screen: mockup T3, mockup T1 unit-side panes, `tactics.vitals` | 2 | I1, I2, I4, I6; coordinated with E7 cut 8 | mush-tactics (`view.rs` only), web, mush-net-ssh |
+| I8 | Tactical unit screen: mockup T3, mockup T1 unit-side panes, `tactics.vitals`, `tactics.contacts` | 2 | I1, I2, I4, I6, I9; built after E7 completed | mush-tactics (`view.rs` + the registration lines, `project()` delegation, `unit_show`, `status.rs` helpers), mush-ruleset (`pool_state`), mush-propagation (`panel.rs`, `contact_cells`), web, mush-net-ssh, docs/help, web/README.md |
 | I9 | Generic semantic-view renderer: list/detail/form over `View`/`ViewEnvelope`, one renderer per client | 2 to 3 | I1, I4 | mush-proto, mush-core (a demo view), mush-net-ssh, web |
 | I10 | Server-initiated interaction: `Request`/`Respond` (confirm, choice, target, text) | 2 | I1, I4 | mush-proto, mush-core, both bridges, mush-net-ssh, web |
 | I11 | Unified notification surface: one `Notice` event, three renders; `MailNotice` and the E6a alerts become producers | 1 to 2 | I9 | mush-proto, mush-core, mush-server, mush-net-ssh, web |
@@ -1089,6 +1090,165 @@ table consistent; the placeholders render and degrade first.
 
 **Verify lenses.** **P (projection)**, **C (coordination)** — can the DTO and
 `@unit/show` drift, or can the view read state E7's migration has moved?
+
+**Design pass (2026-09-07, tree `d890e45` — E7 complete).** Re-grounded by
+symbol before the build (an understand/design workflow: six code maps, three
+independent designs — plan-as-written, live panes, generic-view-first — one
+judge on the P/C/B/S lenses, one completeness critic). What the tree said:
+
+- `UnitStore` is still legacy `reg.state` — E7 cut 8 deferred the typed
+  family to E7k lane L3 (10b §14), and a pinned census
+  (`vf_g4_the_unit_store_writer_census_is_pinned`) fixes the seven
+  `module_state_mut::<UnitStore>` sites in `module.rs`; I8 adds none (its one
+  store read is `view::unit_source`, E7k's edit point).
+- The shipped `project()` serialized the whole `UnitRepr` — the create
+  keyframe carried `rules` and every capability's rules body (a D-I-9
+  violation in production), and the `@unit/damage` delta carried the
+  component asset's `ObjId` both ways. Both close here.
+- The authority §3.8 waited for exists: `status::viewer_is_stationed` (K5a's
+  `ChannelGrant` under the `sim` owner). `perm::controls` alone would have made
+  the HUD staff-only, since a pilot never controls a faction-owned mech.
+- `Query::PanelSubscribe` carries only the feed and the web bridge forwards
+  `{}`, so a browser can only ever see the feed's DEFAULT subject; the plan's
+  literal default (own object or refuse) would leave the web half dead for
+  every pilot, and both feeds sit in every hello manifest (the tactics module
+  is in production composition — with an EMPTY catalog, so today every player
+  is in the no-unit state).
+- E7 shipped no `tactics.contacts` and no `tactics.vitals` feed; the §9 asks
+  (cell display metadata, a table-shaped contacts keyframe) were not taken.
+- Digits: the TUI's 8 and 9 are free; the web has only 6 (8 = build, 9 = llm).
+
+**Decided (D-I8-1 … D-I8-4, under the owner's standing "surface only
+significant forks" order; each reversible on its own):**
+
+- **D-I8-1** The **contacts table ships in I8**: a `tactics.contacts` keyframe
+  in the I9 generic-view convention, owned by `mush-propagation` and built by
+  the SAME `contact_cells` function `+contacts` prints (one view; cut 7's
+  k2/k3/k4 extend to the row by construction). Its Cargo fence gains
+  `mush-proto` — no new graph node (`mush-core` already depends on it),
+  `cargo tree -p mush-tactics` unchanged. It is a separable server commit;
+  the client side is a one-line pane flip on the TUI and an embedded
+  `GenericView` on the web. Rationale: 01 §4 item 8 — "ship mockup T1 with a
+  contacts table once cut 7 exists" — and cut 7 exists.
+- **D-I8-2** The **after-action fan-out**: the `@unit/damage` delta (projected
+  through the view — flat addresses, `kind` tags, the asset as a presence bit)
+  and a `tactics.vitals` keyframe go to the staffer FIRST, then to every
+  CONNECTED viewer stationed on the unit (≤ `MAX_UNIT_AUDIENCE` 64, a walk of
+  the connected set — the world keeps no subject→actor index); the unit
+  KEYFRAME is not fanned, each client re-requests it on its
+  JOURNAL_RING/UNIT_RESYNC_MS loop. Without this `tactics.vitals` was a feed
+  nobody's strip ever updated from. A D-I-15 deviation (two emit lines inside
+  `unit_damage`), recorded in §6.
+- **D-I8-3** `components[].asset` is a **bool** (`attached`), never the
+  `ObjId` — §3.8's field list and its own test contradicted each other; a
+  pilot learns that kit is attached, not which economy title it is.
+- **D-I8-4** The **web ships ONE screen `unit` at digit 6** hosting both
+  layouts (`t` toggles damage / unit); the TUI keeps 8 damage + 9 unit. Cost,
+  recorded: on a tactics server the web's digits are exhausted, so I9's
+  `registerViewScreen` is refused (`no free hotkey digit`); the follow-up is a
+  digitless-screen policy (web/README.md).
+- Defaults taken: authority = stationed ∨ controls ∨ staff; the ONE refusal
+  for every NAMED failure (nonexistent, not a unit, no station, malformed —
+  staff included) is `@unit/status`'s line; the UNNAMED no-subject case
+  answers a `null` keyframe, never a Sys; default subject = own object if it
+  carries a unit record → `status::primary_stationed_unit` (highest-priority
+  `sim` grant on an ACTIVE unit) → null; every cell/section/component carries
+  a server-judged `state` (`mush_ruleset::pool_state`, the pool ladder lifted
+  out of `bounded` so the unit view and the sheet vitals cannot drift; a
+  depletion ladder — an accumulator such as heat reads inverted until the pack
+  declares thresholds); flat `addr`/`install` paths; `DefinitionRef` Display
+  strings as identities; `MAX_UNIT_VIEW_BYTES` 256 KiB soft budget with
+  `truncated` + true `counts` (the TUI drops any frame over 1 MiB, so the
+  record bound is a cliff, not a budget); placeholder titles name the missing
+  PRODUCER, never a cut number.
+
+**As built (2026-09-07, branch `interface-i11`; four commits — the server
+view, the contacts table, the web screen, the TUI screens).** Three lanes
+built in parallel against one frozen contract (fixtures, strings, the ring
+shape, the journal/refresh state machine), each pinning its side with tests
+over the same literal fixtures; the design above held, with these
+deviations:
+
+- **Server.** `view.rs` as designed — `UnitView` is built from the
+  accessors only, so a rules body has no path to the wire; `to_frame()`
+  emits the header, every section and every unit-level cell always, then
+  components, the remaining cells and the capabilities until the 256 KiB
+  budget is spent. The vitals feed is registered by the tactics module
+  directly (not through `register_vitals`, which declares state slots both
+  character rulesets already own and subscribes an `AttrSet` units never
+  raise); its `revision` is the unit revision, so the keyframe, the delta
+  and the vitals frame carry one number. `@unit/show`'s text changed
+  (flat `cell facet/center_torso/rear/armor: 1/6` addresses, `source none`,
+  a real switching clause, the state word instead of a `Debug` dump) — no
+  test pinned the old lines. `is_admin` and `claims_object` are
+  `pub(crate)`. The contacts table is registered by `mush-propagation`
+  under the family's name (`tactics.contacts`; the feed namespace has no
+  owner fence), built by the new `contact_cells` that `render_contact` now
+  formats byte-identically; `viewable_holders` gained a `&World` twin.
+  `mush-ruleset` exports `pool_state` / `pool` / `vitals_frame`.
+- **TUI.** Screens 8 and 9 as specified, with: two sections renderers
+  (one per screen — a renderer cannot know its caller); the tab-strip
+  elision keeps unread badges (`4 chan 1`) and fires only when the nine
+  tabs alone overflow, so 120×34 and 160×44 change in row 0 alone and
+  80×24 by the elision; a `tactics.unit` pane with no frame renders the
+  no-unit line (a server without the tactical module never answers the
+  query) and a dotted module feed the manifest lacks renders "(not
+  published by this server)" — never "(loading...)"; placeholders are a
+  plain title over a two-row declaration (the contract's single-line
+  titles clipped at every width); component-scoped cells render under
+  their component (nothing else would show them); the ring is cleared by
+  a keyframe for a DIFFERENT object but never by the first keyframe (the
+  fanned delta lands before the resync's keyframe); `→` on UTF-8; the
+  contacts pane is live through `render_view_rows`, subscribed on entry
+  only when the manifest carries the feed, Enter prefilling the row's
+  `+contact <id>`. `UNIT_RESYNC_MS` is the boolean resync latch (a
+  whole-second clock; the latch is the stronger coalescer). Survivors at
+  80×24: sections, components, plant (the placeholders and contacts go
+  first); the damage screen keeps all three panes; at 120×34 all seven.
+- **Web.** One screen `unit` at digit 6 (D-I8-4), `UNIT_SCREEN` exported
+  from the screens store and registered once in the hello pass when the
+  manifest carries a `.unit` feed; `t` toggles the layouts through a new
+  `local: toggle` action; `UnitStore` shaped on the sheet store with the
+  contract's outcomes, the ring, and a single 250 ms coalescing timer in
+  the game cleared on both reset seams; a unit `Sys` reply never falls
+  into scrollback (unavailable while nothing is held, ignored while a view
+  is); `applyKeyframe(null)` is the honest no-unit state and does not
+  clear the ring; `clear()` resets the layout (a reconnect returns to the
+  unit layout — recorded); the vitals store replaces on a new subject id
+  or a `revision: 0` frame; contacts embedded as a `GenericView` from the
+  generic-view store (no digit claimed); every glyph from a `state` word;
+  README's false "known gap" block (a nonexistent bridge file) replaced.
+- **Tests.** Server 22 (`i8_` in `mush-tactics/tests/module.rs`: no rules /
+  definition body / foreign id on every surface, refusal byte-identity
+  including staff, the held record, text/DTO parity, the null keyframe,
+  default-subject order, the authority table, no write / no idle, the
+  grant-needle probe, the 8192-cell budget walk, vitals shape / caps /
+  state agreement, the switching profile, keyframe and delta audiences,
+  the fan-out and its cap) + 7 contacts (`mush-propagation/tests/e7c7.rs`:
+  phantom/real row identity and the key set, params ignored, the leak
+  scan, line reconstruction and the prefill round trip, the 256 cap with
+  three holders, no write / no idle, the literal registration); TUI 12 +
+  the widened probes + eleven goldens (two new, rendered from the
+  fixtures); web 43 (344 total).
+- **Residual.** Production composes the tactics module with an EMPTY
+  catalog, so every player is in the no-unit state until a catalog is
+  composed — the screens are honest, not useful, until then. The TUI is at
+  `MAX_SCREENS`; the web's digits are exhausted on a tactics server (I9's
+  view screens refused) — a digitless-screen policy is the follow-up. The
+  damage screen's column balance (Main takes every surplus column while
+  the right column clips its rows at 32) wants a layout weight, not a
+  `min_w`. `tactics.vitals` stacks beside the character's `.vitals` in
+  both clients' strips (no width budget). `settle_mobility` and the
+  destroy hook bump the revision with no delta — both clients REPLACE on
+  an equal revision, which is the defence; write it down before any
+  "drop on equal" optimisation. The TUI resync always fetches the default
+  subject (ring rows carry their object; the before/after filters). The
+  pool ladder is a depletion ladder — heat reads inverted until the pack
+  declares thresholds — and the ≤16 vitals cut is alphabetical. The web
+  has no `GameApp` behavioural harness (the coalescer's wiring is pinned
+  by source probes). E7k lane L3 edits `view::unit_source`, the two
+  `status.rs` store reads, and adds `query_with_context` overrides on both
+  handlers.
 ### 3.9 Cut I9 — The generic semantic-view renderer
 
 **What it is.** The client-side substrate that makes every future
@@ -1702,7 +1862,10 @@ Six standing rules:
 - **I8's timing.** E7 cut 8 migrates `UnitStore` from legacy `reg.state`
   onto K's record types. `unit_for_view` isolates the read, so I8 lands
   either before or after with a one-function change; the default is after
-  I6, and E7 confirms the window (§8 q9).
+  I6, and E7 confirms the window (§8 q9). *Stale as of 2026-09-07: cut 8
+  deferred that migration to E7k lane L3 (10b §14); I8 landed after E7
+  completed with `UnitStore` still legacy, and `view::unit_source` is the
+  one function E7k edits.*
 - **Nothing in I1–I7 waits on E7**, and nothing in E7 waits on I.
 
 ---
@@ -1833,6 +1996,34 @@ Six standing rules:
   large impedance mismatch for an advisory confirm). Rationale: match the
   wire's own "advisory, best-effort" framing; the light path stays light and
   never contends with the NPC/LLM decision workers.
+- **D-I-15 — as built (I8, 2026-09-07).** The boundary held in spirit, not
+  letter. I touched `mush-tactics` through the new `view.rs`; THREE
+  registration lines (the unit query, the vitals feed, the vitals query);
+  `project()` gaining a `&World` and delegating to the view; `is_admin` and
+  `UnitRecordStatus::claims_object` made `pub(crate)`; the `unit_show` body;
+  the `@unit/damage` delta swap and its fan-out (D-I-24); and two helpers in
+  `status.rs` (`primary_stationed_unit`, `stationed_viewers` — the one file
+  the nine-file grant census admits). No new `module_state_mut::<UnitStore>`
+  site (the pinned writer census stays at seven). E7 is complete, so the
+  "agreed with E7" clause has no counterparty; the agreement is recorded here.
+- **D-I-23** (= §3.8 D-I8-1) The **contacts table ships in I8** as a
+  `tactics.contacts` generic-view keyframe owned by `mush-propagation`, built
+  by the same `contact_cells` `+contacts` prints; its Cargo fence gains
+  `mush-proto` (no new graph node). Rationale: 01 §4 item 8, and cut 7 exists.
+- **D-I-24** (= D-I8-2) The **`@unit/damage` after-action delta and a
+  `tactics.vitals` keyframe fan out** to the staffer first, then every
+  connected viewer stationed on the unit (≤ 64); the unit keyframe is pulled,
+  never fanned. Rationale: a HUD nobody's strip updates from is not live.
+- **D-I-25** (= D-I8-3) A component's economic **asset is a presence bit**
+  on every unit surface — the keyframe, the delta, the text — never an
+  `ObjId`. Rationale: the plan's own cleanliness test forbids another object's
+  id; which title it is belongs to the economy's own surfaces.
+- **D-I-26** (= D-I8-4) The **web unit screen is one screen at digit 6** with
+  a legend toggle between the damage and unit layouts; the TUI keeps 8 and
+  9. Rationale: the only free digit; renumbering built-ins or hiding the
+  toggle off the legend costs more than the divergence. Recorded cost: I9's
+  view screens cannot claim a digit on a tactics server (a digitless-screen
+  policy is the follow-up).
 
 ---
 
@@ -1842,7 +2033,7 @@ Six standing rules:
 |---|---|---|
 | `MAX_VITALS_PER_FEED` | 16 | proto (checked at construction) |
 | `MAX_VITAL_DETAIL_BYTES` | 64 | proto |
-| `MAX_VITALS_FRAME_BYTES` | 8 KiB | ruleset publisher |
+| ~~`MAX_VITALS_FRAME_BYTES`~~ | struck 2026-09-07 — never implemented; the proto's per-feed / name / detail caps bound the frame | — |
 | `MAX_COMMANDS_LIST_BYTES` | 64 KiB | core query |
 | `MAX_COMMAND_SUMMARY_BYTES` | 160 | core query |
 | `MAX_AMBIENT_KEYS` / `MAX_AMBIENT_BYTES` | 8 / 2 KiB | core `RoomView` builder |
@@ -1856,8 +2047,12 @@ Six standing rules:
 | `MAX_TUI_FEEDS` | 32 | TUI, each ≤ `MAX_VIEW_DATA_BYTES` |
 | Golden sizes | 80×24, 120×34, 160×44 | TUI tests |
 | `GROUP_WINDOW_S` | 300 | web grouping |
-| `JOURNAL_RING` / `UNIT_RESYNC_MS` | 200 / 250 | clients (I8) |
-| Unit DTO bound | `MAX_UNIT_RECORD_BYTES` (existing) | `view.rs` |
+| `JOURNAL_RING` / `JOURNAL_ROWS_PER_DELTA` | 200 / 50 | clients (I8) |
+| `UNIT_RESYNC_MS` | 250 | web (I8); the TUI's coalescer is its resync latch |
+| `MAX_UNIT_VIEW_BYTES` | 256 KiB (soft; `truncated`) | `view.rs` (I8) |
+| Unit DTO hard bound | `MAX_UNIT_RECORD_BYTES` (existing, 1 MiB) | `view.rs` |
+| `MAX_UNIT_AUDIENCE` | 64 | `view.rs` (I8, D-I8-2) |
+| `MAX_CONTACT_VIEW_ROWS` | 256 | `mush-propagation/src/panel.rs` (I8, D-I8-1) |
 
 **Global keys (both clients; a screen may not rebind these).**
 
@@ -1908,9 +2103,11 @@ modal ruling (D-I-17, D-I-18) rather than by its default.**
 7. **Staff-gated verbs** absent from `commands.list` for non-staff (default),
    not greyed.
 8. ★ **Section map.** A generic section list ships in I8 (default); a
-   ruleset-supplied silhouette is a later data addition.
+   ruleset-supplied silhouette is a later data addition. *Closed
+   2026-09-07: shipped in both clients.*
 9. **I8 timing** relative to E7 cut 8: after I6, window confirmed with E7
-   (default); the accessor makes either order safe.
+   (default); the accessor makes either order safe. *Moot 2026-09-07: cut
+   8 deferred the migration to E7k; I8 landed after E7 completed.*
 10. **Vitals ownership.** Per-ruleset feeds on the suffix convention
     (default) rather than one core-owned `vitals` feed with providers.
 11. ★ **I5 before or after I6.** After (default): data before skin.
@@ -1936,7 +2133,15 @@ modal ruling (D-I-17, D-I-18) rather than by its default.**
   code (a pack can only ever declare `Prefill` and `Local` keys; D-I-18).
   **One ask for cut 7:** shape the contacts DTO (`tactics.contacts`) as a
   table-shaped keyframe with declared columns so the screen model renders it
-  unchanged, and its rows carry the prefill line `Enter` uses.
+  unchanged, and its rows carry the prefill line `Enter` uses. *Status
+  2026-09-07 (I8 as built): E7 completed without either — `pack.rs` carries
+  labels only and no contacts feed shipped. I8 built the contacts table
+  itself (D-I8-1) and judges every cell with the generic pool ladder, so the
+  asks still outstanding are the cell display metadata (`dominant` is now
+  load-bearing: the ≤16 vitals cut is alphabetical, and an accumulator such
+  as heat reads inverted until `warn`/`crit` are declared) and, for the
+  kernel, a subject→actor grant index so the after-action fan-out stops
+  walking the connected set.*
 - **To E6.** The `scene` ambient key and the `scenes` feed read only what
   E6b owns; if `SceneRecord` changes, the ambient contributor is the one
   place to update. `scene.outcome` stays E6b's.
@@ -1950,6 +2155,25 @@ modal ruling (D-I-17, D-I-18) rather than by its default.**
 
 ## 10. Changelog
 
+- **Draft 1.2 — 2026-09-07.** I8 **designed and built** on the tree after E7
+  completed. §3.8 gains the design pass (six code maps, three independent
+  designs, a judge on the P/C/B/S lenses, a completeness critic — the
+  re-grounding: `UnitStore` still legacy with a pinned writer census, the
+  shipped `project()` leaking rule bodies, the station-grant authority in
+  place, the web able to see only a feed's default subject, no contacts or
+  vitals feed shipped by E7, TUI digits 8/9 free and the web's 6 the last
+  one), the four decisions D-I8-1…4 taken as defaults under the owner's
+  standing order (the contacts table now, owned by propagation; the
+  after-action fan-out to the stationed crew; the asset as a presence bit;
+  one web screen at digit 6), and the as-built for the four commits
+  (`2c92a51` the unit view + `tactics.vitals` + the fan-out; `137ee09` the
+  `tactics.contacts` table; `049039b` the web unit screen; `d1534e3` the
+  TUI screens 8 and 9). §3's table row, §5's timing bullet (stale), §6
+  (D-I-15 as built, D-I-23…26), §7 (`MAX_UNIT_VIEW_BYTES`,
+  `JOURNAL_ROWS_PER_DELTA`, `MAX_UNIT_AUDIENCE`, `MAX_CONTACT_VIEW_ROWS`;
+  `MAX_VITALS_FRAME_BYTES` struck as never implemented), §8 (q8 closed, q9
+  moot), §9 (the E7 asks restated as outstanding, plus the kernel's
+  subject→actor index). Tests: 29 server, 12 TUI + eleven goldens, 43 web.
 - **Draft 1.1 — 2026-09-06.** I11's typed server producers **built** (§3.11
   as-built updated): a new notice seam — `Outbox::notice_to_actor` (+ the
   severity-named twins) and the `Ctx::notice{,_info,_warn,_urgent}`
