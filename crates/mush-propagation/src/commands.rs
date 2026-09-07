@@ -21,7 +21,7 @@ use std::sync::Arc;
 use mush_core::{
     ArgShape, CanonicalId, ClockStamp, CmdError, CommandSpec, ContactId, ContactLedgerRow,
     ContactLedgerState, Ctx, IdempotencyKeyText, ModError, ModuleOp, ModuleWrite, ObjId, Powers,
-    PrincipalId, Registrar, Role, match_object, output::display_name, perm,
+    PrincipalId, Registrar, Role, World, match_object, output::display_name, perm,
 };
 use smol_str::SmolStr;
 
@@ -94,6 +94,45 @@ pub fn render_contact(
     at: &ClockStamp,
     viewer_source: Option<ContactId>,
 ) -> String {
+    let c = contact_cells(row, provenance, at, viewer_source);
+    format!(
+        "{}  gen {} rev {}  {}  {}  {}  {}",
+        c.id, c.generation, c.rev, c.state, c.age, c.band, c.source
+    )
+}
+
+/// The cells of one contact line — what [`render_contact`] formats and what
+/// the `tactics.contacts` panel (interface plan I8) ships as a row. One
+/// derivation, two renderings: the text and the table cannot disagree.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ContactCells {
+    /// The opaque id's 12-hex prefix — the only identity a viewer ever sees.
+    pub id: String,
+    /// The contact generation.
+    pub generation: u64,
+    /// The contact revision.
+    pub rev: u64,
+    /// `held` or `lost`.
+    pub state: &'static str,
+    /// `"<n>s"` on the viewer's own clock generation, else `stale` (fold
+    /// D5(a)(i): an incomparable stamp never renders fresher than the truth).
+    pub age: String,
+    /// The provenance band, or `-`.
+    pub band: String,
+    /// `local`, `unattributed`, or the reported form — never a dbref (fold
+    /// K15).
+    pub source: String,
+}
+
+/// Build the cells of one contact line. See [`render_contact`] for the
+/// knowledge rule every cell obeys.
+#[must_use]
+pub fn contact_cells(
+    row: &ContactLedgerRow,
+    provenance: Option<&ContactProvenance>,
+    at: &ClockStamp,
+    viewer_source: Option<ContactId>,
+) -> ContactCells {
     let age = if row.observed_at.clock == at.clock {
         format!("{}s", at.at.saturating_sub(row.observed_at.at).max(0))
     } else {
@@ -111,13 +150,16 @@ pub fn render_contact(
         Some(Provenance::Local) => "local".to_owned(),
         None => "unattributed".to_owned(),
     };
-    let band = provenance.map_or("-", |row| row.band().as_str());
-    format!(
-        "{}  gen {} rev {}  {state}  {age}  {band}  {source}",
-        &row.contact.to_hex()[..12],
-        row.generation,
-        row.revision
-    )
+    let band = provenance.map_or("-", |row| row.band().as_str()).to_owned();
+    ContactCells {
+        id: row.contact.to_hex()[..12].to_owned(),
+        generation: row.generation,
+        rev: row.revision,
+        state,
+        age,
+        band,
+        source,
+    }
 }
 
 /// The one envelope view. Renders state, revision, hop count, age **and the
@@ -167,6 +209,12 @@ pub const UNIDENTIFIED_SENDER: &str = "an unidentified sender";
 /// `assignments_by_actor`, re-used rather than re-derived). There is no argument
 /// anywhere that widens it, and no side or world arm at all.
 fn viewable_holders(ctx: &Ctx<'_>, actor: ObjId) -> Vec<PrincipalId> {
+    viewable_holders_of(ctx.w, actor)
+}
+
+/// [`viewable_holders`] over a bare `World` — the same roster for a reader
+/// with no `Ctx` (the `tactics.contacts` panel, interface plan I8).
+pub(crate) fn viewable_holders_of(w: &World, actor: ObjId) -> Vec<PrincipalId> {
     // ---- E7c11: B0 (the proxy DRIVING ingress; 10b §3.10 deviation (h)) ----
     // **A proxy driver reads the NPC's picture and ONLY the NPC's** (T12:
     // "exposes only that NPC station's observer projection"). The substitution
@@ -176,7 +224,7 @@ fn viewable_holders(ctx: &Ctx<'_>, actor: ObjId) -> Vec<PrincipalId> {
     // reachable through a station" act T11 names. Cut 10's own refutation of
     // K12 ("a proxy driver today perceives nothing of the unit") is what this
     // closes; without it `+fire <contact>` has no contact to name.
-    if let Some(drive) = mush_sim::proxy_drive_of(ctx.w, actor) {
+    if let Some(drive) = mush_sim::proxy_drive_of(w, actor) {
         let mut holders = vec![
             PrincipalId::Object { id: drive.npc },
             PrincipalId::Object { id: drive.unit },
@@ -186,7 +234,7 @@ fn viewable_holders(ctx: &Ctx<'_>, actor: ObjId) -> Vec<PrincipalId> {
         return holders;
     }
     let mut holders = vec![PrincipalId::Object { id: actor }];
-    if let Some(state) = ctx.w.module_state::<mush_sim::SpatialState>()
+    if let Some(state) = w.module_state::<mush_sim::SpatialState>()
         && let Some(units) = state.derived.assignments_by_actor.get(&actor)
     {
         holders.extend(
@@ -207,7 +255,7 @@ fn viewable_holders(ctx: &Ctx<'_>, actor: ObjId) -> Vec<PrincipalId> {
 /// actor stationed on three platforms saw 128 rows in total rather than 128 per
 /// observer, and the first holder's volume hid every later one's picture. The
 /// per-observer accessor the projection already carries is what answers now.
-fn holder_rows<'a>(
+pub(crate) fn holder_rows<'a>(
     ledger: &'a ContactLedgerState,
     holders: &[PrincipalId],
 ) -> Vec<&'a ContactLedgerRow> {
@@ -223,7 +271,7 @@ fn holder_rows<'a>(
 
 /// The opaque contact the viewer itself holds on `source`, if any — the fog-safe
 /// way to name a reporting platform (fold K15).
-fn viewer_contact_on(
+pub(crate) fn viewer_contact_on(
     ledger: &ContactLedgerState,
     holders: &[PrincipalId],
     source: ObjId,
@@ -1165,6 +1213,16 @@ pub fn record_provenance(
 /// Register every verb, with `classify_commands` **per group, before the first
 /// `reg.command`** (K8.5), and `LegacyPostImage` restored after.
 pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
+    // Interface plan I8 (D-I8-1): the contacts table — the cells `+contacts`
+    // prints, as a panel keyframe the unit screens render. A query handler is
+    // not a command, so it sits outside the K8.5 classification groups.
+    let _contacts = reg.panel_feed(crate::panel::CONTACTS_FEED)?;
+    reg.query_handler(
+        crate::panel::CONTACTS_FEED,
+        Arc::new(crate::panel::ContactsQuery::new(
+            crate::panel::CONTACTS_FEED,
+        )),
+    )?;
     // Group 1 — the reads. Nothing here writes a document or stages an action.
     reg.classify_commands(mush_core::CommandCompatibility::ReadOnly);
     reg.command(

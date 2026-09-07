@@ -49,18 +49,21 @@ use smol_str::SmolStr;
 
 pub mod commands;
 pub mod context;
+pub mod panel;
 pub mod pass;
 pub mod policy;
 pub mod record;
 
 pub use commands::{
-    NO_SUCH_CONTACT, NO_SUCH_ENVELOPE, UNAVAILABLE, render_contact, render_envelope,
+    ContactCells, NO_SUCH_CONTACT, NO_SUCH_ENVELOPE, UNAVAILABLE, contact_cells, render_contact,
+    render_envelope,
 };
 pub use context::{
     ADJACENT_RANGE, DeliveryOutcome, DetectionOutcome, Geometry, Interference, JAMMING_BLOCKS_AT,
     MAX_CONTEXT_RECORDS, Medium, PropagationContext, domain_of_place, place_of, resolve_delivery,
     resolve_detection,
 };
+pub use panel::{CONTACTS_FEED, ContactsQuery, MAX_CONTACT_VIEW_ROWS};
 pub use pass::{
     CLOCK_GENERATION_REASON, CONTACT_TTL_SECS, DEFAULT_SIGNATURE, DeliveryReport, DetectionReport,
     MAX_ARM_DOCUMENT_BYTES, MAX_DETECTION_VISITS, MAX_ENVELOPES_PER_PASS, MAX_OBSERVERS_PER_PASS,

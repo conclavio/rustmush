@@ -3335,3 +3335,291 @@ fn vf_b9_the_arm_is_filled_by_bytes_and_a_trimmed_intent_is_not_left_booked() {
         "the trimmed remainder is still due on the second run: {second:?}"
     );
 }
+
+// ======================================================================
+// Interface plan I8 (D-I8-1) — the contacts table, `tactics.contacts`
+// ======================================================================
+
+fn i8_contacts(
+    tw: &TestWorld,
+    actor: ObjId,
+    params: serde_json::Value,
+) -> Result<OutputEvent, mush_proto::RichText> {
+    let (module, handler) = tw
+        .registry()
+        .query_handler(mush_propagation::CONTACTS_FEED)
+        .expect("tactics.contacts has a registered query handler");
+    assert_eq!(module.as_str(), "propagation");
+    handler.query(tw.world(), actor, &params)
+}
+
+fn i8_table(tw: &TestWorld, actor: ObjId, params: serde_json::Value) -> serde_json::Value {
+    match i8_contacts(tw, actor, params) {
+        Ok(OutputEvent::Panel {
+            feed,
+            kind: mush_proto::PanelFrameKind::Keyframe,
+            data,
+        }) if feed == mush_propagation::CONTACTS_FEED => data,
+        other => panic!("expected a tactics.contacts keyframe, got {other:?}"),
+    }
+}
+
+fn i8_rows(tw: &TestWorld, actor: ObjId) -> Vec<serde_json::Value> {
+    i8_table(tw, actor, serde_json::json!({}))["rows"]
+        .as_array()
+        .cloned()
+        .expect("rows")
+}
+
+fn i8_line_of(row: &serde_json::Value) -> String {
+    format!(
+        "{}  gen {} rev {}  {}  {}  {}  {}",
+        row["id"].as_str().unwrap(),
+        row["gen"],
+        row["rev"],
+        row["state"].as_str().unwrap(),
+        row["age"].as_str().unwrap(),
+        row["band"].as_str().unwrap(),
+        row["source"].as_str().unwrap()
+    )
+}
+
+/// **A phantom-backed row and a real row differ only in `id` and `prefill`**,
+/// and every row carries exactly the eight declared keys.
+#[test]
+fn i8_k2_a_phantom_backed_row_and_a_real_row_differ_only_in_id_and_prefill() {
+    let (mut tw, fx) = scene();
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@prop/phantom #{}=spoof,300", fx.alpha.0),
+    );
+    let phantom_id = book(&tw)
+        .phantoms()
+        .next()
+        .map(|p| p.id().as_str().to_owned())
+        .unwrap();
+    let clock = stamp(&tw).clock;
+    install_ledger(
+        &mut tw,
+        vec![
+            row_at(&clock, fx.alpha, [0xaa; 16], true, 1_000, None),
+            row_at(&clock, fx.alpha, [0xbb; 16], true, 1_000, Some(&phantom_id)),
+        ],
+    );
+    let table = i8_table(&tw, fx.ann, serde_json::json!({}));
+    assert_eq!(table["schema"]["id"], serde_json::json!("tactics.contacts"));
+    assert_eq!(table["schema"]["shape"], serde_json::json!("list"));
+    assert_eq!(table["schema"]["actionKey"], serde_json::json!("prefill"));
+    assert_eq!(table["schema"]["columns"].as_array().unwrap().len(), 7);
+    assert_eq!(table["truncated"], serde_json::json!(false));
+    let rows = table["rows"].as_array().unwrap();
+    assert_eq!(rows.len(), 2, "{table}");
+    let keys = |row: &serde_json::Value| -> Vec<String> {
+        row.as_object().unwrap().keys().cloned().collect()
+    };
+    assert_eq!(
+        keys(&rows[0]),
+        [
+            "age", "band", "gen", "id", "prefill", "rev", "source", "state"
+        ]
+    );
+    assert_eq!(keys(&rows[0]), keys(&rows[1]));
+    let strip = |row: &serde_json::Value| {
+        let mut r = row.as_object().unwrap().clone();
+        r.remove("id");
+        r.remove("prefill");
+        r
+    };
+    assert_eq!(
+        strip(&rows[0]),
+        strip(&rows[1]),
+        "a false contact's row is a real contact's row"
+    );
+    assert_eq!(rows[0]["id"], serde_json::json!("aaaaaaaaaaaa"));
+    assert_eq!(
+        rows[0]["prefill"],
+        serde_json::json!("+contact aaaaaaaaaaaa")
+    );
+    assert_eq!(rows[1]["id"], serde_json::json!("bbbbbbbbbbbb"));
+    assert_eq!(rows[0]["state"], serde_json::json!("held"));
+    assert_eq!(rows[0]["age"], serde_json::json!("0s"));
+}
+
+/// **`params` are ignored and one observer's rows never reach another**: Bob
+/// naming Ann (or anything) still gets his own, empty, table.
+#[test]
+fn i8_k3_params_are_ignored_and_another_holders_rows_never_appear() {
+    let (mut tw, fx) = scene();
+    let clock = stamp(&tw).clock;
+    install_ledger(
+        &mut tw,
+        vec![row_at(&clock, fx.alpha, [0xaa; 16], true, 1_000, None)],
+    );
+    assert_eq!(i8_rows(&tw, fx.ann).len(), 1);
+    for params in [
+        serde_json::json!({}),
+        serde_json::json!({ "actor": format!("#{}", fx.ann.0) }),
+        serde_json::json!({ "holder": format!("#{}", fx.alpha.0) }),
+        serde_json::json!({ "object": format!("#{}", fx.alpha.0) }),
+        serde_json::json!({ "target": "Ann" }),
+    ] {
+        let table = i8_table(&tw, fx.bob, params.clone());
+        assert_eq!(table["rows"], serde_json::json!([]), "{params}");
+        assert_eq!(table["truncated"], serde_json::json!(false));
+    }
+}
+
+/// **The leak scan over the keyframe**: no dbref of any platform or crew, no
+/// holder, no phantom id, no stamp, no numeric source.
+#[test]
+fn i8_k4_the_keyframe_leak_scan_finds_no_dbref_no_holder_no_phantom_and_no_stamp() {
+    let (mut tw, fx) = scene();
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@prop/phantom #{}=spoof,300", fx.alpha.0),
+    );
+    let phantom_id = book(&tw)
+        .phantoms()
+        .next()
+        .map(|p| p.id().as_str().to_owned())
+        .unwrap();
+    let clock = stamp(&tw).clock;
+    install_ledger(
+        &mut tw,
+        vec![
+            row_at(&clock, fx.alpha, [0xaa; 16], true, 1_000, None),
+            row_at(&clock, fx.alpha, [0xbb; 16], false, 900, Some(&phantom_id)),
+        ],
+    );
+    let text = i8_table(&tw, fx.ann, serde_json::json!({})).to_string();
+    for id in [
+        fx.orbit, fx.hull, fx.alpha, fx.bravo, fx.target, fx.ann, fx.bob,
+    ] {
+        assert!(
+            !text.contains(&format!("#{}", id.0)),
+            "dbref leaked: {text}"
+        );
+    }
+    for needle in [
+        "holder",
+        "phantom",
+        "observed_at",
+        "subject",
+        "truth",
+        &phantom_id,
+    ] {
+        assert!(!text.contains(needle), "{needle} leaked: {text}");
+    }
+    assert!(!text.contains("\"source\":1"), "{text}");
+    assert!(text.contains("\"state\":\"lost\""), "{text}");
+}
+
+/// **One view.** Every row reconstructs its `+contacts` line byte for byte,
+/// and the row's prefill resolves through `+contact` to the same line.
+#[test]
+fn i8_one_view_the_row_reconstructs_the_plus_contacts_line_and_its_prefill_resolves() {
+    let (mut tw, fx) = scene();
+    let clock = stamp(&tw).clock;
+    install_ledger(
+        &mut tw,
+        vec![
+            row_at(&clock, fx.alpha, [0xaa; 16], true, 1_000, None),
+            row_at(&clock, fx.alpha, [0xcc; 16], false, 700, None),
+        ],
+    );
+    tw.set_now(1_030);
+    let rows = i8_rows(&tw, fx.ann);
+    assert_eq!(rows.len(), 2);
+    let listing = ok(&mut tw, fx.ann, "+contacts");
+    for row in &rows {
+        let line = i8_line_of(row);
+        assert!(
+            listing.lines().any(|l| l == line),
+            "row {line:?} is not a +contacts line of:\n{listing}"
+        );
+        let prefill = row["prefill"].as_str().unwrap().to_owned();
+        let one = ok(&mut tw, fx.ann, &prefill);
+        assert!(one.lines().any(|l| l == line), "{prefill} gave {one}");
+    }
+    assert!(rows.iter().any(|r| r["age"] == serde_json::json!("30s")));
+    assert!(rows.iter().any(|r| r["state"] == serde_json::json!("lost")));
+}
+
+/// **The table caps at `MAX_CONTACT_VIEW_ROWS`, says so, and is deterministic.**
+/// Ann holds a second station so three holders (herself, Alpha, Bravo) can
+/// carry more than the cap.
+#[test]
+fn i8_the_table_caps_at_max_contact_view_rows_says_truncated_and_is_deterministic() {
+    let (mut tw, fx) = scene();
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@spatial/station #{}=aux,aux,channels:movement", fx.bravo.0),
+    );
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@spatial/assign #{}=aux,#{}", fx.bravo.0, fx.ann.0),
+    );
+    let clock = stamp(&tw).clock;
+    let mut rows = Vec::new();
+    for (holder, tag) in [(fx.alpha, 0x10_u8), (fx.bravo, 0x20), (fx.ann, 0x30)] {
+        for i in 0..mush_core::MAX_CONTACTS_PER_OBSERVER {
+            let mut bytes = [tag; 16];
+            bytes[14] = (i / 256) as u8;
+            bytes[15] = (i % 256) as u8;
+            rows.push(row_at(&clock, holder, bytes, true, 1_000, None));
+        }
+    }
+    assert_eq!(rows.len(), 3 * mush_core::MAX_CONTACTS_PER_OBSERVER);
+    install_ledger(&mut tw, rows);
+    let first = i8_table(&tw, fx.ann, serde_json::json!({}));
+    assert_eq!(
+        first["rows"].as_array().unwrap().len(),
+        mush_propagation::MAX_CONTACT_VIEW_ROWS
+    );
+    assert_eq!(first["truncated"], serde_json::json!(true));
+    let second = i8_table(&tw, fx.ann, serde_json::json!({}));
+    assert_eq!(first, second, "two reads of one ledger are byte-identical");
+    // Bob, on one platform, sees his platform's rows and no cut.
+    let his = i8_table(&tw, fx.bob, serde_json::json!({}));
+    assert_eq!(
+        his["rows"].as_array().unwrap().len(),
+        mush_core::MAX_CONTACTS_PER_OBSERVER
+    );
+    assert_eq!(his["truncated"], serde_json::json!(false));
+}
+
+/// The query writes nothing and stamps no idle.
+#[test]
+fn i8_the_contacts_query_writes_nothing_and_stamps_no_idle() {
+    let (mut tw, fx) = scene();
+    let clock = stamp(&tw).clock;
+    install_ledger(
+        &mut tw,
+        vec![row_at(&clock, fx.alpha, [0xaa; 16], true, 1_000, None)],
+    );
+    tw.connect(fx.ann);
+    tw.take_module_ops();
+    let before = tw.world().session_stat(fx.ann).expect("connected");
+    assert_eq!(i8_rows(&tw, fx.ann).len(), 1);
+    assert_eq!(tw.world().session_stat(fx.ann), Some(before));
+    assert!(tw.take_module_ops().is_empty(), "the query queued a write");
+}
+
+/// The feed is registered under its literal name by the propagation module
+/// and sits in the panel manifest.
+#[test]
+fn i8_the_contacts_feed_is_registered_under_its_literal_name() {
+    let (tw, _fx) = scene();
+    assert!(
+        tw.registry()
+            .panel_feeds()
+            .iter()
+            .any(|(feed, _)| feed.as_str() == mush_propagation::CONTACTS_FEED)
+    );
+    assert!(tw.registry().query_handler("tactics.contacts").is_some());
+    assert!(tw.registry().query_handler("Tactics.Contacts").is_none());
+}

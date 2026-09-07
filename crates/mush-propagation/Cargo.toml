@@ -16,8 +16,16 @@ description = "mush-propagation (E7 cut 7): one physical propagation context, tw
 # any other arrangement unbuildable), and the policy reaches it through
 # `mush_core::SensorPolicy` at composition. `cargo tree -p mush-propagation` is
 # the test, and so is `cargo tree -p mush-tactics` being byte-identical to cut 6's.
+#
+# Interface plan I8 (D-I8-1) amends the fence by ONE crate: `mush-proto`, the
+# wire vocabulary a `QueryHandler` answers in (`OutputEvent`/`RichText`), for the
+# `tactics.contacts` panel keyframe (`src/panel.rs`). It adds no node to the
+# graph — `mush-core` already depends on `mush-proto` — and `cargo tree -p
+# mush-tactics` is unchanged; the `mush-tactics`/`mush-sim` edges are exactly as
+# cut 7 left them.
 [dependencies]
 mush-core.workspace = true
+mush-proto.workspace = true
 mush-sim.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -35,7 +43,6 @@ mush-sim = { workspace = true, features = ["testkit"] }
 mush-testkit.workspace = true
 mush-tactics.workspace = true
 mush-scenes.workspace = true
-mush-proto.workspace = true
 
 [lints]
 workspace = true
