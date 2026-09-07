@@ -8,9 +8,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::OnceLock;
 
 use mush_core::{
-    ChannelId, Deferred, DefinitionDescriptor, DefinitionId, DefinitionKind, DefinitionRef,
-    DefinitionRegistryBuilder, DefinitionValidationContext, LIMBO, Ledger, ModuleOp, ModuleWrite,
-    ObjId, Outbox, OwnerId, RulesValueError,
+    ChannelId, ClockRef, ClockStamp, Deferred, DefinitionDescriptor, DefinitionId, DefinitionKind,
+    DefinitionRef, DefinitionRegistryBuilder, DefinitionValidationContext, LIMBO, Ledger, ModuleOp,
+    ModuleWrite, ObjId, Outbox, OwnerId, RulesValueError,
 };
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
@@ -207,12 +207,207 @@ pub enum DomainStatus {
     Retired,
 }
 
-/// The domain clock mode (design §6.2). Cut 1 creates only `Passive`.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+// ---- E7c8: B1 — the pulse cadence ----
+
+/// Ground/atmosphere pulse period (§7, inside S2A's 1–2 s band).
+pub const GROUND_PULSE_MS: u32 = 2_000;
+/// Space pulse period (§7, inside S2A's 5–10 s band).
+pub const SPACE_PULSE_MS: u32 = 6_000;
+/// The shortest pulse period a `Pulse` record may carry.
+pub const MIN_PULSE_PERIOD_MS: u32 = 1_000;
+/// The longest pulse period a `Pulse` record may carry.
+pub const MAX_PULSE_PERIOD_MS: u32 = 60_000;
+
+/// Why a [`DomainClock`] refused to be constructed or to re-enter.
+///
+/// Every arm is re-run by [`DomainClockWire`]'s `TryFrom`, so a stored clock
+/// that could never have been written is refused **on load** rather than
+/// silently widening a cap (§4 rule 1).
+#[derive(Copy, Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum DomainClockError {
+    /// The pulse period lies outside `MIN_PULSE_PERIOD_MS..=MAX_PULSE_PERIOD_MS`.
+    #[error("a domain pulse period must be {MIN_PULSE_PERIOD_MS}..={MAX_PULSE_PERIOD_MS} ms")]
+    PeriodOutOfRange,
+    /// Generation zero is reserved by `ClockRef` and can never be read.
+    #[error("domain clock generation zero is reserved")]
+    ZeroGeneration,
+    /// The pulse's own epoch is stamped on the world IC timeline and nothing
+    /// else — the tick counter is derived from it.
+    #[error("a domain pulse epoch must be stamped on ClockRef::WorldIc")]
+    NotWorldIc,
+}
+
+/// The domain clock mode (design §6.2). Cut 1 created only `Passive`;
+/// **E7 cut 8 adds `Pulse`** (10b §3.8 contradiction (ii)).
+///
+/// `Pulse` is a *cadence*, never an authority: it says how fast the domain's
+/// own `ClockRef::DomainTick` scalar advances and which generation is live. The
+/// scalar itself is a pure function of the world IC clock
+/// ([`DomainClock::tick_at`]), so two runs and a restart agree, which is what
+/// the whole determinism lens rests on.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(tag = "mode")]
 pub enum DomainClock {
     /// Holds placements; never ticks.
     Passive,
+    /// Resolves one deterministic domain-tick commit every `period_ms`.
+    Pulse {
+        /// The cadence, in milliseconds of world IC time.
+        period_ms: u32,
+        /// The live domain-clock generation; `ClockRef::DomainTick` names it and
+        /// a read under any other generation is `StaleGeneration`.
+        generation: u64,
+        /// The world-IC stamp tick 0 is measured from.
+        started_at: ClockStamp,
+    },
+}
+
+/// The strict wire form of [`DomainClock`].
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "mode")]
+pub enum DomainClockWire {
+    /// Holds placements; never ticks.
+    Passive,
+    /// The pulse cadence.
+    Pulse {
+        /// The cadence, in milliseconds of world IC time.
+        period_ms: u32,
+        /// The live domain-clock generation.
+        generation: u64,
+        /// The world-IC stamp tick 0 is measured from.
+        started_at: ClockStamp,
+    },
+}
+
+impl DomainClock {
+    /// The one `Pulse` constructor.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainClockError`] for a period outside the band, generation zero, or
+    /// an epoch that is not on the world IC timeline.
+    pub fn pulse(
+        period_ms: u32,
+        generation: u64,
+        started_at: ClockStamp,
+    ) -> Result<DomainClock, DomainClockError> {
+        if !(MIN_PULSE_PERIOD_MS..=MAX_PULSE_PERIOD_MS).contains(&period_ms) {
+            return Err(DomainClockError::PeriodOutOfRange);
+        }
+        if generation == 0 {
+            return Err(DomainClockError::ZeroGeneration);
+        }
+        if !matches!(started_at.clock, ClockRef::WorldIc { .. }) {
+            return Err(DomainClockError::NotWorldIc);
+        }
+        Ok(DomainClock::Pulse {
+            period_ms,
+            generation,
+            started_at,
+        })
+    }
+
+    /// Whether this domain resolves a tactical commit at all.
+    #[must_use]
+    pub const fn is_pulsing(&self) -> bool {
+        matches!(self, DomainClock::Pulse { .. })
+    }
+
+    /// The live generation, or `None` for a passive domain.
+    #[must_use]
+    pub const fn generation(&self) -> Option<u64> {
+        match self {
+            DomainClock::Passive => None,
+            DomainClock::Pulse { generation, .. } => Some(*generation),
+        }
+    }
+
+    /// The cadence in whole IC seconds (at least one).
+    #[must_use]
+    pub const fn period_secs(&self) -> Option<i64> {
+        match self {
+            DomainClock::Passive => None,
+            DomainClock::Pulse { period_ms, .. } => {
+                let secs = *period_ms as i64 / 1_000;
+                Some(if secs < 1 { 1 } else { secs })
+            }
+        }
+    }
+
+    /// **The one tick function** — the domain-tick scalar at a world IC stamp.
+    ///
+    /// Both the composition-registered `DomainClockProvider` and every command
+    /// that needs "what tick is it?" call THIS, so a reader and the kernel can
+    /// never disagree about which tick a submission belongs to.
+    ///
+    /// Returns `None` for a passive domain, for a stamp on a different world-IC
+    /// generation than the pulse's epoch (a rate change re-anchors rather than
+    /// silently re-scaling), or for a stamp before the epoch.
+    #[must_use]
+    pub fn tick_at(&self, world_ic: &ClockStamp) -> Option<i64> {
+        let DomainClock::Pulse {
+            started_at,
+            period_ms,
+            ..
+        } = self
+        else {
+            return None;
+        };
+        if started_at.clock != world_ic.clock {
+            return None;
+        }
+        let elapsed = world_ic.at.checked_sub(started_at.at)?;
+        if elapsed < 0 {
+            return None;
+        }
+        let period = {
+            let secs = *period_ms as i64 / 1_000;
+            if secs < 1 { 1 } else { secs }
+        };
+        elapsed.checked_div(period)
+    }
+}
+
+impl From<DomainClock> for DomainClockWire {
+    fn from(value: DomainClock) -> DomainClockWire {
+        match value {
+            DomainClock::Passive => DomainClockWire::Passive,
+            DomainClock::Pulse {
+                period_ms,
+                generation,
+                started_at,
+            } => DomainClockWire::Pulse {
+                period_ms,
+                generation,
+                started_at,
+            },
+        }
+    }
+}
+
+impl TryFrom<DomainClockWire> for DomainClock {
+    type Error = DomainClockError;
+
+    fn try_from(value: DomainClockWire) -> Result<DomainClock, DomainClockError> {
+        match value {
+            DomainClockWire::Passive => Ok(DomainClock::Passive),
+            DomainClockWire::Pulse {
+                period_ms,
+                generation,
+                started_at,
+            } => DomainClock::pulse(period_ms, generation, started_at),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for DomainClock {
+    fn deserialize<D>(deserializer: D) -> Result<DomainClock, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let wire = DomainClockWire::deserialize(deserializer)?;
+        DomainClock::try_from(wire).map_err(serde::de::Error::custom)
+    }
 }
 
 /// A simulation domain (design §6.1). `presentation_location` is where every

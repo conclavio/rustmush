@@ -1582,11 +1582,13 @@ pub fn base_registry() -> Registry {
 /// The world task exits when [`Inbound::Control`]`(Shutdown)` steps to
 /// [`StepOutcome::Shutdown`] or when every [`WorldHandle`] (and internal effect
 /// sender) is dropped; the writer drains its queue and exits after that.
-/// The durable-outbox registry seeded with the deployment's own adapters
-/// (`ServerDeps::outbox_adapters` — programme D5's on-call Discord DM adapter
-/// among them). A duplicate `(owner, adapter)` is logged and skipped.
+/// The durable-outbox registry every spawn path uses: the production adapters
+/// (`production_durable_outbox` — E7 cut 8's tactics boundary outbox) plus the
+/// deployment's own (`ServerDeps::outbox_adapters` — programme D5's on-call
+/// Discord DM adapter among them). A duplicate `(owner, adapter)` is logged
+/// and skipped.
 fn outbox_registry(deps: &ServerDeps) -> DurableOutboxRegistry {
-    let mut registry = DurableOutboxRegistry::new();
+    let mut registry = production_durable_outbox();
     for adapter in &deps.outbox_adapters {
         if let Err(error) = registry.register(Arc::clone(adapter)) {
             tracing::error!(%error, "durable outbox adapter not registered");
@@ -1602,6 +1604,32 @@ pub fn spawn_persist_with_gateway(
 ) -> PersistHandles {
     let registry = Arc::new(outbox_registry(&deps));
     spawn_persist_with_gateway_and_outbox(engine, deps, registry, make_gateway)
+}
+
+/// The production durable-outbox registry.
+///
+/// E7 cut 8 (10b §3.8 OPEN 4): `durable_outbox.rs` had the trait and no
+/// production implementation, and every spawn path wired an **empty** registry.
+/// The tactical pulse's typed boundary facts (T2, D-E7-17) are the first thing
+/// that has to cross it, so the tactics adapter is registered here, on the one
+/// path every spawn shares.
+///
+/// A registration that will not build is logged and skipped rather than
+/// panicking a boot: an unroutable outbox item is retained by the store and
+/// retried when the adapter appears, which is strictly better than refusing to
+/// start.
+#[must_use]
+pub fn production_durable_outbox() -> DurableOutboxRegistry {
+    let mut registry = DurableOutboxRegistry::new();
+    match crate::tactics_outbox::TacticsBoundaryOutbox::new() {
+        Some(outbox) => {
+            if let Err(error) = registry.register(Arc::new(outbox)) {
+                tracing::error!(%error, "the tactics boundary outbox adapter was not registered");
+            }
+        }
+        None => tracing::error!("the tactics boundary outbox adapter could not be constructed"),
+    }
+    registry
 }
 
 struct DecisionRuntime {

@@ -1,0 +1,35 @@
+[package]
+name = "mush-propagation"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "mush-propagation (E7 cut 7): one physical propagation context, two resolvers (detection and delivery), false-contact phantoms, delivery envelopes and the observation policy the tactics sensor ingress reads."
+
+# 10b §3.7 / OPEN 1 / D-E7-36: `mush-propagation -> {mush-core, mush-sim}` and
+# NOTHING else. `mush-sim` is the placement graph observation is resolved over
+# (`SpatialState`, `SpaceAnchor`, `subtree`); `mush-core` carries the contact
+# family, `SubjectKey::Scoped`, the clock and the `SensorPolicy` seam.
+#
+# There is deliberately **no `mush-tactics` edge**: the observation ingress is
+# registered by `mush-tactics` under its own owner (the kernel owner fence makes
+# any other arrangement unbuildable), and the policy reaches it through
+# `mush_core::SensorPolicy` at composition. `cargo tree -p mush-propagation` is
+# the test, and so is `cargo tree -p mush-tactics` being byte-identical to cut 6's.
+[dependencies]
+mush-core.workspace = true
+mush-sim.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+smol_str.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+mush-testkit.workspace = true
+mush-tactics.workspace = true
+mush-scenes.workspace = true
+mush-proto.workspace = true
+
+[lints]
+workspace = true

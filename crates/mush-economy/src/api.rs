@@ -1303,6 +1303,7 @@ pub(crate) fn post_with_companions(
             providers: store.facts(),
         };
         let now = ctx.w.now();
+        let gate = store.key_gate();
         let env = ValidateEnv {
             auth,
             custody: &custody,
@@ -1311,9 +1312,16 @@ pub(crate) fn post_with_companions(
             ic_now: ctx.w.game_now_unix(),
             next_hold_id: store.peek_next_hold(),
             spent: spent_for_plan(store, plan, now),
+            keys: Some(&gate),
         };
         (validate(plan, store.snapshot(), &env), providers)
     };
+    // Doc 13 (W-D1): a key the gate could not decide from RAM is asked of the
+    // store off the world loop; this attempt is refused as transient and the
+    // answer warms the cold cache for the next one.
+    if matches!(outcome, PlanResult::Refused(EconomyError::RetryShortly)) {
+        crate::keys::request_key_read(ctx, &plan.idempotency);
+    }
     finish(ctx, outcome, &providers, &plan.actor, companions)
 }
 
@@ -1412,10 +1420,23 @@ pub fn reverse_original(
         }
         let auth = WorldAuth { w: ctx.w };
         (
-            plan_reversal(original, actor.clone(), cause, store.snapshot(), &auth),
+            plan_reversal(
+                original,
+                actor.clone(),
+                cause,
+                store.snapshot(),
+                &auth,
+                Some(&store.key_gate()),
+            ),
             store.providers(),
         )
     };
+    if matches!(outcome, PlanResult::Refused(EconomyError::RetryShortly)) {
+        crate::keys::request_key_read(
+            ctx,
+            &crate::record::IdempotencyKey::reversal_of(original.id),
+        );
+    }
     finish(ctx, outcome, &providers, &actor, Vec::new())
 }
 
@@ -2897,7 +2918,7 @@ fn install_commit(ctx: &mut Ctx<'_>, commit: PreparedEconomyCommit) -> Transacti
         approval_doc,
         contract_docs,
     } = commit;
-    let (journal_op, meta) =
+    let (journal_op, meta, key_doc) =
         {
             let store = ctx
                 .w
@@ -2927,10 +2948,13 @@ fn install_commit(ctx: &mut Ctx<'_>, commit: PreparedEconomyCommit) -> Transacti
             store.next_transaction = next_transaction;
             store.snapshot = snapshot;
             store.note_chunk(chunk_now, applied_seq);
+            // Doc 13 (W-D4): the key document rides in the same batch as the entry.
+            let key_doc = crate::keys::IdemDoc::of(&transaction);
             store.index_transaction(transaction);
-            (journal_op, store.meta_doc())
+            (journal_op, store.meta_doc(), key_doc)
         };
     persist_journal(ctx.out, journal_op);
+    crate::keys::persist_idem(ctx.out, &key_doc);
     for a in &account_docs {
         persist_account(ctx.out, a);
     }

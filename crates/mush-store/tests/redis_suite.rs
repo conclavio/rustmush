@@ -298,6 +298,9 @@ redis_gated!(module_docs_splits_the_ledger_family, store, {
 redis_gated!(module_keys_text_and_purge, store, {
     suite::module_keys_text_and_purge(&store).await;
 });
+redis_gated!(module_docs_from_narrows_to_the_floors, store, {
+    suite::module_docs_from_narrows_to_the_floors(&store).await;
+});
 redis_gated!(module_stream_ordering, store, {
     suite::module_stream_ordering(&store).await;
 });

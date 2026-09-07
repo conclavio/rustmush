@@ -107,6 +107,7 @@ ic_epoch = "2020-01-01 00:00"      # (M5) IC datetime at OOC unix time 0 — the
 [economy]                          # (E2+) the economy's limits; every key optional
 # tx_tail_max = 20000              # (J2) newest journal transactions kept in RAM as full records;
 #                                  #      older ones are read from the journal on demand (doc 12)
+# checkpoint_every_entries = 10000 # (J3) journal entries between checkpoints; 0 writes none (doc 12)
 
 [weather]                          # (M10) weather LLM flavor top-up
 # The deterministic Markov weather machine is unaffected by this; only the

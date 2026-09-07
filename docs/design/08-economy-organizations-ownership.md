@@ -862,7 +862,13 @@ tail. A derived tail may be rebuilt and must never become authority.
 > 200 000 — so the 5 s line is ~1.5 million entries and the million-entry line is the binding one.
 > **J2 landed the same day:** the RAM transaction index is a bounded tail (`[economy] tx_tail_max`,
 > default 20 000) over a journal-derived index that keeps every id; `@econ/history` and
-> `@econ/reverse` reach past the tail through the store-read seam.
+> `@econ/reverse` reach past the tail through the store-read seam. **J5 and J3 followed** (doc
+> 12 §7, §10): sealed chunks archive to compressed disk with a verified purge, and step 4's
+> checkpoint exists — `checkpoint:{seq}` plus immutable parts, written by the sweep after a
+> write-time drift check, validated by hash at boot, never authority. **J4** closed the
+> programme: a boot manifest beside each head lets the loader skip the covered cold chunks, the
+> ledger inspection takes the omission as a floor, and a module that cannot boot narrowed asks
+> for the whole namespace once.
 
 ---
 

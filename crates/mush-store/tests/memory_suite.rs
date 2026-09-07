@@ -155,6 +155,11 @@ async fn module_keys_text_and_purge() {
 }
 
 #[tokio::test]
+async fn module_docs_from_narrows_to_the_floors() {
+    suite::module_docs_from_narrows_to_the_floors(&InMemoryStore::new()).await;
+}
+
+#[tokio::test]
 async fn module_stream_ordering() {
     suite::module_stream_ordering(&InMemoryStore::new()).await;
 }

@@ -62,6 +62,20 @@ impl ContactOperation {
         }
     }
 
+    /// The kernel-side vocabulary this operation answers to (E7c7 B3). One
+    /// mapping, used by the sensor ingress to name the source that fires this
+    /// exact provider — so a kind can never be armed on another's cursor.
+    pub(crate) const fn kind(self) -> mush_core::ObservationKind {
+        match self {
+            Self::Observe => mush_core::ObservationKind::Observe,
+            Self::Refresh => mush_core::ObservationKind::Refresh,
+            Self::Share => mush_core::ObservationKind::Share,
+            Self::Unshare => mush_core::ObservationKind::Unshare,
+            Self::Loss => mush_core::ObservationKind::Loss,
+            Self::Reacquire => mush_core::ObservationKind::Reacquire,
+        }
+    }
+
     const fn all() -> [Self; 6] {
         [
             Self::Observe,
@@ -239,6 +253,78 @@ impl ContactProvider {
         Ok(())
     }
 
+    fn unauthorized() -> ActionError {
+        ActionError::new(
+            ActionErrorCode::Unauthorized,
+            false,
+            "that contact is not this observer's to change",
+        )
+        .expect("static contact authority error is bounded")
+    }
+
+    /// Whether this principal is the kernel's own scheduler class for the family
+    /// owner — the one principal that is not itself an audience member and is
+    /// nonetheless legitimate, because `scheduled_action_ingress` mints it.
+    fn is_scheduler(&self, principal: &PrincipalId) -> bool {
+        matches!(
+            principal,
+            PrincipalId::Scoped { owner, class, .. }
+                if owner == self.contacts.owner() && class.as_str() == "scheduler"
+        )
+    }
+
+    /// **The entitlement gate the six migrated providers never had** (fold O2).
+    ///
+    /// `ContactState`'s `checked_*` transitions check revision, lifecycle and
+    /// clock — never *who is asking*. Neither the providers nor `validate_shape`
+    /// compared the invoking principal against the contact's own audience, so
+    /// any intent that reached the ingress committed: a staff-supplied or
+    /// mis-wired one could Loss another platform's contact, Share it to an
+    /// arbitrary holder, or Observe a subject nobody perceived. The gate held
+    /// only *compositionally*, because the sole producer was a staff verb whose
+    /// offer was projected — and 08i §9 answer 1 and 09a §4 rely on it being
+    /// structural.
+    ///
+    /// The scheduler arm carries an **audience-bearing witness**: the acting
+    /// object the schedule adapter named, which must itself hold the contact.
+    /// The same shape `handoff.rs`'s `require_scheduler` uses.
+    fn require_entitled(
+        &self,
+        invocation: &ActionInvocation,
+        prior: &ContactState,
+    ) -> Result<(), ActionError> {
+        if prior
+            .audience()
+            .binary_search(invocation.principal())
+            .is_ok()
+        {
+            return Ok(());
+        }
+        let witness = PrincipalId::Object {
+            id: invocation.actor(),
+        };
+        if self.is_scheduler(invocation.principal())
+            && prior.audience().binary_search(&witness).is_ok()
+        {
+            return Ok(());
+        }
+        Err(Self::unauthorized())
+    }
+
+    /// An observation may only be credited into a picture the actor is part of.
+    fn require_opening_audience(
+        invocation: &ActionInvocation,
+        audience: &[PrincipalId],
+    ) -> Result<(), ActionError> {
+        let witness = PrincipalId::Object {
+            id: invocation.actor(),
+        };
+        if audience.contains(&witness) || audience.contains(invocation.principal()) {
+            return Ok(());
+        }
+        Err(Self::unauthorized())
+    }
+
     fn validate(&self, invocation: &ActionInvocation) -> Result<(), ActionError> {
         Self::validate_shape(invocation)?;
         match self.operation {
@@ -347,6 +433,7 @@ impl ContactProvider {
                 "derived tactical contact identity is already occupied",
             ));
         }
+        Self::require_opening_audience(invocation, &parameters.audience)?;
         let next = ContactState::new(ContactStateDraft {
             truth_subject: parameters.truth_subject,
             audience: parameters.audience,
@@ -365,6 +452,7 @@ impl ContactProvider {
     ) -> Result<AuthoritativeActionOutput, ActionError> {
         let parameters: RefreshParameters = Self::decode(invocation)?;
         let prior = self.read(txn, parameters.contact)?;
+        self.require_entitled(invocation, &prior)?;
         let next = prior
             .checked_refresh(parameters.expected_revision, parameters.observed_at)
             .map_err(|error| Self::transition_error(&error))?;
@@ -380,6 +468,7 @@ impl ContactProvider {
     ) -> Result<AuthoritativeActionOutput, ActionError> {
         let parameters: AudienceParameters = Self::decode(invocation)?;
         let prior = self.read(txn, parameters.contact)?;
+        self.require_entitled(invocation, &prior)?;
         let next = if share {
             prior.checked_share(parameters.expected_revision, parameters.principal)
         } else {
@@ -397,6 +486,7 @@ impl ContactProvider {
     ) -> Result<AuthoritativeActionOutput, ActionError> {
         let parameters: LossParameters = Self::decode(invocation)?;
         let prior = self.read(txn, parameters.contact)?;
+        self.require_entitled(invocation, &prior)?;
         let next = prior
             .checked_mark_lost(
                 parameters.expected_revision,
@@ -415,6 +505,7 @@ impl ContactProvider {
     ) -> Result<AuthoritativeActionOutput, ActionError> {
         let parameters: ReacquireParameters = Self::decode(invocation)?;
         let prior = self.read(txn, parameters.contact)?;
+        self.require_entitled(invocation, &prior)?;
         let next = prior
             .checked_reacquire(parameters.expected_revision, parameters.observed_at)
             .map_err(|error| Self::transition_error(&error))?;

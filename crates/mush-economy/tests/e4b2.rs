@@ -445,6 +445,7 @@ fn the_settlement_key_is_deterministic_and_the_plan_guards_every_escrow_revision
     let plan = {
         let s = snap(&tw);
         let env = mush_economy::ValidateEnv {
+            keys: None,
             auth: &mush_economy::AllowAll,
             custody: &mush_economy::NoCustody,
             facts: &mush_economy::NoFacts,

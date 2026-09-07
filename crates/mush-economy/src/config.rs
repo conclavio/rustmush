@@ -205,6 +205,12 @@ pub struct EconomyConfig {
     /// [`crate::DEFAULT_TX_TAIL_MAX`]; the sweep evicts down to it, never the post
     /// path. Zero means "the default".
     pub tx_tail_max: usize,
+    /// How many journal entries past the last checkpoint start the next one
+    /// (doc 12 §5.3, J3; `[economy] checkpoint_every_entries`). Written by the
+    /// sweep, never the post path, after the write-time drift check. Default
+    /// [`crate::DEFAULT_CHECKPOINT_EVERY_ENTRIES`]; zero disables checkpoints
+    /// (boot still honours one it finds).
+    pub checkpoint_every_entries: u64,
 }
 
 impl Default for EconomyConfig {
@@ -215,6 +221,7 @@ impl Default for EconomyConfig {
             cadences: BTreeMap::new(),
             stale_contract_age_secs: crate::contract::STALE_CONTRACT_AGE_SECS,
             tx_tail_max: crate::module::DEFAULT_TX_TAIL_MAX,
+            checkpoint_every_entries: crate::checkpoint::DEFAULT_CHECKPOINT_EVERY_ENTRIES,
         }
     }
 }

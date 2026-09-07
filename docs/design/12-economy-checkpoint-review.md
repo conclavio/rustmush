@@ -338,7 +338,9 @@ O(entries) RAM index crosses the economy's 1 GB budget in weeks at the §9 desig
   re-enters with expected revisions, the way quotes and approvals already re-enter (doc 08 §7.4).
   A hit returns the original result or refuses a different plan, as today; a miss posts. No
   probabilistic structure: a false "reused key" refusal on a money path is not acceptable, and a
-  round trip on a month-old key is.
+  round trip on a month-old key is. *Amended by D-12-6: a Bloom filter gates the slow lookup —
+  a negative is certain and posts synchronously; a positive is never a refusal on the filter
+  alone, it is what sends the key to the off-loop read.*
 - **The checkpoint** (§5.2) carries only the window's keys, so its parts are O(window), not
   O(entries), and boot from a checkpoint is O(records + window) at any journal size. The full
   replay still rebuilds the window from the journal (an entry older than the window contributes
@@ -590,6 +592,130 @@ posted before the checkpoint is refused after a checkpoint boot; a key reused wi
 plan is refused), **T** (torn writes: crash between parts and head; crash mid-GC), **F** (frozen
 economy checkpointed and booted stays frozen). Size: four to five days.
 
+> **J3 as built — 2026-09-06.** Built after J1, J2 and J5, which changed what a checkpoint is
+> for: with the replay at ~3.3 µs per entry, the tail bounded and cold chunks archived, the
+> checkpoint's remaining value is the boot **skipping every covered chunk's decode**, the
+> runtime **drift shadow** it needs, and the trust model its documents carry — not the boot
+> time the §6/§9 rows once forecast. §5.8's windowed idempotency index is **not** in this cut
+> (J3-D1, below).
+>
+> 1. **The shared fold** (`mush_economy::fold::FoldState`): every accumulator the boot replay
+>    derives from the journal — running balances and held amounts, last sequence and touch
+>    count per account, title and reservation post-states, terminal times, custody marks,
+>    consumed approvals, the reversed set, the title generation, the allocator high-water
+>    marks — as one value folded by one function, `fold_entry`, which boot replays with and
+>    `index_transaction` calls on every post. The store's three journal-derived maps moved into
+>    it. The live store therefore carries a **journal-authority shadow** of its projections.
+> 2. **The documents** (`mush_economy::checkpoint`): the head `checkpoint:{seq}` (format,
+>    covered sequence and chunk, written-at, the part list with each part's SHA-256 and
+>    sequence range, the `state_hash`, the body: the fold plus the debit-window tails and the
+>    chunk-to-first-sequence map) and the immutable parts `checkpoint:{seq}:idem:{n}` (the
+>    idempotency records and transaction refs for one range, ≤ 25 000 rows each). A later
+>    checkpoint re-lists the parts it inherits and writes only the new range. Hashes are over
+>    canonical JSON, domain-separated.
+> 3. **The writer** runs from the sweep after GC, every `checkpoint_every_entries` past the last
+>    covered sequence, never on the post path. **The write-time drift check** compares every
+>    account, title and reservation projection with the shadow first; a mismatch writes nothing,
+>    says so at `error`, and **freezes the economy** — boot's money-safety rule at runtime, a
+>    property the boot-only fold never gave. Parts are persisted before the head; two heads are
+>    kept and the next write sweeps what neither names. Nothing is written while frozen or
+>    with the cadence at 0.
+> 4. **The boot** selects the newest checkpoint whose key agrees with its covered sequence,
+>    whose sequence is at or below the journal head, whose covered chunk exists, whose parts
+>    are all present and hash to the head, decode and cover what they claim, and whose state
+>    hash recomputes; every rejected one is said at `error` and ignored. It seeds the fold,
+>    the idempotency index, the transaction refs, the reversed set and the two maps, decodes
+>    **no chunk below the covered one except those holding the RAM tail** (J3-F4), keeps the
+>    tail's bodies without folding them, skips every other entry at or below the covered
+>    sequence, and folds the rest. `ReplayStats` gained `from_checkpoint`, `replayed` and
+>    `checkpoint_ms`.
+> 5. **§5.5 as decided (D-12-2):** a document claiming a sequence at or before the covered one
+>    is judged when that sequence is the last the fold touched for it (the checkpoint's value is
+>    the value at the claim), and otherwise lags — healed unverified, at `info`, exempt from the
+>    drift and "never appears at" verdicts. Drift at the head still freezes.
+> 6. **J3-D1 — the windowed idempotency index (§5.8) is deferred to its own cut.** Building it
+>    exposed a hole the review glossed over: a post's idempotency check is synchronous on the
+>    world task, and a window cannot tell a never-used key from a key used before the window —
+>    so either every post with a fresh key pays an off-loop store check (a re-entry the dozens
+>    of `post` callers do not have), or a probabilistic fast-negative (a Bloom filter over every
+>    key, carried by the checkpoint) sits in front of the cold check. The boot's contract heal
+>    (`finished_transition`) also reads keys that may be older than any window. That needs its
+>    own design page and the owner's eye; this cut carries the whole index in the parts, so J3's
+>    RAM story is J2's, and D-12-4's ~7 million-entry line for the index stands. *Decided the
+>    same day: D-12-6, a Bloom filter gate on the slow lookup.*
+> 7. **J3-D2:** the covered sequence is the journal head at write time, not a chunk boundary
+>    — the boot skips whole chunks below the covered chunk and entries at or below the covered
+>    sequence within it, which is simpler than aligning writes to seals and loses nothing.
+>
+> **Measured (lens M).** The scale harness's phases test grew a checkpointed boot beside the
+> full replay (`SCALE_CHECKPOINT_EVERY`): boot once, let the sweep write a checkpoint at the
+> head, overlay its documents, boot again. Release build, this dev box, 100 accounts:
+>
+> | entries | chunks | full boot | of which typed decode | checkpointed boot | of which select + seed | replayed |
+> |---:|---:|---:|---:|---:|---:|---:|
+> | 25 000 | 881 | 95 ms | 39 ms | 127 ms | 64 ms | 0 |
+> | 100 000 | 3 560 | 307 ms | 159 ms | 326 ms | 204 ms | 0 |
+>
+> (The default 20 000-entry RAM tail is decoded either way — J3-F4 — which is most of the
+> 25 000-entry journal.) **The checkpoint as built is boot-time neutral to slightly worse.** It
+> skips the typed decode of every covered chunk outside the tail and pays about the same to
+> decode and hash the parts, because the parts carry **one row per journal entry** (the whole
+> idempotency index, per D-12-4 and J3-D1) — the checkpoint moved the per-entry cost from the
+> journal to its own documents, and the inspection pass (the text decode of every chunk, ~59 ms
+> at 100 000) is paid either way. The boot-time and RAM win
+> the review forecast lives entirely in §5.8's window, deferred (J3-D1). What this cut delivers
+> on its own is the runtime drift shadow, the write-time freeze, and the checkpoint documents'
+> trust model. `ReplayStats` and the boot log line carry `checkpoint_ms` so the split stays
+> visible.
+>
+> **J3-F2 (owner-facing, pre-existing).** The measurement first booted a *frozen* economy: the
+> synthetic journal's documents were captured before the template mint, so the faucet and
+> account 1 carried `last_journal_seq == 0` — the never-touched sentinel — while the journal's
+> entry 0 touched them, and the boot read that as drift at seq 0 rather than lag. Sequence 0 is
+> both a real journal sequence and the sentinel, so a document lost between the **first**
+> journal append and its own write reads as drift and freezes instead of healing. A one-entry
+> exposure, untouched by J3, and the J1/J2 measurements ran on that frozen boot without
+> noticing (their timings were unaffected). The fix is a 1-based journal or an `Option` on the
+> anchor, both schema changes — flagged, not taken here. The harness now captures the documents
+> as the mint left them.
+>
+> **Verify (lenses V, D, I, T, F).** V: a missing part, a tampered part, a wrong state hash, a
+> head not covering what its key says — each ignored, the journal replayed whole, unfrozen,
+> balances right; a garbage newer head does not shadow a valid older one. D: drift at the
+> claimed head sequence still freezes after a checkpoint boot; a pre-checkpoint lag heals
+> without a verdict; the write-time check names every disagreement (unit). I: a key posted
+> before the checkpoint is refused as already posted after a checkpoint boot (a test-only
+> `@testpost` command posts under a chosen key); a fresh key posts. T: parts with no head and a
+> head with no parts are both ignored. F: a frozen economy writes no checkpoint; a zero cadence
+> writes none. The round trip: the sweep writes at its cadence, a boot seeds and replays only
+> the tail, a later checkpoint inherits the earlier part, and the third write sweeps the first
+> head while keeping the part it introduced. Findings folded: **J3-F1** — the round-trip test
+> first expected a checkpoint from fewer new entries than the cadence; the cadence is what the
+> test now asserts.
+>
+> **The cadence-1 pass (lens C).** The default cadence means no ordinary test ever reaches the
+> writer, so the write-time drift check and the checkpointed boot were exercised by the five
+> J3 tests alone. The whole workspace was therefore run once with the cadence forced to 1 —
+> every sweep in every economy-touching test writes a checkpoint and every reboot seeds from
+> one. Twelve tests failed, from two causes, both folded:
+>
+> - **J3-F3 — the sentinel at the checkpoint.** The §5.5 rule excluded every claim of sequence
+>   0 as the never-touched sentinel, so an account whose only touch was the journal's first
+>   entry was left to the head verdict, which read its balance against nothing and froze; and a
+>   hold or asset the rule could not place lagged where B5 should have frozen. The fold's last
+>   touch now decides what the stored sequence alone cannot: a claim at the touch is judged at
+>   the value (a real first touch at 0 included), a touch past the claim lags (the sentinel on
+>   an account the journal did touch included), and no touch or an earlier one is left to the
+>   verdicts — an untouched sentinel is nothing, a claim the journal never made is still B5.
+> - **J3-F4 — the empty tail.** A checkpointed boot decoded nothing below the covered chunk, so
+>   J2's RAM tail came up empty: every history page and reversal went cold, and the boot heals
+>   that read a transaction's body (a settlement's stamp, a lost transition) found none. The
+>   boot now decodes from the chunk holding the tail's floor even below the checkpoint's, keeping
+>   those entries' bodies without folding them; the tail is full after any boot.
+>
+> With both folded the cadence-1 pass is clean across the workspace, and it is the run to
+> repeat whenever the fold, the writer or the boot rule changes.
+
 **J4 — the narrow fetch.** §5.6: the boot manifest, `ModuleBootData.omitted`, the min-present
 marker through `scan_contiguity`/`restore_from_kv`, the `RetryFullFetch` path, and the pipelined
 `JSON.MGET` (which every module gets). *Lenses:* **G** (a manifest naming a chunk the store no
@@ -598,9 +724,83 @@ full replay, and the manifest rewritten), **S** (the store suites: `module_json_
 without omission returns the same documents for the kept keys, both backends). Size: two days,
 plus the Redis suite time.
 
+> **J4 as built — 2026-09-06.** §5.6 as designed, with the retry made a typed error and the
+> omission a marker rather than a key list.
+>
+> 1. **The manifest** (`mush_core::BootManifest` under `BOOT_MANIFEST_KEY`, `boot-manifest`):
+>    `{ format: 1, skip_log_chunks_below: { "journal": k } }`. The economy writes it beside every
+>    head, with *k* the chunk holding the RAM tail's floor at that head (`covered_seq + 1 −
+>    tx_tail_max`), so everything below is both covered and outside the tail. Loader-owned
+>    protocol: the loader reads it first, honours a format it knows (an unreadable or unknown
+>    one is a whole fetch at `warn`), and strips it from the module's documents.
+> 2. **The narrowed listing** (`ObjectStore::module_docs_from(ns, &floors)`): a chunk below its
+>    log's floor is neither fetched from the primary nor merged from the archive (J5's
+>    `merge_archived` takes the floors), and the floors come back in `ModuleDocs::omitted`. Both
+>    backends skip the fetch itself; the trait default lists whole and drops. **The Redis fetch
+>    is now pipelined**: one `JSON.MGET` per page of 256 keys instead of one `JSON.GET` per key,
+>    for every module's boot; a page that trips on a non-JSON key falls back to the per-key
+>    path, which still classifies each key positively before skipping it.
+> 3. **The marker** (`ModuleBootData.omitted`, log id → chunks below not fetched) reaches the
+>    inspection as `ChunkFloors`: `inspect_ledger_from` / `scan_contiguity_from` /
+>    `Ledger::inspect_from`. Below a floor absence is not a hole; the floor's own chunk must be
+>    present when a higher one is (a manifest naming a chunk the store no longer has is a
+>    `MissingChunk` at the floor); the sequence run starts at the first present chunk; a floor
+>    permits absence and never demands it. The restore is unchanged — it only reads the tail.
+> 4. **The retry** (`ModError::RetryFullFetch { module, reason }`): a module handed a narrowed
+>    namespace it cannot boot from returns it; `Engine::module_loaded` delivers one module, and
+>    `boot_modules` walks the modules in order, and on the retry **clears the manifest** (it is
+>    the loader's, and it stood for nothing), fetches that namespace whole, reloads its streams,
+>    and delivers it once more to that module alone; a second refusal fails the boot with the
+>    module's reason. The economy returns the retry when the fetch was narrowed and no valid
+>    checkpoint's covered chunk reaches the floor — the head invalid, gone, or below it.
+> 5. **J4-D1:** the omission is a marker, not the omitted keys — the ledger only needs the floor,
+>    and a key list would be thousands of strings for nothing. **J4-D2:** a floor above the RAM
+>    tail's chunk (the tail lengthened by config since the manifest was written) shortens the
+>    tail until posts refill it, at `info`; never a retry — the money is all there.
+>
+> **Measured (lens M).** The scale harness's checkpointed boot grew a narrowed twin: the same
+> boot with the chunks below the manifest's floor never handed over. Release build, this dev
+> box quiet, 100 accounts, the default 20 000-entry tail:
+>
+> | entries | chunks | full boot | checkpointed boot | narrowed boot | floor | chunks handed over |
+> |---:|---:|---:|---:|---:|---:|---:|
+> | 25 000 | 881 | 81 ms | 104 ms | 115 ms | 172 | 709 |
+> | 100 000 | 3 560 | 327 ms | 334 ms | 269 ms | 2 844 | 716 |
+>
+> At 100 000 entries the narrowed boot hands over a fifth of the chunks and is the first boot
+> shape faster than a full replay (269 vs 327 ms): what it saves is the inspection's text
+> decode of the 2 844 omitted chunks. At 25 000 the tail is most of the journal, the floor
+> omits a fifth, and the three shapes are within noise of each other. **The store-side saving
+> is the point of J4 and is not measurable in process**: on Redis the narrowed listing issues
+> no `JSON.MGET` for the omitted keys at all, and every listing is now one round trip per 256
+> keys rather than one per key; that number needs the Redis suite on a real instance (D-12-3).
+>
+> **Verify (lenses G, S, L, E, C).** G: through `boot_modules` over the in-memory store, a
+> module that refuses its narrowed namespace is delivered the whole one, itself alone, the
+> manifest is cleared, and the boot goes on; a module that refuses the whole one too fails the
+> boot with its reason after exactly one retry. In the economy: a tampered head under a floor,
+> no checkpoint documents under a floor, and a floor above the covered chunk (the manifest
+> naming a chunk the store no longer has) each answer the retry, and the same store fetched
+> whole boots by a full replay with the money right; a floor at the covered chunk boots with a
+> shorter tail (J4-D2). S: the store suite's narrowed listing returns the whole listing's text
+> for every key it keeps, lists nothing below a floor, leaves other logs and the ordinary
+> documents alone, echoes the floors, and narrows nothing on empty floors — the in-memory
+> backend on this box; the Redis suite is `REDIS_URL`-gated and was **not** run here. L: the
+> ledger accepts an omitted prefix and restores the tail past it, still flags the floor's own
+> chunk missing when a higher one exists, a gap above the floor, and a sequence gap above it,
+> inspects a log the floors do not name whole, and takes a present chunk below a floor as
+> present. E: end to end through the driver — the sweep writes head and manifest; a fresh
+> engine boots narrowed from the checkpoint with the tail full; the head tampered, the next
+> boot recovers whole with the manifest cleared; the recovered world's next checkpoint writes
+> a fresh manifest and the boot after it is narrowed again. C: the cadence-1 workspace pass
+> repeated for the boot rule's change. Findings folded: **J4-F1** — the RAM tail's floor was
+> computed from the inspection's entry count, which under a narrowed fetch counts only the
+> present chunks, so a narrowed boot retained every present body (31 for a tail of 3); the
+> journal's length is the restored tail's next sequence, and the floor comes from that.
+
 J1 is the first cut. The order after the owner's decisions (§9) is J2 → J5 (§10.6, the
-archive tier) → J3 → J4; J2 and J5 can each be taken alone. *J1, J2 and J5 are built (§7's
-as-built blocks); J3 and J4 remain.*
+archive tier) → J3 → J4; J2 and J5 can each be taken alone. *All five are built (§7's as-built
+blocks); the windowed index (D-12-6) remains, as its own cut.*
 
 ## 8. Open questions for the owner
 
@@ -680,7 +880,29 @@ tail; mandatory on D-12-4) → **J5 (the ledger archive tier, §10)** → J3 wit
 (the checkpoint carries the window; the `idempotency:` docs and their backfill) → J4 (the narrow
 fetch). After J4 the boot is O(records + window); after J5 the journal's residence in Redis
 (F10) is bounded too. J5 goes before the checkpoint because the store running out of memory is
-an outage, where a slow boot is a slow restart.
+an outage, where a slow boot is a slow restart. *As built, J3 landed without §5.8 (J3-D1); the
+window is its own cut after J4, under D-12-6.*
+
+**D-12-6 — The §5.8 window is gated by a Bloom filter on the slow lookup (owner, 2026-09-06).**
+Resolves J3-D1. §5.8 as written could not tell a never-used key from a key used before the
+window, so every fresh post would have paid the off-loop store check. The owner's direction: the
+RAM index keeps the window's keys; a **Bloom filter over every key ever posted** rides in the
+checkpoint body, is maintained on every post and rebuilt by a full replay; a post's key is looked
+up in RAM first, and a miss is put to the filter — a **negative is certain**, so the post proceeds
+synchronously as today, and only a positive outside the window gates the slow lookup, the
+off-loop read of the key's `idempotency:{namespace}:{key_hash}` document. Sizing: ~20 bits a key
+(about 2.5 MB per million keys, a false-positive rate near 1 in 10 000), a 30-day window to start.
+The review's default for the rare positive is a **transient refusal** ("try again shortly") while
+the off-loop read warms the RAM index with the answer, so no `post` caller grows a re-entry path
+and the retry posts synchronously; the one sub-point left open is whether that visible retry is
+acceptable on interactive money commands or whether the rare positive should re-enter instead,
+the §5.8 letter. *Decided 2026-09-06: the transient refusal (owner: "the transient try again
+shortly is probably okay"). The design is doc 13; its cuts are W1 and W2.* Two notes for the design page: on Redis the "forever" key documents live in
+Redis RAM (~150 bytes a key), so the window moves that cost to the store rather than to disk —
+a key-indexed disk tier is a separate question, not J5's chunk archive; and the boot's contract
+heal reads keys older than any window, so it reads them through the same gate. The cut gets its
+own design page and follows J4; D-12-1's metric is the trigger, well before D-12-4's ~7 million
+line.
 
 ## 10. The ledger archive tier (owner direction, 2026-09-05; J5)
 

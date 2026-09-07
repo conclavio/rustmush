@@ -1381,6 +1381,128 @@ pub async fn module_docs_splits_the_ledger_family(store: &dyn ObjectStore) {
 /// J5: the archive seam — `module_keys` lists what is resident,
 /// `module_doc_text` hands a document over as text, and
 /// `module_purge_archived` removes ledger chunks and nothing else.
+/// J4 (doc 12 §5.6, lens S): a listing narrowed by chunk floors returns the
+/// same documents as the whole listing for every key it keeps, fetches no
+/// chunk below a floor, leaves other logs and the ordinary documents alone,
+/// and reports the floors it applied.
+pub async fn module_docs_from_narrows_to_the_floors(store: &dyn ObjectStore) {
+    let chunk = |n: u64, sealed: bool| {
+        serde_json::json!({
+            "chunk": n, "sealed": sealed, "entries": [{ "seq": n, "value": { "n": n } }]
+        })
+    };
+    write_module_ops(
+        store,
+        1,
+        vec![
+            json_set("a", "k1", serde_json::json!({ "v": 1 })),
+            json_set("a", "log:j:0", chunk(0, true)),
+            json_set("a", "log:j:1", chunk(1, true)),
+            json_set("a", "log:j:2", chunk(2, true)),
+            json_set("a", "log:j:3", chunk(3, false)),
+            json_set("a", "log:other:0", chunk(0, false)),
+            json_set("ab", "log:j:0", chunk(0, false)),
+        ],
+    )
+    .await;
+    let floors: crate::ChunkFloors = [("j".to_string(), 2u64)].into_iter().collect();
+    let skip = crate::BootSkip {
+        floors: floors.clone(),
+        prefixes: Vec::new(),
+    };
+    let whole = store.module_docs("a").await.expect("whole listing");
+    assert!(whole.omitted.is_empty());
+    let narrowed = store
+        .module_docs_from("a", &skip)
+        .await
+        .expect("narrowed listing");
+    assert_eq!(narrowed.omitted, floors);
+    assert_eq!(
+        narrowed.docs, whole.docs,
+        "ordinary documents are untouched"
+    );
+    let mut kept: Vec<String> = narrowed.ledger.iter().map(|(k, _)| k.clone()).collect();
+    kept.sort();
+    assert_eq!(
+        kept,
+        vec![
+            "log:j:2".to_string(),
+            "log:j:3".to_string(),
+            "log:other:0".to_string()
+        ],
+        "chunks below the floor are not listed; other logs are whole"
+    );
+    for (key, text) in &narrowed.ledger {
+        let same = whole.ledger.iter().find(|(k, _)| k == key).map(|(_, t)| t);
+        assert_eq!(
+            same,
+            Some(text),
+            "{key}: the kept text is the whole listing's"
+        );
+    }
+    let unnarrowed = store
+        .module_docs_from("a", &crate::BootSkip::default())
+        .await
+        .expect("empty skip");
+    assert_eq!(
+        unnarrowed.ledger.len(),
+        whole.ledger.len(),
+        "an empty skip narrows nothing"
+    );
+    // A floor above every present chunk lists none of that log.
+    let high = crate::BootSkip {
+        floors: [("j".to_string(), 10u64)].into_iter().collect(),
+        prefixes: Vec::new(),
+    };
+    let empty = store
+        .module_docs_from("a", &high)
+        .await
+        .expect("high floor");
+    assert!(
+        empty.ledger.iter().all(|(k, _)| !k.starts_with("log:j:")),
+        "{:?}",
+        empty.ledger.iter().map(|(k, _)| k).collect::<Vec<_>>()
+    );
+    assert_eq!(empty.docs, whole.docs);
+    // Doc 13 W1: a skipped prefix fetches nothing under it, ledger or not,
+    // and the listing says which prefixes it skipped.
+    write_module_ops(
+        store,
+        2,
+        vec![
+            json_set("a", "idem:aa", serde_json::json!({ "tx": 1 })),
+            json_set("a", "idem:bb", serde_json::json!({ "tx": 2 })),
+        ],
+    )
+    .await;
+    let prefixed = crate::BootSkip {
+        floors: crate::ChunkFloors::new(),
+        prefixes: vec!["idem:".to_string()],
+    };
+    let listed = store
+        .module_docs_from("a", &prefixed)
+        .await
+        .expect("prefix skip");
+    assert_eq!(listed.skipped_prefixes, vec!["idem:".to_string()]);
+    assert!(
+        listed.docs.iter().all(|(k, _)| !k.starts_with("idem:")),
+        "{:?}",
+        listed.docs.iter().map(|(k, _)| k).collect::<Vec<_>>()
+    );
+    assert_eq!(
+        listed.docs.len(),
+        whole.docs.len(),
+        "the other documents are all there"
+    );
+    assert_eq!(listed.ledger.len(), whole.ledger.len());
+    let all = store.module_docs("a").await.expect("whole listing");
+    assert_eq!(
+        all.docs.len(),
+        whole.docs.len() + 2,
+        "a whole listing still lists them"
+    );
+}
+
 pub async fn module_keys_text_and_purge(store: &dyn ObjectStore) {
     let chunk = serde_json::json!({
         "chunk": 0, "sealed": true, "entries": [{ "seq": 0, "value": 1 }]

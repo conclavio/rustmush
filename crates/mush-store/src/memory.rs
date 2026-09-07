@@ -2356,6 +2356,14 @@ impl ObjectStore for InMemoryStore {
     }
 
     fn module_docs<'a>(&'a self, ns: &'a str) -> BoxFuture<'a, Result<ModuleDocs, StoreError>> {
+        self.module_docs_from(ns, &crate::store::NO_SKIP)
+    }
+
+    fn module_docs_from<'a>(
+        &'a self,
+        ns: &'a str,
+        skip: &'a crate::store::BootSkip,
+    ) -> BoxFuture<'a, Result<ModuleDocs, StoreError>> {
         Box::pin(async move {
             validate_module_ns(ns)?;
             let mut out = ModuleDocs::default();
@@ -2363,6 +2371,10 @@ impl ObjectStore for InMemoryStore {
                 let inner = self.lock()?;
                 for ((doc_ns, key), doc) in &inner.module_kv {
                     if doc_ns != ns {
+                        continue;
+                    }
+                    // J4 / W1: below the floor or under a skipped prefix, not even read.
+                    if skip.skips(key) {
                         continue;
                     }
                     // J1: the store holds text; a ledger chunk is handed over as is.
@@ -2374,7 +2386,9 @@ impl ObjectStore for InMemoryStore {
                 }
             }
             // J5: what the primary has been purged of comes from the archive.
-            crate::archive::merge_archived(self.ledger_archive(), ns, &mut out.ledger)?;
+            crate::archive::merge_archived(self.ledger_archive(), ns, &mut out.ledger, skip)?;
+            out.omitted = skip.floors.clone();
+            out.skipped_prefixes = skip.prefixes.clone();
             Ok(out)
         })
     }

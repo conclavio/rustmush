@@ -2406,6 +2406,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "mush-propagation"
+version = "0.1.0"
+dependencies = [
+ "mush-core",
+ "mush-proto",
+ "mush-scenes",
+ "mush-sim",
+ "mush-tactics",
+ "mush-testkit",
+ "serde",
+ "serde_json",
+ "smol_str",
+ "thiserror 2.0.20",
+ "tracing",
+]
+
+[[package]]
 name = "mush-proto"
 version = "0.1.0"
 dependencies = [
@@ -2484,6 +2501,7 @@ dependencies = [
  "mush-org",
  "mush-party",
  "mush-privileges",
+ "mush-propagation",
  "mush-proto",
  "mush-ruleset",
  "mush-scenes",

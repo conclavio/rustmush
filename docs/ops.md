@@ -1013,6 +1013,47 @@ economy sweep, never on a post. A rebuilt approval window (`@account/approval
 … window=`) folds from the tail and logs a `warn` when the tail starts after
 the window floor (doc 12 J2-D1).
 
+**The economy checkpoint** (J3, doc 12 §5.2–§5.5) is written by the economy
+sweep every `[economy] checkpoint_every_entries` journal entries (default
+10 000; 0 writes none) as `checkpoint:{seq}` plus immutable
+`checkpoint:{seq}:idem:{n}` parts, after a **write-time drift check**: the
+live projections are compared with a journal-authority shadow the store
+folds on every post, and a mismatch writes nothing and freezes the economy
+(`@econ/unfreeze` clears it; the boot log names the first mismatch). Boot
+seeds from the newest checkpoint whose parts are present and hash to the
+head and whose state hash recomputes, and replays only the tail; any other
+checkpoint is ignored at `error` and the journal replayed whole — a
+checkpoint is never authority. The boot log line `economy: journal replayed
+at boot` carries `from_checkpoint`, `replayed` and `checkpoint_ms` (the
+time selecting, validating and seeding from the checkpoint took; it roughly
+matches the decode it saves while the parts carry every idempotency row —
+doc 12 J3 as built). Two heads are kept; the
+next write sweeps older ones. A document lagging a version older than the
+checkpoint heals without a drift verdict, said at `info` (doc 12 D-12-2).
+
+**Key documents and the idempotency gate** (doc 13 W1). Every post also
+writes `idem:{sha256}` beside its journal entry — the key's record, kept
+forever and never loaded at boot (the boot manifest's `skip_key_prefixes`).
+Checkpoints are format 2 and carry the key filter as `checkpoint:{seq}:bloom`
+(a few megabytes per million keys). A journal older than the cut is
+backfilled by the sweep, 2 000 documents a fire, and `economy: the key
+documents are backfilled` marks the end. When the RAM window is on (W2) a
+post whose key is neither in RAM nor certainly new is refused with *"that
+request is being checked against the ledger's history; try again shortly"*
+while the document is read off the world loop; the retry a moment later is
+decided. Until W2 every key stays in RAM and the message never appears.
+
+**The narrow fetch** (J4, doc 12 §5.6) needs no configuration. Beside every
+checkpoint head the economy writes `boot-manifest`, naming the journal chunk
+below which the next boot need not fetch; the loader reads it first and lists
+the namespace without those chunks (`namespace fetched narrowed to its boot
+manifest` at `info`, with the floors and `fetch_ms`). If the checkpoint the
+manifest stood for no longer holds, the boot log shows `module cannot boot
+from its narrowed namespace; fetching it whole and delivering again` at
+`warn`, the manifest is cleared, and the boot is a full replay; the next
+checkpoint writes a fresh manifest. Every module's namespace fetch is now one
+`JSON.MGET` per 256 keys rather than one `JSON.GET` per key.
+
 **The ledger archive tier** (J5, doc 12 §10) is off by default. With
 `[store.archive] enabled = true`, a pass runs once a UTC day inside `window`
 (`03:00-04:00`): it copies every **sealed** ledger chunk of every module

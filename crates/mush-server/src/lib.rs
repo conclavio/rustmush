@@ -77,8 +77,10 @@ pub mod persist;
 mod process_fault;
 pub mod quarantine;
 pub mod retained;
+pub mod sim_routes;
 pub mod staff;
 pub mod store_read;
+pub mod tactics_outbox;
 pub mod timeline;
 pub mod world_task;
 
@@ -353,6 +355,21 @@ async fn build_engine(
     engine.set_account_identity(std::sync::Arc::clone(&account_identity));
     if let Some(slot) = engine.world.module_state_mut::<mush_sim::AccountOracle>() {
         *slot = mush_sim::AccountOracle::new(account_identity);
+    }
+    // E7c8 B1: upgrade the pulse cadence from `[tacsim]`, on the same
+    // post-composition device — §7 lists `ground_pulse_ms`/`space_pulse_ms` as
+    // "parsed and inert until cut 8", and this is the cut that reads them. A
+    // value outside the constructible band is CLAMPED, not refused: a knob that
+    // configures a cadence must not be able to stop a world booting, and the
+    // clamp is visible in `@domain/status`.
+    if let Some(slot) = engine
+        .world
+        .module_state_mut::<mush_sim::tick::PulseConfig>()
+    {
+        *slot = mush_sim::tick::PulseConfig {
+            ground_ms: config.tacsim.ground_pulse_ms,
+            space_ms: config.tacsim.space_pulse_ms,
+        };
     }
     modules::boot_modules(&mut engine, &**store).await?;
     Ok((engine, staff, llm))

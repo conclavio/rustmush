@@ -48,12 +48,21 @@ use smol_str::SmolStr;
 mod contact;
 pub mod mobility;
 pub mod module;
+pub mod sensor;
+pub mod status;
 pub mod unit;
 
 pub use contact::{
     CONTACT_CHANGED_OUTCOME_ID, CONTACT_LOSS_ACTION_ID, CONTACT_OBSERVE_ACTION_ID,
     CONTACT_REACQUIRE_ACTION_ID, CONTACT_REFRESH_ACTION_ID, CONTACT_SHARE_ACTION_ID,
     CONTACT_UNSHARE_ACTION_ID,
+};
+
+pub use sensor::{
+    LEDGER_TICK_SECS, LEDGER_TICK_TAG, MAX_INTENTS_PER_ARM, MAX_LEDGER_SCAN_PER_FIRE,
+    MAX_SENSOR_ARM_BYTES, MAX_SENSOR_JOB_BYTES, PHANTOM_CLASS, PHANTOM_OWNER, SENSOR_ARM_ACTION_ID,
+    SENSOR_ARMED_OUTCOME_ID, SENSOR_JOB_FAMILY, SensorJob, sensor_schedule_family,
+    sensor_source_id,
 };
 
 pub use mobility::{

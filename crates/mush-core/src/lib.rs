@@ -79,6 +79,7 @@ pub mod resource;
 pub mod resource_provider;
 pub mod sched;
 pub mod schedule_source;
+pub mod sensor;
 pub mod world;
 
 pub use account::{AccountId, AccountIdentity};
@@ -232,12 +233,13 @@ pub use engine::{
 };
 pub use flags::{Flags, Powers, Privileges, Role};
 pub use ledger::{
-    BreachKind, ContiguityBreach, DEFAULT_ARCHIVE_PAGE_CHUNKS, Ledger, LedgerAppendError,
-    LedgerApplyError, LedgerChunk, LedgerChunkOf, LedgerDoc, LedgerEntry, LedgerEntryOf,
-    LedgerHistory, LedgerReadError, LedgerRestoreError, LedgerRestoreReport,
+    BreachKind, ChunkFloors, ContiguityBreach, DEFAULT_ARCHIVE_PAGE_CHUNKS, Ledger,
+    LedgerAppendError, LedgerApplyError, LedgerChunk, LedgerChunkOf, LedgerDoc, LedgerEntry,
+    LedgerEntryOf, LedgerHistory, LedgerReadError, LedgerRestoreError, LedgerRestoreReport,
     MAX_LEDGER_LOG_ID_BYTES, MAX_RESTORE_BREACH_DETAILS, PreparedLedgerAppend, archive_page_range,
-    chunk_key, inspect_ledger, is_log_key, is_sealed_chunk, parse_chunk, parse_chunk_key,
-    read_cold_range, recent_sealed, scan_contiguity, typed_entries,
+    chunk_key, inspect_ledger, inspect_ledger_from, is_log_key, is_sealed_chunk, parse_chunk,
+    parse_chunk_key, read_cold_range, recent_sealed, scan_contiguity, scan_contiguity_from,
+    typed_entries,
 };
 pub use lock::{LockExpr, LockParseError, LockType, eval_lock, glob_match, parse_lock};
 pub use matchit::{MatchErr, match_object};
@@ -259,17 +261,17 @@ pub use mechanics::{
     canonical_json_bytes_with_limit,
 };
 pub use module::{
-    AMBIENT_IC_TIME_KEY, AsyncCompletion, ContextOutcome, DiscordInteraction,
-    DiscordInteractionHandler, EventHook, GameModule, HookPoint, HookReadContext, InputContext,
-    JobQueueSpec, MAX_AMBIENT_BYTES, MAX_AMBIENT_KEYS, MAX_MODULE_KEY_BYTES,
-    MAX_MODULE_NAMESPACE_BYTES, MAX_STORE_READ_BYTES, MAX_STORE_READ_KEYS, Migration, ModError,
-    ModuleBootData, ModuleCtx, ModuleOp, ModuleWrite, PanelFeedHandle, Perceive, QueryHandler,
-    RecoveryReporter, Registrar, RelayRefusal, RelaySpeaker, STORE_READ_STALE_SECS,
-    STORE_READ_TIMEOUT_MS, Scene, SceneId, StackedContext, StoreReadCompletion, StoreReadError,
-    StoreReadResult, TickCadence, TickHandler, WeatherQuery, WorldEvent, WorldEventKind,
-    WorldObserver, WxSnapshot, apply_store_read_completion, can_perceive,
-    can_perceive_with_action_state, is_concealed, is_concealed_with_action_state, perceives_via,
-    room_ambient,
+    AMBIENT_IC_TIME_KEY, AsyncCompletion, BOOT_MANIFEST_FORMAT, BOOT_MANIFEST_KEY, BootManifest,
+    ContextOutcome, DiscordInteraction, DiscordInteractionHandler, EventHook, GameModule,
+    HookPoint, HookReadContext, InputContext, JobQueueSpec, MAX_AMBIENT_BYTES, MAX_AMBIENT_KEYS,
+    MAX_MODULE_KEY_BYTES, MAX_MODULE_NAMESPACE_BYTES, MAX_STORE_READ_BYTES, MAX_STORE_READ_KEYS,
+    Migration, ModError, ModuleBootData, ModuleCtx, ModuleOp, ModuleWrite, PanelFeedHandle,
+    Perceive, QueryHandler, RecoveryReporter, Registrar, RelayRefusal, RelaySpeaker,
+    STORE_READ_STALE_SECS, STORE_READ_TIMEOUT_MS, Scene, SceneId, StackedContext,
+    StoreReadCompletion, StoreReadError, StoreReadResult, TickCadence, TickHandler, WeatherQuery,
+    WorldEvent, WorldEventKind, WorldObserver, WxSnapshot, apply_store_read_completion,
+    can_perceive, can_perceive_with_action_state, is_concealed, is_concealed_with_action_state,
+    perceives_via, room_ambient,
 };
 pub use obj::{GOD, LIMBO, Obj, ObjId, ObjKind};
 pub use offer::{
@@ -320,6 +322,12 @@ pub use schedule_source::{
     ScheduleSourceCursor, ScheduleSourceKey, ScheduleSourcePage, ScheduleSourceRegistry,
     ScheduleSourceRegistryBuilder, ScheduleSourceRegistryError, ScheduleSourceScanError,
     ScheduledActionCandidate, ScheduledActionPlan, scheduled_action_ingress,
+};
+pub use sensor::{
+    CONTACT_TTL, ContactLedgerRow, ContactLedgerState, MAX_CONTACT_LEDGER_ROWS,
+    MAX_CONTACTS_PER_OBSERVER, MAX_INTENT_AUDIENCE, MAX_OBSERVATIONS_PER_PASS, ObservationIntent,
+    ObservationIntentError, ObservationIntentWire, ObservationKind, ObservationOp, ObserverRef,
+    SensorPolicy, SensorPolicyHandle, bounded_pass,
 };
 pub use world::{
     ChannelGrant, CommandSubjectLink, MAX_CONTAINMENT_DEPTH, SessionStat, World, WorldError,

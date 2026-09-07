@@ -272,6 +272,10 @@ pub struct TacticsModule {
     catalog: Arc<UnitCatalog>,
     legacy_record_definition: Option<DefinitionRef>,
     current_record_definition: Option<DefinitionRef>,
+    /// E7c7 B3: the composition-installed observation policy the sensor ingress
+    /// reads. `mush-propagation` supplies it; `mush-tactics` never learns which
+    /// crate did, because the trait is `mush-core`'s. Unwired arms nothing.
+    sensors: mush_core::SensorPolicyHandle,
 }
 
 impl Default for TacticsModule {
@@ -288,6 +292,7 @@ impl TacticsModule {
             catalog: Arc::new(UnitCatalog::default()),
             legacy_record_definition: None,
             current_record_definition: None,
+            sensors: mush_core::SensorPolicyHandle::unwired(),
         }
     }
     /// A module with a frozen catalog (a ruleset / dev wiring supplies it).
@@ -297,8 +302,39 @@ impl TacticsModule {
             catalog: Arc::new(catalog),
             legacy_record_definition: None,
             current_record_definition: None,
+            sensors: mush_core::SensorPolicyHandle::unwired(),
         }
     }
+
+    /// **E7 cut 7 B3, OPEN 1 — the composition seam that keeps `mush-tactics`
+    /// the sole `ContactState` authority.**
+    ///
+    /// The kernel's owner fence (`ScheduleSourceRegistryBuilder::register` and
+    /// `scheduled_action_ingress`, both in `mush-core/src/schedule_source.rs`)
+    /// forces source-owner == schedule-family-owner == fired-action-owner, and
+    /// the six `contact_*` actions are this module's — so a
+    /// `mush-propagation`-owned schedule source **cannot** fire them and the
+    /// observation ingress has to be registered here. The *policy* is still
+    /// propagation's: it arrives as an `Arc<dyn mush_core::SensorPolicy>` at
+    /// `server_modules_with`, in the `IndustryModule::with_recipes` /
+    /// `SimulationModule::with_accounts` shape, so **`mush-tactics` gains no
+    /// `mush-propagation` edge**. Unwired, the ingress arms nothing at all.
+    #[must_use]
+    pub fn with_sensor_policy(mut self, policy: Arc<dyn mush_core::SensorPolicy>) -> TacticsModule {
+        self.sensors = mush_core::SensorPolicyHandle::new(policy);
+        self
+    }
+}
+
+/// Who may arm the sensor ingress (E7c7 B3).
+///
+/// **Staff only.** A player who could arm it could author another actor's
+/// picture, which is the exact hazard the K lens exists to close; the offer
+/// simply does not exist for anyone else, so there is no refusal to probe with
+/// either.
+#[must_use]
+pub fn sensor_arm_is_permitted(world: &World, actor: ObjId) -> bool {
+    perm::has_power(world, actor, Powers::SIM_ADMIN) || perm::has_role(world, actor, Role::Royalty)
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -781,24 +817,33 @@ impl GameModule for TacticsModule {
 
         let outcome_descriptor = braced_outcome_descriptor()?;
         let contact_outcome_descriptor = crate::contact::outcome_descriptor()?;
+        // E7c7 B3: the sensor ingress's own outcome joins the ONE exact
+        // "outcome" validator — a second `definition_validator` for one kind is
+        // not a thing the registrar allows, so the ingress contributes
+        // descriptors here rather than registering its own.
+        let sensor_outcome_descriptor = crate::sensor::arm_outcome_descriptor()?;
         reg.definition_validator(
             DefinitionKind::new("outcome").map_err(|error| ModError::msg(error.to_string()))?,
             exact_definition_validator(&[
                 outcome_descriptor.clone(),
                 contact_outcome_descriptor.clone(),
+                sensor_outcome_descriptor.clone(),
             ]),
         )?;
         let outcome = reg.definition(outcome_descriptor)?;
         let contact_outcome = reg.definition(contact_outcome_descriptor)?;
+        let sensor_outcome = reg.definition(sensor_outcome_descriptor)?;
         let action_descriptor = brace_action_descriptor(outcome.clone())?;
         let contact_action_descriptors = crate::contact::action_descriptors(&contact_outcome)?;
-        let mut action_descriptors = Vec::with_capacity(1 + contact_action_descriptors.len());
+        let sensor_arm_descriptor = crate::sensor::arm_action_descriptor(&sensor_outcome)?;
+        let mut action_descriptors = Vec::with_capacity(2 + contact_action_descriptors.len());
         action_descriptors.push(action_descriptor.clone());
         action_descriptors.extend(
             contact_action_descriptors
                 .iter()
                 .map(|(_, descriptor)| descriptor.clone()),
         );
+        action_descriptors.push(sensor_arm_descriptor.clone());
         reg.definition_validator(
             DefinitionKind::new("action").map_err(|error| ModError::msg(error.to_string()))?,
             exact_definition_validator(&action_descriptors),
@@ -810,6 +855,11 @@ impl GameModule for TacticsModule {
                 reg.definition(descriptor).map(|action| (operation, action))
             })
             .collect::<Result<Vec<_>, _>>()?;
+        let sensor_arm = reg.definition(sensor_arm_descriptor)?;
+        let sensor_actions: Vec<(mush_core::ObservationKind, DefinitionRef)> = contact_actions
+            .iter()
+            .map(|(operation, action)| (operation.kind(), action.clone()))
+            .collect();
         reg.action_provider(
             action.clone(),
             BraceProvider {
@@ -818,7 +868,53 @@ impl GameModule for TacticsModule {
                 outcome,
             },
         )?;
-        crate::contact::register_providers(reg, contacts, contact_outcome, contact_actions)?;
+        crate::contact::register_providers(
+            reg,
+            contacts.clone(),
+            contact_outcome,
+            contact_actions,
+        )?;
+        // E7c7 B3: the trusted sensor-policy ingress. Registered here, under
+        // THIS owner, because the kernel owner fence forbids any other module
+        // from firing a `contact_*` action (see `crate::sensor`'s header).
+        crate::sensor::register(
+            reg,
+            contacts.clone(),
+            sensor_outcome,
+            sensor_arm,
+            &sensor_actions,
+            self.sensors.clone(),
+        )?;
+        // E7c7 B3: the leak-safe contact-ledger projection. `scan_action_state`
+        // is owner-fenced, so only THIS module can read `tactics/contacts` —
+        // and a policy that cannot name a `ContactId` could only ever arm an
+        // `Observe`. The projection publishes the holder's own view (opaque id,
+        // counters, liveness, and propagation's own phantom id where the
+        // subject is one) into `World` state; no real unit's `ObjId` crosses.
+        reg.state(mush_core::ContactLedgerState::default());
+        let ledger_contacts = contacts;
+        let ledger_owner = OwnerId::new(NS).map_err(|error| ModError::msg(error.to_string()))?;
+        let ledger_scan = std::sync::Mutex::new(crate::sensor::LedgerScan::default());
+        reg.tick(
+            crate::sensor::LEDGER_TICK_TAG,
+            mush_core::module::TickCadence::Coarse(std::time::Duration::from_secs(
+                crate::sensor::LEDGER_TICK_SECS,
+            )),
+            Arc::new(
+                move |ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<mush_core::SceneId>| {
+                    // A poisoned lock is a bug in a handler that cannot panic; the
+                    // projection simply does not advance this fire.
+                    if let Ok(mut staging) = ledger_scan.lock() {
+                        crate::sensor::ledger_tick(
+                            ctx,
+                            &ledger_contacts,
+                            &ledger_owner,
+                            &mut staging,
+                        );
+                    }
+                },
+            ),
+        )?;
 
         // The record format itself is versioned so an old untagged unit can be
         // dry-run through the shared migration registry. The callback captures

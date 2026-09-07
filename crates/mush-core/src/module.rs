@@ -80,6 +80,19 @@ pub enum ModError {
     /// Free-form module boot error (bad persisted data, …).
     #[error("{0}")]
     Msg(String),
+    /// J4 (doc 12 §5.6): the module was handed a **narrowed** namespace (a
+    /// boot manifest let the loader skip cold ledger chunks) and cannot boot
+    /// from it — the checkpoint the manifest stood for proved invalid or
+    /// absent — so the driver must fetch the namespace whole, manifest
+    /// ignored, and call [`GameModule::on_world_loaded`] once more. Returned
+    /// only for a narrowed fetch; from a whole one it is a plain failure.
+    #[error("module {module:?} needs its whole namespace: {reason}")]
+    RetryFullFetch {
+        /// The module asking.
+        module: SmolStr,
+        /// Why the narrowed data would not do.
+        reason: String,
+    },
 }
 
 impl ModError {
@@ -195,6 +208,84 @@ pub struct ModuleBootData {
     /// (doc 12 D-12-3: the part of a boot the replay timer never saw). Zero
     /// when nobody measured it (a test rig).
     pub fetch_ms: u64,
+    /// J4 (doc 12 §5.6): what the loader **deliberately did not fetch** —
+    /// per ledger log id, the chunk index below which no chunk document was
+    /// read, as the namespace's [`BootManifest`] asked. The min-present
+    /// marker the ledger inspection honours ([`crate::inspect_ledger_from`]);
+    /// empty for a whole fetch. A module that finds it cannot boot from a
+    /// narrowed namespace returns [`ModError::RetryFullFetch`].
+    pub omitted: std::collections::BTreeMap<SmolStr, u64>,
+}
+
+/// The key of a namespace's boot manifest (J4, doc 12 §5.6): a document the
+/// **module** writes and the **loader** reads before listing the namespace,
+/// so a checkpointed boot never fetches the cold ledger chunks it will not
+/// decode. Loader-owned protocol: it is stripped from the boot data's `kv`
+/// and never reaches the module as a document.
+pub const BOOT_MANIFEST_KEY: &str = "boot-manifest";
+
+/// The current [`BootManifest::format`].
+pub const BOOT_MANIFEST_FORMAT: u32 = 1;
+
+/// What a namespace's boot may skip (J4, doc 12 §5.6), written by the module
+/// under [`BOOT_MANIFEST_KEY`]. The loader honours a manifest of a format it
+/// knows and ignores any other (a whole fetch, said at `warn`).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BootManifest {
+    /// [`BOOT_MANIFEST_FORMAT`] when written by this code.
+    pub format: u32,
+    /// Per ledger log id, the chunk index below which the loader need not
+    /// fetch: the module has a checkpoint covering those chunks and the RAM
+    /// tail it keeps starts at or above the named chunk. A zero entry asks
+    /// for nothing.
+    #[serde(default)]
+    pub skip_log_chunks_below: std::collections::BTreeMap<SmolStr, u64>,
+    /// Key prefixes the loader need not fetch at all (doc 13 W1): documents
+    /// the module reads through the store-read seam on demand and never at
+    /// boot — the economy's `idem:` key documents. Applies to every key,
+    /// ledger or not; an empty prefix is ignored.
+    #[serde(default)]
+    pub skip_key_prefixes: Vec<SmolStr>,
+}
+
+impl BootManifest {
+    /// A manifest that skips nothing, at the current format.
+    #[must_use]
+    pub fn empty() -> Self {
+        BootManifest {
+            format: BOOT_MANIFEST_FORMAT,
+            skip_log_chunks_below: std::collections::BTreeMap::new(),
+            skip_key_prefixes: Vec::new(),
+        }
+    }
+
+    /// The key prefixes the loader skips: every non-empty one of a manifest
+    /// at a format this code knows; nothing otherwise.
+    #[must_use]
+    pub fn prefixes(&self) -> Vec<SmolStr> {
+        if self.format != BOOT_MANIFEST_FORMAT {
+            return Vec::new();
+        }
+        self.skip_key_prefixes
+            .iter()
+            .filter(|p| !p.is_empty())
+            .cloned()
+            .collect()
+    }
+
+    /// The floors the loader applies: every non-zero entry of a manifest at a
+    /// format this code knows; nothing otherwise.
+    #[must_use]
+    pub fn floors(&self) -> std::collections::BTreeMap<SmolStr, u64> {
+        if self.format != BOOT_MANIFEST_FORMAT {
+            return std::collections::BTreeMap::new();
+        }
+        self.skip_log_chunks_below
+            .iter()
+            .filter(|(_, below)| **below > 0)
+            .map(|(log, below)| (log.clone(), *below))
+            .collect()
+    }
 }
 
 impl ModuleBootData {

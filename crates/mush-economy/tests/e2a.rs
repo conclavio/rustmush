@@ -78,6 +78,7 @@ fn plan(ns: &str, key: &str, lines: Vec<RequestedLine>) -> EconomyPlan {
 /// objects), clock at the same 1000 the tests post at.
 fn env(auth: &dyn AuthEval) -> ValidateEnv<'_> {
     ValidateEnv {
+        keys: None,
         auth,
         custody: &mush_economy::NoCustody,
         facts: &mush_economy::NoFacts,
@@ -287,6 +288,7 @@ fn reversal_compensates_and_is_at_most_once() {
         },
         &s2,
         &mush_economy::AllowAll,
+        None,
     ) {
         PlanResult::Post(prepared) => apply(&s2, &prepared, TransactionId(2), 2, 1000),
         other => panic!("expected Post, got {other:?}"),
@@ -324,6 +326,7 @@ fn reversal_compensates_and_is_at_most_once() {
         },
         &s3,
         &mush_economy::AllowAll,
+        None,
     ) {
         PlanResult::AlreadyPosted(id) => assert_eq!(id, rtx.id),
         other => panic!("expected AlreadyPosted, got {other:?}"),

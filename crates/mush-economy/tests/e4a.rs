@@ -286,6 +286,7 @@ impl Seams {
     }
     fn env<'a>(&'a self, s: &EconomySnapshot) -> ValidateEnv<'a> {
         ValidateEnv {
+            keys: None,
             auth: &self.auth,
             custody: &self.custody,
             facts: &self.facts,
@@ -911,6 +912,7 @@ fn invariant_28_a_capture_carrying_transaction_cannot_be_reversed() {
         },
         &s2,
         &Auth::yes(),
+        None,
     );
     assert_eq!(out, PlanResult::Refused(EconomyError::HasEffects));
 }
@@ -1548,6 +1550,7 @@ fn scenario_17_the_settlement_split_floors_permille_shares_and_pays_the_remainde
     // …and the plan actually posts under the contract's own authority.
     let auth = ContractAuth::new(&c, &s);
     let env = ValidateEnv {
+        keys: None,
         auth: &auth,
         custody: &Custody::default(),
         facts: &Facts::default(),
@@ -1603,6 +1606,7 @@ fn contract_auth_authorizes_exactly_the_surface_and_refuses_an_extra_line() {
     p.requested_lines.push(line(1, -10));
     p.requested_lines.push(line(2, 10));
     let env = ValidateEnv {
+        keys: None,
         auth: &auth,
         custody: &Custody::default(),
         facts: &Facts::default(),
@@ -1983,6 +1987,7 @@ fn the_refund_plan_releases_every_escrow_hold_and_moves_no_money() {
         "an unwind authority captured escrow"
     );
     let env = ValidateEnv {
+        keys: None,
         auth: &auth,
         custody: &Custody::default(),
         facts: &Facts::default(),
@@ -2403,6 +2408,7 @@ fn validate_with(p: &EconomyPlan, s: &EconomySnapshot, auth: &dyn AuthEval) -> P
         p,
         s,
         &ValidateEnv {
+            keys: None,
             auth,
             custody: &custody,
             facts: &facts,
@@ -2600,6 +2606,7 @@ fn vf_4_a_stale_allocator_floor_never_re_mints_a_live_hold() {
     with_hold(&mut s, hold(5, 1, 100));
     let k = Seams::open();
     let stale = ValidateEnv {
+        keys: None,
         auth: &k.auth,
         custody: &k.custody,
         facts: &k.facts,

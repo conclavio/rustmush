@@ -2780,6 +2780,19 @@ pub(crate) struct EconomyArchiveRead;
 impl mush_core::StoreReadCompletion for EconomyArchiveRead {
     fn on_read(&self, ctx: &mut Ctx<'_>, correlation: u64, result: mush_core::StoreReadResult) {
         let actor = ctx.actor;
+        // Doc 13: a keyed `idem:` read (the gate's slow lookup) is matched by
+        // correlation, never by actor, and its answer warms the cold cache.
+        let keyed = ctx.w.module_state::<EconomyStore>().and_then(|store| {
+            store
+                .pending_key_reads
+                .iter()
+                .find(|(_, p)| p.correlation == correlation)
+                .map(|(k, _)| k.clone())
+        });
+        if let Some(key) = keyed {
+            crate::keys::complete_key_read(ctx, &key, result);
+            return;
+        }
         let pending = {
             let Some(store) = ctx.w.module_state_mut::<EconomyStore>() else {
                 return;

@@ -1035,10 +1035,18 @@ fn action_ref(registry: &mush_core::Registry, id: &str) -> Option<DefinitionRef>
         .cloned()
 }
 
+/// Register the handoff lane **and** the pulse's definitions.
+///
+/// `Registrar::definition_validator` admits exactly ONE validator per
+/// definition kind per owner, and this module already owns `mush-sim`'s
+/// `"action"` and `"outcome"` ones. E7 cut 8's tick therefore **contributes its
+/// four descriptors here** rather than registering a second validator — the same
+/// arrangement cut 7's sensor ingress made inside `mush-tactics`.
 pub(crate) fn register(
     reg: &mut Registrar<'_>,
     leases: StateFamilyHandle<ControlLeaseKey, ControlLeaseState>,
-) -> Result<(), ModError> {
+    tick: crate::tick::TickDescriptors,
+) -> Result<crate::tick::TickDefinitions, ModError> {
     let schedules = reg.state_family(
         durable_schedule_state_family_descriptor(
             StateFamilyId::new(SCHEDULE_FAMILY)
@@ -1077,7 +1085,12 @@ pub(crate) fn register(
     let descriptors = handoff_descriptors()?;
     reg.definition_validator(
         DefinitionKind::new("outcome").map_err(|error| ModError::msg(error.to_string()))?,
-        exact_definition_validator(std::slice::from_ref(&descriptors.outcome)),
+        exact_definition_validator(&[
+            descriptors.outcome.clone(),
+            tick.tick_outcome.clone(),
+            tick.intent_outcome.clone(),
+            tick.arm_outcome.clone(),
+        ]),
     )?;
     reg.definition_validator(
         DefinitionKind::new("action").map_err(|error| ModError::msg(error.to_string()))?,
@@ -1085,8 +1098,19 @@ pub(crate) fn register(
             descriptors.request.clone(),
             descriptors.cancel.clone(),
             descriptors.apply.clone(),
+            tick.tick_action.clone(),
+            tick.intent_action.clone(),
+            tick.arm_action.clone(),
         ]),
     )?;
+    let tick_definitions = crate::tick::TickDefinitions {
+        tick_outcome: reg.definition(tick.tick_outcome)?,
+        intent_outcome: reg.definition(tick.intent_outcome)?,
+        arm_outcome: reg.definition(tick.arm_outcome)?,
+        tick_action: reg.definition(tick.tick_action)?,
+        intent_action: reg.definition(tick.intent_action)?,
+        arm_action: reg.definition(tick.arm_action)?,
+    };
     let outcome = reg.definition(descriptors.outcome)?;
     let request = reg.definition(descriptors.request)?;
     let cancel = reg.definition(descriptors.cancel)?;
@@ -1116,7 +1140,7 @@ pub(crate) fn register(
         schedules.clone(),
         HandoffScheduleAdapter { schedules, jobs },
     )?;
-    Ok(())
+    Ok(tick_definitions)
 }
 
 #[cfg(test)]

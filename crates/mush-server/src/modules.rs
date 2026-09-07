@@ -53,8 +53,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use mush_core::{
-    ActionStateBootRecord, Effects, Engine, GameModule, Migration, ModuleBootData, Outbox,
-    is_action_state_persistence_key,
+    ActionStateBootRecord, BOOT_MANIFEST_KEY, BootManifest, Effects, Engine, GameModule, Migration,
+    ModError, ModuleBootData, Outbox, is_action_state_persistence_key,
 };
 use mush_llm::LlmService;
 use mush_ruleset::Ruleset;
@@ -189,8 +189,37 @@ pub fn server_modules_with(
                 mush_economy::stands_in_contract(w, mush_economy::ContractId(run), who)
             },
         ))),
-        Box::new(mush_sim::SimulationModule::new()),
-        Box::new(mush_tactics::TacticsModule::new()),
+        // E7c7 (cut 6 fold, B6): the route catalog reaches `mush-sim` by
+        // composition, not by an edge — the impl reads `TacsimStore` at the root,
+        // exactly as `TacsimRecipeAuthority` does for `mush-industry`. Unwired,
+        // `@journey/depart <id>` builds the manual fixture route; wired, a
+        // pack-authored id resolves to its declared legs, drive class,
+        // propellant and alignment band.
+        Box::new(
+            mush_sim::SimulationModule::new()
+                .with_route_catalog(Arc::new(crate::sim_routes::TacsimRouteCatalog)),
+        ),
+        // E7 cut 7 B3 (OPEN 1): the observation POLICY is `mush-propagation`'s,
+        // but the observation INGRESS has to be `mush-tactics`' — the kernel's
+        // owner fence (`ScheduleSourceRegistryBuilder::register` and
+        // `scheduled_action_ingress`) forces source-owner ==
+        // schedule-family-owner == fired-action-owner, and the six `contact_*`
+        // actions are tactics'. So the policy arrives here, at the composition
+        // root, exactly as `IndustryModule::with_recipes` and
+        // `SimulationModule::with_accounts` do, and **`mush-tactics` gains no
+        // `mush-propagation` edge**: the trait is `mush-core`'s.
+        Box::new(
+            mush_tactics::TacticsModule::new()
+                .with_sensor_policy(Arc::new(mush_propagation::PropagationSensorPolicy)),
+        ),
+        // E7 cut 7 (10b §3.7): the propagation layer itself. It composes AFTER
+        // `mush-sim` (whose `SpatialState` every context is built from) and
+        // after `mush-tactics` (whose leak-safe contact ledger its policy
+        // reads); `on_world_loaded` runs in list order, so both are hydrated
+        // before propagation's boot. It registers NO contact family and NO
+        // contact guard validator — `mush-tactics` is the sole `ContactState`
+        // authority (08i answer 1, D-E7-36).
+        Box::new(mush_propagation::PropagationModule::new()),
         // E2: the accountable-value engine — the double-entry journal, accounts, and
         // the strict durable money ack-gate. After org (it authorizes through it).
         // E3b1 freezes the custody provider table at wiring: the built-in container
@@ -766,22 +795,84 @@ impl<R: Ruleset + Send + Sync + 'static> mush_npc::AgentGrounding for RulesetAge
 
 /// Read and partition one namespace without invoking module-supplied boot
 /// callbacks. Typed state must be validated globally before callbacks run.
+/// How a namespace is fetched (J4, doc 12 §5.6).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Fetch {
+    /// Honour the namespace's boot manifest, if it has one: skip the ledger
+    /// chunks it names.
+    Narrowed,
+    /// The whole namespace, manifest ignored — the retry after a module
+    /// answered [`ModError::RetryFullFetch`], and every first boot's shape
+    /// before J4.
+    Whole,
+}
+
+/// What a namespace's boot manifest lets the loader skip (the chunk floors
+/// and the key prefixes, doc 13 W1), or nothing: no manifest, an unreadable
+/// one (said at `warn`), or a format this loader does not know.
+async fn manifest_skip(store: &dyn ObjectStore, ns: &str) -> Result<mush_store::BootSkip, String> {
+    let Some(doc) = store
+        .module_json_get(ns, BOOT_MANIFEST_KEY)
+        .await
+        .map_err(|e| format!("reading {ns} boot manifest: {e}"))?
+    else {
+        return Ok(mush_store::BootSkip::default());
+    };
+    match serde_json::from_value::<BootManifest>(doc) {
+        Ok(manifest) => {
+            if manifest.format != mush_core::BOOT_MANIFEST_FORMAT {
+                tracing::warn!(
+                    ns,
+                    format = manifest.format,
+                    "boot manifest at an unknown format; fetching the namespace whole"
+                );
+            }
+            Ok(mush_store::BootSkip {
+                floors: manifest
+                    .floors()
+                    .into_iter()
+                    .map(|(log, below)| (log.to_string(), below))
+                    .collect(),
+                prefixes: manifest
+                    .prefixes()
+                    .into_iter()
+                    .map(|p| p.to_string())
+                    .collect(),
+            })
+        }
+        Err(error) => {
+            tracing::warn!(ns, %error, "boot manifest unreadable; fetching the namespace whole");
+            Ok(mush_store::BootSkip::default())
+        }
+    }
+}
+
 async fn load_one_namespace(
     store: &dyn ObjectStore,
     ns: &str,
+    fetch: Fetch,
 ) -> Result<(ModuleBootData, Vec<ActionStateBootRecord>), String> {
     // J1 / doc 12 D-12-3: the fetch is timed and handed to the module beside
     // its data — the part of a boot the replay timer never saw.
     let started = std::time::Instant::now();
+    // J4: the manifest first, then a listing that never fetches what it names.
+    // A whole fetch (the retry) still honours the manifest's key prefixes
+    // (doc 13 W1): those documents are read on demand and never at boot,
+    // whatever the checkpoint's state.
+    let mut skip = manifest_skip(store, ns).await?;
+    if fetch == Fetch::Whole {
+        skip.floors.clear();
+    }
     let documents = store
-        .module_docs(ns)
+        .module_docs_from(ns, &skip)
         .await
         .map_err(|e| format!("listing module namespace {ns:?}: {e}"))?;
     let fetch_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
     let mut kv = Vec::new();
     let mut action_state = Vec::new();
     for (key, value) in documents.docs {
-        if key == SCHEMA_KEY {
+        // Loader-owned protocol documents never reach the module.
+        if key == SCHEMA_KEY || key == BOOT_MANIFEST_KEY {
             continue;
         }
         if is_action_state_persistence_key(&key) {
@@ -795,12 +886,27 @@ async fn load_one_namespace(
         .into_iter()
         .map(|(key, text)| (SmolStr::new(key), text))
         .collect();
+    let omitted = documents
+        .omitted
+        .into_iter()
+        .map(|(log, below)| (SmolStr::new(log), below))
+        .collect();
+    if !skip.is_empty() {
+        tracing::info!(
+            ns,
+            floors = ?skip.floors,
+            prefixes = ?skip.prefixes,
+            fetch_ms,
+            "namespace fetched narrowed to its boot manifest"
+        );
+    }
     Ok((
         ModuleBootData {
             kv,
             ledger,
             streams: HashMap::new(),
             fetch_ms,
+            omitted,
         },
         action_state,
     ))
@@ -814,23 +920,34 @@ async fn load_requested_streams(
     boot: &mut HashMap<SmolStr, ModuleBootData>,
 ) -> Result<(), String> {
     for module in modules {
-        let ns = module.name();
         let data = boot
-            .get_mut(ns)
+            .get_mut(module.name())
             .expect("every composed module namespace was loaded in the first pass");
-        let mut streams = HashMap::new();
-        let stream_requests = module
-            .boot_stream_requests(&data.kv)
-            .map_err(|e| format!("validating module stream requests for {ns:?}: {e}"))?;
-        for (key, count) in stream_requests {
-            let entries = store
-                .stream_range(ns, &key, count)
-                .await
-                .map_err(|e| format!("loading module stream {ns}:{key}: {e}"))?;
-            streams.insert(key, entries);
-        }
-        data.streams = streams;
+        load_streams_for(store, module.as_ref(), data).await?;
     }
+    Ok(())
+}
+
+/// [`load_requested_streams`] for one module's data (the J4 retry refetches
+/// one namespace and needs its streams again).
+async fn load_streams_for(
+    store: &dyn ObjectStore,
+    module: &dyn GameModule,
+    data: &mut ModuleBootData,
+) -> Result<(), String> {
+    let ns = module.name();
+    let mut streams = HashMap::new();
+    let stream_requests = module
+        .boot_stream_requests(&data.kv)
+        .map_err(|e| format!("validating module stream requests for {ns:?}: {e}"))?;
+    for (key, count) in stream_requests {
+        let entries = store
+            .stream_range(ns, &key, count)
+            .await
+            .map_err(|e| format!("loading module stream {ns}:{key}: {e}"))?;
+        streams.insert(key, entries);
+    }
+    data.streams = streams;
     Ok(())
 }
 
@@ -854,7 +971,7 @@ async fn load_module_boot_with_action_state(
     let mut action_state = Vec::new();
     for module in modules {
         let (module_boot, mut module_action_state) =
-            load_one_namespace(store, module.name()).await?;
+            load_one_namespace(store, module.name(), Fetch::Narrowed).await?;
         boot.insert(SmolStr::new(module.name()), module_boot);
         action_state.append(&mut module_action_state);
     }
@@ -1026,9 +1143,65 @@ pub async fn boot_modules(engine: &mut Engine, store: &dyn ObjectStore) -> Resul
     load_requested_streams(store, engine.modules(), &mut boot).await?;
     let mut out = Outbox::new();
     let mut fx = Effects::new();
-    engine
-        .modules_loaded(boot, &mut out, &mut fx)
-        .map_err(|e| format!("module boot failed: {e}"))?;
+    // J4 (doc 12 §5.6): the modules are delivered one at a time, in order, so
+    // a module that cannot boot from a namespace narrowed by its own manifest
+    // (the checkpoint it stood for proved invalid or gone) gets that namespace
+    // fetched whole — manifest ignored — and delivered once more, itself
+    // alone; the retry's failure is the boot's.
+    let names: Vec<SmolStr> = engine
+        .modules()
+        .iter()
+        .map(|m| SmolStr::new(m.name()))
+        .collect();
+    for name in names {
+        let data = boot.remove(&name).unwrap_or_default();
+        match engine.module_loaded(&name, data, &mut out, &mut fx) {
+            Ok(()) => {}
+            Err(ModError::RetryFullFetch { reason, .. }) => {
+                tracing::warn!(
+                    module = %name,
+                    %reason,
+                    "module cannot boot from its narrowed namespace; fetching it whole and delivering again"
+                );
+                // The manifest is loader-owned and its floors stood for a
+                // checkpoint that did not hold: clear the floors, so the next
+                // boot fetches the ledger whole until the module writes a new
+                // manifest beside its next checkpoint. The key prefixes stay
+                // (doc 13 W1): they name documents the module never loads at
+                // boot.
+                let kept = manifest_skip(store, &name).await?;
+                let cleared = BootManifest {
+                    format: mush_core::BOOT_MANIFEST_FORMAT,
+                    skip_log_chunks_below: std::collections::BTreeMap::new(),
+                    skip_key_prefixes: kept.prefixes.iter().map(SmolStr::new).collect(),
+                };
+                write_ops(
+                    store,
+                    vec![ModuleOp {
+                        ns: name.clone(),
+                        op: ModuleWrite::JsonSet {
+                            key: SmolStr::new(BOOT_MANIFEST_KEY),
+                            value: serde_json::to_value(&cleared)
+                                .expect("a boot manifest serializes"),
+                        },
+                    }],
+                )
+                .await?;
+                let (mut data, _already_hydrated_action_state) =
+                    load_one_namespace(store, &name, Fetch::Whole).await?;
+                let module = engine
+                    .modules()
+                    .iter()
+                    .find(|m| m.name() == name)
+                    .expect("the module was just delivered");
+                load_streams_for(store, module.as_ref(), &mut data).await?;
+                engine
+                    .module_loaded(&name, data, &mut out, &mut fx)
+                    .map_err(|e| format!("module boot failed after the whole fetch: {e}"))?;
+            }
+            Err(e) => return Err(format!("module boot failed: {e}")),
+        }
+    }
     // Nothing is connected yet; boot-time output has nowhere to go.
     let events = out.take();
     if !events.is_empty() {
@@ -1539,6 +1712,265 @@ mod tests {
         assert_eq!(kv[0].0, "doc:1");
     }
 
+    /// J4 (doc 12 §5.6): the loader reads the namespace's boot manifest first
+    /// and fetches nothing it names; the omission reaches the module as the
+    /// min-present marker; the manifest itself never does; a whole fetch
+    /// ignores it.
+    #[tokio::test]
+    async fn j4_the_loader_narrows_the_fetch_to_the_boot_manifest() {
+        let store = InMemoryStore::new();
+        let chunk = |n: u64, sealed: bool| {
+            serde_json::json!({
+                "chunk": n, "sealed": sealed, "entries": [{ "seq": n, "value": { "n": n } }]
+            })
+        };
+        let set = |key: &str, value: serde_json::Value| ModuleOp {
+            ns: "toy".into(),
+            op: ModuleWrite::JsonSet {
+                key: key.into(),
+                value,
+            },
+        };
+        write_ops(
+            &store,
+            vec![
+                stamp("toy", 2),
+                set("doc:1", serde_json::json!({ "b": 1 })),
+                set("log:s:0", chunk(0, true)),
+                set("log:s:1", chunk(1, true)),
+                set("log:s:2", chunk(2, false)),
+                set("log:t:0", chunk(0, false)),
+                set("idem:aa", serde_json::json!({ "tx": 1 })),
+                set(
+                    BOOT_MANIFEST_KEY,
+                    serde_json::to_value(BootManifest {
+                        format: mush_core::BOOT_MANIFEST_FORMAT,
+                        skip_log_chunks_below: [(SmolStr::new("s"), 2u64)].into_iter().collect(),
+                        skip_key_prefixes: vec![SmolStr::new("idem:")],
+                    })
+                    .unwrap(),
+                ),
+            ],
+        )
+        .await
+        .unwrap();
+        let (data, _) = load_one_namespace(&store, "toy", Fetch::Narrowed)
+            .await
+            .unwrap();
+        assert_eq!(
+            data.kv.iter().map(|(k, _)| k.as_str()).collect::<Vec<_>>(),
+            vec!["doc:1"],
+            "the manifest is loader-owned and never a module document; the prefixed key is not fetched"
+        );
+        let mut ledger: Vec<&str> = data.ledger.iter().map(|(k, _)| k.as_str()).collect();
+        ledger.sort_unstable();
+        assert_eq!(ledger, vec!["log:s:2", "log:t:0"]);
+        assert_eq!(
+            data.omitted,
+            [(SmolStr::new("s"), 2u64)].into_iter().collect()
+        );
+        let (whole, _) = load_one_namespace(&store, "toy", Fetch::Whole)
+            .await
+            .unwrap();
+        assert_eq!(
+            whole.ledger.len(),
+            4,
+            "a whole fetch ignores the manifest's floors"
+        );
+        assert!(whole.omitted.is_empty());
+        assert_eq!(
+            whole.kv.iter().map(|(k, _)| k.as_str()).collect::<Vec<_>>(),
+            vec!["doc:1"],
+            "a whole fetch still honours the manifest's key prefixes"
+        );
+        // An unreadable manifest is a whole fetch, not a failed boot.
+        write_ops(
+            &store,
+            vec![set(
+                BOOT_MANIFEST_KEY,
+                serde_json::json!({ "format": "nine" }),
+            )],
+        )
+        .await
+        .unwrap();
+        let (data, _) = load_one_namespace(&store, "toy", Fetch::Narrowed)
+            .await
+            .unwrap();
+        assert_eq!(data.ledger.len(), 4);
+        assert!(data.omitted.is_empty());
+        // A manifest at a format this loader does not know: the same.
+        write_ops(
+            &store,
+            vec![set(
+                BOOT_MANIFEST_KEY,
+                serde_json::json!({ "format": 99, "skip_log_chunks_below": { "s": 2 } }),
+            )],
+        )
+        .await
+        .unwrap();
+        let (data, _) = load_one_namespace(&store, "toy", Fetch::Narrowed)
+            .await
+            .unwrap();
+        assert_eq!(data.ledger.len(), 4);
+    }
+
+    /// A module that refuses a narrowed namespace once (J4's
+    /// `RetryFullFetch`) and records what each delivery carried.
+    struct PickyMod {
+        deliveries: Arc<Mutex<Vec<(usize, usize)>>>,
+        refuse_narrowed: bool,
+    }
+
+    impl GameModule for PickyMod {
+        fn name(&self) -> &'static str {
+            "picky"
+        }
+
+        fn register(&mut self, _reg: &mut Registrar<'_>) -> Result<(), ModError> {
+            Ok(())
+        }
+
+        fn on_world_loaded(
+            &mut self,
+            _ctx: &mut mush_core::ModuleCtx<'_>,
+            data: ModuleBootData,
+        ) -> Result<(), ModError> {
+            self.deliveries
+                .lock()
+                .unwrap()
+                .push((data.ledger.len(), data.omitted.len()));
+            if self.refuse_narrowed && !data.omitted.is_empty() {
+                return Err(ModError::RetryFullFetch {
+                    module: SmolStr::new("picky"),
+                    reason: "the checkpoint the manifest stood for is gone".into(),
+                });
+            }
+            Ok(())
+        }
+    }
+
+    /// J4 (lens G): a module that cannot boot from its narrowed namespace is
+    /// delivered the whole one, itself alone, and the boot goes on; a module
+    /// that refuses the whole one too fails the boot; the retry is not
+    /// offered to a whole fetch.
+    #[tokio::test]
+    async fn j4_boot_modules_refetches_whole_for_a_module_that_asks() {
+        let store = InMemoryStore::new();
+        let chunk = |n: u64, sealed: bool| {
+            serde_json::json!({
+                "chunk": n, "sealed": sealed, "entries": [{ "seq": n, "value": { "n": n } }]
+            })
+        };
+        let set = |key: &str, value: serde_json::Value| ModuleOp {
+            ns: "picky".into(),
+            op: ModuleWrite::JsonSet {
+                key: key.into(),
+                value,
+            },
+        };
+        write_ops(
+            &store,
+            vec![
+                set("log:s:0", chunk(0, true)),
+                set("log:s:1", chunk(1, false)),
+                set(
+                    BOOT_MANIFEST_KEY,
+                    serde_json::to_value(BootManifest {
+                        format: mush_core::BOOT_MANIFEST_FORMAT,
+                        skip_log_chunks_below: [(SmolStr::new("s"), 1u64)].into_iter().collect(),
+                        skip_key_prefixes: vec![SmolStr::new("idem:")],
+                    })
+                    .unwrap(),
+                ),
+            ],
+        )
+        .await
+        .unwrap();
+        let deliveries = Arc::new(Mutex::new(Vec::new()));
+        let picky = PickyMod {
+            deliveries: Arc::clone(&deliveries),
+            refuse_narrowed: true,
+        };
+        let modules: Vec<Box<dyn GameModule>> =
+            vec![Box::new(picky), Box::new(ToyMod { loaded: Vec::new() })];
+        let mut engine =
+            Engine::with_modules(World::new_minimal(), mush_core::Registry::new(), modules)
+                .unwrap();
+        boot_modules(&mut engine, &store).await.unwrap();
+        assert_eq!(
+            *deliveries.lock().unwrap(),
+            vec![(1, 1), (2, 0)],
+            "narrowed first (one chunk, one floor), then whole (two chunks, no floor)"
+        );
+        assert_eq!(
+            store
+                .module_json_get("picky", BOOT_MANIFEST_KEY)
+                .await
+                .unwrap()
+                .map(|doc| serde_json::from_value::<BootManifest>(doc).unwrap()),
+            Some(BootManifest {
+                format: mush_core::BOOT_MANIFEST_FORMAT,
+                skip_log_chunks_below: std::collections::BTreeMap::new(),
+                skip_key_prefixes: vec![SmolStr::new("idem:")],
+            }),
+            "the floors that stood for nothing are cleared by the loader; the key prefixes are kept"
+        );
+
+        // The whole fetch refused too: the boot fails with the module's reason.
+        // (The first retry cleared the manifest; write it back for this one.)
+        write_ops(
+            &store,
+            vec![set(
+                BOOT_MANIFEST_KEY,
+                serde_json::to_value(BootManifest {
+                    format: mush_core::BOOT_MANIFEST_FORMAT,
+                    skip_log_chunks_below: [(SmolStr::new("s"), 1u64)].into_iter().collect(),
+                    skip_key_prefixes: Vec::new(),
+                })
+                .unwrap(),
+            )],
+        )
+        .await
+        .unwrap();
+        let deliveries = Arc::new(Mutex::new(Vec::new()));
+        struct AlwaysRetry(Arc<Mutex<Vec<(usize, usize)>>>);
+        impl GameModule for AlwaysRetry {
+            fn name(&self) -> &'static str {
+                "picky"
+            }
+            fn register(&mut self, _reg: &mut Registrar<'_>) -> Result<(), ModError> {
+                Ok(())
+            }
+            fn on_world_loaded(
+                &mut self,
+                _ctx: &mut mush_core::ModuleCtx<'_>,
+                data: ModuleBootData,
+            ) -> Result<(), ModError> {
+                self.0
+                    .lock()
+                    .unwrap()
+                    .push((data.ledger.len(), data.omitted.len()));
+                Err(ModError::RetryFullFetch {
+                    module: SmolStr::new("picky"),
+                    reason: "never satisfied".into(),
+                })
+            }
+        }
+        let modules: Vec<Box<dyn GameModule>> =
+            vec![Box::new(AlwaysRetry(Arc::clone(&deliveries)))];
+        let mut engine =
+            Engine::with_modules(World::new_minimal(), mush_core::Registry::new(), modules)
+                .unwrap();
+        let err = boot_modules(&mut engine, &store).await.unwrap_err();
+        assert!(err.contains("after the whole fetch"), "{err}");
+        assert!(err.contains("never satisfied"), "{err}");
+        assert_eq!(
+            *deliveries.lock().unwrap(),
+            vec![(1, 1), (2, 0)],
+            "exactly one retry"
+        );
+    }
+
     /// J1: ledger chunks reach boot data as text, apart from the ordinary
     /// documents, and the namespace fetch is timed.
     #[tokio::test]
@@ -1766,15 +2198,58 @@ mod tests {
             // nothing caught a composition-order change that re-classified it.
             // A ROW in this loop, not a new stanza: `PINNED_BASELINE` is
             // untouched.
+            //
+            // E7 cut 8 (B6): the eight tactical verbs join `@station`'s
+            // authoritative group — every one stages `tactical_intent` through
+            // cut 2's seam, which is the ceiling criterion cut 5 set and cut 7
+            // reused for `@prop`. `@domain` keeps its cut-6 class: `/tick` and
+            // `/replay` write only the exempt `sim.domain` document and read the
+            // commit family; the durable cursor is armed by the `sim.domain_pulse`
+            // Coarse tick, never by the command, so no baseline entry moves and
+            // `PINNED_BASELINE` stays 158.
             for (name, class) in [
                 ("@station", mush_core::CommandCompatibility::Authoritative),
                 ("@journey", mush_core::CommandCompatibility::LegacyPostImage),
+                ("@domain", mush_core::CommandCompatibility::LegacyPostImage),
+                ("+fire", mush_core::CommandCompatibility::Authoritative),
+                ("+launch", mush_core::CommandCompatibility::Authoritative),
+                ("+heading", mush_core::CommandCompatibility::Authoritative),
+                ("+thrust", mush_core::CommandCompatibility::Authoritative),
+                ("+posture", mush_core::CommandCompatibility::Authoritative),
+                ("+dc", mush_core::CommandCompatibility::Authoritative),
+                ("+dock", mush_core::CommandCompatibility::Authoritative),
+                ("+eject", mush_core::CommandCompatibility::Authoritative),
             ] {
                 assert!(
                     registrations.iter().any(|(spec, owner, published)| {
                         spec.name == name && *owner == Some("sim") && *published == class
                     }),
                     "the sim lane {name} must publish {class:?}"
+                );
+            }
+            // E7 cut 7: FIVE verbs in THREE registration groups, each with its
+            // own `reg.classify_commands(..)` before its first `reg.command`.
+            // `+contacts`/`+contact` are pure reads over the leak-safe ledger;
+            // `+order` writes propagation's own exempt documents, and `+orders`
+            // takes the CEILING class of its switches because `/ack` writes the
+            // acknowledgement envelope. `@prop` takes the ceiling of ITS
+            // switches too, and `/pass` stages the tactics-owned `sensor_arm`
+            // through `Ctx::submit_authoritative` — an ingress adapter for the
+            // authoritative action coordinator, which is `Authoritative`'s own
+            // definition and exactly the criterion cut 5 used for `@station`
+            // (E7 cut 7 independent verify fold, B8).
+            for (name, class) in [
+                ("+contacts", mush_core::CommandCompatibility::ReadOnly),
+                ("+contact", mush_core::CommandCompatibility::ReadOnly),
+                ("+order", mush_core::CommandCompatibility::LegacyPostImage),
+                ("+orders", mush_core::CommandCompatibility::LegacyPostImage),
+                ("@prop", mush_core::CommandCompatibility::Authoritative),
+            ] {
+                assert!(
+                    registrations.iter().any(|(spec, owner, published)| {
+                        spec.name == name && *owner == Some("propagation") && *published == class
+                    }),
+                    "the propagation lane {name} must publish {class:?}"
                 );
             }
             assert!(registrations.iter().any(|(_, owner, class)| {
@@ -2031,6 +2506,13 @@ mod tests {
                 "scenes",
                 "sim",
                 "tactics",
+                // E7 cut 7: the propagation layer, immediately after
+                // `mush-tactics`. Its boot reads no tactics state, but its
+                // POLICY reads the leak-safe contact ledger tactics publishes
+                // and its contexts are built off `mush-sim`'s placement graph,
+                // both of which are hydrated by then (`on_world_loaded` runs in
+                // list order).
+                "propagation",
                 "economy",
                 // E7 cut 2: immediately after the economy (its boot asks about
                 // vault status) and before the market (whose listing quantity is
@@ -2091,6 +2573,7 @@ mod tests {
                     "scenes",
                     "sim",
                     "tactics",
+                    "propagation",
                     "economy",
                     "inventory",
                     // E7 cut 3: immediately after `mush-inventory`, whose handles
@@ -2307,6 +2790,7 @@ mod tests {
                 "scenes",
                 "sim",
                 "tactics",
+                "propagation",
                 "economy",
                 "inventory",
                 // E7 cut 3: immediately after `mush-inventory`, whose handles
@@ -2445,6 +2929,7 @@ mod tests {
                 "scenes",
                 "sim",
                 "tactics",
+                "propagation",
                 "economy",
                 "inventory",
                 // E7 cut 3: immediately after `mush-inventory`, whose handles

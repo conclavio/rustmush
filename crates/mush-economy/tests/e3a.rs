@@ -242,6 +242,7 @@ impl CustodyEval for Custody {
 
 fn env<'a>(auth: &'a dyn AuthEval, custody: &'a dyn CustodyEval) -> ValidateEnv<'a> {
     ValidateEnv {
+        keys: None,
         auth,
         custody,
         facts: &mush_economy::NoFacts,
@@ -1306,6 +1307,7 @@ fn reversing_an_effect_carrying_transaction_is_refused() {
         },
         &s2,
         &Auth::yes(),
+        None,
     ) {
         PlanResult::Refused(e) => assert_eq!(e, EconomyError::HasEffects),
         other => panic!("expected Refused(HasEffects), got {other:?}"),
@@ -1342,6 +1344,7 @@ fn the_reversal_path_ignores_an_approval_rule() {
         },
         &s2,
         &Auth::yes(),
+        None,
     ) {
         PlanResult::Post(prepared) => {
             assert_eq!(prepared.consumed_approval, None);

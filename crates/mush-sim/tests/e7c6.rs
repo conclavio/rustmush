@@ -2757,18 +2757,87 @@ fn vf_dh_an_arrived_journey_emits_no_further_sim_op() {
     );
 }
 
-/// **B6, grounded rather than fixed.** `@journey/depart`'s `<route id>` is only
-/// a LABEL: `build_route` fabricates a fresh `RouteDef` from the command line at
-/// the `manual` drive class with zero declared propellant and no alignment band,
-/// so `RouteDef::propellant()`, `alignment_band()` and `route_duration` have no
-/// cut-6 caller. Resolving the id against cut 1's authored pack cannot be done
-/// inside cut 6's edge set: the pack store is `ruleset-tacsim`'s
-/// (`ruleset_tacsim::store`), and `ruleset-tacsim` depends on `mush-sim`, so the
-/// lookup would be a cycle. It needs a composition-installed catalog in the
-/// `SimulationModule::with_accounts` shape, which is cut 7's. Pinned here so the
-/// deviation is honest and a later fix has a failing assertion to flip.
+/// **B6, DISCHARGED by E7 cut 7.** Cut 6 shipped `@journey/depart`'s
+/// `<route id>` as a LABEL: `build_route` fabricated a fresh `RouteDef` from the
+/// command line at the `manual` drive class with zero declared propellant and no
+/// alignment band, so `RouteDef::propellant()`, `alignment_band()` and
+/// `route_duration` had no caller. The verify's own fix — "resolve the id
+/// against cut 1's authored pack" — could not be an edge (`ruleset-tacsim`
+/// depends on `mush-sim`, so the lookup is a cycle), so it needed a
+/// composition-installed catalog in the `SimulationModule::with_accounts` shape.
+/// That catalog is `mush_sim::RouteCatalog` /
+/// `SimulationModule::with_route_catalog`, implemented over the tacsim store in
+/// `mush_server::sim_routes`.
+///
+/// Both arms are pinned, because a resolution that swallowed the fallback would
+/// break every hand-typed corridor the cut-6 tests fly:
+/// - an **authored** id resolves to its declared legs, drive class, propellant
+///   and alignment band, and the journey the world can actually be observed
+///   flying is that route (the carrier's projected arrival is the authored
+///   destination, not a typed one);
+/// - a **hand-typed** id that names no authored route still builds the manual
+///   fixture route, unchanged.
 #[test]
-fn vf_b6_a_hand_typed_route_is_a_manual_fixture_route() {
+fn vf_b6_an_authored_route_id_resolves_and_an_unknown_one_still_falls_back() {
+    // --- the authored arm ---
+    let cell: std::sync::Arc<std::sync::Mutex<Option<mush_sim::RouteDef>>> =
+        std::sync::Arc::new(std::sync::Mutex::new(None));
+
+    struct TestCatalog(std::sync::Arc<std::sync::Mutex<Option<mush_sim::RouteDef>>>);
+    impl mush_sim::RouteCatalog for TestCatalog {
+        fn resolve(
+            &self,
+            _world: &mush_core::World,
+            id: &mush_core::CanonicalId,
+        ) -> Option<mush_sim::RouteDef> {
+            self.0.lock().ok()?.clone().filter(|route| route.id() == id)
+        }
+    }
+
+    let mut tw = TestWorld::with_modules(vec![
+        Box::new(
+            SimulationModule::new().with_route_catalog(std::sync::Arc::new(TestCatalog(
+                std::sync::Arc::clone(&cell),
+            ))),
+        ),
+        Box::new(ScenesModule::new()),
+    ]);
+    tw.set_now(1_000);
+    let fx = build(&mut tw);
+    *cell.lock().unwrap() = Some(
+        mush_sim::RouteDef::new(
+            mush_core::CanonicalId::new("mars_corridor").unwrap(),
+            (fx.field, fx.phobos),
+            vec![mush_sim::LegDef::new(fx.phobos, 1).unwrap()],
+            Some(mush_sim::CadenceId(7)),
+            mush_core::CanonicalId::new("fusion_torch").unwrap(),
+            900,
+        )
+        .unwrap(),
+    );
+    // No place tokens at all: the id alone must resolve.
+    ok(
+        &mut tw,
+        &format!("@journey/depart #{}=mars_corridor", fx.carrier.0),
+    );
+    let route = journey(&tw, fx.carrier).route().clone();
+    assert_eq!(route.propellant(), 900, "the authored propellant resolved");
+    assert_eq!(
+        route.alignment_band().copied(),
+        Some(mush_sim::CadenceId(7))
+    );
+    assert_eq!(route.drive_class().as_str(), "fusion_torch");
+    advance(&mut tw, 1_002);
+    assert_eq!(*journey(&tw, fx.carrier).state(), JourneyState::Arrived);
+    // The OBSERVABLE outcome, not the record: the carrier is projected at the
+    // authored destination, and the destination room lists it.
+    assert_eq!(
+        mush_sim::graph::project(state(&tw), tw.world(), fx.carrier),
+        Some(fx.phobos),
+        "the authored route actually flew the carrier to its declared endpoint"
+    );
+
+    // --- the fallback arm, unchanged ---
     let (mut tw, fx) = scene();
     ok(
         &mut tw,
@@ -2936,4 +3005,111 @@ fn vf_r9b_the_arrival_event_names_where_it_came_from() {
         ],
         "the departure and the arrival must each name both ends exactly once"
     );
+}
+
+// ---- E7 cut 7 independent verify fold ----
+
+/// A catalog holding one authored route, for the fold's own cases.
+struct FoldCatalog(std::sync::Arc<std::sync::Mutex<Option<mush_sim::RouteDef>>>);
+impl mush_sim::RouteCatalog for FoldCatalog {
+    fn resolve(
+        &self,
+        _world: &mush_core::World,
+        id: &mush_core::CanonicalId,
+    ) -> Option<mush_sim::RouteDef> {
+        self.0.lock().ok()?.clone().filter(|route| route.id() == id)
+    }
+}
+
+/// A world whose catalog authors `mars_corridor` **from Phobos**, while the
+/// carrier is standing in Field.
+fn authored_elsewhere() -> (TestWorld, Fx) {
+    let cell: std::sync::Arc<std::sync::Mutex<Option<mush_sim::RouteDef>>> =
+        std::sync::Arc::new(std::sync::Mutex::new(None));
+    let mut tw = TestWorld::with_modules(vec![
+        Box::new(
+            SimulationModule::new().with_route_catalog(std::sync::Arc::new(FoldCatalog(
+                std::sync::Arc::clone(&cell),
+            ))),
+        ),
+        Box::new(ScenesModule::new()),
+    ]);
+    tw.set_now(1_000);
+    let fx = build(&mut tw);
+    *cell.lock().unwrap() = Some(
+        mush_sim::RouteDef::new(
+            mush_core::CanonicalId::new("mars_corridor").unwrap(),
+            (fx.phobos, fx.field),
+            vec![mush_sim::LegDef::new(fx.field, 1).unwrap()],
+            Some(mush_sim::CadenceId(7)),
+            mush_core::CanonicalId::new("fusion_torch").unwrap(),
+            900,
+        )
+        .unwrap(),
+    );
+    (tw, fx)
+}
+
+/// **O5.** One extra place token cannot bypass the authored route.
+///
+/// Before the fold the catalog was consulted only when no place tokens
+/// followed, so a trailing token skipped the authored arm entirely — including
+/// its `from != origin` refusal — and fell into the manual parser, which minted
+/// a `RouteDef` carrying the **authored id** from the wrong origin with zero
+/// propellant, no alignment band and the manual drive class.
+#[test]
+fn vf_o5_one_extra_token_cannot_bypass_the_authored_route() {
+    let (mut tw, fx) = authored_elsewhere();
+    // The bare form refuses, because the route sets out from somewhere else.
+    let refusal = err(
+        &mut tw,
+        &format!("@journey/depart #{}=mars_corridor", fx.carrier.0),
+    );
+    assert!(refusal.contains("sets out from"), "{refusal}");
+    // …and so does the form with one extra place token, which used to succeed.
+    let bypass = err(
+        &mut tw,
+        &format!(
+            "@journey/depart #{}=mars_corridor #{}:1",
+            fx.carrier.0, fx.phobos.0
+        ),
+    );
+    assert!(
+        bypass.contains("is authored; drop the place list"),
+        "an authored id may not degrade to an unconstrained manual route: {bypass}"
+    );
+    // No journey was created under an id the carrier never flew.
+    assert!(
+        tw.world()
+            .module_state::<mush_sim::JourneyBook>()
+            .is_none_or(|book| !book.under_way(fx.carrier)),
+        "the carrier did not depart on a bypassed authored route"
+    );
+}
+
+/// **O12.** A crew route probe refuses identically for a real authored id and a
+/// nonsense one, while staff still get the informative line (§4 rule 4).
+#[test]
+fn vf_o12_a_crew_route_probe_refuses_identically_for_a_real_and_a_nonsense_id() {
+    let (mut tw, fx) = authored_elsewhere();
+    let real = texts(&tw.run(
+        fx.pilot,
+        &format!("@journey/plan #{}=mars_corridor", fx.carrier.0),
+    ));
+    let nonsense = texts(&tw.run(
+        fx.pilot,
+        &format!("@journey/plan #{}=not_a_real_route_at_all", fx.carrier.0),
+    ));
+    assert_eq!(
+        real, nonsense,
+        "a crew member must not learn which route ids exist or where they begin"
+    );
+    assert!(real.contains(mush_sim::ROUTE_NOT_FROM_HERE), "{real}");
+    assert!(!real.contains("Phobos"), "and it names no place: {real}");
+    // Staff still get the informative form.
+    let staff = err(
+        &mut tw,
+        &format!("@journey/plan #{}=mars_corridor", fx.carrier.0),
+    );
+    assert!(staff.contains("sets out from"), "{staff}");
 }

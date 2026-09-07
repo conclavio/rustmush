@@ -563,6 +563,73 @@ async fn json_doc_text(client: &Client, key: &str) -> Result<Option<String>, Sto
     Ok(matches.first().map(|doc| doc.get().to_owned()))
 }
 
+/// Keys per `JSON.MGET` page in a namespace listing (J4).
+const MGET_PAGE: usize = 256;
+
+/// [`json_doc_text`] for a page of keys in one round trip: `JSON.MGET keys… $`,
+/// each answer the root document's text or `None` for a key that is gone.
+/// A non-JSON key in the page is the wrong-type error the caller resolves
+/// per key.
+async fn json_docs_text(
+    client: &Client,
+    keys: &[String],
+) -> Result<Vec<Option<String>>, StoreError> {
+    if keys.is_empty() {
+        return Ok(Vec::new());
+    }
+    let raws: Vec<Option<String>> = client
+        .json_mget::<Vec<Option<String>>, _, &str>(keys.to_vec(), "$")
+        .await?;
+    let mut out = Vec::with_capacity(keys.len());
+    for raw in raws {
+        let Some(raw) = raw else {
+            out.push(None);
+            continue;
+        };
+        let matches: Vec<&serde_json::value::RawValue> = serde_json::from_str(&raw)?;
+        out.push(matches.first().map(|doc| doc.get().to_owned()));
+    }
+    if out.len() != keys.len() {
+        return Err(StoreError::Corrupt(format!(
+            "JSON.MGET answered {} of {} keys",
+            out.len(),
+            keys.len()
+        )));
+    }
+    Ok(out)
+}
+
+/// [`json_doc_text`] with the non-JSON classification a namespace listing
+/// needs: a stream or a key gone between SCAN and GET is `None`; a
+/// type-clobbered key is the error it always was.
+async fn json_doc_text_classified(
+    client: &Client,
+    full_key: &str,
+) -> Result<Option<String>, StoreError> {
+    // The namespace mixes JSON docs and streams under one prefix. JSON.GET on
+    // either a legitimate stream *or* a type-clobbered key is a wrong-type
+    // error, so the error by itself is not enough to decide that this key
+    // belongs to stream_range. Positively identify the Redis type before
+    // skipping it; otherwise corrupt authoritative state could silently
+    // disappear during boot.
+    match json_doc_text(client, full_key).await {
+        Ok(text) => Ok(text),
+        Err(StoreError::Redis(e)) if is_wrong_type_err(&e) => {
+            let redis_type: String = client.r#type(full_key).await?;
+            match classify_non_json_module_key(full_key, &redis_type)? {
+                NonJsonModuleKey::Stream => {
+                    tracing::debug!(key = full_key, "skipping module stream key");
+                    Ok(None)
+                }
+                // The key may legitimately expire or be deleted between
+                // SCAN/JSON.GET/TYPE. There is no state left to hydrate.
+                NonJsonModuleKey::Gone => Ok(None),
+            }
+        }
+        Err(e) => Err(e),
+    }
+}
+
 /// See the [module docs](self).
 pub struct RedisStore {
     client: Client,
@@ -3013,51 +3080,65 @@ impl ObjectStore for RedisStore {
     }
 
     fn module_docs<'a>(&'a self, ns: &'a str) -> BoxFuture<'a, Result<ModuleDocs, StoreError>> {
+        self.module_docs_from(ns, &crate::store::NO_SKIP)
+    }
+
+    fn module_docs_from<'a>(
+        &'a self,
+        ns: &'a str,
+        skip: &'a crate::store::BootSkip,
+    ) -> BoxFuture<'a, Result<ModuleDocs, StoreError>> {
         Box::pin(async move {
             validate_module_ns(ns)?;
             let prefix = format!("{MOD_PREFIX}{ns}:");
             let keys = self.scan_keys(&module_scan_pattern(ns)).await?;
+            // J4 / W1: a chunk below its floor, or a key under a skipped
+            // prefix, is not fetched at all.
+            let keys: Vec<String> = keys
+                .into_iter()
+                .filter(|full_key| {
+                    full_key
+                        .strip_prefix(&prefix)
+                        .is_none_or(|key| !skip.skips(key))
+                })
+                .collect();
             let mut out = ModuleDocs::default();
-            for full_key in &keys {
-                // The namespace mixes JSON docs and streams under one
-                // prefix. JSON.GET on either a legitimate stream *or* a
-                // type-clobbered key is a wrong-type error, so the error by
-                // itself is not enough to decide that this key belongs to
-                // stream_range. Positively identify the Redis type before
-                // skipping it; otherwise corrupt authoritative state could
-                // silently disappear during boot.
-                let text = match json_doc_text(&self.client, full_key).await {
-                    Ok(text) => text,
+            // J4: the fetch is pipelined — one JSON.MGET per page of keys
+            // instead of one JSON.GET per key (the fetch cost of every
+            // module's boot). A page that trips on a non-JSON key (a stream,
+            // or a type-clobbered key) falls back to the per-key path, which
+            // classifies each key positively before skipping it.
+            for page in keys.chunks(MGET_PAGE) {
+                let texts = match json_docs_text(&self.client, page).await {
+                    Ok(texts) => texts,
                     Err(StoreError::Redis(e)) if is_wrong_type_err(&e) => {
-                        let redis_type: String = self.client.r#type(full_key.as_str()).await?;
-                        match classify_non_json_module_key(full_key, &redis_type)? {
-                            NonJsonModuleKey::Stream => {
-                                tracing::debug!(key = full_key, "skipping module stream key");
-                                continue;
-                            }
-                            // The key may legitimately expire or be deleted
-                            // between SCAN/JSON.GET/TYPE. There is no state
-                            // left to hydrate in that case.
-                            NonJsonModuleKey::Gone => continue,
+                        let mut texts = Vec::with_capacity(page.len());
+                        for full_key in page {
+                            texts.push(json_doc_text_classified(&self.client, full_key).await?);
                         }
+                        texts
                     }
                     Err(e) => return Err(e),
                 };
-                let Some(text) = text else { continue }; // gone between SCAN and GET
-                let Some(key) = full_key.strip_prefix(&prefix) else {
-                    continue; // unreachable under the SCAN pattern
-                };
-                // J1: a ledger chunk stays text; everything else decodes here,
-                // and an undecodable ordinary document is the error it always was.
-                if key.starts_with(LOG_PREFIX) {
-                    out.ledger.push((key.to_string(), text));
-                } else {
-                    out.docs
-                        .push((key.to_string(), serde_json::from_str(&text)?));
+                for (full_key, text) in page.iter().zip(texts) {
+                    let Some(text) = text else { continue }; // gone between SCAN and GET
+                    let Some(key) = full_key.strip_prefix(&prefix) else {
+                        continue; // unreachable under the SCAN pattern
+                    };
+                    // J1: a ledger chunk stays text; everything else decodes here,
+                    // and an undecodable ordinary document is the error it always was.
+                    if key.starts_with(LOG_PREFIX) {
+                        out.ledger.push((key.to_string(), text));
+                    } else {
+                        out.docs
+                            .push((key.to_string(), serde_json::from_str(&text)?));
+                    }
                 }
             }
             // J5: what the primary has been purged of comes from the archive.
-            crate::archive::merge_archived(self.ledger_archive(), ns, &mut out.ledger)?;
+            crate::archive::merge_archived(self.ledger_archive(), ns, &mut out.ledger, skip)?;
+            out.omitted = skip.floors.clone();
+            out.skipped_prefixes = skip.prefixes.clone();
             Ok(out)
         })
     }
