@@ -645,6 +645,82 @@ pub struct StationAssignment {
     pub actor: ObjId,
     /// Unix seconds.
     pub assigned_at: i64,
+    /// **E7c10 B1 (10b §3.10 OPEN 2) — the seat's narrowed channel set.**
+    ///
+    /// `None` (the default, and every pre-cut-10 document) means "the whole of
+    /// [`StationSpec::channels`]" — the cut-2 behaviour verbatim. `Some(set)`
+    /// is intersected with the station's own set by `links::desired_links`, the
+    /// ONE production `ChannelGrant` projection, so a proxy seat granted a
+    /// narrower set is limited **exactly**: an action whose `required_channels`
+    /// fall outside it never projects an offer at all
+    /// (`select_offer_channel_grant` finds no grant carrying the channel).
+    ///
+    /// This is **one extra intersection term inside the one projection** — not a
+    /// tenth `ChannelGrant` consumer, not a second projection, and not a second
+    /// focus. It is why `assignment:<unit>` becomes legality-gating and §4.1's
+    /// cut-10 row records the explicit rule-1 exemption (`legacy-post-image`,
+    /// future family `sim.station_assignment`, migrating at E7k beside
+    /// placement — the same synchronous `SpatialState` lane).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub granted: Option<BTreeSet<ChannelId>>,
+}
+
+/// Load-refusing cap on one unit's `HostAssignments.seats` (10b §3.10
+/// contradiction (vii); cut 5's §7 gap (ix)). A stored map over it is **refused
+/// on load, never truncated** — the document is dropped loudly and its host
+/// marked, exactly as an unparseable assignment doc already is.
+pub const MAX_SEATS_PER_UNIT: usize = 64;
+
+/// Load-refusing cap on one seat's narrowed [`StationAssignment::granted`] set.
+/// A station's own `channels` set is authored data bounded by the pack; the
+/// narrowed set is a subset of it, so this is a defence-in-depth wire bound.
+pub const MAX_GRANTED_CHANNELS: usize = 32;
+
+impl StationAssignment {
+    /// The channels this seat actually grants over `spec` — the station's own
+    /// set intersected with the seat's narrowing, if any. The single place the
+    /// narrowing is computed; `links::desired_links` is its one production
+    /// caller.
+    #[must_use]
+    pub fn granted_channels(&self, spec: &StationSpec) -> BTreeSet<ChannelId> {
+        match &self.granted {
+            None => spec.channels.clone(),
+            Some(granted) => spec.channels.intersection(granted).cloned().collect(),
+        }
+    }
+
+    /// Re-run the wire invariants for one seat (§4 rule 1). Bounded, so a
+    /// stored narrowed set over [`MAX_GRANTED_CHANNELS`] refuses on load.
+    pub fn check(&self) -> Result<(), String> {
+        if let Some(granted) = &self.granted
+            && granted.len() > MAX_GRANTED_CHANNELS
+        {
+            return Err(format!(
+                "station assignment grants {} channels, over the cap of {MAX_GRANTED_CHANNELS}",
+                granted.len()
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl HostAssignments {
+    /// Re-run the wire invariants for a whole host's seats (§4 rule 1): the
+    /// seat census against [`MAX_SEATS_PER_UNIT`] and every seat's own
+    /// narrowing. Called by the boot decode, which drops-and-marks on `Err`.
+    pub fn check(&self) -> Result<(), String> {
+        if self.seats.len() > MAX_SEATS_PER_UNIT {
+            return Err(format!(
+                "host {} carries {} seats, over the cap of {MAX_SEATS_PER_UNIT}",
+                self.host,
+                self.seats.len()
+            ));
+        }
+        for seat in self.seats.values() {
+            seat.check()?;
+        }
+        Ok(())
+    }
 }
 
 /// A host's current station assignments (`assignment:<host>`).

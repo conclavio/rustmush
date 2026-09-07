@@ -47,6 +47,9 @@ pub mod formation;
 pub mod ids;
 pub mod record;
 pub mod render;
+pub mod seat;
+pub mod seatcmd;
+pub mod seatstate;
 pub mod settle;
 pub mod store;
 pub mod terms;
@@ -77,6 +80,15 @@ pub use record::{
 pub use render::{
     Lens, NO_SUCH_FORMATION, NO_SUCH_OPERATION, Verbosity, lens_for, visible_operation,
 };
+pub use seat::{
+    CrewComplement, DriverToken, EligibilitySpec, FallbackSpec, GrantState, MAX_CREW_NAMED,
+    MAX_MUSTER_SLOTS, MAX_SEAT_CHANNELS, MAX_SEAT_GRANTS_PER_OPERATION, MAX_SEAT_LABEL_BYTES,
+    MAX_SEAT_OFFERS_PER_OPERATION, MusterReport, MusterSlot, RevocationTerms, SEAT_OFFER_TTL_SECS,
+    SeatGrant, SeatOffer, SeatOfferId, SeatRecordError, SeatScope, SlotFill, crew_key, muster_key,
+    seat_consent_hash, seat_grant_key, seat_offer_key,
+};
+pub use seatcmd::{NO_SUCH_CREW, NO_SUCH_SEAT};
+pub use seatstate::SeatAuditHolder;
 pub use settle::{
     KIND_OPERATION_ABANDONED, KIND_OPERATION_RESOLVED, abandon, advance_one, canon_source,
     enter_resolving, outcome_abandons, outcome_forfeits, scope_for,
@@ -92,6 +104,11 @@ pub use tick::{MAX_VISITED_PER_FIRE, MAX_WORKED_PER_FIRE, TICK_PERIOD_SECS, TICK
 #[derive(Default)]
 pub struct CampaignModule {
     formation_kinds: Option<Arc<dyn FormationAuthority>>,
+    /// E7c10 B3 (10b §3.10 OPEN 4): the server-side, audit-only seat
+    /// attribution log. `None` leaves it unwired and every consumer fails
+    /// closed — a seat cannot be taken un-attributed, and a grant with no row
+    /// refuses activation and pages.
+    seat_audit: Option<Arc<dyn mush_core::SeatAudit>>,
 }
 
 impl CampaignModule {
@@ -106,6 +123,16 @@ impl CampaignModule {
     /// `IndustryModule::with_recipes`' shape: the implementation lives at the
     /// composition root and reads the ruleset's own store, so `mush-campaign`
     /// gains no ruleset edge and `ruleset-tacsim` gains no campaign edge.
+    /// **The composition seam the seat audit arrives through** (E7c10 B3), on
+    /// `with_formation_kinds`' / `SimulationModule::with_accounts`' shape: the
+    /// implementation lives at the composition root beside `AccountIdentity`'s,
+    /// the row never becomes a world document, and unwired is fail-closed.
+    #[must_use]
+    pub fn with_seat_audit(mut self, audit: Arc<dyn mush_core::SeatAudit>) -> CampaignModule {
+        self.seat_audit = Some(audit);
+        self
+    }
+
     #[must_use]
     pub fn with_formation_kinds(
         mut self,
@@ -137,7 +164,16 @@ impl GameModule for CampaignModule {
             TickCadence::Coarse(std::time::Duration::from_secs(TICK_PERIOD_SECS)),
             Arc::new(tick::tick),
         )?;
+        // E7c10 B3: the audit holder, carried in world state so the seat
+        // commands reach it synchronously. Unwired = fail closed.
+        reg.state(match self.seat_audit.clone() {
+            Some(audit) => seatstate::SeatAuditHolder::new(audit),
+            None => seatstate::SeatAuditHolder::unwired(),
+        });
         commands::register(reg)?;
+        // E7c10 B8: cut 10's five verbs, in two classified groups, with
+        // `LegacyPostImage` restored last (K8.5).
+        seatcmd::register(reg)?;
         Ok(())
     }
 

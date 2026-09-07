@@ -22,6 +22,7 @@ mod handoff;
 pub mod journey;
 pub mod links;
 pub mod route;
+pub mod seat;
 pub mod station;
 pub mod tick;
 pub mod transition;
@@ -44,10 +45,10 @@ pub use custody::InteriorCustodyProvider;
 pub use data::{
     CapacitySpec, DEFAULT_RECOVERY_ROOM, Derived, DomainClock, DomainId, DomainRecord,
     DomainStatus, EgressSpec, HeldPlacement, HostAssignments, HostMounts, HostStations,
-    InteriorSpaceRecord, MAX_SPATIAL_DEPTH, MountId, MountSpec, NS, PASSIVE_DRIVER,
-    PlacementRecord, Presence, RulesValue, SlotId, SpaceAnchor, SpatialCounterError, SpatialParent,
-    SpatialState, StationAssignment, StationId, StationSpec, UnplacedInfo, cgen_key,
-    passive_definition_ref, passive_rules_value,
+    InteriorSpaceRecord, MAX_GRANTED_CHANNELS, MAX_SEATS_PER_UNIT, MAX_SPATIAL_DEPTH, MountId,
+    MountSpec, NS, PASSIVE_DRIVER, PlacementRecord, Presence, RulesValue, SlotId, SpaceAnchor,
+    SpatialCounterError, SpatialParent, SpatialState, StationAssignment, StationId, StationSpec,
+    UnplacedInfo, cgen_key, passive_definition_ref, passive_rules_value,
 };
 pub use domain::{
     ActivationBook, DomainActivation, DomainActivationWire, DomainSummary, DomainSummaryWire,
@@ -68,6 +69,11 @@ pub use route::{
     CadenceId, DriveProfile, DriveProfileWire, Journey, JourneyStatus, Leg, LegDef, LegDefWire,
     MAX_LEGS, MAX_ROUTE_ID_BYTES, RouteCatalog, RouteCatalogState, RouteDef, RouteDefError,
     RouteDefWire, RouteState, route_duration,
+};
+pub use seat::{
+    ControlLeaseView, MAX_LEASE_VIEW_RECORDS, MAX_STATION_SERVICE_ROWS, SeatError, SeatRequest,
+    SeatTicket, ServiceBook, SimFactProvider, StationService, channel_lease_holder,
+    request_seat_activation, service_key,
 };
 pub use station::{MAX_STATION_FALLBACKS, StationFallback, StationFallbacks};
 pub use transition::{Plan, SpatialError, Transition, apply, move_carrier_subtree, plan, run};
@@ -690,6 +696,7 @@ impl GameModule for SimulationModule {
         // validator, so the pulse contributes its four descriptors there and
         // registers its families, its one `DomainClockProvider`, its two action
         // providers and its one `domaintick` schedule source here.
+        let control_leases_view = control_leases.clone();
         let tick_definitions =
             handoff::register(reg, control_leases, tick::definition_descriptors()?)?;
         tick::register(reg, tick_definitions)?;
@@ -717,6 +724,15 @@ impl GameModule for SimulationModule {
         // controller reads on a clean switch. Persisted as `sim.station_fallback`
         // docs; boot re-hydration of the slot is a follow-up (§3.5 as-built).
         reg.state(station::StationFallbacks::default());
+        // E7c10 B1: the world-owned mirror of the `control_leases` family the
+        // `channel_lease_holder` seam answers from. The family handle is a
+        // capability minted only here; the mirror itself is RAM, never
+        // persisted, never authority (see `seat.rs`'s head for why the seam is
+        // not a direct owner-scoped read).
+        reg.state(seat::ControlLeaseView::new(control_leases_view));
+        // E7c10 B8: the applied-marker book `sim.station.served` answers from.
+        // Persisted as exempt `sim.station_service` docs, hydrated at boot.
+        reg.state(seat::ServiceBook::default());
         // E7c6 B2: the carrier-journey book (one `cjourney:<root>` document per
         // carrier) and B5's domain-workflow book (`activation:`/`summary:`).
         // Both are RAM mirrors of exempt `sim.journey` / `sim.domain` records,
@@ -731,6 +747,11 @@ impl GameModule for SimulationModule {
         reg.behavior(interior_spec())?;
         reg.behavior(participant_spec())?;
         reg.hook(HookPoint::MoveAttempt, Arc::new(PlacementGate));
+        // E7c10 B6: the tree's FIRST `HookPoint::Disconnected` hook — cut 5's
+        // deferred unclean-loss PRODUCTION trigger. A disconnect now returns
+        // every focus (proxy seat or ordinary billet) to its declared fallback
+        // at a safe boundary, on the same path a clean release uses.
+        reg.hook(HookPoint::Disconnected, Arc::new(seat::SeatDisconnectHook));
         reg.hook(HookPoint::CarryAttempt, Arc::new(PlacementGate));
         reg.destroy_gate(Arc::new(StructuralDestroyGate));
         reg.detach_gate(Arc::new(SimDetachGate));

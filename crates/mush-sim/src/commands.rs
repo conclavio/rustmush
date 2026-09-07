@@ -1370,6 +1370,10 @@ fn spatial_assign(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             StationAssignment {
                 actor,
                 assigned_at: now,
+                // E7c10 B1: staff surgery seats the WHOLE station (`None` = the
+                // station's own channel set). Only a proxy seat narrows, and
+                // only through `seat::request_seat_activation`.
+                granted: None,
             },
         );
         let rec = ha.clone();
@@ -1540,7 +1544,7 @@ pub(crate) fn holds_billet(ctx: &Ctx<'_>, actor: ObjId, unit: ObjId, station: &S
 /// The console room a station is operated from: its backing cockpit `space` if
 /// authored, else the unit's own projected location. `None` when neither exists
 /// (reach then fails closed).
-fn console_room(ctx: &Ctx<'_>, unit: ObjId, station: &StationId) -> Option<ObjId> {
+pub(crate) fn console_room(ctx: &Ctx<'_>, unit: ObjId, station: &StationId) -> Option<ObjId> {
     let s = st(ctx);
     let space = s
         .stations
@@ -1553,14 +1557,19 @@ fn console_room(ctx: &Ctx<'_>, unit: ObjId, station: &StationId) -> Option<ObjId
 /// Preflight one control-epoch bump for a unit (fails closed on exhaustion,
 /// **before** any mutation — invariant: a claim whose bump fails leaves no
 /// focus).
-fn prepare_focus_bump(ctx: &Ctx<'_>, unit: ObjId) -> Result<u64, CmdError> {
+pub(crate) fn prepare_focus_bump(ctx: &Ctx<'_>, unit: ObjId) -> Result<u64, CmdError> {
     st(ctx).next_control_generation(unit).map_err(counter_err)
 }
 
 /// Commit a preflighted bump and republish the actor's links — **bump then
 /// republish**, in that order (contradiction (v)), so the republished grant
 /// carries the new epoch and every stale intent fails `channel_grant_is_current`.
-fn apply_focus_bump_and_refresh(ctx: &mut Ctx<'_>, unit: ObjId, next: u64, actor: ObjId) {
+pub(crate) fn apply_focus_bump_and_refresh(
+    ctx: &mut Ctx<'_>,
+    unit: ObjId,
+    next: u64,
+    actor: ObjId,
+) {
     st_mut(ctx).apply_control_generation(unit, next);
     persist_control_gen(ctx.out, unit, next);
     refresh_actor_links(ctx.w, actor);
@@ -1632,6 +1641,8 @@ fn focus_acquire(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         acquired_at,
         epoch: new_gen,
         reach,
+        // `+focus` is always the actor's OWN billet: never a proxy seat.
+        proxy: false,
     };
     let released = ctx
         .w

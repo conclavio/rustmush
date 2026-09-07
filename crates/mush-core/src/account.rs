@@ -121,6 +121,40 @@ pub trait AccountIdentity: Send + Sync {
     }
 }
 
+/// **The server-side, audit-only seat attribution seam** (E7 cut 10 B3; Q19A /
+/// doc 10 R3, R7; 10b §3.10 OPEN 4).
+///
+/// A proxy seat's mechanical journal records the **in-world actor** and an
+/// **opaque decision-driver token**, and nothing else. The row that links that
+/// token to an account lives **outside the world**: it is never a world
+/// document, never a journal, contract or canon record, and no ordinary
+/// projection, render or export can reverse it. Exactly one staff verb resolves
+/// it, and even that verb prints no account id.
+///
+/// The implementation lives at the composition root beside `AccountIdentity`'s
+/// (`mush-server`), and reaches the campaign layer through
+/// `CampaignModule::with_seat_audit` on the `with_accounts` builder shape.
+/// **Unwired, every consumer fails closed**: a grant with no audit row refuses
+/// activation and pages rather than activating un-attributed.
+pub trait SeatAudit: Send + Sync {
+    /// Record that `token` was minted for `account`. Returns `false` when the
+    /// row could not be stored — the caller must then refuse the grant rather
+    /// than proceed un-attributed.
+    fn record(&self, token: &str, account: AccountId) -> bool;
+
+    /// Whether a row exists for `token`. This is the *only* question ordinary
+    /// (non-staff) code may ask, and it answers a boolean, never an identity.
+    fn knows(&self, token: &str) -> bool;
+
+    /// The account behind `token` — **staff only**, and never rendered. `None`
+    /// when no row exists.
+    fn account_for(&self, token: &str) -> Option<AccountId>;
+
+    /// Forget a row (a terminal grant's attribution is retained only as long as
+    /// the grant is live). Returns whether a row was removed.
+    fn forget(&self, token: &str) -> bool;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

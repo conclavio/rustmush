@@ -86,6 +86,12 @@ fn authorized(ctx: &Ctx<'_>, capability: &str, scope: OrgScopeId) -> bool {
     .is_allow()
 }
 
+/// The same ask, reachable from cut 10's own seat predicates (`seatcmd`). One
+/// authority helper for the whole crate, not two.
+pub(crate) fn authorized_for(ctx: &Ctx<'_>, capability: &str, scope: OrgScopeId) -> bool {
+    authorized(ctx, capability, scope)
+}
+
 // ---- E7 cut 9 fold, C1 / decision E1(a): the command predicates -----------
 //
 // `render::lens_for` decides **disclosure** and says so in its own doc comment; it

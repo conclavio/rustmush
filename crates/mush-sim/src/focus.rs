@@ -152,6 +152,14 @@ pub struct ActiveFocus {
     pub epoch: u64,
     /// The reach proof under which it was claimed.
     pub reach: ReachProof,
+    /// **E7c10 B4 (T12).** Whether this is an OOC **proxy seat**: the account
+    /// directs an NPC (`actor`) it does not own, under a `campaign.seat` grant.
+    /// It changes no authority — the live authority is still the billet, the
+    /// narrowed `ChannelGrant` and K6's lease — but it is what makes the
+    /// represented NPC clearly identified in every render, what selects the
+    /// `seat.activate` handoff reason, and what cut 10's guardrail predicate
+    /// asks before refusing an administrative verb (T11's command half).
+    pub proxy: bool,
 }
 
 /// The world-owned ephemeral focus map (B2). Installed via `reg.state(..)` — an
@@ -258,6 +266,7 @@ mod tests {
             acquired_at: stamp(1),
             epoch: 1,
             reach: ReachProof::Console { room: ObjId(1) },
+            proxy: false,
         }
     }
 

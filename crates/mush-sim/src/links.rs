@@ -68,7 +68,16 @@ fn desired_links(st: &SpatialState, w: &World, actor: ObjId) -> Vec<ChannelGrant
                 relation: spec.role.clone(),
                 owner: SmolStr::new_static(NS),
                 priority: spec.priority,
-                channels: spec.channels.clone(),
+                // E7c10 B1 (10b §3.10 OPEN 2, T11's mechanical half): ONE extra
+                // intersection term inside the ONE production projection. A
+                // seat with no narrowing (`granted == None` — every ordinary
+                // billet and every pre-cut-10 document) takes the station's own
+                // set unchanged; a proxy seat takes the intersection, so an
+                // action whose `required_channels` fall outside it projects NO
+                // offer at all. No tenth `ChannelGrant` consumer, no second
+                // projection, no second focus: the 08g §10 C12 census stands at
+                // nine and `desired_links` is still the only production writer.
+                channels: assignment.granted_channels(spec),
                 epoch,
             });
         }

@@ -35,6 +35,15 @@ mush-canon.workspace = true
 # `force.*` authority resolves through `mush_org::authorize_in_world`, and every
 # economy seam is typed in `mush_org::{PrincipalId, OrgScopeId}`.
 mush-org.workspace = true
+# E7 cut 10 (10b §3.10 OPEN 1, as the owner decided): the ONE new edge. Cut 10's
+# mechanical half — the billet write, the narrowed `ChannelGrant`, the K6
+# activation request and the `Disconnected` hook — lives in `mush-sim`, because
+# `handoff.rs` is a private module and `ModuleActionState` is owner-scoped, so no
+# crate outside it can reach the K6 request path or the `control_leases` family.
+# `mush-campaign` reaches it through exactly TWO exported `pub fn` seams,
+# `mush_sim::{request_seat_activation, channel_lease_holder}`. The edge is
+# acyclic: `mush-sim -> {core, economy, scenes, proto}` and never campaign.
+mush-sim.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 smol_str.workspace = true
@@ -44,6 +53,8 @@ tracing.workspace = true
 [dev-dependencies]
 mush-testkit.workspace = true
 mush-faction.workspace = true
+mush-canon.workspace = true
+mush-org.workspace = true
 mush-proto.workspace = true
 serde_json.workspace = true
 smol_str.workspace = true

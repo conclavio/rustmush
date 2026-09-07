@@ -141,8 +141,19 @@ fn parse_unit_station(ctx: &Ctx<'_>, lhs: &str) -> Result<(ObjId, StationId), Cm
 /// The requester's current control-generation on `unit`'s station — the exact
 /// grant epoch the subject query and the apply-time witness compare.
 fn requester_grant_epoch(ctx: &Ctx<'_>, unit: ObjId, station: &str) -> Option<u64> {
+    actor_grant_epoch(ctx, ctx.actor, unit, station)
+}
+
+/// The same read for an arbitrary actor (E7c10 B4: the relief is staged as the
+/// departing actor, who is not always `ctx.actor`).
+pub(crate) fn actor_grant_epoch(
+    ctx: &Ctx<'_>,
+    actor: ObjId,
+    unit: ObjId,
+    station: &str,
+) -> Option<u64> {
     ctx.w
-        .command_subjects_of(ctx.actor)
+        .command_subjects_of(actor)
         .iter()
         .find(|grant| grant.subject == unit && grant.station.as_str() == station)
         .map(|grant| grant.epoch)
@@ -318,14 +329,35 @@ fn station_fallback(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 /// billet grant (`HandoffProvider::departed_fallback_station`) rather than the
 /// focus the release just tore down, and so the seat actually fills.
 pub(crate) fn fire_station_fallback(ctx: &mut Ctx<'_>, unit: ObjId, station: &StationId) {
+    let actor = ctx.actor;
+    let _ = fire_station_fallback_as(ctx, actor, unit, station);
+}
+
+/// The same fire, staged **as `actor`** rather than as `ctx.actor`.
+///
+/// **E7c10 B4/B6.** A proxy seat's stand-down, and the displaced own-station
+/// handoff a seat activation performs, are both relieved by an actor who is not
+/// the one typing the command: the NPC gives its station back to the declared
+/// fallback, and the absent player's character gives back the station the seat
+/// took its focus from. `Ctx::submit_authoritative` is hard-wired to
+/// `ctx.actor`, and the engine keys its one-submit-per-drain slot by ACTOR, so
+/// staging under the departing actor is both necessary (the offer is projected
+/// for *that* actor's surviving billet grant) and safe (two actors, two slots,
+/// neither fans the other out). Returns whether a submit was staged.
+pub(crate) fn fire_station_fallback_as(
+    ctx: &mut Ctx<'_>,
+    actor: ObjId,
+    unit: ObjId,
+    station: &StationId,
+) -> bool {
     let Some(holder) = fallbacks(ctx).and_then(|f| f.holder(unit, station)) else {
-        return;
+        return false;
     };
     let Some(action) = crate::handoff::request_action_ref(ctx.reg) else {
-        return;
+        return false;
     };
-    let Some(revision) = requester_grant_epoch(ctx, unit, station.as_str()) else {
-        return;
+    let Some(revision) = actor_grant_epoch(ctx, actor, unit, station.as_str()) else {
+        return false;
     };
     // Deterministic over (unit, station, holder): the model's role would only be
     // to select; the mapping here is fixed, so it enters as this actor's own
@@ -337,13 +369,18 @@ pub(crate) fn fire_station_fallback(ctx: &mut Ctx<'_>, unit: ObjId, station: &St
         holder.0
     );
     let Ok(key) = IdempotencyKeyText::parse_canonical(&discriminator) else {
-        return;
+        return false;
     };
-    ctx.submit_authoritative(
-        action,
-        PerceivedRef::KnownObject { id: unit, revision },
-        Vec::new(),
-        json!({}),
-        key,
-    );
+    ctx.out
+        .defer(mush_core::Deferred::AuthoritativeSubmit(Box::new(
+            mush_core::AuthoritativeSubmit {
+                actor,
+                action,
+                subject: PerceivedRef::KnownObject { id: unit, revision },
+                targets: Vec::new(),
+                parameters: json!({}),
+                key,
+            },
+        )));
+    true
 }

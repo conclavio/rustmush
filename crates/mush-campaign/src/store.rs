@@ -26,6 +26,10 @@ use smol_str::SmolStr;
 use crate::formation::{FormationAuthority, FormationKind, FormationNode};
 use crate::ids::{FormationId, OperationId, formation_key, operation_key};
 use crate::record::{OperationDoc, UnitRef};
+use crate::seat::{
+    CrewComplement, MAX_SEAT_OFFERS_PER_OPERATION, MusterReport, SeatGrant, SeatOffer, SeatOfferId,
+    crew_key, muster_key, seat_grant_key, seat_offer_key,
+};
 
 /// The module's persistence namespace and registered name.
 pub const NS: &str = "campaign";
@@ -81,6 +85,18 @@ pub struct CampaignStore {
     /// no authority is wired, which makes `@force/create` refuse — fail-closed.
     kinds: BTreeMap<SmolStr, FormationKind>,
     authority: Option<Arc<dyn FormationAuthority>>,
+    /// E7c10 B2/B3/B7: the seat lane's own documents, keyed exactly as they
+    /// persist. All four are EXEMPT workflow records — no legality check reads
+    /// one (a probe pins it), and cut 10 persists no lease-like record at all.
+    seat_offers: BTreeMap<(u64, u64), SeatOffer>,
+    seat_grants: BTreeMap<(u64, u64), SeatGrant>,
+    crews: BTreeMap<u32, CrewComplement>,
+    musters: BTreeMap<(u64, u64), MusterReport>,
+    /// The next seat-offer id per operation, floored past every id on disk so a
+    /// held document's id can never be re-issued underneath it.
+    next_seat_offer: BTreeMap<u64, u64>,
+    /// The muster sweep's own monotonic cycle (the tick arm's cursor).
+    pub(crate) muster_cycle: u64,
     held: Vec<HeldDoc>,
     /// How many refused documents did not fit in `held` (E7 cut 9 fold, B14). Past
     /// [`MAX_HELD_DOCUMENTS`] the 65th was dropped from the list with no counter and
@@ -105,6 +121,9 @@ impl std::fmt::Debug for CampaignStore {
             .field("operations", &self.ops.len())
             .field("formations", &self.formations.len())
             .field("kinds", &self.kinds.len())
+            .field("seat_offers", &self.seat_offers.len())
+            .field("seat_grants", &self.seat_grants.len())
+            .field("crews", &self.crews.len())
             .field("held", &self.held.len())
             .field("cursor", &self.cursor)
             .finish()
@@ -118,6 +137,10 @@ struct Meta {
     next_operation: u64,
     next_formation: u64,
     cursor: u64,
+    /// E7c10 B7: the muster sweep's monotonic cycle, so a reboot re-running the
+    /// sweep is a no-op past the applied point rather than a re-write.
+    #[serde(default)]
+    muster_cycle: u64,
 }
 
 impl CampaignStore {
@@ -214,11 +237,98 @@ impl CampaignStore {
             .map(OperationDoc::id)
     }
 
+    // ---- E7c10: the seat lane's accessors and installers ----
+
+    /// One live seat offer.
+    #[must_use]
+    pub fn seat_offer(&self, operation: OperationId, id: SeatOfferId) -> Option<&SeatOffer> {
+        self.seat_offers.get(&(operation.0, id.0))
+    }
+
+    /// Every seat offer, in (operation, offer) order.
+    pub fn seat_offers(&self) -> impl Iterator<Item = &SeatOffer> {
+        self.seat_offers.values()
+    }
+
+    /// How many offers one operation carries - the cap's own count.
+    #[must_use]
+    pub fn seat_offer_count(&self, operation: OperationId) -> usize {
+        self.seat_offers
+            .range((operation.0, 0)..=(operation.0, u64::MAX))
+            .count()
+    }
+
+    /// One seat grant.
+    #[must_use]
+    pub fn seat_grant(&self, operation: OperationId, id: SeatOfferId) -> Option<&SeatGrant> {
+        self.seat_grants.get(&(operation.0, id.0))
+    }
+
+    /// Every seat grant, in (operation, offer) order.
+    pub fn seat_grants(&self) -> impl Iterator<Item = &SeatGrant> {
+        self.seat_grants.values()
+    }
+
+    /// One unit's crew complement.
+    #[must_use]
+    pub fn crew(&self, unit: UnitRef) -> Option<&CrewComplement> {
+        self.crews.get(&unit.0.0)
+    }
+
+    /// Every crew complement, in unit order.
+    pub fn crews(&self) -> impl Iterator<Item = &CrewComplement> {
+        self.crews.values()
+    }
+
+    /// The newest muster report for an operation, if any.
+    #[must_use]
+    pub fn latest_muster(&self, operation: OperationId) -> Option<&MusterReport> {
+        self.musters
+            .range((operation.0, 0)..=(operation.0, u64::MAX))
+            .next_back()
+            .map(|(_, report)| report)
+    }
+
+    /// Mint the next seat-offer id for an operation, or `None` past
+    /// [`crate::seat::MAX_SEAT_OFFERS_PER_OPERATION`].
+    pub(crate) fn mint_seat_offer(&mut self, operation: OperationId) -> Option<SeatOfferId> {
+        if self.seat_offer_count(operation) >= MAX_SEAT_OFFERS_PER_OPERATION {
+            return None;
+        }
+        let slot = self.next_seat_offer.entry(operation.0).or_insert(1);
+        let id = (*slot).max(1);
+        *slot = id.checked_add(1)?;
+        Some(SeatOfferId(id))
+    }
+
+    pub(crate) fn install_seat_offer(&mut self, offer: SeatOffer) {
+        let slot = self.next_seat_offer.entry(offer.operation.0).or_insert(1);
+        *slot = (*slot).max(offer.id.0.saturating_add(1));
+        self.seat_offers
+            .insert((offer.operation.0, offer.id.0), offer);
+    }
+
+    pub(crate) fn install_seat_grant(&mut self, grant: SeatGrant) {
+        self.seat_grants
+            .insert((grant.operation.0, grant.offer.0), grant);
+    }
+
+    pub(crate) fn install_crew(&mut self, crew: CrewComplement) {
+        self.crews.insert(crew.unit.0.0, crew);
+    }
+
+    pub(crate) fn install_muster(&mut self, report: MusterReport) {
+        self.muster_cycle = self.muster_cycle.max(report.cycle);
+        self.musters
+            .insert((report.operation.0, report.cycle), report);
+    }
+
     fn meta_doc(&self) -> serde_json::Value {
         serde_json::to_value(Meta {
             next_operation: self.next_operation,
             next_formation: self.next_formation,
             cursor: self.cursor,
+            muster_cycle: self.muster_cycle,
         })
         .unwrap_or(serde_json::Value::Null)
     }
@@ -344,6 +454,64 @@ pub(crate) fn put_formation(ctx: &mut Ctx<'_>, node: FormationNode) {
     push(ctx.out, ModuleWrite::JsonSet { key, value });
 }
 
+/// Install a seat offer into RAM and queue its document - **the single write
+/// path**, re-running the constructor so ordinary play can never store a
+/// document the next boot would refuse and hold (cut 9 fold C3's discipline).
+pub(crate) fn put_seat_offer(ctx: &mut Ctx<'_>, offer: SeatOffer) -> bool {
+    if offer.check().is_err() {
+        return false;
+    }
+    let key = seat_offer_key(offer.operation, offer.id);
+    let value = serde_json::to_value(&offer).unwrap_or(serde_json::Value::Null);
+    if let Some(store) = ctx.w.module_state_mut::<CampaignStore>() {
+        store.install_seat_offer(offer);
+    }
+    push(ctx.out, ModuleWrite::JsonSet { key, value });
+    true
+}
+
+/// Install a seat grant into RAM and queue its document (the same discipline).
+pub(crate) fn put_seat_grant(ctx: &mut Ctx<'_>, grant: SeatGrant) -> bool {
+    if grant.check().is_err() {
+        return false;
+    }
+    let key = seat_grant_key(grant.operation, grant.offer);
+    let value = serde_json::to_value(&grant).unwrap_or(serde_json::Value::Null);
+    if let Some(store) = ctx.w.module_state_mut::<CampaignStore>() {
+        store.install_seat_grant(grant);
+    }
+    push(ctx.out, ModuleWrite::JsonSet { key, value });
+    true
+}
+
+/// Install a crew complement into RAM and queue its document.
+pub(crate) fn put_crew(ctx: &mut Ctx<'_>, crew: CrewComplement) -> bool {
+    if crew.check().is_err() {
+        return false;
+    }
+    let key = crew_key(crew.unit);
+    let value = serde_json::to_value(&crew).unwrap_or(serde_json::Value::Null);
+    if let Some(store) = ctx.w.module_state_mut::<CampaignStore>() {
+        store.install_crew(crew);
+    }
+    push(ctx.out, ModuleWrite::JsonSet { key, value });
+    true
+}
+
+/// Install a muster report into RAM and queue its document.
+pub(crate) fn put_muster(ctx: &mut Ctx<'_>, report: MusterReport) -> bool {
+    if report.check().is_err() {
+        return false;
+    }
+    let key = muster_key(report.operation, report.cycle);
+    let value = serde_json::to_value(&report).unwrap_or(serde_json::Value::Null);
+    if let Some(store) = ctx.w.module_state_mut::<CampaignStore>() {
+        store.install_muster(report);
+    }
+    push(ctx.out, ModuleWrite::JsonSet { key, value });
+    true
+}
+
 /// Queue the allocator/cursor document.
 pub(crate) fn persist_meta(ctx: &mut Ctx<'_>) {
     let Some(meta) = ctx
@@ -374,6 +542,7 @@ pub(crate) fn load(kv: Vec<(SmolStr, serde_json::Value)>) -> CampaignStore {
                     store.next_operation = meta.next_operation;
                     store.next_formation = meta.next_formation;
                     store.cursor = meta.cursor;
+                    store.muster_cycle = meta.muster_cycle;
                 }
                 Err(error) => {
                     tracing::warn!(%key, %error, "campaign: the meta document was ignored");
@@ -406,6 +575,39 @@ pub(crate) fn load(kv: Vec<(SmolStr, serde_json::Value)>) -> CampaignStore {
                     store.next_formation = store.next_formation.max(id.saturating_add(1));
                     store.hold(key, error.to_string());
                 }
+            }
+        } else if key.starts_with("seat_offer:") {
+            // E7c10 B2: an over-cap or malformed offer is HELD, never deleted -
+            // a seat grant may be live against it - and its id is floored so it
+            // can never be re-issued underneath a document staff must repair.
+            match serde_json::from_value::<SeatOffer>(value) {
+                Ok(offer) if seat_offer_key(offer.operation, offer.id) == key => {
+                    store.install_seat_offer(offer)
+                }
+                Ok(_) => store.hold(key, "the offer's id disagrees with its key".to_owned()),
+                Err(error) => store.hold(key, error.to_string()),
+            }
+        } else if key.starts_with("seat_grant:") {
+            match serde_json::from_value::<SeatGrant>(value) {
+                Ok(grant) if seat_grant_key(grant.operation, grant.offer) == key => {
+                    store.install_seat_grant(grant)
+                }
+                Ok(_) => store.hold(key, "the grant's id disagrees with its key".to_owned()),
+                Err(error) => store.hold(key, error.to_string()),
+            }
+        } else if key.starts_with("crew:") {
+            match serde_json::from_value::<CrewComplement>(value) {
+                Ok(crew) if crew_key(crew.unit) == key => store.install_crew(crew),
+                Ok(_) => store.hold(key, "the crew's unit disagrees with its key".to_owned()),
+                Err(error) => store.hold(key, error.to_string()),
+            }
+        } else if key.starts_with("muster:") {
+            match serde_json::from_value::<MusterReport>(value) {
+                Ok(report) if muster_key(report.operation, report.cycle) == key => {
+                    store.install_muster(report)
+                }
+                Ok(_) => store.hold(key, "the report's key disagrees with itself".to_owned()),
+                Err(error) => store.hold(key, error.to_string()),
             }
         } else {
             tracing::warn!(%key, "campaign: unknown persisted key ignored");

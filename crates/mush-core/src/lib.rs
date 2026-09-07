@@ -82,7 +82,7 @@ pub mod schedule_source;
 pub mod sensor;
 pub mod world;
 
-pub use account::{AccountId, AccountIdentity};
+pub use account::{AccountId, AccountIdentity, SeatAudit};
 pub use action::{
     ActionAttemptMetadata, ActionAttemptMetadataError, ActionError, ActionErrorBuildError,
     ActionErrorCode, ActionInvocation, ActionInvocationDraft, ActionLifecycle, ActionMetadataError,

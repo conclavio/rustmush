@@ -120,6 +120,12 @@ category = "read-only"
 note = "E7 cut 7 (10b 3.7, Q16A): the contacts this actor's platform holds. One observer's picture is invisible to every other observer; the filter is the holder principal and no argument widens it. Writes nothing, and names NO future family: contacts are K6's ContactState, owned by mush-tactics."
 
 [[handler]]
+name = "+crewcall"
+category = "legacy-post-image"
+family = "campaign.crew"
+note = "E7 cut 10 (10b 3.10 B7/B8): the player-facing crew call -- +crewcall/list shows the seats the viewer's own audience membership admits and nothing about an operation it does not, and +crewcall/apply is +seat/accept under the name the call publishes. It writes the same bounded whole-document campaign.seat records the +seat verbs do (seat_grant:{op}:{id}, a strict TryFrom wire re-running MAX_SEAT_OFFERS_PER_OPERATION/MAX_SEAT_CHANNELS/MAX_AUDIENCE and a deterministic key) and takes no part in authority or prepared mechanics: accepting seizes NOTHING, no legality check reads a SeatGrant, and the live control authority is cut 5's billet, the narrowed ChannelGrant and K6's lease. Matchmaking standing is a crew-call eligibility input only (R6) and never an in-world principal."
+
+[[handler]]
 name = "+damage"
 category = "baseline"
 note = "baseline pinned at b0e3b52 (module, shadowrun composition only)"
@@ -304,6 +310,12 @@ family = "market:listing"
 note = "E6c (08f 5.2/5.3): the neutral market's player surface -- listings, buyer-as-issuer quotes with a declared expiry clock, +market/sell, and the aggregate public projection. Bounded whole-document catalog/workflow records (market:listing:{id}, market:quote:{id}) with strict TryFrom wires re-running documented caps, deterministic keys, and no part in authority or prepared mechanics: every money act rides the economy's owner-exported offer_contract / accept_contract / accept_contract_as / cancel_contract seams under an E4 authority, a quote RESERVES NOTHING (08i 4 rule 1 excludes reservations and mechanical offers; doc 10 T4 keeps holds money-only), and a stale quote refuses deterministically rather than re-pricing. The future family is the market record K8.5 replaces this allowlist with."
 
 [[handler]]
+name = "+muster"
+category = "legacy-post-image"
+family = "campaign.muster"
+note = "E7 cut 10 (10b 3.10 B7): who is actually crewing an operation -- one bounded whole-document muster:{op}:{cycle} report behind a strict TryFrom wire (MAX_MUSTER_SLOTS refuses on load, never truncates) at a deterministic key. It is a REPORT and never a gate: a slot resolving to vacancy reduces discretion and does not cancel a valid operation. +muster/lock runs the account-distinctness oracle and stores ONLY THE VERDICT (Q11A/R3/C23A) -- an oracle answering None fails closed and the lock is refused, and the account id enters no journal, contract or canon record. The report names the operation's own units and stations and never an account, a covert operation's existence or an unobserved unit's position."
+
+[[handler]]
 name = "+note"
 category = "baseline"
 note = "baseline pinned at b0e3b52 (module, every composition)"
@@ -427,6 +439,11 @@ name = "+scene"
 category = "legacy-post-image"
 family = "scenes:scene"
 note = "E6b independent verify fold (D9): `+scene` was pinned baseline when it was ArgShape::None with no switches -- a pure read. E6b gave it `/outcome`, which WRITES the terminal SceneOutcome onto the whole-document `scene:{uid}` record and then commits canon, and canon's commit is what an economy observer settles an escrow from. A read that became a mutating whole-document post is exactly what rule 1 asks to be declared, and leaving it baseline let the tripwire's own provenance note -- pinned at b0e3b52 -- stand for a handler that no longer resembles the one pinned. It qualifies for the exception: the record is bounded and strictly decoded (SceneOutcome is a TryFrom wire with MAX_OUTCOME_{NAME,NOTE}_BYTES and MAX_OUTCOME_SUBJECTS; SceneRecord re-runs its invariants in validate_clock), the key is deterministic, the seal is write-once and terminal, and it participates in no prepared mechanic -- mush_canon::commit is terminal and pins the deferred prefix, and every fallible step runs before it. The future family is the scenes typed record K8.5 replaces this allowlist with."
+
+[[handler]]
+name = "+seat"
+category = "authoritative"
+note = "E7 cut 10 (10b 3.10 B4/B5/B8): proxy seats. /offer, /list, /accept and /decline write only the exempt campaign.seat workflow documents (a declined offer writes nothing at all), but /activate and /leave reach K6's control lease through cut 5's own ingress -- mush_sim::request_seat_activation stages the SAME control_handoff_request @station/handoff does -- and a CommandSpec is one primary verb, so the verb takes the CEILING class of its switches: Authoritative, on @station's exact precedent. Cut 10 persists no lease-like record of its own, opens no second lease-creation path, adds no tenth ChannelGrant projection or consumer, and ships NO eviction path: activation refuses when the station is held by anyone but the grant's own declared fallback (K6 gate leg 1) or when any channel in the seat's set is under another holder's live lease (leg 2, cut 10's own policy -- checked_request_handoff never asks), and the kernel answers only BeforeBoundary."
 
 [[handler]]
 name = "+sheet"
@@ -568,6 +585,12 @@ note = "baseline pinned at b0e3b52 (module, every composition)"
 name = "@create"
 category = "baseline"
 note = "baseline pinned at b0e3b52 (core/engine registry)"
+
+[[handler]]
+name = "@crew"
+category = "legacy-post-image"
+family = "campaign.crew"
+note = "E7 cut 10 (10b 3.10 B7): the AGGREGATE complement beside the billets -- @crew/assign, @crew/complement and @crew/readiness over one bounded whole-document crew:{unit} record (MAX_CREW_NAMED refuses on load) at a deterministic key. The NAMED half of a crew IS cut 5's billets (HostAssignments.seats + Derived::seats_by_actor): there is no second roster topology, a crew is not an org scope (R2) and not a party (Q21A -- mush-party is consumed unchanged and never extended). Authority is force.assign on the formation node's own OrgScopeId through mush_org::authorize_in_world, and an unauthorised caller is refused byte-identically whether the unit exists or not. No legality check reads a complement."
 
 [[handler]]
 name = "@deposit"
@@ -814,6 +837,11 @@ note = "E6b: staff conferral of a scene's seal (@scene/facilitate) and the monot
 name = "@script"
 category = "baseline"
 note = "baseline pinned at b0e3b52 (module, every composition)"
+
+[[handler]]
+name = "@seat"
+category = "authoritative"
+note = "E7 cut 10 (10b 3.10 B6/B8): @seat/revoke bumps the unit's control generation IMMEDIATELY (bump then republish, cut 5's order) so every queued human, NPC, pathfinder and LLM intent under the old grant fails World::channel_grant_is_current, clears the seat's narrowed channel set, and returns the seat to its declared fallback AT A SAFE BOUNDARY through the same control_handoff_request path -- never mid-tick and never a direct lease write, which is why the verb's ceiling class is Authoritative. @seat/audit is a staff read that answers WHETHER a driver token is attributed and prints no account id (R7); the token->account row is server-side (mush_core::SeatAudit, implemented in mush-server) and is never a world document, a journal line, a contract party or a canon entity."
 
 [[handler]]
 name = "@set"

@@ -62,6 +62,8 @@ pub mod action_coordinator;
 pub mod archive;
 pub mod campaign_formations;
 pub mod config_ext;
+/// E7c10 B3: the server-side, audit-only seat attribution log.
+pub mod seat_audit;
 // E4c: the economy -> canon evidence bridge (08c §6.1 item 3).
 pub mod decision_dispatch;
 pub mod decision_llm;

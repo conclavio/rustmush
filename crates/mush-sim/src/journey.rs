@@ -869,6 +869,13 @@ pub(crate) enum Source {
 
 /// The registered `Coarse` tick.
 pub(crate) fn tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<SceneId>) {
+    // E7c10 B1: refresh the world-owned `control_leases` mirror the
+    // `channel_lease_holder` seam answers from. This is `mush-sim`'s own
+    // owner-scoped context — the only kind that may read K's lease family — and
+    // it is a bounded PULL over durable state (the cut-6 kernel fact), never an
+    // observer on a family change. It writes nothing durable and submits
+    // nothing, so it cannot collide with the tick-cadence rule.
+    crate::seat::refresh_control_lease_view(ctx);
     advance_due(ctx, Source::Tick);
 }
 

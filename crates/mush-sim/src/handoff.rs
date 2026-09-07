@@ -614,8 +614,13 @@ impl HandoffProvider {
             .module_state::<FocusState>()
             .and_then(|state| state.focus_of_actor(actor))
             .filter(|focus| focus.unit == unit)
-            .map(|focus| focus.station.clone());
-        let (station, driving) = match focused_here {
+            .map(|focus| (focus.station.clone(), focus.proxy));
+        // E7c10 B4: a PROXY focus (an OOC seat grant directing this NPC) rides
+        // the identical create/relief offer and differs only in the recorded
+        // `reason`, so the lease's own audit trail says which of the two
+        // ingresses established it. No second control model, no second focus.
+        let proxy = focused_here.as_ref().is_some_and(|(_, proxy)| *proxy);
+        let (station, driving) = match focused_here.map(|(station, _)| station) {
             Some(station) => (station, true),
             None if request => match departed_fallback_station(engine, actor, unit) {
                 Some(station) => (station, false),
@@ -687,7 +692,7 @@ impl HandoffProvider {
                 "next_holder": next_holder,
                 "requested_at": now,
                 "boundary": now,
-                "reason": "focus.station_seat",
+                "reason": if proxy { "seat.activate" } else { "focus.station_seat" },
                 "expected_revision": revision,
                 "station": station.as_str(),
                 "grant_epoch": epoch,

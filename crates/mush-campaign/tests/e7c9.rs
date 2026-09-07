@@ -1555,12 +1555,20 @@ fn e7c9_o1_a_canon_objective_is_discharged_by_a_pull_not_an_observer() {
 // Wiring / projection (P)
 // ===========================================================================
 
-/// **P1. The crate's edge set is exactly `{core, economy, canon, org}`** — no
-/// faction, no sim, no tactics, no propagation, no ruleset. `cargo tree -p
+/// **P1. The crate's edge set is exactly `{core, economy, canon, org, sim}`** —
+/// no faction, no tactics, no propagation, no ruleset. `cargo tree -p
 /// mush-campaign` is the gate; this is the same fact read from the manifest, so a
 /// stray edge fails a unit test rather than only a human's reading.
+///
+/// **E7 cut 10 added the ONE `mush-sim` edge** (10b §3.10 OPEN 1, as the owner
+/// decided): `handoff.rs` is a private module and `ModuleActionState` is
+/// owner-scoped, so the K6 request path and the `control_leases` family are
+/// unreachable from outside `mush-sim`. The campaign layer crosses that edge
+/// through exactly **two** exported `pub fn` seams —
+/// `mush_sim::{request_seat_activation, channel_lease_holder}` — and the edge is
+/// acyclic (`mush-sim -> {core, economy, scenes, proto}`, never campaign).
 #[test]
-fn e7c9_p1_the_manifest_declares_exactly_four_edges() {
+fn e7c9_p1_the_manifest_declares_exactly_five_edges() {
     let manifest = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml"),
     )
@@ -1580,7 +1588,13 @@ fn e7c9_p1_the_manifest_declares_exactly_four_edges() {
         .collect();
     assert_eq!(
         edges,
-        BTreeSet::from(["mush-canon", "mush-core", "mush-economy", "mush-org"]),
+        BTreeSet::from([
+            "mush-canon",
+            "mush-core",
+            "mush-economy",
+            "mush-org",
+            "mush-sim",
+        ]),
         "the campaign crate's edge set moved"
     );
 }

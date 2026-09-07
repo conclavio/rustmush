@@ -65,8 +65,23 @@ enum Step {
     Paused,
 }
 
+/// How many seat grants one fire may observe or expire (E7c10 B7's arm, with
+/// its own budget so the seat lane can never starve the settlement lane).
+pub const MAX_SEATS_PER_FIRE: usize = 32;
+
 /// One fire.
 pub(crate) fn tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<SceneId>) {
+    // **E7c10 B7 — the seat/muster arm on cut 9's ONE campaign tick.** It is a
+    // PULL over durable state (the cut-6 kernel fact): it reads the K6 lease
+    // through `mush_sim::channel_lease_holder` and this crate's own documents,
+    // and it is never an observer on a family change, never a `schedule_source`
+    // and never a second tick. It makes **no authoritative submission**, so the
+    // TICK-CADENCE RULE still cannot bind this tick however the fires line up.
+    //
+    // Both arms are bounded on records **visited** and are no-ops past the
+    // applied point, so a reboot re-running the sweep changes nothing.
+    crate::seatstate::observe_activations(ctx, MAX_SEATS_PER_FIRE);
+    crate::seatstate::expire_grants(ctx, MAX_SEATS_PER_FIRE);
     let mut stats = TickStats::default();
     let (ids, cursor) = {
         let Some(store) = ctx.w.module_state::<CampaignStore>() else {

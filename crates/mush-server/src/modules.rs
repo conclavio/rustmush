@@ -268,11 +268,18 @@ pub fn server_modules_with(
             // applied root marker — never from its `Resolving` status, so a
             // contract gated on it cannot settle from a resolution that merely
             // started (08c §6.2).
+            // E7 cut 10 (D-E7-30, 10b 10): `sim.*` joins them - the cut's FIRST
+            // and `mush-sim`'s only registration, answering
+            // `sim.station.served` from the applied `sim.station_service`
+            // marker (never a status: a sortie that merely started answers
+            // unknown). Five crates, one namespace each, and `with_facts`
+            // PANICS on a duplicate.
             .with_facts(vec![
                 Arc::new(mush_jobs::JobsFactProvider),
                 Arc::new(mush_inventory::InventoryFactProvider),
                 Arc::new(mush_industry::IndustryFactProvider),
                 Arc::new(mush_campaign::CampaignFactProvider),
+                Arc::new(mush_sim::SimFactProvider),
             ])
             // E5b: housing's exact-mode mirror joins the canon bridge. It hears the
             // obligation and contract transitions a lease is made of; abstract mode
@@ -380,7 +387,14 @@ pub fn server_modules_with(
                 // `mush-industry`. Unwired, `@force/create` refuses every kind.
                 .with_formation_kinds(Arc::new(
                     crate::campaign_formations::TacsimFormationAuthority,
-                )),
+                ))
+                // E7 cut 10 B3 (OPEN 4): the server-side, audit-only seat
+                // attribution log, on the same composition seam. The row
+                // linking a driver token to an account NEVER becomes a
+                // world document, a journal line or a canon record; one
+                // staff verb asks whether a token is attributed, and it
+                // prints no id. Unwired is fail-closed.
+                .with_seat_audit(Arc::new(crate::seat_audit::SeatAuditLog::new())),
         ),
         Box::new(mush_mail::MailModule),
         Box::new(mush_jobs::JobsModule::new()),
@@ -2328,6 +2342,32 @@ mod tests {
                         spec.name == name && *owner == Some("campaign") && *published == class
                     }),
                     "the campaign lane {name} must publish {class:?}"
+                );
+            }
+            // E7 cut 10: the seat lane, in TWO further groups on the same
+            // module. `+seat` and `@seat` publish `Authoritative` because
+            // `/activate`, `/leave` and `/revoke` reach K6's control lease
+            // through cut 5's ingress (`@station`'s exact precedent — the
+            // ingress publishes the class, whoever stages it); `@crew`,
+            // `+crewcall` and `+muster` write only the exempt `campaign.crew` /
+            // `campaign.muster` workflow documents, and `LegacyPostImage` is
+            // restored last so the module still ends in the class its own
+            // records ride.
+            for (name, class) in [
+                ("+seat", mush_core::CommandCompatibility::Authoritative),
+                ("@seat", mush_core::CommandCompatibility::Authoritative),
+                (
+                    "+crewcall",
+                    mush_core::CommandCompatibility::LegacyPostImage,
+                ),
+                ("+muster", mush_core::CommandCompatibility::LegacyPostImage),
+                ("@crew", mush_core::CommandCompatibility::LegacyPostImage),
+            ] {
+                assert!(
+                    registrations.iter().any(|(spec, owner, published)| {
+                        spec.name == name && *owner == Some("campaign") && *published == class
+                    }),
+                    "the campaign seat lane {name} must publish {class:?}"
                 );
             }
             assert!(registrations.iter().any(|(_, owner, class)| {

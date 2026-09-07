@@ -1985,6 +1985,7 @@ dependencies = [
  "mush-faction",
  "mush-org",
  "mush-proto",
+ "mush-sim",
  "mush-testkit",
  "serde",
  "serde_json",

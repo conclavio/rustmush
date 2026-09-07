@@ -278,6 +278,7 @@ pub(crate) fn load_boot(
     let mut placements: BTreeMap<ObjId, PlacementRecord> = BTreeMap::new();
     let mut raw_assignments: Vec<HostAssignments> = Vec::new();
     let mut station_fallbacks: Vec<StationFallback> = Vec::new();
+    let mut station_services: Vec<crate::seat::StationService> = Vec::new();
     // J1: the recovery ledger's chunks arrive as text in `data.ledger`.
     let log_docs = data.ledger;
 
@@ -351,8 +352,18 @@ pub(crate) fn load_boot(
         } else if key.starts_with("assignment:") {
             // Recoverable (a pilot re-boards): a corrupt doc is dropped, not fatal.
             match serde_json::from_value::<HostAssignments>(value) {
+                // E7c10 B1 (10b §3.10 contradiction (vii)): the seat census and
+                // every seat's narrowed channel set are re-run HERE, so a stored
+                // document over `MAX_SEATS_PER_UNIT` / `MAX_GRANTED_CHANNELS` is
+                // REFUSED on load and its host marked — never truncated into a
+                // silently smaller crew.
                 Ok(ha) if parse_id(&key, "assignment:") == Some(u64::from(ha.host.0)) => {
-                    raw_assignments.push(ha)
+                    match ha.check() {
+                        Ok(()) => raw_assignments.push(ha),
+                        Err(error) => {
+                            tracing::error!(%key, host = %ha.host, %error, "sim: over-cap assignment doc refused on load")
+                        }
+                    }
                 }
                 Ok(ha) => {
                     tracing::error!(%key, host = %ha.host, "sim: assignment doc key/host mismatch dropped")
@@ -425,6 +436,23 @@ pub(crate) fn load_boot(
                 }
                 Err(e) => {
                     tracing::error!(%key, error = %e, "sim: unparseable station-fallback doc dropped")
+                }
+            }
+        } else if key.starts_with("station_service:") {
+            // E7c10 B8: the applied markers `sim.station.served` answers from
+            // (an EXEMPT workflow record, never authority). Drop-on-unreadable,
+            // exactly like a fallback doc: a bad marker must not brick boot, and
+            // a missing one answers `None` = unknown = unsatisfied, which is the
+            // fail-closed direction for a fact-gated settlement.
+            match serde_json::from_value::<crate::seat::StationService>(value) {
+                Ok(rec) if crate::seat::service_key(rec.unit, &rec.station, rec.actor) == key => {
+                    station_services.push(rec);
+                }
+                Ok(rec) => {
+                    tracing::error!(%key, unit = %rec.unit, "sim: station-service doc key/body mismatch dropped")
+                }
+                Err(e) => {
+                    tracing::error!(%key, error = %e, "sim: unparseable station-service doc dropped")
                 }
             }
         } else {
@@ -658,6 +686,22 @@ pub(crate) fn load_boot(
             if !slot.declare(rec.unit, rec.station.clone(), rec.holder) {
                 tracing::warn!(
                     "sim: station-fallback census reached at boot; extra declared fallbacks dropped"
+                );
+                break;
+            }
+        }
+    }
+    // E7c10 B8: hydrate the applied-marker book the `sim.*` fact provider reads,
+    // bounded by `MAX_STATION_SERVICE_ROWS`. A marker that does not fit is
+    // dropped from the mirror and stays on disk, and the fact then answers
+    // `None` (unknown = unsatisfied) rather than a wrong `true`.
+    if !station_services.is_empty()
+        && let Some(book) = ctx.w.module_state_mut::<crate::seat::ServiceBook>()
+    {
+        for rec in station_services {
+            if !book.record(rec) {
+                tracing::warn!(
+                    "sim: station-service census reached at boot; extra markers left on disk"
                 );
                 break;
             }
