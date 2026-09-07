@@ -344,6 +344,7 @@ async fn boot_rig(store: &Arc<dyn ObjectStore>) -> (Arc<SessionManager>, Persist
             staff,
             llm: None,
             quarantine_spool: mushd::quarantine::QuarantineSpool::in_memory(),
+            outbox_adapters: Vec::new(),
         },
     );
     (sessions, handles)

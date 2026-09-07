@@ -37,6 +37,8 @@ mush-tactics.workspace = true
 mush-canon.workspace = true
 # D1: explicit-only privileges + audit (`@privilege`; the `@discord` family appends to it).
 mush-privileges.workspace = true
+# D5: the on-call durable-outbox adapter holds a REST-only Discord client.
+mush-net-discord.workspace = true
 # The E1 organization identity + scoped-authorization module.
 mush-org.workspace = true
 # The E2 accountable-value engine (double-entry journal).

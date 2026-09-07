@@ -160,5 +160,23 @@ impl EconomyObserver for StaffAlerts {
                 );
             }
         }
+        // Interface programme D5: the same headline on the staff relay sink
+        // (the Discord staff channel, when mapped), once per record.
+        if let Some(head) = lines.first() {
+            let now_ms = ctx.w.now().saturating_mul(1000);
+            ctx.out.push(
+                mush_core::Audience::Relay(mush_proto::SmolStr::new(
+                    mush_core::output::STAFF_RELAY_SINK,
+                )),
+                mush_proto::OutputEvent::Notice {
+                    id: 0,
+                    severity: mush_proto::NoticeSeverity::Urgent,
+                    category: mush_proto::SmolStr::new("alert"),
+                    text: mush_proto::RichText::plain(head.clone()),
+                    action: None,
+                    ts: now_ms,
+                },
+            );
+        }
     }
 }

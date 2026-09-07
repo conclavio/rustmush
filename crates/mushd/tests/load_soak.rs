@@ -396,6 +396,7 @@ async fn boot_load(tag: &str, send_queue: usize, send_timeout_ms: u64) -> Rig {
             llm: None,
             quarantine_spool: mushd::quarantine::QuarantineSpool::in_memory(),
             metrics: Arc::new(mush_net_web::Metrics::new()),
+            outbox_adapters: Vec::new(),
         },
     );
     let accounts = Arc::new(Accounts::new(Arc::clone(&store), handles.handle.clone(), 3));

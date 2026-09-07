@@ -126,6 +126,7 @@ async fn boot_rig(
             staff,
             llm: None,
             quarantine_spool: mushd::quarantine::QuarantineSpool::in_memory(),
+            outbox_adapters: Vec::new(),
         },
     );
     (sessions, handles)
@@ -159,6 +160,7 @@ async fn boot_module_rig(
             staff,
             llm: None,
             quarantine_spool: mushd::quarantine::QuarantineSpool::in_memory(),
+            outbox_adapters: Vec::new(),
         },
     );
     (sessions, handles)
@@ -268,6 +270,7 @@ async fn boot_round_trip(store: Arc<dyn ObjectStore>) {
             staff: Arc::new(StaffQueue::new()),
             llm: None,
             quarantine_spool: mushd::quarantine::QuarantineSpool::in_memory(),
+            outbox_adapters: Vec::new(),
         },
     );
     let mut nick_rx = attach_direct(&sessions2, &handles2.handle, 7, nick, "nick").await;
@@ -902,6 +905,7 @@ async fn boot_onboarding_rig(
             staff,
             llm: None,
             quarantine_spool: mushd::quarantine::QuarantineSpool::in_memory(),
+            outbox_adapters: Vec::new(),
         },
     );
     (sessions, handles)
@@ -1103,6 +1107,7 @@ async fn boot_worldgen_rig(
             staff,
             llm: Some(llm),
             quarantine_spool: mushd::quarantine::QuarantineSpool::in_memory(),
+            outbox_adapters: Vec::new(),
         },
     );
     (sessions, handles)
@@ -1248,6 +1253,7 @@ async fn boot_wod_rig(
             staff,
             llm: None,
             quarantine_spool: mushd::quarantine::QuarantineSpool::in_memory(),
+            outbox_adapters: Vec::new(),
         },
     );
     (sessions, handles)
@@ -2411,6 +2417,7 @@ async fn boot_npc_rig(
             staff,
             llm: Some(llm),
             quarantine_spool: mushd::quarantine::QuarantineSpool::in_memory(),
+            outbox_adapters: Vec::new(),
         },
     );
     (sessions, handles)

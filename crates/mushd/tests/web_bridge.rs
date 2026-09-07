@@ -81,6 +81,7 @@ async fn rig_with(config: SessionConfig) -> Rig {
             staff,
             llm: None,
             quarantine_spool: mushd::quarantine::QuarantineSpool::in_memory(),
+            outbox_adapters: Vec::new(),
         },
     );
     let accounts = Arc::new(Accounts::new(Arc::clone(&store), handles.handle.clone(), 3));

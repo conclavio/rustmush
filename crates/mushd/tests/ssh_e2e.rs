@@ -208,6 +208,7 @@ async fn boot_duo_server(dir: &std::path::Path, seed_key: bool, with_staff: bool
                 staff,
                 llm: None,
                 quarantine_spool: mushd::quarantine::QuarantineSpool::in_memory(),
+                outbox_adapters: Vec::new(),
             },
         )
         .handle

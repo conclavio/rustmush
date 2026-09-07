@@ -1249,3 +1249,53 @@ fn lb_dlbk6_the_fact_provider_still_answers_from_the_applied_marker() {
         "a plain job's resolution became a settlement fact"
     );
 }
+
+/// Programme D5: filing a request also tells the staff relay sink — the
+/// Discord staff channel, when the operator mapped one — once, with the job
+/// number, the opener and the title, and the command staff open it with.
+#[test]
+fn d5_a_request_is_announced_on_the_staff_relay_sink() {
+    let mut env = setup();
+    let out = run(
+        env.nick,
+        &mut env,
+        "+request A door is stuck=It will not open.",
+    );
+    let staff: Vec<(String, String, String, String)> = out
+        .events()
+        .iter()
+        .filter_map(|(aud, e)| match (aud, e) {
+            (
+                mush_core::Audience::Relay(name),
+                OutputEvent::Notice {
+                    category,
+                    text,
+                    action,
+                    ..
+                },
+            ) => Some((
+                name.to_string(),
+                category.to_string(),
+                text.to_plain_text(),
+                action
+                    .as_ref()
+                    .map(|a| a.prefill.clone())
+                    .unwrap_or_default(),
+            )),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(staff.len(), 1, "{:?}", out.events());
+    let (sink, category, text, prefill) = &staff[0];
+    assert_eq!(sink, mush_core::output::STAFF_RELAY_SINK);
+    assert_eq!(category, "request");
+    assert!(text.starts_with("+request #"), "{text}");
+    assert!(text.ends_with("from Nick: A door is stuck"), "{text}");
+    assert!(prefill.starts_with("+job "), "{prefill}");
+    // The opener's own confirmation is unchanged.
+    assert!(
+        sys_texts(&out)
+            .iter()
+            .any(|t| t.contains("Request filed as job"))
+    );
+}

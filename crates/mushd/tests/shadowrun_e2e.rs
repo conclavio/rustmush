@@ -141,6 +141,7 @@ async fn boot_server(dir: &Path, seed: u64) -> SocketAddr {
             staff,
             llm: None,
             quarantine_spool: mushd::quarantine::QuarantineSpool::in_memory(),
+            outbox_adapters: Vec::new(),
         },
     );
     let world = handles.handle;

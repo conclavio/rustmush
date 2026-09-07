@@ -2479,6 +2479,7 @@ dependencies = [
  "mush-llm",
  "mush-mail",
  "mush-market",
+ "mush-net-discord",
  "mush-npc",
  "mush-org",
  "mush-party",

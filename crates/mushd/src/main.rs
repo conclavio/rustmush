@@ -452,6 +452,9 @@ async fn serve(config: Config, mut quarantine_spool: QuarantineSpool) -> Result<
             // E0 quarantine spool: a separate durable failure domain under the
             // data dir for confirmed-poison ledger seals.
             quarantine_spool,
+            // Programme D5: the on-call Discord DM adapter, when the bot is
+            // configured (a REST-only client of its own, beside the gateway's).
+            outbox_adapters: mushd::discord_dm::adapters_from_config(&config),
         },
         llm_cfg.decision_workers,
         Arc::clone(&controls),

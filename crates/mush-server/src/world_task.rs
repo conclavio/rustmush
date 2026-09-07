@@ -1490,6 +1490,10 @@ pub struct ServerDeps {
     /// tests opt into the explicit in-memory implementation. There is no
     /// log-only preservation mode.
     pub quarantine_spool: crate::quarantine::QuarantineSpool,
+    /// Durable-outbox delivery adapters the deployment supplies beyond the
+    /// engine's own (programme D5: the on-call Discord DM adapter). Registered
+    /// into the outbox registry at spawn; a duplicate is logged and skipped.
+    pub outbox_adapters: Vec<Arc<dyn crate::durable_outbox::DurableOutboxAdapter>>,
 }
 
 impl ServerDeps {
@@ -1505,6 +1509,7 @@ impl ServerDeps {
             llm: None,
             metrics: Arc::new(Metrics::new()),
             quarantine_spool: crate::quarantine::QuarantineSpool::in_memory(),
+            outbox_adapters: Vec::new(),
         }
     }
 }
@@ -1577,17 +1582,26 @@ pub fn base_registry() -> Registry {
 /// The world task exits when [`Inbound::Control`]`(Shutdown)` steps to
 /// [`StepOutcome::Shutdown`] or when every [`WorldHandle`] (and internal effect
 /// sender) is dropped; the writer drains its queue and exits after that.
+/// The durable-outbox registry seeded with the deployment's own adapters
+/// (`ServerDeps::outbox_adapters` — programme D5's on-call Discord DM adapter
+/// among them). A duplicate `(owner, adapter)` is logged and skipped.
+fn outbox_registry(deps: &ServerDeps) -> DurableOutboxRegistry {
+    let mut registry = DurableOutboxRegistry::new();
+    for adapter in &deps.outbox_adapters {
+        if let Err(error) = registry.register(Arc::clone(adapter)) {
+            tracing::error!(%error, "durable outbox adapter not registered");
+        }
+    }
+    registry
+}
+
 pub fn spawn_persist_with_gateway(
     engine: Engine,
     deps: ServerDeps,
     make_gateway: impl FnOnce(mpsc::WeakSender<WorldMsg>) -> Gateway,
 ) -> PersistHandles {
-    spawn_persist_with_gateway_and_outbox(
-        engine,
-        deps,
-        Arc::new(DurableOutboxRegistry::new()),
-        make_gateway,
-    )
+    let registry = Arc::new(outbox_registry(&deps));
+    spawn_persist_with_gateway_and_outbox(engine, deps, registry, make_gateway)
 }
 
 struct DecisionRuntime {
@@ -1680,20 +1694,22 @@ pub fn spawn_persist_with_gateway_production(
         tracing::warn!(
             "decision sources are composed but no decision key ring is set; the decision runtime is not started"
         );
+        let registry = Arc::new(outbox_registry(&deps));
         return Ok(spawn_persist_with_gateway_mode(
             engine,
             deps,
-            Arc::new(DurableOutboxRegistry::new()),
+            registry,
             None,
             None,
             make_gateway,
         ));
     }
     let providers = production_decision_providers(&engine, llm)?;
+    let registry = outbox_registry(&deps);
     spawn_persist_with_gateway_and_decisions(
         engine,
         deps,
-        DurableOutboxRegistry::new(),
+        registry,
         providers,
         decision_workers,
         make_gateway,
@@ -9714,6 +9730,7 @@ mod tests {
             llm: None,
             metrics: Arc::new(Metrics::new()),
             quarantine_spool: crate::quarantine::QuarantineSpool::in_memory(),
+            outbox_adapters: Vec::new(),
         }
     }
 
@@ -12205,6 +12222,7 @@ mod tests {
                 llm: None,
                 metrics: Arc::new(Metrics::new()),
                 quarantine_spool: crate::quarantine::QuarantineSpool::in_memory(),
+                outbox_adapters: Vec::new(),
             },
             move |_| -> Gateway { sink },
         );
@@ -13219,6 +13237,7 @@ mod tests {
                 llm: None,
                 metrics: Arc::new(Metrics::new()),
                 quarantine_spool: crate::quarantine::QuarantineSpool::in_memory(),
+                outbox_adapters: Vec::new(),
             },
             Arc::new(DurableOutboxRegistry::new()),
             None,

@@ -12,13 +12,14 @@ mush-core.workspace = true
 # direction — the answer lives with the data). Nothing runs back: neither
 # mush-economy nor mush-org depends on mush-jobs, directly or in dev.
 mush-economy.workspace = true
+# D5: the staff relay notice on +request is a wire event.
+mush-proto.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 smol_str.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
-mush-proto.workspace = true
 
 [lints]
 workspace = true

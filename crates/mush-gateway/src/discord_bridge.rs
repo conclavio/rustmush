@@ -41,6 +41,7 @@ use mush_config::config::Config;
 use mush_config::discord::link_code_hash;
 use mush_config::ipguard::IpGuard;
 use mush_config::unix_now_s;
+use mush_core::output::STAFF_RELAY_SINK;
 use mush_core::{AccountId, ObjId};
 use mush_ipc::{
     DiscordControlOp, DiscordInteraction, DiscordInteractionError, GatewayLink, RelaySpeak,
@@ -262,6 +263,9 @@ pub struct DiscordBridge<A: AuthBackend + 'static> {
     /// Per-author inbound relay limiter (D4): at most [`RELAY_PER_USER`]
     /// lines per [`RELAY_WINDOW`]; over the limit is silently dropped.
     relay_limiter: Mutex<HashMap<u64, VecDeque<Instant>>>,
+    /// The Discord channel staff-facing lines go to (D5, `[discord]
+    /// .staff_channel_id`); `0` drops them.
+    staff_channel_id: u64,
 }
 
 /// The inbound relay limiter's window.
@@ -351,6 +355,7 @@ impl<A: AuthBackend + 'static> DiscordBridge<A> {
             next_conn: AtomicU64::new(DISCORD_CONN_ID_BASE),
             relay: RelayMapper::new(&config.relay),
             relay_limiter: Mutex::new(HashMap::new()),
+            staff_channel_id: config.staff_channel_id,
         }
     }
 
@@ -1235,6 +1240,44 @@ fn relay_content(kind: NarrativeKind, name: &str, text: &str, impersonated: bool
     }
 }
 
+/// How a staff-sink event reads on the staff channel (D5): a notice with its
+/// severity marker and category (and the command its action offers, as text —
+/// staff act in the game, not from Discord), a system line as text, a channel
+/// line as a bold name and text. Anything else is not a staff line.
+fn staff_line(event: &OutputEvent) -> Option<String> {
+    match event {
+        OutputEvent::Notice {
+            severity,
+            category,
+            text,
+            action,
+            ..
+        } => {
+            let marker = match severity {
+                mush_proto::NoticeSeverity::Info => "•",
+                mush_proto::NoticeSeverity::Warn => "⚠",
+                mush_proto::NoticeSeverity::Urgent => "‼",
+            };
+            let mut s = format!(
+                "{marker} [{}] {}",
+                escape_md(category),
+                escape_md(&text.to_plain_text())
+            );
+            if let Some(a) = action {
+                s.push_str(&format!("  (`{}`)", a.prefill));
+            }
+            Some(s)
+        }
+        OutputEvent::Sys(text) => Some(escape_md(&text.to_plain_text())),
+        OutputEvent::Channel { actor, text, .. } => Some(format!(
+            "**{}**: {}",
+            escape_md(&actor.name),
+            escape_md(&text.to_plain_text())
+        )),
+        _ => None,
+    }
+}
+
 /// The TinyMUX pose forms a Discord line may use: `:waves` → pose,
 /// `;grins` → semipose, anything else is said.
 fn relay_kind(line: &str) -> (NarrativeKind, &str) {
@@ -1275,6 +1318,27 @@ impl<A: AuthBackend + 'static> DiscordBridge<A> {
     /// Game → Discord (D4): a relay-flagged channel's line, mirrored to its
     /// mapped Discord channel under the character's name.
     pub async fn relay_out(&self, channel: &str, event: &OutputEvent) {
+        // D5: the reserved staff sink — `+request` filings and staff alerts —
+        // posts to the staff channel as the bot (system lines are never
+        // impersonated). No channel configured: dropped.
+        if channel == STAFF_RELAY_SINK {
+            if self.staff_channel_id == 0 {
+                tracing::debug!("staff relay line with no staff channel; dropped");
+                return;
+            }
+            let Some(text) = staff_line(event) else {
+                return;
+            };
+            match self
+                .api
+                .send(self.staff_channel_id, Outgoing::plain(text))
+                .await
+            {
+                Ok(_) => tracing::debug!("staff relay line posted"),
+                Err(e) => tracing::warn!(error = %e, "staff relay line not posted"),
+            }
+            return;
+        }
         let Some(map) = self.relay.outbound(channel) else {
             tracing::debug!(channel, "relay line for an unmapped channel dropped");
             return;
@@ -1540,7 +1604,9 @@ mod tests {
     use mush_net_discord::RequestMessage;
     use mush_net_discord::dm::request_rows;
     use mush_net_discord::testing::{Call, FakeApi};
-    use mush_proto::{NarrativeKind, ObjRef, RequestKind, RequestOption};
+    use mush_proto::{
+        NarrativeKind, NoticeAction, NoticeSeverity, ObjRef, RequestKind, RequestOption, SmolStr,
+    };
     use mush_session::SessionConfig;
     use mush_store::{DiscordBanRec, DiscordCodeRecord, InMemoryStore};
 
@@ -2670,6 +2736,52 @@ mod tests {
             b.relay_in(OTHER, 4242, "hi").await,
             RelayLineOutcome::Ignored
         );
+    }
+
+    #[tokio::test]
+    async fn staff_sink_lines_post_to_the_staff_channel_as_the_bot() {
+        let notice = OutputEvent::Notice {
+            id: 0,
+            severity: NoticeSeverity::Urgent,
+            category: SmolStr::new("alert"),
+            text: RichText::plain("Quarantine *full* on dev1"),
+            action: Some(NoticeAction {
+                label: "Open".into(),
+                prefill: "@econ/alerts #3".into(),
+            }),
+            ts: 0,
+        };
+        let r = rig(|c| c.staff_channel_id = 9090).await;
+        r.bridge.relay_out(STAFF_RELAY_SINK, &notice).await;
+        assert_eq!(
+            r.api.calls(),
+            vec![Call::Send {
+                channel_id: 9090,
+                msg: Outgoing::plain(
+                    "‼ [alert] Quarantine \\*full\\* on dev1  (`@econ/alerts #3`)"
+                ),
+            }],
+            "posted as the bot, never impersonated"
+        );
+        // A system line and a channel line render; other events do not.
+        r.bridge
+            .relay_out(
+                STAFF_RELAY_SINK,
+                &OutputEvent::Sys(RichText::tag("system", "IPC boundary down")),
+            )
+            .await;
+        r.bridge
+            .relay_out(STAFF_RELAY_SINK, &OutputEvent::Ping { nonce: 1 })
+            .await;
+        let calls = r.api.calls();
+        assert_eq!(calls.len(), 2);
+        assert!(
+            matches!(&calls[1], Call::Send { channel_id: 9090, msg } if msg.content == "IPC boundary down")
+        );
+        // No staff channel configured: dropped.
+        let r0 = rig(|_| {}).await;
+        r0.bridge.relay_out(STAFF_RELAY_SINK, &notice).await;
+        assert!(r0.api.calls().is_empty());
     }
 
     #[tokio::test]

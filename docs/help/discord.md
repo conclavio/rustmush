@@ -124,6 +124,14 @@ Rules:
   linked: check the code, mint a fresh one with `@discord/link`, and make
   sure neither side is already linked.
 
+Staff channel:
+
+  When the operator has mapped a staff channel, the bot posts there (as the
+  bot, never as a character) every `+request` a player files and every staff
+  economy alert — a headline with the command to open it. Reply and act in
+  the game as usual; a `Staff` comsys channel flagged `relay` gives you a
+  two-way staff channel on Discord too.
+
 Staff (Wizards):
 
   @discord/show <player>       The player's link, including the Discord id.

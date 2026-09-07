@@ -66,6 +66,7 @@ fn spawn_staffed(
             staff,
             llm: None,
             quarantine_spool: mushd::quarantine::QuarantineSpool::in_memory(),
+            outbox_adapters: Vec::new(),
         },
     )
 }

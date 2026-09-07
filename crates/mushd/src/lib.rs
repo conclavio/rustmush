@@ -33,7 +33,7 @@ pub mod repl;
 pub use mush_config::{config, ipguard, logging, unix_now_ms, unix_now_s};
 
 // --- server half (mush-server) ---
-pub use mush_server::{help, modules, persist, quarantine, staff};
+pub use mush_server::{discord_dm, help, modules, persist, quarantine, staff};
 
 // --- gateway half (mush-gateway) ---
 pub use mush_gateway::{bridge_common, controls, discord_bridge, ssh_bridge, web_bridge};

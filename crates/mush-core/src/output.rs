@@ -69,6 +69,12 @@ impl DeliveryClass {
 /// per-connection routing); `mush-session` owns allocation and delivery.
 pub type ConnId = u64;
 
+/// The reserved relay sink staff-facing lines go to (interface programme D5):
+/// `+request` filings and staff alerts are published here as well, and the
+/// gateway's Discord bridge posts them to `[discord].staff_channel_id` as the
+/// bot. Not a comsys channel name; a channel so named would collide.
+pub const STAFF_RELAY_SINK: &str = "staff-alerts";
+
 /// Who should receive an event.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Audience {

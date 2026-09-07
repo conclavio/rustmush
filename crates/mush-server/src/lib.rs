@@ -64,6 +64,7 @@ pub mod config_ext;
 // E4c: the economy -> canon evidence bridge (08c §6.1 item 3).
 pub mod decision_dispatch;
 pub mod decision_llm;
+pub mod discord_dm;
 pub mod durable_outbox;
 pub mod econ_alerts;
 pub mod econ_canon;
@@ -469,6 +470,8 @@ pub async fn serve_with_quarantine_spool(
     // under the configured data dir. Confirmed poison seals and complete K3
     // bundles are fsynced here before the writer enters its integrity halt.
     deps.quarantine_spool = quarantine_spool;
+    // Programme D5: the on-call Discord DM adapter, when the bot is configured.
+    deps.outbox_adapters = crate::discord_dm::adapters_from_config(&config);
 
     // Cloned out BEFORE `deps` is moved into the world spawn: the writer task and
     // the [`SocketSink`] stamp shed/timeout/high-water onto the SAME registry the

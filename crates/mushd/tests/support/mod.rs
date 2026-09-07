@@ -355,6 +355,7 @@ pub async fn boot_module_server(dir: &Path, server_name: &str, boss_password: &s
             staff,
             llm: None,
             quarantine_spool: mushd::quarantine::QuarantineSpool::in_memory(),
+            outbox_adapters: Vec::new(),
         },
     );
     let world = handles.handle;
@@ -443,6 +444,7 @@ pub async fn boot_worldgen_server(
             staff,
             llm: Some(llm),
             quarantine_spool: mushd::quarantine::QuarantineSpool::in_memory(),
+            outbox_adapters: Vec::new(),
         },
     );
     let world = handles.handle;

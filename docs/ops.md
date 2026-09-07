@@ -1064,7 +1064,7 @@ Two operational tradeoffs of the file appender are **deliberate**:
   prunes `<data_dir>/logs/`. Add external rotation — e.g. `logrotate`, or a cron
   sweep like `find <data_dir>/logs -name 'mushd.log.*' -mtime +14 -delete`.
 
-## Discord bot (D1–D4): `[discord]`
+## Discord bot (D1–D5): `[discord]`
 
 The Discord transport (`mush-net-discord`, plan `docs/interface/04-discord-implementation-plan.md`)
 runs **inside the gateway process** (`mushd` all-in-one, or `mush-gateway` in the split deploy)
@@ -1130,6 +1130,34 @@ subscribes to `GUILD_MESSAGES | MESSAGE_CONTENT` only when some mapping accepts 
 role needs **Manage Webhooks** in each mapped channel (or a pre-created webhook named `rustmush`),
 and **View Channel** + **Send Messages** there. The oracle is hydrated at boot: a character created
 since the last restart relays nothing until a restart (fail closed, `RelayError::AccountMismatch`).
+
+**The staff channel (D5).** `[discord].staff_channel_id` names one Discord channel the bot posts
+staff-facing lines to, **as the bot** (system lines are never impersonated): every `+request` filing
+(`• [request] +request #12 from Nick: A door is stuck  (+job 12)`) and every staff economy alert or
+escalation (`‼ [alert] …`). Producers publish these to the reserved relay sink `staff-alerts`
+(`mush_core::output::STAFF_RELAY_SINK`); with the id at `0` they are dropped. Staff *reply* in the
+game, or on a `Staff` comsys channel mapped `direction = "both"` through the D4 relay — there is no
+special reply path. Keep the Discord channel staff-only: job titles are players' words.
+
+**On-call seams (D5, 03 §7a).** What D provides the on-call service, and what O owns:
+
+- **The link, by reference.** On-call keeps `VerifiedContactRef::DiscordLink { account }`; at page
+  time it resolves through `AccountRec.discord` (D1). D stores the snowflake once, on the account.
+- **A REST-only sender.** `mush_net_discord::DiscordRest` — constructible from the token alone, no
+  Gateway, no world; `create_dm`, `send`, `edit`, `webhook_send`. Both halves may hold one; budgets
+  are not shared (on-call volume makes that moot).
+- **The durable adapter.** `mush_server::discord_dm::DiscordDmAdapter` — `owner = "oncall"`,
+  `adapter = "discord.dm"` — is registered into the durable-outbox registry (`ServerDeps::
+  outbox_adapters`) in both binaries whenever `[discord].enabled` and the token resolve. Payload:
+  `{ "user_id", "text", "incident", "attempt" }`. The message carries `incident #… · attempt n` so a
+  duplicate delivery (Discord has no idempotency key) reads as one; a 429/5xx/network fault is
+  `Retryable`, a 4xx or closed DMs `Permanent` (on-call then falls through to SMS/email); the
+  delivered message id is logged at `info` with the incident. Nothing produces an `oncall` intent yet.
+- **Interactions.** A `custom_id` prefix a module claims (`Registrar::discord_interaction("oncall:")`)
+  reaches its handler through `ServiceReq::DiscordInteraction` (D3); an Acknowledge button is
+  `oncall:ack:<incident>`. A gateway-originated incident's ack would be handled in the gateway.
+- **Eligibility is O's.** Whether an account may be on-call, re-verification intervals, rotation,
+  escalation, and the operations store are the on-call programme's.
 
 Setup, once, in the Discord developer portal:
 

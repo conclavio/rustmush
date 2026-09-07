@@ -236,7 +236,7 @@ fn cmd_request(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         ctx,
         OpenJob {
             queue: REQ_QUEUE.into(),
-            title,
+            title: title.clone(),
             opener: ctx.actor,
             text: Some(text),
             payload: None,
@@ -247,6 +247,27 @@ fn cmd_request(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     ctx.out.info(
         ctx.actor,
         format!("Request filed as job {id} in queue {REQ_QUEUE}. Track it with +job {id}."),
+    );
+    // Interface programme D5: staff hear about a new request on their relay
+    // sink too (the Discord staff channel, when the operator mapped one). The
+    // title is the player's own words, the same staff read in `+jobs`.
+    let opener = display_name(ctx.w, ctx.actor);
+    let now_ms = ctx.w.now().saturating_mul(1000);
+    ctx.out.push(
+        mush_core::Audience::Relay(mush_proto::SmolStr::new(
+            mush_core::output::STAFF_RELAY_SINK,
+        )),
+        mush_proto::OutputEvent::Notice {
+            id: 0,
+            severity: mush_proto::NoticeSeverity::Info,
+            category: mush_proto::SmolStr::new("request"),
+            text: mush_proto::RichText::plain(format!("+request #{id} from {opener}: {title}")),
+            action: Some(mush_proto::NoticeAction {
+                label: "Open".into(),
+                prefill: format!("+job {id}"),
+            }),
+            ts: now_ms,
+        },
     );
     Ok(())
 }

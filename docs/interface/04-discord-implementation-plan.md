@@ -770,6 +770,57 @@ message id in the result; a staff reply attributed to the staff character.
 
 **Verify lenses.** **P** — a staff line never reaches a player relay channel; **B** — bounded payloads.
 
+**As built (2026-09-06, branch `z`, uncommitted — the owner commits).** Both halves landed — the
+staff producers and the on-call adapter — with these deviations recorded rather than assumed:
+
+- **Producers publish unconditionally to a reserved sink; the gate is the bridge's.** The server has
+  no view of `[discord].staff_channel_id` (the gateway parses `[discord]`), so `+request` (mush-jobs)
+  and the economy alerts (`econ_alerts.rs`) push a `Notice` to `Audience::Relay(STAFF_RELAY_SINK)`
+  (`"staff-alerts"`, a `mush_core::output` constant) every time, and the bridge posts it to the
+  staff channel **as the bot** when the id is set and drops it at debug otherwise. A comsys channel
+  literally named `staff-alerts` would collide; documented. The `+request` notice carries the job
+  number, the opener and the title with the `+job <n>` action; the alert carries the record's
+  headline. Category `escalation` was not separately produced: the economy alerts already grade
+  severity into the one `alert` notice, so the headline's marker (`‼`) is the escalation signal.
+- **The staff reply path is D4's**, as planned: a `Staff` comsys channel flagged `relay` and mapped
+  `both`. Nothing new was built for it.
+- **`DiscordDmAdapter`** lives in `mush_server::discord_dm` (mush-server now depends on
+  `mush-net-discord` for the REST client — the transport crate depends only on config and proto, so
+  no cycle). Payload `{ user_id, text, incident, attempt }` with `deny_unknown_fields`; `components`
+  from the plan's payload was **not** carried (on-call's Acknowledge button is D3's interaction seam,
+  and a plain page needs none; add it when the producer exists). The label is
+  `_incident #… · attempt n_`; retryable/permanent follow `ApiError` (`CannotDm` permanent). **The
+  delivered message id is logged at `info`, not recorded in the outbox item** — `AuthoritativeOutbox
+  AttemptResult::Delivered` has no field for it; adding one is a store-schema change the on-call
+  programme can make when it wants the reference in its audit.
+- **Registration is `ServerDeps::outbox_adapters`** (`Vec<Arc<dyn DurableOutboxAdapter>>`), seeded
+  into the durable registry by a small `outbox_registry(&deps)` helper at all three spawn paths
+  (plain, no-keys, with decisions), so a duplicate `(owner, adapter)` is logged rather than fatal.
+  `discord_dm::adapters_from_config(&Config)` builds the adapter when `[discord].enabled` and the
+  token resolve (ids from the environment as in D2); both `mushd` and the split server call it. The
+  seventeen test literals of `ServerDeps` gained `outbox_adapters: Vec::new()`.
+
+Landed: `STAFF_RELAY_SINK` (core), the `+request` and alert producers (jobs, server), the bridge's
+staff sink render (`staff_line`: notice with marker/category/command, system line, channel line)
+and `staff_channel_id`, `discord_dm.rs` (adapter + `adapters_from_config`), `ServerDeps::
+outbox_adapters` + `outbox_registry`, the mush-jobs `mush-proto` dependency moved to `[dependencies]`;
+`help discord` (Staff channel), `docs/ops.md` (the staff channel; the on-call seams paragraph — what
+D provides, what O owns), the README row.
+
+Tests: `mush-server::discord_dm` **4** (a page opens the DM and carries the `incident #… · attempt n`
+label; a 429 is retryable and closed DMs permanent; malformed, empty and misrouted intents are
+permanent without reaching Discord; no adapter without the bot or its token); `mush-jobs`
+**`d5_a_request_is_announced_on_the_staff_relay_sink`** (one notice on the sink with number, opener,
+title and the `+job` action; the opener's confirmation unchanged); gateway lib **15 bridge tests**
+(the staff sink posts a notice as the bot with marker, category and the command, a system line as
+text, ignores other events, and drops everything with no staff channel). Whole workspace: **243
+binaries, 3 971 tests, 0 failures**; clippy `-D warnings` and `fmt --check` clean. Not live-tested.
+The P/B lenses were argued: **P** — the staff sink is a reserved name no `[discord.relay]` entry can
+map (the bridge handles it before the map), so a staff line reaches only `staff_channel_id`, and a
+player channel's line never carries the staff sink's name; **B** — the page text is cut at 1 800
+characters before the label, payloads are `deny_unknown_fields`, and every refusal string is a
+constant or a bounded API message.
+
 ### 3.6 Cut D6 — Consent
 
 - `mush-scenes` opens a `Request` (`Ctx::open_request`) to every participant on: a facilitator's
@@ -954,3 +1005,7 @@ None blocks D1; q1 and q6 are the owner's, the rest are defaults the build takes
   found-or-created cached webhook, inbound lines through `ServiceReq::RelaySpeak` and a new
   `RelaySpeaker` seam (a refusal reaches the author), the oracle installed on the engine; deviations
   recorded (`RelaySpeaker` over `AsyncCompletion`, `AccountId` on the wire, a bridge-side limiter).
+- **Draft 0.6 — 2026-09-06.** D5 built (§3.5 "As built"): the staff sink (`+request` and alert
+  notices posted to the staff channel as the bot), the on-call `DiscordDmAdapter` on the durable
+  outbox with `ServerDeps::outbox_adapters`, the on-call seams written up in ops; deviations recorded
+  (the gate is the bridge's, no `components` in the payload yet, the message id logged not stored).
