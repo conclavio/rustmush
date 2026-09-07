@@ -660,6 +660,42 @@ fn seat_activate(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         return Err(no_seat());
     }
     let station = mush_sim::StationId::new(offer.scope.station.as_str()).ok_or_else(no_seat)?;
+    // ---- E7c11 independent verify fold, D5 (T11's "assumption of another
+    // station", on the activation path) ----
+    // The B14 short-circuit above fires only for the SAME `(unit, station)`; a
+    // proxy focus on a **different** seat fell straight through, and
+    // `FocusState::claim` displaced the incumbent. The mechanical half was sound
+    // — `seat::activate` clears the displaced seat's narrowing — but the
+    // campaign half was never told: grant 1 stayed non-terminal with a live
+    // `SeatAudit` row, `active_grant_of` resolved only grant 2, and on a
+    // single-channel unit the tick promoted grant 1 to `Active { epoch }` with
+    // nobody driving it, after which the epoch comparison answered `no_seat()`
+    // for ever and staff `@seat/revoke` was the only exit.
+    //
+    // The incumbent is stood down through the ONE seam (`stand_down` ->
+    // `request_seat_activation(Revoke)`), which revokes grant 1, forgets its
+    // audit row and clears its narrowing, before the new activation. It is the
+    // last fallible step before the activation itself, so a refusal above leaves
+    // the incumbent untouched; the two submissions it can stage are keyed on two
+    // different NPCs, so cut 2's one-submit-per-actor rule (C4) still holds.
+    // If the stand-down itself refuses, grant 2 is left untaken and grant 1 is
+    // NAMED — a seat is never displaced silently.
+    if let Some(previous) = active_grant_of(ctx, ctx.actor)
+        && !(previous.operation == operation && previous.offer == id)
+    {
+        let previous_offer = ctx
+            .w
+            .module_state::<CampaignStore>()
+            .and_then(|store| store.seat_offer(previous.operation, previous.offer))
+            .cloned()
+            .ok_or_else(no_seat)?;
+        stand_down(ctx, &previous, &previous_offer).map_err(|_| {
+            CmdError::msg(format!(
+                "You are already driving seat {}/{}; +seat/leave it before taking another.",
+                previous.operation.0, previous.offer.0
+            ))
+        })?;
+    }
     let ticket = mush_sim::request_seat_activation(
         ctx,
         &SeatRequest::Activate {

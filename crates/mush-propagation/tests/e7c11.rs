@@ -189,6 +189,9 @@ fn take_proxy_seat(tw: &mut TestWorld, fx: &Fx) {
     let focus = ActiveFocus {
         account: fx.account,
         actor: fx.ace,
+        // The independent verify fold's F4/B4: the drive is bound to the
+        // character that took the seat, so the seed must name it too.
+        driver: fx.driver,
         unit: fx.atlas,
         station: mush_sim::StationId::new("pilot").unwrap(),
         acquired_at,
@@ -196,11 +199,14 @@ fn take_proxy_seat(tw: &mut TestWorld, fx: &Fx) {
         reach: ReachProof::Console { room: fx.orbit },
         proxy: true,
     };
+    // F4/B5: `FocusState::claim` is `pub(crate)` now; the seeding door is the
+    // `testkit`-fenced shim, reached through this crate's dev-dependency on
+    // `mush-sim`'s `testkit` feature (not a new edge).
     let released = tw
         .world_mut()
         .module_state_mut::<FocusState>()
         .expect("the focus slot")
-        .claim(focus);
+        .claim_for_test(focus);
     assert!(released.is_empty());
 }
 
@@ -352,4 +358,253 @@ fn e7c11_b0_the_ingress_is_inert_without_a_live_seat() {
         fx.neighbour
     );
     let _ = IdempotencyKeyText::parse_canonical("e7c11.b0.p4").expect("a canonical key");
+}
+
+// ===========================================================================
+// ---- E7 cut 11 independent verify fold ----
+//
+// The picture-and-order half. Owner decisions taken: F3=(a) (`held_contact`
+// reads the same holder set the render does, for a proxy driver AND an ordinary
+// crew member) and F5=(a) (a live seat suppresses the staff short-circuit).
+// This crate has no `mush-campaign` edge and must not gain one, so the seat is
+// still seeded through `FocusState`'s `testkit`-fenced shim; the seat's own
+// end-to-end path stays in `crates/mush-campaign/tests/e7c11.rs`.
+// ===========================================================================
+
+/// A unit station that grants the `fire` channel, plus the NPC billeted on it —
+/// the shared scene's `pilot` grants `movement` only, and `+fire` rides `fire`.
+fn gunner_station(tw: &mut TestWorld, fx: &Fx, who: ObjId) {
+    run(
+        tw,
+        GOD,
+        &format!(
+            "@spatial/station #{}=gunner,gunner,channels:fire",
+            fx.atlas.0
+        ),
+    );
+    run(
+        tw,
+        GOD,
+        &format!("@spatial/assign #{}=gunner,#{}", fx.atlas.0, who.0),
+    );
+}
+
+/// Promote the scene's domain so `combat::resolve_seat` can resolve at all: a
+/// passive domain refuses every tactical verb outright, well before the seat.
+fn pulse(tw: &mut TestWorld, fx: &Fx) {
+    run(tw, GOD, &format!("@domain/promote #{}=contact", fx.orbit.0));
+    run(tw, GOD, &format!("@domain/tick #{}", fx.orbit.0));
+}
+
+/// The proxy seat, on a named station of the hull.
+fn take_proxy_seat_on(tw: &mut TestWorld, fx: &Fx, station: &str) {
+    let acquired_at = tw.world().world_ic_now();
+    let focus = ActiveFocus {
+        account: fx.account,
+        actor: fx.ace,
+        driver: fx.driver,
+        unit: fx.atlas,
+        station: mush_sim::StationId::new(station).unwrap(),
+        acquired_at,
+        epoch: 1,
+        reach: ReachProof::Console { room: fx.orbit },
+        proxy: true,
+    };
+    let released = tw
+        .world_mut()
+        .module_state_mut::<FocusState>()
+        .expect("the focus slot")
+        .claim_for_test(focus);
+    assert!(released.is_empty());
+}
+
+/// **D3(a) / F3. A driver may name the contact the seat just showed them.**
+///
+/// A contact belongs to a **platform**: `ObserverRef::principal()` is
+/// unconditionally `PrincipalId::Object { id: self.platform() }`, so every
+/// `ContactLedgerRow.holder` on the real ledger is a hull. `viewable_holders`
+/// answers `[npc, unit]` and is right; cut 11's `held_contact` accepted only the
+/// NPC, so `+fire` refused every contact `+contacts` had just printed with a
+/// refusal byte-identical to one for a contact that never existed. This is the
+/// tree's first POSITIVE `+fire`: every other `+fire` in the tree asserts a
+/// refusal, which is exactly why ingress site 2 shipped inert.
+#[test]
+fn vf_d3a_a_driver_may_name_the_contact_the_seat_just_showed_them() {
+    let (mut tw, fx) = scene();
+    gunner_station(&mut tw, &fx, fx.ace);
+    pulse(&mut tw, &fx);
+    let rows = vec![ledger_row(&tw, fx.atlas, [0x11; 16])];
+    install_ledger(&mut tw, rows);
+    take_proxy_seat_on(&mut tw, &fx, "gunner");
+
+    let seen = run(&mut tw, fx.driver, "+contacts");
+    assert!(
+        seen.contains("11111111"),
+        "the seat exposes the hull's picture: {seen}"
+    );
+    let absent = run(&mut tw, fx.driver, "+fire ffeeddccbbaa99887766554433221100");
+    assert!(
+        absent.contains(mush_sim::tick::no_such_contact()),
+        "{absent}"
+    );
+    let fired = run(&mut tw, fx.driver, "+fire 11111111111111111111111111111111");
+    assert_ne!(
+        fired, absent,
+        "a contact the driver was just shown must not be indistinguishable from \
+         one that never existed"
+    );
+    assert!(
+        fired.contains("submitted into tick"),
+        "the order goes all the way into the tick: {fired}"
+    );
+}
+
+/// **D3(b) / F3. An ordinary crew member may name their own hull's contact.**
+///
+/// The same divergence held for every billet-holder in the game, with no seat
+/// anywhere: `held_contact` matched `PrincipalId::Object { id: actor }` and the
+/// ledger holds hulls. So `held_contact`'s success arm was dead for the WHOLE
+/// crew, and the fix is not proxy-only.
+#[test]
+fn vf_d3b_an_ordinary_crew_member_may_name_their_own_hulls_contact() {
+    let (mut tw, fx) = scene();
+    gunner_station(&mut tw, &fx, fx.neighbour);
+    pulse(&mut tw, &fx);
+    let rows = vec![ledger_row(&tw, fx.atlas, [0x11; 16])];
+    install_ledger(&mut tw, rows);
+    // No seat anywhere in this test: `driving_actor` is the identity.
+    assert_eq!(
+        mush_sim::driving_actor(tw.world(), fx.neighbour),
+        fx.neighbour
+    );
+
+    let seen = run(&mut tw, fx.neighbour, "+contacts");
+    assert!(
+        seen.contains("11111111"),
+        "their own hull's picture is theirs to read: {seen}"
+    );
+    let absent = run(
+        &mut tw,
+        fx.neighbour,
+        "+fire ffeeddccbbaa99887766554433221100",
+    );
+    assert!(
+        absent.contains(mush_sim::tick::no_such_contact()),
+        "{absent}"
+    );
+    let fired = run(
+        &mut tw,
+        fx.neighbour,
+        "+fire 11111111111111111111111111111111",
+    );
+    assert_ne!(
+        fired, absent,
+        "the crew member's own hull's contact is nameable"
+    );
+    // Past `held_contact`, the refusal is the station one — a DIFFERENT line —
+    // because this crew member holds no foreground focus yet.
+    assert!(
+        fired.contains("You hold no focused station"),
+        "the next gate is the seat, not the contact: {fired}"
+    );
+
+    // …and a row held by a hull they are NOT billeted on stays invisible and
+    // unnameable, byte-identically to one that never existed.
+    let rows = vec![
+        ledger_row(&tw, fx.atlas, [0x11; 16]),
+        ledger_row(&tw, fx.target, [0x44; 16]),
+    ];
+    install_ledger(&mut tw, rows);
+    let seen = run(&mut tw, fx.neighbour, "+contacts");
+    assert!(!seen.contains("44444444"), "{seen}");
+    assert_eq!(
+        run(
+            &mut tw,
+            fx.neighbour,
+            "+fire 44444444444444444444444444444444"
+        ),
+        absent,
+        "somebody else's hull's contact is hidden exactly as a nonexistent one is"
+    );
+}
+
+/// **D7 / F5. A staff driver is narrowed by the seat like anyone else.**
+///
+/// `may_address` computed `is_admin` on the TYPING actor and short-circuited on
+/// it before the seat roster and the NPC's locality, while `cmd_order` still set
+/// `issuer = driving_actor`: a staff account holding a proxy seat issued
+/// envelopes AS THE NPC to any object anywhere in the world, laundered onto a
+/// character that could neither perceive nor reach the recipient and recoverable
+/// only through `@seat/audit`. §3.11's own rule is that T11 forbids the act from
+/// the SEAT, not from the person — so a live seat suppresses the short-circuit
+/// and staff who want the wider reach stand down first.
+#[test]
+fn vf_d7_a_staff_driver_is_narrowed_by_the_seat_like_anyone_else() {
+    let (mut tw, fx) = scene();
+    // The same person, with staff powers, addressing their own room-mate.
+    tw.world_mut()
+        .get_mut(fx.driver)
+        .expect("the driver")
+        .flags
+        .insert(mush_core::Flags::ROYALTY);
+    let own = run(
+        &mut tw,
+        fx.driver,
+        &format!("+order #{}=stand by", fx.neighbour.0),
+    );
+    assert!(own.contains("Queued revision 1"), "{own}");
+
+    take_proxy_seat_on(&mut tw, &fx, "pilot");
+    let narrowed = run(
+        &mut tw,
+        fx.driver,
+        &format!("+order #{}=stand by", fx.neighbour.0),
+    );
+    assert!(
+        narrowed.contains("No such contact."),
+        "a staff account holding a seat is narrowed by it: {narrowed}"
+    );
+    // Byte-identical to an object that does not exist at all: the existence
+    // hiding is unchanged.
+    let missing = run(&mut tw, fx.driver, "+order #99999=stand by");
+    assert_eq!(narrowed, missing);
+    assert_eq!(
+        envelopes(&tw),
+        vec![(fx.driver, fx.neighbour)],
+        "no envelope was issued from the seat, and none was attributed to the NPC"
+    );
+    // The staff gate is untouched for everything the SEAT reaches: the NPC's own
+    // neighbourhood is still addressable, as issuer.
+    let reached = run(&mut tw, fx.driver, &format!("+order #{}=hold", fx.target.0));
+    assert!(reached.contains("Queued revision 1"), "{reached}");
+    assert_eq!(
+        envelopes(&tw),
+        vec![(fx.driver, fx.neighbour), (fx.ace, fx.target)]
+    );
+
+    // Stand down, and the same staff member addresses their room-mate again —
+    // as themselves. The narrowing was the seat's, never the person's.
+    tw.world_mut()
+        .module_state_mut::<FocusState>()
+        .expect("the focus slot")
+        .relinquish(fx.account);
+    let again = run(
+        &mut tw,
+        fx.driver,
+        &format!("+order #{}=stand by", fx.neighbour.0),
+    );
+    assert!(again.contains("Queued revision 2"), "{again}");
+
+    // …and a NON-staff driver is byte-identically narrowed, so the fix changed
+    // nothing for anybody who was not staff.
+    let plain = {
+        let (mut tw2, fx2) = scene();
+        take_proxy_seat_on(&mut tw2, &fx2, "pilot");
+        run(
+            &mut tw2,
+            fx2.driver,
+            &format!("+order #{}=stand by", fx2.neighbour.0),
+        )
+    };
+    assert_eq!(plain, narrowed);
 }

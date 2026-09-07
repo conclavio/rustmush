@@ -324,8 +324,23 @@ fn may_address(ctx: &Ctx<'_>, actor: ObjId, recipient: ObjId) -> bool {
     // place, not the absent character's room. Without the ingress `+order` from
     // a seat was inert; with it and without this narrowing it would be exactly
     // the unrestricted "reachable through a station" act T11 forbids.
-    let acting = mush_sim::driving_actor(ctx.w, actor);
-    if actor == recipient || acting == recipient || is_admin(ctx) {
+    //
+    // **The independent verify fold, D7.** `is_admin` is computed on the
+    // **typing** actor (`SIM_ADMIN`/`Royalty`) and used to short-circuit, so a
+    // staff account holding a proxy seat addressed any object anywhere in the
+    // world while `cmd_order` still attributed the envelope to the NPC — the
+    // widened act laundered onto a character that could neither perceive nor
+    // reach the recipient, recoverable only through `@seat/audit`. That inverts
+    // the rule the four `seat_restriction` sites are deliberately placed *ahead*
+    // of their staff gates for: "a staff account can hold a proxy seat like
+    // anyone else; T11 forbids the act **from the seat**, not from the person."
+    // A live seat therefore suppresses the short-circuit; staff who want the
+    // wider reach stand down first, which is what every seat refusal already
+    // tells them. This narrows an existing arm's precondition — it adds no
+    // fourth arm and is byte-unchanged for every non-proxy actor.
+    let drive = mush_sim::proxy_drive_of(ctx.w, actor);
+    let acting = drive.as_ref().map_or(actor, |drive| drive.npc);
+    if actor == recipient || acting == recipient || (drive.is_none() && is_admin(ctx)) {
         return true;
     }
     if viewable_holders(ctx, actor).contains(&PrincipalId::Object { id: recipient }) {

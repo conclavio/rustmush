@@ -1614,7 +1614,7 @@ fn focus_acquire(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let unit = match_object(ctx.w, ctx.actor, unit_ref.trim())?;
     let station = StationId::new(station_ref)
         .ok_or_else(|| CmdError::msg("Usage: +focus <unit>/<station>"))?;
-    // ---- E7c11: B0 (T11's guardrail, call site 1 of 3) ----
+    // ---- E7c11: B0 (T11's guardrail, call site 1 of 4) ----
     // **Assumption of another station.** A proxy driver's `+focus` would
     // otherwise `claim` over the account's one foreground focus and silently
     // drop the seat it is driving — the seat's give-back never runs, the NPC's
@@ -1622,6 +1622,20 @@ fn focus_acquire(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     // outright; the exit is `+seat/leave`.
     crate::focus::seat_restriction(ctx.w, ctx.actor, crate::focus::ProxyAct::StationAssumption)
         .map_err(CmdError::msg)?;
+    // **Fold F4/B4, the account's one focus slot.** `seat_restriction` above is
+    // DRIVER-scoped, so an alt of the driver's account is not narrowed by it —
+    // but `FocusState` is ACCOUNT-keyed, and this `claim` would drop the seat
+    // with none of a stand-down's work (D1's harm through a second door). The
+    // refusal names no T11 act, because the reason is the occupied slot rather
+    // than a discretion the alt was granted.
+    if let Some(seat) = crate::focus::account_proxy_seat(ctx.w, ctx.actor)
+        && seat.driver != ctx.actor
+    {
+        return Err(CmdError::msg(format!(
+            "Another character on your account is driving a seat at `{}`; they must +seat/leave              before this account can take foreground control.",
+            seat.station
+        )));
+    }
     // The immutable account. `None` = unknown = refuse (never a default).
     let account = account_oracle(ctx).account_of(ctx.actor).ok_or_else(|| {
         CmdError::msg(
@@ -1663,6 +1677,8 @@ fn focus_acquire(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let focus = ActiveFocus {
         account,
         actor: ctx.actor,
+        // An ordinary focus is claimed by the character that holds it.
+        driver: ctx.actor,
         unit,
         station: station.clone(),
         acquired_at,
@@ -1708,6 +1724,36 @@ fn focus_acquire(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 
 /// `+focus/release` — relinquish the account's foreground focus.
 fn focus_release(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    // ---- E7c11 independent verify fold, D1 (T11's guardrail, call site 2 of 4) ----
+    // **The sibling switch of the verb that carries call site 1.** A proxy
+    // driver's account has exactly one foreground focus and it *is* the seat, so
+    // `+focus/release` dropped it while doing none of a stand-down's work:
+    // `StationAssignment.granted` was never cleared (the NPC's station stayed
+    // narrowed with nobody driving it), no `sim.station.served` marker was
+    // written for the interval, `+seat/leave` then answered "You are driving no
+    // seat.", and the `prepare_focus_bump` below made an `Active` grant stale to
+    // `+seat/activate` too — leaving staff `@seat/revoke` as the only exit. It
+    // also fires the seat's own station fallback at a moment of the driver's
+    // choosing, which is exactly the determinism `ProxyAct::FallbackChange`'s
+    // guard site exists to protect. A proxy driver has no ordinary focus to
+    // release, so the refusal is total and costs them nothing; it names
+    // `+seat/leave`, the correct exit.
+    crate::focus::seat_restriction(ctx.w, ctx.actor, crate::focus::ProxyAct::StationAssumption)
+        .map_err(CmdError::msg)?;
+    // **Fold F4/B4, the account's one focus slot.** `seat_restriction` above is
+    // DRIVER-scoped, so an alt of the driver's account is not narrowed by it —
+    // but `FocusState` is ACCOUNT-keyed, and this `claim` would drop the seat
+    // with none of a stand-down's work (D1's harm through a second door). The
+    // refusal names no T11 act, because the reason is the occupied slot rather
+    // than a discretion the alt was granted.
+    if let Some(seat) = crate::focus::account_proxy_seat(ctx.w, ctx.actor)
+        && seat.driver != ctx.actor
+    {
+        return Err(CmdError::msg(format!(
+            "Another character on your account is driving a seat at `{}`; they must +seat/leave              before this account can take foreground control.",
+            seat.station
+        )));
+    }
     let account = account_oracle(ctx)
         .account_of(ctx.actor)
         .ok_or_else(|| CmdError::msg("Your account is not mapped; there is nothing to release."))?;
@@ -1806,11 +1852,29 @@ fn cmd_stations(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             ));
         }
     }
-    if lines.is_empty() {
+    // ---- E7c11 independent verify fold, D8 ----
+    // A live proxy seat is not one of the driver's OWN billets — it is keyed on
+    // the NPC — so cut 11 rendered the driver's own list with `[FOCUSED]` on
+    // nothing and the thing they were actually steering nowhere on it, while
+    // `+focus` reported the seat and `@station/show` denied it. The seat is
+    // named here, with the represented NPC identified (T12). An actor with no
+    // proxy drive gets byte-identical output.
+    let seat_line = crate::focus::proxy_drive_of(ctx.w, ctx.actor).map(|drive| {
+        format!(
+            "  {} — `{}` (seat: you are directing {}) [FOCUSED]",
+            display_name(ctx.w, drive.unit),
+            drive.station,
+            display_name(ctx.w, drive.npc)
+        )
+    });
+    if lines.is_empty() && seat_line.is_none() {
         info(ctx, "You hold no billets.");
     } else {
         info(ctx, "Your billets:");
         for l in lines {
+            info(ctx, l);
+        }
+        if let Some(l) = seat_line {
             info(ctx, l);
         }
         if truncated {

@@ -52,6 +52,15 @@ jobs:
           cargo test -p mush-contract-tests --test gate5_fault_matrix
           cargo test -p mush-contract-tests --test schedule_source
           cargo test -p mush-contract-tests --test ci_gated_test_inventory
+      # 10b §14.3 criterion 4 (E7 cut 11 independent verify fold, G5/F7): every
+      # E7k lane's proof must run in a package that can SEE the crate that owns
+      # the lane. `mush-contract-tests` declares no `mush-industry` dependency,
+      # so L4 (`industry.workorder`) is proven by the industry suite itself —
+      # the `industry.workorder.completed` boundary fact and the production
+      # source's cursor.
+      - name: E7k lane proofs
+        run: |
+          cargo test -p mush-industry --test e7c4
       - name: Production migrations and compatibility declarations
         run: |
           cargo test -p mush-server --test production_action_migrations

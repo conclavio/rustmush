@@ -521,6 +521,11 @@ fn activate(
     let focus = ActiveFocus {
         account,
         actor: npc,
+        // **Fold F4/B4.** The drive is bound to the character that took the
+        // seat, not to the account: an alt the oracle maps to the same account
+        // never consented, never appeared in the offer's audience and holds no
+        // `SeatAudit` token, so it drives nothing.
+        driver: ctx.actor,
         unit,
         station: station.clone(),
         acquired_at,

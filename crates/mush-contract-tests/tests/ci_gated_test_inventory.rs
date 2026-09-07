@@ -258,3 +258,248 @@ fn the_gated_suffix_census_is_stable_and_every_live_backend_proof_names_its_back
         );
     }
 }
+
+// ---- E7 cut 11 independent verify fold ----
+//
+// **G5/G6/G15/F7: 10b §14 becomes a gate rather than prose.** §14's own rule is
+// *"a migration commit cites the SYMBOLS below, never these numbers"* — and
+// three of its four censused lanes cited a job that cannot see the crate that
+// owns the lane, or a test cell that does not exist:
+//
+//   * **L4** cited `cargo test -p mush-contract-tests --test schedule_source`
+//     for `industry.workorder`, and this package declares no `mush-industry`
+//     dependency at all — its three toy-fixture tests name neither "production"
+//     nor "workorder", so L4's go criterion was dischargeable GREEN while
+//     proving nothing about the migrated family;
+//   * **L3** cited the H3 scale harness, whose only tick-shaped cell measures a
+//     synthetic `ReplayWrite` count from env vars and names no `mush-sim` or
+//     `mush-tactics` symbol;
+//   * **L5/L6** cited a `gate5_fault_matrix` "partial-materialization cell"
+//     that does not exist — the file has one test, in-process, over an
+//     `AuthoritativeFaultStore`, and asserts no such criterion.
+//
+// The two assertions below are what turn §14 into something a reviewer who was
+// not here can execute: for every lane §14 names, the cited invocation's package
+// must declare the crate that owns the lane, and every proof §14 names must
+// exist by name in the file it is attributed to.
+
+/// One lane of 10b §14.2, with the crate that owns it and the CI invocation
+/// §14 cites as its lane proof.
+struct GateLane {
+    /// §14.2's label.
+    lane: &'static str,
+    /// The crate whose source the migration re-points.
+    owner_crate: &'static str,
+    /// The invocation §14.2 names, as `-p <pkg> --test <target>` (or `--lib`).
+    invocation: &'static str,
+    /// The package that invocation runs in.
+    invoked_package: &'static str,
+}
+
+/// Every manifest line that declares a workspace dependency, for one package.
+fn declares(root: &Path, package: &str, wanted: &str) -> bool {
+    let manifest = fs::read_to_string(root.join("crates").join(package).join("Cargo.toml"))
+        .unwrap_or_else(|_| panic!("crates/{package}/Cargo.toml"));
+    manifest.lines().any(|line| {
+        let code = line.trim_start();
+        !code.starts_with('#')
+            && (code.starts_with(wanted) || code.starts_with(&format!("{wanted} ")))
+    })
+}
+
+#[test]
+fn vf_g5_every_e7k_lane_job_can_see_the_crate_that_owns_the_lane() {
+    let root = repo_root();
+    // 10b §14.2, as corrected by the independent verify fold.
+    let lanes = [
+        GateLane {
+            lane: "L1+L2 sim.placement + sim.station_assignment",
+            owner_crate: "mush-sim",
+            invocation: "-p mush-sim --test e7c11",
+            invoked_package: "mush-sim",
+        },
+        GateLane {
+            lane: "L1+L2 (the cross-crate consumers)",
+            owner_crate: "mush-sim",
+            invocation: "-p mush-campaign --test e7c10",
+            invoked_package: "mush-campaign",
+        },
+        GateLane {
+            lane: "L1+L2 (the class change)",
+            owner_crate: "mush-sim",
+            invocation: "-p mush-server --test production_action_migrations",
+            invoked_package: "mush-server",
+        },
+        GateLane {
+            lane: "L3 tactics.unit",
+            owner_crate: "mush-tactics",
+            invocation: "-p mush-tactics --test e7c11",
+            invoked_package: "mush-tactics",
+        },
+        GateLane {
+            lane: "L4 industry.workorder",
+            owner_crate: "mush-industry",
+            invocation: "-p mush-industry --test e7c4",
+            invoked_package: "mush-industry",
+        },
+        GateLane {
+            lane: "L5 the ledger append",
+            owner_crate: "mush-economy",
+            invocation: "-p mush-contract-tests --test gate5_fault_matrix",
+            invoked_package: "mush-contract-tests",
+        },
+        GateLane {
+            lane: "L6 cross-owner materialization",
+            owner_crate: "mush-industry",
+            invocation: "-p mush-industry --test e7c3",
+            invoked_package: "mush-industry",
+        },
+    ];
+
+    let mut blind: Vec<String> = Vec::new();
+    for lane in &lanes {
+        let sees = lane.invoked_package == lane.owner_crate
+            || declares(&root, lane.invoked_package, lane.owner_crate);
+        if !sees {
+            blind.push(format!(
+                "{}: `cargo test {}` runs in `{}`, which declares no dependency on \
+                 `{}` and so cannot link the crate that owns the lane",
+                lane.lane, lane.invocation, lane.invoked_package, lane.owner_crate
+            ));
+        }
+    }
+    assert!(
+        blind.is_empty(),
+        "10b §14.2 names a job that cannot see its lane:\n  {}",
+        blind.join("\n  ")
+    );
+
+    // The citation the fold REMOVED, pinned as removed: `schedule_source` runs
+    // in this package, which declares no `mush-industry` at all. If a future
+    // edit re-adds the dependency the citation could come back — and that is a
+    // decision, not an accident.
+    assert!(
+        !declares(&root, "mush-contract-tests", "mush-industry"),
+        "`mush-contract-tests` gained a `mush-industry` dependency: 10b §14.2's \
+         L4 citation may be revisited, deliberately"
+    );
+
+    // §14.3 criterion 4: the lane proofs are named by the *K8 kernel contracts*
+    // job, so a reviewer running CI runs them.
+    let workflow = fs::read_to_string(root.join(".github/workflows/ci.yml"))
+        .expect("the CI workflow is part of the tree this policy governs");
+    for needle in [
+        "-p mush-industry --test e7c4",
+        "-p mush-contract-tests --test gate5_fault_matrix",
+        "-p mush-server --test production_action_migrations",
+    ] {
+        assert!(
+            workflow.contains(needle),
+            "10b §14.3 criterion 4: `cargo test {needle}` must be named by a CI job"
+        );
+    }
+}
+
+#[test]
+fn vf_g6_every_proof_10b_section_14_names_exists_in_the_file_it_is_attributed_to() {
+    let root = repo_root();
+    // (file relative to `crates/`, the test name §14 cites).
+    let cited: [(&str, &str); 9] = [
+        // L1+L2's go criterion.
+        (
+            "mush-campaign/tests/e7c10.rs",
+            "e7c10_p1_no_tacsim_party_type_exists",
+        ),
+        (
+            "mush-campaign/tests/e7c10.rs",
+            "e7c10_p2_no_legality_check_reads_a_seat_grant",
+        ),
+        (
+            "mush-sim/tests/e7c10.rs",
+            "e7c10_p5_the_sim_export_surface_is_exactly_two_seam_functions",
+        ),
+        // L1+L2's writer censuses (the fold's).
+        (
+            "mush-sim/tests/e7c11.rs",
+            "vf_g12_the_placement_writer_census_is_pinned",
+        ),
+        (
+            "mush-sim/tests/e7c11.rs",
+            "vf_g13_the_station_assignment_writer_census_is_pinned",
+        ),
+        // L3's writer census, and its capacity measurement.
+        (
+            "mush-tactics/tests/e7c11.rs",
+            "vf_g4_the_unit_store_writer_census_is_pinned",
+        ),
+        // L4's lane proof: the `industry.workorder.completed` marker.
+        (
+            "mush-industry/tests/e7c4.rs",
+            "e7c4_b7_the_completion_marker_round_trips_and_names_its_fact",
+        ),
+        (
+            "mush-industry/tests/e7c11.rs",
+            "vf_g13_l4_the_work_order_writer_census_is_pinned",
+        ),
+        // L5/L6's fault proof, named exactly as it exists.
+        (
+            "mush-contract-tests/tests/gate5_fault_matrix.rs",
+            "gate1_tactical_and_delayed_lifecycle_bundles_survive_every_in_process_cut",
+        ),
+    ];
+    let mut missing: Vec<String> = Vec::new();
+    for (relative, name) in cited {
+        let text = fs::read_to_string(root.join("crates").join(relative))
+            .unwrap_or_else(|_| panic!("crates/{relative}"));
+        if !text.contains(&format!("fn {name}(")) {
+            missing.push(format!("{name} (attributed to crates/{relative})"));
+        }
+    }
+    assert!(
+        missing.is_empty(),
+        "10b §14 cites a proof that does not exist where it says it does:\n  {}",
+        missing.join("\n  ")
+    );
+
+    // **G6, the negative half.** §14.2's L6 cited a `gate5_fault_matrix`
+    // "partial-materialization cell". There is none: the file's one test cuts
+    // after every materialization op of an in-process `AuthoritativeFaultStore`
+    // bundle and asserts no such criterion. §14 now names it as a cell the
+    // MIGRATION commit must add, and this pins that it has not been added yet —
+    // so the day it is, §14's wording moves with it.
+    let matrix =
+        fs::read_to_string(root.join("crates/mush-contract-tests/tests/gate5_fault_matrix.rs"))
+            .expect("gate5_fault_matrix.rs");
+    assert!(
+        !matrix.to_lowercase().contains("fn partial_materializ"),
+        "a partial-materialization cell now exists: 10b §14.2's L5/L6 citation \
+         must be changed from \"the migration commit must add\" to naming it"
+    );
+    assert_eq!(
+        matrix.matches("#[tokio::test]").count() + matrix.matches("#[test]").count(),
+        1,
+        "gate5_fault_matrix carries exactly one test cell"
+    );
+
+    // **G15, the negative half.** §14.2's L3 cited "the H3 scale harness job".
+    // Its one tick-shaped cell measures a SYNTHETIC bundle shape from env-var
+    // counts and names no `mush-sim` or `mush-tactics` symbol, so it proves
+    // generic bundle throughput and not the lane. §14 now cites
+    // `-p mush-sim --test e7c8` for the measurement instead.
+    let harness =
+        fs::read_to_string(root.join("crates/mush-contract-tests/tests/scale_harness.rs"))
+            .expect("scale_harness.rs");
+    assert!(
+        harness.contains("fn scale_tick_shaped_bundle_measures_caps("),
+        "the tick-shaped cell still exists, and still measures a synthetic shape"
+    );
+    assert!(
+        !harness.contains("mush_sim::") && !harness.contains("mush_tactics::"),
+        "the H3 harness names no symbol of the lane it was cited for"
+    );
+    let e7c8 = fs::read_to_string(root.join("crates/mush-sim/tests/e7c8.rs")).expect("e7c8.rs");
+    assert!(
+        e7c8.contains("measure_tick_bundle") && e7c8.contains("check_domain_capacity"),
+        "…and the measurement §14's L3 go criterion needs really does run here"
+    );
+}

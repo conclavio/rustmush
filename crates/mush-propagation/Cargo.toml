@@ -26,6 +26,12 @@ thiserror.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
+# Not a new crate edge: `mush-sim` is already a normal dependency (above). The
+# test build additionally turns on its `testkit` feature so the proxy-seat tests
+# may seed the world-owned focus (the independent verify fold's F4/B5 fences
+# `FocusState::claim` out of the production surface, exactly as cut 10's B12
+# fenced `ControlLeaseView::note_holder`).
+mush-sim = { workspace = true, features = ["testkit"] }
 mush-testkit.workspace = true
 mush-tactics.workspace = true
 mush-scenes.workspace = true

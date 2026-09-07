@@ -231,19 +231,63 @@ fn held_contact(ctx: &Ctx<'_>, token: &str) -> Result<ContactId, CmdError> {
         .w
         .module_state::<ContactLedgerState>()
         .ok_or_else(refusal)?;
-    // **E7c11 B0.** The contacts a proxy driver may name are the NPC's, not
-    // their own absent character's (T12: "exposes only that NPC station's
-    // observer projection"). Same ingress, same fail-closed answer for a driver
-    // with no seat.
-    let holder = mush_core::PrincipalId::Object {
-        id: crate::focus::driving_actor(ctx.w, ctx.actor),
-    };
+    // **E7c11 B0, corrected by the independent verify fold (D3).** The contacts
+    // a driver may name are the ones their own picture just rendered — and a
+    // contact belongs to a **platform**: `ObserverRef::principal()` is
+    // unconditionally `PrincipalId::Object { id: self.platform() }`, so every
+    // `ContactLedgerRow.holder` on the real ledger is a hull, never a crew
+    // member. Cut 11 accepted only `PrincipalId::Object { id: driving_actor(..) }`
+    // — the NPC for a driver, the actor for everybody else — which matches no
+    // row in either arm, so `+fire <contact>` refused the very contacts
+    // `+contacts` had just printed, byte-identically to a contact that never
+    // existed, and this function's success arm was dead on the real ledger for
+    // the whole crew.
+    //
+    // The holder set below is `mush_propagation::commands::viewable_holders`'
+    // own two arms, so the refusal and the render can never disagree again: a
+    // proxy driver reads the seat's `[npc, unit]` (T12 — only that NPC station's
+    // observer projection), and anybody else reads themselves plus every unit
+    // they are billeted on. The single `no_such_contact()` refusal is unchanged,
+    // so nothing here distinguishes "not yours" from "does not exist".
+    let holders = contact_holders(ctx.w, ctx.actor);
     ledger
         .rows()
         .iter()
-        .any(|row| row.holder == holder && row.contact == wanted && row.active)
+        .any(|row| holders.contains(&row.holder) && row.contact == wanted && row.active)
         .then_some(wanted)
         .ok_or_else(refusal)
+}
+
+/// Every principal whose contact rows `actor` may name (fold D3).
+///
+/// The mirror of `mush-propagation`'s `viewable_holders`, which is what renders
+/// `+contacts`. The two live in different crates because `mush-sim` has no
+/// `mush-propagation` edge (and must not gain one); the fold's regression tests
+/// pin them together *observably* — a contact the render shows is a contact
+/// `+fire` accepts, for a proxy driver and for an ordinary crew member alike.
+fn contact_holders(world: &World, actor: ObjId) -> Vec<mush_core::PrincipalId> {
+    let mut holders = if let Some(drive) = crate::focus::proxy_drive_of(world, actor) {
+        vec![
+            mush_core::PrincipalId::Object { id: drive.npc },
+            mush_core::PrincipalId::Object { id: drive.unit },
+        ]
+    } else {
+        let mut own = vec![mush_core::PrincipalId::Object { id: actor }];
+        if let Some(state) = world.module_state::<SpatialState>()
+            && let Some(units) = state.derived.assignments_by_actor.get(&actor)
+        {
+            own.extend(
+                units
+                    .iter()
+                    .take(mush_core::MAX_CONTACTS_PER_OBSERVER)
+                    .map(|unit| mush_core::PrincipalId::Object { id: *unit }),
+            );
+        }
+        own
+    };
+    holders.sort();
+    holders.dedup();
+    holders
 }
 
 fn slot_token(raw: &str) -> Result<String, CmdError> {
@@ -401,6 +445,16 @@ fn cmd_dock(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 }
 
 fn cmd_eject(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    // ---- E7c11 independent verify fold, D2 (T11's guardrail, call site 3 of 4) ----
+    // **`+eject` is T11's abandonment act on the station lane.** Its required
+    // channel is `movement` — the channel the *narrowest* steering seat grants —
+    // and `tick::boundary_kind(IntentKind::Eject)` is `tactics.unit_abandoned`,
+    // so a `movement`-only proxy seat could put the NPC's hull into an
+    // abandonment through the real command -> offer -> ingress -> window path
+    // while `ProxyAct::Abandonment` was classified "inert" and asked nowhere.
+    // The verb's own help line is "Abandon the unit."
+    crate::focus::seat_restriction(ctx.w, ctx.actor, crate::focus::ProxyAct::Abandonment)
+        .map_err(CmdError::msg)?;
     discrete(ctx, IntentKind::Eject, None, None)
 }
 

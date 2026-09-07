@@ -248,17 +248,30 @@ fn submit_station_action(
 /// `@station/show [<unit>/<station>]` — the actor's foreground station and its
 /// lease disposition (read-only). Names no unit location.
 fn station_show(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
-    let Some((unit, station)) = focused_station(ctx, ctx.actor) else {
+    // ---- E7c11 independent verify fold, D8 ----
+    // Resolve through the ingress. `focused_station` is `FocusState`'s
+    // ACTOR-keyed read and a proxy focus is keyed on the NPC, so cut 11 answered
+    // "You are driving no station." to somebody who was in fact steering — the
+    // first surface a confused driver checks, and the one that made D1's
+    // stranding hard to diagnose. The represented NPC is named (T12).
+    let drive = crate::focus::proxy_drive_of(ctx.w, ctx.actor);
+    let who = drive.as_ref().map_or(ctx.actor, |drive| drive.npc);
+    let Some((unit, station)) = focused_station(ctx, who) else {
         info(ctx, "You are driving no station.");
         return Ok(());
     };
-    info(
-        ctx,
-        format!(
+    let line = match &drive {
+        Some(drive) => format!(
+            "You are directing {} at `{station}` on {}.",
+            mush_core::output::display_name(ctx.w, drive.npc),
+            mush_core::output::display_name(ctx.w, unit)
+        ),
+        None => format!(
             "You are driving `{station}` on {}.",
             mush_core::output::display_name(ctx.w, unit)
         ),
-    );
+    };
+    info(ctx, line);
     Ok(())
 }
 
@@ -267,7 +280,7 @@ fn station_show(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 /// plus its RAM mirror. The declared data is what the immediate controller reads
 /// on a clean switch.
 fn station_fallback(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
-    // ---- E7c11: B0 (T11's guardrail, call site 2 of 3) ----
+    // ---- E7c11: B0 (T11's guardrail, call site 4 of 4) ----
     // **A fallback change.** The staff gate below is an account power, and a
     // staff account can hold a proxy seat like anyone else; T11 forbids the act
     // *from the seat*, not from the person. Re-declaring the fallback while

@@ -140,6 +140,21 @@ pub struct ActiveFocus {
     pub account: AccountId,
     /// The character currently driving it.
     pub actor: ObjId,
+    /// **E7c11 fold F4 (B4).** The character that actually *claimed* this focus
+    /// — the one who typed `+focus`, or who took the seat with
+    /// `+seat/activate`. For an ordinary focus it equals [`ActiveFocus::actor`];
+    /// for a **proxy seat** it is the human driver while `actor` is the NPC.
+    ///
+    /// Cut 11 bound the ingress to the *account* alone, so every alt the oracle
+    /// mapped to the driver's account drove the seat (and was refused their own
+    /// unrelated `+focus`) though none of them consented, appeared in the
+    /// offer's audience or held a `SeatAudit` token. [`proxy_drive_of`] requires
+    /// this field to equal the caller, so the drive is bound to the character
+    /// that took the seat and not to the account's whole stable.
+    ///
+    /// `FocusState` is never persisted and never hydrated (D-E7-34), so this
+    /// field moves no wire and no stored document.
+    pub driver: ObjId,
     /// The operated unit.
     pub unit: ObjId,
     /// The billet's station on that unit.
@@ -207,7 +222,19 @@ impl FocusState {
     /// witnesses). Two claims for one account cannot interleave into two: the
     /// world's single writer serializes them, and the loser sees the winner's
     /// focus already installed.
-    pub fn claim(&mut self, focus: ActiveFocus) -> Vec<ActiveFocus> {
+    ///
+    /// **E7c11 fold F4 (B5): fenced.** Cut 11 made `ActiveFocus { proxy: true }`
+    /// an authority root — `combat::resolve_seat`, `combat::held_contact`, the
+    /// tick's apply-time witness, `viewable_holders`, `may_address` and
+    /// `cmd_order` all read it — while `World::module_state_mut::<T>()` is
+    /// generic and not owner-scoped, so an unconditional `pub fn` let any
+    /// composed crate install a proxy focus that drove **wider than a real
+    /// seat**: the station's full channel set, no offer, no acceptance, no
+    /// `SeatAudit` token and no distinctness check. This is verbatim the fence
+    /// `ControlLeaseView::note_holder` already carries one file away
+    /// (`seat.rs`), for the same reason. Tests reach it through
+    /// [`FocusState::claim_for_test`] behind the `testkit` feature.
+    pub(crate) fn claim(&mut self, focus: ActiveFocus) -> Vec<ActiveFocus> {
         let mut released = Vec::new();
         if let Some(prior) = self.by_account.remove(&focus.account) {
             self.by_actor.remove(&prior.actor);
@@ -222,6 +249,14 @@ impl FocusState {
         self.by_actor.insert(focus.actor, focus.account);
         self.by_account.insert(focus.account, focus);
         released
+    }
+
+    /// The test-only door onto [`FocusState::claim`] (fold F4/B5), so a suite
+    /// that must seed a focus without driving a whole `+seat/activate` still
+    /// can — and production compositions still cannot.
+    #[cfg(any(test, feature = "testkit"))]
+    pub fn claim_for_test(&mut self, focus: ActiveFocus) -> Vec<ActiveFocus> {
+        self.claim(focus)
     }
 
     /// Release an account's foreground focus. Idempotent: returns the released
@@ -248,8 +283,11 @@ impl FocusState {
 pub struct ProxyDrive {
     /// The account whose one foreground focus this drive consumes (T12).
     pub account: AccountId,
-    /// The human character typing the command. It never moves and never acts
-    /// (T13); it is only the identity the ingress resolves *from*.
+    /// The human character that **took the seat** and is typing the command —
+    /// [`ActiveFocus::driver`], proven equal to the caller (fold F4/B4; before
+    /// the fold this was merely "whoever asked", so every alt of the account
+    /// drove). It never moves and never acts (T13); it is only the identity the
+    /// ingress resolves *from*.
     pub driver: ObjId,
     /// The NPC the account directs — the actor every downstream authority check
     /// reads (T16: the human adds judgment, never an absent character's stats).
@@ -262,24 +300,67 @@ pub struct ProxyDrive {
 
 /// The live proxy drive `actor` is typing through, if any.
 ///
-/// **Fails closed on every unknown.** An unwired [`AccountOracle`], an unmapped
+/// **Fails closed on every unknown.** A caller that is not an
+/// [`mush_core::ObjKind::Player`], an unwired [`AccountOracle`], an unmapped
 /// character, an account with no foreground focus, a focus that is not a proxy
-/// seat, or a focus whose `actor` *is* the caller (an NPC acting for itself, or
-/// a staged submit under the NPC) all answer `None` — which leaves the caller on
-/// exactly the pre-cut-11 path.
+/// seat, a focus whose `actor` *is* the caller (an NPC acting for itself, or a
+/// staged submit under the NPC), or a focus some **other** character of the same
+/// account claimed all answer `None` — which leaves the caller on exactly the
+/// pre-cut-11 path.
 ///
-/// It is **idempotent by construction**: `proxy_drive_of(w, npc)` is `None`
-/// (an NPC maps to no account), so [`driving_actor`] is a fixed point after one
-/// application and no chain of seats can hop from one NPC to another.
+/// It is **idempotent**, and the fold made that a construction rather than a
+/// data convention (F4/B6): `AccountMap` is hydrated from `list_accounts()`'s
+/// `characters` with no `ObjKind` filter, so an NPC a builder links to an
+/// account used to make `driving_actor` hop from one NPC to another. The
+/// `ObjKind::Player` gate below closes it, so `proxy_drive_of(w, npc)` is `None`
+/// for every NPC and [`driving_actor`] is a fixed point after one application.
 #[must_use]
 pub fn proxy_drive_of(world: &mush_core::World, actor: ObjId) -> Option<ProxyDrive> {
+    // **F4/B6.** Only a player character drives. An account-mapped NPC is its
+    // own fixed point, whatever the account map happens to contain.
+    if world
+        .get(actor)
+        .is_none_or(|obj| obj.kind != mush_core::ObjKind::Player)
+    {
+        return None;
+    }
     let account = world.module_state::<AccountOracle>()?.account_of(actor)?;
     let focus = world
         .module_state::<FocusState>()?
         .focus_of_account(account)?;
-    (focus.proxy && focus.actor != actor).then(|| ProxyDrive {
+    // **F4/B4.** The drive is bound to the character that CLAIMED the focus,
+    // never to the account's whole stable: an alt who never consented, was never
+    // in the offer's audience and holds no `SeatAudit` token drives nothing —
+    // and is therefore not narrowed by [`seat_restriction`] either.
+    (focus.proxy && focus.actor != actor && focus.driver == actor).then(|| ProxyDrive {
         account,
         driver: actor,
+        npc: focus.actor,
+        unit: focus.unit,
+        station: focus.station.clone(),
+    })
+}
+
+/// The live **proxy seat** this actor's account holds, whoever of the account
+/// claimed it — the account's one foreground focus slot (invariant 1), seen from
+/// any of its characters.
+///
+/// [`proxy_drive_of`] is deliberately *driver*-scoped after the fold (F4/B4):
+/// only the character that took the seat drives it, and only they are narrowed
+/// by [`seat_restriction`]. But `FocusState` is still **account**-keyed, so an
+/// alt's `+focus` would `claim` over the account's one slot and drop the seat
+/// with none of a stand-down's work — D1's exact harm through a second door.
+/// The two `+focus` arms ask this as well, and refuse without naming a T11 act:
+/// the reason is the occupied slot, not a discretion the alt was granted.
+#[must_use]
+pub(crate) fn account_proxy_seat(world: &mush_core::World, actor: ObjId) -> Option<ProxyDrive> {
+    let account = world.module_state::<AccountOracle>()?.account_of(actor)?;
+    let focus = world
+        .module_state::<FocusState>()?
+        .focus_of_account(account)?;
+    focus.proxy.then(|| ProxyDrive {
+        account,
+        driver: focus.driver,
         npc: focus.actor,
         unit: focus.unit,
         station: focus.station.clone(),
@@ -302,83 +383,92 @@ pub fn driving_actor(world: &mush_core::World, actor: ObjId) -> ObjId {
     proxy_drive_of(world, actor).map_or(actor, |drive| drive.npc)
 }
 
-/// T11's nine acts a proxy seat **never** confers.
+/// Generates [`ProxyAct`], its `ALL` array, its `token()` and its
+/// `is_guarded()` from **one** declaration (fold B8).
 ///
-/// > "Human-directed NPC control grants tactical discretion, not title,
-/// > administration or an unrestricted possession verb. It does not by default
-/// > permit asset transfer or abandonment, scuttling, fallback changes,
-/// > loadout/crew mutation, organization spending, surrender of unrelated
-/// > assets, departure from the authorized operation, or assumption of another
-/// > station." — doc 10 §19 T11
-///
-/// Six of the nine are refused by *inertness*: they are economy, org and staff
-/// verbs keyed on `ctx.actor`, which the ingress deliberately never rewrites, so
-/// a driver's own authority over them is byte-identical before and after
-/// activation. The remaining three ride the station lane the ingress opens, and
-/// [`seat_restriction`] refuses them explicitly.
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub enum ProxyAct {
-    /// Moving title in an asset (E4b2 `@claim/transfer`, a market sale).
-    AssetTransfer,
-    /// Abandoning an asset (`AssetLifecycle::Abandoned`).
-    Abandonment,
-    /// Destroying the unit or its cargo deliberately.
-    Scuttling,
-    /// Re-declaring a station's fallback controller (`@station/fallback`).
-    FallbackChange,
-    /// Mutating the unit's loadout or crew roster (`@crew/*`).
-    LoadoutOrCrew,
-    /// Spending the commanding organization's money.
-    OrganizationSpending,
-    /// Surrendering an asset the operation does not cover.
-    UnrelatedSurrender,
-    /// Taking the unit out of the authorized operation (`@journey/depart`,
-    /// `@journey/divert`).
-    OperationDeparture,
-    /// Assuming another station (`+focus` onto a different billet).
-    StationAssumption,
+/// `token()` and `is_guarded()` were already exhaustive matches, so a tenth
+/// variant forced them to be updated — but nothing forced the hand-written
+/// `pub const ALL: [ProxyAct; 9]`, whose only pin (`ALL.len() == 9`) was
+/// tautological on the array's own type. A tenth act omitted from `ALL`
+/// compiled and left every cut-11 test green. It cannot now be declared at all
+/// without joining `ALL`.
+macro_rules! proxy_acts {
+    ($( $(#[$meta:meta])* $variant:ident => $token:literal, $guarded:literal; )+) => {
+        /// T11's nine acts a proxy seat **never** confers.
+        ///
+        /// > "Human-directed NPC control grants tactical discretion, not title,
+        /// > administration or an unrestricted possession verb. It does not by
+        /// > default permit asset transfer or abandonment, scuttling, fallback
+        /// > changes, loadout/crew mutation, organization spending, surrender of
+        /// > unrelated assets, departure from the authorized operation, or
+        /// > assumption of another station." — doc 10 §19 T11
+        ///
+        /// **Five** of the nine are refused by *inertness*: they are economy,
+        /// org and staff verbs keyed on `ctx.actor`, which the ingress
+        /// deliberately never rewrites, so a driver's own authority over them is
+        /// byte-identical before and after activation. The remaining **four**
+        /// ride the station lane the ingress opens, and [`seat_restriction`]
+        /// refuses them explicitly.
+        ///
+        /// The split was six/three until the independent verify fold: `+eject`
+        /// is `IntentKind::Eject`, whose required channel is `movement` and
+        /// whose boundary fact is `tactics.unit_abandoned`, so it rides
+        /// `combat::resolve_seat` — the ingress's own site 1 — and abandonment
+        /// does **not** refuse by inertness.
+        #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+        pub enum ProxyAct {
+            $( $(#[$meta])* $variant, )+
+        }
+
+        impl ProxyAct {
+            /// How many acts the vocabulary holds — derived with [`ProxyAct::ALL`]
+            /// from the one declaration, never counted by hand.
+            pub const COUNT: usize = [$( stringify!($variant) ),+].len();
+
+            /// Every act, in declaration order — the closed vocabulary a test
+            /// enumerates.
+            pub const ALL: [ProxyAct; Self::COUNT] = [$( ProxyAct::$variant ),+];
+
+            /// The stable token this act is named by in a refusal and in a test
+            /// name.
+            #[must_use]
+            pub const fn token(self) -> &'static str {
+                match self { $( ProxyAct::$variant => $token, )+ }
+            }
+
+            /// Whether this act is refused by [`seat_restriction`] itself rather
+            /// than by the driver's own (unchanged) authority. The four are
+            /// exactly the acts that ride the station lane B0's ingress opens.
+            #[must_use]
+            pub const fn is_guarded(self) -> bool {
+                match self { $( ProxyAct::$variant => $guarded, )+ }
+            }
+        }
+    };
 }
 
-impl ProxyAct {
-    /// Every act, in declaration order — the closed vocabulary a test enumerates.
-    pub const ALL: [ProxyAct; 9] = [
-        ProxyAct::AssetTransfer,
-        ProxyAct::Abandonment,
-        ProxyAct::Scuttling,
-        ProxyAct::FallbackChange,
-        ProxyAct::LoadoutOrCrew,
-        ProxyAct::OrganizationSpending,
-        ProxyAct::UnrelatedSurrender,
-        ProxyAct::OperationDeparture,
-        ProxyAct::StationAssumption,
-    ];
-
-    /// The stable token this act is named by in a refusal and in a test name.
-    #[must_use]
-    pub const fn token(self) -> &'static str {
-        match self {
-            ProxyAct::AssetTransfer => "asset transfer",
-            ProxyAct::Abandonment => "abandonment",
-            ProxyAct::Scuttling => "scuttling",
-            ProxyAct::FallbackChange => "a fallback change",
-            ProxyAct::LoadoutOrCrew => "a loadout or crew change",
-            ProxyAct::OrganizationSpending => "organization spending",
-            ProxyAct::UnrelatedSurrender => "surrender of an unrelated asset",
-            ProxyAct::OperationDeparture => "departure from the operation",
-            ProxyAct::StationAssumption => "assumption of another station",
-        }
-    }
-
-    /// Whether this act is refused by [`seat_restriction`] itself rather than by
-    /// the driver's own (unchanged) authority. The three are exactly the acts
-    /// that ride the station lane B0's ingress opens.
-    #[must_use]
-    pub const fn is_guarded(self) -> bool {
-        matches!(
-            self,
-            ProxyAct::FallbackChange | ProxyAct::OperationDeparture | ProxyAct::StationAssumption
-        )
-    }
+proxy_acts! {
+    /// Moving title in an asset (E4b2 `@claim/transfer`, a market sale).
+    AssetTransfer => "asset transfer", false;
+    /// Abandoning an asset (`AssetLifecycle::Abandoned`) — and, on the station
+    /// lane, `+eject`, whose boundary fact is `tactics.unit_abandoned`.
+    Abandonment => "abandonment", true;
+    /// Destroying the unit or its cargo deliberately.
+    Scuttling => "scuttling", false;
+    /// Re-declaring a station's fallback controller (`@station/fallback`).
+    FallbackChange => "a fallback change", true;
+    /// Mutating the unit's loadout or crew roster (`@crew/*`).
+    LoadoutOrCrew => "a loadout or crew change", false;
+    /// Spending the commanding organization's money.
+    OrganizationSpending => "organization spending", false;
+    /// Surrendering an asset the operation does not cover.
+    UnrelatedSurrender => "surrender of an unrelated asset", false;
+    /// Taking the unit out of the authorized operation (`@journey/depart`,
+    /// `@journey/divert`).
+    OperationDeparture => "departure from the operation", true;
+    /// Assuming another station (`+focus` onto a different billet, and
+    /// `+focus/release`, which surrenders the seat's own).
+    StationAssumption => "assumption of another station", true;
 }
 
 /// **T11's guardrail** (E7 cut 11 B0, deviation (h)).
@@ -439,6 +529,7 @@ mod tests {
         ActiveFocus {
             account,
             actor: ObjId(actor),
+            driver: ObjId(actor),
             unit: ObjId(unit),
             station: StationId::new("pilot").unwrap(),
             acquired_at: stamp(1),
