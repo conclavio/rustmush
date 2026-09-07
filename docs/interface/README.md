@@ -12,6 +12,7 @@ design handoff and the plans that act on it. Programme letter: **I**
 | [02-implementation-plan.md](02-implementation-plan.md) | The I programme plan: eight cuts of groundwork and vertical slices through WoD and Shadowrun, with the TacSim HUD gated on E7. |
 | [03-discord-owner-questions.md](03-discord-owner-questions.md) | Discord as the fourth interface (Draft 0.3, owner survey — every question answered, the library spike done: twilight): a follow is a real connection of the character's session; the verified link, the lossy DM policy, the comsys relay, staff paging, the on-call seams (§7a). |
 | [04-discord-implementation-plan.md](04-discord-implementation-plan.md) | The D programme plan (Draft 0.7, D1–D6 built): six cuts D1–D6 — identity and the privilege/audit ledger, the follow connection, interaction, the relay, the staff channel and on-call seams, consent — sixteen decisions D-D-1..16, constants, eight open questions with defaults. |
+| [05-look-back.md](05-look-back.md) | I1–I13 look-back (Draft 0.1, grounded at `673db4c`): 576 claims audited, 29 confirmed gaps ranked with their smallest fix and test, the three debt lenses merged (LB-1..37), what I did not build, the E7/K hand-offs restated with owners, the single fold list (§7). |
 
 The design docs these build on live in [`../design/`](../design/): 02
 (connectivity: SSH, session, web, protocol), 10 and 10b (TacSim foundations
