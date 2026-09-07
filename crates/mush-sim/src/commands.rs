@@ -1504,7 +1504,22 @@ fn account_oracle<'a>(ctx: &'a Ctx<'_>) -> &'a AccountOracle {
 /// this reports which one is focused.
 #[must_use]
 pub(crate) fn focused_station(ctx: &Ctx<'_>, actor: ObjId) -> Option<(ObjId, StationId)> {
-    focus_state(ctx)
+    focused_station_of(ctx.w, actor)
+}
+
+/// The same predicate, over a bare `&World`.
+///
+/// **E7 cut 8 independent verify fold:** `TacticalIntentProvider::project_offer`
+/// has an `&Engine` and no `Ctx`, and `DomainTickScheduleAdapter::plan` needs
+/// the same answer to run A7's focus companion beside the grant witness. There
+/// is still exactly ONE focus predicate; `focused_station` delegates to it.
+#[must_use]
+pub(crate) fn focused_station_of(
+    world: &mush_core::World,
+    actor: ObjId,
+) -> Option<(ObjId, StationId)> {
+    world
+        .module_state::<FocusState>()?
         .focus_of_actor(actor)
         .map(|f| (f.unit, f.station.clone()))
 }
@@ -3196,7 +3211,16 @@ fn domain_replay(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         info(ctx, NONE);
         return Ok(());
     };
+    // The commit key carries the clock generation since the E7c8 fold (D5(a)),
+    // so the replay reads the domain's CURRENT generation — a re-promoted
+    // domain's tick 5 is a different record from the previous generation's.
+    let generation = st(ctx)
+        .domains
+        .get(&id)
+        .and_then(|record| record.clock.generation())
+        .unwrap_or(0);
     let mut lines = Vec::new();
+    let mut refusals = 0_usize;
     // Bounded on records **visited** (D-LBK-5): the retention ring is
     // `MAX_RETAINED_TICK_COMMITS`, so the walk can never exceed it.
     for step in 0..crate::tick::MAX_RETAINED_TICK_COMMITS {
@@ -3208,19 +3232,37 @@ fn domain_replay(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         }
         let key = crate::tick::TickCommitKey {
             domain: id,
+            generation,
             tick: want,
         };
         if let Ok(Some(commit)) = ctx.action_state(&handles.commits, &key) {
+            let refused = commit
+                .deltas()
+                .iter()
+                .filter(|delta| matches!(delta.outcome, crate::tick::DeltaOutcome::Refused { .. }))
+                .count();
+            refusals = refusals.saturating_add(refused);
             lines.push(format!(
-                "  tick {:>6}  state {}  {} accepted, {} delta(s), {} draw(s), {} fact(s)",
+                "  tick {:>6}  state {}  {} accepted, {} delta(s) ({} refused), {} draw(s), {} \
+                 fact(s)",
                 commit.tick(),
                 commit.state_hash().to_hex(),
                 commit.accepted().len(),
                 commit.deltas().len(),
+                refused,
                 commit.draws().len(),
                 commit.facts().len()
             ));
         }
+    }
+    if refusals > 0 {
+        // **T12/A4:** a refusal is surfaced to the operator, not buried in the
+        // record. A boundary-fact budget exhaustion reads here as a refusal
+        // with its count rather than as a silent truncation.
+        lines.push(format!(
+            "  {refusals} intent(s) in that range were REFUSED with a recorded reason; they were \
+             never accepted."
+        ));
     }
     if lines.is_empty() {
         info(ctx, NONE);
@@ -3243,6 +3285,18 @@ fn parse_tick_range(raw: &str) -> Option<(i64, i64)> {
 
 /// Register `@domain`, `@spatial`, `@journey` and cut 5's focus surface.
 pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
+    // **E7 cut 8 independent verify fold B1.** `@domain` is one `CommandSpec`,
+    // so it takes the CEILING class of its switches — and `/tick` reaches an
+    // `ActionTxn`: `cmd_domain` → `domain_tick` → `tick::run_maintenance` →
+    // `ctx.submit_authoritative(domain_pulse_arm, ..)`. Cut 8's own acceptance
+    // test proved it by calling `ok("@domain/tick")` and then draining the
+    // submission the command had just queued, while `modules.rs` pinned it
+    // `LegacyPostImage` with the note "the durable cursor is armed by the
+    // `sim.domain_pulse` Coarse tick, **never by the command**". That is the
+    // identical misdeclaration the tripwire caught for `@station` at cut 5 and
+    // `@prop` at cut 7. `LegacyPostImage` is restored immediately after, so
+    // every later registration keeps the module default.
+    reg.classify_commands(CommandCompatibility::Authoritative);
     reg.command(
         CommandSpec {
             name: "@domain".into(),
@@ -3275,6 +3329,7 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
         },
         Arc::new(cmd_domain),
     )?;
+    reg.classify_commands(CommandCompatibility::LegacyPostImage);
     reg.command(
         CommandSpec {
             name: "@spatial".into(),

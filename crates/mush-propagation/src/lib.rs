@@ -96,6 +96,37 @@ pub const DELIVERY_TICK_SECS: u64 = 1;
 /// `route.sweep` and every schedule-source id on the tree.
 pub const DELIVERY_TICK_TAG: &str = "propagation.delivery";
 
+/// The coarse **detection** cadence, in seconds.
+///
+/// **E7 cut 8 independent verify fold D8(a).** §3.8's deviation (f) deferred
+/// this, and the deferral left cut 8's whole surface unreachable: `@prop/pass`
+/// (staff) was the ONLY producer of a contact anywhere in the tree —
+/// `SensorPolicy::due` has exactly one caller, `SensorScheduleAdapter::re_derived`,
+/// which runs only for a `SensorJob` that is already armed — so on a running
+/// server no contact ever formed, `+fire` had nothing to name, and the tactical
+/// surface could not be reached end to end even before A2. This tick walks the
+/// **promoted** domains and runs cut 7's landed `detection_pass` per domain,
+/// arming through the tactics-owned ingress exactly as `@prop/pass` does. It
+/// adds no crate edge (`mush-propagation -> mush-sim` already exists) and it
+/// bounds detection cost for the first time.
+/// **Why 2 s and not 1 s.** `Ctx::submit_authoritative` is one per ACTOR per
+/// deferred drain, and every `reg.tick` handler runs as `GOD`; a drain that
+/// carries two submissions from one actor **fans out and voids both** (cut 2's
+/// fold C4, applied across handlers rather than within one). `sim.domain_pulse`
+/// fires every second and submits only while a domain still needs arming or
+/// disarming, so a 2 s detection cadence always leaves the pulse an unshared
+/// fire to get its cursor armed in, and thereafter the detection tick has every
+/// even fire to itself. A detection fire that loses the slot simply arms nothing
+/// and the next one repeats it — the intents are re-derived from the sighting
+/// book each time, so nothing is lost.
+pub const DETECTION_TICK_SECS: u64 = 2;
+/// The registered detection tick tag. Disjoint from every other tick tag and
+/// schedule-source id on the tree.
+pub const DETECTION_TICK_TAG: &str = "propagation.detection";
+/// Promoted domains one detection fire may visit. Bounded on records
+/// **visited** (D-LBK-5); `MAX_ACTIVE_DOMAINS` is 8, so this never binds.
+pub const MAX_DOMAINS_PER_DETECTION_FIRE: usize = 8;
+
 /// The propagation module.
 #[derive(Debug, Default)]
 pub struct PropagationModule;
@@ -123,6 +154,17 @@ impl GameModule for PropagationModule {
             DELIVERY_TICK_TAG,
             TickCadence::Coarse(Duration::from_secs(DELIVERY_TICK_SECS)),
             Arc::new(delivery_tick),
+        )?;
+        // **The detection pass, per promoted domain** (fold D8(a)). Same shape
+        // as the delivery tick: a `Coarse` `reg.tick` that reads `SpatialState`,
+        // `ContactLedgerState` and the `PropagationStore` off `ctx.w`, writes
+        // only propagation's own exempt documents, and stages exactly ONE
+        // `Ctx::submit_authoritative` of the tactics-owned `sensor_arm` action
+        // per fire (cut 2's fold C4).
+        reg.tick(
+            DETECTION_TICK_TAG,
+            TickCadence::Coarse(Duration::from_secs(DETECTION_TICK_SECS)),
+            Arc::new(detection_tick),
         )?;
         commands::register(reg)?;
         Ok(())
@@ -332,6 +374,161 @@ fn delivery_tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<SceneId>) {
             },
         });
     }
+}
+
+/// **One coarse detection fire, over the promoted domains** (fold D8(a)).
+///
+/// It walks `SpatialState.domains` for `clock.is_pulsing()`, runs
+/// [`pass::detection_pass`] scoped to each promoted domain — the `domain` and
+/// `arm_bound` parameters cut 7's own fold landed, precisely so a per-domain
+/// pulse could do per-domain work — and arms the result through the
+/// **tactics-owned** `sensor_arm` ingress by definition-registry lookup, the
+/// same way `@prop/pass` does. It registers nothing of tactics', writes no
+/// contact, and stages exactly **one** `Ctx::submit_authoritative` per fire.
+///
+/// The report is never dropped: `bound_hit`, `resume`, `stranded` and every
+/// refusal are **paged** into the store's own notice queue, which `@prop/pass`
+/// and `@prop/held` drain (E4c V6).
+fn detection_tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<SceneId>) {
+    let at = ctx.w.world_ic_now();
+    let Some(state) = ctx.w.module_state::<mush_sim::SpatialState>().cloned() else {
+        return;
+    };
+    let promoted: Vec<mush_sim::DomainId> = state
+        .domains
+        .iter()
+        .filter(|(_, record)| record.clock.is_pulsing())
+        .map(|(id, _)| *id)
+        .take(MAX_DOMAINS_PER_DETECTION_FIRE)
+        .collect();
+    if promoted.is_empty() {
+        return;
+    }
+    let visited = promoted.len();
+    let bound_hit_domains = state
+        .domains
+        .values()
+        .filter(|record| record.clock.is_pulsing())
+        .count()
+        > visited;
+    let ledger = ctx
+        .w
+        .module_state::<mush_core::ContactLedgerState>()
+        .cloned()
+        .unwrap_or_default();
+    let Some(mut book) = ctx.w.module_state::<record::PropagationStore>().cloned() else {
+        return;
+    };
+    let arm_bound = commands::max_intents_per_arm();
+    let mut intents: Vec<mush_core::ObservationIntent> = Vec::new();
+    let mut sightings: Vec<String> = Vec::new();
+    let mut dropped: Vec<String> = Vec::new();
+    let mut notices: Vec<String> = Vec::new();
+    let mut stranded = 0_usize;
+    for domain in promoted {
+        let report = pass::detection_pass(
+            &mut book,
+            &state,
+            ctx.w,
+            &ledger,
+            &at,
+            Some(domain),
+            arm_bound,
+        );
+        sightings.extend(report.sightings.iter().cloned());
+        dropped.extend(report.dropped_sightings.iter().cloned());
+        stranded = stranded.saturating_add(report.stranded);
+        for refusal in &report.refused {
+            notices.push(refusal.clone());
+        }
+        if report.bound_hit {
+            notices.push(format!(
+                "The detection pass for domain #{domain} stopped at its bound of {arm_bound} \
+                 observation(s){}; the next fire resumes there.",
+                report
+                    .resume
+                    .map(|(observer, subject)| format!(
+                        " and resumes at observer #{}, subject #{}",
+                        observer.0, subject.0
+                    ))
+                    .unwrap_or_default()
+            ));
+        }
+        intents.extend(report.intents);
+    }
+    if bound_hit_domains {
+        notices.push(format!(
+            "The detection tick stopped at its bound of {MAX_DOMAINS_PER_DETECTION_FIRE} promoted \
+             domain(s); the next fire covers the rest."
+        ));
+    }
+    if stranded > 0 {
+        notices.push(format!(
+            "{stranded} contact(s) were stranded on an older world time generation and are being \
+             retired; their holders will see them go lost."
+        ));
+    }
+    // **C4:** one submission per fire. A pass with more due work than one arm
+    // carries says so and the next fire takes the rest.
+    intents.sort_by(|left, right| left.key().as_str().cmp(right.key().as_str()));
+    intents.dedup_by(|left, right| left.key() == right.key());
+    let armed = intents.len().min(arm_bound);
+    if intents.len() > armed {
+        notices.push(format!(
+            "{} observation(s) were due past the per-arm bound of {arm_bound}; the next detection \
+             fire arms them.",
+            intents.len() - armed
+        ));
+    }
+    let batch: Vec<mush_core::ObservationIntent> = intents.into_iter().take(armed).collect();
+    let written: Vec<record::Sighting> = sightings
+        .iter()
+        .filter_map(|key| book.sighting(key).cloned())
+        .collect();
+    for notice in &notices {
+        book.page(notice.clone());
+    }
+    if let Some(slot) = ctx.w.module_state_mut::<record::PropagationStore>() {
+        *slot = book;
+    }
+    for sighting in &written {
+        if let Ok(value) = serde_json::to_value(sighting) {
+            ctx.persist(ModuleOp {
+                ns: SmolStr::new_static(NS),
+                op: ModuleWrite::JsonSet {
+                    key: record::sighting_key(&sighting.key()),
+                    value,
+                },
+            });
+        }
+    }
+    for key in &dropped {
+        ctx.persist(ModuleOp {
+            ns: SmolStr::new_static(NS),
+            op: ModuleWrite::Del {
+                key: record::sighting_key(key),
+            },
+        });
+    }
+    if batch.is_empty() {
+        return;
+    }
+    let Some(action) = commands::sensor_arm_action_ref(ctx.reg) else {
+        return;
+    };
+    let (Ok(document), Ok(key)) = (
+        serde_json::to_string(&batch),
+        mush_core::IdempotencyKeyText::parse_canonical(format!("prop/detect/{:x}", at.at)),
+    ) else {
+        return;
+    };
+    ctx.submit_authoritative(
+        action,
+        mush_core::PerceivedRef::SelfActor,
+        Vec::new(),
+        serde_json::json!({ "intents": document }),
+        key,
+    );
 }
 
 /// Move propagation's own records onto the current clock generation, keeping

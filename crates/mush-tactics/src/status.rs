@@ -92,13 +92,25 @@ impl UnitStatus {
 /// its status. There is no per-station `ProjectionScopeId` — 08i answer 11
 /// forbids one — so the check is "does this viewer hold a station here", not
 /// "which station".
+/// **E7 cut 8 independent verify fold A12:** the owner fence is real now. This
+/// used to be `grant.subject == unit` with no `grant.owner` filter, contrary to
+/// its own doc two lines above — so any future module publishing a
+/// `CommandSubjectLink` on that object would have silently conferred read access
+/// to the unit's true revision, section and component counts and `Obj.location`.
+/// `World::channel_grant` filters by owner; the two authorization paths now
+/// agree.
 #[must_use]
 pub fn viewer_is_stationed(world: &World, viewer: ObjId, unit: ObjId) -> bool {
     world
         .command_subjects_of(viewer)
         .iter()
-        .any(|grant| grant.subject == unit)
+        .any(|grant| grant.subject == unit && grant.owner == SIM_OWNER)
 }
+
+/// The owner whose grants confer a station on a unit: cut 5's `sim` control
+/// links. Named as a string rather than imported — `mush-tactics` has no
+/// `mush-sim` edge and must not gain one (deviation (a)).
+pub const SIM_OWNER: &str = "sim";
 
 /// **Compose** the status. Reads four sources and writes nothing.
 #[must_use]

@@ -316,6 +316,22 @@ impl CarrierJourney {
         self
     }
 
+    /// Re-state one journey.
+    ///
+    /// **E7 cut 8 independent verify fold D9(a):** cut 8's applying authority is
+    /// the one writer of [`JourneyState::Promoted`], both directions — a
+    /// `Cruising` carrier in a newly pulsing domain becomes `Promoted`, and a
+    /// carrier promoted into a domain that stands down goes back to `Cruising`.
+    /// Without the symmetric restore a demoted domain would strand every
+    /// journey `Promoted` for ever. The state is not part of the constructor's
+    /// invariants (they cover the cursor, the two stamps, the destination and
+    /// the anomaly), so re-stating cannot make an unconstructible record.
+    #[must_use]
+    pub fn with_state(mut self, state: JourneyState) -> CarrierJourney {
+        self.state = state;
+        self
+    }
+
     /// Durable id.
     #[must_use]
     pub fn id(&self) -> JourneyId {

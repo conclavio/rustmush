@@ -598,8 +598,8 @@ note = "D1 (docs/interface/04 §3.1): the Discord identity family. Whole-documen
 
 [[handler]]
 name = "@domain"
-category = "baseline"
-note = "baseline pinned at b0e3b52 (module, every composition)"
+category = "authoritative"
+note = "E7 cut 8 independent verify fold B1. Re-declared from baseline: one CommandSpec taking the CEILING class of its eleven switches, and /tick reaches an ActionTxn -- cmd_domain -> domain_tick -> tick::run_maintenance -> Ctx::submit_authoritative(domain_pulse_arm), which arms or disarms the domain's durable pulse cursor. Cut 8's own acceptance test proved it by calling @domain/tick and then draining the submission the command had just queued, while modules.rs pinned the verb LegacyPostImage with the note 'the durable cursor is armed by the sim.domain_pulse Coarse tick, never by the command' -- factually false, and deleted in the same commit. This is the identical criterion cut 5 raised for @station and cut 7 for @prop: a handler that stages an authoritative action publishes Authoritative even when the documents it writes stay exempt. The other switches are unchanged: /create, /present, /promote, /demote and /pause|/resume write the exempt sim.domain and sim.activation workflow documents, /status, /summary, /list and /replay are reads (/replay pages the owner-fenced domain_tick_commits family through Ctx::action_state and writes nothing). Retiring this baseline entry lowers PINNED_BASELINE 158 -> 157 in this commit, which is exactly the move the tripwire documents as legal; the stanza count and every position are unchanged."
 
 [[handler]]
 name = "@dump"

@@ -144,6 +144,17 @@ pub const MAX_STANDING_ORDER_BYTES: usize = 4 * 1024;
 /// Deltas one commit may carry (one per accepted intent, at the window cap).
 pub const MAX_TICK_DELTAS: usize = MAX_INTENTS_PER_TICK as usize;
 
+/// **The per-fire reap cap** (E7c8 fold D5(a)). Records the adapter may name for
+/// removal in one tick, per family. Bounded on records **visited** (D-LBK-5) and
+/// **resumable**: whatever is left over is named again by the next fire, two
+/// seconds later, so the ring converges rather than truncating.
+pub const MAX_REAP_PER_FIRE: usize = 64;
+/// Records one reap scan visits per family per fire.
+pub const MAX_REAP_SCAN_RECORDS: usize = 256;
+/// The behavior that marks a domain host as a **space** domain, so its pulse
+/// takes `[tacsim].space_pulse_ms` rather than the ground cadence (fold B9).
+pub const SPACE_DOMAIN_BEHAVIOR: &str = "sim.space";
+
 // ----------------------------------------------------------------------
 // B3 — standing orders (the continuous half of S2A)
 // ----------------------------------------------------------------------
@@ -557,6 +568,40 @@ impl IntentKind {
         IntentKind::all().into_iter().find(|k| k.token() == token)
     }
 
+    /// **The control channel this kind rides** (E7c8 fold A6/D2(a)).
+    ///
+    /// K5a publishes a channel set per station; before this fold nothing mapped
+    /// an [`IntentKind`] onto one, so a gunner steered and a helmsman fired —
+    /// whichever single channel the station happened to grant was stamped on the
+    /// document and witnessed against itself. The map is total and canonical: a
+    /// station may issue a kind exactly when its grant carries this channel.
+    #[must_use]
+    pub const fn required_channel(self) -> &'static str {
+        match self {
+            IntentKind::Heading
+            | IntentKind::Thrust
+            | IntentKind::Speed
+            | IntentKind::Dock
+            | IntentKind::Eject => "movement",
+            IntentKind::Posture => "sensors",
+            IntentKind::Fire | IntentKind::Launch => "fire",
+            IntentKind::DamageControl => "damage_control",
+        }
+    }
+
+    /// Every channel some kind requires, in canonical order — the vocabulary a
+    /// station's grant is measured against.
+    #[must_use]
+    pub fn required_channels() -> Vec<&'static str> {
+        let mut channels: Vec<&'static str> = IntentKind::all()
+            .into_iter()
+            .map(IntentKind::required_channel)
+            .collect();
+        channels.sort_unstable();
+        channels.dedup();
+        channels
+    }
+
     /// The continuous channel this kind persists on, if any.
     #[must_use]
     pub const fn channel(self) -> Option<OrderChannel> {
@@ -605,8 +650,16 @@ pub struct TacticalIntentDoc {
     pub station: String,
     /// The unit's control-lease/grant epoch, pinned at submit.
     pub epoch: u64,
-    /// The channel the station grants.
+    /// The channel the station grants. It **must** be
+    /// [`IntentKind::required_channel`] for `kind`, and the pinned seat must
+    /// carry it (fold A6).
     pub channel: String,
+    /// The seat's own `ChannelGrant::priority` — the arbitration K5a publishes
+    /// and which nothing consulted before this fold (A8). A higher priority
+    /// settles LAST on a shared `(unit, channel)` order key and therefore wins,
+    /// instead of the winner being whichever crewman has the larger dbref.
+    #[serde(default)]
+    pub priority: u16,
     /// What is intended.
     pub kind: IntentKind,
     /// The continuous value, for a continuous kind.
@@ -626,8 +679,27 @@ impl TacticalIntentDoc {
     ///
     /// # Errors
     ///
-    /// [`TickRecordError::ChannelValueMismatch`] when the two disagree.
+    /// [`TickRecordError::ChannelValueMismatch`] when the two disagree, or
+    /// [`TickRecordError::TooLarge`] when a free-text field is unbounded (fold
+    /// B10: `slot`, `station` and `channel` are canonical ids on the write side
+    /// and the whole invocation is retained inside the window post-image, so an
+    /// unbounded one is a stored record that could never have been written).
     pub fn validate(&self) -> Result<(), TickRecordError> {
+        if self.station.is_empty()
+            || self.station.len() > MAX_STATION_TOKEN_BYTES
+            || self.channel.is_empty()
+            || self.channel.len() > MAX_STATION_TOKEN_BYTES
+            || self
+                .slot
+                .as_ref()
+                .is_some_and(|slot| slot.is_empty() || slot.len() > MAX_SLOT_TOKEN_BYTES)
+        {
+            return Err(TickRecordError::TooLarge);
+        }
+        // The channel a kind rides is the map's, never the caller's choice.
+        if self.channel != self.kind.required_channel() {
+            return Err(TickRecordError::ChannelValueMismatch);
+        }
         match (self.kind.channel(), &self.value) {
             (Some(channel), Some(value)) => {
                 value.validate()?;
@@ -642,6 +714,53 @@ impl TacticalIntentDoc {
         }
     }
 }
+
+/// **The pinned tactical seat** (E7c8 fold D1(a), A1/A2/A3/A4/A5/A7).
+///
+/// The whole seat is a **fixed offer parameter**: `project_offer` — the one
+/// place on this lane with an `&Engine` — resolves the querying actor's focused
+/// station, its published `ChannelGrant` and its domain's live pulse, and emits
+/// them under `fixed_parameters`. `merge_parameters` refuses a client key that
+/// collides with a fixed one, so a caller cannot supply, override or forge any
+/// of it; `prepare_authoritative` then requires every corresponding field of the
+/// decoded [`TacticalIntentDoc`] to equal the seat and refuses `Unauthorized`
+/// otherwise. That makes the gate **structural** rather than compositional, in
+/// the exact shape [`PulseArmProvider`]'s `armed_by` already had.
+///
+/// It also removes `observed_at` from the public schema entirely: the stamp is
+/// derived from `(domain, generation, tick)` here, which is what closes the
+/// declared-`Text`/submitted-object mismatch that made the whole ingress inert.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SeatDoc {
+    /// The unit the focused station commands.
+    pub unit: ObjId,
+    /// The focused station.
+    pub station: String,
+    /// Every channel that station's **published grant** carries. A kind is
+    /// issuable exactly when this set contains its
+    /// [`IntentKind::required_channel`], which is what drops cut 8's
+    /// `channels.len() == 1` restriction (fold A6).
+    pub channels: Vec<String>,
+    /// The epoch of the actor's own published grant — **not** the unit-wide
+    /// `control_gen` the verb used to pin, which is what silently voided every
+    /// other station's orders after any crewmate's `+focus` (fold A5).
+    pub epoch: u64,
+    /// The grant's arbitration priority (fold A8).
+    pub priority: u16,
+    /// The domain the unit is in.
+    pub domain: u64,
+    /// The tick the seat was resolved in.
+    pub tick: i64,
+    /// The domain clock generation the seat was resolved on.
+    pub generation: u64,
+}
+
+/// The most bytes a station or channel token may carry inside an intent.
+pub const MAX_STATION_TOKEN_BYTES: usize = 64;
+/// The most bytes a bay, section or dock token may carry (`combat::slot_token`'s
+/// own bound, re-run on the wire).
+pub const MAX_SLOT_TOKEN_BYTES: usize = 32;
 
 // ----------------------------------------------------------------------
 // B4 — the commit record
@@ -666,9 +785,21 @@ pub struct IntentRef {
 #[serde(tag = "outcome", rename_all = "snake_case")]
 pub enum DeltaOutcome {
     /// A continuous order was written; latest order wins.
+    ///
+    /// **The post-image travels with the delta** (fold T7). Deviation (c) makes
+    /// the [`StandingOrder`] the tick's only per-unit authoritative post-image,
+    /// so a delta that named only its channel left the entire mutable result of
+    /// the tick outside `state_hash`: a replay that wrote heading `999,0,0`
+    /// where the first wrote `1,0,0` reproduced the stored hash exactly.
     OrderSet {
         /// The channel it settled on.
         channel: OrderChannel,
+        /// The value that settled there.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        value: Option<OrderValue>,
+        /// The revision it settled at.
+        #[serde(default)]
+        revision: u64,
     },
     /// A discrete effect resolved, with its recorded draw.
     Resolved {
@@ -690,8 +821,12 @@ pub enum DeltaOutcome {
 pub struct UnitDelta {
     /// The unit it applies to.
     pub unit: ObjId,
-    /// What was intended.
-    pub kind: IntentKind,
+    /// What was intended — `None` for an intent this build cannot classify
+    /// (correction 17: the refusal used to be recorded under a borrowed
+    /// `IntentKind::Eject`, so two unclassifiable intents from one actor
+    /// produced byte-identical deltas).
+    #[serde(default)]
+    pub kind: Option<IntentKind>,
     /// What happened.
     pub outcome: DeltaOutcome,
 }
@@ -706,39 +841,82 @@ pub struct BoundaryFact {
     pub kind: String,
     /// The domain it happened in.
     pub domain: u64,
+    /// The domain clock generation it happened on (fold B8: without it a
+    /// demote → re-promote, which restarts the tick counter, re-mints ids an
+    /// idempotent consumer has already recorded).
+    #[serde(default)]
+    pub generation: u64,
     /// The tick it happened on.
     pub tick: i64,
     /// The unit it happened to.
     pub unit: ObjId,
+    /// Its position in this tick's fact list (fold B8: two crew can both
+    /// resolve the same kind on one unit in one tick, and before this the two
+    /// facts shared an id, so the second was silently dropped as a duplicate).
+    #[serde(default)]
+    pub ordinal: u16,
+    /// **Provisional** (fold D6(b)): cut 8's resolution is a `draw % 2`
+    /// placeholder with no unit post-image behind it, so a consumer must opt in
+    /// rather than settle off it. The flag is removed when a damage model lands.
+    #[serde(default)]
+    pub provisional: bool,
 }
 
 impl BoundaryFact {
-    /// The stable id cut 9 indexes on: `{kind}/{domain}/{tick}/{unit}`.
+    /// The stable id cut 9 indexes on:
+    /// `{kind}/{domain}/{generation}/{tick}/{unit}/{ordinal}` — unique inside a
+    /// tick and never replayed across a re-promotion (fold B8).
     #[must_use]
     pub fn stable_id(&self) -> String {
         format!(
-            "{}/{}/{}/{}",
-            self.kind, self.domain, self.tick, self.unit.0
+            "{}/{}/{}/{}/{}/{}",
+            self.kind, self.domain, self.generation, self.tick, self.unit.0, self.ordinal
         )
     }
 }
 
-/// The `(domain, tick)` key one commit occupies.
+/// The `(domain, generation, tick)` key one commit occupies.
+///
+/// **The generation is part of the identity** (fold D5(a)/T4/B3): `apply_pulse`
+/// re-anchors `started_at` on every promotion, so a re-promoted domain restarts
+/// its tick counter at 0 and walked straight back over the previous generation's
+/// key space — silently overwriting its low-numbered commits and stranding its
+/// high-numbered ones.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TickCommitKey {
     /// The domain.
     pub domain: DomainId,
+    /// The domain clock generation.
+    #[serde(default)]
+    pub generation: u64,
     /// The tick.
     pub tick: i64,
 }
 
+/// Encode one `i64` as a fixed-width, order-preserving decimal.
+///
+/// **Total over `i64`** (fold B3): the previous encoding clamped with
+/// `tick.max(0)`, so every negative tick shared tick 0's family key — at tick 1
+/// the ring's expiry key was `-63`, whose encoding **was** tick 0's, and the
+/// deterministic first commit of a fresh domain was deleted 63 ticks early.
+#[must_use]
+pub fn encode_tick(tick: i64) -> String {
+    let shifted = i128::from(tick) - i128::from(i64::MIN);
+    format!("{shifted:020}")
+}
+
 impl TickCommitKey {
     /// The canonical encoded key. Zero-padded so the family's canonical scan
-    /// order is tick order.
+    /// order is `(domain, generation, tick)` order.
     #[must_use]
     pub fn encoded(&self) -> String {
-        format!("{:020}:{:020}", self.domain.0, self.tick.max(0))
+        format!(
+            "{:020}:{:020}:{}",
+            self.domain.0,
+            self.generation,
+            encode_tick(self.tick)
+        )
     }
 }
 
@@ -751,6 +929,7 @@ impl TickCommitKey {
 #[serde(into = "DomainTickCommitWire")]
 pub struct DomainTickCommit {
     domain: DomainId,
+    generation: u64,
     tick: i64,
     clock: ClockRef,
     window: ActionWindowId,
@@ -759,6 +938,7 @@ pub struct DomainTickCommit {
     facts: Vec<BoundaryFact>,
     rng_inputs: CanonicalHash,
     draws: Vec<u32>,
+    resolution_secret_version: Option<u32>,
     state_hash: CanonicalHash,
 }
 
@@ -784,7 +964,13 @@ pub struct DomainTickCommitWire {
     pub rng_inputs: CanonicalHash,
     /// The recorded draws, in draw order.
     pub draws: Vec<u32>,
-    /// The hash over the accepted set, the RNG root and the ordered deltas.
+    /// The root-secret version the draws were taken under (fold T11), so a
+    /// replay can be checked against the exact version rather than whichever
+    /// one happens to be live.
+    #[serde(default)]
+    pub resolution_secret_version: Option<u32>,
+    /// The hash over the accepted set, the RNG root, the ordered deltas **with
+    /// their post-images** and the emitted facts.
     pub state_hash: CanonicalHash,
 }
 
@@ -797,6 +983,14 @@ impl DomainTickCommit {
     /// # Errors
     ///
     /// [`TickRecordError::TooLarge`] when the contents will not encode.
+    /// **What the hash covers** (fold T7/T12): the accepted set, the RNG root,
+    /// the ordered deltas **with their post-images**, the emitted **facts** and
+    /// the resolution secret version the draws were taken under. Before this
+    /// fold the deltas carried only a channel name and the facts were outside
+    /// the hash entirely, so a replay that wrote a different order value, or a
+    /// stored commit whose `facts` array had been edited, both reproduced the
+    /// stored hash exactly — the claim was true for **omission** and false for
+    /// **divergence**.
     #[allow(clippy::too_many_arguments)]
     pub fn derive_state_hash(
         domain: DomainId,
@@ -805,8 +999,10 @@ impl DomainTickCommit {
         window: ActionWindowId,
         accepted: &[IntentRef],
         deltas: &[UnitDelta],
+        facts: &[BoundaryFact],
         rng_inputs: CanonicalHash,
         draws: &[u32],
+        resolution_secret_version: Option<u32>,
     ) -> Result<CanonicalHash, TickRecordError> {
         CanonicalHash::for_canonical_value(
             Self::HASH_DOMAIN,
@@ -818,8 +1014,10 @@ impl DomainTickCommit {
                 "window": window,
                 "accepted": accepted,
                 "deltas": deltas,
+                "facts": facts,
                 "rng_inputs": rng_inputs,
                 "draws": draws,
+                "resolution_secret_version": resolution_secret_version,
             }),
             MAX_TICK_COMMIT_BYTES,
         )
@@ -845,10 +1043,12 @@ impl DomainTickCommit {
         facts: Vec<BoundaryFact>,
         rng_inputs: CanonicalHash,
         draws: Vec<u32>,
+        resolution_secret_version: Option<u32>,
     ) -> Result<DomainTickCommit, TickRecordError> {
-        if !matches!(clock, ClockRef::DomainTick { .. }) {
+        let ClockRef::DomainTick { generation, .. } = &clock else {
             return Err(TickRecordError::NotDomainTick);
-        }
+        };
+        let generation = *generation;
         if deltas.len() > MAX_TICK_DELTAS || accepted.len() > MAX_TICK_DELTAS {
             return Err(TickRecordError::TooManyDeltas);
         }
@@ -856,10 +1056,20 @@ impl DomainTickCommit {
             return Err(TickRecordError::TooManyFacts);
         }
         let state_hash = Self::derive_state_hash(
-            domain, tick, &clock, window, &accepted, &deltas, rng_inputs, &draws,
+            domain,
+            tick,
+            &clock,
+            window,
+            &accepted,
+            &deltas,
+            &facts,
+            rng_inputs,
+            &draws,
+            resolution_secret_version,
         )?;
         let commit = DomainTickCommit {
             domain,
+            generation,
             tick,
             clock,
             window,
@@ -868,6 +1078,7 @@ impl DomainTickCommit {
             facts,
             rng_inputs,
             draws,
+            resolution_secret_version,
             state_hash,
         };
         let value = serde_json::to_value(&commit).map_err(|_| TickRecordError::TooLarge)?;
@@ -916,6 +1127,16 @@ impl DomainTickCommit {
     pub fn draws(&self) -> &[u32] {
         &self.draws
     }
+    /// The root-secret version the draws were taken under.
+    #[must_use]
+    pub const fn resolution_secret_version(&self) -> Option<u32> {
+        self.resolution_secret_version
+    }
+    /// The clock generation.
+    #[must_use]
+    pub const fn generation(&self) -> u64 {
+        self.generation
+    }
     /// The state hash.
     #[must_use]
     pub const fn state_hash(&self) -> CanonicalHash {
@@ -926,6 +1147,7 @@ impl DomainTickCommit {
     pub const fn key(&self) -> TickCommitKey {
         TickCommitKey {
             domain: self.domain,
+            generation: self.generation,
             tick: self.tick,
         }
     }
@@ -943,6 +1165,7 @@ impl From<DomainTickCommit> for DomainTickCommitWire {
             facts: value.facts,
             rng_inputs: value.rng_inputs,
             draws: value.draws,
+            resolution_secret_version: value.resolution_secret_version,
             state_hash: value.state_hash,
         }
     }
@@ -963,6 +1186,7 @@ impl TryFrom<DomainTickCommitWire> for DomainTickCommit {
             value.facts,
             value.rng_inputs,
             value.draws,
+            value.resolution_secret_version,
         )?;
         if commit.state_hash != stored {
             return Err(TickRecordError::HashMismatch);
@@ -1026,13 +1250,25 @@ pub fn pulse_clock(owner: &OwnerId, domain: DomainId, generation: u64) -> Option
     })
 }
 
-/// The stable window identity for one `(domain, tick)`.
+/// The stable window identity for one `(domain, generation, tick)`.
+///
+/// **The generation is part of the identity** (fold D5(a)/T4): without it a
+/// demote → re-promote — which re-anchors `started_at` and restarts the tick
+/// counter at 0 — walked back over the previous generation's leftover windows,
+/// so every legitimate order for the reused tick number refused
+/// `IntentWindowMismatch` and the tick's own `checked_close_due` failed
+/// `ClockMismatch` across two `ClockRef::DomainTick` generations.
 #[must_use]
-pub fn tick_window_id(owner: &OwnerId, domain: DomainId, tick: i64) -> Option<ActionWindowId> {
+pub fn tick_window_id(
+    owner: &OwnerId,
+    domain: DomainId,
+    generation: u64,
+    tick: i64,
+) -> Option<ActionWindowId> {
     let hash = CanonicalHash::for_canonical_value(
         "sim.domain_tick_window_local.v1",
         1,
-        &json!({ "domain": domain, "tick": tick }),
+        &json!({ "domain": domain, "generation": generation, "tick": tick }),
         1024,
     )
     .ok()?;
@@ -1134,7 +1370,13 @@ pub(crate) fn tick_outcome_descriptor() -> Result<DefinitionDescriptor, ModError
         "outcome",
         TICK_OUTCOME_ID,
         json!({
-            "fields": { "tick": "i64", "accepted": "usize", "facts": "usize" },
+            "fields": {
+                "tick": "i64",
+                "accepted": "usize",
+                "facts": "usize",
+                "facts_refused": "usize",
+                "reaped": "usize"
+            },
             "contains_truth_subject": false
         }),
     )?
@@ -1224,16 +1466,43 @@ pub(crate) fn arm_action_descriptor(
     .as_current())
 }
 
+/// One refusal on the tick lane, **classified honestly** (fold T5/D4(a)).
+///
+/// Before this fold every refusal the pulse raised was `retryable: false`, so a
+/// per-domain bound refusal, a cross-generation window and any typed-state
+/// hiccup all satisfied neither `scheduled_prepare_stale` nor
+/// `scheduled_prepare_retryable` and fell through to `apply_integrity_freeze` —
+/// one domain's problem stopped the world. Now `Stale` is anything a later fire
+/// recovers from, `retryable` is a genuine transient, and `Integrity` is
+/// reserved for what should really stop the world.
 fn err(code: ActionErrorCode, message: &'static str) -> ActionError {
-    ActionError::new(code, false, message).expect("static tick error is bounded")
+    let retryable = matches!(
+        code,
+        ActionErrorCode::Busy | ActionErrorCode::Unavailable | ActionErrorCode::Conflict
+    );
+    ActionError::new(code, retryable, message).expect("static tick error is bounded")
 }
 
+/// A refusal a **later fire recovers from on its own**: a window that has
+/// already closed, a candidate whose domain moved on, a stamp from a generation
+/// that is gone. The driver discards it as stale and drives on.
+fn stale(message: &'static str) -> ActionError {
+    err(ActionErrorCode::Stale, message)
+}
+
+/// A refusal that should genuinely stop the world: the tick's own records
+/// disagree with themselves in a way no later fire can mend.
 fn integrity(message: &'static str) -> ActionError {
     err(ActionErrorCode::Integrity, message)
 }
 
+/// The typed-state lane is **transient**, not an integrity failure: a store that
+/// cannot answer this instant answers the next poll (fold T5).
 fn state_error(_error: &ActionStateError) -> ActionError {
-    integrity("the tactical tick's own state is unavailable")
+    err(
+        ActionErrorCode::Unavailable,
+        "the tactical tick's own state is unavailable",
+    )
 }
 
 /// The one refusal a viewer may not distinguish: naming a contact the actor does
@@ -1284,21 +1553,62 @@ impl TacticalIntentProvider {
         Ok(doc)
     }
 
-    fn observed_at(invocation: &ActionInvocation) -> Result<ClockStamp, ActionError> {
+    /// The **fixed** seat the offer pinned. Its absence is `Unauthorized`, not
+    /// a decode failure: a submission that did not come through a projected
+    /// offer for this exact actor cannot have one.
+    fn seat(invocation: &ActionInvocation) -> Result<SeatDoc, ActionError> {
         let value = invocation
             .parameters()
-            .get("observed_at")
+            .get("seat")
             .cloned()
-            .ok_or_else(|| integrity("a tactical intent carries its domain-tick stamp"))?;
-        let stamp: ClockStamp = serde_json::from_value(value)
-            .map_err(|_| integrity("that tactical intent's stamp will not decode"))?;
-        if !matches!(stamp.clock, ClockRef::DomainTick { .. }) {
-            return Err(err(
-                ActionErrorCode::InvalidRequest,
-                "a tactical intent is stamped on its domain's tick clock",
-            ));
-        }
-        Ok(stamp)
+            .ok_or_else(|| {
+                err(
+                    ActionErrorCode::Unauthorized,
+                    "a tactical intent must come through a projected offer for a focused station",
+                )
+            })?;
+        serde_json::from_value(value).map_err(|_| {
+            err(
+                ActionErrorCode::Unauthorized,
+                "that tactical seat will not decode",
+            )
+        })
+    }
+
+    /// The stamp, **derived from the pinned seat** — never accepted from the
+    /// caller (fold D1(a)/A2/A3).
+    fn observed_at(owner: &OwnerId, seat: &SeatDoc) -> Result<ClockStamp, ActionError> {
+        let clock = pulse_clock(owner, DomainId(seat.domain), seat.generation)
+            .ok_or_else(|| integrity("that domain's pulse clock is unconstructible"))?;
+        Ok(ClockStamp {
+            clock,
+            at: seat.tick,
+        })
+    }
+
+    /// The per-`(unit, kind)` window slot (fold D2(a)/T9).
+    ///
+    /// `WindowIntentSlot` is `{actor, truth_subject}`. With the unit as the
+    /// subject, one actor's `+heading` and `+fire` in one tick were **one** slot
+    /// and the second silently `Replaced`d the first, against §3.8's explicit
+    /// promise; scoping the subject by kind makes latest-order-wins apply per
+    /// control channel, which is what S2A's continuous/discrete split needs.
+    fn slot_subject(
+        owner: &OwnerId,
+        unit: ObjId,
+        kind: IntentKind,
+    ) -> Result<SubjectKey, ActionError> {
+        Ok(SubjectKey::Scoped {
+            owner: owner.clone(),
+            class: CanonicalId::new("tactical_order")
+                .map_err(|_| integrity("the tactical slot class is invalid"))?,
+            id: mush_core::IdempotencyKeyText::parse_canonical(format!(
+                "{}.{}",
+                unit.0,
+                kind.token()
+            ))
+            .map_err(|_| integrity("that intent's slot identity is unconstructible"))?,
+        })
     }
 }
 
@@ -1328,6 +1638,14 @@ impl ActionProvider for TacticalIntentProvider {
         {
             return Ok(None);
         }
+        // **The gate is the seat** (fold D1(a)/A1). `project_offer` is the one
+        // place on this lane with an `&Engine`, so it resolves the querying
+        // actor's focused station, its published grant and its domain's live
+        // pulse HERE — and returns `Ok(None)` when there is none, so the offer
+        // no longer reaches every actor in the world.
+        let Some(seat) = crate::combat::resolve_seat(&engine.world, query.actor()).ok() else {
+            return Ok(None);
+        };
         // **One offer per action kind, never one per target** (08i answer 11):
         // the whole tactical vocabulary is a single offer whose `intent` document
         // names the kind, and the opaque contact choices ride the offer's own
@@ -1345,25 +1663,17 @@ impl ActionProvider for TacticalIntentProvider {
             .add_definition(action.clone(), definitions)
             .map_err(|_| integrity("the tactical definition guard is unavailable"))?;
         Ok(Some(ProviderOfferDraft {
-            fixed_parameters: json!({}),
-            parameters: ProjectedParameterSchema::new(vec![
-                ProjectedParameter {
-                    id: CanonicalId::new("intent")
-                        .map_err(|_| integrity("the tactical parameter id is invalid"))?,
-                    required: true,
-                    kind: ProjectedParameterKind::Text {
-                        maximum_bytes: mush_core::MAX_PROJECTED_ACTION_TEXT_BYTES,
-                    },
+            // `merge_parameters` refuses a client key that collides with a fixed
+            // one, so the seat is unforgeable rather than merely conventional.
+            fixed_parameters: json!({ "seat": seat }),
+            parameters: ProjectedParameterSchema::new(vec![ProjectedParameter {
+                id: CanonicalId::new("intent")
+                    .map_err(|_| integrity("the tactical parameter id is invalid"))?,
+                required: true,
+                kind: ProjectedParameterKind::Text {
+                    maximum_bytes: mush_core::MAX_PROJECTED_ACTION_TEXT_BYTES,
                 },
-                ProjectedParameter {
-                    id: CanonicalId::new("observed_at")
-                        .map_err(|_| integrity("the tactical parameter id is invalid"))?,
-                    required: true,
-                    kind: ProjectedParameterKind::Text {
-                        maximum_bytes: mush_core::MAX_PROJECTED_ACTION_TEXT_BYTES,
-                    },
-                },
-            ])
+            }])
             .map_err(|_| integrity("the tactical parameter schema is invalid"))?,
             targets: ProjectedTargetSchema::None,
             required_channels: Vec::new(),
@@ -1396,17 +1706,67 @@ impl ActionProvider for TacticalIntentProvider {
         invocation: &ActionInvocation,
         txn: &mut ActionTxn<'_>,
     ) -> Result<mush_core::AuthoritativeActionOutput, ActionError> {
+        self.submit_intent(invocation, txn, None)
+    }
+
+    fn prepare_authoritative_with_context(
+        &self,
+        invocation: &ActionInvocation,
+        txn: &mut ActionTxn<'_>,
+        context: &mut mush_core::PrepareCtx<'_>,
+    ) -> Result<mush_core::AuthoritativeActionOutput, ActionError> {
+        // **T11:** a window this ingress opens lazily pins the live root-secret
+        // version, so it appears in `Engine::resolution_key_rotation_references`
+        // and a rotation cannot prune material an unresolved tick still needs.
+        // `None` stays valid for a deployment with no resolution key ring.
+        let version = context.current_resolution_secret_version().ok();
+        self.submit_intent(invocation, txn, version)
+    }
+}
+
+impl TacticalIntentProvider {
+    /// The one submit path. **Every field the caller names is compared to the
+    /// pinned seat** (fold D1(a)) before a durable window slot is spent, which
+    /// is what makes A1/A3/A4/A5/A6/A7 unrepresentable rather than merely
+    /// unlikely.
+    fn submit_intent(
+        &self,
+        invocation: &ActionInvocation,
+        txn: &mut ActionTxn<'_>,
+        secret_version: Option<u32>,
+    ) -> Result<mush_core::AuthoritativeActionOutput, ActionError> {
         self.validate_invocation(invocation)?;
         let doc = Self::document(invocation)?;
-        let now = Self::observed_at(invocation)?;
+        let seat = Self::seat(invocation)?;
         let owner = self.families.windows.owner().clone();
-        let domain = DomainId(doc.domain);
-        let window_id = tick_window_id(&owner, domain, doc.tick)
+        // The seat is the authority. A mismatch on identity is `Unauthorized`;
+        // a mismatch on the tick alone is `Stale`, because the pulse simply
+        // moved on between the verb and the resolution.
+        if doc.unit != seat.unit
+            || doc.station != seat.station
+            || doc.epoch != seat.epoch
+            || doc.priority != seat.priority
+            || doc.domain != seat.domain
+        {
+            return Err(err(
+                ActionErrorCode::Unauthorized,
+                "that order names a seat you do not hold",
+            ));
+        }
+        if doc.channel != doc.kind.required_channel() || !seat.channels.contains(&doc.channel) {
+            return Err(err(
+                ActionErrorCode::Unauthorized,
+                "your station does not grant the control channel that order rides",
+            ));
+        }
+        if doc.tick != seat.tick {
+            return Err(stale("that tick has already advanced; re-issue the order"));
+        }
+        let now = Self::observed_at(&owner, &seat)?;
+        let domain = DomainId(seat.domain);
+        let generation = seat.generation;
+        let window_id = tick_window_id(&owner, domain, generation, seat.tick)
             .ok_or_else(|| integrity("that domain's window identity is unconstructible"))?;
-        let ClockRef::DomainTick { generation, .. } = &now.clock else {
-            return Err(integrity("a tactical intent is stamped on a domain tick"));
-        };
-        let generation = *generation;
         let existing = txn
             .get(&self.families.windows, &window_id)
             .map_err(|error| state_error(&error))?
@@ -1414,19 +1774,27 @@ impl ActionProvider for TacticalIntentProvider {
         let record = match existing {
             Some(record) => record,
             None => ActionWindowRecord::open(
-                open_window(window_id, &now.clock, doc.tick, generation)
+                open_window(window_id, &now.clock, seat.tick, generation, secret_version)
                     .map_err(|_| integrity("that tick's window is unconstructible"))?,
             ),
         };
         let intent = WindowIntent::new(
             window_id,
             generation,
-            SubjectKey::Object { id: doc.unit },
+            Self::slot_subject(&owner, doc.unit, doc.kind)?,
             Vec::new(),
             self.action.clone(),
             invocation.clone(),
-            WindowOrderKey::new(vec![doc.kind.order_rank(), doc.unit.0 as i64])
-                .map_err(|_| integrity("that intent's order key is invalid"))?,
+            // **A8:** the station's own grant priority settles the tie, so a
+            // junior crewman can no longer overwrite the commander purely
+            // because their dbref is larger. A higher priority sorts LAST and
+            // therefore writes the order last.
+            WindowOrderKey::new(vec![
+                doc.kind.order_rank(),
+                doc.unit.0 as i64,
+                i64::from(doc.priority),
+            ])
+            .map_err(|_| integrity("that intent's order key is invalid"))?,
         )
         .map_err(|_| integrity("that intent will not join a window"))?;
         let transition = record
@@ -1436,11 +1804,17 @@ impl ActionProvider for TacticalIntentProvider {
                     ActionErrorCode::BoundsExceeded,
                     "this tick's intent window is full; the next tick opens a fresh one",
                 ),
+                // **T8:** the tick now RETAINS the consumed window for one tick,
+                // so an intent that raced the driver against the pulse lands
+                // here — a refusal the player can act on — instead of being
+                // accepted into a spent window and silently lost.
                 mush_core::ActionWindowError::OutsideWindow
-                | mush_core::ActionWindowError::NotOpen { .. } => err(
-                    ActionErrorCode::Stale,
-                    "that tick has already closed; re-issue the order",
-                ),
+                | mush_core::ActionWindowError::NotOpen { .. } => {
+                    stale("that tick has already closed; re-issue the order")
+                }
+                mush_core::ActionWindowError::IntentWindowMismatch => {
+                    stale("that domain's pulse has been re-promoted; re-issue the order")
+                }
                 _ => integrity("that intent could not be admitted"),
             })?;
         let replaced = matches!(
@@ -1460,7 +1834,7 @@ impl ActionProvider for TacticalIntentProvider {
         .map_err(|error| state_error(&error))?;
         let outcome = RulesValue::new(
             self.outcome.clone(),
-            json!({ "tick": doc.tick, "replaced": replaced }),
+            json!({ "tick": seat.tick, "replaced": replaced }),
         )
         .map_err(|_| integrity("the tactical outcome is invalid"))?;
         Ok(mush_core::AuthoritativeActionOutput::new(outcome)
@@ -1469,11 +1843,20 @@ impl ActionProvider for TacticalIntentProvider {
 }
 
 /// One tick's collection interval: `[tick, tick + 1)` on the domain's own clock.
+///
+/// `secret_version` **pins** the root-secret version the eventual resolution
+/// will draw under (fold T11). The kernel already runs the other half of that
+/// contract — `ActionState::unresolved_window_resolution_secret_versions` feeds
+/// `Engine::resolution_key_rotation_references`, which exists so a rotation can
+/// be REFUSED when it would prune material an unresolved window still needs.
+/// Leaving it `None`, as cut 8 did, made every tick window invisible to that
+/// guard. `None` remains valid where no resolution key ring is installed.
 fn open_window(
     id: ActionWindowId,
     clock: &ClockRef,
     tick: i64,
     generation: u64,
+    secret_version: Option<u32>,
 ) -> Result<ActionWindow, mush_core::ActionWindowError> {
     ActionWindow::new(ActionWindowDraft {
         id,
@@ -1492,7 +1875,7 @@ fn open_window(
         restart: WindowRestartPolicy::CloseIfElapsed,
         timeout: WindowTimeoutPolicy::Close,
         max_catch_up: 1,
-        resolution_secret_version: None,
+        resolution_secret_version: secret_version,
     })
 }
 
@@ -1518,6 +1901,16 @@ struct TickPlan {
     /// against `World::channel_grant_is_current` at apply). Every accepted
     /// intent NOT in this list is **refused with a reason**, never skipped.
     current: Vec<RequestUid>,
+    /// Commit keys that have fallen out of the retention ring, **named by a
+    /// bounded scan** rather than guessed arithmetically (fold D5(a)/B3). Also
+    /// carries every commit of a superseded generation.
+    reap_commits: Vec<TickCommitKey>,
+    /// Orphan window records: a generation that is gone, or a tick older than
+    /// the one this fire retains. The consumed window itself is kept one tick.
+    reap_windows: Vec<ActionWindowId>,
+    /// Standing orders whose unit is no longer in any domain (fold A9): the
+    /// book had no lifecycle at all and no `txn.remove` anywhere in the tree.
+    reap_orders: Vec<StandingOrderKey>,
 }
 
 impl DomainTickProvider {
@@ -1547,12 +1940,48 @@ impl DomainTickProvider {
             .cloned()
             .and_then(|value| serde_json::from_value(value).ok())
             .ok_or_else(|| integrity("a domain tick names its revalidated set"))?;
+        let reap_commits: Vec<TickCommitKey> = parameters
+            .get("reap_commits")
+            .cloned()
+            .map_or_else(
+                || Some(Vec::new()),
+                |value| serde_json::from_value(value).ok(),
+            )
+            .ok_or_else(|| integrity("a domain tick names its commit reap set"))?;
+        let reap_windows: Vec<ActionWindowId> = parameters
+            .get("reap_windows")
+            .cloned()
+            .map_or_else(
+                || Some(Vec::new()),
+                |value| serde_json::from_value(value).ok(),
+            )
+            .ok_or_else(|| integrity("a domain tick names its window reap set"))?;
+        let reap_orders: Vec<StandingOrderKey> = parameters
+            .get("reap_orders")
+            .cloned()
+            .map_or_else(
+                || Some(Vec::new()),
+                |value| serde_json::from_value(value).ok(),
+            )
+            .ok_or_else(|| integrity("a domain tick names its order reap set"))?;
+        if reap_commits.len() > MAX_REAP_PER_FIRE
+            || reap_windows.len() > MAX_REAP_PER_FIRE
+            || reap_orders.len() > MAX_REAP_PER_FIRE
+        {
+            return Err(err(
+                ActionErrorCode::BoundsExceeded,
+                "a domain tick reaps at most MAX_REAP_PER_FIRE records per family",
+            ));
+        }
         Ok(TickPlan {
             domain,
             tick,
             observed_at,
             window,
             current,
+            reap_commits,
+            reap_windows,
+            reap_orders,
         })
     }
 
@@ -1575,6 +2004,23 @@ impl DomainTickProvider {
 impl ActionProvider for DomainTickProvider {
     fn validate_invocation(&self, invocation: &ActionInvocation) -> Result<(), ActionError> {
         DomainTickProvider::plan(invocation).map(|_| ())
+    }
+
+    /// **The `"internal": true` flag is decorative; THIS is the fence** (fold
+    /// A14). Nothing in `mush-core` reads that key, so before this the tick was
+    /// unreachable to a client only because the trait default returned
+    /// `Ok(None)` — real protection, but accidental. An explicit override says
+    /// why, so a later maintainer who adds a projection for any reason has to
+    /// delete this line and read the comment first: `prepare_authoritative_with_context`
+    /// takes its `current` witness list as an action **parameter**, i.e. an
+    /// attacker-declared "these intents passed the station check".
+    fn project_offer(
+        &self,
+        _action: &DefinitionRef,
+        _query: &LegalActionQuery,
+        _engine: &Engine,
+    ) -> Result<Option<ProviderOfferDraft>, ActionError> {
+        Ok(None)
     }
 
     fn prepare_invocation(
@@ -1613,6 +2059,11 @@ impl ActionProvider for DomainTickProvider {
             .get(&self.families.windows, &plan.window)
             .map_err(|error| state_error(&error))?
             .cloned();
+        // A record left over from an EARLIER generation is treated as absent
+        // and reaped rather than closed (fold T4): `checked_close_due` compares
+        // stamps across two `ClockRef::DomainTick` generations and fails
+        // `ClockMismatch`, which used to take the whole world down with it.
+        let record = record.filter(|record| record.window().clock() == &plan.observed_at.clock);
         let (accepted_docs, consumed) = match record {
             Some(record) => {
                 let closed = if record.phase() == mush_core::ActionWindowPhase::Open {
@@ -1622,14 +2073,14 @@ impl ActionProvider for DomainTickProvider {
                             Self::operation(invocation.request(), "close")?,
                             &plan.observed_at,
                         )
-                        .map_err(|_| integrity("this tick's window would not close"))?
+                        .map_err(|_| stale("this tick's window would not close"))?
                         .into_record()
                 } else {
                     record
                 };
                 let ordered = closed
                     .resolution_order()
-                    .map_err(|_| integrity("this tick's window would not order"))?;
+                    .map_err(|_| stale("this tick's window would not order"))?;
                 let mut docs = Vec::with_capacity(ordered.len());
                 for intent in ordered {
                     let request = intent.invocation().request();
@@ -1643,7 +2094,7 @@ impl ActionProvider for DomainTickProvider {
                         commit_token,
                         &plan.observed_at,
                     )
-                    .map_err(|_| integrity("this tick's window would not consume"))?
+                    .map_err(|_| stale("this tick's window would not consume"))?
                     .into_record();
                 (docs, Some(consumed))
             }
@@ -1653,6 +2104,11 @@ impl ActionProvider for DomainTickProvider {
         // ---- recorded RNG (K3.1a): one stream, never re-drawn on replay ----
         let rng_domain = CanonicalId::new("sim.domain_tick")
             .map_err(|_| integrity("the tick's rng domain is invalid"))?;
+        // **The RNG root identifies the tick's INPUTS** (fold T7): the intent
+        // values, the contact and slot each names, and `plan.current` — the
+        // revalidated witness set that decides which intents refuse. Hashing
+        // only `(request, actor, kind)` left the whole decision surface outside
+        // the root.
         let inputs_hash = CanonicalHash::for_canonical_value(
             "sim.domain_tick_inputs.v1",
             1,
@@ -1660,21 +2116,40 @@ impl ActionProvider for DomainTickProvider {
                 "domain": plan.domain,
                 "tick": plan.tick,
                 "window": plan.window,
+                "current": plan.current,
                 "accepted": accepted_docs
                     .iter()
                     .map(|(request, actor, doc)| json!({
                         "request": request,
                         "actor": actor,
                         "kind": doc.as_ref().map(|doc| doc.kind),
+                        "unit": doc.as_ref().map(|doc| doc.unit),
+                        "value": doc.as_ref().and_then(|doc| doc.value.clone()),
+                        "contact": doc.as_ref().and_then(|doc| doc.contact),
+                        "slot": doc.as_ref().and_then(|doc| doc.slot.clone()),
                     }))
                     .collect::<Vec<_>>(),
             }),
             MAX_TICK_COMMIT_BYTES,
         )
         .map_err(|_| integrity("the tick's rng inputs will not encode"))?;
-        let mut rng = context
-            .start_resolution(&rng_domain, inputs_hash)
-            .map_err(|_| integrity("the tick's resolution stream is unavailable"))?;
+        // **T11:** draw under the version the window PINNED, so a replay after a
+        // key rotation reproduces the same stream. Falling back to the live
+        // version keeps a pre-fold window (pinned `None`) resolvable.
+        let secret_version = consumed
+            .as_ref()
+            .and_then(|record| record.window().resolution_secret_version())
+            .or_else(|| context.current_resolution_secret_version().ok());
+        let mut rng = match secret_version {
+            Some(version) => context.start_resolution_at(version, &rng_domain, inputs_hash),
+            None => context.start_resolution(&rng_domain, inputs_hash),
+        }
+        .map_err(|_| {
+            err(
+                ActionErrorCode::Unavailable,
+                "the tick's resolution stream is unavailable",
+            )
+        })?;
 
         // ---- resolution ----
         let mut accepted = Vec::with_capacity(accepted_docs.len());
@@ -1682,35 +2157,44 @@ impl ActionProvider for DomainTickProvider {
         let mut facts: Vec<BoundaryFact> = Vec::new();
         let mut draws: Vec<u32> = Vec::new();
         let mut orders: BTreeMap<StandingOrderKey, StandingOrder> = BTreeMap::new();
+        let mut facts_refused = 0_usize;
+        let generation = match &plan.observed_at.clock {
+            ClockRef::DomainTick { generation, .. } => *generation,
+            _ => return Err(integrity("a domain tick fires on a domain tick clock")),
+        };
         for (request, actor, doc) in accepted_docs {
             let Some(doc) = doc else {
                 // An intent this build cannot classify REFUSES; it is never
                 // dropped silently (10b §3.8, review addition).
                 deltas.push(UnitDelta {
                     unit: actor,
-                    kind: IntentKind::Eject,
+                    kind: None,
                     outcome: DeltaOutcome::Refused {
                         reason: "unknown intent kind".to_owned(),
                     },
                 });
                 continue;
             };
-            accepted.push(IntentRef {
-                actor,
-                unit: doc.unit,
-                kind: doc.kind,
-                request,
-            });
+            // **A4:** the witness check runs BEFORE the accept, so a refused
+            // intent is recorded as a refusal and never as an accepted one —
+            // the durable commit `@domain/replay` reads no longer attributes
+            // orders against stations nobody holds.
             if !plan.current.contains(&request) {
                 deltas.push(UnitDelta {
                     unit: doc.unit,
-                    kind: doc.kind,
+                    kind: Some(doc.kind),
                     outcome: DeltaOutcome::Refused {
                         reason: "stale station authority".to_owned(),
                     },
                 });
                 continue;
             }
+            accepted.push(IntentRef {
+                actor,
+                unit: doc.unit,
+                kind: doc.kind,
+                request,
+            });
             match (doc.kind.channel(), doc.value.clone()) {
                 (Some(channel), Some(value)) => {
                     let key = StandingOrderKey {
@@ -1731,17 +2215,23 @@ impl ActionProvider for DomainTickProvider {
                     let order = StandingOrder::new(
                         doc.unit,
                         channel,
-                        value,
+                        value.clone(),
                         plan.observed_at.clone(),
                         actor,
                         revision,
                     )
-                    .map_err(|_| integrity("that standing order is unconstructible"))?;
+                    .map_err(|_| stale("that standing order is unconstructible"))?;
                     orders.insert(key, order);
                     deltas.push(UnitDelta {
                         unit: doc.unit,
-                        kind: doc.kind,
-                        outcome: DeltaOutcome::OrderSet { channel },
+                        kind: Some(doc.kind),
+                        // **T7:** the post-image travels with the delta, so a
+                        // replay that writes a different value fails the hash.
+                        outcome: DeltaOutcome::OrderSet {
+                            channel,
+                            value: Some(value),
+                            revision,
+                        },
                     });
                 }
                 _ => {
@@ -1752,17 +2242,40 @@ impl ActionProvider for DomainTickProvider {
                         .map_err(|_| integrity("the tick's resolution stream is exhausted"))?;
                     draws.push(draw);
                     let effective = draw % 2 == 0;
+                    if effective && facts.len() >= MAX_BOUNDARY_FACTS_PER_TICK {
+                        // **T12:** a fact past the budget is a REFUSAL with its
+                        // reason, never a silent truncation inside the loop —
+                        // which is also what makes `DomainTickCommit::new`'s own
+                        // `TooManyFacts` check reachable rather than dead.
+                        facts_refused = facts_refused.saturating_add(1);
+                        deltas.push(UnitDelta {
+                            unit: doc.unit,
+                            kind: Some(doc.kind),
+                            outcome: DeltaOutcome::Refused {
+                                reason: "boundary fact budget exhausted".to_owned(),
+                            },
+                        });
+                        continue;
+                    }
                     deltas.push(UnitDelta {
                         unit: doc.unit,
-                        kind: doc.kind,
+                        kind: Some(doc.kind),
                         outcome: DeltaOutcome::Resolved { draw, effective },
                     });
-                    if effective && facts.len() < MAX_BOUNDARY_FACTS_PER_TICK {
+                    if effective {
+                        let ordinal = u16::try_from(facts.len())
+                            .map_err(|_| integrity("too many boundary facts for one tick"))?;
                         facts.push(BoundaryFact {
                             kind: boundary_kind(doc.kind).to_owned(),
                             domain: plan.domain.0,
+                            generation,
                             tick: plan.tick,
                             unit: doc.unit,
+                            ordinal,
+                            // **D6(b):** cut 8's resolution is a placeholder with
+                            // no unit post-image behind it. The flag says so on
+                            // the wire, so cut 9 must opt in rather than settle.
+                            provisional: true,
                         });
                     }
                 }
@@ -1781,6 +2294,7 @@ impl ActionProvider for DomainTickProvider {
             facts.clone(),
             inputs_hash,
             draws,
+            secret_version,
         )
         .map_err(|_| {
             err(
@@ -1791,6 +2305,8 @@ impl ActionProvider for DomainTickProvider {
         let key = commit.key();
         let accepted_count = accepted.len();
 
+        let orders_written: std::collections::BTreeSet<StandingOrderKey> =
+            orders.keys().copied().collect();
         for (order_key, order) in orders {
             if txn
                 .get(&self.families.orders, &order_key)
@@ -1804,11 +2320,15 @@ impl ActionProvider for DomainTickProvider {
             .map_err(|error| state_error(&error))?;
         }
         if let Some(consumed) = consumed {
-            // The commit retains the accepted set, so the spent window record is
-            // reaped in the same bundle rather than growing a family a two-second
-            // pulse would add 43k records a day to.
-            let _ = consumed;
-            txn.remove(&self.families.windows, &plan.window)
+            // **T8/D5(a):** the spent window is RETAINED for one tick, not
+            // deleted. Deleting it destroyed the kernel's own duplicate fence:
+            // `prepare_authoritative` treats absence as "open a fresh one", so
+            // an intent that raced the 250 ms driver against a 2 s pulse was
+            // accepted into a spent window, acknowledged to the player and never
+            // consumed. Retained, `checked_submit`'s `require_open` refuses it
+            // with the player-actionable `Stale` the provider already maps. It
+            // is reaped by the NEXT fire through `plan.reap_windows`.
+            txn.replace(&self.families.windows, &plan.window, consumed)
                 .map_err(|error| state_error(&error))?;
         }
         if txn
@@ -1821,34 +2341,70 @@ impl ActionProvider for DomainTickProvider {
             txn.insert(&self.families.commits, &key, commit)
         }
         .map_err(|error| state_error(&error))?;
-        // The retention ring: drop exactly the commit that falls out of it.
-        if let Some(expired) = plan.tick.checked_sub(MAX_RETAINED_TICK_COMMITS as i64) {
-            let expired_key = TickCommitKey {
-                domain: plan.domain,
-                tick: expired,
-            };
+        // **The retention ring, the orphan sweep and the order reaper** (fold
+        // D5(a)/B3/A9). Every key here was named by a BOUNDED SCAN of the real
+        // family in `DomainTickScheduleAdapter::plan` — not by
+        // `plan.tick - 64`, which named a tick that never committed after any
+        // gap in a `LatestFirst`/`max_catch_up: 1` cursor and, below tick 64,
+        // named tick 0's own key. The per-fire cap is `MAX_REAP_PER_FIRE`; what
+        // is left over is named again two seconds later.
+        let mut reaped = 0_usize;
+        for expired in &plan.reap_commits {
             if txn
-                .get(&self.families.commits, &expired_key)
+                .get(&self.families.commits, expired)
                 .map_err(|error| state_error(&error))?
                 .is_some()
             {
-                txn.remove(&self.families.commits, &expired_key)
+                txn.remove(&self.families.commits, expired)
                     .map_err(|error| state_error(&error))?;
+                reaped = reaped.saturating_add(1);
+            }
+        }
+        for orphan in &plan.reap_windows {
+            if *orphan == plan.window {
+                continue;
+            }
+            if txn
+                .get(&self.families.windows, orphan)
+                .map_err(|error| state_error(&error))?
+                .is_some()
+            {
+                txn.remove(&self.families.windows, orphan)
+                    .map_err(|error| state_error(&error))?;
+                reaped = reaped.saturating_add(1);
+            }
+        }
+        for order_key in &plan.reap_orders {
+            if orders_written.contains(order_key) {
+                continue;
+            }
+            if txn
+                .get(&self.families.orders, order_key)
+                .map_err(|error| state_error(&error))?
+                .is_some()
+            {
+                txn.remove(&self.families.orders, order_key)
+                    .map_err(|error| state_error(&error))?;
+                reaped = reaped.saturating_add(1);
             }
         }
         // The next collection interval, so the following tick's submissions have
         // somewhere to go without a second authority opening it.
         let next_tick = plan.tick.saturating_add(1);
-        if let (Some(next_id), ClockRef::DomainTick { generation, .. }) = (
-            tick_window_id(&owner, plan.domain, next_tick),
-            &plan.observed_at.clock,
-        ) && txn
-            .get(&self.families.windows, &next_id)
-            .map_err(|error| state_error(&error))?
-            .is_none()
+        if let Some(next_id) = tick_window_id(&owner, plan.domain, generation, next_tick)
+            && txn
+                .get(&self.families.windows, &next_id)
+                .map_err(|error| state_error(&error))?
+                .is_none()
         {
-            let window = open_window(next_id, &plan.observed_at.clock, next_tick, *generation)
-                .map_err(|_| integrity("the next tick's window is unconstructible"))?;
+            let window = open_window(
+                next_id,
+                &plan.observed_at.clock,
+                next_tick,
+                generation,
+                secret_version,
+            )
+            .map_err(|_| integrity("the next tick's window is unconstructible"))?;
             txn.insert(
                 &self.families.windows,
                 &next_id,
@@ -1859,12 +2415,10 @@ impl ActionProvider for DomainTickProvider {
 
         // ---- T2: typed boundary facts leave the bundle; nothing economic runs ----
         let mut outbox = Vec::with_capacity(facts.len());
-        for (ordinal, fact) in facts.iter().enumerate() {
-            let ordinal = u16::try_from(ordinal)
-                .map_err(|_| integrity("too many boundary facts for one tick"))?;
+        for fact in &facts {
             outbox.push(
                 DurableOutboxIntent::new(
-                    ordinal,
+                    fact.ordinal,
                     OwnerId::new(BOUNDARY_OUTBOX_OWNER)
                         .map_err(|_| integrity("the boundary owner is invalid"))?,
                     CanonicalId::new(BOUNDARY_OUTBOX_ADAPTER)
@@ -1873,8 +2427,11 @@ impl ActionProvider for DomainTickProvider {
                         "id": fact.stable_id(),
                         "kind": fact.kind,
                         "domain": fact.domain,
+                        "generation": fact.generation,
                         "tick": fact.tick,
                         "unit": fact.unit,
+                        "ordinal": fact.ordinal,
+                        "provisional": fact.provisional,
                     }),
                 )
                 .map_err(|_| integrity("a boundary fact will not encode"))?,
@@ -1887,16 +2444,23 @@ impl ActionProvider for DomainTickProvider {
                 "tick": plan.tick,
                 "accepted": accepted_count,
                 "facts": facts.len(),
+                "facts_refused": facts_refused,
+                "reaped": reaped,
             }),
         )
         .map_err(|_| integrity("the tick outcome is invalid"))?;
+        // **The prepared resolution's outcome must BE the action's outcome.**
+        // `prepare_registered_authoritative_action` refuses the bundle when the
+        // two differ, and cut 8 passed an empty `json!({})` here — which no test
+        // could see, because no cut-8 test ever drove the tick provider at all.
+        // The E7c8 fold's D7(a) harness (`world_task.rs`'s `e7c8_pulse`) is what
+        // surfaced it on its first driven tick.
         let prepared = rng
             .into_prepared(
                 Vec::new(),
                 RulesValue::new(self.outcome.clone(), json!({}))
                     .map_err(|_| integrity("the tick modifiers are invalid"))?,
-                RulesValue::new(self.outcome.clone(), json!({}))
-                    .map_err(|_| integrity("the tick resolution outcome is invalid"))?,
+                outcome.clone(),
             )
             .map_err(|_| integrity("the tick's resolution will not close"))?;
         Ok(mush_core::AuthoritativeActionOutput::new(outcome)
@@ -1956,6 +2520,11 @@ struct ArmDoc {
     from_tick: i64,
     /// Arm (`true`) or disarm (`false`).
     arm: bool,
+    /// On a **disarm**, the units whose standing orders leave with the domain
+    /// (fold A9). Bounded by `MAX_UNITS_PER_DOMAIN`; the world-side pass reads
+    /// the census, because a prepared provider has no `&World`.
+    #[serde(default)]
+    clear_units: Vec<ObjId>,
 }
 
 impl PulseArmProvider {
@@ -2059,6 +2628,27 @@ impl ActionProvider for PulseArmProvider {
         invocation: &ActionInvocation,
         txn: &mut ActionTxn<'_>,
     ) -> Result<mush_core::AuthoritativeActionOutput, ActionError> {
+        self.arm_pulse(invocation, txn, None)
+    }
+
+    fn prepare_authoritative_with_context(
+        &self,
+        invocation: &ActionInvocation,
+        txn: &mut ActionTxn<'_>,
+        context: &mut mush_core::PrepareCtx<'_>,
+    ) -> Result<mush_core::AuthoritativeActionOutput, ActionError> {
+        let version = context.current_resolution_secret_version().ok();
+        self.arm_pulse(invocation, txn, version)
+    }
+}
+
+impl PulseArmProvider {
+    fn arm_pulse(
+        &self,
+        invocation: &ActionInvocation,
+        txn: &mut ActionTxn<'_>,
+        secret_version: Option<u32>,
+    ) -> Result<mush_core::AuthoritativeActionOutput, ActionError> {
         self.validate_invocation(invocation)?;
         // The staff gate is STRUCTURAL, not compositional (cut 7 fold K16):
         // `armed_by` is a fixed offer parameter, so its presence and its
@@ -2071,6 +2661,12 @@ impl ActionProvider for PulseArmProvider {
             ));
         }
         let doc = Self::document(invocation)?;
+        if doc.clear_units.len() > MAX_UNITS_PER_DOMAIN {
+            return Err(err(
+                ActionErrorCode::BoundsExceeded,
+                "a pulse disarm clears at most MAX_UNITS_PER_DOMAIN units' orders",
+            ));
+        }
         let owner = self.families.schedules.owner().clone();
         let domain = DomainId(doc.domain);
         let id = tick_schedule_id(&owner, domain)
@@ -2078,11 +2674,31 @@ impl ActionProvider for PulseArmProvider {
         let prior = txn
             .get(&self.families.schedules, &id)
             .map_err(|error| state_error(&error))?
-            .is_some();
+            .cloned();
         if !doc.arm {
-            if prior {
+            if prior.is_some() {
                 txn.remove(&self.families.schedules, &id)
                     .map_err(|error| state_error(&error))?;
+            }
+            // **A9:** the standing-order book leaves with the domain. Before
+            // this fold there was no `txn.remove` on the order family anywhere
+            // in the tree, so a captured unit booted with the previous
+            // commander's heading, thrust and emcon posture still authoritative.
+            for unit in &doc.clear_units {
+                for channel in OrderChannel::all() {
+                    let key = StandingOrderKey {
+                        unit: *unit,
+                        channel,
+                    };
+                    if txn
+                        .get(&self.families.orders, &key)
+                        .map_err(|error| state_error(&error))?
+                        .is_some()
+                    {
+                        txn.remove(&self.families.orders, &key)
+                            .map_err(|error| state_error(&error))?;
+                    }
+                }
             }
             let outcome = RulesValue::new(
                 self.outcome.clone(),
@@ -2093,9 +2709,35 @@ impl ActionProvider for PulseArmProvider {
         }
         let clock = pulse_clock(&owner, domain, doc.generation)
             .ok_or_else(|| integrity("that domain's pulse clock is unconstructible"))?;
+        // **The authority is idempotent in TRUTH, not only in its key** (fold
+        // T1/D3). Re-arming a live cursor used to `txn.replace` it with a fresh
+        // `pulse_cursor(.., generation: 1, next_ordinal: 0)` at revision 1 —
+        // and because `DurableSchedule::advance_key` hashes
+        // `{schedule, owner, generation, next_ordinal, revision}` and NOT
+        // `next_due`, the reset cursor minted the byte-identical ingress
+        // identity the previous tick had already finalized: `Finalized` →
+        // `drive_one` `Err` → `apply_integrity_freeze`. A promoted domain
+        // resolved exactly one tick and then wedged the server.
+        if let Some(existing) = &prior
+            && existing.clock() == &clock
+        {
+            // Write the record back **byte-identically**: the cursor's
+            // generation, ordinal, revision and `next_due` are all unchanged, so
+            // `advance_key` is unchanged and no ingress identity repeats. (A
+            // wholly empty transaction is refused by the kernel, so the no-op
+            // has to be an identical post-image rather than nothing at all.)
+            txn.replace(&self.families.schedules, &id, existing.clone())
+                .map_err(|error| state_error(&error))?;
+            let outcome = RulesValue::new(
+                self.outcome.clone(),
+                json!({ "armed": true, "generation": doc.generation }),
+            )
+            .map_err(|_| integrity("the pulse outcome is invalid"))?;
+            return Ok(mush_core::AuthoritativeActionOutput::new(outcome));
+        }
         let schedule = pulse_cursor(&owner, domain, &clock, doc.from_tick)
             .map_err(|_| integrity("that domain's pulse cursor is unconstructible"))?;
-        if prior {
+        if prior.is_some() {
             txn.replace(&self.families.schedules, &id, schedule)
         } else {
             txn.insert(&self.families.schedules, &id, schedule)
@@ -2103,15 +2745,21 @@ impl ActionProvider for PulseArmProvider {
         .map_err(|error| state_error(&error))?;
         // The first collection interval, so an intent submitted before the first
         // occurrence has a window to join.
-        let window_id = tick_window_id(&owner, domain, doc.from_tick)
+        let window_id = tick_window_id(&owner, domain, doc.generation, doc.from_tick)
             .ok_or_else(|| integrity("that tick's window identity is unconstructible"))?;
         if txn
             .get(&self.families.windows, &window_id)
             .map_err(|error| state_error(&error))?
             .is_none()
         {
-            let window = open_window(window_id, &clock, doc.from_tick, doc.generation)
-                .map_err(|_| integrity("that tick's window is unconstructible"))?;
+            let window = open_window(
+                window_id,
+                &clock,
+                doc.from_tick,
+                doc.generation,
+                secret_version,
+            )
+            .map_err(|_| integrity("that tick's window is unconstructible"))?;
             txn.insert(
                 &self.families.windows,
                 &window_id,
@@ -2172,7 +2820,8 @@ impl ScheduleActionAdapter for DomainTickScheduleAdapter {
                 "the domain pulse candidate is no longer current",
             ));
         }
-        let ClockRef::DomainTick { id, .. } = advance.observed_at().clock.clone() else {
+        let ClockRef::DomainTick { id, generation, .. } = advance.observed_at().clock.clone()
+        else {
             return Err(integrity("a domain pulse fires on a domain tick"));
         };
         let domain =
@@ -2184,17 +2833,26 @@ impl ScheduleActionAdapter for DomainTickScheduleAdapter {
         // The occurrence due at T resolves the window that collected `[T-1, T)`.
         let tick = occurrence.due().at.saturating_sub(1);
         let owner = self.families.windows.owner().clone();
-        let window = tick_window_id(&owner, domain, tick)
+        let window = tick_window_id(&owner, domain, generation, tick)
             .ok_or_else(|| integrity("that tick's window identity is unconstructible"))?;
-        let host = engine
+        let state = engine
             .world
             .module_state::<SpatialState>()
-            .and_then(|state| state.domains.get(&domain).map(|record| record.host))
+            .ok_or_else(|| err(ActionErrorCode::Stale, "that domain is gone"))?;
+        let host = state
+            .domains
+            .get(&domain)
+            .map(|record| record.host)
             .ok_or_else(|| err(ActionErrorCode::Stale, "that domain is gone"))?;
 
         // Re-check every accepted intent's pinned station witness. A grant that
         // has since moved leaves the intent in the frozen set and REFUSES it in
         // the commit, so the tick still resolves and the refusal is recorded.
+        //
+        // **A7:** the grant is a BILLET; cut 5's rule is a FOCUS. The companion
+        // check closes the submit-to-apply window that the pinned seat closes at
+        // submit, so an order whose focus was released before the tick fires is
+        // refused with its reason rather than resolved.
         let mut still_current: Vec<RequestUid> = Vec::new();
         if let Ok(Some(record)) = engine.action_state().get(&self.families.windows, &window) {
             for intent in record.intents() {
@@ -2204,20 +2862,36 @@ impl ScheduleActionAdapter for DomainTickScheduleAdapter {
                 let Some(channel) = mush_core::ChannelId::new(&doc.channel) else {
                     continue;
                 };
-                if engine.world.channel_grant_is_current(
-                    intent.invocation().actor(),
-                    doc.unit,
-                    NS,
-                    &doc.station,
-                    doc.epoch,
-                    &channel,
-                ) {
+                let actor = intent.invocation().actor();
+                let focused = crate::commands::focused_station_of(&engine.world, actor)
+                    .is_some_and(|(unit, station)| {
+                        unit == doc.unit && station.as_str() == doc.station
+                    });
+                if focused
+                    && engine.world.channel_grant_is_current(
+                        actor,
+                        doc.unit,
+                        NS,
+                        &doc.station,
+                        doc.epoch,
+                        &channel,
+                    )
+                {
                     still_current.push(intent.invocation().request());
                 }
             }
         }
         still_current.sort();
         still_current.dedup();
+
+        // **The bounded reap sets** (fold D5(a)/B3/A9). The tick provider has an
+        // `ActionTxn` and no scan, so the one place on this lane that CAN read
+        // the families names what falls out of the ring — from the real records,
+        // never from `plan.tick - 64` arithmetic against a non-consecutive
+        // cursor. Each set is capped at `MAX_REAP_PER_FIRE` and resumes on the
+        // next fire.
+        let (reap_commits, reap_windows, reap_orders) =
+            self.reap_sets(engine, state, domain, generation, tick);
 
         let definitions = engine
             .registry
@@ -2240,11 +2914,110 @@ impl ScheduleActionAdapter for DomainTickScheduleAdapter {
                 "observed_at": advance.observed_at(),
                 "window": window,
                 "current": still_current,
+                "reap_commits": reap_commits,
+                "reap_windows": reap_windows,
+                "reap_orders": reap_orders,
             }),
             guards: guards
                 .finish()
                 .map_err(|_| integrity("the tick guards are invalid"))?,
         })
+    }
+}
+
+impl DomainTickScheduleAdapter {
+    /// Name, from the real families, what this fire may remove.
+    ///
+    /// Bounded on records **visited** (`MAX_REAP_SCAN_RECORDS`) and on records
+    /// **named** (`MAX_REAP_PER_FIRE`), and **resumable**: a fire that fills its
+    /// cap leaves the rest for the next one, two seconds later, so the ring
+    /// converges rather than truncating (E4c V6's rule read the honest way for a
+    /// self-healing sweep).
+    fn reap_sets(
+        &self,
+        engine: &Engine,
+        state: &SpatialState,
+        domain: DomainId,
+        generation: u64,
+        tick: i64,
+    ) -> (
+        Vec<TickCommitKey>,
+        Vec<ActionWindowId>,
+        Vec<StandingOrderKey>,
+    ) {
+        let mut commits: Vec<TickCommitKey> = Vec::new();
+        let mut windows: Vec<ActionWindowId> = Vec::new();
+        let mut orders: Vec<StandingOrderKey> = Vec::new();
+        let oldest_retained = tick.saturating_sub(MAX_RETAINED_TICK_COMMITS as i64);
+        if let Ok(page) =
+            engine
+                .action_state()
+                .scan_family(&self.families.commits, None, MAX_REAP_SCAN_RECORDS)
+        {
+            for entry in page.entries() {
+                if commits.len() >= MAX_REAP_PER_FIRE {
+                    break;
+                }
+                let commit = entry.value();
+                if commit.domain() != domain {
+                    continue;
+                }
+                // A superseded generation's commits, and anything that has
+                // fallen out of the last `MAX_RETAINED_TICK_COMMITS` ticks.
+                if commit.generation() != generation || commit.tick() < oldest_retained {
+                    commits.push(commit.key());
+                }
+            }
+        }
+        if let Ok(page) =
+            engine
+                .action_state()
+                .scan_family(&self.families.windows, None, MAX_REAP_SCAN_RECORDS)
+        {
+            for entry in page.entries() {
+                if windows.len() >= MAX_REAP_PER_FIRE {
+                    break;
+                }
+                let record = entry.value();
+                let ClockRef::DomainTick {
+                    id: window_domain,
+                    generation: window_generation,
+                    ..
+                } = record.window().clock()
+                else {
+                    continue;
+                };
+                if domain_id_of(window_domain) != Some(domain) {
+                    continue;
+                }
+                // A window of a superseded generation is an orphan; so is one
+                // strictly older than the tick this fire consumes, which is what
+                // makes the consumed window's one-tick retention finite.
+                if *window_generation != generation || record.window().opens().at < tick {
+                    windows.push(record.window().id());
+                }
+            }
+        }
+        if let Ok(page) =
+            engine
+                .action_state()
+                .scan_family(&self.families.orders, None, MAX_REAP_SCAN_RECORDS)
+        {
+            for entry in page.entries() {
+                if orders.len() >= MAX_REAP_PER_FIRE {
+                    break;
+                }
+                let order = entry.value();
+                // **A9:** an order whose unit is in no domain at all — unplaced,
+                // quarantined or destroyed — has no crew that could ever
+                // overwrite it, so it is the row that would otherwise outlive
+                // the unit's capture.
+                if crate::graph::effective_domain(state, order.unit()).is_none() {
+                    orders.push(order.key());
+                }
+            }
+        }
+        (commits, windows, orders)
     }
 }
 
@@ -2351,10 +3124,23 @@ pub fn intent_action_ref(reg: &mush_core::Registry) -> Option<DefinitionRef> {
 pub struct PulseMaintenance {
     /// Domains whose live activation request was applied this pass.
     pub applied: Vec<DomainId>,
-    /// Domains whose cursor was armed this pass.
+    /// Domains whose cursor **needs** arming this pass — a domain with no
+    /// cursor, or one whose cursor is pinned to a superseded generation.
+    ///
+    /// **Not "every live pulsing domain"** (fold T1/T3/D3): the old plan pushed
+    /// every one on every 1 s fire, so the queue never drained, the single
+    /// submission per fire pinned it to the lowest live `DomainId` for ever, a
+    /// second promoted domain never got a cursor, and a demoted one beside a
+    /// live one was never disarmed.
     pub armed: Vec<DomainId>,
     /// Domains that were stood back down to `Passive` this pass.
     pub stood_down: Vec<DomainId>,
+    /// Domains holding a cursor that no longer belongs to a pulsing domain —
+    /// the disarm queue, which takes **priority** over arming because a disarm
+    /// is a correctness obligation and an arm is not (fold D3(a)).
+    pub disarm: Vec<DomainId>,
+    /// The cadence each applied domain takes, ground or space (fold B9).
+    pub periods: BTreeMap<DomainId, u32>,
     /// Domains refused with the measured reason (never truncated).
     pub refused: Vec<String>,
     /// Whether the visit bound bound. **Paged, never logged** (E4c V6).
@@ -2375,6 +3161,10 @@ pub struct TickHandles {
     pub orders: StateFamilyHandle<StandingOrderKey, StandingOrder>,
     /// The per-tick intent window.
     pub windows: StateFamilyHandle<ActionWindowId, ActionWindowRecord>,
+    /// The per-domain durable pulse cursor family. The maintenance pass reads
+    /// it so it can arm only what is **unarmed** (fold D3(a)); every write is
+    /// still `PulseArmProvider`'s, inside an `ActionTxn`.
+    pub schedules: StateFamilyHandle<ScheduleId, DurableSchedule>,
 }
 
 impl std::fmt::Debug for TickHandles {
@@ -2431,12 +3221,51 @@ impl PulseConfig {
 /// (cut 2's fold C4: exactly one submission per command or tick).
 pub fn run_maintenance(ctx: &mut mush_core::Ctx<'_>, only: Option<DomainId>) -> PulseMaintenance {
     let now = ctx.w.world_ic_now();
-    let period = ctx
+    let config = ctx
         .w
         .module_state::<PulseConfig>()
         .copied()
-        .unwrap_or_default()
-        .period_ms(false);
+        .unwrap_or_default();
+    // **D3(a):** which domains already hold a cursor, and at which generation.
+    // `Ctx::scan_action_state` is owner-fenced and read-only, so consulting the
+    // family here costs no authority and is what makes the arm queue finite.
+    let cursors: BTreeMap<DomainId, u64> = ctx
+        .w
+        .module_state::<TickHandles>()
+        .cloned()
+        .and_then(|handles| {
+            ctx.scan_action_state(&handles.schedules, None, MAX_REAP_SCAN_RECORDS)
+                .ok()
+                .map(|page| {
+                    page.entries()
+                        .iter()
+                        .filter_map(|entry| {
+                            let ClockRef::DomainTick { id, generation, .. } = entry.value().clock()
+                            else {
+                                return None;
+                            };
+                            domain_id_of(id).map(|domain| (domain, *generation))
+                        })
+                        .collect()
+                })
+        })
+        .unwrap_or_default();
+    // **B9:** which domains take the space cadence. A domain host carrying the
+    // `sim.space` behavior pulses at `[tacsim].space_pulse_ms`; every other one
+    // takes the ground cadence. Before this fold `period_ms(false)` was the sole
+    // production call site and `space_ms` had no reader at all.
+    let space: std::collections::BTreeSet<DomainId> = ctx
+        .w
+        .module_state::<SpatialState>()
+        .map(|state| {
+            state
+                .domains
+                .iter()
+                .filter(|(_, record)| domain_is_space(ctx.w, record.host))
+                .map(|(id, _)| *id)
+                .collect()
+        })
+        .unwrap_or_default();
     let plan = {
         let Some(state) = ctx.w.module_state::<SpatialState>() else {
             return PulseMaintenance::default();
@@ -2446,13 +3275,26 @@ pub fn run_maintenance(ctx: &mut mush_core::Ctx<'_>, only: Option<DomainId>) -> 
             .module_state::<crate::domain::ActivationBook>()
             .cloned()
             .unwrap_or_default();
-        plan_maintenance(state, &book, &now, period, only)
+        plan_maintenance(&MaintenanceInputs {
+            state,
+            book: &book,
+            now: &now,
+            config,
+            space: &space,
+            cursors: &cursors,
+            only,
+        })
     };
     // ---- the applying authority: one `sim` document per applied domain ----
     let mut applied_records = Vec::new();
     let mut stood_down_records = Vec::new();
     if let Some(state) = ctx.w.module_state_mut::<SpatialState>() {
         for id in &plan.applied {
+            let period = plan
+                .periods
+                .get(id)
+                .copied()
+                .unwrap_or_else(|| config.period_ms(false));
             if let Some(record) = state.domains.get_mut(id)
                 && apply_pulse(record, period, &now).is_ok()
             {
@@ -2470,32 +3312,47 @@ pub fn run_maintenance(ctx: &mut mush_core::Ctx<'_>, only: Option<DomainId>) -> 
     for record in applied_records.iter().chain(&stood_down_records) {
         crate::data::persist_domain(ctx.out, record);
     }
-    // ---- one arm/disarm per fire ----
+    // **D9(a):** the journey book follows the domain, both ways. `Promoted` had
+    // no writer at all before this fold, so a cruising carrier that entered a
+    // live domain was inexpressible; and without the symmetric restore a
+    // demoted domain would strand every journey `Promoted` for ever.
+    write_journey_promotion(ctx, &plan);
+    // ---- one arm/disarm per fire (cut 2's fold C4, unchanged) ----
     let Some(action) = arm_action_ref(ctx.reg) else {
         return plan;
     };
+    // **The disarm goes FIRST.** A cursor left on a domain that is no longer
+    // pulsing is the standing trigger for the scan pause; an arm that waits one
+    // more second costs nothing.
     let mut submitted = None;
-    for id in plan.applied.iter().chain(&plan.armed) {
-        let Some(record) = ctx
+    if let Some(id) = plan.disarm.first() {
+        let generation = cursors.get(id).copied().unwrap_or(1);
+        let units: Vec<ObjId> = ctx
             .w
             .module_state::<SpatialState>()
-            .and_then(|state| state.domains.get(id))
-        else {
-            continue;
-        };
-        let Some(generation) = record.clock.generation() else {
-            continue;
-        };
-        let from_tick = record.clock.tick_at(&now).unwrap_or(0);
-        submitted = Some((*id, generation, from_tick, true));
-        break;
+            .and_then(|state| state.derived.local_objects.get(id).cloned())
+            .map(|set| set.into_iter().take(MAX_UNITS_PER_DOMAIN).collect())
+            .unwrap_or_default();
+        submitted = Some((*id, generation, 0, false, units));
     }
-    if submitted.is_none()
-        && let Some(id) = plan.stood_down.first()
-    {
-        submitted = Some((*id, 1, 0, false));
+    if submitted.is_none() {
+        for id in plan.applied.iter().chain(&plan.armed) {
+            let Some(record) = ctx
+                .w
+                .module_state::<SpatialState>()
+                .and_then(|state| state.domains.get(id))
+            else {
+                continue;
+            };
+            let Some(generation) = record.clock.generation() else {
+                continue;
+            };
+            let from_tick = record.clock.tick_at(&now).unwrap_or(0);
+            submitted = Some((*id, generation, from_tick, true, Vec::new()));
+            break;
+        }
     }
-    let Some((id, generation, from_tick, arm)) = submitted else {
+    let Some((id, generation, from_tick, arm, clear_units)) = submitted else {
         return plan;
     };
     let doc = ArmDoc {
@@ -2503,14 +3360,18 @@ pub fn run_maintenance(ctx: &mut mush_core::Ctx<'_>, only: Option<DomainId>) -> 
         generation,
         from_tick,
         arm,
+        clear_units,
     };
+    // **The key drops `from_tick`** (fold T1/D3): it advanced every pulse
+    // period, so the submission was never a HIT and every domain tick reset the
+    // live cursor to `(generation 1, ordinal 0, revision 1)` — minting the
+    // ingress identity the previous tick had already finalized.
     let (Ok(document), Ok(key)) = (
         serde_json::to_string(&doc),
         mush_core::IdempotencyKeyText::parse_canonical(format!(
-            "sim.pulse.{}.{}.{}.{}",
+            "sim.pulse.{}.{}.{}",
             id.0,
             generation,
-            from_tick.max(0),
             u8::from(arm)
         )),
     ) else {
@@ -2524,6 +3385,86 @@ pub fn run_maintenance(ctx: &mut mush_core::Ctx<'_>, only: Option<DomainId>) -> 
         key,
     );
     plan
+}
+
+/// Whether one domain host declares the space cadence (fold B9).
+#[must_use]
+pub fn domain_is_space(world: &mush_core::World, host: ObjId) -> bool {
+    mush_core::BehaviorId::new(SPACE_DOMAIN_BEHAVIOR)
+        .ok()
+        .is_some_and(|behavior| world.has_behavior(host, &behavior))
+}
+
+/// **D9(a): the `JourneyState::Promoted` writer, both directions.**
+///
+/// A `Cruising` carrier whose current leg resolves into a newly pulsing domain
+/// becomes `Promoted { domain }`; a carrier `Promoted` into a domain that has
+/// just stood down goes back to `Cruising`. `run_maintenance` already holds
+/// `&mut Ctx`, `SpatialState` and the `JourneyBook`, so this needed no new seam
+/// — §3.8's deviation (g) claimed a dependency on (f) that was a design
+/// preference, not a build constraint.
+fn write_journey_promotion(ctx: &mut mush_core::Ctx<'_>, plan: &PulseMaintenance) {
+    use crate::journey::{JourneyBook, JourneyState};
+    if plan.applied.is_empty() && plan.stood_down.is_empty() {
+        return;
+    }
+    let changes: Vec<(ObjId, JourneyState)> = {
+        let (Some(state), Some(book)) = (
+            ctx.w.module_state::<SpatialState>(),
+            ctx.w.module_state::<JourneyBook>(),
+        ) else {
+            return;
+        };
+        let mut changes = Vec::new();
+        for (root, journey) in &book.journeys {
+            match journey.state() {
+                JourneyState::Cruising => {
+                    if let Some(domain) = journey_domain(state, journey)
+                        && plan.applied.contains(&domain)
+                    {
+                        changes.push((*root, JourneyState::Promoted { domain }));
+                    }
+                }
+                JourneyState::Promoted { domain } if plan.stood_down.contains(domain) => {
+                    changes.push((*root, JourneyState::Cruising));
+                }
+                _ => {}
+            }
+        }
+        changes
+    };
+    if changes.is_empty() {
+        return;
+    }
+    let mut written = Vec::new();
+    if let Some(book) = ctx.w.module_state_mut::<JourneyBook>() {
+        for (root, state) in changes {
+            if let Some(journey) = book.journeys.remove(&root) {
+                let updated = journey.with_state(state);
+                written.push(updated.clone());
+                book.journeys.insert(root, updated);
+            }
+        }
+    }
+    for journey in &written {
+        crate::journey::persist_journey(ctx.out, journey);
+    }
+}
+
+/// The domain a carrier journey is currently in: where its root actually is, or
+/// — while it is under way and therefore deliberately unplaced — the domain its
+/// destination resolves to.
+fn journey_domain(
+    state: &SpatialState,
+    journey: &crate::journey::CarrierJourney,
+) -> Option<DomainId> {
+    if let Some(domain) = crate::graph::effective_domain(state, journey.root()) {
+        return Some(domain);
+    }
+    match journey.destination() {
+        crate::data::SpatialParent::Direct { domain, .. } => Some(*domain),
+        _ => None,
+    }
 }
 
 /// The world-side maintenance fire.
@@ -2544,19 +3485,43 @@ pub(crate) fn maintenance_tick(
     }
 }
 
+/// Everything one maintenance decision reads.
+///
+/// Grouped rather than passed loose because the pass grew two real inputs in
+/// this fold — the live cursor set (D3) and the space-cadence set (B9) — and a
+/// seven-argument free function is where a caller starts guessing.
+pub struct MaintenanceInputs<'a> {
+    /// The live spatial state.
+    pub state: &'a SpatialState,
+    /// Cut 6's activation requests.
+    pub book: &'a crate::domain::ActivationBook,
+    /// The world IC instant.
+    pub now: &'a ClockStamp,
+    /// The configured cadences.
+    pub config: PulseConfig,
+    /// Domains that take the space cadence.
+    pub space: &'a std::collections::BTreeSet<DomainId>,
+    /// Domain → the generation of its live durable cursor.
+    pub cursors: &'a BTreeMap<DomainId, u64>,
+    /// Restrict the pass to one domain (`@domain/tick`).
+    pub only: Option<DomainId>,
+}
+
 /// Decide what the maintenance pass should do, without mutating anything.
 ///
-/// Pure over `(state, book, now)`, so the world-side tick and `@domain/tick`
-/// share one decision and cannot disagree. Bounded on domains **visited**
-/// (D-LBK-5).
+/// Pure over its inputs, so the world-side tick and `@domain/tick` share one
+/// decision and cannot disagree. Bounded on domains **visited** (D-LBK-5).
 #[must_use]
-pub fn plan_maintenance(
-    state: &SpatialState,
-    book: &crate::domain::ActivationBook,
-    now: &ClockStamp,
-    period_ms: u32,
-    only: Option<DomainId>,
-) -> PulseMaintenance {
+pub fn plan_maintenance(input: &MaintenanceInputs<'_>) -> PulseMaintenance {
+    let MaintenanceInputs {
+        state,
+        book,
+        now,
+        config,
+        space,
+        cursors,
+        only,
+    } = input;
     let mut plan = PulseMaintenance::default();
     let mut visited = 0_usize;
     for (id, record) in &state.domains {
@@ -2568,36 +3533,73 @@ pub fn plan_maintenance(
             plan.bound_hit = true;
             break;
         }
+        let period_ms = config.period_ms(space.contains(id));
         let live = book.is_promoted(*id);
+        let units = state
+            .derived
+            .local_objects
+            .get(id)
+            .map_or(0, std::collections::BTreeSet::len);
         match (&record.clock, live, record.status == DomainStatus::Active) {
             // A live request on an active, passive domain: apply it.
-            (DomainClock::Passive, true, true) => {
-                let units = state
-                    .derived
-                    .local_objects
-                    .get(id)
-                    .map_or(0, std::collections::BTreeSet::len);
-                match check_domain_capacity(units) {
-                    Ok(_) => {
-                        let mut candidate = record.clone();
-                        match apply_pulse(&mut candidate, period_ms, now) {
-                            Ok(_) => plan.applied.push(*id),
-                            Err(reason) => plan.refused.push(reason),
+            (DomainClock::Passive, true, true) => match check_domain_capacity(units) {
+                Ok(_) => {
+                    let mut candidate = record.clone();
+                    match apply_pulse(&mut candidate, period_ms, now) {
+                        Ok(_) => {
+                            plan.applied.push(*id);
+                            plan.periods.insert(*id, period_ms);
                         }
+                        Err(reason) => plan.refused.push(reason),
                     }
-                    Err(reason) => plan.refused.push(reason),
                 }
-            }
+                Err(reason) => plan.refused.push(reason),
+            },
             // Pulsing but no longer eligible: stand it back down. State is
             // preserved both ways; only the cadence changes (Q15A).
             (DomainClock::Pulse { .. }, false, _) | (DomainClock::Pulse { .. }, _, false) => {
                 plan.stood_down.push(*id);
             }
-            // Pulsing and eligible: make sure the cursor is armed. Arming is
-            // idempotent under its deterministic key, so re-arming a live cursor
-            // is a HIT that changes nothing.
-            (DomainClock::Pulse { .. }, true, true) => plan.armed.push(*id),
+            // Pulsing and eligible: arm it **only when it needs arming** — no
+            // cursor at all, or a cursor pinned to a superseded generation
+            // (fold T1/T3/D3(a)). Re-arming a live cursor is not "a HIT that
+            // changes nothing": it reset the cursor and froze the world on the
+            // domain's second tick.
+            (DomainClock::Pulse { generation, .. }, true, true) => {
+                if cursors.get(id) != Some(generation) {
+                    plan.armed.push(*id);
+                }
+                // **B5:** the cap is re-measured on the PULSING arm too, and a
+                // domain that has outgrown it is PAGED rather than stood down
+                // mid-combat. Before this fold `check_domain_capacity` ran on
+                // exactly one arm — the promote transition — so a 65th unit
+                // entering an already-pulsing domain was neither refused nor
+                // reported anywhere.
+                if let Err(reason) = check_domain_capacity(units) {
+                    plan.refused.push(format!(
+                        "Domain #{id} is already pulsing and has outgrown its cap; it keeps \
+                         pulsing and is NOT stood down mid-combat. {reason}"
+                    ));
+                }
+            }
             _ => {}
+        }
+    }
+    // **The disarm queue** (fold T3/D3(a)): a cursor that belongs to no pulsing
+    // domain. It covers the domain stood down by this very pass, one whose
+    // record has gone entirely, and a leftover from an earlier crash — each of
+    // which otherwise leaves a `SimDomainClockProvider::now` that answers
+    // `Unavailable` on every 250 ms poll for ever.
+    for id in cursors.keys() {
+        if only.is_some_and(|wanted| wanted != *id) {
+            continue;
+        }
+        let pulsing = state
+            .domains
+            .get(id)
+            .is_some_and(|record| record.clock.is_pulsing());
+        if !pulsing || plan.stood_down.contains(id) {
+            plan.disarm.push(*id);
         }
     }
     plan
@@ -2666,11 +3668,22 @@ impl TickBundleMeasurement {
 /// **Encode a worst-case tick for `units` units and measure it** — never assume
 /// (08i answer 15).
 ///
+/// **The write count is COUNTED, not modelled** (fold B2). Cut 8 hard-coded
+/// `units + 1 + 1 + 2` and modelled one `StandingOrder` per unit, but the tick
+/// writes one per `StandingOrderKey { unit, channel }` over **four** continuous
+/// channels, and K's window slot admits `MAX_INTENTS_PER_TICK` 256 of them — so
+/// a 64-unit domain reaches 256 order post-images, not 64. Everything the
+/// bundle contains is built here as a real record and the writes are counted
+/// off that list, so a future cut that adds a write class moves the number
+/// instead of leaving a literal behind.
+///
 /// The encoded shape is exactly what `DomainTickProvider` writes at saturation:
-/// one `StandingOrder` post-image per unit, the consumed window's removal, the
-/// `DomainTickCommit` with one delta per unit and its recorded draws, the ring's
-/// expiry removal, the next window's post-image, and one boundary fact (hence
-/// one outbox payload) per unit up to `MAX_BOUNDARY_FACTS_PER_TICK`.
+/// `min(MAX_INTENTS_PER_TICK, units × OrderChannel::all().len())` `StandingOrder`
+/// post-images, the consumed window's one-tick retention, the
+/// `DomainTickCommit` with one delta per intent, its recorded draws and its
+/// `ResolutionRecord`, the ring's expiry removal, the previous window's reap,
+/// the next window's post-image, and one boundary fact (hence one outbox
+/// payload) per intent up to `MAX_BOUNDARY_FACTS_PER_TICK`.
 ///
 /// # Panics
 ///
@@ -2679,46 +3692,68 @@ impl TickBundleMeasurement {
 pub fn measure_tick_bundle(units: usize) -> Option<TickBundleMeasurement> {
     let owner = OwnerId::new(NS).ok()?;
     let domain = DomainId(7);
+    let generation = 1_u64;
     let tick = 4_096_i64;
-    let clock = pulse_clock(&owner, domain, 1)?;
+    let clock = pulse_clock(&owner, domain, generation)?;
     let stamp = ClockStamp {
         clock: clock.clone(),
         at: tick,
     };
-    let window = tick_window_id(&owner, domain, tick)?;
-    let mut accepted = Vec::with_capacity(units);
-    let mut deltas = Vec::with_capacity(units);
+    let window = tick_window_id(&owner, domain, generation, tick)?;
+    // One intent per `(unit, channel)` slot, capped by the window's own
+    // capacity — the reachable worst case, not one per unit.
+    let channels = OrderChannel::all();
+    let intents = units
+        .saturating_mul(channels.len())
+        .min(MAX_INTENTS_PER_TICK as usize);
+    let mut accepted = Vec::with_capacity(intents);
+    let mut deltas = Vec::with_capacity(intents);
     let mut facts = Vec::new();
-    let mut draws = Vec::with_capacity(units);
-    let mut orders = Vec::with_capacity(units);
-    for index in 0..units {
-        let unit = ObjId(1_000_000 + u32::try_from(index).ok()?);
+    let mut draws = Vec::with_capacity(intents);
+    let mut orders = Vec::with_capacity(intents);
+    for index in 0..intents {
+        let unit = ObjId(1_000_000 + u32::try_from(index / channels.len()).ok()?);
+        let actor = ObjId(2_000_000 + u32::try_from(index).ok()?);
+        let channel = channels[index % channels.len()];
+        let value = match channel {
+            OrderChannel::Heading => OrderValue::Vector {
+                x: -999,
+                y: 999,
+                z: -999,
+            },
+            OrderChannel::Thrust | OrderChannel::Speed => OrderValue::Scalar { value: -999 },
+            OrderChannel::Posture => OrderValue::Emcon { level: 3 },
+        };
+        let kind = match channel {
+            OrderChannel::Heading => IntentKind::Heading,
+            OrderChannel::Thrust => IntentKind::Thrust,
+            OrderChannel::Speed => IntentKind::Speed,
+            OrderChannel::Posture => IntentKind::Posture,
+        };
         let request = RequestUid::from_bytes([(index % 251) as u8; 16]);
         accepted.push(IntentRef {
-            actor: unit,
+            actor,
             unit,
-            kind: IntentKind::Heading,
+            kind,
             request,
         });
         deltas.push(UnitDelta {
             unit,
-            kind: IntentKind::Heading,
+            kind: Some(kind),
             outcome: DeltaOutcome::OrderSet {
-                channel: OrderChannel::Heading,
+                channel,
+                value: Some(value.clone()),
+                revision: u64::from(u32::MAX),
             },
         });
         draws.push(0xDEAD_BEEF_u32.wrapping_add(index as u32));
         orders.push(
             StandingOrder::new(
                 unit,
-                OrderChannel::Heading,
-                OrderValue::Vector {
-                    x: -999,
-                    y: 999,
-                    z: -999,
-                },
+                channel,
+                value,
                 stamp.clone(),
-                unit,
+                actor,
                 u64::from(u32::MAX),
             )
             .ok()?,
@@ -2727,8 +3762,11 @@ pub fn measure_tick_bundle(units: usize) -> Option<TickBundleMeasurement> {
             facts.push(BoundaryFact {
                 kind: "tactics.sortie_started".to_owned(),
                 domain: domain.0,
+                generation,
                 tick,
                 unit,
+                ordinal: u16::try_from(facts.len()).ok()?,
+                provisional: true,
             });
         }
     }
@@ -2748,29 +3786,38 @@ pub fn measure_tick_bundle(units: usize) -> Option<TickBundleMeasurement> {
         deltas,
         facts.clone(),
         inputs,
-        draws,
+        draws.clone(),
+        Some(1),
     )
     .ok()?;
     let next_window = ActionWindowRecord::open(
         open_window(
-            tick_window_id(&owner, domain, tick + 1)?,
+            tick_window_id(&owner, domain, generation, tick + 1)?,
             &clock,
             tick + 1,
-            1,
+            generation,
+            Some(1),
         )
         .ok()?,
     );
-    // Post-images: N orders + the commit + the next window. Removals: the spent
-    // window, the expired ring entry.
-    let replay_writes = units + 1 + 1 + 2;
+    // The consumed window is RETAINED (T8), so it is a post-image rather than a
+    // removal, and the previous tick's window is reaped beside it.
+    let consumed_window =
+        ActionWindowRecord::open(open_window(window, &clock, tick, generation, Some(1)).ok()?);
+    // The `ResolutionRecord`'s own draws are a fourth relevant cap
+    // (`MAX_RESOLUTION_DRAWS`); they were never in the encoded bundle before.
+    let resolution = json!({ "domain": "sim.domain_tick", "draws": draws });
     let mut payloads = Vec::with_capacity(facts.len());
     for fact in &facts {
         payloads.push(json!({
             "id": fact.stable_id(),
             "kind": fact.kind,
             "domain": fact.domain,
+            "generation": fact.generation,
             "tick": fact.tick,
             "unit": fact.unit,
+            "ordinal": fact.ordinal,
+            "provisional": fact.provisional,
         }));
     }
     let outbox_payload_bytes = payloads
@@ -2785,13 +3832,23 @@ pub fn measure_tick_bundle(units: usize) -> Option<TickBundleMeasurement> {
     let bundle = json!({
         "orders": orders,
         "commit": commit,
+        "consumed_window": consumed_window,
         "next_window": next_window,
+        "resolution": resolution,
         "outbox": payloads,
     });
     let bundle_bytes =
         canonical_json_bytes_with_limit(&bundle, mush_core::MAX_AUTHORITATIVE_BUNDLE_BYTES)
             .ok()?
             .len();
+    // **Counted off the encoded bundle**, one write per record the tick names:
+    // every `StandingOrder` post-image, the commit, the retained consumed
+    // window, the next window, the reaped previous window and the expired ring
+    // entry.
+    let replay_writes = orders
+        .len()
+        .checked_add(5)
+        .filter(|writes| *writes <= mush_core::MAX_AUTHORITATIVE_REPLAY_WRITES)?;
     Some(TickBundleMeasurement {
         units,
         replay_writes,
@@ -2962,6 +4019,7 @@ pub(crate) fn register(
         commits: families.commits.clone(),
         orders: families.orders.clone(),
         windows: families.windows.clone(),
+        schedules: families.schedules.clone(),
     });
 
     reg.action_provider(
@@ -3248,11 +4306,15 @@ mod tests {
     /// The state hash covers the accepted set, the RNG root and the ordered
     /// deltas: a replay that omits an accepted intent **fails the hash** rather
     /// than reproducing it.
+    ///
+    /// **Re-pinned by the E7c8 fold (T7/T12)** with the two arms the original
+    /// could not see: a delta whose ORDER VALUE diverges, and an edited `facts`
+    /// array.
     #[test]
     fn e7c8_b4_a_commit_that_omits_an_accepted_intent_fails_its_state_hash() {
         let owner = OwnerId::new(NS).expect("static owner");
         let clock = pulse_clock(&owner, DomainId(2), 1).expect("a domain clock");
-        let window = tick_window_id(&owner, DomainId(2), 5).expect("a window id");
+        let window = tick_window_id(&owner, DomainId(2), 1, 5).expect("a window id");
         let inputs =
             CanonicalHash::for_canonical_value("t.v1", 1, &json!({ "a": 1 }), 256).expect("hash");
         let accepted = vec![
@@ -3271,37 +4333,72 @@ mod tests {
         ];
         let deltas = vec![UnitDelta {
             unit: ObjId(1),
-            kind: IntentKind::Fire,
+            kind: Some(IntentKind::Fire),
             outcome: DeltaOutcome::Resolved {
                 draw: 4,
                 effective: true,
             },
         }];
-        let full = DomainTickCommit::new(
-            DomainId(2),
-            5,
-            clock.clone(),
-            window,
-            accepted.clone(),
-            deltas.clone(),
-            Vec::new(),
-            inputs,
-            vec![4],
-        )
-        .expect("a coherent commit");
-        let short = DomainTickCommit::new(
-            DomainId(2),
-            5,
-            clock,
-            window,
-            accepted[..1].to_vec(),
-            deltas,
-            Vec::new(),
-            inputs,
-            vec![4],
-        )
-        .expect("a coherent commit");
-        assert_ne!(full.state_hash(), short.state_hash());
+        let facts = vec![BoundaryFact {
+            kind: "tactics.fired".to_owned(),
+            domain: 2,
+            generation: 1,
+            tick: 5,
+            unit: ObjId(1),
+            ordinal: 0,
+            provisional: true,
+        }];
+        let commit =
+            |accepted: Vec<IntentRef>, deltas: Vec<UnitDelta>, facts: Vec<BoundaryFact>| {
+                DomainTickCommit::new(
+                    DomainId(2),
+                    5,
+                    clock.clone(),
+                    window,
+                    accepted,
+                    deltas,
+                    facts,
+                    inputs,
+                    vec![4],
+                    Some(1),
+                )
+                .expect("a coherent commit")
+            };
+        let full = commit(accepted.clone(), deltas.clone(), facts.clone());
+        let short = commit(accepted[..1].to_vec(), deltas.clone(), facts.clone());
+        assert_ne!(
+            full.state_hash(),
+            short.state_hash(),
+            "an omitted accepted intent must fail the hash"
+        );
+        // **T12:** the facts are inside the hash, so an edited fact list fails it.
+        let no_facts = commit(accepted.clone(), deltas, Vec::new());
+        assert_ne!(
+            full.state_hash(),
+            no_facts.state_hash(),
+            "a commit whose fact list is edited must fail its hash"
+        );
+        // **T7:** two commits differing only in an ORDER VALUE have different
+        // hashes. Before the fold the delta carried only its channel name, so
+        // the entire mutable result of the tick was outside the hash.
+        let order_of = |x: i32, revision: u64| {
+            vec![UnitDelta {
+                unit: ObjId(1),
+                kind: Some(IntentKind::Heading),
+                outcome: DeltaOutcome::OrderSet {
+                    channel: OrderChannel::Heading,
+                    value: Some(OrderValue::Vector { x, y: 0, z: 0 }),
+                    revision,
+                },
+            }]
+        };
+        let one = commit(accepted.clone(), order_of(1, 1), Vec::new());
+        let other = commit(accepted.clone(), order_of(999, 7), Vec::new());
+        assert_ne!(
+            one.state_hash(),
+            other.state_hash(),
+            "two commits differing only in an order value shared a hash"
+        );
         // Re-entering the full commit reproduces its hash exactly.
         let text = serde_json::to_string(&full).expect("serializes");
         assert_eq!(
@@ -3312,6 +4409,10 @@ mod tests {
         let mut wire: serde_json::Value = serde_json::from_str(&text).expect("json");
         wire["state_hash"] = json!(short.state_hash());
         assert!(serde_json::from_value::<DomainTickCommit>(wire).is_err());
+        // And so is one whose FACTS were edited under an unchanged hash.
+        let mut edited: serde_json::Value = serde_json::from_str(&text).expect("json");
+        edited["facts"] = json!([]);
+        assert!(serde_json::from_value::<DomainTickCommit>(edited).is_err());
     }
 
     /// **B5 — the measurement.** A tick at the pinned cap fits inside every K8
@@ -3459,13 +4560,19 @@ mod measurement_report {
         );
     }
 
-    /// **The measured frontier, stated honestly.** No K8 cap ever binds a tick:
-    /// the encoded bundle stays under 60 % of all three at **every** N the window
-    /// can admit, and what actually stops the count is
-    /// `MAX_WINDOW_CAPACITY`/`MAX_INTENTS_PER_TICK` 256 — one intent per
-    /// `(actor, truth_subject)` slot. So `MAX_UNITS_PER_DOMAIN` 64 is confirmed
-    /// as a **latency and offer-budget policy figure**, four times below the
-    /// window's own ceiling and sixteen times below the replay-write cap.
+    /// **The measured frontier, stated honestly — re-tabulated by the E7c8 fold
+    /// (B2).** No K8 cap ever binds a tick: the encoded bundle stays under 60 %
+    /// of all three at **every** N the window can admit, and what actually stops
+    /// the count is `MAX_WINDOW_CAPACITY`/`MAX_INTENTS_PER_TICK` 256.
+    ///
+    /// What the fold corrected is where that ceiling sits. A window slot is one
+    /// intent per `(actor, truth_subject)`, and the tick writes one
+    /// `StandingOrder` per `(unit, channel)` over **four** continuous channels —
+    /// so 64 units reach 256 order post-images and **261 replay writes (25 %)**,
+    /// not 68 (6 %). `MAX_UNITS_PER_DOMAIN` 64 is therefore **exactly** the
+    /// window's own ceiling on the continuous surface, not four times below it,
+    /// and it remains a latency and offer-budget policy figure — still four
+    /// times inside the replay-write cap.
     #[test]
     fn e7c8_b5_no_k8_cap_binds_before_the_window_capacity_does() {
         let mut frontier = MAX_UNITS_PER_DOMAIN;
@@ -3483,10 +4590,24 @@ mod measurement_report {
         }
         println!("every N up to {frontier} stays under 60% of every K8 cap");
         assert_eq!(frontier, MAX_INTENTS_PER_TICK as usize);
-        // One past the window capacity is unencodable at all — the commit record
-        // refuses more deltas than the window could ever have admitted.
-        assert!(measure_tick_bundle(MAX_INTENTS_PER_TICK as usize + 1).is_none());
-        // And the pinned cap sits well inside that.
-        assert!(MAX_UNITS_PER_DOMAIN * 4 <= MAX_INTENTS_PER_TICK as usize);
+        // The window's own ceiling is what stops the count, and it is reached at
+        // exactly `MAX_UNITS_PER_DOMAIN` units: past that the intent count is
+        // clamped by `MAX_INTENTS_PER_TICK`, so the bundle stops growing.
+        let at_cap = measure_tick_bundle(MAX_UNITS_PER_DOMAIN).expect("the cap encodes");
+        let past_cap = measure_tick_bundle(MAX_INTENTS_PER_TICK as usize).expect("encodes");
+        assert_eq!(
+            at_cap.replay_writes, past_cap.replay_writes,
+            "the window capacity, not the unit count, is what stops the write count"
+        );
+        assert_eq!(
+            at_cap.replay_writes, 261,
+            "the measured worst case at MAX_UNITS_PER_DOMAIN"
+        );
+        assert_eq!(at_cap.replay_write_percent(), 25);
+        assert_eq!(
+            MAX_UNITS_PER_DOMAIN * OrderChannel::all().len(),
+            MAX_INTENTS_PER_TICK as usize,
+            "the unit cap sits exactly on the window's own ceiling"
+        );
     }
 }

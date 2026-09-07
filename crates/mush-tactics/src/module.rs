@@ -1004,13 +1004,16 @@ impl GameModule for TacticsModule {
             CommandSpec {
                 name: "@unit".into(),
                 shape: ArgShape::EqPair,
-                switches: ["create", "show", "damage", "remove", "recovery"]
+                switches: ["create", "show", "status", "damage", "remove", "recovery"]
                     .iter()
                     .copied()
                     .map(SmolStr::new)
                     .collect(),
                 help: "@unit/create <obj>=<schema-id>   make an object a tactical unit\n\
-                       @unit/show <obj>                 inspect it\n\
+                       @unit/show <obj>                 (staff) inspect it\n\
+                       @unit/status <obj>               the unit.status PROJECTION, for you: \
+                       what a station holder of that unit may see. A unit you hold no `sim` \
+                       station on reads byte-identically to one that does not exist.\n\
                        @unit/damage <obj>={json plan}   (staff/debug) apply a UnitMutationPlan\n\
                        @unit/remove <obj>               strip the tactical unit\n\
                        @unit/recovery                   inspect K1 lifecycle/recovery state"
@@ -2226,6 +2229,16 @@ fn cmd_unit(
     current_record_definition: &DefinitionRef,
     ctx: &mut Ctx<'_>,
 ) -> Result<(), CmdError> {
+    // **E7 cut 8 independent verify fold A12.** `/status` is the one caller the
+    // `unit.status` projection never had: before this fold `unit_status` and
+    // `unit_status_of` were referenced only by `mush-tactics`' own tests, so the
+    // fog rule they exist to enforce was asserted nowhere a person could reach.
+    // It runs BEFORE the staff gate on purpose — the projection's whole
+    // contract is what an ordinary station holder may see, and an unauthorized
+    // viewer's line is byte-identical to a nonexistent unit's.
+    if ctx.switches.has("status") {
+        return unit_status_line(ctx);
+    }
     require_admin(ctx)?;
     if ctx.switches.has("create") {
         unit_create(catalog, feed, current_record_definition, ctx)
@@ -2239,9 +2252,25 @@ fn cmd_unit(
         unit_remove(ctx)
     } else {
         Err(CmdError::msg(
-            "Usage: @unit/create|show|damage|remove <obj>[=...] or @unit/recovery",
+            "Usage: @unit/create|show|status|damage|remove <obj>[=...] or @unit/recovery",
         ))
     }
+}
+
+/// `@unit/status <obj>` — the `unit.status` projection, for the caller.
+///
+/// **Existence-hiding is the point** (§4 rule 4): an object the viewer holds no
+/// `sim` station on, a husk, and an object that never existed all render the
+/// same line, so probing reveals nothing. The lookup itself is deliberately
+/// resolved by dbref only — `match_object` would leak name visibility.
+fn unit_status_line(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    let raw = ctx.args.lhs().trim().trim_start_matches('#').to_owned();
+    let Ok(id) = raw.parse::<u32>() else {
+        return Err(CmdError::msg("Usage: @unit/status #<dbref>"));
+    };
+    let line = crate::status::unit_status(ctx.w, ctx.actor, ObjId(id)).render();
+    info(ctx, line);
+    Ok(())
 }
 
 /// Why an object cannot become a tactical unit (parity with route_ineligible).

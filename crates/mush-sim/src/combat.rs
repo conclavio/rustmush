@@ -38,18 +38,21 @@ use std::sync::Arc;
 
 use mush_core::{
     ArgShape, CmdError, CommandSpec, ContactId, ContactLedgerState, Ctx, IdempotencyKeyText,
-    ModError, ObjId, PerceivedRef, Registrar,
+    ModError, ObjId, PerceivedRef, Registrar, World,
 };
 use serde_json::json;
 use smol_str::SmolStr;
 
-use crate::data::{DomainId, SpatialState, StationId};
+use crate::data::SpatialState;
 use crate::tick::{
-    IntentKind, OrderValue, TacticalIntentDoc, intent_action_ref, no_such_contact, pulse_clock,
+    IntentKind, MAX_ORDER_SCALAR, MIN_ORDER_SCALAR, OrderValue, SeatDoc, TacticalIntentDoc,
+    intent_action_ref, no_such_contact,
 };
 
-/// The most bytes a bay, section or dock token may carry.
-pub const MAX_SLOT_TOKEN_BYTES: usize = 32;
+/// The most bytes a bay, section or dock token may carry. The wire re-runs the
+/// same bound inside `TacticalIntentDoc::validate` (fold B10), so a document
+/// built anywhere carries the same limit the verb does.
+pub use crate::tick::MAX_SLOT_TOKEN_BYTES;
 
 /// One registered verb: its name, argument shape, help and handler.
 type Verb = (
@@ -63,43 +66,59 @@ fn info(ctx: &mut Ctx<'_>, line: impl Into<String>) {
     crate::commands::info(ctx, line);
 }
 
-/// Everything a verb must know before it can build an intent.
-struct Seat {
-    unit: ObjId,
-    station: StationId,
-    channel: String,
-    epoch: u64,
-    domain: DomainId,
-    tick: i64,
-    generation: u64,
-}
-
-/// Resolve the actor's live tactical seat, or the exact reason it refuses.
+/// **Resolve the actor's live tactical seat, or the exact reason it refuses.**
 ///
-/// Every arm is a refusal a player can act on: not focused, the unit is not in a
-/// domain, the domain is not pulsing, or the station grants no single channel.
-fn seat(ctx: &Ctx<'_>) -> Result<Seat, CmdError> {
-    let (unit, station) = crate::commands::focused_station(ctx, ctx.actor).ok_or_else(|| {
+/// This is the ONE seat predicate (fold D1(a)): the verb calls it so the player
+/// gets an actionable refusal, and `TacticalIntentProvider::project_offer` calls
+/// it so the *same* seat becomes the offer's fixed parameter and the provider
+/// can compare the caller's document against it. A verb and an offer that
+/// resolved the seat separately could disagree, which is the whole class of
+/// defect the pinned seat exists to remove.
+///
+/// It takes a `&World` rather than a `&Ctx` because `project_offer` has an
+/// `&Engine` and no `Ctx`.
+///
+/// # Errors
+///
+/// A player-facing reason: not focused, the unit is not in a domain, the domain
+/// is not pulsing, its pulse is anchored on an older world-time generation, or
+/// the actor holds no published grant on the station they are focused on.
+pub(crate) fn resolve_seat(world: &World, actor: ObjId) -> Result<SeatDoc, CmdError> {
+    let (unit, station) = crate::commands::focused_station_of(world, actor).ok_or_else(|| {
         CmdError::msg("You hold no focused station; +focus a billet before issuing orders.")
     })?;
-    let state = ctx
-        .w
+    let state = world
         .module_state::<SpatialState>()
         .ok_or_else(|| CmdError::msg("The simulation is unavailable."))?;
-    let channel = state
-        .stations
-        .get(&unit)
-        .and_then(|host| host.stations.get(&station))
-        .and_then(|spec| {
-            (spec.channels.len() == 1)
-                .then(|| spec.channels.iter().next().map(|c| c.as_str().to_owned()))
-        })
-        .flatten()
+    // **A5:** the epoch, the channel set and the priority all come from the
+    // actor's OWN published `ChannelGrant` — the exact record the apply witness
+    // compares. Cut 8 pinned `SpatialState.control_gen[unit]`, the unit-wide
+    // counter, while `apply_focus_bump_and_refresh` republishes only
+    // `ctx.actor`'s links, so any crewmate's `+focus` silently voided every
+    // other station's orders AFTER the player had been told "submitted".
+    let grant = world
+        .channel_grant(actor, unit, crate::NS, station.as_str())
         .ok_or_else(|| {
             CmdError::msg(
-                "That station does not grant exactly one control channel; it cannot issue orders.",
+                "You hold no live control grant on that station; +focus it again (a crew change \
+                 may have republished it).",
             )
         })?;
+    // **A6:** the whole granted set travels, and the kind decides which channel
+    // the order rides. A station granting two channels can now issue on both,
+    // and a gunner can no longer steer.
+    let channels: Vec<String> = grant
+        .channels
+        .iter()
+        .map(|channel| channel.as_str().to_owned())
+        .collect();
+    if channels.is_empty() {
+        return Err(CmdError::msg(
+            "That station grants no control channel; it cannot issue orders.",
+        ));
+    }
+    let epoch = grant.epoch;
+    let priority = grant.priority;
     let domain = crate::graph::effective_domain(state, unit)
         .ok_or_else(|| CmdError::msg("That unit is not placed in a simulation domain."))?;
     let record = state
@@ -112,23 +131,43 @@ fn seat(ctx: &Ctx<'_>) -> Result<Seat, CmdError> {
              orders resolve.",
         )
     })?;
-    let now = ctx.w.world_ic_now();
+    let now = world.world_ic_now();
     let tick = record.clock.tick_at(&now).ok_or_else(|| {
         CmdError::msg(
             "That domain's pulse is anchored on an older world time generation; staff must \
              re-promote it (@domain/tick).",
         )
     })?;
-    let epoch = state.control_gen.get(&unit).copied().unwrap_or(0);
-    Ok(Seat {
+    Ok(SeatDoc {
         unit,
-        station,
-        channel,
+        station: station.as_str().to_owned(),
+        channels,
         epoch,
-        domain,
+        priority,
+        domain: domain.0,
         tick,
         generation,
     })
+}
+
+fn seat(ctx: &Ctx<'_>) -> Result<SeatDoc, CmdError> {
+    let seat = resolve_seat(ctx.w, ctx.actor)?;
+    Ok(seat)
+}
+
+/// The channel one kind rides, refused with its reason when the focused station
+/// does not grant it (fold A6).
+fn channel_for(seat: &SeatDoc, kind: IntentKind) -> Result<String, CmdError> {
+    let wanted = kind.required_channel();
+    if seat.channels.iter().any(|held| held == wanted) {
+        Ok(wanted.to_owned())
+    } else {
+        Err(CmdError::msg(format!(
+            "Your station ({}) does not grant the {wanted} channel; {} rides it.",
+            seat.station,
+            kind.token()
+        )))
+    }
 }
 
 /// Stage one intent through the `tactical_intent` action.
@@ -138,26 +177,24 @@ fn seat(ctx: &Ctx<'_>) -> Result<Seat, CmdError> {
 /// double-typed order in one tick is a HIT, and a *different* order on the same
 /// channel in the same tick REPLACES the slot in the window (S2A's
 /// latest-order-wins) rather than consuming a second seat.
-fn submit(ctx: &mut Ctx<'_>, seat: &Seat, doc: TacticalIntentDoc) -> Result<(), CmdError> {
+fn submit(ctx: &mut Ctx<'_>, seat: &SeatDoc, doc: TacticalIntentDoc) -> Result<(), CmdError> {
     let action = intent_action_ref(ctx.reg)
         .ok_or_else(|| CmdError::msg("The tactical ingress is not composed on this server."))?;
-    let clock = pulse_clock(
-        &crate::tick::owner().map_err(|e| CmdError::msg(e.to_string()))?,
-        seat.domain,
-        seat.generation,
-    )
-    .ok_or_else(|| CmdError::msg("That domain's tick clock is unavailable."))?;
-    let observed_at = mush_core::ClockStamp {
-        clock,
-        at: seat.tick,
-    };
     let kind = doc.kind;
+    // **A2:** the stamp is no longer a parameter at all. Cut 8 declared
+    // `observed_at` as `ProjectedParameterKind::Text` and submitted
+    // `serde_json::to_value(&ClockStamp)` — an OBJECT — so `validate_parameter_value`
+    // refused every one of the eight verbs with `OfferResolveError::InvalidParameters`
+    // at `resolve_and_stage_offer` and no intent ever reached a window through
+    // the command path. The seat carries `(domain, generation, tick)` as a fixed
+    // parameter and the provider derives the stamp, so the schema and the verb
+    // cannot disagree by construction.
     let document = serde_json::to_string(&doc)
         .map_err(|_| CmdError::msg("That order could not be encoded."))?;
     let key = IdempotencyKeyText::parse_canonical(format!(
         "sim.intent.{}.{}.{}.{}",
         seat.unit.0,
-        seat.station.as_str(),
+        seat.station,
         seat.tick.max(0),
         kind.token()
     ))
@@ -166,10 +203,7 @@ fn submit(ctx: &mut Ctx<'_>, seat: &Seat, doc: TacticalIntentDoc) -> Result<(), 
         action,
         PerceivedRef::SelfActor,
         Vec::new(),
-        json!({
-            "intent": document,
-            "observed_at": serde_json::to_value(&observed_at).unwrap_or(serde_json::Value::Null),
-        }),
+        json!({ "intent": document }),
         key,
     );
     Ok(())
@@ -208,13 +242,15 @@ fn slot_token(raw: &str) -> Result<String, CmdError> {
 
 fn continuous(ctx: &mut Ctx<'_>, kind: IntentKind, value: OrderValue) -> Result<(), CmdError> {
     let seat = seat(ctx)?;
+    let channel = channel_for(&seat, kind)?;
     let doc = TacticalIntentDoc {
-        domain: seat.domain.0,
+        domain: seat.domain,
         tick: seat.tick,
         unit: seat.unit,
-        station: seat.station.as_str().to_owned(),
+        station: seat.station.clone(),
         epoch: seat.epoch,
-        channel: seat.channel.clone(),
+        priority: seat.priority,
+        channel,
         kind,
         value: Some(value.clone()),
         contact: None,
@@ -241,13 +277,15 @@ fn discrete(
     slot: Option<String>,
 ) -> Result<(), CmdError> {
     let seat = seat(ctx)?;
+    let channel = channel_for(&seat, kind)?;
     let doc = TacticalIntentDoc {
-        domain: seat.domain.0,
+        domain: seat.domain,
         tick: seat.tick,
         unit: seat.unit,
-        station: seat.station.as_str().to_owned(),
+        station: seat.station.clone(),
         epoch: seat.epoch,
-        channel: seat.channel.clone(),
+        priority: seat.priority,
+        channel,
         kind,
         value: None,
         contact,
@@ -265,11 +303,23 @@ fn discrete(
     Ok(())
 }
 
+/// **The documented band is enforced at the verb** (fold B10).
+///
+/// `+thrust 5000` used to parse, consume the actor's one authoritative submit
+/// slot and come back asynchronously as "that tactical intent's value does not
+/// match its kind" — a refusal that names neither the band nor the verb.
+const fn in_band(value: i32) -> bool {
+    value >= MIN_ORDER_SCALAR && value <= MAX_ORDER_SCALAR
+}
+
 fn parse_vector(raw: &str) -> Option<OrderValue> {
     let mut parts = raw.split(',');
-    let x = parts.next()?.trim().parse().ok()?;
-    let y = parts.next()?.trim().parse().ok()?;
-    let z = parts.next()?.trim().parse().ok()?;
+    let x: i32 = parts.next()?.trim().parse().ok()?;
+    let y: i32 = parts.next()?.trim().parse().ok()?;
+    let z: i32 = parts.next()?.trim().parse().ok()?;
+    if !in_band(x) || !in_band(y) || !in_band(z) {
+        return None;
+    }
     parts
         .next()
         .is_none()
@@ -277,18 +327,24 @@ fn parse_vector(raw: &str) -> Option<OrderValue> {
 }
 
 fn cmd_heading(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
-    let value = parse_vector(ctx.args.raw())
-        .ok_or_else(|| CmdError::msg("Usage: +heading <x>,<y>,<z> (each -1000..=1000)."))?;
+    let value = parse_vector(ctx.args.raw()).ok_or_else(|| {
+        CmdError::msg(format!(
+            "Usage: +heading <x>,<y>,<z> (each {MIN_ORDER_SCALAR}..={MAX_ORDER_SCALAR})."
+        ))
+    })?;
     continuous(ctx, IntentKind::Heading, value)
 }
 
 fn cmd_thrust(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
-    let value: i32 = ctx
-        .args
-        .raw()
-        .trim()
-        .parse()
-        .map_err(|_| CmdError::msg("Usage: +thrust <n> (-1000..=1000)."))?;
+    let usage = || {
+        CmdError::msg(format!(
+            "Usage: +thrust <n> ({MIN_ORDER_SCALAR}..={MAX_ORDER_SCALAR})."
+        ))
+    };
+    let value: i32 = ctx.args.raw().trim().parse().map_err(|_| usage())?;
+    if !in_band(value) {
+        return Err(usage());
+    }
     continuous(ctx, IntentKind::Thrust, OrderValue::Scalar { value })
 }
 
@@ -336,18 +392,26 @@ fn cmd_eject(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 // B6 — the immediate deterministic fallback controller (C30A, K7.0)
 // ----------------------------------------------------------------------
 
-/// The fallback order a linkdead or unmanned station issues.
+/// The fallback order a linkdead or unmanned station **would** issue.
 ///
-/// **Deterministic, and it creates no `PendingDecision`** (08i answer 3,
-/// D-E7-38): nothing asynchronous races it, so under K7.0's rule it submits
-/// directly on the action-idempotency scope. Its key is the *same* shape a human
-/// order takes on that `(unit, station, tick, kind)`, so if an LLM decision ever
-/// competes for that slot the two collide on one key and the existing decision's
-/// submission wins — which is exactly "reuse that decision's record and key
-/// rather than minting a second".
+/// **NOT BUILT — recorded honestly** (fold A11). This function and
+/// [`fallback_key`] have no caller anywhere in the tree: the only uses are this
+/// module's own tests. `station::fire_station_fallback` stages a **control
+/// handoff**, not a tactical order, so a linkdead or unmanned station seats no
+/// fallback order at all — its continuous orders simply persist (which is what
+/// "carry on" means in practice) and its discrete vocabulary lapses.
 ///
-/// The mapping is fixed: hold the last standing order. A controller that must
-/// *choose* is K7's, and every such row stays a `#[ignore]` pin naming K7.
+/// The safety claim cut 8 recorded here is also **false and is withdrawn**: a
+/// `ScopedIdempotencyKey` is scoped by `IdempotencyScope.principal`, and the
+/// kernel's invocation constructor enforces that the scope's principal equals
+/// the invoking principal — so a fallback submitted by any *other* principal is
+/// a SECOND submission, not a collision, and it would land in its own window
+/// slot beside the human's. If this is ever wired, it must submit under the
+/// **same principal** as the human order for the keys to collide as claimed.
+///
+/// The mapping itself is fixed and deliberate: hold the last standing order, and
+/// reduce the discrete vocabulary to the one act that is never an attack. A
+/// controller that must *choose* is K7's.
 #[must_use]
 pub fn fallback_order(kind: IntentKind) -> IntentKind {
     // Cut 8's declared fallback is "carry on": the continuous channels keep
@@ -361,10 +425,11 @@ pub fn fallback_order(kind: IntentKind) -> IntentKind {
     }
 }
 
-/// The deterministic idempotency key a fallback submission takes.
+/// The deterministic idempotency key a fallback submission would take.
 ///
-/// Identical in shape to a human order's, so the two cannot both occupy one
-/// `(unit, station, tick, kind)` slot.
+/// Identical in shape to a human order's — but see [`fallback_order`]: the keys
+/// only collide when both submissions share one `IdempotencyScope.principal`,
+/// which nothing in the tree arranges yet.
 #[must_use]
 pub fn fallback_key(unit: ObjId, station: &str, tick: i64, kind: IntentKind) -> Option<String> {
     IdempotencyKeyText::parse_canonical(format!(

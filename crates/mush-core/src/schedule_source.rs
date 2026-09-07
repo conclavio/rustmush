@@ -20,7 +20,7 @@ use crate::action::{
     IngressPayload, IngressSurfaceVersion, PerceivedRef, PrincipalId, ScopedIdempotencyKey,
 };
 use crate::action_state::{ActionStateError, ActionTxn, StateFamilyHandle, StateFamilyRegistry};
-use crate::clock_provider::ClockReadError;
+use crate::clock_provider::{ClockProviderFailure, ClockReadError};
 use crate::durable_schedule::{
     DurableSchedule, DurableScheduleError, ScheduleAdvance, ScheduleDriveCause, ScheduleEvaluation,
     ScheduleId,
@@ -613,7 +613,16 @@ impl ScheduleSourceRegistry {
                     // advanced. Every other source's candidates still surface, and
                     // the paused entry's recovery is its owner's restamp
                     // (`@wo/restamp` for production).
-                    Err(ClockReadError::StaleGeneration { .. }) => continue,
+                    //
+                    // E7c8 independent verify fold T2/D4(a): the same reasoning
+                    // covers a schedule whose **module provider** cannot answer.
+                    // `ClockProviderRegistry::read_domain` wraps every failure in
+                    // `DomainProvider`, which the flat arm above cannot match, so
+                    // one stood-down or re-promoted domain took the whole shared
+                    // discovery — production, `control_handoff`, `npc` and the six
+                    // `sensor_*` sources — down with it. See
+                    // [`schedule_scan_clock_is_skippable`].
+                    Err(source) if schedule_scan_clock_is_skippable(&source) => continue,
                     Err(source) => {
                         return Err(ScheduleSourceScanError::Clock {
                             source_key: key.clone(),
@@ -653,6 +662,42 @@ impl ScheduleSourceRegistry {
             records_scanned,
             next_cursor: None,
         })
+    }
+}
+
+/// Whether one schedule's clock read is a **per-entry pause** rather than a
+/// failure of the whole shared discovery.
+///
+/// A scan walks every owner's schedules in one pass, so a clock that cannot
+/// answer for *one* record must never abort the others. The skippable set is
+/// exactly "the clock is not answering right now, and a later fire may answer":
+///
+/// - [`ClockReadError::StaleGeneration`] — the flat form the `WorldIc` and
+///   `Registered` paths raise (E7c4 R2/D4);
+/// - [`ClockReadError::DomainProvider`] with
+///   [`ClockProviderFailure::StaleGeneration`] or
+///   [`ClockProviderFailure::Unavailable`] — a domain that has stood down, been
+///   re-promoted onto a new generation, or gone away entirely (E7c8 T2/D4);
+/// - [`ClockReadError::SceneProvider`] with
+///   [`ClockProviderFailure::Unavailable`] — a scene clock whose scene is not
+///   currently readable.
+///
+/// Everything else — a missing registry, a missing provider, an unsupported
+/// clock, a zero generation, an `Overflow` or an `Integrity` answer — is a real
+/// composition or invariant failure and still aborts the scan, because no later
+/// fire recovers from it on its own.
+#[must_use]
+pub fn schedule_scan_clock_is_skippable(error: &ClockReadError) -> bool {
+    match error {
+        ClockReadError::StaleGeneration { .. } => true,
+        ClockReadError::DomainProvider { source, .. } => matches!(
+            source,
+            ClockProviderFailure::StaleGeneration { .. } | ClockProviderFailure::Unavailable
+        ),
+        ClockReadError::SceneProvider { source, .. } => {
+            matches!(source, ClockProviderFailure::Unavailable)
+        }
+        _ => false,
     }
 }
 
@@ -794,4 +839,90 @@ pub enum ScheduleSourceScanError {
     State(#[from] ActionStateError),
     #[error(transparent)]
     OwnerNotReady(#[from] MechanicalOwnerReadinessError),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::clock::ClockRef;
+    use crate::mechanics::{CanonicalId, OwnerId};
+
+    fn owner() -> OwnerId {
+        OwnerId::new("sim").expect("a static owner")
+    }
+
+    /// **E7 cut 8 independent verify fold, T2/D4(a).** The scan's per-entry
+    /// pause covers every clock failure a later fire can recover from, and
+    /// **only** those: a stood-down domain (`DomainProvider { Unavailable }`),
+    /// a re-promoted one (`DomainProvider { StaleGeneration }`), an unreadable
+    /// scene (`SceneProvider { Unavailable }`) and the flat `StaleGeneration`
+    /// cut 4's fold added — while a missing registry, a missing provider, an
+    /// unsupported clock, a zero generation, an `Overflow` and an `Integrity`
+    /// answer all still abort, because nothing recovers from them by waiting.
+    #[test]
+    fn vf_t2c_the_scan_pause_covers_domain_and_scene_provider_stalls_and_nothing_else() {
+        let id = CanonicalId::new("d0").expect("a static id");
+        // Skippable: the four a later fire recovers from.
+        for skippable in [
+            ClockReadError::StaleGeneration {
+                requested: 1,
+                current: 2,
+            },
+            ClockReadError::DomainProvider {
+                owner: owner(),
+                id: id.clone(),
+                source: ClockProviderFailure::Unavailable,
+            },
+            ClockReadError::DomainProvider {
+                owner: owner(),
+                id: id.clone(),
+                source: ClockProviderFailure::StaleGeneration {
+                    requested: 1,
+                    current: 3,
+                },
+            },
+            ClockReadError::SceneProvider {
+                owner: owner(),
+                source: ClockProviderFailure::Unavailable,
+            },
+        ] {
+            assert!(
+                schedule_scan_clock_is_skippable(&skippable),
+                "{skippable} must pause its own entry, not the whole scan"
+            );
+        }
+        // Not skippable: every arm that names a real composition or invariant
+        // failure. Naming each one here is the point — a new arm added to
+        // `ClockReadError` fails this test until someone classifies it.
+        for fatal in [
+            ClockReadError::RegistryUnavailable,
+            ClockReadError::UnsupportedClock {
+                clock: ClockRef::Utc,
+            },
+            ClockReadError::ZeroGeneration {
+                clock: ClockRef::Utc,
+            },
+            ClockReadError::SceneProviderMissing,
+            ClockReadError::DomainProviderMissing { owner: owner() },
+            ClockReadError::DomainProvider {
+                owner: owner(),
+                id: id.clone(),
+                source: ClockProviderFailure::Overflow,
+            },
+            ClockReadError::DomainProvider {
+                owner: owner(),
+                id,
+                source: ClockProviderFailure::Integrity,
+            },
+            ClockReadError::SceneProvider {
+                owner: owner(),
+                source: ClockProviderFailure::Integrity,
+            },
+        ] {
+            assert!(
+                !schedule_scan_clock_is_skippable(&fatal),
+                "{fatal} must still abort the scan"
+            );
+        }
+    }
 }

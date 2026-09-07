@@ -2202,15 +2202,23 @@ mod tests {
             // E7 cut 8 (B6): the eight tactical verbs join `@station`'s
             // authoritative group — every one stages `tactical_intent` through
             // cut 2's seam, which is the ceiling criterion cut 5 set and cut 7
-            // reused for `@prop`. `@domain` keeps its cut-6 class: `/tick` and
-            // `/replay` write only the exempt `sim.domain` document and read the
-            // commit family; the durable cursor is armed by the `sim.domain_pulse`
-            // Coarse tick, never by the command, so no baseline entry moves and
-            // `PINNED_BASELINE` stays 158.
+            // reused for `@prop`.
+            //
+            // E7 cut 8 independent verify fold (B1): `@domain` publishes
+            // `Authoritative`. Its cut-6 note here — "the durable cursor is
+            // armed by the `sim.domain_pulse` Coarse tick, never by the
+            // command" — was factually false and is deleted: `@domain/tick`
+            // runs `tick::run_maintenance`, which reaches
+            // `Ctx::submit_authoritative(domain_pulse_arm, ..)` from the
+            // command handler, and cut 8's own `e7c8_x3_*` proved it by
+            // draining that submission. Its allowlist stanza moves
+            // `baseline` → `authoritative` in the same commit, which lowers
+            // `PINNED_BASELINE` 158 → 157 — the retirement the tripwire itself
+            // documents as legal.
             for (name, class) in [
                 ("@station", mush_core::CommandCompatibility::Authoritative),
                 ("@journey", mush_core::CommandCompatibility::LegacyPostImage),
-                ("@domain", mush_core::CommandCompatibility::LegacyPostImage),
+                ("@domain", mush_core::CommandCompatibility::Authoritative),
                 ("+fire", mush_core::CommandCompatibility::Authoritative),
                 ("+launch", mush_core::CommandCompatibility::Authoritative),
                 ("+heading", mush_core::CommandCompatibility::Authoritative),

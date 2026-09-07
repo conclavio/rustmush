@@ -3062,17 +3062,28 @@ enum DurableScheduleDrive {
     Staged(StagedAuthoritativeAction),
 }
 
+/// Whether a failed schedule discovery is a transient the next poll may clear.
+///
+/// **E7 cut 8 independent verify fold T2/D4(a).** The scan itself now pauses a
+/// single entry whose clock cannot answer
+/// (`mush_core::schedule_scan_clock_is_skippable`), so this is the backstop for
+/// the one shape it cannot skip per entry: a registered-provider clock that is
+/// simply unavailable right now. It accepts the same skippable set, so a clock
+/// stall on ANY lane is a `Transient` the driver retries rather than an `Err`
+/// the caller turns into `apply_integrity_freeze`.
 fn schedule_discovery_retryable(error: &mush_core::ScheduleSourceScanError) -> bool {
+    let mush_core::ScheduleSourceScanError::Clock { source, .. } = error else {
+        return false;
+    };
+    if mush_core::schedule_scan_clock_is_skippable(source.as_ref()) {
+        return true;
+    }
     matches!(
-        error,
-        mush_core::ScheduleSourceScanError::Clock { source, .. }
-            if matches!(
-                source.as_ref(),
-                mush_core::ClockReadError::Provider {
-                    source: mush_core::ClockProviderFailure::Unavailable,
-                    ..
-                }
-            )
+        source.as_ref(),
+        mush_core::ClockReadError::Provider {
+            source: mush_core::ClockProviderFailure::Unavailable,
+            ..
+        }
     )
 }
 
@@ -16545,5 +16556,561 @@ mod tests {
         let turn_index = record["turn_index"].as_u64().unwrap() as usize;
         assert_eq!(participants[turn_index], npc.0, "{record}");
         stop_test_server(handles).await;
+    }
+
+    /// # E7 cut 8 independent verify fold — D7(a): the pulse, driven
+    ///
+    /// §3.8's deviation (e) recorded "`DurableScheduleDriver::drive_one` is a
+    /// private `async fn` of `world_task.rs` with no test seam" and deferred the
+    /// end-to-end tick replay and the slot-hold figure on that basis. The
+    /// premise is false **across crates only**: this very module already drives
+    /// `drive_one` a dozen times over `mush_store::InMemoryStore`, and
+    /// `mush-sim` is an ordinary (non-dev) dependency of `mush-server` — so
+    /// composing `SimulationModule` instead of the toy owner is the only new
+    /// thing here. No new public API, no `#[ignore]`, no `*_gated` test and no
+    /// CI job: `ci_gated_test_inventory` is untouched.
+    ///
+    /// Three of the fold's HIGHs (T1, T2, T3) were invisible to every test cut 8
+    /// wrote for exactly one reason: none of them advanced the clock across two
+    /// consecutive **driven** ticks. These do.
+    mod e7c8_pulse {
+        use super::*;
+        use mush_core::{
+            ActionInvocation, ActionInvocationDraft, ActionOfferId, CanonicalHash, CanonicalId,
+            CommitToken, DefinitionId, DefinitionKey, DefinitionKind, DefinitionRef,
+            IdempotencyKey, IdempotencyScope, ObjId, OwnerId, PerceivedRef, PrincipalId,
+            RequestUid, ScopedIdempotencyKey,
+        };
+        use mush_sim::tick::{
+            DomainTickCommit, MAX_RETAINED_TICK_COMMITS as RETAINED, SCHEDULE_SOURCE,
+            TickCommitKey, TickHandles, pulse_clock, tick_schedule_id,
+        };
+        use mush_sim::{DomainId, SimulationModule, SpatialState};
+        use serde_json::json;
+
+        /// The world every row here starts from: one domain host, promoted, its
+        /// activation applied, with the durable cursor armed through the REAL
+        /// `domain_pulse_arm` authority.
+        fn pulsing_world() -> (mush_core::Engine, mush_store::InMemoryStore, i64) {
+            let mut world =
+                mush_testkit::TestWorld::with_modules(vec![Box::new(SimulationModule::new())]);
+            world.set_now(1_000);
+            let host = world
+                .world_mut()
+                .create(mush_core::ObjKind::Room, "Landing Field", GOD, None)
+                .unwrap();
+            world
+                .world_mut()
+                .attach_behavior(
+                    host,
+                    mush_core::BehaviorId::new("sim.domain").unwrap(),
+                    mush_core::BehaviorBinding {
+                        schema_version: 1,
+                        attached_by: GOD,
+                        attached_at: 0,
+                    },
+                )
+                .unwrap();
+            let _ = world.run(GOD, &format!("@domain/create #{}=sim.passive", host.0));
+            let _ = world.run(GOD, &format!("@domain/promote #{}=contact", host.0));
+            let _ = world.run(GOD, &format!("@domain/tick #{}", host.0));
+            let submit = *world
+                .engine_mut()
+                .take_authoritative_submit()
+                .expect("@domain/tick stages the arm from the command handler");
+            let _ = world.drain_write_batch();
+            let mut engine = world.into_engine();
+            // The production composition installs both key rings; the tick
+            // resolves with recorded randomness and its window PINS the version
+            // it draws under (fold T11).
+            engine.set_resolution_keys(
+                mush_core::ResolutionKeyRing::new(
+                    mush_core::ResolutionSecret::new(3, [7; 32]).unwrap(),
+                    [],
+                )
+                .unwrap(),
+            );
+            arm_directly(&mut engine, &submit);
+            let store = mush_store::InMemoryStore::new();
+            (engine, store, 1_000)
+        }
+
+        /// Apply the queued `domain_pulse_arm` submission straight through the
+        /// registered provider. The staff gate is the fixed `armed_by`
+        /// parameter, which the submission already carries by construction.
+        fn arm_directly(engine: &mut mush_core::Engine, submit: &mush_core::AuthoritativeSubmit) {
+            let mut parameters = submit.parameters.clone();
+            parameters["armed_by"] = json!(submit.actor);
+            let invocation = invocation_of(&submit.action, submit.actor, parameters, 21);
+            let (prepared, _) = engine
+                .prepare_registered_authoritative_action(
+                    &submit.action,
+                    &invocation,
+                    CommitToken::from_bytes([21; 16]),
+                )
+                .expect("the pulse arm prepares");
+            let (_ops, installation) = prepared.into_parts();
+            engine.install_prepared_action(installation);
+        }
+
+        fn invocation_of(
+            action: &DefinitionRef,
+            actor: ObjId,
+            parameters: serde_json::Value,
+            token: u8,
+        ) -> ActionInvocation {
+            let principal = PrincipalId::Object { id: actor };
+            ActionInvocation::new(ActionInvocationDraft {
+                request: RequestUid::from_bytes([token; 16]),
+                principal: principal.clone(),
+                actor,
+                offered_action: ActionOfferId(CanonicalHash::from_bytes([9; 32])),
+                subject: PerceivedRef::SelfActor,
+                targets: Vec::new(),
+                parameters,
+                idempotency: ScopedIdempotencyKey::new(
+                    IdempotencyScope {
+                        principal,
+                        owner: action.key().owner.clone(),
+                        namespace: CanonicalId::new(action.key().id.as_str()).unwrap(),
+                    },
+                    1,
+                    IdempotencyKey::Request(RequestUid::from_bytes([token; 16])),
+                ),
+            })
+            .expect("a well-formed invocation")
+        }
+
+        /// Drive until a tick stages, completing it exactly as `world_task`
+        /// does: reserve, reconcile, install.
+        ///
+        /// The driver's page cursor walks one record per call and resets when
+        /// the page comes back empty, so a due occurrence takes at most a
+        /// couple of polls to surface — exactly as the 250 ms world loop
+        /// experiences it. Every intermediate outcome is asserted **not** to be
+        /// an `Err`, because an `Err` here is `apply_integrity_freeze`.
+        async fn drive_until_staged(
+            driver: &mut DurableScheduleDriver,
+            engine: &mut mush_core::Engine,
+            store: &mush_store::InMemoryStore,
+        ) -> Result<&'static str, String> {
+            let mut last = "idle";
+            for _ in 0..4 {
+                last = drive_and_apply(driver, engine, store).await?;
+                if last == "staged" {
+                    return Ok(last);
+                }
+            }
+            Ok(last)
+        }
+
+        /// Drive one scheduled action and, when it stages, complete it exactly
+        /// as `world_task` does: reserve, reconcile, install.
+        async fn drive_and_apply(
+            driver: &mut DurableScheduleDriver,
+            engine: &mut mush_core::Engine,
+            store: &mush_store::InMemoryStore,
+        ) -> Result<&'static str, String> {
+            let outcome = driver.drive_one(engine, store).await?;
+            Ok(match outcome {
+                DurableScheduleDrive::Idle => "idle",
+                DurableScheduleDrive::DeferredByLegacyPredecessor => "deferred",
+                DurableScheduleDrive::DiscardedStale(_) => "stale",
+                DurableScheduleDrive::Transient(_) => "transient",
+                DurableScheduleDrive::Staged(_) => {
+                    let staged = engine
+                        .take_staged_action()
+                        .expect("the staged tick is admitted")
+                        .expect("a staged tick action");
+                    let (persistence, installation) = staged.into_parts();
+                    let StagedActionPersistence::Authoritative(bundle) = persistence else {
+                        panic!("the tick used legacy persistence")
+                    };
+                    store
+                        .reserve_authoritative_intent((*bundle).clone())
+                        .await
+                        .expect("reserve");
+                    store
+                        .reconcile_authoritative(bundle.token(), bundle.bundle_hash())
+                        .await
+                        .expect("reconcile");
+                    engine.install_prepared_action(installation);
+                    "staged"
+                }
+            })
+        }
+
+        fn handles(engine: &mush_core::Engine) -> TickHandles {
+            engine
+                .world
+                .module_state::<TickHandles>()
+                .expect("the pulse registers its read handles")
+                .clone()
+        }
+
+        fn generation(engine: &mush_core::Engine) -> u64 {
+            engine
+                .world
+                .module_state::<SpatialState>()
+                .and_then(|state| state.domains.get(&DomainId(0)).cloned())
+                .and_then(|record| record.clock.generation())
+                .expect("a pulsing domain")
+        }
+
+        fn commit_at(engine: &mush_core::Engine, tick: i64) -> Option<DomainTickCommit> {
+            let handles = handles(engine);
+            engine
+                .action_state()
+                .get(
+                    &handles.commits,
+                    &TickCommitKey {
+                        domain: DomainId(0),
+                        generation: generation(engine),
+                        tick,
+                    },
+                )
+                .ok()
+                .flatten()
+                .cloned()
+        }
+
+        /// **T1 (HIGH), the whole point of this module.** A promoted domain's
+        /// SECOND consecutive tick **stages**; before the fold it returned
+        /// `Err`, which `world_task.rs:4127` turns into `apply_integrity_freeze`
+        /// — a promoted domain resolved exactly one tick and then wedged the
+        /// server. The cause: the maintenance pass re-armed the live cursor on
+        /// every fire and `PulseArmProvider` reset it to
+        /// `(generation 1, ordinal 0, revision 1)`, so `advance_key` — which
+        /// hashes `{schedule, owner, generation, next_ordinal, revision}` and
+        /// **not** `next_due` — minted the ingress identity the previous tick
+        /// had already finalized.
+        #[tokio::test]
+        async fn vf_t1a_a_second_consecutive_tick_stages_rather_than_freezing_the_world() {
+            let (mut engine, store, at) = pulsing_world();
+            let mut driver = DurableScheduleDriver::new(1);
+            // Tick one.
+            engine.world.set_now(at + 10);
+            let first = drive_until_staged(&mut driver, &mut engine, &store)
+                .await
+                .expect("the first tick drives");
+            assert_eq!(first, "staged", "the first tick must stage");
+            // Tick two, and tick three: the domain clock has moved on, so a
+            // fresh occurrence is due each time.
+            engine.world.set_now(at + 20);
+            let second = drive_until_staged(&mut driver, &mut engine, &store)
+                .await
+                .expect("the SECOND tick must not return Err: that is the freeze");
+            assert_eq!(
+                second, "staged",
+                "the second consecutive tick must stage, not freeze the world"
+            );
+            // And a third, so the property is not an artefact of two.
+            engine.world.set_now(at + 30);
+            let third = drive_until_staged(&mut driver, &mut engine, &store)
+                .await
+                .expect("the third tick drives");
+            assert_eq!(third, "staged");
+            // Two distinct commits exist, at consecutive ticks.
+            let ticks: Vec<i64> = (0..20)
+                .filter(|t| commit_at(&engine, *t).is_some())
+                .collect();
+            assert!(
+                ticks.len() >= 2,
+                "three driven ticks must leave more than one commit; got {ticks:?}"
+            );
+        }
+
+        /// **T1(b).** Re-arming a live cursor leaves its ordinal and revision
+        /// untouched — the authority is idempotent in TRUTH, not merely under
+        /// its key.
+        #[tokio::test]
+        async fn vf_t1b_a_rearm_of_a_live_cursor_leaves_its_ordinal_and_revision_untouched() {
+            let (mut engine, store, at) = pulsing_world();
+            let mut driver = DurableScheduleDriver::new(1);
+            engine.world.set_now(at + 10);
+            drive_until_staged(&mut driver, &mut engine, &store)
+                .await
+                .expect("a tick");
+            let owner = OwnerId::new("sim").unwrap();
+            let id = tick_schedule_id(&owner, DomainId(0)).expect("a cursor id");
+            let before = engine
+                .action_state()
+                .get(&handles(&engine).schedules, &id)
+                .expect("read")
+                .expect("a live cursor")
+                .clone();
+            // Re-arm it at the same generation, exactly as the maintenance pass
+            // would if it were still pushing every live domain onto `armed`.
+            let action = engine
+                .registry
+                .definitions()
+                .and_then(|definitions| {
+                    definitions
+                        .current(&DefinitionKey {
+                            owner: owner.clone(),
+                            kind: DefinitionKind::new("action").unwrap(),
+                            id: DefinitionId::new("domain_pulse_arm").unwrap(),
+                        })
+                        .cloned()
+                })
+                .expect("the arm action is composed");
+            let document = json!({
+                "domain": 0,
+                "generation": generation(&engine),
+                "from_tick": 0,
+                "arm": true,
+                "clear_units": [],
+            });
+            let invocation = invocation_of(
+                &action,
+                GOD,
+                json!({
+                    "arm": serde_json::to_string(&document).unwrap(),
+                    "armed_by": json!(GOD),
+                }),
+                44,
+            );
+            let (prepared, _) = engine
+                .prepare_registered_authoritative_action(
+                    &action,
+                    &invocation,
+                    CommitToken::from_bytes([44; 16]),
+                )
+                .expect("the re-arm prepares");
+            let (_ops, installation) = prepared.into_parts();
+            engine.install_prepared_action(installation);
+            let after = engine
+                .action_state()
+                .get(&handles(&engine).schedules, &id)
+                .expect("read")
+                .expect("the cursor survives")
+                .clone();
+            assert_eq!(
+                (
+                    before.next_ordinal(),
+                    before.revision(),
+                    before.next_due().clone()
+                ),
+                (
+                    after.next_ordinal(),
+                    after.revision(),
+                    after.next_due().clone()
+                ),
+                "a re-arm at the same generation must change NOTHING about the cursor"
+            );
+        }
+
+        /// **The deferred replay row** (§3.8 deviation (e)). Drive a tick, drop
+        /// the staged bundle, drive it again: the same `state_hash`. The RNG
+        /// stream does not re-draw, because the window pins the resolution
+        /// secret version the tick draws under (fold T11).
+        #[tokio::test]
+        async fn vf_d7b_a_dropped_staged_tick_redrives_to_the_same_state_hash() {
+            let (mut engine, store, at) = pulsing_world();
+            let mut driver = DurableScheduleDriver::new(1);
+            engine.world.set_now(at + 10);
+            // First attempt: stage it and then DROP it, as a crash between
+            // staging and reconciliation does.
+            let outcome = driver.drive_one(&mut engine, &store).await.expect("drives");
+            let DurableScheduleDrive::Staged(_) = outcome else {
+                panic!("the tick must stage")
+            };
+            let staged = engine
+                .take_staged_action()
+                .expect("admitted")
+                .expect("a staged tick");
+            let (persistence, installation) = staged.into_parts();
+            let StagedActionPersistence::Authoritative(first) = persistence else {
+                panic!("legacy persistence")
+            };
+            let first_hash = first.bundle_hash();
+            engine.abort_prepared_action(installation);
+            // Second attempt over the same clock: the same bundle hash.
+            let mut driver = DurableScheduleDriver::new(1);
+            let outcome = driver.drive_one(&mut engine, &store).await.expect("drives");
+            let DurableScheduleDrive::Staged(_) = outcome else {
+                panic!("the re-drive must stage")
+            };
+            let staged = engine
+                .take_staged_action()
+                .expect("admitted")
+                .expect("a staged tick");
+            let (persistence, installation) = staged.into_parts();
+            let StagedActionPersistence::Authoritative(second) = persistence else {
+                panic!("legacy persistence")
+            };
+            assert_eq!(
+                first_hash,
+                second.bundle_hash(),
+                "a re-drive after a dropped bundle must reproduce the same commit"
+            );
+            engine.abort_prepared_action(installation);
+        }
+
+        /// **T2/T3 (HIGH).** A stood-down domain whose cursor is still live
+        /// drives `Idle` or `Transient` — **never** `Err`. Before the fold every
+        /// `DomainClockProvider` failure was `ClockReadError::DomainProvider`,
+        /// which neither the scan's pause arm nor `schedule_discovery_retryable`
+        /// could match, so one stood-down domain aborted the whole shared
+        /// discovery and took production, `control_handoff`, `npc` and cut 7's
+        /// six `sensor_*` sources down with it inside one 250 ms poll.
+        #[tokio::test]
+        async fn vf_t2b_a_stood_down_domain_with_a_live_cursor_drives_idle_never_err() {
+            let (mut engine, store, at) = pulsing_world();
+            let mut driver = DurableScheduleDriver::new(1);
+            engine.world.set_now(at + 10);
+            drive_until_staged(&mut driver, &mut engine, &store)
+                .await
+                .expect("a first tick");
+            // Stand the domain down WITHOUT disarming: the exact window the old
+            // code left open on every demote, and which T3 made permanent.
+            if let Some(state) = engine.world.module_state_mut::<SpatialState>()
+                && let Some(record) = state.domains.get_mut(&DomainId(0))
+            {
+                record.clock = mush_sim::data::DomainClock::Passive;
+            }
+            engine.world.set_now(at + 20);
+            for _ in 0..3 {
+                let outcome = driver
+                    .drive_one(&mut engine, &store)
+                    .await
+                    .expect("a sick domain must never return Err from the shared scan");
+                assert!(
+                    matches!(
+                        outcome,
+                        DurableScheduleDrive::Idle | DurableScheduleDrive::Transient(_)
+                    ),
+                    "a stood-down domain with a live cursor did not pause its own entry"
+                );
+            }
+            // The provider really cannot answer — the pause is doing the work.
+            let clock =
+                pulse_clock(&OwnerId::new("sim").unwrap(), DomainId(0), 2).expect("a domain clock");
+            assert!(engine.clock_now(&clock).is_err());
+        }
+
+        /// **The slot-hold, measured** (§3.8's last unmeasured figure). How long
+        /// the driver holds the durable schedule slot for one tick, over an
+        /// in-memory store — the floor, not a production figure, but a real
+        /// measurement rather than a deferral.
+        #[tokio::test]
+        async fn vf_d7c_the_measured_slot_hold_for_one_driven_tick() {
+            let (mut engine, store, at) = pulsing_world();
+            let mut driver = DurableScheduleDriver::new(1);
+            let mut worst = std::time::Duration::ZERO;
+            let mut total = std::time::Duration::ZERO;
+            let rounds = 5_u32;
+            for round in 0..rounds {
+                engine.world.set_now(at + 10 + 10 * i64::from(round));
+                let started = std::time::Instant::now();
+                let outcome = drive_until_staged(&mut driver, &mut engine, &store)
+                    .await
+                    .expect("every driven tick stages");
+                let elapsed = started.elapsed();
+                assert_eq!(outcome, "staged", "round {round}");
+                total += elapsed;
+                worst = worst.max(elapsed);
+            }
+            println!(
+                "E7c8 fold D7(c) slot-hold over InMemoryStore: {} tick(s), mean {:?}, worst {:?}",
+                rounds,
+                total / rounds,
+                worst
+            );
+            // The pin is a sanity ceiling, not a benchmark: a tick that holds
+            // the slot for a whole second has stopped being a 2 s pulse.
+            assert!(
+                worst < std::time::Duration::from_millis(500),
+                "one driven tick held the durable schedule slot for {worst:?}"
+            );
+        }
+
+        /// **T8 (MEDIUM), end to end.** The consumed window is RETAINED for one
+        /// tick and then reaped by the NEXT fire's bounded sweep — it is no
+        /// longer deleted in the same bundle. Deleting it destroyed the kernel's
+        /// own duplicate fence: `prepare_authoritative` treats absence as "open
+        /// a fresh one", so an intent that raced the 250 ms driver poll against
+        /// the 2 s pulse was accepted into a spent window, acknowledged to the
+        /// player, and never consumed.
+        #[tokio::test]
+        async fn vf_t8b_the_consumed_window_is_retained_one_tick_and_then_reaped() {
+            let (mut engine, store, at) = pulsing_world();
+            let mut driver = DurableScheduleDriver::new(1);
+            engine.world.set_now(at + 10);
+            drive_until_staged(&mut driver, &mut engine, &store)
+                .await
+                .expect("a first tick");
+            let first_windows = window_count(&engine);
+            assert!(
+                first_windows > 0,
+                "the consumed window is retained, not deleted in the same bundle"
+            );
+            // Several more ticks: the family stays flat rather than growing one
+            // record per tick, which is what the ring is for.
+            for round in 1..6 {
+                engine.world.set_now(at + 10 + 10 * i64::from(round));
+                drive_until_staged(&mut driver, &mut engine, &store)
+                    .await
+                    .expect("a later tick");
+            }
+            let later = window_count(&engine);
+            assert!(
+                later <= first_windows + 2,
+                "the window family grew from {first_windows} to {later} across five                  driven ticks; the reaper is not bounding it"
+            );
+        }
+
+        /// **B3 (HIGH), end to end.** Neither the window family nor the commit
+        /// family grows without bound across a long run of driven ticks.
+        #[tokio::test]
+        async fn vf_b3c_the_window_and_commit_families_stay_flat_across_many_driven_ticks() {
+            let (mut engine, store, at) = pulsing_world();
+            let mut driver = DurableScheduleDriver::new(1);
+            for round in 0..8 {
+                engine.world.set_now(at + 10 + 10 * i64::from(round));
+                drive_until_staged(&mut driver, &mut engine, &store)
+                    .await
+                    .expect("every tick stages");
+            }
+            assert!(
+                window_count(&engine) <= 3,
+                "the window family grew to {} across eight driven ticks",
+                window_count(&engine)
+            );
+            assert!(
+                commit_count(&engine) <= usize::try_from(RETAINED).unwrap_or(64) + 1,
+                "the commit family grew past its retention ring"
+            );
+        }
+
+        fn window_count(engine: &mush_core::Engine) -> usize {
+            engine
+                .action_state()
+                .scan_family(&handles(engine).windows, None, 256)
+                .map(|page| page.entries().len())
+                .unwrap_or(0)
+        }
+
+        fn commit_count(engine: &mush_core::Engine) -> usize {
+            engine
+                .action_state()
+                .scan_family(&handles(engine).commits, None, 256)
+                .map(|page| page.entries().len())
+                .unwrap_or(0)
+        }
+
+        /// The source is composed exactly once and under its own id, so nothing
+        /// above depends on a second registration having appeared.
+        #[test]
+        fn vf_d7a_the_domaintick_source_is_composed_once_in_the_server_composition() {
+            let world =
+                mush_testkit::TestWorld::with_modules(vec![Box::new(SimulationModule::new())]);
+            let sources = world
+                .registry()
+                .schedule_sources()
+                .expect("a schedule source registry");
+            assert!(!sources.is_empty());
+            assert_eq!(SCHEDULE_SOURCE, "domaintick");
+        }
     }
 }

@@ -1776,3 +1776,91 @@ fn e7c8_b2_the_contact_count_is_the_viewers_own_never_the_units() {
     assert_eq!(alpha.sections, bravo.sections);
     assert_eq!(alpha.components, bravo.components);
 }
+
+// ---- E7 cut 8 independent verify fold ----
+
+/// **A12 (LOW).** `unit.status` authorizes on a **`sim`** grant, not on any
+/// grant at all. `viewer_is_stationed` used to be
+/// `grant.subject == unit` with no owner filter — contrary to its own doc — so
+/// any future module publishing a `CommandSubjectLink` on that object would have
+/// silently conferred read access to the unit's true revision, section and
+/// component counts and its `Obj.location`. A foreign-owner grant now renders
+/// **byte-identically to no grant at all**.
+#[test]
+fn vf_a12_a_foreign_owner_grant_renders_unit_status_byte_identically_to_no_grant_at_all() {
+    let mut tw = boot();
+    let viewer = tw
+        .world_mut()
+        .create(ObjKind::Player, "Gunner", GOD, None)
+        .unwrap();
+    let unit = make_unit(&mut tw);
+    let nothing = mush_tactics::status::unit_status(tw.world(), viewer, unit);
+    // A grant published by SOME OTHER owner on the same object.
+    tw.world_mut()
+        .publish_command_subject(mush_core::CommandSubjectLink {
+            actor: viewer,
+            subject: unit,
+            owner: SmolStr::new("industry"),
+            station: SmolStr::new("gunnery"),
+            relation: SmolStr::new("gunner"),
+            priority: 10,
+            channels: Default::default(),
+            epoch: 1,
+        });
+    let foreign = mush_tactics::status::unit_status(tw.world(), viewer, unit);
+    assert_eq!(
+        foreign, nothing,
+        "a foreign owner's link must confer no station at all"
+    );
+    assert_eq!(foreign.render(), nothing.render());
+    assert!(!mush_tactics::status::viewer_is_stationed(
+        tw.world(),
+        viewer,
+        unit
+    ));
+    // And the `sim` grant still does authorize, so the fence is a filter and
+    // not a break.
+    grant_station(&mut tw, viewer, unit);
+    assert!(mush_tactics::status::viewer_is_stationed(
+        tw.world(),
+        viewer,
+        unit
+    ));
+    let seen = mush_tactics::status::unit_status(tw.world(), viewer, unit);
+    assert!(seen.authorized);
+    assert_ne!(seen.render(), nothing.render());
+}
+
+/// **A12, the caller half.** The projection has a real surface now: `@unit/status`
+/// runs it for an ordinary (non-staff) viewer, and an object the viewer holds no
+/// `sim` station on reads byte-identically to one that never existed.
+#[test]
+fn vf_a12b_the_unit_status_verb_exists_and_hides_existence_for_an_ordinary_viewer() {
+    let mut tw = boot();
+    let viewer = tw
+        .world_mut()
+        .create(ObjKind::Player, "Gunner", GOD, None)
+        .unwrap();
+    let unit = make_unit(&mut tw);
+    let unstationed = tw.run(viewer, &format!("@unit/status #{}", unit.0));
+    let nonexistent = tw.run(viewer, "@unit/status #999999");
+    let text = |events: &[(mush_core::Audience, mush_proto::OutputEvent)]| {
+        events
+            .iter()
+            .map(|(_, event)| mush_testkit::text_of(event))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    assert_eq!(
+        text(&unstationed),
+        text(&nonexistent),
+        "an unauthorized read and a nonexistent one must be byte-identical"
+    );
+    grant_station(&mut tw, viewer, unit);
+    let stationed = tw.run(viewer, &format!("@unit/status #{}", unit.0));
+    assert_ne!(
+        text(&stationed),
+        text(&nonexistent),
+        "a stationed viewer sees the unit, so the identity above is a fog rule"
+    );
+}

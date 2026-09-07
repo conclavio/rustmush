@@ -64,7 +64,13 @@ const RULESETS: [&str; 2] = ["wod", "shadowrun"];
 /// a terminal sealed outcome and commits canon an escrow settles from. It is
 /// `legacy-post-image` now, with its family and its reasons in the stanza. The
 /// tripwire still fails on an **unlisted** verb, which is what it is for.
-const PINNED_BASELINE: usize = 158;
+///
+/// 158 -> 157 with the E7 cut 8 independent verify fold (B1): `@domain` was
+/// pinned as a baseline verb and cut 8 gave it `/tick`, whose handler reaches
+/// `Ctx::submit_authoritative(domain_pulse_arm, ..)` and arms the domain's
+/// durable pulse cursor. It is `authoritative` now, with its reasons in the
+/// stanza.
+const PINNED_BASELINE: usize = 157;
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]

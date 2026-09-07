@@ -321,7 +321,8 @@ pub use schedule_source::{
     ScheduleActionPlanError, ScheduleAdvanceAdmissionError, ScheduleCandidateError,
     ScheduleSourceCursor, ScheduleSourceKey, ScheduleSourcePage, ScheduleSourceRegistry,
     ScheduleSourceRegistryBuilder, ScheduleSourceRegistryError, ScheduleSourceScanError,
-    ScheduledActionCandidate, ScheduledActionPlan, scheduled_action_ingress,
+    ScheduledActionCandidate, ScheduledActionPlan, schedule_scan_clock_is_skippable,
+    scheduled_action_ingress,
 };
 pub use sensor::{
     CONTACT_TTL, ContactLedgerRow, ContactLedgerState, MAX_CONTACT_LEDGER_ROWS,

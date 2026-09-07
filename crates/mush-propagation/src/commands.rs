@@ -934,6 +934,24 @@ const fn mush_tactics_max_intents_per_arm() -> usize {
     16
 }
 
+/// The same bound, for the `propagation.detection` tick (fold D8(a)).
+#[must_use]
+pub const fn max_intents_per_arm() -> usize {
+    mush_tactics_max_intents_per_arm()
+}
+
+/// The tactics-owned `sensor_arm` action, for the detection tick.
+#[must_use]
+pub fn sensor_arm_action_ref(reg: &mush_core::Registry) -> Option<mush_core::DefinitionRef> {
+    reg.definitions()?
+        .current(&mush_core::DefinitionKey {
+            owner: mush_core::OwnerId::new("tactics").ok()?,
+            kind: mush_core::DefinitionKind::new("action").ok()?,
+            id: mush_core::DefinitionId::new("sensor_arm").ok()?,
+        })
+        .cloned()
+}
+
 /// Resolve the tactics-owned `sensor_arm` action by its registered identity.
 ///
 /// A **string lookup, not an edge**: the definition registry is keyed by

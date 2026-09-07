@@ -1294,7 +1294,11 @@ fn e7c6_p4_each_verb_publishes_its_recorded_class() {
         .collect();
     for (name, class) in [
         ("@journey", CommandCompatibility::LegacyPostImage),
-        ("@domain", CommandCompatibility::LegacyPostImage),
+        // **E7 cut 8 independent verify fold B1:** `@domain` publishes
+        // `Authoritative`. It is one `CommandSpec` and therefore takes the
+        // CEILING class of its switches; `/tick` reaches
+        // `Ctx::submit_authoritative(domain_pulse_arm, ..)` from the handler.
+        ("@domain", CommandCompatibility::Authoritative),
         ("@spatial", CommandCompatibility::LegacyPostImage),
         ("+stations", CommandCompatibility::ReadOnly),
         ("@station", CommandCompatibility::Authoritative),
