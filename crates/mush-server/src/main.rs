@@ -52,7 +52,7 @@ fn main() -> ExitCode {
         }
     };
 
-    let _log_guards = mush_config::logging::init(&config.log, &config.server.data_dir);
+    let _log_guards = mush_config::logging::init(&config.log, &config.server.data_dir, "server");
 
     let runtime = match tokio::runtime::Builder::new_multi_thread()
         .enable_all()

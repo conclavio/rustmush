@@ -1091,15 +1091,29 @@ failed pass.
 level = "info"      # a tracing env-filter; empty = honor RUST_LOG, else "info".
 #                     e.g. "info,mush_llm=debug,mush_net_web=warn"
 format = "pretty"   # "pretty" (console) or "json" (one object/line, for shipping)
-file = false        # also write daily-rotating logs to <data_dir>/logs/mushd.log.YYYY-MM-DD
+file = false        # also write daily-rotating logs to <data_dir>/logs/<half>.log.YYYY-MM-DD
 ```
 
 `format = "json"` emits one JSON object per line for a log shipper; `file = true`
 adds a **non-blocking, daily-rotating** file appender under `<data_dir>/logs/`
-(in addition to stdout), whose worker is held for the process lifetime. Log lines
-carry paths and counts only — never secrets (API keys are read by env-var name and
-never logged; raw tokens are never logged). An unknown `format` degrades to
+(in addition to stdout), whose worker is held for the process lifetime. The file
+is named for the **half** that wrote it — `mushd.log` for the all-in-one,
+`gateway.log` and `server.log` in the split deploy, where both processes read the
+same config and the same `data_dir` — and every event (file and stdout alike)
+carries a `half=` field, so the merged journal of a gateway and the child that
+inherits its stdio stays readable. Log lines carry paths and counts only — never
+secrets (API keys are read by env-var name and never logged; raw tokens are never
+logged). An unknown `format` degrades to
 `pretty` with a warning rather than refusing to boot.
+
+**Panics land in the log.** Boot installs a process-wide panic hook, so a panic
+anywhere in the process — including the `.await` paths a `catch_unwind` cannot
+reach and a supervisor sees only as an opaque join error — is logged at ERROR
+with the fixed marker `MUSH-PANIC`, plus the thread, the payload, the source
+location and a forced backtrace, and only then chained to the usual stderr
+message. Grep the half's log file for `MUSH-PANIC` first when a process died.
+The event goes through the same env-filter as everything else, so do not set a
+`[log].level` that silences ERROR.
 
 Two operational tradeoffs of the file appender are **deliberate**:
 
@@ -1110,7 +1124,8 @@ Two operational tradeoffs of the file appender are **deliberate**:
   matters — the LLM/staff **audit** — is a separate Redis stream, not this file.
 - **No built-in retention.** Daily rotation keeps files **forever**; nothing
   prunes `<data_dir>/logs/`. Add external rotation — e.g. `logrotate`, or a cron
-  sweep like `find <data_dir>/logs -name 'mushd.log.*' -mtime +14 -delete`.
+  sweep like `find <data_dir>/logs -name '*.log.*' -mtime +14 -delete` (the
+  glob must cover every half: `mushd.log.*`, `gateway.log.*`, `server.log.*`).
 
 ## Discord bot (D1–D5): `[discord]`
 

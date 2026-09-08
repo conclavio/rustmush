@@ -107,8 +107,14 @@ fn main() -> ExitCode {
 
     // Structured logging per `[log]` (level/format + optional daily-rotating
     // file output). The guard keeps the non-blocking file appender's worker
-    // alive for the whole process; it drops at the end of `main`.
-    let _log_guards = mushd::logging::init(&config.log, &config.server.data_dir);
+    // alive for the whole process; it drops at the end of `main`. The role is
+    // the all-in-one's own (`mushd.log`, `half=mushd`) — the split halves pass
+    // `gateway`/`server` so they never share one file.
+    let _log_guards = mushd::logging::init(
+        &config.log,
+        &config.server.data_dir,
+        mushd::logging::DEFAULT_ROLE,
+    );
 
     // Dev convenience: load `.env` from the working directory (or an ancestor)
     // into the process environment so LLM API keys resolve without exporting
