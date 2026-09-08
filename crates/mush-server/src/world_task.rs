@@ -62,6 +62,33 @@
 //! no trait threading — and WHO's idle/connect columns are exact. (The
 //! session manager remains the authority on peer addresses; the M1 WHO
 //! format does not show them.)
+//!
+//! ## No `unreachable!` in the world loop (WS01-S5)
+//!
+//! An "impossible" state reached inside this task is not a bug report — it is
+//! a process kill. The task that owns the world is the one that would unwind,
+//! while the store writer keeps its queue and the players keep their
+//! connections, so a wrong `unreachable!` here costs the game rather than the
+//! turn. Every such site is therefore converted to the posture the rest of the
+//! file already takes for an integrity breach: log at `error!`, then either
+//! [`apply_integrity_freeze`] (loud, non-auto-lifting, staff-visible) or the
+//! local fail-closed answer (refuse the message, refuse the flush, suppress
+//! the effect). `#![deny(clippy::unreachable)]` below keeps it that way for
+//! this module; it cannot be a crate-level deny while `lib.rs`, `persist.rs`
+//! and `quarantine.rs` still carry production `unreachable!` of their own.
+//!
+//! Six production `expect` deliberately remain, all of them boot-time or
+//! arithmetic-precondition rather than world-state assertions, and none of
+//! them reachable from a player line:
+//!
+//! * [`base_registry`] x2 — command-table collisions at construction, before
+//!   the loop exists; a collision is a build-time wiring error.
+//! * the delayed-decision recovery arm — `CanonicalId::new` over a literal.
+//! * `flush_prepared_action` and `flush_dirty` — the serial `checked_add`,
+//!   whose `u64::MAX` case is refused a few lines above each site.
+//! * `@discord/link` — `normalize_link_code` over a code this function just
+//!   minted.
+#![deny(clippy::unreachable)]
 
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -986,8 +1013,24 @@ fn admit_world_msg(mode: WorldMode, world: &World, msg: &WorldMsg) -> Admission 
     if admission != Admission::CheckStoreReadOnlyCommand {
         return admission;
     }
+    resolve_store_read_only_command(world, msg)
+}
+
+/// The one admission that needs the message body: a command line typed while
+/// the store is read-only is allowed only if the read-only allowlist clears it.
+///
+/// Only [`Inbound::Cmd`] classifies as [`IngressClass::Command`], so anything
+/// else arriving here means the classifier and this resolver have drifted
+/// apart. That is a wiring breach rather than something the player did — but
+/// the caller is the single writer, so it fails closed with the refusal the
+/// caller was already prepared to hear instead of ending the world task.
+fn resolve_store_read_only_command(world: &World, msg: &WorldMsg) -> Admission {
     let WorldMsg::Inbound(inbound) = msg else {
-        unreachable!("only Inbound::Cmd is classified as Command")
+        tracing::error!(
+            class = ?classify_world_msg(msg),
+            "store-read-only admission reached a message that is not inbound; refusing"
+        );
+        return Admission::Refuse(RefusalReason::StoreUnavailable);
     };
     if refuse_store_read_only(world, inbound).is_some() {
         Admission::Refuse(RefusalReason::StoreUnavailable)
@@ -1338,7 +1381,13 @@ impl WorldHandle {
             }
         };
         let GatewayInput::Action(input) = request.input else {
-            unreachable!("constructed legal-action request changed variants")
+            // This function built `request` from `GatewayInput::Action` a few
+            // lines up; a different variant here means the ingress types moved
+            // under it. Answer the way every other internal failure in this
+            // function answers — nothing was submitted — rather than unwinding
+            // the caller's task.
+            tracing::error!("in-process legal-action request lost its action variant");
+            return ActionSend::Gone;
         };
         match self.connection_ready(input.conn, input.actor).await {
             Ok(true) => {}
@@ -3761,7 +3810,15 @@ async fn run(
                         StepOutcome::Continue
                     }
                     Admission::CheckStoreReadOnlyCommand => {
-                        unreachable!("admit_world_msg resolves store-read-only commands")
+                        // `admit_world_msg` resolves this class itself and
+                        // never returns it. Seeing it means the resolver was
+                        // bypassed, so treat the message as unadmitted rather
+                        // than stepping it against an unresolved admission.
+                        tracing::error!(
+                            "unresolved store-read-only admission reached the world loop; refusing"
+                        );
+                        refuse_world_msg(msg, RefusalReason::StoreUnavailable, &gateway);
+                        StepOutcome::Continue
                     }
                     Admission::Allow => match msg {
                         WorldMsg::Inbound(msg) => {
@@ -4087,129 +4144,152 @@ async fn run(
                 StepOutcome::Continue
             }
             Wake::CommitReceipt(PendingReceiptEvent::Owned(ownership)) => {
-                let pending = pending_commit
-                    .as_mut()
-                    .expect("ownership receipt cannot resolve without a pending commit");
-                complete_pending_ownership(
-                    pending,
-                    ownership,
-                    &engine.world,
-                    &gateway,
-                    &mut health,
-                    &persistence_integrity,
-                );
-                StepOutcome::Continue
-            }
-            Wake::CommitReceipt(PendingReceiptEvent::Final(ack)) => {
-                let pending = pending_commit
-                    .take()
-                    .expect("commit receipt cannot resolve without a pending commit");
-                let exit_after_ack = pending.exit_after_ack;
-                let mut completed = guarded!(
-                    "complete_pending_commit",
-                    complete_pending_commit(
+                match pending_commit.as_mut() {
+                    Some(pending) => complete_pending_ownership(
                         pending,
-                        ack,
-                        &mut engine,
+                        ownership,
+                        &engine.world,
                         &gateway,
                         &mut health,
                         &persistence_integrity,
-                        &tx,
-                        llm.as_ref(),
-                        &deps.store,
-                    )
-                );
-                let decision_response = completed.decision_response.take();
-                let decision_terminal = completed.decision_terminal.take();
-                guarded!(
-                    "finish_pending_operational",
-                    finish_pending_operational(&mut engine, &gateway, completed)
-                );
-                if let Some(response) = decision_response {
-                    let resolving = if let Some(store) = deps.store.authoritative_store() {
-                        stage_decision_resolving(
-                            &mut engine,
-                            store,
-                            &response.fence,
-                            &response.binding,
-                            response.outcome,
-                            action_epoch,
-                        )
-                        .await
-                    } else {
-                        Err("authoritative store capability disappeared".to_owned())
-                    };
-                    match resolving {
-                        Ok(Some(staged)) => {
-                            action_completion = Some(ActionCompletion {
-                                staged,
-                                owned: None,
-                                finished: None,
-                                ownership_valid: false,
-                                post_commit_decision: None,
-                                post_commit_decision_response: None,
-                                post_commit_decision_terminal: Some(DecisionTerminalPostCommit {
-                                    fence: response.fence,
-                                    binding: response.binding,
-                                    outcome: response.outcome,
-                                }),
-                            });
+                    ),
+                    None => freeze_orphan_commit_receipt(
+                        &engine.world,
+                        &gateway,
+                        &mut health,
+                        &persistence_integrity,
+                        "ownership",
+                    ),
+                }
+                StepOutcome::Continue
+            }
+            Wake::CommitReceipt(PendingReceiptEvent::Final(ack)) => {
+                // A `let ... else` cannot stand in here: this arm has to
+                // produce a `StepOutcome`, and a let-else block must
+                // diverge. The freeze arm therefore yields `Continue` in
+                // its own right — the loop survives the breach.
+                match pending_commit.take() {
+                    None => {
+                        freeze_orphan_commit_receipt(
+                            &engine.world,
+                            &gateway,
+                            &mut health,
+                            &persistence_integrity,
+                            "commit",
+                        );
+                        StepOutcome::Continue
+                    }
+                    Some(pending) => {
+                        let exit_after_ack = pending.exit_after_ack;
+                        let mut completed = guarded!(
+                            "complete_pending_commit",
+                            complete_pending_commit(
+                                pending,
+                                ack,
+                                &mut engine,
+                                &gateway,
+                                &mut health,
+                                &persistence_integrity,
+                                &tx,
+                                llm.as_ref(),
+                                &deps.store,
+                            )
+                        );
+                        let decision_response = completed.decision_response.take();
+                        let decision_terminal = completed.decision_terminal.take();
+                        guarded!(
+                            "finish_pending_operational",
+                            finish_pending_operational(&mut engine, &gateway, completed)
+                        );
+                        if let Some(response) = decision_response {
+                            let resolving = if let Some(store) = deps.store.authoritative_store() {
+                                stage_decision_resolving(
+                                    &mut engine,
+                                    store,
+                                    &response.fence,
+                                    &response.binding,
+                                    response.outcome,
+                                    action_epoch,
+                                )
+                                .await
+                            } else {
+                                Err("authoritative store capability disappeared".to_owned())
+                            };
+                            match resolving {
+                                Ok(Some(staged)) => {
+                                    action_completion = Some(ActionCompletion {
+                                        staged,
+                                        owned: None,
+                                        finished: None,
+                                        ownership_valid: false,
+                                        post_commit_decision: None,
+                                        post_commit_decision_response: None,
+                                        post_commit_decision_terminal: Some(
+                                            DecisionTerminalPostCommit {
+                                                fence: response.fence,
+                                                binding: response.binding,
+                                                outcome: response.outcome,
+                                            },
+                                        ),
+                                    });
+                                }
+                                Ok(None) => {}
+                                Err(error) => {
+                                    tracing::error!(
+                                        owner = %response.fence.controller().owner,
+                                        decision = ?response.fence.decision(),
+                                        error = %error,
+                                        "failed to bind committed selected action to pending decision"
+                                    );
+                                }
+                            }
                         }
-                        Ok(None) => {}
-                        Err(error) => {
-                            tracing::error!(
-                                owner = %response.fence.controller().owner,
-                                decision = ?response.fence.decision(),
-                                error = %error,
-                                "failed to bind committed selected action to pending decision"
-                            );
+                        if let Some(terminal) = decision_terminal {
+                            let staged = if let Some(store) = deps.store.authoritative_store() {
+                                stage_decision_terminal(
+                                    &mut engine,
+                                    store,
+                                    &terminal.fence,
+                                    &terminal.binding,
+                                    terminal.outcome,
+                                    action_epoch,
+                                )
+                                .await
+                            } else {
+                                Err("authoritative store capability disappeared".to_owned())
+                            };
+                            match staged {
+                                Ok(Some(staged)) => {
+                                    action_completion = Some(ActionCompletion {
+                                        staged,
+                                        owned: None,
+                                        finished: None,
+                                        ownership_valid: false,
+                                        post_commit_decision: None,
+                                        post_commit_decision_response: None,
+                                        post_commit_decision_terminal: None,
+                                    });
+                                }
+                                Ok(None) => {}
+                                Err(error) => {
+                                    tracing::error!(
+                                        owner = %terminal.fence.controller().owner,
+                                        decision = ?terminal.fence.decision(),
+                                        error = %error,
+                                        "failed to terminalize resolved decision"
+                                    );
+                                }
+                            }
+                        }
+                        if std::mem::take(&mut recovery_waits_for_commit) {
+                            apply_store_status(&engine.world, &gateway, &mut health, true, "");
+                        }
+                        if exit_after_ack {
+                            StepOutcome::Shutdown
+                        } else {
+                            StepOutcome::Continue
                         }
                     }
-                }
-                if let Some(terminal) = decision_terminal {
-                    let staged = if let Some(store) = deps.store.authoritative_store() {
-                        stage_decision_terminal(
-                            &mut engine,
-                            store,
-                            &terminal.fence,
-                            &terminal.binding,
-                            terminal.outcome,
-                            action_epoch,
-                        )
-                        .await
-                    } else {
-                        Err("authoritative store capability disappeared".to_owned())
-                    };
-                    match staged {
-                        Ok(Some(staged)) => {
-                            action_completion = Some(ActionCompletion {
-                                staged,
-                                owned: None,
-                                finished: None,
-                                ownership_valid: false,
-                                post_commit_decision: None,
-                                post_commit_decision_response: None,
-                                post_commit_decision_terminal: None,
-                            });
-                        }
-                        Ok(None) => {}
-                        Err(error) => {
-                            tracing::error!(
-                                owner = %terminal.fence.controller().owner,
-                                decision = ?terminal.fence.decision(),
-                                error = %error,
-                                "failed to terminalize resolved decision"
-                            );
-                        }
-                    }
-                }
-                if std::mem::take(&mut recovery_waits_for_commit) {
-                    apply_store_status(&engine.world, &gateway, &mut health, true, "");
-                }
-                if exit_after_ack {
-                    StepOutcome::Shutdown
-                } else {
-                    StepOutcome::Continue
                 }
             }
             Wake::Timer => {
@@ -4436,7 +4516,15 @@ async fn run(
                 let wake = match &wake {
                     Wake::DecisionNotification(wake) => Some(wake),
                     Wake::DurableDecisions => None,
-                    _ => unreachable!(),
+                    // The arm pattern above admits exactly those two wakes;
+                    // anything else means the pattern and this match drifted.
+                    // Drop the wake instead of the world.
+                    _ => {
+                        tracing::error!(
+                            "delayed-decision driver saw a wake it does not own; ignoring"
+                        );
+                        continue;
+                    }
                 };
                 let Some(driver) = durable_decisions.as_mut() else {
                     continue;
@@ -5537,11 +5625,15 @@ fn refuse_world_msg(msg: WorldMsg, reason: RefusalReason, gateway: &Gateway) {
         WorldMsg::Inbound(Inbound::Control(ControlMsg::Dump)) => {
             tracing::warn!(?reason, "dump control suppressed by world mode");
         }
+        // Shutdown and a transport-only reattach are admitted in every world
+        // mode, so neither should ever be routed here. If one is, the refusal
+        // is the safe half — refusing a shutdown only means the operator has
+        // to ask again — and losing the loop would be the unsafe half.
         WorldMsg::Inbound(Inbound::Control(ControlMsg::Shutdown)) => {
-            unreachable!("shutdown is admitted in every world mode")
+            tracing::error!(?reason, "shutdown refused by world mode; dropped");
         }
         WorldMsg::ReAttach { .. } => {
-            unreachable!("transport-only reattach is admitted in every world mode")
+            tracing::error!(?reason, "reattach refused by world mode; dropped");
         }
         WorldMsg::CreatePlayer { reply, .. } => {
             let error = if reason == RefusalReason::CommitPending {
@@ -5861,6 +5953,34 @@ fn apply_integrity_freeze(
     );
 }
 
+/// A commit receipt (ownership or final acknowledgement) resolved while the
+/// loop holds no pending commit.
+///
+/// The receipt is proof that the writer accepted a batch; the pending commit is
+/// the only place the output, effects and typed RAM images that batch belongs
+/// to are held. Without it the acknowledgement cannot be released and cannot be
+/// re-derived — RAM and the store have diverged in a way this task cannot
+/// reconcile. That is the same class of breach as a deterministic store
+/// rejection, so it takes the same answer: freeze, tell staff, and keep the
+/// loop alive so the freeze is observable and the shutdown path still runs.
+/// Asserting instead would end the single writer while the store writer kept
+/// its queue and the players kept their connections.
+fn freeze_orphan_commit_receipt(
+    world: &World,
+    gateway: &Gateway,
+    health: &mut StoreHealth,
+    persistence_integrity: &PersistenceIntegrityLatch,
+    which: &str,
+) {
+    apply_integrity_freeze(
+        world,
+        gateway,
+        health,
+        persistence_integrity,
+        &format!("{which} receipt resolved with no pending commit to release it against"),
+    );
+}
+
 /// Every connected Wizard-or-better — the one staff audience the server fans an
 /// alert out to, whether from the world loop (`broadcast_wizards`) or from inside
 /// a step (the economy's DL-05 observer, `econ_alerts`).
@@ -5955,7 +6075,16 @@ async fn flush_prepared_action(
 ) -> FlushOutcome {
     let staged: StagedAction = match engine.take_staged_action() {
         Ok(Some(staged)) => staged,
-        Ok(None) => unreachable!("prepared flush selected only with a staged action"),
+        // `flush_engine_step` selects this lane only when a staged action is
+        // in hand. Nothing staged means the selection and the engine disagree:
+        // refuse the flush, which leaves the step unpersisted and un-released
+        // rather than claiming a durable write nobody built.
+        Ok(None) => {
+            tracing::error!("prepared flush selected with no staged action; refusing");
+            return FlushOutcome::Refused(
+                "prepared flush selected with no staged action".to_owned(),
+            );
+        }
         Err(error) => return FlushOutcome::Refused(error.to_string()),
     };
     let (persistence, installation) = staged.into_parts();
@@ -6195,7 +6324,21 @@ async fn flush_dirty(
     };
     if let Err(send_error) = writer.send(StoreJob::Write { batch, notify }).await {
         let StoreJob::Write { batch, .. } = send_error.0 else {
-            unreachable!("flush_dirty sends only StoreJob::Write")
+            // The batch this call built is inside the returned job; another
+            // variant means it is not in hand and cannot be preserved to the
+            // quarantine spool. Nothing here can recover it, so the incident
+            // id is the whole record of the loss — and the caller still hears
+            // `WriterGone`, so the write is never confirmed as durable.
+            tracing::error!(
+                serial = *serial,
+                incident = incident_id(
+                    "store-writer-rejected-foreign-job",
+                    "flush_dirty send returned a job that is not a write",
+                )
+                .0,
+                "store writer returned a non-write job; the authoritative batch is unrecoverable"
+            );
+            return FlushOutcome::WriterGone;
         };
         tracing::error!(
             serial = *serial,
@@ -6232,7 +6375,14 @@ fn admit_staff_ops(mode: WorldMode, ops: Vec<StaffOp>, gateway: &Gateway) -> Vec
                 send_sys(gateway, op.actor, reason.text());
             }
             Admission::CheckStoreReadOnlyCommand => {
-                unreachable!("typed staff operations never use command-text classification")
+                // Staff ops are typed, so they never classify as a command
+                // line and never need the read-only allowlist. An unresolved
+                // admission is suppressed: not running the op is the fail-safe
+                // half of a staff mutation.
+                tracing::error!(
+                    actor = %op.actor,
+                    "typed staff operation hit command-text admission; suppressed"
+                );
             }
         }
     }
@@ -8168,7 +8318,13 @@ fn release_classified_effects(
             }
         }
         Admission::CheckStoreReadOnlyCommand => {
-            unreachable!("effect launch never uses command-text classification")
+            // `IngressClass::ExternalEffect` never resolves to the command-text
+            // check. If it somehow does, launching nothing is the fail-safe
+            // half: a detached effect is the one thing that escapes the loop.
+            tracing::error!(
+                dropped = released.len(),
+                "external effect launch hit command-text admission; suppressed"
+            );
         }
     }
 }
@@ -14130,6 +14286,236 @@ mod tests {
         assert!(persistence_integrity.is_latched());
         assert!(wizard_heard(&recorder, "persistence integrity breach"));
         assert_eq!(engine.action_state().revision(), 0);
+    }
+
+    // ---- WS01-S5: the world loop's impossible states fail closed ----
+    //
+    // Every proof below drives the converted site directly, because that is
+    // the only way to reach it: each was an `unreachable!` or an `expect`
+    // precisely because no ordinary input produces the state. The failure mode
+    // they all guard is the same one — the task that owns the world unwinds
+    // while the store writer keeps its queue and the players keep their
+    // connections — so "the call returned" is a real assertion.
+
+    /// A commit receipt with no pending commit to release it against. Both
+    /// halves of the receipt (ownership and final ack) used to `expect` here,
+    /// on the single writer, over a store writer that would have gone on
+    /// serving its queue. Now the world freezes, staff are told, and the loop
+    /// is still there to be shut down.
+    #[test]
+    fn an_orphan_commit_receipt_freezes_the_world_instead_of_ending_the_writer() {
+        for which in ["ownership", "commit"] {
+            let (mut engine, _handle) = prepared_lane_fixture();
+            engine.world.set_connected(GOD, true);
+            let recorder = Arc::new(RecordingGateway::default());
+            let gateway: Gateway = recorder.clone();
+            let mut health = StoreHealth::new();
+            let persistence_integrity = PersistenceIntegrityLatch::new();
+
+            freeze_orphan_commit_receipt(
+                &engine.world,
+                &gateway,
+                &mut health,
+                &persistence_integrity,
+                which,
+            );
+
+            // Reaching this line at all is the liveness half of the proof.
+            assert!(health.mode.integrity_frozen(), "{which}: the world froze");
+            assert!(persistence_integrity.is_latched(), "{which}: and latched");
+            assert!(
+                wizard_heard(&recorder, "persistence integrity breach"),
+                "{which}: staff were told"
+            );
+            assert!(
+                wizard_heard(
+                    &recorder,
+                    &format!("{which} receipt resolved with no pending commit"),
+                ),
+                "{which}: and told which receipt was orphaned"
+            );
+            // The freeze is a mutation barrier, not a stopped loop: shutdown is
+            // still admitted, which is what makes the freeze observable and the
+            // exit path reachable.
+            assert_eq!(
+                admission_for(health.mode, IngressClass::Command),
+                Admission::Refuse(RefusalReason::IntegrityFrozen),
+                "{which}: mutations are paused"
+            );
+            assert_eq!(
+                admission_for(health.mode, IngressClass::Shutdown),
+                Admission::Allow,
+                "{which}: the loop is still there to shut down"
+            );
+        }
+    }
+
+    /// `refuse_world_msg` used to `unreachable!` on the two messages that are
+    /// admitted in every world mode. If one is ever routed to it, refusing a
+    /// shutdown only costs the operator a second attempt; ending the loop from
+    /// inside the refusal path costs the game.
+    #[test]
+    fn refuse_world_msg_drops_messages_it_should_never_have_been_given() {
+        let recorder = Arc::new(RecordingGateway::default());
+        let gateway: Gateway = recorder.clone();
+
+        refuse_world_msg(
+            WorldMsg::Inbound(Inbound::Control(ControlMsg::Shutdown)),
+            RefusalReason::CommitPending,
+            &gateway,
+        );
+        refuse_world_msg(
+            WorldMsg::ReAttach {
+                recs: Vec::new().into_boxed_slice(),
+            },
+            RefusalReason::CommitPending,
+            &gateway,
+        );
+
+        // Both returned, and neither invented output for a nonexistent actor.
+        assert!(
+            recorder
+                .sends
+                .lock()
+                .expect("recording gateway poisoned")
+                .is_empty(),
+            "a dropped control message speaks to nobody"
+        );
+    }
+
+    /// The store-read-only admission is resolved by message body, and only
+    /// `Inbound::Cmd` classifies as a command. A message that reaches the
+    /// resolver anyway means the classifier drifted: it must refuse, not kill
+    /// the loop that asked.
+    #[test]
+    fn a_misclassified_store_read_only_admission_refuses_instead_of_asserting() {
+        let world = World::new_minimal();
+
+        assert_eq!(
+            resolve_store_read_only_command(
+                &world,
+                &WorldMsg::ReAttach {
+                    recs: Vec::new().into_boxed_slice(),
+                },
+            ),
+            Admission::Refuse(RefusalReason::StoreUnavailable),
+            "a non-inbound message fails closed"
+        );
+
+        // The controls: the resolver still answers real command lines the way
+        // the read-only allowlist says.
+        assert_eq!(
+            resolve_store_read_only_command(
+                &world,
+                &WorldMsg::Inbound(Inbound::Cmd {
+                    conn: 1,
+                    actor: GOD,
+                    line: "@dig somewhere".to_string(),
+                }),
+            ),
+            Admission::Refuse(RefusalReason::StoreUnavailable),
+            "a mutating line is still refused while the store is read-only"
+        );
+        assert_eq!(
+            resolve_store_read_only_command(
+                &world,
+                &WorldMsg::Inbound(Inbound::Cmd {
+                    conn: 1,
+                    actor: GOD,
+                    line: "\"hello".to_string(),
+                }),
+            ),
+            Admission::Allow,
+            "speech still passes"
+        );
+    }
+
+    /// The prepared lane is selected only when a staged action is in hand.
+    /// If the selection and the engine disagree the flush refuses: nothing is
+    /// persisted, nothing is released, and the caller is told so.
+    #[tokio::test]
+    async fn a_prepared_flush_with_nothing_staged_refuses_instead_of_asserting() {
+        let (mut engine, _handle) = prepared_lane_fixture();
+        assert!(
+            !engine.has_staged_action(),
+            "the bypass is calling the prepared lane with nothing staged"
+        );
+
+        let (writer, mut writer_rx) = persist::test_store_writer_channel(Arc::new(Metrics::new()));
+        let mut serial = 0;
+        let mut health = StoreHealth::new();
+        let metrics = Metrics::new();
+        let mut retained = RetainedSeals::new();
+        let high_water = AtomicU64::new(0);
+        let outcome = flush_prepared_action(
+            &mut engine,
+            &writer,
+            &mut serial,
+            &mut health,
+            &metrics,
+            &mut retained,
+            &high_water,
+        )
+        .await;
+
+        match outcome {
+            FlushOutcome::Refused(detail) => assert!(
+                detail.contains("no staged action"),
+                "unexpected refusal: {detail}"
+            ),
+            _ => panic!("an empty prepared flush must refuse"),
+        }
+        assert_eq!(serial, 0, "a refused flush consumes no serial");
+        assert!(
+            matches!(writer_rx.try_recv(), Err(mpsc::error::TryRecvError::Empty)),
+            "and hands the writer nothing"
+        );
+        assert!(health.last_write_unix.is_none());
+    }
+
+    /// The writer-gone arm of `flush_dirty` carries the `let ... else` that
+    /// used to be an `unreachable!`. A closed writer queue is the reachable
+    /// half of that path: it must report the batch as dropped rather than
+    /// letting an ack-gated caller confirm a write that never happened.
+    #[tokio::test]
+    async fn flush_dirty_reports_writer_gone_when_the_queue_is_closed() {
+        let (mut engine, _handle) = prepared_lane_fixture();
+        engine
+            .world
+            .create(ObjKind::Thing, "orphan orb", GOD, Some(LIMBO))
+            .expect("test object creation succeeds");
+        assert!(engine.has_legacy_persistence_work());
+
+        let (writer, writer_rx) = persist::test_store_writer_channel(Arc::new(Metrics::new()));
+        drop(writer_rx);
+        let mut serial = 0;
+        let mut health = StoreHealth::new();
+        let metrics = Metrics::new();
+        let mut retained = RetainedSeals::new();
+        let high_water = AtomicU64::new(0);
+        let persistence_integrity = PersistenceIntegrityLatch::new();
+        let outcome = flush_dirty(
+            &mut engine,
+            &writer,
+            &mut serial,
+            true,
+            &mut health,
+            &metrics,
+            &mut retained,
+            &high_water,
+            &crate::quarantine::QuarantineSpool::in_memory(),
+            &persistence_integrity,
+        )
+        .await;
+
+        assert!(
+            matches!(outcome, FlushOutcome::WriterGone),
+            "a closed writer queue is a dropped batch, never a durable one"
+        );
+        assert!(
+            health.last_write_unix.is_none(),
+            "and nothing may be recorded as written"
+        );
     }
 
     /// Interface plan I13: the exact receipt not only installs the typed
