@@ -13,7 +13,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { GameApp } from "./game.svelte";
+import { GameApp, type ComposerHandle } from "./game.svelte";
 import type { Envelope, OutputEvent, Query, ViewEnvelope } from "./proto";
 import { UNIT_RESYNC_MS } from "./stores/unit.svelte";
 import type { WebSocketLike } from "./ws";
@@ -22,6 +22,8 @@ import type { WebSocketLike } from "./ws";
 const UNIT_FEED = "tactics.unit";
 const CONTACTS_FEED = "tactics.contacts";
 const SHEET_FEED = "wod.sheet";
+const VITALS_FEED = "wod.vitals";
+const VIEW_FEED = "foo.view";
 
 /** One outbound client frame, parsed off the wire. */
 interface ClientFrame {
@@ -75,6 +77,13 @@ class FakeSocket implements WebSocketLike {
   /** Deliver one server envelope. */
   deliver(e: Envelope): void {
     this.onmessage?.({ data: JSON.stringify(e) });
+  }
+
+  /** The connection died (an UNCLEAN close): the client reconnects after
+   * its backoff. `close()` above is the clean one, which never does. */
+  drop(code = 1006): void {
+    this.readyState = 3; // CLOSED
+    this.onclose?.({ code, wasClean: false });
   }
 
   /** Every frame the client sent, parsed. */
@@ -164,6 +173,37 @@ function delta(rev: number): unknown {
     now: 1757000000,
     cause: null,
     entries: [{ kind: "cell", addr: "unit/heat", from: 1, to: 0 }],
+  };
+}
+
+/** A minimal I9 generic-view keyframe: enough for `GenericViewStore.apply`
+ * to hold it, which is what makes `GameApp` register a screen for the feed. */
+function viewKeyframe(): unknown {
+  return {
+    schema: { id: "foo", version: 1, shape: "list", columns: [{ key: "a" }] },
+    rows: [{ a: "1" }],
+  };
+}
+
+/** Every scrollback block as its first line's plain text. */
+function lineTexts(app: GameApp): string[] {
+  return app.scrollback.entries.map((b) => b.lines[0]?.map((s) => s.text).join("") ?? "");
+}
+
+/** A `.vitals` keyframe at `revision`, one gauge, one subject. */
+function vitalsFrame(revision: number): unknown {
+  return {
+    subject: { id: "#7", name: "Atlas" },
+    revision,
+    vitals: [
+      {
+        id: "wod.health",
+        label: "Health",
+        role: "dominant",
+        value: { kind: "bounded", current: revision, min: 0, max: 10 },
+        state: "ok",
+      },
+    ],
   };
 }
 
@@ -299,6 +339,162 @@ describe("the hello pass", () => {
 
     expect(app.screens.feedScreens).toEqual([]);
     expect(ws.reqs().map((r) => r.q.t)).toEqual(["who", "sheet", "commands"]);
+  });
+
+  it("re-subscribes every panel feed after a reconnect, and replies still correlate", () => {
+    // I4-C41: the R lens rested on Hello-before-Resumed ordering and nothing
+    // drove it. The re-subscribe is the hello pass's own work — `resumed`
+    // only marks the seam — so the panel state a viewer had before the drop
+    // is asked for again on the NEW socket.
+    const panels = [SHEET_FEED, VITALS_FEED, "scenes"];
+    const { app, ws } = boot(panels);
+    expect(ws.reqs().map(feedOf).filter((f) => f !== null)).toEqual([VITALS_FEED, "scenes"]);
+
+    ws.drop();
+    expect(app.session.status).toBe("reconnecting");
+    vi.advanceTimersByTime(500); // the first backoff window, `random: () => 1`
+    const next = openHello(panels);
+    next.deliver(env(0, { t: "resumed", d: { replayed: false } }));
+
+    expect(next).not.toBe(ws); // a genuinely new socket
+    expect(app.session.status).toBe("connected");
+    expect(next.reqs().map(feedOf).filter((f) => f !== null)).toEqual([VITALS_FEED, "scenes"]);
+
+    // Correlation survives the seam: `#hydrate` clears the pending map for
+    // the old socket's ids, and the new ones climb from where the old left
+    // off — so a reply is only ever answered by the id read off THIS socket.
+    const vitalsReq = next.reqs().filter((r) => feedOf(r) === VITALS_FEED)[0]!;
+    expect(vitalsReq.id).toBeGreaterThan(ws.reqs()[ws.reqs().length - 1]!.id);
+    next.deliver(reply(9, vitalsReq.id, panelEvent(VITALS_FEED, "keyframe", vitalsFrame(3))));
+    expect(app.vitals.list[0]?.frame.revision).toBe(3);
+  });
+});
+
+// Feed screens across a character switch (LB-2). `ScreensStore.clear()` keeps
+// `feedScreens` on purpose — the bare-hello path needs the unit screen to
+// survive a re-hello — but the full game-state reset must not: a `foo.view`
+// screen registered against server A's manifest kept digit 6 on server B, so
+// the tactical unit screen was refused and never appeared. Both registrars
+// discarded their reason, so the refusal was silent as well.
+describe("feed screens across a character switch", () => {
+  it("a `.view` screen holding digit 6 refuses the unit screen, out loud", () => {
+    const { app, ws } = boot([VIEW_FEED]);
+    ws.deliver(panel(3, VIEW_FEED, "keyframe", viewKeyframe()));
+    expect(app.screens.feedScreens.map((f) => f.def.digit)).toEqual([6]);
+    expect(lineTexts(app)).toEqual([]);
+
+    // The same session learns a `.unit` feed: `#hydrate`'s registration is
+    // refused because digit 6 is spoken for.
+    ws.deliver(hello([VIEW_FEED, UNIT_FEED]));
+
+    expect(app.screens.feedScreens.map((f) => f.def.id)).toEqual([`view:${VIEW_FEED}`]);
+    expect(lineTexts(app)).toEqual([
+      "This client could not add the unit screen: screen unit: digit 6 used twice.",
+    ]);
+  });
+
+  it("the other order refuses the view screen, also out loud", () => {
+    const { app, ws } = boot([UNIT_FEED, VIEW_FEED]);
+    expect(app.screens.feedScreens.map((f) => f.def.id)).toEqual(["unit"]);
+
+    ws.deliver(panel(3, VIEW_FEED, "keyframe", viewKeyframe()));
+
+    expect(app.screens.feedScreens).toHaveLength(1);
+    // The view is still HELD — only its screen was refused, and the digitless
+    // screen policy (LB-15) is what will eventually place it.
+    expect(app.genericViews.get(VIEW_FEED)).not.toBeNull();
+    expect(lineTexts(app)).toEqual([
+      `This client could not add the ${VIEW_FEED} screen: no free hotkey digit for a view screen.`,
+    ]);
+  });
+
+  it("a generic-view screen's `r` asks for its own feed, never WHO", () => {
+    // LB-3: `localAction("refresh")` names every built-in screen and falls
+    // through to `refreshWho()` for anything else — so a module's own view
+    // screen refreshed the WHO list. Its feed IS its refresh.
+    const { app, ws } = boot([VIEW_FEED]);
+    ws.deliver(panel(3, VIEW_FEED, "keyframe", viewKeyframe()));
+    expect(app.screens.switchTo(`view:${VIEW_FEED}`, app.gate)).toBe(true);
+    const before = ws.reqs().length;
+
+    expect(app.runBinding("r")).toBe(true);
+
+    expect(ws.reqs().slice(before).map((r) => r.q)).toEqual([
+      { t: "panel_subscribe", d: { feed: VIEW_FEED } },
+    ]);
+  });
+
+  it("a character switch drops them, so the next server's screen registers", () => {
+    vi.stubGlobal(
+      "localStorage",
+      memoryStorage({
+        "rustmush.token": "tok",
+        "rustmush.chars": JSON.stringify([{ key: 7, name: "Atlas" }]),
+      }),
+    );
+    const app = makeApp();
+    app.client.connect("tok", "7");
+    const ws = openHello([VIEW_FEED]);
+    ws.deliver(panel(3, VIEW_FEED, "keyframe", viewKeyframe()));
+    expect(app.screens.feedScreens.map((f) => f.def.digit)).toEqual([6]);
+
+    // A different character on a tactics server.
+    app.enterGame(7);
+    expect(app.screens.feedScreens).toEqual([]);
+    openHello([UNIT_FEED]);
+
+    expect(app.screens.feedScreens.map((f) => f.def.id)).toEqual(["unit"]);
+    expect(lineTexts(app)).toEqual([]); // nothing was refused, so nothing was said
+  });
+});
+
+// The vitals watermark across a world restart (I1-C4). A web socket survives
+// a world restart with no fresh Hello (`mush-gateway/tests/web_restart_
+// survival.rs`) while `VitalsRevisions` restarts at zero, so a viewer holding
+// revision N drops every gauge the restarted world publishes — silently, for
+// the rest of the session. Every seam where the client may now be looking at
+// a different run of the world resets the watermarks.
+describe("the vitals watermark", () => {
+  it("accepts a restarted world's revision 1 after a hello; without one it stays stale", () => {
+    const { app, ws } = boot([VITALS_FEED]);
+    ws.deliver(panel(3, VITALS_FEED, "keyframe", vitalsFrame(5)));
+    expect(app.vitals.list[0]?.frame.revision).toBe(5);
+
+    // No hello: the monotonic guard is doing its real job — a late frame
+    // from the SAME run must never roll a gauge back.
+    ws.deliver(panel(4, VITALS_FEED, "keyframe", vitalsFrame(4)));
+    expect(app.vitals.list[0]?.frame.revision).toBe(5);
+
+    // The world restarted and its counter with it. The hello marks every
+    // held group accept-next; the frames stay on screen meanwhile.
+    ws.deliver(hello([VITALS_FEED]));
+    expect(app.vitals.list[0]?.frame.revision).toBe(5);
+    ws.deliver(panel(5, VITALS_FEED, "keyframe", vitalsFrame(1)));
+    expect(app.vitals.list[0]?.frame.revision).toBe(1);
+
+    // The mark is spent: the new run's own numbers are guarded again.
+    ws.deliver(panel(6, VITALS_FEED, "keyframe", vitalsFrame(3)));
+    ws.deliver(panel(7, VITALS_FEED, "keyframe", vitalsFrame(2)));
+    expect(app.vitals.list[0]?.frame.revision).toBe(3);
+  });
+
+  it("resets on the two reconnect seams: a replayed resume and a resume gap", () => {
+    // `resumed { replayed: true }` replays the gap silently — no hello, no
+    // rehydrate — so it is the ONLY seam a restart inside a short gap
+    // crosses.
+    const { app, ws } = boot([VITALS_FEED]);
+    ws.deliver(panel(3, VITALS_FEED, "keyframe", vitalsFrame(5)));
+    ws.deliver(env(0, { t: "resumed", d: { replayed: true } }));
+    ws.deliver(panel(4, VITALS_FEED, "keyframe", vitalsFrame(1)));
+    expect(app.vitals.list[0]?.frame.revision).toBe(1);
+
+    // The gap outgrew the ring: `onFullRehydrate`. The strip is not blanked
+    // — a stale gauge is a smaller lie than a missing one.
+    ws.deliver(panel(5, VITALS_FEED, "keyframe", vitalsFrame(9)));
+    ws.deliver(env(0, { t: "resumed", d: { replayed: false } }));
+    expect(app.vitals.list[0]?.frame.revision).toBe(9);
+    ws.deliver(panel(6, VITALS_FEED, "keyframe", vitalsFrame(2)));
+    expect(app.vitals.list[0]?.frame.revision).toBe(2);
   });
 });
 
@@ -436,6 +632,10 @@ describe("the unit-resync coalescer", () => {
 
     expect(app2.screen).toBe("game");
     expect(app2.unit.journal).toEqual([]);
+    // A re-attach is a fresh VIEW, not a `/clear`: the reset clears the
+    // scrollback (which draws the backlog floor, LB-1) and then begins a new
+    // segment, which lifts it for the new session's ring.
+    expect(app2.scrollback.moreBacklog).toBe(true);
     const next = openHello();
     const m = next.reqs().length;
     vi.advanceTimersByTime(60_000);
@@ -471,6 +671,365 @@ describe("the unit-resync coalescer", () => {
     const after = ws.reqs().slice(before);
     expect(after.map((r) => r.q.t)).toEqual(["panel_subscribe", "panel_subscribe"]);
     expect(after.map(feedOf)).toEqual([UNIT_FEED, CONTACTS_FEED]);
+  });
+});
+
+// The narrative backlog floor (LB-1). `/clear` threw away every held `seq`,
+// so `oldestNarrativeSeq` is `null` again and the next page is the NEWEST
+// one — the very lines the viewer just cleared, repainted, with nothing to
+// dedup them against. The TUI draws a floor instead (`docs/help/tui.md`
+// "Scene history"); the web now agrees.
+describe("the narrative backlog floor", () => {
+  /** A room narrative line at `seq` — the backlog's cursor comes off these. */
+  function said(seq: number): Envelope {
+    return env(seq, {
+      t: "narrative",
+      d: { kind: "say", actor: { id: "#7", name: "Atlas" }, text: [{ text: "hello" }] },
+    } as OutputEvent);
+  }
+
+  it("/clear stops older history from repainting the lines it cleared", () => {
+    const { app, ws } = boot();
+    ws.deliver(said(3));
+    ws.deliver(said(4));
+    const before = ws.reqs().length;
+
+    // The affordance works: a page is asked for, from the oldest held seq.
+    app.loadOlderNarrative();
+    expect(ws.reqs()).toHaveLength(before + 1);
+    expect(lastReq(ws).q).toEqual({
+      t: "narrative_backlog",
+      d: { before_seq: 3, limit: 200 },
+    });
+
+    app.submit("/clear");
+
+    // The floor, not the in-flight latch: `clear()` releases that, so this
+    // assertion is about `moreBacklog` alone.
+    expect(app.scrollback.fetchingBacklog).toBe(false);
+    expect(app.scrollback.oldestNarrativeSeq).toBeNull();
+    app.loadOlderNarrative();
+    expect(ws.reqs()).toHaveLength(before + 1);
+
+    // A fresh view lifts it: the resume-gap rehydrate starts a new session
+    // segment, whose ring the gateway primes from the scene.
+    ws.deliver(env(0, { t: "resumed", d: { replayed: false } }));
+    app.loadOlderNarrative();
+    expect(ws.reqs()).toHaveLength(before + 2);
+    // A new session's ring: no seq survived the segment, so the cursor is
+    // null and the server sends its newest page.
+    expect(lastReq(ws).q).toEqual({
+      t: "narrative_backlog",
+      d: { before_seq: null, limit: 200 },
+    });
+  });
+
+  it("/history is the same verb the TUI has, and it honours the floor", () => {
+    // LB-20: the TUI and line mode have had `/history` since I12; the web
+    // could only reach it by scrolling to the top of the pane.
+    const { app, ws } = boot();
+    ws.deliver(said(3));
+    const before = ws.reqs().length;
+
+    app.submit("/history");
+
+    expect(ws.reqs()).toHaveLength(before + 1);
+    expect(lastReq(ws).q).toEqual({
+      t: "narrative_backlog",
+      d: { before_seq: 3, limit: 200 },
+    });
+    expect(app.paletteEntries).toEqual([]);
+    app.paletteQuery("/hist");
+    expect(app.paletteEntries.map((e) => e.insert)).toContain("/history");
+
+    // Below a `/clear` floor there is nothing to ask for, and saying so is
+    // the difference between "nothing older" and "the command is broken".
+    app.submit("/clear");
+    app.submit("/history");
+    expect(ws.reqs()).toHaveLength(before + 1);
+    expect(lineTexts(app)).toEqual(["No older history in this view."]);
+  });
+});
+
+// The modal shell's whole key model (I4-C45). `act` is where a `NavIntent`
+// from `keys.ts` becomes a side effect, and it was the one part of the shell
+// with no test at all — `composer` is a public, fake-able handle, so this
+// needs no DOM.
+describe("GameApp.act", () => {
+  /** The composer the scene screen registers, recorded rather than rendered. */
+  class FakeComposer implements ComposerHandle {
+    /** Every `focus` argument, in order (`undefined` = keep the draft). */
+    focuses: (string | undefined)[] = [];
+    blurs = 0;
+    cycles = 0;
+    #text = "";
+
+    focus(prefill?: string): void {
+      this.focuses.push(prefill);
+      if (prefill !== undefined) {
+        this.#text = prefill;
+      }
+    }
+    blur(): void {
+      this.blurs += 1;
+    }
+    cycleMode(): void {
+      this.cycles += 1;
+    }
+    text(): string {
+      return this.#text;
+    }
+    setText(next: string): void {
+      this.#text = next;
+    }
+  }
+
+  /** `focusComposer` defers to a microtask so the screen switch renders the
+   * box before it is focused; `queueMicrotask` is not faked by
+   * `vi.useFakeTimers()`, so one awaited tick is enough. */
+  const tick = (): Promise<void> => Promise.resolve();
+
+  function withComposer(panels?: string[]): { app: GameApp; ws: FakeSocket; c: FakeComposer } {
+    const { app, ws } = boot(panels);
+    const c = new FakeComposer();
+    app.composer = c;
+    return { app, ws, c };
+  }
+
+  it("compose focuses the box, keeping the draft unless a trigger typed one", async () => {
+    const { app, c } = withComposer();
+
+    // Enter: focus, no prefill — an empty prefill must reach `focus` as
+    // `undefined`, or the half-typed draft is wiped.
+    expect(app.act({ kind: "compose", prefill: "" })).toBe(true);
+    await tick();
+    expect(c.focuses).toEqual([undefined]);
+
+    // A speech trigger types itself into the box.
+    expect(app.act({ kind: "compose", prefill: '"' })).toBe(true);
+    await tick();
+    expect(c.focuses).toEqual([undefined, '"']);
+    expect(c.text()).toBe('"');
+  });
+
+  it("a screen's prefill binding comes back to the scene screen with the line", async () => {
+    const { app, c } = withComposer([SHEET_FEED, "mail"]);
+    expect(app.screens.switchTo("mail", app.gate)).toBe(true);
+
+    expect(app.act({ kind: "binding", key: "s" })).toBe(true);
+    await tick();
+
+    // The box lives on the scene screen, so a prefill from screen 3 lands
+    // there — with the line ready, unsent (D-I-18).
+    expect(app.screens.active).toBe("scene");
+    expect(c.focuses).toEqual(["@mail/send "]);
+    // An unbound key on this screen is not the shell's.
+    expect(app.act({ kind: "binding", key: "z" })).toBe(false);
+  });
+
+  it("an exit key walks the room, on the wire", () => {
+    const { app, ws, c } = withComposer();
+    const before = ws.sentJson().length;
+
+    expect(app.act({ kind: "exit", name: "North" })).toBe(true);
+
+    expect(ws.sentJson().slice(before)).toEqual([{ t: "line", d: "North" }]);
+    expect(c.focuses).toEqual([]); // an exit never opens the box
+  });
+
+  it("help toggles, screens switch or refuse, and the browser keeps its own keys", () => {
+    const { app } = withComposer([SHEET_FEED]);
+
+    expect(app.act({ kind: "help" })).toBe(true);
+    expect(app.screens.helpOpen).toBe(true);
+    expect(app.act({ kind: "help" })).toBe(true);
+    expect(app.screens.helpOpen).toBe(false);
+
+    expect(app.act({ kind: "screen", digit: 2 })).toBe(true);
+    expect(app.screens.active).toBe("sheet");
+    // Digit 6 is the unit screen's, and this manifest has no unit feed.
+    expect(app.act({ kind: "screen", digit: 6 })).toBe(false);
+    expect(app.screens.active).toBe("sheet");
+
+    // The browser scrolls and tabs on its own here: not consumed.
+    expect(app.act({ kind: "scroll", rows: 10 })).toBe(false);
+    expect(app.act({ kind: "pane", dir: 1 })).toBe(false);
+    expect(app.act({ kind: "jump", bottom: true })).toBe(false);
+  });
+
+  it("the palette opens on an empty box with a slash, and closes on a second press", async () => {
+    const { app, c } = withComposer();
+
+    expect(app.act({ kind: "palette" })).toBe(true);
+    await tick();
+    expect(c.focuses).toEqual(["/"]);
+    expect(app.screens.paletteOpen).toBe(true);
+
+    // Open again with text already typed: the box keeps it.
+    app.screens.paletteOpen = false;
+    c.setText("+roll ");
+    expect(app.act({ kind: "palette" })).toBe(true);
+    await tick();
+    expect(c.focuses).toEqual(["/", undefined]);
+
+    expect(app.act({ kind: "palette" })).toBe(true);
+    expect(app.screens.paletteOpen).toBe(false);
+  });
+
+  it("`?` on a palette row asks the game for that command's help", () => {
+    // I4-C23: the affordance was a comment in `CommandPalette.svelte` and
+    // nothing else — no handler, no footer hint.
+    const { app, ws, c } = withComposer();
+    app.commands.apply({
+      commands: [{ name: "look", usage: "look [<thing>]", summary: "Look around." }],
+    });
+    c.setText("/look");
+    app.openPalette();
+    // A command row inserts its USAGE, so the help verb is its first word.
+    expect(app.paletteEntries[app.paletteSelected]?.insert).toBe("look [<thing>]");
+    const before = ws.sentJson().length;
+
+    app.paletteHelp();
+
+    expect(app.screens.paletteOpen).toBe(false);
+    expect(ws.sentJson().slice(before)).toEqual([{ t: "line", d: "help look" }]);
+
+    // A client-local row has no server help page: `/help` is its card, and
+    // it never reaches the wire.
+    c.setText("/clear");
+    app.openPalette();
+    expect(app.paletteEntries[app.paletteSelected]?.local).toBe(true);
+    const local = ws.sentJson().length;
+    app.paletteHelp();
+    expect(ws.sentJson()).toHaveLength(local);
+    expect(lineTexts(app).some((t) => t.startsWith("Client commands"))).toBe(true);
+  });
+});
+
+// I5's demotion rule (I5-C14): OOC, channel, system and roll lines step back
+// — small mono, less contrast, still there. `c.on("sys")` said so; three
+// other server-driven system pushes said `ev-sys` alone and rendered at full
+// contrast in the scene's prose face.
+describe("system-line demotion", () => {
+  it("every system line the GAME sent is demoted; only client-local ones are not", () => {
+    const { app, ws } = boot();
+
+    // 1. an unsolicited Sys event
+    ws.deliver(env(5, { t: "sys", d: [{ text: "The lights flicker." }] } as OutputEvent));
+    // 2. a typed WHO — session output (seq > 0), so it also echoes classically
+    ws.deliver(
+      env(6, {
+        t: "who",
+        d: [{ name: "Atlas", idle_s: 0, conn_s: 60 }],
+      } as OutputEvent),
+    );
+    // 3. a reply-borne Sys with nothing pending: the generic error line
+    ws.deliver(reply(7, 9999, SYS_REFUSAL));
+
+    const sys = app.scrollback.entries.filter((b) => b.cls.includes("ev-sys"));
+    expect(sys).toHaveLength(3);
+    for (const block of sys) {
+      expect(block.cls).toBe("ev-sys ev-demoted");
+    }
+
+    // A client-local line is the one system family that is NOT demoted: it
+    // is italic (`ev-local`) because it never went to the game at all.
+    app.submit("/theme dark");
+    const local = app.scrollback.entries.filter((b) => b.cls.includes("ev-local"));
+    expect(local.map((b) => b.cls)).toEqual(["ev-sys ev-local"]);
+  });
+});
+
+// The Request/Respond app seam (I10-C9). The stores were tested; that a
+// `request` envelope reaches `RequestStore` at all, and that `respond` puts
+// the documented frame on the wire, was pinned nowhere.
+describe("a server-initiated request", () => {
+  function request(seq: number, id: number): Envelope {
+    return env(seq, {
+      t: "request",
+      d: {
+        id,
+        kind: "choice",
+        prompt: [{ text: "Who takes point?" }],
+        options: [
+          { id: "mara", label: "Mara" },
+          { id: "atlas", label: "Atlas" },
+        ],
+      },
+    } as OutputEvent);
+  }
+
+  it("reaches the store, answers by id on the wire, and is dropped locally", () => {
+    const { app, ws } = boot();
+
+    ws.deliver(request(5, 5));
+
+    expect(app.requests.current?.id).toBe(5);
+    expect(app.requests.current?.options.map((o) => o.id)).toEqual(["mara", "atlas"]);
+    const before = ws.sentJson().length;
+
+    app.respond(5, { t: "choose", d: "mara" });
+
+    // The client reports the choice and nothing else — the server owns the
+    // effect (D-I-21) — and drops it locally rather than waiting for an ack.
+    expect(ws.sentJson().slice(before)).toEqual([
+      { t: "respond", d: { id: 5, choice: { t: "choose", d: "mara" } } },
+    ]);
+    expect(app.requests.current).toBeNull();
+  });
+
+  it("is cleared at a game-entry seam: the registry is RAM-only server-side", () => {
+    vi.stubGlobal(
+      "localStorage",
+      memoryStorage({
+        "rustmush.token": "tok",
+        "rustmush.chars": JSON.stringify([{ key: 7, name: "Atlas" }]),
+      }),
+    );
+    const app = makeApp();
+    app.client.connect("tok", "7");
+    const ws = openHello();
+    ws.deliver(request(6, 6));
+    expect(app.requests.current?.id).toBe(6);
+
+    // A re-attach: the server's request registry is RAM-only (D-I-22) and
+    // the id may be reminted for something else, so a stale answer must
+    // never be sendable.
+    app.enterGame(7);
+    expect(app.requests.pending).toEqual([]);
+
+    // Same rule at the resume-gap seam.
+    const next = openHello();
+    next.deliver(request(7, 7));
+    expect(app.requests.current?.id).toBe(7);
+    next.deliver(env(0, { t: "resumed", d: { replayed: false } }));
+    expect(app.requests.pending).toEqual([]);
+  });
+});
+
+// LB-21: a world with two rulesets loaded publishes two `.roll` feeds. The
+// web routed frames from `session.rollFeed` alone — the tie-break's winner —
+// and silently dropped the other ruleset's rolls. The TUI has always
+// rendered every `.roll` feed.
+describe("roll feeds", () => {
+  const ROLL_A = "sr.roll";
+  const ROLL_B = "wod.roll";
+
+  function rollFrame(summary: string): unknown {
+    return { who: "#7", summary };
+  }
+
+  it("renders every `.roll` feed, not only the tie-break's winner", () => {
+    const { app, ws } = boot([ROLL_A, ROLL_B]);
+    expect(app.session.rollFeed).toBe(ROLL_A); // sorted-first
+
+    ws.deliver(panel(3, ROLL_A, "keyframe", rollFrame("Sr5 roll: 3 hits.")));
+    ws.deliver(panel(4, ROLL_B, "keyframe", rollFrame("oWoD roll: 2 successes.")));
+
+    expect(app.rolls.entries.map((r) => r.summary)).toEqual([
+      "oWoD roll: 2 successes.", // newest first
+      "Sr5 roll: 3 hits.",
+    ]);
   });
 });
 
@@ -530,6 +1089,8 @@ describe("an authoritative action commit", () => {
     expect(ws.sentJson().filter((f) => f.t === "ack")).toEqual([{ t: "ack", d: { commit } }]);
     expect(app.toasts.map((t) => t.text)).toEqual(["Brace committed."]);
     expect(app.scrollback.entries).toHaveLength(1);
+    // The receipt line is a system line the game sent: demoted (I5-C14).
+    expect(app.scrollback.entries[0]?.cls).toBe("ev-sys ev-demoted");
     // The I13 interim mitigation is retired: the server republishes the
     // sheet on an action-state commit, so the viewer's own commit costs no
     // extra round trip here.

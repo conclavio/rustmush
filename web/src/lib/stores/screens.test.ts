@@ -1,10 +1,14 @@
 // ScreensStore: the binding-table probe, availability from the manifest,
 // feed-registered screens, and the digits shared with the TUI.
 
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+
 import { describe, expect, it } from "vitest";
 
 import {
   BUILTIN_SCREENS,
+  RUN_ALLOWLIST,
   ScreensStore,
   UNIT_SCREEN,
   validateScreens,
@@ -162,5 +166,42 @@ describe("the tactical unit screen (interface cut I8)", () => {
     // `registerFeedScreen` is not idempotent — GameApp registers exactly once.
     expect(s.registerFeedScreen(UNIT_SCREEN)).toContain("declared twice");
     expect(s.registerViewScreen("jobs.view")).toContain("no free hotkey digit");
+  });
+});
+
+// LB-16: `RUN_ALLOWLIST` is two hand-kept copies — this one and
+// `mush-net-ssh/src/tui/screen.rs` — with nothing that crossed between them.
+// Both are now pinned to one committed fixture, this side in a vitest and
+// the TUI side in a Rust test, so a verb added to one and not the other
+// fails a build rather than diverging in silence.
+describe("the run allowlist", () => {
+  const fixture: string[] = JSON.parse(
+    readFileSync(resolve(process.cwd(), "src/lib/run-allowlist.json"), "utf8"),
+  ) as string[];
+
+  it("matches the committed fixture the TUI is pinned to", () => {
+    const sorted = [...RUN_ALLOWLIST].sort();
+    expect(new Set(sorted).size).toBe(RUN_ALLOWLIST.length); // no verb twice
+    expect(sorted).toEqual(fixture);
+  });
+
+  it("carries no writer: a bare key mutates nothing", () => {
+    // `@mail <n>` marks the message read and `+orders` writes work orders;
+    // both rode this list until LB-16. `@mail` was unreachable from the TUI
+    // anyway (it refuses any `@` Run), which is how a stale entry survives
+    // unnoticed on a hand-kept list.
+    expect(fixture).not.toContain("@mail");
+    expect(fixture).not.toContain("+orders");
+    expect(fixture.filter((v) => v.startsWith("@"))).toEqual([]);
+  });
+
+  it("lists every verb a screen actually binds, and reserves the rest", () => {
+    const bound = [...BUILTIN_SCREENS, UNIT_SCREEN.def]
+      .flatMap((s) => s.keys)
+      .flatMap((b) => (b.action.kind === "run" ? [b.action.cmd.split(/\s+/)[0] ?? ""] : []));
+    expect(bound).toEqual(["look", "inventory", "+roll/last", "+contacts"]);
+    for (const verb of bound) {
+      expect(fixture).toContain(verb);
+    }
   });
 });

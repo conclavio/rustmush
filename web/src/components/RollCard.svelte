@@ -4,25 +4,34 @@
   // highlighted, the result, the difficulty and the Willpower or automatic
   // successes. Everyone else in the room reads the one-line `roll` narration
   // from I3; the card is the roller's private detail.
+  //
+  // The dice, the difficulty and the result label are the oWoD20 engine's
+  // detail (I6-C11). A roll from another engine carries none of it, so the
+  // card falls back to the server-rendered summary rather than vanishing.
   import { classifyResult, dieClass } from "$lib/roll";
   import type { RollEntry } from "$lib/stores/rolls.svelte";
 
   let { entry }: { entry: RollEntry } = $props();
 
-  const result = $derived(classifyResult(entry.outcome.result));
+  const outcome = $derived(entry.outcome);
+  const result = $derived(outcome === null ? null : classifyResult(outcome.result));
 </script>
 
-<div class="card" data-kind={result.kind} aria-label="your roll">
-  <div class="dice">
-    {#each entry.outcome.dice as d, i (i)}
-      <span class={`die ${dieClass(d)}`}>{d.face}{#if d.doubled}<sup>×2</sup>{/if}</span>
-    {/each}
-  </div>
-  <span class="result">{result.label}</span>
-  <span class="meta">
-    diff {entry.outcome.difficulty}{#if entry.outcome.willpower_success} · +WP{/if}{#if entry.outcome.extra_successes > 0}
-      · +{entry.outcome.extra_successes} auto{/if}
-  </span>
+<div class="card" data-kind={result?.kind} aria-label="your roll">
+  {#if outcome !== null && result !== null}
+    <div class="dice">
+      {#each outcome.dice as d, i (i)}
+        <span class={`die ${dieClass(d)}`}>{d.face}{#if d.doubled}<sup>×2</sup>{/if}</span>
+      {/each}
+    </div>
+    <span class="result">{result.label}</span>
+    <span class="meta">
+      diff {outcome.difficulty}{#if outcome.willpower_success} · +WP{/if}{#if outcome.extra_successes > 0}
+        · +{outcome.extra_successes} auto{/if}
+    </span>
+  {:else}
+    <span class="result">{entry.summary}</span>
+  {/if}
 </div>
 
 <style>

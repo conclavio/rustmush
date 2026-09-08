@@ -97,7 +97,8 @@ type PendingReq =
 
 const HELP_LINES = [
   "Client commands (handled locally, never sent to the game):",
-  "  /clear          — empty the scrollback",
+  "  /clear          — empty the scrollback (and draw a floor under it)",
+  "  /history        — load the page of scene history above what you see",
   "  /theme [dark|light|system] — switch theme (no argument: toggle)",
   "  /help           — this card",
   "Keys while nothing has focus: 1-9 screens, Enter opens the box,",
@@ -256,6 +257,11 @@ export class GameApp {
         // cursor or de-dup key again — and later pages land at the seam.
         this.scrollback.beginSegment();
         this.scrollback.pushText("ev-sys ev-local", "— Reconnected (some history skipped) —");
+        // A revision only means anything within the run of the world that
+        // minted it (I1-C4): the world may have restarted inside the gap,
+        // so the held watermarks accept the next frame per feed. Frames stay
+        // on screen — the strip is stale, not gone.
+        this.vitals.resetWatermarks();
         this.composer?.blur();
         this.screens.paletteOpen = false;
         // The unit panel is revision state against a subject that may have
@@ -384,7 +390,12 @@ export class GameApp {
 
   #resetGameState(): void {
     this.#clearUnitResync();
+    // A re-attach is a FRESH VIEW, not a `/clear`: `clear()` draws the
+    // backlog floor (LB-1) and `beginSegment` lifts it again for the new
+    // session's ring, which the gateway primes from the scene the way the
+    // TUI's `@notui`/`@tui` does (`docs/help/tui.md` "Scene history").
     this.scrollback.clear();
+    this.scrollback.beginSegment();
     this.channels.clear();
     this.actions.clear();
     this.who.clear();
@@ -395,6 +406,12 @@ export class GameApp {
     this.worldgen.clear();
     this.llm.clear();
     this.screens.clear();
+    // …and the registered feed screens with it (LB-2): they belong to the
+    // manifest of the server this session is leaving, and a `.view` screen
+    // still holding digit 6 would silently refuse the next server's unit
+    // screen. NOT part of `screens.clear()` — the bare-hello path relies on
+    // a re-hello finding its screen already registered.
+    this.screens.clearFeedScreens();
     this.commands.clear();
     this.vitals.clear();
     this.genericViews.clear();
@@ -416,7 +433,24 @@ export class GameApp {
     const c = this.client;
     c.on("hello", (env) => {
       this.session.applyHello(env.d);
+      // A hello is a new run of the world as far as this client can tell —
+      // the gauges it holds were numbered by the previous one (I1-C4).
+      // BEFORE `#hydrate`, so the keyframes it asks for are the frames the
+      // marks buy.
+      this.vitals.resetWatermarks();
       this.#hydrate();
+    });
+    c.on("resumed", (env) => {
+      // The gateway's reconnected seam, replayed half: the gap came back
+      // from the resume buffer, so there is no rehydrate and no fresh hello
+      // — this is the ONLY notice the client gets that it was away while
+      // the world may have restarted (I1-C4). The replayed frames arrive in
+      // order, so the first re-seeds each feed and the rest compare
+      // normally. The `replayed: false` half is `onFullRehydrate`, which
+      // runs before this handler and resets there.
+      if (env.d.replayed) {
+        this.vitals.resetWatermarks();
+      }
     });
     c.on("room", (env) => {
       this.roomView = env.d;
@@ -457,7 +491,10 @@ export class GameApp {
         // scrollback feedback too.
         const names = env.d.map((e) => e.name).join(", ");
         this.scrollback.pushText(
-          "ev-sys",
+          // A system line the GAME sent steps back (I5-C14): small mono, less
+          // contrast, still there. The only undemoted system lines are the
+          // client-local ones, which are italic instead.
+          "ev-sys ev-demoted",
           `${env.d.length} player${env.d.length === 1 ? "" : "s"} connected: ${names}`,
           env.ts,
         );
@@ -565,7 +602,7 @@ export class GameApp {
       this.session.unitFeed !== null &&
       !this.screens.feedScreens.some((f) => f.def.id === UNIT_SCREEN.def.id)
     ) {
-      this.screens.registerFeedScreen(UNIT_SCREEN);
+      this.#screenRefused(UNIT_SCREEN.def.label, this.screens.registerFeedScreen(UNIT_SCREEN));
     }
     for (const { pending, q } of hydrationQueries(this.session)) {
       this.#req(pending, q);
@@ -573,6 +610,24 @@ export class GameApp {
     if (this.session.hasPanel("legal.actions")) {
       this.#requestLegalActions();
     }
+  }
+
+  /**
+   * Surface a refused screen registration (LB-2). Both registrars return a
+   * reason and both call sites used to DISCARD it, so a collision — a
+   * `.view` screen already holding digit 6 when the unit screen arrives, or
+   * the reverse — was invisible: the screen simply never appeared and
+   * nothing said why. A client-local line is the right home; the server
+   * never sees this and there is nothing to retry.
+   */
+  #screenRefused(what: string, reason: string | null): void {
+    if (reason === null) {
+      return;
+    }
+    this.scrollback.pushText(
+      "ev-sys ev-local",
+      `This client could not add the ${what} screen: ${reason}.`,
+    );
   }
 
   /** Send a correlated request. Returns whether the frame actually went out
@@ -661,7 +716,9 @@ export class GameApp {
           // unwired propagation layer is not scrollback clutter.
           return;
         }
-        this.scrollback.push("ev-sys", [renderRich(event.d)], ts);
+        // The generic reply-error line, demoted like every other
+        // server-driven system line (I5-C14).
+        this.scrollback.push("ev-sys ev-demoted", [renderRich(event.d)], ts);
         return;
       default:
         // Additive evolution: ignore payloads this client predates.
@@ -719,9 +776,14 @@ export class GameApp {
       // a `.view` feed — `GenericViewStore` keys on the feed name, not the
       // suffix, so holding it here claims no screen digit.
       this.genericViews.apply(d.feed, d.data);
-    } else if (d.feed === this.session.rollFeed) {
+    } else if (d.feed.endsWith(".roll")) {
       // The roller's own roll also lands inline as a dice card (I5); the
       // room's one-line narration is what everyone else reads.
+      //
+      // EVERY `.roll` feed, not just `session.rollFeed` (LB-21): a world
+      // with two rulesets loaded publishes two, the tie-break picked one,
+      // and the other ruleset's rolls were silently dropped. The TUI has
+      // always rendered every `.roll` feed (`panels.rs`).
       const entry = this.rolls.push(d.data);
       if (entry && isOwnRoll(entry.who, this.session.character?.id ?? null)) {
         this.scrollback.pushRoll(entry);
@@ -743,7 +805,7 @@ export class GameApp {
       // exists for it — a module ships a view and gets a screen with no
       // bespoke code.
       if (this.genericViews.apply(d.feed, d.data)) {
-        this.screens.registerViewScreen(d.feed);
+        this.#screenRefused(d.feed, this.screens.registerViewScreen(d.feed));
       }
     }
     // Unknown feeds (future modules): ignored — additive evolution.
@@ -825,7 +887,7 @@ export class GameApp {
         if (retired !== undefined) this.#seenActionCommits.delete(retired);
       }
       const summary = receipt.result?.summary ?? "Action committed.";
-      this.scrollback.pushText("ev-sys", `${summary} Transaction: ${receipt.status}`);
+      this.scrollback.pushText("ev-sys ev-demoted", `${summary} Transaction: ${receipt.status}`);
       this.toast(summary);
       // ACK only after the semantic result has been validated, deduplicated,
       // and accepted into client state. A failed send leaves the gateway copy
@@ -958,7 +1020,20 @@ export class GameApp {
         // `refreshWho()` for anything it does not name.
         this.unit.toggleLayout();
         return;
-      case "refresh":
+      case "refresh": {
+        // A generic-view screen (I9) has no bespoke arm below, and the
+        // `default:` is `refreshWho()` — so `r` on a module's own view used
+        // to refresh WHO (LB-3). Its feed IS its refresh, and the screen
+        // definition already carries it, so this stays data-driven the way
+        // the TUI's `screen_queries()` is.
+        const viewFeed = this.screens.activeDef(this.gate).viewFeed;
+        if (viewFeed !== undefined) {
+          this.#req(
+            { kind: "view", feed: viewFeed },
+            { t: "panel_subscribe", d: { feed: viewFeed } },
+          );
+          return;
+        }
         switch (this.screens.active) {
           case "mail":
             this.#req({ kind: "mail.list" }, { t: "mail_list", d: { folder: this.mail.folder } });
@@ -985,6 +1060,7 @@ export class GameApp {
           default:
             this.refreshWho();
         }
+      }
     }
   }
 
@@ -1051,6 +1127,31 @@ export class GameApp {
     this.composer?.focus(entry.insert);
   }
 
+  /**
+   * `?` on the highlighted palette row: ask for that command's help page
+   * (I4-C23). The palette closes and the answer lands in scrollback.
+   *
+   * `help <verb>` reads state and nothing else, so this is a bare key
+   * sending a read-only verb exactly as D-I-18 allows — `help` is already on
+   * `RUN_ALLOWLIST`. A client-local row has no server help page (`/help` is
+   * its card), so it gets that instead.
+   */
+  paletteHelp(): void {
+    const entry = this.paletteEntries[this.paletteSelected];
+    this.screens.paletteOpen = false;
+    if (!entry) {
+      return;
+    }
+    if (entry.local) {
+      this.submit("/help");
+      return;
+    }
+    const verb = entry.insert.trim().split(/\s+/)[0] ?? "";
+    if (verb.length > 0) {
+      this.submit(`help ${verb}`);
+    }
+  }
+
   // -- input --------------------------------------------------------------
 
   /** Submit a line from the main input. Handles client-local /commands. */
@@ -1077,6 +1178,22 @@ export class GameApp {
     switch ((name ?? "").toLowerCase()) {
       case "clear":
         this.scrollback.clear();
+        return;
+      case "history":
+        // The same verb the TUI and line mode have had since I12 (LB-20).
+        // Below a `/clear` floor, or once the server's ring is exhausted,
+        // there is nothing to ask for — say so rather than doing nothing
+        // visible, which reads as a broken command.
+        if (this.scrollback.moreBacklog) {
+          this.loadOlderNarrative();
+        } else {
+          this.scrollback.pushText(
+            "ev-sys ev-local",
+            this.scrollback.backlogEvicted
+              ? "Older history has rolled off the server's buffer."
+              : "No older history in this view.",
+          );
+        }
         return;
       case "theme": {
         const choice =

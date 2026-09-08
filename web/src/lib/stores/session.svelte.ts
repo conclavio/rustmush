@@ -23,26 +23,48 @@ export class SessionStore {
     return this.panels.includes(p);
   }
 
+  /**
+   * The manifest feed carrying `suffix`, SORTED-first (LB-21).
+   *
+   * A world with two rulesets loaded publishes two `.sheet` feeds, and the
+   * manifest's own order is the server's registration order — which the
+   * gateway's bridge and this client walk differently. Taking the first in
+   * the array meant two clients on the same server could disagree about
+   * which sheet is "the" sheet. The TUI already sorts (`panels.rs`), so
+   * sorting here makes the tie-break identical in every client.
+   */
+  #feedWithSuffix(suffix: string): string | null {
+    let best: string | null = null;
+    for (const p of this.panels) {
+      if (p.endsWith(suffix) && (best === null || p < best)) {
+        best = p;
+      }
+    }
+    return best;
+  }
+
   /** The active ruleset's sheet panel feed (e.g. `"wod.sheet"`), or `null`
    * when no ruleset with a sheet is loaded — derived from the `hello`
    * panel manifest by suffix, never a hardcoded ruleset id, so a future
    * second ruleset (or a rename) needs no client change. Feature-gates the
    * Sheet tab. */
   get sheetFeed(): string | null {
-    return this.panels.find((p) => p.endsWith(".sheet")) ?? null;
+    return this.#feedWithSuffix(".sheet");
   }
 
   /** The active ruleset's roll panel feed (e.g. `"wod.roll"`); same
-   * suffix-derived convention as `sheetFeed`. Feature-gates the Rolls tab. */
+   * suffix-derived convention as `sheetFeed`. Feature-gates the Rolls tab.
+   * Note this is the feed the ROLL BUILDER targets — `#routePanel` renders
+   * every `.roll` feed's frames, not just this one (LB-21). */
   get rollFeed(): string | null {
-    return this.panels.find((p) => p.endsWith(".roll")) ?? null;
+    return this.#feedWithSuffix(".roll");
   }
 
   /** The tactical unit panel feed (e.g. `"tactics.unit"`); same
    * suffix-derived convention as `sheetFeed`/`rollFeed`. Gates the unit
    * screen's registration and the hydration subscribe (interface cut I8). */
   get unitFeed(): string | null {
-    return this.panels.find((p) => p.endsWith(".unit")) ?? null;
+    return this.#feedWithSuffix(".unit");
   }
 
   /** Whether the worldgen draft-preview panel is available: `hello`

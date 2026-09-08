@@ -44,7 +44,22 @@ export interface ScreenDef {
   viewFeed?: string;
 }
 
-/** Verbs a bare key may send (D-I-18): every one reads state only. */
+/**
+ * Verbs a bare key may send (D-I-18): every one reads state only.
+ *
+ * Four are bound today — `look`, `inventory`, `+roll/last`, `+contacts` —
+ * and the rest are reserved for the screens a ruleset declares. Look-back
+ * LB-16 took two off it: `@mail <n>` MARKS THE MESSAGE READ (`mush-mail`)
+ * and `+orders` writes work orders, so neither belonged on a list whose
+ * whole promise is that a bare key mutates nothing. `@mail` was unreachable
+ * from the TUI anyway — `screen.rs` refuses any `@` Run outright — which is
+ * exactly how a stale entry survives unnoticed on a hand-kept list.
+ *
+ * This is one of two hand-kept copies (`mush-net-ssh/src/tui/screen.rs` is
+ * the other); both are pinned to the committed fixture `run-allowlist.json`
+ * beside this file — by a vitest here and a Rust test there — until K8.5's
+ * read-only classification can replace the hand-keeping.
+ */
 export const RUN_ALLOWLIST: readonly string[] = [
   "look",
   "l",
@@ -53,14 +68,12 @@ export const RUN_ALLOWLIST: readonly string[] = [
   "i",
   "+sheet",
   "+contacts",
-  "+orders",
   "+intel",
   "+actions",
   "+scene",
   "+recap",
   "+roll/last",
   "help",
-  "@mail",
 ];
 
 const hasPanel = (g: GateInput, p: string): boolean => g.panels.includes(p);
@@ -347,5 +360,24 @@ export class ScreensStore {
     this.exits = new Map();
     this.paletteOpen = false;
     this.helpOpen = false;
+  }
+
+  /**
+   * Drop every registered feed screen (LB-2) — a SEPARATE seam from
+   * `clear()`, and only the full game-state reset calls it.
+   *
+   * `clear()` deliberately keeps them: a second hello on the same character
+   * re-hydrates the same manifest, and `registerFeedScreen` has no
+   * idempotency of its own, so a screen dropped there would be refused with
+   * "screen unit declared twice" on every re-hello.
+   *
+   * A character switch is the opposite case. The screens belong to the OLD
+   * server's manifest: a `foo.view` screen that took digit 6 on server A
+   * survives into a tactics server, where `registerFeedScreen(UNIT_SCREEN)`
+   * is then refused with "digit 6 used twice" and the unit screen simply
+   * never appears.
+   */
+  clearFeedScreens(): void {
+    this.feedScreens = [];
   }
 }

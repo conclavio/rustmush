@@ -128,6 +128,12 @@ export function boxGlyph(mark: string | null): string {
 export class VitalsStore {
   groups = $state<Record<string, VitalsGroup>>({});
 
+  /** Feeds whose next frame is accepted whatever its revision, because the
+   * watermark they hold may outlive the counter that minted it (see
+   * `resetWatermarks`). Not reactive: nothing renders it, and it is
+   * consumed by the very call that would render its effect. */
+  #acceptNext = new Set<string>();
+
   /** Apply a `.vitals` frame for `feed`; `false` when malformed or stale.
    *
    * The monotonic guard holds only WITHIN one subject's own history. A
@@ -145,6 +151,9 @@ export class VitalsStore {
    * presented as live. */
   apply(feed: string, raw: unknown, atMs = Date.now()): boolean {
     if (raw === null) {
+      // The group is gone; an accept-next mark for it has nothing left to
+      // protect and must not outlive it.
+      this.#acceptNext.delete(feed);
       if (feed in this.groups) {
         const rest = { ...this.groups };
         delete rest[feed];
@@ -154,15 +163,46 @@ export class VitalsStore {
     }
     const frame = parseVitalsFrame(raw);
     if (!frame) {
+      // A malformed payload is not the frame the mark was waiting for.
       return false;
     }
     const current = this.groups[feed];
+    // Read-once: the mark buys exactly ONE frame, which re-seeds the
+    // watermark for every frame after it.
+    const acceptNext = this.#acceptNext.delete(feed);
     const sameSubject = current?.frame.subject.id === frame.subject.id;
-    if (current && sameSubject && frame.revision !== 0 && current.frame.revision > frame.revision) {
+    if (
+      !acceptNext &&
+      current &&
+      sameSubject &&
+      frame.revision !== 0 &&
+      current.frame.revision > frame.revision
+    ) {
       return false;
     }
     this.groups = { ...this.groups, [feed]: { feed, frame, at: atMs } };
     return true;
+  }
+
+  /**
+   * Mark every held group accept-next, keeping the frames on screen
+   * (I1-C4).
+   *
+   * A revision is only comparable within one run of the world that minted
+   * it. A gateway session outlives a world restart (a web socket survives
+   * with no fresh Hello — `mush-gateway/tests/web_restart_survival.rs`),
+   * while `VitalsRevisions` restarts from zero, so a viewer holding
+   * revision N silently drops every frame the restarted world publishes and
+   * reads stale gauges as live for the rest of the session. Every seam
+   * where the client may be looking at a different run of the world calls
+   * this: a `hello`, the resume-gap rehydrate, and the reconnected seam.
+   *
+   * The frames are KEPT — blanking the strip on a routine reconnect would
+   * be a worse lie than a one-frame-stale gauge — and only the comparison
+   * is suspended, for exactly one frame per feed.
+   */
+  resetWatermarks(): void {
+    this.#acceptNext = new Set(Object.keys(this.groups));
   }
 
   /** Every group, by feed name. */
@@ -176,5 +216,6 @@ export class VitalsStore {
 
   clear(): void {
     this.groups = {};
+    this.#acceptNext.clear();
   }
 }

@@ -32,13 +32,27 @@ export interface Owod20Outcome {
   result: RollResultJson;
 }
 
-/** The `wod.roll` panel payload (`roll.rs`'s `emit_roll` -> `roll_feed.keyframe`). */
+/** A `.roll` panel payload (`roll.rs`'s `emit_roll` -> `roll_feed.keyframe`,
+ * and any other ruleset's `<ruleset>.roll` feed). */
 export interface RollPanelData {
   /** The roller's dbref, `"#123"` form (`ObjId::to_string()`). */
   who: string;
-  /** The classic one-line summary already rendered server-side. */
+  /** The classic one-line summary already rendered server-side — the ONLY
+   * field every ruleset's roll feed carries, so it is what the recent-rolls
+   * table shows. */
   summary: string;
-  outcome: Owod20Outcome;
+  /**
+   * The oWoD20 dice detail, or `null` for a roll from another engine
+   * (I6-C11).
+   *
+   * `Owod20Outcome` is ONE ruleset's shape: it needs a `difficulty`, which a
+   * Shadowrun pool or an Initiative score has no notion of. Requiring it
+   * dropped every Sr5 frame on the floor, so the web's recent-rolls table
+   * and dice card were permanently empty on a Shadowrun server while the
+   * TUI — which renders the summary — was fine. A frame without it is kept
+   * and rendered from its summary; only the dice detail is gated.
+   */
+  outcome: Owod20Outcome | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -93,21 +107,22 @@ function parseOutcome(raw: unknown): Owod20Outcome | null {
   };
 }
 
-/** Parse a `wod.roll` panel payload; `null` if it doesn't even carry a
- * usable outcome (the readout has nothing to show in that case). */
+/** Parse a `.roll` panel payload; `null` only when there is nothing at all
+ * to show — no roller, or neither a summary nor an oWoD20 outcome to derive
+ * one from (I6-C11: an unrecognised outcome shape is NOT that case). */
 export function parseRollPanel(raw: unknown): RollPanelData | null {
   if (!isObj(raw) || typeof raw.who !== "string") {
     return null;
   }
   const outcome = parseOutcome(raw.outcome);
-  if (!outcome) {
-    return null;
+  const summary = typeof raw.summary === "string" && raw.summary.length > 0 ? raw.summary : null;
+  if (summary !== null) {
+    return { who: raw.who, summary, outcome };
   }
-  return {
-    who: raw.who,
-    summary: typeof raw.summary === "string" ? raw.summary : fallbackSummary(outcome),
-    outcome,
-  };
+  if (outcome === null) {
+    return null; // a roller and nothing else is not a roll
+  }
+  return { who: raw.who, summary: fallbackSummary(outcome), outcome };
 }
 
 function fallbackSummary(o: Owod20Outcome): string {

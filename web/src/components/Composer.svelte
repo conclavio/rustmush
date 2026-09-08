@@ -141,6 +141,13 @@
         app.palettePick();
         return;
       }
+      if (ev.key === "?") {
+        // The highlighted row's help page (I4-C23): a read-only `help <cmd>`.
+        // A literal `?` in the palette query could only ever match nothing.
+        ev.preventDefault();
+        app.paletteHelp();
+        return;
+      }
       return;
     }
     if (masked) {

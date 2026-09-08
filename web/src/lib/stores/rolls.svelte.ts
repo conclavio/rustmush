@@ -16,7 +16,10 @@ export interface RollEntry {
   rowId: number;
   who: string;
   summary: string;
-  outcome: Owod20Outcome;
+  /** The oWoD20 dice detail, or `null` for another engine's roll (I6-C11) —
+   * the summary is what every ruleset carries, so it is what the row shows;
+   * the dice card is gated on this. */
+  outcome: Owod20Outcome | null;
   ts: number;
 }
 
@@ -25,8 +28,9 @@ export class RollsStore {
 
   #nextRowId = 1;
 
-  /** Apply one `wod.roll` panel frame. Returns the new entry, or `null` if
-   * the payload wasn't a usable roll outcome. */
+  /** Apply one `.roll` panel frame. Returns the new entry, or `null` if the
+   * payload was not a usable roll (no roller, or neither a summary nor an
+   * outcome). */
   push(raw: unknown, ts = Date.now()): RollEntry | null {
     const parsed = parseRollPanel(raw);
     if (!parsed) {

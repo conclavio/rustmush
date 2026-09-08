@@ -98,6 +98,59 @@ describe("VitalsStore", () => {
     expect(s.groups["wod.vitals"]?.frame.revision).toBe(3);
   });
 
+  it("resetWatermarks buys ONE frame per held feed and keeps the frames (I1-C4)", () => {
+    // A revision is only comparable within the run of the world that minted
+    // it. A gateway session outlives a world restart, whose counter restarts
+    // at zero, so every post-restart frame would otherwise be dropped as
+    // stale and the strip would keep reading a dead number as live.
+    const s = new VitalsStore();
+    expect(s.apply("wod.vitals", frame(5), 10)).toBe(true);
+    expect(s.apply("sr.vitals", frame(9), 10)).toBe(true);
+    // Without the reset the guard holds: this is the bug's own shape.
+    expect(s.apply("wod.vitals", frame(1), 11)).toBe(false);
+
+    s.resetWatermarks();
+
+    // The frames are KEPT — a routine reconnect must not blank the strip.
+    expect(s.groups["wod.vitals"]?.frame.revision).toBe(5);
+    expect(s.groups["sr.vitals"]?.frame.revision).toBe(9);
+    // One frame per feed is bought, and it re-seeds the watermark…
+    expect(s.apply("wod.vitals", frame(1), 12)).toBe(true);
+    expect(s.groups["wod.vitals"]?.frame.revision).toBe(1);
+    expect(s.apply("wod.vitals", frame(3), 13)).toBe(true);
+    // …so the guard is armed again straight after: read-once, not a mode.
+    expect(s.apply("wod.vitals", frame(2), 14)).toBe(false);
+    expect(s.groups["wod.vitals"]?.frame.revision).toBe(3);
+    // The other held feed still has its own unspent mark.
+    expect(s.apply("sr.vitals", frame(2), 15)).toBe(true);
+    expect(s.groups["sr.vitals"]?.frame.revision).toBe(2);
+  });
+
+  it("an unspent mark never outlives its group, and a refusal never spends it", () => {
+    const s = new VitalsStore();
+    expect(s.apply("wod.vitals", frame(5), 10)).toBe(true);
+    s.resetWatermarks();
+    // A malformed payload is not the frame the mark was waiting for.
+    expect(s.apply("wod.vitals", "nope", 11)).toBe(false);
+    expect(s.apply("wod.vitals", frame(1), 12)).toBe(true);
+    expect(s.groups["wod.vitals"]?.frame.revision).toBe(1);
+
+    // A no-subject keyframe drops the group; a mark left behind would let a
+    // frame minted BEFORE the drop walk straight back in.
+    expect(s.apply("wod.vitals", frame(7), 13)).toBe(true);
+    s.resetWatermarks();
+    expect(s.apply("wod.vitals", null, 14)).toBe(true);
+    expect(s.apply("wod.vitals", frame(4), 15)).toBe(true); // a fresh group either way
+    expect(s.apply("wod.vitals", frame(2), 16)).toBe(false); // the guard, not the mark
+    expect(s.groups["wod.vitals"]?.frame.revision).toBe(4);
+
+    // A cleared store holds no marks either.
+    s.resetWatermarks();
+    s.clear();
+    expect(s.apply("wod.vitals", frame(6), 17)).toBe(true);
+    expect(s.apply("wod.vitals", frame(5), 18)).toBe(false);
+  });
+
   it("gauge helpers", () => {
     const parsed = parseVitalsFrame(frame(1))!;
     const wp = parsed.vitals.find((v) => v.id === "wod.willpower")!;

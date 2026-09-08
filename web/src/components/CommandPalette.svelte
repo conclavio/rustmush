@@ -32,7 +32,7 @@
         <span class="detail">{e.detail}</span>
       </button>
     {/each}
-    <div class="hint">Enter inserts · Ctrl+Enter runs · Esc closes</div>
+    <div class="hint">Enter inserts · Ctrl+Enter runs · ? help · Esc closes</div>
   </div>
 {/if}
 

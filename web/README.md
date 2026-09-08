@@ -65,7 +65,13 @@ jsdom environment and a component-testing dependency — those assertions are
 still `readFileSync` source probes (`unit.test.ts`'s widget block,
 `vitalsboard.test.ts`'s vocabulary lint). The credentialled reset seam
 (`enterGame` → `#resetGameState`) needs a `localStorage` stub, which
-`game.test.ts` puts in with `vi.stubGlobal` for that one test only.
+`game.test.ts` puts in with `vi.stubGlobal` for the few tests that reach it.
+
+`app.composer` is a plain `ComposerHandle` field, so the shell's key model
+needs no DOM either: `game.test.ts` assigns a recording fake and drives
+`GameApp.act` through it. `focusComposer` defers to `queueMicrotask`, which
+`vi.useFakeTimers()` does NOT fake — one `await Promise.resolve()` is enough
+to flush it.
 
 ## Generated protocol types — `src/lib/proto/`
 
@@ -147,9 +153,11 @@ src/
 ## Screens and keys (interface cut I4)
 
 The browser is a set of **numbered screens** (`$lib/stores/screens.svelte.ts`)
-sharing names and digits with the SSH TUI: 1 scene, 2 sheet, 3 mail, 4 chan,
-5 rolls, 7 actions, 8 build, 9 llm (6 is the TUI's intel screen). 6 is the
-one digit the built-ins leave free, and since interface cut I8 a server that
+sharing names and digits with the SSH TUI where both have the screen: 1
+scene, 2 sheet, 3 mail, 4 chan, 5 rolls, 7 actions, 8 build, 9 llm. The TUI's
+6 is its intel screen and its 8 and 9 are the tactical damage and unit
+screens; here 6 is the one digit the built-ins leave free, and since
+interface cut I8 a server that
 publishes a `.unit` feed claims it for the **unit** screen (see below). Each
 screen is gated on the hello's manifest; a ruleset screen registers by a
 panel-feed suffix (`registerFeedScreen`) and appears only when the server
@@ -159,9 +167,20 @@ publishes that feed. One binding table per screen — `local` / `prefill` /
 key never sends a mutating command; the one carve-out is walking an exit on
 the scene screen (D-I-19).
 
+That verb list (`RUN_ALLOWLIST`) is one of two hand-kept copies — the TUI's
+`tui/screen.rs` is the other — and both are pinned to the committed fixture
+`src/lib/run-allowlist.json`, by a vitest here and a Rust test there, so a
+verb added to one and not the other fails a build instead of drifting in
+silence. The look-back took two entries off it: `@mail <n>` marks the
+message read and `+orders` writes work orders, and neither belonged on a
+list whose whole promise is that a bare key mutates nothing. Four verbs are
+actually bound (`look`, `inventory`, `+roll/last`, `+contacts`); the rest
+are reserved for the screens a ruleset declares.
+
 The shell is **modal** (D-I-17): input mode is "the composer has focus".
 While nothing has focus, `1`–`9` switch screens, `Enter` opens the composer
-(a highlighted row prefills it), `"` `:` `;` `\` open it with the trigger
+(in the TUI a highlighted row prefills it; the web has no row selection —
+its rows are buttons), `"` `:` `;` `\` open it with the trigger
 typed, `/` opens the palette, `?` the key help, the room's one-letter exits
 walk, and a letter runs the screen's own binding (the chips on the legend
 row — on a phone, where the on-screen keyboard makes focus the only mode,
@@ -169,8 +188,13 @@ the chips are the whole story). Inside the composer, `Alt+key` performs the
 key's nav action (`Alt+1`, `Alt+n`, `Alt+?`) and `Ctrl/⌘+K` toggles the
 palette; `Enter` sends and keeps focus, `Enter` on an empty box and `Esc`
 blur it (`Esc` keeps the draft), `Shift+Enter` is a newline collapsed to a
-space on send. The whole table is `$lib/keys.ts`'s `navIntent`, pinned by
-vitest without a DOM.
+space on send. With the palette open, `Enter` inserts the highlighted row,
+`Ctrl+Enter` runs it, `?` asks the game for that row's help page
+(`help <cmd>` — read-only, so a bare key may send it; a client-local row
+prints `/help` instead) and `Esc` closes it keeping the text. The whole
+table is `$lib/keys.ts`'s `navIntent`, pinned by vitest without a DOM; what
+each intent then DOES is `GameApp.act`, driven in `game.test.ts` against a
+fake `ComposerHandle`.
 
 The composer's Say / Pose / Emit / OOC control is client-side (D-I-8): an
 explicit trigger or a channel alias verb always wins (`$lib/composer.ts`).
@@ -188,6 +212,17 @@ The **vitals strip** (`$lib/stores/vitals.svelte.ts`) renders every
 on every full rehydrate — dominant first, ignoring a lower revision; it
 replaces the textual prompt when a frame exists.
 
+**A revision only means anything within one run of the world.** A gateway
+session outlives a world restart (a web socket survives with no fresh Hello)
+while the world's revision counters restart at zero, so a viewer holding
+revision N would drop every frame the restarted world publishes and read
+stale gauges as live for the rest of the session. `resetWatermarks()` marks
+every held group accept-next — one frame per feed, which re-seeds the
+watermark — and is called at each seam where the client may now be looking
+at a different run: a `hello`, `onFullRehydrate`, and a replayed `resumed`
+(the one reconnect that brings neither). The frames are KEPT: a stale gauge
+is a smaller lie than a blanked strip on a routine reconnect.
+
 ## Scene typography and comms (interface cuts I5, I7)
 
 The scene screen groups consecutive speech and action by one actor under a
@@ -196,6 +231,10 @@ pure function over the visible window, five-minute window measured from the
 previous line, broken by any other block, never for emits, spoofs or OOC),
 sets prose in a system serif stack (`--font-prose`, class `ev-prose`) and
 demotes OOC, channel, system and roll lines to small mono (`ev-demoted`).
+Every system line the GAME sent is demoted — the `sys` event, the typed-WHO
+echo, the generic reply-error line and an action receipt alike; the one
+undemoted system family is the client-local `ev-sys ev-local` line, italic
+instead, because it never went to the game at all.
 The roller's own `.roll` frame lands inline as a dice card
 (`RollCard.svelte`); everyone else reads the server's one-line `roll`
 narration. On a phone the composer is a sticky bottom sheet.
@@ -217,10 +256,23 @@ table, or a key/value list); `GenericViewStore` holds one per feed;
 `ScreensStore.registerViewScreen` auto-registers the screen on the next free
 hotkey digit (only 6 is free, and on a server carrying a `.unit` feed the
 I8 unit screen has already taken it — see the recorded cost below; a
-digitless-screen policy is the follow-up). A row's action is always a
-Prefill (D-I-18): a click opens the
-composer with the line ready. The SSH TUI walks the identical convention in
-`render_view_rows`.
+digitless-screen policy is the follow-up). Either registration can be
+REFUSED, and the reason is now pushed to the scrollback as a client-local
+line rather than discarded: a screen that quietly never appears is the
+hardest kind of bug to report. A row's action is always a Prefill
+(D-I-18): a click opens the composer with the line ready. The SSH TUI walks
+the identical convention in `render_view_rows`.
+
+Two rules the look-back added. **`r` on a view screen refreshes its own
+feed** — `localAction("refresh")` names every built-in and used to fall
+through to `refreshWho()`, so a module's view refreshed the WHO list; the
+arm reads `ScreenDef.viewFeed`, so it stays data-driven like the TUI's
+`screen_queries()`. And **`parseViewSchema` dedups column and field keys**
+(first wins, D-I-4): both renderers key their `#each` block by the
+producer-chosen key, and Svelte throws `each_key_duplicate` out of the whole
+flush on a repeat — a producer shipping two columns called `id` would take
+the client's render down, not just its own view. Deduped before the cap, so
+duplicates cannot squeeze real columns out.
 
 ## Ruleset screens on existing data (interface cut I6)
 
@@ -253,7 +305,11 @@ One screen on digit 6 (`UnitScreen.svelte`), gated on a `.unit` feed in the
 hello manifest and registered exactly once from `GameApp.#hydrate` —
 `registerFeedScreen` has no idempotency guard and `ScreensStore.clear()`
 keeps `feedScreens`, so a second hello would otherwise be refused with
-"screen unit declared twice". Keys: `r` refresh, `t` flip layout, `c` run
+"screen unit declared twice". A character switch is the opposite case and
+has its own seam: `#resetGameState` calls `clearFeedScreens()`, because the
+registered screens belong to the manifest of the server being left — a
+`foo.view` screen holding digit 6 on server A would otherwise refuse this
+screen on server B, silently. Keys: `r` refresh, `t` flip layout, `c` run
 `+contacts`, `d` prefill `@unit/damage `. `@unit/*` is staff-gated and
 mutating, so it is a Prefill and never on `RUN_ALLOWLIST` (D-I-18);
 `validateScreens` would refuse the whole screen otherwise.
@@ -428,11 +484,24 @@ The client asks for it with `Req { q: { t: "sheet" } }` (`ClientCommand`'s
 `Query::Sheet` — deliberately target-less: it is always the viewer's own
 sheet) and the reply/live-push both arrive as a `Panel` frame on whichever
 feed ends in `.sheet` (`SessionStore.sheetFeed`, derived from the `hello`
-panel manifest by suffix — never a hardcoded `"wod"`). The `wod.roll` panel
-feed (`SessionStore.rollFeed`, same suffix convention) is pure push — one
-frame per `+roll`, to the roller only — and feeds the Rolls tab's compact
-readout (dice with successes/1s highlighted, doubled-10 marker, Botch/
-Failure/N-successes label).
+panel manifest by suffix — never a hardcoded `"wod"`). A `.roll` panel feed
+is pure push — one frame per `+roll`, to the roller only — and feeds the
+Rolls tab's compact readout (dice with successes/1s highlighted, doubled-10
+marker, Botch/Failure/N-successes label).
+
+Two look-back corrections here. The suffix tie-break is **sorted-first**
+(`SessionStore`), not first-in-manifest: the manifest's order is the
+server's registration order, which the gateway bridge and this client
+walked differently, so two clients on the same server could disagree about
+which sheet is "the" sheet. The TUI already sorted. And `#routePanel`
+renders **every** `.roll` feed rather than only `session.rollFeed` — a world
+with two rulesets publishes two, and the other one's rolls were being
+dropped silently. `RollPanelData.outcome` is nullable for the same reason:
+`Owod20Outcome` needs a `difficulty`, which a Shadowrun pool or an
+Initiative score has no notion of, so requiring it emptied the recent-rolls
+table and the dice card on any other ruleset. A frame without it is kept and
+rendered from its server-side `summary` — the one field every ruleset's roll
+feed carries — and only the dice detail is gated.
 
 **Rendering rules** (`$lib/sheet.ts`, exercised by `sheet.test.ts` against a
 realistic Vampire section):
@@ -612,6 +681,16 @@ Design notes / deliberate simplifications:
   terminal flow.
 - **Channel tab input** wraps lines in the member's alias verb
   (`pub <text>`), so `:`/`;` pose prefixes keep working.
-- **/commands** are client-local: `/clear`, `/theme [dark|light|system]`,
-  `/help`. Everything else goes to the game verbatim; the palette lists the
-  three beside the server's command table and keeps their slash.
+- **/commands** are client-local: `/clear`, `/history`,
+  `/theme [dark|light|system]`, `/help`. Everything else goes to the game
+  verbatim; the palette lists the four beside the server's command table and
+  keeps their slash. `/history` is the same verb the TUI and line mode have
+  had since I12 — before the look-back the web could only reach it by
+  scrolling to the top of the pane.
+- **`/clear` draws a floor**, it does not reset the cursor. Clearing throws
+  away every held narrative `seq`, so `oldestNarrativeSeq` is `null` again
+  and the next page would be the server's NEWEST one — the lines just
+  cleared, repainted, with nothing to dedup them against. `clear()` therefore
+  sets `moreBacklog = false`, exactly as the TUI states in
+  `docs/help/tui.md` "Scene history"; a fresh view (a re-attach, or the
+  resume-gap rehydrate) lifts the floor through `beginSegment`.

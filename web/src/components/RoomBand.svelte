@@ -48,9 +48,13 @@
     {#if band.zone}<span class="sep">·</span><span class="zone">{band.zone}</span>{/if}
     {#if band.weather}
       <span class="sep">·</span>
-      <span class="weather" title={band.weather.line ?? band.weather.state}>
+      <!-- The chip shows the module's PROSE when it sent any, falling back to
+           the bare state (I4-C20). The prose used to be a tooltip only, which
+           is why I3's interim `Weather:` scrollback line could not be retired:
+           the fact was visible nowhere else. -->
+      <span class="weather" title={band.weather.state}>
         {#if weatherIcon(band.weather.icon)}<span aria-hidden="true">{weatherIcon(band.weather.icon)}</span>{/if}
-        {band.weather.state}{#if band.weather.temp !== null}<span class="muted"> {band.weather.temp}°</span>{/if}
+        {band.weather.line ?? band.weather.state}{#if band.weather.temp !== null}<span class="muted"> {band.weather.temp}°</span>{/if}
       </span>
     {/if}
     {#if band.clock}

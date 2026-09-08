@@ -943,8 +943,25 @@ describe("the widgets and the screen are keyed and branched as the panes need", 
     const src = read("src/components/widgets/KeyValue.svelte");
     expect(src).toMatch(/\{#each rows as r, i \(i\)\}/);
     expect(src).not.toMatch(/\{#each rows as r \(r\.key\)\}/);
-    // The convention it follows.
-    expect(read("src/components/widgets/Table.svelte")).toMatch(/\(i\)\}/);
+  });
+
+  it("Table index-keys everything that comes off the wire", () => {
+    // The old probe here was `toMatch(/\(i\)\}/)` — it passed on any `(i)}`
+    // anywhere in the file and said nothing about WHICH block was keyed
+    // (LB-4). Both wire-derived loops are named exactly now.
+    const src = read("src/components/widgets/Table.svelte");
+    expect(src).toMatch(/\{#each rows as row, i \(i\)\}/);
+    expect(src).toMatch(/\{#each tableCells\(columns, row\) as cell, j \(j\)\}/);
+    expect(src).not.toMatch(/\{#each rows as row \(/);
+    // Its header keys by `c.key`, which is safe ONLY because every caller
+    // passes a client-declared constant: `UnitScreen`'s BEFORE_AFTER_COLUMNS
+    // and JOURNAL_COLUMNS, `VitalsBoard`'s ROLL_COLUMNS. `GenericView`'s
+    // columns come off the wire instead, and are deduped in
+    // `parseViewSchema` (genericview.test.ts).
+    expect(src).toMatch(/\{#each columns as c \(c\.key\)\}/);
+    for (const caller of ["src/components/UnitScreen.svelte", "src/components/VitalsBoard.svelte"]) {
+      expect(read(caller)).toMatch(/COLUMNS: TableColumn\[\] = \[/);
+    }
   });
 
   it("UnitScreen branches refusal, then unanswered, then no-subject, then the panes", () => {

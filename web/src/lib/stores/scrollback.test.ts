@@ -55,7 +55,7 @@ describe("ScrollbackStore", () => {
     expect(sb.unseen).toBe(0);
   });
 
-  it("clear resets entries, window and unseen", () => {
+  it("clear resets entries, window and unseen, and draws the backlog floor", () => {
     const sb = new ScrollbackStore();
     fill(sb, 10);
     sb.setPinned(false);
@@ -65,6 +65,15 @@ describe("ScrollbackStore", () => {
     expect(sb.entries).toHaveLength(0);
     expect(sb.unseen).toBe(0);
     expect(sb.windowSize).toBe(WINDOW_STEP);
+    // LB-1: `/clear` is a FLOOR, not a reset of the cursor. Clearing threw
+    // every held seq away, so a page would have nothing to dedup against,
+    // and `oldestNarrativeSeq` is `null` — which asks the server for the
+    // NEWEST page, i.e. the lines just cleared, repainted.
+    expect(sb.oldestNarrativeSeq).toBeNull();
+    expect(sb.moreBacklog).toBe(false);
+    // A fresh view lifts the floor (the re-attach seam).
+    sb.beginSegment();
+    expect(sb.moreBacklog).toBe(true);
   });
 
   it("blocks carry monotonically increasing ids (stable render keys)", () => {

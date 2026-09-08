@@ -6,7 +6,7 @@
   // trait, no pool and no ruleset (the probe in vitalsboard.test.ts greps
   // for exactly that).
   import type { GameApp } from "$lib/game.svelte";
-  import { classifyResult, youOrId } from "$lib/roll";
+  import { youOrId } from "$lib/roll";
   import { fmtClock } from "$lib/render";
   import { orderedVitals } from "$lib/stores/vitals.svelte";
   import type { TableColumn } from "$lib/widgets";
@@ -25,11 +25,17 @@
     { key: "when", label: "when", align: "right" },
   ];
 
+  // The row shows the server-rendered SUMMARY (I6-C11): it is the one field
+  // every ruleset's `.roll` feed carries, and classifying one dice engine's
+  // outcome shape instead is what left this table blank for every other
+  // engine. The dice column is that one engine's detail — empty for the
+  // rest, which is honest rather than wrong, and this file stays free of
+  // ruleset vocabulary either way (vitalsboard.test.ts).
   const recentRolls = $derived(
     app.rolls.entries.slice(-8).map((r) => ({
       who: youOrId(r.who, app.session.character?.id ?? null),
-      result: classifyResult(r.outcome.result).label,
-      dice: r.outcome.dice.map((d) => d.face).join(" "),
+      result: r.summary,
+      dice: r.outcome === null ? "" : r.outcome.dice.map((d) => d.face).join(" "),
       when: fmtClock(r.ts),
     })),
   );

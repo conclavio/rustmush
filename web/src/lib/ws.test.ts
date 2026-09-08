@@ -198,6 +198,41 @@ describe("WsClient", () => {
     expect(calls).toBe(1);
   });
 
+  it("tolerates an event variant it has no handler for (I1-C42)", () => {
+    // Variant tolerance is a CLIENT property, not a wire one: the server's
+    // round-trip tests cover unknown FIELDS, and nothing pinned that a whole
+    // event type this client predates is survivable. A server adding one
+    // (`Composing` was exactly that) must not stall the stream — the seq has
+    // to advance, or the resume point freezes at the last known variant and
+    // every reconnect replays from there.
+    const client = makeClient();
+    client.connect("t", "1");
+    const ws = lastSocket();
+    ws.open();
+
+    const sys: unknown[] = [];
+    const all: Envelope[] = [];
+    client.on("sys", (e) => sys.push(e.d));
+    client.onAny((e) => all.push(e));
+
+    expect(() =>
+      ws.deliver(env(3, { t: "composing", d: { actor: { id: "#7", name: "Atlas" }, active: true } })),
+    ).not.toThrow();
+
+    expect(sys).toEqual([]); // no handler for it
+    expect(all).toHaveLength(1); // …but it IS an envelope
+    expect(client.lastSeq).toBe(3); // the stream advanced past it
+    ws.deliver(env(4, { t: "sys", d: [{ text: "still here" }] }));
+    expect(sys).toEqual([[{ text: "still here" }]]);
+    expect(client.lastSeq).toBe(4);
+
+    // A variant this client does not know AT ALL is the same case: `t` is a
+    // string, so it is an envelope, and it dispatches to nobody.
+    ws.deliverRaw(JSON.stringify({ seq: 5, ts: 0, t: "from_the_future", d: { x: 1 } }));
+    expect(all).toHaveLength(3);
+    expect(client.lastSeq).toBe(5);
+  });
+
   it("ignores malformed and non-envelope frames", () => {
     const client = makeClient();
     client.connect("t", "1");

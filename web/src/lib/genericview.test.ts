@@ -60,6 +60,60 @@ describe("parseViewSchema", () => {
     const s = parseViewSchema({ id: "x", version: 1, shape: "list", columns: many });
     expect(s?.columns.length).toBe(MAX_VIEW_FIELDS);
   });
+
+  // LB-4: `GenericView.svelte` keys its header cells by `c.key` and its
+  // detail rows by `f.key`, and Svelte throws `each_key_duplicate` out of the
+  // whole flush on a repeat — a producer shipping two columns called `id`
+  // would take the client's render down, not just its own view. The keys are
+  // producer-chosen ids, so the parser makes them unique: first wins (D-I-4).
+  it("dedups duplicate column keys, first wins", () => {
+    const s = parseViewSchema({
+      id: "jobs",
+      version: 1,
+      shape: "list",
+      columns: [
+        { key: "id", label: "#", align: "right" },
+        { key: "title" },
+        { key: "id", label: "SECOND", align: "left" },
+      ],
+    });
+    expect(s?.columns).toEqual([
+      { key: "id", label: "#", align: "right" },
+      { key: "title", label: "title", align: "left" },
+    ]);
+  });
+
+  it("dedups duplicate field keys, first wins", () => {
+    const s = parseViewSchema({
+      id: "job",
+      version: 1,
+      shape: "detail",
+      fields: [
+        { key: "body", label: "Body", kind: "rich" },
+        { key: "body", label: "SECOND", kind: "number" },
+        { key: "n" },
+      ],
+    });
+    expect(s?.fields).toEqual([
+      { key: "body", label: "Body", kind: "rich" },
+      { key: "n", label: "n", kind: "text" },
+    ]);
+  });
+
+  it("dedups BEFORE the cap, so duplicates cannot squeeze real columns out", () => {
+    // A hostile (or just buggy) producer sending MAX_VIEW_FIELDS copies of
+    // one key must not cost the view every other column.
+    const dupes = Array.from({ length: MAX_VIEW_FIELDS }, () => ({ key: "same" }));
+    const rest = Array.from({ length: 5 }, (_, i) => ({ key: `c${i}` }));
+    const s = parseViewSchema({
+      id: "x",
+      version: 1,
+      shape: "list",
+      columns: [...dupes, ...rest],
+    });
+    expect(s?.columns.map((c) => c.key)).toEqual(["same", "c0", "c1", "c2", "c3", "c4"]);
+    expect(new Set(s?.columns.map((c) => c.key)).size).toBe(s?.columns.length);
+  });
 });
 
 describe("parseGenericView", () => {

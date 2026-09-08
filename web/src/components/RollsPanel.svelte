@@ -28,24 +28,29 @@
     </p>
   {:else}
     {#each app.rolls.entries as r (r.rowId)}
-      {@const result = classifyResult(r.outcome.result)}
-      <div class="roll" data-kind={result.kind}>
+      <!-- The dice, the difficulty and the result label are the oWoD20
+           engine's detail (I6-C11): another engine's roll shows the
+           server-rendered summary alone rather than being dropped. -->
+      {@const result = r.outcome === null ? null : classifyResult(r.outcome.result)}
+      <div class="roll" data-kind={result?.kind}>
         <div class="rollhead">
           <span class="who">{youOrId(r.who, app.session.character?.id ?? null)}</span>
-          <span class="result">{result.label}</span>
+          <span class="result">{result?.label ?? r.summary}</span>
           <span class="when muted">{fmtClock(r.ts)}</span>
         </div>
-        <div class="dice">
-          {#each r.outcome.dice as d, i (i)}
-            <span class={`die ${dieClass(d)}`}>
-              {d.face}{#if d.doubled}<sup>×2</sup>{/if}
-            </span>
-          {/each}
-        </div>
-        <div class="meta muted">
-          diff {r.outcome.difficulty}{#if r.outcome.willpower_success} · +WP{/if}{#if r.outcome.extra_successes > 0}
-            · +{r.outcome.extra_successes} auto{/if}
-        </div>
+        {#if r.outcome !== null}
+          <div class="dice">
+            {#each r.outcome.dice as d, i (i)}
+              <span class={`die ${dieClass(d)}`}>
+                {d.face}{#if d.doubled}<sup>×2</sup>{/if}
+              </span>
+            {/each}
+          </div>
+          <div class="meta muted">
+            diff {r.outcome.difficulty}{#if r.outcome.willpower_success} · +WP{/if}{#if r.outcome.extra_successes > 0}
+              · +{r.outcome.extra_successes} auto{/if}
+          </div>
+        {/if}
       </div>
     {/each}
   {/if}

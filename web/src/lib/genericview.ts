@@ -91,6 +91,31 @@ function parseField(raw: unknown): ViewField | null {
   return { key: raw.key, label: str(raw.label) ?? raw.key, kind };
 }
 
+/**
+ * First wins on a repeated `key` (D-I-4, LB-4).
+ *
+ * Both renderers key their `#each` block by the column's or field's key, and
+ * Svelte throws `each_key_duplicate` out of the WHOLE flush on a repeat: a
+ * producer that ships two columns called `id` would take the client's render
+ * down, not just its own view. The keys are producer-chosen ids, so they are
+ * not trustworthy — the same class the I8 fold fixed in `KeyValue.svelte` by
+ * keying on the index.
+ *
+ * Deduped BEFORE the cap: a run of duplicates must not squeeze real columns
+ * out of the first `MAX_VIEW_FIELDS`.
+ */
+function dedupByKey<T extends { key: string }>(items: readonly T[]): T[] {
+  const seen = new Set<string>();
+  const out: T[] = [];
+  for (const item of items) {
+    if (!seen.has(item.key)) {
+      seen.add(item.key);
+      out.push(item);
+    }
+  }
+  return out;
+}
+
 /** Parse a `ViewSchema`; `null` when it is fundamentally malformed. */
 export function parseViewSchema(raw: unknown): ViewSchema | null {
   if (!isObj(raw) || typeof raw.id !== "string" || typeof raw.version !== "number") {
@@ -101,10 +126,10 @@ export function parseViewSchema(raw: unknown): ViewSchema | null {
     return null;
   }
   const columns = Array.isArray(raw.columns)
-    ? raw.columns.flatMap((c) => parseColumn(c) ?? []).slice(0, MAX_VIEW_FIELDS)
+    ? dedupByKey(raw.columns.flatMap((c) => parseColumn(c) ?? [])).slice(0, MAX_VIEW_FIELDS)
     : [];
   const fields = Array.isArray(raw.fields)
-    ? raw.fields.flatMap((f) => parseField(f) ?? []).slice(0, MAX_VIEW_FIELDS)
+    ? dedupByKey(raw.fields.flatMap((f) => parseField(f) ?? [])).slice(0, MAX_VIEW_FIELDS)
     : [];
   return {
     id: raw.id,

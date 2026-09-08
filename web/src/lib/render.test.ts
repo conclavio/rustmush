@@ -246,14 +246,22 @@ describe("roomLines", () => {
     expect(bare).toHaveLength(1);
   });
 
-  it("prints the weather fact from ambient and ignores odd shapes", () => {
+  it("leaves the weather fact to the room band (I4-C20)", () => {
+    // I3 put the weather module's prose in a `Weather:` line here explicitly
+    // "until I4's room band". The band shipped and the line stayed, so the
+    // fact was rendered twice. The room block is now the same four lines
+    // whatever `ambient` carries.
     const wet = roomLines({
       ...view,
       ambient: { weather: { state: "rain", line: "Overhead: steady rain." } },
     });
-    expect(wet).toHaveLength(5);
-    expect(wet[4]!.map((s) => s.text).join("")).toBe("Weather: Overhead: steady rain.");
-    expect(wet[4]![1]!.cls).toContain("tag-weather");
+    expect(wet).toHaveLength(4);
+    expect(
+      wet
+        .flat()
+        .map((s) => s.text)
+        .join(" "),
+    ).not.toContain("Weather");
     for (const ambient of [
       undefined,
       {},

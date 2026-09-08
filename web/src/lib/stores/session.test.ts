@@ -26,6 +26,25 @@ describe("SessionStore.sheetFeed / rollFeed", () => {
     expect(s.sheetFeed).toBe("btech.sheet");
     expect(s.rollFeed).toBe("btech.roll");
   });
+
+  it("breaks a two-ruleset tie by sorting, not by manifest order (LB-21)", () => {
+    // The manifest's order is the server's registration order, and the
+    // gateway's bridge and this client walked it differently — so two
+    // clients on the same server could disagree about which sheet is "the"
+    // sheet. The TUI already sorts; this now matches it, whatever order the
+    // manifest arrives in.
+    const panels = ["wod.sheet", "wod.roll", "sr.sheet", "sr.roll", "tactics.unit"];
+    const s = new SessionStore();
+    s.applyHello({ server: "rustmush", features: [], panels });
+    expect(s.sheetFeed).toBe("sr.sheet");
+    expect(s.rollFeed).toBe("sr.roll");
+
+    const reversed = new SessionStore();
+    reversed.applyHello({ server: "rustmush", features: [], panels: [...panels].reverse() });
+    expect(reversed.sheetFeed).toBe("sr.sheet");
+    expect(reversed.rollFeed).toBe("sr.roll");
+    expect(reversed.unitFeed).toBe("tactics.unit");
+  });
 });
 
 describe("SessionStore.worldgenAvailable", () => {

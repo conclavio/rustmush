@@ -120,9 +120,10 @@ export class ScrollbackStore {
   /** Blocks pushed while unpinned (drives the "N new lines" pill). */
   unseen = $state(0);
   /** Whether the server may hold older narrative below what is here
-   * (interface plan I12). `true` until a backlog page reports `more: false`
-   * or the local cap can hold no more — drives the "load older history"
-   * affordance. Re-armed by `beginSegment` (a new session has a new ring). */
+   * (interface plan I12). `true` until a backlog page reports `more: false`,
+   * the local cap can hold no more, or `clear()` draws a floor — drives the
+   * "load older history" affordance. Re-armed by `beginSegment` (a new
+   * session has a new ring). */
   moreBacklog = $state(true);
   /** A backlog page is in flight (one at a time). Set only once a request
    * actually went out; reset on every `hello`. */
@@ -205,11 +206,12 @@ export class ScrollbackStore {
     return min;
   }
 
-  /** Start a new session segment after a full rehydrate (interface plan
-   * I12): the server fell back to a fresh attach, whose ring and seq
-   * namespace start over. Keep the old blocks on screen but drop their
-   * seqs (never a cursor or de-dup key again), record the seam, and re-arm
-   * the backlog so the new session's history can be pulled. */
+  /** Start a new session segment (interface plan I12): the server fell back
+   * to a fresh attach, or this client re-attached as a character, and the
+   * new session's ring and seq namespace start over. Keep the old blocks on
+   * screen but drop their seqs (never a cursor or de-dup key again), record
+   * the seam, and re-arm the backlog so the new session's history can be
+   * pulled — including over a `clear()` floor, which a fresh view lifts. */
   beginSegment(): void {
     let changed = false;
     for (const b of this.entries) {
@@ -300,11 +302,28 @@ export class ScrollbackStore {
     }
   }
 
+  /**
+   * `/clear` draws a FLOOR under what has been read (LB-1) — the same rule
+   * the TUI states in `docs/help/tui.md` "Scene history": the screen
+   * empties and new lines appear below the floor, but nothing older is ever
+   * loaded into this view again.
+   *
+   * It has to work that way. The de-dup key is the block's own `seq`, and
+   * clearing throws every held seq away, so the next page would come back
+   * with nothing to dedup against and repaint the lines the viewer just
+   * asked to be rid of — `oldestNarrativeSeq` over an empty ring is `null`,
+   * which asks the server for the NEWEST page (`manager.rs`), i.e. exactly
+   * the lines that were on screen a moment ago.
+   *
+   * A fresh view — the TUI's `@notui`/`@tui`, this client's re-attach — is
+   * primed from the newest as usual: `beginSegment` re-arms the backlog for
+   * a new session's ring.
+   */
   clear(): void {
     this.entries = [];
     this.windowSize = WINDOW_STEP;
     this.unseen = 0;
-    this.moreBacklog = true;
+    this.moreBacklog = false;
     this.fetchingBacklog = false;
     this.backlogEvicted = false;
     this.#seam = 0;

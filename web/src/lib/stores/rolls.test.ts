@@ -27,8 +27,8 @@ describe("RollsStore", () => {
     const a = r.push(rollData(8));
     const b = r.push(rollData(9));
     expect(a?.rowId).not.toBe(b?.rowId);
-    expect(r.entries[0]?.outcome.dice[0]?.face).toBe(9); // newest first
-    expect(r.entries[1]?.outcome.dice[0]?.face).toBe(8);
+    expect(r.entries[0]?.outcome?.dice[0]?.face).toBe(9); // newest first
+    expect(r.entries[1]?.outcome?.dice[0]?.face).toBe(8);
   });
 
   it("caps the ring at 30 entries", () => {
@@ -45,6 +45,34 @@ describe("RollsStore", () => {
     const result = r.push({ garbage: true });
     expect(result).toBeNull();
     expect(r.entries).toHaveLength(1);
+  });
+
+  // I6-C11: `Owod20Outcome` is ONE ruleset's shape — it needs a
+  // `difficulty`, which a Shadowrun pool has no notion of. Requiring it
+  // dropped every `sr.roll` frame, so the recent-rolls table and the dice
+  // card were permanently empty on a Shadowrun server while the TUI, which
+  // renders the summary, was fine.
+  it("keeps a roll from another engine, on its summary alone", () => {
+    const r = new RollsStore();
+    const entry = r.push({
+      who: "#1",
+      summary: "Nick rolls Agility + Pistols: 3 hits.",
+      outcome: { hits: 3, glitch: false, pool: 9 }, // Sr5-shaped: no difficulty
+    });
+
+    expect(entry).not.toBeNull();
+    expect(r.entries).toHaveLength(1);
+    expect(r.entries[0]?.summary).toBe("Nick rolls Agility + Pistols: 3 hits.");
+    // The oWoD20 detail is absent, not faked — the dice card is gated on it.
+    expect(r.entries[0]?.outcome).toBeNull();
+  });
+
+  it("still drops a frame with neither a summary nor an outcome", () => {
+    const r = new RollsStore();
+    expect(r.push({ who: "#1" })).toBeNull();
+    expect(r.push({ who: "#1", summary: "" })).toBeNull();
+    expect(r.push({ summary: "no roller" })).toBeNull();
+    expect(r.entries).toHaveLength(0);
   });
 
   it("clear empties the ring", () => {

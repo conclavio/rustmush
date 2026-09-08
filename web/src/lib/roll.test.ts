@@ -83,8 +83,8 @@ describe("parseRollPanel", () => {
     const parsed = parseRollPanel(botchPayload);
     expect(parsed).not.toBeNull();
     expect(parsed?.who).toBe("#42");
-    expect(parsed?.outcome.dice).toHaveLength(3);
-    expect(parsed?.outcome.result).toEqual({ Botch: 1 });
+    expect(parsed?.outcome?.dice).toHaveLength(3);
+    expect(parsed?.outcome?.result).toEqual({ Botch: 1 });
   });
 
   it("a specialty (doubled 10) success round-trips", () => {
@@ -106,15 +106,39 @@ describe("parseRollPanel", () => {
         result: { Success: 5 },
       },
     });
-    expect(parsed?.outcome.dice.filter((d) => d.doubled)).toHaveLength(2);
-    expect(classifyResult(parsed!.outcome.result).label).toBe("5 successes");
+    expect(parsed?.outcome?.dice.filter((d) => d.doubled)).toHaveLength(2);
+    expect(classifyResult(parsed!.outcome!.result).label).toBe("5 successes");
   });
 
   it("missing/malformed payloads yield null rather than throwing", () => {
     expect(parseRollPanel(null)).toBeNull();
     expect(parseRollPanel({})).toBeNull();
+    // No summary AND no usable outcome: nothing to render.
     expect(parseRollPanel({ who: "#1", outcome: "nope" })).toBeNull();
     expect(parseRollPanel({ who: "#1", outcome: { dice: "nope" } })).toBeNull(); // no difficulty
+    expect(parseRollPanel({ who: "#1", summary: "" })).toBeNull(); // an empty one is none
+    expect(parseRollPanel({ summary: "a roll with no roller" })).toBeNull();
+  });
+
+  // I6-C11: `Owod20Outcome` is ONE ruleset's shape. `difficulty` is oWoD's
+  // own concept, and demanding it dropped every `sr.roll` frame — the web's
+  // recent-rolls table and dice card were permanently empty on a Shadowrun
+  // server while the TUI, which renders the summary, was fine.
+  it("keeps another engine's roll on its summary, with a null outcome", () => {
+    const parsed = parseRollPanel({
+      who: "#42",
+      summary: "Nick rolls Agility + Pistols: 3 hits.",
+      outcome: { hits: 3, glitch: false, pool: 9 },
+    });
+    expect(parsed?.who).toBe("#42");
+    expect(parsed?.summary).toBe("Nick rolls Agility + Pistols: 3 hits.");
+    expect(parsed?.outcome).toBeNull();
+
+    // …and a frame with no `outcome` key at all is the same case: an
+    // Initiative push carries a score and a summary, nothing more.
+    const init = parseRollPanel({ who: "#42", summary: "Nick rolls Initiative: = 14." });
+    expect(init?.summary).toBe("Nick rolls Initiative: = 14.");
+    expect(init?.outcome).toBeNull();
   });
 
   it("a malformed summary falls back to the classified result label", () => {
@@ -130,6 +154,6 @@ describe("parseRollPanel", () => {
       who: "#1",
       outcome: { difficulty: 6, dice: [{ face: 5 }, "garbage", null], result: "Failure" },
     });
-    expect(parsed?.outcome.dice).toHaveLength(1);
+    expect(parsed?.outcome?.dice).toHaveLength(1);
   });
 });

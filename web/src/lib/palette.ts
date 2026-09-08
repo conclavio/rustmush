@@ -34,6 +34,10 @@ export interface PaletteEntry {
 /** The client's own commands; they keep their slash when picked. */
 export const LOCAL_COMMANDS: ReadonlyArray<readonly [string, string]> = [
   ["/clear", "empty the scrollback"],
+  // The same verb and the same wording as the TUI's own list
+  // (`tui/app.rs`), which has had it since I12 while the web could only
+  // reach it from the scroll-top button (LB-20).
+  ["/history", "load older scene history"],
   ["/theme", "switch theme (dark, light, system)"],
   ["/help", "the client commands"],
 ];
