@@ -58,7 +58,7 @@ mod data;
 mod query;
 mod speak;
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Arc;
 
 use mush_core::module::{
@@ -251,12 +251,27 @@ fn auto_join_default(ctx: &mut Ctx<'_>, player: ObjId) {
 /// a first boot: seed [`DEFAULT_CHANNEL`] and auto-join every existing
 /// live Player.
 ///
-/// A channel document that fails to decode FAILS THE BOOT: proceeding
-/// would classify every one of that channel's memberships as orphans and
-/// permanently delete them — corrupt data is an operational problem to
-/// fix, never a license for destructive "recovery". (Membership docs are
-/// individually skippable: dropping one loses one player's alias, not a
-/// whole channel's roster.)
+/// A channel document that fails to decode is **skipped, counted and
+/// logged by key**, exactly as a membership document already was. It used
+/// to fail the whole module boot, on the reasoning that proceeding would
+/// classify that channel's memberships as orphans and delete them — but the
+/// destruction was the thing to prevent, not the boot. One undecodable
+/// channel doc took comsys off the game entirely, and the way to write one
+/// is to type it: `@channel/perm` turns player text into a lock tree that
+/// lands in this document.
+///
+/// So the channel is skipped and its id remembered as *unreadable*, which
+/// buys back both halves of the old argument:
+///
+/// - its memberships are neither loaded nor deleted — an unreadable
+///   channel is not a missing one, and nothing about this boot licenses
+///   destructive "recovery";
+/// - its id cannot be handed out again, because the `next_chan_id`
+///   fallback counts unreadable ids too. A reallocated id would overwrite
+///   the very document an operator still has to repair.
+///
+/// Corrupt data remains an operational problem to fix; the count and the
+/// per-key `tracing::error!` are how an operator learns which one.
 fn load_boot(ctx: &mut ModuleCtx<'_>, data: ModuleBootData) -> Result<(), ModError> {
     // First boot = completely empty namespace, decided BEFORE any parsing:
     // "all channel docs corrupt" must never look like a fresh install (it
@@ -265,6 +280,10 @@ fn load_boot(ctx: &mut ModuleCtx<'_>, data: ModuleBootData) -> Result<(), ModErr
     // first boot.
     let first_boot = data.kv.is_empty();
     let mut channels: BTreeMap<ChannelId, Channel> = BTreeMap::new();
+    // Ids whose `chan:{id}` document would not decode: known to exist,
+    // unusable this boot, and not to be treated as absent by anything
+    // downstream.
+    let mut unreadable: BTreeSet<ChannelId> = BTreeSet::new();
     let mut raw_members: Vec<Membership> = Vec::new();
     let mut next_from_meta: Option<u64> = None;
 
@@ -277,8 +296,14 @@ fn load_boot(ctx: &mut ModuleCtx<'_>, data: ModuleBootData) -> Result<(), ModErr
             let id = id
                 .parse::<u64>()
                 .map_err(|_| ModError::msg(format!("comsys: bad channel key {key:?}")))?;
-            let chan = serde_json::from_value::<Channel>(value)
-                .map_err(|e| ModError::msg(format!("comsys: bad channel doc {key:?}: {e}")))?;
+            let chan = match serde_json::from_value::<Channel>(value) {
+                Ok(chan) => chan,
+                Err(e) => {
+                    tracing::error!(%key, error = %e, "comsys: bad channel doc skipped");
+                    unreadable.insert(ChannelId(id));
+                    continue;
+                }
+            };
             if !(1..=MAX_HISTORY_CAP).contains(&chan.history.cap) {
                 return Err(ModError::msg(format!(
                     "comsys: channel doc {key:?} history cap {} is outside 1-{MAX_HISTORY_CAP}",
@@ -310,9 +335,14 @@ fn load_boot(ctx: &mut ModuleCtx<'_>, data: ModuleBootData) -> Result<(), ModErr
             .w
             .get(m.player)
             .is_some_and(|o| !o.flags.contains(Flags::GOING));
+        // A membership of an *unreadable* channel is held, not orphaned:
+        // the channel exists in the store and only this boot cannot read
+        // it. Leaving the membership out of RAM costs one player one alias
+        // until the document is repaired; deleting the document would cost
+        // the whole roster forever.
         if live_player && channels.contains_key(&m.channel) {
             members.insert((m.player, m.channel), m);
-        } else {
+        } else if !unreadable.contains(&m.channel) {
             orphans.push(member_key(m.player, m.channel));
         }
     }
@@ -340,8 +370,17 @@ fn load_boot(ctx: &mut ModuleCtx<'_>, data: ModuleBootData) -> Result<(), ModErr
         rings.insert(id, ring);
     }
 
-    let next_chan_id =
-        next_from_meta.unwrap_or_else(|| channels.keys().last().map_or(0, |id| id.0 + 1));
+    // The fallback (no `meta` doc) must count ids whose document did not
+    // decode: reallocating one would `JsonSet` straight over the document
+    // an operator is still trying to repair.
+    let next_chan_id = next_from_meta.unwrap_or_else(|| {
+        channels
+            .keys()
+            .chain(unreadable.iter())
+            .map(|id| id.0 + 1)
+            .max()
+            .unwrap_or(0)
+    });
 
     *ctx.w
         .module_state_mut::<ComsysState>()
@@ -353,6 +392,12 @@ fn load_boot(ctx: &mut ModuleCtx<'_>, data: ModuleBootData) -> Result<(), ModErr
     };
     for key in orphans {
         persist_del(ctx.out, key);
+    }
+    if !unreadable.is_empty() {
+        tracing::error!(
+            skipped = unreadable.len(),
+            "comsys: channel documents skipped as undecodable; their memberships were left in              the store and their ids will not be reallocated"
+        );
     }
     if first_boot {
         seed_default_channel(ctx);

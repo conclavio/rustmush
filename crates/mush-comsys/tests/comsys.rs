@@ -1204,10 +1204,16 @@ fn prefix_expanded_speech_never_routes_to_a_channel() {
     }
 }
 
-/// A corrupt CHANNEL document fails the boot loudly instead of silently
-/// deleting every membership of that channel as "orphans".
+/// A corrupt CHANNEL document is skipped, not fatal — and its memberships
+/// are still not deleted as "orphans".
+///
+/// Both halves matter and they used to be one: the boot failed *in order to*
+/// avoid the destructive cleanup. WS01-S3B separates them, because the way to
+/// write a corrupt channel document is to type it (`@channel/perm` puts a
+/// player's lock tree in there), and one such document must not take the
+/// whole channel system off the game.
 #[test]
-fn corrupt_channel_doc_fails_boot_and_preserves_memberships() {
+fn corrupt_channel_doc_is_skipped_and_preserves_memberships() {
     let member = serde_json::json!({
         "player": 2, "channel": 0, "alias": "pub", "last_read": 4
     });
@@ -1229,14 +1235,21 @@ fn corrupt_channel_doc_fails_boot_and_preserves_memberships() {
     let mut engine =
         Engine::with_modules(world, registry, vec![Box::new(ComsysModule::new())]).unwrap();
     let (mut out, mut fx) = (Outbox::new(), Effects::new());
-    let err = engine
+    engine
         .modules_loaded(
             HashMap::from([(SmolStr::new(NS), boot_data)]),
             &mut out,
             &mut fx,
         )
-        .expect_err("a corrupt channel doc must fail the boot");
-    assert!(err.to_string().contains("chan:0"), "{err}");
+        .expect("a corrupt channel doc must not fail the module boot");
+    // The channel is absent from RAM, and this is not mistaken for a first
+    // boot (which would re-seed Public and force-join everyone).
+    let st = state(&engine);
+    assert!(
+        st.channels.is_empty(),
+        "the unreadable channel is not loaded"
+    );
+    assert!(st.members.is_empty(), "and neither is its membership");
     // Crucially: NO destructive cleanup was queued — the membership doc
     // survives in the store for the repaired boot.
     assert!(

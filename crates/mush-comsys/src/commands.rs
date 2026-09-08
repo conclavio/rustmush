@@ -520,6 +520,13 @@ fn channel_perm(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         return Err(CmdError::msg(usage));
     }
     let w = &*ctx.w;
+    // The one gate where a *player* can be told why a lock is refused, and
+    // the reason the persisted `chan:{id}` document stays inside
+    // `MAX_DOC_DEPTH`: `parse_lock` bounds both the frames it spends and the
+    // height of the tree it builds (`MAX_LOCK_EXPR_DEPTH`), so a flat
+    // `#1&#1&…` chain thousands of terms long — which fits in one input line
+    // and evades any frame counter — never becomes a `ChannelPerms` field.
+    // The store's own depth refusal is only the floor under this.
     let expr: LockExpr = parse_lock(&expr_src, |name| {
         if name.eq_ignore_ascii_case("me") {
             Some(actor)

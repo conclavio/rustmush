@@ -1199,6 +1199,110 @@ pub async fn module_batch_atomicity(store: &dyn ObjectStore) {
     );
 }
 
+/// A module document nested past `MAX_DOC_DEPTH` is refused at the storage
+/// boundary, and the refusal takes the whole batch with it — every store, not
+/// only the one whose decoder would have choked reading it back.
+///
+/// The lock trees in a comsys `chan:{id}` document are typed by a player, and
+/// `parse_lock` is where an over-deep one is refused with an explanation. This
+/// is the floor under that gate, for a tree that reached a `ModuleOp` without
+/// passing it. Refusing here rather than at read time is the whole point: a
+/// document that lands in the store is one that boot cannot decode, and until
+/// this bound existed the module lane had no depth check at all.
+pub async fn over_deep_module_doc_refuses_the_whole_batch(store: &dyn ObjectStore) {
+    let (seed, _) = minimal_seed_batch(1);
+    store.write(seed).await.expect("seed");
+
+    // The shape a hostile `@channel/perm` would persist: a left-nested `&`
+    // chain, sixty expression levels, inside a channel document's join lock.
+    let mut expr = LockExpr::Const(true);
+    for _ in 1..60 {
+        expr = LockExpr::And(Box::new(expr), Box::new(LockExpr::Const(true)));
+    }
+    let doc = serde_json::json!({
+        "id": 1,
+        "perms": { "join": serde_json::to_value(&expr).expect("a lock tree serializes") },
+    });
+    // Prove the fixture: over our bound, and still inside `serde_json`'s own
+    // 128-level limit, so the refusal below is this store's and not a
+    // decoder error surfacing from somewhere further in.
+    let depth = mush_core::depth_of_value(&doc);
+    assert!(
+        depth > mush_core::MAX_DOC_DEPTH && depth < 128,
+        "the fixture must be over the bound and still decodable: {depth}"
+    );
+    serde_json::from_str::<serde_json::Value>(
+        &serde_json::to_string(&doc).expect("the fixture serializes"),
+    )
+    .expect("the fixture must re-decode, or this test proves nothing");
+
+    let err = store
+        .write(WriteBatch {
+            serial: 2,
+            upserts: vec![thing(2, "alpha")],
+            module_ops: vec![
+                json_set("comsys", "chan:0", serde_json::json!({"id": 0})),
+                json_set("comsys", "chan:1", doc),
+            ],
+            next_id: Some(3),
+            ..WriteBatch::default()
+        })
+        .await
+        .expect_err("an over-deep module document must refuse the batch");
+    assert!(
+        matches!(err, StoreError::Corrupt(_)),
+        "the poison path is non-transient and latches integrity: {err:?}"
+    );
+    assert!(err.to_string().contains("mod:comsys:chan:1"), "{err}");
+
+    // Nothing from the refused batch landed — not the object, not the
+    // allocator, and not the *good* module op queued ahead of the poison.
+    let snap = store.load_world().await.expect("load").expect("non-empty");
+    assert_eq!(
+        snap.next_id, 2,
+        "next_id from the refused batch must not land"
+    );
+    assert_eq!(
+        snap.objects.len(),
+        2,
+        "upsert from the refused batch must not land"
+    );
+    for key in ["chan:0", "chan:1"] {
+        assert_eq!(
+            store.module_json_get("comsys", key).await.expect("get"),
+            None,
+            "module op {key} from the refused batch must not land"
+        );
+    }
+
+    // The bound is a ceiling, not a ban: the deepest tree `parse_lock` will
+    // build persists and reads back identical.
+    let mut legal = LockExpr::Const(true);
+    for _ in 1..mush_core::MAX_LOCK_EXPR_DEPTH {
+        legal = LockExpr::And(Box::new(legal), Box::new(LockExpr::Const(true)));
+    }
+    let good = serde_json::json!({
+        "id": 1,
+        "perms": { "join": serde_json::to_value(&legal).expect("a lock tree serializes") },
+    });
+    store
+        .write(WriteBatch {
+            serial: 3,
+            module_ops: vec![json_set("comsys", "chan:1", good.clone())],
+            ..WriteBatch::default()
+        })
+        .await
+        .expect("the deepest lock the parser builds must still persist");
+    assert_eq!(
+        store
+            .module_json_get("comsys", "chan:1")
+            .await
+            .expect("get"),
+        Some(good),
+        "a maximal legal lock must survive the round trip"
+    );
+}
+
 /// The store itself—not only the server driver—rejects every legacy module
 /// operation aimed at the authoritative typed-state keyspace. The refusal is
 /// atomic with unrelated object/module/allocator writes in the same batch.

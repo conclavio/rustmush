@@ -2022,6 +2022,7 @@ dependencies = [
  "serde_json",
  "smol_str",
  "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

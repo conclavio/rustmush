@@ -306,6 +306,9 @@ redis_gated!(serde_obj_round_trip, store, {
 redis_gated!(module_batch_atomicity, store, {
     suite::module_batch_atomicity(&store).await;
 });
+redis_gated!(over_deep_module_doc_refuses_the_whole_batch, store, {
+    suite::over_deep_module_doc_refuses_the_whole_batch(&store).await;
+});
 redis_gated!(authoritative_module_prefix_is_store_owned, store, {
     suite::authoritative_module_prefix_is_store_owned(&store).await;
 });

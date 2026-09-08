@@ -138,7 +138,8 @@ pub(crate) fn validate_module_key(key: &str) -> Result<(), StoreError> {
     Ok(())
 }
 
-/// Validate one [`ModuleOp`] (namespace + the key inside the write).
+/// Validate one [`ModuleOp`] (namespace + the key inside the write, plus the
+/// nesting depth of any document it carries).
 pub(crate) fn validate_module_op(op: &ModuleOp) -> Result<(), StoreError> {
     validate_module_ns(&op.ns)?;
     let key = match &op.op {
@@ -150,6 +151,52 @@ pub(crate) fn validate_module_op(op: &ModuleOp) -> Result<(), StoreError> {
     if is_action_state_persistence_key(key) {
         return Err(StoreError::Invalid(format!(
             "module key {key:?} is owned by authoritative action persistence"
+        )));
+    }
+    match &op.op {
+        ModuleWrite::JsonSet { value, .. } | ModuleWrite::StreamAppend { value, .. } => {
+            refuse_over_deep_module_doc(&op.ns, key, value)?;
+        }
+        ModuleWrite::Del { .. } => {}
+    }
+    Ok(())
+}
+
+/// The module lane's copy of [`refuse_over_deep_object_doc`], and the same
+/// poison path rather than validation.
+///
+/// Every module write goes through [`validate_module_op`] in both stores
+/// before either touches anything, so this is the one place the whole lane
+/// inherits the bound — and it has to be here rather than in each module,
+/// because the module API hands the store a `serde_json::Value` that nothing
+/// downstream re-measures.
+///
+/// Nothing this server builds can reach it. The deepest module document is a
+/// comsys `chan:{id}` doc carrying four lock trees, and `parse_lock` already
+/// refuses anything over `MAX_LOCK_EXPR_DEPTH` (48) at `@channel/perm`, the
+/// one gate where a *player* can be told why: a maximal tree serializes about
+/// 96 JSON levels and the channel doc plus its `perms` map adds two, against
+/// [`mush_core::MAX_DOC_DEPTH`] of 120. A document that trips this is a tree
+/// no parser built.
+///
+/// The measurement walks the decoded value by worklist
+/// ([`mush_core::depth_of_value`]) and so does not recurse — it runs *before*
+/// `serde_json::to_string`, which does, and which is what a hostile document
+/// would otherwise overflow on. And like its object twin it is deliberately
+/// [`StoreError::Corrupt`]: non-transient, so the write-behind loop cannot
+/// wedge on it, and an integrity latch rather than a refusal a player could
+/// provoke — which is exactly why enforcement belongs at the parse gate and
+/// this is only the floor under it.
+pub(crate) fn refuse_over_deep_module_doc(
+    ns: &str,
+    key: &str,
+    value: &serde_json::Value,
+) -> Result<(), StoreError> {
+    let depth = mush_core::depth_of_value(value);
+    if depth > mush_core::MAX_DOC_DEPTH {
+        return Err(StoreError::Corrupt(format!(
+            "module document mod:{ns}:{key} is {depth} JSON levels deep, past the limit of {}              this store will write",
+            mush_core::MAX_DOC_DEPTH
         )));
     }
     Ok(())
@@ -1515,6 +1562,95 @@ pub(crate) fn refuse_over_deep_object_doc(id: ObjId, doc: &str) -> Result<(), St
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A left-nested `&` chain `depth` [`mush_core::LockExpr`] nodes tall —
+    /// the shape `@channel/perm <chan>=join=#1&#1&…` builds, and the one
+    /// input class a frame counter cannot see.
+    fn and_chain(depth: u32) -> mush_core::LockExpr {
+        let mut e = mush_core::LockExpr::Const(true);
+        for _ in 1..depth {
+            e = mush_core::LockExpr::And(Box::new(e), Box::new(mush_core::LockExpr::Const(true)));
+        }
+        e
+    }
+
+    /// One `chan:{id}`-shaped document carrying `expr` as its join lock.
+    fn channel_doc(expr: &mush_core::LockExpr) -> serde_json::Value {
+        serde_json::json!({
+            "id": 1,
+            "perms": { "join": serde_json::to_value(expr).expect("a lock tree serializes") },
+        })
+    }
+
+    /// The module lane's floor under the parse gate: a lock tree that never
+    /// went through `parse_lock` — a module built it, or a caller
+    /// hand-assembled the `ModuleOp` — is refused at the storage boundary
+    /// instead of being written as a document boot cannot read back.
+    ///
+    /// Sixty expression levels is the interesting number because it is
+    /// *under* nothing: `MAX_LOCK_EXPR_DEPTH` is 48, and an externally
+    /// tagged `And` costs two JSON levels, so sixty of them plus the
+    /// document's own two clear `MAX_DOC_DEPTH` while staying well inside
+    /// `serde_json`'s own 128-level decode limit — this refusal is ours, not
+    /// a decoder error surfacing from somewhere further in.
+    #[test]
+    fn validate_module_op_refuses_an_over_deep_document() {
+        let doc = channel_doc(&and_chain(60));
+        // Prove the fixture before asserting on it, or the test is vacuous.
+        let depth = mush_core::depth_of_value(&doc);
+        assert!(
+            depth > mush_core::MAX_DOC_DEPTH,
+            "a depth-60 lock must clear MAX_DOC_DEPTH, measured {depth}"
+        );
+        for op in [
+            ModuleWrite::JsonSet {
+                key: "chan:1".into(),
+                value: doc.clone(),
+            },
+            ModuleWrite::StreamAppend {
+                key: "hist:1".into(),
+                value: doc.clone(),
+                maxlen: 10,
+            },
+        ] {
+            let err = validate_module_op(&ModuleOp {
+                ns: "comsys".into(),
+                op,
+            })
+            .expect_err("an over-deep module document must be refused");
+            assert!(
+                matches!(err, StoreError::Corrupt(_)),
+                "the poison path is non-transient and latches integrity: {err:?}"
+            );
+            assert!(err.to_string().contains("mod:comsys:"), "{err}");
+            assert!(
+                err.to_string()
+                    .contains(&mush_core::MAX_DOC_DEPTH.to_string()),
+                "the refusal names the bound: {err}"
+            );
+        }
+    }
+
+    /// And the bound is a ceiling, not a ban: the deepest tree the parser
+    /// will build still writes. A floor that refused legal documents would
+    /// freeze the world on a lock a player is allowed to type.
+    #[test]
+    fn validate_module_op_admits_the_deepest_lock_the_parser_builds() {
+        let doc = channel_doc(&and_chain(mush_core::MAX_LOCK_EXPR_DEPTH));
+        let depth = mush_core::depth_of_value(&doc);
+        assert!(
+            depth <= mush_core::MAX_DOC_DEPTH,
+            "a maximal parsed lock must fit: measured {depth}"
+        );
+        validate_module_op(&ModuleOp {
+            ns: "comsys".into(),
+            op: ModuleWrite::JsonSet {
+                key: "chan:1".into(),
+                value: doc,
+            },
+        })
+        .expect("the deepest lock `parse_lock` builds must still persist");
+    }
 
     #[test]
     fn account_rec_debug_redacts_hash() {
