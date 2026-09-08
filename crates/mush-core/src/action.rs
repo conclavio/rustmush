@@ -3942,6 +3942,18 @@ pub trait ActionProvider: Send + Sync {
         self.prepare_authoritative_with_context(resolved.invocation(), txn, context)
     }
 
+    /// Additional authority selected by this resolved invocation. For example,
+    /// a crew member may act through a platform-owned contact audience. Only
+    /// the trusted provider chooses that principal; the kernel issues each
+    /// witness and retains its guard for the final pre-commit recheck.
+    fn resolved_authority_witnesses(
+        &self,
+        _resolved: &ResolvedActionInvocation,
+        _engine: &crate::engine::Engine,
+    ) -> Result<Vec<AuthorityWitnessRequest>, ActionError> {
+        Ok(Vec::new())
+    }
+
     /// Name exact provider-owned revision coordinates that become known only
     /// after opaque subject/target resolution. The kernel reads and stamps
     /// their generations; providers never supply the observed values.
@@ -4785,6 +4797,26 @@ impl ActionProviderRegistry {
             bridge_definitions.into_iter().collect(),
             rank,
         ))
+    }
+
+    /// Select additional witnesses through the exact ready provider. Issuance
+    /// and the final guard-set bound remain kernel responsibilities.
+    pub(crate) fn resolved_authority_witnesses(
+        &self,
+        action: &DefinitionRef,
+        resolved: &ResolvedActionInvocation,
+        engine: &crate::engine::Engine,
+    ) -> Result<Vec<AuthorityWitnessRequest>, ActionProviderDispatchError> {
+        let entry = self.get_exact(action)?;
+        let requests = entry
+            .provider()
+            .resolved_authority_witnesses(resolved, engine)
+            .map_err(|source| ActionProviderDispatchError::Provider {
+                action: Box::new(action.clone()),
+                source: Box::new(source),
+            })?;
+        self.get_exact(action)?; // Recheck readiness after the callback.
+        Ok(requests)
     }
 
     /// Ask one exact provider which revision coordinates are selected by the

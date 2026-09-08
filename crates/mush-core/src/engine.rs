@@ -1752,6 +1752,25 @@ impl Engine {
         })
     }
 
+    /// Read exact authority through its registered owner without exposing a
+    /// foreign state-family handle. The caller supplies policy (for example,
+    /// which platform an operator may use); the owner alone supplies truth.
+    pub fn authority_witness(
+        &self,
+        request: &crate::action::AuthorityWitnessRequest,
+    ) -> Result<Option<crate::action::AuthorityWitness>, crate::action::AuthorityWitnessError> {
+        let validators = self.registry.authority_guard_validators().ok_or_else(|| {
+            crate::action::AuthorityWitnessError::Missing {
+                provider: request.provider().clone(),
+                kind: request.kind(),
+            }
+        })?;
+        validators.witness(
+            &crate::action::AuthorityGuardContext::new(&self.world, &self.action_state),
+            request,
+        )
+    }
+
     /// Resolve one untrusted opaque submission against a freshly regenerated
     /// internal set without exposing the deployment key ring to providers or
     /// interface code.
@@ -1862,6 +1881,31 @@ impl Engine {
                 .ok_or(crate::offer::LegalActionResolutionError::Resolve(
                     crate::offer::OfferResolveError::Unavailable,
                 ))?;
+        let unavailable = || {
+            crate::offer::LegalActionResolutionError::Resolve(
+                crate::offer::OfferResolveError::Unavailable,
+            )
+        };
+        let requests = self
+            .registry
+            .action_providers()
+            .ok_or_else(unavailable)?
+            .resolved_authority_witnesses(&action, &resolved, self)
+            .map_err(|_| unavailable())?;
+        if requests.len() > crate::action::MAX_AUTHORITY_GUARDS {
+            return Err(unavailable());
+        }
+        let mut selected_guards = Vec::with_capacity(requests.len());
+        for request in requests {
+            let witness = self
+                .authority_witness(&request)
+                .map_err(|_| unavailable())?
+                .ok_or_else(unavailable)?;
+            selected_guards.push(witness.guard().clone());
+        }
+        let guards = guards
+            .with_authority_guards(&selected_guards)
+            .map_err(|_| unavailable())?;
         let definitions = self.registry.definitions().ok_or(
             crate::offer::LegalActionResolutionError::Resolve(
                 crate::offer::OfferResolveError::Unavailable,

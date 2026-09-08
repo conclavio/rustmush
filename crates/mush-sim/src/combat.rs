@@ -265,7 +265,7 @@ fn held_contact(ctx: &Ctx<'_>, token: &str) -> Result<ContactId, CmdError> {
 /// `mush-propagation` edge (and must not gain one); the fold's regression tests
 /// pin them together *observably* — a contact the render shows is a contact
 /// `+fire` accepts, for a proxy driver and for an ordinary crew member alike.
-fn contact_holders(world: &World, actor: ObjId) -> Vec<mush_core::PrincipalId> {
+pub(crate) fn contact_holders(world: &World, actor: ObjId) -> Vec<mush_core::PrincipalId> {
     let mut holders = if let Some(drive) = crate::focus::proxy_drive_of(world, actor) {
         vec![
             mush_core::PrincipalId::Object { id: drive.npc },
@@ -314,6 +314,7 @@ fn continuous(ctx: &mut Ctx<'_>, kind: IntentKind, value: OrderValue) -> Result<
         kind,
         value: Some(value.clone()),
         contact: None,
+        contact_generation: None,
         slot: None,
     };
     submit(ctx, &seat, doc)?;
@@ -338,6 +339,23 @@ fn discrete(
 ) -> Result<(), CmdError> {
     let seat = seat(ctx)?;
     let channel = channel_for(&seat, kind)?;
+    let contact_generation = match contact {
+        Some(id) => {
+            let holders = contact_holders(ctx.w, ctx.actor);
+            Some(
+                ctx.w
+                    .module_state::<ContactLedgerState>()
+                    .and_then(|ledger| {
+                        ledger.rows().iter().find(|row| {
+                            row.contact == id && row.active && holders.contains(&row.holder)
+                        })
+                    })
+                    .map(|row| row.generation)
+                    .ok_or_else(|| CmdError::msg(no_such_contact()))?,
+            )
+        }
+        None => None,
+    };
     let doc = TacticalIntentDoc {
         domain: seat.domain,
         tick: seat.tick,
@@ -349,6 +367,7 @@ fn discrete(
         kind,
         value: None,
         contact,
+        contact_generation,
         slot,
     };
     submit(ctx, &seat, doc)?;

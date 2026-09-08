@@ -32,6 +32,9 @@ use mush_testkit::{TestWorld, text_of};
 use smol_str::SmolStr;
 use std::collections::HashMap;
 
+#[path = "pulse_contracts/mod.rs"]
+mod pulse_contracts;
+
 // ---- harness -----------------------------------------------------------
 
 fn boot() -> TestWorld {
@@ -508,10 +511,10 @@ fn e7c8_c1_the_measurement_is_monotone_and_the_byte_caps_never_bind() {
         previous = Some(measured.replay_writes);
     }
     // The corrected figures: 64 units saturate the window's 256 slots over four
-    // control channels and encode 261 replay writes, 25% of the nearest cap.
+    // control channels: 453 writes including all three capped cleanup sets.
     let at_cap = measure_tick_bundle(MAX_UNITS_PER_DOMAIN).expect("encodes");
-    assert_eq!(at_cap.replay_writes, 261);
-    assert_eq!(at_cap.replay_write_percent(), 25);
+    assert_eq!(at_cap.replay_writes, 453);
+    assert_eq!(at_cap.replay_write_percent(), 44);
 }
 
 /// The retention ring is a real bound: `@domain/replay` can never be asked to
@@ -816,7 +819,11 @@ fn run_err(tw: &mut TestWorld, who: ObjId, line: &str) -> String {
 }
 
 fn fold_scene() -> (TestWorld, Fold) {
-    let mut tw = boot();
+    fold_scene_with(vec![Box::new(SimulationModule::new())])
+}
+
+fn fold_scene_with(modules: Vec<Box<dyn mush_core::GameModule>>) -> (TestWorld, Fold) {
+    let mut tw = TestWorld::with_modules(modules);
     tw.set_now(1_000);
     let field = tw
         .world_mut()
@@ -946,52 +953,7 @@ fn drive_submit(
     submit: &mush_core::AuthoritativeSubmit,
     token: u8,
 ) -> Result<(), String> {
-    let (action, resolved) = {
-        let engine = tw.engine();
-        let query = engine
-            .legal_action_query(
-                PrincipalId::Object { id: submit.actor },
-                submit.actor,
-                submit.subject.clone(),
-            )
-            .map_err(|error| format!("query: {error:?}"))?;
-        let offers = engine
-            .project_legal_actions(&query)
-            .map_err(|error| format!("projection: {error:?}"))?;
-        let projected = offers
-            .projected_for_action(&submit.action)
-            .ok_or_else(|| "the tactical intent offer did not project".to_owned())?;
-        let submission = OfferSubmission {
-            offer: projected.offer(),
-            subject: projected.subject().clone(),
-            targets: submit.targets.clone(),
-            // **Verbatim**: the parameters the verb staged, resolved against the
-            // offer's own declared schema. This is the comparison that makes the
-            // A2 class of defect unrepresentable.
-            parameters: submit.parameters.clone(),
-        };
-        let execution = OfferExecutionContext {
-            request: RequestUid::from_bytes([token; 16]),
-            principal: PrincipalId::Object { id: submit.actor },
-            actor: submit.actor,
-            idempotency: ScopedIdempotencyKey::new(
-                IdempotencyScope {
-                    principal: PrincipalId::Object { id: submit.actor },
-                    owner: submit.action.key().owner.clone(),
-                    namespace: CanonicalId::new(submit.action.key().id.as_str()).unwrap(),
-                },
-                1,
-                IdempotencyKey::Request(RequestUid::from_bytes([token; 16])),
-            ),
-            viewer_scope: query.viewer_scope(),
-            now: None,
-        };
-        let resolved = engine
-            .resolve_legal_action(&offers, execution, submission)
-            .map_err(|error| format!("resolve: {error:?}"))?;
-        let (action, resolved, _guards) = resolved.into_authoritative_parts();
-        (action, resolved)
-    };
+    let (action, resolved, _guards) = resolve_submit(tw, submit, token)?.into_authoritative_parts();
     let (prepared, _) = tw
         .engine_mut()
         .prepare_registered_resolved_authoritative_action(
@@ -1003,6 +965,56 @@ fn drive_submit(
     let (_ops, installation) = prepared.into_parts();
     tw.engine_mut().install_prepared_action(installation);
     Ok(())
+}
+
+fn resolve_submit(
+    tw: &TestWorld,
+    submit: &mush_core::AuthoritativeSubmit,
+    token: u8,
+) -> Result<mush_core::ResolvedAuthoritativeOffer, String> {
+    let engine = tw.engine();
+    let query = engine
+        .legal_action_query(
+            PrincipalId::Object { id: submit.actor },
+            submit.actor,
+            submit.subject.clone(),
+        )
+        .map_err(|error| format!("query: {error:?}"))?;
+    let offers = engine
+        .project_legal_actions(&query)
+        .map_err(|error| format!("projection: {error:?}"))?;
+    let projected = offers
+        .projected_for_action(&submit.action)
+        .ok_or_else(|| "the tactical intent offer did not project".to_owned())?;
+    let submission = OfferSubmission {
+        offer: projected.offer(),
+        subject: projected.subject().clone(),
+        targets: submit.targets.clone(),
+        // **Verbatim**: the parameters the verb staged, resolved against the
+        // offer's own declared schema. This is the comparison that makes the
+        // A2 class of defect unrepresentable.
+        parameters: submit.parameters.clone(),
+    };
+    let execution = OfferExecutionContext {
+        request: RequestUid::from_bytes([token; 16]),
+        principal: PrincipalId::Object { id: submit.actor },
+        actor: submit.actor,
+        idempotency: ScopedIdempotencyKey::new(
+            IdempotencyScope {
+                principal: PrincipalId::Object { id: submit.actor },
+                owner: submit.action.key().owner.clone(),
+                namespace: CanonicalId::new(submit.action.key().id.as_str()).unwrap(),
+            },
+            1,
+            IdempotencyKey::Request(RequestUid::from_bytes([token; 16])),
+        ),
+        viewer_scope: query.viewer_scope(),
+        now: None,
+    };
+    let resolved = engine
+        .resolve_legal_action(&offers, execution, submission)
+        .map_err(|error| format!("resolve: {error:?}"))?;
+    Ok(resolved)
 }
 
 /// Run one verb and drive its submission all the way into the window.
@@ -1534,15 +1546,17 @@ fn vf_b1b_domain_tick_leaves_an_authoritative_submission_in_the_queue() {
 fn vf_b2a_the_measurement_models_one_post_image_per_unit_and_channel() {
     let at_cap = measure_tick_bundle(MAX_UNITS_PER_DOMAIN).expect("the cap encodes");
     assert_eq!(
-        at_cap.replay_writes, 261,
+        at_cap.replay_writes, 453,
         "64 units x 4 control channels saturate the window's 256 slots, plus the \
-         commit, the retained window, the next window, the reaped window and the \
-         ring's expiry"
+         commit, two windows, progress, schedule, and three capped removal sets"
     );
-    assert_eq!(at_cap.replay_write_percent(), 25);
+    assert_eq!(at_cap.replay_write_percent(), 44);
     // Four units are sixteen order post-images, not four.
     let four = measure_tick_bundle(4).expect("encodes");
-    assert_eq!(four.replay_writes, 4 * OrderChannel::all().len() + 5);
+    assert_eq!(
+        four.replay_writes,
+        4 * OrderChannel::all().len() + 5 + 3 * mush_sim::tick::MAX_REAP_PER_FIRE
+    );
 }
 
 /// **B3 (HIGH).** The commit key encoding is TOTAL over `i64`: no negative tick

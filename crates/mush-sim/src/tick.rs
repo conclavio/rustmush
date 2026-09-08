@@ -107,6 +107,8 @@ pub const SCHEDULE_FAMILY: &str = "domaintick_schedules";
 pub const COMMIT_FAMILY: &str = "domain_tick_commits";
 /// The per-`(unit, channel)` standing-order family.
 pub const ORDER_FAMILY: &str = "standing_orders";
+/// Commit-coupled progress through the three bounded retention scans.
+pub const REAP_FAMILY: &str = "tick_reap_progress";
 
 /// The `OwnerId` the tick's boundary facts are stamped with, and the
 /// `DurableOutboxAdapter` that carries them out of the bundle. They are
@@ -633,10 +635,9 @@ impl IntentKind {
     }
 }
 
-/// The parameters one tactical intent carries. Built by a trusted command
-/// handler (or by the deterministic fallback controller), never by a client:
-/// the station/epoch witness is pinned here at submit and **re-checked at
-/// resolution** through `World::channel_grant_is_current` (cut 5's rule).
+/// Untrusted parameters shared by command and structured ingress. The provider
+/// compares station coordinates with its fixed offer seat; the kernel issues
+/// selected contact witnesses, and the tick rechecks both before resolution.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TacticalIntentDoc {
@@ -668,6 +669,10 @@ pub struct TacticalIntentDoc {
     /// The opaque contact a discrete kind targets.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub contact: Option<ContactId>,
+    /// The observed contact generation. Required for targeted intents; a loss
+    /// and reacquisition may never authorize an intent from the old picture.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub contact_generation: Option<u64>,
     /// The bay or section a discrete kind names.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub slot: Option<String>,
@@ -685,6 +690,19 @@ impl TacticalIntentDoc {
     /// and the whole invocation is retained inside the window post-image, so an
     /// unbounded one is a stored record that could never have been written).
     pub fn validate(&self) -> Result<(), TickRecordError> {
+        let targeted = matches!(
+            self.kind,
+            IntentKind::Fire | IntentKind::Launch | IntentKind::Dock
+        );
+        if targeted != self.contact.is_some()
+            || targeted
+                != self
+                    .contact_generation
+                    .is_some_and(|generation| generation > 0)
+            || (!targeted && self.contact_generation.is_some())
+        {
+            return Err(TickRecordError::ChannelValueMismatch);
+        }
         if self.station.is_empty()
             || self.station.len() > MAX_STATION_TOKEN_BYTES
             || self.channel.is_empty()
@@ -1351,6 +1369,30 @@ pub(crate) struct TickFamilies {
     schedules: StateFamilyHandle<ScheduleId, DurableSchedule>,
     commits: StateFamilyHandle<TickCommitKey, DomainTickCommit>,
     orders: StateFamilyHandle<StandingOrderKey, StandingOrder>,
+    reaping: StateFamilyHandle<DomainId, TickReapProgress>,
+}
+
+/// One cursor per family and active domain. Aborted ticks never advance these
+/// cursors; restart resumes the exact committed scan, not the family prefix.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TickReapProgress {
+    commits: Option<String>,
+    windows: Option<String>,
+    orders: Option<String>,
+}
+
+impl TickReapProgress {
+    fn validate(&self) -> Result<(), String> {
+        if [&self.commits, &self.windows, &self.orders]
+            .into_iter()
+            .flatten()
+            .any(|key| key.is_empty() || key.len() > 64)
+        {
+            return Err("invalid tick retention cursor".to_owned());
+        }
+        Ok(())
+    }
 }
 
 fn descriptor(kind: &str, id: &str, payload: Value) -> Result<DefinitionDescriptor, ModError> {
@@ -1527,6 +1569,33 @@ struct TacticalIntentProvider {
 }
 
 impl TacticalIntentProvider {
+    /// Select an audience through current crew/proxy policy, then ask tactics
+    /// for its exact generation witness. No contact projection grants authority.
+    fn contact_request(
+        engine: &Engine,
+        invocation: &ActionInvocation,
+    ) -> Result<Option<mush_core::AuthorityWitnessRequest>, ActionError> {
+        let doc = Self::document(invocation)?;
+        let Some(id) = doc.contact else {
+            return Ok(None);
+        };
+        let generation = doc
+            .contact_generation
+            .ok_or_else(|| stale(NO_SUCH_CONTACT))?;
+        for principal in crate::combat::contact_holders(&engine.world, invocation.actor()) {
+            let request = mush_core::AuthorityWitnessRequest::Contact {
+                provider: OwnerId::new("tactics").expect("static owner"),
+                principal,
+                id,
+                generation,
+            };
+            if matches!(engine.authority_witness(&request), Ok(Some(_))) {
+                return Ok(Some(request));
+            }
+        }
+        Err(stale(NO_SUCH_CONTACT))
+    }
+
     fn document(invocation: &ActionInvocation) -> Result<TacticalIntentDoc, ActionError> {
         let raw = invocation
             .parameters()
@@ -1639,18 +1708,24 @@ impl ActionProvider for TacticalIntentProvider {
             return Ok(None);
         }
         // **The gate is the seat** (fold D1(a)/A1). `project_offer` is the one
-        // place on this lane with an `&Engine`, so it resolves the querying
+        // place that projects the seat, so it resolves the querying
         // actor's focused station, its published grant and its domain's live
         // pulse HERE — and returns `Ok(None)` when there is none, so the offer
         // no longer reaches every actor in the world.
         let Some(seat) = crate::combat::resolve_seat(&engine.world, query.actor()).ok() else {
             return Ok(None);
         };
+        let can_abandon = crate::focus::seat_restriction(
+            &engine.world,
+            query.actor(),
+            crate::focus::ProxyAct::Abandonment,
+        )
+        .is_ok();
         // **One offer per action kind, never one per target** (08i answer 11):
         // the whole tactical vocabulary is a single offer whose `intent` document
-        // names the kind, and the opaque contact choices ride the offer's own
-        // ≤ `MAX_PROJECTED_ACTION_CHOICES` bound. There is no per-station
-        // `ProjectionScopeId`.
+        // names the kind. Targeted documents carry an opaque contact and
+        // generation; resolution asks the contact owner for that one witness.
+        // There is no per-station `ProjectionScopeId` or full contact snapshot.
         let definitions = engine
             .registry
             .definitions()
@@ -1665,7 +1740,7 @@ impl ActionProvider for TacticalIntentProvider {
         Ok(Some(ProviderOfferDraft {
             // `merge_parameters` refuses a client key that collides with a fixed
             // one, so the seat is unforgeable rather than merely conventional.
-            fixed_parameters: json!({ "seat": seat }),
+            fixed_parameters: json!({ "seat": seat, "can_abandon": can_abandon }),
             parameters: ProjectedParameterSchema::new(vec![ProjectedParameter {
                 id: CanonicalId::new("intent")
                     .map_err(|_| integrity("the tactical parameter id is invalid"))?,
@@ -1688,6 +1763,17 @@ impl ActionProvider for TacticalIntentProvider {
                 .finish()
                 .map_err(|_| integrity("the tactical offer guards are invalid"))?,
         }))
+    }
+
+    fn resolved_authority_witnesses(
+        &self,
+        resolved: &mush_core::ResolvedActionInvocation,
+        engine: &Engine,
+    ) -> Result<Vec<mush_core::AuthorityWitnessRequest>, ActionError> {
+        let invocation = resolved.invocation();
+        Ok(Self::contact_request(engine, invocation)?
+            .into_iter()
+            .collect())
     }
 
     fn prepare_invocation(
@@ -1738,6 +1824,18 @@ impl TacticalIntentProvider {
         self.validate_invocation(invocation)?;
         let doc = Self::document(invocation)?;
         let seat = Self::seat(invocation)?;
+        if doc.kind == IntentKind::Eject
+            && invocation
+                .parameters()
+                .get("can_abandon")
+                .and_then(Value::as_bool)
+                != Some(true)
+        {
+            return Err(err(
+                ActionErrorCode::Unauthorized,
+                "that seat does not permit abandonment",
+            ));
+        }
         let owner = self.families.windows.owner().clone();
         // The seat is the authority. A mismatch on identity is `Unauthorized`;
         // a mismatch on the tick alone is `Stale`, because the pulse simply
@@ -1911,6 +2009,7 @@ struct TickPlan {
     /// Standing orders whose unit is no longer in any domain (fold A9): the
     /// book had no lifecycle at all and no `txn.remove` anywhere in the tree.
     reap_orders: Vec<StandingOrderKey>,
+    reap_progress: TickReapProgress,
 }
 
 impl DomainTickProvider {
@@ -1973,6 +2072,14 @@ impl DomainTickProvider {
                 "a domain tick reaps at most MAX_REAP_PER_FIRE records per family",
             ));
         }
+        let reap_progress: TickReapProgress = parameters
+            .get("reap_progress")
+            .cloned()
+            .map_or_else(|| Ok(TickReapProgress::default()), serde_json::from_value)
+            .map_err(|_| integrity("a domain tick names valid retention progress"))?;
+        reap_progress
+            .validate()
+            .map_err(|_| integrity("invalid retention cursor"))?;
         Ok(TickPlan {
             domain,
             tick,
@@ -1982,6 +2089,7 @@ impl DomainTickProvider {
             reap_commits,
             reap_windows,
             reap_orders,
+            reap_progress,
         })
     }
 
@@ -2126,6 +2234,7 @@ impl ActionProvider for DomainTickProvider {
                         "unit": doc.as_ref().map(|doc| doc.unit),
                         "value": doc.as_ref().and_then(|doc| doc.value.clone()),
                         "contact": doc.as_ref().and_then(|doc| doc.contact),
+                        "contact_generation": doc.as_ref().and_then(|doc| doc.contact_generation),
                         "slot": doc.as_ref().and_then(|doc| doc.slot.clone()),
                     }))
                     .collect::<Vec<_>>(),
@@ -2184,7 +2293,7 @@ impl ActionProvider for DomainTickProvider {
                     unit: doc.unit,
                     kind: Some(doc.kind),
                     outcome: DeltaOutcome::Refused {
-                        reason: "stale station authority".to_owned(),
+                        reason: "stale tactical authority".to_owned(),
                     },
                 });
                 continue;
@@ -2388,6 +2497,25 @@ impl ActionProvider for DomainTickProvider {
                 reaped = reaped.saturating_add(1);
             }
         }
+        if txn
+            .get(&self.families.reaping, &plan.domain)
+            .map_err(|error| state_error(&error))?
+            .is_some()
+        {
+            txn.replace(
+                &self.families.reaping,
+                &plan.domain,
+                plan.reap_progress.clone(),
+            )
+        } else {
+            txn.insert(
+                &self.families.reaping,
+                &plan.domain,
+                plan.reap_progress.clone(),
+            )
+        }
+        .map_err(|error| state_error(&error))?;
+
         // The next collection interval, so the following tick's submissions have
         // somewhere to go without a second authority opening it.
         let next_tick = plan.tick.saturating_add(1);
@@ -2402,7 +2530,7 @@ impl ActionProvider for DomainTickProvider {
                 &plan.observed_at.clock,
                 next_tick,
                 generation,
-                secret_version,
+                context.current_resolution_secret_version().ok(),
             )
             .map_err(|_| integrity("the next tick's window is unconstructible"))?;
             txn.insert(
@@ -2680,6 +2808,14 @@ impl PulseArmProvider {
                 txn.remove(&self.families.schedules, &id)
                     .map_err(|error| state_error(&error))?;
             }
+            if txn
+                .get(&self.families.reaping, &domain)
+                .map_err(|error| state_error(&error))?
+                .is_some()
+            {
+                txn.remove(&self.families.reaping, &domain)
+                    .map_err(|error| state_error(&error))?;
+            }
             // **A9:** the standing-order book leaves with the domain. Before
             // this fold there was no `txn.remove` on the order family anywhere
             // in the tree, so a captured unit booted with the previous
@@ -2875,6 +3011,14 @@ impl ScheduleActionAdapter for DomainTickScheduleAdapter {
                         unit == doc.unit && station.as_str() == doc.station
                     });
                 if focused
+                    && TacticalIntentProvider::contact_request(engine, intent.invocation()).is_ok()
+                    && (doc.kind != IntentKind::Eject
+                        || crate::focus::seat_restriction(
+                            &engine.world,
+                            intent.invocation().actor(),
+                            crate::focus::ProxyAct::Abandonment,
+                        )
+                        .is_ok())
                     && engine.world.channel_grant_is_current(
                         actor,
                         doc.unit,
@@ -2897,8 +3041,8 @@ impl ScheduleActionAdapter for DomainTickScheduleAdapter {
         // never from `plan.tick - 64` arithmetic against a non-consecutive
         // cursor. Each set is capped at `MAX_REAP_PER_FIRE` and resumes on the
         // next fire.
-        let (reap_commits, reap_windows, reap_orders) =
-            self.reap_sets(engine, state, domain, generation, tick);
+        let (reap_commits, reap_windows, reap_orders, reap_progress) =
+            self.reap_sets(engine, state, domain, generation, tick)?;
 
         let definitions = engine
             .registry
@@ -2924,6 +3068,7 @@ impl ScheduleActionAdapter for DomainTickScheduleAdapter {
                 "reap_commits": reap_commits,
                 "reap_windows": reap_windows,
                 "reap_orders": reap_orders,
+                "reap_progress": reap_progress,
             }),
             guards: guards
                 .finish()
@@ -2932,14 +3077,39 @@ impl ScheduleActionAdapter for DomainTickScheduleAdapter {
     }
 }
 
+/// Visit at most one page, stopping at the removal cap WITHOUT skipping the
+/// unvisited suffix. An exhausted page wraps only when the family is exhausted.
+fn reap_page<K, V, R>(
+    engine: &Engine,
+    family: &StateFamilyHandle<K, V>,
+    after: Option<&str>,
+    select: impl Fn(&V) -> Option<R>,
+) -> Result<(Vec<R>, Option<String>), ActionError>
+where
+    K: Send + Sync + 'static,
+    V: Clone + Send + Sync + 'static,
+{
+    let page = engine
+        .action_state()
+        .scan_family(family, after, MAX_REAP_SCAN_RECORDS)
+        .map_err(|error| state_error(&error))?;
+    let mut selected = Vec::new();
+    for (index, entry) in page.entries().iter().enumerate() {
+        if let Some(key) = select(entry.value()) {
+            selected.push(key);
+        }
+        if selected.len() == MAX_REAP_PER_FIRE && index + 1 < page.entries().len() {
+            return Ok((selected, Some(entry.encoded_key().to_owned())));
+        }
+    }
+    Ok((selected, page.next_after().map(ToString::to_string)))
+}
+
 impl DomainTickScheduleAdapter {
-    /// Name, from the real families, what this fire may remove.
-    ///
-    /// Bounded on records **visited** (`MAX_REAP_SCAN_RECORDS`) and on records
-    /// **named** (`MAX_REAP_PER_FIRE`), and **resumable**: a fire that fills its
-    /// cap leaves the rest for the next one, two seconds later, so the ring
-    /// converges rather than truncating (E4c V6's rule read the honest way for a
-    /// self-healing sweep).
+    /// Read-only planning; progress is installed beside the removals in the
+    /// same authoritative tick. Other domains' live records cannot hide this
+    /// domain's expired records, and refusal/abort cannot skip a page.
+    #[allow(clippy::type_complexity)]
     fn reap_sets(
         &self,
         engine: &Engine,
@@ -2947,84 +3117,70 @@ impl DomainTickScheduleAdapter {
         domain: DomainId,
         generation: u64,
         tick: i64,
-    ) -> (
-        Vec<TickCommitKey>,
-        Vec<ActionWindowId>,
-        Vec<StandingOrderKey>,
-    ) {
-        let mut commits: Vec<TickCommitKey> = Vec::new();
-        let mut windows: Vec<ActionWindowId> = Vec::new();
-        let mut orders: Vec<StandingOrderKey> = Vec::new();
+    ) -> Result<
+        (
+            Vec<TickCommitKey>,
+            Vec<ActionWindowId>,
+            Vec<StandingOrderKey>,
+            TickReapProgress,
+        ),
+        ActionError,
+    > {
+        let progress = engine
+            .action_state()
+            .get(&self.families.reaping, &domain)
+            .map_err(|error| state_error(&error))?
+            .cloned()
+            .unwrap_or_default();
         let oldest_retained = tick.saturating_sub(MAX_RETAINED_TICK_COMMITS as i64);
-        if let Ok(page) =
-            engine
-                .action_state()
-                .scan_family(&self.families.commits, None, MAX_REAP_SCAN_RECORDS)
-        {
-            for entry in page.entries() {
-                if commits.len() >= MAX_REAP_PER_FIRE {
-                    break;
-                }
-                let commit = entry.value();
-                if commit.domain() != domain {
-                    continue;
-                }
-                // A superseded generation's commits, and anything that has
-                // fallen out of the last `MAX_RETAINED_TICK_COMMITS` ticks.
-                if commit.generation() != generation || commit.tick() < oldest_retained {
-                    commits.push(commit.key());
-                }
-            }
-        }
-        if let Ok(page) =
-            engine
-                .action_state()
-                .scan_family(&self.families.windows, None, MAX_REAP_SCAN_RECORDS)
-        {
-            for entry in page.entries() {
-                if windows.len() >= MAX_REAP_PER_FIRE {
-                    break;
-                }
-                let record = entry.value();
+        let (commits, commit_cursor) = reap_page(
+            engine,
+            &self.families.commits,
+            progress.commits.as_deref(),
+            |commit| {
+                (commit.domain() == domain
+                    && (commit.generation() != generation || commit.tick() < oldest_retained))
+                    .then(|| commit.key())
+            },
+        )?;
+        let (windows, window_cursor) = reap_page(
+            engine,
+            &self.families.windows,
+            progress.windows.as_deref(),
+            |record| {
                 let ClockRef::DomainTick {
-                    id: window_domain,
-                    generation: window_generation,
+                    id,
+                    generation: old_generation,
                     ..
                 } = record.window().clock()
                 else {
-                    continue;
+                    return None;
                 };
-                if domain_id_of(window_domain) != Some(domain) {
-                    continue;
-                }
-                // A window of a superseded generation is an orphan; so is one
-                // strictly older than the tick this fire consumes, which is what
-                // makes the consumed window's one-tick retention finite.
-                if *window_generation != generation || record.window().opens().at < tick {
-                    windows.push(record.window().id());
-                }
-            }
-        }
-        if let Ok(page) =
-            engine
-                .action_state()
-                .scan_family(&self.families.orders, None, MAX_REAP_SCAN_RECORDS)
-        {
-            for entry in page.entries() {
-                if orders.len() >= MAX_REAP_PER_FIRE {
-                    break;
-                }
-                let order = entry.value();
-                // **A9:** an order whose unit is in no domain at all — unplaced,
-                // quarantined or destroyed — has no crew that could ever
-                // overwrite it, so it is the row that would otherwise outlive
-                // the unit's capture.
-                if crate::graph::effective_domain(state, order.unit()).is_none() {
-                    orders.push(order.key());
-                }
-            }
-        }
-        (commits, windows, orders)
+                (domain_id_of(id) == Some(domain)
+                    && (*old_generation != generation || record.window().opens().at < tick))
+                    .then(|| record.window().id())
+            },
+        )?;
+        let (orders, order_cursor) = reap_page(
+            engine,
+            &self.families.orders,
+            progress.orders.as_deref(),
+            |order| {
+                crate::graph::effective_domain(state, order.unit())
+                    .is_none()
+                    .then(|| order.key())
+            },
+        )?;
+        Ok((
+            commits,
+            windows,
+            orders,
+            TickReapProgress {
+                commits: commit_cursor,
+                windows: window_cursor,
+                orders: order_cursor,
+            },
+        ))
     }
 }
 
@@ -3172,6 +3328,8 @@ pub struct TickHandles {
     /// it so it can arm only what is **unarmed** (fold D3(a)); every write is
     /// still `PulseArmProvider`'s, inside an `ActionTxn`.
     pub schedules: StateFamilyHandle<ScheduleId, DurableSchedule>,
+    /// Committed progress of the bounded retention sweep.
+    pub reaping: StateFamilyHandle<DomainId, TickReapProgress>,
 }
 
 impl std::fmt::Debug for TickHandles {
@@ -3688,9 +3846,9 @@ impl TickBundleMeasurement {
 /// `min(MAX_INTENTS_PER_TICK, units × OrderChannel::all().len())` `StandingOrder`
 /// post-images, the consumed window's one-tick retention, the
 /// `DomainTickCommit` with one delta per intent, its recorded draws and its
-/// `ResolutionRecord`, the ring's expiry removal, the previous window's reap,
-/// the next window's post-image, and one boundary fact (hence one outbox
-/// payload) per intent up to `MAX_BOUNDARY_FACTS_PER_TICK`.
+/// `ResolutionRecord`, the next window's post-image, the kernel schedule,
+/// retention progress and three full removal sets, and one boundary fact
+/// (hence one outbox payload) per intent up to `MAX_BOUNDARY_FACTS_PER_TICK`.
 ///
 /// # Panics
 ///
@@ -3836,6 +3994,28 @@ pub fn measure_tick_bundle(units: usize) -> Option<TickBundleMeasurement> {
         })
         .max()
         .unwrap_or(0);
+    let reap_progress = TickReapProgress {
+        commits: Some("9".repeat(64)),
+        windows: Some("f".repeat(64)),
+        orders: Some("9".repeat(64)),
+    };
+    let reap_commits: Vec<_> = (0..MAX_REAP_PER_FIRE)
+        .map(|index| TickCommitKey {
+            domain,
+            generation,
+            tick: tick - MAX_RETAINED_TICK_COMMITS as i64 - index as i64 - 1,
+        })
+        .collect();
+    let reap_windows: Vec<_> = (0..MAX_REAP_PER_FIRE)
+        .map(|index| tick_window_id(&owner, domain, generation, tick - index as i64 - 1))
+        .collect::<Option<Vec<_>>>()?;
+    let reap_orders: Vec<_> = (0..MAX_REAP_PER_FIRE)
+        .map(|index| StandingOrderKey {
+            unit: ObjId(u32::MAX - index as u32),
+            channel: OrderChannel::Heading,
+        })
+        .collect();
+    let schedule = pulse_cursor(&owner, domain, &clock, tick + 1).ok()?;
     let bundle = json!({
         "orders": orders,
         "commit": commit,
@@ -3843,6 +4023,11 @@ pub fn measure_tick_bundle(units: usize) -> Option<TickBundleMeasurement> {
         "next_window": next_window,
         "resolution": resolution,
         "outbox": payloads,
+        "reap_progress": reap_progress,
+        "reap_commits": reap_commits,
+        "reap_windows": reap_windows,
+        "reap_orders": reap_orders,
+        "schedule": schedule,
     });
     let bundle_bytes =
         canonical_json_bytes_with_limit(&bundle, mush_core::MAX_AUTHORITATIVE_BUNDLE_BYTES)
@@ -3850,11 +4035,14 @@ pub fn measure_tick_bundle(units: usize) -> Option<TickBundleMeasurement> {
             .len();
     // **Counted off the encoded bundle**, one write per record the tick names:
     // every `StandingOrder` post-image, the commit, the retained consumed
-    // window, the next window, the reaped previous window and the expired ring
-    // entry.
+    // window, the next window, sweep progress, the kernel-seeded schedule,
+    // and all three bounded removal sets (not just one illustrative deletion).
     let replay_writes = orders
         .len()
         .checked_add(5)
+        .and_then(|writes| {
+            writes.checked_add(reap_commits.len() + reap_windows.len() + reap_orders.len())
+        })
         .filter(|writes| *writes <= mush_core::MAX_AUTHORITATIVE_REPLAY_WRITES)?;
     Some(TickBundleMeasurement {
         units,
@@ -3923,7 +4111,7 @@ fn definition_ref_of(descriptor: &DefinitionDescriptor) -> Result<DefinitionRef,
         .map_err(|error| ModError::msg(error.to_string()))
 }
 
-/// Register the pulse: four typed families, the window guard validator, the one
+/// Register the pulse: five typed families, the window guard validator, the one
 /// domain clock provider, two action providers and **one** schedule source.
 ///
 /// Called from `SimulationModule::register`, under **this** owner, because the
@@ -4011,11 +4199,35 @@ pub(crate) fn register(
         |value: &StandingOrder| value.validate_document().map_err(|error| error.to_string()),
         |value: &StandingOrder| serde_json::to_value(value).map_err(|error| error.to_string()),
     )?;
+    let reaping = reg.state_family(
+        StateFamilyDescriptor::new(
+            StateFamilyId::new(REAP_FAMILY).map_err(|error| ModError::msg(error.to_string()))?,
+            CanonicalId::new("sim.domain_id.v1")
+                .map_err(|error| ModError::msg(error.to_string()))?,
+            CanonicalId::new("sim.tick_reap_progress.v1")
+                .map_err(|error| ModError::msg(error.to_string()))?,
+            1,
+            CanonicalId::new("sim.tick_reap_progress.decode.v1")
+                .map_err(|error| ModError::msg(error.to_string()))?,
+            CanonicalId::new("sim.tick_reap_progress.validate.v1")
+                .map_err(|error| ModError::msg(error.to_string()))?,
+            CanonicalId::new("sim.tick_reap_progress.json.v1")
+                .map_err(|error| ModError::msg(error.to_string()))?,
+        )
+        .map_err(|error| ModError::msg(error.to_string()))?
+        .with_limits(20, 1024)
+        .map_err(|error| ModError::msg(error.to_string()))?,
+        |key: &DomainId| Ok(format!("{:020}", key.0)),
+        |value: &Value| serde_json::from_value(value.clone()).map_err(|error| error.to_string()),
+        TickReapProgress::validate,
+        |value: &TickReapProgress| serde_json::to_value(value).map_err(|error| error.to_string()),
+    )?;
     let families = TickFamilies {
         windows,
         schedules,
         commits,
         orders,
+        reaping,
     };
 
     // **B1 — the one owner-scoped production domain clock provider.**
@@ -4027,6 +4239,7 @@ pub(crate) fn register(
         orders: families.orders.clone(),
         windows: families.windows.clone(),
         schedules: families.schedules.clone(),
+        reaping: families.reaping.clone(),
     });
 
     reg.action_provider(
@@ -4575,7 +4788,7 @@ mod measurement_report {
     /// What the fold corrected is where that ceiling sits. A window slot is one
     /// intent per `(actor, truth_subject)`, and the tick writes one
     /// `StandingOrder` per `(unit, channel)` over **four** continuous channels —
-    /// so 64 units reach 256 order post-images and **261 replay writes (25 %)**,
+    /// so 64 units reach 256 order post-images and **453 replay writes (44 %)**,
     /// not 68 (6 %). `MAX_UNITS_PER_DOMAIN` 64 is therefore **exactly** the
     /// window's own ceiling on the continuous surface, not four times below it,
     /// and it remains a latency and offer-budget policy figure — still four
@@ -4607,10 +4820,10 @@ mod measurement_report {
             "the window capacity, not the unit count, is what stops the write count"
         );
         assert_eq!(
-            at_cap.replay_writes, 261,
+            at_cap.replay_writes, 453,
             "the measured worst case at MAX_UNITS_PER_DOMAIN"
         );
-        assert_eq!(at_cap.replay_write_percent(), 25);
+        assert_eq!(at_cap.replay_write_percent(), 44);
         assert_eq!(
             MAX_UNITS_PER_DOMAIN * OrderChannel::all().len(),
             MAX_INTENTS_PER_TICK as usize,
