@@ -1943,7 +1943,9 @@ impl ObjectStore for InMemoryStore {
             // state, so a failure leaves the store untouched: all-or-nothing.
             let mut docs = Vec::with_capacity(batch.upserts.len());
             for obj in &batch.upserts {
-                docs.push((obj.id.0, serde_json::to_string(obj)?));
+                let doc = serde_json::to_string(obj)?;
+                crate::types::refuse_over_deep_object_doc(obj.id, &doc)?;
+                docs.push((obj.id.0, doc));
             }
             let mut planned = Vec::with_capacity(batch.module_ops.len());
             for op in &batch.module_ops {
@@ -4199,5 +4201,100 @@ mod tests {
         assert_eq!(read, text);
         assert_eq!(mush_core::depth_of_json_text(&read), depth);
         assert!(mush_core::depth_of_json_text(&read) > mush_core::MAX_DOC_DEPTH);
+    }
+
+    /// The parity half of the Redis regression in
+    /// `tests/redis_suite.rs::one_undecodable_object_doc_does_not_abort_the_world_load`:
+    /// this store already classifies a bad document per key, because it
+    /// decodes inside the loop. The Redis store used to decode inside its
+    /// transport helper, so one over-deep `locks` tree aborted the whole load.
+    /// Pinning the shape here is what makes "the two backends agree" a fact
+    /// rather than a hope.
+    #[tokio::test]
+    async fn one_undecodable_doc_does_not_abort_the_world_load() {
+        let store = InMemoryStore::new();
+        let good = |id: u32| Obj::new(ObjId(id), mush_core::ObjKind::Thing, "keep", ObjId(1), 0);
+        store
+            .write(WriteBatch {
+                serial: 1,
+                upserts: vec![good(1), good(2)],
+                next_id: Some(3),
+                ..WriteBatch::default()
+            })
+            .await
+            .expect("seed two sound objects");
+
+        // Past `serde_json`'s recursion limit, so no decoder reaches the end
+        // of it — the shape a hostile `locks` tree takes in a store.
+        let depth = 200;
+        let deep = format!(
+            r#"{{"id":9,"name":"deep","locks":{{"Enter":{}}}}}"#,
+            "[".repeat(depth) + &"]".repeat(depth)
+        );
+        assert!(
+            serde_json::from_str::<serde_json::Value>(&deep).is_err(),
+            "the plant is only a plant if it is genuinely undecodable"
+        );
+        store
+            .debug_plant_raw_doc("obj:9", &deep)
+            .await
+            .expect("plant an undecodable doc");
+
+        let snapshot = store
+            .load_world()
+            .await
+            .expect("one undecodable doc must not abort the load")
+            .expect("a seeded store is not empty");
+        assert_eq!(snapshot.corrupt_docs, 1);
+        let mut ids: Vec<u32> = snapshot.objects.iter().map(|o| o.id.0).collect();
+        ids.sort_unstable();
+        assert_eq!(ids, vec![1, 2], "the sound objects still load");
+    }
+
+    /// The poison path: a document past [`mush_core::MAX_DOC_DEPTH`] never
+    /// reaches the store, on either backend.
+    ///
+    /// Nothing legal builds one — `parse_lock` bounds the tallest shape this
+    /// server writes, and the deepest document it constructs measures 98
+    /// levels against a bound of 120 — so this is reached only by a bug, and
+    /// the refusal is deliberately [`StoreError::Corrupt`]: a write the world
+    /// cannot read back is worse than a write that never happened.
+    #[tokio::test]
+    async fn the_write_path_refuses_an_over_deep_object_doc() {
+        let store = InMemoryStore::new();
+        let mut obj = Obj::new(ObjId(1), mush_core::ObjKind::Thing, "poison", ObjId(1), 0);
+        // Nested by a loop, so building the fixture does not itself recurse.
+        let mut value = serde_json::Value::Null;
+        for _ in 0..mush_core::MAX_DOC_DEPTH {
+            value = serde_json::Value::Array(vec![value]);
+        }
+        obj.attrs
+            .set("deep", mush_core::Attr::json(value, ObjId(1)));
+        assert!(
+            mush_core::depth_of_json_text(
+                &serde_json::to_string(&obj).expect("the fixture serializes")
+            ) > mush_core::MAX_DOC_DEPTH,
+            "the fixture must actually be over the bound"
+        );
+
+        let error = store
+            .write(WriteBatch {
+                serial: 1,
+                upserts: vec![obj],
+                next_id: Some(2),
+                ..WriteBatch::default()
+            })
+            .await
+            .expect_err("an over-deep object doc is never written");
+        assert!(
+            matches!(error, StoreError::Corrupt(ref m) if m.contains("JSON levels deep")),
+            "{error:?}"
+        );
+        assert!(
+            !error.is_transient(),
+            "retrying a poisoned batch never helps"
+        );
+        // All-or-nothing: the refused batch left no trace.
+        assert_eq!(store.load_world().await.expect("load"), None);
     }
 }

@@ -192,6 +192,53 @@ fn authoritative_ledger_bundle(token_byte: u8, request_byte: u8) -> Authoritativ
     )
 }
 
+/// The deepest document `serde_json` will decode, and therefore the deepest
+/// one RedisJSON's own `JSON.SET` parser will store: its recursion budget is
+/// 128 containers and entering the 128th spends the last of it.
+const DEEPEST_STORABLE_DOC: usize = 127;
+
+/// One object doc at exactly `depth` JSON levels, all of the depth inside
+/// `locks` — the shape a hostile lock key takes once it is sitting in a store.
+fn deep_lock_obj_doc(id: u32, depth: usize) -> String {
+    // The `Obj` and its `locks` map spend the first two levels.
+    let arrays = depth - 2;
+    format!(
+        r#"{{"id":{id},"name":"deep","locks":{{"Enter":{}}}}}"#,
+        "[".repeat(arrays) + &"]".repeat(arrays)
+    )
+}
+
+/// A `MakeWriter` collecting everything a `fmt` layer writes, so a test can
+/// assert on the diagnostic an operator would actually read.
+#[derive(Clone, Default)]
+struct Capture(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+impl Capture {
+    fn text(&self) -> String {
+        String::from_utf8_lossy(&self.0.lock().expect("capture buffer")).into_owned()
+    }
+}
+
+impl std::io::Write for Capture {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0
+            .lock()
+            .expect("capture buffer")
+            .extend_from_slice(buf);
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Capture {
+    type Writer = Capture;
+    fn make_writer(&'a self) -> Self::Writer {
+        self.clone()
+    }
+}
+
 macro_rules! redis_gated {
     ($name:ident, $store:ident, $body:block) => {
         #[tokio::test]
@@ -1550,3 +1597,90 @@ redis_gated!(kill9_equivalent_reconnect_load, store, {
     store.wipe_namespaces().await.expect("cleanup");
     store.close().await.expect("close");
 });
+
+// One undecodable object doc must not take the whole world load with it.
+//
+// This is a Redis-only failure and belongs to a live server: `load_world`
+// used to call a helper that did transport *and* decode in one step, and
+// propagated the decode error with `?` **outside** the per-key match that
+// already skips a corrupt doc. So a single object whose `locks` nested past
+// what `serde_json` will read back made the entire world unloadable, naming
+// no key. The in-memory store never had the bug (it decodes inside the
+// loop), which is why the same test there proves nothing — the parity case
+// lives in `memory.rs` as a pin, this one is the regression.
+//
+// The knife edge is real rather than contrived: RedisJSON parses `JSON.SET`
+// with the same `serde_json`, so it happily stores a document one level
+// under the limit — and then `JSON.GET key $` hands it back wrapped in a
+// one-element path-match array, which spends that last level.
+redis_gated!(
+    one_undecodable_object_doc_does_not_abort_the_world_load,
+    store,
+    {
+        let doc = deep_lock_obj_doc(9, DEEPEST_STORABLE_DOC);
+        // Prove the fixture before spending a round trip on it: storable,
+        // and undecodable only once the reply wrapper is around it. If either
+        // half stops holding, this test is vacuous and must say so.
+        assert_eq!(
+            mush_core::depth_of_json_text(&doc),
+            DEEPEST_STORABLE_DOC,
+            "the fixture is built to an exact depth"
+        );
+        serde_json::from_str::<serde_json::Value>(&doc)
+            .expect("a doc at the limit must still be storable, or nothing can be planted");
+        serde_json::from_str::<Vec<serde_json::Value>>(&format!("[{doc}]")).expect_err(
+            "the JSON.GET wrapper must push the fixture past the decode limit, or this              test proves nothing",
+        );
+
+        let sound = |id: u32| Obj::new(ObjId(id), ObjKind::Thing, "keep", ObjId(1), 0);
+        store
+            .write(WriteBatch {
+                serial: 1,
+                upserts: vec![sound(1), sound(2)],
+                next_id: Some(10),
+                durable: true,
+                ..WriteBatch::default()
+            })
+            .await
+            .expect("seed two sound objects");
+        store
+            .debug_plant_raw_doc("obj:9", &doc)
+            .await
+            .expect("RedisJSON stores a document at its own parser's limit");
+
+        let capture = Capture::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_ansi(false)
+            .with_writer(capture.clone())
+            .finish();
+        let guard = tracing::subscriber::set_default(subscriber);
+        let snapshot = store
+            .load_world()
+            .await
+            .expect("one undecodable doc must not abort the load")
+            .expect("a seeded store is not empty");
+        drop(guard);
+
+        assert_eq!(
+            snapshot.corrupt_docs, 1,
+            "the bad doc is counted, not fatal"
+        );
+        let mut ids: Vec<u32> = snapshot.objects.iter().map(|o| o.id.0).collect();
+        ids.sort_unstable();
+        assert_eq!(ids, vec![1, 2], "the sound objects still load");
+        assert_eq!(snapshot.next_id, 10);
+
+        let log = capture.text();
+        assert!(
+            log.contains("obj:9"),
+            "the skipped key must be named or the operator cannot find it: {log}"
+        );
+        assert!(
+            log.contains("undecodable object doc"),
+            "the diagnostic must say what happened: {log}"
+        );
+
+        store.wipe_namespaces().await.expect("cleanup");
+        store.close().await.expect("close");
+    }
+);

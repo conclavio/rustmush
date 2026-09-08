@@ -1483,6 +1483,35 @@ impl StoreError {
     }
 }
 
+/// The write path's last-resort nesting check on a serialized object doc.
+///
+/// **This is the poison path, not validation.** Nothing this server builds
+/// can reach it. The deepest document it constructs is an object carrying a
+/// maximal lock tree, and `mush_core` pins that at 98 JSON levels against a
+/// [`mush_core::MAX_DOC_DEPTH`] of 120 — because `parse_lock` already refuses
+/// anything over `MAX_LOCK_EXPR_DEPTH` (48) at the one gate where a *player*
+/// can be told why. A document that trips this check therefore is not bad
+/// input: it is a tree no parser would have built, and the only honest answer
+/// is to keep it out of the store rather than persist a document boot cannot
+/// read back.
+///
+/// It is deliberately [`StoreError::Corrupt`], which is non-transient: the
+/// write-behind retry loop will not wedge itself on it, and the server latches
+/// integrity and freezes the world instead of surfacing it as a refusal a
+/// player could provoke. That consequence is exactly why enforcement lives at
+/// the parse gate and this is only the backstop under it.
+pub(crate) fn refuse_over_deep_object_doc(id: ObjId, doc: &str) -> Result<(), StoreError> {
+    let depth = mush_core::depth_of_json_text(doc);
+    if depth > mush_core::MAX_DOC_DEPTH {
+        return Err(StoreError::Corrupt(format!(
+            "object {id} serializes {depth} JSON levels deep, past the limit of {} this store \
+             will write",
+            mush_core::MAX_DOC_DEPTH
+        )));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

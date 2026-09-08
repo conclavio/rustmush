@@ -19,6 +19,9 @@ sha2.workspace = true
 
 [dev-dependencies]
 tokio.workspace = true
+# A skipped document is only diagnosable if the log names the key that
+# carried it, so the load-world regression asserts on the event itself.
+tracing-subscriber.workspace = true
 
 [lints]
 workspace = true

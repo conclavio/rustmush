@@ -536,18 +536,50 @@ fn classify_non_json_module_key(
     }
 }
 
-/// `JSON.GET key $` → the raw doc, unwrapped from RedisJSON's one-element
-/// path-match array. `Ok(None)` when the key is gone.
-async fn json_doc(client: &Client, key: &str) -> Result<Option<serde_json::Value>, StoreError> {
+/// The **transport** half of [`json_doc`]: `JSON.GET key $`, the reply
+/// verbatim — RedisJSON's one-element path-match array, still text.
+/// `Ok(None)` when the key is gone.
+///
+/// Every error from here is a *read* failure (connection, timeout,
+/// `WRONGTYPE`) and never a statement about what the document contains, which
+/// is the whole point of the split: a caller reading a namespace key by key
+/// can propagate a read failure and still attribute a bad document to the one
+/// key that carries it.
+async fn json_doc_reply(client: &Client, key: &str) -> Result<Option<String>, StoreError> {
     let raw: Option<String> = client
         .json_get::<Option<String>, _, &str, &str, &str, _>(key, None, None, None, "$")
         .await?;
-    let Some(raw) = raw else { return Ok(None) };
-    let mut matches: Vec<serde_json::Value> = serde_json::from_str(&raw)?;
+    Ok(raw)
+}
+
+/// The **decode** half of [`json_doc`]: the path-match array parsed and
+/// unwrapped. `Ok(None)` when the array is empty (the path matched nothing).
+///
+/// The error type is `serde_json`'s rather than [`StoreError`] so a caller
+/// cannot accidentally treat "this one document is undecodable" as "the read
+/// failed". That distinction is not theoretical: `serde_json` refuses at 128
+/// container levels and the `JSON.GET` wrapper array spends one of them, so a
+/// document RedisJSON itself accepted can still be undecodable here — one
+/// stored object doc that must not take a whole world load down with it.
+fn decode_json_doc(reply: &str) -> Result<Option<serde_json::Value>, serde_json::Error> {
+    let mut matches: Vec<serde_json::Value> = serde_json::from_str(reply)?;
     if matches.is_empty() {
         return Ok(None);
     }
     Ok(Some(matches.swap_remove(0)))
+}
+
+/// `JSON.GET key $` → the raw doc, unwrapped from RedisJSON's one-element
+/// path-match array. `Ok(None)` when the key is gone.
+///
+/// Transport and decode in one step, for the single-key reads where a bad
+/// document *is* a failed read. A caller that must survive one bad document
+/// among many uses [`json_doc_reply`] + [`decode_json_doc`] instead.
+async fn json_doc(client: &Client, key: &str) -> Result<Option<serde_json::Value>, StoreError> {
+    let Some(raw) = json_doc_reply(client, key).await? else {
+        return Ok(None);
+    };
+    Ok(decode_json_doc(&raw)?)
 }
 
 /// [`json_doc`] without the decode: the document's **text**, unwrapped from
@@ -2463,21 +2495,36 @@ impl ObjectStore for RedisStore {
             let mut objects = Vec::with_capacity(keys.len());
             let mut corrupt = 0usize;
             for key in &keys {
-                match json_doc(&self.client, key).await? {
+                // Transport and decode are separate on purpose: a read
+                // failure is the load's (propagate), an undecodable document
+                // is one key's (count it, name it, keep going). Folding the
+                // two together let one over-deep `locks` tree abort the whole
+                // world load naming no key at all.
+                let Some(reply) = json_doc_reply(&self.client, key).await? else {
                     // Key vanished between SCAN and GET: fine, skip.
-                    None => {}
-                    Some(doc) => match serde_json::from_value::<Obj>(doc) {
-                        Ok(obj) => {
-                            if obj_key(obj.id) != *key {
-                                tracing::warn!(key, id = %obj.id, "object doc id/key mismatch");
-                            }
-                            objects.push(obj);
+                    continue;
+                };
+                let doc = match decode_json_doc(&reply) {
+                    // The path matched nothing: same as gone.
+                    Ok(None) => continue,
+                    Ok(Some(doc)) => doc,
+                    Err(e) => {
+                        corrupt += 1;
+                        tracing::error!(key, error = %e, "skipping undecodable object doc");
+                        continue;
+                    }
+                };
+                match serde_json::from_value::<Obj>(doc) {
+                    Ok(obj) => {
+                        if obj_key(obj.id) != *key {
+                            tracing::warn!(key, id = %obj.id, "object doc id/key mismatch");
                         }
-                        Err(e) => {
-                            corrupt += 1;
-                            tracing::error!(key, error = %e, "skipping corrupt object doc");
-                        }
-                    },
+                        objects.push(obj);
+                    }
+                    Err(e) => {
+                        corrupt += 1;
+                        tracing::error!(key, error = %e, "skipping corrupt object doc");
+                    }
                 }
             }
             if corrupt > 0 {
@@ -2512,7 +2559,9 @@ impl ObjectStore for RedisStore {
             // MULTI — a refused op leaves the store untouched.
             let mut docs = Vec::with_capacity(batch.upserts.len());
             for obj in &batch.upserts {
-                docs.push((obj_key(obj.id), serde_json::to_string(obj)?));
+                let doc = serde_json::to_string(obj)?;
+                crate::types::refuse_over_deep_object_doc(obj.id, &doc)?;
+                docs.push((obj_key(obj.id), doc));
             }
             enum Planned {
                 JsonSet {
@@ -3326,6 +3375,44 @@ mod tests {
         assert_eq!(config.version, RespVersion::RESP3);
         assert!(config.fail_fast, "boot must fail fast when unreachable");
         assert!(builder.get_policy().is_some(), "reconnect policy set");
+    }
+
+    /// The one proof that WS01-S1's lock bound and `serde_json`'s recursion
+    /// limit agree **at this seam**, wrapper included.
+    ///
+    /// `MAX_LOCK_EXPR_DEPTH` (48) is an AST bound; what this store decodes is
+    /// text, and `JSON.GET key $` hands back the document inside a one-element
+    /// path-match array, so the number that has to clear `serde_json`'s limit
+    /// is the object's serialized depth **plus one**. A legal maximal lock is
+    /// the deepest document this server can be made to write, so if anything
+    /// legal were ever going to be undecodable on the way back in, it would be
+    /// this one.
+    #[test]
+    fn a_maximal_lock_round_trips_through_the_path_match_wrapper() {
+        use mush_core::{LockType, MAX_LOCK_EXPR_DEPTH, ObjKind, parse_lock};
+
+        // A flat `&` chain left-nests one level per term, so a chain exactly
+        // MAX_LOCK_EXPR_DEPTH long is the tallest tree the parser will build;
+        // `sex:m*le` is an `AttrMatch`, the costliest leaf.
+        let terms = usize::try_from(MAX_LOCK_EXPR_DEPTH).expect("bound fits");
+        let src = vec!["sex:m*le"; terms].join(" & ");
+        let expr = parse_lock(&src, |_| Some(ObjId(1))).expect("a maximal lock parses");
+        let mut obj = Obj::new(ObjId(7), ObjKind::Thing, "deep", ObjId(1), 0);
+        obj.locks.insert(LockType::Enter, expr);
+
+        // The write path takes it: the backstop is under legal data, not on it.
+        let doc = serde_json::to_string(&obj).expect("a maximal object serializes");
+        crate::types::refuse_over_deep_object_doc(obj.id, &doc)
+            .expect("the deepest legal object is not the poison path");
+
+        // And the read path takes it back, through exactly the two decodes
+        // `load_world` performs: the wrapper array, then the object.
+        let reply = format!("[{doc}]");
+        let decoded = decode_json_doc(&reply)
+            .expect("the wrapper must not push a legal object past the recursion limit")
+            .expect("a one-element path match is not empty");
+        let back: Obj = serde_json::from_value(decoded).expect("the object decodes");
+        assert_eq!(back, obj, "a maximal lock survives the store's round trip");
     }
 
     #[test]
