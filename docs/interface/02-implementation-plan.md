@@ -1,6 +1,6 @@
 # 02 — Interface programme (I): implementation plan
 
-**Draft 1.3 — 2026-09-07** (the changelog in §10 carries every draft).
+**Draft 1.4 — 2026-09-07** (the changelog in §10 carries every draft).
 Scoped from [01-assessment.md](01-assessment.md)
 against the tree at `a0142e3` (working tree; E7 in flight on main). Every
 symbol named here was opened in that tree; line numbers are deliberately not
@@ -671,6 +671,11 @@ these deviations and details:
    through ratatui's `TestBackend`; `UPDATE_GOLDEN=1` rewrites them.
 10. The clock gutter is UTC `HH:MM` (the server has no per-player zone);
     the tab strip's right side is `<name> ● <n> on <HH:MM>`.
+11. **The sketch's fields, as built** (look-back I2-C1): `select` became
+    `PaneRow.prefill` / `PrefillRow`, `BorderRole::Input` the input box's own
+    border, `PaneContent::Table` the I9 `render_view_rows` renderer and
+    `Text` the `Placeholder`; `right_title` was never built and has no
+    consumer.
 
 ### 3.3 Cut I3 — Line-mode typography
 
@@ -691,7 +696,10 @@ against, so it changes typographically and keeps its sentences (§8 q3).
   tagged `roll`: `roll  Mireille  perception+alertness  8 6 4 3 = 2
   successes  diff 6` (Shadowrun: `roll  Pellet  hacking+logic  … = 4 hits
   (limit 6)`). Line mode prints it as-is; the TUI and web put `roll` in the
-  gutter. The private `.roll` panel to the roller is unchanged.
+  gutter. The private `.roll` panel to the roller is unchanged. *As built:* the
+Shadowrun tail reads `[Physical limit 6]` (deviation 3), and the web
+**demotes** the roll line rather than guttering it (§3.5; look-back
+I3-C12/C13).
 - **WHO Where** (D-I-12). `who_entries` fills `location` when it equals the
   viewer's room (players) or always (staff, unchanged); `render_who` gains a
   `Where` column and the footer `N connected, M in your room.`
@@ -868,7 +876,7 @@ applied after the data exists (§8 q11).
 - **Mobile:** the composer as a bottom sheet with the mode chips, exits as a
   chip row, rails as drawers (existing).
 
-**Tests (~15).** Grouping rules including the window, the room-change break
+**Tests (~15; 11 built).** Grouping rules including the window, the room-change break
 and the never-group kinds; demoted classes; the serif class applies only to
 narrative prose; the card renders for the roller only.
 
@@ -903,7 +911,7 @@ these particulars:
 - Mobile: the composer is a sticky bottom sheet below 800 px with the
   preview hidden; the timestamp gutter goes; the room band's exit chips and
   the rail drawers were already there from I4.
-- Tests: `web/src/lib/scene.test.ts` (12) — bodies per kind, the grouping
+- Tests: `web/src/lib/scene.test.ts` (11) — bodies per kind, the grouping
   kinds, classes, the roll span, the roller-only rule, and the grouping
   rules (same speaker, a different speaker, an intervening event, an emit
   from the same actor, the window measured from the previous line, the
@@ -922,8 +930,10 @@ every later HUD reuses.
 - **Shadowrun combat screen** (TUI screen 6 and web screen `combat` when the
   ruleset is Shadowrun): physical and stun monitors with the wound modifier,
   limits, edge, initiative (base, dice, and the last `+init` result), recent
-  `sr.roll` entries; the "next box → −3" warning arrives as `detail` from
-  `extra_vitals`. This is mockup S1's meat pane and mockup S2's damage pane
+  `sr.roll` entries; the wound modifier arrives as the track's `detail` from
+  the generic publisher (`from_sheet` / `wound_penalty` — the *current*
+  penalty, not a "next box" prediction; look-back I6-C12). This is mockup
+  S1's meat pane and mockup S2's damage pane
   without the drone or the deck.
 - **WoD**: the scene screen's vitals strip (health boxes and level, blood,
   willpower, splat pool) and a roll builder — web: attribute and ability
@@ -962,8 +972,8 @@ a reason the plan did not have in front of it:
   for the unknown, `tableCells`). TUI: `render_vitals_rows` in
   `tui/render.rs` with the same rules (`▰▱` gauges with digits, boxes
   grouped by three with the level and detail, `✓ ◐ ✗` condition column;
-  ASCII fallbacks). The Shadowrun "next box → −3" warning is the frame's
-  `detail`, shown beside the track.
+  ASCII fallbacks). The Shadowrun wound modifier is the frame's `detail`,
+  shown beside the track (the current penalty; look-back I6-C12).
 - **Roll builder.** Web: `RollBuilder.svelte` over `src/lib/rollbuilder.ts`
   — pickers from every dotted, categorised, player-visible field grouped in
   schema order, difficulty 3–9, the `/spec` switch, `Roll` sends and
@@ -1238,8 +1248,9 @@ deviations:
   damage screen's column balance (Main takes every surplus column while
   the right column clips its rows at 32) wants a layout weight, not a
   `min_w`. `tactics.vitals` stacks beside the character's `.vitals` in
-  both clients' strips (no width budget). `settle_mobility` and the
-  destroy hook bump the revision with no delta — both clients REPLACE on
+  both clients' strips (no width budget). The apply/create adjoining
+  `settle_mobility`, and the destroy hook, bump the revision with no delta
+  — both clients REPLACE on
   an equal revision, which is the defence; write it down before any
   "drop on equal" optimisation. The TUI resync always fetches the default
   subject (ring rows carry their object; the before/after filters). The
@@ -1479,7 +1490,8 @@ the web client.**
   (the four kinds as a centred dialog, a bottom sheet on a phone; an option
   answers by id, Cancel sends `cancel`, the deadline drops it locally so the
   server applies its default), wired into `GameApp` (`c.on("request")`,
-  `respond(id, choice)` sends `Respond`, cleared on logout). Tests in
+  `respond(id, choice)` sends `Respond`, cleared at every game-entry seam).
+  Tests in
   `requests.test.ts`.
 - **The additive-variant tax:** an ignore or seam arm in `mush-ansi` (line
   mode renders nothing — a line-only client falls back to the server
@@ -1635,9 +1647,11 @@ viewer may not see? **B (bounds)**.
 client surfaces; the E6a/page producers held back.** The event and all three
 renders landed; the server-side producers beyond the mail shim are deferred,
 deliberately, to keep this cut out of the E7-active economy crates until it
-lands.
+lands. *The producers landed later in the same cut (the list below); the
+job-status notices, the one promised producer still missing, landed on
+2026-09-07 (look-back I11-C24).*
 
-- **The wire (commit `ce33afc`).** `OutputEvent::Notice { id, severity:
+- **The wire (commit `33ed114`).** `OutputEvent::Notice { id, severity:
   Info | Warn | Urgent, category, text, action?: { label, prefill }, ts }`,
   additive and ts-exported, with `NoticeSeverity`/`NoticeAction` and
   `MAX_NOTICE_TEXT_BYTES = 512`. The producer seam (`Ctx::…`) bounds the text
@@ -1688,6 +1702,13 @@ producer to `MAX_NOTICE_TEXT_BYTES`; the web history capped at
 `NOTIFICATION_CAP`, the toasts at `MAX_TOASTS`; the TUI count is a
 `saturating_add`. Never idle: `Notice` is delivered, and its apply path never
 stamps `last_input`.
+
+**Look-back (2026-09-07).** The `MailNotice` compatibility shim is web-only:
+the TUI and line mode render mail through their own `MailNotice` arms and
+never through the notice surface, and no server-side mail `Notice` producer
+exists — a permanent shim unless one is written (LB-19, open). The job-status
+producer was folded: `mush-jobs` `notify` now emits a `jobs` `Notice` with an
+`Open` action prefilling `+job <id>` beside its Sys line (I11-C24).
 
 ### 3.12 Cut I12 — Server-side narrative backlog
 
@@ -1783,7 +1804,7 @@ verify (leak ×2, staleness/bounds); the design **holds**. **Approach R
   primitive; 1 bridge handler + 2 one-line routing arms; the web prepend; TUI
   optional.
 
-**As built (2026-09-05) — server + web (`17d524d`).** As designed. Proto
+**As built (2026-09-05) — server + web (`00db8f8`).** As designed. Proto
 `Query::NarrativeBacklog { before_seq?, limit }` (gen-ts regenerated).
 `mush-session`: `backlog_matching(sess, before_seq, limit, keep) ->
 NarrativeBacklog { lines, more, evicted }` beside `replay_since`;
@@ -1862,9 +1883,9 @@ by `mush-scenes`.
   transport-side, `@history` does not stamp idle (D-I-3), which the intercept
   documents. Page size 100 rather than the gateway's 200: one page is one
   write raced against the SSH write timeout.
-- **Tests (26 + 1 golden).** `backlog.rs` (3); `app.rs` (17, the first being the
+- **Tests (26 + 1 golden).** `backlog.rs` (3); `app.rs` (16, the first being the
   regression that matters: a backlog reply never reaches the panel store);
-  the golden (1); loopback end to end over real SSH (6: oldest-first with
+  the golden (1); loopback end to end over real SSH (7: oldest-first with
   header/footer and the exact `{before_seq, limit}` sent, `more` carrying the
   cursor and a third refused locally, `+history` the same verb, an
   unsolicited narrative Panel printing nothing, `@tui` surfacing the primed
@@ -2198,7 +2219,8 @@ Six standing rules:
   proto shape, whole frames, a monotonic `revision`, and the `.vitals`
   suffix convention the clients already use for `.sheet` and `.roll`. They
   are **declared** on `FieldDef.vital` and computed generically by
-  `mush-ruleset`, with `Ruleset::extra_vitals` for derived values. TacSim
+  `mush-ruleset`, with the ruleset's `VitalsSource` for derived values (the
+  design's `Ruleset::extra_vitals`, renamed as built). TacSim
   publishes `tactics.vitals` from unit cells (I8) and, later, from the rules
   pack's display metadata (§9). Rationale: 01 §4 item 1 — one gauge for a
   health track, a condition monitor and a heat cell; the sheet schema is the
@@ -2396,7 +2418,7 @@ Six standing rules:
 | `MAX_SCREENS` / `MAX_PANES_PER_SCREEN` | 9 / 8 | TUI |
 | `GUTTER_W` (screens) / line-mode fact gutter | 10 / 9 | TUI, web, `mush-ansi` |
 | `TUI_HISTORY` | 200 | TUI (matches the web) |
-| `SCROLLBACK_CAP` | 1000 (existing) | TUI |
+| `SCROLLBACK_CAP` | TUI 1000 / web 5000 | the two rings differ (look-back LB-26) |
 | `MAX_TUI_FEEDS` | 32 | TUI, each ≤ `MAX_VIEW_DATA_BYTES` |
 | Golden sizes | 80×24, 120×34, 160×44 | TUI tests |
 | `GROUP_WINDOW_S` | 300 | web grouping |
@@ -2411,6 +2433,11 @@ Six standing rules:
 | `MAX_OPEN_REQUESTS_PER_SUBJECT` | 32 | `mush-core/src/request.rs` (I10); the TUI overlay queue mirrors it |
 | `NARRATIVE_PAGE` / `BACKLOG_LATCH_S` | 100 / 5 | TUI (I12) |
 | `HISTORY_DEFAULT` / `HISTORY_MAX` / `HISTORY_LATCH` | 20 / 100 / 5 s | line mode (I12); the gateway's own clamp is 200 |
+| `MAX_REQUEST_OPTIONS` / `MAX_REQUEST_PROMPT_BYTES` / `MAX_REQUEST_TEXT_BYTES` | 32 / 2048 / 2048 | proto (I10) |
+| `MAX_NOTICE_TEXT_BYTES` | 512 | proto (I11) |
+| `NOTIFICATION_CAP` / `MAX_TOASTS` | 100 / 3 | web (I11) |
+| `BACKLOG_RING` | 200 | TUI comsys backlog pane |
+| `MAX_VIEW_ROWS` / `MAX_VIEW_FIELDS` (web) · `VIEW_MAX_COLS` (TUI) | 256 / 32 · 12 | I9; the two renderers' caps diverge (look-back LB-17, open) |
 
 **Global keys (both clients; a screen may not rebind these).**
 
@@ -2421,13 +2448,14 @@ Six standing rules:
 | `"` `:` `;` `\` | enter input mode with the trigger typed | insert |
 | `/` | enter input mode with `/` typed and the palette open | insert; on an empty box, open the palette |
 | `Esc` | close overlay | leave to nav, keep the draft (close the palette first if open) |
-| `Tab` / `Shift-Tab` | pane focus forward / back | completion |
+| `Tab` / `Shift-Tab` (TUI) | pane focus forward / back | completion |
 | `↑` `↓` | scroll the focused pane | history |
 | `PgUp` `PgDn` | scroll the focused pane | scroll the scrollback |
-| `g` / `G` | top / bottom of the focused pane | insert |
+| `g` / `G` (TUI; the web reserves them, unbound) | top / bottom of the focused pane | insert |
 | `?` | help overlay for the screen | insert |
 | Alt+key | the key's nav action | **the key's nav action** (`Alt+1` = screen 1, `Alt+t` = target, `Alt+?` = help) |
-| `F1`–`F9` | switch screen | switch screen |
+| `F1`–`F9` (TUI) | switch screen | switch screen |
+| `^N` / `^O` / `^R` (TUI) | IC pane / OOC pane / roll-line prefill | the same |
 | `^K` | toggle the palette | toggle the palette |
 | `^P` | cycle the sticky mode | cycle the sticky mode |
 | `^]` | detach (TUI) | detach (TUI) |
@@ -2499,20 +2527,64 @@ modal ruling (D-I-17, D-I-18) rather than by its default.**
   load-bearing: the ≤16 vitals cut is alphabetical, and an accumulator such
   as heat reads inverted until `warn`/`crit` are declared) and, for the
   kernel, a subject→actor grant index so the after-action fan-out stops
-  walking the connected set.*
+  walking the connected set.* **Re-filed 2026-09-07** (E7 is complete and
+  cannot receive them; [05-look-back.md](05-look-back.md) §6 names the
+  owners): the cell display metadata and the `keys` legend →
+  `ruleset-tacsim`; the contact-id derivation → K; the proxy-driver seam →
+  core/K; the subject→actor grant index → K; E7k lane L3 → `mush-tactics`; the
+  `.view` suffix for `tactics.contacts` → the E7 crates; the `UnitCatalog`
+  composition at the root → the server (an owner decision, 05 §7).
 - **To E6.** The `scene` ambient key and the `scenes` feed read only what
   E6b owns; if `SceneRecord` changes, the ambient contributor is the one
   place to update. `scene.outcome` stays E6b's.
-- **To the rulesets.** `FieldDef.vital`, `Ruleset::extra_vitals`,
-  `SheetStore::put_in` and its probe, the `roll` narration tag.
+- **To the rulesets.** `FieldDef.vital`, `VitalsSource` (the design's
+  `Ruleset::extra_vitals`), `SheetStore::put_in` and its probe, the `roll`
+  narration tag.
 - **To the web client's known gaps** (`web/README.md`): the sheet keyframe on
   mutation closes "live-enough, not truly live"; `SheetPanel`'s poll and the
-  refresh heuristic can retire after I1.
+  refresh heuristic can retire after I1. *Discharged: I4 retired the poll;
+  I13 made the sheet live by push (2026-09-07).*
+
+**Known open (2026-09-07, from the look-back; each true, safe and recorded
+here once).** The proxy-driver HUD is contacts-only (§3.8); a destroyed unit's
+stationed viewers cannot be refreshed by the destroy hook (§3.8); the TUI
+priming race paints a line twice across the mode flip (§3.12 — the envelope
+seq at the Ansi sink closes it); the line-mode history latch can be stolen by
+a late page under a stalled pump (§3.12 — a per-connection correlation id);
+`cleared > 0 ⇒ !backlog_more` is held by construction, not asserted. I9's
+form was never joined to I10 and the bespoke `ActionsPanel`/`SheetPanel` were
+never retired — both non-goals now (LB-30). I13's `show_staff` staleness and
+the B→A delta upgrade are coupled: a field-diff delta must land the
+fingerprint fix in the same cut (LB-31). The pose counter (§8 q13) stays
+deferred (LB-33). The tactics `≤16` cut and the accumulator ladder wait on the
+pack's display metadata (LB-7's I half is blocked on it, not on I). A Paradox
+vital wants thresholds the rules have not declared (LB-22 — an owner's rules
+call, not a default).
 
 ---
 
 ## 10. Changelog
 
+- **Draft 1.4 — 2026-09-07.** The **I1–I13 look-back**
+  ([05-look-back.md](05-look-back.md), Draft 0.1, grounded at `673db4c`):
+  576 claims, 506 implemented as stated, 29 confirmed gaps (1 high, 5 medium),
+  37 debt items, the hand-offs re-filed with owners, six owner decisions. Its
+  fold-now code list folded across three lanes (the web vitals watermark
+  reset on hello, the web `/clear` re-arm, `feedScreens` across a character
+  switch, the generic-view refresh and duplicate keys, Sr5 rolls on the web
+  and `+init/roll` on `sr.roll`, the channel screen's Enter, the
+  `NarrativeBacklog` round-trip, the strict query-flood test, `GameApp.act`,
+  the `intel` bridge map, the TUI feed gates, the vitals gauge width, the
+  `RUN_ALLOWLIST` fixture, the line-mode Notice/Request goldens, the
+  job-status notices, the sheet-probe needles, the vitals cleanliness probe,
+  the `ic` flag round-trip) and its doc batch (this draft: §3.2 item 11,
+  §3.3's as-built note, the I5/I12 counts, the I6 wound-modifier wording,
+  the I11 hash and shim note, the I12 hash, D-I-2 and §9 `VitalsSource`,
+  §7's new rows and per-client key markers, §9's re-filed hand-offs and
+  the known-open block). Owner decisions surfaced, not taken: the empty
+  `UnitCatalog` (LB-6), the consolidated verify over I1–I7 + I9 (LB-5), the
+  digitless-screen policy (LB-15), the ring measurement (LB-13), the T3
+  panes (LB-14), the hand-off filings (LB-34..37).
 - **Draft 1.3 — 2026-09-07.** The remaining slate **built in three lanes**
   under the owner's standing order (no owner fork surfaced). **I13** (§3.13
   "As built — part 2"): the server-side sheet cap (`MAX_SHEET_DOC_BYTES`,
@@ -2580,7 +2652,7 @@ modal ruling (D-I-17, D-I-18) rather than by its default.**
   implementation-verify fold (§3.12/§3.13 notes) and the help/README
   discipline fold.
 - **Draft 1.0 — 2026-09-05.** I12 and I13 **built** on the approved designs
-  (§3.12/§3.13 as-built). I12 (`17d524d`): resume-ring-backed narrative backlog,
+  (§3.12/§3.13 as-built). I12 (`00db8f8`): resume-ring-backed narrative backlog,
   server + web (TUI/line deferred). I13 (`89c8a9e`): full-data versioned sheet
   delta + a `SheetView`/fingerprint refactor, all three producers + both
   clients. Every folded verify fix landed; the one "high" I13 claim

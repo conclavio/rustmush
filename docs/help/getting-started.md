@@ -46,7 +46,11 @@ mail; channels; rolls; intel; actions, and two tactical screens — a damage
 report and a unit view — that show your unit whenever you hold a station on
 one (they are always in the strip) — with single-key navigation and an
 input box you open with Enter. "@notui" (or Ctrl-]) returns to the classic
-line view, which stays the default. See "help tui".
+line view, which stays the default. See "help tui". In either view the
+server keeps the recent scene lines you already saw: in the line view
+"@history" prints the last 20 oldest first ("@history 50" for more,
+"@history more" to keep going back); in the dashboard the same history
+loads above your scrollback when you scroll to the top.
 
 In the web client, a bell collects notices — new mail, a page, an alert —
 first as a brief toast, then in a tray you can open any time; a notice's

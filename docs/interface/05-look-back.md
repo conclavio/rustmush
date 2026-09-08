@@ -171,6 +171,19 @@ Each has a receiving owner named here because E7 is complete and 10b carries non
 
 ## 7. The fold list
 
+**Fold status (2026-09-07, same day, the commits following `f7bc801`).** Code
+items 1–15 and 17 folded in three lanes; 18 folded for LB-12, LB-17, LB-20,
+LB-21, LB-24, LB-25 (LB-22's thresholds are an owner's rules call; LB-18 is a
+devDependency decision). 16 (LB-7's I half) is **blocked on the pack's display
+metadata**, not on I — the ≤16 cut has no declared priority to follow and no
+cell says it is an accumulator; re-filed with §6 item 4. The docs batch landed
+as plan Draft 1.4 (README LB-27 included; `screens.test.ts`'s title left).
+The owner decisions below are untaken. Two things the fold changed beyond its
+rows: `/clear` on the web is now a floor like the TUI's and a character switch
+re-arms it (`#resetGameState` → `beginSegment`); `feed_query` in the TUI is a
+third hand-kept copy of the bridge's feed→query map until
+`Registrar::panel_feed` declares its keyframe query (LB-10's long fix, open).
+
 Ordered; every item is build-affecting and small enough to fold now. Effort XS < S.
 
 **Fold now (code)**
