@@ -25,7 +25,7 @@ use mush_server::gateway_sink::GatewaySink;
 use mush_server::quarantine::QuarantineSpool;
 use mush_server::staff::StaffQueue;
 use mush_server::world_task::{
-    self, Gateway, PersistHandles, ServerDeps, spawn_persist_with_gateway,
+    self, Gateway, PersistHandles, ServerDeps, WorldOutcome, spawn_persist_with_gateway,
 };
 use mush_store::{
     AccountRec, BanRec, DiscordBanRec, DiscordCodeRecord, DiscordLinkRec, InMemoryStore,
@@ -392,10 +392,11 @@ async fn cmd(handle: &world_task::WorldHandle, line: &str) {
 // ---------------------------------------------------------------------------
 
 /// The fault the gate exists for: a command handler mutates the world and then
-/// panics. The world task really unwinds — its join is an error — and because
-/// the publication is the loop function's last statement, nothing marks the
-/// exit clean. `mushd`'s shutdown tail would otherwise see a perfectly drained
-/// writer and a clear integrity latch and snapshot the half-world.
+/// panics. Since WS01-S4 the dispatch boundary catches that panic, so the join
+/// resolves with [`WorldOutcome::Faulted`] instead of a `JoinError` — but the
+/// firewall breaks out *below* the clean-exit publication, so the flag still
+/// reads false. `mushd`'s shutdown tail would otherwise see a perfectly drained
+/// writer and snapshot the half-world.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_panicking_world_task_is_not_a_clean_exit() {
     let store: Arc<dyn ObjectStore> = Arc::new(InMemoryStore::new());
@@ -408,10 +409,10 @@ async fn a_panicking_world_task_is_not_a_clean_exit() {
 
     cmd(&handles.handle, "exit-panic").await;
 
-    let joined = handles.world_join.await;
+    let joined = handles.world_join.await.expect("the firewall caught it");
     assert!(
-        joined.is_err(),
-        "the handler must really panic the world task, not simulate it"
+        matches!(joined, WorldOutcome::Faulted(_)),
+        "the handler must really panic the world task, not simulate it: {joined:?}"
     );
     assert!(
         !world_exit.is_clean(),

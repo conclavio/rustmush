@@ -125,6 +125,10 @@ pub struct Metrics {
     sessions_current: AtomicI64,
     connections_current: AtomicI64,
     commands_total: AtomicU64,
+    /// Panics caught at the world task's dispatch boundary. Any value
+    /// above zero means the single writer was thrown out of its own state
+    /// machine and the world is frozen; it is an alert, not a trend.
+    world_panics_total: AtomicU64,
 
     // -- world loop (published each sample) --
     loop_lag_last_ms: AtomicU64,
@@ -288,6 +292,15 @@ impl Metrics {
     /// Count one processed command (world task, per `Inbound::Cmd`).
     pub fn command_processed(&self) {
         self.commands_total.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Count one panic caught at the world task's dispatch boundary.
+    ///
+    /// The world task must never panic (docs/PLAN.md); when one is caught
+    /// anyway the loop freezes persistence and stops. This counter is what
+    /// makes that visible to a scraper without reading the log.
+    pub fn world_panic(&self) {
+        self.world_panics_total.fetch_add(1, Ordering::Relaxed);
     }
 
     // -- world-loop sampling ----------------------------------------------
@@ -662,6 +675,7 @@ impl Metrics {
             sessions_current: self.sessions_current.load(Ordering::Relaxed),
             connections_current: self.connections_current.load(Ordering::Relaxed),
             commands_total: self.commands_total.load(Ordering::Relaxed),
+            world_panics_total: self.world_panics_total.load(Ordering::Relaxed),
             loop_lag_last_ms: self.loop_lag_last_ms.load(Ordering::Relaxed),
             loop_lag_max_ms: self.loop_lag_max_ms.load(Ordering::Relaxed),
             lag_buckets: std::array::from_fn(|i| self.lag_buckets[i].load(Ordering::Relaxed)),
@@ -842,6 +856,8 @@ pub struct MetricsSnapshot {
     pub connections_current: i64,
     /// Commands processed since boot.
     pub commands_total: u64,
+    /// Panics caught at the world task's dispatch boundary since boot.
+    pub world_panics_total: u64,
     /// Most recent loop lag, ms.
     pub loop_lag_last_ms: u64,
     /// Worst loop lag since boot, ms.
@@ -1073,6 +1089,13 @@ impl MetricsSnapshot {
             "counter",
             "Commands processed by the world task since boot.",
             &[(&[], self.commands_total as f64)],
+        );
+        metric(
+            &mut o,
+            "mush_world_panics_total",
+            "counter",
+            "Panics caught at the world task's dispatch boundary since boot.",
+            &[(&[], self.world_panics_total as f64)],
         );
 
         // Loop lag: last/max gauges + a native histogram.

@@ -76,7 +76,10 @@ pub mod world_task {
     /// in-memory persistence, delivering in-process over the shared
     /// `SessionManager`.
     #[must_use]
-    pub fn spawn(engine: Engine, sessions: Arc<SessionManager>) -> (WorldHandle, JoinHandle<()>) {
+    pub fn spawn(
+        engine: Engine,
+        sessions: Arc<SessionManager>,
+    ) -> (WorldHandle, JoinHandle<WorldOutcome>) {
         let handles = spawn_persist(engine, sessions, ServerDeps::in_memory());
         (handles.handle, handles.world_join)
     }

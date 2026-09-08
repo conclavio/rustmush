@@ -1515,6 +1515,68 @@ impl ServerDeps {
     }
 }
 
+/// How the world loop's own function ended.
+///
+/// Distinct from [`WorldExitStatus`], which answers whether the loop reached a
+/// *clean shutdown*: this says whether it walked out of its state machine at
+/// all, or was thrown out of it by a panic the dispatch boundary caught. Every
+/// ordinary break — including the ones that are not clean exits — is
+/// [`Clean`](WorldOutcome::Clean); only the firewall produces
+/// [`Faulted`](WorldOutcome::Faulted).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum WorldOutcome {
+    /// The loop ended through one of its own breaks.
+    Clean,
+    /// A synchronous engine entry panicked; the loop froze persistence,
+    /// discarded the faulted turn and stopped.
+    Faulted(WorldFault),
+}
+
+/// One caught panic: where the loop was, and what the payload said.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WorldFault {
+    /// The guarded call site (a static label, not a source location).
+    pub site: &'static str,
+    /// The downcast panic payload, or a placeholder for a non-string one.
+    pub detail: String,
+}
+
+/// Render a `catch_unwind` payload as text. Both shapes `panic!` produces are
+/// covered; anything else is named rather than dropped.
+fn panic_detail(payload: &(dyn std::any::Any + Send)) -> String {
+    payload
+        .downcast_ref::<&'static str>()
+        .map(|text| (*text).to_owned())
+        .or_else(|| payload.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "<non-string panic payload>".to_owned())
+}
+
+/// The world-task dispatch boundary: run one **synchronous** engine entry and
+/// turn a panic into a value.
+///
+/// The world task owns the in-RAM world and must never panic (docs/PLAN.md
+/// "Architecture"), but every command handler, tick, observer and hook in the
+/// process runs inside it — a single `unwrap` in module code used to take the
+/// whole game down while the store writer kept its queue. This is the same
+/// shape the script host already uses for the interpreter
+/// (`mush_script::runtime`): [`AssertUnwindSafe`](std::panic::AssertUnwindSafe)
+/// because the world is genuinely observed after the catch, which is exactly
+/// why the caller must freeze persistence rather than carry on.
+///
+/// It cannot cover a panic across an `.await` — the driver sites are futures,
+/// not closures — so the task's `JoinError` remains the net for those.
+fn guard<T>(site: &'static str, call: impl FnOnce() -> T) -> Result<T, WorldFault> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(call)).map_err(|payload| {
+        let detail = panic_detail(payload.as_ref());
+        tracing::error!(
+            site,
+            detail = %detail,
+            "WORLD TASK PANIC caught at the dispatch boundary; the world is stopping frozen"
+        );
+        WorldFault { site, detail }
+    })
+}
+
 /// Handles from [`spawn_persist`]: the sender everything talks through and
 /// the join handles the shutdown sequence awaits **in order** (world first,
 /// then the writer — dropping the world task's job sender is what lets the
@@ -1522,8 +1584,9 @@ impl ServerDeps {
 pub struct PersistHandles {
     /// Sender handle for the world task.
     pub handle: WorldHandle,
-    /// The world task itself.
-    pub world_join: JoinHandle<()>,
+    /// The world task itself. Its value says whether the loop ended through
+    /// its own state machine or through the panic firewall.
+    pub world_join: JoinHandle<WorldOutcome>,
     /// The store-writer task (drains after the world task ends).
     pub writer_join: JoinHandle<()>,
     /// Recovery-driven durable external-delivery worker.
@@ -3398,7 +3461,7 @@ async fn run(
     decision_runtime: Option<DecisionRuntime>,
     initial_mode: Option<WorldMode>,
     _outbox_lifetime: watch::Sender<bool>,
-) {
+) -> WorldOutcome {
     tracing::info!("world task running");
     let boot_unix = unix_now_s();
     // The LLM service handle (built from [llm] config) that drives a module's
@@ -3514,6 +3577,34 @@ async fn run(
     // reaches the statement at all. The shutdown coordinator refuses the final
     // BGSAVE unless it is set.
     let mut clean_exit = false;
+    // Set by the panic firewall alone, and read by the very last statement of
+    // this function. A faulted break never sets `clean_exit`, so a caught panic
+    // can no more publish a clean exit than an uncaught one could.
+    let mut fault: Option<WorldFault> = None;
+    // Every SYNCHRONOUS engine entry below runs through this. On a caught panic
+    // the loop records the fault, freezes persistence, discards the faulted
+    // turn's residue, and breaks — it never re-enters the engine afterwards and
+    // never releases the half-written output of the turn that faulted.
+    macro_rules! guarded {
+        ($site:expr, $call:expr) => {
+            match guard($site, || $call) {
+                Ok(value) => value,
+                Err(caught) => {
+                    fault = Some(recover_from_world_fault(
+                        caught,
+                        &mut engine,
+                        &mut out,
+                        &mut fx,
+                        &gateway,
+                        &mut health,
+                        &persistence_integrity,
+                        &metrics,
+                    ));
+                    break;
+                }
+            }
+        };
+    }
     loop {
         let admission_mode = match (&pending_commit, health.mode) {
             // IntegrityFrozen is stricter than every in-flight state and may
@@ -3688,7 +3779,7 @@ async fn run(
                                 deferred_world_msg = Some(WorldMsg::Inbound(msg));
                                 StepOutcome::Continue
                             } else {
-                                engine.step(msg, &mut out, &mut fx)
+                                guarded!("engine.step", engine.step(msg, &mut out, &mut fx))
                             }
                         }
                         WorldMsg::ReAttach { recs } => {
@@ -3726,7 +3817,10 @@ async fn run(
                                 // connection's world-side state without a
                                 // connect announce/hook/event, then push each
                                 // session a fresh room render.
-                                apply_reattach_snapshot(&mut engine, &recs, &mut out);
+                                guarded!(
+                                    "apply_reattach_snapshot",
+                                    apply_reattach_snapshot(&mut engine, &recs, &mut out)
+                                );
                                 tracing::info!(
                                     count = recs.len(),
                                     "re-attached held connections after restart"
@@ -3742,14 +3836,17 @@ async fn run(
                                     // Emitted BEFORE the flush so whatever the
                                     // observers persist rides the same durable
                                     // creation batch.
-                                    engine.emit_world_event(
-                                        &WorldEvent::ObjCreated {
-                                            obj: id,
-                                            kind: ObjKind::Player,
-                                            creator: mush_core::GOD,
-                                        },
-                                        &mut out,
-                                        &mut fx,
+                                    guarded!(
+                                        "emit_world_event/ObjCreated",
+                                        engine.emit_world_event(
+                                            &WorldEvent::ObjCreated {
+                                                obj: id,
+                                                kind: ObjKind::Player,
+                                                creator: mush_core::GOD,
+                                            },
+                                            &mut out,
+                                            &mut fx,
+                                        )
                                     );
                                     // The common post-step commit path below owns
                                     // the exact receipt and completes this typed
@@ -3806,7 +3903,11 @@ async fn run(
                                 custom_id: interaction.custom_id.clone(),
                                 values: interaction.values.clone(),
                             };
-                            let result = match engine.discord_interaction(&core, &mut out) {
+                            let dispatched = guarded!(
+                                "discord_interaction",
+                                engine.discord_interaction(&core, &mut out)
+                            );
+                            let result = match dispatched {
                                 None => Err(mush_ipc::DiscordInteractionError::UnknownPrefix),
                                 Some(Ok(text)) => Ok(text),
                                 Some(Err(why)) => {
@@ -4004,20 +4105,26 @@ async fn run(
                     .take()
                     .expect("commit receipt cannot resolve without a pending commit");
                 let exit_after_ack = pending.exit_after_ack;
-                let mut completed = complete_pending_commit(
-                    pending,
-                    ack,
-                    &mut engine,
-                    &gateway,
-                    &mut health,
-                    &persistence_integrity,
-                    &tx,
-                    llm.as_ref(),
-                    &deps.store,
+                let mut completed = guarded!(
+                    "complete_pending_commit",
+                    complete_pending_commit(
+                        pending,
+                        ack,
+                        &mut engine,
+                        &gateway,
+                        &mut health,
+                        &persistence_integrity,
+                        &tx,
+                        llm.as_ref(),
+                        &deps.store,
+                    )
                 );
                 let decision_response = completed.decision_response.take();
                 let decision_terminal = completed.decision_terminal.take();
-                finish_pending_operational(&mut engine, &gateway, completed);
+                guarded!(
+                    "finish_pending_operational",
+                    finish_pending_operational(&mut engine, &gateway, completed)
+                );
                 if let Some(response) = decision_response {
                     let resolving = if let Some(store) = deps.store.authoritative_store() {
                         stage_decision_resolving(
@@ -4112,7 +4219,10 @@ async fn run(
                 // wake here is then only the re-emit nudge, which drives the
                 // foot-of-loop persistence flush (re-emit stays live while frozen).
                 if admission_for(admission_mode, IngressClass::Timer) == Admission::Allow {
-                    engine.fire_due(unix_now_ms(), &mut out, &mut fx);
+                    guarded!(
+                        "fire_due",
+                        engine.fire_due(unix_now_ms(), &mut out, &mut fx)
+                    );
                 }
                 StepOutcome::Continue
             }
@@ -4700,7 +4810,10 @@ async fn run(
                     shutdown_deadline = Some(Instant::now() + Duration::from_secs(15));
                     StepOutcome::Continue
                 } else {
-                    engine.step(Inbound::Control(ControlMsg::Shutdown), &mut out, &mut fx)
+                    guarded!(
+                        "engine.step/shutdown",
+                        engine.step(Inbound::Control(ControlMsg::Shutdown), &mut out, &mut fx)
+                    )
                 }
             }
             Wake::ShutdownDeadline => {
@@ -4714,18 +4827,24 @@ async fn run(
                 )
                 .await;
                 if let Some(pending) = pending_commit.take() {
-                    let completed = complete_pending_commit(
-                        pending,
-                        Err(AuthoritativeCommitFailure::Integrity(detail.to_owned())),
-                        &mut engine,
-                        &gateway,
-                        &mut health,
-                        &persistence_integrity,
-                        &tx,
-                        llm.as_ref(),
-                        &deps.store,
+                    let completed = guarded!(
+                        "complete_pending_commit/shutdown-deadline",
+                        complete_pending_commit(
+                            pending,
+                            Err(AuthoritativeCommitFailure::Integrity(detail.to_owned())),
+                            &mut engine,
+                            &gateway,
+                            &mut health,
+                            &persistence_integrity,
+                            &tx,
+                            llm.as_ref(),
+                            &deps.store,
+                        )
                     );
-                    finish_pending_operational(&mut engine, &gateway, completed);
+                    guarded!(
+                        "finish_pending_operational/shutdown-deadline",
+                        finish_pending_operational(&mut engine, &gateway, completed)
+                    );
                 }
                 metrics.set_persistence_state(
                     health.mode.store_read_only(),
@@ -4998,16 +5117,19 @@ async fn run(
         };
         if !local_ops.is_empty() {
             let local_failure_actor = local_ops.first().map(|op| op.actor);
-            run_local_staff_ops(
-                &mut engine,
-                &gateway,
-                &health,
-                boot_unix,
-                local_ops,
-                &mut out,
-                &mut fx,
-                llm.as_ref(),
-                &metrics,
+            guarded!(
+                "run_local_staff_ops",
+                run_local_staff_ops(
+                    &mut engine,
+                    &gateway,
+                    &health,
+                    boot_unix,
+                    local_ops,
+                    &mut out,
+                    &mut fx,
+                    llm.as_ref(),
+                    &metrics,
+                )
             );
             let mut sends = resolve_classified_sends(
                 &engine.registry,
@@ -5201,7 +5323,10 @@ async fn run(
             // sends, so the announce-to-all and the StepOutcome are
             // identical; main's shutdown sequence (writer drain → store
             // drain → BGSAVE) runs when this task's join resolves.
-            let outcome = engine.step(Inbound::Control(ControlMsg::Shutdown), &mut out, &mut fx);
+            let outcome = guarded!(
+                "engine.step/staff-shutdown",
+                engine.step(Inbound::Control(ControlMsg::Shutdown), &mut out, &mut fx)
+            );
             debug_assert_eq!(outcome, StepOutcome::Shutdown);
             let mut sends = resolve_classified_sends(
                 &engine.registry,
@@ -5369,6 +5494,10 @@ async fn run(
     // snapshotting whatever the store happened to have caught.
     if clean_exit {
         world_exit.mark_clean();
+    }
+    match fault {
+        Some(fault) => WorldOutcome::Faulted(fault),
+        None => WorldOutcome::Clean,
     }
 }
 
@@ -5643,6 +5772,62 @@ fn release_prepared_installation(
 /// enter [`WorldMode::IntegrityFrozen`] so a later transient recovery cannot
 /// lift it, and alert Wizards. Idempotent — the writer may send an initial
 /// failure plus per-seal resolution details; only the first transition alerts.
+/// The panic firewall's recovery path: everything the loop does between
+/// catching a panic and breaking out with a [`WorldFault`].
+///
+/// A panic raised *inside* a `catch_unwind` handler aborts the process, so this
+/// may call nothing that can panic. Two rules follow from that. The staged
+/// action is dropped through [`Engine::discard_step_residue`] — an infallible
+/// abort that runs no registry, guard, validator or observer code — rather than
+/// through `Engine::take_staged_action`, which revalidates guards through the
+/// registry and can fail (or panic) on its own. And the discard itself runs
+/// inside a second [`guard`]: if even that explodes, the barrier is latched
+/// directly and no further engine call is made.
+///
+/// The turn's presentation buffers are replaced wholesale. A faulted turn is
+/// not a turn: half of a handler ran, the outbox holds whatever it had said so
+/// far, and none of it may reach a player as though the turn had happened.
+#[allow(clippy::too_many_arguments)] // the recovery path needs the loop's whole context
+fn recover_from_world_fault(
+    fault: WorldFault,
+    engine: &mut Engine,
+    out: &mut Outbox,
+    fx: &mut Effects,
+    gateway: &Gateway,
+    health: &mut StoreHealth,
+    persistence_integrity: &PersistenceIntegrityLatch,
+    metrics: &Metrics,
+) -> WorldFault {
+    metrics.world_panic();
+    let detail = format!("world task panicked at {}: {}", fault.site, fault.detail);
+    if guard("discard_step_residue", || engine.discard_step_residue()).is_err() {
+        // The cleanup re-entered a panic. Fail closed without touching the
+        // engine again: latch the process-wide barrier and set the loop's own
+        // mode by hand, skipping the staff broadcast (it reads the world).
+        persistence_integrity.latch();
+        if !health.mode.integrity_frozen() {
+            health.mode = WorldMode::IntegrityFrozen {
+                incident: incident_id("world-task-panic-cleanup", &detail),
+            };
+        }
+        tracing::error!(
+            site = fault.site,
+            "world-task fault cleanup panicked; freezing without further engine calls"
+        );
+        return fault;
+    }
+    *out = Outbox::new();
+    *fx = Effects::new();
+    apply_integrity_freeze(
+        &engine.world,
+        gateway,
+        health,
+        persistence_integrity,
+        &detail,
+    );
+    fault
+}
+
 fn apply_integrity_freeze(
     world: &World,
     gateway: &Gateway,
