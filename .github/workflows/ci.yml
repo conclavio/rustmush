@@ -21,9 +21,17 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy, rustfmt
+      # WS01-S11B: rust-toolchain.toml at the repo root is the only place in
+      # this repo that names a Rust version. `rustup toolchain install` with no
+      # argument installs the toolchain that file pins, with the `clippy` and
+      # `rustfmt` components it lists, so no job here can drift from it and a
+      # bump is one file's diff. `rustc --version` puts the resolved pin in the
+      # log beside the gates it is the subject of.
+      - name: Rust toolchain (pinned by rust-toolchain.toml)
+        shell: bash
+        run: |
+          rustup toolchain install
+          rustc --version
       - uses: Swatinem/rust-cache@v2
       - name: Format
         run: cargo fmt --all --check
@@ -44,7 +52,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - name: Rust toolchain (pinned by rust-toolchain.toml)
+        shell: bash
+        run: |
+          rustup toolchain install
+          rustc --version
       - uses: Swatinem/rust-cache@v2
       - name: Five-gate and lifecycle contracts
         run: |
@@ -73,7 +85,11 @@ jobs:
       REDIS_URL: redis://127.0.0.1:6379
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - name: Rust toolchain (pinned by rust-toolchain.toml)
+        shell: bash
+        run: |
+          rustup toolchain install
+          rustc --version
       - uses: Swatinem/rust-cache@v2
       - name: Start disposable Redis 8
         run: docker run -d --rm --name redis -p 127.0.0.1:6379:6379 redis:8 redis-server --appendonly yes --appendfsync always --no-appendfsync-on-rewrite no
@@ -113,7 +129,11 @@ jobs:
       REDIS_URL: redis://127.0.0.1:6379
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - name: Rust toolchain (pinned by rust-toolchain.toml)
+        shell: bash
+        run: |
+          rustup toolchain install
+          rustc --version
       - uses: Swatinem/rust-cache@v2
       - name: Start disposable Redis 8
         run: docker run -d --rm --name redis -p 127.0.0.1:6379:6379 redis:8 redis-server --appendonly yes --appendfsync always --no-appendfsync-on-rewrite no
@@ -125,7 +145,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - name: Rust toolchain (pinned by rust-toolchain.toml)
+        shell: bash
+        run: |
+          rustup toolchain install
+          rustc --version
       - uses: Swatinem/rust-cache@v2
       - name: Canonical definition and action wire goldens
         run: |
@@ -145,7 +169,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - name: Rust toolchain (pinned by rust-toolchain.toml)
+        shell: bash
+        run: |
+          rustup toolchain install
+          rustc --version
       - uses: Swatinem/rust-cache@v2
       - run: cargo test -p mush-contract-tests --test provider_rng_policy
 
@@ -154,7 +182,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - name: Rust toolchain (pinned by rust-toolchain.toml)
+        shell: bash
+        run: |
+          rustup toolchain install
+          rustc --version
       - uses: Swatinem/rust-cache@v2
       - name: Private truth has no serde contract
         run: cargo test -p mush-contract-tests --test truth_serialization_policy

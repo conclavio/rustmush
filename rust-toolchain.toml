@@ -1,0 +1,30 @@
+# The one place this repo names a Rust version (WS01-S11B).
+#
+# Every gate the panic-surface work is building — the source-scan budget, and
+# any restriction lint enabled under `cargo clippy --workspace --all-targets --
+# -D warnings` — is a measurement against a specific compiler. With a floating
+# `stable` those measurements have no fixed subject: a lint that reports zero
+# in a crate today reports two on the next release, and CI turns red on main
+# for every unrelated PR with no diff in the repo to explain it. So the channel
+# is exact, and rustup resolves it from this file for CI and for every
+# developer's checkout alike.
+#
+# `components` lives here rather than in the workflow because this file is what
+# installs the toolchain: CI runs `rustup toolchain install` with no argument,
+# which reads this file (channel, components and profile) and names no version
+# of its own. `clippy` and `rustfmt` are load-bearing — the `test` job runs
+# `cargo fmt --all --check` and the clippy gate.
+#
+# `profile = "minimal"` keeps the CI install to the compiler, cargo and the host
+# std; the two components above are added back explicitly. A checkout that wants
+# more (`rust-docs`, `rust-analyzer`, `rust-src`) adds it with
+# `rustup component add`, which does not disturb the pin.
+#
+# BUMPING IT: its own PR, nothing else in the diff. A bump moves every lint and
+# every budget measurement in the repo at once, and the point of a pin is that
+# the resulting delta is reviewable on its own rather than as a side effect of
+# an unrelated change.
+[toolchain]
+channel = "1.98.0"
+components = ["clippy", "rustfmt"]
+profile = "minimal"
