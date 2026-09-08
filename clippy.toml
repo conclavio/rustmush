@@ -9,18 +9,33 @@
 # ci.yml` runs `cargo clippy --workspace --all-targets -- -D warnings`, and
 # `--all-targets` compiles the test targets too: without these allowances every
 # `unwrap()` in a `#[cfg(test)] mod tests` block and in `crates/*/tests/*.rs`
-# counts as a hard error. Measured on this tree, the six candidate restriction
-# lints report 14,137 hits with no clippy.toml and 3,725 with this one — so a
-# per-crate enabling decision made without this file is sized against a number
-# roughly four times the one that would actually be enforced.
+# counts as a hard error. So a per-crate enabling decision made without this
+# file is sized against a number roughly four times the one that would actually
+# be enforced.
+#
+# Measured at this commit with clippy 0.1.98, running the four lints above over
+# `--workspace --all-targets` and counting distinct source locations: 15,405
+# without this file, 4,011 with it — 3.8x. Re-measure rather than trust these if
+# the tree has moved; the ratio is the durable part, the absolutes are not.
+#
+# LOCATION — why this file is at the root and must be the only one. Clippy
+# resolves its config per compiled crate: the lookup starts at that crate's
+# CARGO_MANIFEST_DIR, not at the directory clippy was invoked from, and walks up
+# until it finds a `.clippy.toml` or `clippy.toml`, reading the first hit and no
+# other. So a `crates/<pkg>/clippy.toml` is not a harmless duplicate and not a
+# dead file — it is found before this one and silently drops all four allowances
+# for that crate, without having to mention them. The tripwire in
+# crates/mush-contract-tests/tests/clippy_test_allowances.rs scans for both
+# spellings.
 #
 # SCOPE — what the allowance actually covers, which is narrower than "tests":
 # clippy exempts `#[cfg(test)]` modules and the bodies of `#[test]` functions.
 # It does NOT exempt free helper functions in `crates/*/tests/*.rs` — an
 # integration-test file's setup helpers are ordinary functions, not `#[test]`
-# bodies, and they account for 2,125 of the 3,725 surviving hits. Any per-crate
-# enable must therefore still be measured with `--all-targets`; the number from
-# a `--lib`-only run is not the number CI enforces.
+# bodies, and at this commit they are 2,764 of the 4,011 surviving locations,
+# the majority. Any per-crate enable must therefore still be measured with
+# `--all-targets`; the number from a `--lib`-only run is not the number CI
+# enforces.
 
 allow-unwrap-in-tests = true
 allow-expect-in-tests = true
