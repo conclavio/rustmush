@@ -372,10 +372,11 @@ fn vf_a1_the_wreck_walk_is_bounded_on_records_visited() {
         mush_server::salvage_source::MAX_SALVAGE_JOURNEY_VISIT,
         4_096
     );
-    assert!(
+    // Both sides are `const`, so this is a compile-time invariant, not a runtime
+    // assertion (clippy::assertions_on_constants under `-D warnings`).
+    const _: () = assert!(
         mush_server::salvage_source::MAX_SALVAGE_JOURNEY_VISIT > mush_inventory::MAX_SALVAGE_WRECKS,
-        "a visit budget as tight as the result budget would hide live wrecks behind \
-         old arrivals"
+        "a visit budget as tight as the result budget would hide live wrecks behind old arrivals"
     );
     // …and the whole thing still answers on a live world.
     let mut tw = boot();

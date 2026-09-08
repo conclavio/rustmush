@@ -1412,7 +1412,11 @@ fn vf_b8_every_station_lane_verb_has_a_recorded_proxy_disposition() {
             ("mush-sim/src/combat.rs".to_owned(), 1),
             // `@station/fallback`.
             ("mush-sim/src/station.rs".to_owned(), 1),
-            ("mush-sim/src/tick.rs".to_owned(), 0),
+            // Tick-time rechecks (commit b8ec25c, "close pulse authority"):
+            // the `can_abandon` recheck at tick.rs:1718 and the apply-time
+            // authority recheck at tick.rs:3016. Both re-ask an act already
+            // gated on the command lane; neither is a new station-lane verb.
+            ("mush-sim/src/tick.rs".to_owned(), 2),
             ("mush-sim/src/seat.rs".to_owned(), 0),
             ("mush-propagation/src/commands.rs".to_owned(), 0),
         ],
