@@ -1102,14 +1102,7 @@ impl SessionManager {
     /// background panel pulls, so a mail-composing connection must not be able
     /// to fire unthrottled ring scans.
     pub fn check_query_flood(&self, conn: ConnId) -> FloodVerdict {
-        match self.conns.get(&conn) {
-            Some(e) => e
-                .bucket
-                .lock()
-                .expect("flood bucket poisoned")
-                .check(Instant::now()),
-            None => FloodVerdict::Ok,
-        }
+        self.check_query_flood_at(conn, Instant::now())
     }
 
     /// Whether `character` is currently [flood-exempt](Self::set_flood_exempt)

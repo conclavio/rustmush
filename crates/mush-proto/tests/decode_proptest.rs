@@ -52,6 +52,8 @@ fn client_command_strategy() -> impl Strategy<Value = ClientCommand> {
         any::<String>().prop_map(|feed| Query::PanelSubscribe {
             feed: SmolStr::new(&feed)
         }),
+        (any::<Option<u64>>(), any::<u32>())
+            .prop_map(|(before_seq, limit)| Query::NarrativeBacklog { before_seq, limit }),
     ];
     prop_oneof![
         any::<String>().prop_map(ClientCommand::Line),

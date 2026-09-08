@@ -69,6 +69,17 @@ fn init_cmd(cmd: &Sr5Cmd, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             &[format!("{base} + {dice}D6")],
         );
         emit_room(ctx, who, &line, &narration);
+        // The rolls feed hears it too (look-back I6-C11): no `outcome` — an
+        // Initiative roll is dice plus a base, not a hit count — so a client
+        // keeps `who`/`summary` and skips its dice card.
+        cmd.roll_feed.keyframe(
+            ctx,
+            serde_json::json!({
+                "who": who.to_string(),
+                "summary": line,
+                "expr": "Initiative",
+            }),
+        );
     } else {
         let name = name_of(ctx, who);
         ctx.out.sys_to_actor(

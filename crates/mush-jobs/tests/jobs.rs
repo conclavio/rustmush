@@ -467,6 +467,29 @@ fn deny_and_status_override() {
             .iter()
             .any(|t| t.contains("status changed to Open by Rita"))
     );
+    // Interface plan I11 (look-back I11-C24): the opener also gets a `Notice`
+    // in the `jobs` category with an `Open` action prefilling `+job 1` — and
+    // the staffer who made the change gets none.
+    let notices: Vec<(ObjId, String, Option<String>)> = out
+        .events()
+        .iter()
+        .filter_map(|(aud, e)| match (aud, e) {
+            (
+                mush_core::Audience::Actor(a),
+                OutputEvent::Notice {
+                    category, action, ..
+                },
+            ) if category.as_str() == "jobs" => Some((
+                *a,
+                category.to_string(),
+                action.as_ref().map(|act| act.prefill.clone()),
+            )),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(notices.len(), 1, "{notices:?}");
+    assert_eq!(notices[0].0, env.nick);
+    assert_eq!(notices[0].2.as_deref(), Some("+job 1"));
     let out = run(env.rita, &mut env, "+job/status 1=in-progress");
     assert_eq!(
         get_job(&env.engine.world, 1).unwrap().status,

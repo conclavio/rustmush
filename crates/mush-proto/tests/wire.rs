@@ -220,6 +220,20 @@ fn roundtrip_every_client_command_variant() {
             id: 8,
             q: Query::Commands,
         },
+        ClientCommand::Req {
+            id: 9,
+            q: Query::NarrativeBacklog {
+                before_seq: Some(4180),
+                limit: 100,
+            },
+        },
+        ClientCommand::Req {
+            id: 10,
+            q: Query::NarrativeBacklog {
+                before_seq: None,
+                limit: 20,
+            },
+        },
         ClientCommand::Composing { active: true },
         ClientCommand::Composing { active: false },
         ClientCommand::Resume { last_seq: 4180 },
@@ -248,6 +262,28 @@ fn roundtrip_every_client_command_variant() {
         .is_err(),
         "malformed semantic acknowledgements must fail protocol decoding"
     );
+
+    // Interface plan I12 (look-back I12-C2): a `NarrativeBacklog` with no
+    // cursor omits the key on the wire, and the literal the web client
+    // hand-writes for its first page decodes to exactly that.
+    let first_page = ClientCommand::Req {
+        id: 11,
+        q: Query::NarrativeBacklog {
+            before_seq: None,
+            limit: 200,
+        },
+    };
+    let encoded = serde_json::to_value(&first_page).unwrap();
+    assert!(
+        encoded["d"]["q"]["d"].get("before_seq").is_none(),
+        "`before_seq: None` is omitted, not `null`: {encoded}"
+    );
+    let literal: ClientCommand = serde_json::from_value(json!({
+        "t": "req",
+        "d": { "id": 11, "q": { "t": "narrative_backlog", "d": { "limit": 200 } } }
+    }))
+    .unwrap();
+    assert_eq!(literal, first_page);
 }
 
 #[test]

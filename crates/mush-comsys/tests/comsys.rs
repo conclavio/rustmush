@@ -1797,3 +1797,24 @@ fn d4_relay_flag_mirrors_lines_once_and_the_relay_speaker_keeps_the_gates() {
     let out = run(&mut engine, nick, "pub unflagged again");
     assert!(relay_sends(&out).is_empty());
 }
+
+/// Look-back LB-25 (I7): the `ic` flag survives a restart — it round-trips
+/// through the persisted JSON, and a channel document written before I7 (no
+/// `ic` key) reads back as OOC, which is what `#[serde(default)]` promises and
+/// nothing pinned.
+#[test]
+fn the_ic_flag_round_trips_and_a_pre_i7_document_reads_as_ooc() {
+    let flags = mush_comsys::ChannelFlags {
+        ic: true,
+        ..mush_comsys::ChannelFlags::default()
+    };
+    let json = serde_json::to_string(&flags).unwrap();
+    assert!(json.contains("\"ic\":true"), "{json}");
+    assert_eq!(
+        serde_json::from_str::<mush_comsys::ChannelFlags>(&json).unwrap(),
+        flags
+    );
+    let legacy: mush_comsys::ChannelFlags = serde_json::from_str("{}").unwrap();
+    assert!(!legacy.ic, "a document without the key is OOC");
+    assert_eq!(legacy, mush_comsys::ChannelFlags::default());
+}

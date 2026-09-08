@@ -145,3 +145,35 @@ fn an_initiative_roll_takes_the_same_form() {
     assert!(plain.contains(" = "), "{plain}");
     assert!(plain.ends_with("D6"), "{plain}");
 }
+
+/// Look-back I6-C11: `+init/roll` reaches the `sr.roll` feed like every
+/// other roll — with `who`, the classic `summary` and no `outcome`, since an
+/// Initiative roll is dice plus a base and not a hit count.
+#[test]
+fn an_initiative_roll_reaches_the_rolls_feed_without_an_outcome() {
+    let (mut tw, nick) = world();
+    let ev = tw.run(nick, "+init/roll");
+    let frame = ev
+        .iter()
+        .find_map(|(aud, ev)| match (aud, ev) {
+            (Audience::Actor(a), OutputEvent::Panel { feed, data, .. })
+                if *a == nick && feed.as_str() == "sr.roll" =>
+            {
+                Some(data.clone())
+            }
+            _ => None,
+        })
+        .expect("an sr.roll keyframe to the roller");
+    assert_eq!(frame["who"], nick.to_string());
+    assert_eq!(frame["expr"], "Initiative");
+    let summary = frame["summary"].as_str().expect("summary");
+    // Reaction 5 + Intuition 3 = 8, one initiative die.
+    assert!(
+        summary.starts_with("Nick rolls Initiative: 8 + 1D6 [") && summary.contains("] = "),
+        "{summary}"
+    );
+    assert!(
+        frame.get("outcome").is_none(),
+        "no hit-count outcome on an initiative roll: {frame}"
+    );
+}

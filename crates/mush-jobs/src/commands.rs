@@ -204,16 +204,21 @@ fn update_job(ctx: &mut Ctx<'_>, id: u64, mutate: impl FnOnce(&mut Job)) -> Resu
     Ok(updated)
 }
 
-/// Sys-notice the opener (tag `"jobs"`) if they are connected and not the
-/// acting player.
-fn notify_opener(ctx: &mut Ctx<'_>, opener: ObjId, msg: String) {
-    notify(ctx, opener, msg);
+/// Notify the opener of job `id` (tag `"jobs"`) if they are connected and
+/// not the acting player.
+fn notify_opener(ctx: &mut Ctx<'_>, opener: ObjId, id: u64, msg: String) {
+    notify(ctx, opener, id, msg);
 }
 
-/// Sys-notice any actor (tag `"jobs"`) if connected and not the actor.
-fn notify(ctx: &mut Ctx<'_>, who: ObjId, msg: String) {
+/// Notify any actor about job `id` (tag `"jobs"`) if connected and not the
+/// actor: the classic Sys line for the scrollback, and — interface plan I11,
+/// the producer §3.11 promised and look-back I11-C24 found missing — a
+/// `Notice` in the `jobs` category whose one action prefills `+job <id>`, so
+/// the web tray and the TUI's unseen count carry it and a tap opens the job.
+fn notify(ctx: &mut Ctx<'_>, who: ObjId, id: u64, msg: String) {
     if who != ctx.actor && ctx.w.is_connected(who) {
-        ctx.out.sys_to_actor(who, "jobs", msg);
+        ctx.out.sys_to_actor(who, "jobs", msg.clone());
+        ctx.notice_info(who, "jobs", msg, Some(("Open", &format!("+job {id}"))));
     }
 }
 
@@ -428,7 +433,7 @@ fn job_comment(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         display_name(ctx.w, ctx.actor),
         job.title
     );
-    notify_opener(ctx, job.opener, msg);
+    notify_opener(ctx, job.opener, id, msg);
     Ok(())
 }
 
@@ -468,9 +473,9 @@ fn job_assign(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         "Job {id} ({}) has been assigned to {staffer_name}.",
         job.title
     );
-    notify_opener(ctx, job.opener, msg);
+    notify_opener(ctx, job.opener, id, msg);
     let msg = format!("You have been assigned job {id} ({}).", job.title);
-    notify(ctx, staffer, msg);
+    notify(ctx, staffer, id, msg);
     Ok(())
 }
 
@@ -546,7 +551,7 @@ fn job_approve(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     if let Some(text) = comment {
         msg.push_str(&format!(" {text}"));
     }
-    notify_opener(ctx, job.opener, msg);
+    notify_opener(ctx, job.opener, id, msg);
     Ok(())
 }
 
@@ -588,7 +593,7 @@ fn job_deny(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         job.title,
         display_name(ctx.w, ctx.actor)
     );
-    notify_opener(ctx, job.opener, msg);
+    notify_opener(ctx, job.opener, id, msg);
     Ok(())
 }
 
@@ -645,7 +650,7 @@ fn job_status(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         job.title,
         display_name(ctx.w, ctx.actor)
     );
-    notify_opener(ctx, job.opener, msg);
+    notify_opener(ctx, job.opener, id, msg);
     Ok(())
 }
 

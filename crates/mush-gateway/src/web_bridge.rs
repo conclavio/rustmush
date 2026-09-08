@@ -668,16 +668,22 @@ impl<A: AuthBackend + 'static> WebHooks for WebBridge<A> {
                     // The subscription ack IS the panel's keyframe where a
                     // state query exists; deltas then stream live. (M4 has
                     // no per-feed mute — every attached connection receives
-                    // all panel frames.) The three feeds whose query is named
-                    // differently from the feed are mapped here; every other
-                    // feed forwards under its own name, and the engine answers
-                    // with the same-named handler's keyframe or, for a
-                    // push-only feed, a plain "subscribed" ack (interface plan
-                    // I1, D-I-3) — so `llm.dashboard`, `wod.vitals`, `scenes`
-                    // and the next feed need no bridge arm.
+                    // all panel frames.) The feeds whose query is named
+                    // differently from the feed — `comsys`, `mail`, `intel`,
+                    // and `legal.actions`, answered locally — are mapped
+                    // here; every other feed forwards under its own name, and
+                    // the engine answers with the same-named handler's
+                    // keyframe or, for a push-only feed, a plain "subscribed"
+                    // ack (interface plan I1, D-I-3) — so `llm.dashboard`,
+                    // `wod.vitals`, `scenes` and the next feed need no bridge
+                    // arm. A feed whose keyframe query is named differently
+                    // DOES need one (look-back LB-10 found `intel` missing:
+                    // the subscribe forwarded `intel`, which no handler
+                    // answers), until `Registrar::panel_feed` declares it.
                     match feed.as_str() {
                         "comsys" => (SmolStr::new_static("comsys.state"), serde_json::json!({})),
                         "who" => (SmolStr::new_static("who"), serde_json::json!({})),
+                        "intel" => (SmolStr::new_static("intel.list"), serde_json::json!({})),
                         "legal.actions" => {
                             self.core.legal_actions_panel(conn_id, id, actor).await;
                             return;

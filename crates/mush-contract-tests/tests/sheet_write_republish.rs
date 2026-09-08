@@ -10,7 +10,18 @@
 
 use std::path::{Path, PathBuf};
 
-const FORBIDDEN: &str = ".put_by(ctx.w";
+/// Every store write that bypasses the event: `put_by` (look-back I1-C22
+/// added `put` — the same write under the caller's own audit identity — and
+/// `remove`, which no republisher hears either).
+const FORBIDDEN: &[&str] = &[".put_by(ctx.w", ".put(ctx.w", ".remove(ctx.w"];
+
+/// Whether `line` carries one of the forbidden writes.
+fn offending_needle(line: &str) -> Option<&'static str> {
+    FORBIDDEN
+        .iter()
+        .copied()
+        .find(|needle| line.contains(needle))
+}
 
 fn rust_sources(root: &Path, files: &mut Vec<PathBuf>) {
     let mut entries = std::fs::read_dir(root)
@@ -48,7 +59,7 @@ fn ruleset_command_code_writes_sheets_through_put_in() {
         let source = std::fs::read_to_string(&file)
             .unwrap_or_else(|error| panic!("cannot read {}: {error}", file.display()));
         for (index, line) in source.lines().enumerate() {
-            if line.contains(FORBIDDEN) {
+            if offending_needle(line).is_some() {
                 offenders.push(format!("{}:{}: {}", file.display(), index + 1, line.trim()));
             }
         }
@@ -57,5 +68,25 @@ fn ruleset_command_code_writes_sheets_through_put_in() {
         offenders.is_empty(),
         "sheet writes in command code must use SheetStore::put_in (I1):\n{}",
         offenders.join("\n")
+    );
+}
+
+#[test]
+fn the_needles_catch_every_eventless_write_and_nothing_else() {
+    assert_eq!(
+        offending_needle("    store.put_by(ctx.w, target, &doc, ctx.actor)?;"),
+        Some(".put_by(ctx.w")
+    );
+    assert_eq!(
+        offending_needle("    store.put(ctx.w, target, &doc)?;"),
+        Some(".put(ctx.w")
+    );
+    assert_eq!(
+        offending_needle("    store.remove(ctx.w, target);"),
+        Some(".remove(ctx.w")
+    );
+    assert_eq!(
+        offending_needle("    store.put_in(target, &doc, ctx.actor, ctx)?;"),
+        None
     );
 }

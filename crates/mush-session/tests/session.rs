@@ -256,6 +256,48 @@ fn flood_bucket_over_manager_with_fake_clock() {
     assert_eq!(mgr.check_input_at(ConnId(99), t1), FloodVerdict::Ok);
 }
 
+/// The strict query check (interface plan I12, look-back I12-C6): a
+/// flood-exempt character is still charged — the exempt protects composed
+/// input *lines*, not background ring scans — and it draws on the one bucket
+/// `check_input` uses, so a page of history costs what a line costs.
+#[test]
+fn query_flood_check_ignores_the_exempt_and_shares_the_bucket() {
+    let mgr = SessionManager::with_config(SessionConfig {
+        flood_rate: 2.0,
+        flood_burst: 3.0,
+        ..SessionConfig::default()
+    });
+    let t0 = Instant::now();
+    let (c1, _rx1) = conn_at(1, 1, 8, t0);
+    mgr.attach(c1, CharKey(1), "f".into());
+    mgr.set_flood_exempt(CharKey(1), true);
+    // Exempt: forty input lines pass and the bucket is untouched.
+    for i in 0..40 {
+        assert_eq!(
+            mgr.check_input_at(ConnId(1), t0),
+            FloodVerdict::Ok,
+            "exempt line {i}"
+        );
+    }
+    // The strict check ignores the exempt: a burst of 3, then throttled.
+    for i in 0..3 {
+        assert_eq!(
+            mgr.check_query_flood_at(ConnId(1), t0),
+            FloodVerdict::Ok,
+            "query {i}"
+        );
+    }
+    assert_eq!(
+        mgr.check_query_flood_at(ConnId(1), t0),
+        FloodVerdict::Throttled
+    );
+    // It is the same bucket: a non-exempt line now finds it empty.
+    mgr.set_flood_exempt(CharKey(1), false);
+    assert_eq!(mgr.check_input_at(ConnId(1), t0), FloodVerdict::Throttled);
+    // Unknown connections are never throttled.
+    assert_eq!(mgr.check_query_flood_at(ConnId(99), t0), FloodVerdict::Ok);
+}
+
 /// A flood-exempt character (the world task marks actors inside an input
 /// context — mail compose) bypasses the throttle entirely, on every one of
 /// their connections, without draining their bucket; clearing the flag
