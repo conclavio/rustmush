@@ -21,6 +21,8 @@ use mush_proto::{
 };
 use serde_json::Value;
 
+use super::app::TuiManifest;
+
 /// The most feeds the store keeps.
 pub const MAX_TUI_FEEDS: usize = 32;
 /// The most `.roll` frames the rolls ring keeps.
@@ -153,6 +155,28 @@ impl PanelStore {
             .map(|p| &p.data)
     }
 
+    /// The `.unit` feed THIS world publishes, resolved by suffix from the
+    /// manifest exactly as [`Self::sheet`] resolves `.sheet` — sorted first,
+    /// so two of them pick deterministically.
+    ///
+    /// Look-back LB-12: `tactics.unit` is only the name the tacsim pack
+    /// happens to use, and screens 8/9 promise to follow any `<pack>.unit`
+    /// feed "without a client change" while the code hard-coded
+    /// [`UNIT_FEED`]; the web already suffix-routed it. An empty manifest is a
+    /// hello that has not landed, and the screens must still name a feed, so
+    /// [`UNIT_FEED`] is the fallback.
+    #[must_use]
+    pub fn unit_feed(manifest: &TuiManifest) -> &str {
+        let mut names: Vec<&str> = manifest
+            .panels
+            .iter()
+            .map(String::as_str)
+            .filter(|n| n.ends_with(".unit"))
+            .collect();
+        names.sort_unstable();
+        names.first().copied().unwrap_or(UNIT_FEED)
+    }
+
     /// The `.roll` frames, oldest first.
     #[must_use]
     pub fn rolls(&self) -> &VecDeque<Value> {
@@ -222,7 +246,7 @@ impl PanelStore {
         }
         match kind {
             PanelFrameKind::Keyframe => {
-                if feed.as_str() == UNIT_FEED {
+                if feed.ends_with(".unit") {
                     // A keyframe for another subject makes the journal rows of
                     // the one we held meaningless: drop them. "Held" is the
                     // STORED frame, not its object id — a `null` keyframe is
@@ -247,6 +271,16 @@ impl PanelStore {
             PanelFrameKind::Delta if feed.ends_with(".sheet") => {
                 self.apply_sheet_delta(feed, data, now)
             }
+            // The after-action journal (interface plan I8), on any `.unit`
+            // feed (look-back LB-12). The delta is the only place the
+            // before/after sides are ever carried, so it is kept in the ring
+            // BEFORE asking for a keyframe: the storm guard answers `Ignored`
+            // for the 2nd..nth delta while one request is outstanding, and
+            // every one of those still belongs in the ring.
+            PanelFrameKind::Delta if feed.ends_with(".unit") => {
+                self.push_unit_journal(data);
+                self.resync(feed, now)
+            }
             PanelFrameKind::Delta => match feed.as_str() {
                 "comsys" => {
                     if let Some(backlog) = data.get("backlog") {
@@ -269,16 +303,6 @@ impl PanelStore {
                         _ => return self.resync(feed, now),
                     };
                     self.store(feed, merged, now)
-                }
-                // The after-action journal (interface plan I8). The delta is
-                // the only place the before/after sides are ever carried, so
-                // it is kept in the ring BEFORE asking for a keyframe: the
-                // storm guard answers `Ignored` for the 2nd..nth delta while
-                // one request is outstanding, and every one of those still
-                // belongs in the ring.
-                UNIT_FEED => {
-                    self.push_unit_journal(data);
-                    self.resync(feed, now)
                 }
                 _ => self.resync(feed, now),
             },

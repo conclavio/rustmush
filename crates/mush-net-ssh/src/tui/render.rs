@@ -417,9 +417,9 @@ pub fn render_event(
 /// `Weather` from `ambient.weather.line`.
 fn render_room(w: &mut EntryAcc<'_>, view: &RoomView) {
     w.clock_gutter();
-    w.tagged("room", &view.name);
+    w.tagged("room", &flat(&view.name));
     w.plain(" ");
-    w.tagged("dim", &view.id);
+    w.tagged("dim", &flat(&view.id));
     w.end_line();
     if !view.desc.to_plain_text().is_empty() {
         w.rich(&view.desc);
@@ -431,7 +431,7 @@ fn render_room(w: &mut EntryAcc<'_>, view: &RoomView) {
             if i > 0 {
                 w.plain(", ");
             }
-            w.plain(&obj.name);
+            w.plain(&flat(&obj.name));
         }
         w.end_line();
     }
@@ -441,7 +441,7 @@ fn render_room(w: &mut EntryAcc<'_>, view: &RoomView) {
             if i > 0 {
                 w.plain("  ");
             }
-            w.tagged("exit", &exit.name);
+            w.tagged("exit", &flat(&exit.name));
         }
         w.end_line();
     }
@@ -452,9 +452,21 @@ fn render_room(w: &mut EntryAcc<'_>, view: &RoomView) {
         .and_then(Value::as_str)
     {
         w.plain("Weather  ");
-        w.tagged("weather", line);
+        w.tagged("weather", &flat(line));
         w.end_line();
     }
+}
+
+/// A room field flattened to ONE visual line.
+///
+/// `EntryAcc::write` splits an embedded newline into a fresh ENTRY, and a
+/// scrollback entry with no gutter reads as a continuation of the fact above
+/// it — a module- or builder-written field could forge a second `Here` or
+/// `Exits` row (look-back I3-C36; the same fix as line mode's `flat`). Room
+/// fields are never sanitised on the way in the way player lines are; other
+/// control bytes `clean` already strips.
+fn flat(s: &str) -> String {
+    s.replace('\n', " ")
 }
 
 /// Whether `text` is a one-line roll narration (its first span is tagged
@@ -1007,6 +1019,13 @@ pub fn render_sheet_rows(payload: &Value, ctx: &RenderCtx<'_>) -> PaneRows {
 const VIEW_COL_MAX_W: usize = 24;
 /// The most columns a generic-view list renders.
 const VIEW_MAX_COLS: usize = 12;
+/// The most rows a generic-view list renders, matching the web's
+/// `MAX_VIEW_ROWS` (look-back LB-17: the two sides had no shared number and
+/// this side had no row cap at all).
+const VIEW_MAX_ROWS: usize = 256;
+/// The most fields a generic-view detail or form renders, matching the web's
+/// `MAX_VIEW_FIELDS`.
+const VIEW_MAX_FIELDS: usize = 32;
 
 /// The generic semantic-view pane (interface plan I9): a `{ schema, rows,
 /// record }` payload walked into rows by its declared `shape` — a list with a
@@ -1029,7 +1048,9 @@ pub fn render_view_rows(data: &Value, ctx: &RenderCtx<'_>) -> PaneRows {
             }
             let action_key = schema.get("actionKey").and_then(Value::as_str);
             let empty = Vec::new();
-            let rows_data = data.get("rows").and_then(Value::as_array).unwrap_or(&empty);
+            let all_rows = data.get("rows").and_then(Value::as_array).unwrap_or(&empty);
+            let cut = all_rows.len() > VIEW_MAX_ROWS;
+            let rows_data = &all_rows[..all_rows.len().min(VIEW_MAX_ROWS)];
             let mut widths: Vec<usize> = cols.iter().map(|c| c.label.chars().count()).collect();
             for r in rows_data {
                 for (i, c) in cols.iter().enumerate() {
@@ -1071,8 +1092,10 @@ pub fn render_view_rows(data: &Value, ctx: &RenderCtx<'_>) -> PaneRows {
             }
             // A view that says its walk was cut says so here, so every
             // generic list inherits the honesty the unit panes have (I8: the
-            // contacts table is the first producer to reach the row cap).
-            if data.get("truncated").and_then(Value::as_bool) == Some(true) {
+            // contacts table is the first producer to reach the row cap) —
+            // and so does a list this renderer cut itself at
+            // [`VIEW_MAX_ROWS`] (look-back LB-17).
+            if cut || data.get("truncated").and_then(Value::as_bool) == Some(true) {
                 rows.push(PaneRow::plain(Line::from(dim_span_owned(
                     "(more rows than shown)",
                 ))));
@@ -1087,8 +1110,16 @@ pub fn render_view_rows(data: &Value, ctx: &RenderCtx<'_>) -> PaneRows {
                 return PaneRows::one("(empty view)");
             }
             let record = data.get("record");
+            // Look-back I9-C6: a `record` that is PRESENT but not an object
+            // makes every field render blank, which reads exactly like a
+            // record that is there and empty. Say which it is. A `null`
+            // record is the ordinary "nothing selected" and keeps the blank
+            // field rows, which is what the schema promised.
+            if record.is_some_and(|r| !r.is_null() && !r.is_object()) {
+                return PaneRows::one("(unreadable record)");
+            }
             let mut rows = Vec::new();
-            for f in fields {
+            for f in fields.iter().take(VIEW_MAX_FIELDS) {
                 let Some(key) = f.get("key").and_then(Value::as_str) else {
                     continue;
                 };
@@ -1101,6 +1132,11 @@ pub fn render_view_rows(data: &Value, ctx: &RenderCtx<'_>) -> PaneRows {
                     Span::styled(format!("{}: ", clean(label)), label_style),
                     Span::raw(value),
                 ])));
+            }
+            if fields.len() > VIEW_MAX_FIELDS {
+                rows.push(PaneRow::plain(Line::from(dim_span_owned(
+                    "(more fields than shown)",
+                ))));
             }
             PaneRows { rows }
         }
@@ -2043,12 +2079,39 @@ pub fn render_unit_delta_rows(data: &Value, ctx: &RenderCtx<'_>) -> PaneRows {
 // ---------------------------------------------------------------------------
 
 /// The vitals strip: every `.vitals` frame as `[ label ▰▰▰▱ 6/10 ]` gauges,
-/// tracks as boxes with the level named, readouts as text; `Dominant`
-/// first. Empty when no frame is held.
+/// tracks as boxes with the level named, readouts as text. Empty when no
+/// frame is held.
+///
+/// Ordering (look-back LB-8). Across FEEDS: the viewer's own — the frame whose
+/// subject is `own`, the character the hello named — then any feed carrying a
+/// `Dominant` vital, then the order given. Within a feed: `Dominant`, `Track`,
+/// `Pool`, `Readout`. A tactics unit publishes up to sixteen pool cells (~400
+/// columns) and sorts before `wod.vitals` alphabetically, so without this the
+/// pilot's own health sat off the right edge of a strip that is one row and
+/// does not wrap.
+///
+/// The strip is CUT to `width` columns and says so: the cells that fit, then a
+/// dim `+N more`. `width` 0 means unbounded (a caller that measures itself).
 #[must_use]
-pub fn vitals_line(frames: &[(mush_proto::SmolStr, VitalsFrame)], utf8: bool) -> Line<'static> {
-    let mut spans: Vec<Span<'static>> = Vec::new();
-    for (_, frame) in frames {
+pub fn vitals_line(
+    frames: &[(mush_proto::SmolStr, VitalsFrame)],
+    utf8: bool,
+    width: usize,
+    own: Option<&str>,
+) -> Line<'static> {
+    let mut order: Vec<usize> = (0..frames.len()).collect();
+    order.sort_by_key(|&i| {
+        let frame = &frames[i].1;
+        let is_own = own.is_some_and(|c| frame.subject.name == c);
+        let has_dominant = frame
+            .vitals
+            .iter()
+            .any(|v| matches!(v.role, VitalRole::Dominant));
+        (!is_own, !has_dominant, i)
+    });
+    let mut cells: Vec<Span<'static>> = Vec::new();
+    for i in order {
+        let frame = &frames[i].1;
         let mut vitals: Vec<&mush_proto::Vital> = frame.vitals.iter().collect();
         vitals.sort_by_key(|v| match v.role {
             VitalRole::Dominant => 0,
@@ -2057,9 +2120,6 @@ pub fn vitals_line(frames: &[(mush_proto::SmolStr, VitalsFrame)], utf8: bool) ->
             VitalRole::Readout => 3,
         });
         for v in vitals {
-            if !spans.is_empty() {
-                spans.push(Span::raw("  "));
-            }
             let style = match v.state {
                 VitalState::Ok => Style::default(),
                 VitalState::Warn => Style::default().fg(Color::Indexed(3)),
@@ -2108,10 +2168,56 @@ pub fn vitals_line(frames: &[(mush_proto::SmolStr, VitalsFrame)], utf8: bool) ->
                 }
                 VitalValue::Text { text } => format!("{label} {}", clean(text)),
             };
-            spans.push(Span::styled(format!("[ {text} ]"), style));
+            cells.push(Span::styled(format!("[ {text} ]"), style));
         }
     }
-    Line::from(spans)
+    Line::from(fit_cells(cells, width))
+}
+
+/// Lays `cells` out separated by two spaces, cut to `width` columns with a
+/// dim `+N more` for what did not fit. `width` 0 is unbounded.
+fn fit_cells(cells: Vec<Span<'static>>, width: usize) -> Vec<Span<'static>> {
+    let join = |k: usize| -> Vec<Span<'static>> {
+        let mut out: Vec<Span<'static>> = Vec::new();
+        for c in cells.iter().take(k) {
+            if !out.is_empty() {
+                out.push(Span::raw("  "));
+            }
+            out.push(c.clone());
+        }
+        out
+    };
+    let used = |k: usize| -> usize {
+        if k == 0 {
+            0
+        } else {
+            cells[..k].iter().map(Span::width).sum::<usize>() + 2 * (k - 1)
+        }
+    };
+    if cells.is_empty() || width == 0 || used(cells.len()) <= width {
+        return join(cells.len());
+    }
+    // The marker's own width counts against the budget, and it grows with the
+    // number elided, so the largest prefix that fits is searched from the top.
+    let mut k = cells.len();
+    let marker = |m: usize| format!("+{m} more");
+    while k > 0 {
+        // `+ 2` is the separator before the marker; inside this loop there is
+        // always at least one cell to separate it from.
+        if used(k) + 2 + marker(cells.len() - k).chars().count() <= width {
+            break;
+        }
+        k -= 1;
+    }
+    let mut out = join(k);
+    if k > 0 {
+        out.push(Span::raw("  "));
+    }
+    out.push(dim_span_owned(&truncate_chars(
+        &marker(cells.len() - k),
+        width,
+    )));
+    out
 }
 
 /// The status line: room name and id, zone, weather state, the IC clock,
@@ -2390,6 +2496,45 @@ mod tests {
         assert_eq!(body_text(&entries[0]), "Zoe: hello");
     }
 
+    /// Look-back I3-C36 (the TUI half): `EntryAcc::write` splits an embedded
+    /// newline into a fresh ENTRY, and a scrollback entry with no gutter reads
+    /// as a continuation of the fact above it — so a builder-named object
+    /// could forge a second `Here` or `Exits` row. Room fields are flattened
+    /// to one line each, exactly as line mode flattens them.
+    #[test]
+    fn control_bytes_in_room_fields_cannot_break_the_fact_gutter() {
+        let theme = AnsiTheme::classic();
+        let mut view = RoomView {
+            name: "Hall\nExits    forged".into(),
+            id: "#2".into(),
+            desc: RichText::plain("A hall."),
+            contents: vec![ObjRef::new("#7", "ball\nHere     forged")],
+            exits: vec![ExitRef {
+                name: "north\nWeather  forged".into(),
+                aliases: vec!["n".into()],
+            }],
+            zone: None,
+            ambient: Default::default(),
+        };
+        view.ambient.insert(
+            "weather".into(),
+            serde_json::json!({ "state": "rain", "line": "Rain.\nHere     forged again" }),
+        );
+        let entries = render_event(&OutputEvent::Room(view), &caps(ColorDepth::None), &theme, 0);
+        let texts: Vec<String> = entries.iter().map(body_text).collect();
+        for label in ["Here", "Exits", "Weather"] {
+            assert_eq!(
+                texts.iter().filter(|t| t.starts_with(label)).count(),
+                1,
+                "exactly one {label} row: {texts:?}"
+            );
+        }
+        assert_eq!(texts[0], "Hall Exits    forged #2", "one heading entry");
+        assert_eq!(texts[2], "Here     ball Here     forged");
+        assert_eq!(texts[3], "Exits    north Weather  forged");
+        assert_eq!(texts[4], "Weather  Rain. Here     forged again");
+    }
+
     #[test]
     fn wrap_spans_breaks_at_spaces_keeps_styles_and_hard_splits_long_words() {
         let red = Style::default().fg(Color::Indexed(1));
@@ -2540,6 +2685,55 @@ mod tests {
         let t: Vec<String> = rows.rows.iter().map(|r| line_text(&r.line)).collect();
         assert_eq!(t, vec!["Title: Docks".to_string(), "Count: 2".to_string()]);
 
+        // I9-C38: a `form` is the detail shape by another name — same rows.
+        let form = serde_json::json!({
+            "schema": { "id": "job", "version": 1, "shape": "form",
+                "fields": [ { "key": "title", "label": "Title" },
+                            { "key": "n", "label": "Count", "kind": "number" } ] },
+            "record": { "title": "Docks", "n": 2 }
+        });
+        let form_rows: Vec<String> = render_view_rows(&form, &ctx)
+            .rows
+            .iter()
+            .map(|r| line_text(&r.line))
+            .collect();
+        assert_eq!(form_rows, t, "a form renders as its detail twin");
+
+        // I9-C6: a `record` that is present but unusable is named, not shown
+        // as a screen of blank fields indistinguishable from an empty one.
+        let junk = serde_json::json!({
+            "schema": { "shape": "detail", "fields": [ { "key": "title" } ] },
+            "record": "junk"
+        });
+        assert_eq!(
+            line_text(&render_view_rows(&junk, &ctx).rows[0].line),
+            "(unreadable record)"
+        );
+        let no_record = serde_json::json!({
+            "schema": { "shape": "detail", "fields": [ { "key": "title", "label": "Title" } ] },
+            "record": serde_json::Value::Null
+        });
+        assert_eq!(
+            line_text(&render_view_rows(&no_record, &ctx).rows[0].line),
+            "Title: ",
+            "a null record is the ordinary nothing-selected, not a fault"
+        );
+
+        // I9-C38: the three `(empty view)` return sites, none of them asserted
+        // before — a detail with no `fields` key, one with an empty `fields`,
+        // and a list whose schema names no columns.
+        for empty in [
+            serde_json::json!({ "schema": { "shape": "detail" } }),
+            serde_json::json!({ "schema": { "shape": "detail", "fields": [] } }),
+            serde_json::json!({ "schema": { "shape": "list", "columns": [] } }),
+        ] {
+            assert_eq!(
+                line_text(&render_view_rows(&empty, &ctx).rows[0].line),
+                "(empty view)",
+                "{empty}"
+            );
+        }
+
         assert_eq!(
             line_text(&render_view_rows(&serde_json::json!({}), &ctx).rows[0].line),
             "(no view)"
@@ -2551,6 +2745,60 @@ mod tests {
                 .line
             ),
             "(unknown view shape)"
+        );
+    }
+
+    /// Look-back LB-17: the generic-view caps diverged — the web bounded rows
+    /// at 256 and fields at 32, this side bounded neither, so from the 257th
+    /// row the "same columns, same rows" promise failed in silence. Both
+    /// sides carry the same pair now, and a list or detail this renderer cut
+    /// itself says so exactly as a server-truncated one does.
+    #[test]
+    fn a_generic_view_cut_by_the_row_or_field_cap_says_so() {
+        let theme = AnsiTheme::default();
+        let store = PanelStore::new();
+        let ctx = RenderCtx {
+            theme: &theme,
+            depth: ColorDepth::None,
+            utf8: true,
+            store: &store,
+            selected_channel: None,
+        };
+        let rows: Vec<Value> = (0..300)
+            .map(|i| serde_json::json!({ "id": i, "title": format!("row {i}") }))
+            .collect();
+        let list = serde_json::json!({
+            "schema": { "shape": "list",
+                "columns": [ { "key": "id", "label": "#" }, { "key": "title", "label": "Title" } ] },
+            "rows": rows
+        });
+        let painted = render_view_rows(&list, &ctx);
+        let text: Vec<String> = painted.rows.iter().map(|r| line_text(&r.line)).collect();
+        // Header + VIEW_MAX_ROWS rows + the marker.
+        assert_eq!(painted.rows.len(), VIEW_MAX_ROWS + 2);
+        assert_eq!(
+            text.last().map(String::as_str),
+            Some("(more rows than shown)")
+        );
+        assert!(
+            text.iter().any(|l| l.starts_with("255")),
+            "{:?}",
+            &text[..3]
+        );
+        assert!(!text.iter().any(|l| l.starts_with("256")), "cut at the cap");
+
+        let fields: Vec<Value> = (0..40)
+            .map(|i| serde_json::json!({ "key": format!("k{i}"), "label": format!("F{i}") }))
+            .collect();
+        let detail = serde_json::json!({
+            "schema": { "shape": "detail", "fields": fields },
+            "record": { "k0": "a" }
+        });
+        let painted = render_view_rows(&detail, &ctx);
+        assert_eq!(painted.rows.len(), VIEW_MAX_FIELDS + 1);
+        assert_eq!(
+            line_text(&painted.rows[VIEW_MAX_FIELDS].line),
+            "(more fields than shown)"
         );
     }
 
@@ -2680,10 +2928,28 @@ mod tests {
             ],
         )
         .unwrap();
-        let line = vitals_line(&[("wod.vitals".into(), frame)], false);
+        let held = [("wod.vitals".into(), frame)];
+        let line = vitals_line(&held, false, 0, None);
         assert_eq!(
             line_text(&line),
             "[ Health X__ Bruised ]  [ WP #####--- 6/10 ]  [ wound -1 ]"
+        );
+        // Look-back LB-8: the strip is one row and does not wrap, so a width
+        // that cannot hold every cell drops cells from the right and says how
+        // many went.
+        assert_eq!(
+            line_text(&vitals_line(&held, false, 46, None)),
+            "[ Health X__ Bruised ]  +2 more",
+            "the marker's own width counts against the budget"
+        );
+        assert_eq!(
+            line_text(&vitals_line(&held, false, 8, None)),
+            "+3 more",
+            "not even one cell fits"
+        );
+        assert!(
+            line_text(&vitals_line(&held, false, 200, None)).ends_with("[ wound -1 ]"),
+            "room for everything means no marker"
         );
         let theme = AnsiTheme::classic();
         let mut view = RoomView {

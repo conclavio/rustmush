@@ -408,6 +408,13 @@ fn every_screen_has_a_golden_at_the_budget_size() {
     ] {
         app.feed_input(&[digit]);
         let text = frame_text(&mut app, 120, 34);
+        // Look-back I7-C16: the backlog pane frames ONE channel's messages
+        // and its border read the literal word "channel". It names the
+        // channel the screen is acting on — the one `b` asks backlog for.
+        if name == "chan" {
+            assert!(text.contains("\u{250c}Radio"), "the pane names it:\n{text}");
+            assert!(!text.contains("\u{250c}channel"), "{text}");
+        }
         check(&format!("tui_{name}_120x34.txt"), &text);
     }
 }
@@ -509,4 +516,58 @@ fn the_unit_screen_keeps_every_section_cell_on_screen() {
         text.contains("    rear/armor \u{25b0}\u{25b1}\u{25b1}\u{25b1}\u{25b1} 1/6"),
         "the second cell is a continuation row, not clipped:\n{text}"
     );
+}
+
+/// Look-back LB-8: the vitals strip is ONE row and does not wrap, and a
+/// tactics unit publishes up to sixteen pool cells under a feed name that
+/// sorts before `wod.vitals` — so on a tacsim server the pilot's own health
+/// was pushed hundreds of columns off the right edge and simply vanished.
+/// The character's own feed leads now, and the cells that do not fit are
+/// counted rather than dropped in silence.
+#[test]
+fn the_vitals_strip_paints_the_character_first_and_counts_what_it_cut() {
+    let mut app = fixture_app();
+    let pool = |id: &str, label: &str, current: i64, max: i64| {
+        serde_json::json!({
+            "id": id, "label": label, "role": "pool",
+            "value": { "kind": "bounded", "current": current, "min": 0, "max": max },
+            "state": "ok"
+        })
+    };
+    app.apply_event(&OutputEvent::Panel {
+        feed: SmolStr::new_static("tactics.vitals"),
+        kind: PanelFrameKind::Keyframe,
+        data: serde_json::json!({
+            "subject": { "id": "#7", "name": "Atlas" }, "revision": 2,
+            "vitals": [
+                pool("unit/heat", "heat", 20, 30),
+                pool("section/center_torso/structure", "structure", 8, 8),
+                pool("facet/center_torso/rear/armor", "armor", 1, 6),
+                pool("component/gauss/ammo", "ammo", 9, 12),
+                pool("unit/fuel", "fuel", 40, 60),
+                pool("unit/coolant", "coolant", 5, 5),
+            ]
+        }),
+    });
+    let text = frame_text(&mut app, 80, 24);
+    for line in text.lines() {
+        assert!(line.chars().count() <= 80, "row too wide: {line:?}");
+    }
+    let strip = text
+        .lines()
+        .find(|l| l.contains("[ Health"))
+        .unwrap_or_else(|| panic!("no vitals strip:\n{text}"));
+    assert!(
+        strip.starts_with("[ Health"),
+        "the pilot's own dominant vital leads: {strip:?}"
+    );
+    assert!(
+        strip.trim_end().ends_with(" more"),
+        "the cut says how many cells went: {strip:?}"
+    );
+    assert!(
+        !strip.contains("coolant"),
+        "the cells past the edge are gone, not clipped mid-cell: {strip:?}"
+    );
+    check("tui_vitals_two_feeds_80x24.txt", &text);
 }

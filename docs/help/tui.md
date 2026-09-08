@@ -145,9 +145,13 @@ reads the scene back, and is not taken as the line you were composing.
              `d` a delete of the highlighted message.
   4 chan     Your channels on the left, in-character ones (green frame) above
              the out-of-character ones (yellow frame): alias, name, unread
-             count. The highlighted channel's recent lines fill the right;
-             `b` asks for more backlog. Enter on a channel opens the box with
-             its alias. Ctrl-N walks the focused list, Ctrl-O swaps lists.
+             count. The highlighted channel's recent lines fill the right, in
+             a pane named for that channel; `b` asks for more backlog. Enter
+             opens the box with the highlighted channel's alias ready — and
+             on a server with no in-character channels, where the focus lands
+             on the empty IC list, with the alias of the channel the right
+             pane is showing. Ctrl-N walks the focused list, Ctrl-O swaps
+             lists.
   5 rolls    Your vitals as widgets on the left — tracks as boxes in threes
              with the level named, pools as gauges, readouts with a condition
              mark — and the dice you have rolled on the right. Ctrl-R opens
@@ -185,11 +189,17 @@ client's reading of a word.
 
 Above the input box, when your ruleset publishes vitals, a strip of gauges
 shows your health track, pools and readouts; without one the prompt shows
-as in line mode. The WHO rail drops out below 100 columns and the chrome
-below 12 rows, so a small window always keeps the scrollback and the box.
+as in line mode. Your own character's gauges come first, ahead of any unit
+or vehicle you are also reading, and the strip is one row: when there are
+more gauges than fit, the ones that did not fit are counted at the right
+(`+4 more`) rather than dropped in silence — screen 5 shows them all. The
+WHO rail drops out below 100 columns and the chrome below 12 rows, so a
+small window always keeps the scrollback and the box.
 
 Password and hidden prompts (login, chargen) open the box on their own and
-mask or hide your typing, just as in line mode.
+mask or hide your typing, just as in line mode. A line you were part-way
+through typing is put aside rather than carried into the password field: it
+comes back the next time you open the box on an empty line.
 
 When the game asks you something — a confirmation, a pick from a few
 options, a short line — an overlay opens over the screen. Pick an option and

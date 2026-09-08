@@ -5,8 +5,9 @@
 use mush_ansi::{AnsiTheme, ansi_len, render};
 use mush_proto::{
     ActionStatusId, ClientCaps, ClientKind, Color, ColorDepth, ExitRef, InputMode, NarrativeKind,
-    ObjRef, OutputEvent, PanelFrameKind, ProjectedActionReceipt, ProjectedActionResult, PromptSpec,
-    RichText, RoomView, Span, Style, WhoEntry,
+    NoticeAction, NoticeSeverity, ObjRef, OutputEvent, PanelFrameKind, ProjectedActionReceipt,
+    ProjectedActionResult, PromptSpec, RequestKind, RequestOption, RichText, RoomView, Span, Style,
+    WhoEntry,
 };
 
 fn caps(color: ColorDepth, width: u16) -> ClientCaps {
@@ -71,6 +72,43 @@ fn say(text: &str) -> OutputEvent {
         kind: NarrativeKind::Say,
         actor: Some(nick()),
         text: RichText::plain(text),
+    }
+}
+
+/// A notice with the loudest severity and a one-tap action (interface plan
+/// I11) — the shape line mode has to flatten into one row.
+fn notice_event() -> OutputEvent {
+    OutputEvent::Notice {
+        id: 3,
+        severity: NoticeSeverity::Urgent,
+        category: "page".into(),
+        text: RichText::plain("Zoe pages: are you about?"),
+        action: Some(NoticeAction {
+            label: "Reply".into(),
+            prefill: "page Zoe=".into(),
+        }),
+        ts: 1_757_000_000_000,
+    }
+}
+
+/// A two-option ask (interface plan I10): the numbers line mode prints are
+/// the contract the `respond <n>` interpreter decodes.
+fn choice_request_event() -> OutputEvent {
+    OutputEvent::Request {
+        id: 7,
+        kind: RequestKind::Choice,
+        prompt: RichText::plain("Who takes the watch?"),
+        options: vec![
+            RequestOption {
+                id: "mara".into(),
+                label: "Mara".into(),
+            },
+            RequestOption {
+                id: "juno".into(),
+                label: "Juno".into(),
+            },
+        ],
+        deadline_ms: None,
     }
 }
 
@@ -745,6 +783,46 @@ fn prompt_ping_panel_golden() {
 
 fn all_variant_events() -> Vec<OutputEvent> {
     vec![
+        // Look-back LB-9: `Notice`, `Request`, `View`, `Composing` and
+        // `Resumed` never rode the CRLF and control-byte sweep, though three
+        // of them print text a module authored.
+        notice_event(),
+        choice_request_event(),
+        // The same two with hostile server-authored text: an embedded ESC,
+        // a bare newline and a lone CR in every field a module chooses.
+        OutputEvent::Notice {
+            id: 5,
+            severity: NoticeSeverity::Warn,
+            category: "pa\x1b[31mge\n".into(),
+            text: RichText::plain("two\nlines\rand \x1b[2Jan escape"),
+            action: Some(NoticeAction {
+                label: "Open\n".into(),
+                prefill: "page \x1b]0;x\x07Zoe=".into(),
+            }),
+            ts: 0,
+        },
+        OutputEvent::Request {
+            id: 6,
+            kind: RequestKind::Choice,
+            prompt: RichText::plain("pick\none\x1b[31m"),
+            options: vec![
+                RequestOption {
+                    id: "a".into(),
+                    label: "A\nlabel".into(),
+                },
+                RequestOption {
+                    id: "b".into(),
+                    label: "B\x1b[0m".into(),
+                },
+            ],
+            deadline_ms: None,
+        },
+        action_receipt_event(),
+        OutputEvent::Composing {
+            actor: nick(),
+            active: true,
+        },
+        OutputEvent::Resumed { replayed: true },
         OutputEvent::Room(RoomView {
             name: "Hall".into(),
             id: "#2".into(),
@@ -856,4 +934,185 @@ fn embedded_newlines_and_control_injection() {
     let out = rendered(&evil, ColorDepth::TrueColor, 0);
     assert!(!out.contains(&0x1b));
     assert_eq!(out, b"bad[31mesc\r\n");
+}
+
+// -- I10 / I11 line-mode goldens (look-back LB-9) ----------------------------
+
+/// Look-back LB-9: `Notice`, `Request`, `View`, `Composing` and `Resumed`
+/// reached line mode with no golden of their own, though three of them print
+/// server-authored text. One frozen render each, at the depth a plain SSH
+/// client gets.
+#[test]
+fn notice_and_request_line_goldens() {
+    assert_eq!(
+        rendered_str(&notice_event(), ColorDepth::None, 0),
+        "[page] Zoe pages: are you about?  (page Zoe=)\r\n"
+    );
+    // The severity picks the tag and nothing else: Urgent is the error
+    // colour, Info and Warn the system one.
+    let calm = OutputEvent::Notice {
+        id: 4,
+        severity: NoticeSeverity::Info,
+        category: "jobs".into(),
+        text: RichText::plain("Job 12 was answered."),
+        action: None,
+        ts: 0,
+    };
+    assert_eq!(
+        rendered_str(&calm, ColorDepth::None, 0),
+        "[jobs] Job 12 was answered.\r\n"
+    );
+    assert_ne!(
+        rendered(&notice_event(), ColorDepth::Ansi16, 0),
+        rendered(&calm, ColorDepth::Ansi16, 0)
+    );
+
+    assert_eq!(
+        rendered_str(&choice_request_event(), ColorDepth::None, 0),
+        "The game asks:\r\n\
+         Who takes the watch?\r\n\
+         \x20 1  Mara\r\n\
+         \x20 2  Juno\r\n\
+         \x20 answer:  respond <number>   respond cancel\r\n"
+    );
+    let confirm = OutputEvent::Request {
+        id: 8,
+        kind: RequestKind::Confirm,
+        prompt: RichText::plain("Take the watch?"),
+        options: vec![],
+        deadline_ms: None,
+    };
+    assert_eq!(
+        rendered_str(&confirm, ColorDepth::None, 0),
+        "The game asks:\r\n\
+         Take the watch?\r\n\
+         \x20 answer:  respond yes   respond no   respond cancel\r\n"
+    );
+    let text = OutputEvent::Request {
+        id: 9,
+        kind: RequestKind::Text,
+        prompt: RichText::plain("Name the watch officer."),
+        options: vec![],
+        deadline_ms: None,
+    };
+    assert_eq!(
+        rendered_str(&text, ColorDepth::None, 0),
+        "The game asks:\r\n\
+         Name the watch officer.\r\n\
+         \x20 answer:  respond <your answer>   respond cancel\r\n"
+    );
+
+    // `Composing` and `Resumed` render nothing at all in a scrolling stream:
+    // there is nowhere to put "is typing" and nothing to say when it stops,
+    // and SSH never resumes. Pinned so a later "just print it" is a decision.
+    assert!(
+        rendered(
+            &OutputEvent::Composing {
+                actor: nick(),
+                active: true,
+            },
+            ColorDepth::TrueColor,
+            80
+        )
+        .is_empty()
+    );
+    assert!(
+        rendered(
+            &OutputEvent::Resumed { replayed: true },
+            ColorDepth::TrueColor,
+            80
+        )
+        .is_empty()
+    );
+}
+
+/// Look-back LB-9: the option numbers line mode prints ARE the numbers
+/// `respond <n>` decodes with `checked_sub(1)` (`mush-core`'s
+/// `line_respond`). Nothing bound the two before. This side owns only the
+/// printing: the numbers are read back off the rendered page and fed through
+/// the same 1-based rule, and each must land on the option whose label sits
+/// on that row.
+#[test]
+fn the_printed_option_numbers_are_the_ones_respond_decodes() {
+    let OutputEvent::Request { options, .. } = choice_request_event() else {
+        unreachable!()
+    };
+    let page = rendered_str(&choice_request_event(), ColorDepth::None, 0);
+    let rows: Vec<&str> = page
+        .lines()
+        .filter(|l| l.trim_start().starts_with(|c: char| c.is_ascii_digit()))
+        .collect();
+    assert_eq!(rows.len(), options.len(), "one numbered row per option");
+    for row in rows {
+        let mut parts = row.split_whitespace();
+        let printed: usize = parts.next().unwrap().parse().expect("a bare number");
+        let label = parts.next().expect("a label");
+        let chosen = options
+            .get(printed.checked_sub(1).expect("1-based, never 0"))
+            .expect("the printed number indexes an option");
+        assert_eq!(chosen.label, label, "row {printed} names {label}");
+    }
+    // And the first is 1, not 0: a `respond 0` has nothing to land on.
+    assert!(
+        page.contains("  1  Mara") && page.contains("  2  Juno"),
+        "{page}"
+    );
+    assert!(!page.contains("  0  "), "{page}");
+}
+
+/// Look-back I3-C36: a room field carrying a newline used to forge a second
+/// fact row. `LineWriter::write` splits an embedded newline with `end_line()`
+/// at indent 0 — flush left, exactly where a fact LABEL sits — and room
+/// fields are module- and builder-written, never sanitised on the way in the
+/// way player lines are. An object called "ball\nExits    nowhere" printed a
+/// row indistinguishable from the real `Exits` row below it.
+#[test]
+fn control_bytes_in_room_fields_cannot_break_the_fact_gutter() {
+    let mut view = RoomView {
+        name: "Hall\nExits    forged".into(),
+        id: "#2".into(),
+        desc: RichText::plain("A big hall."),
+        contents: vec![
+            ObjRef::new("#7", "ball\nHere     forged"),
+            ObjRef::new("#8", "lamp\x1b[31m"),
+        ],
+        exits: vec![ExitRef {
+            name: "north\nWeather  forged".into(),
+            aliases: vec![],
+        }],
+        zone: None,
+        ambient: Default::default(),
+    };
+    view.ambient.insert(
+        "weather".into(),
+        serde_json::json!({ "line": "Steady rain.\nHere     forged again" }),
+    );
+    let out = rendered_str(&OutputEvent::Room(view), ColorDepth::None, 80);
+    let lines: Vec<&str> = out.lines().collect();
+    for label in ["Here", "Exits", "Weather"] {
+        assert_eq!(
+            lines.iter().filter(|l| l.starts_with(label)).count(),
+            1,
+            "exactly one {label} row:\n{out}"
+        );
+    }
+    // Every continuation inside the facts block wraps under the nine-column
+    // gutter; nothing a field carried reaches column 0.
+    let first_fact = lines.iter().position(|l| l.starts_with("Here")).unwrap();
+    for line in &lines[first_fact..] {
+        assert!(
+            line.starts_with("Here")
+                || line.starts_with("Exits")
+                || line.starts_with("Weather")
+                || line.starts_with("         ")
+                || line.is_empty(),
+            "a field escaped the gutter: {line:?}\n{out}"
+        );
+    }
+    for line in &lines {
+        assert!(line.chars().count() <= 80, "row too wide: {line:?}");
+    }
+    // The forged labels are still THERE as text — flattened onto their own
+    // field's line, which is the honest place for them.
+    assert!(out.contains("Here     ball Here     forged"), "{out}");
 }

@@ -144,21 +144,27 @@ pub fn render(event: &OutputEvent, caps: &ClientCaps, theme: &AnsiTheme, out: &m
             w.end_line();
             w.rich(prompt);
             w.end_line();
+            // `respond cancel` is accepted for every kind (`line_respond`)
+            // and was printed for none of them (look-back LB-9): a line-mode
+            // player who did not want to answer had no documented way out but
+            // to wait for the deadline.
             match kind {
                 RequestKind::Confirm => {
-                    w.plain("  answer:  respond yes   respond no");
+                    w.plain("  answer:  respond yes   respond no   respond cancel");
                     w.end_line();
                 }
                 RequestKind::Choice => {
+                    // The printed number is the 1-based option index the
+                    // engine decodes with `checked_sub(1)`.
                     for (i, o) in options.iter().enumerate() {
                         w.plain(&format!("  {}  {}", i + 1, o.label));
                         w.end_line();
                     }
-                    w.plain("  answer:  respond <number>");
+                    w.plain("  answer:  respond <number>   respond cancel");
                     w.end_line();
                 }
                 RequestKind::Target | RequestKind::Text => {
-                    w.plain("  answer:  respond <your answer>");
+                    w.plain("  answer:  respond <your answer>   respond cancel");
                     w.end_line();
                 }
             }
@@ -209,9 +215,9 @@ pub fn fmt_duration(secs: u64) -> String {
 /// — `Here`, `Exits`, and `Weather` from `ambient.weather.line` when the
 /// weather module contributed one. Facts wrap under their label.
 fn render_room(w: &mut LineWriter<'_>, view: &RoomView) {
-    w.tagged("room", &view.name);
+    w.tagged("room", &flat(&view.name));
     w.plain(" ");
-    w.tagged("dim", &view.id);
+    w.tagged("dim", &flat(&view.id));
     w.end_line();
     let rule_w = match usize::from(w.caps.width) {
         0 => ROOM_RULE_MAX_W,
@@ -235,7 +241,7 @@ fn render_room(w: &mut LineWriter<'_>, view: &RoomView) {
             if i > 0 {
                 w.plain(", ");
             }
-            w.plain(&obj.name);
+            w.plain(&flat(&obj.name));
         }
         w.end_line_indent(ROOM_FACT_GUTTER_W);
     }
@@ -245,15 +251,27 @@ fn render_room(w: &mut LineWriter<'_>, view: &RoomView) {
             if i > 0 {
                 w.plain("  ");
             }
-            w.tagged("exit", &exit.name);
+            w.tagged("exit", &flat(&exit.name));
         }
         w.end_line_indent(ROOM_FACT_GUTTER_W);
     }
     if let Some(line) = weather {
         w.plain(&fact_label("Weather"));
-        w.tagged("weather", line);
+        w.tagged("weather", &flat(line));
         w.end_line_indent(ROOM_FACT_GUTTER_W);
     }
+}
+
+/// A room field flattened to ONE visual line.
+///
+/// `LineWriter::write` splits an embedded newline with `end_line()` at indent
+/// 0, so a field carrying one would start a fresh flush-left line — exactly
+/// where a fact LABEL sits, forging a second `Here` or `Exits` row
+/// (look-back I3-C36). Room fields are module- and builder-written and are
+/// never sanitised the way player lines are on the way in. Other control
+/// bytes the writer already strips.
+fn flat(s: &str) -> String {
+    s.replace('\n', " ")
 }
 
 /// `label` padded to the fact gutter.

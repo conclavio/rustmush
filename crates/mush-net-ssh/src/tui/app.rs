@@ -39,7 +39,7 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use serde_json::Value;
 
 use super::keys::{Key, KeyParser};
-use super::panels::{ChanMsg, PanelOutcome, PanelStore, UNIT_FEED, rich_plain};
+use super::panels::{ChanMsg, PanelOutcome, PanelStore, UNIT_FEED};
 use super::render::{
     Entry, GUTTER_W, PaneRows, RenderCtx, dim_span_owned, legend_line, render_backlog_rows,
     render_channels_rows, render_event, render_rolls_rows, render_sheet_rows, render_vitals_rows,
@@ -47,7 +47,7 @@ use super::render::{
 };
 use super::screen::{
     BorderRole, GLOBAL_KEYS, JUMP_KEYS, KeyAction, LocalAction, PaneContent, PaneId, PaneSlot,
-    PaneSpec, RESERVED_EXIT_KEYS, Screen, ScreenId, builtin_screens, validate_screens,
+    PaneSpec, Screen, ScreenId, builtin_screens, validate_screens,
 };
 use crate::line::LineBuffer;
 
@@ -523,9 +523,18 @@ impl TuiApp {
             ),
             ("who".to_string(), empty()),
             ("commands.list".to_string(), empty()),
-            ("comsys.state".to_string(), empty()),
-            ("scenes".to_string(), empty()),
         ];
+        // `comsys` and `scenes` are modules a world may simply not compose,
+        // and their entry queries were unconditional (look-back LB-11) — two
+        // "Unknown query" replies into the scene scrollback on every `@tui`
+        // against such a server. `who` and `commands.list` are core and are
+        // never gated. An empty manifest is a hello that has not landed, not
+        // an absent feed, so it still asks.
+        for feed in ["comsys", "scenes"] {
+            if self.manifest.panels.is_empty() || manifest_has(&self.manifest, feed) {
+                q.push((feed_query(feed).to_string(), empty()));
+            }
+        }
         for feed in &self.manifest.panels {
             if feed.ends_with(".vitals") {
                 q.push((feed.clone(), empty()));
@@ -535,10 +544,23 @@ impl TuiApp {
         q
     }
 
+    /// The feed a screen's declaration actually names on THIS server. Screens
+    /// 8 and 9 are written against [`UNIT_FEED`], the name the tacsim pack
+    /// happens to use; a world that publishes `<pack>.unit` under any other
+    /// prefix drives the same two screens (look-back LB-12, mirroring the
+    /// web's `endsWith(".unit")` routing). Every other feed is itself.
+    fn resolve_feed<'a>(&'a self, feed: &'a str) -> &'a str {
+        if feed == UNIT_FEED {
+            PanelStore::unit_feed(&self.manifest)
+        } else {
+            feed
+        }
+    }
+
     /// The active screen's own hydration queries.
     fn screen_queries(&self) -> Vec<(String, Value)> {
         let screen = self.screen();
-        // An `on_enter` that names one of the screen's own PANEL feeds is
+        // An `on_enter` that hydrates one of the screen's own PANEL feeds is
         // gated on the manifest exactly as the pane's subscribe is (below):
         // asking a server that does not publish the feed earns an `Unknown
         // query` reply in a scrollback neither tactical screen shows. An
@@ -546,31 +568,46 @@ impl TuiApp {
         // feed is absent, so it still asks. A semantic VIEW (`legal.actions`)
         // is not a panel feed and `Hello.panels` never lists one, so it is
         // never gated.
-        let panel_feed = |name: &str| {
-            screen
-                .panes
-                .iter()
-                .any(|p| matches!(p.content, PaneContent::Panel { feed, .. } if feed == name))
+        //
+        // The gate matches the query against each pane's FEED THROUGH
+        // `feed_query` (look-back LB-11): `mail.list`, `intel.list` and
+        // `comsys.state` are named differently from the `mail`/`intel`/
+        // `comsys` feeds they hydrate, so comparing the raw names matched
+        // nothing and screens 3/4/6 asked a mail-less, comsys-less server
+        // unconditionally.
+        //
+        // Both sides run through `resolve_feed`, so a screen declaring
+        // `tactics.unit` gates and subscribes on the `.unit` feed THIS world
+        // actually publishes (look-back LB-12).
+        let gated_feed = |name: &str| {
+            screen.panes.iter().find_map(|p| {
+                pane_feed(p.content)
+                    .map(|f| self.resolve_feed(f))
+                    .filter(|f| feed_query(f) == name)
+            })
         };
         let mut q: Vec<(String, Value)> = screen
             .on_enter
             .iter()
-            .filter(|(n, _)| {
-                !panel_feed(n) || self.manifest.panels.is_empty() || manifest_has(&self.manifest, n)
+            .map(|(n, a)| (self.resolve_feed(n).to_string(), a.clone()))
+            .filter(|(n, _)| match gated_feed(n) {
+                Some(feed) => self.manifest.panels.is_empty() || manifest_has(&self.manifest, feed),
+                None => true,
             })
-            .map(|(n, a)| ((*n).to_string(), a.clone()))
             .collect();
         // Interface plan I8: a pane over a module feed (a dotted name) the
         // manifest carries is subscribed on entry — the contacts table — and
         // an absent feed is never asked for, so a server without its producer
         // prints nothing. A feed `on_enter` already names is not doubled.
         for p in &screen.panes {
-            if let PaneContent::Panel { feed, .. } = p.content
-                && feed.contains('.')
-                && manifest_has(&self.manifest, feed)
-                && !q.iter().any(|(n, _)| n == feed)
-            {
-                q.push((feed.to_string(), Value::Object(serde_json::Map::new())));
+            if let PaneContent::Panel { feed, .. } = p.content {
+                let feed = self.resolve_feed(feed);
+                if feed.contains('.')
+                    && manifest_has(&self.manifest, feed)
+                    && !q.iter().any(|(n, _)| n == feed)
+                {
+                    q.push((feed.to_string(), Value::Object(serde_json::Map::new())));
+                }
             }
         }
         if screen
@@ -623,7 +660,17 @@ impl TuiApp {
                 // A masked or hidden prompt (a password, chargen) wants
                 // typing: open a fresh box, leaving any draft aside — a
                 // game line has no business in a password field.
-                if spec.mode != InputMode::Normal && self.mode == Mode::Nav {
+                //
+                // Look-back I2-C32: this used to fire only from NAV mode, so
+                // the one case it exists to prevent was the one it missed —
+                // a half-typed line already in the box rode into the masked
+                // field and `Enter` sent the game line and the password as
+                // one string. The line becomes the draft instead, and comes
+                // back the next time input mode opens empty.
+                if spec.mode != InputMode::Normal {
+                    if !self.line.is_empty() {
+                        self.draft = Some(self.line.text());
+                    }
                     self.mode = Mode::Input;
                     self.line.clear();
                     self.palette = None;
@@ -1593,8 +1640,16 @@ impl TuiApp {
             .or_else(|| rows.rows.into_iter().find(|r| r.selectable))
     }
 
+    /// The line `Enter` prefills: the focused pane's highlighted row, else —
+    /// on a screen with channel panes — the channel [`Self::selected_channel`]
+    /// already answers with (I7-C12). On a stock server every channel is OOC,
+    /// so the channel screen opens with focus on an EMPTY IC pane whose only
+    /// row is non-selectable; without this fallback screen 4's advertised
+    /// `Enter type` opened a blank line.
     fn selected_prefill(&self) -> Option<String> {
-        self.selected_row().and_then(|r| r.prefill)
+        self.selected_row()
+            .and_then(|r| r.prefill)
+            .or_else(|| self.selected_channel_row().and_then(|r| r.prefill))
     }
 
     fn selected_row_key(&self) -> Option<String> {
@@ -1614,24 +1669,32 @@ impl TuiApp {
         idx
     }
 
-    /// The channel highlighted on the active screen: the focused channel
+    /// The channel ROW highlighted on the active screen: the focused channel
     /// pane's highlight, else the first channel any channel pane lists
-    /// (the IC pane is often empty; the OOC pane then answers).
-    fn selected_channel(&self) -> Option<String> {
+    /// (the IC pane is often empty; the OOC pane then answers). The whole row
+    /// rather than its key, so `Enter` can reach the row's prefill too.
+    fn selected_channel_row(&self) -> Option<super::render::PaneRow> {
         for i in self.channel_pane_indexes() {
             let spec = self.screen().panes[i];
             let rows = self.pane_rows(&spec);
             let ui = self.pane_ui(spec.id);
-            let key = rows
+            let row = rows
                 .rows
                 .get(ui.selected)
-                .and_then(|r| r.row_key.clone())
-                .or_else(|| rows.rows.iter().find_map(|r| r.row_key.clone()));
-            if key.is_some() {
-                return key;
+                .filter(|r| r.row_key.is_some())
+                .or_else(|| rows.rows.iter().find(|r| r.row_key.is_some()))
+                .cloned();
+            if row.is_some() {
+                return row;
             }
         }
         None
+    }
+
+    /// The name of the channel [`Self::selected_channel_row`] names: the key
+    /// `b` asks backlog for and the backlog pane's title.
+    fn selected_channel(&self) -> Option<String> {
+        self.selected_channel_row().and_then(|r| r.row_key)
     }
 
     /// `^N` (interface plan I7): highlight the next channel of the focused
@@ -1872,28 +1935,33 @@ impl TuiApp {
         let ctx = self.render_ctx();
         match spec.content {
             PaneContent::Scrollback | PaneContent::Who => PaneRows::default(),
-            PaneContent::Panel { feed, render } => match self.panels.get(feed) {
-                Some(data) => render(data, &ctx),
-                // A feed whose first keyframe is still in flight is honestly
-                // loading — except the unit feed (interface plan I8), whose
-                // frame may never come: a refusal lands in the scrollback,
-                // which neither tactical screen shows, and a composition
-                // without the tactical module answers nothing at all. Its
-                // renderers have an honest empty state (the no-unit line, or
-                // the after-action ring when one has arrived), so hand them
-                // the empty frame rather than a spinner that never stops.
-                None if feed == UNIT_FEED => render(&Value::Null, &ctx),
-                // A module feed this server does not publish at all (the
-                // contacts table on a server without the propagation layer)
-                // is declared-empty, not loading: nothing will ever arrive.
-                None if feed.contains('.')
-                    && !self.manifest.panels.is_empty()
-                    && !manifest_has(&self.manifest, feed) =>
-                {
-                    PaneRows::placeholder("(not published by this server)")
+            PaneContent::Panel { feed, render } => {
+                let feed = self.resolve_feed(feed);
+                match self.panels.get(feed) {
+                    Some(data) => render(data, &ctx),
+                    // A feed whose first keyframe is still in flight is
+                    // honestly loading — except a `.unit` feed (interface plan
+                    // I8), whose frame may never come: a refusal lands in the
+                    // scrollback, which neither tactical screen shows, and a
+                    // composition without the tactical module answers nothing
+                    // at all. Its renderers have an honest empty state (the
+                    // no-unit line, or the after-action ring when one has
+                    // arrived), so hand them the empty frame rather than a
+                    // spinner that never stops.
+                    None if feed.ends_with(".unit") => render(&Value::Null, &ctx),
+                    // A module feed this server does not publish at all (the
+                    // contacts table on a server without the propagation
+                    // layer) is declared-empty, not loading: nothing will ever
+                    // arrive.
+                    None if feed.contains('.')
+                        && !self.manifest.panels.is_empty()
+                        && !manifest_has(&self.manifest, feed) =>
+                    {
+                        PaneRows::placeholder("(not published by this server)")
+                    }
+                    None => loading(),
                 }
-                None => loading(),
-            },
+            }
             PaneContent::View { view, render } => match self.panels.get(view) {
                 Some(data) => render(data, &ctx),
                 None => loading(),
@@ -2025,7 +2093,12 @@ impl TuiApp {
         }
         if gauge_h > 0 {
             frame.render_widget(
-                Paragraph::new(vitals_line(&vitals, self.caps.utf8)),
+                Paragraph::new(vitals_line(
+                    &vitals,
+                    self.caps.utf8,
+                    gauge_area.width as usize,
+                    self.manifest.character.as_deref(),
+                )),
                 gauge_area,
             );
         }
@@ -2225,11 +2298,19 @@ impl TuiApp {
         } else {
             style = style.add_modifier(Modifier::DIM);
         }
-        let title = if focused {
-            format!(" {} ", spec.title)
-        } else {
-            spec.title.to_string()
+        // The backlog pane frames ONE channel's messages, and its title was
+        // the literal word "channel" (look-back I7-C16) while the plan said
+        // it named the channel. The name is server-supplied, so it is cut to
+        // printable ASCII and bounded before it touches a border.
+        let name = match spec.content {
+            PaneContent::Backlog => self
+                .selected_channel()
+                .map(|c| ascii_title(&c))
+                .filter(|c| !c.is_empty())
+                .unwrap_or_else(|| spec.title.to_string()),
+            _ => spec.title.to_string(),
         };
+        let title = if focused { format!(" {name} ") } else { name };
         Block::default()
             .borders(Borders::ALL)
             .border_style(style)
@@ -2549,6 +2630,21 @@ fn sanitize(s: &str) -> String {
     s.chars().filter(|c| !c.is_control()).collect()
 }
 
+/// The most characters a server-supplied pane title may spend on a border.
+const MAX_PANE_TITLE: usize = 16;
+
+/// A server-supplied string safe to draw INTO a pane border: printable ASCII
+/// only (a border is box-drawing, and a wide or combining char there
+/// mis-measures the frame) and bounded by [`MAX_PANE_TITLE`].
+fn ascii_title(s: &str) -> String {
+    s.chars()
+        .filter(|c| c.is_ascii_graphic() || *c == ' ')
+        .take(MAX_PANE_TITLE)
+        .collect::<String>()
+        .trim()
+        .to_string()
+}
+
 /// The one-letter exit keys a room offers (D-I-19): every exit whose name
 /// or an alias is exactly one ASCII letter binds that letter, unless the
 /// letter is a global or jump key; first exit wins a contested letter.
@@ -2580,22 +2676,42 @@ pub fn exit_keys(exits: &[ExitRef]) -> Vec<(char, String)> {
     keys
 }
 
-/// The letters a room may always use on the scene screen.
-#[must_use]
-pub fn reserved_exit_keys() -> &'static [char] {
-    &RESERVED_EXIT_KEYS
-}
-
-/// The plain text of a serialized `RichText`, for tests and rows.
-#[must_use]
-pub fn plain_of(v: &Value) -> String {
-    rich_plain(v)
-}
+// Look-back LB-24: `reserved_exit_keys()` and `plain_of()` were `pub` with
+// no caller anywhere — `pub mod tui` hides that from `dead_code`, so nothing
+// could see it. `RESERVED_EXIT_KEYS` is already `pub` in `screen`, and
+// `rich_plain` is used directly by the renderers.
 
 /// Whether `feed` is one of the manifest's feeds.
 #[must_use]
 pub fn manifest_has(manifest: &TuiManifest, feed: &str) -> bool {
     manifest.panels.iter().any(|f| f == feed)
+}
+
+/// The read-only query that hydrates a panel FEED, mirroring the web bridge's
+/// subscribe map (`mush-gateway/src/web_bridge.rs`): a feed is normally
+/// answered by a handler of the same name, and these are the ones that are
+/// not (look-back LB-10/LB-11 — three copies of this map exist; the long fix
+/// is `Registrar::panel_feed` declaring its own keyframe query).
+#[must_use]
+pub fn feed_query(feed: &str) -> &str {
+    match feed {
+        "comsys" => "comsys.state",
+        "intel" => "intel.list",
+        "mail" => "mail.list",
+        other => other,
+    }
+}
+
+/// The panel feed a pane reads, where it has one. The two channel panes and
+/// the backlog beside them all read `comsys` (`pane_rows`), which is what the
+/// manifest names — `comsys.state` is only the query.
+#[must_use]
+fn pane_feed(content: PaneContent) -> Option<&'static str> {
+    match content {
+        PaneContent::Panel { feed, .. } => Some(feed),
+        PaneContent::Channels { .. } | PaneContent::Backlog => Some("comsys"),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -3043,8 +3159,19 @@ mod tests {
     #[test]
     fn vitals_strip_shows_and_prompt_shows_without_it() {
         let mut app = app();
+        // I2-C40: the textual prompt is the fallback for a server with no
+        // vitals feed at all, and nothing asserted it showed. It shows with
+        // the strip and without it.
+        app.apply_event(&OutputEvent::Prompt(PromptSpec {
+            mode: InputMode::Normal,
+            text: Some(RichText::plain("HP:20>")),
+        }));
         let text = super::super::frame_text(&mut app, 120, 34);
         assert!(!text.contains("[ Health"));
+        assert!(
+            text.contains("HP:20>"),
+            "no vitals, so the prompt is it:\n{text}"
+        );
         app.apply_event(&OutputEvent::Panel {
             feed: SmolStr::new_static("wod.vitals"),
             kind: PanelFrameKind::Keyframe,
@@ -3070,6 +3197,40 @@ mod tests {
             "dominant first"
         );
         assert!(strip.contains("[ wound 0 ]"));
+        assert!(
+            text.contains("HP:20>"),
+            "the prompt keeps its place beside the strip:\n{text}"
+        );
+    }
+
+    /// Look-back I2-C32: a masked prompt (a password, a chargen question)
+    /// opens a FRESH box from either mode. It used to fire only from nav, so
+    /// a half-typed game line already in the box rode into the password field
+    /// and one Enter sent both. The line is kept as the draft and comes back
+    /// when input mode next opens empty.
+    #[test]
+    fn a_masked_prompt_never_inherits_a_half_typed_game_line() {
+        let mut app = app();
+        app.feed_input(b"\rattack the guard");
+        assert_eq!(app.mode(), Mode::Input);
+        assert_eq!(app.input_text(), "attack the guard");
+        app.apply_event(&OutputEvent::Prompt(PromptSpec {
+            mode: InputMode::Masked,
+            text: Some(RichText::plain("Password:")),
+        }));
+        assert_eq!(app.mode(), Mode::Input, "the box stays open for typing");
+        assert_eq!(app.input_text(), "", "the password field starts empty");
+        assert_eq!(app.draft(), Some("attack the guard"));
+        let r = app.feed_input(b"secret\r");
+        assert_eq!(r.submit, vec!["secret".to_string()], "the password alone");
+        // Back in normal mode the line the player was writing is offered again.
+        app.apply_event(&OutputEvent::Prompt(PromptSpec {
+            mode: InputMode::Normal,
+            text: None,
+        }));
+        app.feed_input(&[0x1b]);
+        app.feed_input(b"\r");
+        assert_eq!(app.input_text(), "attack the guard");
     }
 
     #[test]
@@ -3423,6 +3584,61 @@ mod tests {
         assert!(!text.contains("(loading...)"), "{text}");
     }
 
+    /// Look-back LB-12: `tactics.unit` is the name one pack uses, and screens
+    /// 8/9 promised to follow any `<pack>.unit` feed "without a client
+    /// change". They now resolve it by SUFFIX from the manifest, as the web
+    /// always did and as `.sheet`/`.vitals`/`.roll` already do here: the
+    /// entry query, the pane lookup and the after-action journal all follow.
+    #[test]
+    fn a_differently_named_unit_feed_drives_the_tactical_screens() {
+        let mut app = app();
+        app.set_manifest(TuiManifest {
+            panels: vec!["mek.unit".into()],
+            character: None,
+        });
+        let names: Vec<String> = app
+            .feed_input(b"9")
+            .queries
+            .into_iter()
+            .map(|(n, _)| n)
+            .collect();
+        assert_eq!(names, vec!["mek.unit"], "the world's own feed is asked for");
+        app.apply_event(&OutputEvent::Panel {
+            feed: SmolStr::new_static("mek.unit"),
+            kind: PanelFrameKind::Keyframe,
+            data: serde_json::json!({
+                "object": { "id": "#7", "name": "Atlas" },
+                "revision": 3, "state": "active", "record": null,
+                "sections": [ { "id": "center_torso", "condition": "ok", "state": "ok",
+                                "facets": [], "slots": [] } ],
+                "cells": [ { "addr": "unit/heat", "label": "heat",
+                             "current": 20, "min": 0, "max": 30, "state": "ok" } ],
+                "components": [], "capabilities": [],
+                "counts": { "sections": 1, "cells": 1, "components": 0, "capabilities": 0 },
+                "truncated": false
+            }),
+        });
+        let text = super::super::frame_text(&mut app, 120, 34);
+        assert!(text.contains("Atlas"), "the unit paints:\n{text}");
+        assert!(!text.contains("No tactical unit"), "{text}");
+        // The delta rings in the journal the after-action panes read.
+        app.apply_event(&OutputEvent::Panel {
+            feed: SmolStr::new_static("mek.unit"),
+            kind: PanelFrameKind::Delta,
+            data: serde_json::json!({
+                "object": { "id": "#7", "name": "Atlas" },
+                "from_revision": 3, "to_revision": 4, "now": 1_757_000_000, "cause": "gauss",
+                "entries": [ { "kind": "cell", "addr": "unit/heat", "from": 20, "to": 28 } ]
+            }),
+        });
+        app.feed_input(b"8");
+        let text = super::super::frame_text(&mut app, 120, 34);
+        assert!(
+            text.contains("unit/heat") && text.contains("gauss"),
+            "the before/after and journal panes read the delta:\n{text}"
+        );
+    }
+
     /// I8 (hole 11): a server restarted behind the gateway re-sends its hello
     /// to a live TUI. The vitals feeds were always re-fetched; the active
     /// screen's own feeds are now too, so a tactical screen does not sit on
@@ -3491,7 +3707,13 @@ mod tests {
     fn entry_queries_cover_the_manifest_and_the_screen() {
         let mut app = app();
         app.set_manifest(TuiManifest {
-            panels: vec!["wod.vitals".into(), "wod.sheet".into(), "mail".into()],
+            panels: vec![
+                "wod.vitals".into(),
+                "wod.sheet".into(),
+                "mail".into(),
+                "comsys".into(),
+                "scenes".into(),
+            ],
             character: Some("Nick".into()),
         });
         let q: Vec<String> = app.entry_queries().into_iter().map(|(n, _)| n).collect();
@@ -3522,6 +3744,67 @@ mod tests {
         assert_eq!(r.queries.len(), 1);
         assert_eq!(r.queries[0].0, "comsys.backlog");
         assert_eq!(r.queries[0].1["channel"], "Public");
+    }
+
+    /// Look-back LB-11: every entry and `on_enter` query that hydrates a
+    /// module feed is gated on that FEED being in the manifest, not on the
+    /// query's own name — `mail.list`, `intel.list` and `comsys.state` are
+    /// named differently from `mail`, `intel` and `comsys`, so the old
+    /// name-match gated nothing and screens 3/4/6 earned "Unknown query" on a
+    /// server without the module.
+    #[test]
+    fn screen_and_entry_queries_are_gated_on_the_pane_feed() {
+        let names =
+            |r: &InputResult| -> Vec<String> { r.queries.iter().map(|(n, _)| n.clone()).collect() };
+        let mut bare = app();
+        bare.set_manifest(TuiManifest {
+            panels: vec!["wod.vitals".into()],
+            character: Some("Nick".into()),
+        });
+        let q: Vec<String> = bare.entry_queries().into_iter().map(|(n, _)| n).collect();
+        for absent in ["comsys.state", "scenes"] {
+            assert!(!q.contains(&absent.to_string()), "{absent} not in {q:?}");
+        }
+        assert!(q.contains(&"who".to_string()), "core queries still asked");
+        for (digit, absent) in [
+            (b'3', "mail.list"),
+            (b'4', "comsys.state"),
+            (b'6', "intel.list"),
+        ] {
+            let r = bare.feed_input(&[digit]);
+            assert!(
+                !names(&r).contains(&absent.to_string()),
+                "{absent} not asked: {:?}",
+                names(&r)
+            );
+        }
+        // The same screens on a server that publishes the feeds.
+        let mut full = app();
+        full.set_manifest(TuiManifest {
+            panels: vec![
+                "mail".into(),
+                "comsys".into(),
+                "scenes".into(),
+                "intel".into(),
+            ],
+            character: Some("Nick".into()),
+        });
+        let q: Vec<String> = full.entry_queries().into_iter().map(|(n, _)| n).collect();
+        for expected in ["comsys.state", "scenes"] {
+            assert!(q.contains(&expected.to_string()), "{expected} in {q:?}");
+        }
+        for (digit, expected) in [
+            (b'3', "mail.list"),
+            (b'4', "comsys.state"),
+            (b'6', "intel.list"),
+        ] {
+            let r = full.feed_input(&[digit]);
+            assert!(
+                names(&r).contains(&expected.to_string()),
+                "{expected} asked: {:?}",
+                names(&r)
+            );
+        }
     }
 
     /// I7: the channel screen lists IC and OOC channels apart; `^N` walks
@@ -3574,6 +3857,48 @@ mod tests {
         let before = app.focused_pane();
         app.feed_input(&[0x0e, 0x0f]);
         assert_eq!(app.focused_pane(), before);
+    }
+
+    /// I7-C12: `Enter` on the channel screen prefills the channel the screen
+    /// is already acting on. On a stock server every channel is OOC and focus
+    /// opens on the empty IC pane, whose one row is not selectable — so the
+    /// prefill has to fall back to the channel `b` would ask backlog for. With
+    /// an IC channel present the focused pane answers for itself.
+    #[test]
+    fn channel_enter_prefills_the_fallback_channel() {
+        let on_channel_screen = |channels: Value| {
+            let mut a = app();
+            a.feed_input(b"4");
+            a.apply_event(&OutputEvent::Panel {
+                feed: SmolStr::new_static("comsys"),
+                kind: PanelFrameKind::Keyframe,
+                data: serde_json::json!({ "channels": channels }),
+            });
+            a
+        };
+        let mut ooc_only = on_channel_screen(serde_json::json!([
+            { "name": "Public", "alias": "pub", "unread": 0 },
+        ]));
+        assert_eq!(
+            ooc_only.focused_pane(),
+            Some(PaneId("ic")),
+            "the empty IC pane"
+        );
+        ooc_only.feed_input(b"\r");
+        assert_eq!(ooc_only.mode(), Mode::Input);
+        assert_eq!(
+            ooc_only.input_text(),
+            "pub ",
+            "the OOC pane's channel answers"
+        );
+        // With an IC channel the focused pane has its own selectable row.
+        let mut with_ic = on_channel_screen(serde_json::json!([
+            { "name": "Public", "alias": "pub", "unread": 0 },
+            { "name": "Radio", "alias": "rad", "unread": 0, "ic": true },
+        ]));
+        with_ic.feed_input(b"\r");
+        assert_eq!(with_ic.mode(), Mode::Input);
+        assert_eq!(with_ic.input_text(), "rad ");
     }
 
     /// I10: the server-initiated request overlay — a confirm answers with

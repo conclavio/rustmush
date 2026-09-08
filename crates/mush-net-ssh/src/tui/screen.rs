@@ -40,6 +40,16 @@ pub const JUMP_KEYS: [char; 2] = ['g', 'G'];
 /// Verbs a bare key may send (D-I-18). Every entry reads state and changes
 /// nothing; the probe in [`validate_screens`] holds every `Run` to this
 /// list by its first word.
+///
+/// Four are bound today — `look`, `inventory`, `+roll/last`, `+contacts` —
+/// and the rest are reserved for the screens a ruleset declares. Look-back
+/// LB-16 took two off it: `@mail <n>` MARKS THE MESSAGE READ (`mush-mail`)
+/// and `+orders` writes work orders, so neither belonged on a list whose
+/// whole promise is that a bare key mutates nothing. The list is one of two
+/// hand-kept copies (`web/src/lib/stores/screens.svelte.ts` is the other);
+/// both are pinned to the committed fixture `web/src/lib/run-allowlist.json`
+/// — asserted below and by a vitest — until K8.5's read-only classification
+/// can replace the hand-keeping.
 pub const RUN_ALLOWLIST: &[&str] = &[
     "look",
     "l",
@@ -48,14 +58,12 @@ pub const RUN_ALLOWLIST: &[&str] = &[
     "i",
     "+sheet",
     "+contacts",
-    "+orders",
     "+intel",
     "+actions",
     "+scene",
     "+recap",
     "+roll/last",
     "help",
-    "@mail",
 ];
 
 /// The body of a declared-but-unproduced pane (interface plan I8), two rows
@@ -926,6 +934,49 @@ mod tests {
             .position(|d| !placeholders.contains(d))
             .expect("some live pane degrades too");
         assert_eq!(live_first, placeholders.len());
+    }
+
+    /// Look-back LB-16: [`RUN_ALLOWLIST`] is one of two hand-kept copies, with
+    /// nothing that crossed them. Both are now pinned to one committed
+    /// fixture, this side in Rust and the web side in a vitest, so a verb
+    /// added to one and not the other fails a build rather than diverging in
+    /// silence. `@mail` and `+orders` are off the list because both WRITE.
+    #[test]
+    fn the_run_allowlist_matches_the_committed_fixture_and_writes_nothing() {
+        let fixture: Vec<String> =
+            serde_json::from_str(include_str!("../../../../web/src/lib/run-allowlist.json"))
+                .expect("web/src/lib/run-allowlist.json is a JSON array of verbs");
+        let mut sorted: Vec<String> = RUN_ALLOWLIST.iter().map(|v| (*v).to_string()).collect();
+        sorted.sort();
+        assert_eq!(sorted.len(), RUN_ALLOWLIST.len(), "a verb is listed twice");
+        assert_eq!(sorted, fixture, "the TUI and web copies have drifted");
+        for writer in ["@mail", "+orders"] {
+            assert!(
+                !fixture.contains(&writer.to_string()),
+                "{writer} mutates and may not ride a bare key"
+            );
+        }
+        assert!(
+            !fixture.iter().any(|v| v.starts_with('@')),
+            "no admin verb is read-only enough for a bare key"
+        );
+        // Every verb a built-in actually binds is on the list; the rest of the
+        // list is reserved for the screens a ruleset declares.
+        let bound: Vec<&str> = builtin_screens()
+            .iter()
+            .flat_map(|s| s.keys.iter())
+            .filter_map(|b| match b.action {
+                KeyAction::Run(cmd) => cmd.split_whitespace().next(),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(bound, ["look", "inventory", "+roll/last", "+contacts"]);
+        for verb in &bound {
+            assert!(
+                RUN_ALLOWLIST.contains(verb),
+                "{verb} is bound but not listed"
+            );
+        }
     }
 
     #[test]
