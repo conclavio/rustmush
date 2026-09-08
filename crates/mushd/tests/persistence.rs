@@ -619,7 +619,9 @@ async fn apply_inventory<T>(
         .await
         .expect("the writer answers")
         .expect("the inventory bundle finalizes");
-    engine.install_prepared_action(installation);
+    engine
+        .install_prepared_action(installation)
+        .expect("the fixture installs");
     value
 }
 

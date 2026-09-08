@@ -963,7 +963,9 @@ fn drive_submit(
         )
         .map_err(|error| format!("prepare: {error:?}"))?;
     let (_ops, installation) = prepared.into_parts();
-    tw.engine_mut().install_prepared_action(installation);
+    tw.engine_mut()
+        .install_prepared_action(installation)
+        .expect("the fixture installs");
     Ok(())
 }
 
@@ -1324,7 +1326,9 @@ fn vf_a3_a_forged_generation_addresses_its_own_window_and_the_real_order_still_r
     ) {
         // Install it, so the forgery is as real as it can possibly get.
         let (_ops, installation) = prepared.into_parts();
-        tw.engine_mut().install_prepared_action(installation);
+        tw.engine_mut()
+            .install_prepared_action(installation)
+            .expect("the fixture installs");
     }
     // Whatever the forgery reached, it is NOT the real generation's window.
     let owner = mush_core::OwnerId::new("sim").unwrap();
@@ -2148,7 +2152,9 @@ fn apply_arm(tw: &mut TestWorld, submit: &mush_core::AuthoritativeSubmit) {
         CommitToken::from_bytes([210; 16]),
     ) {
         let (_ops, installation) = prepared.into_parts();
-        tw.engine_mut().install_prepared_action(installation);
+        tw.engine_mut()
+            .install_prepared_action(installation)
+            .expect("the fixture installs");
     }
 }
 

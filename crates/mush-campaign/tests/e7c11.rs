@@ -164,7 +164,9 @@ fn drive_submit(
         )
         .ok()?;
     let (ops, installation) = prepared.into_parts();
-    tw.engine_mut().install_prepared_action(installation);
+    tw.engine_mut()
+        .install_prepared_action(installation)
+        .expect("the fixture installs");
     Some(ops)
 }
 
@@ -209,7 +211,9 @@ fn apply_due_handoff(tw: &mut TestWorld, token: u8) -> bool {
         return false;
     };
     let (_, installation) = prepared.into_parts();
-    tw.engine_mut().install_prepared_action(installation);
+    tw.engine_mut()
+        .install_prepared_action(installation)
+        .expect("the fixture installs");
     true
 }
 

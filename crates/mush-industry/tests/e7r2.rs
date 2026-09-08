@@ -153,7 +153,9 @@ fn apply<T>(
     };
     if let Some(prepared) = prepared {
         let (_, installation) = prepared.into_parts();
-        engine.install_prepared_action(installation);
+        engine
+            .install_prepared_action(installation)
+            .expect("the fixture installs");
     }
     result
 }

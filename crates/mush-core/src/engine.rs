@@ -2649,7 +2649,25 @@ impl Engine {
     /// transaction.
     pub fn abort_prepared_transaction(&mut self, prepared: PreparedTxn) {
         let (_, installation) = prepared.into_parts();
-        self.action_state.abort(installation);
+        self.release_installation(installation, "abort_prepared_transaction");
+    }
+
+    /// Give a prepared installation back to the store on a path that has no
+    /// refusal of its own to carry the news.
+    ///
+    /// [`ActionStateStore::abort`] refuses only on an identity mismatch, which
+    /// is a wiring bug rather than a gameplay outcome, and it checks before it
+    /// mutates — so the refusal leaves live state untouched and the only thing
+    /// left to do is say so loudly. It is never asserted: the world task owns
+    /// this call and must never panic.
+    fn release_installation(&mut self, installation: PreparedInstallation, site: &'static str) {
+        if let Err(error) = self.action_state.abort(installation) {
+            tracing::error!(
+                site,
+                %error,
+                "prepared action-state installation could not be released"
+            );
+        }
     }
 
     /// Move a logical action's persistence and install images into the one
@@ -2665,16 +2683,16 @@ impl Engine {
     ) -> Result<(), StagePreparedActionError> {
         if self.staged_action.is_some() {
             let (_, installation) = prepared.into_parts();
-            self.action_state.abort(installation);
+            self.release_installation(installation, "stage_prepared_action/already-staged");
             return Err(StagePreparedActionError::AlreadyStaged);
         }
         let (module_ops, installation) = prepared.into_parts();
         if self.world.has_dirty() {
-            self.action_state.abort(installation);
+            self.release_installation(installation, "stage_prepared_action/dirty-world");
             return Err(StagePreparedActionError::DirtyWorld);
         }
         if !self.module_ops.is_empty() {
-            self.action_state.abort(installation);
+            self.release_installation(installation, "stage_prepared_action/legacy-module-ops");
             return Err(StagePreparedActionError::LegacyModuleOps);
         }
         self.staged_action = Some(StagedAction {
@@ -2714,7 +2732,7 @@ impl Engine {
         };
         if let Some(error) = refusal {
             let (_, installation) = prepared.into_parts();
-            self.action_state.abort(installation);
+            self.release_installation(installation, "stage_authoritative_action");
             return Err(error);
         }
         let (_, installation) = prepared.into_parts();
@@ -2801,7 +2819,30 @@ impl Engine {
     fn abort_staged_action(&mut self) {
         if let Some(staged) = self.staged_action.take() {
             let (_, installation) = staged.into_parts();
-            self.action_state.abort(installation);
+            self.release_installation(installation, "abort_staged_action");
+        }
+    }
+
+    /// Drop whatever a faulted turn left staged, running no registry, guard,
+    /// codec, validator or observer code on the way out.
+    ///
+    /// The world task's panic firewall calls this from inside its recovery
+    /// path, where a second panic would abort the process, so it may not use
+    /// [`Engine::take_staged_action`]: that revalidates guards through the
+    /// registry and can fail on its own. It takes the staged action apart
+    /// directly and returns the reservation to the store; a store reservation
+    /// that outlived its staged action is reported rather than ignored,
+    /// because nothing else in the process still holds the images that would
+    /// release it.
+    pub fn discard_step_residue(&mut self) {
+        if let Some(staged) = self.staged_action.take() {
+            let (_, installation) = staged.into_parts();
+            self.release_installation(installation, "discard_step_residue");
+        } else if self.action_state.has_prepared() {
+            tracing::error!(
+                "faulted step left an action-state reservation with no staged action; \
+                 its prepared images are unreachable and the reservation stays pending"
+            );
         }
     }
 
@@ -2812,8 +2853,15 @@ impl Engine {
     /// observers hear about the change (interface plan I13), and a contract
     /// probe (`mush-contract-tests` `action_state_republish`) keeps the two
     /// apart.
-    pub fn install_prepared_action(&mut self, installation: PreparedInstallation) {
-        self.action_state.install(installation);
+    ///
+    /// Refuses — never asserts — when the installation does not match this
+    /// engine's store: see [`ActionStateStore::install`].
+    #[must_use = "an identity mismatch here is a wiring bug the caller must fail closed on"]
+    pub fn install_prepared_action(
+        &mut self,
+        installation: PreparedInstallation,
+    ) -> Result<(), ActionStateError> {
+        self.action_state.install(installation)
     }
 
     /// Install typed post-images after the exact applied receipt **and tell
@@ -2829,14 +2877,20 @@ impl Engine {
     /// persist** — it runs after the commit's own flush, and a legacy module
     /// op queued here would make the next prepared action's flush refuse
     /// itself as mixed work; republishing frames is all the seam is for.
+    ///
+    /// The family list is read off the installation *before* the install
+    /// consumes it, so a refused install must announce nothing at all: the
+    /// images are not live, and no observer may be told they are. Nothing has
+    /// been written to `out`/`fx` when this returns `Err`.
+    #[must_use = "an identity mismatch here is a wiring bug the caller must fail closed on"]
     pub fn install_prepared_action_announcing(
         &mut self,
         installation: PreparedInstallation,
         out: &mut Outbox,
         fx: &mut Effects,
-    ) {
+    ) -> Result<(), ActionStateError> {
         let touched = installation.touched_families();
-        self.action_state.install(installation);
+        self.action_state.install(installation)?;
         for (owner, family, keys) in touched {
             self.emit_world_event(
                 &WorldEvent::ActionStateChanged {
@@ -2848,11 +2902,19 @@ impl Engine {
                 fx,
             );
         }
+        Ok(())
     }
 
     /// Discard typed post-images after an indeterminate/refused receipt.
-    pub fn abort_prepared_action(&mut self, installation: PreparedInstallation) {
-        self.action_state.abort(installation);
+    ///
+    /// Refuses — never asserts — on the same identity mismatch
+    /// [`Engine::install_prepared_action`] refuses on.
+    #[must_use = "an identity mismatch here is a wiring bug the caller must fail closed on"]
+    pub fn abort_prepared_action(
+        &mut self,
+        installation: PreparedInstallation,
+    ) -> Result<(), ActionStateError> {
+        self.action_state.abort(installation)
     }
 
     /// The registered game modules, in registration order. The driver uses
@@ -4409,7 +4471,9 @@ mod tests {
         let mut transaction = engine.action_transaction(&handle).unwrap();
         transaction.insert(&handle, &id, contact.clone()).unwrap();
         let (_, installation) = transaction.prepare().unwrap().into_parts();
-        engine.install_prepared_action(installation);
+        engine
+            .install_prepared_action(installation)
+            .expect("the fixture installs");
 
         let perceived = PerceivedRef::Contact {
             provider: provider.clone(),
@@ -4450,7 +4514,9 @@ mod tests {
         let mut transaction = engine.action_transaction(&handle).unwrap();
         transaction.replace(&handle, &id, lost).unwrap();
         let (_, installation) = transaction.prepare().unwrap().into_parts();
-        engine.install_prepared_action(installation);
+        engine
+            .install_prepared_action(installation)
+            .expect("the fixture installs");
         assert_eq!(
             engine
                 .legal_action_query(principal, GOD, perceived)
@@ -4578,7 +4644,9 @@ mod tests {
         let mut transaction = engine.action_transaction(&handle).unwrap();
         transaction.insert(&handle, &7, 41).unwrap();
         let (_, installation) = transaction.prepare().unwrap().into_parts();
-        engine.install_prepared_action(installation);
+        engine
+            .install_prepared_action(installation)
+            .expect("the fixture installs");
 
         let mut out = Outbox::new();
         let mut effects = Effects::new();
@@ -4733,7 +4801,9 @@ mod tests {
         let mut transaction = engine.action_transaction(&handle).unwrap();
         transaction.insert(&handle, &7, 41).unwrap();
         let (_, installation) = transaction.prepare().unwrap().into_parts();
-        engine.install_prepared_action(installation);
+        engine
+            .install_prepared_action(installation)
+            .expect("the fixture installs");
 
         let mut out = Outbox::new();
         let mut effects = Effects::new();

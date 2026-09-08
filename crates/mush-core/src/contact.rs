@@ -647,7 +647,7 @@ mod tests {
         let mut transaction = store.transaction(&handle).unwrap();
         transaction.insert(&handle, &id, state.clone()).unwrap();
         let (_, installation) = transaction.prepare().unwrap().into_parts();
-        store.install(installation);
+        store.install(installation).expect("the fixture installs");
 
         let world = World::new_minimal();
         let context = AuthorityGuardContext::new(&world, &store);

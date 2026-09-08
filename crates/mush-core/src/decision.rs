@@ -3180,7 +3180,7 @@ mod tests {
         let prepared = txn.prepare().unwrap();
         let (writes, installation) = prepared.into_parts();
         assert_eq!(writes.len(), 3);
-        store.install(installation);
+        store.install(installation).expect("the fixture installs");
         assert_eq!(
             store.get(&families.pending, &pending.id).unwrap(),
             Some(&pending)
@@ -3212,7 +3212,7 @@ mod tests {
         let mut capture = store.transaction(&families.pending).unwrap();
         plan.stage(&mut capture, &families).unwrap();
         let (_, installation) = capture.prepare().unwrap().into_parts();
-        store.install(installation);
+        store.install(installation).expect("the fixture installs");
 
         let cancellation = pending
             .plan_cancellation(&pending.controller, pending.id, pending.revision)
@@ -3220,7 +3220,7 @@ mod tests {
         let mut terminalize = store.transaction(&families.pending).unwrap();
         cancellation.stage(&mut terminalize, &families).unwrap();
         let (_, installation) = terminalize.prepare().unwrap().into_parts();
-        store.install(installation);
+        store.install(installation).expect("the fixture installs");
         let terminal = store
             .get(&families.pending, &pending.id)
             .unwrap()
@@ -3236,7 +3236,7 @@ mod tests {
             .unwrap();
         let (writes, installation) = compact.prepare().unwrap().into_parts();
         assert_eq!(writes.len(), 4);
-        store.install(installation);
+        store.install(installation).expect("the fixture installs");
 
         assert_eq!(store.get(&families.pending, &pending.id).unwrap(), None);
         assert_eq!(store.get(&families.prompts, &pending.id).unwrap(), None);

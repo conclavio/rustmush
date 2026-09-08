@@ -96,7 +96,9 @@ fn apply<T>(
     };
     if let Some(prepared) = prepared {
         let (_, installation) = prepared.into_parts();
-        engine.install_prepared_action(installation);
+        engine
+            .install_prepared_action(installation)
+            .expect("the fixture installs");
     }
     result
 }
@@ -891,7 +893,9 @@ fn e7c2_restart_the_pool_book_and_lot_post_images_are_one_bundle() {
     // Abort it: nothing at all is installed, so a crash before the receipt
     // leaves the pre-image exactly.
     let (_, installation) = prepared.into_parts();
-    engine.abort_prepared_action(installation);
+    engine
+        .abort_prepared_action(installation)
+        .expect("the fixture aborts");
     let (pooled, still_there) = read(engine, &families, |txn| {
         (
             families.available(txn, a, &commodity("metals")).unwrap(),

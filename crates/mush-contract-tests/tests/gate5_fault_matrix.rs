@@ -384,7 +384,9 @@ fn delayed_capture_bundles() -> Vec<(&'static str, AuthoritativeBundle)> {
     let prepared = txn.prepare().unwrap();
     let writes = prepared.authoritative_replay_writes();
     let (_, installation) = prepared.into_parts();
-    engine.install_prepared_action(installation);
+    engine
+        .install_prepared_action(installation)
+        .expect("the fixture installs");
 
     let mut definitions = DefinitionRegistryBuilder::new();
     let action = definitions
@@ -467,7 +469,9 @@ fn delayed_capture_bundles() -> Vec<(&'static str, AuthoritativeBundle)> {
     let prepared = txn.prepare().unwrap();
     let lease_writes = prepared.authoritative_replay_writes();
     let (_, installation) = prepared.into_parts();
-    engine.install_prepared_action(installation);
+    engine
+        .install_prepared_action(installation)
+        .expect("the fixture installs");
     let lease_bundle = decision_sibling_bundle(&capture, 0xB0, "leased", lease_writes);
 
     let fence = DecisionCompletionFence::new(
@@ -487,7 +491,9 @@ fn delayed_capture_bundles() -> Vec<(&'static str, AuthoritativeBundle)> {
     let prepared = txn.prepare().unwrap();
     let attempt_writes = prepared.authoritative_replay_writes();
     let (_, installation) = prepared.into_parts();
-    engine.install_prepared_action(installation);
+    engine
+        .install_prepared_action(installation)
+        .expect("the fixture installs");
     let attempt_bundle = decision_sibling_bundle(&capture, 0xC0, "attempt_failed", attempt_writes);
 
     let terminal = retry_ready
@@ -503,7 +509,9 @@ fn delayed_capture_bundles() -> Vec<(&'static str, AuthoritativeBundle)> {
     let prepared = txn.prepare().unwrap();
     let terminal_writes = prepared.authoritative_replay_writes();
     let (_, installation) = prepared.into_parts();
-    engine.install_prepared_action(installation);
+    engine
+        .install_prepared_action(installation)
+        .expect("the fixture installs");
     let terminal_bundle =
         decision_sibling_bundle(&capture, 0xD0, "terminal_cancelled", terminal_writes);
 

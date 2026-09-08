@@ -2922,7 +2922,8 @@ fn vf_o2a_loss_refresh_share_reacquire_and_observe_by_a_principal_outside_the_au
         .expect("an observation into one's own picture commits");
     let contact = output.into_parts().0.data()["contact"].clone();
     tw.engine_mut()
-        .install_prepared_action(prepared.into_parts().1);
+        .install_prepared_action(prepared.into_parts().1)
+        .expect("the fixture installs");
     // Carl is not in the audience, holds no station, and is not the observer.
     for (index, (id, parameters)) in [
         (
@@ -3014,7 +3015,8 @@ fn vf_o2a_loss_refresh_share_reacquire_and_observe_by_a_principal_outside_the_au
         )
         .expect("the holder's own refresh still commits");
     tw.engine_mut()
-        .install_prepared_action(prepared.into_parts().1);
+        .install_prepared_action(prepared.into_parts().1)
+        .expect("the fixture installs");
 }
 
 /// **O2/K16.** A `sensor_arm` that did not come through a projected offer for
@@ -3091,7 +3093,8 @@ fn arm(
         )
         .expect("a staff arm commits");
     tw.engine_mut()
-        .install_prepared_action(prepared.into_parts().1);
+        .install_prepared_action(prepared.into_parts().1)
+        .expect("the fixture installs");
     output.into_parts().0.data().clone()
 }
 
@@ -3122,7 +3125,8 @@ fn fire_due_cursor(tw: &mut TestWorld, token: u8) -> Result<serde_json::Value, S
         )
         .map_err(|error| error.to_string())?;
     tw.engine_mut()
-        .install_prepared_action(prepared.into_parts().1);
+        .install_prepared_action(prepared.into_parts().1)
+        .expect("the fixture installs");
     Ok(output.into_parts().0.data().clone())
 }
 

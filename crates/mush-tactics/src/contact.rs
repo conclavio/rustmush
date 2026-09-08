@@ -662,7 +662,9 @@ mod tests {
                 _ => None,
             })
             .unwrap();
-        engine.install_prepared_action(installation);
+        engine
+            .install_prepared_action(installation)
+            .expect("the fixture installs");
         (contact, state)
     }
 

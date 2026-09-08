@@ -51,7 +51,9 @@ fn seed_contact(tw: &mut TestWorld, holder: ObjId) -> ContactId {
     let mut txn = tw.engine_mut().action_transaction(&handle).unwrap();
     txn.insert(&handle, &id, contact.clone()).unwrap();
     let (_, install) = txn.prepare().unwrap().into_parts();
-    tw.engine_mut().install_prepared_action(install);
+    tw.engine_mut()
+        .install_prepared_action(install)
+        .expect("the fixture installs");
     tw.world_mut()
         .module_state_mut::<mush_core::ContactLedgerState>()
         .unwrap()
@@ -225,7 +227,9 @@ fn platform_contact_is_guarded_at_resolution_and_rechecked_when_tick_fires() {
     assert_eq!(reacquired.generation(), 3);
     txn.replace(&handle, &id, reacquired).unwrap();
     let (_, install) = txn.prepare().unwrap().into_parts();
-    tw.engine_mut().install_prepared_action(install);
+    tw.engine_mut()
+        .install_prepared_action(install)
+        .expect("the fixture installs");
     let e = tw.engine();
     assert!(
         !guards
@@ -244,7 +248,9 @@ fn platform_contact_is_guarded_at_resolution_and_rechecked_when_tick_fires() {
     let (prepared, plan) = prepare_tick(&mut tw, DomainId(0), 183);
     assert!(plan["current"].as_array().unwrap().is_empty());
     let (_, install) = prepared.into_parts();
-    tw.engine_mut().install_prepared_action(install);
+    tw.engine_mut()
+        .install_prepared_action(install)
+        .expect("the fixture installs");
     let handles = handles(&tw);
     let key = TickCommitKey {
         domain: DomainId(0),
@@ -286,7 +292,9 @@ fn new_windows_pin_current_key_and_retire_the_resolved_windows_key() {
         tw.set_now(at);
         let (prepared, _) = prepare_tick(&mut tw, DomainId(0), token);
         let (_, install) = prepared.into_parts();
-        tw.engine_mut().install_prepared_action(install);
+        tw.engine_mut()
+            .install_prepared_action(install)
+            .expect("the fixture installs");
         assert_eq!(
             window_record(&tw, current_tick(&tw))
                 .unwrap()
@@ -367,13 +375,17 @@ fn later_domain_cleanup_resumes_committed_progress_and_does_not_skip_at_removal_
                 .unwrap();
         }
         let (_, install) = txn.prepare().unwrap().into_parts();
-        tw.engine_mut().install_prepared_action(install);
+        tw.engine_mut()
+            .install_prepared_action(install)
+            .expect("the fixture installs");
     }
     tw.set_now(1_400);
     let (prepared, first_plan) = prepare_tick(&mut tw, DomainId(4), 220);
     assert!(first_plan["reap_commits"].as_array().unwrap().is_empty());
     let (_, install) = prepared.into_parts();
-    tw.engine_mut().abort_prepared_action(install);
+    tw.engine_mut()
+        .abort_prepared_action(install)
+        .expect("the fixture aborts");
     assert!(
         tw.engine()
             .action_state()
@@ -384,7 +396,9 @@ fn later_domain_cleanup_resumes_committed_progress_and_does_not_skip_at_removal_
     let (prepared, retried) = prepare_tick(&mut tw, DomainId(4), 220);
     assert_eq!(first_plan, retried);
     let (ops, install) = prepared.into_parts();
-    tw.engine_mut().install_prepared_action(install);
+    tw.engine_mut()
+        .install_prepared_action(install)
+        .expect("the fixture installs");
     // Prove that the committed cursor uses ordinary typed boot hydration.
     let records = ops.into_iter().filter_map(|op| match op.op {
         mush_core::ModuleWrite::JsonSet { key, value }
@@ -413,7 +427,9 @@ fn later_domain_cleanup_resumes_committed_progress_and_does_not_skip_at_removal_
         let (prepared, plan) = prepare_tick(&mut tw, DomainId(4), token);
         assert_eq!(plan["reap_commits"].as_array().unwrap().len(), count);
         let (_, install) = prepared.into_parts();
-        tw.engine_mut().install_prepared_action(install);
+        tw.engine_mut()
+            .install_prepared_action(install)
+            .expect("the fixture installs");
     }
     let generation = clock_of(&tw, DomainId(4)).generation().unwrap();
     for tick in 0..100 {

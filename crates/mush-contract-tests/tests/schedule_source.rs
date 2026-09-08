@@ -130,7 +130,10 @@ fn stale_discovery_cannot_mutate_cursor_or_domain_state() {
         )
         .expect("prepare guarded fixture");
     let (_, installation) = prepared.into_parts();
-    world.engine_mut().install_prepared_action(installation);
+    world
+        .engine_mut()
+        .install_prepared_action(installation)
+        .expect("the fixture installs");
     let effect = world
         .engine()
         .action_state()
@@ -174,7 +177,10 @@ fn stale_discovery_cannot_mutate_cursor_or_domain_state() {
         .expect("install competing cursor advance");
     let prepared = transaction.prepare().expect("prepare cursor update");
     let (_, installation) = prepared.into_parts();
-    world.engine_mut().install_prepared_action(installation);
+    world
+        .engine_mut()
+        .install_prepared_action(installation)
+        .expect("the fixture installs");
 
     let error = world
         .engine_mut()

@@ -199,7 +199,9 @@ fn apply_directly(tw: &mut TestWorld, submit: &mush_core::AuthoritativeSubmit) {
         mush_core::CommitToken::from_bytes([31; 16]),
     ) {
         let (_ops, installation) = prepared.into_parts();
-        tw.engine_mut().install_prepared_action(installation);
+        tw.engine_mut()
+            .install_prepared_action(installation)
+            .expect("the fixture installs");
     }
 }
 

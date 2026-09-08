@@ -4900,7 +4900,11 @@ async fn run(
                         ),
                     );
                     if let Some(installation) = prepared_installation {
-                        engine.abort_prepared_action(installation);
+                        release_prepared_installation(
+                            &mut engine,
+                            installation,
+                            "step-flush/queued-without-receipt",
+                        );
                     }
                     abort_without_receipt(
                         classified_sends,
@@ -5068,7 +5072,11 @@ async fn run(
                     prepared_installation,
                 } => {
                     if let Some(installation) = prepared_installation {
-                        engine.abort_prepared_action(installation);
+                        release_prepared_installation(
+                            &mut engine,
+                            installation,
+                            "timer-flush/queued-without-receipt",
+                        );
                     }
                     abort_without_receipt(
                         sends,
@@ -5261,7 +5269,11 @@ async fn run(
                     prepared_installation,
                 } => {
                     if let Some(installation) = prepared_installation {
-                        engine.abort_prepared_action(installation);
+                        release_prepared_installation(
+                            &mut engine,
+                            installation,
+                            "shutdown-flush/queued-without-receipt",
+                        );
                     }
                     abort_without_receipt(
                         sends,
@@ -5602,6 +5614,31 @@ fn apply_store_status(
     }
 }
 
+/// Hand a prepared installation back to the engine on a path that already
+/// carries its own refusal.
+///
+/// [`Engine::abort_prepared_action`] refuses only when the installation does
+/// not match the store it is being applied to — a wiring bug, not gameplay —
+/// and it checks before it mutates, so live action state is untouched either
+/// way. Every caller of this helper is already returning a
+/// [`FlushOutcome::Rejected`]/[`FlushOutcome::WriterGone`] or an
+/// integrity failure that the world loop turns into a freeze, so the refusal
+/// is logged with its site and the caller's own disposition stands. It is
+/// never asserted: this is the single writer.
+fn release_prepared_installation(
+    engine: &mut Engine,
+    installation: PreparedInstallation,
+    site: &'static str,
+) {
+    if let Err(error) = engine.abort_prepared_action(installation) {
+        tracing::error!(
+            site,
+            %error,
+            "prepared action-state installation could not be released"
+        );
+    }
+}
+
 /// Latch the non-auto-lifting freeze on any deterministic persistence breach:
 /// enter [`WorldMode::IntegrityFrozen`] so a later transient recovery cannot
 /// lift it, and alert Wizards. Idempotent — the writer may send an initial
@@ -5742,7 +5779,11 @@ async fn flush_prepared_action(
     // step must not be able to add legacy dirtiness and silently move it to a
     // subsequent commit. Recheck at the last boundary before writer custody.
     if engine.has_legacy_persistence_work() {
-        engine.abort_prepared_action(installation);
+        release_prepared_installation(
+            engine,
+            installation,
+            "flush_prepared_action/legacy-persistence-work",
+        );
         return FlushOutcome::Rejected(
             "prepared action reached submission alongside legacy persistence work".to_owned(),
         );
@@ -5752,7 +5793,11 @@ async fn flush_prepared_action(
     // not be folded into, or overtaken by, this state-family transaction.
     retained.ack(high_water.load(Ordering::Relaxed));
     if !retained.is_empty() {
-        engine.abort_prepared_action(installation);
+        release_prepared_installation(
+            engine,
+            installation,
+            "flush_prepared_action/retained-ledger-predecessor",
+        );
         return FlushOutcome::Rejected(
             "prepared action reached submission with an unresolved legacy ledger predecessor"
                 .to_owned(),
@@ -5761,7 +5806,11 @@ async fn flush_prepared_action(
     let receipt = match persistence {
         StagedActionPersistence::Legacy(module_ops) => {
             if *serial == u64::MAX {
-                engine.abort_prepared_action(installation);
+                release_prepared_installation(
+                    engine,
+                    installation,
+                    "flush_prepared_action/serial-exhausted",
+                );
                 return FlushOutcome::Rejected(
                     "authoritative writer serial exhausted; restart/recovery required".to_owned(),
                 );
@@ -5785,7 +5834,11 @@ async fn flush_prepared_action(
                 .await
                 .is_err()
             {
-                engine.abort_prepared_action(installation);
+                release_prepared_installation(
+                    engine,
+                    installation,
+                    "flush_prepared_action/writer-gone-legacy",
+                );
                 tracing::error!(
                     serial = *serial,
                     "store writer gone before accepting prepared action"
@@ -5811,7 +5864,11 @@ async fn flush_prepared_action(
                 .await
                 .is_err()
             {
-                engine.abort_prepared_action(installation);
+                release_prepared_installation(
+                    engine,
+                    installation,
+                    "flush_prepared_action/writer-gone-authoritative",
+                );
                 tracing::error!(
                     %expected_token,
                     "store writer gone before accepting authoritative action"
@@ -8087,7 +8144,7 @@ fn complete_pending_commit(
         ..
     } = pending;
     let terminal_failure = ack.as_ref().err().cloned();
-    let (outcome, failure, integrity_failure) = match ack {
+    let (outcome, failure, mut integrity_failure) = match ack {
         Ok(()) => (DeliveryOutcome::Committed, None, false),
         Err(AuthoritativeCommitFailure::Refused(detail)) => {
             (DeliveryOutcome::Aborted, Some(detail), false)
@@ -8115,25 +8172,56 @@ fn complete_pending_commit(
             let ops_before = engine.module_ops().len();
             let mut announce_out = Outbox::new();
             let mut announce_fx = Effects::new();
-            engine.install_prepared_action_announcing(
+            match engine.install_prepared_action_announcing(
                 installation,
                 &mut announce_out,
                 &mut announce_fx,
-            );
-            debug_assert_eq!(
-                engine.module_ops().len(),
-                ops_before,
-                "an ActionStateChanged observer queued persistence"
-            );
-            sends.extend(resolve_classified_sends(
-                &engine.registry,
+            ) {
+                Ok(()) => {
+                    debug_assert_eq!(
+                        engine.module_ops().len(),
+                        ops_before,
+                        "an ActionStateChanged observer queued persistence"
+                    );
+                    sends.extend(resolve_classified_sends(
+                        &engine.registry,
+                        &engine.world,
+                        &mut announce_out,
+                        Some(engine.action_state()),
+                    ));
+                    effects.extend(announce_fx.drain_classified());
+                }
+                Err(error) => {
+                    // A prepared installation that does not match the store it
+                    // was minted from is an engine wiring bug, and this runs on
+                    // the single world-owning task, which must never panic
+                    // (docs/PLAN.md). So persistence freezes instead: the
+                    // images never went live, the store checked before it
+                    // mutated, and `announce_out`/`announce_fx` are dropped
+                    // unread — no observer may be told about a change that did
+                    // not happen.
+                    integrity_failure = true;
+                    apply_integrity_freeze(
+                        &engine.world,
+                        gateway,
+                        health,
+                        persistence_integrity,
+                        &format!("prepared action-state installation refused: {error}"),
+                    );
+                }
+            }
+        } else if let Err(error) = engine.abort_prepared_action(installation) {
+            // Same wiring bug on the refusal half of the seam: the reservation
+            // could not be released, so the store is wedged and the world must
+            // stop writing rather than assert here.
+            integrity_failure = true;
+            apply_integrity_freeze(
                 &engine.world,
-                &mut announce_out,
-                Some(engine.action_state()),
-            ));
-            effects.extend(announce_fx.drain_classified());
-        } else {
-            engine.abort_prepared_action(installation);
+                gateway,
+                health,
+                persistence_integrity,
+                &format!("prepared action-state abort refused: {error}"),
+            );
         }
     }
     if let Some(post_commit) = action
@@ -9665,7 +9753,9 @@ mod tests {
             .prepare()
             .expect("decision lease prepare")
             .into_parts();
-        engine.install_prepared_action(installation);
+        engine
+            .install_prepared_action(installation)
+            .expect("the fixture installs");
         let fence = mush_core::DecisionCompletionFence::new(
             worker.controller().clone(),
             worker.decision(),
@@ -9763,7 +9853,9 @@ mod tests {
             .reconcile_authoritative(bundle.token(), bundle.bundle_hash())
             .await
             .expect("capture reconciliation");
-        engine.install_prepared_action(installation);
+        engine
+            .install_prepared_action(installation)
+            .expect("the fixture installs");
     }
 
     async fn wait_for_persisted_decision_terminal(
@@ -10541,7 +10633,9 @@ mod tests {
             .reconcile_authoritative(bundle.token(), bundle.bundle_hash())
             .await
             .expect("fallback custody reconcile");
-        engine.install_prepared_action(installation);
+        engine
+            .install_prepared_action(installation)
+            .expect("the fixture installs");
         assert!(matches!(
             engine
                 .action_state()
@@ -10706,7 +10800,9 @@ mod tests {
             .reconcile_authoritative(bundle.token(), bundle.bundle_hash())
             .await
             .expect("lease reconcile");
-        engine.install_prepared_action(installation);
+        engine
+            .install_prepared_action(installation)
+            .expect("the fixture installs");
         drop(reservation);
 
         let fence = mush_core::DecisionCompletionFence::new(
@@ -10770,7 +10866,9 @@ mod tests {
             .reconcile_authoritative(bundle.token(), bundle.bundle_hash())
             .await
             .expect("cancellation reconcile");
-        engine.install_prepared_action(installation);
+        engine
+            .install_prepared_action(installation)
+            .expect("the fixture installs");
         assert!(engine.decision_response_ingress(&fence, &response).is_err());
         assert!(matches!(
             engine
@@ -10815,7 +10913,9 @@ mod tests {
             .reconcile_authoritative(bundle.token(), bundle.bundle_hash())
             .await
             .expect("compaction reconcile");
-        engine.install_prepared_action(installation);
+        engine
+            .install_prepared_action(installation)
+            .expect("the fixture installs");
         assert!(
             engine
                 .action_state()
@@ -10872,7 +10972,9 @@ mod tests {
             .prepare()
             .expect("terminal test prepare")
             .into_parts();
-        engine.install_prepared_action(installation);
+        engine
+            .install_prepared_action(installation)
+            .expect("the fixture installs");
 
         let (completion_tx, _completion_rx) = mpsc::channel(MAX_DECISION_COMPLETIONS);
         let dispatcher = Arc::new(
@@ -10957,7 +11059,9 @@ mod tests {
             .reconcile_authoritative(bundle.token(), bundle.bundle_hash())
             .await
             .expect("lease reconciliation");
-        engine.install_prepared_action(installation);
+        engine
+            .install_prepared_action(installation)
+            .expect("the fixture installs");
         drop(reservation);
 
         let fence = mush_core::DecisionCompletionFence::new(
@@ -11019,7 +11123,9 @@ mod tests {
             .expect("selected action admission")
             .expect("selected staged action");
         let (_persistence, installation) = staged.into_parts();
-        engine.abort_prepared_action(installation);
+        engine
+            .abort_prepared_action(installation)
+            .expect("the fixture aborts");
 
         let retry_at = worker.lease_until().clone();
         engine.set_now(retry_at.at);
@@ -11047,7 +11153,9 @@ mod tests {
             .expect("retry post-image");
         let prepared = transaction.prepare().expect("retry preparation");
         let (_, installation) = prepared.into_parts();
-        engine.install_prepared_action(installation);
+        engine
+            .install_prepared_action(installation)
+            .expect("the fixture installs");
         let second_fence = mush_core::DecisionCompletionFence::new(
             worker.controller().clone(),
             worker.decision(),
@@ -11101,7 +11209,9 @@ mod tests {
             .reconcile_authoritative(bundle.token(), bundle.bundle_hash())
             .await
             .expect("selected action reconcile");
-        engine.install_prepared_action(installation);
+        engine
+            .install_prepared_action(installation)
+            .expect("the fixture installs");
         assert!(matches!(
             ActionCoordinator::preflight(&store, duplicate_ingress)
                 .await
@@ -11150,7 +11260,9 @@ mod tests {
             .reconcile_authoritative(bundle.token(), bundle.bundle_hash())
             .await
             .expect("resolving reconcile");
-        engine.install_prepared_action(installation);
+        engine
+            .install_prepared_action(installation)
+            .expect("the fixture installs");
         let resolved = engine
             .action_state()
             .get(&registration.families.pending, &pending.id)
@@ -11196,7 +11308,9 @@ mod tests {
             .reconcile_authoritative(bundle.token(), bundle.bundle_hash())
             .await
             .expect("terminal reconcile");
-        engine.install_prepared_action(installation);
+        engine
+            .install_prepared_action(installation)
+            .expect("the fixture installs");
         let terminal = engine
             .action_state()
             .get(&registration.families.pending, &pending.id)
@@ -11317,7 +11431,9 @@ mod tests {
                 panic!("{kind:?} used legacy persistence")
             };
             bundles.push(serde_json::to_value(&*bundle).expect("canonical bundle JSON"));
-            engine.abort_prepared_action(installation);
+            engine
+                .abort_prepared_action(installation)
+                .expect("the fixture aborts");
         }
 
         assert!(bundles.windows(2).all(|pair| pair[0] == pair[1]));
@@ -11374,7 +11490,9 @@ mod tests {
         txn.replace(&registration.families.pending, &pending.id, fallback)
             .expect("fallback race post-image");
         let (_, installation) = txn.prepare().unwrap().into_parts();
-        engine.install_prepared_action(installation);
+        engine
+            .install_prepared_action(installation)
+            .expect("the fixture installs");
 
         let page = engine
             .discover_decision_dispatches(None, 8)
@@ -11423,7 +11541,9 @@ mod tests {
             .reconcile_authoritative(bundle.token(), bundle.bundle_hash())
             .await
             .expect("fallback reconcile");
-        engine.install_prepared_action(installation);
+        engine
+            .install_prepared_action(installation)
+            .expect("the fixture installs");
 
         assert!(matches!(
             ActionCoordinator::preflight(&store, provider_ingress)
@@ -11505,7 +11625,9 @@ mod tests {
         txn.replace(&registration.families.pending, &pending.id, tampered)
             .expect("tampered post-image");
         let (_, installation) = txn.prepare().unwrap().into_parts();
-        engine.install_prepared_action(installation);
+        engine
+            .install_prepared_action(installation)
+            .expect("the fixture installs");
 
         let owner = OwnerId::new(DECISION_HARNESS_OWNER).expect("static harness owner");
         let bystander = OwnerId::new("cv_bystander").expect("static bystander owner");
@@ -11779,7 +11901,9 @@ mod tests {
                     txn.replace(&tactical_state.control_leases, &key, revoked)
                         .expect("lease-revoke post-image");
                     let (_, installation) = txn.prepare().unwrap().into_parts();
-                    engine.install_prepared_action(installation);
+                    engine
+                        .install_prepared_action(installation)
+                        .expect("the fixture installs");
                 }
                 Change::SourceComponent => {
                     disable_tactical_gate_weapon(&mut engine, &tactical_state, source);
@@ -11807,7 +11931,9 @@ mod tests {
                     txn.replace(&tactical_state.contacts, &chosen_contact, lost)
                         .expect("contact-loss post-image");
                     let (_, installation) = txn.prepare().unwrap().into_parts();
-                    engine.install_prepared_action(installation);
+                    engine
+                        .install_prepared_action(installation)
+                        .expect("the fixture installs");
                 }
                 Change::Window => {
                     let id = mush_contract_tests::tactical_gate::tactical_gate_window_id();
@@ -11831,7 +11957,9 @@ mod tests {
                     txn.replace(&tactical_state.windows, &id, closed)
                         .expect("window-close post-image");
                     let (_, installation) = txn.prepare().unwrap().into_parts();
-                    engine.install_prepared_action(installation);
+                    engine
+                        .install_prepared_action(installation)
+                        .expect("the fixture installs");
                 }
                 Change::BridgeOwner => {
                     engine
@@ -11944,7 +12072,9 @@ mod tests {
                 assert!(bundle.resolution().is_some(), "RNG evidence is durable");
                 assert_eq!(bundle.semantic_events().len(), 1);
                 assert!(bundle.durable_outbox().is_empty());
-                engine.abort_prepared_action(installation);
+                engine
+                    .abort_prepared_action(installation)
+                    .expect("the fixture aborts");
             }
         }
 
@@ -11991,7 +12121,10 @@ mod tests {
             )
             .expect("prepare guarded fixture");
         let (_, installation) = prepared.into_parts();
-        world.engine_mut().install_prepared_action(installation);
+        world
+            .engine_mut()
+            .install_prepared_action(installation)
+            .expect("the fixture installs");
         let effect = world
             .engine()
             .action_state()
@@ -12089,7 +12222,10 @@ mod tests {
             )
             .expect("prepare guarded fixture");
         let (_, installation) = prepared.into_parts();
-        world.engine_mut().install_prepared_action(installation);
+        world
+            .engine_mut()
+            .install_prepared_action(installation)
+            .expect("the fixture installs");
         let effect = world
             .engine()
             .action_state()
@@ -12150,7 +12286,9 @@ mod tests {
         };
         assert_eq!(bundle.idempotency().epoch(), 9);
         assert_eq!(driver.idempotency_epoch, 9);
-        engine.abort_prepared_action(installation);
+        engine
+            .abort_prepared_action(installation)
+            .expect("the fixture aborts");
     }
 
     #[tokio::test]
@@ -12176,7 +12314,10 @@ mod tests {
             )
             .expect("prepare guarded fixture");
         let (_, installation) = prepared.into_parts();
-        world.engine_mut().install_prepared_action(installation);
+        world
+            .engine_mut()
+            .install_prepared_action(installation)
+            .expect("the fixture installs");
         let effect = world
             .engine()
             .action_state()
@@ -12228,7 +12369,10 @@ mod tests {
             .expect("install competing cursor advance");
         let prepared = transaction.prepare().expect("prepare cursor update");
         let (_, installation) = prepared.into_parts();
-        world.engine_mut().install_prepared_action(installation);
+        world
+            .engine_mut()
+            .install_prepared_action(installation)
+            .expect("the fixture installs");
         let _ = world.drain_write_batch();
 
         let mut engine = world.into_engine();
@@ -13683,6 +13827,125 @@ mod tests {
         );
         assert!(!persistence_integrity.is_latched());
     }
+    /// Mint one prepared installation against a *different* engine's action
+    /// store. Applying it anywhere else is a pure wiring bug: nothing a player
+    /// can type produces one.
+    fn foreign_prepared_installation() -> PreparedInstallation {
+        let (mut other, other_handle) = prepared_lane_fixture();
+        let mut transaction = other
+            .action_transaction(&other_handle)
+            .expect("test transaction begins");
+        transaction
+            .insert(&other_handle, &41, PreparedLaneState { amount: 7 })
+            .expect("test state is valid");
+        transaction
+            .prepare()
+            .expect("test transaction prepares")
+            .into_parts()
+            .1
+    }
+
+    /// Whether staff were told, in the words `apply_integrity_freeze` uses.
+    fn wizard_heard(recorder: &RecordingGateway, needle: &str) -> bool {
+        recorder
+            .sends
+            .lock()
+            .expect("recording gateway poisoned")
+            .iter()
+            .any(|(_, event)| match event.as_ref() {
+                OutputEvent::Sys(text) => text.to_plain_text().contains(needle),
+                _ => false,
+            })
+    }
+
+    /// core-action-7: the commit seam used to `assert!` when a prepared
+    /// installation did not belong to the engine's own store — on the one task
+    /// that owns the world and may never panic (docs/PLAN.md). Now the seam
+    /// fails closed: persistence freezes, staff are told, nothing is announced
+    /// to observers, no typed image goes live, and this call RETURNS. The
+    /// liveness assertion is the point — the failure mode is "a wiring bug
+    /// takes down the single writer".
+    #[test]
+    fn a_foreign_prepared_installation_freezes_the_commit_seam_and_the_writer_lives() {
+        let (mut engine, handle) = prepared_lane_fixture();
+        engine.world.set_connected(GOD, true);
+        let pending = pending_with_prepared_installation(9, foreign_prepared_installation());
+        let recorder = Arc::new(RecordingGateway::default());
+        let gateway: Gateway = recorder.clone();
+        let mut health = StoreHealth::new();
+        let persistence_integrity = PersistenceIntegrityLatch::new();
+        let (tx, _rx) = mpsc::channel(1);
+
+        let completed = complete_pending_commit(
+            pending,
+            Ok(()),
+            &mut engine,
+            &gateway,
+            &mut health,
+            &persistence_integrity,
+            &tx.downgrade(),
+            None,
+            &test_effect_store(),
+        );
+
+        // Reaching this line at all is the proof the single writer survived.
+        assert_eq!(completed.outcome, DeliveryOutcome::Committed);
+        assert!(health.mode.integrity_frozen());
+        assert!(persistence_integrity.is_latched());
+        assert!(wizard_heard(&recorder, "persistence integrity breach"));
+        assert_eq!(
+            engine.action_state().revision(),
+            0,
+            "a refused install must leave live action state untouched"
+        );
+        assert!(
+            engine
+                .action_state()
+                .get(&handle, &41)
+                .expect("state lookup succeeds")
+                .is_none(),
+            "no typed post-image may go live from a refused installation"
+        );
+        assert!(
+            !wizard_heard(&recorder, "announced "),
+            "an install that did not happen must not be announced to observers \
+             (the fixture's I13 observer says `announced <owner>/<family>`)"
+        );
+    }
+
+    /// The refusal half of the same seam: an abort that does not match the
+    /// store freezes rather than asserting, and the loop still returns.
+    #[test]
+    fn a_foreign_installation_on_the_abort_path_freezes_and_the_writer_lives() {
+        let (mut engine, _handle) = prepared_lane_fixture();
+        engine.world.set_connected(GOD, true);
+        let pending = pending_with_prepared_installation(9, foreign_prepared_installation());
+        let recorder = Arc::new(RecordingGateway::default());
+        let gateway: Gateway = recorder.clone();
+        let mut health = StoreHealth::new();
+        let persistence_integrity = PersistenceIntegrityLatch::new();
+        let (tx, _rx) = mpsc::channel(1);
+
+        let completed = complete_pending_commit(
+            pending,
+            Err(AuthoritativeCommitFailure::Refused(
+                "store refused the batch".to_owned(),
+            )),
+            &mut engine,
+            &gateway,
+            &mut health,
+            &persistence_integrity,
+            &tx.downgrade(),
+            None,
+            &test_effect_store(),
+        );
+
+        assert_eq!(completed.outcome, DeliveryOutcome::Aborted);
+        assert!(health.mode.integrity_frozen());
+        assert!(persistence_integrity.is_latched());
+        assert!(wizard_heard(&recorder, "persistence integrity breach"));
+        assert_eq!(engine.action_state().revision(), 0);
+    }
 
     /// Interface plan I13: the exact receipt not only installs the typed
     /// post-images, it announces them — the fixture's observer hears one
@@ -13976,7 +14239,9 @@ mod tests {
         let first = first.prepare().unwrap();
         let mismatched_bundle = prepared_lane_bundle(&first, 101);
         let (_, first_installation) = first.into_parts();
-        engine.abort_prepared_action(first_installation);
+        engine
+            .abort_prepared_action(first_installation)
+            .expect("the fixture aborts");
 
         let mut second = engine.action_transaction(&handle).unwrap();
         second
@@ -15120,7 +15385,9 @@ mod tests {
             .reconcile_authoritative(bundle.token(), bundle.bundle_hash())
             .await
             .unwrap();
-        engine.install_prepared_action(installation);
+        engine
+            .install_prepared_action(installation)
+            .expect("the fixture installs");
         store
             .checkpoint_authoritative(bundle.token(), bundle.bundle_hash())
             .await
@@ -15308,7 +15575,9 @@ mod tests {
                 .expect("seed");
             let prepared = txn.prepare().expect("prepared");
             let (_, installation) = prepared.into_parts();
-            engine.install_prepared_action(installation);
+            engine
+                .install_prepared_action(installation)
+                .expect("the fixture installs");
         }
         (world, families, from)
     }
@@ -15375,7 +15644,9 @@ mod tests {
             .reconcile_authoritative(bundle.token(), bundle.bundle_hash())
             .await
             .unwrap();
-        engine.install_prepared_action(installation);
+        engine
+            .install_prepared_action(installation)
+            .expect("the fixture installs");
         store
             .checkpoint_authoritative(bundle.token(), bundle.bundle_hash())
             .await
@@ -15576,7 +15847,9 @@ mod tests {
         };
         if let Some(prepared) = prepared {
             let (_, installation) = prepared.into_parts();
-            engine.install_prepared_action(installation);
+            engine
+                .install_prepared_action(installation)
+                .expect("the fixture installs");
         }
         result
     }
@@ -15644,7 +15917,9 @@ mod tests {
             .reconcile_authoritative(bundle.token(), bundle.bundle_hash())
             .await
             .unwrap();
-        engine.install_prepared_action(installation);
+        engine
+            .install_prepared_action(installation)
+            .expect("the fixture installs");
         store
             .checkpoint_authoritative(bundle.token(), bundle.bundle_hash())
             .await
@@ -15721,7 +15996,10 @@ mod tests {
             .reconcile_authoritative(bundle.token(), bundle.bundle_hash())
             .await
             .unwrap();
-        world.engine_mut().install_prepared_action(installation);
+        world
+            .engine_mut()
+            .install_prepared_action(installation)
+            .expect("the fixture installs");
         store
             .checkpoint_authoritative(bundle.token(), bundle.bundle_hash())
             .await
@@ -16207,7 +16485,9 @@ mod tests {
                 .unwrap()
                 .expect("staged action")
                 .into_parts();
-            engine.abort_prepared_action(installation);
+            engine
+                .abort_prepared_action(installation)
+                .expect("the fixture aborts");
         }
         assert!(!engine.has_authoritative_submit());
     }
@@ -16329,7 +16609,9 @@ mod tests {
             .reconcile_authoritative(bundle.token(), bundle.bundle_hash())
             .await
             .unwrap();
-        engine.install_prepared_action(installation);
+        engine
+            .install_prepared_action(installation)
+            .expect("the fixture installs");
         store
             .checkpoint_authoritative(bundle.token(), bundle.bundle_hash())
             .await
@@ -16908,7 +17190,9 @@ mod tests {
                 )
                 .expect("the pulse arm prepares");
             let (_ops, installation) = prepared.into_parts();
-            engine.install_prepared_action(installation);
+            engine
+                .install_prepared_action(installation)
+                .expect("the fixture installs");
         }
 
         fn invocation_of(
@@ -16992,7 +17276,9 @@ mod tests {
                         .reconcile_authoritative(bundle.token(), bundle.bundle_hash())
                         .await
                         .expect("reconcile");
-                    engine.install_prepared_action(installation);
+                    engine
+                        .install_prepared_action(installation)
+                        .expect("the fixture installs");
                     "staged"
                 }
             })
@@ -17136,7 +17422,9 @@ mod tests {
                 )
                 .expect("the re-arm prepares");
             let (_ops, installation) = prepared.into_parts();
-            engine.install_prepared_action(installation);
+            engine
+                .install_prepared_action(installation)
+                .expect("the fixture installs");
             let after = engine
                 .action_state()
                 .get(&handles(&engine).schedules, &id)
@@ -17182,7 +17470,9 @@ mod tests {
                 panic!("legacy persistence")
             };
             let first_hash = first.bundle_hash();
-            engine.abort_prepared_action(installation);
+            engine
+                .abort_prepared_action(installation)
+                .expect("the fixture aborts");
             // Second attempt over the same clock: the same bundle hash.
             let mut driver = DurableScheduleDriver::new(1);
             let outcome = driver.drive_one(&mut engine, &store).await.expect("drives");
@@ -17202,7 +17492,9 @@ mod tests {
                 second.bundle_hash(),
                 "a re-drive after a dropped bundle must reproduce the same commit"
             );
-            engine.abort_prepared_action(installation);
+            engine
+                .abort_prepared_action(installation)
+                .expect("the fixture aborts");
         }
 
         /// **T2/T3 (HIGH).** A stood-down domain whose cursor is still live

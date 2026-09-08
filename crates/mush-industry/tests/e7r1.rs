@@ -152,7 +152,9 @@ fn apply<T>(
     };
     if let Some(prepared) = prepared {
         let (_, installation) = prepared.into_parts();
-        engine.install_prepared_action(installation);
+        engine
+            .install_prepared_action(installation)
+            .expect("the fixture installs");
     }
     result
 }
@@ -1054,7 +1056,9 @@ fn land_parts(
         )
         .map_err(|error| format!("{error:?}"))?;
     let (ops, installation) = prepared.into_parts();
-    tw.engine_mut().install_prepared_action(installation);
+    tw.engine_mut()
+        .install_prepared_action(installation)
+        .expect("the fixture installs");
     Ok(ops)
 }
 

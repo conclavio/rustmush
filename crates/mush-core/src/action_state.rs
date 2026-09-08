@@ -1456,12 +1456,17 @@ impl ActionStateStore {
 
     /// Install already-validated images after the exact persistence receipt.
     ///
-    /// This operation is logically infallible: every identity, bound, type,
-    /// and pre-state check happened before [`PreparedInstallation`] was
-    /// created. A mismatch can therefore only be an engine wiring bug and is
-    /// asserted rather than converted into a post-ack gameplay failure.
-    pub fn install(&mut self, installation: PreparedInstallation) {
-        self.assert_installation(&installation);
+    /// Every identity, bound, type and pre-state check happened before
+    /// [`PreparedInstallation`] was created, so a refusal here can only be an
+    /// engine wiring bug — never a gameplay outcome. It is still returned
+    /// rather than asserted: this runs on the single world-owning task, which
+    /// must never panic (docs/PLAN.md), so a wiring bug has to freeze
+    /// persistence instead of taking the writer down with it.
+    ///
+    /// The whole check happens before the first mutation, so a refusal leaves
+    /// `records`, `revision` and `pending_reservation` exactly as they were.
+    pub fn install(&mut self, installation: PreparedInstallation) -> Result<(), ActionStateError> {
+        self.check_installation(&installation)?;
         for (key, mutation) in installation.mutations {
             match mutation {
                 InstallMutation::Put { value, canonical } => {
@@ -1476,28 +1481,43 @@ impl ActionStateStore {
         }
         self.revision = installation.new_revision;
         self.pending_reservation = None;
+        Ok(())
     }
 
     /// Drop prepared post-images after a definitive persistence refusal.
-    pub fn abort(&mut self, installation: PreparedInstallation) {
-        self.assert_installation(&installation);
+    ///
+    /// Refuses on the same three identity checks as [`Self::install`], and for
+    /// the same reason: an abort that does not match its store is a wiring
+    /// bug, and the single writer may not panic over one.
+    pub fn abort(&mut self, installation: PreparedInstallation) -> Result<(), ActionStateError> {
+        self.check_installation(&installation)?;
         self.pending_reservation = None;
+        Ok(())
     }
 
-    fn assert_installation(&self, installation: &PreparedInstallation) {
-        assert!(
-            Arc::ptr_eq(&self.identity, &installation.store_identity),
-            "prepared installation belongs to a different action state store"
-        );
-        assert_eq!(
-            self.pending_reservation,
-            Some(installation.reservation),
-            "prepared installation does not own the store reservation"
-        );
-        assert_eq!(
-            self.revision, installation.base_revision,
-            "prepared installation pre-state changed while commit was pending"
-        );
+    /// The three things a prepared installation must prove about the store it
+    /// is being applied to. Pure: it never touches live state, so every caller
+    /// can run it first and stay all-or-nothing.
+    fn check_installation(
+        &self,
+        installation: &PreparedInstallation,
+    ) -> Result<(), ActionStateError> {
+        if !Arc::ptr_eq(&self.identity, &installation.store_identity) {
+            return Err(ActionStateError::ForeignStoreIdentity);
+        }
+        if self.pending_reservation != Some(installation.reservation) {
+            return Err(ActionStateError::ReservationMismatch {
+                expected: installation.reservation,
+                found: self.pending_reservation,
+            });
+        }
+        if self.revision != installation.base_revision {
+            return Err(ActionStateError::BaseRevisionMoved {
+                expected: installation.base_revision,
+                found: self.revision,
+            });
+        }
+        Ok(())
     }
 }
 
@@ -2303,6 +2323,21 @@ pub enum ActionStateError {
     },
     #[error("action state store already holds prepared reservation {reservation}")]
     CommitPending { reservation: u64 },
+    /// A prepared installation reached a store it was not minted from. Only a
+    /// wiring bug produces this; it used to be an `assert!` on the single
+    /// world-owning task.
+    #[error("prepared installation belongs to a different action state store")]
+    ForeignStoreIdentity,
+    /// The installation names a reservation this store does not currently
+    /// hold — a double install, or an installation applied out of order.
+    #[error("prepared installation owns reservation {expected}, but the store holds {found:?}")]
+    ReservationMismatch { expected: u64, found: Option<u64> },
+    /// Live state moved underneath a pending commit: the post-images were
+    /// derived from a revision the store has already left.
+    #[error(
+        "prepared installation was prepared against revision {expected}; the store is at {found}"
+    )]
+    BaseRevisionMoved { expected: u64, found: u64 },
     #[error("transaction operation count {attempted} exceeds maximum {max}")]
     OperationLimit { attempted: usize, max: usize },
     #[error("transaction canonical bytes {attempted} exceed maximum {max}")]
@@ -2588,7 +2623,9 @@ mod tests {
 
     fn install_direct(engine: &mut Engine, prepared: PreparedTxn) -> Vec<ModuleOp> {
         let (ops, installation) = prepared.into_parts();
-        engine.install_prepared_action(installation);
+        engine
+            .install_prepared_action(installation)
+            .expect("the fixture installs");
         ops
     }
 
@@ -2767,7 +2804,9 @@ mod tests {
         ));
 
         let (_, installation) = prepared.into_parts();
-        engine.abort_prepared_action(installation);
+        engine
+            .abort_prepared_action(installation)
+            .expect("the fixture aborts");
         assert!(!engine.action_state().has_prepared());
         assert!(engine.action_state().get(&handle, &7).unwrap().is_none());
     }
@@ -2921,9 +2960,13 @@ mod tests {
         assert_eq!(second_order, first_order);
 
         let (_, first_installation) = first_prepared.into_parts();
-        first.abort_prepared_action(first_installation);
+        first
+            .abort_prepared_action(first_installation)
+            .expect("the fixture aborts");
         let (_, second_installation) = second_prepared.into_parts();
-        second.abort_prepared_action(second_installation);
+        second
+            .abort_prepared_action(second_installation)
+            .expect("the fixture aborts");
     }
 
     #[test]
@@ -2940,5 +2983,185 @@ mod tests {
         );
         assert!(!engine.action_state().has_prepared());
         assert!(engine.action_state().is_empty());
+    }
+    /// A store with one registered family and no engine around it, so a test
+    /// can move the store's own pre-state under a pending commit.
+    fn bare_store() -> (ActionStateStore, CounterHandle) {
+        let owner = OwnerId::new("state_test").expect("static owner id");
+        let owners = BTreeSet::from([owner.clone()]);
+        let readiness = MechanicalOwnerReadiness::for_owners(&owners);
+        let descriptor = StateFamilyDescriptor::new(
+            StateFamilyId::new("counter").expect("static family id"),
+            CanonicalId::new("u64.decimal.v1").expect("static codec id"),
+            CanonicalId::new("counter.v1").expect("static schema id"),
+            1,
+            CanonicalId::new("counter.decode_json.v1").expect("static decoder id"),
+            CanonicalId::new("counter.range.v1").expect("static validator id"),
+            CanonicalId::new("counter.json.v1").expect("static serializer id"),
+        )
+        .expect("static state-family descriptor");
+        let mut builder = StateFamilyRegistryBuilder::new();
+        let handle = builder
+            .register::<u64, CounterState, _, _, _, _>(
+                owner,
+                descriptor,
+                |key: &u64| Ok(key.to_string()),
+                |value: &Value| {
+                    let amount = value
+                        .get("amount")
+                        .and_then(Value::as_u64)
+                        .ok_or_else(|| "amount must be an unsigned integer".to_owned())?;
+                    Ok(CounterState {
+                        amount: u16::try_from(amount)
+                            .map_err(|_| "amount exceeds u16".to_owned())?,
+                    })
+                },
+                |_value: &CounterState| Ok(()),
+                |value: &CounterState| Ok(json!({ "amount": value.amount })),
+            )
+            .expect("the counter family registers");
+        let registry = builder
+            .freeze_for_owners_with_readiness(&owners, readiness)
+            .expect("single-owner registry is canonical");
+        (ActionStateStore::new(registry), handle)
+    }
+
+    /// Everything a refused installation must leave untouched: the revision,
+    /// the outstanding reservation, and the live records byte for byte.
+    type LiveState = (u64, Option<u64>, Vec<(StateKey, Vec<u8>)>);
+
+    fn live_state(store: &ActionStateStore) -> LiveState {
+        (
+            store.revision,
+            store.pending_reservation,
+            store
+                .records
+                .iter()
+                .map(|(key, record)| (key.clone(), record.canonical.as_slice().to_vec()))
+                .collect(),
+        )
+    }
+
+    fn prepare_counter(
+        store: &mut ActionStateStore,
+        handle: &CounterHandle,
+        key: u64,
+        amount: u16,
+    ) -> PreparedInstallation {
+        let mut txn = store.transaction(handle).expect("the store is unreserved");
+        txn.insert(handle, &key, CounterState { amount })
+            .expect("the counter value is valid");
+        txn.prepare()
+            .expect("the transaction prepares")
+            .into_parts()
+            .1
+    }
+
+    /// core-action-7 (a): an installation minted against one store and applied
+    /// to another used to `assert!` on `Arc::ptr_eq`. The world task is the
+    /// single writer and may never panic (docs/PLAN.md), so the mismatch is a
+    /// typed refusal now — and the target store is byte-identical afterwards.
+    #[test]
+    fn an_installation_from_a_foreign_store_is_refused_not_asserted() {
+        let (mut first, first_handle) = bare_store();
+        let (mut second, second_handle) = bare_store();
+
+        // Give the target store live state worth clobbering.
+        let seeded = prepare_counter(&mut second, &second_handle, 9, 1);
+        second.install(seeded).expect("the store installs its own");
+        let before = live_state(&second);
+
+        let foreign = prepare_counter(&mut first, &first_handle, 9, 3);
+        assert!(matches!(
+            second.install(foreign),
+            Err(ActionStateError::ForeignStoreIdentity)
+        ));
+        assert_eq!(live_state(&second), before);
+    }
+
+    /// The abort half refuses on the same proof, and leaves the target store's
+    /// own outstanding reservation alone rather than clearing it.
+    #[test]
+    fn aborting_a_foreign_installation_does_not_clear_the_local_reservation() {
+        let (mut first, first_handle) = bare_store();
+        let (mut second, second_handle) = bare_store();
+        let local = prepare_counter(&mut second, &second_handle, 9, 1);
+        let before = live_state(&second);
+
+        let foreign = prepare_counter(&mut first, &first_handle, 9, 3);
+        assert!(matches!(
+            second.abort(foreign),
+            Err(ActionStateError::ForeignStoreIdentity)
+        ));
+        assert_eq!(live_state(&second), before);
+        assert!(second.has_prepared());
+        second
+            .abort(local)
+            .expect("the local reservation still releases");
+        assert!(!second.has_prepared());
+    }
+
+    /// core-action-7 (b): the pre-state moved while the commit was pending.
+    /// The post-images were derived from a revision the store has already
+    /// left, so the install refuses and changes nothing on its way out.
+    #[test]
+    fn an_installation_whose_base_revision_moved_is_refused_not_asserted() {
+        let (mut store, handle) = bare_store();
+        let installation = prepare_counter(&mut store, &handle, 9, 1);
+        // What the wiring bug looks like from the store's side: live state
+        // advanced underneath a commit that was still in flight.
+        store.revision = 4;
+        let before = live_state(&store);
+
+        assert!(matches!(
+            store.install(installation),
+            Err(ActionStateError::BaseRevisionMoved {
+                expected: 0,
+                found: 4
+            })
+        ));
+        assert_eq!(live_state(&store), before);
+    }
+
+    /// core-action-7 (c): the second half of a double install. The first one
+    /// cleared `pending_reservation`, so the replay owns nothing — and its
+    /// delete never reaches `records`, which is the all-or-nothing ordering
+    /// the check exists for. The replay is hand-built because
+    /// `PreparedInstallation` deliberately cannot be cloned; a real double
+    /// install delivers exactly this shape a second time.
+    #[test]
+    fn a_second_install_of_one_reservation_is_refused_not_asserted() {
+        let (mut store, handle) = bare_store();
+        let installation = prepare_counter(&mut store, &handle, 9, 1);
+        let reservation = installation.reservation;
+        let base_revision = installation.base_revision;
+        let new_revision = installation.new_revision;
+        let store_identity = Arc::clone(&installation.store_identity);
+        store
+            .install(installation)
+            .expect("the first install lands");
+
+        let live_key = store
+            .records
+            .keys()
+            .next()
+            .expect("the first install left one record")
+            .clone();
+        let replay = PreparedInstallation {
+            reservation,
+            base_revision,
+            new_revision,
+            store_identity,
+            mutations: BTreeMap::from([(live_key, InstallMutation::Delete)]),
+        };
+        let before = live_state(&store);
+        assert!(matches!(
+            store.install(replay),
+            Err(ActionStateError::ReservationMismatch {
+                expected: 1,
+                found: None
+            })
+        ));
+        assert_eq!(live_state(&store), before);
     }
 }

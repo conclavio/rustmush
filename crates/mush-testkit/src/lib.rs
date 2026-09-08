@@ -266,7 +266,8 @@ impl TestWorld {
         let mut out = Outbox::new();
         let mut fx = Effects::new();
         self.engine
-            .install_prepared_action_announcing(installation, &mut out, &mut fx);
+            .install_prepared_action_announcing(installation, &mut out, &mut fx)
+            .expect("the fixture installs");
         out.take()
     }
 

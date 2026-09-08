@@ -696,7 +696,9 @@ fn install_request(
         .prepare_registered_authoritative_action(action, inv, CommitToken::from_bytes([token; 16]))
         .expect("request stages");
     let (ops, installation) = prepared.into_parts();
-    tw.engine_mut().install_prepared_action(installation);
+    tw.engine_mut()
+        .install_prepared_action(installation)
+        .expect("the fixture installs");
     ops
 }
 
@@ -724,7 +726,9 @@ fn apply_due(tw: &mut TestWorld, at: i64, token: u8) -> Vec<ModuleOp> {
         )
         .unwrap();
     let (ops, installation) = prepared.into_parts();
-    tw.engine_mut().install_prepared_action(installation);
+    tw.engine_mut()
+        .install_prepared_action(installation)
+        .expect("the fixture installs");
     ops
 }
 
@@ -1169,7 +1173,9 @@ fn drive_fire_submit(
         )
         .expect("the resolved fire stages");
     let (ops, installation) = prepared.into_parts();
-    tw.engine_mut().install_prepared_action(installation);
+    tw.engine_mut()
+        .install_prepared_action(installation)
+        .expect("the fixture installs");
     ops
 }
 

@@ -2292,7 +2292,9 @@ pub fn install_tactical_gate_unit(
         txn.prepare().expect("Gate-2 unit bootstrap prepares")
     };
     let (_, installation) = prepared.into_parts();
-    engine.install_prepared_action(installation);
+    engine
+        .install_prepared_action(installation)
+        .expect("the fixture installs");
 }
 
 /// Fixture-only placement bootstrap for a unit deployed into the tactical arena.
@@ -2313,7 +2315,9 @@ pub fn install_tactical_gate_placement(
         txn.prepare().expect("Gate-4 placement bootstrap prepares")
     };
     let (_, installation) = prepared.into_parts();
-    engine.install_prepared_action(installation);
+    engine
+        .install_prepared_action(installation)
+        .expect("the fixture installs");
     placement
 }
 
@@ -2340,7 +2344,9 @@ pub fn move_tactical_gate_placement(
         txn.prepare().expect("Gate-4 placement movement prepares")
     };
     let (_, installation) = prepared.into_parts();
-    engine.install_prepared_action(installation);
+    engine
+        .install_prepared_action(installation)
+        .expect("the fixture installs");
     placement
 }
 
@@ -2375,7 +2381,9 @@ pub fn disable_tactical_gate_weapon(
         txn.prepare().expect("Gate-4 component mutation prepares")
     };
     let (_, installation) = prepared.into_parts();
-    engine.install_prepared_action(installation);
+    engine
+        .install_prepared_action(installation)
+        .expect("the fixture installs");
     changed
 }
 
@@ -2413,7 +2421,9 @@ pub fn exhaust_tactical_gate_ammo(
         txn.prepare().expect("Gate-4 resource mutation prepares")
     };
     let (_, installation) = prepared.into_parts();
-    engine.install_prepared_action(installation);
+    engine
+        .install_prepared_action(installation)
+        .expect("the fixture installs");
     changed
 }
 
@@ -2440,7 +2450,9 @@ pub fn install_tactical_gate_contact(
         txn.prepare().expect("Gate-3 contact bootstrap prepares")
     };
     let (_, installation) = prepared.into_parts();
-    engine.install_prepared_action(installation);
+    engine
+        .install_prepared_action(installation)
+        .expect("the fixture installs");
     contact
 }
 
@@ -2481,7 +2493,9 @@ pub fn install_tactical_gate_weapons_lease(
         txn.prepare().expect("Gate-3 lease bootstrap prepares")
     };
     let (_, installation) = prepared.into_parts();
-    engine.install_prepared_action(installation);
+    engine
+        .install_prepared_action(installation)
+        .expect("the fixture installs");
     lease
 }
 
@@ -2534,7 +2548,9 @@ pub fn install_tactical_gate_fire_window(
         txn.prepare().expect("Gate-3 window bootstrap prepares")
     };
     let (_, installation) = prepared.into_parts();
-    engine.install_prepared_action(installation);
+    engine
+        .install_prepared_action(installation)
+        .expect("the fixture installs");
     record
 }
 
@@ -2569,7 +2585,9 @@ pub fn install_tactical_gate_volley_window(
         txn.prepare().expect("volley window bootstrap prepares")
     };
     let (_, installation) = prepared.into_parts();
-    engine.install_prepared_action(installation);
+    engine
+        .install_prepared_action(installation)
+        .expect("the fixture installs");
     record
 }
 
@@ -2630,7 +2648,9 @@ pub fn install_tactical_gate_closed_volley(
         txn.prepare().expect("closed volley bootstrap prepares")
     };
     let (_, installation) = prepared.into_parts();
-    engine.install_prepared_action(installation);
+    engine
+        .install_prepared_action(installation)
+        .expect("the fixture installs");
     record
 }
 
@@ -2903,7 +2923,9 @@ mod tests {
         }
 
         let (_, installation) = prepared.into_parts();
-        engine.install_prepared_action(installation);
+        engine
+            .install_prepared_action(installation)
+            .expect("the fixture installs");
         let source = engine
             .action_state()
             .get(&state.units, &source_id)
@@ -3217,7 +3239,9 @@ mod tests {
         assert!(resolution.is_some());
 
         let (_, installation) = prepared.into_parts();
-        engine.install_prepared_action(installation);
+        engine
+            .install_prepared_action(installation)
+            .expect("the fixture installs");
         assert_eq!(
             engine
                 .action_state()
@@ -3302,7 +3326,9 @@ mod tests {
             txn.prepare().unwrap()
         };
         let (_, installation) = prepared.into_parts();
-        engine.install_prepared_action(installation);
+        engine
+            .install_prepared_action(installation)
+            .expect("the fixture installs");
 
         let unit_before: BTreeMap<_, _> = [first, stale_source, target]
             .into_iter()
@@ -3574,7 +3600,9 @@ mod tests {
                 );
             }
             let (_, installation) = prepared.into_parts();
-            engine.install_prepared_action(installation);
+            engine
+                .install_prepared_action(installation)
+                .expect("the fixture installs");
             let window = engine
                 .action_state()
                 .get(&state.windows, &window_id)
@@ -3619,7 +3647,9 @@ mod tests {
             txn.prepare().unwrap()
         };
         let (_, installation) = prepared.into_parts();
-        engine.install_prepared_action(installation);
+        engine
+            .install_prepared_action(installation)
+            .expect("the fixture installs");
 
         let resolve = tactical_gate_resolve_volley_invocation(
             &definitions,
@@ -3637,7 +3667,9 @@ mod tests {
         assert_eq!(prepared.operation_count(), 4);
         assert!(output.into_parts().1.is_some());
         let (_, installation) = prepared.into_parts();
-        engine.install_prepared_action(installation);
+        engine
+            .install_prepared_action(installation)
+            .expect("the fixture installs");
         assert_eq!(
             engine
                 .action_state()
@@ -3856,7 +3888,9 @@ mod tests {
             txn.prepare().unwrap()
         };
         let (_, installation) = prepared.into_parts();
-        engine.install_prepared_action(installation);
+        engine
+            .install_prepared_action(installation)
+            .expect("the fixture installs");
         let check = resolved
             .guards()
             .revalidate_with_action_state(
@@ -3955,7 +3989,9 @@ mod tests {
             txn.prepare().unwrap()
         };
         let (_, installation) = prepared.into_parts();
-        engine.install_prepared_action(installation);
+        engine
+            .install_prepared_action(installation)
+            .expect("the fixture installs");
 
         let check = resolved
             .guards()
@@ -4072,7 +4108,9 @@ mod tests {
         let outcome = output.into_parts().0;
         assert_eq!(outcome.data()["target"], hidden_target_id.0);
         let (_, installation) = prepared.into_parts();
-        engine.install_prepared_action(installation);
+        engine
+            .install_prepared_action(installation)
+            .expect("the fixture installs");
         assert_eq!(
             engine
                 .action_state()
@@ -4337,7 +4375,9 @@ mod tests {
             txn.prepare().unwrap()
         };
         let (_, installation) = prepared.into_parts();
-        engine.install_prepared_action(installation);
+        engine
+            .install_prepared_action(installation)
+            .expect("the fixture installs");
 
         let request = RequestUid::from_bytes([0x74; 16]);
         let error = engine
@@ -4572,7 +4612,9 @@ mod tests {
             txn.prepare().unwrap()
         };
         let (_, installation) = prepared.into_parts();
-        engine.install_prepared_action(installation);
+        engine
+            .install_prepared_action(installation)
+            .expect("the fixture installs");
         let refreshed = projector
             .project_tactical_snapshot(&engine, &principal, source)
             .unwrap();

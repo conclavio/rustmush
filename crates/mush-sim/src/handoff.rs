@@ -1225,7 +1225,9 @@ mod tests {
 
     fn install(engine: &mut Engine, prepared: mush_core::PreparedTxn) -> Vec<mush_core::ModuleOp> {
         let (ops, installation) = prepared.into_parts();
-        engine.install_prepared_action(installation);
+        engine
+            .install_prepared_action(installation)
+            .expect("the fixture installs");
         ops
     }
 

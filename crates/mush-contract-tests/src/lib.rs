@@ -1939,7 +1939,9 @@ pub fn install_toy_focus(
         txn.prepare().expect("focus bootstrap prepares")
     };
     let (_, installation) = prepared.into_parts();
-    engine.install_prepared_action(installation);
+    engine
+        .install_prepared_action(installation)
+        .expect("the fixture installs");
 }
 
 /// Attach an empty authoritative reservation book to an existing toy focus
@@ -1972,7 +1974,9 @@ pub fn install_toy_reservation_book(
         txn.prepare().expect("reservation bootstrap prepares")
     };
     let (_, installation) = prepared.into_parts();
-    engine.install_prepared_action(installation);
+    engine
+        .install_prepared_action(installation)
+        .expect("the fixture installs");
     id
 }
 
@@ -1993,7 +1997,9 @@ pub fn install_toy_schedule(
         txn.prepare().expect("schedule bootstrap prepares")
     };
     let (_, installation) = prepared.into_parts();
-    engine.install_prepared_action(installation);
+    engine
+        .install_prepared_action(installation)
+        .expect("the fixture installs");
 }
 
 /// Atomically install a toy schedule and its provider-specific addressing.
@@ -2020,7 +2026,9 @@ pub fn install_toy_scheduled_expiry(
         txn.prepare().expect("scheduled expiry bootstrap prepares")
     };
     let (_, installation) = prepared.into_parts();
-    engine.install_prepared_action(installation);
+    engine
+        .install_prepared_action(installation)
+        .expect("the fixture installs");
 }
 
 /// Canonical semantic invocation for the toy `brace` provider.
@@ -2284,7 +2292,10 @@ mod tests {
             txn.prepare().expect("guarded bootstrap prepares")
         };
         let (_, installation) = prepared.into_parts();
-        world.engine_mut().install_prepared_action(installation);
+        world
+            .engine_mut()
+            .install_prepared_action(installation)
+            .expect("the fixture installs");
     }
 
     #[test]
@@ -2458,7 +2469,10 @@ mod tests {
         };
         assert_eq!(prepared.operation_count(), 2);
         let (module_ops, installation) = prepared.into_parts();
-        world.engine_mut().install_prepared_action(installation);
+        world
+            .engine_mut()
+            .install_prepared_action(installation)
+            .expect("the fixture installs");
         let boot_records = module_ops
             .into_iter()
             .filter_map(|operation| match operation.op {
@@ -2552,7 +2566,10 @@ mod tests {
             let (_, installation) = txn.prepare().unwrap().into_parts();
             installation
         };
-        world.engine_mut().install_prepared_action(installation);
+        world
+            .engine_mut()
+            .install_prepared_action(installation)
+            .expect("the fixture installs");
         assert_eq!(
             world
                 .engine()
@@ -2681,7 +2698,10 @@ mod tests {
                 .all(|op| matches!(op.op, mush_core::ModuleWrite::JsonSet { .. }))
         );
 
-        world.engine_mut().install_prepared_action(installation);
+        world
+            .engine_mut()
+            .install_prepared_action(installation)
+            .expect("the fixture installs");
         assert_eq!(
             world
                 .engine()
@@ -2767,7 +2787,10 @@ mod tests {
                 .is_none()
         );
         let (_, installation) = prepared.into_parts();
-        world.engine_mut().abort_prepared_action(installation);
+        world
+            .engine_mut()
+            .abort_prepared_action(installation)
+            .expect("the fixture aborts");
         assert!(!world.engine().action_state().has_prepared());
     }
 
@@ -2789,7 +2812,10 @@ mod tests {
             .prepare_registered_action(&toy_definitions().brace, &invocation)
             .expect("brace prepares");
         let (_, installation) = prepared.into_parts();
-        world.engine_mut().abort_prepared_action(installation);
+        world
+            .engine_mut()
+            .abort_prepared_action(installation)
+            .expect("the fixture aborts");
 
         assert_eq!(
             world
@@ -3325,7 +3351,10 @@ mod tests {
             )
             .expect("brace prepares");
         let (_, installation) = prepared.into_parts();
-        world.engine_mut().install_prepared_action(installation);
+        world
+            .engine_mut()
+            .install_prepared_action(installation)
+            .expect("the fixture installs");
         let guarded = world
             .engine()
             .action_state()
@@ -3403,7 +3432,10 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].kind().as_str(), "guarded_expire");
         let (_, installation) = prepared.into_parts();
-        world.engine_mut().install_prepared_action(installation);
+        world
+            .engine_mut()
+            .install_prepared_action(installation)
+            .expect("the fixture installs");
         assert!(
             world
                 .engine()

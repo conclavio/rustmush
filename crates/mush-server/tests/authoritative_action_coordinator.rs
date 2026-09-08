@@ -238,7 +238,10 @@ async fn commit_toy_window_operation(
         .await
         .unwrap();
     assert!(receipt.matches_bundle(&bundle));
-    world.engine_mut().install_prepared_action(installation);
+    world
+        .engine_mut()
+        .install_prepared_action(installation)
+        .expect("the fixture installs");
     let checkpoint = store
         .checkpoint_authoritative(bundle.token(), bundle.bundle_hash())
         .await
@@ -541,7 +544,9 @@ async fn real_provider_is_exactly_once_and_hydrates_before_the_next_action() {
         .await
         .unwrap();
     assert!(receipt.matches_bundle(&bundle));
-    engine.install_prepared_action(installation);
+    engine
+        .install_prepared_action(installation)
+        .expect("the fixture installs");
     store
         .checkpoint_authoritative(bundle.token(), bundle.bundle_hash())
         .await
@@ -755,7 +760,10 @@ async fn gate_one_offer_is_preflighted_regenerated_and_routed_without_hidden_cli
     assert_eq!(resolution.action(), bundle.token());
     assert_eq!(resolution.outcome(), bundle.outcome());
     assert_eq!(resolution.draws().len(), 1);
-    world.engine_mut().abort_prepared_action(installation);
+    world
+        .engine_mut()
+        .abort_prepared_action(installation)
+        .expect("the fixture aborts");
 }
 
 #[tokio::test]
@@ -825,7 +833,10 @@ async fn toy_trigger_cascade_survives_bundle_checkpoint_and_restart() {
         .unwrap();
     assert_eq!(receipt.semantic_events(), bundle.semantic_events());
     assert_eq!(receipt.resolution(), Some(&exact_resolution));
-    world.engine_mut().install_prepared_action(installation);
+    world
+        .engine_mut()
+        .install_prepared_action(installation)
+        .expect("the fixture installs");
     assert_eq!(
         world
             .engine()
@@ -985,7 +996,10 @@ async fn toy_trigger_cascade_survives_bundle_checkpoint_and_restart() {
         .reconcile_authoritative(expiry_bundle.token(), expiry_bundle.bundle_hash())
         .await
         .unwrap();
-    restarted.engine_mut().install_prepared_action(installation);
+    restarted
+        .engine_mut()
+        .install_prepared_action(installation)
+        .expect("the fixture installs");
     store
         .checkpoint_authoritative(expiry_bundle.token(), expiry_bundle.bundle_hash())
         .await
