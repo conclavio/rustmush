@@ -24,6 +24,18 @@
 //!
 //! The [`Display`](std::fmt::Display) impl prints an expression back in this
 //! syntax such that `parse(print(e)) == e` (a round-trip test enforces it).
+//!
+//! Three bounds keep a deep tree from becoming a stack overflow, and they are
+//! not the same bound: [`MAX_LOCK_PARSE_FRAMES`] and [`MAX_LOCK_EXPR_DEPTH`]
+//! stop the parser from *building* one; `MAX_LOCK_STRUCTURAL_DEPTH` stops
+//! [`eval_lock`] and `Display` reading one that got into RAM by some other
+//! road (a decode, a module), and they fail closed at it;
+//! [`LockExpr::clamp_depth`] repairs such a tree in place. Freeing one is
+//! bounded too — `Drop` is hand-written and iterative — and
+//! [`LockExpr::depth`] measures without recursing. What is *not* bounded is
+//! the derived `Clone`/`PartialEq`/`Debug`/`Serialize`; they are safe only
+//! because nothing outside this file builds a compound node, which
+//! `tests/lock_construction_ratchet.rs` holds in place.
 
 use std::fmt;
 use std::str::FromStr;
@@ -145,6 +157,29 @@ pub enum LockExpr {
 /// Default / maximum indirection depth for [`eval_lock`].
 pub const MAX_LOCK_DEPTH: u8 = 10;
 
+/// Does this node own children — and so cost a level of every walk over the
+/// tree, `Drop` included?
+fn compound(e: &LockExpr) -> bool {
+    matches!(e, LockExpr::Not(_) | LockExpr::And(..) | LockExpr::Or(..))
+}
+
+/// How many *structural* levels ([`LockExpr::Not`], [`And`](LockExpr::And),
+/// [`Or`](LockExpr::Or)) [`eval_lock`] and [`Display`](fmt::Display) will
+/// descend before they give up and fail closed.
+///
+/// This is a stack fence, not a policy: it exists so that a tree which never
+/// went through [`parse_lock`] — one decoded from Redis, or built by a module
+/// — cannot walk the guard page on the world task. Two independent bounds
+/// already stand in front of it ([`MAX_LOCK_EXPR_DEPTH`] = 48 on the parse
+/// path, serde_json's own 128-level recursion limit on the decode path, which
+/// caps a decodable tree at roughly 127 `Not` levels or 63 `And`/`Or` levels),
+/// so no tree that can legitimately reach RAM comes anywhere near 1024 and the
+/// truncation below is unreachable in practice. That headroom is the point:
+/// the budget must stay strictly above every decodable tree, or `Display`
+/// would truncate a legal key and break the module's load-bearing
+/// `parse(print(e)) == e` invariant.
+const MAX_LOCK_STRUCTURAL_DEPTH: u32 = 1024;
+
 /// Evaluate `expr` against `who`.
 ///
 /// `depth` bounds **indirect** lock chains ([`LockExpr::Indirect`]); each
@@ -162,8 +197,24 @@ pub const MAX_LOCK_DEPTH: u8 = 10;
 ///   their compact serialization; a missing attribute fails.
 /// - `Indirect`: a missing target object fails; a target without that lock
 ///   type passes (an unset lock is unlocked, as in TinyMUX).
+///
+/// Structural nesting (`!`, `&`, `|`) is bounded separately by
+/// [`MAX_LOCK_STRUCTURAL_DEPTH`]; a tree taller than that fails closed at the
+/// bound instead of overflowing the world task's stack.
 #[must_use]
 pub fn eval_lock(w: &World, expr: &LockExpr, who: ObjId, depth: u8) -> bool {
+    eval_with(w, expr, who, depth, MAX_LOCK_STRUCTURAL_DEPTH)
+}
+
+/// [`eval_lock`] with both budgets explicit.
+///
+/// `indirect` is the public `depth`: it counts [`LockExpr::Indirect`] hops and
+/// is what [`MAX_LOCK_DEPTH`] sizes. `structural` counts `Not`/`And`/`Or`
+/// levels within one object's key and is reseeded on every indirection,
+/// because each hop starts a fresh (and separately bounded) tree — the two
+/// budgets multiply into the true stack ceiling, which is why the indirect
+/// budget stays small.
+fn eval_with(w: &World, expr: &LockExpr, who: ObjId, indirect: u8, structural: u32) -> bool {
     match expr {
         LockExpr::Const(b) => *b,
         LockExpr::Is(id) => who == *id,
@@ -185,20 +236,41 @@ pub fn eval_lock(w: &World, expr: &LockExpr, who: ObjId, depth: u8) -> bool {
             None => false,
         },
         LockExpr::Indirect(obj, lt) => {
-            if depth == 0 {
+            if indirect == 0 {
                 return false;
             }
             match w.get(*obj) {
                 None => false,
                 Some(o) => match o.locks.get(lt) {
                     None => true,
-                    Some(inner) => eval_lock(w, inner, who, depth - 1),
+                    // A fresh tree: the structural budget starts over, the
+                    // indirect one does not.
+                    Some(inner) => {
+                        eval_with(w, inner, who, indirect - 1, MAX_LOCK_STRUCTURAL_DEPTH)
+                    }
                 },
             }
         }
-        LockExpr::Not(e) => !eval_lock(w, e, who, depth),
-        LockExpr::And(a, b) => eval_lock(w, a, who, depth) && eval_lock(w, b, who, depth),
-        LockExpr::Or(a, b) => eval_lock(w, a, who, depth) || eval_lock(w, b, who, depth),
+        LockExpr::Not(e) => {
+            if structural == 0 {
+                return false;
+            }
+            !eval_with(w, e, who, indirect, structural - 1)
+        }
+        LockExpr::And(a, b) => {
+            if structural == 0 {
+                return false;
+            }
+            eval_with(w, a, who, indirect, structural - 1)
+                && eval_with(w, b, who, indirect, structural - 1)
+        }
+        LockExpr::Or(a, b) => {
+            if structural == 0 {
+                return false;
+            }
+            eval_with(w, a, who, indirect, structural - 1)
+                || eval_with(w, b, who, indirect, structural - 1)
+        }
     }
 }
 
@@ -621,6 +693,58 @@ impl LockExpr {
         done.pop().unwrap_or(1)
     }
 
+    /// Truncate this tree to at most `max` levels, failing closed: every
+    /// compound node at or below level `max` (the root is level 1) is replaced
+    /// by `#FALSE`, and the number of replacements is returned.
+    ///
+    /// This is the repair the decode path needs. `depth()` only *measures* an
+    /// unvetted tree; a store that hands back something taller than
+    /// [`MAX_LOCK_EXPR_DEPTH`] has to do something with it, and the choice
+    /// this crate makes is to keep the object loadable and make the
+    /// over-deep part unpassable rather than to fail the whole load.
+    ///
+    /// Walked with an explicit worklist, for the same reason [`depth`] is: the
+    /// tree being repaired is by definition one nothing has vetted.
+    ///
+    /// Note what "fail closed" means and what it does not: the *subtree* is
+    /// replaced by `#FALSE`, not the expression. `!` above the cut still
+    /// inverts it, exactly as `!#FALSE` does anywhere else. Truncation changes
+    /// the meaning of the key — that is unavoidable — it just refuses to
+    /// invent a passing leaf.
+    ///
+    /// ```
+    /// use mush_core::lock::parse_lock;
+    /// use mush_core::obj::ObjId;
+    /// let mut e = parse_lock("#1 & (#2 | #3)", |_| Some(ObjId(1))).unwrap();
+    /// assert_eq!(e.depth(), 3);
+    /// assert_eq!(e.clamp_depth(2), 1);
+    /// assert_eq!(e.to_string(), "#1 & #FALSE");
+    /// ```
+    ///
+    /// [`depth`]: LockExpr::depth
+    pub fn clamp_depth(&mut self, max: u32) -> u32 {
+        let mut clamped = 0u32;
+        let mut work: Vec<(&mut LockExpr, u32)> = vec![(self, 1)];
+        while let Some((node, level)) = work.pop() {
+            if compound(node) && level >= max {
+                // Dropping the old subtree here is safe however tall it is:
+                // `Drop for LockExpr` dismantles iteratively.
+                *node = LockExpr::Const(false);
+                clamped = clamped.saturating_add(1);
+                continue;
+            }
+            match node {
+                LockExpr::Not(a) => work.push((a.as_mut(), level.saturating_add(1))),
+                LockExpr::And(a, b) | LockExpr::Or(a, b) => {
+                    work.push((a.as_mut(), level.saturating_add(1)));
+                    work.push((b.as_mut(), level.saturating_add(1)));
+                }
+                _ => {}
+            }
+        }
+        clamped
+    }
+
     /// Binding strength for the printer: `|` = 1, `&` = 2, `!` = 3, atoms = 4.
     fn prec(&self) -> u8 {
         match self {
@@ -635,7 +759,18 @@ impl LockExpr {
     /// looser than its context requires, and forces parens on right-nested
     /// same-precedence children so the (left-associative) parser rebuilds
     /// the identical tree.
-    fn fmt_prec(&self, f: &mut fmt::Formatter<'_>, min: u8) -> fmt::Result {
+    ///
+    /// `budget` is the structural fence ([`MAX_LOCK_STRUCTURAL_DEPTH`]): the
+    /// printer recurses, and `Display` is reached from log lines and from
+    /// `@examine` on trees the parser never saw, so past the budget it writes
+    /// `#FALSE` and stops rather than descending. The budget sits far above
+    /// anything serde can decode, so this never fires on a real key and the
+    /// `parse(print(e)) == e` invariant is untouched.
+    fn fmt_prec(&self, f: &mut fmt::Formatter<'_>, min: u8, budget: u32) -> fmt::Result {
+        if budget == 0 {
+            return f.write_str("#FALSE");
+        }
+        let budget = budget - 1;
         let paren = self.prec() < min;
         if paren {
             f.write_str("(")?;
@@ -651,17 +786,17 @@ impl LockExpr {
             LockExpr::Indirect(id, lt) => write!(f, "@{id}/{lt}")?,
             LockExpr::Not(e) => {
                 f.write_str("!")?;
-                e.fmt_prec(f, 3)?;
+                e.fmt_prec(f, 3, budget)?;
             }
             LockExpr::And(a, b) => {
-                a.fmt_prec(f, 2)?;
+                a.fmt_prec(f, 2, budget)?;
                 f.write_str(" & ")?;
-                b.fmt_prec(f, 3)?;
+                b.fmt_prec(f, 3, budget)?;
             }
             LockExpr::Or(a, b) => {
-                a.fmt_prec(f, 1)?;
+                a.fmt_prec(f, 1, budget)?;
                 f.write_str(" | ")?;
-                b.fmt_prec(f, 2)?;
+                b.fmt_prec(f, 2, budget)?;
             }
         }
         if paren {
@@ -673,7 +808,60 @@ impl LockExpr {
 
 impl fmt::Display for LockExpr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.fmt_prec(f, 0)
+        self.fmt_prec(f, 0, MAX_LOCK_STRUCTURAL_DEPTH)
+    }
+}
+
+/// Dismantle a tree iteratively.
+///
+/// The compiler's own drop glue is recursive — freeing `Not(Not(Not(…)))`
+/// re-enters itself once per level — so the last stack overflow left in this module is the one
+/// that happens *after* a deep tree is already in RAM, where no parse bound
+/// can help: overwrite an over-deep lock, or let its object fall out of the
+/// world, and the free walks the guard page and kills the world task. This
+/// impl replaces each child with `#FALSE` and pushes the child onto a heap
+/// worklist instead.
+///
+/// The nodes this loop drops have had their compound children taken already,
+/// so their own `drop` hits the `deep` guard below and returns without
+/// allocating: the recursion is two frames deep, not `n`.
+///
+/// The cost of the impl is that `LockExpr`'s variants can never be
+/// destructured by move (`let LockExpr::Not(inner) = e else { … }`); nothing
+/// in the workspace does, and `mem::replace` on a `&mut` is the substitute.
+impl Drop for LockExpr {
+    fn drop(&mut self) {
+        /// Move `node`'s compound children onto `work`, leaving `#FALSE`s.
+        fn dismantle(node: &mut LockExpr, work: &mut Vec<LockExpr>) {
+            let take = |child: &mut Box<LockExpr>, work: &mut Vec<LockExpr>| {
+                if compound(child) {
+                    work.push(std::mem::replace(child.as_mut(), LockExpr::Const(false)));
+                }
+            };
+            match node {
+                LockExpr::Not(a) => take(a, work),
+                LockExpr::And(a, b) | LockExpr::Or(a, b) => {
+                    take(a, work);
+                    take(b, work);
+                }
+                _ => {}
+            }
+        }
+
+        let deep = match &*self {
+            LockExpr::Not(a) => compound(a),
+            LockExpr::And(a, b) | LockExpr::Or(a, b) => compound(a) || compound(b),
+            _ => false,
+        };
+        if !deep {
+            return;
+        }
+        let mut work: Vec<LockExpr> = Vec::new();
+        dismantle(self, &mut work);
+        while let Some(mut node) = work.pop() {
+            dismantle(&mut node, &mut work);
+            // `node` drops here with only `#FALSE` children: shallow.
+        }
     }
 }
 
@@ -1183,16 +1371,77 @@ mod tests {
     #[test]
     fn depth_walks_a_tree_the_parser_would_have_refused() {
         // `depth()` is used on trees that did not come from the parser
-        // (deserialized, module-built): it must not recurse.
-        // Kept modest all the same: `Drop` for a boxed tree is itself
-        // recursive, and nothing in the tree can now hand it a deep one
-        // (the parser refuses at 48, serde stops at its own limit long
-        // before a stack runs out), so this test must not be the thing
-        // that overflows.
+        // (deserialized, module-built): it must not recurse. Dropping the
+        // tree afterwards does not recurse either (WS01-S2); the taller
+        // shapes live in `tests/lock_depth_*.rs`, on a small stack, where
+        // an overflow names itself.
         let mut e = LockExpr::Is(ObjId(1));
         for _ in 0..2_000 {
             e = LockExpr::And(Box::new(e), Box::new(LockExpr::Const(true)));
         }
         assert_eq!(e.depth(), 2_001);
+    }
+
+    // ---------------------------------------------------------------
+    // Structural budget (WS01-S2). The fence is 1024 levels, twenty times
+    // the parser's own bound, precisely so it never fires on a key anyone
+    // can write: these are the tallest legal shapes, and they must
+    // evaluate and print exactly as they did before the budget existed.
+    // The trees that *do* hit the budget are in `tests/lock_depth_eval.rs`.
+
+    #[test]
+    fn the_tallest_legal_chains_evaluate_and_round_trip_unchanged() {
+        let (w, nick, _sword, _door) = eval_world();
+        let me = nick.to_string();
+        // 47 terms / 47 levels — one under MAX_LOCK_EXPR_DEPTH.
+        let ands = std::iter::repeat_n(me.as_str(), 47)
+            .collect::<Vec<_>>()
+            .join(" & ");
+        let bangs = format!("{}{me}", "!".repeat(46));
+
+        let e = round_trips(&ands);
+        assert_eq!(e.depth(), 47);
+        assert!(
+            eval_lock(&w, &e, nick, MAX_LOCK_DEPTH),
+            "a 47-term & chain of `is me` passes for me"
+        );
+        let e = round_trips(&bangs);
+        assert_eq!(e.depth(), 47);
+        assert!(
+            eval_lock(&w, &e, nick, MAX_LOCK_DEPTH),
+            "46 negations is an even number of them"
+        );
+        // One negation fewer: the answer flips, so the budget is not
+        // quietly swallowing the whole spine.
+        let e = round_trips(&format!("{}{me}", "!".repeat(45)));
+        assert!(!eval_lock(&w, &e, nick, MAX_LOCK_DEPTH));
+    }
+
+    #[test]
+    fn an_indirect_chain_still_spends_the_indirect_budget_only() {
+        // Five objects, each of whose basic lock is the next one's. The
+        // structural budget is reseeded at every hop; what stops the walk
+        // is MAX_LOCK_DEPTH, and five hops are well inside it.
+        let mut w = World::new_minimal();
+        let nick = w.create(ObjKind::Player, "Nick", GOD, Some(LIMBO)).unwrap();
+        let chain: Vec<ObjId> = (0..5)
+            .map(|i| {
+                w.create(ObjKind::Thing, &format!("link{i}"), GOD, Some(LIMBO))
+                    .unwrap()
+            })
+            .collect();
+        for pair in chain.windows(2) {
+            let (here, next) = (pair[0], pair[1]);
+            w.get_mut(here)
+                .unwrap()
+                .locks
+                .insert(LockType::Basic, LockExpr::Indirect(next, LockType::Basic));
+        }
+        // The last link has no basic lock, and an unset lock is unlocked.
+        let e = LockExpr::Indirect(chain[0], LockType::Basic);
+        assert!(eval_lock(&w, &e, nick, MAX_LOCK_DEPTH));
+        // Four hops is one too few to reach the end of a five-link chain.
+        assert!(!eval_lock(&w, &e, nick, 4));
+        assert!(eval_lock(&w, &e, nick, 5));
     }
 }
