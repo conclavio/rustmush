@@ -602,6 +602,18 @@ impl LlmService {
     /// writes the audit row when the terminal
     /// [`StreamEvent::Done`](crate::types::StreamEvent::Done) arrives. The
     /// concurrency permit is held for the stream's lifetime.
+    ///
+    /// **WS17-S0 ruling: this entry point stays.** It has exactly one caller in
+    /// the tree — its own test, `tests/service.rs`
+    /// `streaming_settles_budget_and_emits_done` — so deleting it was on the
+    /// table. The ruling is KEEP, because the settle-on-`Done` contract above is
+    /// only half-built: a consumer that drops the stream before `Done` arrives
+    /// settles no budget and writes no audit row at all, and removing the entry
+    /// point would retire that hole rather than close it. So the Drop-settle
+    /// guard is still owed here — an `Outcome::Abandoned` row plus a settle of
+    /// what actually streamed, fired from `SettleState`'s `Drop` when `settled`
+    /// is still false — and the first real streaming caller must not be the
+    /// thing that discovers the gap.
     pub async fn call_streaming(
         &self,
         ctx: CallCtx,
