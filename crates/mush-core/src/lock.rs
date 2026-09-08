@@ -268,7 +268,49 @@ pub enum LockParseError {
     /// A `^` term whose left side isn't `flag`, or with an empty flag name.
     #[error("bad flag lock {0:?} (expected flag^NAME)")]
     BadFlagLock(String),
+    /// The key nests deeper than the parser will go — either more nested
+    /// `(`/`!` than [`MAX_LOCK_PARSE_FRAMES`] (a stack bound) or a tree
+    /// taller than [`MAX_LOCK_EXPR_DEPTH`] (an AST bound). `max` is
+    /// whichever limit refused.
+    #[error("lock expression nests too deeply (limit {max})")]
+    TooDeep {
+        /// The limit that was exceeded.
+        max: u32,
+    },
 }
+
+/// Maximum recursion budget the parser will spend on nested `(` and `!`.
+///
+/// This is a **stack** bound, and only that. Each nested `(` costs 4 (the
+/// `parse_primary` → `parse_or` → `parse_and` → `parse_unary` descent it
+/// re-enters) and each `!` costs 1 (`parse_unary`'s self-call), so a key may
+/// nest 16 parentheses or 64 negations before [`parse_lock`] refuses with
+/// [`LockParseError::TooDeep`]. Without it `("(".repeat(n))` walks the guard
+/// page and the process dies of SIGSEGV — not an error a command handler can
+/// turn into "I don't understand that key".
+///
+/// It does **not** bound the produced tree: parentheses are transparent (they
+/// yield the inner expression, not a node) and `a & b & c …` is parsed by an
+/// O(1)-stack loop, so `#1&#1&…` never touches this counter at all. That is
+/// [`MAX_LOCK_EXPR_DEPTH`]'s job.
+pub const MAX_LOCK_PARSE_FRAMES: u32 = 64;
+
+/// Maximum height of the [`LockExpr`] tree [`parse_lock`] will build.
+///
+/// An **AST** bound, complementary to [`MAX_LOCK_PARSE_FRAMES`]: leaves are
+/// depth 1, `Not(e)` is `1 + depth(e)` and `And`/`Or` are `1 + max(children)`.
+/// The `&`/`|` loops keep this running maximum in O(1) as they left-nest, so
+/// the input class that evades a frame counter entirely — a flat operator
+/// chain thousands of terms long, which fits inside one 8192-character input
+/// line — is refused here instead of being stored as a tree that later
+/// recurses in `Display`, in `eval_lock`, in serde, and in `Drop`.
+///
+/// 48 is sized against serde_json's recursion limit of 128: an `And`/`Or`
+/// node costs two JSON levels (`{"And":[…]}`), so a maximal tree serializes
+/// about 101 levels deep inside the object/`locks` wrapper, with headroom. No
+/// hand-written lock comes close — the deepest key in the tree or the docs is
+/// a handful of terms — so a refusal here is a refusal of an attack.
+pub const MAX_LOCK_EXPR_DEPTH: u32 = 48;
 
 /// Parse TinyMUX-ish lock syntax into a [`LockExpr`].
 ///
@@ -299,12 +341,20 @@ where
     let mut p = Parser {
         src,
         pos: 0,
+        frames: 0,
         resolve,
     };
-    let expr = p.parse_or()?;
+    let (expr, depth) = p.parse_or()?;
     p.skip_ws();
     if p.pos < p.src.len() {
         return Err(LockParseError::Trailing(p.pos));
+    }
+    // The loops in `parse_or`/`parse_and` already refuse at the bound; this
+    // recheck is the one that holds even if a future arm forgets to.
+    if depth > MAX_LOCK_EXPR_DEPTH {
+        return Err(LockParseError::TooDeep {
+            max: MAX_LOCK_EXPR_DEPTH,
+        });
     }
     Ok(expr)
 }
@@ -312,7 +362,26 @@ where
 struct Parser<'a, R> {
     src: &'a str,
     pos: usize,
+    /// Recursion budget spent, in stack frames — see
+    /// [`MAX_LOCK_PARSE_FRAMES`]. Charged by `enter` and returned by `leave`
+    /// on **every** path out of the recursive arms, error paths included, so
+    /// a failed sub-parse cannot make a later sibling refuse spuriously.
+    frames: u32,
     resolve: R,
+}
+
+/// The depth of a node built from two sub-results, refusing at the bound.
+///
+/// Called once per `&`/`|` iteration and once per `!`, which is what keeps
+/// the running height O(1) to maintain no matter how long the chain is.
+fn combine_depth(a: u32, b: u32) -> Result<u32, LockParseError> {
+    let d = a.max(b).saturating_add(1);
+    if d > MAX_LOCK_EXPR_DEPTH {
+        return Err(LockParseError::TooDeep {
+            max: MAX_LOCK_EXPR_DEPTH,
+        });
+    }
+    Ok(d)
 }
 
 impl<R: FnMut(&str) -> Option<ObjId>> Parser<'_, R> {
@@ -332,53 +401,88 @@ impl<R: FnMut(&str) -> Option<ObjId>> Parser<'_, R> {
         }
     }
 
-    fn parse_or(&mut self) -> Result<LockExpr, LockParseError> {
-        let mut left = self.parse_and()?;
+    /// Charge `cost` stack frames, refusing rather than descending past
+    /// [`MAX_LOCK_PARSE_FRAMES`]. Nothing is charged when it refuses, so the
+    /// counter stays exact.
+    fn enter(&mut self, cost: u32) -> Result<(), LockParseError> {
+        if self.frames + cost > MAX_LOCK_PARSE_FRAMES {
+            return Err(LockParseError::TooDeep {
+                max: MAX_LOCK_PARSE_FRAMES,
+            });
+        }
+        self.frames += cost;
+        Ok(())
+    }
+
+    /// Return frames charged by a matching `enter`.
+    fn leave(&mut self, cost: u32) {
+        self.frames = self.frames.saturating_sub(cost);
+    }
+
+    /// Each parser fn returns its expression **and** that expression's depth,
+    /// so the iterative `&`/`|` loops below can hold the tree height without
+    /// a second walk (and without any stack of their own).
+    fn parse_or(&mut self) -> Result<(LockExpr, u32), LockParseError> {
+        let (mut left, mut depth) = self.parse_and()?;
         loop {
             self.skip_ws();
             if self.peek() == Some('|') {
                 self.bump();
-                let right = self.parse_and()?;
+                let (right, rd) = self.parse_and()?;
+                depth = combine_depth(depth, rd)?;
                 left = LockExpr::Or(Box::new(left), Box::new(right));
             } else {
-                return Ok(left);
+                return Ok((left, depth));
             }
         }
     }
 
-    fn parse_and(&mut self) -> Result<LockExpr, LockParseError> {
-        let mut left = self.parse_unary()?;
+    fn parse_and(&mut self) -> Result<(LockExpr, u32), LockParseError> {
+        let (mut left, mut depth) = self.parse_unary()?;
         loop {
             self.skip_ws();
             if self.peek() == Some('&') {
                 self.bump();
-                let right = self.parse_unary()?;
+                let (right, rd) = self.parse_unary()?;
+                depth = combine_depth(depth, rd)?;
                 left = LockExpr::And(Box::new(left), Box::new(right));
             } else {
-                return Ok(left);
+                return Ok((left, depth));
             }
         }
     }
 
-    fn parse_unary(&mut self) -> Result<LockExpr, LockParseError> {
+    fn parse_unary(&mut self) -> Result<(LockExpr, u32), LockParseError> {
         self.skip_ws();
         if self.peek() == Some('!') {
             self.bump();
-            Ok(LockExpr::Not(Box::new(self.parse_unary()?)))
+            // One frame: this is a genuine self-call.
+            self.enter(1)?;
+            let inner = self.parse_unary();
+            self.leave(1);
+            let (expr, d) = inner?;
+            let depth = combine_depth(d, 0)?;
+            Ok((LockExpr::Not(Box::new(expr)), depth))
         } else {
             self.parse_primary()
         }
     }
 
-    fn parse_primary(&mut self) -> Result<LockExpr, LockParseError> {
+    fn parse_primary(&mut self) -> Result<(LockExpr, u32), LockParseError> {
         self.skip_ws();
         if self.peek() == Some('(') {
             self.bump();
-            let expr = self.parse_or()?;
+            // Four frames: re-entering `parse_or` re-enters the whole
+            // precedence descent down to `parse_primary`.
+            self.enter(4)?;
+            let inner = self.parse_or();
+            self.leave(4);
+            let (expr, depth) = inner?;
             self.skip_ws();
             if self.peek() == Some(')') {
                 self.bump();
-                Ok(expr)
+                // Parentheses are transparent: no node, so no depth either.
+                Ok((expr, depth))
             } else {
                 Err(LockParseError::UnbalancedParen)
             }
@@ -389,7 +493,7 @@ impl<R: FnMut(&str) -> Option<ObjId>> Parser<'_, R> {
 
     /// A term runs until an operator/paren; spaces inside are allowed
     /// (player names may contain them) and trimmed at the edges.
-    fn parse_term(&mut self) -> Result<LockExpr, LockParseError> {
+    fn parse_term(&mut self) -> Result<(LockExpr, u32), LockParseError> {
         let start = self.pos;
         while let Some(c) = self.peek() {
             if matches!(c, '&' | '|' | '(' | ')') {
@@ -405,7 +509,8 @@ impl<R: FnMut(&str) -> Option<ObjId>> Parser<'_, R> {
                 LockParseError::EmptyTerm
             });
         }
-        self.classify(raw)
+        // Every leaf is depth 1.
+        self.classify(raw).map(|e| (e, 1))
     }
 
     /// `#123` directly; anything else (with optional `*`) via the resolver.
@@ -466,6 +571,56 @@ impl<R: FnMut(&str) -> Option<ObjId>> Parser<'_, R> {
 }
 
 impl LockExpr {
+    /// Height of this tree: leaves are 1, `Not` is `1 + child`, `And`/`Or`
+    /// are `1 + max(children)`.
+    ///
+    /// Walked with an explicit worklist rather than by recursion, because the
+    /// whole point of the measurement is to be safe on a tree that did *not*
+    /// come from [`parse_lock`] — one deserialized from Redis, or built by a
+    /// module — where nothing has yet established that it is under
+    /// [`MAX_LOCK_EXPR_DEPTH`].
+    ///
+    /// ```
+    /// use mush_core::lock::parse_lock;
+    /// use mush_core::obj::ObjId;
+    /// let e = parse_lock("#1 & !(#2 | #3)", |_| Some(ObjId(1))).unwrap();
+    /// assert_eq!(e.depth(), 4);
+    /// ```
+    #[must_use]
+    pub fn depth(&self) -> u32 {
+        /// One step of the walk: visit a node, or fold `n` finished children.
+        enum Step<'a> {
+            Visit(&'a LockExpr),
+            Fold(u8),
+        }
+        let mut work = vec![Step::Visit(self)];
+        let mut done: Vec<u32> = Vec::new();
+        while let Some(step) = work.pop() {
+            match step {
+                Step::Visit(e) => match e {
+                    LockExpr::Not(a) => {
+                        work.push(Step::Fold(1));
+                        work.push(Step::Visit(a));
+                    }
+                    LockExpr::And(a, b) | LockExpr::Or(a, b) => {
+                        work.push(Step::Fold(2));
+                        work.push(Step::Visit(a));
+                        work.push(Step::Visit(b));
+                    }
+                    _ => done.push(1),
+                },
+                Step::Fold(n) => {
+                    let mut max = 0u32;
+                    for _ in 0..n {
+                        max = max.max(done.pop().unwrap_or(0));
+                    }
+                    done.push(max.saturating_add(1));
+                }
+            }
+        }
+        done.pop().unwrap_or(1)
+    }
+
     /// Binding strength for the printer: `|` = 1, `&` = 2, `!` = 3, atoms = 4.
     fn prec(&self) -> u8 {
         match self {
@@ -918,5 +1073,126 @@ mod tests {
                 lt
             );
         }
+    }
+    // ---------------------------------------------------------------
+    // Depth bounds (WS01-S1). The three input classes that reach the
+    // parser's two guards live in their own test binaries
+    // (`tests/lock_parse_depth_*.rs`) because a regression there is a
+    // stack overflow, which kills the process rather than failing an
+    // assert. What is checked here is the *edge*: the tallest tree the
+    // parser will still build, and the first one it will not.
+
+    /// `#1 & #1 & …` with `n` operators — depth `n + 1`, left-nested.
+    fn and_chain(n: u32) -> String {
+        let mut s = String::from("#1");
+        for _ in 0..n {
+            s.push_str(" & #1");
+        }
+        s
+    }
+
+    /// The `|` twin of [`and_chain`].
+    fn or_chain(n: u32) -> String {
+        let mut s = String::from("#1");
+        for _ in 0..n {
+            s.push_str(" | #1");
+        }
+        s
+    }
+
+    /// `!!!…#1` with `n` negations — depth `n + 1`.
+    fn bang_chain(n: u32) -> String {
+        let mut s = "!".repeat(n as usize);
+        s.push_str("#1");
+        s
+    }
+
+    #[test]
+    fn chains_at_exactly_max_depth_parse_and_round_trip() {
+        let max = MAX_LOCK_EXPR_DEPTH;
+        for src in [and_chain(max - 1), or_chain(max - 1), bang_chain(max - 1)] {
+            let e = round_trips(&src);
+            assert_eq!(e.depth(), max, "expected a depth-{max} tree from {src:?}");
+        }
+    }
+
+    #[test]
+    fn chains_one_past_max_depth_are_refused() {
+        let max = MAX_LOCK_EXPR_DEPTH;
+        for src in [and_chain(max), or_chain(max), bang_chain(max)] {
+            assert_eq!(
+                parse_lock(&src, fake_resolver),
+                Err(LockParseError::TooDeep { max }),
+                "expected TooDeep for {src:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn depth_is_exact_for_each_chain_shape() {
+        for n in [0, 1, 2, 7, MAX_LOCK_EXPR_DEPTH - 1] {
+            for src in [and_chain(n), or_chain(n), bang_chain(n)] {
+                let e = parse_lock(&src, fake_resolver).unwrap();
+                assert_eq!(e.depth(), n + 1, "wrong depth for {src:?}");
+            }
+        }
+        // Mixed shapes: depth is 1 + max(children), not a node count.
+        let e = parse_lock("#1 & !(#2 | #3)", fake_resolver).unwrap();
+        assert_eq!(e.depth(), 4);
+        let e = parse_lock("(#1)", fake_resolver).unwrap();
+        assert_eq!(e.depth(), 1, "parentheses build no node");
+    }
+
+    #[test]
+    fn nested_parens_are_bounded_by_the_frame_guard() {
+        // Parentheses cost 4 frames each and build no node, so it is the
+        // frame counter — not the depth counter — that stops them.
+        let ok = MAX_LOCK_PARSE_FRAMES as usize / 4;
+        let src = format!("{}#1{}", "(".repeat(ok), ")".repeat(ok));
+        assert_eq!(
+            parse_lock(&src, fake_resolver).unwrap(),
+            LockExpr::Is(ObjId(1))
+        );
+        let src = format!("{}#1{}", "(".repeat(ok + 1), ")".repeat(ok + 1));
+        assert_eq!(
+            parse_lock(&src, fake_resolver),
+            Err(LockParseError::TooDeep {
+                max: MAX_LOCK_PARSE_FRAMES
+            })
+        );
+    }
+
+    #[test]
+    fn frames_are_returned_so_siblings_do_not_inherit_them() {
+        // Sixteen sibling paren groups each spend a quarter of the budget
+        // in turn; only a failure to decrement on the way out would make
+        // the later ones refuse.
+        let src = std::iter::repeat_n("(#1)", 16)
+            .collect::<Vec<_>>()
+            .join(" & ");
+        let e = parse_lock(&src, fake_resolver).unwrap();
+        assert_eq!(e.depth(), 16);
+        // Same for the error path: a failed sub-parse inside parens must
+        // not leak its frames into the next attempt.
+        for _ in 0..8 {
+            assert!(parse_lock("((#1)", fake_resolver).is_err());
+        }
+        assert!(parse_lock("((((#1))))", fake_resolver).is_ok());
+    }
+
+    #[test]
+    fn depth_walks_a_tree_the_parser_would_have_refused() {
+        // `depth()` is used on trees that did not come from the parser
+        // (deserialized, module-built): it must not recurse.
+        // Kept modest all the same: `Drop` for a boxed tree is itself
+        // recursive, and nothing in the tree can now hand it a deep one
+        // (the parser refuses at 48, serde stops at its own limit long
+        // before a stack runs out), so this test must not be the thing
+        // that overflows.
+        let mut e = LockExpr::Is(ObjId(1));
+        for _ in 0..2_000 {
+            e = LockExpr::And(Box::new(e), Box::new(LockExpr::Const(true)));
+        }
+        assert_eq!(e.depth(), 2_001);
     }
 }

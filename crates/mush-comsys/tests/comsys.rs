@@ -733,6 +733,55 @@ fn recall_renders_pose_forms_and_titles() {
 // Admin surface
 // ----------------------------------------------------------------------
 
+/// `@channel/perm` is the comsys's own `parse_lock` entry point, so it has
+/// to refuse an over-deep key the same way `@lock` does: a message to the
+/// admin, the channel's existing permission untouched, and — because a
+/// module op is what would reach Redis — nothing queued to persist.
+#[test]
+fn over_deep_channel_perm_is_refused_and_mutates_nothing() {
+    let (mut engine, _nick, _ann) = setup();
+    let before = state(&engine).channel_by_name("Public").unwrap().clone();
+    for key in [
+        "(".repeat(8192),
+        "!".repeat(8192),
+        format!("{}#1", "#1&".repeat(2730)),
+        format!("{}#1", "#1|".repeat(2730)),
+    ] {
+        let out = run(
+            &mut engine,
+            GOD,
+            &format!("@channel/perm Public=speak={key}"),
+        );
+        assert!(
+            sys_texts(&out)
+                .iter()
+                .any(|t| t.contains("I don't understand that lock.")),
+            "over-deep key should be refused: {:?}",
+            sys_texts(&out)
+        );
+        let after = state(&engine).channel_by_name("Public").unwrap();
+        assert_eq!(after.perms.speak, before.perms.speak);
+        assert_eq!(after.seq, before.seq, "a refused perm must not bump seq");
+        assert!(
+            engine.take_module_ops().is_empty(),
+            "a refused perm must queue no module write"
+        );
+    }
+    // The refusal names the depth limit rather than some other parse error.
+    let out = run(
+        &mut engine,
+        GOD,
+        &format!("@channel/perm Public=speak={}#1", "#1&".repeat(2730)),
+    );
+    assert!(
+        sys_texts(&out)
+            .iter()
+            .any(|t| t.contains("nests too deeply")),
+        "{:?}",
+        sys_texts(&out)
+    );
+}
+
 #[test]
 fn admin_commands_are_gated() {
     let (mut engine, nick, _) = setup();

@@ -858,7 +858,8 @@ pub(super) fn register(reg: &mut Registry) -> Result<(), RegistryError> {
                    teleport, zone. (enter/use/mail arrive with their commands.) \
                    Keys: me, *player, #123, +#123 (carry), $#123 (owned-by), \
                    flag^WIZARD, attr:glob, @#123/type (indirect), combined with \
-                   ! & | and parentheses."
+                   ! & | and parentheses. A key may nest at most 48 operators \
+                   deep (16 levels of parentheses); deeper keys are refused."
                 .into(),
             ..CommandSpec::default()
         },

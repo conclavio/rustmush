@@ -7,7 +7,7 @@
 //! without silently changing meaning. Both are asserted here over random
 //! strings and over a generator of valid lock expressions.
 
-use mush_core::{LockExpr, ObjId, parse_lock};
+use mush_core::{LockExpr, MAX_LOCK_EXPR_DEPTH, ObjId, parse_lock};
 use proptest::prelude::*;
 
 /// A resolver that accepts any non-empty name (maps them all to `#1`) so more
@@ -31,6 +31,34 @@ fn assert_round_trip(expr: &LockExpr) {
         printed,
         "print not idempotent for {printed:?}"
     );
+    // Nothing the parser accepts may exceed the AST bound (WS01-S1): every
+    // later consumer of a stored lock — Display, eval_lock, serde, Drop —
+    // recurses over this tree.
+    assert!(
+        expr.depth() <= MAX_LOCK_EXPR_DEPTH,
+        "parser produced a depth-{} tree (limit {MAX_LOCK_EXPR_DEPTH}) for {printed:?}",
+        expr.depth(),
+    );
+}
+
+/// Long unbroken runs of the four nesting tokens — the shapes that drive the
+/// parser's recursion (`(`, `!`) and the shapes that drive its iterative
+/// left-nesting loops instead (`#1&`, `#1|`), which no `prop_recursive`
+/// generator will ever produce at this length. Up to 4096 tokens, i.e. up to
+/// half an input line; the parser must refuse them, not overflow.
+fn deep_nesting_string() -> impl Strategy<Value = String> {
+    (
+        prop_oneof![Just("("), Just("!"), Just("#1&"), Just("#1|")],
+        1usize..=4096usize,
+        any::<bool>(),
+    )
+        .prop_map(|(unit, n, terminated)| {
+            let mut s = unit.repeat(n);
+            if terminated {
+                s.push_str("#1");
+            }
+            s
+        })
 }
 
 /// A generator of valid lock-expression strings built from the grammar, so the
@@ -70,8 +98,13 @@ proptest! {
     #![proptest_config(ProptestConfig { cases: 512, ..ProptestConfig::default() })]
 
     /// Arbitrary strings never panic; any AST that parses round-trips.
+    ///
+    /// The input mixes free-form noise with the deep-nesting runs, so the
+    /// same "never panics" claim covers the shapes that used to recurse.
     #[test]
-    fn parse_arbitrary_never_panics(s in ".{0,160}") {
+    fn parse_arbitrary_never_panics(
+        s in prop_oneof![3 => ".{0,160}".boxed(), 1 => deep_nesting_string().boxed()],
+    ) {
         if let Ok(expr) = parse_lock(&s, resolve_any) {
             assert_round_trip(&expr);
         }
@@ -87,7 +120,7 @@ proptest! {
                 Just("/"), Just(" "), Just("flag"), Just("me"), Just("1"),
                 Just("#TRUE"), Just("basic"),
             ],
-            0..48,
+            0..4096,
         ).prop_map(|parts| parts.concat()),
     ) {
         if let Ok(expr) = parse_lock(&s, resolve_any) {

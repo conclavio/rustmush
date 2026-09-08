@@ -241,7 +241,10 @@ pub use ledger::{
     parse_chunk_key, read_cold_range, recent_sealed, scan_contiguity, scan_contiguity_from,
     typed_entries,
 };
-pub use lock::{LockExpr, LockParseError, LockType, eval_lock, glob_match, parse_lock};
+pub use lock::{
+    LockExpr, LockParseError, LockType, MAX_LOCK_EXPR_DEPTH, MAX_LOCK_PARSE_FRAMES, eval_lock,
+    glob_match, parse_lock,
+};
 pub use matchit::{MatchErr, match_object};
 pub use mechanics::{
     BridgeDescriptor, BridgeEntry, BridgeKey, BridgeLookupError, BridgeRegistry,

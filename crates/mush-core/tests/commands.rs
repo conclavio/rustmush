@@ -715,6 +715,36 @@ fn lock_switch_validation_and_unlock() {
     assert_error_contains(&out, bob, "Permission denied.");
 }
 
+/// An over-deep key is refused at the command layer the same way any other
+/// unparseable key is — a message to the player — and leaves no lock behind.
+///
+/// The three shapes are the three the parser bounds separately: a run of
+/// `(` and a run of `!` (which recurse), and a flat `&` chain a full input
+/// line long (which does not recurse but builds an unbounded tree).
+#[test]
+fn over_deep_lock_keys_are_refused_and_mutate_nothing() {
+    let mut g = Game::new();
+    let bob = g.bob;
+    let keys = [
+        "(".repeat(8192),
+        "!".repeat(8192),
+        format!("{}#1", "#1&".repeat(2730)),
+        format!("{}#1", "#1|".repeat(2730)),
+    ];
+    for key in keys {
+        let out = g.run(bob, &format!("@lock me={key}"));
+        assert_error_contains(&out, bob, "I don't understand that key.");
+        assert!(
+            g.w.get(bob).unwrap().locks.is_empty(),
+            "an over-deep key must leave no lock on the object"
+        );
+    }
+    // The refusal is specific: it names the depth limit, not "bad object
+    // reference" or a trailing-input byte offset.
+    let out = g.run(bob, &format!("@lock me={}#1", "#1&".repeat(2730)));
+    assert_error_contains(&out, bob, "nests too deeply");
+}
+
 // ---------------------------------------------------------------------
 // @teleport / @zone / @parent / @chown
 // ---------------------------------------------------------------------
