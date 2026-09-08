@@ -7334,7 +7334,7 @@ async fn staff_ops_loop(
                 run_discord_link_mint(&*store, subject).await
             }
             StaffOpKind::DiscordUnlinkSelf { actor: subject } => {
-                run_discord_unlink(&*store, subject, false).await
+                run_discord_unlink(&gateway, &*store, subject, false).await
             }
             // Answered on the world loop through the gateway control (D3); it is
             // never queued to this executor, so this arm only keeps the match
@@ -7363,13 +7363,13 @@ async fn staff_ops_loop(
             }
             StaffOpKind::DiscordShow { target, .. } => run_discord_show(&*store, target).await,
             StaffOpKind::DiscordUnlink { target, .. } => {
-                run_discord_unlink(&*store, target, true).await
+                run_discord_unlink(&gateway, &*store, target, true).await
             }
             StaffOpKind::DiscordBan {
                 actor: by,
                 target,
                 reason,
-            } => run_discord_ban(&*store, by, target, &reason).await,
+            } => run_discord_ban(&gateway, &*store, by, target, &reason).await,
             StaffOpKind::DiscordUnban { target, .. } => run_discord_unban(&*store, target).await,
             // Dump/Shutdown and the local ops never enter this queue (see
             // run_staff_ops / run_local_staff_ops).
@@ -7474,7 +7474,12 @@ async fn run_discord_link_mint(store: &dyn ObjectStore, subject: ObjId) -> Strin
 
 /// `@discord/unlink` (self) and `@discord/unlink <player>` (staff): clear the
 /// link and release the reverse index.
-async fn run_discord_unlink(store: &dyn ObjectStore, target: ObjId, by_staff: bool) -> String {
+async fn run_discord_unlink(
+    gateway: &Gateway,
+    store: &dyn ObjectStore,
+    target: ObjId,
+    by_staff: bool,
+) -> String {
     let whose = if by_staff {
         "that account"
     } else {
@@ -7499,6 +7504,12 @@ async fn run_discord_unlink(store: &dyn ObjectStore, target: ObjId, by_staff: bo
             );
         }
         Err(e) => return format!("@discord/unlink failed: {e}"),
+    }
+    for character in &account.characters {
+        gateway.discord_control(
+            u64::from(character.id.0),
+            mush_ipc::DiscordControlOp::Revoke,
+        );
     }
     if let Err(e) = store.discord_user_release(link.user_id).await {
         // The doc is unlinked; the index is what stops a re-link elsewhere.
@@ -7602,6 +7613,7 @@ async fn run_discord_show(store: &dyn ObjectStore, target: ObjId) -> String {
 /// snowflake (the link stays so `@discord/unban <player>` can find it; the
 /// bridge refuses link, follow and relay while the ban stands).
 async fn run_discord_ban(
+    gateway: &Gateway,
     store: &dyn ObjectStore,
     by: ObjId,
     target: ObjId,
@@ -7630,6 +7642,12 @@ async fn run_discord_ban(
         .await
     {
         Ok(()) => {
+            for character in &account.characters {
+                gateway.discord_control(
+                    u64::from(character.id.0),
+                    mush_ipc::DiscordControlOp::Revoke,
+                );
+            }
             tracing::info!(account = %account.name, "@discord/ban applied");
             format!(
                 "@discord/ban: {who}'s Discord user is banned — they can no longer link, \
@@ -12199,6 +12217,7 @@ mod tests {
 
     #[derive(Default)]
     struct RecordingGateway {
+        discord: Mutex<Vec<(u64, DiscordControlOp)>>,
         sends: Mutex<Vec<(SendTarget, Arc<OutputEvent>)>>,
     }
 
@@ -12222,6 +12241,9 @@ mod tests {
     }
 
     impl GatewaySink for RecordingGateway {
+        fn discord_control(&self, character: u64, op: DiscordControlOp) {
+            self.discord.lock().unwrap().push((character, op));
+        }
         fn transmit(&self, sends: Vec<(SendTarget, Arc<OutputEvent>)>) {
             self.sends
                 .lock()
@@ -13689,6 +13711,7 @@ mod tests {
         let ack = receipt.receive().await;
         let pending = pending_with_prepared_installation(batch.serial, installation);
         let recorder = Arc::new(RecordingGateway {
+            discord: Mutex::default(),
             sends: Mutex::new(Vec::new()),
         });
         let gateway: Gateway = recorder.clone();
@@ -13746,6 +13769,7 @@ mod tests {
         let (_, installation) = prepared.into_parts();
         let pending = pending_with_prepared_installation(7, installation);
         let recorder = Arc::new(RecordingGateway {
+            discord: Mutex::default(),
             sends: Mutex::new(Vec::new()),
         });
         let gateway: Gateway = recorder.clone();
@@ -17315,6 +17339,51 @@ mod tests {
                 .expect("a schedule source registry");
             assert!(!sources.is_empty());
             assert_eq!(SCHEDULE_SOURCE, "domaintick");
+        }
+    }
+
+    #[tokio::test]
+    async fn discord_unlink_and_ban_revoke_every_character_on_the_account() {
+        for operation in ["self-unlink", "staff-unlink", "ban"] {
+            let store = InMemoryStore::new();
+            store
+                .create_account(AccountRec {
+                    id: None,
+                    name: "Nick".into(),
+                    argon2_hash: "fixture".into(),
+                    created: 1,
+                    characters: vec![],
+                    ssh_keys: vec![],
+                    discord: Some(mush_store::DiscordLinkRec {
+                        user_id: 42,
+                        linked_at: 1,
+                        relay_character: None,
+                        auto_follow: true,
+                        dm_channel: None,
+                        quiet: false,
+                    }),
+                })
+                .await
+                .unwrap();
+            store
+                .link_character("Nick", ObjId(7), "Nick")
+                .await
+                .unwrap();
+            store.link_character("Nick", ObjId(8), "Alt").await.unwrap();
+            store.discord_user_reserve(42, "Nick").await.unwrap();
+            let recorder = Arc::new(RecordingGateway::default());
+            let gateway: Gateway = recorder.clone();
+            let result = if operation == "ban" {
+                run_discord_ban(&gateway, &store, GOD, ObjId(7), "test").await
+            } else {
+                run_discord_unlink(&gateway, &store, ObjId(7), operation == "staff-unlink").await
+            };
+            assert!(!result.contains("failed"), "{result}");
+            assert_eq!(
+                *recorder.discord.lock().unwrap(),
+                vec![(7, DiscordControlOp::Revoke), (8, DiscordControlOp::Revoke)],
+                "{operation}: {result}"
+            );
         }
     }
 }

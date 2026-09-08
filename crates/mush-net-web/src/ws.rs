@@ -417,12 +417,12 @@ async fn pump(
                             // idle stamp, never a protocol error.
                             hooks.composing(conn_id, active).await;
                         }
-                        Ok(ClientCommand::Respond { id, choice }) => {
+                        Ok(ClientCommand::Respond { id, epoch, choice }) => {
                             // A server-initiated interaction reply (interface
                             // plan I10, D-I-21): the engine correlates it by
                             // id and applies the choice; a stale/forged id is
                             // ignored engine-side, never a protocol error.
-                            hooks.respond(conn_id, id, choice).await;
+                            hooks.respond(conn_id, id, epoch, choice).await;
                         }
                         Ok(ClientCommand::Resume { .. }) => {
                             tracing::warn!(conn = conn_id, "mid-connection resume is a protocol error");

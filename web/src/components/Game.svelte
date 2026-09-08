@@ -7,7 +7,7 @@
   // keys act while nothing has focus; inside the composer only Alt+key and
   // Ctrl/⌘+K are the shell's.
   import type { GameApp } from "$lib/game.svelte";
-  import { isTextField, navIntent } from "$lib/keys";
+  import { isInteractiveControl, isTextField, navIntent } from "$lib/keys";
   import { storageGet, storageSet } from "$lib/storage";
   import { systemPrefersLight, toggledTheme } from "$lib/theme";
 
@@ -79,6 +79,10 @@
   }
 
   function onKeydown(ev: KeyboardEvent): void {
+    if (ev.defaultPrevented || ev.isComposing || app.requests.current || app.screens.helpOpen || app.disconnectReason !== null) return;
+    // Only explicit shell modifiers may leave a focused control. Bare
+    // Enter, Space, Tab, arrows and typing belong to that control.
+    if (!ev.altKey && !ev.ctrlKey && !ev.metaKey && isInteractiveControl(ev.target)) return;
     const intent = navIntent(
       {
         key: ev.key,

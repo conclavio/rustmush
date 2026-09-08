@@ -100,3 +100,11 @@ describe("RequestStore", () => {
     expect(s.pending).toEqual([]);
   });
 });
+
+it("a new epoch discards all queued offers from the prior engine", () => {
+  const store = new RequestStore();
+  store.push({...choice(1), epoch:"old"});
+  store.push({...choice(2), epoch:"old"});
+  store.push({...choice(1), epoch:"new"});
+  expect(store.pending.map(r=>[r.id,r.epoch])).toEqual([[1,"new"]]);
+});

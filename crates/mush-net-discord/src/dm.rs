@@ -74,6 +74,8 @@ impl DmPolicy {
 /// buttons, and the text to keep when the buttons are replaced by the answer.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RequestMessage {
+    /// Engine lifetime echoed with the response.
+    pub epoch: String,
     /// The DM channel.
     pub channel_id: u64,
     /// The message.
@@ -126,6 +128,8 @@ struct NoticeActions {
 /// button prefills.
 #[derive(Debug, Default)]
 pub struct FollowState {
+    /// Stops queued output and expiry edits when the follow is revoked.
+    pub cancelled: tokio_util::sync::CancellationToken,
     /// The `scenes` keyframe said the character is in an active scene.
     pub in_scene: AtomicBool,
     /// Quiet follows show only notices, requests and the character's scene.
@@ -144,6 +148,11 @@ pub struct FollowState {
 }
 
 impl FollowState {
+    /// Discard controls from a previous engine lifetime.
+    pub fn clear_requests(&self) {
+        self.requests.lock().expect("requests poisoned").clear();
+    }
+
     /// A state for a follow of `self_id` with the given quiet preference.
     #[must_use]
     pub fn new(quiet: bool, self_id: impl Into<String>) -> Arc<FollowState> {
@@ -179,6 +188,20 @@ impl FollowState {
     /// there first (already answered, or already expired).
     pub fn take_request(&self, id: u64) -> Option<RequestMessage> {
         self.requests.lock().expect("requests poisoned").remove(&id)
+    }
+
+    /// Forget only the originating message, never a replacement received
+    /// while forwarding its predecessor's answer to the world.
+    pub fn take_request_message(&self, id: u64, message_id: u64) -> Option<RequestMessage> {
+        let mut requests = self.requests.lock().expect("requests poisoned");
+        if requests
+            .get(&id)
+            .is_some_and(|r| r.message_id == message_id)
+        {
+            requests.remove(&id)
+        } else {
+            None
+        }
     }
 
     /// A notice reply button's `(label, prefill)` by its nonce.
@@ -220,7 +243,7 @@ pub struct Interactive {
     pub rows: Vec<Row>,
     /// For a request, `(request id, deadline in Unix ms)` so the writer can
     /// record the message and expire it.
-    pub request: Option<(u64, Option<u64>)>,
+    pub request: Option<(u64, String, Option<u64>)>,
 }
 
 /// What one event becomes on the DM.
@@ -362,6 +385,10 @@ pub fn render(event: &OutputEvent, state: &FollowState) -> Rendered {
     let quiet = state.quiet.load(Ordering::Relaxed);
     let in_scene = state.in_scene.load(Ordering::Relaxed);
     match event {
+        OutputEvent::Hello { .. } => {
+            state.clear_requests();
+            Rendered::Drop
+        }
         OutputEvent::Narrative { kind, actor, text } => {
             if quiet && !in_scene {
                 return Rendered::Drop;
@@ -436,6 +463,7 @@ pub fn render(event: &OutputEvent, state: &FollowState) -> Rendered {
             Rendered::Priority(s)
         }
         OutputEvent::Request {
+            epoch,
             id,
             kind,
             prompt,
@@ -444,7 +472,7 @@ pub fn render(event: &OutputEvent, state: &FollowState) -> Rendered {
         } => Rendered::Interactive(Interactive {
             text: format!("❓ {}", escape_md(&prompt.to_plain_text())),
             rows: request_rows(*id, *kind, options),
-            request: Some((*id, *deadline_ms)),
+            request: Some((*id, epoch.clone(), *deadline_ms)),
         }),
         OutputEvent::Panel { feed, data, .. } if feed == "scenes" => {
             if data.is_null() {
@@ -663,19 +691,35 @@ fn spawn_expiry(api: Arc<dyn DiscordApi>, state: Arc<FollowState>, id: u64, dead
         .and_then(|d| u64::try_from(d.as_millis()).ok())
         .unwrap_or(u64::MAX);
     let wait = Duration::from_millis(deadline_ms.saturating_sub(now_ms));
+    let Some(expected) = state.request(id) else {
+        return;
+    };
     tokio::spawn(async move {
-        tokio::time::sleep(wait).await;
-        if let Some(shown) = state.take_request(id) {
-            let _ = api
-                .edit(
-                    shown.channel_id,
-                    shown.message_id,
-                    Outgoing::plain(format!(
-                        "{}\n⌛ Expired — the game applied its default.",
-                        shown.text
-                    )),
-                )
-                .await;
+        tokio::select! {
+            () = state.cancelled.cancelled() => return,
+            () = tokio::time::sleep(wait) => {}
+        }
+        let shown = {
+            let mut requests = state.requests.lock().expect("requests poisoned");
+            if requests
+                .get(&id)
+                .is_some_and(|r| r.message_id == expected.message_id && r.epoch == expected.epoch)
+            {
+                requests.remove(&id)
+            } else {
+                None
+            }
+        };
+        if let Some(shown) = shown {
+            let editing = api.edit(
+                shown.channel_id,
+                shown.message_id,
+                Outgoing::plain(format!(
+                    "{}\n⌛ Expired — the game applied its default.",
+                    shown.text
+                )),
+            );
+            tokio::select! { () = state.cancelled.cancelled() => {}, _ = editing => {} }
         }
     });
 }
@@ -737,13 +781,14 @@ async fn flush(
                     Ok(message_id) => {
                         tracing::debug!(
                             rows = item.rows.len(),
-                            request = item.request.map(|(id, _)| id),
+                            request = item.request.as_ref().map(|(id, _, _)| id),
                             "discord dm: interactive message sent"
                         );
-                        if let Some((id, deadline)) = item.request {
+                        if let Some((id, epoch, deadline)) = item.request {
                             state.request_shown(
                                 id,
                                 RequestMessage {
+                                    epoch,
                                     channel_id,
                                     message_id,
                                     text: item.text.clone(),
@@ -806,9 +851,20 @@ pub async fn run_dm_writer(
     policy: DmPolicy,
     state: Arc<FollowState>,
 ) {
+    // A flush owns only one bounded batch. Keep draining the session while
+    // REST waits, so narrative pressure is handled here instead of upstream.
+    const PRIORITY_CAP: usize = 128;
     let mut buffers = Buffers::default();
     let mut deadline: Option<Instant> = None;
+    let mut retrying = false;
+    let mut closing: Option<Instant> = None;
     loop {
+        if state.cancelled.is_cancelled() || state.dm_closed.load(Ordering::Relaxed) {
+            return;
+        }
+        if closing.is_some() && buffers.is_empty() {
+            return;
+        }
         let wait = async {
             match deadline {
                 Some(d) => tokio::time::sleep_until(d).await,
@@ -816,37 +872,89 @@ pub async fn run_dm_writer(
             }
         };
         tokio::select! {
-            ev = rx.recv() => match ev {
-                None => {
-                    // Drain first, then a bounded final flush: one attempt,
-                    // no retry loop on a closing follow.
-                    if !buffers.is_empty() {
-                        let _ = flush(&api, channel_id, &policy, &mut buffers, &state).await;
+            biased;
+            () = state.cancelled.cancelled() => return,
+            () = async { match closing { Some(d) => tokio::time::sleep_until(d).await, None => std::future::pending().await } } => return,
+            () = wait => {
+                let mut batch = Buffers::default();
+                if let Some(item) = buffers.priority.pop_front() {
+                    batch.priority.push_back(item);
+                } else {
+                    batch.dropped = std::mem::take(&mut buffers.dropped);
+                    let mut chars = 0;
+                    while let Some(line) = buffers.pending.front() {
+                        let size = line.chars().count() + 1;
+                        if chars > 0 && chars + size > policy.max_chars { break; }
+                        chars += size;
+                        batch.pending.push_back(buffers.pending.pop_front().expect("front exists"));
                     }
+                }
+                let result;
+                {
+                    let sending = flush(&api, channel_id, &policy, &mut batch, &state);
+                    tokio::pin!(sending);
+                    loop {
+                        tokio::select! {
+                            biased;
+                            () = state.cancelled.cancelled() => return,
+                            () = async { match closing { Some(d) => tokio::time::sleep_until(d).await, None => std::future::pending().await } } => return,
+                            done = &mut sending => { result = done; break; },
+                            ev = rx.recv(), if closing.is_none() => match ev {
+                                Some(env) => {
+                                    buffers.push(render(&env.event, &state), policy.queue_lines);
+                                    if buffers.priority.len() >= PRIORITY_CAP {
+                                        tracing::warn!("discord dm: priority queue exhausted; detaching");
+                                        state.dm_closed.store(true, Ordering::Relaxed);
+                                        return;
+                                    }
+                                }
+                                None => closing = Some(Instant::now() + Duration::from_secs(5)),
+                            }
+                        }
+                    }
+                }
+                // Unsent old work precedes new work. Narrative keeps the
+                // newest lines within the same cap even after a retry.
+                batch.priority.append(&mut buffers.priority);
+                batch.pending.append(&mut buffers.pending);
+                batch.dropped += buffers.dropped;
+                while batch.pending.len() > policy.queue_lines {
+                    batch.pending.pop_front();
+                    batch.dropped += 1;
+                }
+                if batch.priority.len() >= PRIORITY_CAP {
+                    state.dm_closed.store(true, Ordering::Relaxed);
                     return;
+                }
+                buffers = batch;
+                retrying = result == Flush::Retry;
+                deadline = if retrying { Some(Instant::now() + RETRY_BACKOFF) }
+                    else if !buffers.is_empty() { Some(Instant::now()) } else { None };
+            },
+            ev = rx.recv(), if closing.is_none() => match ev {
+                None => {
+                    closing = Some(Instant::now() + Duration::from_secs(5));
+                    if !retrying { deadline = Some(Instant::now()); }
                 }
                 Some(env) => {
                     let rendered = render(&env.event, &state);
-                    tracing::trace!(seq = env.seq, kept = !matches!(rendered, Rendered::Drop), "discord dm: event");
                     let priority = matches!(rendered, Rendered::Priority(_) | Rendered::Interactive(_));
                     if buffers.push(rendered, policy.queue_lines) {
-                        let now = Instant::now();
-                        deadline = Some(match deadline {
-                            // A priority item flushes as soon as we return to
-                            // the loop; a narrative line waits out the window.
-                            _ if priority => now,
-                            Some(d) => d,
-                            None => now + policy.coalesce,
-                        });
+                        if buffers.priority.len() >= PRIORITY_CAP {
+                            tracing::warn!("discord dm: priority queue exhausted; detaching");
+                            state.dm_closed.store(true, Ordering::Relaxed);
+                            return;
+                        }
+                        if !retrying {
+                            deadline = Some(match deadline {
+                                _ if priority => Instant::now(),
+                                Some(d) => d,
+                                None => Instant::now() + policy.coalesce,
+                            });
+                        }
                     }
                 }
             },
-            () = wait => {
-                deadline = match flush(&api, channel_id, &policy, &mut buffers, &state).await {
-                    Flush::Done => None,
-                    Flush::Retry => Some(Instant::now() + RETRY_BACKOFF),
-                };
-            }
         }
     }
 }
@@ -873,6 +981,17 @@ mod tests {
         RequestOption {
             id: SmolStr::new(id),
             label: label.into(),
+        }
+    }
+
+    fn notice(text: &str) -> OutputEvent {
+        OutputEvent::Notice {
+            id: 1,
+            severity: NoticeSeverity::Info,
+            category: "test".into(),
+            text: RichText::plain(text),
+            action: None,
+            ts: 0,
         }
     }
 
@@ -1007,6 +1126,7 @@ mod tests {
         // A request is interactive: prompt text, answer components, and the
         // id/deadline the writer needs.
         let request = OutputEvent::Request {
+            epoch: "test".into(),
             id: 9,
             kind: RequestKind::Choice,
             prompt: RichText::plain("End the scene?"),
@@ -1017,7 +1137,7 @@ mod tests {
             panic!("a request is interactive");
         };
         assert_eq!(i.text, "❓ End the scene?");
-        assert_eq!(i.request, Some((9, Some(1_000))));
+        assert_eq!(i.request, Some((9, "test".into(), Some(1_000))));
         assert_eq!(i.rows.len(), 2, "a button row and the Decline row");
         // Dropped kinds.
         for ev in [
@@ -1255,6 +1375,36 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
+    async fn a_slow_rest_send_must_not_block_the_session_drain() {
+        let api = FakeApi::new();
+        api.stall_send.store(true, Ordering::Relaxed);
+        let state = FollowState::new(false, "#1");
+        let (tx, rx) = mpsc::channel::<Arc<Envelope>>(256);
+        let writer = tokio::spawn(run_dm_writer(
+            api.clone(),
+            555,
+            rx,
+            DmPolicy::new(50, 1900, 2000),
+            state,
+        ));
+        tx.send(env(say("Nick", "first"))).await.unwrap();
+        settle().await;
+        tokio::time::advance(Duration::from_millis(60)).await;
+        settle().await;
+        assert!(api.calls().iter().any(|c| matches!(c, Call::Send { .. })));
+        for _ in 0..256 {
+            tx.try_send(env(say("Nick", "burst"))).unwrap();
+            tokio::task::yield_now().await;
+        }
+        let result = tx.try_send(env(say("Nick", "last")));
+        writer.abort();
+        assert!(
+            result.is_ok(),
+            "The 256-slot session sink filled while the REST send was pending"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
     async fn a_request_is_its_own_message_recorded_and_expired_at_the_deadline() {
         let api = FakeApi::new();
         let state = FollowState::new(false, "#1");
@@ -1271,6 +1421,7 @@ mod tests {
         // A narrative line is waiting; the request does not wait with it.
         tx.send(env(say("Nick", "before"))).await.unwrap();
         tx.send(env(OutputEvent::Request {
+            epoch: "test".into(),
             id: 9,
             kind: RequestKind::Confirm,
             prompt: RichText::plain("Spend a willpower?"),
@@ -1312,6 +1463,7 @@ mod tests {
         assert_eq!(state.request(9), None);
         // Answered first (the bridge takes it): the deadline edits nothing.
         tx.send(env(OutputEvent::Request {
+            epoch: "test".into(),
             id: 10,
             kind: RequestKind::Confirm,
             prompt: RichText::plain("Again?"),
@@ -1343,6 +1495,7 @@ mod tests {
         let writer = tokio::spawn(run_dm_writer(api.clone(), 555, rx, policy, state.clone()));
         api.script([Some(ApiError::Permanent("bad component".into()))]);
         tx.send(env(OutputEvent::Request {
+            epoch: "test".into(),
             id: 3,
             kind: RequestKind::Text,
             prompt: RichText::plain("Name it."),
@@ -1394,5 +1547,142 @@ mod tests {
         assert!(state.dm_closed.load(Ordering::Relaxed));
         drop(tx);
         writer.await.unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn stalled_send_keeps_priority_and_only_newest_narrative_then_cancels() {
+        let api = FakeApi::new();
+        api.stall_send.store(true, Ordering::Relaxed);
+        let state = FollowState::new(false, "#1");
+        let (tx, rx) = mpsc::channel(256);
+        let writer = tokio::spawn(run_dm_writer(
+            api.clone(),
+            555,
+            rx,
+            DmPolicy::new(50, 1900, 10),
+            state.clone(),
+        ));
+        tx.send(env(say("Nick", "first"))).await.unwrap();
+        settle().await;
+        tokio::time::advance(Duration::from_millis(60)).await;
+        settle().await;
+        for i in 0..20 {
+            tx.send(env(say("Nick", &format!("queued-{i}"))))
+                .await
+                .unwrap();
+        }
+        tx.send(env(OutputEvent::Request {
+            epoch: "test".into(),
+            id: 4,
+            kind: RequestKind::Confirm,
+            prompt: RichText::plain("priority ask"),
+            options: vec![],
+            deadline_ms: None,
+        }))
+        .await
+        .unwrap();
+        settle().await;
+        assert_eq!(sends(&api).len(), 1);
+        api.stall_send.store(false, Ordering::Relaxed);
+        api.send_release.notify_one();
+        settle().await;
+        let output = sends(&api);
+        assert!(output[1].content.contains("priority ask"), "{output:?}");
+        let rest = output[2..]
+            .iter()
+            .map(|o| o.content.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            rest.contains("10 lines dropped") && rest.contains("queued-19"),
+            "{rest}"
+        );
+        assert!(!rest.contains("queued-0"));
+        api.stall_send.store(true, Ordering::Relaxed);
+        tx.send(env(say("Nick", "in flight"))).await.unwrap();
+        settle().await;
+        tokio::time::advance(Duration::from_millis(60)).await;
+        settle().await;
+        let count = sends(&api).len();
+        state.cancelled.cancel();
+        writer.await.unwrap();
+        api.send_release.notify_one();
+        settle().await;
+        assert_eq!(sends(&api).len(), count);
+        assert!(tx.is_closed());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn priority_arrival_cannot_shorten_retry_backoff() {
+        let api = FakeApi::new();
+        api.script([Some(ApiError::Retryable("429".into()))]);
+        let state = FollowState::new(false, "#1");
+        let (tx, rx) = mpsc::channel(256);
+        let writer = tokio::spawn(run_dm_writer(
+            api.clone(),
+            555,
+            rx,
+            DmPolicy::new(50, 1900, 2000),
+            state.clone(),
+        ));
+        tx.send(env(notice("old priority"))).await.unwrap();
+        settle().await;
+        tx.send(env(notice("new priority"))).await.unwrap();
+        settle().await;
+        assert_eq!(sends(&api).len(), 1);
+        tokio::time::advance(RETRY_BACKOFF).await;
+        settle().await;
+        let output = sends(&api);
+        assert!(output[1].content.contains("old priority"));
+        assert!(output[2].content.contains("new priority"));
+        state.cancelled.cancel();
+        writer.await.unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn priority_overflow_and_closing_flush_are_bounded() {
+        for overflow in [false, true] {
+            let api = FakeApi::new();
+            api.stall_send.store(true, Ordering::Relaxed);
+            let state = FollowState::new(false, "#1");
+            let (tx, rx) = mpsc::channel(256);
+            let writer = tokio::spawn(run_dm_writer(
+                api.clone(),
+                555,
+                rx,
+                DmPolicy::new(50, 1900, 2000),
+                state.clone(),
+            ));
+            tx.send(env(notice("stalled"))).await.unwrap();
+            settle().await;
+            if overflow {
+                for _ in 0..128 {
+                    tx.send(env(notice("priority"))).await.unwrap();
+                }
+                settle().await;
+                assert!(state.dm_closed.load(Ordering::Relaxed));
+            }
+            drop(tx);
+            writer.await.unwrap(); // paused time reaches the five-second cap
+            assert_eq!(sends(&api).len(), 1);
+        }
+    }
+
+    #[test]
+    fn answering_a_previous_message_leaves_its_replacement_open() {
+        let state = FollowState::new(false, "#1");
+        state.request_shown(
+            1,
+            RequestMessage {
+                epoch: "new-world".into(),
+                channel_id: 5,
+                message_id: 9,
+                text: "new ask".into(),
+                rows: vec![],
+            },
+        );
+        assert!(state.take_request_message(1, 8).is_none());
+        assert_eq!(state.request(1).unwrap().message_id, 9);
+        assert!(state.take_request_message(1, 9).is_some());
     }
 }

@@ -26,10 +26,10 @@ use crate::target::SendTarget;
 pub use mush_core::ControlMsg;
 
 /// The boundary protocol version, announced in [`ToGateway::Hello`]. Bump on a
-/// breaking change; additive changes (new enum arms, new struct fields under a
-/// self-describing encoding) keep the same version and stay wire-compatible
-/// with older peers.
-pub const IPC_VERSION: u32 = 4;
+/// decoding or behavioral incompatibility. Defaulted fields under the
+/// self-describing encoding can be additive, provided old peers remain safe.
+// Version 5 requires request epochs and account revocation controls.
+pub const IPC_VERSION: u32 = 5;
 
 /// Maximum replayable player inputs held by either half of one split-process
 /// boundary. The gateway enforces the limit before accepting custody and the
@@ -150,6 +150,9 @@ pub enum WireInbound {
     /// one-way path like `Composing`. A lost answer means the server applies
     /// its deadline default.
     Respond {
+        /// Opaque lifetime of the engine that opened this request.
+        #[serde(default)]
+        epoch: String,
         /// The connection it arrived on.
         conn: u64,
         /// The actor answering (must be the request's subject).
@@ -461,11 +464,13 @@ impl From<WireInbound> for Inbound {
                 active,
             },
             WireInbound::Respond {
+                epoch,
                 conn,
                 actor,
                 id,
                 choice,
             } => Inbound::Respond {
+                epoch,
                 conn,
                 actor,
                 id,
@@ -525,11 +530,13 @@ impl TryFrom<Inbound> for WireInbound {
                 active,
             }),
             Inbound::Respond {
+                epoch,
                 conn,
                 actor,
                 id,
                 choice,
             } => Ok(WireInbound::Respond {
+                epoch,
                 conn,
                 actor,
                 id,
@@ -714,6 +721,8 @@ impl std::fmt::Debug for DiscordInteraction {
 /// `IPC_VERSION`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DiscordControlOp {
+    /// Revoke cached and in-flight access after unlink or ban.
+    Revoke,
     /// Attach a follow for the character's linked Discord user.
     Follow,
     /// Detach the character's follow, if any.

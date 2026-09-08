@@ -13,6 +13,7 @@ export const MAX_REQUEST_OPTIONS = 32;
 /** One pending server request. */
 export interface PendingRequest {
   id: number;
+  epoch: string;
   kind: RequestKind;
   prompt: RichText;
   options: RequestOption[];
@@ -47,6 +48,7 @@ export function parseRequest(d: unknown): PendingRequest | null {
     : [];
   return {
     id: d.id,
+    epoch: typeof d.epoch === "string" ? d.epoch : "",
     kind,
     prompt: d.prompt as RichText,
     options,
@@ -65,14 +67,15 @@ export class RequestStore {
   /** Enqueue a parsed request; a duplicate id replaces the old one IN PLACE
    * (D-I-29 — the rule the SSH TUI overlay already follows). Position is
    * part of the contract: a re-sent id is the same ask restated, so it must
-   * not be demoted behind asks the player has not seen yet, and after a
-   * world restart the id counter remints from 1, where a collision means the
-   * front entry is a zombie the fresh ask should REPLACE, not queue behind. */
+   * not be demoted behind asks the player has not seen yet. An epoch change
+   * clears the entire old queue before admitting the new request. */
   push(d: unknown): boolean {
     const req = parseRequest(d);
     if (!req) {
       return false;
     }
+    // An epoch change invalidates every queued offer from the old world.
+    this.pending = this.pending.filter((r) => r.epoch === req.epoch);
     this.pending = this.pending.some((r) => r.id === req.id)
       ? this.pending.map((r) => (r.id === req.id ? req : r))
       : [...this.pending, req];

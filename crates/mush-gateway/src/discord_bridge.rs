@@ -247,7 +247,9 @@ struct Follow {
 /// follow connections), the store (the link records) and the REST client
 /// (DM channels and the writers' sends).
 pub struct DiscordBridge<A: AuthBackend + 'static> {
-    core: GameBridge<A>,
+    core: Arc<GameBridge<A>>,
+    // Conservative barrier: any revocation invalidates an in-flight attach.
+    revocation: AtomicU64,
     store: Arc<dyn ObjectStore>,
     api: Arc<dyn DiscordApi>,
     policy: DmPolicy,
@@ -340,7 +342,8 @@ impl<A: AuthBackend + 'static> DiscordBridge<A> {
         config: &DiscordConfig,
     ) -> DiscordBridge<A> {
         DiscordBridge {
-            core: GameBridge::with_link(accounts, sessions, link, guard),
+            core: Arc::new(GameBridge::with_link(accounts, sessions, link, guard)),
+            revocation: AtomicU64::new(0),
             store,
             api,
             policy: DmPolicy::new(
@@ -527,6 +530,7 @@ impl<A: AuthBackend + 'static> DiscordBridge<A> {
         wanted: Option<&str>,
         intro: Option<&str>,
     ) -> FollowOutcome {
+        let generation = self.revocation.load(Ordering::SeqCst);
         let account = match self.store.account_by_discord_user(user_id).await {
             Ok(Some(a)) => a,
             Ok(None) => return FollowOutcome::NotLinked,
@@ -566,6 +570,7 @@ impl<A: AuthBackend + 'static> DiscordBridge<A> {
             }
         };
         if let Some(prev) = previous {
+            prev.state.cancelled.cancel();
             self.core.quit(prev.conn).await;
         }
         // The DM channel: `create_dm` is idempotent (Discord returns the
@@ -579,15 +584,10 @@ impl<A: AuthBackend + 'static> DiscordBridge<A> {
                 return FollowOutcome::Failed("Discord did not open the conversation".to_string());
             }
         };
-        if link.dm_channel != Some(channel) {
-            let mut updated = link.clone();
-            updated.dm_channel = Some(channel);
-            // Informational (the on-call outbox reads it); a failure here
-            // does not stop the follow.
-            let _ = self
-                .store
-                .set_account_discord(&account.name, Some(&updated))
-                .await;
+        // Never write an old link snapshot back after awaiting Discord.
+        // The channel is idempotently resolved on each follow.
+        if !self.authorized(user_id, chosen.id).await {
+            return FollowOutcome::NotLinked;
         }
         let conn = ConnId(self.next_conn.fetch_add(1, Ordering::Relaxed));
         let (tx, rx) = mpsc::channel::<Arc<Envelope>>(DM_SINK_CAPACITY);
@@ -600,6 +600,10 @@ impl<A: AuthBackend + 'static> DiscordBridge<A> {
         let state = FollowState::new(link.quiet, chosen.id.to_string());
         {
             let mut follows = self.follows.lock().expect("follows poisoned");
+            // The same lock protects invalidation and publication.
+            if generation == u64::MAX || generation != self.revocation.load(Ordering::SeqCst) {
+                return FollowOutcome::Failed("the link changed; try following again".into());
+            }
             if let Some(cur) = follows.get(&user_id) {
                 // Raced with an auto-follow for the same user: keep theirs.
                 return FollowOutcome::Following {
@@ -622,22 +626,34 @@ impl<A: AuthBackend + 'static> DiscordBridge<A> {
         // session drops it (quit, boot, reaper, shutdown) the writer flushes,
         // ends, and forgets the follow if it is still this connection.
         let follows = Arc::clone(&self.follows);
+        let core = Arc::clone(&self.core);
         tokio::spawn({
             let api = Arc::clone(&self.api);
             let policy = self.policy;
             let state = Arc::clone(&state);
             async move {
-                run_dm_writer(api, channel, rx, policy, state).await;
-                let mut follows = follows.lock().expect("follows poisoned");
-                if follows.get(&user_id).is_some_and(|f| f.conn == conn) {
-                    follows.remove(&user_id);
+                run_dm_writer(api, channel, rx, policy, state.clone()).await;
+                state.cancelled.cancel();
+                let removed = {
+                    let mut follows = follows.lock().expect("follows poisoned");
+                    if follows.get(&user_id).is_some_and(|f| f.conn == conn) {
+                        follows.remove(&user_id)
+                    } else {
+                        None
+                    }
+                };
+                if removed.is_some() {
+                    core.quit(conn).await;
                 }
             }
         });
-        if let Some(text) = intro
-            && let Err(e) = self.api.send(channel, Outgoing::plain(text)).await
-        {
-            tracing::debug!(error = %e, "discord follow: intro not delivered");
+        if let Some(text) = intro {
+            tokio::select! {
+                () = state.cancelled.cancelled() => return FollowOutcome::NotLinked,
+                result = self.api.send(channel, Outgoing::plain(text)) => {
+                    if let Err(e) = result { tracing::debug!(error = %e, "discord follow: intro not delivered"); }
+                }
+            }
         }
         match self
             .core
@@ -645,6 +661,14 @@ impl<A: AuthBackend + 'static> DiscordBridge<A> {
             .await
         {
             Ok(_) => {
+                if state.cancelled.is_cancelled()
+                    || generation != self.revocation.load(Ordering::SeqCst)
+                    || !self.authorized(user_id, chosen.id).await
+                {
+                    state.cancelled.cancel();
+                    self.core.quit(conn).await;
+                    return FollowOutcome::NotLinked;
+                }
                 tracing::info!(conn = conn.0, actor = %chosen.id, "discord follow attached");
                 FollowOutcome::Following {
                     character: chosen.name,
@@ -796,6 +820,48 @@ fn bounded_reply(text: String) -> String {
 }
 
 impl<A: AuthBackend + 'static> DiscordBridge<A> {
+    /// Store-backed permission check; an unavailable store fails closed.
+    async fn authorized(&self, user: u64, character: ObjId) -> bool {
+        if !matches!(self.store.discord_ban_get(user).await, Ok(None)) {
+            return false;
+        }
+        matches!(self.store.account_by_discord_user(user).await, Ok(Some(a))
+            if a.discord.as_ref().is_some_and(|l| l.user_id == user)
+                && a.characters.iter().any(|c| c.id == character))
+    }
+
+    fn invalidate_character(&self, actor: ObjId) -> Option<ConnId> {
+        let mut follows = self.follows.lock().expect("follows poisoned");
+        // MAX is unreachable in practice; saturating makes exhaustion fail
+        // closed below instead of reviving an earlier attachment generation.
+        let _ = self
+            .revocation
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
+                Some(n.saturating_add(1))
+            });
+        let user = follows
+            .iter()
+            .find(|(_, f)| f.character == actor)
+            .map(|(u, _)| *u)?;
+        let old = follows.remove(&user)?;
+        old.state.cancelled.cancel();
+        Some(old.conn)
+    }
+
+    async fn validated_follow(&self, user: u64) -> Option<(ConnId, ObjId, Arc<FollowState>)> {
+        let (conn, actor, state) = self.follow_of(user)?;
+        if state.cancelled.is_cancelled() || !self.authorized(user, actor).await {
+            if let Some(conn) = self.invalidate_character(actor) {
+                self.core.quit(conn).await;
+            }
+            return None;
+        }
+        if state.cancelled.is_cancelled() || !self.follow_of(user).is_some_and(|f| f.0 == conn) {
+            return None;
+        }
+        Some((conn, actor, state))
+    }
+
     /// The follow's connection and writer state, if `user_id` is following.
     fn follow_of(&self, user_id: u64) -> Option<(ConnId, ObjId, Arc<FollowState>)> {
         self.follows
@@ -807,6 +873,16 @@ impl<A: AuthBackend + 'static> DiscordBridge<A> {
 
     /// The interaction router (D3, 03 §7a.4): by `custom_id` namespace.
     async fn route_interaction(&self, user_id: u64, ix: Interaction) -> InteractionReply {
+        if (ix.custom_id.starts_with("d:") || self.follow_of(user_id).is_some())
+            && self.validated_follow(user_id).await.is_none()
+        {
+            return InteractionReply::Ephemeral(
+                "You are not following a character here; `/follow` first.".into(),
+            );
+        }
+        if !matches!(self.store.discord_ban_get(user_id).await, Ok(None)) {
+            return InteractionReply::Ephemeral("That control is unavailable.".into());
+        }
         let id = ix.custom_id.clone();
         if let Some(rest) = id.strip_prefix("d:req:") {
             return self.answer_request(user_id, rest, &ix).await;
@@ -831,11 +907,12 @@ impl<A: AuthBackend + 'static> DiscordBridge<A> {
     fn answered(
         state: &FollowState,
         request_id: u64,
+        message_id: u64,
         custom_id: &str,
         value: Option<&str>,
         fallback_label: &str,
     ) -> InteractionReply {
-        match state.take_request(request_id) {
+        match state.take_request_message(request_id, message_id) {
             Some(shown) => {
                 let label = shown
                     .label_for(custom_id, value)
@@ -864,6 +941,12 @@ impl<A: AuthBackend + 'static> DiscordBridge<A> {
                 "You are not following a character here; `/follow` first.".to_string(),
             );
         };
+        let Some(shown) = state.request(request_id).filter(|shown| {
+            ix.message_id == Some(shown.message_id)
+                && ix.channel_id.is_none_or(|c| c == shown.channel_id)
+        }) else {
+            return InteractionReply::Ephemeral("That request has expired.".into());
+        };
         let picked = ix.values.first().map(String::as_str);
         let (choice, fallback) = match opt {
             "yes" => (RespondChoice::Confirm(true), "Yes"),
@@ -891,8 +974,17 @@ impl<A: AuthBackend + 'static> DiscordBridge<A> {
         };
         // The engine applies its own rules: the subject must match, the
         // choice must be one it offered, and a second answer is ignored.
-        self.core.respond(conn.0, request_id, choice).await;
-        Self::answered(&state, request_id, &ix.custom_id, picked, fallback)
+        self.core
+            .respond(conn.0, request_id, shown.epoch, choice)
+            .await;
+        Self::answered(
+            &state,
+            request_id,
+            shown.message_id,
+            &ix.custom_id,
+            picked,
+            fallback,
+        )
     }
 
     /// `d:reqm:<id>` — the free-text answer modal.
@@ -910,6 +1002,12 @@ impl<A: AuthBackend + 'static> DiscordBridge<A> {
                 "You are not following a character here; `/follow` first.".to_string(),
             );
         };
+        let Some(shown) = state.request(request_id).filter(|shown| {
+            ix.message_id == Some(shown.message_id)
+                && ix.channel_id.is_none_or(|c| c == shown.channel_id)
+        }) else {
+            return InteractionReply::Ephemeral("That request has expired.".into());
+        };
         let answer = ix
             .fields
             .iter()
@@ -920,9 +1018,14 @@ impl<A: AuthBackend + 'static> DiscordBridge<A> {
             return InteractionReply::Ephemeral("An empty answer was not sent.".to_string());
         }
         self.core
-            .respond(conn.0, request_id, RespondChoice::Text(answer.clone()))
+            .respond(
+                conn.0,
+                request_id,
+                shown.epoch,
+                RespondChoice::Text(answer.clone()),
+            )
             .await;
-        match state.take_request(request_id) {
+        match state.take_request_message(request_id, shown.message_id) {
             Some(shown) => InteractionReply::UpdateMessage(Outgoing::plain(format!(
                 "{}\n✅ {}",
                 shown.text,
@@ -1063,9 +1166,19 @@ impl<A: AuthBackend + 'static> DiscordControl for BridgeControl<A> {
         let Ok(rt) = tokio::runtime::Handle::try_current() else {
             return;
         };
-        rt.spawn(async move {
-            bridge.apply_control(char_key_obj(CharKey(char)), op).await;
-        });
+        let actor = char_key_obj(CharKey(char));
+        if op == DiscordControlOp::Revoke {
+            let conn = bridge.invalidate_character(actor);
+            rt.spawn(async move {
+                if let Some(conn) = conn {
+                    bridge.core.quit(conn).await;
+                }
+            });
+        } else {
+            rt.spawn(async move {
+                bridge.apply_control(actor, op).await;
+            });
+        }
     }
 }
 
@@ -1092,6 +1205,11 @@ impl<A: AuthBackend + 'static> DiscordBridge<A> {
     /// `quiet`) for `actor`, answering them with a `discord` system line.
     pub async fn apply_control(&self, actor: ObjId, op: DiscordControlOp) {
         match op {
+            DiscordControlOp::Revoke => {
+                if let Some(conn) = self.invalidate_character(actor) {
+                    self.core.quit(conn).await;
+                }
+            }
             DiscordControlOp::Follow => {
                 if let Some((_, _, _)) = self.follow_of_character(actor) {
                     self.tell(actor, "Discord: already following you.");
@@ -1494,6 +1612,11 @@ impl<A: AuthBackend + 'static> DiscordHooks for DiscordBridge<A> {
             ) {
                 return UnlinkOutcome::NotLinked;
             }
+            for character in &account.characters {
+                if let Some(conn) = self.invalidate_character(character.id) {
+                    self.core.quit(conn).await;
+                }
+            }
             let _ = self.store.discord_user_release(user_id).await;
             // An unlinked user has no business following.
             let follow = self
@@ -1554,14 +1677,17 @@ impl<A: AuthBackend + 'static> DiscordHooks for DiscordBridge<A> {
 
     fn dm_line<'a>(&'a self, user_id: u64, line: &'a str) -> BoxFuture<'a, LineOutcome> {
         Box::pin(async move {
+            let Some((validated, _, _)) = self.validated_follow(user_id).await else {
+                return LineOutcome::NotFollowing;
+            };
             let conn = {
                 let mut follows = self.follows.lock().expect("follows poisoned");
                 match follows.get_mut(&user_id) {
-                    Some(f) => {
+                    Some(f) if f.conn == validated && !f.state.cancelled.is_cancelled() => {
                         f.last_input = Instant::now();
                         f.conn
                     }
-                    None => return LineOutcome::NotFollowing,
+                    _ => return LineOutcome::NotFollowing,
                 }
             };
             tracing::debug!(conn = conn.0, "discord dm line accepted for the follow");
@@ -1615,10 +1741,52 @@ mod tests {
     const NICKY: ObjId = ObjId(7);
     const ALT: ObjId = ObjId(8);
 
+    #[tokio::test]
+    async fn unlinked_follow_must_stop_accepting_commands() {
+        let r = rig(|_| {}).await;
+        linked(&r.store, "Nick", USER, |_| {}).await;
+        assert!(matches!(
+            r.bridge.follow(USER, None).await,
+            FollowOutcome::Following { .. }
+        ));
+        // The same two store operations run_discord_unlink performs.
+        r.store.set_account_discord("Nick", None).await.unwrap();
+        r.store.discord_user_release(USER).await.unwrap();
+        assert_eq!(
+            r.bridge.dm_line(USER, "say still connected").await,
+            LineOutcome::NotFollowing
+        );
+    }
+
+    #[tokio::test]
+    async fn banned_follow_must_stop_accepting_commands() {
+        let r = rig(|_| {}).await;
+        linked(&r.store, "Nick", USER, |_| {}).await;
+        assert!(matches!(
+            r.bridge.follow(USER, None).await,
+            FollowOutcome::Following { .. }
+        ));
+        r.store
+            .discord_ban_put(DiscordBanRec {
+                user_id: USER,
+                by_account: "Staff".into(),
+                reason: "test".into(),
+                at: 1,
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            r.bridge.dm_line(USER, "say still connected").await,
+            LineOutcome::NotFollowing
+        );
+    }
+
     /// A world link that admits everything and records what it was sent and
     /// asked; a forwarded Discord interaction is acknowledged by name.
     #[derive(Default)]
     struct AutoLink {
+        stall_ready: std::sync::atomic::AtomicBool,
+        ready_release: tokio::sync::Notify,
         sent: Mutex<Vec<ToServer>>,
         requests: Mutex<Vec<ServiceReq>>,
     }
@@ -1642,7 +1810,12 @@ mod tests {
             Box::pin(async move {
                 Some(match req {
                     ServiceReq::Barrier => ServiceResp::Barrier,
-                    ServiceReq::ConnectionReady { .. } => ServiceResp::ConnectionReady(true),
+                    ServiceReq::ConnectionReady { .. } => {
+                        if self.stall_ready.load(Ordering::Relaxed) {
+                            self.ready_release.notified().await;
+                        }
+                        ServiceResp::ConnectionReady(true)
+                    }
                     ServiceReq::InInputContext { .. } => ServiceResp::InInputContext(false),
                     ServiceReq::DiscordInteraction(ix) => {
                         let reply = format!("acked {}", ix.custom_id);
@@ -2014,8 +2187,8 @@ mod tests {
                 .discord
                 .unwrap()
                 .dm_channel
-                .is_some(),
-            "the DM channel is remembered"
+                .is_none(),
+            "following must not rewrite the persisted link snapshot"
         );
         // The same character again is a no-op; another replaces it cleanly.
         assert_eq!(
@@ -2266,12 +2439,19 @@ mod tests {
             values: values.iter().map(|v| (*v).to_string()).collect(),
             fields: Vec::new(),
             channel_id: Some(1001),
-            message_id: Some(500),
+            message_id: Some(
+                500 + custom_id
+                    .split(':')
+                    .nth(2)
+                    .and_then(|s| s.parse::<u64>().ok())
+                    .unwrap_or(0),
+            ),
         }
     }
 
     fn shown(id: u64, text: &str, kind: RequestKind, options: &[RequestOption]) -> RequestMessage {
         RequestMessage {
+            epoch: "test".into(),
             channel_id: 1001,
             message_id: 500 + id,
             text: text.to_string(),
@@ -2309,7 +2489,7 @@ mod tests {
         // message is already marked, so the clicker is told privately.
         assert!(matches!(
             b.interaction(USER, click("d:req:9:no", &[])).await,
-            InteractionReply::Ephemeral(t) if t.contains("already be closed")
+            InteractionReply::Ephemeral(t) if t.contains("expired")
         ));
         // A select pick names the option by its label.
         let many: Vec<RequestOption> = (0..30)
@@ -2795,5 +2975,138 @@ mod tests {
         let far = Instant::now() + Duration::from_secs(10 * 24 * 3600);
         assert!(r.bridge.sweep_idle(far).await.is_empty());
         assert_eq!(r.bridge.following(USER), Some((NICKY, "Nicky".to_string())));
+    }
+
+    async fn settle() {
+        for _ in 0..16 {
+            tokio::task::yield_now().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn revocation_cancels_an_attached_alt_and_its_buttons() {
+        let r = rig(|_| {}).await;
+        linked(&r.store, "Nick", USER, |_| {}).await;
+        r.store.link_character("Nick", ALT, "Alt").await.unwrap();
+        assert!(matches!(
+            r.bridge.follow(USER, Some("Alt")).await,
+            FollowOutcome::Following { attached: true, .. }
+        ));
+        let state = state_of(&r.bridge, USER);
+        state.request_shown(9, shown(9, "Ask", RequestKind::Confirm, &[]));
+        let control = BridgeControl(Arc::downgrade(&r.bridge));
+        control.control(u64::from(ALT.0), DiscordControlOp::Revoke);
+        assert!(
+            state.cancelled.is_cancelled(),
+            "invalidation is synchronous"
+        );
+        assert!(r.bridge.follow_of(USER).is_none());
+        assert!(matches!(
+            r.bridge.interaction(USER, click("d:req:9:yes", &[])).await,
+            InteractionReply::Ephemeral(_)
+        ));
+        assert!(responds(&r.link).is_empty());
+        settle().await;
+        assert!(r.sessions.session_of_char(char_key(ALT)).is_none());
+    }
+
+    #[tokio::test]
+    async fn revocation_while_creating_a_dm_cannot_restore_the_link_or_attach() {
+        for banned in [false, true] {
+            let r = rig(|_| {}).await;
+            linked(&r.store, "Nick", USER, |_| {}).await;
+            r.api.stall_create.store(true, Ordering::Relaxed);
+            let bridge = Arc::clone(&r.bridge);
+            let attach = tokio::spawn(async move { bridge.follow(USER, None).await });
+            settle().await;
+            assert!(
+                r.api
+                    .calls()
+                    .iter()
+                    .any(|c| matches!(c, Call::CreateDm { .. }))
+            );
+            if banned {
+                r.store
+                    .discord_ban_put(DiscordBanRec {
+                        user_id: USER,
+                        by_account: "Staff".into(),
+                        reason: "test".into(),
+                        at: 1,
+                    })
+                    .await
+                    .unwrap();
+            } else {
+                r.store.set_account_discord("Nick", None).await.unwrap();
+            }
+            BridgeControl(Arc::downgrade(&r.bridge))
+                .control(u64::from(NICKY.0), DiscordControlOp::Revoke);
+            r.api.create_release.notify_one();
+            assert!(!matches!(
+                attach.await.unwrap(),
+                FollowOutcome::Following { .. }
+            ));
+            assert!(r.bridge.follow_of(USER).is_none());
+            assert!(r.sessions.session_of_char(char_key(NICKY)).is_none());
+            assert!(!r.api.calls().iter().any(|c| matches!(c, Call::Send { .. })));
+            if !banned {
+                assert!(
+                    r.store
+                        .get_account("Nick")
+                        .await
+                        .unwrap()
+                        .unwrap()
+                        .discord
+                        .is_none()
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn old_discord_message_cannot_answer_a_reused_request_id() {
+        let r = rig(|_| {}).await;
+        linked(&r.store, "Nick", USER, |_| {}).await;
+        r.bridge.follow(USER, None).await;
+        let state = state_of(&r.bridge, USER);
+        let mut fresh = shown(9, "Fresh", RequestKind::Confirm, &[]);
+        fresh.message_id = 999;
+        fresh.epoch = "new-world".into();
+        state.request_shown(9, fresh);
+        assert!(
+            matches!(r.bridge.interaction(USER, click("d:req:9:yes", &[])).await, InteractionReply::Ephemeral(t) if t.contains("expired"))
+        );
+        assert!(responds(&r.link).is_empty());
+        assert!(state.request(9).is_some());
+        let mut current = click("d:req:9:yes", &[]);
+        current.message_id = Some(999);
+        r.bridge.interaction(USER, current).await;
+        assert!(r.link.sent().iter().any(|s| matches!(s, ToServer::Inbound(WireInbound::Respond { epoch, .. }) if epoch == "new-world")));
+    }
+
+    #[tokio::test]
+    async fn revocation_during_world_admission_leaves_no_connection() {
+        let r = rig(|_| {}).await;
+        linked(&r.store, "Nick", USER, |_| {}).await;
+        r.link.stall_ready.store(true, Ordering::Relaxed);
+        let bridge = r.bridge.clone();
+        let attach = tokio::spawn(async move { bridge.follow(USER, None).await });
+        settle().await;
+        let (_, _, state) = r
+            .bridge
+            .follow_of(USER)
+            .expect("published before world admission");
+        assert!(r.sessions.session_of_char(char_key(NICKY)).is_some());
+        r.store.set_account_discord("Nick", None).await.unwrap();
+        BridgeControl(Arc::downgrade(&r.bridge))
+            .control(u64::from(NICKY.0), DiscordControlOp::Revoke);
+        assert!(state.cancelled.is_cancelled());
+        r.link.ready_release.notify_one();
+        assert!(!matches!(
+            attach.await.unwrap(),
+            FollowOutcome::Following { .. }
+        ));
+        settle().await;
+        assert!(r.bridge.follow_of(USER).is_none());
+        assert!(r.sessions.session_of_char(char_key(NICKY)).is_none());
     }
 }

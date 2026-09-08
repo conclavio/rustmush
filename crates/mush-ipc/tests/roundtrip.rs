@@ -407,7 +407,7 @@ fn every_to_gateway_variant_round_trips() {
 
 #[test]
 fn version_is_present_and_travels_in_hello() {
-    assert_eq!(IPC_VERSION, 4, "the boundary protocol version is pinned");
+    assert_eq!(IPC_VERSION, 5, "the boundary protocol version is pinned");
     assert_eq!(
         MAX_IN_FLIGHT_SERVICE_REQUESTS, 256,
         "service-request custody is a fixed cross-boundary contract"

@@ -361,8 +361,14 @@ mod net {
             })
         }
 
-        fn respond(&self, conn: u64, id: u64, choice: RespondChoice) -> BoxFuture<'_, ()> {
-            Box::pin(async move { self.core.respond(conn, id, choice).await })
+        fn respond(
+            &self,
+            conn: u64,
+            id: u64,
+            epoch: String,
+            choice: RespondChoice,
+        ) -> BoxFuture<'_, ()> {
+            Box::pin(async move { self.core.respond(conn, id, epoch, choice).await })
         }
 
         fn disconnected(&self, conn: u64) -> BoxFuture<'_, ()> {

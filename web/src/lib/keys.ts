@@ -196,3 +196,12 @@ export function isTextField(target: unknown): boolean {
   }
   return el.isContentEditable === true;
 }
+
+/** Controls own their native keys, including keys on nested button content. */
+export function isInteractiveControl(target: unknown): boolean {
+  if (typeof target !== "object" || target === null) return false;
+  const el = target as { closest?: (selector: string) => unknown };
+  return typeof el.closest === "function" && !!el.closest(
+    "button, a[href], input, select, textarea, summary, [contenteditable], [role='button'], [role='tab'], [role='checkbox'], [role='switch'], [role='menuitem'], [role='slider'], [role='combobox'], [role='listbox']",
+  );
+}

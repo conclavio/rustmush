@@ -338,6 +338,10 @@ pub struct SceneRecord {
     /// `/rewind`), for the nudge clock.
     #[serde(default)]
     pub turn_started_at: i64,
+    /// Identifies a visit to a turn, including rewinds and nudge-policy resets.
+    /// MAX is a fail-closed sentinel: no further nudges may be issued.
+    #[serde(default)]
+    pub turn_visit: u64,
     /// The `(round, turn_index)` already nudged, so a turn is nudged once.
     #[serde(default)]
     pub nudged: Option<(u32, usize)>,
@@ -506,12 +510,17 @@ impl SceneRecord {
         Ok(raised)
     }
 
-    /// Remove `obj` from the scene (participant or observer), keeping the turn
-    /// cursor sane: an earlier participant shifts the cursor down, and the
-    /// cursor never dangles past the end. Returns whether `obj` was a member.
+    /// Invalidate any outstanding nudge without reusing a turn visit.
+    pub fn invalidate_nudge(&mut self) {
+        self.turn_visit = self.turn_visit.saturating_add(1);
+        self.nudged = None;
+    }
+
+    /// Remove a member and keep the turn cursor within the participant list.
     pub fn remove_member(&mut self, obj: ObjId) -> bool {
         let mut found = false;
         if let Some(pos) = self.participants.iter().position(|&p| p == obj) {
+            self.invalidate_nudge();
             self.participants.remove(pos);
             found = true;
             if pos < self.turn_index {
@@ -552,6 +561,7 @@ impl SceneRecord {
         } else {
             (next_index, self.round)
         };
+        self.invalidate_nudge();
         self.turn = turn;
         self.turn_index = turn_index;
         self.round = round;
@@ -574,6 +584,7 @@ impl SceneRecord {
         } else {
             return None;
         }
+        self.invalidate_nudge();
         Some((self.round, self.current_actor()))
     }
 
@@ -965,6 +976,7 @@ mod tests {
             consent: Vec::new(),
             nudge_after_s: None,
             turn_started_at: 0,
+            turn_visit: 0,
             nudged: None,
         }
     }
@@ -1123,5 +1135,30 @@ mod tests {
         let mut s = scene(vec![]);
         assert_eq!(s.advance_turn().unwrap(), (1, None));
         assert_eq!(s.round, 1);
+    }
+
+    #[test]
+    fn turn_visit_survives_position_revisits_and_never_wraps() {
+        let mut s = scene(vec![2, 3, 4]);
+        let first = s.turn_visit;
+        s.advance_turn().unwrap();
+        s.rewind_turn().unwrap();
+        assert_eq!(s.current_actor(), Some(ObjId(2)));
+        assert!(s.turn_visit > first);
+        let before = s.turn_visit;
+        s.remove_member(ObjId(2));
+        assert!(s.turn_visit > before);
+        s.turn_visit = u64::MAX - 1;
+        s.invalidate_nudge();
+        s.invalidate_nudge();
+        assert_eq!(s.turn_visit, u64::MAX);
+    }
+
+    #[test]
+    fn older_scene_records_default_the_turn_visit() {
+        let mut value = serde_json::to_value(scene(vec![2, 3])).unwrap();
+        value.as_object_mut().unwrap().remove("turn_visit");
+        let restored: SceneRecord = serde_json::from_value(value).unwrap();
+        assert_eq!(restored.turn_visit, 0);
     }
 }

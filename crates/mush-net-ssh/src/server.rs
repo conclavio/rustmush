@@ -745,8 +745,8 @@ impl ConnHandler {
         for (name, args) in result.queries {
             self.hooks.query(self.conn_id, name, args).await;
         }
-        for (id, choice) in result.responds {
-            self.hooks.respond(self.conn_id, id, choice).await;
+        for (id, epoch, choice) in result.responds {
+            self.hooks.respond(self.conn_id, id, epoch, choice).await;
         }
         if result.redraw {
             self.fire_repaint();

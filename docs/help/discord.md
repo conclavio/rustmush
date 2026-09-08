@@ -117,8 +117,7 @@ Rules:
 - One Discord user per account and one account per Discord user. To move a
   link, unlink first.
 - The game stores your Discord user's numeric id (never your handle, which
-  can change), the time you linked, your preferences, and the id of the DM
-  conversation once a follow opened one. It never stores or logs what you say
+  can change), the time you linked, and your preferences. It never stores or logs what you say
   in Discord, nor what the DM showed you.
 - Your Discord id is staff-only data. Staff cannot read it by rank: a
   specific, granted privilege is required, every look is recorded, and the
@@ -146,6 +145,8 @@ Staff (Wizards):
                                linking, following, or relaying until unbanned.
                                The ban follows the Discord user, not the
                                account, so unlinking does not lift it.
+                               Unlinking or banning also stops any current
+                               follow for any character on that account.
   @discord/unban <player>[=<reason>]
                                Or `@discord/unban <discord user id>` for a user
                                who unlinked while banned.

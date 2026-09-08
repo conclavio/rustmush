@@ -367,7 +367,7 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
     /// flood cannot reach the world loop past the throttle, never idle-stamps,
     /// and drops a throttled or unattached answer silently (the server applies
     /// the deadline default). Advisory, one-way. Used by both bridges.
-    pub async fn respond(&self, conn: u64, id: u64, choice: RespondChoice) {
+    pub async fn respond(&self, conn: u64, id: u64, epoch: String, choice: RespondChoice) {
         let conn_id = ConnId(conn);
         if self.sessions.check_input(conn_id) == FloodVerdict::Throttled {
             return;
@@ -377,6 +377,7 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
         };
         self.link
             .to_server(ToServer::Inbound(WireInbound::Respond {
+                epoch,
                 conn,
                 actor,
                 id,

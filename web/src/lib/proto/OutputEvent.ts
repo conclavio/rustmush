@@ -131,6 +131,10 @@ actor: ObjRef,
  */
 active: boolean, } } | { "t": "request", "d": {
 /**
+ * Opaque lifetime of the engine that opened this request.
+ */
+epoch: string,
+/**
  * Server-chosen correlation id, echoed in the response.
  */
 id: number,

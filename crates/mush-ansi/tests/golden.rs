@@ -95,6 +95,7 @@ fn notice_event() -> OutputEvent {
 /// the contract the `respond <n>` interpreter decodes.
 fn choice_request_event() -> OutputEvent {
     OutputEvent::Request {
+        epoch: "test".into(),
         id: 7,
         kind: RequestKind::Choice,
         prompt: RichText::plain("Who takes the watch?"),
@@ -802,6 +803,7 @@ fn all_variant_events() -> Vec<OutputEvent> {
             ts: 0,
         },
         OutputEvent::Request {
+            epoch: "test".into(),
             id: 6,
             kind: RequestKind::Choice,
             prompt: RichText::plain("pick\none\x1b[31m"),
@@ -976,6 +978,7 @@ fn notice_and_request_line_goldens() {
          \x20 answer:  respond <number>   respond cancel\r\n"
     );
     let confirm = OutputEvent::Request {
+        epoch: "test".into(),
         id: 8,
         kind: RequestKind::Confirm,
         prompt: RichText::plain("Take the watch?"),
@@ -989,6 +992,7 @@ fn notice_and_request_line_goldens() {
          \x20 answer:  respond yes   respond no   respond cancel\r\n"
     );
     let text = OutputEvent::Request {
+        epoch: "test".into(),
         id: 9,
         kind: RequestKind::Text,
         prompt: RichText::plain("Name the watch officer."),

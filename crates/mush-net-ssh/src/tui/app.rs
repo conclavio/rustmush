@@ -162,12 +162,13 @@ pub struct InputResult {
     /// Answers to server-initiated requests the transport should submit via
     /// `hooks.respond`, `(id, choice)` (interface plan I10, D-I-21). Advisory,
     /// never idle stamps.
-    pub responds: Vec<(u64, RespondChoice)>,
+    pub responds: Vec<(u64, String, RespondChoice)>,
 }
 
 /// A server-initiated request being shown as an overlay (interface plan I10).
 #[derive(Clone, Debug, PartialEq)]
 struct TuiRequest {
+    epoch: String,
     id: u64,
     kind: RequestKind,
     prompt: RichText,
@@ -281,7 +282,7 @@ pub struct TuiApp {
     /// measure the player's answer against an ask they cannot see.
     requests: VecDeque<TuiRequest>,
     /// The request id whose free-text answer the input box is capturing (I10).
-    answering: Option<u64>,
+    answering: Option<(u64, String)>,
     thinking: Vec<(String, i64)>,
     composing: Vec<(String, i64)>,
 }
@@ -756,6 +757,7 @@ impl TuiApp {
                 return queries;
             }
             OutputEvent::Request {
+                epoch,
                 id,
                 kind,
                 prompt,
@@ -769,8 +771,10 @@ impl TuiApp {
                 // engine would not have opened it either. Expired fronts go
                 // first, so an ask that died while the player was away does
                 // not spend the cap or the front slot.
+                self.requests.retain(|r| r.epoch == *epoch);
                 self.evict_expired_requests(now);
                 let req = TuiRequest {
+                    epoch: epoch.clone(),
                     id: *id,
                     kind: *kind,
                     prompt: prompt.clone(),
@@ -1383,8 +1387,8 @@ impl TuiApp {
     /// Answers go to the OLDEST open ask, which is the one the overlay shows
     /// and the one the engine's `respond` resolves.
     fn request_key(&mut self, key: Key, r: &mut InputResult) {
-        let (id, kind) = match self.requests.front() {
-            Some(req) => (req.id, req.kind),
+        let (id, epoch, kind) = match self.requests.front() {
+            Some(req) => (req.id, req.epoch.clone(), req.kind),
             None => return,
         };
         let choice = match kind {
@@ -1410,7 +1414,7 @@ impl TuiApp {
                     // Capture the free-text answer in the box. The ask
                     // leaves the queue here (`answering` carries its id), so
                     // the box is not fighting its own overlay for keys.
-                    self.answering = Some(id);
+                    self.answering = Some((id, epoch));
                     self.requests.pop_front();
                     self.enter_input(None);
                     return;
@@ -1421,7 +1425,7 @@ impl TuiApp {
         };
         match choice {
             Some(c) => {
-                r.responds.push((id, c));
+                r.responds.push((id, epoch, c));
                 // Answered or cancelled, the front ask is done — and the
                 // next one, if any, is now showing.
                 self.requests.pop_front();
@@ -1431,7 +1435,7 @@ impl TuiApp {
     }
 
     fn submit_line(&mut self, line: String, r: &mut InputResult) {
-        if let Some(id) = self.answering.take() {
+        if let Some((id, epoch)) = self.answering.take() {
             // The box was capturing a target/text answer (I10): the line is
             // the answer, not a command; an empty line cancels.
             let choice = if line.trim().is_empty() {
@@ -1439,7 +1443,7 @@ impl TuiApp {
             } else {
                 RespondChoice::Text(line)
             };
-            r.responds.push((id, choice));
+            r.responds.push((id, epoch, choice));
             return;
         }
         self.scroll_off = 0;
@@ -1487,8 +1491,8 @@ impl TuiApp {
     /// [`TuiApp::leave_input`] cannot do it — `Resumed` calls that too, and
     /// there no answer should ride the wire.
     fn cancel_answer(&mut self, r: &mut InputResult) {
-        if let Some(id) = self.answering.take() {
-            r.responds.push((id, RespondChoice::Cancel));
+        if let Some((id, epoch)) = self.answering.take() {
+            r.responds.push((id, epoch, RespondChoice::Cancel));
         }
     }
 
@@ -3909,6 +3913,7 @@ mod tests {
     fn request_overlay_answers_across_kinds() {
         let mut app = app();
         let req = |id, kind, options: Vec<RequestOption>| OutputEvent::Request {
+            epoch: "test".into(),
             id,
             kind,
             prompt: RichText::plain("?"),
@@ -3919,13 +3924,13 @@ mod tests {
         app.apply_event(&req(1, RequestKind::Confirm, vec![]));
         assert_eq!(
             app.feed_input(b"y").responds,
-            vec![(1, RespondChoice::Confirm(true))]
+            vec![(1, "test".into(), RespondChoice::Confirm(true))]
         );
 
         app.apply_event(&req(2, RequestKind::Confirm, vec![]));
         assert_eq!(
             app.feed_input(b"n").responds,
-            vec![(2, RespondChoice::Confirm(false))]
+            vec![(2, "test".into(), RespondChoice::Confirm(false))]
         );
 
         app.apply_event(&req(
@@ -3944,7 +3949,7 @@ mod tests {
         ));
         assert_eq!(
             app.feed_input(b"2").responds,
-            vec![(3, RespondChoice::Choose("mara".into()))]
+            vec![(3, "test".into(), RespondChoice::Choose("mara".into()))]
         );
 
         // Target/Text: Enter opens the box, the next line is the answer.
@@ -3955,7 +3960,7 @@ mod tests {
         );
         assert_eq!(
             app.feed_input(b"Fenris\r").responds,
-            vec![(4, RespondChoice::Text("Fenris".into()))]
+            vec![(4, "test".into(), RespondChoice::Text("Fenris".into()))]
         );
 
         // A key that answers nothing leaves the overlay up.
@@ -3963,7 +3968,7 @@ mod tests {
         assert!(app.feed_input(b"z").responds.is_empty());
         assert_eq!(
             app.feed_input(b"y").responds,
-            vec![(5, RespondChoice::Confirm(true))]
+            vec![(5, "test".into(), RespondChoice::Confirm(true))]
         );
     }
 
@@ -4485,6 +4490,7 @@ mod tests {
     fn request_overlay_queues_and_answers_oldest_first() {
         let mut app = app();
         let choice = OutputEvent::Request {
+            epoch: "test".into(),
             id: 7,
             kind: RequestKind::Choice,
             prompt: RichText::plain("which door?"),
@@ -4501,6 +4507,7 @@ mod tests {
             deadline_ms: None,
         };
         let confirm = OutputEvent::Request {
+            epoch: "test".into(),
             id: 9,
             kind: RequestKind::Confirm,
             prompt: RichText::plain("end the scene?"),
@@ -4519,7 +4526,7 @@ mod tests {
 
         assert_eq!(
             app.feed_input(b"1").responds,
-            vec![(7, RespondChoice::Choose("left".into()))]
+            vec![(7, "test".into(), RespondChoice::Choose("left".into()))]
         );
         let frame = super::super::frame_text(&mut app, 120, 34);
         assert!(frame.contains("end the scene?"), "the next ask: {frame}");
@@ -4527,7 +4534,7 @@ mod tests {
         assert!(!frame.contains("1 of"), "one left: {frame}");
         assert_eq!(
             app.feed_input(b"y").responds,
-            vec![(9, RespondChoice::Confirm(true))]
+            vec![(9, "test".into(), RespondChoice::Confirm(true))]
         );
         assert!(!super::super::frame_text(&mut app, 120, 34).contains("end the scene?"));
 
@@ -4536,13 +4543,14 @@ mod tests {
         app.apply_event(&confirm);
         assert_eq!(
             app.feed_input(b"\x1b").responds,
-            vec![(7, RespondChoice::Cancel)]
+            vec![(7, "test".into(), RespondChoice::Cancel)]
         );
         assert!(super::super::frame_text(&mut app, 120, 34).contains("end the scene?"));
 
         // A repeat of an open id replaces it in place — it does not queue
         // twice and does not jump the line.
         app.apply_event(&OutputEvent::Request {
+            epoch: "test".into(),
             id: 9,
             kind: RequestKind::Confirm,
             prompt: RichText::plain("end the scene now?"),
@@ -4566,6 +4574,7 @@ mod tests {
         );
         assert!(frame.contains("the game asks (1 of 2)"), "{frame}");
         app.apply_event(&OutputEvent::Request {
+            epoch: "test".into(),
             id: 9,
             kind: RequestKind::Confirm,
             prompt: RichText::plain("end it here?"),
@@ -4590,6 +4599,7 @@ mod tests {
     /// One `Confirm` ask, with a deadline.
     fn timed_ask(id: u64, prompt: &str, deadline_ms: Option<u64>) -> OutputEvent {
         OutputEvent::Request {
+            epoch: "test".into(),
             id,
             kind: RequestKind::Confirm,
             prompt: RichText::plain(prompt),
@@ -4629,7 +4639,7 @@ mod tests {
         assert!(!frame.contains("1 of"), "one left: {frame}");
         assert_eq!(
             app.feed_input(b"y").responds,
-            vec![(2, RespondChoice::Confirm(true))],
+            vec![(2, "test".into(), RespondChoice::Confirm(true))],
             "and it answers normally"
         );
     }
@@ -4655,6 +4665,7 @@ mod tests {
     fn a_hello_drops_every_open_ask() {
         let mut app = app();
         app.apply_event(&OutputEvent::Request {
+            epoch: "test".into(),
             id: 1,
             kind: RequestKind::Text,
             prompt: RichText::plain("name them"),
@@ -4691,6 +4702,7 @@ mod tests {
     fn esc_out_of_the_answer_box_cancels_the_ask_and_frees_the_queue() {
         let mut app = app();
         app.apply_event(&OutputEvent::Request {
+            epoch: "test".into(),
             id: 1,
             kind: RequestKind::Text,
             prompt: RichText::plain("name them"),
@@ -4701,14 +4713,14 @@ mod tests {
         assert!(app.feed_input(b"\r").responds.is_empty(), "the box opens");
         assert_eq!(
             app.feed_input(b"\x1b").responds,
-            vec![(1, RespondChoice::Cancel)]
+            vec![(1, "test".into(), RespondChoice::Cancel)]
         );
         assert!(app.answering.is_none());
         let frame = super::super::frame_text(&mut app, 120, 34);
         assert!(frame.contains("sure?"), "ask 2 shows at once: {frame}");
         assert_eq!(
             app.feed_input(b"y").responds,
-            vec![(2, RespondChoice::Confirm(true))]
+            vec![(2, "test".into(), RespondChoice::Confirm(true))]
         );
     }
 
@@ -4718,6 +4730,7 @@ mod tests {
     fn an_empty_line_in_the_answer_box_cancels_the_ask() {
         let mut app = app();
         app.apply_event(&OutputEvent::Request {
+            epoch: "test".into(),
             id: 1,
             kind: RequestKind::Text,
             prompt: RichText::plain("name them"),
@@ -4727,7 +4740,7 @@ mod tests {
         assert!(app.feed_input(b"\r").responds.is_empty(), "the box opens");
         assert_eq!(
             app.feed_input(b"\r").responds,
-            vec![(1, RespondChoice::Cancel)]
+            vec![(1, "test".into(), RespondChoice::Cancel)]
         );
         assert!(app.answering.is_none());
         assert_eq!(app.mode(), Mode::Nav);
@@ -4740,6 +4753,7 @@ mod tests {
         let mut app = app();
         for id in 0..(MAX_OPEN_REQUESTS_PER_SUBJECT as u64 + 5) {
             app.apply_event(&OutputEvent::Request {
+                epoch: "test".into(),
                 id,
                 kind: RequestKind::Confirm,
                 prompt: RichText::plain(format!("ask {id}")),
@@ -4750,7 +4764,7 @@ mod tests {
         assert_eq!(app.requests.len(), MAX_OPEN_REQUESTS_PER_SUBJECT);
         assert_eq!(
             app.feed_input(b"y").responds,
-            vec![(0, RespondChoice::Confirm(true))],
+            vec![(0, "test".into(), RespondChoice::Confirm(true))],
             "the oldest is still the one answered"
         );
     }
@@ -4761,6 +4775,7 @@ mod tests {
     fn a_text_ask_keeps_the_box_while_the_next_ask_waits() {
         let mut app = app();
         app.apply_event(&OutputEvent::Request {
+            epoch: "test".into(),
             id: 1,
             kind: RequestKind::Text,
             prompt: RichText::plain("name them"),
@@ -4768,6 +4783,7 @@ mod tests {
             deadline_ms: None,
         });
         app.apply_event(&OutputEvent::Request {
+            epoch: "test".into(),
             id: 2,
             kind: RequestKind::Confirm,
             prompt: RichText::plain("sure?"),
@@ -4782,7 +4798,7 @@ mod tests {
         assert!(!frame.contains("sure?"), "the next ask waits: {frame}");
         assert_eq!(
             app.feed_input(b"Fenris\r").responds,
-            vec![(1, RespondChoice::Text("Fenris".into()))]
+            vec![(1, "test".into(), RespondChoice::Text("Fenris".into()))]
         );
         assert!(super::super::frame_text(&mut app, 120, 34).contains("sure?"));
     }

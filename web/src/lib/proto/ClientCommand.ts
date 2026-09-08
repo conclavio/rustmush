@@ -31,6 +31,10 @@ commit: string, } } | { "t": "composing", "d": {
  */
 active: boolean, } } | { "t": "respond", "d": {
 /**
+ * Opaque lifetime of the engine that opened this request.
+ */
+epoch: string,
+/**
  * The `id` from the originating request.
  */
 id: number,

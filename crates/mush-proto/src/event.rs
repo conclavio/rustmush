@@ -1022,6 +1022,9 @@ pub enum OutputEvent {
     /// disconnected client is never stuck. Perceive- and DARK-gated at the
     /// producer; never an idle stamp.
     Request {
+        /// Opaque lifetime of the engine that opened this request.
+        #[serde(default)]
+        epoch: String,
         /// Server-chosen correlation id, echoed in the response.
         id: u64,
         /// What the request asks for.

@@ -147,7 +147,13 @@ pub trait SshHooks: Send + Sync {
     /// D-I-21): the TUI's request overlay and a line-mode `respond` both route
     /// here. Advisory and best-effort — a lost answer means the server applies
     /// the deadline default; never an idle stamp. The default drops it.
-    fn respond(&self, _conn: u64, _id: u64, _choice: RespondChoice) -> BoxFuture<'_, ()> {
+    fn respond(
+        &self,
+        _conn: u64,
+        _id: u64,
+        _epoch: String,
+        _choice: RespondChoice,
+    ) -> BoxFuture<'_, ()> {
         Box::pin(async {})
     }
 

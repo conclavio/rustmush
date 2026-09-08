@@ -4,6 +4,7 @@
   // server owns the effect; this only sends a RespondChoice. On desktop it is
   // a centred dialog, on a phone a bottom sheet (the CSS). A line-only or
   // disconnected client never sees it and the server applies its default.
+  import { onDestroy } from "svelte";
   import type { GameApp } from "$lib/game.svelte";
   import { renderRich } from "$lib/render";
   import type { RespondChoice } from "$lib/proto";
@@ -15,11 +16,35 @@
   const req = $derived(app.requests.current);
 
   let text = $state("");
+  let error = $state("");
+  let dialog = $state<HTMLDialogElement>();
+  let returnFocus: HTMLElement | null = null;
 
-  // A fresh request clears any typed answer.
+  // Native modality makes the background inert and keeps Tab in the dialog.
+  // Keep it open across queued asks, restoring the original focus only when
+  // the whole queue is done; the underlying composer keeps its draft.
   $effect(() => {
-    void req?.id;
+    const r = req;
+    const d = dialog;
+    if (!d) return;
+    if (!r) {
+      d.close();
+      if (returnFocus?.isConnected) returnFocus.focus();
+      returnFocus = null;
+      return;
+    }
     text = "";
+    error = "";
+    if (!d.open) {
+      returnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+      d.showModal();
+    }
+    d.querySelector<HTMLElement>("input, button")?.focus();
+  });
+
+  onDestroy(() => {
+    dialog?.close();
+    if (returnFocus?.isConnected) returnFocus.focus();
   });
 
   // The request expires on its own deadline; the server applies its default,
@@ -35,19 +60,35 @@
 
   function answer(choice: RespondChoice): void {
     if (req) {
-      app.respond(req.id, choice);
+      if (!app.respond(req.id, choice)) {
+        error = "Your answer was not sent. Reconnect, then try again.";
+      }
+    }
+  }
+
+  function keepFocus(event: KeyboardEvent): void {
+    if (event.key !== "Tab" || !dialog) return;
+    const controls = [...dialog.querySelectorAll<HTMLElement>("input:not(:disabled), button:not(:disabled), a[href], [tabindex='0']")];
+    const first = controls[0];
+    const last = controls.at(-1);
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last?.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first?.focus();
     }
   }
 </script>
 
-{#if req}
-  <div class="backdrop" role="presentation">
-    <div
-      class="sheet"
-      role="dialog"
-      aria-modal="true"
-      aria-label="the game is asking you something"
-    >
+<dialog
+  bind:this={dialog}
+  class="sheet"
+  aria-label="the game is asking you something"
+  onkeydown={keepFocus}
+  oncancel={(event) => { event.preventDefault(); answer({ t: "cancel" }); }}
+>
+  {#if req}
       <div class="prompt">
         <RichLine line={renderRich(req.prompt)} onCmd={() => {}} />
       </div>
@@ -77,6 +118,7 @@
         >
           <input
             type="text"
+            aria-label="Your answer"
             bind:value={text}
             placeholder={req.kind === "target" ? "a name or #dbref" : "your answer"}
           />
@@ -84,23 +126,22 @@
         </form>
       {/if}
 
+      {#if error}<p class="error" role="status">{error}</p>{/if}
       <button type="button" class="cancel" onclick={() => answer({ t: "cancel" })}>Cancel</button>
-    </div>
-  </div>
-{/if}
+  {/if}
+</dialog>
 
 <style>
-  .backdrop {
-    position: fixed;
-    inset: 0;
-    background: rgb(0 0 0 / 45%);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    z-index: 50;
-  }
+  .sheet::backdrop { background: rgb(0 0 0 / 45%); }
+  .sheet:not([open]) { display: none; }
+  .error { margin: 0; color: var(--fg); font-size: 0.9rem; }
 
   .sheet {
+    color: var(--fg);
+    margin: auto;
+    max-height: calc(100dvh - 2rem);
+    overflow-y: auto;
+    box-sizing: border-box;
     background: var(--bg-panel);
     border: 1px solid var(--border);
     border-radius: 10px;
@@ -133,6 +174,7 @@
 
   input {
     flex: 1;
+    min-width: 0;
     font: inherit;
     padding: 0.35rem 0.5rem;
     background: var(--bg-input);
@@ -180,12 +222,10 @@
   }
 
   @media (max-width: 800px) {
-    .backdrop {
-      align-items: flex-end;
-    }
-
     .sheet {
       width: 100vw;
+      max-width: 100vw;
+      margin: auto 0 0;
       border-radius: 12px 12px 0 0;
       padding-bottom: 1.4rem;
     }

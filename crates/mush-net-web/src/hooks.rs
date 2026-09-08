@@ -230,7 +230,13 @@ pub trait WebHooks: Send + Sync {
     /// the choice, and re-validates. Advisory and best-effort — a lost answer
     /// means the server applies the deadline default; never an idle stamp.
     /// The default drops it.
-    fn respond(&self, _conn: u64, _id: u64, _choice: RespondChoice) -> BoxFuture<'_, ()> {
+    fn respond(
+        &self,
+        _conn: u64,
+        _id: u64,
+        _epoch: String,
+        _choice: RespondChoice,
+    ) -> BoxFuture<'_, ()> {
         Box::pin(async {})
     }
 

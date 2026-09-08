@@ -116,6 +116,7 @@ fn open_requests_are_capped_per_subject_and_an_answer_frees_a_slot() {
     let (mut out, mut fx) = (Outbox::new(), Effects::new());
     engine.step(
         Inbound::Respond {
+            epoch: engine.request_epoch().into(),
             conn: 1,
             actor: nick,
             id: ids[0],
@@ -154,4 +155,61 @@ fn a_deadline_frees_the_slots_it_expires() {
         reopened.iter().all(|id| *id > cap as u64),
         "ids are never reused: {reopened:?}"
     );
+}
+
+#[test]
+fn request_from_a_previous_world_must_not_answer_a_new_request() {
+    let (mut old_engine, old_nick) = setup();
+    let stale_id = ask(&mut old_engine, old_nick)[0];
+    let (mut new_engine, nick) = setup();
+    let cap = MAX_OPEN_REQUESTS_PER_SUBJECT as usize;
+    for _ in 0..cap {
+        assert_eq!(ask(&mut new_engine, nick).len(), 1);
+    }
+    assert!(ask(&mut new_engine, nick).is_empty());
+    let (mut out, mut fx) = (Outbox::new(), Effects::new());
+    new_engine.step(
+        Inbound::Respond {
+            epoch: old_engine.request_epoch().into(),
+            conn: 1,
+            actor: nick,
+            id: stale_id,
+            choice: RespondChoice::Confirm(true),
+        },
+        &mut out,
+        &mut fx,
+    );
+    assert!(
+        ask(&mut new_engine, nick).is_empty(),
+        "An old-world answer consumed a current request and freed a slot"
+    );
+}
+
+#[test]
+fn missing_or_wrong_epoch_is_ignored_but_a_current_answer_frees_a_slot() {
+    let (mut engine, nick) = setup();
+    let mut ids = vec![];
+    for _ in 0..MAX_OPEN_REQUESTS_PER_SUBJECT {
+        ids.extend(ask(&mut engine, nick));
+    }
+    for epoch in [
+        String::new(),
+        "old-world".into(),
+        engine.request_epoch().into(),
+    ] {
+        let current = epoch == engine.request_epoch();
+        let (mut out, mut fx) = (Outbox::new(), Effects::new());
+        engine.step(
+            Inbound::Respond {
+                epoch,
+                conn: 1,
+                actor: nick,
+                id: ids[0],
+                choice: RespondChoice::Confirm(true),
+            },
+            &mut out,
+            &mut fx,
+        );
+        assert_eq!(ask(&mut engine, nick).len(), usize::from(current));
+    }
 }

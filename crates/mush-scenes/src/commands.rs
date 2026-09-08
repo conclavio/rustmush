@@ -214,6 +214,7 @@ fn timestop_start(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             consent: Vec::new(),
             nudge_after_s: None,
             turn_started_at: now,
+            turn_visit: 0,
             nudged: None,
         };
         st.scenes.insert(id, rec.clone());
@@ -434,6 +435,7 @@ fn timestop_nudge(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let updated = {
         let st = state(ctx);
         let rec = st.scenes.get_mut(&s.id).expect("resolved above");
+        rec.invalidate_nudge();
         rec.nudge_after_s = after;
         rec.turn_started_at = now;
         rec.nudged = None;
@@ -530,6 +532,7 @@ fn consent_payload(rec: &SceneRecord, about: &str, participant: ObjId) -> String
         "participant": participant.0,
         "round": rec.round,
         "turn_index": rec.turn_index,
+        "turn_visit": rec.turn_visit,
     })
     .to_string()
 }
@@ -585,6 +588,9 @@ impl RequestCompletion for ConsentDone {
         if about == CONSENT_NUDGE {
             // Only the turn that was asked about may be answered.
             let current = rec.status == SceneStatus::Active
+                && rec.nudge_after_s.is_some()
+                && rec.turn_visit < u64::MAX
+                && payload["turn_visit"].as_u64() == Some(rec.turn_visit)
                 && rec.round == round
                 && rec.turn_index == turn_index
                 && rec.current_actor() == Some(participant);
@@ -668,7 +674,7 @@ pub(crate) fn nudge_tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<mush_core
     let due: Vec<SceneRecord> = state_ref(ctx)
         .scenes
         .values()
-        .filter(|rec| rec.status == SceneStatus::Active)
+        .filter(|rec| rec.status == SceneStatus::Active && rec.turn_visit < u64::MAX)
         .filter(|rec| {
             rec.nudge_after_s
                 .is_some_and(|after| now.saturating_sub(rec.turn_started_at) >= i64::from(after))
@@ -755,6 +761,7 @@ fn timestop_resume(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let (anchor, updated) = {
         let st = state(ctx);
         let rec = st.scenes.get_mut(&s.id).expect("resolved above");
+        rec.invalidate_nudge();
         rec.status = SceneStatus::Active;
         rec.pause_reason = None;
         rec.turn_started_at = now;

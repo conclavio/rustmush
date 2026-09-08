@@ -959,6 +959,31 @@ describe("a server-initiated request", () => {
     } as OutputEvent);
   }
 
+  it("retains a failed answer for retry, and sends its original epoch", () => {
+    const {app, ws} = boot();
+    const event = request(5, 5);
+    if (event.t === "request") {
+      event.d.epoch = "current-world";
+      event.d.kind = "text";
+      event.d.options = [];
+    }
+    ws.deliver(event);
+    ws.readyState = 3;
+    expect(app.respond(5, {t:"text", d:"my answer"})).toBe(false);
+    expect(app.requests.current?.id).toBe(5);
+    ws.readyState = 1;
+    expect(app.respond(5, {t:"text", d:"my answer"})).toBe(true);
+    expect(ws.sentJson().at(-1)).toEqual({t:"respond",d:{id:5,epoch:"current-world",choice:{t:"text",d:"my answer"}}});
+    expect(app.requests.current).toBeNull();
+  });
+
+  it("drops obsolete asks on Hello", () => {
+    const {app, ws} = boot();
+    ws.deliver(request(5, 5));
+    ws.deliver({...hello(), seq:6});
+    expect(app.requests.current).toBeNull();
+  });
+
   it("reaches the store, answers by id on the wire, and is dropped locally", () => {
     const { app, ws } = boot();
 
@@ -973,7 +998,7 @@ describe("a server-initiated request", () => {
     // The client reports the choice and nothing else — the server owns the
     // effect (D-I-21) — and drops it locally rather than waiting for an ack.
     expect(ws.sentJson().slice(before)).toEqual([
-      { t: "respond", d: { id: 5, choice: { t: "choose", d: "mara" } } },
+      { t: "respond", d: { id: 5, epoch: "", choice: { t: "choose", d: "mara" } } },
     ]);
     expect(app.requests.current).toBeNull();
   });

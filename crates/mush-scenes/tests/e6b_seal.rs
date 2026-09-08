@@ -958,6 +958,7 @@ fn respond(engine: &mut Engine, actor: ObjId, id: u64, choice: RespondChoice) ->
     let (mut out, mut fx) = (Outbox::new(), Effects::new());
     engine.step(
         Inbound::Respond {
+            epoch: engine.request_epoch().into(),
             conn: 1,
             actor,
             id,
@@ -1367,4 +1368,55 @@ fn d6_a_nudge_asks_the_idle_actor_once_a_pass_advances_and_a_late_pass_is_ignore
     assert!(texts(&out).contains("Nudging off"), "{}", texts(&out));
     let out = advance_to(&mut r, 1_000 + 340 + 301 + 600);
     assert!(requests(&out).is_empty(), "{:?}", requests(&out));
+}
+
+#[test]
+fn old_nudge_must_not_advance_a_rewound_turn() {
+    let mut r = rig();
+    run(&mut r.engine, r.nick, "+timestop");
+    run(&mut r.engine, r.nick, "+timestop/nudge 5");
+    let out = advance_to(&mut r, 1_000 + 301);
+    let asked = requests(&out);
+    assert_eq!(asked.len(), 1);
+    run(&mut r.engine, r.nick, "+timestop/next");
+    run(&mut r.engine, r.nick, "+timestop/rewind");
+    assert_eq!(scene(&r).current_actor(), Some(r.nick));
+    respond(
+        &mut r.engine,
+        r.nick,
+        asked[0].1,
+        RespondChoice::Choose("pass".into()),
+    );
+    assert_eq!(
+        scene(&r).current_actor(),
+        Some(r.nick),
+        "A stale nudge undid the facilitator's rewind"
+    );
+}
+
+#[test]
+fn nudge_policy_and_pause_resume_invalidate_an_outstanding_pass() {
+    for commands in [
+        vec!["+timestop/nudge off"],
+        vec!["+timestop/nudge off", "+timestop/nudge 5"],
+        vec!["+timestop/pause", "+timestop/resume"],
+    ] {
+        let mut r = rig();
+        run(&mut r.engine, r.nick, "+timestop");
+        run(&mut r.engine, r.nick, "+timestop/nudge 5");
+        let out = advance_to(&mut r, 1301);
+        let asked = requests(&out);
+        assert_eq!(asked.len(), 1);
+        for command in commands {
+            run(&mut r.engine, r.nick, command);
+        }
+        respond(
+            &mut r.engine,
+            r.nick,
+            asked[0].1,
+            RespondChoice::Choose("pass".into()),
+        );
+        assert_eq!(scene(&r).current_actor(), Some(r.nick));
+        assert!(votes(&r).is_empty());
+    }
 }

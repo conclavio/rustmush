@@ -1007,6 +1007,14 @@ pub mod testing {
     /// A recording [`DiscordApi`] with scriptable failures.
     #[derive(Default)]
     pub struct FakeApi {
+        /// Hold sends until `send_release` is notified.
+        pub stall_send: std::sync::atomic::AtomicBool,
+        /// Releases one blocked send.
+        pub send_release: tokio::sync::Notify,
+        /// Hold DM creation to exercise attachment races.
+        pub stall_create: std::sync::atomic::AtomicBool,
+        /// Releases one blocked DM creation.
+        pub create_release: tokio::sync::Notify,
         calls: Mutex<Vec<Call>>,
         /// Errors returned by the next calls, in order; `None` means success.
         failures: Mutex<VecDeque<Option<ApiError>>>,
@@ -1116,6 +1124,9 @@ pub mod testing {
         fn create_dm(&self, user_id: u64) -> BoxFuture<'_, Result<u64, ApiError>> {
             Box::pin(async move {
                 self.record(Call::CreateDm { user_id })?;
+                if self.stall_create.load(std::sync::atomic::Ordering::Relaxed) {
+                    self.create_release.notified().await;
+                }
                 if self
                     .closed_dms
                     .lock()
@@ -1131,6 +1142,9 @@ pub mod testing {
         fn send(&self, channel_id: u64, msg: Outgoing) -> BoxFuture<'_, Result<u64, ApiError>> {
             Box::pin(async move {
                 self.record(Call::Send { channel_id, msg })?;
+                if self.stall_send.load(std::sync::atomic::Ordering::Relaxed) {
+                    self.send_release.notified().await;
+                }
                 Ok(self.alloc())
             })
         }

@@ -433,6 +433,7 @@ export class GameApp {
     const c = this.client;
     c.on("hello", (env) => {
       this.session.applyHello(env.d);
+      this.requests.clear();
       // A hello is a new run of the world as far as this client can tell —
       // the gauges it holds were numbered by the previous one (I1-C4).
       // BEFORE `#hydrate`, so the keyframes it asks for are the frames the
@@ -1079,11 +1080,16 @@ export class GameApp {
     this.client.send({ t: "composing", d: { active } });
   }
 
-  /** Answer a server-initiated request (I10, D-I-21): report the choice by
-   * id and drop it locally. The server owns the effect. */
-  respond(id: number, choice: RespondChoice): void {
-    this.client.send({ t: "respond", d: { id, choice } });
+  /** Echo the request identity and choice. Retire it only when the transport
+   * accepts the frame; the server still owns the effect. */
+  respond(id: number, choice: RespondChoice): boolean {
+    this.requests.expireDue();
+    const req = this.requests.pending.find((r) => r.id === id);
+    if (!req || !this.client.send({ t: "respond", d: { id, epoch: req.epoch, choice } })) {
+      return false;
+    }
     this.requests.remove(id);
+    return true;
   }
 
   /** Open the palette behind the composer's caret. */

@@ -14,6 +14,7 @@ twilight-gateway.workspace = true
 twilight-model.workspace = true
 twilight-util.workspace = true
 tokio.workspace = true
+tokio-util = { workspace = true, features = ["rt"] }
 futures.workspace = true
 tracing.workspace = true
 serde.workspace = true

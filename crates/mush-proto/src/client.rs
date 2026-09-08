@@ -113,6 +113,9 @@ pub enum ClientCommand {
     /// owns the effect (D-I-21). A stale, forged or duplicate `id` is
     /// ignored by the server.
     Respond {
+        /// Opaque lifetime of the engine that opened this request.
+        #[serde(default)]
+        epoch: String,
         /// The `id` from the originating request.
         id: u64,
         /// The viewer's choice.

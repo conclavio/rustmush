@@ -508,6 +508,8 @@ pub enum Inbound {
     /// forged or duplicate `id` is ignored, never an error, and this never
     /// stamps idle.
     Respond {
+        /// Opaque lifetime of the engine that opened this request.
+        epoch: String,
         /// The connection it arrived on.
         conn: ConnId,
         /// The actor answering (must be the request's subject).
@@ -716,6 +718,7 @@ pub struct Engine {
     pending_requests: HashMap<u64, crate::request::PendingRequest>,
     /// Next request id to mint.
     next_request_id: u64,
+    request_epoch: String,
     /// Outstanding requests per subject, capped by
     /// [`MAX_OPEN_REQUESTS_PER_SUBJECT`](crate::request::MAX_OPEN_REQUESTS_PER_SUBJECT).
     open_requests_per_subject: HashMap<ObjId, u32>,
@@ -764,6 +767,11 @@ impl Engine {
             authoritative_submits: BTreeMap::new(),
             pending_requests: HashMap::new(),
             next_request_id: 1,
+            request_epoch: {
+                let mut bytes = [0u8; 16];
+                getrandom::fill(&mut bytes).expect("request epoch requires OS entropy");
+                bytes.iter().map(|b| format!("{b:02x}")).collect()
+            },
             open_requests_per_subject: HashMap::new(),
             decision_captures: BTreeMap::new(),
         }
@@ -2910,7 +2918,14 @@ impl Engine {
                     // a pending request resolves it without an idle stamp (an
                     // answer is not live input). Otherwise normal dispatch.
                     if let Some((id, choice)) = self.line_respond(actor, &line) {
-                        self.handle_respond(conn, actor, id, choice, out);
+                        self.handle_respond(
+                            conn,
+                            actor,
+                            id,
+                            &self.request_epoch.clone(),
+                            choice,
+                            out,
+                        );
                     } else {
                         self.world.session_input(actor);
                         dispatch_with_action_state(
@@ -2946,12 +2961,13 @@ impl Engine {
                 StepOutcome::Continue
             }
             Inbound::Respond {
+                epoch,
                 conn,
                 actor,
                 id,
                 choice,
             } => {
-                self.handle_respond(conn, actor, id, choice, out);
+                self.handle_respond(conn, actor, id, &epoch, choice, out);
                 StepOutcome::Continue
             }
             Inbound::ConnUp {
@@ -3453,14 +3469,23 @@ impl Engine {
         )
     }
 
+    /// Lifetime token clients must echo when answering an open request.
+    pub fn request_epoch(&self) -> &str {
+        &self.request_epoch
+    }
+
     fn handle_respond(
         &mut self,
         _conn: ConnId,
         actor: ObjId,
         id: u64,
+        epoch: &str,
         choice: mush_proto::RespondChoice,
         out: &mut Outbox,
     ) {
+        if epoch != self.request_epoch {
+            return;
+        }
         let Some(pending) = self.pending_requests.get(&id) else {
             return;
         };
@@ -3879,6 +3904,7 @@ impl Engine {
                     out.to_actor(
                         req.subject,
                         OutputEvent::Request {
+                            epoch: self.request_epoch.clone(),
                             id,
                             kind: req.kind,
                             prompt: req.prompt,
@@ -5581,6 +5607,7 @@ mod tests {
         let (mut out, mut fx) = (Outbox::new(), Effects::new());
         engine.step(
             Inbound::Respond {
+                epoch: engine.request_epoch().into(),
                 conn: 1,
                 actor: GOD,
                 id: 1,
@@ -5599,6 +5626,7 @@ mod tests {
         let (mut out, mut fx) = (Outbox::new(), Effects::new());
         engine.step(
             Inbound::Respond {
+                epoch: engine.request_epoch().into(),
                 conn: 1,
                 actor: GOD,
                 id: 1,
@@ -5645,6 +5673,7 @@ mod tests {
         let (mut out, mut fx) = (Outbox::new(), Effects::new());
         engine.step(
             Inbound::Respond {
+                epoch: engine.request_epoch().into(),
                 conn: 9,
                 actor: ObjId(99),
                 id: 3,
@@ -5733,6 +5762,7 @@ mod tests {
         let (mut out, mut fx) = (Outbox::new(), Effects::new());
         engine.step(
             Inbound::Respond {
+                epoch: engine.request_epoch().into(),
                 conn: 1,
                 actor: GOD,
                 id: 5,
@@ -5749,6 +5779,7 @@ mod tests {
         let (mut out, mut fx) = (Outbox::new(), Effects::new());
         engine.step(
             Inbound::Respond {
+                epoch: engine.request_epoch().into(),
                 conn: 1,
                 actor: GOD,
                 id: 5,
@@ -5765,6 +5796,7 @@ mod tests {
         let (mut out, mut fx) = (Outbox::new(), Effects::new());
         engine.step(
             Inbound::Respond {
+                epoch: engine.request_epoch().into(),
                 conn: 1,
                 actor: GOD,
                 id: 5,

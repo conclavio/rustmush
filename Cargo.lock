@@ -2078,6 +2078,7 @@ name = "mush-core"
 version = "0.1.0"
 dependencies = [
  "bitflags",
+ "getrandom 0.4.3",
  "hmac",
  "mush-proto",
  "proptest",
@@ -2319,6 +2320,7 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.20",
  "tokio",
+ "tokio-util",
  "toml",
  "tracing",
  "twilight-gateway",
@@ -4582,6 +4584,7 @@ dependencies = [
  "bytes",
  "futures-core",
  "futures-sink",
+ "futures-util",
  "libc",
  "pin-project-lite",
  "slab",

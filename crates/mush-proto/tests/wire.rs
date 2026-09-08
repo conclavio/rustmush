@@ -656,6 +656,7 @@ fn request_and_respond_roundtrip() {
 
     // A Choice request with options and a deadline.
     let req = OutputEvent::Request {
+        epoch: "test".into(),
         id: 7,
         kind: RequestKind::Choice,
         prompt: RichText::plain("Aim at whom?"),
@@ -680,6 +681,7 @@ fn request_and_respond_roundtrip() {
 
     // A Confirm request omits options and deadline on the wire.
     let confirm = OutputEvent::Request {
+        epoch: "test".into(),
         id: 8,
         kind: RequestKind::Confirm,
         prompt: RichText::plain("Spend Willpower?"),
@@ -699,6 +701,7 @@ fn request_and_respond_roundtrip() {
         (RespondChoice::Cancel, "cancel"),
     ] {
         let cmd = ClientCommand::Respond {
+            epoch: "test".into(),
             id: 7,
             choice: choice.clone(),
         };
@@ -741,4 +744,12 @@ fn notice_roundtrip() {
     let j2 = serde_json::to_value(&n2).unwrap();
     assert!(j2["d"].get("action").is_none(), "action skipped when None");
     assert_eq!(serde_json::from_value::<OutputEvent>(j2).unwrap(), n2);
+}
+
+#[test]
+fn legacy_respond_decodes_with_an_empty_epoch_for_engine_rejection() {
+    let command: ClientCommand =
+        serde_json::from_str(r#"{"t":"respond","d":{"id":1,"choice":{"t":"confirm","d":true}}}"#)
+            .unwrap();
+    assert!(matches!(command, ClientCommand::Respond { epoch, .. } if epoch.is_empty()));
 }
