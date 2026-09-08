@@ -643,6 +643,24 @@ impl<R: FnMut(&str) -> Option<ObjId>> Parser<'_, R> {
 }
 
 impl LockExpr {
+    /// A left-nested `&` chain `depth` expression nodes tall: the shape
+    /// `@channel/perm <chan>=join=#1&#1&…` builds, and the one input class a
+    /// frame counter cannot see. **Test support only.** It is the single
+    /// compound-node builder outside `parse_lock`, kept here so the
+    /// construction ratchet (`tests/lock_construction_ratchet.rs`) stays exact:
+    /// tests that plant over-deep fixtures call this instead of naming the
+    /// variants themselves. It is deliberately unbounded, because those tests
+    /// exist to exceed the bound; production code must never call it.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn and_chain(depth: u32) -> Self {
+        let mut expr = Self::Const(true);
+        for _ in 1..depth {
+            expr = Self::And(Box::new(expr), Box::new(Self::Const(true)));
+        }
+        expr
+    }
+
     /// Height of this tree: leaves are 1, `Not` is `1 + child`, `And`/`Or`
     /// are `1 + max(children)`.
     ///

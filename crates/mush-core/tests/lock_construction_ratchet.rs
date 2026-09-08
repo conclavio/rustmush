@@ -84,11 +84,16 @@ fn crate_sources() -> Vec<(String, String)> {
     out
 }
 
-/// One source file with its whole-line comments removed: a policy scan reads
-/// code, and prose about `LockExpr::And(…)` — including this file's own
-/// argument, quoted in `lock.rs`'s docs — is not code.
+/// One source file with its `#[cfg(test)]` tail and its whole-line comments
+/// removed: a policy scan reads production code. Test modules that plant
+/// over-deep fixtures build them through `LockExpr::and_chain`, the one
+/// builder `lock.rs` lends them, and prose about `LockExpr::And(…)` —
+/// including this file's own argument, quoted in `lock.rs`'s docs — is not
+/// code either.
 fn code_only(text: &str) -> String {
-    text.lines()
+    let boundary = text.find("#[cfg(test)]").unwrap_or(text.len());
+    text[..boundary]
+        .lines()
         .filter(|line| !line.trim_start().starts_with("//"))
         .collect::<Vec<_>>()
         .join("\n")

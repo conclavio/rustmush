@@ -1215,10 +1215,7 @@ pub async fn over_deep_module_doc_refuses_the_whole_batch(store: &dyn ObjectStor
 
     // The shape a hostile `@channel/perm` would persist: a left-nested `&`
     // chain, sixty expression levels, inside a channel document's join lock.
-    let mut expr = LockExpr::Const(true);
-    for _ in 1..60 {
-        expr = LockExpr::And(Box::new(expr), Box::new(LockExpr::Const(true)));
-    }
+    let expr = LockExpr::and_chain(60);
     let doc = serde_json::json!({
         "id": 1,
         "perms": { "join": serde_json::to_value(&expr).expect("a lock tree serializes") },
@@ -1277,10 +1274,7 @@ pub async fn over_deep_module_doc_refuses_the_whole_batch(store: &dyn ObjectStor
 
     // The bound is a ceiling, not a ban: the deepest tree `parse_lock` will
     // build persists and reads back identical.
-    let mut legal = LockExpr::Const(true);
-    for _ in 1..mush_core::MAX_LOCK_EXPR_DEPTH {
-        legal = LockExpr::And(Box::new(legal), Box::new(LockExpr::Const(true)));
-    }
+    let legal = LockExpr::and_chain(mush_core::MAX_LOCK_EXPR_DEPTH);
     let good = serde_json::json!({
         "id": 1,
         "perms": { "join": serde_json::to_value(&legal).expect("a lock tree serializes") },

@@ -1567,11 +1567,7 @@ mod tests {
     /// the shape `@channel/perm <chan>=join=#1&#1&…` builds, and the one
     /// input class a frame counter cannot see.
     fn and_chain(depth: u32) -> mush_core::LockExpr {
-        let mut e = mush_core::LockExpr::Const(true);
-        for _ in 1..depth {
-            e = mush_core::LockExpr::And(Box::new(e), Box::new(mush_core::LockExpr::Const(true)));
-        }
-        e
+        mush_core::LockExpr::and_chain(depth)
     }
 
     /// One `chan:{id}`-shaped document carrying `expr` as its join lock.
