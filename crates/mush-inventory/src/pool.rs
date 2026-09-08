@@ -148,6 +148,36 @@ pub fn reservation_deadline(now: &ClockStamp) -> Result<ClockStamp, InventoryErr
     })
 }
 
+/// ---- E7r2: P1 — what one sale asks [`InventoryFamilies::settle_sale`] for ----
+///
+/// A parameter object rather than eight positional arguments, because the two lot
+/// ids and the two endpoints are trivially transposable and a transposed pair would
+/// deliver the buyer's goods to the seller.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct LotSale {
+    /// Where the buyer's lot is created. Must differ from the source endpoint.
+    pub destination: EndpointRef,
+    /// How much of the hold the buyer bought.
+    pub sold: u64,
+    /// The grade the listing advertised, carried onto both lots.
+    pub grade: Grade,
+    /// The buyer's lot id — derived from the settling request, never allocated.
+    pub buyer_lot: LotId,
+    /// The seller's remainder lot id, used only when `sold` is short of the hold.
+    pub remainder_lot: LotId,
+}
+
+/// What [`InventoryFamilies::settle_sale`] moved.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SettledSale {
+    /// The lot the buyer now holds.
+    pub buyer: Lot,
+    /// The lot the seller keeps when the sale was short of the hold.
+    pub remainder: Option<Lot>,
+    /// The source pool's balance after the consume.
+    pub balance: u64,
+}
+
 /// What one quantity mutation moved, for the caller's outcome and marker.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Moved {
@@ -585,6 +615,141 @@ impl InventoryFamilies {
         })
     }
 
+    /// ---- E7r2: P1 — settle one hold **as matter**, not as a number ----
+    ///
+    /// **Consume one live hold and hand the quantity it held to `destination` as a
+    /// lot**, parented to the source endpoint's own lineage root, in ONE bundle.
+    ///
+    /// This is an owner-exported seam (08i answer 16), **not** a new
+    /// [`InventoryVerb`](crate::InventoryVerb) and not a new arithmetic: the
+    /// consume is K's `checked_consume` and the lineage draw is
+    /// [`PoolTranche::checked_draw`], exactly as `crystallize` does them. It
+    /// exists because a sale needs both halves and cannot have them separately:
+    /// `consume` writes the source pool pair and `crystallize` writes it again
+    /// (through `debit`), and an [`ActionTxn`] mutates one key **once**
+    /// (`ActionStateError::DuplicateMutation`). E7 residue pass 1's [`renew`] is
+    /// the precedent for the shape — one method, because one `write_pair`.
+    ///
+    /// **It mints nothing.** The pool is debited by the hold's own amount and the
+    /// same amount reappears as lots, so `pool + lots` at the two endpoints is
+    /// conserved to the unit; the buyer's lot carries `Lineage::Tranche`, whose
+    /// root still names every lot ever poured into that pool, so provenance
+    /// survives and no `Lineage::Origin` is created. `checked_draw` is the second
+    /// gate and the one that matters for a market: **a sale cannot draw more
+    /// lineage than the matter that established the root**, so a pool credited
+    /// from somewhere with no root refuses with [`InventoryError::NoTranche`]
+    /// rather than laundering.
+    ///
+    /// `sold` may be less than the hold: the remainder returns to `from` as its
+    /// own tranche-rooted lot rather than to the pool, because the pool pair is
+    /// already written. `destination` must differ from `from` — one endpoint's
+    /// `lot_census` is one key.
+    ///
+    /// # Errors
+    /// [`InventoryError`] on any refusal; **nothing is written on an error**.
+    #[allow(clippy::too_many_arguments)]
+    pub fn settle_sale(
+        &self,
+        txn: &mut ActionTxn<'_>,
+        from: EndpointRef,
+        commodity: &CanonicalId,
+        reservation: ReservationId,
+        expected_reservation_revision: u64,
+        now: &ClockStamp,
+        commit: CommitToken,
+        sale: LotSale,
+    ) -> Result<SettledSale, InventoryError> {
+        if sale.destination == from {
+            return Err(InventoryError::MergeMismatch);
+        }
+        let (key, pair) = self.load_pair(txn, from, commodity)?;
+        let Some((scalar, book)) = pair else {
+            return Err(InventoryError::NoPool);
+        };
+        let held = book
+            .records()
+            .iter()
+            .find(|record| record.id() == reservation)
+            .map(mush_core::ReservationRecord::amount)
+            .ok_or(InventoryError::NoReservation)?;
+        if sale.sold == 0 || sale.sold > held {
+            return Err(InventoryError::Insufficient {
+                available: held,
+                requested: sale.sold,
+            });
+        }
+        // Validate-then-mutate: every refusal below runs before the first write.
+        let (book, scalar) = book.checked_consume(
+            book.revision(),
+            scalar,
+            reservation,
+            expected_reservation_revision,
+            now,
+            commit,
+        )?;
+        let (tranche_id, tranche) = self
+            .tranche_for(txn, from, commodity)?
+            .ok_or(InventoryError::NoTranche)?;
+        // The whole hold leaves the pool, so the whole hold is drawn from the root.
+        let drawn = tranche
+            .checked_draw(held)
+            .map_err(|_| InventoryError::NoTranche)?;
+        let depth = tranche
+            .depth()
+            .checked_add(1)
+            .ok_or(InventoryError::Record(InventoryRecordError::LineageDepth {
+                max: MAX_LINEAGE_DEPTH,
+            }))?;
+        let buyer = Lot::new(
+            sale.buyer_lot,
+            sale.destination,
+            commodity.clone(),
+            sale.sold,
+            sale.grade,
+            Lineage::Tranche {
+                tranche: tranche_id,
+            },
+            depth,
+        )?;
+        let left = held.checked_sub(sale.sold).ok_or(InventoryError::Record(
+            InventoryRecordError::QuantityOverflow,
+        ))?;
+        let remainder = if left == 0 {
+            None
+        } else {
+            Some(Lot::new(
+                sale.remainder_lot,
+                from,
+                commodity.clone(),
+                left,
+                sale.grade,
+                Lineage::Tranche {
+                    tranche: tranche_id,
+                },
+                depth,
+            )?)
+        };
+        if txn.get(&self.lots, &sale.buyer_lot)?.is_some() {
+            return Err(InventoryError::AlreadyExists);
+        }
+        if remainder.is_some() && txn.get(&self.lots, &sale.remainder_lot)?.is_some() {
+            return Err(InventoryError::AlreadyExists);
+        }
+        self.write_pair(txn, key, true, scalar, book)?;
+        txn.replace(&self.tranches, &tranche_id, drawn)?;
+        txn.insert(&self.lots, &sale.buyer_lot, buyer.clone())?;
+        self.move_lots(txn, sale.destination, 1)?;
+        if let Some(record) = remainder.clone() {
+            txn.insert(&self.lots, &sale.remainder_lot, record)?;
+            self.move_lots(txn, from, 1)?;
+        }
+        Ok(SettledSale {
+            buyer,
+            remainder,
+            balance: balance_of(scalar)?,
+        })
+    }
+
     /// **Re-anchor one live hold's deadline onto `now`'s clock**, keeping its
     /// amount, its id and its place in the contention set (E7 residue pass 1
     /// independent verify fold, Z3).
@@ -776,6 +941,60 @@ impl InventoryFamilies {
         txn.replace(&self.lots, &lot, shrunk)?;
         txn.insert(&self.lots, &child, created.clone())?;
         Ok(created)
+    }
+
+    /// ---- E7r2: P2 — **move one lot to another endpoint, unchanged** ----
+    ///
+    /// [`Lot::checked_relocate`]'s **first caller in the entire workspace** (10b
+    /// §15.1 item 4's blocker cell, confirmed exactly true and now discharged), and
+    /// the one seam salvage moves matter through.
+    ///
+    /// *A relocated lot is the SAME lot.* `checked_relocate` carries `id`,
+    /// `commodity`, `quantity`, `grade`, `lineage` and `depth` through untouched and
+    /// moves only `endpoint` and `revision` — so provenance is intact by
+    /// construction rather than by care, and there is no arithmetic here at all to
+    /// get wrong. **Nothing is minted, split or merged**: the two `lot_census`
+    /// counters move by one in opposite directions and the pools are not touched,
+    /// because a lot is not pooled quantity.
+    ///
+    /// It is deliberately **not** an [`InventoryVerb`](crate::InventoryVerb): no
+    /// player-reachable relocate verb exists, and that absence is what stops a seller
+    /// walking a listed lot out from under the market (10b §15.5's constraint (3)).
+    /// The only caller is the salvage action's own `prepare_authoritative`, whose
+    /// authority is `may_take_from_vault` over the wreck's endpoint, decided in
+    /// `project_offer`.
+    ///
+    /// # Errors
+    /// [`InventoryError::NoLot`] when the lot does not exist or is not at `from`,
+    /// [`InventoryError::MergeMismatch`] when `from == to` (one endpoint's
+    /// `lot_census` is one key, and a self-move would write it twice), and
+    /// [`InventoryError::Record`] on a stale revision. **Nothing is written on an
+    /// error.**
+    pub fn relocate(
+        &self,
+        txn: &mut ActionTxn<'_>,
+        lot: LotId,
+        from: EndpointRef,
+        to: EndpointRef,
+    ) -> Result<Lot, InventoryError> {
+        if from == to {
+            return Err(InventoryError::MergeMismatch);
+        }
+        let record = txn
+            .get(&self.lots, &lot)?
+            .cloned()
+            .ok_or(InventoryError::NoLot)?;
+        // The endpoint is re-checked rather than trusted: `from` decides the
+        // authority, so a lot that has already moved must not be movable by an offer
+        // that named where it used to be.
+        if record.endpoint() != from {
+            return Err(InventoryError::NoLot);
+        }
+        let moved = record.checked_relocate(record.revision(), to)?;
+        txn.replace(&self.lots, &lot, moved.clone())?;
+        self.move_lots(txn, from, -1)?;
+        self.move_lots(txn, to, 1)?;
+        Ok(moved)
     }
 
     /// Merge several lots into one. Every parent is consumed; the child records

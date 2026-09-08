@@ -193,6 +193,48 @@ impl FacilityRecord {
     pub const fn policy_revision(&self) -> u64 {
         self.policy_revision
     }
+
+    /// ---- E7r2: P0a — **re-assign the owner, bumping the policy revision** ----
+    ///
+    /// The one mutation this record has, and the whole of E7 residue pass 2's
+    /// facility-ownership split (pass 1's fold F1(c)). Until it existed,
+    /// `@facility/open` was staff-only and hardcoded the opener as owner, so
+    /// **drafter, payer and payee-owner collapsed to one principal** on every server
+    /// anyone had actually booted: pass 1 could only narrow its own headline to
+    /// *"production is no longer free for a requester who is not the facility's
+    /// owner"* and let the owner-operator produce with a zero-net capture. With a
+    /// settable owner the headline is restorable unqualified, because a genuinely
+    /// distinct payee now exists.
+    ///
+    /// **The policy revision bumps, deliberately.** A work order pins
+    /// `policy_revision` at draft and re-checks it at submit, and
+    /// `money::payee_account` re-resolves the payee at settlement from the *live*
+    /// record — so without the bump an order drafted against the old owner would
+    /// submit unchanged and pay the new one. With it, every in-flight draft is
+    /// invalidated and re-drafted against the owner it will actually pay. The
+    /// capacity revision does **not** move: nothing about the slots changed, and
+    /// bumping it would interrupt running orders for a paperwork change.
+    ///
+    /// [`payee_of`](crate::money::payee_account)'s owner-operator arm is untouched by
+    /// this: an owner who is still the budget's owner is still paid into their own
+    /// budget account as a recorded zero-net self-transfer.
+    ///
+    /// # Errors
+    /// [`IndustryRecordError::RevisionOverflow`] at `u64::MAX`.
+    pub fn with_owner(&self, owner: PrincipalId) -> Result<Self, IndustryRecordError> {
+        let policy_revision = self
+            .policy_revision
+            .checked_add(1)
+            .ok_or(IndustryRecordError::RevisionOverflow)?;
+        Self::from_parts(
+            self.object,
+            owner,
+            self.capabilities.clone(),
+            self.maximum_slots,
+            self.capacity_revision,
+            policy_revision,
+        )
+    }
 }
 
 /// The document key one facility's definition lives at (the `industry` namespace,

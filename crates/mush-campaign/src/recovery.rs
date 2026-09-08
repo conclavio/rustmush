@@ -63,6 +63,15 @@ pub const MAX_RECOVERY_QUEUE: usize = 256;
 /// it.
 pub const MAX_RECOVERY_APPLICATIONS_PER_PRINCIPAL: usize = 1;
 
+/// The most titled assets [`loss_is_covered`] visits looking for one wreck
+/// (E7r2 P0b).
+///
+/// Bounded on records **visited** (D-LBK-5). Past it the predicate answers `false`,
+/// which is the fail-closed direction: the cooldown applies. It is deliberately larger
+/// than [`RecoveryConfig::max_operational_assets`] can usefully be, because an
+/// applicant eligible at all holds few assets by construction.
+pub const MAX_RECOVERY_LOSS_VISIT: usize = 64;
+
 /// The recovery arm's **own** per-fire budget on cut 9's `campaign.operations` tick.
 ///
 /// It is a fourth arm beside `observe_activations`, `expire_grants` and the operation
@@ -490,6 +499,7 @@ pub struct RecoveryGrant {
     tier: SmolStr,
     granted_at: i64,
     ended_at: Option<i64>,
+    loss_covered: bool,
 }
 
 /// The strict wire form of [`RecoveryGrant`].
@@ -509,6 +519,14 @@ pub struct RecoveryGrantWire {
     /// When the lease ended, if it has — the cooldown runs from here.
     #[serde(default)]
     pub ended_at: Option<i64>,
+    /// **Whether the loss this grant answers was an approved-operation loss**
+    /// (E7 residue pass 2, P0b).
+    ///
+    /// `#[serde(default)]` so every grant written before pass 2 re-enters as
+    /// `false` — the fail-closed direction, in which the cooldown applies exactly
+    /// as pass 1 left it.
+    #[serde(default)]
+    pub loss_covered: bool,
 }
 
 impl RecoveryGrant {
@@ -528,6 +546,32 @@ impl RecoveryGrant {
         granted_at: i64,
         ended_at: Option<i64>,
     ) -> Result<RecoveryGrant, RecoveryRecordError> {
+        Self::with_cover(
+            applicant, contract, loaner, tier, granted_at, ended_at, false,
+        )
+    }
+
+    /// ---- E7r2: P0b — the same constructor, carrying the insured-loss marker ----
+    ///
+    /// [`RecoveryGrant::new`] is this with `loss_covered: false`, which is the shape
+    /// every call site that cannot attest a covered loss keeps and the shape every
+    /// pre-pass-2 document re-enters with. There is **one** constructor and therefore
+    /// one place the invariants live: `TryFrom<RecoveryGrantWire>` re-runs this, so a
+    /// hand-edited document carrying the marker is validated exactly as a fresh grant
+    /// is.
+    ///
+    /// # Errors
+    ///
+    /// As [`RecoveryGrant::new`].
+    pub fn with_cover(
+        applicant: ObjId,
+        contract: u64,
+        loaner: ObjId,
+        tier: SmolStr,
+        granted_at: i64,
+        ended_at: Option<i64>,
+        loss_covered: bool,
+    ) -> Result<RecoveryGrant, RecoveryRecordError> {
         if applicant.0 == 0 {
             return Err(RecoveryRecordError::Zero("a grant's applicant"));
         }
@@ -544,6 +588,7 @@ impl RecoveryGrant {
             tier,
             granted_at,
             ended_at,
+            loss_covered,
         })
     }
 
@@ -583,6 +628,25 @@ impl RecoveryGrant {
         self.ended_at.is_none()
     }
 
+    /// **Whether the loss this grant answers was an approved-operation loss**
+    /// (E7r2 P0b, from pass 1's fold F4(i)(a)).
+    ///
+    /// Q7A's *"waived when the loss was inside the restrictions"* is a **per-loss**
+    /// fact. Pass 1 found the shipped tree implementing it as *"waived by the policy
+    /// word, for everybody, always"* — which made `cooldown_days` dead on every
+    /// default deployment and let apply → grant → return → apply farm one stipend per
+    /// cycle out of a pool nothing in this crate can mint into. The fold's fix was to
+    /// make the cooldown **always** apply until a per-loss marker existed; this is
+    /// that marker, and it is the waiver's **only** gate.
+    ///
+    /// It is set by [`loss_is_covered`] at grant time — a deterministic predicate over
+    /// recorded facts, never a staff opinion and never the config's `insurance` word,
+    /// which still governs debt-versus-writeoff and nothing else.
+    #[must_use]
+    pub const fn loss_covered(&self) -> bool {
+        self.loss_covered
+    }
+
     /// The post-image of an ending.
     #[must_use]
     pub fn ended(&self, at: i64) -> RecoveryGrant {
@@ -601,6 +665,7 @@ impl From<RecoveryGrant> for RecoveryGrantWire {
             tier: value.tier,
             granted_at: value.granted_at,
             ended_at: value.ended_at,
+            loss_covered: value.loss_covered,
         }
     }
 }
@@ -608,13 +673,14 @@ impl From<RecoveryGrant> for RecoveryGrantWire {
 impl TryFrom<RecoveryGrantWire> for RecoveryGrant {
     type Error = RecoveryRecordError;
     fn try_from(value: RecoveryGrantWire) -> Result<Self, RecoveryRecordError> {
-        RecoveryGrant::new(
+        RecoveryGrant::with_cover(
             value.applicant,
             value.contract,
             value.loaner,
             value.tier,
             value.granted_at,
             value.ended_at,
+            value.loss_covered,
         )
     }
 }
@@ -783,7 +849,19 @@ pub fn eligible(
         // nothing in this crate can mint into. `insurance` now governs
         // debt-versus-writeoff and nothing else; see
         // [`RecoveryConfig::insures_approved_operations`].
-        if let Some(ended) = grant.ended_at() {
+        //
+        // **E7r2 P0b adds the one waiver, and it is per-loss.** A grant whose end
+        // carries [`RecoveryGrant::loss_covered`] skips the cooldown — that is Q7A's
+        // *"waived when the loss was inside the restrictions"*, implemented as the
+        // per-loss fact it always was. The marker is written once, at grant time, by
+        // [`loss_is_covered`]'s deterministic predicate; a grant that does not carry
+        // it waits exactly as pass 1 left it, and a document written before pass 2
+        // re-enters as `false`. The farm the fold closed stays closed, because a
+        // second cycle can only be covered by a second *recorded* approved-operation
+        // loss.
+        if let Some(ended) = grant.ended_at()
+            && !grant.loss_covered()
+        {
             let until = ended.saturating_add(cfg.cooldown_secs);
             if now < until {
                 return Err(RecoveryRefusal::Cooldown { until });
@@ -986,9 +1064,58 @@ pub fn upkeep_template(
 /// F4(i)(b)): a cooldown that bites must also be a cooldown a player can *see*.
 #[must_use]
 pub fn cooldown_until(cfg: &RecoveryConfig, grant: Option<&RecoveryGrant>) -> Option<i64> {
+    // E7r2 P0b: one predicate, two readers. `@recovery/status` renders exactly the
+    // cooldown `eligible` enforces, so a covered grant reads "no cooldown" and is in
+    // fact refused nothing — the render and the gate cannot drift.
     grant
+        .filter(|grant| !grant.loss_covered())
         .and_then(RecoveryGrant::ended_at)
         .map(|ended| ended.saturating_add(cfg.cooldown_secs))
+}
+
+/// ---- E7r2: P0b — **was this applicant's loss an approved-operation loss?** ----
+///
+/// The deterministic predicate the marker is written from, evaluated **once, at grant
+/// time**, over recorded facts and nothing else (Q7A: staff are never the gate). It
+/// answers true when the applicant has a hull that is **both**:
+///
+/// * a **wreck** — a carrier root whose journey reached a terminal loss state,
+///   `JourneyState::{Failed, Captured { .. }}`, which is cut 6's own record and the
+///   same fact E7 residue pass 2's salvage source reports; and
+/// * an **approved operational asset** — a member of a formation this world records,
+///   which is [`is_deployable`], the campaign-side deployability predicate
+///   [`is_accessible_operational`] already uses. A hull that was never in a formation
+///   was not lost on an operation this campaign approved.
+///
+/// Both halves are read from state this crate already reads — `mush_sim`'s
+/// `JourneyBook` and this crate's own `CampaignStore` — so the edge set is unchanged
+/// and `cargo tree -p mush-campaign` is byte-identical.
+///
+/// **Bounded**: the walk is over the applicant's own titled assets, capped at
+/// [`MAX_RECOVERY_LOSS_VISIT`] records **visited** (D-LBK-5), and a census past the
+/// cap answers `false` rather than paging — the fail-closed direction, in which the
+/// cooldown applies.
+#[must_use]
+pub fn loss_is_covered(world: &World, applicant: ObjId) -> bool {
+    let Some(economy) = world.module_state::<EconomyStore>() else {
+        return false;
+    };
+    let Some(book) = world.module_state::<mush_sim::JourneyBook>() else {
+        return false;
+    };
+    let owner = PrincipalId::Object(applicant);
+    economy
+        .snapshot()
+        .assets_of(&owner)
+        .take(MAX_RECOVERY_LOSS_VISIT)
+        .any(|asset| {
+            book.get(asset.object).is_some_and(|journey| {
+                matches!(
+                    journey.state(),
+                    mush_sim::JourneyState::Failed | mush_sim::JourneyState::Captured { .. }
+                )
+            }) && is_deployable(world, asset.object)
+        })
 }
 
 /// The IC second a `ClockStamp` names, for the records above.

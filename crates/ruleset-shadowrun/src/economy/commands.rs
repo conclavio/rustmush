@@ -134,6 +134,24 @@ pub(crate) fn register(reg: &mut Registrar<'_>, cmd: Arc<Sr5Cmd>) -> Result<(), 
         Arc::new(move |ctx: &mut Ctx<'_>| lifestyle_cmd(ctx)),
     )?;
 
+    // ---- E7r2: P0c — `+nuyen` is its OWN registration group, `ReadOnly` ----
+    //
+    // E7 residue pass 1's fold added the class tripwire (allowlist category vs the
+    // class the production composition publishes) and it found `+nuyen` declaring
+    // `read-only` while `ShadowrunRuleset::register`'s module-wide
+    // `classify_commands(LegacyPostImage)` published it as a whole-document
+    // post-image writer. The fold's note called that "the dangerous direction" —
+    // the allowlist asserting a verb persists nothing while the composition says it
+    // does — and pass 2 fixes it on the side the tree makes true: `nuyen_cmd` is a
+    // pure render (`match_object`, `perm::can_examine`, `may_view_account`, `say`)
+    // and writes nothing at all, so the honest repair is the CLASS, not the stanza.
+    // Moving the stanza to `legacy-post-image` would have needed a fabricated
+    // "future family" for a write path that does not exist.
+    //
+    // K8.5's discipline, per group: classify before this group's own `reg.command`,
+    // and restore `LegacyPostImage` immediately after so every later registration in
+    // this module keeps the class its own documents ride.
+    reg.classify_commands(mush_core::CommandCompatibility::ReadOnly);
     reg.command(
         CommandSpec {
             name: "+nuyen".into(),
@@ -148,6 +166,7 @@ pub(crate) fn register(reg: &mut Registrar<'_>, cmd: Arc<Sr5Cmd>) -> Result<(), 
             Arc::new(move |ctx: &mut Ctx<'_>| nuyen_cmd(&cmd, ctx))
         },
     )?;
+    reg.classify_commands(mush_core::CommandCompatibility::LegacyPostImage);
 
     reg.command(
         CommandSpec {

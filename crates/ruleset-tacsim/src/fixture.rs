@@ -39,6 +39,33 @@ pub const CORE_JSON: &str = include_str!("fixture/tacsim_core.json");
 /// The campaign-seed pack, source-controlled and compiled in.
 pub const CORRIDOR_JSON: &str = include_str!("fixture/tacsim_corridor.json");
 
+/// ---- E7r2: P5 — **the whole Mars–Phobos–Ceres corridor, as `tacsim.corridor@2`**
+/// ----
+///
+/// 10b §15.1 item 9's content half (9b), against doc 10 §11: *"a Mars ground theater,
+/// a Phobos shipyard and orbital domain, a Ceres mining/freeport region, one
+/// interplanetary route, one refinery, one open market"*. Twelve entries against
+/// [`MAX_FIXTURE_ENTRIES`]: v1's six, plus the Ceres freeport and its refinery, the
+/// Mars orbital approach, the Tharsis ground theater and its objective, and the
+/// `phobos_mars` route that joins them — with E7 residue pass 1's `hazard`,
+/// `interdiction` and `controller` authored, because R2 landed those fields and a
+/// corridor that cannot be interdicted cannot host §11's *"fight or evade an
+/// interception"*.
+///
+/// **It is a NEW VERSION, and v1 is left byte-identical on purpose** (T1/Q18A:
+/// versions coexist and a consumer stays pinned until an explicit migration). A
+/// published pack is *"immutable and referenced by digest"*, so re-deriving v1's
+/// digest over new content is exactly the in-place edit that immutability forbids —
+/// every world seeded from `tacsim.corridor@1`, and every hauling contract's route
+/// assumptions with it, would be re-priced, re-timed and re-resolved by a file that
+/// changed underneath them. Publishing v2 beside v1 re-prices, re-times and resolves
+/// **nothing**, and `ruleset-tacsim/tests/e7r1.rs`'s digest pin stays green and
+/// unmodified as the proof.
+///
+/// This pack's own digest is **re-derived, never hand-edited** — a hand-edited one
+/// fails `PackError::DigestMismatch` naming both, which `e7r2.rs` drives.
+pub const CORRIDOR_V2_JSON: &str = include_str!("fixture/tacsim_corridor_v2.json");
+
 /// The recipe the fixture authors (10b §3.1: `alloy_smelt@1` — entry `alloy_smelt` at
 /// pack version 1).
 pub const RECIPE: &str = "alloy_smelt";
@@ -48,6 +75,21 @@ pub const ROUTE: &str = "ceres_phobos";
 
 /// The three places the seed pack instantiates, in pack-local id order.
 pub const PLACES: [&str; 3] = ["ceres_extraction", "phobos_yard", "transfer_node"];
+
+/// The route `tacsim.corridor@2` adds, joining Phobos to the Mars ground theater
+/// (E7r2 P5).
+pub const ROUTE_MARS: &str = "phobos_mars";
+
+/// The seven places `tacsim.corridor@2` instantiates, in pack-local id order.
+pub const PLACES_V2: [&str; 7] = [
+    "ceres_extraction",
+    "ceres_freeport",
+    "mars_objective",
+    "mars_orbit",
+    "mars_theater",
+    "phobos_yard",
+    "transfer_node",
+];
 
 /// S4A's ten commodity families, as 10b §9 q10 transliterates them.
 ///
@@ -91,5 +133,24 @@ pub fn config() -> TacsimConfig {
         // granted hulls would be a policy nobody wrote, and doc 10 §11's proving
         // loop is item 11's, not this pass's.
         recovery: crate::config::TacsimRecoveryConfig::default(),
+    }
+}
+
+/// **The fixture with the whole §11 corridor seeded** — `tacsim.core@1` plus
+/// `tacsim.corridor@2` (E7r2 P5).
+///
+/// [`config`] is deliberately left on v1 and is byte-identical to what it has always
+/// returned: a default composition seeds exactly what it seeded before, so nothing a
+/// running world holds is re-priced, re-timed or re-resolved by this pass. A host that
+/// wants the whole corridor asks for it, which is what a version that coexists **means**
+/// (T1/Q18A). Doc 10 §11's proving loop drives this one.
+#[must_use]
+pub fn config_v2() -> TacsimConfig {
+    TacsimConfig {
+        seeds: vec![PackSource {
+            name: "<built-in tacsim.corridor@2>".to_string(),
+            bytes: CORRIDOR_V2_JSON.to_string(),
+        }],
+        ..config()
     }
 }

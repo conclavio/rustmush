@@ -5798,9 +5798,14 @@ fn econ_ack(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             // E7 residue pass 1, R1: a work order whose budget hold vanished is
             // stopped at `@wo/deliver` by `mush-industry` itself; acknowledging the
             // page decides nothing about the money, so the economy says nothing.
+            // E7 residue pass 2, P1: a lot listing whose inventory reservation
+            // vanished is already withdrawn by the market's own sweep arm — nothing
+            // was sold and no quantity moved — so acknowledging the page decides
+            // nothing about the money either.
             EscalationSubject::Obligation(_)
             | EscalationSubject::Hold(_)
-            | EscalationSubject::WorkOrder(_) => {}
+            | EscalationSubject::WorkOrder(_)
+            | EscalationSubject::MarketListing(_) => {}
         },
     }
     ctx.gate_on_durable_ack();

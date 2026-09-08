@@ -1264,8 +1264,19 @@ fn fail(ctx: &mut Ctx<'_>, journey: CarrierJourney, why: &str) -> Step {
     let root = journey.root;
     let mut stopped = journey;
     stopped.state = JourneyState::Failed;
+    // ---- E7r2 P2: the CARGO's route is named FIRST, and it is not a staff act ----
+    //
+    // This sentence is what turned "recoverable" into "recoverable by staff": both
+    // commands it used to name are staff-only, so cut 6's own recovery path made doc
+    // 10 §11's *"no arrow needs a staff act"* false for every lost hull. E7 residue
+    // pass 2's `@salvage/recover` is the owner's own route to the **cargo** — one
+    // stranded lot at a time, under E3's `may_take_from_vault` and moving no title —
+    // so it goes first, and the two staff commands stay for the **hull**, which is
+    // still theirs to place.
     stopped.anomaly = Some(bounded_anomaly(format!(
-        "{why}. Recommended: @journey/divert #{} =<route id> <place>… (or @spatial/place/domain #{} =<domain> to recover it by hand).",
+        "{why}. Recommended: its custodian recovers the cargo with @salvage/status then \
+         @salvage/recover; staff place the hull with @journey/divert #{} =<route id> <place>… \
+         (or @spatial/place/domain #{} =<domain>).",
         root.0, root.0
     )));
     tracing::error!(

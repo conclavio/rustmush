@@ -33,6 +33,21 @@ use crate::trade::{QuoteRequest, QuoteWindow};
 ///
 /// [`ModError`] if a name is already taken.
 pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
+    // ---- E7r2: P1 — both verbs publish `Authoritative`, per group ----
+    //
+    // K8.5's rule is `classify_commands` **per group, before the first `reg.command`
+    // of that group**, and this crate is the one the rule was written from: it failed
+    // 140 tests at the K merge for want of it. Both verbs move
+    // `LegacyPostImage -> Authoritative` by the **ceiling** rule a `CommandSpec` takes
+    // over its switches (`@station`, `@inv`, `@wo`, `@prop`, `@domain`): `@market/vendor
+    // stock` and `/withdraw` and `+market/accept` all stage
+    // `Ctx::submit_authoritative` of the market-owned lot action. The other switches
+    // read, or write the module's own `market:*` documents, and they ride the same
+    // lane because a primary verb has one class.
+    //
+    // `LegacyPostImage` is **restored last**, so the class this module ends in is the
+    // one its own documents ride — cut 9's campaign lane, exactly.
+    reg.classify_commands(mush_core::CommandCompatibility::Authoritative);
     reg.command(
         CommandSpec {
             name: "+market".into(),
@@ -56,8 +71,11 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
                    +market/quote <listing>[=<qty>] [remote]\n\
                    \x20                                 a price with a declared expiry. It \
                    reserves nothing: the goods are still anyone's until a deal is in force.\n\
-                   +market/accept <quote>             take it up. You are the issuer: your escrow \
-                   is placed from your own account, and the vendor accepts on its own standing.\n\
+                   +market/accept <quote>[=<endpoint>]\n\
+                   \x20                                 take it up. You are the issuer: your \
+                   escrow is placed from your own account, and the vendor accepts on its own \
+                   standing. A listing sold out of an inventory endpoint is delivered INTO one, \
+                   so name a vault you may draw from.\n\
                    +market/sell <obj>=<vendor>        offer something you are carrying. The \
                    vendor escrows its payment first; you then accept the contract and \
                    deposit the goods into its vault (@vault/deposit). It buys CUSTODY, so \
@@ -89,6 +107,13 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
                    cap.\n\
                    @market/vendor stock <vendor>=<ruleset>:<code> price=<n> [qty=<n>] \
                    [object=<obj>] [hidden] [days=<n>] [lead=<secs>]\n\
+                   \x20                                 …or, for a lot-represented good, \
+                   [endpoint=<vault>] [commodity=<id>] [grade=<n>] — which RESERVES that much of \
+                   the endpoint's stock until the listing sells or is withdrawn. An \
+                   organization's own officer may stock and withdraw its lot listings; \
+                   everything else here is staff.\n\
+                   @market/vendor withdraw <listing>  take a listing down and release anything it \
+                   held.\n\
                    @market/vendor retire <vendor>     stop it trading. Live contracts still settle.\n\
                    @market/source create <org>=<vault> [market=<venue>] [spread=<permille>] \
                    [volume=<n>] [loss=<n>] [window=<secs>]\n\
@@ -99,6 +124,7 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
         },
         Arc::new(market_admin),
     )?;
+    reg.classify_commands(mush_core::CommandCompatibility::LegacyPostImage);
     Ok(())
 }
 
@@ -266,6 +292,10 @@ fn show(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         Supply::Stock { .. } => "in stock".to_string(),
         Supply::Market { .. } => "quoted by a market maker".to_string(),
         Supply::Procurement { lead } => format!("procured, delivered by {}", lead.at),
+        // E7r2 P1: the handles are OPAQUE. A viewer learns that the stock is real and
+        // already held — which is the honest thing a reserving listing says — and
+        // learns no endpoint, no commodity id and no other principal's inventory.
+        Supply::Lot { .. } => "held stock, reserved for this listing".to_string(),
     };
     lines(ctx, vec![line, format!("  supply: {extra}")]);
     Ok(())
@@ -445,7 +475,15 @@ fn accept(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let Some(id) = parse_u64(ctx.args.lhs()).map(QuoteId) else {
         return Err(refuse(ctx, NO_SUCH_QUOTE));
     };
-    match crate::trade::accept(ctx, id) {
+    // E7r2 P1: `+market/accept <quote>=<vault>` names where a lot-represented purchase
+    // is delivered. Every E6c representation ignores it, and a lot purchase that names
+    // none is refused **before any money moves**.
+    let destination = ctx
+        .args
+        .rhs()
+        .and_then(|rhs| rhs.split_whitespace().next().and_then(parse_u64))
+        .map(|id| mush_inventory::EndpointRef(mush_economy::VaultId(id)));
+    match crate::trade::accept_into(ctx, id, destination) {
         Ok(contract) => {
             info(
                 ctx,
@@ -570,16 +608,45 @@ fn refuse(ctx: &mut Ctx<'_>, why: &'static str) -> CmdError {
 // ---- @market ---------------------------------------------------------------
 
 fn market_admin(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    // ---- E7r2: P1 — the authority is now PER SUB-VERB, not per command ----
+    //
+    // `@market` was staff-only for all three switches, and doc 10 §11's proving loop
+    // asks that **no arrow needs a staff act** — a run that produced a lot has to be
+    // sellable by the principal that produced it. Registering vendors, funding them
+    // from a faucet, loading catalogue packs, registering market makers and retiring a
+    // shop stay staff acts; `@market/vendor stock` and `/withdraw` become acts of the
+    // vendor's **own organization** (`may_stock_for`), and only for a lot-represented
+    // good — the arm that mints title as a side effect of stocking is still staff-only
+    // and still checked inside `api::list_goods`.
+    if ctx.switches.has("vendor") {
+        return admin_vendor(ctx);
+    }
     require_staff(ctx)?;
     if ctx.switches.has("catalog") {
         admin_catalog(ctx)
-    } else if ctx.switches.has("vendor") {
-        admin_vendor(ctx)
     } else if ctx.switches.has("source") {
         admin_source(ctx)
     } else {
         Err(CmdError::msg("Usage: @market/catalog|vendor|source …"))
     }
+}
+
+/// **Whether this actor may stock or withdraw for that vendor** (E7r2 P1).
+///
+/// Staff, or a principal `mush_economy::acts_for` answers true for over the vendor's
+/// own organization — E3's own authority, asked through the economy's exported seam and
+/// rebuilt nowhere. A vendor that does not exist answers `false`, so the refusal a
+/// stranger gets is the one an unknown vendor gets.
+fn may_stock_for(ctx: &Ctx<'_>, vendor: VendorId) -> bool {
+    if api::is_staff(ctx.w, ctx.actor) {
+        return true;
+    }
+    ctx.w
+        .module_state::<MarketStore>()
+        .and_then(|s| s.vendor(vendor).map(|v| v.org))
+        .is_some_and(|org| {
+            mush_economy::acts_for(ctx.w, ctx.actor, &mush_org::PrincipalId::Organization(org))
+        })
 }
 
 fn admin_catalog(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
@@ -725,6 +792,7 @@ fn admin_vendor(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                     "Usage: @market/vendor create <org>=<vault> [name=] [market=] [buy=]",
                 ));
             };
+            require_staff(ctx)?;
             let Some(vault) = rhs
                 .split_whitespace()
                 .next()
@@ -777,6 +845,7 @@ fn admin_vendor(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             }
         }
         "fund" => {
+            require_staff(ctx)?;
             let Some(vendor) = target.first().and_then(|s| parse_u64(s)).map(VendorId) else {
                 return Err(CmdError::msg(
                     "Usage: @market/vendor fund <vendor>=<amount> faucet=<id> [period=<secs>]",
@@ -848,6 +917,13 @@ fn admin_vendor(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             let Some(catalog) = rhs.split_whitespace().next().and_then(parse_catalog) else {
                 return Err(CmdError::msg("Name what is being stocked."));
             };
+            // E7r2 P1: an organization's own officer may stock it. `list_goods` still
+            // refuses a non-lot representation to a non-staff actor below, so the
+            // title-minting arm keeps the authority it always had.
+            if !may_stock_for(ctx, vendor) {
+                return Err(refuse(ctx, NO_SUCH_VENDOR));
+            }
+            let staff = api::is_staff(ctx.w, ctx.actor);
             let Some(price) = opts
                 .get("price")
                 .and_then(|s| s.parse::<i64>().ok())
@@ -870,20 +946,62 @@ fn admin_vendor(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 return Err(refuse(ctx, NO_SUCH_VENDOR));
             };
             let now = ctx.w.now();
-            let source = match opts.get("lead").and_then(|s| s.parse::<i64>().ok()) {
-                Some(lead) => Supply::Procurement {
-                    lead: mush_economy::EconomicDeadline {
-                        clock: mush_economy::EconomicClock::RealUtc,
-                        at: now.saturating_add(lead.max(60)),
+            // ---- E7r2: P1 — `endpoint=<vault>` selects the lot supply ----
+            //
+            // The commodity defaults to the catalogue **code**, which is the mapping
+            // the corridor pack already uses (`tacsim:iron` sells `iron`), and
+            // `commodity=` overrides it for a pack that names them differently. The
+            // grade is the listing's advertisement and rides onto the buyer's lot.
+            let lot_endpoint = opts
+                .get("endpoint")
+                .and_then(|s| s.parse::<u64>().ok())
+                .map(|id| mush_inventory::EndpointRef(mush_economy::VaultId(id)));
+            let source = match lot_endpoint {
+                Some(endpoint) => {
+                    let raw = opts
+                        .get("commodity")
+                        .map_or_else(|| catalog.code.to_string(), ToString::to_string);
+                    let Ok(commodity) = mush_core::CanonicalId::new(&raw) else {
+                        return Err(CmdError::msg("That is not a commodity id."));
+                    };
+                    let grade = opts
+                        .get("grade")
+                        .and_then(|s| s.parse::<u8>().ok())
+                        .unwrap_or(0);
+                    if grade > mush_inventory::MAX_GRADE {
+                        return Err(CmdError::msg(format!(
+                            "A grade is 0 to {}.",
+                            mush_inventory::MAX_GRADE
+                        )));
+                    }
+                    Supply::Lot {
+                        endpoint: crate::record::LotEndpoint(endpoint),
+                        commodity: crate::record::LotCommodity(commodity),
+                        grade,
+                    }
+                }
+                None => match opts.get("lead").and_then(|s| s.parse::<i64>().ok()) {
+                    Some(lead) => Supply::Procurement {
+                        lead: mush_economy::EconomicDeadline {
+                            clock: mush_economy::EconomicClock::RealUtc,
+                            at: now.saturating_add(lead.max(60)),
+                        },
                     },
-                },
-                None => match opts.get("source").and_then(|s| parse_u64(s)) {
-                    Some(n) => Supply::Market {
-                        source: MarketSourceId(n),
+                    None => match opts.get("source").and_then(|s| parse_u64(s)) {
+                        Some(n) => Supply::Market {
+                            source: MarketSourceId(n),
+                        },
+                        None => Supply::Stock { vault },
                     },
-                    None => Supply::Stock { vault },
                 },
             };
+            // Everything but the lot supply stays a staff act: `Supply::Stock`,
+            // `Supply::Market` and `Supply::Procurement` advertise a counter against
+            // the shop's own balance sheet, and the `Asset` arm MINTS TITLE as a side
+            // effect of publishing.
+            if !staff && !matches!(source, Supply::Lot { .. }) {
+                return Err(CmdError::msg("Permission denied."));
+            }
             let days = opts
                 .get("days")
                 .and_then(|s| s.parse::<i64>().ok())
@@ -912,7 +1030,45 @@ fn admin_vendor(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 Err(e) => Err(refuse_market(ctx, &e)),
             }
         }
+        // ---- E7r2: P1 — the release path, as a SWITCH on an existing verb ----
+        //
+        // `api::withdraw_listing` has existed since E6c with no command behind it, and
+        // a lot listing's hold needs one: a lapse is the sweep's, but a seller changing
+        // their mind is an act. It is a new **sub-verb**, not a new primary verb, so
+        // the pinned allowlist gains no stanza and `PINNED_BASELINE` does not move.
+        "withdraw" => {
+            let Some(listing) = target.first().and_then(|s| parse_u64(s)).map(ListingId) else {
+                return Err(CmdError::msg("Usage: @market/vendor withdraw <listing>"));
+            };
+            // Existence-hiding: a listing this actor may not see and one that does not
+            // exist read the same line, through the same predicate `+market/show` uses.
+            let visible = ctx
+                .w
+                .module_state::<MarketStore>()
+                .and_then(|s| s.listing(listing).cloned())
+                .filter(|l| may_view_listing(ctx.w, ctx.actor, l));
+            let Some(l) = visible else {
+                return Err(refuse(ctx, NO_SUCH_LISTING));
+            };
+            if !may_stock_for(ctx, l.vendor) {
+                return Err(refuse(ctx, NO_SUCH_LISTING));
+            }
+            match crate::api::withdraw_listing(ctx, listing) {
+                Ok(()) => {
+                    info(
+                        ctx,
+                        format!(
+                            "Listing #{listing} withdrawn. Any inventory it held is released \
+                             back to its endpoint."
+                        ),
+                    );
+                    Ok(())
+                }
+                Err(e) => Err(refuse_market(ctx, &e)),
+            }
+        }
         "retire" => {
+            require_staff(ctx)?;
             let Some(vendor) = target.first().and_then(|s| parse_u64(s)).map(VendorId) else {
                 return Err(CmdError::msg("Usage: @market/vendor retire <vendor>"));
             };

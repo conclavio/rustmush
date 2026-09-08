@@ -15,10 +15,24 @@ description = "mush-market (E6c): the neutral market — bounded catalogs and co
 #
 # `tracing` is the logging facade a loud skip at boot needs; `serde`/`serde_json`/
 # `smol_str` are the persistence vocabulary every E crate already uses.
+#
+# E7 residue pass 2 (P1, 10b §15.5 (a′)) adds the ONE new edge of the whole pass:
+# `mush-market -> mush-inventory`. A `Supply::Lot` listing sells provenance-bearing
+# stock whose quantity truth is `mush-inventory`'s and must stay there, so the market
+# reserves, consumes and releases through `InventoryFamilies`' own exported verbs on
+# the DELEGATED path (`InventoryModule::with_quantity_delegates(["industry",
+# "market"])`), exactly as `mush-industry` has done since cut 3 — no new
+# `InventoryVerb`, no engine-owned reservation and no second quantity authority.
+# The direction is the one 10b §3.2 always intended (`mush-market -> mush-inventory`,
+# never the inverse), and it is pinned by `tests/e7r2.rs` here, by
+# `mush-inventory/tests/e7c2.rs` (which forbids inventory -> market) and by
+# `mush-industry/tests/e7c3.rs` (which forbids industry -> market); neither of those
+# two is amended by this pass. `cargo tree -p mush-market` is the test.
 [dependencies]
 mush-core.workspace = true
 mush-org.workspace = true
 mush-economy.workspace = true
+mush-inventory.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 smol_str.workspace = true

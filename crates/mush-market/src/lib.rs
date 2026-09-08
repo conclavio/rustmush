@@ -7,11 +7,21 @@
 //!
 //! ## Game-neutral, and that is a dependency claim
 //!
-//! `mush-market → {core, org, economy}` plus serde/serde_json/smol_str/tracing, and
-//! **nothing else**: no `mush-party`, no `mush-canon`, no ruleset edge. Nothing in
-//! this crate names a run, a fence, nuyen or a runner (answer 20 — it must serve WoD
-//! and TacSim too). The economy never depends on the market (doc 08 D11, doc 10 §14),
-//! so `cargo tree -p mush-market` is the test of both halves.
+//! `mush-market → {core, org, economy, inventory}` plus
+//! serde/serde_json/smol_str/tracing, and **nothing else**: no `mush-party`, no
+//! `mush-canon`, no ruleset edge. Nothing in this crate names a run, a fence, nuyen or
+//! a runner (answer 20 — it must serve WoD and TacSim too). The economy never depends
+//! on the market (doc 08 D11, doc 10 §14), so `cargo tree -p mush-market` is the test
+//! of both halves, and `tests/e7r2.rs` is its checked-in half.
+//!
+//! **`mush-inventory` is E7 residue pass 2's one new edge** (10b §15.1 item 3, §15.5
+//! (a′)), and it runs in the direction 10b §3.2 always intended. It exists so a
+//! `Supply::Lot` listing can reserve, consume and release the quantity it advertises
+//! through cut 2's **own** exported verbs on the **delegated** path — the composition
+//! root names `"market"` in `InventoryModule::with_quantity_delegates`, exactly as it
+//! has named `"industry"` since cut 3 — rather than by defining a second quantity
+//! authority here. No `InventoryVerb` is added, no `ENGINE_OWNED_RESERVATIONS` entry is
+//! registered, and `mint_origin` is called nowhere in this crate.
 //!
 //! Prices, availability, legality and what an item *means* are the ruleset's, and
 //! they arrive through three wiring-frozen tables — [`CatalogSource`],
@@ -30,15 +40,21 @@
 //!
 //! ## What this crate does **not** do
 //!
-//! - **It reserves nothing.** A quote is a price with an expiry; the listing's
-//!   quantity decrements at contract **activation** and nowhere else (OPEN 4). There
-//!   is no reservation family and no new `Hold` field — 08i §4 rule 1's exemption
-//!   does not cover reservations or mechanical offers, and doc 10 T4 keeps E4 `Hold`s
-//!   money-only.
-//! - **It defines no `Lot`.** [`Representation::Lot`] is catalog **policy**
-//!   (D-E6-12), and a listing whose entry declares it is refused at creation: the lot
-//!   is `mush-inventory`'s in E7 cut 2, with a different field list (10b §3.2, Q2D),
-//!   and a second definition here would invert the intended edge.
+//! - **A quote reserves nothing.** A quote is a price with an expiry; a listing's
+//!   quantity decrements at contract **activation** and nowhere else (OPEN 4). This
+//!   crate still defines **no reservation family** and no new `Hold` field — 08i §4
+//!   rule 1's exemption covers neither — and doc 10 T4 keeps E4 `Hold`s money-only.
+//!   *E7r2 P1 narrows the sentence and does not delete it:* a `Supply::Lot` listing
+//!   **does** reserve, on `mush-inventory`'s own `ReservationBook` through the
+//!   delegated families, because it advertises finite matter another owner is the
+//!   truth for rather than a counter of this crate's own. The divergence is recorded
+//!   in 08f §5.6 and in the [`Supply::Lot`] doc comment.
+//! - **It still defines no `Lot`.** [`Representation::Lot`] is catalog **policy**
+//!   (D-E6-12) and the record is `mush-inventory`'s, with a different field list (10b
+//!   §3.2, Q2D). What E7r2 P1 lifted is the *refusal*, not the ownership: this crate
+//!   holds an opaque [`LotEndpoint`] and [`LotCommodity`] handle and reaches every
+//!   quantity through cut 2's exported verbs, so there is still exactly one definition
+//!   of a lot in the tree and exactly one place its arithmetic lives.
 //! - **It adds no settlement machinery.** Accepting a quote drafts an ordinary E4b2
 //!   contract; `Deliverable::TitleTransfer` is E4's own; everything else is delivered
 //!   by a registered provider through the economy's existing seams.
@@ -77,6 +93,7 @@ mod api;
 mod boot;
 mod commands;
 mod ids;
+mod lot;
 mod module;
 mod projection;
 mod record;
@@ -91,32 +108,40 @@ pub use api::{
     may_view_listing, org_is_closed, org_may_trade, principal_account, refuse_market,
     register_vendor, retire_vendor, visible, withdraw_listing,
 };
-pub use boot::{MAX_BOOT_DELIVERY_PAGES, MAX_RECONCILED_QUOTES, MAX_SWEPT_PER_FIRE};
+pub use boot::{
+    MAX_BOOT_DELIVERY_PAGES, MAX_LOT_RECONCILED_PER_FIRE, MAX_RECONCILED_QUOTES, MAX_SWEPT_PER_FIRE,
+};
 pub use ids::{
     ListingId, MAX_MARKET_ID_BYTES, MarketId, MarketSourceId, QuoteId, VendorId, parse_u64,
 };
+pub use lot::{
+    ACTION_LOT, LOT_REFUSED, LotError, LotOp, MAX_LOT_ENDPOINT_CHOICES,
+    OUTCOME_ID as LOT_OUTCOME_ID, action_ref as lot_action_ref, listing_holder,
+    listing_holder_text, listing_reservation,
+};
 pub use module::{
     AvailabilityProvider, CatalogSource, DeliveryOrder, DeliveryProvider, MarketModule,
-    MarketObserver, SWEEP_PERIOD_SECS, SWEEP_TAG,
+    MarketObserver, SWEEP_PERIOD_SECS, SWEEP_TAG, lot_supply,
 };
 pub use projection::{
     DEPTH_BUCKETS, DEPTH_QUANTITY_STEP, DepthBucket, PROJECTION_VISIT, PROJECTION_WINDOW_SECS,
     Projection, is_public_seller,
 };
 pub use record::{
-    AvailabilityOutcome, AvailabilityRule, CatalogEntry, Legality, Listing, MAX_CATALOG_CODE_BYTES,
-    MAX_CATALOG_ENTRIES, MAX_CATALOG_ENTRIES_PER_PACK, MAX_ENTRY_NAME_BYTES, MAX_ENTRY_TAGS,
-    MAX_LISTINGS, MAX_LISTINGS_PER_VENDOR, MAX_OPEN_QUOTES_PER_BUYER, MAX_PACK_BYTES, MAX_QUANTITY,
-    MAX_QUOTES, MAX_SOURCES, MAX_TRADE_ROWS, MAX_VENDORS, MarketSource, MarketVisibility,
-    ObservedRevisions, Quote, RecordError, Representation, Settlement, Supply, Vendor,
-    VendorStatus, check_entry, declared_hash,
+    AvailabilityOutcome, AvailabilityRule, CatalogEntry, Legality, Listing, LotCommodity,
+    LotEndpoint, MAX_CATALOG_CODE_BYTES, MAX_CATALOG_ENTRIES, MAX_CATALOG_ENTRIES_PER_PACK,
+    MAX_ENTRY_NAME_BYTES, MAX_ENTRY_TAGS, MAX_LISTINGS, MAX_LISTINGS_PER_VENDOR,
+    MAX_OPEN_QUOTES_PER_BUYER, MAX_PACK_BYTES, MAX_QUANTITY, MAX_QUOTES, MAX_SOURCES,
+    MAX_TRADE_ROWS, MAX_VENDORS, MarketSource, MarketVisibility, ObservedRevisions, Quote,
+    RecordError, Representation, Settlement, Supply, Vendor, VendorStatus, check_entry,
+    declared_hash,
 };
 pub use store::{
     MARKET_PAGE, MARKET_PAGE_MAX, MARKET_PAGE_VISIT, MAX_TRADES_PER_PAIR, META_KEY, MarketStore,
-    NS, catalog_key, listing_key, load, quote_key, source_key, vendor_key,
+    NS, catalog_key, listing_key, load, owner, quote_key, source_key, vendor_key,
 };
 pub use trade::{
     DEAL_WINDOW_SECS, MAX_LAPSED_SWEEP_PER_CALL, MAX_OPEN_SELLS_PER_VENDOR, QUOTE_TTL_LIVE,
-    QUOTE_TTL_REMOTE, QuoteRequest, QuoteWindow, STALE_QUOTE, accept, artefact_stamp, is_current,
-    quote, sell,
+    QUOTE_TTL_REMOTE, QuoteRequest, QuoteWindow, STALE_QUOTE, accept, accept_into, artefact_stamp,
+    is_current, quote, sell,
 };

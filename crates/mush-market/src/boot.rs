@@ -61,9 +61,95 @@ pub(crate) fn reconcile(ctx: &mut Ctx<'_>) {
     reconcile_contracts(ctx);
 }
 
-/// The `Coarse` sweep tick.
+/// The most lot listings one sweep fire reconciles (E7r2 P1).
+///
+/// Bounded on records **visited** (D-LBK-5), with its own budget so it can never
+/// starve the lapse sweep above it.
+pub const MAX_LOT_RECONCILED_PER_FIRE: usize = 32;
+
+/// The `Coarse` sweep tick — **two arms on one existing tick**, never a second tick.
 pub(crate) fn sweep_tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<mush_core::SceneId>) {
     sweep(ctx, MAX_SWEPT_PER_FIRE);
+    reconcile_lot_holds(ctx, MAX_LOT_RECONCILED_PER_FIRE);
+}
+
+/// ---- E7r2: P1 — the arm OPEN 2's ordering owes ----
+///
+/// `@market/vendor stock` writes the listing document and *then* stages the one
+/// authoritative submission that places its hold, because a command cannot observe its
+/// own submission. A crash in between therefore leaves a **live `Supply::Lot` listing
+/// whose reservation is not `Held`** — a listing a buyer could pay for and whose matter
+/// leg would then refuse.
+///
+/// This arm withdraws exactly those, and **pages per listing** rather than per fire, so
+/// one stuck listing stops only itself (08c §4.6: stop only the subject, with the
+/// recommended command filled in). It is a NEW ARM on the market's **existing**
+/// `SWEEP_TAG` tick — no second tick, no clock, no schedule source — and it stages **no
+/// authoritative submission at all**: a `reg.tick` runs as GOD and two GOD-tick
+/// submissions in one drain void both. The withdrawal is a plain document delete, and
+/// the hold it could not find is the one thing it never has to release.
+///
+/// A reboot re-running it is a no-op past the applied point: a listing whose hold IS
+/// live is left exactly as it is, and a listing already withdrawn is not in `live`.
+fn reconcile_lot_holds(ctx: &mut Ctx<'_>, budget: usize) {
+    let Some(families) = crate::module::lot_supply(ctx.w) else {
+        return;
+    };
+    let candidates: Vec<(crate::ids::ListingId, mush_inventory::EndpointRef, String)> = ctx
+        .w
+        .module_state::<MarketStore>()
+        .map(|store| {
+            store
+                .lot_listings()
+                .take(budget)
+                .filter_map(|listing| {
+                    listing.source.lot().map(|(endpoint, commodity, _)| {
+                        (listing.id, endpoint, commodity.as_str().to_owned())
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    for (id, endpoint, commodity) in candidates {
+        let Ok(commodity) = mush_core::CanonicalId::new(&commodity) else {
+            continue;
+        };
+        let Ok(reservation) = crate::lot::listing_reservation(id, endpoint, &commodity) else {
+            continue;
+        };
+        // The reservation index is written in the same bundle as the hold, so a live
+        // hold is a point lookup rather than a walk (cut 2's fold B10).
+        let held = ctx
+            .action_state(&families.reservations, &reservation)
+            .ok()
+            .flatten()
+            .is_some();
+        if held {
+            continue;
+        }
+        tracing::error!(
+            listing = id.0,
+            endpoint = endpoint.vault().0,
+            "market: a lot listing names a reservation nothing holds; withdrawing it"
+        );
+        mush_economy::open_escalation(
+            ctx,
+            mush_economy::EscalationKind::SettlementRefused,
+            mush_economy::EscalationSubject::MarketListing(id.0),
+            format!(
+                "market listing #{id} advertised inventory stock and its reservation was never \
+                 placed. The listing has been withdrawn; nothing was sold and no quantity moved."
+            ),
+            vec![
+                format!("@inv/show {}", endpoint.vault().0),
+                format!(
+                    "@market/vendor stock <vendor>=<ruleset>:<code> price=<n> endpoint={}",
+                    endpoint.vault().0
+                ),
+            ],
+        );
+        del_listing(ctx, id);
+    }
 }
 
 /// **Delete what has closed itself** (R3, R4).

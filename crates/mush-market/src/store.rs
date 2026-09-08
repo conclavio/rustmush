@@ -34,6 +34,20 @@ use crate::record::{
 
 /// The module namespace.
 pub const NS: &str = "market";
+
+/// This crate's mechanics owner id (E7r2 P1).
+///
+/// It exists because the lot lift registers this crate's **first** authoritative action
+/// and its first `PrincipalId::Scoped` holder key, both of which are stamped with the
+/// module's own owner. `mush_inventory::owner` and `mush_industry::record::owner` are
+/// the shape.
+///
+/// # Panics
+/// Never: `"market"` is a canonical id by construction, asserted by a test.
+#[must_use]
+pub fn owner() -> mush_core::OwnerId {
+    mush_core::OwnerId::new(NS).expect("static market owner id is canonical")
+}
 /// The allocator document.
 pub const META_KEY: &str = "market:meta";
 
@@ -100,6 +114,13 @@ pub struct MarketStore {
     pub(crate) by_pair: BTreeMap<(CatalogRef, MarketId), BTreeSet<ListingId>>,
     /// **vendor → listings**, what `MAX_LISTINGS_PER_VENDOR` bounds.
     pub(crate) by_vendor: BTreeMap<VendorId, BTreeSet<ListingId>>,
+    /// **E7r2 P1 — `(inventory endpoint, commodity)` → the live lot listings on it.**
+    ///
+    /// The one-live-listing-per-lot index. It is a *re-derived projection* like every
+    /// other index here — [`MarketStore::reindex`] is the only place it is built and
+    /// [`MarketStore::indexes_agree`] says so out loud — and it carries only listings
+    /// that are still live, because a sold-out one holds nothing.
+    pub(crate) by_lot_pool: BTreeMap<(mush_inventory::EndpointRef, SmolStr), BTreeSet<ListingId>>,
     pub(crate) quotes: BTreeMap<QuoteId, Quote>,
     /// **buyer → quotes**, so the per-buyer cap is the buyer's own walk.
     ///
@@ -167,6 +188,30 @@ impl MarketStore {
     pub fn live_listings(&self) -> impl Iterator<Item = &Listing> {
         self.live.iter().filter_map(|id| self.listings.get(id))
     }
+    /// **The live lot listing over one `(endpoint, commodity)` pool, if there is one**
+    /// (E7r2 P1, the one-live-listing-per-lot index).
+    ///
+    /// A point lookup on the re-derived index, never a walk: `@market/vendor stock`
+    /// asks it before it publishes, and the sweep's reconcile arm asks it per listing.
+    #[must_use]
+    pub fn lot_listing_of(
+        &self,
+        endpoint: mush_inventory::EndpointRef,
+        commodity: &mush_core::CanonicalId,
+    ) -> Option<ListingId> {
+        self.by_lot_pool
+            .get(&(endpoint, SmolStr::new(commodity.as_str())))
+            .and_then(|set| set.iter().next().copied())
+    }
+
+    /// Every live lot listing, for the sweep's reconcile arm. Bounded by the caller.
+    pub fn lot_listings(&self) -> impl Iterator<Item = &Listing> {
+        self.live
+            .iter()
+            .filter_map(|id| self.listings.get(id))
+            .filter(|l| l.source.lot().is_some())
+    }
+
     /// How many listings this vendor holds open — what `MAX_LISTINGS_PER_VENDOR`
     /// bounds.
     #[must_use]
@@ -336,12 +381,23 @@ impl MarketStore {
             .collect();
         self.by_pair = BTreeMap::new();
         self.by_vendor = BTreeMap::new();
+        self.by_lot_pool = BTreeMap::new();
         for l in self.listings.values() {
             self.by_pair
                 .entry((l.catalog.clone(), l.market.clone()))
                 .or_default()
                 .insert(l.id);
             self.by_vendor.entry(l.vendor).or_default().insert(l.id);
+            // E7r2 P1: only a LIVE lot listing holds a pool, so only a live one is
+            // indexed — a sold-out row has already had its reservation consumed.
+            if let Some((endpoint, commodity, _)) = l.source.lot()
+                && l.quantity > 0
+            {
+                self.by_lot_pool
+                    .entry((endpoint, SmolStr::new(commodity.as_str())))
+                    .or_default()
+                    .insert(l.id);
+            }
         }
         self.by_buyer = BTreeMap::new();
         self.by_listing = BTreeMap::new();
@@ -379,6 +435,7 @@ impl MarketStore {
             && probe.live == self.live
             && probe.by_pair == self.by_pair
             && probe.by_vendor == self.by_vendor
+            && probe.by_lot_pool == self.by_lot_pool
             && probe.by_buyer == self.by_buyer
             && probe.by_listing == self.by_listing
             && probe.by_quote_contract == self.by_quote_contract

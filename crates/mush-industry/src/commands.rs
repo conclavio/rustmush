@@ -907,6 +907,94 @@ fn cmd_facility(ctx: &mut Ctx<'_>, families: &IndustryFamilies) -> Result<(), Cm
         );
         return Ok(());
     }
+    // ---- E7r2: P0a — the facility-ownership split ----
+    //
+    // `@facility/owner <object>=<principal>`. Until this arm existed, every facility
+    // in the tree was owned by the staffer who opened it (`@facility/open` is
+    // staff-only and hardcodes the opener), so **drafter, payer and payee-owner
+    // collapsed to one principal** and E7 residue pass 1 had to narrow its own
+    // headline to *"production is no longer free for a requester who is not the
+    // facility's owner"* — true, but vacuous on a tree where nobody could be. With an
+    // owner that is settable to an ordinary player or an `Organization`, a work order
+    // at another's facility pays a genuinely distinct account and the headline is
+    // restorable unqualified.
+    //
+    // The gate is the record's own, not a second one: **staff, or a principal
+    // `mush_economy::acts_for` answers true for over the CURRENT owner** — the same
+    // predicate `@wo/draft` and `@wo/submit` already ask of the same field, so an
+    // organization's officer may hand its facility on and a stranger reads
+    // `NO_SUCH_FACILITY`, byte-identically to a facility that does not exist.
+    //
+    // It writes the facility document and nothing else. It moves no money, opens no
+    // account and touches no work order: the payee is re-resolved from the live record
+    // at settlement (`money::payee_account`), and `with_owner`'s policy-revision bump
+    // is what stops an order drafted against the old owner submitting against the new.
+    if ctx.switches.has("owner") {
+        let Ok(id) = ctx.args.lhs().trim().trim_start_matches('#').parse::<u32>() else {
+            return Err(CmdError::msg("Usage: @facility/owner <object>=<principal>"));
+        };
+        let object = ObjId(id);
+        let Some(facility) = ctx
+            .w
+            .module_state::<IndustryStore>()
+            .and_then(|store| store.facility(object).cloned())
+        else {
+            return Err(CmdError::msg(NO_SUCH_FACILITY));
+        };
+        // Existence-hiding: a facility this actor may not re-assign reads exactly what
+        // an object that is no facility reads.
+        if !crate::store::is_staff(ctx.w, ctx.actor)
+            && !mush_economy::acts_for(ctx.w, ctx.actor, facility.owner())
+        {
+            return Err(CmdError::msg(NO_SUCH_FACILITY));
+        }
+        let Some(rhs) = ctx.args.rhs().map(str::trim).filter(|rhs| !rhs.is_empty()) else {
+            return Err(CmdError::msg("Usage: @facility/owner <object>=<principal>"));
+        };
+        // The economy's own principal text and the economy's own resolver, so a
+        // **hidden** organization is unresolvable to an outsider by name and by id
+        // alike (E6a fold D11) — this arm is not the one place that leaks one.
+        let Some(owner) = mush_economy::parse_principal(ctx, rhs) else {
+            return Err(CmdError::msg("No such principal."));
+        };
+        // ---- vf_c1 (E7r2's adversarial verify): a facility owner is never a SYSTEM
+        // principal ----
+        //
+        // `parse_principal` accepts `sys:<name>`, so without this an ordinary player
+        // owning a facility could name a faucet, sink, escrow or clearing principal as
+        // its owner — and every completed order there would then capture its budget
+        // into an account **no principal may withdraw from**. That is not a mint (the
+        // posting is still zero-sum and the ledger total holds), but it is a **sink
+        // reachable from a player verb**, and D-E6-4's rule that a system principal is
+        // never a contract party exists for the same reason. Refused by name, in the
+        // fail-closed direction: a facility's owner is somebody who can be paid.
+        if matches!(owner, PrincipalId::System(_)) {
+            return Err(CmdError::msg(
+                "A facility's owner is a character or an organization: a system \
+                 principal holds no operating account anybody can draw on.",
+            ));
+        }
+        if owner == *facility.owner() {
+            return Err(CmdError::msg("That facility already has that owner."));
+        }
+        let updated = facility
+            .with_owner(owner)
+            .map_err(|error| CmdError::msg(error.to_string()))?;
+        let policy = updated.policy_revision();
+        crate::store::persist_facility(ctx.out, &updated);
+        if let Some(store) = ctx.w.module_state_mut::<IndustryStore>() {
+            store.put_facility(updated);
+        }
+        ctx.out.info(
+            ctx.actor,
+            format!(
+                "Facility #{} re-assigned; its policy revision is now {policy}, so any drafted \
+                 order must be re-drafted against the new owner.",
+                object.0
+            ),
+        );
+        return Ok(());
+    }
     if ctx.switches.has("show") {
         let Ok(id) = ctx.args.lhs().trim().parse::<u32>() else {
             ctx.out.info(ctx.actor, NO_SUCH_FACILITY);
@@ -922,10 +1010,15 @@ fn cmd_facility(ctx: &mut Ctx<'_>, families: &IndustryFamilies) -> Result<(), Cm
             return Ok(());
         };
         let available = facility_available(ctx, families, object, facility.maximum_slots());
+        // E7r2 P0a: the owner is RENDERED, because it is now settable and because a
+        // requester deciding whether to draft here is deciding who gets paid. It is
+        // the economy's own `principal_token` spelling — the one `@facility/owner`
+        // reads back — so the line is a usable argument rather than prose.
+        let owner = mush_economy::principal_token(facility.owner());
         ctx.out.info(
             ctx.actor,
             format!(
-                "Facility #{}: {} slots ({available} available), capabilities [{}]",
+                "Facility #{}: {} slots ({available} available), owner {owner}, capabilities [{}]",
                 object.0,
                 facility.maximum_slots(),
                 facility
@@ -1528,7 +1621,9 @@ pub fn register(
     reg.command(
         CommandSpec {
             name: "@facility".into(),
-            switches: vec!["open".into(), "list".into(), "show".into()],
+            // E7r2 P0a: `owner` is a new SUB-VERB on an existing primary verb, so the
+            // pinned allowlist gains no stanza and `PINNED_BASELINE` does not move.
+            switches: vec!["open".into(), "owner".into(), "list".into(), "show".into()],
             shape: ArgShape::EqPair,
             ..CommandSpec::default()
         },

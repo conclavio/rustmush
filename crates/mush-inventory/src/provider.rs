@@ -872,11 +872,27 @@ fn exact_validator(
     }
 }
 
-/// Register the outcome, the five actions and their providers.
+/// Register the outcome, the five actions and their providers — **and, when the
+/// composition wired one, E7r2 P2's sixth action**.
+///
+/// The salvage action is registered *here* rather than from a second `register` of
+/// its own for one structural reason: `reg.definition_validator` takes one closure per
+/// `(owner, kind)`, and this crate's `"action"` validator is `exact_validator` over
+/// the whole descriptor set. Registering a second one would either collide or make the
+/// first inexact. So the descriptor joins the list and the set stays exact — which is
+/// also why a salvage action that was never composed is not merely unreachable but
+/// **absent from the registry**, the fail-closed shape `salvage::action_ref` reports.
+///
+/// It is **not** an [`InventoryVerb`]: the enum stays at five, and
+/// `mush-market/tests/e7r2.rs` pins it.
 ///
 /// # Errors
 /// [`ModError`] if any definition or provider registration is refused.
-pub fn register(reg: &mut Registrar<'_>, families: &InventoryFamilies) -> Result<(), ModError> {
+pub fn register(
+    reg: &mut Registrar<'_>,
+    families: &InventoryFamilies,
+    salvage: Option<&std::sync::Arc<dyn crate::salvage::SalvageSource>>,
+) -> Result<(), ModError> {
     let outcome_descriptor = descriptor(
         "outcome",
         OUTCOME_ID,
@@ -895,7 +911,7 @@ pub fn register(reg: &mut Registrar<'_>, families: &InventoryFamilies) -> Result
         InventoryVerb::Dissolve,
         InventoryVerb::Crystallize,
     ];
-    let descriptors = verbs
+    let mut descriptors = verbs
         .iter()
         .map(|verb| {
             descriptor(
@@ -906,6 +922,22 @@ pub fn register(reg: &mut Registrar<'_>, families: &InventoryFamilies) -> Result
             .map(|descriptor| descriptor.with_references(vec![outcome.clone()]))
         })
         .collect::<Result<Vec<_>, ModError>>()?;
+    // E7r2 P2: the sixth descriptor exists only on a composition that wired a
+    // `SalvageSource`, so the validated set on an unwired server is byte-identical to
+    // cut 2's five.
+    let salvage_descriptor = salvage
+        .map(|_| {
+            descriptor(
+                "action",
+                crate::salvage::ACTION_SALVAGE,
+                json!({ "subject": "self_actor", "targets": 0, "family": "inventory.lot" }),
+            )
+            .map(|descriptor| descriptor.with_references(vec![outcome.clone()]))
+        })
+        .transpose()?;
+    if let Some(descriptor) = &salvage_descriptor {
+        descriptors.push(descriptor.clone());
+    }
     reg.definition_validator(
         DefinitionKind::new("action").map_err(|error| ModError::msg(error.to_string()))?,
         exact_validator(&descriptors),
@@ -921,6 +953,14 @@ pub fn register(reg: &mut Registrar<'_>, families: &InventoryFamilies) -> Result
                 families: families.clone(),
             },
         )?;
+    }
+    if let Some(descriptor) = salvage_descriptor {
+        let action = reg.definition(descriptor)?;
+        if let Some(provider) =
+            crate::salvage::provider_for(action.clone(), outcome, families, salvage)
+        {
+            reg.action_provider(action, provider)?;
+        }
     }
     Ok(())
 }

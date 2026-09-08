@@ -115,6 +115,7 @@ pub struct MarketModule {
     availability: Vec<Arc<dyn AvailabilityProvider>>,
     delivery: Vec<Arc<dyn DeliveryProvider>>,
     issuer: Option<mush_org::SystemPrincipalId>,
+    inventory: Option<mush_inventory::InventoryHandleCell>,
 }
 
 impl std::fmt::Debug for MarketModule {
@@ -166,6 +167,27 @@ impl MarketModule {
         self.issuer = Some(issuer);
         self
     }
+
+    /// ---- E7r2: P1 — take cut 2's family handles from the composition root ----
+    ///
+    /// `IndustryModule::with_inventory`'s shape exactly, for the same reason: module
+    /// state is installed **after** every module has registered, so the handles cannot
+    /// be read from `&World` while this module registers — and the lot action's
+    /// provider needs them then. The composition root fills the cell by composing
+    /// `mush-inventory` first (the boot order it already fixes: inventory, industry,
+    /// …, market), and it must **also** name `"market"` in
+    /// `InventoryModule::with_quantity_delegates`: the cell carries a **capability**,
+    /// and the delegation is what lets a market-owned `ActionTxn` write with it.
+    ///
+    /// **Unwired is fail-closed and byte-identical to E6c**: no lot action is
+    /// registered at all, `Representation::is_stockable` keeps its one call site, and
+    /// `@market/vendor stock` refuses a lot-represented good with the sentence it has
+    /// refused it with since E6c.
+    #[must_use]
+    pub fn with_inventory(mut self, cell: mush_inventory::InventoryHandleCell) -> MarketModule {
+        self.inventory = Some(cell);
+        self
+    }
 }
 
 /// The frozen tables, parked in the store so a handler can reach them.
@@ -175,6 +197,9 @@ pub(crate) struct MarketTables {
     pub(crate) availability: Vec<Arc<dyn AvailabilityProvider>>,
     pub(crate) delivery: Vec<Arc<dyn DeliveryProvider>>,
     pub(crate) issuer: Option<mush_org::SystemPrincipalId>,
+    /// E7r2 P1: cut 2's delegated handles, when the composition wired them. `None` is
+    /// **fail-closed** — a lot listing is refused byte-identically to E6c.
+    pub(crate) inventory: Option<mush_inventory::InventoryFamilies>,
 }
 
 impl std::fmt::Debug for MarketTables {
@@ -189,8 +214,18 @@ impl GameModule for MarketModule {
     }
 
     fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
-        // K8.5 module compatibility: every command this module registers is a bounded
-        // whole-document post-image on the compatibility lane (08i §4, rule 1).
+        // ---- E7r2: P1 — the lot supply's own handles, before anything else ----
+        //
+        // Read here and not later because `lot::register` needs them at registration
+        // time and because `MarketStore`'s frozen table carries them for the command
+        // layer's own pre-checks. `None` is the E6c composition: no action, no lot
+        // listing, and the same refusal E6c printed.
+        let inventory = self.inventory.as_ref().and_then(|cell| cell.get().cloned());
+        // K8.5 module compatibility: the module's own documents are bounded
+        // whole-document post-images on the compatibility lane (08i §4, rule 1). The
+        // two player-facing verbs are classified **per group** in
+        // `crate::commands::register`, which is where their own `reg.command`s are —
+        // the discipline that failed this very crate's 140 tests at the K merge.
         reg.classify_commands(mush_core::CommandCompatibility::LegacyPostImage);
         reg.state(MarketStore {
             tables: MarketTables {
@@ -198,6 +233,7 @@ impl GameModule for MarketModule {
                 availability: self.availability.clone(),
                 delivery: self.delivery.clone(),
                 issuer: self.issuer.clone(),
+                inventory: inventory.clone(),
             },
             ..MarketStore::default()
         });
@@ -212,6 +248,16 @@ impl GameModule for MarketModule {
             TickCadence::Coarse(std::time::Duration::from_secs(SWEEP_PERIOD_SECS)),
             Arc::new(crate::boot::sweep_tick),
         )?;
+        // ---- E7r2: P1 — the ONE market-owned authoritative action ----
+        //
+        // Registered **after** `reg.classify_commands(..)` and only when the
+        // composition wired the delegated handles (§15.5 (c′)). It is the whole of the
+        // lift's mechanic: `reserve` at `@market/vendor stock`, `settle_sale` at
+        // `+market/accept`, `release` at `@market/vendor withdraw`, all on cut 2's own
+        // exported verbs under `lot::listing_holder(ListingId)`.
+        if let Some(families) = &inventory {
+            crate::lot::register(reg, families)?;
+        }
         crate::commands::register(reg)?;
         Ok(())
     }
@@ -268,6 +314,16 @@ impl EconomyObserver for MarketObserver {
 /// The frozen title issuer, when the composition named one.
 pub(crate) fn title_issuer(ctx: &Ctx<'_>) -> Option<mush_org::SystemPrincipalId> {
     ctx.w.module_state::<MarketStore>()?.tables.issuer.clone()
+}
+
+/// **The delegated quantity handles, when the composition wired them** (E7r2 P1).
+///
+/// `None` on a server that composed no lot supply, which is the E6c composition and is
+/// fail-closed in both directions: no lot listing may be published and no lot action
+/// exists to move one.
+#[must_use]
+pub fn lot_supply(w: &mush_core::World) -> Option<mush_inventory::InventoryFamilies> {
+    w.module_state::<MarketStore>()?.tables.inventory.clone()
 }
 
 /// Ask the frozen sources for one pack. `None` when no source owns it.

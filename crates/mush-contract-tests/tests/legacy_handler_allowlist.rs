@@ -223,32 +223,34 @@ fn published_classes(ruleset: &str) -> BTreeMap<String, CommandCompatibility> {
         .collect()
 }
 
-/// **Category/class drift this fold FOUND and did not fix** (independent verify fold,
-/// B8) — `(verb, declared category, published class)`.
+/// **Category/class drift recorded but not fixed** — `(verb, declared category,
+/// published class)`.
 ///
-/// The cross-check below is the tripwire F10(a) asked for, and the first thing it did
-/// was find two verbs whose stanza and registration have disagreed since before this
-/// pass. Neither is `@wo` and neither belongs to the E7 residue, and this fold's own
-/// rules permit exactly one edit to `legacy-handlers.toml` (the `@wo` note), so they
-/// are **recorded here rather than silently re-categorised**:
+/// **EMPTY, and it stays empty** (E7 residue pass 2, P0c). E7 residue pass 1's fold
+/// added this cross-check and the first thing it did was find two verbs whose stanza
+/// and registration had disagreed since before that pass; its own rules permitted one
+/// edit to `legacy-handlers.toml`, so it recorded them here rather than re-categorising
+/// them silently. Pass 2 fixed both, each on the side the tree makes true:
 ///
-/// * **`@station`** declares `legacy-post-image` and publishes `Authoritative`. The
-///   stanza under-claims: it names a future typed family for a verb the composition
-///   already puts on the authoritative lane, so K8.5's migration would plan work that
-///   is done.
-/// * **`+nuyen`** declares `read-only` and publishes `LegacyPostImage`. This is the
-///   direction that matters: the allowlist asserts the verb persists **nothing**,
-///   while the composition publishes it as a whole-document post-image writer. A
-///   reader auditing the disclosure surface from this file would believe a write path
-///   does not exist.
+/// * **`@station`** declared `legacy-post-image` and published `Authoritative`. The
+///   registration was right — `/handoff` and `/cancel` ride cut 2's authoritative
+///   ingress and a `CommandSpec` takes the ceiling class of its switches — so the
+///   **stanza** moved to `authoritative`, and its `family` key was dropped with it:
+///   §14.4 puts `sim.station_fallback` on the list of workflow documents that
+///   deliberately have **no** E7k lane, so naming it as a future typed family made the
+///   migration plan work that is not planned.
+/// * **`+nuyen`** declared `read-only` and published `LegacyPostImage`. Here the
+///   **stanza** was right and the registration was wrong: `nuyen_cmd` is a pure render
+///   and writes nothing, and it published a post-image class only because
+///   `ShadowrunRuleset::register` classifies its whole module at once. It is now its
+///   own K8.5 registration group, `ReadOnly` before its own `reg.command` with
+///   `LegacyPostImage` restored after. Declaring it `legacy-post-image` instead would
+///   have needed a fabricated future family for a write path that does not exist.
 ///
-/// Each needs its owning cut to decide whether the stanza or the registration is
-/// wrong; the tripwire's job is that neither can drift further, and that a third one
-/// cannot appear unnoticed.
-const KNOWN_CLASS_DRIFT: &[(&str, &str, &str)] = &[
-    ("@station", "legacy-post-image", "authoritative"),
-    ("+nuyen", "read-only", "legacy-post-image"),
-];
+/// Neither retired a baseline stanza, so `PINNED_BASELINE` is unmoved at 157. An entry
+/// added here is a defect that must be fixed by its owning cut; the assertion below
+/// makes a stale exception impossible to leave behind.
+const KNOWN_CLASS_DRIFT: &[(&str, &str, &str)] = &[];
 
 /// The category word a published [`CommandCompatibility`] corresponds to.
 fn category_of(class: CommandCompatibility) -> &'static str {

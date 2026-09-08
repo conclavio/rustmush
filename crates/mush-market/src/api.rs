@@ -696,15 +696,69 @@ pub fn list_goods(ctx: &mut Ctx<'_>, spec: ListingSpec) -> Result<ListingId, Mar
             )));
         }
     }
-    // OPEN 1: `Representation::Lot` is catalog **policy** in E6c and no `Lot` record
-    // exists. 10b §3.2 (Q2D) puts the lot in `mush-inventory` as the single source of
-    // quantity truth with a different field list, E7 cut 2 owns it, and defining a
-    // second one here would invert the intended `mush-inventory -> mush-market` edge.
-    if !entry.representation.is_stockable() {
+    // ---- E7r2: P1 — the `Representation::Lot` refusal, LIFTED where it can be ----
+    //
+    // OPEN 1's reason is unchanged and is why the predicate survives: the lot is
+    // `mush-inventory`'s single source of quantity truth (10b §3.2, Q2D), and defining
+    // a second one here would invert the intended `mush-market -> mush-inventory`
+    // edge. What changed is that the edge now EXISTS and the quantity is reached
+    // through cut 2's own exported verbs on the delegated path, so a server that
+    // composed `MarketModule::with_inventory` can publish one. A server that did not
+    // refuses with the sentence E6c refused it with, byte for byte —
+    // `ruleset-shadowrun/tests/e6c.rs`'s `"not stockable"` assertion is untouched.
+    let lot_supply = crate::module::lot_supply(ctx.w);
+    if !entry.representation.is_stockable() && lot_supply.is_none() {
         return Err(MarketError::bad(format!(
             "'{}' is a lot-represented good, and lots are not stockable on this server yet.",
             entry.name
         )));
+    }
+    // The two halves must agree in **both** directions: a lot-represented entry is
+    // stocked from an inventory endpoint and nothing else is, so no other
+    // representation can borrow the one `Supply` arm that reserves.
+    let lot_leg = match (entry.representation, spec.source.lot()) {
+        (Representation::Lot, Some((endpoint, commodity, grade))) => {
+            Some((endpoint, commodity.clone(), grade))
+        }
+        (Representation::Lot, None) => {
+            return Err(MarketError::bad(
+                "A lot-represented good is stocked out of an inventory endpoint \
+                 (endpoint=<vault>).",
+            ));
+        }
+        (_, Some(_)) => {
+            return Err(MarketError::bad(
+                "Only a lot-represented good is stocked out of an inventory endpoint.",
+            ));
+        }
+        (_, None) => None,
+    };
+    if let Some((endpoint, commodity, _)) = &lot_leg {
+        // **Custody, existence-hidingly.** `mush_inventory::may_take` is E3's own
+        // vault-withdraw authority, asked through cut 2's exported seam: an actor who
+        // may not take from the endpoint reads exactly what an actor naming an
+        // endpoint that never existed reads. It is a PRE-CHECK for a good refusal —
+        // the gate is the offer's own regenerated `Choice` list, which
+        // `Engine::resolve_legal_action` rebuilds immediately before preparation.
+        if !mush_inventory::may_take(ctx.w, ctx.actor, *endpoint) {
+            return Err(MarketError::NoStanding(NO_SUCH_LISTING));
+        }
+        // **One live listing per pool** (the one-live-listing-per-lot index). Two
+        // listings over one `(endpoint, commodity)` would each hold their own share of
+        // the same pool — legal for K's contention set, and an oversell of the same
+        // provenance root as far as a buyer can tell, because both would draw from the
+        // one tranche and the second sale would refuse **after** its money leg was in
+        // force. Refused here instead.
+        if ctx
+            .w
+            .module_state::<MarketStore>()
+            .is_some_and(|s| s.lot_listing_of(*endpoint, commodity).is_some())
+        {
+            return Err(MarketError::bad(
+                "That endpoint already carries a live listing for that commodity. Withdraw \
+                 it first (@market/vendor withdraw <listing>).",
+            ));
+        }
     }
     if spec.price.minor() <= 0 {
         return Err(MarketError::bad("A listing asks a positive price."));
@@ -837,6 +891,36 @@ pub fn list_goods(ctx: &mut Ctx<'_>, spec: ListingSpec) -> Result<ListingId, Mar
         },
     );
     persist_meta(ctx);
+    // ---- E7r2: P1 — the hold, staged AFTER the document that names it ----
+    //
+    // OPEN 2's ordering, and the reason for the sweep arm: a command cannot observe
+    // its own authoritative submission, so the `ReservationId` is a pure derivation
+    // (`lot::listing_reservation`) the listing document already implies, and the ONE
+    // submit is staged last. A crash in between leaves a listing whose hold nobody
+    // placed — which `boot::sweep`'s own arm withdraws and pages, per listing.
+    if let Some((endpoint, commodity, grade)) = lot_leg {
+        let staged = crate::lot::stage(
+            ctx,
+            &crate::lot::LotLeg {
+                op: crate::lot::LotOp::Reserve,
+                listing: id,
+                endpoint,
+                source: endpoint,
+                commodity,
+                quantity: spec.quantity,
+                grade,
+            },
+        );
+        if !staged {
+            // The composition wired a lot supply and the action is not registered:
+            // that is a composition defect, not a player error. Take the document back
+            // rather than leaving a listing nothing can move.
+            del_listing(ctx, id);
+            return Err(MarketError::bad(
+                "This server cannot move lot stock right now, so nothing was listed.",
+            ));
+        }
+    }
     Ok(id)
 }
 
@@ -869,15 +953,36 @@ fn titleable(ctx: &Ctx<'_>, object: ObjId, vendor: &Vendor) -> bool {
 ///
 /// [`MarketError::NoStanding`] when there is no such listing to the actor.
 pub fn withdraw_listing(ctx: &mut Ctx<'_>, id: ListingId) -> Result<(), MarketError> {
-    if ctx
+    let Some(listing) = ctx
         .w
         .module_state::<MarketStore>()
-        .and_then(|s| s.listing(id))
-        .is_none()
-    {
+        .and_then(|s| s.listing(id).cloned())
+    else {
         return Err(MarketError::NoStanding(NO_SUCH_LISTING));
-    }
+    };
+    // ---- E7r2: P1 — a withdrawn lot listing gives its hold back ----
+    //
+    // The document delete and the release are one command's work and the release is
+    // its ONE authoritative submission. The document goes first so a crash in between
+    // leaves a hold with no listing, which the sweep's own arm pages about — the
+    // opposite order would leave a listing with no hold, which is the shape a buyer
+    // can pay for.
+    let leg = listing
+        .source
+        .lot()
+        .map(|(endpoint, commodity, grade)| crate::lot::LotLeg {
+            op: crate::lot::LotOp::Release,
+            listing: id,
+            endpoint,
+            source: endpoint,
+            commodity: commodity.clone(),
+            quantity: listing.quantity,
+            grade,
+        });
     del_listing(ctx, id);
+    if let Some(leg) = leg {
+        crate::lot::stage(ctx, &leg);
+    }
     Ok(())
 }
 

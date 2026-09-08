@@ -148,6 +148,17 @@ impl Representation {
         }
     }
     /// Whether E6c can actually deliver this representation (OPEN 1: `Lot` cannot).
+    ///
+    /// **E7r2 P1 — LIFTED, not retired, and the comment above is why.** 10b §15.5
+    /// called this "the `is_stockable` retirement"; it overstates the change. The
+    /// predicate keeps its definition and its meaning — *E6c on its own cannot
+    /// deliver a lot* — and its **one** call site (`api::list_goods`) now asks it
+    /// only when the composition has **not** wired a lot supply
+    /// (`MarketModule::with_inventory`). A server that composes no
+    /// `mush-inventory` therefore refuses a `Representation::Lot` listing
+    /// **byte-identically to E6c**, which is what
+    /// `ruleset-shadowrun/tests/e6c.rs`'s `"not stockable"` assertion and
+    /// `mush-market/tests/e7r2.rs`'s own pin both check.
     #[must_use]
     pub fn is_stockable(self) -> bool {
         !matches!(self, Representation::Lot)
@@ -457,6 +468,37 @@ pub enum MarketVisibility {
     Hidden,
 }
 
+// ---- E7r2: P1 — the lot supply's two opaque handles ------------------------
+
+/// **An opaque handle on one `mush-inventory` endpoint.**
+///
+/// Opaque in the sense that matters: the market never renders it, never offers it as
+/// a choice to a buyer and never lets a player name one. It is written at
+/// `@market/vendor stock` from the seller's own custody check
+/// (`mush_economy::may_take_from_vault`) and read only by the market's own
+/// authoritative action, which is the one place a quantity mutation may happen at
+/// all. A viewer of `+market/show` or `+market/depth` learns nothing from it.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct LotEndpoint(pub mush_inventory::EndpointRef);
+
+impl LotEndpoint {
+    /// The vault the endpoint is.
+    #[must_use]
+    pub const fn vault(self) -> VaultId {
+        self.0.vault()
+    }
+}
+
+/// **An opaque handle on the commodity a lot listing sells.**
+///
+/// The second half of the `(endpoint, commodity)` pair `mush_inventory::pool_resource`
+/// and `ReservationId::derive` actually key on. Like [`LotEndpoint`] it is written at
+/// stock time and never rendered: the *catalogue entry* is what a buyer reads.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct LotCommodity(pub mush_core::CanonicalId);
+
 /// Where the goods come from (§5.2).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -477,6 +519,43 @@ pub enum Supply {
         /// When it can be delivered by.
         lead: EconomicDeadline,
     },
+    /// **E7r2 P1 — provenance-bearing stock in `mush-inventory`** (§15.1 item 3;
+    /// 10b §15.5's delegated path).
+    ///
+    /// The only `Supply` arm that **reserves**: a deliberate divergence from this
+    /// record's own opening sentence, recorded in 08f §5.6 and in 10b §3.2's "As
+    /// built". E6c's other three arms advertise a *counter* — a catalogue promise the
+    /// vendor is expected to be able to honour — and over-advertising one is a
+    /// commercial mistake. This arm advertises **finite matter another owner is the
+    /// truth for**, and there is no honest way to publish it without holding it: the
+    /// reservation is placed on `mush-inventory`'s own `ReservationBook` at
+    /// `(endpoint, commodity)` when the listing is written, consumed when a contract
+    /// comes into force, and released when the listing is withdrawn.
+    Lot {
+        /// Which inventory endpoint the stock sits in.
+        endpoint: LotEndpoint,
+        /// Which commodity's pool at that endpoint.
+        commodity: LotCommodity,
+        /// The grade the listing advertises, carried onto the buyer's lot.
+        grade: u8,
+    },
+}
+
+impl Supply {
+    /// The lot endpoint, commodity and grade of a `Supply::Lot`, and `None` for every
+    /// other arm — the one accessor every lot-aware path reads, so a new arm cannot
+    /// be reached by accident.
+    #[must_use]
+    pub fn lot(&self) -> Option<(mush_inventory::EndpointRef, &mush_core::CanonicalId, u8)> {
+        match self {
+            Supply::Lot {
+                endpoint,
+                commodity,
+                grade,
+            } => Some((endpoint.0, &commodity.0, *grade)),
+            Supply::Stock { .. } | Supply::Market { .. } | Supply::Procurement { .. } => None,
+        }
+    }
 }
 
 /// `market:listing:{id}` — one published intention to sell (§5.2).
@@ -568,6 +647,27 @@ impl TryFrom<ListingWire> for Listing {
             return Err(RecordError(
                 "a listing that names an object sells exactly one",
             ));
+        }
+        // ---- E7r2: P1 — the lot arm re-runs its own caps on the wire ----
+        //
+        // A hand-edited grade past `MAX_GRADE` would make the buyer's lot refuse
+        // `Grade::new` inside the settling bundle, i.e. **after** the money leg is in
+        // force. It is refused ON LOAD instead, where a refused document is skipped
+        // loudly and the seller re-lists.
+        if let Supply::Lot {
+            endpoint, grade, ..
+        } = &w.source
+        {
+            if *grade > mush_inventory::MAX_GRADE {
+                return Err(RecordError("a lot listing's grade is out of range"));
+            }
+            if w.object.is_some() {
+                return Err(RecordError("a lot listing names no object"));
+            }
+            // The endpoint is a handle on another owner's record, never a claim: the
+            // vault it names may be gone, and the listing is then reconciled away by
+            // the sweep's own arm rather than refused here.
+            let _ = endpoint;
         }
         Ok(Listing {
             id: ListingId(w.id),

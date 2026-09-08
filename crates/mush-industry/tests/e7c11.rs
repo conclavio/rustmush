@@ -171,6 +171,12 @@ fn vf_g13_l4_the_work_order_writer_census_is_pinned() {
 /// industry-owned action's prepare on an endpoint the acting player does not
 /// own. The two manifest tripwires point the OTHER way; neither bans the
 /// direction the lift needs, and the lift adds the edge in its own commit.
+///
+/// **E7 residue pass 2 (P1) IS that commit**, so the last assertion is inverted in
+/// place rather than deleted: the edge it said must not exist yet is now required to
+/// exist, and the two tripwires it cites are still untouched and still green. Keeping
+/// the assertion the other way round is what stops the edge quietly disappearing again
+/// — a lift that lost its edge would take the corridor's first real sale with it.
 #[test]
 fn vf_g1_the_delegated_quantity_seam_is_in_production_and_unblocked() {
     // The seam, and its production consumer.
@@ -203,13 +209,23 @@ fn vf_g1_the_delegated_quantity_seam_is_in_production_and_unblocked() {
         "the industry tripwire's premise still holds: no `mush-industry -> \
          mush-market` dependency"
     );
-    // This fold adds NO crate edge: `mush-market` still declares none on
-    // `mush-inventory`, and it lands with the lift.
+    // E7r2 P1: the lift landed, so the edge is HERE — declared once, in
+    // `[dependencies]`, with its reason in the manifest comment beside the crate's own
+    // edge-set claim.
     let market = std::fs::read_to_string(crates_dir().join("mush-market/Cargo.toml"))
         .expect("mush-market/Cargo.toml");
     assert!(
-        !market.contains("mush-inventory"),
-        "the `mush-market -> mush-inventory` edge lands in the LIFT's own commit \
-         (10b §15.5, as rewritten by fold F1), never in this fold"
+        market.contains("mush-inventory.workspace = true"),
+        "the `mush-market -> mush-inventory` edge landed with the lift (10b §15.5 (a′)) \
+         and must not disappear: without it a produced lot cannot be sold and the \
+         extract -> produce -> sell loop is inert again"
+    );
+    // …and it is the pass's ONLY new edge in this direction: the market still declares
+    // no industry edge, so the lift did not quietly generalize into a second one.
+    assert!(
+        !market
+            .lines()
+            .any(|line| line.trim_start().starts_with("mush-industry")),
+        "the lift adds exactly one edge; `mush-market -> mush-industry` is not it"
     );
 }

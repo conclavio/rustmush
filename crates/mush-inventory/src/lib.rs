@@ -51,6 +51,7 @@ pub mod module;
 pub mod pool;
 pub mod provider;
 pub mod record;
+pub mod salvage;
 pub mod store;
 
 pub use facts::InventoryFactProvider;
@@ -59,20 +60,25 @@ pub use module::{
     InventoryHandleCell, InventoryHandles, InventoryModule, SWEEP_PERIOD_SECS, SWEEP_TAG,
 };
 pub use pool::{
-    InventoryError, InventoryFamilies, Moved, derive_lot_id, derive_tranche_id, pool_key,
-    pool_resource, reservation_deadline, reservation_id_from_text, reservation_id_text,
-    tranche_key,
+    InventoryError, InventoryFamilies, LotSale, Moved, SettledSale, derive_lot_id,
+    derive_tranche_id, pool_key, pool_resource, reservation_deadline, reservation_id_from_text,
+    reservation_id_text, tranche_key,
 };
 pub use provider::{
     InventoryVerb, MAX_ENDPOINT_CHOICES, action_ref, endpoint_status, endpoint_visible,
     endpoints_truncated, live_endpoints, may_take,
 };
 pub use record::{
-    AppliedMarker, EndpointRef, FACT_LOT_CREATED, FACT_TRANSFERRED, Grade, INV_PAGE,
-    InventoryRecordError, Lineage, Lot, LotCensus, LotId, MAX_APPLIED_MARKERS, MAX_GRADE,
+    AppliedMarker, EndpointRef, FACT_LOT_CREATED, FACT_SALVAGE_RECOVERED, FACT_TRANSFERRED, Grade,
+    INV_PAGE, InventoryRecordError, Lineage, Lot, LotCensus, LotId, MAX_APPLIED_MARKERS, MAX_GRADE,
     MAX_LINEAGE_DEPTH, MAX_LOT_PARENTS, MAX_LOT_QUANTITY, MAX_LOTS_PER_ENDPOINT, MAX_POOL_QUANTITY,
     MAX_POOLS_PER_ENDPOINT, MAX_RETAINED_TERMINAL_RESERVATIONS, MAX_TRANCHE_ABSORBED,
     MAX_TRANCHE_GENERATIONS, MAX_TRANCHE_INHERITED, NS, Pool, PoolCensus, PoolTranche,
     RESERVATION_TTL_IC_DAYS, RESERVATION_TTL_SECS, TrancheId, owner,
+};
+pub use salvage::{
+    ACTION_SALVAGE, MAX_SALVAGE_ENDPOINTS, MAX_SALVAGE_SITES, MAX_SALVAGE_WRECKS, NO_SUCH_WRECK,
+    SalvageHandle, SalvageSource, WreckReport, salvage_holder, salvage_holder_text, site_token,
+    sites,
 };
 pub use store::{InventoryStore, Quarantine};

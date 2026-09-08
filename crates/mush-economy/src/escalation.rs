@@ -150,6 +150,16 @@ pub enum EscalationSubject {
     /// the page. The `u64` is the raw `WorkOrderId`, because the dependency runs
     /// industry → economy and must keep running that way.
     WorkOrder(u64),
+    /// One **market listing** whose inventory reservation is gone (E7 residue pass 2,
+    /// P1).
+    ///
+    /// [`EscalationSubject::WorkOrder`]'s twin, for the same reason and on the same
+    /// terms: the economy neither resolves nor interprets it, the dependency runs
+    /// market → economy and must keep running that way, and the ladder's per-subject
+    /// dedupe is what makes one stuck listing **stop only itself**. A `Supply::Lot`
+    /// listing whose hold nothing holds is withdrawn and paged; it is never read as a
+    /// replay hit. The `u64` is the raw `ListingId`.
+    MarketListing(u64),
     /// The whole economy — the level-3 case, and the only one that is not local.
     Economy,
 }
@@ -168,6 +178,7 @@ impl EscalationSubject {
             EscalationSubject::DeclaredCadence(id) => format!("declared cadence #{id}"),
             EscalationSubject::DroppedPage => "a dropped economy announcement".to_string(),
             EscalationSubject::WorkOrder(id) => format!("work order #{id}"),
+            EscalationSubject::MarketListing(id) => format!("market listing #{id}"),
             EscalationSubject::Economy => "the economy".to_string(),
         }
     }

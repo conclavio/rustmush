@@ -357,7 +357,7 @@ pub fn quote(ctx: &mut Ctx<'_>, req: &QuoteRequest) -> Result<QuoteId, MarketErr
             visibility: listing.visibility,
             source: match listing.source {
                 Supply::Market { source } => Some(source),
-                Supply::Stock { .. } | Supply::Procurement { .. } => None,
+                Supply::Stock { .. } | Supply::Procurement { .. } | Supply::Lot { .. } => None,
             },
             price: unit,
             quantity,
@@ -470,6 +470,25 @@ pub(crate) fn price_for(l: &Listing, store: Option<&MarketStore>) -> Amount {
 ///
 /// [`MarketError`]; render it with [`crate::refuse_market`].
 pub fn accept(ctx: &mut Ctx<'_>, id: QuoteId) -> Result<ContractId, MarketError> {
+    accept_into(ctx, id, None)
+}
+
+/// **Take a quote up, naming where a lot-represented purchase is delivered** (E7r2 P1).
+///
+/// `destination` is `None` for every E6c representation and for a buyer who named
+/// none; a `Supply::Lot` purchase needs one, because matter has to arrive somewhere and
+/// `mush-inventory`'s endpoints are E3 vaults rather than a person. It must be an
+/// endpoint the BUYER may take from — `+market/accept <quote>=<vault>` — and naming one
+/// they may not is refused identically to naming one that does not exist.
+///
+/// # Errors
+///
+/// [`MarketError`]; render it with [`crate::refuse_market`].
+pub fn accept_into(
+    ctx: &mut Ctx<'_>,
+    id: QuoteId,
+    destination: Option<mush_inventory::EndpointRef>,
+) -> Result<ContractId, MarketError> {
     let Some(mut q) = ctx
         .w
         .module_state::<MarketStore>()
@@ -550,6 +569,29 @@ pub fn accept(ctx: &mut Ctx<'_>, id: QuoteId) -> Result<ContractId, MarketError>
     // rather than at settlement, where the money has gone. A provider that will not
     // answer (`None`) leaves the accept exactly as it was: this is a pre-check, never a
     // second authority.
+    // ---- E7r2: P1 — the lot leg's own pre-check, before any money moves ----
+    //
+    // The same shape as `cannot_deliver` above and for the same reason: a purchase the
+    // matter leg cannot honour must be refused with the buyer's money still theirs.
+    // The destination is checked against `may_take_from_vault` — cut 2's exported
+    // `may_take` — so naming a stranger's vault reads exactly like naming a vault that
+    // does not exist, and the seller's own endpoint is refused because
+    // `settle_sale` writes one `lot_census` key per endpoint.
+    let destination = match listing.source.lot() {
+        Some((endpoint, _, _)) => {
+            let Some(destination) = destination else {
+                return Err(MarketError::bad(
+                    "Name the inventory endpoint this is delivered into: +market/accept \
+                     <quote>=<vault>.",
+                ));
+            };
+            if !mush_inventory::may_take(ctx.w, ctx.actor, destination) || destination == endpoint {
+                return Err(MarketError::NoStanding(NO_SUCH_QUOTE));
+            }
+            Some(destination)
+        }
+        None => None,
+    };
     if let Some(why) = crate::module::cannot_deliver(ctx, &q, representation) {
         tracing::info!(
             quote = q.id.0,
@@ -618,6 +660,31 @@ pub fn accept(ctx: &mut Ctx<'_>, id: QuoteId) -> Result<ContractId, MarketError>
             ));
         }
     }
+    // ---- E7r2: P1 — the matter leg, at the SAME serialization point ----
+    //
+    // OPEN 1's default: the consume is ONE `Ctx::submit_authoritative` from
+    // `+market/accept`, staged at the activation E6c already serializes on. Keeping
+    // `+market` on the compatibility lane and deferring the consume to a sweep arm
+    // would open a paid-but-unconsumed window the reservation was placed to close, and
+    // a GOD tick may not stage an authoritative submission at all (the tick-cadence
+    // rule). The money is escrowed and the contract is in force by the time this runs,
+    // so **a lot is never consumed without the money leg**: every refusal above
+    // returns before it, and a settle that never activates consumes nothing.
+    if let Some((endpoint, commodity, grade)) = listing.source.lot() {
+        let destination = destination.unwrap_or(endpoint);
+        crate::lot::stage(
+            ctx,
+            &crate::lot::LotLeg {
+                op: crate::lot::LotOp::Consume,
+                listing: listing.id,
+                endpoint: destination,
+                source: endpoint,
+                commodity: commodity.clone(),
+                quantity: q.quantity,
+                grade,
+            },
+        );
+    }
     // **The single serialization point** (OPEN 4): the listing's quantity decrements
     // when — and only when — the contract came into force. A quote reserved nothing,
     // so two quotes on the last unit are a race the economy already serialized, and
@@ -637,7 +704,19 @@ pub fn accept(ctx: &mut Ctx<'_>, id: QuoteId) -> Result<ContractId, MarketError>
 }
 
 /// Take `quantity` off a listing, deleting it when it is exhausted.
+///
+/// **A `Supply::Lot` listing is always exhausted by one sale** (E7r2 P1).
+/// `ReservationBook::checked_consume` settles a hold **whole** — it is one record with
+/// one amount, not a running counter — so the listing's reservation is gone the moment
+/// any quantity is bought, and a surviving listing would advertise a hold that no
+/// longer exists: the next buyer would pay, and the matter leg would refuse with their
+/// money in force. `settle_sale` gives the seller the unsold remainder back as its own
+/// tranche-rooted lot instead, and the seller re-lists it.
 fn commit_quantity(ctx: &mut Ctx<'_>, listing: &Listing, quantity: u64) {
+    if listing.source.lot().is_some() {
+        crate::store::del_listing(ctx, listing.id);
+        return;
+    }
     let left = listing.quantity.saturating_sub(quantity);
     if left == 0 {
         crate::store::del_listing(ctx, listing.id);

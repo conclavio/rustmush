@@ -1559,6 +1559,53 @@ exhaustive match with no `?`, `unwrap`, `expect` or panicking index. Both digest
 **`file:line` in §5.1–§5.4 is historical.** The symbol beside each cite is the citation; the numbers
 were true at Draft 0.3 and are not re-numbered here (08i §8's rule).
 
+> ---- **AMENDED IN PLACE by E7 residue pass 2 (P1), 2026-09-07 — one deliberate
+> divergence, recorded here because this section is where the claim it contradicts is
+> made** ----
+>
+> **E6c's `Listing` "holds no money and reserves nothing", and `Supply::Lot` is a
+> deliberate exception to the second half.** 10b §15.1 item 3 lifts
+> `Representation::Lot`'s refusal by adding a **fourth** `Supply` arm,
+> `Supply::Lot { endpoint, commodity, grade }`, and that arm **places a real
+> reservation** on `mush-inventory`'s own `ReservationBook` at `(endpoint, commodity)`
+> when the listing is written, consumes it when a contract comes into force, and
+> releases it at `@market/vendor withdraw`.
+>
+> **Why the sentence survives for the other three arms and is false for this one.**
+> `Supply::{Stock, Market, Procurement}` advertise a **counter** — a catalogue promise
+> the vendor is expected to be able to honour out of its own balance sheet — and
+> over-advertising one is a commercial mistake the vendor pays for, which is exactly
+> why E6c's single serialization point at contract **activation** makes oversell
+> unreachable without reserving anything. `Supply::Lot` advertises **finite matter
+> another owner is the source of truth for**, and there is no honest way to publish
+> that without holding it: two listings over one pool would each draw from the same
+> lineage root, and the second sale would refuse **after** its money leg was in force.
+> Conservation over a finite lot is a different problem from an advertised counter, and
+> it gets a different answer.
+>
+> **What does not change.** A **quote** still reserves nothing — 08i §4 rule 1's
+> exemption covers neither reservations nor mechanical offers and doc 10 T4 keeps E4
+> `Hold`s money-only, so this crate still defines no reservation family and no new
+> `Hold` field. The reservation is `mush-inventory`'s, reached through cut 2's own
+> exported verbs on the **delegated** path (`with_quantity_delegates(["industry",
+> "market"])`), and `mush-market` defines no second quantity authority: no
+> `InventoryVerb` is added, `ENGINE_OWNED_RESERVATIONS` is untouched (it is matched only
+> against `HoldPurpose::Reservation`, a money hold), and `mint_origin` is called nowhere
+> in the crate. The **money leg is E6c's, untouched**: `offer_contract` /
+> `accept_contract` / `accept_contract_as` on the economy's own carve-out lane, with
+> `ContractAuth` at settlement.
+>
+> **And it is invisible to a server that does not compose it.**
+> `Representation::is_stockable` is **lifted with its comment** rather than retired —
+> one definition, one call site, now conditional on `MarketModule::with_inventory` — so
+> a server that composes no lot supply refuses a lot-represented good **byte-identically
+> to E6c**, and `crates/ruleset-shadowrun/tests/e6c.rs`'s `"not stockable"` assertion is
+> untouched and green. `mush-market`'s declared edge set becomes
+> `{core, org, economy, inventory}`; the direction is the one 10b §3.2 always intended
+> (`mush-market → mush-inventory`, never the inverse), and it is pinned by a third
+> tripwire in `mush-market/tests/e7r2.rs` beside the two existing ones, which forbid the
+> inverse and are unamended.
+
 **B1 — the gate: the safe public projection** (`mush-market/src/projection.rs`). The condition, and
 how each half of it is a property of the *code*:
 

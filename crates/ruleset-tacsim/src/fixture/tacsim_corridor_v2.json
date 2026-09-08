@@ -1,0 +1,105 @@
+{
+  "manifest": {
+    "id": "tacsim.corridor",
+    "version": 2,
+    "kind": "campaign_seed",
+    "digest": "6f782bd9159e982a469635a8c7191bee1d8e97ad48e3cbaf9ee27d393a4ebe15",
+    "requires": [
+      { "id": "tacsim.core", "version": 1 }
+    ]
+  },
+  "entries": {
+    "ceres_extraction": {
+      "kind": "location",
+      "def": { "label": "Ceres Extraction Site", "role": "extraction" }
+    },
+    "ceres_freeport": {
+      "kind": "location",
+      "def": { "label": "Ceres Freeport", "role": "market" }
+    },
+    "ceres_iron": {
+      "kind": "deposit",
+      "def": {
+        "label": "Ceres Iron Seam",
+        "place": "ceres_extraction",
+        "commodity": "metals",
+        "grade": 60,
+        "accessibility": 100,
+        "grade_class": "grade_b",
+        "reserve_class": "reserve_major",
+        "reserve": 50000,
+        "curve": [
+          { "cumulative": 0, "per_cycle": 500 },
+          { "cumulative": 20000, "per_cycle": 300 },
+          { "cumulative": 40000, "per_cycle": 100 }
+        ]
+      }
+    },
+    "ceres_phobos": {
+      "kind": "route",
+      "def": {
+        "from": "ceres_extraction",
+        "to": "phobos_yard",
+        "legs": [
+          { "to": "transfer_node", "base_s": 86400, "hazard": 1 },
+          { "to": "phobos_yard", "base_s": 172800, "hazard": 3, "interdiction": 3 }
+        ],
+        "drive_class": "fusion_torch",
+        "propellant": 1200,
+        "controller": "ceres_combine"
+      }
+    },
+    "ceres_refinery": {
+      "kind": "facility",
+      "def": {
+        "label": "Ceres Freeport Refinery",
+        "at": "ceres_freeport",
+        "capabilities": ["refine", "smelt"],
+        "slots": 2
+      }
+    },
+    "mars_objective": {
+      "kind": "location",
+      "def": { "label": "Tharsis Relay Station", "role": "objective" }
+    },
+    "mars_orbit": {
+      "kind": "location",
+      "def": { "label": "Mars Orbital Approach", "role": "orbit" }
+    },
+    "mars_theater": {
+      "kind": "location",
+      "def": { "label": "Tharsis Ground Theater", "role": "theater" }
+    },
+    "phobos_forge": {
+      "kind": "facility",
+      "def": {
+        "label": "Phobos Yard Forge",
+        "at": "phobos_yard",
+        "capabilities": ["forge", "smelt"],
+        "slots": 2
+      }
+    },
+    "phobos_mars": {
+      "kind": "route",
+      "def": {
+        "from": "phobos_yard",
+        "to": "mars_theater",
+        "legs": [
+          { "to": "mars_orbit", "base_s": 43200, "hazard": 2, "interdiction": 4 },
+          { "to": "mars_theater", "base_s": 21600, "hazard": 4, "interdiction": 4 }
+        ],
+        "drive_class": "fusion_torch",
+        "propellant": 400,
+        "controller": "mars_directorate"
+      }
+    },
+    "phobos_yard": {
+      "kind": "location",
+      "def": { "label": "Phobos Yard", "role": "yard" }
+    },
+    "transfer_node": {
+      "kind": "location",
+      "def": { "label": "Cislunar Transfer Node", "role": "transfer" }
+    }
+  }
+}

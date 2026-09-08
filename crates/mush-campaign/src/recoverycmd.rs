@@ -34,8 +34,8 @@ use smol_str::SmolStr;
 
 use crate::recovery::{
     ApplicationState, MAX_RECOVERY_PER_FIRE, RecoveryApplication, RecoveryConfig, RecoveryGrant,
-    RecoveryRefusal, accessible_operational_assets, cooldown_until, eligible, next_loaner, policy,
-    pool_balance, pool_can_fund, provider, upkeep_template,
+    RecoveryRefusal, accessible_operational_assets, cooldown_until, eligible, loss_is_covered,
+    next_loaner, policy, pool_balance, pool_can_fund, provider, upkeep_template,
 };
 use crate::render::is_staff;
 use crate::store::{
@@ -165,6 +165,17 @@ fn recovery_status(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         } else {
             format!("Your last loaner (#{}) was returned.", grant.loaner().0)
         });
+        // E7r2 P0b: the marker is rendered to the applicant it belongs to, because it
+        // is the whole reason their cooldown line reads the way it does. A grant
+        // without it says nothing extra — the cooldown row below already is the
+        // sentence.
+        if grant.loss_covered() {
+            rows.push(
+                "That loss was recorded as an approved-operation loss, so no cooldown \
+                 applies to it."
+                    .to_owned(),
+            );
+        }
     }
     rows.push(match verdict {
         Ok(()) => format!("You are eligible ({assets} accessible operational assets)."),
@@ -496,8 +507,24 @@ pub(crate) fn try_grant(
                 |app| SmolStr::new(app.tier()),
             );
         let granted_at = grant.as_ref().map_or(now, RecoveryGrant::granted_at);
-        let Ok(record) = RecoveryGrant::new(applicant, contract.0, loaner, tier, granted_at, None)
-        else {
+        // E7r2 P0b: on the RESUME path the marker is re-read from the record exactly
+        // as `granted_at` is, and re-derived only when there is no record to read. The
+        // predicate is over live world state, so a resume after the wreck was salvaged
+        // would otherwise answer differently from the grant it is resuming — and the
+        // waiver would silently disappear from a lease already in force.
+        let loss_covered = grant.as_ref().map_or_else(
+            || loss_is_covered(ctx.w, applicant),
+            RecoveryGrant::loss_covered,
+        );
+        let Ok(record) = RecoveryGrant::with_cover(
+            applicant,
+            contract.0,
+            loaner,
+            tier,
+            granted_at,
+            None,
+            loss_covered,
+        ) else {
             return GrantOutcome::ApplicantBlocked("the grant record would not construct");
         };
         if let Some(account) = applicant_account(ctx, cfg, &PrincipalId::Object(applicant))
@@ -558,7 +585,18 @@ pub(crate) fn try_grant(
         Ok(contract) => contract,
         Err(_) => return GrantOutcome::ApplicantBlocked("the lease could not be offered"),
     };
-    let Ok(record) = RecoveryGrant::new(applicant, contract.0, loaner, tier, now, None) else {
+    // ---- E7r2: P0b — the insured-loss marker, written HERE and nowhere else ----
+    //
+    // `loss_is_covered` is a deterministic predicate over recorded facts — the
+    // applicant holds title to a hull whose journey reached a terminal loss state
+    // (`Failed`/`Captured`) and which is a member of a formation this world records.
+    // It is evaluated **once**, at the moment the grant is made, and frozen onto the
+    // record: the cooldown is decided by what was true when the lease was granted, not
+    // by what happens to the wreck afterwards. Nothing else in this crate ever sets it.
+    let loss_covered = loss_is_covered(ctx.w, applicant);
+    let Ok(record) =
+        RecoveryGrant::with_cover(applicant, contract.0, loaner, tier, now, None, loss_covered)
+    else {
         return GrantOutcome::ApplicantBlocked("the grant record would not construct");
     };
     if let Err(why) = post_stipend(ctx, cfg, applicant, contract, account) {

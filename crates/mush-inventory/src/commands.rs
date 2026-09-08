@@ -252,7 +252,162 @@ pub fn register(reg: &mut Registrar<'_>, families: &InventoryFamilies) -> Result
             ..CommandSpec::default()
         },
         Arc::new(move |ctx: &mut Ctx<'_>| dispatch(ctx, &families)),
+    )?;
+    // ---- E7r2: P2 — `@salvage`, in the SAME `Authoritative` group ----
+    //
+    // A **new primary verb**, so it enters the pinned allowlist in this same commit
+    // with a stanza of its own — non-baseline, so `PINNED_BASELINE` does not move.
+    // It registers after `classify_commands(Authoritative)` above and before any
+    // re-classification, which is K8.5's rule: `/recover` stages exactly one
+    // `Ctx::submit_authoritative` of the salvage action and `/status` reads, so the
+    // ceiling class is `Authoritative`.
+    //
+    // Recovery is a **command**, never an observer and never a tick arm: the actor is
+    // the wreck's own custodian and the authority is theirs, so there is nobody for a
+    // GOD tick to act as.
+    reg.command(
+        CommandSpec {
+            name: "@salvage".into(),
+            switches: vec!["status".into(), "recover".into()],
+            shape: ArgShape::EqPair,
+            help: "@salvage/status [<wreck>]              what you may recover, and from \
+                   where.\n\
+                   @salvage/recover <wreck>/<endpoint>/<lot>=<endpoint>\n\
+                   \x20                                    move one stranded lot out of a \
+                   wreck you may draw from and into an endpoint you hold. The lot is the SAME \
+                   lot: its provenance, grade and quantity are untouched, and nothing is \
+                   created. Capture changes custody, never title, so a captor sees no wreck \
+                   here at all."
+                .to_owned(),
+            ..CommandSpec::default()
+        },
+        Arc::new(cmd_salvage),
     )
+}
+
+/// The composed wreck oracle, or `None` on a server that wired none.
+fn salvage_source(ctx: &Ctx<'_>) -> Option<Arc<dyn crate::salvage::SalvageSource>> {
+    ctx.w
+        .module_state::<crate::salvage::SalvageHandle>()
+        .and_then(|handle| handle.0.clone())
+}
+
+fn cmd_salvage(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    if ctx.switches.has("recover") {
+        return salvage_recover(ctx);
+    }
+    salvage_status(ctx)
+}
+
+/// **What this actor may recover, and from where.**
+///
+/// It discloses **no other principal's wreck**: the list is `salvage::sites`, which is
+/// `may_take_from_vault` over the wreck's own endpoints and nothing else, so a captor
+/// and a stranger both read `(nothing to recover)` — the same line an actor reads on a
+/// world with no wrecks in it at all.
+fn salvage_status(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    let Some(source) = salvage_source(ctx) else {
+        // Fail-closed and byte-identical to a world with no wrecks: an unwired
+        // composition is not announced, because announcing it would tell a player
+        // something about the server rather than about the world.
+        ctx.out.info(ctx.actor, "(nothing to recover)");
+        return Ok(());
+    };
+    let (sites, truncated) = crate::salvage::sites(ctx.w, source.as_ref(), ctx.actor);
+    if sites.is_empty() {
+        ctx.out.info(ctx.actor, "(nothing to recover)");
+        return Ok(());
+    }
+    for (root, endpoint) in &sites {
+        let site = source
+            .wreck(ctx.w, *root)
+            .map_or(0, |report| report.site().0);
+        ctx.out.info(
+            ctx.actor,
+            format!(
+                "Wreck #{} (in #{site}): endpoint {} — @salvage/recover {}/<lot>=<endpoint>",
+                root.0,
+                endpoint.vault().0,
+                crate::salvage::site_token(*root, *endpoint)
+            ),
+        );
+    }
+    if truncated {
+        ctx.out.info(
+            ctx.actor,
+            format!(
+                "(more than {} recoverable sites; recover some to see the rest)",
+                crate::salvage::MAX_SALVAGE_SITES
+            ),
+        );
+    }
+    Ok(())
+}
+
+/// `@salvage/recover <wreck>/<endpoint>/<lot>=<endpoint>`.
+///
+/// The pre-check is a *good refusal*, never the gate: the gate is the offer's own
+/// regenerated `Choice` list, which `Engine::resolve_legal_action` rebuilds
+/// immediately before preparation, so custody that moved between the command and the
+/// commit drops the site out of the list and the submission is refused.
+fn salvage_recover(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    let lhs = ctx.args.lhs().trim().to_owned();
+    let mut parts = lhs.rsplitn(2, '/');
+    let Some(lot_text) = parts.next() else {
+        return Err(CmdError::msg(crate::salvage::NO_SUCH_WRECK));
+    };
+    let Some(site_text) = parts.next() else {
+        return Err(CmdError::msg(
+            "Usage: @salvage/recover <wreck>/<endpoint>/<lot>=<endpoint>",
+        ));
+    };
+    let Some(lot) = LotId::parse(lot_text) else {
+        return Err(CmdError::msg(crate::salvage::NO_SUCH_WRECK));
+    };
+    let Some((root, from)) = crate::salvage::parse_site(site_text) else {
+        return Err(CmdError::msg(crate::salvage::NO_SUCH_WRECK));
+    };
+    let Some(to) = ctx.args.rhs().and_then(|rhs| parse_endpoint(rhs.trim())) else {
+        return Err(CmdError::msg(
+            "Name the endpoint this is recovered into: @salvage/recover \
+             <wreck>/<endpoint>/<lot>=<endpoint>",
+        ));
+    };
+    // Existence-hiding, through the SAME view the offer gates on: an actor who may not
+    // take from that wreck endpoint reads exactly what an actor naming a wreck that
+    // never existed reads, and a captor reads it too — before and after the capture,
+    // because capture does not change `may_take_from_vault`'s answer for anybody.
+    let permitted = salvage_source(ctx).is_some_and(|source| {
+        crate::salvage::sites(ctx.w, source.as_ref(), ctx.actor)
+            .0
+            .contains(&(root, from))
+    });
+    if !permitted {
+        return Err(CmdError::msg(crate::salvage::NO_SUCH_WRECK));
+    }
+    if !crate::provider::may_take(ctx.w, ctx.actor, to) || to == from {
+        return Err(CmdError::msg(crate::salvage::NO_SUCH_WRECK));
+    }
+    let Some(action) = crate::salvage::action_ref(ctx.reg) else {
+        return Err(CmdError::msg(crate::salvage::NO_SUCH_WRECK));
+    };
+    let at = ctx.w.world_ic_now().at;
+    let attempt = ctx
+        .w
+        .module_state_mut::<InventoryStore>()
+        .map_or(0, |store| store.next_attempt(at));
+    ctx.submit_authoritative(
+        action,
+        PerceivedRef::SelfActor,
+        Vec::new(),
+        json!({
+            "site": crate::salvage::site_token(root, from),
+            "to": to.vault().0.to_string(),
+            "lot": lot.to_string(),
+        }),
+        key(&format!("inv.salvage.{}.{at:x}.{attempt:x}", root.0))?,
+    );
+    Ok(())
 }
 
 fn dispatch(ctx: &mut Ctx<'_>, families: &InventoryFamilies) -> Result<(), CmdError> {

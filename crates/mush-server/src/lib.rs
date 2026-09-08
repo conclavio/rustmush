@@ -80,6 +80,7 @@ pub mod persist;
 mod process_fault;
 pub mod quarantine;
 pub mod retained;
+pub mod salvage_source;
 pub mod sim_routes;
 pub mod staff;
 pub mod store_read;

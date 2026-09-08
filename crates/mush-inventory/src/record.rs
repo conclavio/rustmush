@@ -1057,13 +1057,27 @@ impl<'de> Deserialize<'de> for AppliedMarker {
 pub const FACT_TRANSFERRED: &str = "inventory.transferred";
 /// `inventory.lot.created` (§10, D-E7-30).
 pub const FACT_LOT_CREATED: &str = "inventory.lot.created";
+/// `inventory.salvage.recovered { from, to, commodity, quantity }` — the **third**
+/// kind (E7 residue pass 2, P4; 10b §15.3 item 26, OPEN 5 taken).
+///
+/// A **kind, never a namespace**: `EconomyModule::with_facts` stays at five
+/// namespaces and a duplicate panics at composition. `tactics.salvage.recovered` is
+/// decided never to exist (10b:1714) and is not added.
+///
+/// Item 26's only stated blocker was §15.1 item 4 — *"nothing writes it"* — and P2's
+/// salvage bundle is the producer that lifts it. Like its two siblings it is answered
+/// from the applied marker the committed bundle itself wrote and **never** from a
+/// status: a recovery that merely started leaves no marker, so the fact answers
+/// unsatisfied and no settlement pays early.
+pub const FACT_SALVAGE_RECOVERED: &str = "inventory.salvage.recovered";
 
 impl AppliedMarker {
     /// Build a marker.
     ///
     /// # Errors
-    /// [`InventoryRecordError::UnknownFactKind`] for a kind outside the two this
-    /// crate owns, or [`InventoryRecordError::ZeroQuantity`].
+    /// [`InventoryRecordError::UnknownFactKind`] for a kind outside the **three**
+    /// this crate owns (E7r2 P4 added [`FACT_SALVAGE_RECOVERED`]), or
+    /// [`InventoryRecordError::ZeroQuantity`].
     pub fn new(
         kind: &str,
         from: Option<EndpointRef>,
@@ -1085,7 +1099,10 @@ impl AppliedMarker {
         actor: ObjId,
         at: i64,
     ) -> Result<Self, InventoryRecordError> {
-        if kind != FACT_TRANSFERRED && kind != FACT_LOT_CREATED {
+        // E7r2 P4: the refusal is still a closed list and still the one place the
+        // vocabulary lives — it gained one entry and no structure. A hand-edited
+        // document naming a fourth kind is refused **on load**, never truncated.
+        if kind != FACT_TRANSFERRED && kind != FACT_LOT_CREATED && kind != FACT_SALVAGE_RECOVERED {
             return Err(InventoryRecordError::UnknownFactKind);
         }
         if quantity == 0 {
@@ -1102,7 +1119,7 @@ impl AppliedMarker {
         })
     }
 
-    /// Which of this crate's two facts it records.
+    /// Which of this crate's three facts it records.
     #[must_use]
     pub fn kind(&self) -> &str {
         self.kind.as_str()

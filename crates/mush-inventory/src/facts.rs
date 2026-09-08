@@ -32,7 +32,7 @@
 use mush_core::World;
 use mush_economy::{FactProvider, FactState};
 
-use crate::record::{FACT_LOT_CREATED, FACT_TRANSFERRED, NS};
+use crate::record::{FACT_LOT_CREATED, FACT_SALVAGE_RECOVERED, FACT_TRANSFERRED, NS};
 use crate::store::InventoryStore;
 
 /// The one `inventory.*` provider this crate registers.
@@ -51,7 +51,17 @@ impl FactProvider for InventoryFactProvider {
         if revision.is_some_and(|revision| revision != 1) {
             return None;
         }
-        if kind != FACT_TRANSFERRED && kind != FACT_LOT_CREATED {
+        // ---- E7r2: P4 — the THIRD arm (10b §15.3 item 26, OPEN 5 taken) ----
+        //
+        // `inventory.salvage.recovered` joins on exactly the two terms its siblings
+        // ride: a **kind** on the existing `inventory.*` namespace, never a sixth
+        // namespace (`with_facts` stays five and a duplicate panics), and answered
+        // from the applied marker P2's salvage bundle wrote, never from a status. A
+        // recovery that merely *started* wrote no marker, so it answers `None` — and
+        // `None` never settles money. The truncated-mirror `None` below and the
+        // "unknown is unsatisfied" contract are unchanged and cover this arm for
+        // free, which is the point of adding a kind rather than a namespace.
+        if kind != FACT_TRANSFERRED && kind != FACT_LOT_CREATED && kind != FACT_SALVAGE_RECOVERED {
             return None;
         }
         let store = w.module_state::<InventoryStore>()?;

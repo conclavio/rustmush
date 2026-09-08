@@ -56,6 +56,7 @@ pub struct InventoryModule {
     families: Option<InventoryFamilies>,
     delegates: Vec<SmolStr>,
     cell: Option<InventoryHandleCell>,
+    salvage: Option<std::sync::Arc<dyn crate::salvage::SalvageSource>>,
 }
 
 impl InventoryModule {
@@ -66,7 +67,31 @@ impl InventoryModule {
             families: None,
             delegates: Vec::new(),
             cell: None,
+            salvage: None,
         }
+    }
+
+    /// ---- E7r2: P2 — **name the composition's wreck oracle** ----
+    ///
+    /// [`InventoryModule::with_handle_cell`] and
+    /// [`InventoryModule::with_quantity_delegates`]' exact shape, and for the same
+    /// reason: whether a carrier root is a recoverable wreck is `mush-sim`'s fact,
+    /// this crate has no edge to `mush-sim` (`mush-inventory → {core, economy}`,
+    /// pinned by `tests/e7c2.rs`), and `mush-server` is the one crate with edges to
+    /// both. Declaring the trait here and implementing it there is what keeps the
+    /// edge set frozen — the seam is at the composition root **because** the
+    /// dependency may not be.
+    ///
+    /// **Unwired is fail-closed**: no salvage action is registered at all, so
+    /// `@salvage/status` shows nothing and `@salvage/recover` refuses byte-identically
+    /// to a wreck that does not exist.
+    #[must_use]
+    pub fn with_salvage_source(
+        mut self,
+        source: std::sync::Arc<dyn crate::salvage::SalvageSource>,
+    ) -> Self {
+        self.salvage = Some(source);
+        self
     }
 
     /// Publish this crate's family handles into a composition-root cell.
@@ -330,9 +355,13 @@ impl GameModule for InventoryModule {
         )?;
 
         // ---- E7c2: B5 — the prepared path ----
-        crate::provider::register(reg, &families)?;
+        crate::provider::register(reg, &families, self.salvage.as_ref())?;
 
         reg.state(InventoryStore::default());
+        // E7r2 P2: the composed wreck oracle, published read-only so `@salvage`'s
+        // read and pre-check arms reach exactly the source `project_offer` gates on —
+        // one internal view, two readers, and they cannot drift.
+        reg.state(crate::salvage::SalvageHandle(self.salvage.clone()));
         // 08i answer 16: the exported verbs are the ONLY way a consumer touches
         // quantity, and a consumer that does not own the registration still
         // needs the handles they take. Publishing them in module state is that

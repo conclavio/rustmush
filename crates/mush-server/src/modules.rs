@@ -342,11 +342,25 @@ pub fn server_modules_with(
         // E7 cut 2 (10b §3.2, Q13A/Q2D, D-E7-3): the neutral quantity authority.
         // It boots **immediately after `mush-economy`** because its own boot
         // reconciliation asks the economy about vault status — the housing
-        // precedent exactly — and before `mush-market`, which must never learn
-        // that quantities have another owner: a listing's `quantity` stays the
-        // market's own advertised counter and becomes no `Pool` claim.
-        // `mush-inventory -> {core, economy}` only; nothing industry-, market- or
-        // TacSim-shaped is inside it.
+        // precedent exactly — and before `mush-market`.
+        //
+        // **E7r2 P1 amends the rest of this note in place rather than deleting
+        // it, because it is now false by decision.** It used to end "…and before
+        // `mush-market`, which must never learn that quantities have another
+        // owner: a listing's `quantity` stays the market's own advertised
+        // counter and becomes no `Pool` claim." That is still true of E6c's
+        // three `Supply` arms and it is exactly why they can over-advertise
+        // harmlessly. It is deliberately NOT true of `Supply::Lot`
+        // (10b §15.1 item 3; the owner's fix-before sentence: *"a produced lot
+        // that cannot be sold leaves the extract → produce → sell loop inert,
+        // and the corridor's first sale must be a real listing"*). A lot listing
+        // advertises finite matter this module is the truth for, so it holds a
+        // real reservation on this module's own `ReservationBook` — through the
+        // delegation below, never through a second quantity authority of the
+        // market's own.
+        //
+        // `mush-inventory -> {core, economy}` is unchanged and is pinned by
+        // `mush-inventory/tests/e7c2.rs`: the new edge runs the other way.
         Box::new(
             mush_inventory::InventoryModule::new()
                 // E7 cut 3 B1: the cross-owner write bridge cut 2's own handoff
@@ -357,7 +371,28 @@ pub fn server_modules_with(
                 // gate: every quantity mutation still rides
                 // `InventoryFamilies`' exported verbs and
                 // `ReservationBook::checked_apply_resource`.
-                .with_quantity_delegates(["industry"])
+                //
+                // **E7r2 P1 (§15.5 (b′)) adds `"market"` on exactly the same
+                // terms**, and it is the SECOND consumer of one pattern rather
+                // than a new one: the market's own `market_lot` action reserves
+                // at `@market/vendor stock`, settles at `+market/accept` and
+                // releases at `@market/vendor withdraw`, each in one bundle,
+                // under `mush_market::listing_holder(ListingId)` — which is
+                // `mush_industry::wo_holder`'s shape. No `InventoryVerb` is
+                // added and no `ENGINE_OWNED_RESERVATIONS` entry is registered.
+                .with_quantity_delegates(["industry", "market"])
+                // ---- E7r2 P2: the wreck oracle, hosted HERE ----
+                //
+                // `mush-inventory → {core, economy}` and nothing else, pinned by
+                // `mush-inventory/tests/e7c2.rs`; whether a carrier root is a
+                // recoverable wreck is `mush-sim`'s fact. So the trait is declared in
+                // `mush-inventory` and implemented in `crate::salvage_source`, the
+                // one crate with edges to both — `sim_routes::TacsimRouteCatalog`'s
+                // shape exactly, and for exactly the same reason. Naming it here is
+                // what makes `@salvage` exist at all: an unwired composition
+                // registers no salvage action and refuses byte-identically to a
+                // wreck that does not exist.
+                .with_salvage_source(Arc::new(crate::salvage_source::SimSalvageSource))
                 .with_handle_cell(Arc::clone(&inventory_handles)),
         ),
         // E7 cut 3 (10b §3.3, D-E7-3, doc 10 §14): the neutral industry
@@ -441,14 +476,28 @@ pub fn server_modules_with(
         // it validates listings against real accounts, assets and vaults, and reads
         // the economy's own contract state for the trade tape the safe projection
         // folds — and before the rulesets, which register content, dice and delivery
-        // into its three wiring-frozen tables. `mush-market -> {core, org, economy}`
-        // only; nothing Shadowrun-shaped is inside it (answer 20).
+        // into its three wiring-frozen tables. `mush-market -> {core, org, economy,
+        // inventory}` (E7r2 P1's one new edge); nothing Shadowrun-shaped is inside it
+        // (answer 20).
+        //
+        // It also boots **after `mush-inventory`**, and now for a second reason: the
+        // handle cell must be filled by the time this module registers, which it is —
+        // inventory composes above and `Engine::compose_modules` registers in list
+        // order.
         Box::new(
             mush_market::MarketModule::new()
                 .with_catalog_sources(market_catalog_sources(shadowrun))
                 .with_availability(market_availability(shadowrun))
                 .with_delivery(market_delivery(shadowrun))
-                .with_issuer(market_title_issuer()),
+                .with_issuer(market_title_issuer())
+                // E7r2 P1 (§15.5 (b′)): `IndustryModule::with_inventory`'s shape
+                // exactly. It carries a **capability**; the authority to write with it
+                // is `with_quantity_delegates(["industry", "market"])` above, and
+                // without that name the very first `settle_sale` would answer
+                // `ActionStateError::OwnerMismatch`. Unwired is fail-closed: no lot
+                // action registers and `@market/vendor stock` refuses a
+                // lot-represented good byte-identically to E6c.
+                .with_inventory(Arc::clone(&inventory_handles)),
         ),
         Box::new(mush_script::ScriptModule::new()),
     ]
@@ -2411,6 +2460,29 @@ mod tests {
                     "the campaign lane {name} must publish {class:?}"
                 );
             }
+            // ---- E7r2: P1 — the market lane moves to `Authoritative` ----
+            //
+            // Both verbs, by the CEILING rule a `CommandSpec` takes over its switches
+            // (`@station` / `@inv` / `@wo` / `@prop` / `@domain`'s precedent):
+            // `@market/vendor stock`, `@market/vendor withdraw` and `+market/accept`
+            // each stage exactly one `Ctx::submit_authoritative` of the market-owned
+            // `market_lot` action, which reserves, settles and releases on cut 2's
+            // delegated `InventoryFamilies`. `crate::commands::register` classifies the
+            // group before its first `reg.command` and restores `LegacyPostImage`
+            // after, so the module still ends in the class its own `market:*` documents
+            // ride. Both allowlist categories move in the same commit and
+            // `PINNED_BASELINE` is unmoved at 157 — neither stanza was baseline.
+            for (name, class) in [
+                ("+market", mush_core::CommandCompatibility::Authoritative),
+                ("@market", mush_core::CommandCompatibility::Authoritative),
+            ] {
+                assert!(
+                    registrations.iter().any(|(spec, owner, published)| {
+                        spec.name == name && *owner == Some("market") && *published == class
+                    }),
+                    "the market lane {name} must publish {class:?}"
+                );
+            }
             // E7 cut 10: the seat lane, in TWO further groups on the same
             // module. `+seat` and `@seat` publish `Authoritative` because
             // `/activate`, `/leave` and `/revoke` reach K6's control lease
@@ -2435,6 +2507,36 @@ mod tests {
                         spec.name == name && *owner == Some("campaign") && *published == class
                     }),
                     "the campaign seat lane {name} must publish {class:?}"
+                );
+            }
+            // ---- E7r2: P0c — `+nuyen` is `ReadOnly`, in its own group ----
+            //
+            // E7 residue pass 1's fold recorded `+nuyen` in the class tripwire's
+            // `KNOWN_CLASS_DRIFT`: the allowlist declared `read-only` while
+            // `ShadowrunRuleset::register`'s module-wide
+            // `classify_commands(LegacyPostImage)` published a post-image writer.
+            // `nuyen_cmd` writes nothing, so pass 2 fixed the CLASS: its own
+            // registration group, `ReadOnly` before its `reg.command`, with
+            // `LegacyPostImage` restored after. `KNOWN_CLASS_DRIFT` is now empty and
+            // this row is what keeps the group from being folded back in.
+            if ruleset == "shadowrun" {
+                assert!(
+                    registrations.iter().any(|(spec, owner, class)| {
+                        spec.name == "+nuyen"
+                            && *owner == Some("shadowrun")
+                            && *class == mush_core::CommandCompatibility::ReadOnly
+                    }),
+                    "the shadowrun nuyen read must publish `ReadOnly`"
+                );
+                // …and the group is restored, so the ruleset's own documents keep
+                // riding the class they always did.
+                assert!(
+                    registrations.iter().any(|(spec, owner, class)| {
+                        spec.name == "@sr"
+                            && *owner == Some("shadowrun")
+                            && *class == mush_core::CommandCompatibility::LegacyPostImage
+                    }),
+                    "the shadowrun lane restores `LegacyPostImage` after the read group"
                 );
             }
             assert!(registrations.iter().any(|(_, owner, class)| {
@@ -2501,6 +2603,13 @@ mod tests {
     /// its typed families to `"industry"` at composition, which is what lets one
     /// extraction bundle carry both owners' post-images. It is never implicit:
     /// no other owner is a grantee, and the delegation is not symmetric.
+    ///
+    /// **E7r2 P1 adds the second grantee and nothing else.** `"market"` joins on
+    /// exactly the same terms — a market-owned action's prepare drives the same
+    /// exported verbs under `mush_market::listing_holder` — and the two properties this
+    /// test exists for are unchanged: the delegation is still **one-directional** (a
+    /// delegate cannot write back), and the whole production composition still carries
+    /// **only** the delegations named here, so a third one cannot arrive unnoticed.
     #[test]
     fn e7c3_wiring_the_quantity_delegation_is_declared_and_narrow() {
         use mush_testkit::TestWorld;
@@ -2520,18 +2629,33 @@ mod tests {
             .expect("the composed state-family registry");
         let inventory = mush_core::OwnerId::new("inventory").expect("owner");
         let industry = mush_core::OwnerId::new("industry").expect("owner");
+        let market = mush_core::OwnerId::new("market").expect("owner");
         assert!(
             families.delegates(&inventory, &industry),
             "inventory delegates its families to industry"
         );
         assert!(
+            families.delegates(&inventory, &market),
+            "E7r2 P1: …and to market, which is what lets one sale carry the pool, the \
+             reservation and the buyer's lot in one bundle"
+        );
+        assert!(
             !families.delegates(&industry, &inventory),
             "and the delegation is NOT symmetric"
         );
+        assert!(
+            !families.delegates(&market, &inventory),
+            "…in either direction: the market grants the quantity authority nothing"
+        );
+        assert!(
+            !families.delegates(&market, &industry) && !families.delegates(&industry, &market),
+            "and the two grantees are strangers to each other"
+        );
         assert_eq!(
             families.delegations(),
-            vec![(inventory, industry)],
-            "exactly one delegation in the whole production composition"
+            vec![(inventory.clone(), industry), (inventory, market)],
+            "exactly two delegations in the whole production composition, both from \
+             `inventory` outward"
         );
     }
 
