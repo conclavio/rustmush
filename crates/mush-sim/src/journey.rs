@@ -992,7 +992,11 @@ pub(crate) fn advance_due(ctx: &mut Ctx<'_>, source: Source) {
     // The rotation cursor rides the allocator document that already exists, so
     // a restart resumes the rotation instead of re-starving the tail (R11).
     persist_journey_meta(ctx.out, next_id, cursor);
-    #[cfg(debug_assertions)]
+    // WS01-S11D: gated on the `debug-checks` cargo feature, not on
+    // `cfg(debug_assertions)` — a release profile that turns debug assertions on
+    // must not thereby walk every root on every rotation and panic the
+    // single-writer world task on a drift.
+    #[cfg(feature = "debug-checks")]
     {
         let Some(st) = ctx.w.module_state::<SpatialState>() else {
             return;

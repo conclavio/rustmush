@@ -6,6 +6,17 @@ license.workspace = true
 authors.workspace = true
 description = "mush-housing (E5a+E5b): the game-neutral housing library — properties, tenancies, the tenancy state machine that never ends a home on its own, the multi-resident support assessment, the fail-closed access predicate and the Obj.home invariant helpers — plus the HousingModule that attaches them to a world: persistence and boot, the movement/carry hooks, the destroy gate, the cadence-driven assessment tick, the exact-mode bridge to E4 contracts and obligations, the story window, and the @property/@tenancy/+home/+guest surface."
 
+[features]
+# WS01-S11D: the write path's recomputation-equivalence assertion
+# (`assert_projections`, D-LBK-4a). It used to ride `cfg(debug_assertions)`,
+# which stops being a production fence the moment `[profile.release]` sets
+# `debug-assertions = true` — and then a projection drift is a `debug_assert!`
+# panic inside the single-writer world task, on top of a full projection
+# rebuild per housing write. Off by default; `mush-server`'s test build turns it
+# on. The public checker `HousingStore::projections_consistent` is unaffected,
+# and it is what `tests/e5b.rs` asserts with directly.
+debug-checks = []
+
 [dependencies]
 mush-core.workspace = true
 mush-org.workspace = true

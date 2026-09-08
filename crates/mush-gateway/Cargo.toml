@@ -55,7 +55,13 @@ thiserror.workspace = true
 
 [dev-dependencies]
 mush-contract-tests.workspace = true
-mush-server.workspace = true
+# WS01-S11D: the split-process kill proofs (tests/authoritative_process_kill.rs)
+# re-exec this test binary as the server worker and stop it at exact durability
+# cuts, so this is the one edge in the tree that turns the crash-injection hooks
+# on. It is a `[dev-dependencies]` edge on purpose: the gateway's own binary
+# never links `mush-server` at all, and no release build of any crate here
+# activates the feature.
+mush-server = { workspace = true, features = ["fault-injection"] }
 mush-testkit.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 reqwest.workspace = true

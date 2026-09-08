@@ -15,6 +15,16 @@ description = "rustmush forked SERVER half (M16b): owns the world task + persist
 name = "mush-server"
 path = "src/main.rs"
 
+[features]
+# WS01-S11D: the K8 crash-injection hooks in `src/process_fault.rs`. Off by
+# default, and no shipped binary turns it on. They used to be gated on
+# `cfg(debug_assertions)`, which is only a production fence for as long as
+# nobody sets `debug-assertions = true` in `[profile.release]`; with the fence
+# gone, `RUSTMUSH_K8_PROCESS_CUT` in the environment of the D1 VPS is an abort
+# switch sited at the four durability cuts and the quarantine publication. The
+# two kill proofs enable it through `mush-gateway`'s `[dev-dependencies]`.
+fault-injection = []
+
 [dependencies]
 mush-config.workspace = true
 mush-core.workspace = true
@@ -86,6 +96,14 @@ thiserror.workspace = true
 [dev-dependencies]
 fred.workspace = true
 mush-contract-tests.workspace = true
+# WS01-S11D: not new crate edges — both are normal dependencies above. The test
+# build additionally turns on their `debug-checks` features, which is where the
+# two recomputation-equivalence walks that used to ride `cfg(debug_assertions)`
+# now live. `cargo test --workspace` unifies the activation across the graph, so
+# those crates' own suites run with the walks on while no release build carries
+# a per-write projection rebuild or a `debug_assert!` in the world task.
+mush-housing = { workspace = true, features = ["debug-checks"] }
+mush-sim = { workspace = true, features = ["debug-checks"] }
 tokio = { workspace = true, features = ["test-util"] }
 
 [lints]

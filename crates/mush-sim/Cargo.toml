@@ -33,6 +33,13 @@ tracing.workspace = true
 # holders into the sole input of the K6 gate's leg (2). It is fenced behind this
 # feature; only test compositions turn it on.
 testkit = []
+# WS01-S11D: the journey rotation's terminal-record walk (`journey.rs`). It used
+# to ride `cfg(debug_assertions)`, which stops fencing production the moment
+# `[profile.release]` sets `debug-assertions = true` — and then every rotation
+# walks every root and a drift is a `debug_assert!` panic inside the
+# single-writer world task. Off by default; `mush-server`'s test build turns it
+# on.
+debug-checks = []
 
 [dev-dependencies]
 futures.workspace = true

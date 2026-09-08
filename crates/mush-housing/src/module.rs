@@ -443,14 +443,21 @@ impl HousingStore {
             || old.is_some_and(|o| o.status.is_ended() != new.status.is_ended())
     }
 
-    /// The debug-build equivalence assertion the write path carries (D-LBK-4a).
-    #[cfg(debug_assertions)]
+    /// The equivalence assertion the write path carries (D-LBK-4a).
+    ///
+    /// WS01-S11D: gated on the `debug-checks` cargo feature, not on
+    /// `cfg(debug_assertions)` — a release profile that turns debug assertions
+    /// on must not thereby buy a full projection rebuild per write and a panic
+    /// inside the single-writer world task. `projections_consistent` is public
+    /// and `tests/e5b.rs` asserts on it directly, so the coverage is the
+    /// suite's, not this hook's.
+    #[cfg(feature = "debug-checks")]
     fn assert_projections(&self) {
         if let Err(drift) = self.projections_consistent() {
             debug_assert!(false, "housing: {drift}");
         }
     }
-    #[cfg(not(debug_assertions))]
+    #[cfg(not(feature = "debug-checks"))]
     fn assert_projections(&self) {}
 
     /// One room's entry in the room → property projection.
