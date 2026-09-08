@@ -218,6 +218,14 @@ impl InMemoryStore {
     /// refused by `validate_replay_admission` before the planted damage ever
     /// got its turn.
     ///
+    /// One difference that is **not** structural and matters to any shared
+    /// suite: this store takes `text` as bytes, while the Redis seam goes
+    /// through `JSON.SET`, which parses and re-serializes. So a plant nested
+    /// past `serde_json`'s 128-level recursion limit lands here and is
+    /// refused there — keep cross-backend plants inside
+    /// (`MAX_DOC_DEPTH`, 128) — and a readback that is byte-identical here is
+    /// only *semantically* identical there.
+    ///
     /// Never call this from production code: it bypasses every invariant this
     /// crate maintains.
     ///
@@ -258,7 +266,10 @@ impl InMemoryStore {
     ///
     /// The read half of [`debug_plant_raw_doc`](Self::debug_plant_raw_doc):
     /// a decode-free readback is what proves a read-only diagnostic left the
-    /// bytes alone.
+    /// bytes alone. Here that readback is byte-verbatim, because this store
+    /// holds the bytes; the Redis mirror returns RedisJSON's own
+    /// re-serialization of the same document, so only the decoded value is
+    /// comparable across the two.
     #[doc(hidden)]
     pub async fn debug_read_raw_doc(
         &self,
@@ -4063,13 +4074,24 @@ mod tests {
     }
 
     /// The seam takes an `account:` key verbatim, which is the point: every
-    /// runtime read lowercases the name, so `account:Nick` is a shadow doc no
-    /// read resolves — the exact damage a hand repair leaves behind, and one
-    /// only a raw seam can plant.
+    /// *keyed* read lowercases the name, so `account:Nick` is a shadow doc no
+    /// keyed read resolves and no `NX` blocks — the exact damage a hand
+    /// repair leaves behind, and one only a raw seam can plant.
+    ///
+    /// The split is the whole diagnostic, so pin both halves. A shadow doc is
+    /// **not** invisible to an unkeyed listing on either backend
+    /// (`list_accounts` walks map values here, `SCAN account:*` in Redis),
+    /// and that is exactly what makes a non-lowercase `account:*` key
+    /// detectable at all: the listing reports an account the keyed reads
+    /// cannot reach, and the same name can be created a second time beside
+    /// it.
     #[tokio::test]
     async fn a_non_lowercase_account_key_plants_a_shadow_doc() {
         let store = InMemoryStore::new();
-        let doc = r#"{"name":"Nick","argon2_hash":"x","characters":[]}"#;
+        // Decodable on purpose: a decode failure is a different fault (see
+        // `an_undecodable_account_doc_is_dropped_by_the_listing`) and must not
+        // be allowed to stand in for a key-normalization proof.
+        let doc = r#"{"name":"Nick","argon2_hash":"x","created":1,"characters":[]}"#;
         store
             .debug_plant_raw_doc("account:Nick", doc)
             .await
@@ -4082,28 +4104,93 @@ mod tests {
                 .as_deref(),
             Some(doc)
         );
+        // Keyed reads compute `account:nick` and miss it, in both directions:
+        // nothing to fetch, and nothing to update.
         assert!(
             store
                 .get_account("Nick")
                 .await
                 .expect("get_account")
                 .is_none(),
-            "a shadow doc is invisible to every normalizing read"
+            "a shadow doc is invisible to a keyed read"
         );
-        assert!(store.list_accounts().await.expect("list").is_empty());
+        assert!(
+            !store
+                .set_account_password("Nick", "y")
+                .await
+                .expect("set_account_password"),
+            "a shadow doc is invisible to a keyed write"
+        );
+        // And `NX` does not see it either, so the name can be taken again.
+        store
+            .create_account(AccountRec {
+                id: None,
+                name: "Nick".to_owned(),
+                argon2_hash: "live".to_owned(),
+                created: 2,
+                characters: vec![],
+                ssh_keys: vec![],
+                discord: None,
+            })
+            .await
+            .expect("the shadow doc does not reserve the name");
+        // The unkeyed listing sees both — one account by every keyed path,
+        // two by the listing, which is the discrepancy a diagnostic reports.
+        let listed = store.list_accounts().await.expect("list");
+        assert_eq!(listed.len(), 2, "the shadow doc is listed, not hidden");
+        assert!(listed.iter().all(|rec| rec.name == "Nick"));
+        // The live account's write went to its own key: the planted bytes are
+        // still exactly as planted.
+        assert_eq!(
+            store
+                .debug_read_raw_doc("account:Nick")
+                .await
+                .expect("read account:Nick")
+                .as_deref(),
+            Some(doc)
+        );
     }
 
-    /// The seam and `mush_core::depth` are one pair: a document too deep to
-    /// decode is plantable, and measurable on the way back out.
+    /// The other account fault, kept apart from the one above: a doc that
+    /// does not decode (`created` has no serde default) is dropped by the
+    /// listing with a log line, and errors the keyed read rather than
+    /// answering `None`. Both faults hide an account from `get_account`; only
+    /// the listing tells them apart.
+    #[tokio::test]
+    async fn an_undecodable_account_doc_is_dropped_by_the_listing() {
+        let store = InMemoryStore::new();
+        store
+            .debug_plant_raw_doc("account:nick", r#"{"name":"nick","argon2_hash":"x"}"#)
+            .await
+            .expect("plant account:nick");
+        assert!(
+            store.list_accounts().await.expect("list").is_empty(),
+            "an undecodable account doc is skipped by the listing"
+        );
+        let error = store
+            .get_account("nick")
+            .await
+            .expect_err("a keyed read reports the decode failure");
+        assert!(matches!(error, StoreError::Serde(_)), "{error:?}");
+    }
+
+    /// The seam and `mush_core::depth` are one pair: a document past
+    /// `MAX_DOC_DEPTH` is plantable, and measurable on the way back out.
+    ///
+    /// The depth is deliberately inside the window `serde_json` still
+    /// decodes: this store takes the bytes verbatim, but the Redis seam
+    /// re-parses them through `JSON.SET`, so a plant past 128 levels lands on
+    /// one backend and is refused by the other. Damage a shared suite can
+    /// plant has to fit through the narrower door.
     #[tokio::test]
     async fn an_over_deep_doc_survives_the_round_trip_and_is_measurable() {
         let store = InMemoryStore::new();
-        let depth = mush_core::MAX_DOC_DEPTH + 30;
+        let depth = mush_core::MAX_DOC_DEPTH + 4;
         let text = "[".repeat(depth) + &"]".repeat(depth);
         store
             .debug_plant_raw_doc("obj:3", &text)
             .await
-            .expect("plant a 130-deep doc");
+            .expect("plant an over-deep doc");
         let read = store
             .debug_read_raw_doc("obj:3")
             .await

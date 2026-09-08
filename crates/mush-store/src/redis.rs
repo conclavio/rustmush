@@ -1153,8 +1153,20 @@ impl RedisStore {
     /// proven against damage that can actually be planted, so the seam is a
     /// prerequisite for the tests, not a convenience.
     ///
+    /// It is not quite the twin of [`InMemoryStore::debug_plant_raw_doc`]:
+    /// this one goes through `JSON.SET`, which parses `text` and re-serializes
+    /// it. So `text` must be JSON RedisJSON accepts — a document nested past
+    /// its own `serde_json` recursion limit of 128 levels is refused here
+    /// while the in-memory seam takes it verbatim — and a readback is a
+    /// normalized re-serialization rather than the bytes handed in. Plants a
+    /// shared suite runs on both backends must therefore stay inside
+    /// (`mush_core::MAX_DOC_DEPTH`, 128) and compare decoded documents, not
+    /// bytes.
+    ///
     /// Never call this from production code: it is the one write path that
     /// bypasses every invariant this crate maintains.
+    ///
+    /// [`InMemoryStore::debug_plant_raw_doc`]: crate::InMemoryStore::debug_plant_raw_doc
     #[doc(hidden)]
     pub async fn debug_plant_raw_doc(
         &self,
@@ -1170,7 +1182,10 @@ impl RedisStore {
     ///
     /// The read half of [`debug_plant_raw_doc`](Self::debug_plant_raw_doc):
     /// a decode-free readback is what proves a read-only diagnostic left the
-    /// bytes alone.
+    /// bytes alone. "As the store holds it" is literal here — RedisJSON holds
+    /// a parsed document and prints it back in its own normalization, so this
+    /// answers the same *document* as was planted, not necessarily the same
+    /// bytes (the in-memory seam does answer the same bytes).
     #[doc(hidden)]
     pub async fn debug_read_raw_doc(
         &self,

@@ -37,16 +37,28 @@ use crate::lock::LockExpr;
 
 /// The deepest document this server will accept as sound.
 ///
-/// Chosen to sit clearly **below** `serde_json`'s 128-level recursion limit:
-/// a document at or under this depth decodes on every path that will ever see
-/// it, while the headroom between 100 and 128 means a refusal here is a
-/// deliberate, reportable answer rather than a decoder error surfacing from
-/// somewhere further in. It is not tuned to any live store — no store has
-/// run yet — it is picked to be comfortably above every document this server
-/// constructs (the deepest is a lock tree, itself bounded at 48 by
-/// [`crate::lock::MAX_LOCK_EXPR_DEPTH`]) and comfortably below the depth at
-/// which the decoders give out.
-pub const MAX_DOC_DEPTH: usize = 100;
+/// Sized between two measured facts. It is not tuned to any live store — no
+/// store has run yet.
+///
+/// **Below**: `serde_json` caps its own recursion at 128 levels, so a
+/// document past that is not something this crate gets to refuse — it is a
+/// decoder error surfacing from somewhere further in. 120 keeps eight levels
+/// of margin under that cap, which is also what lets a test plant a document
+/// that is over *this* bound and still decodable: the only kind a refusal can
+/// be proven against on both backends (the Redis seam re-parses, so a plant
+/// past 128 never lands there at all).
+///
+/// **Above**: the deepest document this server constructs is an object
+/// carrying a maximal lock tree, and it measures **98** JSON levels — pinned
+/// by `the_deepest_document_this_server_builds_is_pinned` below, so the
+/// headroom is a fact rather than an estimate. Mind the factor while reading
+/// that number against [`crate::lock::MAX_LOCK_EXPR_DEPTH`], which is 48:
+/// that bound counts *expression* nodes, and an externally tagged `And`/`Or`
+/// costs two JSON levels (`{"And":[…]}`) while a fielded leaf (`AttrMatch`,
+/// `Indirect`) costs two of its own, so a maximal tree serializes 96 deep and
+/// the enclosing `Obj` plus its `locks` map adds two more. Expression depth
+/// is roughly half of serialized depth, never the same number.
+pub const MAX_DOC_DEPTH: usize = 120;
 
 /// Maximum container nesting in `text`, by a flat byte scan.
 ///
@@ -125,9 +137,20 @@ pub fn depth_of_value(value: &serde_json::Value) -> usize {
 /// apart (see `tests/lock_construction_ratchet.rs`).
 ///
 /// The number counts *expression* nodes, not the JSON levels the tree
-/// serializes into — a leaf that carries fields (`AttrMatch`, `Indirect`) is
-/// one more JSON level than it is a lock level — so it is a lower bound on
-/// the stored document's depth, which is the safe direction for a guard.
+/// serializes into: externally tagged `And`/`Or` costs two levels per node
+/// (`{"And":[…]}`) and a fielded leaf (`AttrMatch`, `Indirect`) costs two of
+/// its own, so this **under-reports** the depth of the stored document by
+/// roughly a factor of two, before whatever levels the enclosing document
+/// adds on top.
+///
+/// So it is **not** the input to a write-path refusal. For an accept/refuse
+/// check — refuse when the depth exceeds [`MAX_DOC_DEPTH`] — an
+/// under-estimate is the *unsafe* direction: a caller comparing
+/// `depth_of_lock(expr) <= MAX_DOC_DEPTH` admits a document nearly twice the
+/// bound. Measure the serialized text with [`depth_of_json_text`] for that.
+/// What this answers is the AST's own height, against the AST's own bound
+/// ([`crate::lock::MAX_LOCK_EXPR_DEPTH`]) — which a tree decoded from the
+/// store or handed over by a module was never checked against.
 #[must_use]
 pub fn depth_of_lock(expr: &LockExpr) -> usize {
     usize::try_from(expr.depth()).unwrap_or(usize::MAX)
@@ -188,12 +211,12 @@ mod tests {
     /// measures over it.
     #[test]
     fn max_doc_depth_boundary_is_pinned() {
-        assert_eq!(MAX_DOC_DEPTH, 100);
+        assert_eq!(MAX_DOC_DEPTH, 120);
         let at = nested_object_text(MAX_DOC_DEPTH);
         let over = nested_object_text(MAX_DOC_DEPTH + 1);
-        assert_eq!(depth_of_json_text(&at), 100);
+        assert_eq!(depth_of_json_text(&at), 120);
         assert!(depth_of_json_text(&at) <= MAX_DOC_DEPTH);
-        assert_eq!(depth_of_json_text(&over), 101);
+        assert_eq!(depth_of_json_text(&over), 121);
         assert!(depth_of_json_text(&over) > MAX_DOC_DEPTH);
         // And the constant stays under serde_json's own recursion limit, so
         // a document at the bound is still decodable.
@@ -208,6 +231,51 @@ mod tests {
         assert_eq!(depth_of_json_text(&text), 200_000);
         // Unbalanced closers saturate instead of underflowing.
         assert_eq!(depth_of_json_text(&"]".repeat(200_000)), 0);
+    }
+
+    /// The headroom under [`MAX_DOC_DEPTH`] is a measurement, not an
+    /// estimate: the deepest document this server can be made to construct
+    /// is an object carrying a maximal lock tree, and it is **98** levels.
+    ///
+    /// This test is also the counter-example to using [`depth_of_lock`] as a
+    /// write-path guard input — the same tree it calls 48 serializes 96 deep
+    /// and lands 98 deep on an object.
+    #[test]
+    fn the_deepest_document_this_server_builds_is_pinned() {
+        use crate::lock::{LockType, MAX_LOCK_EXPR_DEPTH};
+        use crate::obj::{Obj, ObjKind};
+
+        // A flat `&` chain left-nests one level per term, so a chain exactly
+        // MAX_LOCK_EXPR_DEPTH long is the tallest tree the parser will build.
+        // `sex:m*le` is an `AttrMatch`, the costliest leaf: two JSON levels.
+        let terms = usize::try_from(MAX_LOCK_EXPR_DEPTH).expect("bound fits");
+        let src = vec!["sex:m*le"; terms].join(" & ");
+        let expr = parse_lock(&src, |_| Some(ObjId(1))).expect("a maximal lock parses");
+        assert_eq!(depth_of_lock(&expr), terms, "expression nodes");
+        let lock_text = serde_json::to_string(&expr).expect("a lock serializes");
+        assert_eq!(
+            depth_of_json_text(&lock_text),
+            96,
+            "JSON levels: ~2x the AST"
+        );
+
+        let mut obj = Obj::new(ObjId(1), ObjKind::Thing, "deep", ObjId(1), 0);
+        obj.locks.insert(LockType::Enter, expr);
+        let obj_text = serde_json::to_string(&obj).expect("an object serializes");
+        assert_eq!(
+            depth_of_json_text(&obj_text),
+            98,
+            "the `Obj` and its `locks` map add two levels over the tree"
+        );
+        assert!(
+            depth_of_json_text(&obj_text) < MAX_DOC_DEPTH,
+            "legal data must sit under the bound with room to spare"
+        );
+        // And an over-bound document is still decodable, which is what makes
+        // a refusal ours to give rather than serde_json's.
+        let over = nested_object_text(MAX_DOC_DEPTH + 4);
+        serde_json::from_str::<serde_json::Value>(&over)
+            .expect("a document just past the bound still decodes");
     }
 
     /// `depth_of_lock` is `LockExpr::depth` in this module's units, leaf
