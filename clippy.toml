@@ -1,0 +1,28 @@
+# Workspace clippy configuration (WS01-S11A).
+#
+# This file enables no lint. It only tells clippy which regions of the tree the
+# panic-shaped restriction lints (`clippy::unwrap_used`, `clippy::expect_used`,
+# `clippy::panic`, `clippy::indexing_slicing`) must not police, so that when a
+# lint is enabled per crate its count is the count of production code.
+#
+# It has to exist before any of those lints is turned on. `.github/workflows/
+# ci.yml` runs `cargo clippy --workspace --all-targets -- -D warnings`, and
+# `--all-targets` compiles the test targets too: without these allowances every
+# `unwrap()` in a `#[cfg(test)] mod tests` block and in `crates/*/tests/*.rs`
+# counts as a hard error. Measured on this tree, the six candidate restriction
+# lints report 14,137 hits with no clippy.toml and 3,725 with this one — so a
+# per-crate enabling decision made without this file is sized against a number
+# roughly four times the one that would actually be enforced.
+#
+# SCOPE — what the allowance actually covers, which is narrower than "tests":
+# clippy exempts `#[cfg(test)]` modules and the bodies of `#[test]` functions.
+# It does NOT exempt free helper functions in `crates/*/tests/*.rs` — an
+# integration-test file's setup helpers are ordinary functions, not `#[test]`
+# bodies, and they account for 2,125 of the 3,725 surviving hits. Any per-crate
+# enable must therefore still be measured with `--all-targets`; the number from
+# a `--lib`-only run is not the number CI enforces.
+
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true
+allow-indexing-slicing-in-tests = true
