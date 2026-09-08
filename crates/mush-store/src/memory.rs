@@ -194,6 +194,90 @@ impl InMemoryStore {
         }
         Ok(inner)
     }
+
+    /// Test/ops seam: write `text` as the whole document under
+    /// `canonical_key` — the key [`crate::RedisStore`] would have used —
+    /// with no encoding, no validation and no id bookkeeping beyond the
+    /// allocator floor below.
+    ///
+    /// The mirror of [`RedisStore::debug_plant_raw_doc`], and the reason it
+    /// exists: refusals are only provable against damage that can actually be
+    /// planted, and the damage worth planting is what a store can hold but
+    /// this crate would never write — a body whose id disagrees with its key,
+    /// a document nested past [`mush_core::MAX_DOC_DEPTH`], an `account:`
+    /// suffix that is not the lowercase form every read normalizes to (a
+    /// shadow doc no read resolves, exactly as in Redis: the key is taken
+    /// verbatim here for that fidelity).
+    ///
+    /// Two differences from the Redis seam, both structural: this store keys
+    /// its maps by decoded id, so only the `obj:` and `account:` prefixes can
+    /// be addressed (anything else is [`StoreError::Invalid`] rather than a
+    /// silently dropped write), and planting `obj:{id}` lifts `meta:next_id`
+    /// above `id` — an object at or above the allocator resume point is
+    /// corruption in its own right, and every authoritative write would be
+    /// refused by `validate_replay_admission` before the planted damage ever
+    /// got its turn.
+    ///
+    /// Never call this from production code: it bypasses every invariant this
+    /// crate maintains.
+    ///
+    /// [`RedisStore::debug_plant_raw_doc`]: crate::RedisStore::debug_plant_raw_doc
+    #[doc(hidden)]
+    pub async fn debug_plant_raw_doc(
+        &self,
+        canonical_key: &str,
+        text: &str,
+    ) -> Result<(), StoreError> {
+        let mut inner = self.lock()?;
+        if let Some(suffix) = canonical_key.strip_prefix(crate::redis::OBJ_PREFIX) {
+            let id: u32 = suffix.parse().map_err(|_| {
+                StoreError::Invalid(format!("planted key {canonical_key:?} has no object id"))
+            })?;
+            let Some(floor) = id.checked_add(1) else {
+                return Err(StoreError::Invalid(
+                    "planted object id has no allocator resume point above it".to_owned(),
+                ));
+            };
+            inner.objects.insert(id, text.to_owned());
+            if inner.next_id.is_none_or(|next_id| next_id < floor) {
+                inner.next_id = Some(floor);
+            }
+            Ok(())
+        } else if let Some(suffix) = canonical_key.strip_prefix(crate::redis::ACCOUNT_PREFIX) {
+            inner.accounts.insert(suffix.to_owned(), text.to_owned());
+            Ok(())
+        } else {
+            Err(StoreError::Invalid(format!(
+                "cannot plant {canonical_key:?}: only obj:* and account:* keys are addressable"
+            )))
+        }
+    }
+
+    /// Test/ops seam: the document text stored under `canonical_key`, exactly
+    /// as the store holds it, or `None` when the key is gone.
+    ///
+    /// The read half of [`debug_plant_raw_doc`](Self::debug_plant_raw_doc):
+    /// a decode-free readback is what proves a read-only diagnostic left the
+    /// bytes alone.
+    #[doc(hidden)]
+    pub async fn debug_read_raw_doc(
+        &self,
+        canonical_key: &str,
+    ) -> Result<Option<String>, StoreError> {
+        let inner = self.lock()?;
+        if let Some(suffix) = canonical_key.strip_prefix(crate::redis::OBJ_PREFIX) {
+            let id: u32 = suffix.parse().map_err(|_| {
+                StoreError::Invalid(format!("planted key {canonical_key:?} has no object id"))
+            })?;
+            Ok(inner.objects.get(&id).cloned())
+        } else if let Some(suffix) = canonical_key.strip_prefix(crate::redis::ACCOUNT_PREFIX) {
+            Ok(inner.accounts.get(suffix).cloned())
+        } else {
+            Err(StoreError::Invalid(format!(
+                "cannot read {canonical_key:?}: only obj:* and account:* keys are addressable"
+            )))
+        }
+    }
 }
 
 /// One deterministic interruption point in the reusable authoritative-store
@@ -3899,5 +3983,134 @@ mod tests {
             .await
             .expect_err("a corrupt ordinary document never disappears from boot discovery");
         assert!(matches!(error, StoreError::Serde(_)), "{error:?}");
+    }
+    /// The raw seam's whole contract: bytes in, the same bytes out, no
+    /// decoding, no normalization — the damage a refusal test needs to be
+    /// able to plant is damage this crate would never write itself.
+    #[tokio::test]
+    async fn planted_raw_docs_read_back_verbatim() {
+        let store = InMemoryStore::new();
+        // A body whose id disagrees with its key, and a body that is not an
+        // object doc at all.
+        let mismatched = r#"{"id":4,"name":"nine"}"#;
+        store
+            .debug_plant_raw_doc("obj:9", mismatched)
+            .await
+            .expect("plant obj:9");
+        store
+            .debug_plant_raw_doc("obj:7", r#"{"id":"nonsense"}"#)
+            .await
+            .expect("plant obj:7");
+        assert_eq!(
+            store
+                .debug_read_raw_doc("obj:9")
+                .await
+                .expect("read obj:9")
+                .as_deref(),
+            Some(mismatched),
+            "the seam must not re-encode what it was handed"
+        );
+        assert_eq!(
+            store.debug_read_raw_doc("obj:5").await.expect("read obj:5"),
+            None
+        );
+        // A key this store cannot address is refused, never silently dropped.
+        let error = store
+            .debug_plant_raw_doc("mod:m:doc", "{}")
+            .await
+            .expect_err("only obj:* and account:* are addressable");
+        assert!(matches!(error, StoreError::Invalid(_)), "{error:?}");
+        let error = store
+            .debug_plant_raw_doc("obj:nine", "{}")
+            .await
+            .expect_err("an unparseable object id is refused");
+        assert!(matches!(error, StoreError::Invalid(_)), "{error:?}");
+    }
+
+    /// Planting an object lifts `meta:next_id` above it. Without that the
+    /// store is corrupt on its own terms — an id at or above the allocator
+    /// resume point — and `validate_replay_admission` would refuse every
+    /// authoritative write before the planted damage ever got its turn.
+    #[tokio::test]
+    async fn planting_an_object_lifts_the_allocator_above_it() {
+        let store = InMemoryStore::new();
+        store
+            .debug_plant_raw_doc("obj:9", r#"{"id":"nonsense"}"#)
+            .await
+            .expect("plant obj:9");
+        let snapshot = store
+            .load_world()
+            .await
+            .expect("load")
+            .expect("a planted store is not empty");
+        assert_eq!(snapshot.next_id, 10, "the allocator must clear the plant");
+        assert_eq!(snapshot.corrupt_docs, 1);
+        assert!(snapshot.objects.is_empty());
+        // A lower plant afterwards must not walk the allocator backwards.
+        store
+            .debug_plant_raw_doc("obj:2", r#"{"id":"nonsense"}"#)
+            .await
+            .expect("plant obj:2");
+        assert_eq!(
+            store
+                .load_world()
+                .await
+                .expect("load")
+                .expect("snapshot")
+                .next_id,
+            10
+        );
+    }
+
+    /// The seam takes an `account:` key verbatim, which is the point: every
+    /// runtime read lowercases the name, so `account:Nick` is a shadow doc no
+    /// read resolves — the exact damage a hand repair leaves behind, and one
+    /// only a raw seam can plant.
+    #[tokio::test]
+    async fn a_non_lowercase_account_key_plants_a_shadow_doc() {
+        let store = InMemoryStore::new();
+        let doc = r#"{"name":"Nick","argon2_hash":"x","characters":[]}"#;
+        store
+            .debug_plant_raw_doc("account:Nick", doc)
+            .await
+            .expect("plant account:Nick");
+        assert_eq!(
+            store
+                .debug_read_raw_doc("account:Nick")
+                .await
+                .expect("read account:Nick")
+                .as_deref(),
+            Some(doc)
+        );
+        assert!(
+            store
+                .get_account("Nick")
+                .await
+                .expect("get_account")
+                .is_none(),
+            "a shadow doc is invisible to every normalizing read"
+        );
+        assert!(store.list_accounts().await.expect("list").is_empty());
+    }
+
+    /// The seam and `mush_core::depth` are one pair: a document too deep to
+    /// decode is plantable, and measurable on the way back out.
+    #[tokio::test]
+    async fn an_over_deep_doc_survives_the_round_trip_and_is_measurable() {
+        let store = InMemoryStore::new();
+        let depth = mush_core::MAX_DOC_DEPTH + 30;
+        let text = "[".repeat(depth) + &"]".repeat(depth);
+        store
+            .debug_plant_raw_doc("obj:3", &text)
+            .await
+            .expect("plant a 130-deep doc");
+        let read = store
+            .debug_read_raw_doc("obj:3")
+            .await
+            .expect("read obj:3")
+            .expect("planted doc is present");
+        assert_eq!(read, text);
+        assert_eq!(mush_core::depth_of_json_text(&read), depth);
+        assert!(mush_core::depth_of_json_text(&read) > mush_core::MAX_DOC_DEPTH);
     }
 }

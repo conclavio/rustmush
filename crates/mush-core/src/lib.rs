@@ -61,6 +61,7 @@ pub mod contact;
 pub mod control;
 pub mod decision;
 pub mod decision_source;
+pub mod depth;
 pub mod durable_schedule;
 pub mod engine;
 pub mod flags;
@@ -219,6 +220,7 @@ pub use decision_source::{
     decision_cancellation_ingress, decision_compaction_ingress, decision_fallback_trigger_ingress,
     decision_lease_ingress, decision_resolving_ingress, decision_terminal_ingress,
 };
+pub use depth::{MAX_DOC_DEPTH, depth_of_json_text, depth_of_lock, depth_of_value};
 pub use durable_schedule::{
     DurableSchedule, DurableScheduleDraft, DurableScheduleError, DurableScheduleStateCodec,
     MAX_SCHEDULE_CATCH_UP, ScheduleAdvance, ScheduleCatchUpOrder, ScheduleDriveCause,

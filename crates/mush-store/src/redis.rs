@@ -1140,6 +1140,44 @@ impl RedisStore {
         }
         Ok(())
     }
+
+    /// Test/ops seam: write `text` as the whole document under
+    /// `canonical_key` — the exact key this crate would have used (`obj:{id}`,
+    /// `account:{lowername}`, `mod:{ns}:{key}`, …), no encoding, no
+    /// validation, no id bookkeeping.
+    ///
+    /// This exists so a test can plant the documents a *store* can hold but
+    /// this crate would never write: a body whose id disagrees with its key, a
+    /// key whose suffix is not the lowercase form every read normalizes to, a
+    /// document nested past [`mush_core::MAX_DOC_DEPTH`]. Refusals can only be
+    /// proven against damage that can actually be planted, so the seam is a
+    /// prerequisite for the tests, not a convenience.
+    ///
+    /// Never call this from production code: it is the one write path that
+    /// bypasses every invariant this crate maintains.
+    #[doc(hidden)]
+    pub async fn debug_plant_raw_doc(
+        &self,
+        canonical_key: &str,
+        text: &str,
+    ) -> Result<(), StoreError> {
+        let _: () = self.client.json_set(canonical_key, "$", text, None).await?;
+        Ok(())
+    }
+
+    /// Test/ops seam: the document text stored under `canonical_key`, exactly
+    /// as the store holds it, or `None` when the key is gone.
+    ///
+    /// The read half of [`debug_plant_raw_doc`](Self::debug_plant_raw_doc):
+    /// a decode-free readback is what proves a read-only diagnostic left the
+    /// bytes alone.
+    #[doc(hidden)]
+    pub async fn debug_read_raw_doc(
+        &self,
+        canonical_key: &str,
+    ) -> Result<Option<String>, StoreError> {
+        json_doc_text(&self.client, canonical_key).await
+    }
 }
 
 /// Escape a string so RediSearch treats it as a literal term: every
