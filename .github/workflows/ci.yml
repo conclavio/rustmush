@@ -41,6 +41,8 @@ jobs:
         run: cargo build --workspace --all-targets
       - name: Test
         run: cargo test --workspace --no-fail-fast
+      - name: Panic hook and per-half log files (WS01-S13; the child half is #[ignore]d and spawned by its sibling)
+        run: cargo test -p mushd --test world_panic_exit
       - name: TS bindings drift check (Linux only)
         if: runner.os == 'Linux'
         run: |
