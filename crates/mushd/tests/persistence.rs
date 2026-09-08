@@ -10,7 +10,7 @@ mod support;
 
 use std::net::IpAddr;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicU64, AtomicUsize, Ordering};
 use std::time::Duration;
 
 use futures::future::BoxFuture;
@@ -1676,6 +1676,9 @@ const MODE_WRONG_RECEIPT: u8 = 4;
 struct FlakyStore {
     inner: InMemoryStore,
     mode: AtomicU8,
+    /// WS07-S8: every snapshot this store is asked for, counted — so a test
+    /// can say that a shutdown tail took none.
+    bgsaves: AtomicUsize,
 }
 
 impl FlakyStore {
@@ -1683,11 +1686,16 @@ impl FlakyStore {
         FlakyStore {
             inner: InMemoryStore::new(),
             mode: AtomicU8::new(MODE_NORMAL),
+            bgsaves: AtomicUsize::new(0),
         }
     }
 
     fn set_mode(&self, mode: u8) {
         self.mode.store(mode, Ordering::SeqCst);
+    }
+
+    fn bgsaves(&self) -> usize {
+        self.bgsaves.load(Ordering::SeqCst)
     }
 }
 
@@ -1901,6 +1909,7 @@ impl ObjectStore for FlakyStore {
     }
 
     fn bgsave(&self) -> BoxFuture<'_, Result<(), StoreError>> {
+        self.bgsaves.fetch_add(1, Ordering::SeqCst);
         self.inner.bgsave()
     }
 
@@ -2536,4 +2545,85 @@ async fn npc_agent_persistence_round_trip_redis_gated() {
         .expect("connect to REDIS_URL");
     store.wipe_namespaces().await.expect("wipe test namespaces");
     npc_agent_round_trip(Arc::new(store)).await;
+}
+
+// ---------------------------------------------------------------------------
+// WS07-S8. An unclean world exit takes no shutdown BGSAVE
+// ---------------------------------------------------------------------------
+
+/// The trap the world-exit term closes: a world task that dies mid-flight still
+/// drops its job sender, so the writer drains perfectly and the integrity latch
+/// stays clear. On the old two-term gate that row snapshotted — promoting a
+/// half-applied world to the on-disk truth.
+///
+/// This replays `mushd`'s real shutdown tail (main.rs) over a counting store:
+/// a positive control proves the rig can and does snapshot, and then the tail
+/// after an aborted world task adds nothing to the count.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_unclean_world_exit_takes_no_shutdown_bgsave() {
+    let flaky = Arc::new(FlakyStore::new());
+    let store: Arc<dyn ObjectStore> = Arc::clone(&flaky) as Arc<dyn ObjectStore>;
+    let guard = Arc::new(IpGuard::new());
+    let (sessions, handles) = boot_rig(&store, &guard).await;
+    let world = handles.handle.clone();
+    let mut god_rx = attach_direct(&sessions, &world, 1, GOD, "god").await;
+    assert!(world.barrier().await, "connection setup barrier");
+
+    // Positive control: this store really reaches BGSAVE and really counts it.
+    god_cmd(&world, "@dump").await;
+    expect_text(&mut god_rx, "@dump: snapshot acknowledged by the store.").await;
+    assert_eq!(flaky.bgsaves(), 1, "@dump must have snapshotted");
+
+    let PersistHandles {
+        handle,
+        world_join,
+        writer_join,
+        outbox_join,
+        persistence_integrity,
+        world_exit,
+    } = handles;
+
+    // `kill -9` shape, in-process: the world task stops without ever reaching
+    // the statement that publishes a clean exit.
+    world_join.abort();
+    assert!(
+        world_join.await.is_err(),
+        "the world task must really be gone"
+    );
+
+    // The rest of main.rs's tail, in order: drop the handles, let the writer
+    // drain, drain the store, then the gated snapshot.
+    drop(handle);
+    drop(world);
+    outbox_join.abort();
+    let writer_drained = writer_join.await.is_ok();
+    store.drain().await.expect("store drain");
+    let integrity_latched = persistence_integrity.is_latched();
+
+    // The two terms the old gate had are both innocent here — which is exactly
+    // why they were not enough.
+    assert!(
+        writer_drained,
+        "the writer still drains after an aborted world task"
+    );
+    assert!(
+        !integrity_latched,
+        "nothing breached persistence integrity here"
+    );
+    assert!(
+        !world_exit.is_clean(),
+        "an aborted world task never reaches its clean-exit publication"
+    );
+
+    // `shutdown_bgsave_allowed` (main.rs, unit-tested there over the full
+    // truth table) is this condition; the branch is live, so a wrongly-clean
+    // flag would show up as a second BGSAVE.
+    if world_exit.is_clean() && writer_drained && !integrity_latched {
+        store.bgsave().await.expect("shutdown bgsave");
+    }
+    assert_eq!(
+        flaky.bgsaves(),
+        1,
+        "the shutdown tail must add no BGSAVE after an unclean world exit"
+    );
 }

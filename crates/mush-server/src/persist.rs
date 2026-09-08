@@ -460,6 +460,41 @@ impl PersistenceIntegrityLatch {
     }
 }
 
+/// Process-local record of whether the world task reached one of its two
+/// clean exits (a stepped `ControlMsg::Shutdown` with no commit outstanding,
+/// or an in-game `@shutdown` whose final flush came back clean).
+///
+/// Defaults to **not** clean and is only ever set, as the last statement of
+/// the world loop's function, from a local the loop sets at those two breaks
+/// alone. Every other way out — a panic, the channel-closed exit, the bounded
+/// shutdown grace, an unacknowledged, refused or rejected shutdown write —
+/// leaves it false, because none of them reach that statement with the local
+/// set. The shutdown coordinator reads it before the ordinary final BGSAVE:
+/// snapshotting a world that stopped mid-flight would capture whatever RAM
+/// happened to have reached the store, and call it the truth.
+#[derive(Clone, Debug, Default)]
+pub struct WorldExitStatus {
+    clean: Arc<AtomicBool>,
+}
+
+impl WorldExitStatus {
+    /// Construct a status that has not yet seen a clean exit.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Whether the world task ran to one of its clean exits.
+    #[must_use]
+    pub fn is_clean(&self) -> bool {
+        self.clean.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn mark_clean(&self) {
+        self.clean.store(true, Ordering::Release);
+    }
+}
+
 /// One unit of work for the store-writer task.
 pub enum StoreJob {
     /// Apply one batch, acknowledged in FIFO order. Transient failures retry;

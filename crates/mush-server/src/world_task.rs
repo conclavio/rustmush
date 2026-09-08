@@ -112,6 +112,7 @@ use crate::durable_outbox::{
 use crate::gateway_sink::GatewaySink;
 use crate::persist::{
     self, AuthoritativeCommitFailure, PersistenceIntegrityLatch, StoreJob, StoreWriter,
+    WorldExitStatus,
 };
 use crate::retained::RetainedSeals;
 use crate::staff::{StaffOp, StaffOpKind, StaffQueue};
@@ -1530,6 +1531,11 @@ pub struct PersistHandles {
     /// Process-local fail-closed snapshot barrier shared by the world,
     /// store writer, and shutdown coordinator.
     pub persistence_integrity: PersistenceIntegrityLatch,
+    /// Whether the world task reached one of its clean exits. Read by the
+    /// shutdown coordinator before the ordinary final BGSAVE; false until the
+    /// world loop's own last statement sets it, so a panicked or abandoned
+    /// world task can never be snapshotted over.
+    pub world_exit: WorldExitStatus,
 }
 
 /// Boot the standard engine: minimal world (Limbo `#0`, God `#1`) with
@@ -1886,6 +1892,9 @@ fn spawn_persist_with_gateway_mode(
     // the writer and world publish breaches directly into it, and the shutdown
     // coordinator reads the same atomic before any ordinary snapshot.
     let persistence_integrity = PersistenceIntegrityLatch::new();
+    // Set only by the world loop's own final statement, and only for its two
+    // clean breaks; the shutdown coordinator gates the final BGSAVE on it.
+    let world_exit = WorldExitStatus::new();
     // The writer publishes the commit high-water, stamps the metrics registry
     // (write-queue depth + last-ack age) as it drains each batch, and sends its
     // control signals over `signal_tx`.
@@ -1940,6 +1949,7 @@ fn spawn_persist_with_gateway_mode(
         shutdown_rx,
         action_epoch,
         persistence_integrity.clone(),
+        world_exit.clone(),
         decision_runtime,
         initial_mode,
         outbox_lifetime,
@@ -1950,6 +1960,7 @@ fn spawn_persist_with_gateway_mode(
         writer_join,
         outbox_join,
         persistence_integrity,
+        world_exit,
     }
 }
 
@@ -3383,6 +3394,7 @@ async fn run(
     mut shutdown: watch::Receiver<bool>,
     action_epoch: u64,
     persistence_integrity: PersistenceIntegrityLatch,
+    world_exit: WorldExitStatus,
     decision_runtime: Option<DecisionRuntime>,
     initial_mode: Option<WorldMode>,
     _outbox_lifetime: watch::Sender<bool>,
@@ -3495,6 +3507,13 @@ async fn run(
     // behind the bounded world queue while a commit holds one deferred message.
     let mut shutdown_requested = false;
     let mut shutdown_deadline: Option<Instant> = None;
+    // Set at the two clean breaks ONLY, and consumed by the very last statement
+    // of this function. Everything else that can end the loop — the
+    // channel-closed exit, the bounded shutdown grace, an unacknowledged,
+    // refused or rejected shutdown write — leaves it false, and a panic never
+    // reaches the statement at all. The shutdown coordinator refuses the final
+    // BGSAVE unless it is set.
+    let mut clean_exit = false;
     loop {
         let admission_mode = match (&pending_commit, health.mode) {
             // IntegrityFrozen is stricter than every in-flight state and may
@@ -5166,6 +5185,7 @@ async fn run(
         );
         if outcome == StepOutcome::Shutdown && pending_commit.is_none() {
             tracing::info!("world task shut down cleanly");
+            clean_exit = true;
             break;
         }
         if staff_shutdown {
@@ -5207,6 +5227,7 @@ async fn run(
                         &deps.store,
                     );
                     tracing::info!("world task shut down cleanly");
+                    clean_exit = true;
                     break;
                 }
                 FlushOutcome::Queued {
@@ -5329,6 +5350,14 @@ async fn run(
     // Dropping `writer` here closes the job queue; the writer task drains
     // whatever is still pending and exits (awaited by the shutdown
     // sequence via `PersistHandles::writer_join`).
+    //
+    // The clean-exit publication is the LAST statement of the world loop: any
+    // panic or abandonment before this line leaves the status false, and the
+    // shutdown coordinator then skips the ordinary final BGSAVE rather than
+    // snapshotting whatever the store happened to have caught.
+    if clean_exit {
+        world_exit.mark_clean();
+    }
 }
 
 /// Complete a refused message without ever handing it to the engine. Requests
@@ -14428,6 +14457,7 @@ mod tests {
             shutdown_rx,
             1,
             PersistenceIntegrityLatch::new(),
+            WorldExitStatus::new(),
             None,
             None,
             watch::channel(false).0,

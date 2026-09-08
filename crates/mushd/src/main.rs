@@ -60,10 +60,21 @@ const WRITER_DRAIN_TIMEOUT: Duration = Duration::from_secs(15);
 /// this is the belt to that suspender.
 const SHUTDOWN_STORE_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// An ordinary shutdown snapshot is safe only after every queued write has a
-/// terminal result and no component observed an integrity breach.
-const fn shutdown_bgsave_allowed(writer_drained: bool, integrity_latched: bool) -> bool {
-    writer_drained && !integrity_latched
+/// An ordinary shutdown snapshot is safe only after the world task itself
+/// reached a clean exit, every queued write has a terminal result, and no
+/// component observed an integrity breach.
+///
+/// The world-exit term is the one that closes the panic hole: a world task that
+/// unwound mid-command still drops its job sender, so the writer drains
+/// perfectly and the latch stays clear — and the old two-term gate would then
+/// promote whatever RAM had reached the store to the on-disk truth. A world
+/// that did not finish is not a world worth snapshotting.
+const fn shutdown_bgsave_allowed(
+    world_exited_cleanly: bool,
+    writer_drained: bool,
+    integrity_latched: bool,
+) -> bool {
+    world_exited_cleanly && writer_drained && !integrity_latched
 }
 
 fn main() -> ExitCode {
@@ -472,6 +483,9 @@ async fn serve(config: Config, mut quarantine_spool: QuarantineSpool) -> Result<
         Arc::clone(&controls),
     )?;
     let persistence_integrity = handles.persistence_integrity.clone();
+    // Set by the world loop's own last statement; false after a panic, a
+    // channel-closed exit, or a shutdown that ran out its bounded grace.
+    let world_exit = handles.world_exit.clone();
     let world = handles.handle;
     let mut world_join = handles.world_join;
     let writer_join = handles.writer_join;
@@ -648,12 +662,18 @@ async fn serve(config: Config, mut quarantine_spool: QuarantineSpool) -> Result<
         Err(_) => tracing::error!("store drain timed out (store down?)"),
     }
     let integrity_latched = persistence_integrity.is_latched();
-    if shutdown_bgsave_allowed(writer_drained, integrity_latched) {
+    let world_exited_cleanly = world_exit.is_clean();
+    if shutdown_bgsave_allowed(world_exited_cleanly, writer_drained, integrity_latched) {
         match tokio::time::timeout(SHUTDOWN_STORE_TIMEOUT, store.bgsave()).await {
             Ok(Ok(())) => tracing::info!("shutdown BGSAVE triggered"),
             Ok(Err(e)) => tracing::error!(error = %e, "shutdown BGSAVE failed"),
             Err(_) => tracing::error!("shutdown BGSAVE timed out (store down?)"),
         }
+    } else if !world_exited_cleanly {
+        tracing::error!(
+            "shutdown BGSAVE skipped: the world task did not reach a clean exit; its RAM never \
+             finished reaching the store and a snapshot would canonize a partial world"
+        );
     } else if !writer_drained {
         tracing::error!(
             "shutdown BGSAVE skipped: store writer did not drain cleanly; snapshotting could \
@@ -714,11 +734,21 @@ fn banner(name: &str) -> String {
 mod tests {
     use super::shutdown_bgsave_allowed;
 
+    /// The full truth table of the three-term gate. Exactly one row may
+    /// snapshot; every row with an unclean world exit must refuse, including
+    /// the one that otherwise looks perfect (drained writer, clear latch) —
+    /// that row is the panicked world task, and it is the whole point of the
+    /// world-exit term.
     #[test]
     fn shutdown_bgsave_requires_clean_drain_and_clear_integrity() {
-        assert!(shutdown_bgsave_allowed(true, false));
-        assert!(!shutdown_bgsave_allowed(false, false));
-        assert!(!shutdown_bgsave_allowed(true, true));
-        assert!(!shutdown_bgsave_allowed(false, true));
+        assert!(shutdown_bgsave_allowed(true, true, false));
+        assert!(!shutdown_bgsave_allowed(true, true, true));
+        assert!(!shutdown_bgsave_allowed(true, false, false));
+        assert!(!shutdown_bgsave_allowed(true, false, true));
+        // Every unclean-world-exit row refuses, whatever the other two say.
+        assert!(!shutdown_bgsave_allowed(false, true, false));
+        assert!(!shutdown_bgsave_allowed(false, true, true));
+        assert!(!shutdown_bgsave_allowed(false, false, false));
+        assert!(!shutdown_bgsave_allowed(false, false, true));
     }
 }
