@@ -96,8 +96,10 @@ Ten concepts carry all of the above. Everything else is a projection.
 - **Region.** A bounded frame with a kind. A *surface* region is metric: metres, `+x` east, `+y`
   north, `+z` up, an origin, an optional geographic reference. *Orbital*, *system* and
   *interstellar* regions are node graphs: their places are nodes, their distances are connection
-  durations, and they have no cells. A surface region owns a ground field (1.3) and a background
-  recipe (1.2 **Background**).
+  durations, and they have no cells. Above the surface the constellation is **fixed**: a
+  connection's distance is derived from real geometry at the campaign epoch and pinned (doc 10
+  T17); no body moves, and the solar system is a set of placed neighborhoods, never a coordinate
+  grid. A surface region owns a ground field (1.3) and a background recipe (1.2 **Background**).
 - **Surface.** A walkable 2.5D layer in a region: the **ground** (layer 0) or a **floor** of a
   structure (layers above and below ground, each with its own height map and holes). A bridge deck,
   a mezzanine, a ship's compartment deck and a station ring are floors of structures. Every pose
