@@ -37,8 +37,25 @@ while IFS='=' read -r k v; do
   printf 's|__%s__|%s|g\n' "$k" "$v"
 done < instance.env > render.sed
 sed -f render.sed deploy/instance/mushd.toml.tmpl > mushd.toml
-grep -n '__' mushd.toml && echo 'INCOMPLETE instance.env' && exit 1
+grep -n '^[^#]*__' mushd.toml && { echo 'INCOMPLETE instance.env'; exit 1; }
 ```
+
+The loop READS `instance.env`; it does not `source` it. Values are sed
+replacements rather than shell words, so `INSTANCE_TITLE=rustmush dev3 (oWoD)`
+is a good line here and a syntax error to `.` — do not be tempted by
+`set -a; . ./instance.env`, which aborts on that line, leaves every key after
+it unset, and renders a config with empty ports and an empty start room. The
+completeness `grep` skips comment lines (`^[^#]*`) because the template's own
+header spells the mechanism out with `__KEY__` tokens; that is exactly the rule
+the test applies, so the shell and the test cannot disagree about what a
+complete render is.
+
+`START_ROOM` / `START_ROOM_UNAPPROVED` name object ids that must EXIST in the
+world you boot. A fresh store seeds only Limbo `#0` and God `#1`, so `#2`/`#3`
+are the ids the instance's own seed — the rooms you dig before opening — will
+take, not rooms you get for free. Check them after first boot (`look #2`,
+`examine #3` as God) before letting anyone connect; WS25-S5 is where the seed
+grows those rooms itself.
 
 `crates/mush-config/tests/shipped_configs.rs` renders both shipped `instance.env`
 files on every build and asserts the sections are all there, the start rooms are

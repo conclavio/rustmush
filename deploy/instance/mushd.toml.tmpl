@@ -15,23 +15,28 @@
 # `KEY=value` lines; rendering substitutes every `__KEY__` token with that key's
 # value, and nothing else. That is the entire mechanism — it is a `sed`, not a
 # template language, so the shell that deploys and the test that checks the
-# shipped files cannot disagree about what a rendered config is:
-#
-#   set -a; . ./instance.env; set +a
-#   sed -e "s|__INSTANCE__|$INSTANCE|g" -e "s|__INSTANCE_TITLE__|$INSTANCE_TITLE|g" \
-#       ... mushd.toml.tmpl > /opt/rustmush/$INSTANCE/mushd.toml
-#
-# or, equivalently and without listing the keys twice:
+# shipped files cannot disagree about what a rendered config is. There is ONE
+# recipe, and it is this one:
 #
 #   while IFS='=' read -r k v; do
 #     case "$k" in ''|'#'*) continue;; esac
 #     printf 's|__%s__|%s|g\n' "$k" "$v"
 #   done < instance.env > /tmp/render.sed
 #   sed -f /tmp/render.sed mushd.toml.tmpl > mushd.toml
+#   grep -n '^[^#]*__' mushd.toml && { echo 'INCOMPLETE instance.env'; exit 1; }
 #
-# A rendered config with a `__SOMETHING__` left in it is an incomplete
-# instance.env, and crates/mush-config/tests/shipped_configs.rs fails on exactly
-# that. See deploy/instance/instance.env.example for the key list.
+# instance.env is NOT a shell script and must never be `source`d: a value is a
+# sed replacement, not a shell word, so `INSTANCE_TITLE=rustmush dev3 (oWoD)` is
+# a perfectly good line here and a syntax error to `.` — which would leave every
+# key after it unset and render a config full of empty ports. The loop above
+# reads the line; it does not evaluate it.
+#
+# A rendered config with an unsubstituted token left in a LIVE (non-comment)
+# line is an incomplete instance.env — that is what the grep catches, and
+# crates/mush-config/tests/shipped_configs.rs applies the same rule to the
+# shipped files on every build. Comment lines are exempt on both sides, which is
+# why this header may spell the mechanism out with tokens of its own. See
+# deploy/instance/instance.env.example for the key list.
 
 [server]
 name = "__INSTANCE_TITLE__"
@@ -237,6 +242,13 @@ upkeep_per_period = 0
 # a game. `start_room` is where an approved character lands; unapproved
 # characters are held in `start_room_unapproved` on the chargen command set
 # until a storyteller approves their chargen job.
+#
+# THESE TWO IDS MUST EXIST IN THE WORLD YOU BOOT. A fresh store today seeds only
+# Limbo #0 and God #1 (crates/mush-server/src/persist.rs), so #2/#3 are the ids
+# the instance's OWN seed — the rooms you dig before opening — will take, not
+# rooms you get for free. After first boot, check with `@find` / `look #2` as
+# God, or `examine #3`; a missing id lands new characters nowhere. WS25-S5 is
+# where the seed itself grows a start room and a chargen area.
 [onboarding]
 chargen_required = __CHARGEN_REQUIRED__
 start_room = __START_ROOM__

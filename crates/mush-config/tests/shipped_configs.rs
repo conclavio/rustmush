@@ -23,6 +23,7 @@
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use mush_config::config::{Config, ConfigError};
 
@@ -71,6 +72,14 @@ fn declared_sections(text: &str) -> Vec<String> {
         .collect()
 }
 
+/// The part of a line the deploy's completeness check looks at: everything
+/// before the first `#`. `grep -n '^[^#]*__'` in deploy/README.md and in the
+/// template's own header IS this function; every placeholder rule below goes
+/// through it so the shell and the test cannot drift apart.
+fn live(line: &str) -> &str {
+    line.split('#').next().unwrap_or("")
+}
+
 /// Parse an `instance.env` into its `KEY=value` pairs.
 fn parse_env(text: &str) -> Vec<(String, String)> {
     text.lines()
@@ -103,25 +112,44 @@ fn rendered_instance(env_file: &str) -> (String, Config) {
     // install a config containing the literal `__START_ROOM__`, which parses as
     // a string where an integer belongs — or, worse, as a plausible-looking
     // path. Name the offenders.
-    let leftovers: Vec<&str> = text
-        .lines()
-        .filter(|l| l.contains("__") && !l.trim_start().starts_with('#'))
-        .collect();
+    //
+    // The rule is deliberately the deploy's rule, character for character:
+    // `grep -n '^[^#]*__'`, i.e. a token in the part of the line before any
+    // `#`. The template's own header spells the mechanism out with `__KEY__`
+    // tokens, so both sides must exempt comments — and they must exempt the
+    // SAME lines, or the shell declares a good render incomplete (or worse,
+    // passes a bad one) while this test disagrees.
+    let leftovers: Vec<&str> = text.lines().filter(|l| live(l).contains("__")).collect();
     assert!(
         leftovers.is_empty(),
         "{env_file} leaves placeholders unrendered: {leftovers:?}"
     );
 
+    // One directory per CALL, not per process: these tests run as parallel
+    // threads in a single binary and three of them render the same env file, so
+    // a path keyed only on the file name would have one thread deleting the
+    // config another was about to load — and `Config::load` answers a missing
+    // file with `Config::default()` (config.rs, the NotFound arm), which is the
+    // silent-default failure this whole step exists to close. It must never be
+    // the thing that answers here.
+    static RENDER: AtomicU64 = AtomicU64::new(0);
     let dir = std::env::temp_dir().join(format!(
-        "mush-tmpl-{}-{}",
+        "mush-tmpl-{}-{}-{}",
         env_file.replace('.', "_"),
-        std::process::id()
+        std::process::id(),
+        RENDER.fetch_add(1, Ordering::Relaxed)
     ));
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("mushd.toml");
     std::fs::write(&path, &text).unwrap();
+    assert!(
+        path.is_file(),
+        "{env_file}: the rendered config vanished before it was loaded, so \
+         Config::load would have answered with compiled-in defaults"
+    );
     let cfg = Config::load(&path)
         .unwrap_or_else(|e| panic!("the rendered {env_file} config does not parse: {e}"));
+    // Only what this call created.
     let _ = std::fs::remove_dir_all(&dir);
 
     (text, cfg)
@@ -317,11 +345,8 @@ fn every_template_placeholder_is_a_shipped_instance_env_key() {
     // Only the live lines: the header's own prose spells the mechanism out with
     // `__KEY__` and `__SOMETHING__`, which are examples, not parameters.
     let mut used = BTreeSet::new();
-    for line in template
-        .lines()
-        .filter(|l| !l.trim_start().starts_with('#'))
-    {
-        let mut rest = line;
+    for line in template.lines() {
+        let mut rest = live(line);
         while let Some(start) = rest.find("__") {
             let after = &rest[start + 2..];
             let Some(end) = after.find("__") else { break };
