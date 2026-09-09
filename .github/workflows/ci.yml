@@ -100,6 +100,14 @@ jobs:
           cargo test -p mush-contract-tests --test gate5_fault_matrix
           cargo test -p mush-contract-tests --test schedule_source
           cargo test -p mush-contract-tests --test ci_gated_test_inventory
+      # WS01-S11: the world task must never panic, so the number of places it
+      # could is budgeted per crate under panic_budget/ and only a reviewed
+      # diff raises one. The same target refuses `panic = "abort"`, which would
+      # make WS01-S4's catch_unwind boundary inert. It also runs under the
+      # cross-platform `test` job's `--workspace`; it is named here so the log
+      # says which contract failed.
+      - name: The production panic surface and the panic=abort firewall
+        run: cargo test -p mush-contract-tests --test panic_budget
       # 10b §14.3 criterion 4 (E7 cut 11 independent verify fold, G5/F7): every
       # E7k lane's proof must run in a package that can SEE the crate that owns
       # the lane. `mush-contract-tests` declares no `mush-industry` dependency,

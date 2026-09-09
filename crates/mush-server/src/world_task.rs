@@ -88,6 +88,41 @@
 //!   whose `u64::MAX` case is refused a few lines above each site.
 //! * `@discord/link` — `normalize_link_code` over a code this function just
 //!   minted.
+//!
+//! ## The never-panic contract (WS01-S11)
+//!
+//! The rule the paragraph above applies locally is a workspace contract, and
+//! it is worth stating plainly: **this task must never panic and must never
+//! block.** It owns every object in the game. A panic here does not fail a
+//! command — it unwinds the only holder of world state while the store writer
+//! still has a queue and every player still has a socket, so the blast radius
+//! of a wrong `unwrap()` in this file is the game, not the turn. A blocking
+//! call is the same outage more slowly: nothing else can touch the world while
+//! it waits.
+//!
+//! Three mechanisms hold the line, and none of them is a code review:
+//!
+//! 1. **Posture.** An integrity breach is logged at `error!` and answered with
+//!    [`apply_integrity_freeze`] or the local fail-closed refusal — never with
+//!    a macro that ends the process. `#![deny(clippy::unreachable)]` below
+//!    keeps the strongest of those macros out of this module by compilation.
+//! 2. **A boundary** (WS01-S4). The task runs inside a catch, so a panic that
+//!    does happen is classified [`crate::WorldOutcome::Faulted`] and becomes an
+//!    orderly non-zero exit that drains the writer and fsyncs the quarantine
+//!    rather than a silently dead task the gateway keeps talking to. That is
+//!    also why no profile may set `panic = "abort"`: abort deletes the catch,
+//!    replaces the exit with `SIGABRT`, and loses the batch in hand.
+//! 3. **A budget** (WS01-S11). Every production crate's count of `unwrap` /
+//!    `expect` / `panic!` / `unreachable!` / `todo!` / `unimplemented!` is
+//!    written down in `panic_budget/<crate>.txt` and enforced by
+//!    `crates/mush-contract-tests/tests/panic_budget.rs`. The surface may
+//!    shrink freely; growing it is a diff a reviewer signs, and in the pre-auth
+//!    gateway crates it may not grow at all without a written reason.
+//!
+//! New code in this task therefore carries its errors: refuse the message,
+//! refuse the flush, freeze the world if truth is already broken — and say so
+//! in the log. Adding an `expect` here means raising a number in a file whose
+//! diff somebody reads.
 #![deny(clippy::unreachable)]
 
 use std::collections::{BTreeMap, VecDeque};
