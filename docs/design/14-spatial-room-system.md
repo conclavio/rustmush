@@ -328,7 +328,9 @@ them at apply (3.2). Prose fields are prose; the digest covers them like any fie
 
 Two packs ship in the repository and apply at first boot when `[game].starter_area = true`
 (default; the testkit's `boot_world` leaves it false). Names and voices are the owner's
-(2026-09-09) where given; three NPCs carry placeholders until named.
+(2026-09-09) where given; two NPCs carry placeholders until named. Three of the names and two of
+the lines are an homage to a 2004 film about a high school: per doc 06 §15 the packs' `brief`
+records that origin, the quotations stay short, and nothing else is imported.
 
 **`region.limbo`** — one surface region, "the lot", 400 m square, flat at datum 0 with a raised
 loading dock (+1.2 m) on the back lot; locality `locality.lot`; background recipe "paved lot";
@@ -357,12 +359,12 @@ games room allowed):
 
 | Room | Surface | Purpose and occupant |
 |---|---|---|
-| Forecourt & Bus Stop | ground, outdoor | arrival from `<S>` and from the bus |
+| Forecourt & Bus Stop | ground, outdoor | arrival from `<S>` and from the bus; **Regina**, on the lookout for it |
 | Lobby | Lobby building, floor 0 | reception; **Susie** |
 | Breakroom | Lobby building, floor 0 | the staff breakroom; **Phil** |
 | Production Office | Lobby building, floor 1 (mezzanine, +3.6 m) | **restricted** to staff: the one locked room, and the stair portal's `dz` |
-| Souvenir Shop | its own site | **Karen** |
-| Backlot | ground, outdoor; the loading dock | circulation; the **Meteorologist** (placeholder name) |
+| Souvenir Shop | its own site | **Gretchen** |
+| Backlot | ground, outdoor; the loading dock | circulation; **Karen Smith**, the meteorologist |
 | Coffee Shop | its own site on the back lot | the open house venue; the **Economist** (placeholder) |
 | Writers' Room | its own site | the **Set Designer** (placeholder): the builder's front desk |
 
@@ -381,15 +383,24 @@ the lot works with `[llm].enabled = false`; the interface abilities are §4.6:
   abilities `chargen.explain`, `rules.lookup`). Public lore: how scenes and `+request` work,
   what a storyteller does; guarded: which storyline he thinks is overrated. Fallback: "I'm off
   the clock. Tell me about your character anyway."
-- **Karen** — owner of the Souvenir Shop and its manager, and still insists on speaking with
-  the manager. Public lore: the shop's stock (props, posters, the tutorial pamphlet), the lot's
-  history as she tells it; guarded: what the props department owes her. Fallback: "I'd like to
-  speak with the manager. …Right. That's me. How can I help you?"
-- **The Meteorologist** (placeholder) — Backlot; talks about the weather (`weather.report`,
-  `weather.forecast` over the lot's weather cell). **The Economist** (placeholder) — Coffee Shop;
-  shows you the markets (`market.quote`, `market.list` over the public projection). **The Set
-  Designer** (placeholder) — Writers' Room; the builder's front desk (`build.propose`,
-  `build.status`, `build.answer`).
+- **Gretchen** — owner of the Souvenir Shop, selling memorabilia that is still trying to make
+  fetch happen. Public lore: the shop's stock (props, posters, "fetch" merchandise nobody buys,
+  the tutorial pamphlet), the lot's history as she tells it; guarded: everything she has been
+  told in confidence, which is why she is told so little. Fallback: "That is so fetch. It's
+  going to happen. Can I help you find something?"
+- **Karen Smith** — the meteorologist, Backlot. Talks about the weather (`weather.report`,
+  `weather.forecast` over the lot's weather cell); her method is not the instruments. Public
+  lore: current conditions and the forecast, read from the cell when the model is on; guarded:
+  how she really knows it is going to rain. Fallback: "Hi, this is Karen Smith. It's 68 degrees,
+  and there's a 30 percent chance that it's already raining."
+- **Regina** — Forecourt & Bus Stop, on the lookout for the studio tour bus. She can tell you
+  when the next one is due and where it is (`travel.next`, `travel.status` over the bus's
+  journey). Public lore: the bus loop, the checkpoints, who got off last; guarded: why she
+  watches for it so carefully. Fallback: "The bus? It's coming. It's always coming. …Stand back
+  from the curb."
+- **The Economist** (placeholder) — Coffee Shop; shows you the markets (`market.quote`,
+  `market.list` over the public projection). **The Set Designer** (placeholder) — Writers' Room;
+  the builder's front desk (`build.propose`, `build.status`, `build.answer`).
 
 **Hooks**: `hook.open_house` — Susie's set at the coffee shop, an invitation and a place
 strangers meet, no mechanic. **Items**: the tutorial pamphlet (readable), the shooting-schedule
@@ -625,6 +636,7 @@ a ruleset sheet, registered through the same seam and invoked the same way:
 |---|---|---|
 | `atlas.describe(place)`, `who.nearby()` | the receptionist | `+atlas` and the presence projection, filtered for the asker |
 | `weather.report(zone)`, `weather.forecast(zone)` | the meteorologist | `mush-weather`'s cell for the lot's zone (the read side of `@weather <zone>`) |
+| `travel.next(connection)`, `travel.status(journey)` | the bus-watcher | the journey record and `+travel`'s view of it, filtered for the asker (a traveler's destination stays hidden, as `+intercept` hides it today) |
 | `market.quote(…)`, `market.list(…)` | the economist | `+market`'s public projection (`crates/mush-market/src/commands.rs`), never the book beneath it (doc 10 §14's safe projection) |
 | `build.propose(brief)`, `build.status(id)`, `build.answer(q, a)` | the set designer | the authoring agent (4.1); the conversation *is* the proposal record's question loop; the NPC never applies |
 | `chargen.explain(topic)`, `rules.lookup(topic)` | the off-duty gamemaster | the help topics and the loaded ruleset's chargen schema |
@@ -632,8 +644,8 @@ a ruleset sheet, registered through the same seam and invoked the same way:
 Four rules keep an interface NPC exactly as powerful as the person talking to it:
 
 1. **Authority is the asker's.** Every interface ability runs with the speaking character's
-   principal, powers and visibility; the NPC holds none of its own. Karen cannot show a hidden
-   faction's holding because a wizard asked her about it yesterday.
+   principal, powers and visibility; the NPC holds none of its own. Gretchen cannot tell you a
+   hidden faction's holding because a wizard asked her about it yesterday.
 2. **Read or propose, never mutate.** An interface ability either reads a projection the asker
    could read with a command, or writes to a proposal record the asker owns. The mutation stays
    a typed command the asker issues (`+build/go`): the NPC drafts, the validator checks, the person
@@ -784,5 +796,5 @@ pins both fine tile sets and the background; a hyphenated id is refused at load 
   lands (cut 2 chooses the record; the layer may absorb it).
 - The pedestrian encounter policy for unwatched hazard bands in city campaigns (a ruleset
   decision; the engine only exposes the band).
-- Names for the Meteorologist, the Economist and the Set Designer (Susie, Phil and Karen are the
-  owner's, 2026-09-09).
+- Names for the Economist and the Set Designer (Susie, Phil, Gretchen, Karen Smith and Regina are
+  the owner's, 2026-09-09).
