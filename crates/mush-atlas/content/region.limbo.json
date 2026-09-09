@@ -1,0 +1,202 @@
+{
+  "manifest": {
+    "id": "region.limbo",
+    "version": 1,
+    "kind": "region",
+    "digest": "80cc2032c4f21da8a4335bb896e3f895b9cf1c1a2945a6610d6f1d63f038932b",
+    "requires": []
+  },
+  "brief": {
+    "prose": "The Lot: a four-hundred-metre square of studio back lot, flat and paved, with a raised loading dock behind the lobby building. Two neighborhoods stand on it — the OOC Area by the south gate and the Staff Lobby in the north-east — joined by the studio tour, a bus loop past the security gate and the water tower. It is the first content of every fresh world: where newcomers arrive, learn the commands, and meet the staff.",
+    "origin": "Most of the cast's names and a few of their lines are an homage to a 2004 film about a high school (doc 06 §15): the quotations are short, nothing else is imported, and the setting is a film lot that never names it.",
+    "answers": {
+      "q.scale": "one lot, walkable end to end",
+      "q.mood": "a working studio on a quiet day",
+      "q.travel": "the tour bus, and feet"
+    }
+  },
+  "entries": {
+    "region.limbo": {
+      "kind": "region",
+      "def": {
+        "name": "The Lot",
+        "kind": "surface",
+        "body": "earth",
+        "extent": [
+          [
+            0,
+            0
+          ],
+          [
+            400,
+            400
+          ]
+        ],
+        "datum_m": 0.0,
+        "background": {
+          "surface": "paved",
+          "mix": [
+            [
+              "grass",
+              8
+            ]
+          ],
+          "relief_cm": 0,
+          "relief_period_cm": 800,
+          "seed": 20260909
+        },
+        "ground_resolution_cm": 1000
+      }
+    },
+    "locality.lot": {
+      "kind": "locality",
+      "def": {
+        "region": "region.limbo",
+        "name": "The Studio Lot",
+        "kind": "lot",
+        "footprint": [
+          [
+            0,
+            0
+          ],
+          [
+            400,
+            0
+          ],
+          [
+            400,
+            400
+          ],
+          [
+            0,
+            400
+          ]
+        ]
+      }
+    },
+    "checkpoint.security_gate": {
+      "kind": "checkpoint",
+      "def": {
+        "region": "region.limbo",
+        "name": "Security Gate",
+        "point": [
+          150,
+          60,
+          0
+        ]
+      }
+    },
+    "checkpoint.water_tower": {
+      "kind": "checkpoint",
+      "def": {
+        "region": "region.limbo",
+        "name": "Water Tower",
+        "point": [
+          230,
+          150,
+          0
+        ]
+      }
+    },
+    "connection.lot_tour": {
+      "kind": "connection",
+      "def": {
+        "region": "region.limbo",
+        "name": "Studio Tour",
+        "kind": "journey",
+        "from": {
+          "neighborhood": "neighborhood.ooc_area",
+          "point": [
+            70,
+            30,
+            0
+          ]
+        },
+        "to": {
+          "neighborhood": "neighborhood.staff_lobby",
+          "point": [
+            258,
+            268,
+            0
+          ]
+        },
+        "direction": "both",
+        "modes": [
+          "bus"
+        ],
+        "corridor": [
+          [
+            70,
+            30,
+            0
+          ],
+          [
+            150,
+            60,
+            0
+          ],
+          [
+            230,
+            150,
+            0
+          ],
+          [
+            258,
+            268,
+            0
+          ]
+        ],
+        "legs": [
+          {
+            "to": "checkpoint.security_gate",
+            "base_s": 120,
+            "hazard": 0,
+            "interdiction": 0
+          },
+          {
+            "to": "checkpoint.water_tower",
+            "base_s": 180,
+            "hazard": 0,
+            "interdiction": 0
+          },
+          {
+            "to": "checkpoint.water_tower",
+            "base_s": 120,
+            "hazard": 0,
+            "interdiction": 0
+          }
+        ],
+        "visibility": "public",
+        "status": "active"
+      }
+    },
+    "lore.the_lot": {
+      "kind": "lore",
+      "def": {
+        "tag": "the_lot",
+        "entries": [
+          {
+            "tier": "public",
+            "subject": "the lot",
+            "fact": "The lot is a working film studio: the OOC Area by the south gate, the Staff Lobby in the north-east, and the studio tour bus looping between them."
+          },
+          {
+            "tier": "public",
+            "subject": "the tour bus",
+            "fact": "The studio tour bus runs from the OOC bus stop past the security gate and the water tower to the lobby forecourt, and back."
+          },
+          {
+            "tier": "public",
+            "subject": "the open house",
+            "fact": "Once a week the back-lot coffee shop holds an open house; Susie from the lobby plays her own songs there."
+          },
+          {
+            "tier": "public",
+            "subject": "staff",
+            "fact": "The people in the Staff Lobby are staff: ask them, they like being asked."
+          }
+        ]
+      }
+    }
+  }
+}

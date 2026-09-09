@@ -103,6 +103,10 @@ max_characters = 3                 # (M2) per-account character cap (newchar)
 ic_ratio = 1                       # (M5) IC seconds per OOC second (game-clock speed); 4 = an IC day every 6 real hours; read at boot
 ic_epoch = "2020-01-01 00:00"      # (M5) IC datetime at OOC unix time 0 — the calendar's phase/start. "YYYY-MM-DD[ HH:MM[:SS]]".
 #                                  # IC time is a pure function of real time (survives restarts); it is NOT reset to this at each boot.
+starter_area = true                # (S1) apply the shipped starter area — the lot, the OOC Area <O> and the
+#                                  # Staff lot <S> off Limbo — at a world's FIRST boot. Static content compiled
+#                                  # into the server: no LLM call, ever. Never re-applied on a later boot; a
+#                                  # pack staff retired stays retired. Set false for an empty Limbo.
 
 # (M5) The scripting and weather modules are compiled in and always active.
 # mush-script's sandbox budgets and mush-weather's tick/ambient knobs use
@@ -241,6 +245,19 @@ upkeep_per_period = 0              # the lease's rent obligation, per campaign c
 # chargen_required = false          # gate unapproved characters behind approval
 # start_room = 0                    # live start room approved characters land in (#0 = Limbo)
 # start_room_unapproved = 0         # restricted chargen area (defaults to start_room)
+
+[atlas]                            # (S1) the spatial layer: map tiles and the content pack shelf
+# Every key defaults. deny_unknown_fields, like [tacsim] and [npc]: a typo
+# refuses the boot rather than taking a default.
+tile_max_cells = 65536             # the most cells one map tile holds (256x256); larger footprints rasterize coarser
+nearest_room_cells = 8             # parsed, INERT until S4's windows
+# Content packs, read HOST-SIDE at boot exactly like [tacsim].pack_paths: each
+# entry is a .json pack file or a directory searched for *.json in sorted order,
+# and one that cannot be read, does not parse, or whose declared digest is not
+# its content's is a HARD BOOT ERROR NAMING THE FILE. Listed packs go on the
+# shelf "@atlas/pack list|plan|apply" works from; nothing is applied by being
+# listed here. The shipped starter packs are always on the shelf.
+pack_paths = []
 
 [npc]                              # (H2b) the NPC agent layer's world-task knobs
 # How long an NPC's scene turn may wait for its durable decision before the

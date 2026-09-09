@@ -2044,6 +2044,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "mush-atlas"
+version = "0.1.0"
+dependencies = [
+ "mush-content",
+ "mush-core",
+ "mush-npc",
+ "mush-proto",
+ "mush-testkit",
+ "serde",
+ "serde_json",
+ "smol_str",
+ "thiserror 2.0.20",
+ "tracing",
+]
+
+[[package]]
 name = "mush-campaign"
 version = "0.1.0"
 dependencies = [
@@ -2112,6 +2128,19 @@ dependencies = [
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "mush-content"
+version = "0.1.0"
+dependencies = [
+ "mush-core",
+ "mush-testkit",
+ "serde",
+ "serde_json",
+ "smol_str",
+ "thiserror 2.0.20",
+ "tracing",
 ]
 
 [[package]]
@@ -2442,6 +2471,7 @@ dependencies = [
 name = "mush-npc"
 version = "0.1.0"
 dependencies = [
+ "mush-content",
  "mush-core",
  "mush-faction",
  "mush-llm",
@@ -2573,10 +2603,12 @@ version = "0.1.0"
 dependencies = [
  "fred",
  "futures",
+ "mush-atlas",
  "mush-campaign",
  "mush-canon",
  "mush-comsys",
  "mush-config",
+ "mush-content",
  "mush-contract-tests",
  "mush-core",
  "mush-economy",
@@ -2739,8 +2771,10 @@ dependencies = [
  "dotenvy",
  "fred",
  "futures",
+ "mush-atlas",
  "mush-comsys",
  "mush-config",
+ "mush-content",
  "mush-core",
  "mush-economy",
  "mush-gateway",

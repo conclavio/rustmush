@@ -40,6 +40,7 @@ fn boot() -> TestWorld {
     let mut modules = server_modules_with(
         mush_weather::WeatherConfig::default(),
         mush_economy::EconomyConfig::default(),
+        mush_atlas::AtlasConfig::default(),
         &onboarding,
         None,
         Some(&shadowrun),

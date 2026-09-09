@@ -139,6 +139,9 @@ linkdead_grace_s = 300
 max_characters = 3
 ic_ratio = 1
 ic_epoch = "2020-01-01 00:00"
+# The shipped starter area (the lot off Limbo) at a world's FIRST boot only;
+# static content, no LLM call. A retired pack stays retired across restarts.
+starter_area = true
 
 # The economy's bounds. Written out because each is a policy: how large a hole a
 # ruleset may open in the mint per period, how much journal stays in RAM, how
@@ -253,6 +256,13 @@ upkeep_per_period = 0
 chargen_required = __CHARGEN_REQUIRED__
 start_room = __START_ROOM__
 start_room_unapproved = __START_ROOM_UNAPPROVED__
+
+# The spatial layer. deny_unknown_fields. pack_paths are read host-side like
+# [tacsim].pack_paths and only stock the @atlas/pack shelf.
+[atlas]
+tile_max_cells = 65536
+nearest_room_cells = 8
+pack_paths = []
 
 [npc]
 scene_turn_deadline_secs = 120

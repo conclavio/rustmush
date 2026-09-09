@@ -55,6 +55,11 @@ category = "baseline"
 note = "baseline pinned at b0e3b52 (module, wod composition only)"
 
 [[handler]]
+name = "+atlas"
+category = "read-only"
+note = "S1 (14-spatial-implementation-plan 3.1): the atlas views -- the viewer's neighborhood as a text map and a room list, a neighborhood by name, or the region's footprints and corridors (+atlas/region). Presentation over the atlas records, filtered for the viewer (a room the viewer may not enter is absent, not blanked); no durable mutation of any kind."
+
+[[handler]]
 name = "+banality"
 category = "baseline"
 note = "baseline pinned at b0e3b52 (module, wod composition only)"
@@ -533,6 +538,12 @@ note = "baseline pinned at b0e3b52 (module, every composition)"
 name = "@asset"
 category = "baseline"
 note = "baseline pinned at b0e3b52 (module, every composition)"
+
+[[handler]]
+name = "@atlas"
+category = "legacy-post-image"
+family = "atlas.records"
+note = "S1 (14-spatial-implementation-plan 3.1): @atlas/pack list|show|plan|apply|retire, staff (SIM_ADMIN or Royalty). Applying a content pack writes bounded whole-document atlas records at deterministic keys (mod:atlas:<kind>:<pack>:<entry>, roomgeo:<obj>, tile:<pack>:<entry>) through strict deny_unknown_fields wires re-validated at boot, and the content latch (mod:content:applied:<pack>) through mush-content's API. None of it takes part in authority or prepared mechanics: a room's geometry decides what a map draws, never what an action may do. The declared family is where S4's windows move the tiles when they come under the K3 bundle limits."
 
 [[handler]]
 name = "@behavior"

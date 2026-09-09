@@ -22,7 +22,7 @@ use mush_config::resolution_keys::DurableResolutionKeyStore;
 use mush_core::Engine;
 use mush_llm::LlmService;
 use mush_server::config_ext::{
-    economy_config_with, llm_config, onboarding_ruleset, shadowrun_cadences,
+    atlas_config, economy_config_with, llm_config, onboarding_ruleset, shadowrun_cadences,
     shadowrun_economy_config, tacsim_config, weather_config, wod_economy_config, worldgen_config,
 };
 use mush_store::{LedgerArchive, ObjectStore, core_migrations, run_migrations};
@@ -209,9 +209,12 @@ pub async fn boot_all_in_one(
     // which composes inside `server_modules_with` — through the composition root's
     // own mapping and never through a crate edge.
     let tacsim = tacsim_config(&config.tacsim)?;
+    // S1: `[atlas]`, read host-side for the same reason as `[tacsim]`.
+    let atlas = atlas_config(&config.atlas)?;
     let mut mods = crate::modules::server_modules_with(
         weather_config(&config.weather),
         economy_config_with(&config.economy, &contributed)?,
+        atlas,
         &onboarding,
         wod_selected.then_some(&wod_economy),
         sr_selected.then_some(&sr_economy),
@@ -250,6 +253,8 @@ pub async fn boot_all_in_one(
         );
     }
     mods.push(crate::modules::tacsim_module(tacsim));
+    // S1: the content module LAST — see `mush_server::modules::content_module`.
+    mods.push(crate::modules::content_module(config.game.starter_area)?);
     // Compose and freeze every mechanics registry before persisted world data
     // is loaded. This makes the C1 boot order structural instead of relying on
     // individual modules to avoid early interpretation.

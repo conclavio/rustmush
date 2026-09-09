@@ -3,7 +3,7 @@
 //! not depend on `mush-llm` / `mush-weather` / `mush-worldgen` / `ruleset-wod`.
 
 use mush_config::config::{
-    EconomyCfg, OnboardingCfg, ShadowrunCfg, TacsimCfg, WeatherCfg, WodCfg, WorldgenCfg,
+    AtlasCfg, EconomyCfg, OnboardingCfg, ShadowrunCfg, TacsimCfg, WeatherCfg, WodCfg, WorldgenCfg,
 };
 use serde::Deserialize;
 
@@ -415,6 +415,36 @@ pub fn tacsim_config(cfg: &TacsimCfg) -> Result<ruleset_tacsim::TacsimConfig, St
     Ok(typed)
 }
 
+/// The module-facing [`mush_atlas::AtlasConfig`] (S1, 14-spatial-implementation-plan
+/// §3.1): `[atlas]`'s limits, and its `pack_paths` read **host-side** exactly as
+/// `[tacsim].pack_paths` are, so an unreadable, oversized or mis-digested pack is a
+/// hard boot error naming the file before any module runs.
+///
+/// # Errors
+///
+/// A pack file that cannot be read or does not verify, a directory that cannot be
+/// listed, more than [`mush_atlas::MAX_CONFIGURED_PACKS`] packs, or a
+/// `tile_max_cells` outside `1..=65536`.
+pub fn atlas_config(cfg: &AtlasCfg) -> Result<mush_atlas::AtlasConfig, String> {
+    let sources = read_pack_sources(&cfg.pack_paths, "[atlas].pack_paths")?;
+    let typed = mush_atlas::AtlasConfig {
+        tile_max_cells: cfg.tile_max_cells,
+        nearest_room_cells: cfg.nearest_room_cells,
+        packs: sources
+            .into_iter()
+            .map(|s| mush_atlas::PackSource {
+                name: s.name,
+                bytes: s.bytes,
+            })
+            .collect(),
+    };
+    // Verified here, at the host, so the boot fails with the file's name in the
+    // message; the module repeats the parse at wiring, and two evaluations of a pure
+    // function over the same bytes cannot disagree.
+    mush_atlas::verify_sources(&typed)?;
+    Ok(typed)
+}
+
 /// **E7r1 R4 — `[tacsim.recovery]`, validated at the host.**
 ///
 /// A disabled provider validates nothing but its own disabled-ness: the block may
@@ -562,25 +592,30 @@ fn read_pack_sources(
             ));
         }
     }
+    let section = label.split('.').next().unwrap_or(label);
     let mut out: Vec<ruleset_tacsim::PackSource> = Vec::with_capacity(candidates.len());
     for file in candidates {
-        out.push(read_one_pack(&file)?);
+        let (name, bytes) = read_pack_file(&file, section)?;
+        out.push(ruleset_tacsim::PackSource { name, bytes });
     }
     Ok(out)
 }
 
-fn read_one_pack(path: &std::path::Path) -> Result<ruleset_tacsim::PackSource, String> {
+/// Read one pack file for `section`, refusing anything over
+/// [`MAX_TACSIM_PACK_BYTES`] — the one size a pack file may be, whichever section
+/// names it.
+fn read_pack_file(path: &std::path::Path, section: &str) -> Result<(String, String), String> {
     let name = path.display().to_string();
     let meta = std::fs::metadata(path)
-        .map_err(|error| format!("[tacsim] {name} could not be read: {error}"))?;
+        .map_err(|error| format!("{section} {name} could not be read: {error}"))?;
     if meta.len() > MAX_TACSIM_PACK_BYTES {
         return Err(format!(
-            "[tacsim] {name} is larger than this server will read ({MAX_TACSIM_PACK_BYTES} bytes)"
+            "{section} {name} is larger than this server will read ({MAX_TACSIM_PACK_BYTES} bytes)"
         ));
     }
     let bytes = std::fs::read_to_string(path)
-        .map_err(|error| format!("[tacsim] {name} could not be read: {error}"))?;
-    Ok(ruleset_tacsim::PackSource { name, bytes })
+        .map_err(|error| format!("{section} {name} could not be read: {error}"))?;
+    Ok((name, bytes))
 }
 
 #[cfg(test)]

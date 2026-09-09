@@ -1,0 +1,567 @@
+{
+  "manifest": {
+    "id": "neighborhood.ooc_area",
+    "version": 1,
+    "kind": "neighborhood",
+    "digest": "ea068eb175a6590f904980615e2e8050a15fb34309cdeae3c6fe7fc43c679532",
+    "requires": [
+      {
+        "id": "region.limbo",
+        "version": 1
+      }
+    ]
+  },
+  "brief": {
+    "prose": "The OOC Area: a hall by the south gate where newcomers arrive from Limbo, three short tutorial rooms (moving, talking, building), a lounge with the notice board, and the bus stop outside where the studio tour departs. Public, no secrets, one player-built games room allowed.",
+    "origin": "Most of the cast's names and a few of their lines are an homage to a 2004 film about a high school (doc 06 §15): the quotations are short, nothing else is imported, and the setting is a film lot that never names it.",
+    "answers": {
+      "q.public_role": "arrival and tutorial",
+      "q.secrets": "none",
+      "q.hydration": "one player-built games room"
+    }
+  },
+  "entries": {
+    "neighborhood": {
+      "kind": "neighborhood",
+      "def": {
+        "region": "region.limbo",
+        "locality": "locality.lot",
+        "name": "OOC Area",
+        "setting": "ooc",
+        "representation": "authored",
+        "footprint": [
+          [
+            20,
+            20
+          ],
+          [
+            140,
+            20
+          ],
+          [
+            140,
+            110
+          ],
+          [
+            20,
+            110
+          ]
+        ],
+        "room_budget": {
+          "target": 6,
+          "maximum": 7
+        },
+        "hydration": {
+          "enabled": true,
+          "max_player_sites": 1
+        },
+        "resolution_cm": 100
+      }
+    },
+    "site.ooc_hall": {
+      "kind": "site",
+      "def": {
+        "name": "The OOC Hall",
+        "site_kind": "site.hall",
+        "footprint": [
+          [
+            25,
+            45
+          ],
+          [
+            115,
+            45
+          ],
+          [
+            115,
+            105
+          ],
+          [
+            25,
+            105
+          ]
+        ],
+        "entrances": [
+          "exit.lounge_bus_stop"
+        ]
+      }
+    },
+    "structure.ooc_hall": {
+      "kind": "structure",
+      "def": {
+        "site": "site.ooc_hall",
+        "footprint": [
+          [
+            25,
+            45
+          ],
+          [
+            115,
+            45
+          ],
+          [
+            115,
+            105
+          ],
+          [
+            25,
+            105
+          ]
+        ],
+        "floors": [
+          {
+            "index": 0,
+            "z_offset_m": 0,
+            "height_m": 4
+          }
+        ]
+      }
+    },
+    "room.welcome_hall": {
+      "kind": "room",
+      "def": {
+        "name": "Welcome Hall",
+        "site": "site.ooc_hall",
+        "surface": {
+          "floor": [
+            "structure.ooc_hall",
+            0
+          ]
+        },
+        "footprint": {
+          "rect": [
+            [
+              30,
+              75
+            ],
+            [
+              60,
+              100
+            ]
+          ]
+        },
+        "desc": "A bright hall with a scuffed floor and a hand-lettered sign: WELCOME TO THE LOT. Arrows point to the tutorial rooms east and the lounge south; a docent waits by the door. This is out of character: nothing said here is part of the story.",
+        "details": {
+          "sign": "WELCOME TO THE LOT. Tutorial: east. Lounge: south. The bus: through the lounge and out. Type 'help getting-started' any time."
+        }
+      }
+    },
+    "room.tutorial_moving": {
+      "kind": "room",
+      "def": {
+        "name": "Tutorial: Moving",
+        "site": "site.ooc_hall",
+        "surface": {
+          "floor": [
+            "structure.ooc_hall",
+            0
+          ]
+        },
+        "footprint": {
+          "rect": [
+            [
+              60,
+              75
+            ],
+            [
+              85,
+              100
+            ]
+          ]
+        },
+        "desc": "A small room with a map painted on the floor. Exits are listed when you 'look'; type the name of an exit, or the letters in angle brackets, to walk through it. 'home' takes you back to Limbo from anywhere. Keep going east.",
+        "details": {
+          "map": "The painted map shows this hall: Welcome Hall, then Moving, Talking, Building, and the Lounge back west."
+        }
+      }
+    },
+    "room.tutorial_talking": {
+      "kind": "room",
+      "def": {
+        "name": "Tutorial: Talking",
+        "site": "site.ooc_hall",
+        "surface": {
+          "floor": [
+            "structure.ooc_hall",
+            0
+          ]
+        },
+        "footprint": {
+          "rect": [
+            [
+              85,
+              75
+            ],
+            [
+              110,
+              100
+            ]
+          ]
+        },
+        "desc": "A room lined with old microphones. 'say hello' or '\"hello' speaks; ':waves' or 'pose waves' acts; 'page Name=text' reaches someone anywhere; 'help channels' explains the channels. South is the building tutorial.",
+        "details": {
+          "microphones": "Prop microphones, not wired to anything. The channels are."
+        }
+      }
+    },
+    "room.tutorial_building": {
+      "kind": "room",
+      "def": {
+        "name": "Tutorial: Building",
+        "site": "site.ooc_hall",
+        "surface": {
+          "floor": [
+            "structure.ooc_hall",
+            0
+          ]
+        },
+        "footprint": {
+          "rect": [
+            [
+              85,
+              50
+            ],
+            [
+              110,
+              75
+            ]
+          ]
+        },
+        "desc": "A sandbox: sawhorses, a workbench, a whiteboard of commands. Players with the BUILDER flag may '@dig' here to try the building commands; staff reset the room now and then. The lounge is west.",
+        "details": {
+          "whiteboard": "@dig <name>=<exit>;<alias>, @desc here=<text>, @open <exit>=<room>. Ask a builder for the flag. The set designer in the Writers' Room talks briefs into plans."
+        }
+      }
+    },
+    "room.lounge": {
+      "kind": "room",
+      "def": {
+        "name": "Lounge",
+        "site": "site.ooc_hall",
+        "surface": {
+          "floor": [
+            "structure.ooc_hall",
+            0
+          ]
+        },
+        "footprint": {
+          "rect": [
+            [
+              30,
+              50
+            ],
+            [
+              85,
+              75
+            ]
+          ]
+        },
+        "desc": "Sofas, a coffee machine that mostly works, and the notice board. The OOC hangout: talk about the game, not in it. The bus stop is out the south door.",
+        "details": {
+          "coffee machine": "It takes a while. So does the bus."
+        }
+      }
+    },
+    "room.bus_stop": {
+      "kind": "room",
+      "def": {
+        "name": "Bus Stop (OOC)",
+        "surface": "ground",
+        "footprint": {
+          "rect": [
+            [
+              40,
+              25
+            ],
+            [
+              100,
+              45
+            ]
+          ]
+        },
+        "desc": "A painted kerb, a shelter with a timetable, and the south gate beyond it. The studio tour bus boards here for the lobby forecourt; the hall is north.",
+        "details": {
+          "timetable": "STUDIO TOUR — every hour on the hour, via the Security Gate and the Water Tower, to the Lobby Forecourt. Subject to delay."
+        }
+      }
+    },
+    "room.bus": {
+      "kind": "room",
+      "def": {
+        "name": "Studio Tour Bus",
+        "surface": "ground",
+        "kind": "indoor",
+        "footprint": {
+          "rect": [
+            [
+              41,
+              22
+            ],
+            [
+              53,
+              25
+            ]
+          ]
+        },
+        "desc": "Two rows of vinyl seats, a rattling PA, and windows full of back lot. The driver watches the mirror. Until the tour runs on its own clock the bus stands at both its stops: get off at the OOC bus stop or the lobby forecourt.",
+        "flags": [
+          "sheltered"
+        ]
+      }
+    },
+    "exit.limbo_welcome": {
+      "kind": "exit",
+      "def": {
+        "from": "limbo",
+        "to": "room.welcome_hall",
+        "names": [
+          "OOC Area <O>;o;ooc",
+          "Limbo <X>;x;limbo"
+        ],
+        "portal": {
+          "mode": "open"
+        }
+      }
+    },
+    "exit.hall_moving": {
+      "kind": "exit",
+      "def": {
+        "from": "room.welcome_hall",
+        "to": "room.tutorial_moving",
+        "names": [
+          "Tutorial: Moving <M>;m;moving;east;e",
+          "Welcome Hall <W>;w;hall;west"
+        ],
+        "portal": {
+          "mode": "open"
+        }
+      }
+    },
+    "exit.moving_talking": {
+      "kind": "exit",
+      "def": {
+        "from": "room.tutorial_moving",
+        "to": "room.tutorial_talking",
+        "names": [
+          "Tutorial: Talking <T>;t;talking;east;e",
+          "Tutorial: Moving <M>;m;moving;west"
+        ],
+        "portal": {
+          "mode": "open"
+        }
+      }
+    },
+    "exit.talking_building": {
+      "kind": "exit",
+      "def": {
+        "from": "room.tutorial_talking",
+        "to": "room.tutorial_building",
+        "names": [
+          "Tutorial: Building <B>;b;building;south;s",
+          "Tutorial: Talking <T>;t;talking;north;n"
+        ],
+        "portal": {
+          "mode": "open"
+        }
+      }
+    },
+    "exit.building_lounge": {
+      "kind": "exit",
+      "def": {
+        "from": "room.tutorial_building",
+        "to": "room.lounge",
+        "names": [
+          "Lounge <L>;l;lounge;west;w",
+          "Tutorial: Building <B>;b;building;east"
+        ],
+        "portal": {
+          "mode": "open"
+        }
+      }
+    },
+    "exit.hall_lounge": {
+      "kind": "exit",
+      "def": {
+        "from": "room.welcome_hall",
+        "to": "room.lounge",
+        "names": [
+          "Lounge <L>;l;lounge;south;s",
+          "Welcome Hall <W>;w;hall;north"
+        ],
+        "portal": {
+          "mode": "open"
+        }
+      }
+    },
+    "exit.lounge_bus_stop": {
+      "kind": "exit",
+      "def": {
+        "from": "room.lounge",
+        "to": "room.bus_stop",
+        "names": [
+          "Bus Stop <BS>;bs;out;stop",
+          "Lounge <L>;l;lounge;in"
+        ],
+        "portal": {
+          "mode": "door",
+          "at": [
+            70,
+            45,
+            0
+          ]
+        }
+      }
+    },
+    "exit.bus_stop_bus": {
+      "kind": "exit",
+      "def": {
+        "from": "room.bus_stop",
+        "to": "room.bus",
+        "names": [
+          "Board the Bus <BUS>;bus;board"
+        ],
+        "portal": {
+          "mode": "door"
+        }
+      }
+    },
+    "exit.bus_bus_stop": {
+      "kind": "exit",
+      "def": {
+        "from": "room.bus",
+        "to": "room.bus_stop",
+        "names": [
+          "Off at the OOC Bus Stop <OOC>;ooc;off"
+        ],
+        "portal": {
+          "mode": "door"
+        }
+      }
+    },
+    "item.pamphlet": {
+      "kind": "item",
+      "def": {
+        "name": "tutorial pamphlet",
+        "room": "room.welcome_hall",
+        "desc": "A folded pamphlet: SO YOU'RE ON THE LOT. Moving, talking, building — three rooms east and south of here — then the bus to the lobby, where the staff are. 'help getting-started' has the rest.",
+        "details": {
+          "back page": "Rules of conduct: 'help rules-of-conduct'. Requests: '+request'."
+        }
+      }
+    },
+    "item.notice_board": {
+      "kind": "item",
+      "def": {
+        "name": "notice board",
+        "room": "room.lounge",
+        "desc": "Cork, pins, and the week's notices. The open house at the back-lot coffee shop is circled twice.",
+        "details": {
+          "notices": "OPEN HOUSE — back-lot coffee shop, weekly; Susie plays. TUTORIAL ROOMS reset by staff on request. LOST AND FOUND — the box by the sofa."
+        },
+        "flags": [
+          "sticky"
+        ]
+      }
+    },
+    "item.lost_and_found": {
+      "kind": "item",
+      "def": {
+        "name": "lost-and-found box",
+        "room": "room.lounge",
+        "desc": "A cardboard box by the sofa, marked LOST AND FOUND. Things left on the lot end up here.",
+        "flags": [
+          "enter_ok",
+          "sticky"
+        ]
+      }
+    },
+    "npc.sharon": {
+      "kind": "npc",
+      "def": {
+        "name": "Sharon Norbury",
+        "room": "room.welcome_hall",
+        "tier": "extra",
+        "profile": {
+          "persona": "The OOC Area's docent: patient, precise, a little dry. She has explained the tutorial a thousand times and will explain it once more, properly.",
+          "background": "A teacher by trade who took the docent post because somebody had to. She knows every help topic by name.",
+          "speech_style": "Clear, short sentences. Names the command, then what it does. Never sarcastic to a newcomer.",
+          "goals": [
+            "Walk newcomers through the tutorial rooms",
+            "Point at the right help topic"
+          ],
+          "knows": [
+            "The three tutorial rooms and what each teaches",
+            "The bus goes to the Staff Lobby",
+            "'help <topic>' answers most questions"
+          ],
+          "does_not_know": [
+            "Anything in character: the story, the setting, the rules of any game system"
+          ],
+          "fallback": [
+            "The tutorial is through there. I'll be here when you have questions. Raise your hand.",
+            "Moving, then talking, then building. In that order, please."
+          ]
+        },
+        "lore": [
+          {
+            "tier": "public",
+            "subject": "the tutorial",
+            "fact": "Three rooms: Moving, Talking, Building, east and south of the Welcome Hall."
+          },
+          {
+            "tier": "public",
+            "subject": "help",
+            "fact": "Every command has a help topic: 'help getting-started', 'help movement', 'help communication', 'help building'."
+          }
+        ],
+        "tags": [
+          "the_lot"
+        ]
+      }
+    },
+    "npc.aaron": {
+      "kind": "npc",
+      "def": {
+        "name": "Aaron Samuels",
+        "room": "room.bus",
+        "tier": "minor",
+        "profile": {
+          "persona": "The tour bus driver: easy-going, unbothered, eyes on the mirror. He has driven the loop so long he could do it asleep, and some days does.",
+          "background": "Hired to drive the tour and never asked for anything else. Regina watches for his bus every day; he has noticed, and says nothing.",
+          "speech_style": "Short, amiable, over the PA. Announces stops. Does not chat while the bus is moving.",
+          "goals": [
+            "Drive the loop",
+            "Get everyone off at the right stop"
+          ],
+          "knows": [
+            "The tour route and its two stops",
+            "The security gate and the water tower"
+          ],
+          "does_not_know": [
+            "Why the tour is late",
+            "What goes on in the Production Office"
+          ],
+          "fallback": [
+            "Next stop, the lobby. Please stay seated.",
+            "This is the OOC bus stop. Mind the step."
+          ]
+        },
+        "lore": [
+          {
+            "tier": "public",
+            "subject": "the tour",
+            "fact": "The bus runs the loop: OOC bus stop, security gate, water tower, lobby forecourt, and back."
+          },
+          {
+            "tier": "guarded",
+            "subject": "regina",
+            "fact": "That one on the forecourt watches for the bus like it owes her money."
+          }
+        ],
+        "tags": [
+          "the_lot"
+        ]
+      }
+    }
+  }
+}

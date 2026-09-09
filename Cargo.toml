@@ -198,6 +198,16 @@ ruleset-shadowrun = { path = "crates/ruleset-shadowrun" }
 # physical/civil context apart, so it composes beside the one character ruleset,
 # after it, under `[tacsim].enabled`.
 ruleset-tacsim = { path = "crates/ruleset-tacsim" }
+# S1 (14-spatial-implementation-plan §3.1): content packs — the JSON pack format, its
+# digest, dependency pinning by version and digest, the entry-kind registry and the
+# once-per-pack apply latch with create/update/retire. `mush-content -> {core}` only: it
+# knows no object kind and no game system; owners register the entry kinds they decode.
+mush-content = { path = "crates/mush-content" }
+# S1: the spatial records (regions, neighborhoods, sites, structures, rooms with geometry,
+# portals, connections, tiles, features), the rasterizer, the `+atlas` views and
+# `@atlas/pack`, and the starter area as shipped content. `mush-atlas -> {core, content,
+# proto}` only — no sim, tactics, npc, housing or worldgen edge.
+mush-atlas = { path = "crates/mush-atlas" }
 mush-testkit = { path = "crates/mush-testkit" }
 mush-contract-tests = { path = "crates/mush-contract-tests" }
 # M16b: the all-in-one server library reused by both forked halves, plus the

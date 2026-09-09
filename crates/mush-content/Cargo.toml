@@ -1,0 +1,25 @@
+[package]
+name = "mush-content"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Content packs (S1, doc 14 §2.5): the JSON pack format, its digest, dependency pinning, the entry-kind registry, and the once-per-pack apply latch with create/update/retire"
+
+# 14-spatial-implementation-plan §3.1: `mush-content -> {mush-core}` plus the serde
+# vocabulary. It knows no world object kinds and no game system: owners register the
+# entry kinds they decode, and the latch maps pack entries to whatever objects those
+# owners made. `cargo tree -p mush-content` is the test.
+[dependencies]
+mush-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+smol_str.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+mush-testkit.workspace = true
+
+[lints]
+workspace = true

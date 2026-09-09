@@ -293,6 +293,10 @@ pub fn game_modules(
     // E7 cut 1: the TacSim layer's frozen block, read **host-side** and BEFORE the
     // module list, because `[tacsim.recovery]` is mapped into the built-ins below.
     let tacsim = config_ext::tacsim_config(&config.tacsim)?;
+    // S1: `[atlas]` likewise — its `pack_paths` are read host-side so a bad pack file
+    // fails the boot naming the file, and the typed config reaches the atlas inside
+    // the built-ins.
+    let atlas = config_ext::atlas_config(&config.atlas)?;
     let onboarding = config_ext::onboarding_ruleset(&config.onboarding);
     // E5c: `[wod.economy]`, validated here (an unknown mode is a hard boot error).
     // `None` when no WoD ruleset is enabled — that is what gates the housing title
@@ -327,6 +331,7 @@ pub fn game_modules(
     let mut mods = modules::server_modules_with(
         config_ext::weather_config(&config.weather),
         config_ext::economy_config_with(&config.economy, &contributed)?,
+        atlas,
         &onboarding,
         wod_selected.then_some(&wod_economy),
         sr_selected.then_some(&sr_economy),
@@ -365,6 +370,14 @@ pub fn game_modules(
         );
     }
     mods.push(modules::tacsim_module(tacsim));
+    // S1: the content module LAST of all — its boot pass applies the starter packs
+    // through the atlas's and the NPC module's appliers, which must have hydrated
+    // their own slots first (`on_world_loaded` runs in list order). Zero LLM calls:
+    // the packs are bytes compiled into the server.
+    if config.game.starter_area {
+        tracing::info!("starter area on: the lot applies at a first boot");
+    }
+    mods.push(modules::content_module(config.game.starter_area)?);
     Ok(mods)
 }
 

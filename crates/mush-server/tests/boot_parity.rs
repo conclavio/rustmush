@@ -134,6 +134,8 @@ fn game_modules_pins_the_composition_order() {
             "faction",
             "scenes",
             "sim",
+            // S1: the atlas, right after the placement graph it will read (S2).
+            "atlas",
             "tactics",
             "propagation",
             "economy",
@@ -152,13 +154,22 @@ fn game_modules_pins_the_composition_order() {
             "npc",
             "wod",
             "tacsim",
+            // S1: the content module after everything whose appliers it drives.
+            "content",
         ],
         "the roster, and the one place its order is stated"
     );
     assert_eq!(
-        names(&mods).last().copied(),
+        names(&mods).iter().rev().nth(1).copied(),
         Some("tacsim"),
-        "the TacSim layer must compose LAST: its boot reads the character ruleset's facts"
+        "the TacSim layer must compose after the character ruleset: its boot reads that \
+         ruleset's facts; only the content module, whose boot pass drives every other \
+         module's appliers, comes after it"
+    );
+    assert_eq!(
+        names(&mods).last().copied(),
+        Some("content"),
+        "the content module composes LAST: its boot pass writes other modules' RAM slots"
     );
     let _ = std::fs::remove_dir_all(&cfg.server.data_dir);
 }
@@ -190,6 +201,75 @@ async fn the_split_boot_carries_the_operator_recovery_policy() {
     );
     drop(booted);
     let _ = std::fs::remove_dir_all(&cfg.server.data_dir);
+}
+
+// ---- S1: the starter area ---------------------------------------------------
+
+/// The lot applies at a fresh world's first boot, lands in the store in the SAME
+/// batch as its latch, and a second boot over that store loads it rather than
+/// applying it again; a server with `[game].starter_area = false` boots Limbo and
+/// God alone. No provider is configured on any of these boots, and none is needed.
+#[tokio::test]
+async fn the_starter_area_boots_once_and_is_durable() {
+    let cfg = wod_config("starter");
+    let store: Arc<dyn ObjectStore> = Arc::new(InMemoryStore::new());
+    let quarantine = spool(&cfg);
+    let rooms = |engine: &mush_core::Engine| {
+        engine
+            .world
+            .iter()
+            .filter(|o| o.kind == mush_core::ObjKind::Room)
+            .count()
+    };
+    let booted = boot::build_engine(&cfg, &store, &quarantine)
+        .await
+        .expect("a fresh world boots with the starter area");
+    assert_eq!(
+        rooms(&booted.engine),
+        mush_atlas::starter::LOT_ROOMS + 2,
+        "fourteen lot rooms, the bus interior, and Limbo"
+    );
+    let objects = booted.engine.world.iter().count();
+    for ns in ["atlas", "content"] {
+        assert!(
+            booted.archive_namespaces.iter().any(|n| n == ns),
+            "{ns} is a composed module: {:?}",
+            booted.archive_namespaces
+        );
+    }
+    drop(booted);
+
+    // The same store, booted again: the objects came back from the store and the
+    // latch kept the packs from applying twice (P8).
+    let again = boot::build_engine(&cfg, &store, &quarantine)
+        .await
+        .expect("a second boot over the same store");
+    assert_eq!(rooms(&again.engine), mush_atlas::starter::LOT_ROOMS + 2);
+    assert_eq!(
+        again.engine.world.iter().count(),
+        objects,
+        "nothing applied twice"
+    );
+    let content = again
+        .engine
+        .world
+        .module_state::<mush_content::ContentState>()
+        .expect("the content module composed");
+    assert_eq!(content.latches.all().count(), 3, "three latches came back");
+    assert!(content.latches.all().all(|l| l.anomaly().is_none()));
+    drop(again);
+
+    let mut off = wod_config("starter-off");
+    off.game.starter_area = false;
+    let store: Arc<dyn ObjectStore> = Arc::new(InMemoryStore::new());
+    let spool_off = spool(&off);
+    let bare = boot::build_engine(&off, &store, &spool_off)
+        .await
+        .expect("boots without the starter area");
+    assert_eq!(bare.engine.world.iter().count(), 2, "Limbo and God");
+    drop(bare);
+    let _ = std::fs::remove_dir_all(&cfg.server.data_dir);
+    let _ = std::fs::remove_dir_all(&off.server.data_dir);
 }
 
 // ---- 2: the layer really composes -----------------------------------------

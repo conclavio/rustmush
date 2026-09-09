@@ -123,6 +123,7 @@ fn production_commands(ruleset: &str) -> BTreeSet<String> {
     let mut mods = modules::server_modules_with(
         config_ext::weather_config(&config.weather),
         config_ext::economy_config(&config.economy).expect("the default [economy] converts"),
+        config_ext::atlas_config(&config.atlas).expect("the default [atlas] converts"),
         &onboarding,
         wod_selected.then_some(&wod_economy),
         sr_selected.then_some(&sr_economy),
@@ -151,6 +152,11 @@ fn production_commands(ruleset: &str) -> BTreeSet<String> {
     mods.push(modules::tacsim_module(
         config_ext::tacsim_config(&config.tacsim).expect("the default [tacsim] converts"),
     ));
+    // S1: the content module last, as `build_engine` composes it. It registers no
+    // verb; it is here so this is the production roster and not most of it.
+    mods.push(
+        modules::content_module(config.game.starter_area).expect("the content module composes"),
+    );
     // `build_engine`'s own step: compose and freeze every registry before any world
     // record exists. The verbs are fixed here; no world and no boot are needed.
     let composition = Engine::compose_modules(registry, mods)
@@ -193,6 +199,7 @@ fn published_classes(ruleset: &str) -> BTreeMap<String, CommandCompatibility> {
     let mut mods = modules::server_modules_with(
         config_ext::weather_config(&config.weather),
         config_ext::economy_config(&config.economy).expect("the default [economy] converts"),
+        config_ext::atlas_config(&config.atlas).expect("the default [atlas] converts"),
         &onboarding,
         wod_selected.then_some(&wod_economy),
         sr_selected.then_some(&sr_economy),
@@ -210,6 +217,11 @@ fn published_classes(ruleset: &str) -> BTreeMap<String, CommandCompatibility> {
     mods.push(modules::tacsim_module(
         config_ext::tacsim_config(&config.tacsim).expect("the default [tacsim] converts"),
     ));
+    // S1: the content module last, as `build_engine` composes it. It registers no
+    // verb; it is here so this is the production roster and not most of it.
+    mods.push(
+        modules::content_module(config.game.starter_area).expect("the content module composes"),
+    );
     let composition = Engine::compose_modules(registry, mods)
         .expect("the production composition registers without collision");
     let registry = composition.registry();

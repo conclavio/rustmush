@@ -1,0 +1,29 @@
+[package]
+name = "mush-atlas"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "mush-atlas (S1, doc 14 §2–3): the spatial records — regions, neighborhoods, sites, structures, rooms with geometry, portals, connections, tiles and features — the rasterizer that makes coarse geometry from a pack, the +atlas text views, and @atlas/pack; plus the starter area shipped as content"
+
+# 14-spatial-implementation-plan §3.1: `mush-atlas -> {core, content, proto}` plus the serde
+# vocabulary. No sim, tactics, npc, housing or worldgen edge: places know nothing about the
+# people or the fights in them. `cargo tree -p mush-atlas` is the test.
+[dependencies]
+mush-core.workspace = true
+mush-content.workspace = true
+mush-proto.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+smol_str.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+# Dev-only. `mush-npc` is here so the starter-area acceptance suite can compose the cast's
+# applier beside this crate's and assert the lot boots whole; it is not a production edge.
+[dev-dependencies]
+mush-testkit.workspace = true
+mush-npc.workspace = true
+
+[lints]
+workspace = true

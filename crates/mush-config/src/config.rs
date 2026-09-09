@@ -63,6 +63,10 @@
 //! | `[tacsim.recovery].max_operational_assets` | `0` | the eligibility threshold, over **accessible** assets |
 //! | `[tacsim.recovery].insurance` | `"approved_operations"` | the insurance policy word; `none` is the other |
 //! | `[tacsim.recovery].upkeep_per_period` | `0` | the lease's rent obligation, per campaign cadence period |
+//! | `[game].starter_area` | `true` | S1: apply the shipped starter area (the lot, the OOC Area, the Staff Lobby) at a world's first boot; static content, no LLM call; never re-applied |
+//! | `[atlas].tile_max_cells` | `65536` | S1: the most cells one map tile holds; a larger footprint rasterizes coarser |
+//! | `[atlas].nearest_room_cells` | `8` | S1: parsed, **inert** until S4's windows |
+//! | `[atlas].pack_paths` | `[]` | S1: content pack files or directories, read **host-side** at boot like `[tacsim].pack_paths`; they go on the `@atlas/pack` shelf and nothing is applied by being listed |
 //! | `[llm]` | `enabled = false` | M7 LLM layer (providers, routes, budgets); into [`mush_llm::LlmConfig`] |
 //!
 //! The `[web]` table deserializes straight into
@@ -787,6 +791,37 @@ impl Default for NpcCfg {
     }
 }
 
+/// `[atlas]` — the spatial layer's knobs (S1, 14-spatial-implementation-plan §3.1,
+/// §7). Every field defaults; like `[tacsim]` and `[npc]` the block is
+/// `deny_unknown_fields`, so a mistyped key refuses the boot rather than taking a
+/// default.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct AtlasCfg {
+    /// The most cells one tile may hold (256×256 by default; a larger footprint
+    /// rasterizes coarser rather than refusing).
+    pub tile_max_cells: u32,
+    /// How far, in cells, a point may be from a room and still count as in it
+    /// (parsed now; S4's windows read it).
+    pub nearest_room_cells: u32,
+    /// Content pack files, or directories searched for `*.json`, read **host-side**
+    /// at boot exactly as `[tacsim].pack_paths` are: an unreadable, oversized or
+    /// mis-digested pack is a hard boot error naming the file. Loaded packs go on
+    /// the shelf `@atlas/pack list|plan|apply` works from; nothing is applied by
+    /// being listed here.
+    pub pack_paths: Vec<String>,
+}
+
+impl Default for AtlasCfg {
+    fn default() -> Self {
+        AtlasCfg {
+            tile_max_cells: 65_536,
+            nearest_room_cells: 8,
+            pack_paths: Vec::new(),
+        }
+    }
+}
+
 impl Default for TacsimCfg {
     fn default() -> Self {
         TacsimCfg {
@@ -1029,6 +1064,12 @@ pub struct GameCfg {
     /// time (so it survives restarts); it is **not** reset to this value at
     /// each boot. Also read once at boot.
     pub ic_epoch: String,
+    /// S1 (doc 14 §2.6, plan §3.1): apply the shipped starter area — the lot, the
+    /// OOC Area and the Staff Lobby — at a world's **first** boot. Static content,
+    /// no LLM call; a later boot never re-applies it, and a retired pack stays
+    /// retired. `true` by default; the testkit composes no content module, so a
+    /// test world never grows unless the test asks for the lot.
+    pub starter_area: bool,
 }
 
 impl Default for GameCfg {
@@ -1038,6 +1079,7 @@ impl Default for GameCfg {
             max_characters: 3,
             ic_ratio: 1,
             ic_epoch: "2020-01-01 00:00".to_string(),
+            starter_area: true,
         }
     }
 }
@@ -1204,6 +1246,9 @@ pub struct Config {
     /// `[npc]` — the NPC agent layer's world-task knobs (H2). Defaults whole.
     #[serde(default)]
     pub npc: NpcCfg,
+    /// `[atlas]` — the spatial layer's knobs (S1). Defaults whole.
+    #[serde(default)]
+    pub atlas: AtlasCfg,
     /// `[llm]` — the M7 LLM layer (providers, feature routes, budgets, kill
     /// switch). The raw section, deserialized into `mush_llm::LlmConfig` by the
     /// server / all-in-one binary (kept untyped here so `mush-config` need not
@@ -1238,6 +1283,7 @@ impl Default for Config {
             shadowrun: ShadowrunCfg::default(),
             tacsim: TacsimCfg::default(),
             npc: NpcCfg::default(),
+            atlas: AtlasCfg::default(),
             llm: empty_toml_table(),
             ipc: IpcCfg::default(),
         }

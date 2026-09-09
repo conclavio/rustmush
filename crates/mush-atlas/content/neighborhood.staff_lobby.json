@@ -1,0 +1,1203 @@
+{
+  "manifest": {
+    "id": "neighborhood.staff_lobby",
+    "version": 1,
+    "kind": "neighborhood",
+    "digest": "5f91be4eb27bc64a6496a5a789397d271d9289f7392236cea6e0466295fec069",
+    "requires": [
+      {
+        "id": "region.limbo",
+        "version": 1
+      },
+      {
+        "id": "neighborhood.ooc_area",
+        "version": 1
+      }
+    ]
+  },
+  "brief": {
+    "prose": "The Staff Lobby: the studio's front office in the north-east of the lot. A forecourt and bus stop where the tour arrives; a two-storey lobby building with reception, the staff breakroom and, up the stairs on the mezzanine, the restricted production office; the souvenir shop; the backlot with its raised loading dock; the back-lot coffee shop where the open house happens; and the writers' room, which is the builders' front desk. Every NPC room is public. One secret: why the tour is late.",
+    "origin": "Most of the cast's names and a few of their lines are an homage to a 2004 film about a high school (doc 06 §15): the quotations are short, nothing else is imported, and the setting is a film lot that never names it.",
+    "answers": {
+      "q.public_role": "the staff's front door",
+      "q.locked": "the production office, staff only",
+      "q.hydration": "none here"
+    }
+  },
+  "entries": {
+    "neighborhood": {
+      "kind": "neighborhood",
+      "def": {
+        "region": "region.limbo",
+        "locality": "locality.lot",
+        "name": "Staff Lobby",
+        "setting": "urban",
+        "representation": "authored",
+        "footprint": [
+          [
+            240,
+            200
+          ],
+          [
+            360,
+            200
+          ],
+          [
+            360,
+            290
+          ],
+          [
+            240,
+            290
+          ]
+        ],
+        "room_budget": {
+          "target": 8,
+          "maximum": 8
+        },
+        "hydration": {
+          "enabled": false,
+          "max_player_sites": 0
+        },
+        "resolution_cm": 100
+      }
+    },
+    "site.lobby": {
+      "kind": "site",
+      "def": {
+        "name": "The Lobby Building",
+        "site_kind": "site.office",
+        "footprint": [
+          [
+            250,
+            210
+          ],
+          [
+            290,
+            210
+          ],
+          [
+            290,
+            240
+          ],
+          [
+            250,
+            240
+          ]
+        ],
+        "entrances": [
+          "exit.forecourt_lobby"
+        ]
+      }
+    },
+    "structure.lobby": {
+      "kind": "structure",
+      "def": {
+        "site": "site.lobby",
+        "footprint": [
+          [
+            250,
+            210
+          ],
+          [
+            290,
+            210
+          ],
+          [
+            290,
+            240
+          ],
+          [
+            250,
+            240
+          ]
+        ],
+        "floors": [
+          {
+            "index": 0,
+            "z_offset_m": 0,
+            "height_m": 3.6
+          },
+          {
+            "index": 1,
+            "z_offset_m": 3.6,
+            "height_m": 3.0,
+            "name": "Mezzanine"
+          }
+        ]
+      }
+    },
+    "site.shop": {
+      "kind": "site",
+      "def": {
+        "name": "The Souvenir Shop",
+        "site_kind": "site.shop",
+        "footprint": [
+          [
+            300,
+            210
+          ],
+          [
+            330,
+            210
+          ],
+          [
+            330,
+            235
+          ],
+          [
+            300,
+            235
+          ]
+        ],
+        "entrances": [
+          "exit.forecourt_shop"
+        ]
+      }
+    },
+    "structure.shop": {
+      "kind": "structure",
+      "def": {
+        "site": "site.shop",
+        "footprint": [
+          [
+            300,
+            210
+          ],
+          [
+            330,
+            210
+          ],
+          [
+            330,
+            235
+          ],
+          [
+            300,
+            235
+          ]
+        ],
+        "floors": [
+          {
+            "index": 0,
+            "z_offset_m": 0,
+            "height_m": 3.2
+          }
+        ]
+      }
+    },
+    "site.coffee_shop": {
+      "kind": "site",
+      "def": {
+        "name": "The Back-Lot Coffee Shop",
+        "site_kind": "site.cafe",
+        "footprint": [
+          [
+            312,
+            240
+          ],
+          [
+            334,
+            240
+          ],
+          [
+            334,
+            268
+          ],
+          [
+            312,
+            268
+          ]
+        ],
+        "entrances": [
+          "exit.backlot_coffee"
+        ]
+      }
+    },
+    "structure.coffee_shop": {
+      "kind": "structure",
+      "def": {
+        "site": "site.coffee_shop",
+        "footprint": [
+          [
+            312,
+            240
+          ],
+          [
+            334,
+            240
+          ],
+          [
+            334,
+            268
+          ],
+          [
+            312,
+            268
+          ]
+        ],
+        "floors": [
+          {
+            "index": 0,
+            "z_offset_m": 0,
+            "height_m": 3.4
+          }
+        ]
+      }
+    },
+    "site.writers": {
+      "kind": "site",
+      "def": {
+        "name": "The Writers' Room",
+        "site_kind": "site.office",
+        "footprint": [
+          [
+            338,
+            240
+          ],
+          [
+            356,
+            240
+          ],
+          [
+            356,
+            268
+          ],
+          [
+            338,
+            268
+          ]
+        ],
+        "entrances": [
+          "exit.backlot_writers"
+        ]
+      }
+    },
+    "structure.writers": {
+      "kind": "structure",
+      "def": {
+        "site": "site.writers",
+        "footprint": [
+          [
+            338,
+            240
+          ],
+          [
+            356,
+            240
+          ],
+          [
+            356,
+            268
+          ],
+          [
+            338,
+            268
+          ]
+        ],
+        "floors": [
+          {
+            "index": 0,
+            "z_offset_m": 0,
+            "height_m": 3.0
+          }
+        ]
+      }
+    },
+    "room.forecourt": {
+      "kind": "room",
+      "def": {
+        "name": "Forecourt & Bus Stop",
+        "surface": "ground",
+        "footprint": {
+          "rect": [
+            [
+              250,
+              240
+            ],
+            [
+              310,
+              270
+            ]
+          ]
+        },
+        "desc": "A wide paved forecourt in front of the lobby building, with a bus shelter at its west end and the studio's name in brass over the doors. The tour bus stops here; the backlot is north, the souvenir shop east, the lobby south. Limbo is the way you came.",
+        "details": {
+          "shelter": "The timetable says the tour is on time. The timetable is optimistic.",
+          "brass letters": "THE LOT — FRONT OFFICE."
+        }
+      }
+    },
+    "room.lobby": {
+      "kind": "room",
+      "def": {
+        "name": "Lobby",
+        "site": "site.lobby",
+        "surface": {
+          "floor": [
+            "structure.lobby",
+            0
+          ]
+        },
+        "footprint": {
+          "rect": [
+            [
+              252,
+              212
+            ],
+            [
+              276,
+              238
+            ]
+          ]
+        },
+        "desc": "Reception: a long desk, a guitar case leaning against it, a wall of framed posters and a bell nobody needs to ring because Susie has already seen you. The breakroom is east; the stairs go up to the production office, staff only.",
+        "details": {
+          "desk": "A visitor's book, a bowl of mints, and the day's call sheet.",
+          "posters": "Every production the lot has hosted, and two it wishes it had.",
+          "guitar case": "Susie's. Stickers from venues you have not heard of."
+        }
+      }
+    },
+    "room.breakroom": {
+      "kind": "room",
+      "def": {
+        "name": "Breakroom",
+        "site": "site.lobby",
+        "surface": {
+          "floor": [
+            "structure.lobby",
+            0
+          ]
+        },
+        "footprint": {
+          "rect": [
+            [
+              276,
+              212
+            ],
+            [
+              288,
+              238
+            ]
+          ]
+        },
+        "desc": "A staff breakroom: a fridge with names on things, a table of dice and character sheets, and a whiteboard of scene ideas half rubbed out. Phil is off the clock and will tell you so. The lobby is west.",
+        "details": {
+          "whiteboard": "Storyline ideas, ranked. One is circled and labelled OVERRATED in Phil's hand."
+        }
+      }
+    },
+    "room.production_office": {
+      "kind": "room",
+      "def": {
+        "name": "Production Office",
+        "site": "site.lobby",
+        "surface": {
+          "floor": [
+            "structure.lobby",
+            1
+          ]
+        },
+        "footprint": {
+          "rect": [
+            [
+              252,
+              212
+            ],
+            [
+              288,
+              238
+            ]
+          ]
+        },
+        "access": "restricted",
+        "desc": "The mezzanine office over the lobby: schedules pinned three deep, a window onto the forecourt, and the shooting-schedule clipboard nobody is allowed to lose. Staff only. The stairs go down.",
+        "details": {
+          "window": "The forecourt, the bus shelter, and Regina looking north for the bus."
+        }
+      }
+    },
+    "room.souvenir_shop": {
+      "kind": "room",
+      "def": {
+        "name": "Souvenir Shop",
+        "site": "site.shop",
+        "surface": {
+          "floor": [
+            "structure.shop",
+            0
+          ]
+        },
+        "footprint": {
+          "rect": [
+            [
+              302,
+              212
+            ],
+            [
+              328,
+              233
+            ]
+          ]
+        },
+        "desc": "Shelves of props, posters and mugs, a rack of tutorial pamphlets, and a whole display of FETCH merchandise that has not sold a unit. Gretchen runs it. The forecourt is out the door.",
+        "details": {
+          "fetch display": "Hats, shirts, pins. FETCH. It is going to happen.",
+          "posters": "Signed, some of them by the people they are of."
+        }
+      }
+    },
+    "room.backlot": {
+      "kind": "room",
+      "def": {
+        "name": "Backlot",
+        "surface": "ground",
+        "footprint": {
+          "rect": [
+            [
+              250,
+              270
+            ],
+            [
+              356,
+              290
+            ]
+          ]
+        },
+        "desc": "The back lot: a broad service road behind the front office, a raised loading dock at its east end, and the weather, which Karen Smith is reading. The coffee shop and the writers' room open onto it from the south; the forecourt is south-west.",
+        "details": {
+          "loading dock": "A metre and a bit up, with a ramp. A good place to watch a sky from."
+        }
+      }
+    },
+    "room.coffee_shop": {
+      "kind": "room",
+      "def": {
+        "name": "Coffee Shop",
+        "site": "site.coffee_shop",
+        "surface": {
+          "floor": [
+            "structure.coffee_shop",
+            0
+          ]
+        },
+        "footprint": {
+          "rect": [
+            [
+              314,
+              242
+            ],
+            [
+              332,
+              266
+            ]
+          ]
+        },
+        "desc": "The back-lot coffee shop: mismatched chairs, a small stage in the corner for the open house, and Cady Heron at the corner table with the studio's books and a price board she keeps current. The backlot is out the door.",
+        "details": {
+          "stage": "A stool, a microphone, and a set list in Susie's handwriting.",
+          "price board": "Coffee, and what things are going for this week."
+        }
+      }
+    },
+    "room.writers_room": {
+      "kind": "room",
+      "def": {
+        "name": "Writers' Room",
+        "site": "site.writers",
+        "surface": {
+          "floor": [
+            "structure.writers",
+            0
+          ]
+        },
+        "footprint": {
+          "rect": [
+            [
+              340,
+              242
+            ],
+            [
+              354,
+              266
+            ]
+          ]
+        },
+        "desc": "A long table under a corkboard of floor plans and index cards. This is the builders' front desk: Janis Ian turns a brief into a plan here, and never applies one herself. The backlot is out the door.",
+        "details": {
+          "corkboard": "Floor plans of every set on the lot, and two marked TEAR DOWN in pencil."
+        }
+      }
+    },
+    "exit.limbo_forecourt": {
+      "kind": "exit",
+      "def": {
+        "from": "limbo",
+        "to": "room.forecourt",
+        "names": [
+          "Staff <S>;s;staff",
+          "Limbo <X>;x;limbo"
+        ],
+        "portal": {
+          "mode": "open"
+        }
+      }
+    },
+    "exit.forecourt_lobby": {
+      "kind": "exit",
+      "def": {
+        "from": "room.forecourt",
+        "to": "room.lobby",
+        "names": [
+          "Lobby <L>;l;lobby;in;south",
+          "Forecourt <F>;f;forecourt;out;north"
+        ],
+        "portal": {
+          "mode": "door",
+          "at": [
+            264,
+            240,
+            0
+          ]
+        }
+      }
+    },
+    "exit.lobby_breakroom": {
+      "kind": "exit",
+      "def": {
+        "from": "room.lobby",
+        "to": "room.breakroom",
+        "names": [
+          "Breakroom <BR>;br;breakroom;east;e",
+          "Lobby <L>;l;lobby;west;w"
+        ],
+        "portal": {
+          "mode": "door"
+        }
+      }
+    },
+    "exit.stairs": {
+      "kind": "exit",
+      "def": {
+        "from": "room.lobby",
+        "to": "room.production_office",
+        "names": [
+          "Up <U>;u;up;stairs",
+          "Down <D>;d;down;stairs"
+        ],
+        "portal": {
+          "mode": "stair",
+          "at": [
+            [
+              262,
+              214,
+              0
+            ],
+            [
+              262,
+              214,
+              3.6
+            ]
+          ],
+          "dz_m": 3.6
+        },
+        "lock": "staff",
+        "desc": "A steel stair to the mezzanine. A sign on the rail says STAFF ONLY."
+      }
+    },
+    "exit.forecourt_shop": {
+      "kind": "exit",
+      "def": {
+        "from": "room.forecourt",
+        "to": "room.souvenir_shop",
+        "names": [
+          "Souvenir Shop <SS>;ss;shop;east",
+          "Forecourt <F>;f;forecourt;out"
+        ],
+        "portal": {
+          "mode": "door",
+          "at": [
+            305,
+            238,
+            0
+          ]
+        }
+      }
+    },
+    "exit.forecourt_backlot": {
+      "kind": "exit",
+      "def": {
+        "from": "room.forecourt",
+        "to": "room.backlot",
+        "names": [
+          "Backlot <B>;b;backlot;north;n",
+          "Forecourt <F>;f;forecourt;south;s"
+        ],
+        "portal": {
+          "mode": "open"
+        }
+      }
+    },
+    "exit.backlot_coffee": {
+      "kind": "exit",
+      "def": {
+        "from": "room.backlot",
+        "to": "room.coffee_shop",
+        "names": [
+          "Coffee Shop <C>;c;coffee;cafe",
+          "Backlot <B>;b;backlot;out"
+        ],
+        "portal": {
+          "mode": "door",
+          "at": [
+            323,
+            269,
+            0
+          ]
+        }
+      }
+    },
+    "exit.backlot_writers": {
+      "kind": "exit",
+      "def": {
+        "from": "room.backlot",
+        "to": "room.writers_room",
+        "names": [
+          "Writers' Room <WR>;wr;writers",
+          "Backlot <B>;b;backlot;out"
+        ],
+        "portal": {
+          "mode": "door",
+          "at": [
+            347,
+            269,
+            0
+          ]
+        }
+      }
+    },
+    "exit.forecourt_bus": {
+      "kind": "exit",
+      "def": {
+        "from": "room.forecourt",
+        "to": "room.bus",
+        "names": [
+          "Board the Bus <BUS>;bus;board"
+        ],
+        "portal": {
+          "mode": "door",
+          "at": [
+            258,
+            268,
+            0
+          ]
+        }
+      }
+    },
+    "exit.bus_forecourt": {
+      "kind": "exit",
+      "def": {
+        "from": "room.bus",
+        "to": "room.forecourt",
+        "names": [
+          "Off at the Forecourt <LOT>;lot;off"
+        ],
+        "portal": {
+          "mode": "door",
+          "at": [
+            258,
+            268,
+            0
+          ]
+        }
+      }
+    },
+    "feature.loading_dock": {
+      "kind": "feature",
+      "def": {
+        "feature_kind": "platform",
+        "surface": "ground",
+        "polygon": [
+          [
+            322,
+            272
+          ],
+          [
+            350,
+            272
+          ],
+          [
+            350,
+            288
+          ],
+          [
+            322,
+            288
+          ]
+        ],
+        "z_range": [
+          0,
+          1.2
+        ],
+        "blocks": {
+          "movement": false,
+          "sight": false
+        },
+        "raise_cm": 120,
+        "room": "room.backlot"
+      }
+    },
+    "feature.reception_desk": {
+      "kind": "feature",
+      "def": {
+        "feature_kind": "counter",
+        "surface": {
+          "floor": [
+            "structure.lobby",
+            0
+          ]
+        },
+        "polyline": [
+          [
+            256,
+            222
+          ],
+          [
+            270,
+            222
+          ]
+        ],
+        "z_range": [
+          0,
+          1.1
+        ],
+        "blocks": {
+          "movement": true,
+          "sight": false
+        },
+        "room": "room.lobby"
+      }
+    },
+    "item.clipboard": {
+      "kind": "item",
+      "def": {
+        "name": "shooting-schedule clipboard",
+        "room": "room.production_office",
+        "desc": "The shooting schedule, three weeks deep, in a clipboard with a chain on it.",
+        "details": {
+          "schedule": "Every stage booked, every day, in pencil. Tuesday says TOUR — LATE?"
+        },
+        "flags": [
+          "sticky"
+        ]
+      }
+    },
+    "item.mug": {
+      "kind": "item",
+      "def": {
+        "name": "souvenir mug",
+        "room": "room.souvenir_shop",
+        "desc": "A mug with the lot's name on one side and FETCH on the other. Two for one."
+      }
+    },
+    "hook.open_house": {
+      "kind": "hook",
+      "def": {
+        "name": "The open house",
+        "room": "room.coffee_shop",
+        "text": "Once a week the back-lot coffee shop opens its doors to everyone on the lot. Susie plays a set of her own songs from the stool in the corner, the staff come off shift, and strangers end up at the same table. Nothing is at stake. That is the point."
+      }
+    },
+    "secret.late": {
+      "kind": "secret",
+      "def": {
+        "truth": "The tour is late because Aaron takes the long way past the water tower on purpose: Regina watches for the bus from the forecourt every day, and he is giving her a reason to keep watching. Karen Smith knows; it is why she says there is a chance it is already raining.",
+        "reveal": "staff",
+        "about": [
+          "npc.aaron",
+          "npc.regina",
+          "npc.karen"
+        ]
+      }
+    },
+    "npc.susie": {
+      "kind": "npc",
+      "def": {
+        "name": "Susie",
+        "room": "room.lobby",
+        "tier": "minor",
+        "profile": {
+          "persona": "The receptionist. ENFP: warm, quick, curious about everyone who walks in, already halfway through a question before you have said hello. Plays guitar; sings her own songs at the open house and is shy about exactly that one thing.",
+          "background": "Came to the lot for a summer job on reception and stayed. Knows the layout of every stage and who is on the lot today because she is the one they walk past.",
+          "speech_style": "Bright and fast, lots of questions, first names at once. Never makes a newcomer feel lost.",
+          "goals": [
+            "Greet everyone off the tour bus",
+            "Tell people the layout of the lot and who is around",
+            "Play the open house"
+          ],
+          "knows": [
+            "The layout of the lot",
+            "The bus schedule",
+            "The open house",
+            "Who is on the lot today"
+          ],
+          "does_not_know": [
+            "Why the tour is running late"
+          ],
+          "fallback": [
+            "Welcome to the lot! The bus just got in — coffee shop's out back, and I'm right here if you get turned around.",
+            "Breakroom's through there. Phil's off the clock, which is when he's most fun."
+          ]
+        },
+        "lore": [
+          {
+            "tier": "public",
+            "subject": "the lot",
+            "fact": "The forecourt is out front, the breakroom is east of reception, the stairs go up to the production office — staff only — and the backlot is north with the coffee shop and the writers' room."
+          },
+          {
+            "tier": "public",
+            "subject": "the open house",
+            "fact": "Weekly, at the back-lot coffee shop. I play. Come."
+          },
+          {
+            "tier": "guarded",
+            "subject": "the tour",
+            "fact": "The tour is running late again. It has been late a lot."
+          }
+        ],
+        "tags": [
+          "the_lot"
+        ]
+      }
+    },
+    "npc.ron": {
+      "kind": "npc",
+      "def": {
+        "name": "Ron Duvall",
+        "room": "room.lobby",
+        "tier": "minor",
+        "profile": {
+          "persona": "The front office: unhurried, exact, faintly weary, the man the paperwork goes to. Reads every request that comes in and remembers who wrote it.",
+          "background": "Has run the front office longer than anyone has run anything on the lot. Believes in writing things down.",
+          "speech_style": "Measured. Formal. Says what the process is and does not editorialise about it.",
+          "goals": [
+            "Get requests filed properly",
+            "Keep the front office orderly"
+          ],
+          "knows": [
+            "How a request is filed and where it goes",
+            "That staff read the queue"
+          ],
+          "does_not_know": [
+            "The contents of anyone else's requests"
+          ],
+          "fallback": [
+            "Put it in writing. +request. I read every one.",
+            "The queue is the queue. You are in it."
+          ]
+        },
+        "lore": [
+          {
+            "tier": "public",
+            "subject": "requests",
+            "fact": "+request files a ticket with staff; +job is how staff work it. Put the who, the what and the where in it and it goes faster."
+          }
+        ],
+        "tags": [
+          "the_lot"
+        ]
+      }
+    },
+    "npc.phil": {
+      "kind": "npc",
+      "def": {
+        "name": "Phil",
+        "room": "room.breakroom",
+        "tier": "minor",
+        "profile": {
+          "persona": "The off-duty gamemaster: opinionated about everything gaming, delighted to brainstorm a character concept with anyone, allergic to being asked to run something right now.",
+          "background": "Works at a comic book shop off-screen and storytells here on his nights. Has an opinion on every storyline on the whiteboard and one of them is circled.",
+          "speech_style": "Enthusiastic, tangential, quotes rulebooks from memory. Says 'off the clock' and then keeps talking.",
+          "goals": [
+            "Brainstorm characters with anyone who asks",
+            "Explain how scenes and requests work"
+          ],
+          "knows": [
+            "How scenes work",
+            "How +request works",
+            "What a storyteller does",
+            "Character concepts, endlessly"
+          ],
+          "does_not_know": [
+            "What any storyline will actually do next"
+          ],
+          "fallback": [
+            "I'm off the clock. Tell me about your character anyway.",
+            "Scenes are just people agreeing to be in a place at a time. The rest is dice."
+          ]
+        },
+        "lore": [
+          {
+            "tier": "public",
+            "subject": "scenes",
+            "fact": "A scene is a place, a time and whoever shows up; a storyteller runs the consequential ones. +request asks for one."
+          },
+          {
+            "tier": "public",
+            "subject": "storytellers",
+            "fact": "Storytellers run scenes, answer requests and keep the story honest."
+          },
+          {
+            "tier": "guarded",
+            "subject": "storylines",
+            "fact": "One of the storylines on the whiteboard is overrated and I circled it."
+          }
+        ],
+        "tags": [
+          "the_lot"
+        ]
+      }
+    },
+    "npc.gretchen": {
+      "kind": "npc",
+      "def": {
+        "name": "Gretchen",
+        "room": "room.souvenir_shop",
+        "tier": "minor",
+        "profile": {
+          "persona": "The souvenir shop's owner: eager, confiding, a little too pleased to be trusted with things, and still trying to make fetch happen. Knows the lot's history as she tells it, which is most of it.",
+          "background": "Opened the shop with a loan and an idea, and the idea was FETCH. The loan is paid off; the idea is not.",
+          "speech_style": "Breathless, confidential, lots of 'so'. Sells you something whether or not you buy it.",
+          "goals": [
+            "Sell the merchandise",
+            "Make fetch happen"
+          ],
+          "knows": [
+            "The shop's stock: props, posters, the fetch merchandise, the tutorial pamphlet",
+            "The lot's history, as she tells it"
+          ],
+          "does_not_know": [
+            "Anything told to her in confidence, which is why she is told so little"
+          ],
+          "fallback": [
+            "That is so fetch. It's going to happen. Can I help you find something?",
+            "The pamphlets are free. The mugs are two for one. The hats are fetch."
+          ]
+        },
+        "lore": [
+          {
+            "tier": "public",
+            "subject": "the shop",
+            "fact": "Props, posters, mugs, the tutorial pamphlet, and the FETCH display, which is going to happen."
+          },
+          {
+            "tier": "public",
+            "subject": "the lot",
+            "fact": "The lot has hosted more productions than the posters show; the lobby building is the oldest thing on it."
+          },
+          {
+            "tier": "guarded",
+            "subject": "confidences",
+            "fact": "People tell me things. Not many people. Not many things."
+          }
+        ],
+        "tags": [
+          "the_lot"
+        ]
+      }
+    },
+    "npc.karen": {
+      "kind": "npc",
+      "def": {
+        "name": "Karen Smith",
+        "room": "room.backlot",
+        "tier": "minor",
+        "profile": {
+          "persona": "The lot's meteorologist: sunny, certain, and right more often than her method should allow. Her method is not the instruments.",
+          "background": "Was given the weather because somebody had to read it out on the tour PA. Turned out to be good at it. Nobody asks how.",
+          "speech_style": "Bright and matter-of-fact, like a broadcast. Gives the temperature and a percentage.",
+          "goals": [
+            "Report the weather",
+            "Forecast the weather"
+          ],
+          "knows": [
+            "Current conditions on the lot",
+            "The forecast",
+            "That the loading dock is the best place to watch a sky from"
+          ],
+          "does_not_know": [
+            "How instruments work"
+          ],
+          "fallback": [
+            "Hi, this is Karen Smith. It's 68 degrees, and there's a 30 percent chance that it's already raining.",
+            "Bring a coat. Or don't. It'll be one of those."
+          ]
+        },
+        "lore": [
+          {
+            "tier": "public",
+            "subject": "the weather",
+            "fact": "Karen reads the lot's weather from the backlot: conditions now and the forecast for the day."
+          },
+          {
+            "tier": "guarded",
+            "subject": "her method",
+            "fact": "She knows it is going to rain the way she knows the bus is late."
+          }
+        ],
+        "tags": [
+          "the_lot"
+        ]
+      }
+    },
+    "npc.regina": {
+      "kind": "npc",
+      "def": {
+        "name": "Regina",
+        "room": "room.forecourt",
+        "tier": "minor",
+        "profile": {
+          "persona": "On the forecourt, on the lookout for the studio tour bus, every day, with the concentration of someone waiting for a verdict. Can tell you when the next one is due and where it is now, and will, without being asked.",
+          "background": "Used to be somebody on this lot and is going to be again; in the meantime she watches the road north for the bus and gives every arrival a once-over.",
+          "speech_style": "Clipped, precise, faintly imperious. Talks about the bus as if it were a person who owes her.",
+          "goals": [
+            "See the bus arrive",
+            "Know where it is"
+          ],
+          "knows": [
+            "The bus loop and its two stops",
+            "The checkpoints: the security gate and the water tower",
+            "Who got off the last bus"
+          ],
+          "does_not_know": [
+            "Why she watches for it so carefully, which she would not say if she knew"
+          ],
+          "fallback": [
+            "The bus? It's coming. It's always coming. ...Stand back from the curb.",
+            "Next one's due at the top of the hour. It was due at the top of the last hour."
+          ]
+        },
+        "lore": [
+          {
+            "tier": "public",
+            "subject": "the bus",
+            "fact": "The tour bus loops from the OOC bus stop past the security gate and the water tower to this forecourt, and back."
+          },
+          {
+            "tier": "public",
+            "subject": "arrivals",
+            "fact": "Regina saw who got off the last bus. She always does."
+          },
+          {
+            "tier": "guarded",
+            "subject": "why",
+            "fact": "Why she watches for the bus is nobody's business, and she watches."
+          }
+        ],
+        "tags": [
+          "the_lot"
+        ]
+      }
+    },
+    "npc.cady": {
+      "kind": "npc",
+      "def": {
+        "name": "Cady Heron",
+        "room": "room.coffee_shop",
+        "tier": "minor",
+        "profile": {
+          "persona": "The economist, doing the studio's books at the corner table: clear-eyed, friendly, quietly unimpressed by anyone's arithmetic but her own. Explains a listing, a quote and a hold the way other people explain the weather.",
+          "background": "Came to the lot to keep its books and found the market more interesting than the ledger. Keeps the coffee shop's price board current as a public service.",
+          "speech_style": "Plain and exact. Numbers first. A dry joke every so often, delivered straight.",
+          "goals": [
+            "Keep the books",
+            "Show anyone who asks what the market is doing"
+          ],
+          "knows": [
+            "How the market commands work",
+            "What a listing, a quote and a hold are",
+            "What is cheap this week"
+          ],
+          "does_not_know": [
+            "Whose books do not add up, aloud"
+          ],
+          "fallback": [
+            "The limit does not exist. The price, however, is on the board.",
+            "A quote is a price for now. A hold is a price for later. A listing is hope."
+          ]
+        },
+        "lore": [
+          {
+            "tier": "public",
+            "subject": "the market",
+            "fact": "+market lists what is on offer; a quote is a price for now, a hold reserves it for a while, and the board in the coffee shop shows the week's prices."
+          },
+          {
+            "tier": "public",
+            "subject": "prices",
+            "fact": "Coffee is cheap this week. It is always cheap this week."
+          },
+          {
+            "tier": "guarded",
+            "subject": "the books",
+            "fact": "Somebody's books do not add up, and it is not the coffee shop's."
+          }
+        ],
+        "tags": [
+          "the_lot"
+        ]
+      }
+    },
+    "npc.janis": {
+      "kind": "npc",
+      "def": {
+        "name": "Janis Ian",
+        "room": "room.writers_room",
+        "tier": "minor",
+        "profile": {
+          "persona": "The set designer and the builders' front desk: sharp, dry, fiercely practical, with a pencil behind one ear and opinions about which sets on the lot should be torn down. Talks a brief into a plan and never applies one herself.",
+          "background": "Designed half the sets on the lot and would redesign the other half. Took the writers' room because it has the biggest corkboard.",
+          "speech_style": "Direct, a little acerbic, asks what a place is FOR before anything else. Praises rarely and means it.",
+          "goals": [
+            "Turn briefs into plans",
+            "Keep the lot from filling up with bad sets"
+          ],
+          "knows": [
+            "How a neighborhood pack is shaped",
+            "What the validator refuses and why",
+            "The builder's path: brief, plan, review, apply"
+          ],
+          "does_not_know": [
+            "The contents of anyone's brief before they give it"
+          ],
+          "fallback": [
+            "Tell me what the place is for. Then tell me what it looks like. In that order.",
+            "A plan is not a place. Staff apply plans. I draw them."
+          ]
+        },
+        "lore": [
+          {
+            "tier": "public",
+            "subject": "building",
+            "fact": "A brief becomes a plan here: what the place is for, what it looks like, how many rooms, where the doors go. Staff review and apply the plan."
+          },
+          {
+            "tier": "public",
+            "subject": "the validator",
+            "fact": "The validator refuses overlapping footprints, exits between rooms that do not touch, and rooms that leave their building."
+          },
+          {
+            "tier": "guarded",
+            "subject": "tear down",
+            "fact": "Two sets on this lot should be torn down. I have them marked."
+          }
+        ],
+        "tags": [
+          "the_lot"
+        ]
+      }
+    }
+  }
+}

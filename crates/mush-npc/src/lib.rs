@@ -109,6 +109,7 @@
 )]
 
 mod action;
+pub mod content;
 pub mod decision;
 mod intel;
 mod knowledge;

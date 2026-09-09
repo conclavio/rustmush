@@ -52,6 +52,11 @@ mush-worldgen.workspace = true
 # The M8 NPC agent module: NpcModule registered at boot, run_npc_turn_async
 # driven off the world loop from the Effect::ModuleAsync seam (world_task.rs),
 # with a WoD grounding/ability adapter when the "wod" ruleset is enabled.
+# S1 (14-spatial-implementation-plan §3.1): content packs and the atlas. The content
+# module composes LAST (its boot pass applies the starter packs through every other
+# module's applier); the atlas composes right after `mush-sim`.
+mush-content.workspace = true
+mush-atlas.workspace = true
 mush-npc.workspace = true
 # E7: the TacSim simulation layer. The composition root upgrades two of its
 # post-composition state slots by type (the account oracle, the pulse cadence),

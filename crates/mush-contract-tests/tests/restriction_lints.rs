@@ -97,12 +97,16 @@ const LINTS: [&str; 6] = [
 /// if one of them stops. A non-zero is the advisory record — the lint is off
 /// there, and this is what turning it on would cost. Changing a count is how
 /// you enable or retire a lint, and it is a reviewed diff either way.
-const MEASURED: [(&str, [u32; 6]); 43] = [
+const MEASURED: [(&str, [u32; 6]); 45] = [
     ("mush-ansi", [0, 0, 13, 0, 0, 0]),
+    // S1: born with all six denied (14-spatial-implementation-plan §3.1).
+    ("mush-atlas", [0, 0, 0, 0, 0, 0]),
     ("mush-campaign", [0, 0, 4, 0, 0, 0]),
     ("mush-canon", [0, 7, 0, 0, 0, 0]),
     ("mush-comsys", [0, 13, 0, 0, 1, 0]),
     ("mush-config", [0, 4, 17, 0, 0, 0]),
+    // S1: born with all six denied.
+    ("mush-content", [0, 0, 0, 0, 0, 0]),
     ("mush-contract-tests", [0, 311, 4, 0, 3, 0]),
     ("mush-core", [0, 117, 94, 0, 4, 1]),
     ("mush-dice", [0, 0, 6, 0, 0, 0]),
@@ -420,8 +424,9 @@ fn the_measurement_covers_every_crate_in_the_workspace() {
     );
     assert_eq!(
         MEASURED.len(),
-        43,
-        "the measurement in this file's header covered 43 crates"
+        45,
+        "the measurement in this file's header covered 43 crates; S1 added mush-atlas and \
+         mush-content, both born at zero on every lint"
     );
 }
 
@@ -442,12 +447,14 @@ fn the_enabled_set_is_the_one_the_measurement_produced() {
     assert_eq!(
         enabled,
         BTreeMap::from([
-            ("clippy::unwrap_used", 40),
-            ("clippy::expect_used", 7),
-            ("clippy::indexing_slicing", 14),
-            ("clippy::panic", 37),
-            ("clippy::unreachable", 32),
-            ("clippy::panic_in_result_fn", 41),
+            // S1: mush-atlas and mush-content arrive at zero on every lint, so each
+            // count is the measurement's plus two.
+            ("clippy::unwrap_used", 42),
+            ("clippy::expect_used", 9),
+            ("clippy::indexing_slicing", 16),
+            ("clippy::panic", 39),
+            ("clippy::unreachable", 34),
+            ("clippy::panic_in_result_fn", 43),
         ]),
         "the per-lint crate counts moved; re-measure before changing them"
     );

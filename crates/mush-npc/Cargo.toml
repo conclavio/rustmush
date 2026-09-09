@@ -8,6 +8,9 @@ description = "LLM NPC agents: AgentHost, stimuli, action tools, memory"
 
 [dependencies]
 mush-core.workspace = true
+# S1 (14-spatial-implementation-plan §3.1): the `npc` and `lore` pack entry kinds —
+# this crate owns the people in a place the way `mush-atlas` owns the place.
+mush-content.workspace = true
 mush-faction.workspace = true
 mush-llm.workspace = true
 mush-ruleset.workspace = true

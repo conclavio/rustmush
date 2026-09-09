@@ -1,6 +1,6 @@
 # 14 — The integrated spatial/room system: implementation plan
 
-**Draft 0.1 — 2026-09-09.** The build plan for [doc 14](14-spatial-room-system.md) (Draft 0.1,
+**Draft 0.2 — 2026-09-09 (S1 landed).** The build plan for [doc 14](14-spatial-room-system.md) (Draft 0.1,
 decisions D-14-1..32 binding), in the shape of [10b](10b-e7-implementation-plan.md) and
 [11-h](11-h-implementation-plan.md): seven cuts, each independently CI-green and adversarially
 verified before the next builds on it, every record and verb named, every gate listed. Grounded
@@ -169,6 +169,92 @@ exits on `#0`, and the cast at their posts. *Views:* `+atlas` renders the lot in
 configuration make boot call a provider or make a test world grow?).
 
 **What this cut does not do.** No journeys, no windows, no agent, no theme or weather changes.
+
+**Ledger (landed 2026-09-09).** Gates: `cargo fmt --all --check`, `cargo clippy --workspace
+--all-targets -- -D warnings`, `cargo build --workspace --all-targets`, `cargo test --workspace`,
+the restriction-lint table (both crates at zero on all six), the panic budget (no file: zero), the
+legacy-handler allowlist (`+atlas` read-only; `@atlas` legacy-post-image, family `atlas.records`),
+the feature and CI-gated inventories. Verify fold over P/I/G/B: see the findings folded below.
+Deviations from the text above, each with its reason:
+
+- **One loader, not a moved one.** `mush-content` is a new pack layer that digests the *raw
+  canonical JSON* of a pack (manifest without its digest, entries as authored, the brief), so a
+  pack's identity is owner-independent: two servers with different decoders compute one digest.
+  `ruleset-tacsim`'s loader stays where it is, byte for byte, and its typed-entry digests are not
+  what `mush-content` computes — the "three tacsim fixture digests unchanged" test is therefore
+  not written; the fold of tacsim onto `mush-content` is S7's (D-P-1), and that is when the
+  tacsim digests get re-pinned. Entries decode through an `EntryApplier` per kind (`kinds`,
+  `phase`, `create`, `update`, `retire_check`, `retire`, `finish`, `finish_retire`), registered
+  at composition by `mush-atlas` (thirteen place kinds) and `mush-npc` (`npc`, `lore`); an
+  unknown kind is refused at plan and at apply naming the entry, and a hyphenated id at parse.
+- **The latch is per entry and honest.** `Applied { pack, version, digest, applied_at, entries:
+  id → (kind, entry digest, object), retired, anomaly }` at `mod:content:applied:<pack>`. An
+  apply that stops part way — an owner refused an entry, the world refused an object — is
+  latched as far as it got with the anomaly, never rolled back (tacsim's seed rule, kept for
+  update and retire); the next apply plans from that latch. A retired pack keeps its latch
+  marked `retired`, so a first boot never resurrects what staff removed.
+- **Objects and the latch commit together at boot.** `boot_modules` folds the world's dirty
+  objects into the same boot `WriteBatch` as the module ops (it wrote only ops before S1, and
+  before S1 no module made objects at boot). Without that, a crash between the latch write and
+  the world's first flush would leave a latch describing a lot that is not there.
+- **Atlas records ride the compatibility lane, not `reg.state_family`.** Bounded whole documents
+  with strict `deny_unknown_fields` wires re-validated at boot, at `mod:atlas:<kind>:<pack>:
+  <entry>`, `roomgeo:<obj>` and `tile:<pack>:<entry>`; a document that fails its wire is dropped
+  loudly with a `Del` fixup (`mush-party`'s rule — records are derived from packs and a pack
+  re-applies). The state-family machinery is for K-owned authoritative families with
+  coordinator hydration, and a tile takes part in no authority or prepared mechanic. The
+  allowlist entry names `atlas.records` as the family the records move to when S4's windows put
+  tiles under the K3 bundle limits.
+- **Composition order.** `AtlasModule` composes right after `mush-sim` as planned;
+  `ContentModule` composes **last**, after the TacSim layer, not before `mush-sim`: its boot pass
+  applies packs whose entries are made by other modules' appliers, each writing its own RAM slot
+  (the NPC host's lore pools, the atlas's records), and `on_world_loaded` runs in list order, so
+  every owner must have hydrated first or its own boot would overwrite the pass. Boot applies a
+  shipped pack only when it has **no latch at all**; a newer shipped version over an older latch
+  is logged and left to `@atlas/pack plan`, so a restart never rewrites a lot under its players.
+- **`[game].starter_area` gates the boot packs, not a testkit flag.** The testkit composes no
+  content module, so `boot_world` is Limbo and God by construction; there is no
+  `TestWorld::with_starter_area()`, because a `mush-testkit → mush-atlas` edge would put a
+  dev-dependency cycle under every crate that tests through the testkit. A test that wants the
+  lot composes `NpcModule`, `AtlasModule` and `ContentModule::with_boot_packs(starter::packs())`
+  (`crates/mush-atlas/tests/lot.rs`); the production roster gets it from
+  `modules::content_module(config.game.starter_area)`.
+- **P9 is asserted as "no effect deferred", not as a mock call count.** `build_engine` builds
+  its own `LlmService`, so no `MockProvider` can be injected into a production boot; the lot
+  test drives `Engine::modules_loaded` directly and asserts the boot deferred no `Effect` at
+  all, which is the only way a call could leave the world task, and `boot_modules` keeps its
+  `debug_assert!(fx.is_empty())`.
+- **`@atlas/pack plan <file>` is served by `[atlas].pack_paths`.** Packs are read host-side at
+  boot onto a shelf (tacsim's discipline: a bad file fails the boot naming it), never from a
+  path inside the world task; `plan`, `apply` and `retire` name shelf packs. `apply` takes the
+  sixteen-hex fingerprint `plan` printed (a digest over the pack digest and every step), and
+  refuses when the pack or the world moved since.
+- **The two neighborhood packs do not import in either order.** The Staff Lobby's bus exits
+  name the OOC Area's bus room, so `neighborhood.staff_lobby` requires `neighborhood.ooc_area`
+  and applies after it; out of order is refused naming the requirement. The bus is a room
+  (`room.bus`) standing at both its stops until S2 gives it a journey; that makes fourteen lot
+  rooms, the bus interior, and Limbo.
+- **Tiles** are produced by the appliers' `finish` pass once a pack's entries are all in place:
+  one ground tile per neighborhood at its resolution (100 cm), one per structure floor, and the
+  region's coarse ground (1000 cm), each coarsened — never refused — until it fits
+  `tile_max_cells` and 512 KiB encoded. Measured (`tile_encoding_sizes_are_measured`): a flat
+  256×256 tile encodes to 28 bytes, a full 8 m relief lattice to 85 KiB, and only a grid where
+  no cell equals its neighbour reaches 683 KiB, which the coarsening rule keeps out of the
+  store. The background's relief and mix are drawn on an 8 m lattice for exactly that reason.
+  §8's open question is closed: 256×256 stands.
+- **Interface abilities are not in the NPC entries.** The cast carries profiles, fallbacks and
+  lore; `interfaces` arrive with S6, as a pack revision the latch applies in place.
+
+Verify fold (P/I/G/B), findings folded before landing: **P** — the digest is over the raw
+canonical value, so a re-keyed entry map or re-ordered object digests identically and a
+hand-edited digest fails `DigestMismatch` naming both. **I** — an entry id is unique only within
+its pack, and the first retire implementation looked records up by entry id alone, so retiring
+the Staff Lobby's `neighborhood` entry removed the OOC Area's record: `retire` and `retire_check`
+now take the pack id and address records by `(pack, entry)`. A destroyed object stays a `GOING`
+husk until the world task sweeps, so counts in the tests exclude husks. **G** — the `region`
+entry's `#[serde(flatten)]` kind did not survive `deny_unknown_fields` (serde refuses the
+flattened field), so the region pack applied nothing at first; the def now carries `kind` and
+`body` as plain fields. **B** — covered by the boot-batch deviation above.
 
 ### 3.2 Cut S2 — one travel system
 
@@ -527,3 +613,4 @@ square root of its pinned distance.
 ## 10. Changelog
 
 - 0.1 (2026-09-09): first draft, from doc 14 Draft 0.1; S7 gains the campaign ephemeris (doc 10 T17) the same day; §6's decisions acknowledged by the owner the same day.
+- 0.2 (2026-09-09): S1 landed — `mush-content`, `mush-atlas`, the starter packs, `[game].starter_area`, `[atlas]`; its ledger and verify fold recorded under §3.1; §8's tile-size question closed by measurement.

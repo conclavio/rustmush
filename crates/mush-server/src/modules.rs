@@ -76,6 +76,8 @@ pub fn server_modules() -> Vec<Box<dyn GameModule>> {
     server_modules_with(
         mush_weather::WeatherConfig::default(),
         mush_economy::EconomyConfig::default(),
+        // S1: default `[atlas]` limits, an empty shelf but for the shipped packs.
+        mush_atlas::AtlasConfig::default(),
         &ruleset_wod::OnboardingConfig::default(),
         // `[rulesets].enabled` defaults to `["wod"]`, so the default composition is a
         // WoD server and the housing title issuer stays wired exactly as E5b wired
@@ -106,6 +108,7 @@ pub fn server_modules() -> Vec<Box<dyn GameModule>> {
 pub fn server_modules_with(
     weather: mush_weather::WeatherConfig,
     economy: mush_economy::EconomyConfig,
+    atlas: mush_atlas::AtlasConfig,
     onboarding: &ruleset_wod::OnboardingConfig,
     wod: Option<&ruleset_wod::WodEconomyConfig>,
     shadowrun: Option<&ruleset_shadowrun::SrEconomyConfig>,
@@ -203,6 +206,12 @@ pub fn server_modules_with(
             mush_sim::SimulationModule::new()
                 .with_route_catalog(Arc::new(crate::sim_routes::TacsimRouteCatalog)),
         ),
+        // S1 (14-spatial-implementation-plan §3.1): the atlas — places with geometry
+        // — immediately after `mush-sim`, whose placement graph S2's journeys read.
+        // It owns the `atlas` records and the `+atlas`/`@atlas` surface; the packs
+        // it applies arrive through the content module, which composes LAST (see
+        // [`content_module`]). `mush-atlas -> {core, content, proto}` only.
+        atlas_module(atlas),
         // E7 cut 7 B3 (OPEN 1): the observation POLICY is `mush-propagation`'s,
         // but the observation INGRESS has to be `mush-tactics`' — the kernel's
         // owner fence (`ScheduleSourceRegistryBuilder::register` and
@@ -760,6 +769,56 @@ pub fn tacsim_module(cfg: ruleset_tacsim::TacsimConfig) -> Box<dyn GameModule> {
     Box::new(ruleset_tacsim::TacsimRuleset::with_config(cfg))
 }
 
+/// The **atlas** (S1, 14-spatial-implementation-plan §3.1): the spatial records, the
+/// rasterizer, the `+atlas` views and `@atlas/pack`, with `[atlas]`'s limits and the
+/// operator's packs, and the shipped starter packs on the shelf whatever
+/// `[game].starter_area` says — the shelf is what staff plan and apply from, and
+/// listing a pack applies nothing.
+#[must_use]
+pub fn atlas_module(cfg: mush_atlas::AtlasConfig) -> Box<dyn GameModule> {
+    let starter = mush_atlas::starter::packs().unwrap_or_else(|error| {
+        // The shipped packs are digest-pinned in `mush-atlas`'s own tests; this
+        // cannot fail on a tree that passed them, and a shelf without them is the
+        // honest degradation if it ever did.
+        tracing::error!(%error, "atlas: the shipped starter packs did not load");
+        Vec::new()
+    });
+    Box::new(mush_atlas::AtlasModule::with_config(cfg).with_shelf(starter))
+}
+
+/// The **content module** (S1, 14-spatial-implementation-plan §3.1): the pack latch,
+/// every entry kind's applier, and the first-boot apply of the starter area.
+///
+/// It composes **LAST** — after the NPC module and the rulesets, after the TacSim
+/// layer — because its boot pass applies packs whose entries are made by other
+/// modules' appliers (`mush-atlas` for places, `mush-npc` for people), and each of
+/// those writes its own RAM slot as it goes; `on_world_loaded` runs in list order,
+/// so every owner must have hydrated before this pass or the owner's own boot would
+/// overwrite what the pass wrote. Registration order does not matter to it: it
+/// registers one state slot and nothing else.
+///
+/// `starter_area` is `[game].starter_area`: `true` ships the three starter packs
+/// as boot packs, applied once on a world that has never latched them (doc 14
+/// §3.1 P9: zero LLM calls; the packs are bytes); `false` composes the module with
+/// no boot packs, so the world stays Limbo and God.
+///
+/// # Errors
+///
+/// A kind two owners both claimed (a programming error at composition), or the
+/// shipped packs failing to load (they are digest-pinned; see [`atlas_module`]).
+pub fn content_module(starter_area: bool) -> Result<Box<dyn GameModule>, String> {
+    let mut appliers = mush_content::Appliers::new();
+    mush_atlas::register_appliers(&mut appliers).map_err(|e| format!("atlas appliers: {e}"))?;
+    mush_npc::content::register_appliers(&mut appliers)
+        .map_err(|e| format!("npc appliers: {e}"))?;
+    let mut module = mush_content::ContentModule::new().with_appliers(appliers);
+    if starter_area {
+        let packs = mush_atlas::starter::packs().map_err(|e| format!("starter packs: {e}"))?;
+        module = module.with_boot_packs(packs);
+    }
+    Ok(Box::new(module))
+}
+
 /// The **disabled** recovery policy, for a composition that carries no TacSim layer.
 ///
 /// It exists so a caller outside this crate can build the module list without naming
@@ -1145,13 +1204,17 @@ async fn ns_version(store: &dyn ObjectStore, ns: &str) -> Result<Option<u32>, St
 /// Write one batch of module ops through the store, ack awaited (boot runs
 /// before the world task, so it writes directly).
 async fn write_ops(store: &dyn ObjectStore, ops: Vec<ModuleOp>) -> Result<(), String> {
-    const BOOT_SERIAL: u64 = 0;
     let batch = WriteBatch {
         serial: BOOT_SERIAL,
         durable: true,
         module_ops: ops,
         ..WriteBatch::default()
     };
+    write_batch(store, batch).await
+}
+
+/// Commit one boot-time batch, durably, checking the receipt's serial.
+async fn write_batch(store: &dyn ObjectStore, batch: WriteBatch) -> Result<(), String> {
     let receipt = store
         .write(batch)
         .await
@@ -1378,11 +1441,25 @@ pub async fn boot_modules(engine: &mut Engine, store: &dyn ObjectStore) -> Resul
             "module boot attempted coordinator-reserved persistence key {namespace}:{key}"
         ));
     }
-    if !ops.is_empty() {
-        write_ops(store, ops).await?;
+    // S1: a module boot pass may also make OBJECTS — the content module applies the
+    // starter packs, which dig rooms and place NPCs — and those ride the SAME batch
+    // as the ops, so the content latch and the objects it describes commit together
+    // or not at all ("objects and the latch or neither"). A crash between two writes
+    // would otherwise leave a latch that says the lot exists over a world without
+    // it, and the next boot would believe the latch.
+    let dirty = engine.world.take_dirty();
+    if ops.is_empty() && dirty.is_empty() {
+        return Ok(());
     }
-    Ok(())
+    let mut batch = crate::persist::batch_from_dirty(&engine.world, dirty, BOOT_SERIAL, true);
+    batch.module_ops = ops;
+    write_batch(store, batch).await
 }
+
+/// The serial every boot-time batch carries: the world seed's, the module boot
+/// write's, and the manifest reset's. Receipts echo it; the world task's own serials
+/// start after boot.
+const BOOT_SERIAL: u64 = 0;
 
 #[cfg(test)]
 mod tests {
@@ -2271,6 +2348,7 @@ mod tests {
             let mut modules = server_modules_with(
                 mush_weather::WeatherConfig::default(),
                 mush_economy::EconomyConfig::default(),
+                mush_atlas::AtlasConfig::default(),
                 &onboarding,
                 (ruleset == "wod").then_some(&wod),
                 (ruleset == "shadowrun").then_some(&shadowrun),
@@ -2571,6 +2649,7 @@ mod tests {
         let tw = TestWorld::with_modules(server_modules_with(
             mush_weather::WeatherConfig::default(),
             mush_economy::EconomyConfig::default(),
+            mush_atlas::AtlasConfig::default(),
             &onboarding,
             None,
             None,
@@ -2617,6 +2696,7 @@ mod tests {
         let tw = TestWorld::with_modules(server_modules_with(
             mush_weather::WeatherConfig::default(),
             mush_economy::EconomyConfig::default(),
+            mush_atlas::AtlasConfig::default(),
             &onboarding,
             None,
             None,
@@ -2674,6 +2754,7 @@ mod tests {
         let tw = TestWorld::with_modules(server_modules_with(
             mush_weather::WeatherConfig::default(),
             mush_economy::EconomyConfig::default(),
+            mush_atlas::AtlasConfig::default(),
             &onboarding,
             Some(&wod),
             None,
@@ -2709,6 +2790,7 @@ mod tests {
         let tw = TestWorld::with_modules(server_modules_with(
             mush_weather::WeatherConfig::default(),
             mush_economy::EconomyConfig::default(),
+            mush_atlas::AtlasConfig::default(),
             &onboarding,
             None,
             None,
@@ -2744,6 +2826,7 @@ mod tests {
         let mut mods = server_modules_with(
             mush_weather::WeatherConfig::default(),
             economy,
+            mush_atlas::AtlasConfig::default(),
             &onboarding,
             Some(&wod),
             None,
@@ -2819,6 +2902,7 @@ mod tests {
                 "faction",
                 "scenes",
                 "sim",
+                "atlas",
                 "tactics",
                 // E7 cut 7: the propagation layer, immediately after
                 // `mush-tactics`. Its boot reads no tactics state, but its
@@ -2869,6 +2953,7 @@ mod tests {
             let mut mods = server_modules_with(
                 mush_weather::WeatherConfig::default(),
                 mush_economy::EconomyConfig::default(),
+                mush_atlas::AtlasConfig::default(),
                 &onboarding,
                 (ruleset == "wod").then_some(&wod),
                 (ruleset == "shadowrun").then_some(&shadowrun),
@@ -2891,6 +2976,7 @@ mod tests {
                     "faction",
                     "scenes",
                     "sim",
+                    "atlas",
                     "tactics",
                     "propagation",
                     "economy",
@@ -3122,6 +3208,7 @@ mod tests {
                 "faction",
                 "scenes",
                 "sim",
+                "atlas",
                 "tactics",
                 "propagation",
                 "economy",
@@ -3265,6 +3352,7 @@ mod tests {
                 "faction",
                 "scenes",
                 "sim",
+                "atlas",
                 "tactics",
                 "propagation",
                 "economy",
