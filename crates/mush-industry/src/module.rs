@@ -622,6 +622,20 @@ impl GameModule for IndustryModule {
             ),
         )?;
 
+        // ---- WS02-S4: the open-order index, maintained on open/terminate ----
+        //
+        // Interface plan I13's `ActionStateChanged` is the only seam that says a
+        // typed record went live *with a world in hand*, which is what the draft
+        // offer needs: it must read the per-requester cap without walking
+        // `industry.workorder` on every projection pass. The sweep's `reconcile`
+        // rebuilds the same index from the family, so a missed announcement heals.
+        reg.subscribe(
+            mush_core::WorldEventKind::ActionStateChanged,
+            Arc::new(crate::store::WorkOrderIndex {
+                work_orders: families.work_orders.clone(),
+            }),
+        );
+
         // ---- E7c3/E7c4: B7/B8 — commands ----
         crate::commands::register(reg, &families, self.claim_catalog(), self.recipes.clone())?;
         self.families = Some(families);

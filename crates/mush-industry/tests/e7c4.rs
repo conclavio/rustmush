@@ -671,15 +671,62 @@ fn e7c4_d2_the_durable_marker_family_stays_bounded_and_conserves() {
 /// A test recipe authority: it resolves exactly the corridor's `alloy_smelt` and
 /// answers its digest, so `@wo/draft` binds a real recipe and the command-level
 /// gates can be exercised. Anything else is unauthored (fails closed).
+///
+/// WS02-S4 gave it two more jobs: it **counts** its catalog walks, so the draft
+/// offer's cache is observable, and it can author `filler` extra runnable recipes,
+/// so the offer's recipe-book cap is reachable.
 #[derive(Debug, Default)]
-struct TestRecipes;
+struct TestRecipes {
+    catalogs: Arc<std::sync::atomic::AtomicUsize>,
+    filler: usize,
+}
+
+/// The pack-local id of one filler recipe.
+fn filler_id(index: usize) -> String {
+    format!("filler_{index:04}")
+}
+
+/// One filler recipe: a distinct input commodity, the corridor's own capability.
+fn filler_recipe(index: usize) -> (RecipeRef, PinnedRecipe) {
+    let recipe = RecipeRef::new(
+        commodity("tacsim.core"),
+        1,
+        commodity(&filler_id(index)),
+        DefinitionDigest::from_bytes([0x11; 32]),
+    )
+    .expect("filler recipe ref");
+    let pinned = PinnedRecipe::new(
+        vec![RecipeLine::new(commodity("metals"), 4).expect("input line")],
+        vec![
+            RecipeLine::new(
+                commodity("structural_alloys"),
+                u64::try_from(index % 7 + 1).unwrap(),
+            )
+            .expect("output line"),
+        ],
+        capabilities(&["smelt"]),
+        3,
+    )
+    .expect("filler pinned");
+    (recipe, pinned)
+}
+
+impl TestRecipes {
+    fn with_filler(filler: usize) -> Self {
+        Self {
+            catalogs: Arc::default(),
+            filler,
+        }
+    }
+}
 
 impl mush_industry::RecipeAuthority for TestRecipes {
     fn digest_of(&self, _world: &World, recipe: &RecipeRef) -> Option<DefinitionDigest> {
         (recipe.pack().as_str() == "tacsim.core"
             && recipe.version() == 1
-            && recipe.id().as_str() == "alloy_smelt")
-            .then(|| DefinitionDigest::from_bytes([0x11; 32]))
+            && (recipe.id().as_str() == "alloy_smelt"
+                || recipe.id().as_str().starts_with("filler_")))
+        .then(|| DefinitionDigest::from_bytes([0x11; 32]))
     }
     fn resolve(
         &self,
@@ -688,12 +735,31 @@ impl mush_industry::RecipeAuthority for TestRecipes {
         version: u32,
         id: &CanonicalId,
     ) -> Option<(RecipeRef, PinnedRecipe)> {
-        (pack.as_str() == "tacsim.core" && version == 1 && id.as_str() == "alloy_smelt")
-            .then(alloy_recipe)
+        if pack.as_str() != "tacsim.core" || version != 1 {
+            return None;
+        }
+        if id.as_str() == "alloy_smelt" {
+            return Some(alloy_recipe());
+        }
+        (0..self.filler)
+            .find(|index| filler_id(*index) == id.as_str())
+            .map(filler_recipe)
+    }
+    fn catalog_revision(&self, _world: &World) -> u64 {
+        1
+    }
+    fn catalog(&self, _world: &World) -> Vec<(RecipeRef, PinnedRecipe)> {
+        self.catalogs
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let mut out = vec![alloy_recipe()];
+        out.extend((0..self.filler).map(filler_recipe));
+        out
     }
 }
 
-fn boot_with_recipes() -> (TestWorld, IndustryFamilies) {
+fn boot_with_authority(
+    recipes: Arc<dyn mush_industry::RecipeAuthority>,
+) -> (TestWorld, IndustryFamilies) {
     let cell: InventoryHandleCell = Arc::default();
     let world = TestWorld::with_modules(vec![
         Box::new(mush_economy::EconomyModule::new()),
@@ -705,7 +771,7 @@ fn boot_with_recipes() -> (TestWorld, IndustryFamilies) {
         Box::new(
             IndustryModule::new()
                 .with_inventory(Arc::clone(&cell))
-                .with_recipes(Arc::new(TestRecipes)),
+                .with_recipes(recipes),
         ),
     ]);
     let families = world
@@ -715,6 +781,10 @@ fn boot_with_recipes() -> (TestWorld, IndustryFamilies) {
         .0
         .clone();
     (world, families)
+}
+
+fn boot_with_recipes() -> (TestWorld, IndustryFamilies) {
+    boot_with_authority(Arc::new(TestRecipes::default()))
 }
 
 /// **E7r1 R1** — the two accounts a work order needs at draft: GOD's budget (which
@@ -1205,5 +1275,394 @@ fn vf_b5_wo_set_is_not_silently_list() {
     assert!(
         !out.contains("(no work orders)"),
         "@wo/set does not silently run the work-order list"
+    );
+}
+
+// ============================================================================
+// ---- WS02-S4: the work-order draft offer's facility gate and its books ----
+//
+// Before this, `IndustryVerb::WoDraft`'s projection declared thirteen free
+// parameters and gated nothing: the command's owner/`acts_for` check, its
+// quarantine refusal and its per-requester cap were all reachable only by typing
+// `@wo/draft`, and a direct offer submission met none of them. These pin the
+// three layers that replaced that — the offer that refuses to exist, the books
+// that ride the fixed parameters, and the prepare that re-derives the drafter's
+// authority from them.
+// ============================================================================
+
+/// The offer id `industry_wo_draft` is projected to this actor under, if at all.
+/// The binding hashes the fixed parameters, so the id **is** the books' identity.
+fn draft_offer_id(world: &mut TestWorld, actor: ObjId) -> Option<mush_core::ActionOfferId> {
+    world.engine_mut().set_offer_keys(
+        mush_core::OfferKeyRing::new(mush_core::OfferSecret::new(2, [2; 32]).expect("secret"), [])
+            .expect("key ring"),
+    );
+    let engine = world.engine();
+    let action = mush_industry::action_ref(&engine.registry, mush_industry::IndustryVerb::WoDraft)
+        .expect("the draft action is registered");
+    let query = engine
+        .legal_action_query(
+            mush_core::PrincipalId::Object { id: actor },
+            actor,
+            mush_core::PerceivedRef::SelfActor,
+        )
+        .expect("legal action query");
+    let offers = engine
+        .project_legal_actions(&query)
+        .expect("projection succeeds");
+    offers
+        .projected_for_action(&action)
+        .map(|projected| projected.offer())
+}
+
+fn has_draft_offer(world: &mut TestWorld, actor: ObjId) -> bool {
+    draft_offer_id(world, actor).is_some()
+}
+
+/// Submit `parameters` against this actor's own live `WoDraft` offer and prepare
+/// it — the **direct offer route**, which no command gate stands in front of.
+fn draft_through_the_offer(
+    world: &mut TestWorld,
+    actor: ObjId,
+    parameters: serde_json::Value,
+    token: u8,
+) -> Result<(), String> {
+    world.engine_mut().set_offer_keys(
+        mush_core::OfferKeyRing::new(
+            mush_core::OfferSecret::new(2, [2; 32]).map_err(|_| "secret".to_owned())?,
+            [],
+        )
+        .map_err(|_| "key ring".to_owned())?,
+    );
+    let (action, resolved) = {
+        let engine = world.engine();
+        let action =
+            mush_industry::action_ref(&engine.registry, mush_industry::IndustryVerb::WoDraft)
+                .ok_or_else(|| "no draft action".to_owned())?;
+        let query = engine
+            .legal_action_query(
+                mush_core::PrincipalId::Object { id: actor },
+                actor,
+                mush_core::PerceivedRef::SelfActor,
+            )
+            .map_err(|error| error.to_string())?;
+        let offers = engine
+            .project_legal_actions(&query)
+            .map_err(|error| error.to_string())?;
+        let projected = offers
+            .projected_for_action(&action)
+            .ok_or_else(|| "no draft offer".to_owned())?;
+        let submission = mush_core::OfferSubmission {
+            offer: projected.offer(),
+            subject: projected.subject().clone(),
+            targets: Vec::new(),
+            parameters,
+        };
+        let execution = mush_core::OfferExecutionContext {
+            request: RequestUid::from_bytes([token; 16]),
+            principal: mush_core::PrincipalId::Object { id: actor },
+            actor,
+            idempotency: ScopedIdempotencyKey::new(
+                IdempotencyScope {
+                    principal: mush_core::PrincipalId::Object { id: actor },
+                    owner: action.key().owner.clone(),
+                    namespace: CanonicalId::new(action.key().id.as_str())
+                        .map_err(|_| "namespace".to_owned())?,
+                },
+                1,
+                IdempotencyKey::Request(RequestUid::from_bytes([token; 16])),
+            ),
+            viewer_scope: query.viewer_scope(),
+            now: None,
+        };
+        let resolved = engine
+            .resolve_legal_action(&offers, execution, submission)
+            .map_err(|error| format!("{error:?}"))?;
+        let (action, resolved, _guards) = resolved.into_authoritative_parts();
+        (action, resolved)
+    };
+    world
+        .engine_mut()
+        .prepare_registered_resolved_authoritative_action(
+            &action,
+            &resolved,
+            CommitToken::from_bytes([token; 16]),
+        )
+        .map(|_| ())
+        .map_err(|error| format!("{error:?}"))
+}
+
+/// The parameters a real `@wo/draft` stages, with the facility and its pinned
+/// slot count swapped for whatever the caller names.
+fn draft_parameters(actor: ObjId, facility: u32, slots: u32) -> serde_json::Value {
+    let (_, pinned) = alloy_recipe();
+    serde_json::json!({
+        "facility": facility,
+        "facility_slots": slots,
+        "capacity_revision": 1,
+        "policy_revision": 1,
+        "pack": "tacsim.core",
+        "version": 1,
+        "recipe": "alloy_smelt",
+        "digest": DefinitionDigest::from_bytes([0x11; 32]).to_hex(),
+        "quantity": 1,
+        "account": 1,
+        "source": 500,
+        "destination": 600,
+        "beneficiary": format!("obj:{}", actor.0),
+        "pinned": serde_json::to_string(&pinned).expect("pinned json"),
+    })
+}
+
+fn install_facility(world: &mut TestWorld, object: u32, owner: ObjId, slots: u32) {
+    let store = world
+        .engine_mut()
+        .world
+        .module_state_mut::<IndustryStore>()
+        .expect("industry store");
+    store.put_facility(
+        FacilityRecord::new(
+            ObjId(object),
+            PrincipalId::Object(owner),
+            capabilities(&["smelt"]),
+            slots,
+        )
+        .expect("facility record"),
+    );
+}
+
+#[test]
+fn ws02_s4_an_actor_with_no_facility_is_projected_no_draft_offer() {
+    // The fog rule, on the facility axis: an actor who may draft nowhere sees
+    // exactly what an actor in a world with no facility at all sees, which is
+    // exactly what a verb that does not exist projects — nothing.
+    let (mut world, _families) = boot_with_recipes();
+    let alice = world.spawn_player("alice");
+    assert!(
+        !has_draft_offer(&mut world, GOD),
+        "no facility exists yet, so not even staff is offered a draft"
+    );
+    assert!(!has_draft_offer(&mut world, alice));
+    world.run(GOD, "@facility/open 7=2 smelt");
+    let _ = world.engine_mut().take_authoritative_submit();
+    assert!(
+        has_draft_offer(&mut world, GOD),
+        "the facility's owner is offered the draft"
+    );
+    assert!(
+        !has_draft_offer(&mut world, alice),
+        "a stranger is offered nothing — byte-identical to naming a facility that \
+         does not exist, so the projection is no existence oracle"
+    );
+}
+
+#[test]
+fn ws02_s4_the_facility_book_excludes_a_rival_and_a_quarantined_facility() {
+    let (mut world, families) = boot_with_recipes();
+    let alice = world.spawn_player("alice");
+    install_facility(&mut world, 21, alice, 2); // hers
+    install_facility(&mut world, 22, GOD, 2); // a rival's
+    install_facility(&mut world, 23, alice, 2); // hers, about to be quarantined
+    {
+        // R4's shape: a live order holding a slot at 23 whose capacity book is
+        // wholly absent quarantines it on the next reconcile.
+        let engine = world.engine_mut();
+        let running = draft_order(0x2323, ObjId(23), 1, 500, 600)
+            .acquired(Vec::new(), Vec::new(), None, WorkOrderState::Running)
+            .expect("acquire");
+        apply(engine, &families, |txn| {
+            families.open_work_order(txn, running)
+        })
+        .expect("open running order");
+    }
+    world.modules_loaded(std::collections::HashMap::new());
+    assert!(
+        world
+            .world()
+            .module_state::<IndustryStore>()
+            .expect("store")
+            .is_facility_quarantined(ObjId(23)),
+        "the fixture really quarantined 23"
+    );
+    let facilities = mush_industry::provider::draftable_facilities(world.engine(), alice, false);
+    let offered: Vec<u32> = facilities
+        .iter()
+        .map(|facility| facility.object().0)
+        .collect();
+    assert_eq!(
+        offered,
+        vec![21],
+        "the book carries only the facilities alice may draft at, and never a \
+         quarantined one"
+    );
+    let entries = mush_industry::provider::catalog_entries(&TestRecipes::default(), world.world());
+    let books =
+        mush_industry::provider::wo_offer_books(world.engine(), alice, &facilities, &entries);
+    assert!(books.facilities.contains_key("21"));
+    assert!(
+        !books.facilities.contains_key("22"),
+        "a rival's facility is absent"
+    );
+    assert!(
+        !books.facilities.contains_key("23"),
+        "a quarantined one is absent"
+    );
+    assert_eq!(
+        books.recipes.len(),
+        1,
+        "the corridor's one recipe is offered"
+    );
+    assert!(
+        !books.truncated,
+        "the corridor's own pack is nowhere near the cap"
+    );
+}
+
+#[test]
+fn ws02_s4_the_per_requester_cap_is_read_off_the_index_not_the_family() {
+    let (mut world, families) = boot_with_recipes();
+    world.run(GOD, "@facility/open 7=2 smelt");
+    let _ = world.engine_mut().take_authoritative_submit();
+    assert!(has_draft_offer(&mut world, GOD), "the owner starts offered");
+    let mut ids = Vec::new();
+    {
+        let engine = world.engine_mut();
+        for index in 0..mush_industry::MAX_WORK_ORDERS_PER_REQUESTER as u64 {
+            let order = draft_order(0x7700 + index, ObjId(7), 1, 500, 600);
+            ids.push(order.id());
+            apply(engine, &families, |txn| {
+                families.open_work_order(txn, order)
+            })
+            .expect("open order");
+        }
+    }
+    // The sweep's reconcile is what rebuilds the index from the family.
+    world.modules_loaded(std::collections::HashMap::new());
+    assert_eq!(
+        world
+            .world()
+            .module_state::<IndustryStore>()
+            .expect("store")
+            .open_work_orders(&PrincipalId::Object(GOD)),
+        mush_industry::MAX_WORK_ORDERS_PER_REQUESTER,
+        "reconcile counted every non-terminal order"
+    );
+    assert!(
+        !has_draft_offer(&mut world, GOD),
+        "at the per-requester cap there is no offer at all"
+    );
+    // And it really is the INDEX the projection reads, not a walk of the family:
+    // empty the index while every one of those orders is still live and open, and
+    // the offer comes back.
+    {
+        let store = world
+            .engine_mut()
+            .world
+            .module_state_mut::<IndustryStore>()
+            .expect("store");
+        for id in &ids {
+            store.note_work_order(&PrincipalId::Object(GOD), *id, false);
+        }
+        assert_eq!(store.open_requesters(), 0);
+    }
+    assert!(
+        has_draft_offer(&mut world, GOD),
+        "the family still holds 16 open orders; the projection consulted the RAM \
+         index, which is the whole point of the move"
+    );
+}
+
+#[test]
+fn ws02_s4_two_projections_agree_and_the_catalog_is_walked_once() {
+    let counted = Arc::new(TestRecipes::default());
+    let catalogs = Arc::clone(&counted.catalogs);
+    let (mut world, _families) = boot_with_authority(counted);
+    world.run(GOD, "@facility/open 7=2 smelt");
+    let _ = world.engine_mut().take_authoritative_submit();
+    let first = draft_offer_id(&mut world, GOD).expect("offered");
+    let second = draft_offer_id(&mut world, GOD).expect("offered");
+    assert_eq!(
+        first, second,
+        "the offer binding hashes the fixed parameters, so two projections in one \
+         IC second agreeing on the id is two byte-identical book sets"
+    );
+    assert_eq!(
+        catalogs.load(std::sync::atomic::Ordering::Relaxed),
+        1,
+        "the catalog is walked once per publish, not once per projection"
+    );
+}
+
+#[test]
+fn ws02_s4_a_large_catalog_truncates_at_the_cap_and_the_offer_still_builds() {
+    let (mut world, _families) = boot_with_authority(Arc::new(TestRecipes::with_filler(400)));
+    world.run(GOD, "@facility/open 7=2 smelt");
+    let _ = world.engine_mut().take_authoritative_submit();
+    let entries =
+        mush_industry::provider::catalog_entries(&TestRecipes::with_filler(400), world.world());
+    assert_eq!(
+        entries.len(),
+        401,
+        "the fixture really authored 401 recipes"
+    );
+    assert_eq!(
+        entries,
+        mush_industry::provider::catalog_entries(&TestRecipes::with_filler(400), world.world()),
+        "the catalog reduction is deterministic — the composition root answers a \
+         `BTreeMap` walk and this sorts on the rendered key anyway, which is what \
+         makes the offer's cache and its byte-identical projections true"
+    );
+    let facilities = mush_industry::provider::draftable_facilities(world.engine(), GOD, true);
+    let books = mush_industry::provider::wo_offer_books(world.engine(), GOD, &facilities, &entries);
+    assert_eq!(
+        books.recipes.len(),
+        mush_industry::provider::MAX_OFFERED_RECIPES,
+        "the book is cut at the cap"
+    );
+    assert!(
+        books.truncated,
+        "and says so, which is how an operator learns"
+    );
+    assert!(
+        books.recipes.contains_key("tacsim.core/1/alloy_smelt"),
+        "the cut is on a sorted key order, not an arbitrary one"
+    );
+    assert!(
+        serde_json::to_vec(&books.recipes).expect("book json").len()
+            < mush_core::MAX_PROJECTED_LEGAL_ACTION_BYTES,
+        "the book stays well inside the projected-offer bound"
+    );
+    assert!(
+        has_draft_offer(&mut world, GOD),
+        "and the offer still builds with 400 recipes in the world"
+    );
+}
+
+#[test]
+fn ws02_s4_an_offer_route_draft_cannot_name_a_facility_it_was_not_offered() {
+    // The bypass, attempted: alice has a live `WoDraft` offer of her own (she owns
+    // 21), and submits against it a `facility` naming GOD's 22 — the parameter the
+    // offer route lets any submitter choose, and the one the command's
+    // owner/`acts_for` gate was the only thing that ever checked.
+    let (mut world, _families) = boot_with_recipes();
+    let alice = world.spawn_player("alice");
+    install_facility(&mut world, 21, alice, 2);
+    install_facility(&mut world, 22, GOD, 2);
+    let forged = draft_through_the_offer(&mut world, alice, draft_parameters(alice, 22, 2), 0x41);
+    let message = forged.expect_err("a facility outside her book is refused");
+    assert!(
+        message.contains("You cannot do that with that work order."),
+        "and refused with the byte-identical work-order line: {message}"
+    );
+    // The same submission naming her own facility, with the record's own slots,
+    // goes through — the gate refuses the forgery, not the verb.
+    draft_through_the_offer(&mut world, alice, draft_parameters(alice, 21, 2), 0x42)
+        .expect("her own facility drafts");
+    // And an inflated slot pin at her own facility is refused too: the staleness
+    // stamps the submit's drift check reads are the record's, never the client's.
+    let inflated = draft_through_the_offer(&mut world, alice, draft_parameters(alice, 21, 8), 0x43);
+    assert!(
+        inflated.is_err(),
+        "a 2-slot facility cannot be pinned as an 8-slot one through the offer route"
     );
 }

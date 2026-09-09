@@ -47,9 +47,10 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use mush_core::{ObjId, Outbox, World};
+use mush_core::{Ctx, ObjId, Outbox, StateFamilyHandle, World, WorldEvent, WorldObserver};
 use mush_economy::{EconomyStore, InstrumentId, VaultId};
 use mush_inventory::{EndpointRef, InventoryStore};
+use mush_org::PrincipalId;
 use smol_str::SmolStr;
 
 use crate::facility::{FacilityRecord, facility_of_key};
@@ -208,6 +209,23 @@ pub struct IndustryStore {
     /// How many notes were dropped at [`crate::money::MAX_SETTLE_PENDING`] since
     /// boot — counted rather than silent (D9).
     settle_pending_dropped: u64,
+    /// **WS02-S4** — the per-requester index of **non-terminal** work orders, so
+    /// the draft offer can read `MAX_WORK_ORDERS_PER_REQUESTER` without walking
+    /// `industry.workorder`. `project_legal_actions` runs every provider on every
+    /// projection pass, including every authoritative submission, and a family
+    /// scan there is a walk per projection rather than a walk per commit.
+    ///
+    /// Maintained on open/terminate by the `ActionStateChanged` observer
+    /// [`WorkOrderIndex`] and rebuilt from the family by [`reconcile`] at boot and
+    /// on every sweep, so a missed announcement heals inside one sweep period.
+    /// The **command** keeps its own bounded scan: the durable-DoS bound must not
+    /// rest on a mirror that can lag, and the command has a world to walk with.
+    ///
+    /// Bounded by the family it mirrors: an entry exists only for a requester
+    /// with a live order and is dropped when their last one goes terminal. Keyed
+    /// by `mush_economy::principal_token`, the canonical spelling the claim gate
+    /// already compares principals by — `PrincipalId` itself is not `Ord`.
+    open_orders: BTreeMap<SmolStr, BTreeSet<crate::workorder::WorkOrderId>>,
 }
 
 impl IndustryStore {
@@ -269,6 +287,41 @@ impl IndustryStore {
     /// Forget one order's pending note (its state moved on, or the release landed).
     pub fn clear_settle_pending(&mut self, order: crate::workorder::WorkOrderId) {
         self.settle_pending.remove(&order);
+    }
+
+    /// **WS02-S4** — how many non-terminal work orders this requester holds, from
+    /// the RAM index rather than a walk of `industry.workorder`.
+    #[must_use]
+    pub fn open_work_orders(&self, requester: &PrincipalId) -> usize {
+        self.open_orders
+            .get(&mush_economy::principal_token(requester))
+            .map_or(0, BTreeSet::len)
+    }
+
+    /// Note one work order as live or terminal. Idempotent by construction — the
+    /// index is a set of ids, not a delta count, so replaying one announcement
+    /// changes nothing and a missed one is repaired by the next [`reconcile`].
+    pub fn note_work_order(
+        &mut self,
+        requester: &PrincipalId,
+        order: crate::workorder::WorkOrderId,
+        open: bool,
+    ) {
+        let token = mush_economy::principal_token(requester);
+        if open {
+            self.open_orders.entry(token).or_default().insert(order);
+        } else if let Some(live) = self.open_orders.get_mut(&token) {
+            live.remove(&order);
+            if live.is_empty() {
+                self.open_orders.remove(&token);
+            }
+        }
+    }
+
+    /// How many requesters currently hold a live order (the index's observable).
+    #[must_use]
+    pub fn open_requesters(&self) -> usize {
+        self.open_orders.len()
     }
 
     /// Whether one body is quarantined.
@@ -663,11 +716,19 @@ pub fn reconcile(ctx: &mut mush_core::ModuleCtx<'_>, families: &crate::IndustryF
     // slot the vanished book held is not released). A corrupt (not absent)
     // authoritative work order still refuses the whole boot by design.
     let mut facility_quarantined: BTreeMap<ObjId, FacilityQuarantine> = BTreeMap::new();
+    // WS02-S4: the per-requester open-order index, rebuilt on the walk this loop
+    // was already making. Installed only if the walk saw the whole family — a
+    // truncated walk would under-count, and an under-counting index is a cap that
+    // silently stops being read.
+    let mut open_orders: BTreeMap<SmolStr, BTreeSet<crate::workorder::WorkOrderId>> =
+        BTreeMap::new();
+    let mut orders_complete = true;
     let mut cursor: Option<String> = None;
     let mut pages = 0;
     loop {
         if pages >= crate::record::MAX_LIST_PAGES {
             complete = false;
+            orders_complete = false;
             break;
         }
         pages += 1;
@@ -679,6 +740,7 @@ pub fn reconcile(ctx: &mut mush_core::ModuleCtx<'_>, families: &crate::IndustryF
             Ok(page) => page,
             Err(_) => {
                 complete = false;
+                orders_complete = false;
                 break;
             }
         };
@@ -688,6 +750,12 @@ pub fn reconcile(ctx: &mut mush_core::ModuleCtx<'_>, families: &crate::IndustryF
         }
         let next = page.next_after().map(ToString::to_string);
         for order in rows {
+            if !order.state().is_terminal() {
+                open_orders
+                    .entry(mush_economy::principal_token(order.requester()))
+                    .or_default()
+                    .insert(order.id());
+            }
             if !order.state().holds_resources() {
                 continue;
             }
@@ -748,10 +816,84 @@ pub fn reconcile(ctx: &mut mush_core::ModuleCtx<'_>, families: &crate::IndustryF
     }
     store.quarantined = quarantined;
     store.facility_quarantined = facility_quarantined;
+    if orders_complete {
+        store.open_orders = open_orders;
+    }
     store.applied = applied;
     store.wo_applied = wo_applied;
     store.complete = complete;
     store.reconciliations = store.reconciliations.saturating_add(1);
+}
+
+/// Largest number of touched keys one announcement is decoded from — well past
+/// what a single work-order commit touches, and never an unbounded walk.
+const MAX_INDEX_NOTES: usize = 64;
+
+/// **WS02-S4** — the `industry.workorder` open-order index, maintained on
+/// open/terminate.
+///
+/// Interface plan I13's `ActionStateChanged` is the only seam that says "this
+/// typed record went live" with a world in hand: a `prepare_authoritative`
+/// provider has no world and cannot touch module state, and the coarse sweep is
+/// a minute away. So the index is announced into here, and [`reconcile`] rebuilds
+/// it from the family at boot and on every sweep — a missed announcement costs at
+/// most one sweep period of drift, and the **command**'s own bounded scan, which
+/// this does not replace, keeps enforcing the durable cap exactly meanwhile.
+///
+/// It writes RAM only. An observer of this event must not persist: it runs after
+/// the commit's own flush, and a queued legacy op would make the next prepared
+/// action's flush refuse itself as mixed work.
+pub(crate) struct WorkOrderIndex {
+    pub(crate) work_orders:
+        StateFamilyHandle<crate::workorder::WorkOrderId, crate::workorder::WorkOrder>,
+}
+
+impl WorldObserver for WorkOrderIndex {
+    fn on_event(&self, ctx: &mut Ctx<'_>, ev: &WorldEvent) {
+        let WorldEvent::ActionStateChanged {
+            owner,
+            family,
+            keys,
+        } = ev
+        else {
+            return;
+        };
+        // A foreign owner's family that happens to share a name is not ours to
+        // decode (the vitals republish's own rule).
+        if owner != self.work_orders.owner() || family != self.work_orders.descriptor().id() {
+            return;
+        }
+        let mut notes: Vec<(PrincipalId, crate::workorder::WorkOrderId, bool)> = Vec::new();
+        for key in keys.iter().take(MAX_INDEX_NOTES) {
+            let Some(id) = crate::workorder::WorkOrderId::parse(key) else {
+                continue;
+            };
+            // A record that is gone leaves its note where it was: orders are never
+            // pruned, so this cannot happen, and if it ever does the next
+            // `reconcile` is the repair rather than a guessed-at requester.
+            let Ok(Some(order)) = ctx.action_state(&self.work_orders, &id) else {
+                continue;
+            };
+            notes.push((
+                order.requester().clone(),
+                order.id(),
+                !order.state().is_terminal(),
+            ));
+        }
+        if keys.len() > MAX_INDEX_NOTES {
+            tracing::warn!(
+                target: "industry",
+                keys = keys.len(),
+                cap = MAX_INDEX_NOTES,
+                "industry: a work-order commit touched more records than the index cap"
+            );
+        }
+        if let Some(store) = ctx.w.module_state_mut::<IndustryStore>() {
+            for (requester, order, open) in notes {
+                store.note_work_order(&requester, order, open);
+            }
+        }
+    }
 }
 
 /// The three cross-cutting shapes, asked of one deposit.

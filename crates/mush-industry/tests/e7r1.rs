@@ -49,6 +49,12 @@ impl mush_industry::RecipeAuthority for TestRecipes {
         (pack.as_str() == "tacsim.core" && version == 1 && id.as_str() == "alloy_smelt")
             .then(alloy_recipe)
     }
+    fn catalog_revision(&self, _world: &World) -> u64 {
+        1
+    }
+    fn catalog(&self, _world: &World) -> Vec<(RecipeRef, PinnedRecipe)> {
+        vec![alloy_recipe()]
+    }
 }
 
 fn commodity(id: &str) -> CanonicalId {

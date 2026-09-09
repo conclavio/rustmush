@@ -33,12 +33,13 @@ use std::collections::BTreeMap;
 
 use mush_core::{
     ActionError, ActionErrorCode, ActionInvocation, ActionPresentation, ActionProvider, ActionTxn,
-    AuthoritativeActionOutput, CanonicalId, ClockStamp, CommitToken, DefinitionDescriptor,
-    DefinitionDigest, DefinitionId, DefinitionKind, DefinitionRef, DefinitionValidationContext,
-    DurableSchedule, DurableScheduleDraft, Engine, LegalActionQuery, ModError, ObjId, PerceivedRef,
-    PrincipalId as CorePrincipalId, Registrar, ReservationId, RevisionSet, RulesValue,
-    ScheduleActionAdapter, ScheduleActionDraft, ScheduleAdvance, ScheduleCatchUpOrder,
-    ScheduleEvaluation, ScheduleId, ScheduleRestartPolicy, StateFamilyHandle, SubjectKey,
+    AuthoritativeActionOutput, CanonicalHash, CanonicalId, ClockStamp, CommitToken,
+    DefinitionDescriptor, DefinitionDigest, DefinitionId, DefinitionKind, DefinitionRef,
+    DefinitionValidationContext, DurableSchedule, DurableScheduleDraft, Engine, LegalActionQuery,
+    MAX_ACTION_PARAMETER_BYTES, ModError, ObjId, PerceivedRef, PrincipalId as CorePrincipalId,
+    Registrar, ReservationId, RevisionSet, RulesValue, ScheduleActionAdapter, ScheduleActionDraft,
+    ScheduleAdvance, ScheduleCatchUpOrder, ScheduleEvaluation, ScheduleId, ScheduleRestartPolicy,
+    StateFamilyHandle, SubjectKey, World,
 };
 use mush_economy::{AccountId, ContractId, EconomicVisibility, ExternalRef, VaultId};
 use mush_inventory::{EndpointRef, Grade};
@@ -97,6 +98,21 @@ pub const OUTCOME_ID: &str = "industry_result";
 pub const MAX_DEPOSIT_CHOICES: usize = 64;
 /// Largest commodity id one parameter may carry.
 pub const MAX_COMMODITY_BYTES: usize = 64;
+/// Largest facility book one `WoDraft` offer publishes.
+pub const MAX_WO_OFFER_FACILITIES: usize = 16;
+/// Largest endpoint book one `WoDraft` offer publishes.
+pub const MAX_WO_OFFER_ENDPOINTS: usize = 16;
+/// Largest account book one `WoDraft` offer publishes.
+pub const MAX_WO_OFFER_ACCOUNTS: usize = 16;
+/// Largest recipe book one `WoDraft` offer publishes. Well inside K's
+/// `MAX_PROJECTED_ACTION_CHOICES` (256) and, at 96 rows, inside
+/// [`MAX_WO_OFFER_BOOK_BYTES`] for any key a pack can spell.
+pub const MAX_OFFERED_RECIPES: usize = 96;
+/// Largest the recipe book may grow, in bytes of key + hash. The whole fixed
+/// object still has to canonicalize inside `MAX_ACTION_PARAMETER_BYTES` and the
+/// offer inside `MAX_PROJECTED_LEGAL_ACTION_BYTES`; this is the crate's own,
+/// much tighter bound, so the book is never what breaks either.
+pub const MAX_WO_OFFER_BOOK_BYTES: usize = 8 * 1024;
 /// Largest curve text one parameter may carry (`c:y,c:y,…`).
 pub const MAX_CURVE_BYTES: usize = 256;
 
@@ -255,6 +271,20 @@ pub struct IndustryProvider {
     action: DefinitionRef,
     outcome: DefinitionRef,
     families: IndustryFamilies,
+    /// The composition root's recipe authority, the same `Arc` the command lane
+    /// and the production schedule adapter hold. `None` on a server that has said
+    /// nothing about what a recipe is: `@wo/draft` already refuses there, and the
+    /// offer follows it.
+    recipes: Option<std::sync::Arc<dyn crate::workorder::RecipeAuthority>>,
+    /// The hashed catalog, keyed on [`RecipeAuthority::catalog_revision`]. The
+    /// walk and the hashing happen once per pack publish, not once per
+    /// projection — and `project_legal_actions` runs every provider on every
+    /// projection pass, including every authoritative submission.
+    catalog: std::sync::Mutex<Option<(u64, std::sync::Arc<Vec<CatalogEntry>>)>>,
+    /// The catalog revision the truncation warning has already been logged for,
+    /// so a truncated book says so once per publish rather than once per
+    /// projection.
+    truncation_warned: std::sync::Mutex<Option<u64>>,
 }
 
 fn error(code: ActionErrorCode, message: impl Into<String>) -> ActionError {
@@ -287,6 +317,26 @@ pub const CLAIM_FILE_STAFF: &str = "claim_file_staff";
 /// The `principal_token` spellings of the authorities a non-staff actor may file
 /// under, published as a fixed parameter beside the offer's own `Choice`.
 pub const CLAIM_ISSUERS: &str = "claim_issuers";
+
+/// The actor the `WoDraft` offer was projected to, published as a fixed
+/// parameter so the prepare can tell its own offer from somebody else's.
+pub const WO_DRAFTER: &str = "wo_drafter";
+/// Whether that actor was staff when the `WoDraft` offer was projected — staff
+/// may draft at any facility by id, exactly as they may name any claim by id.
+pub const WO_DRAFT_STAFF: &str = "wo_draft_staff";
+/// The facilities the drafter may draft at, `id → {slots, capacity_revision,
+/// policy_revision, capabilities}`, server-authored beside the offer.
+pub const WO_FACILITIES: &str = "wo_facilities";
+/// The drafter's live inventory endpoints, server-authored beside the offer.
+pub const WO_ENDPOINTS: &str = "wo_endpoints";
+/// The drafter's own active accounts, server-authored beside the offer.
+pub const WO_ACCOUNTS: &str = "wo_accounts";
+/// The recipes the drafter's facilities can actually run,
+/// `"<pack>/<version>/<id>" → 32-hex pinned hash`.
+pub const WO_RECIPES: &str = "wo_recipes";
+/// Whether [`WO_RECIPES`] left something out — the flag an operator reads when a
+/// recipe that exists cannot be drafted.
+pub const WO_RECIPES_TRUNCATED: &str = "wo_recipes_truncated";
 
 /// The one line every work-order refusal a viewer may not distinguish renders.
 const WO_REFUSED: &str = "You cannot do that with that work order.";
@@ -940,6 +990,291 @@ pub fn movable_claims(engine: &Engine, families: &IndustryFamilies, actor: ObjId
     out
 }
 
+// ---- WS02-S4: the work-order draft offer's server-authored books ------------
+//
+// The `WoDraft` arm used to declare thirteen free parameters and nothing else:
+// every one of them client-supplied, no facility gate, no recipe gate, and the
+// command's three checks (owner/`acts_for`, quarantine, the per-requester cap)
+// reachable only by typing `@wo/draft`. A direct offer submission met none of
+// them. The three layers below are `ClaimFile`'s, applied here:
+//
+// 1. the **command** still refuses first, with its own diagnostics;
+// 2. the **offer** refuses to exist at all for an actor with no facility to
+//    draft at — the same nothing a verb that does not exist projects, so the
+//    projection is not a facility-existence oracle either;
+// 3. the **books** ride the offer's fixed parameters, which `merge_parameters`
+//    refuses to let a submitter collide with, so `wo_draft` re-derives the
+//    drafter's authority from the offer that produced the invocation instead of
+//    trusting the parameters beside it.
+
+/// One published recipe, reduced to what an offer has to carry: its key, the
+/// hash of its pinned lines, and the facility capabilities it needs.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CatalogEntry {
+    /// `"<pack>/<version>/<id>"`.
+    pub key: String,
+    /// The 32-hex prefix of the pinned lines' canonical hash.
+    pub hash: String,
+    /// What a facility must offer to run it.
+    pub requires: std::collections::BTreeSet<CanonicalId>,
+}
+
+/// The four books one `WoDraft` offer publishes, and whether the recipe book
+/// left anything out.
+#[derive(Clone, Debug, Default)]
+pub struct WoOfferBooks {
+    /// `id → {slots, capacity_revision, policy_revision, capabilities}`.
+    pub facilities: serde_json::Map<String, Value>,
+    /// The drafter's live endpoints, ascending.
+    pub endpoints: Vec<u64>,
+    /// The drafter's own active accounts, ascending.
+    pub accounts: Vec<u64>,
+    /// `"<pack>/<version>/<id>" → 32-hex pinned hash`.
+    pub recipes: serde_json::Map<String, Value>,
+    /// Whether a cap bit — [`MAX_OFFERED_RECIPES`] or
+    /// [`MAX_WO_OFFER_BOOK_BYTES`].
+    pub truncated: bool,
+}
+
+/// The 32-hex identity of one pinned recipe, the value the recipe book carries.
+///
+/// # Errors
+/// [`ActionError`] if the pinned lines will not canonicalize inside
+/// `MAX_ACTION_PARAMETER_BYTES` — which a constructed [`PinnedRecipe`] cannot do.
+pub fn pinned_hash(pinned: &PinnedRecipe) -> Result<String, ActionError> {
+    let value =
+        serde_json::to_value(pinned).map_err(|_| error(ActionErrorCode::Integrity, WO_REFUSED))?;
+    let hash = CanonicalHash::for_canonical_value(
+        "industry.pinned",
+        1,
+        &value,
+        MAX_ACTION_PARAMETER_BYTES,
+    )
+    .map_err(|_| error(ActionErrorCode::Integrity, WO_REFUSED))?;
+    Ok(hash.to_hex().chars().take(32).collect())
+}
+
+/// The published catalog, reduced to [`CatalogEntry`] rows in key order.
+///
+/// Deterministic: the authority answers `(pack, version, id)` order and this
+/// sorts on the rendered key anyway, so two walks of one unchanged world produce
+/// the identical vector — which is what makes the offer's cache and its
+/// byte-identical projections true rather than hopeful.
+#[must_use]
+pub fn catalog_entries(
+    recipes: &dyn crate::workorder::RecipeAuthority,
+    world: &World,
+) -> Vec<CatalogEntry> {
+    let mut out: Vec<CatalogEntry> = recipes
+        .catalog(world)
+        .into_iter()
+        .filter_map(|(reference, pinned)| {
+            Some(CatalogEntry {
+                key: recipe_key(&reference),
+                hash: pinned_hash(&pinned).ok()?,
+                requires: pinned.requires().clone(),
+            })
+        })
+        .collect();
+    out.sort_by(|left, right| left.key.cmp(&right.key));
+    out.dedup_by(|left, right| left.key == right.key);
+    out
+}
+
+/// The book key one recipe reference is spelled under.
+#[must_use]
+pub fn recipe_key(reference: &RecipeRef) -> String {
+    format!(
+        "{}/{}/{}",
+        reference.pack().as_str(),
+        reference.version(),
+        reference.id().as_str()
+    )
+}
+
+/// **The facilities this actor may draft at right now**: staff, the owner, or a
+/// principal the actor `acts_for` — `commands.rs`'s own predicate, minus the
+/// quarantined ones, bounded at [`MAX_WO_OFFER_FACILITIES`].
+///
+/// An empty answer is what makes the offer disappear, so a stranger sees exactly
+/// what an actor looking at a facility that does not exist sees.
+#[must_use]
+pub fn draftable_facilities(
+    engine: &Engine,
+    actor: ObjId,
+    staff: bool,
+) -> Vec<crate::facility::FacilityRecord> {
+    let Some(store) = engine.world.module_state::<crate::store::IndustryStore>() else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for facility in store.facilities() {
+        if out.len() >= MAX_WO_OFFER_FACILITIES {
+            break;
+        }
+        // R4: a facility whose capacity book was lost authorizes nobody — the
+        // command's refusal, in the shape the offer can express it.
+        if store.is_facility_quarantined(facility.object()) {
+            continue;
+        }
+        if !(staff || mush_economy::acts_for(&engine.world, actor, facility.owner())) {
+            continue;
+        }
+        out.push(facility.clone());
+    }
+    out
+}
+
+/// Build the four books for one drafter, from the facilities they may draft at
+/// and the hashed catalog.
+///
+/// The recipe book is scoped to what those facilities can actually run, sorted,
+/// and cut at [`MAX_OFFERED_RECIPES`] or [`MAX_WO_OFFER_BOOK_BYTES`], whichever
+/// bites first. A recipe outside the cut is undraftable and refuses with the
+/// byte-identical `WO_REFUSED`; [`WoOfferBooks::truncated`] and the log line the
+/// offer emits are how an operator learns that is why.
+#[must_use]
+pub fn wo_offer_books(
+    engine: &Engine,
+    actor: ObjId,
+    facilities: &[crate::facility::FacilityRecord],
+    catalog: &[CatalogEntry],
+) -> WoOfferBooks {
+    let mut books = WoOfferBooks::default();
+    for facility in facilities {
+        books.facilities.insert(
+            facility.object().0.to_string(),
+            json!({
+                "slots": facility.maximum_slots(),
+                "capacity_revision": facility.capacity_revision(),
+                "policy_revision": facility.policy_revision(),
+                "capabilities": facility
+                    .capabilities()
+                    .iter()
+                    .map(CanonicalId::as_str)
+                    .collect::<Vec<_>>(),
+            }),
+        );
+    }
+    books.endpoints = mush_inventory::live_endpoints(&engine.world, actor)
+        .into_iter()
+        .take(MAX_WO_OFFER_ENDPOINTS)
+        .map(|vault| vault.0)
+        .collect();
+    books.accounts = drafter_accounts(&engine.world, actor);
+    let mut bytes = 0_usize;
+    for entry in catalog {
+        if !facilities
+            .iter()
+            .any(|facility| facility.offers(&entry.requires))
+        {
+            continue;
+        }
+        if books.recipes.len() >= MAX_OFFERED_RECIPES {
+            books.truncated = true;
+            break;
+        }
+        // The row's own weight, quotes and separators included — cheap, and it
+        // bounds the book on the axis the offer's canonical limit cares about.
+        let weight = entry.key.len() + entry.hash.len() + 6;
+        if bytes + weight > MAX_WO_OFFER_BOOK_BYTES {
+            books.truncated = true;
+            break;
+        }
+        bytes += weight;
+        books
+            .recipes
+            .insert(entry.key.clone(), json!(entry.hash.clone()));
+    }
+    books
+}
+
+/// The drafter's **own** active accounts — the set `money::check_wo_accounts`
+/// will accept as a budget, since a work order's hold is a reservation on the
+/// requester's own account, staff included.
+#[must_use]
+fn drafter_accounts(world: &World, actor: ObjId) -> Vec<u64> {
+    let owner = PrincipalId::Object(actor);
+    let Some(store) = world.module_state::<mush_economy::EconomyStore>() else {
+        return Vec::new();
+    };
+    let mut out: Vec<u64> = Vec::new();
+    for account in store.snapshot().accounts() {
+        if out.len() >= MAX_WO_OFFER_ACCOUNTS {
+            break;
+        }
+        if account.owner == owner && matches!(account.status, mush_economy::AccountStatus::Active) {
+            out.push(account.id.0);
+        }
+    }
+    out.sort_unstable();
+    out
+}
+
+/// **The draft's structural gate** — `file()`'s shape, for the facility instead
+/// of the issuer: re-derive the drafter's authority from the offer that produced
+/// this invocation rather than from the parameters beside it.
+///
+/// A `prepare_authoritative` provider gets no world, so it cannot ask `acts_for`
+/// anything. What it can do is refuse a facility, a revision pair or a recipe the
+/// projection that minted this offer did not publish — and a submitter cannot
+/// reach those, because `merge_parameters` refuses a supplied key that collides
+/// with a fixed one. Every refusal is the byte-identical `WO_REFUSED`.
+fn wo_draft_authorized(
+    parameters: &serde_json::Map<String, Value>,
+    actor: ObjId,
+    facility: ObjId,
+    facility_slots: u32,
+    capacity_revision: u64,
+    policy_revision: u64,
+    recipe: &RecipeRef,
+) -> Result<(), ActionError> {
+    let refused = || error(ActionErrorCode::Unauthorized, WO_REFUSED);
+    // The offer was projected to *this* actor: a replayed invocation cannot carry
+    // one drafter's books under another drafter's name.
+    let drafter = parameters
+        .get(WO_DRAFTER)
+        .and_then(Value::as_u64)
+        .and_then(|id| u32::try_from(id).ok())
+        .map(ObjId);
+    if drafter != Some(actor) {
+        return Err(refused());
+    }
+    // Staff may draft at any facility by id, exactly as they may contest any
+    // claim by id. Their book is a convenience bounded at
+    // `MAX_WO_OFFER_FACILITIES`, never the whole of their authority.
+    if parameters
+        .get(WO_DRAFT_STAFF)
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        return Ok(());
+    }
+    let row = parameters
+        .get(WO_FACILITIES)
+        .and_then(Value::as_object)
+        .and_then(|book| book.get(&facility.0.to_string()))
+        .and_then(Value::as_object)
+        .ok_or_else(refused)?;
+    // The pinned staleness stamps are the record's, not the client's: an offer
+    // route could otherwise pin a 1-slot facility as an 8-slot one, or pin
+    // revisions that never existed so the submit's drift check could not fire.
+    let agrees = row.get("slots").and_then(Value::as_u64) == Some(u64::from(facility_slots))
+        && row.get("capacity_revision").and_then(Value::as_u64) == Some(capacity_revision)
+        && row.get("policy_revision").and_then(Value::as_u64) == Some(policy_revision);
+    if !agrees {
+        return Err(refused());
+    }
+    if !parameters
+        .get(WO_RECIPES)
+        .and_then(Value::as_object)
+        .is_some_and(|book| book.contains_key(&recipe_key(recipe)))
+    {
+        return Err(refused());
+    }
+    Ok(())
+}
+
 impl IndustryProvider {
     fn parameters<'i>(
         &self,
@@ -957,6 +1292,50 @@ impl IndustryProvider {
                 "industry parameters must be an object",
             )
         })
+    }
+
+    /// The hashed catalog and the revision it was walked at, from the cache when
+    /// no pack has been published since.
+    ///
+    /// A poisoned lock is not a crash on the one task that must never panic: the
+    /// walk simply happens again, which is slower and just as correct.
+    fn catalog_book(&self, world: &World) -> (u64, std::sync::Arc<Vec<CatalogEntry>>) {
+        let Some(recipes) = self.recipes.as_ref() else {
+            return (0, std::sync::Arc::new(Vec::new()));
+        };
+        let revision = recipes.catalog_revision(world);
+        if let Ok(guard) = self.catalog.lock()
+            && let Some((cached, book)) = guard.as_ref()
+            && *cached == revision
+        {
+            return (revision, std::sync::Arc::clone(book));
+        }
+        let book = std::sync::Arc::new(catalog_entries(recipes.as_ref(), world));
+        if let Ok(mut guard) = self.catalog.lock() {
+            *guard = Some((revision, std::sync::Arc::clone(&book)));
+        }
+        (revision, book)
+    }
+
+    /// Say once per pack publish that a drafter's recipe book was cut short —
+    /// the operator-facing half of the truncation, which no player sees.
+    fn warn_truncated(&self, revision: u64, actor: ObjId, offered: usize) {
+        let Ok(mut guard) = self.truncation_warned.lock() else {
+            return;
+        };
+        if *guard == Some(revision) {
+            return;
+        }
+        *guard = Some(revision);
+        tracing::warn!(
+            target: "industry",
+            actor = actor.0,
+            offered,
+            cap = MAX_OFFERED_RECIPES,
+            bytes = MAX_WO_OFFER_BOOK_BYTES,
+            "industry: a work-order draft offer's recipe book was truncated; \
+             recipes past the cut cannot be drafted"
+        );
     }
 }
 
@@ -986,6 +1365,9 @@ impl ActionProvider for IndustryProvider {
         // The `ClaimFile` offer's server-authored authority list, published below
         // as a fixed parameter so `prepare_authoritative` can re-check it.
         let mut claim_issuers: Vec<String> = Vec::new();
+        // The `WoDraft` offer's server-authored books, published the same way and
+        // for the same reason.
+        let mut wo_books: Option<WoOfferBooks> = None;
         match self.verb {
             IndustryVerb::DepositOpen => {
                 // Opening an ore body is a staff act: it credits a pool from
@@ -1154,6 +1536,45 @@ impl ActionProvider for IndustryProvider {
                 parameters.push(text("deposit", 32)?);
             }
             IndustryVerb::WoDraft => {
+                // ---- The facility gate, layer 2: the offer itself (WS02-S4) ----
+                //
+                // The cheap path FIRST, and it is not a style preference:
+                // `project_legal_actions` runs this on every projection pass,
+                // including every authoritative command submission and every
+                // decision capture. An actor with no facility to draft at gets
+                // **no offer at all** and no book is ever built for them.
+                //
+                // `facility` stays an integer: a `Choice` must be a string, and
+                // the command stages an integer, so making it a choice would
+                // refuse every `@wo/draft` on the parameter schema.
+                let facilities = draftable_facilities(engine, actor, staff);
+                if facilities.is_empty() {
+                    return Ok(None);
+                }
+                // C2/D2 (m2): the per-requester cap, read off the RAM index the
+                // store maintains on open/terminate rather than walked here —
+                // the command's own bounded scan stays the authority, this is
+                // the projection-cheap read of the same number.
+                let open = engine
+                    .world
+                    .module_state::<crate::store::IndustryStore>()
+                    .map_or(0, |store| {
+                        store.open_work_orders(&PrincipalId::Object(actor))
+                    });
+                if open >= crate::workorder::MAX_WORK_ORDERS_PER_REQUESTER {
+                    return Ok(None);
+                }
+                let (revision, catalog) = self.catalog_book(&engine.world);
+                let books = wo_offer_books(engine, actor, &facilities, &catalog);
+                if books.recipes.is_empty() {
+                    // Nothing this actor's facilities can run: no offer, for the
+                    // same fog reason an unauthorized facility gets none.
+                    return Ok(None);
+                }
+                if books.truncated {
+                    self.warn_truncated(revision, actor, books.recipes.len());
+                }
+                wo_books = Some(books);
                 // The draft command (world available) resolves the recipe from the
                 // authority and pins the facility policy, then submits these as
                 // parameters; the provider re-checks the shapes and writes the
@@ -1279,6 +1700,26 @@ impl ActionProvider for IndustryProvider {
             map.insert(CLAIM_FILED_BY.to_owned(), json!(actor.0));
             map.insert(CLAIM_FILE_STAFF.to_owned(), json!(staff));
             map.insert(CLAIM_ISSUERS.to_owned(), json!(claim_issuers));
+        }
+        // ---- The facility gate, layer 3: the structural half (WS02-S4) ----
+        //
+        // Same trick, same reason: `merge_parameters` refuses a submitted key
+        // that collides with a fixed one, so these five reach `wo_draft` exactly
+        // as this projection wrote them and a direct offer submission cannot
+        // forge itself a facility, a revision pair or a recipe it was not
+        // offered. Deterministic given an unchanged world: the books are sorted
+        // maps over sorted sources, so two projections in one IC second produce
+        // byte-identical fixed parameters — and therefore the identical offer id.
+        if let Some(books) = wo_books
+            && let Some(map) = fixed.as_object_mut()
+        {
+            map.insert(WO_DRAFTER.to_owned(), json!(actor.0));
+            map.insert(WO_DRAFT_STAFF.to_owned(), json!(staff));
+            map.insert(WO_FACILITIES.to_owned(), Value::Object(books.facilities));
+            map.insert(WO_ENDPOINTS.to_owned(), json!(books.endpoints));
+            map.insert(WO_ACCOUNTS.to_owned(), json!(books.accounts));
+            map.insert(WO_RECIPES.to_owned(), Value::Object(books.recipes));
+            map.insert(WO_RECIPES_TRUNCATED.to_owned(), json!(books.truncated));
         }
         Ok(Some(mush_core::ProviderOfferDraft {
             // The IC stamp rides the offer's FIXED parameters, so preparation
@@ -1851,6 +2292,15 @@ impl IndustryProvider {
             .map_err(|_| error(ActionErrorCode::InvalidRequest, WO_REFUSED))?;
         let recipe = RecipeRef::new(pack, version, recipe_id, digest)
             .map_err(|source| error(ActionErrorCode::InvalidRequest, source.to_string()))?;
+        wo_draft_authorized(
+            parameters,
+            actor,
+            facility,
+            facility_slots,
+            capacity_revision,
+            policy_revision,
+            &recipe,
+        )?;
         let id = derive_work_order_id(invocation.request(), 0).map_err(|source| refuse(&source))?;
         let order = WorkOrder::draft(
             id,
@@ -2759,6 +3209,9 @@ pub fn register(
                 action,
                 outcome: outcome.clone(),
                 families: families.clone(),
+                recipes: recipes.clone(),
+                catalog: std::sync::Mutex::new(None),
+                truncation_warned: std::sync::Mutex::new(None),
             },
         )?;
     }
