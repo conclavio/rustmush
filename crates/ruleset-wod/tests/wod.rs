@@ -5,7 +5,7 @@
 //! Dice are deterministic: the ruleset is built with a fixed RNG seed and the
 //! test replays the same `ChaCha8Rng` stream to predict every roll.
 
-use mush_core::{GOD, ObjId};
+use mush_core::{GOD, ObjId, ObjKind};
 use mush_dice::owod20::{Owod20Opts, Owod20Outcome, Owod20Pool};
 use mush_jobs::{JobStatus, JobsModule, get_job};
 use mush_ruleset::schema::{FieldDef, TrackSize};
@@ -250,6 +250,102 @@ fn contested_roll_resolves_both_sides() {
         std::cmp::Ordering::Equal => "deadlock",
     };
     assert!(tw.seen_by(&ev, nick).iter().any(|l| l.contains(winner)));
+}
+
+/// The contested-roll oracle, the twin of the Shadowrun one.
+/// `+roll ... contested <target>=<pool>` resolved any matched target's sheet
+/// with no gate, so the `#dbref` and `*name` spellings walked the database for
+/// who exists and where they stand, and the pool spelling then read them one
+/// trait at a time off the distinct per-term refusal — naming a Background
+/// answered whether they had it. All of it now gives one sentence, and the
+/// gate runs before `prepare(mine)`, the call that spends Willpower.
+#[test]
+fn contested_refusals_are_one_sentence_and_spend_no_willpower() {
+    let (mut tw, nick) = world(S);
+    nick_sheet(&mut tw);
+    set(&mut tw, "@sheet/set Nick/willpower=3");
+    set(&mut tw, "@sheet/set Nick/willpower_temp=3");
+    // Bob has a sheet that would resolve — and stands in another room.
+    let bob = tw.spawn_player("Bob");
+    set(&mut tw, "@sheet/set Bob/dexterity=3");
+    set(&mut tw, "@sheet/set Bob/brawl=2");
+    let vault = tw
+        .world_mut()
+        .create(ObjKind::Room, "Vault", GOD, None)
+        .expect("a room off-stage");
+    tw.world_mut()
+        .move_to(bob, vault)
+        .expect("Bob walks off-stage");
+    // Wisp is in the room with Nick, and holds no Backgrounds at all.
+    let _wisp = tw.spawn_player("Wisp");
+    set(&mut tw, "@sheet/set Wisp/strength=2");
+
+    let wp_before = read_sheet(&tw, nick).number("willpower_temp");
+    let lines = [
+        // Out of reach, by the dbref spelling that resolves globally.
+        format!("+roll strength+brawl contested #{}=dexterity+brawl", bob.0),
+        // Out of reach, by the `*name` spelling, which also resolves globally.
+        "+roll strength+brawl contested *Bob=dexterity+brawl".to_string(),
+        // A dbref that names nothing at all.
+        "+roll strength+brawl contested #99999=dexterity+brawl".to_string(),
+        // In the room, but with no rating in the named Background.
+        "+roll strength+brawl contested Wisp=strength+Resources".to_string(),
+        // In the room, and the named term is not a trait on any sheet.
+        "+roll strength+brawl contested Wisp=strength+zzzznotatrait".to_string(),
+    ];
+    let refusals: Vec<Vec<String>> = lines
+        .iter()
+        .map(|line| {
+            let ev = tw.run(nick, line);
+            tw.seen_by(&ev, nick)
+        })
+        .collect();
+    assert!(
+        refusals[0]
+            .iter()
+            .any(|l| l.contains("You can't contest a roll against that target.")),
+        "{:?}",
+        refusals[0]
+    );
+    for (i, seen) in refusals.iter().enumerate() {
+        assert_eq!(
+            seen, &refusals[0],
+            "refusal {i} ({}) must be byte-identical to the first",
+            lines[i]
+        );
+        assert!(
+            roll_lines(seen).is_empty(),
+            "a refused contest rolls nothing: {seen:?}"
+        );
+    }
+    assert_eq!(
+        read_sheet(&tw, nick).number("willpower_temp"),
+        wp_before,
+        "a refused contest must not spend Willpower"
+    );
+
+    // The gate is locality-or-authority, not a ban: an in-room target still
+    // resolves and the room still sees both pools.
+    set(&mut tw, "@sheet/set Wisp/dexterity=3");
+    set(&mut tw, "@sheet/set Wisp/brawl=2");
+    let ev = tw.run(nick, "+roll strength+brawl contested Wisp=dexterity+brawl");
+    let seen = tw.seen_by(&ev, nick);
+    assert!(
+        roll_lines(&seen)
+            .iter()
+            .any(|l| l.starts_with("roll  Nick  ") && l.contains("  vs  Wisp  ")),
+        "{seen:?}"
+    );
+    // And staff holding EXAMINE_ALL still reach the off-stage NPC by dbref.
+    let ev = tw.run(
+        GOD,
+        &format!("+roll 4 contested #{}=dexterity+brawl", bob.0),
+    );
+    let seen = tw.seen_by(&ev, GOD);
+    assert!(
+        roll_lines(&seen).iter().any(|l| l.contains("  vs  Bob  ")),
+        "{seen:?}"
+    );
 }
 
 #[test]

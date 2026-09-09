@@ -5,7 +5,7 @@
 //! Dice are deterministic: the ruleset is built with a fixed RNG seed and the
 //! test replays the same `ChaCha8Rng` stream to predict every roll.
 
-use mush_core::{GOD, ObjId};
+use mush_core::{GOD, ObjId, ObjKind};
 use mush_dice::sr5::{Sr5Opts, Sr5Outcome, Sr5Pool, Sr5Result};
 use mush_jobs::{JobStatus, JobsModule, get_job};
 use mush_ruleset::{ApprovalState, SheetDoc};
@@ -374,6 +374,111 @@ fn contested_edge_is_spent_once_and_never_on_a_failed_roll() {
         read_sheet(&tw, nick).number(schema::EDGE_CURRENT),
         Some(0),
         "a successful contested /edge spends exactly one Edge"
+    );
+}
+
+/// The contested-roll oracle. `+roll ... contested <target>=<pool>` resolved
+/// any matched target's sheet with no gate at all — the rest of the crate
+/// checks `perm::can_examine` before it reads another character (`+sheet`,
+/// `+karma`, `+condition`) — so the `#dbref` and `*name` spellings walked the
+/// database for who exists and where they stand, and the pool spelling then
+/// read them one rating at a time off the distinct per-term refusal. All of
+/// it now answers with one sentence, and none of it costs Edge.
+#[test]
+fn contested_refusals_are_one_sentence_and_spend_no_edge() {
+    let (mut tw, nick) = world(S);
+    samurai(&mut tw);
+    // Vlad has a sheet that would resolve — and stands in another room.
+    let vlad = tw.spawn_player("Vlad");
+    set(&mut tw, "@sheet/set Vlad/reaction=4");
+    set(&mut tw, "@sheet/set Vlad/intuition=3");
+    let vault = tw
+        .world_mut()
+        .create(ObjKind::Room, "Vault", GOD, None)
+        .expect("a room off-stage");
+    tw.world_mut()
+        .move_to(vlad, vault)
+        .expect("Vlad walks off-stage");
+    // Wisp is in the room with Nick, and has no Alchemy (which never defaults).
+    let _wisp = tw.spawn_player("Wisp");
+    set(&mut tw, "@sheet/set Wisp/agility=3");
+
+    let edge_before = read_sheet(&tw, nick).number(schema::EDGE_CURRENT);
+    let lines = [
+        // Out of reach, by the dbref spelling that resolves globally.
+        format!(
+            "+roll/edge agility+pistols contested #{}=reaction+intuition",
+            vlad.0
+        ),
+        // Out of reach, by the `*name` spelling, which also resolves globally.
+        "+roll/edge agility+pistols contested *Vlad=reaction+intuition".to_string(),
+        // A dbref that names nothing at all.
+        "+roll/edge agility+pistols contested #99999=reaction+intuition".to_string(),
+        // In the room, but with no rating in the named non-defaultable skill.
+        "+roll/edge agility+pistols contested Wisp=agility+alchemy".to_string(),
+        // In the room, and the named term is not a trait on any sheet.
+        "+roll/edge agility+pistols contested Wisp=bogusattr+bogusskill".to_string(),
+    ];
+    let refusals: Vec<Vec<String>> = lines
+        .iter()
+        .map(|line| {
+            let ev = tw.run(nick, line);
+            tw.seen_by(&ev, nick)
+        })
+        .collect();
+    assert!(
+        refusals[0]
+            .iter()
+            .any(|l| l.contains("You can't contest a roll against that target.")),
+        "{:?}",
+        refusals[0]
+    );
+    for (i, seen) in refusals.iter().enumerate() {
+        assert_eq!(
+            seen, &refusals[0],
+            "refusal {i} ({}) must be byte-identical to the first",
+            lines[i]
+        );
+        assert!(
+            roll_lines(seen).is_empty(),
+            "a refused contest rolls nothing: {seen:?}"
+        );
+    }
+    assert_eq!(
+        read_sheet(&tw, nick).number(schema::EDGE_CURRENT),
+        edge_before,
+        "a refused contest must not spend Edge"
+    );
+
+    // The gate is locality-or-authority, not a ban: an in-room target still
+    // resolves and the room still sees both pools.
+    set(&mut tw, "@sheet/set Wisp/reaction=4");
+    set(&mut tw, "@sheet/set Wisp/intuition=3");
+    let ev = tw.run(
+        nick,
+        "+roll agility+pistols contested Wisp=reaction+intuition",
+    );
+    assert!(
+        tw.seen_by(&ev, nick).iter().any(|l| {
+            l.starts_with("roll  Nick  ")
+                && l.contains("  vs  Wisp  ")
+                && l.contains("  => ")
+                && (l.contains("wins") || l.contains("tie"))
+        }),
+        "{:?}",
+        tw.seen_by(&ev, nick)
+    );
+    // And staff holding EXAMINE_ALL still reach the off-stage NPC by dbref.
+    let ev = tw.run(
+        GOD,
+        &format!("+roll 4 contested #{}=reaction+intuition", vlad.0),
+    );
+    assert!(
+        tw.seen_by(&ev, GOD)
+            .iter()
+            .any(|l| l.starts_with("roll  ") && l.contains("  vs  Vlad  ")),
+        "{:?}",
+        tw.seen_by(&ev, GOD)
     );
 }
 

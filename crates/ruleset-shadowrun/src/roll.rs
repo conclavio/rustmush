@@ -16,7 +16,7 @@
 
 use std::sync::Arc;
 
-use mush_core::{CmdError, Ctx, ObjId, Role, match_object, perm};
+use mush_core::{CmdError, Ctx, ObjId, Role, is_nearby, match_object, perm};
 use mush_dice::RollCtx;
 use mush_dice::pool::PoolMechanic;
 use mush_dice::sr5::{Sr5Opts, Sr5Outcome, Sr5Pool, contest};
@@ -465,6 +465,15 @@ pub(crate) fn roll_labeled(
     Ok(outcome)
 }
 
+/// The single refusal every contested roll gives for a target it will not
+/// read. One sentence for all of it: a target out of reach, a dbref that
+/// names nothing, a target whose sheet has no rating in the named term, and a
+/// term that is not a trait at all. Distinct wording on any of those turns
+/// `+roll ... contested` into an oracle — walk the dbrefs to learn who exists
+/// and where they are, then walk the terms to read their sheet one rating at
+/// a time, all without ever touching them.
+const CONTESTED_REFUSED: &str = "You can't contest a roll against that target.";
+
 /// A contested roll: the actor and a target each roll, then compare net hits.
 fn contested_roll(
     cmd: &Sr5Cmd,
@@ -474,12 +483,27 @@ fn contested_roll(
     their_expr: &str,
 ) -> Result<(), CmdError> {
     let actor = ctx.actor;
-    let target = match_object(ctx.w, actor, target_spec)?;
+    let target =
+        match_object(ctx.w, actor, target_spec).map_err(|_| CmdError::msg(CONTESTED_REFUSED))?;
+    // Rolling against a character reads their sheet, so it is an examine, and
+    // the rest of the crate already demands one (`+condition`, `+karma`,
+    // `+sheet`). `match_object` stays global — `#123` and `*name` resolve
+    // anywhere — so the test lands here: reach (`is_nearby`), or the examine
+    // right itself (its controller, or staff holding `EXAMINE_ALL`, which is
+    // how an ST rolls against an off-stage NPC).
+    if target != actor
+        && !perm::can_examine(ctx.w, actor, target)
+        && !is_nearby(ctx.w, actor, target)
+    {
+        return Err(CmdError::msg(CONTESTED_REFUSED));
+    }
     let priv_roll = ctx.switches.has("priv");
 
-    // Validate both pools before the actor's Edge is spent.
+    // Validate both pools before the actor's Edge is spent. The actor's own
+    // failure names the trait — it is their sheet. The target's never does.
     let mine_resolved = resolve_for(cmd, ctx, actor, &args.pool_expr).map_err(CmdError::msg)?;
-    let their_resolved = resolve_for(cmd, ctx, target, their_expr).map_err(CmdError::msg)?;
+    let their_resolved =
+        resolve_for(cmd, ctx, target, their_expr).map_err(|_| CmdError::msg(CONTESTED_REFUSED))?;
 
     // Prepare the *opponent's* pool first (it never spends Edge). `prepare` for
     // the actor performs the Edge deduction as a side effect, so it must run
@@ -498,7 +522,8 @@ fn contested_roll(
         false,
         false,
         false,
-    )?;
+    )
+    .map_err(|_| CmdError::msg(CONTESTED_REFUSED))?;
     let mine = prepare(
         cmd,
         ctx,
