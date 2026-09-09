@@ -44,7 +44,7 @@ use mushd::quarantine::QuarantineSpool;
 use mushd::ssh_bridge::{SshBridge, start_listener};
 use mushd::staff::{StaffQueue, register_server_commands_with_cap};
 use mushd::web_bridge::WebBridge;
-use mushd::world_task::{self, ServerDeps};
+use mushd::world_task::{self, ServerDeps, WorldOutcome};
 use mushd::{repl, unix_now_s};
 
 /// How long the shutdown sequence waits for the writer to drain before
@@ -61,20 +61,55 @@ const WRITER_DRAIN_TIMEOUT: Duration = Duration::from_secs(15);
 const SHUTDOWN_STORE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// An ordinary shutdown snapshot is safe only after the world task itself
-/// reached a clean exit, every queued write has a terminal result, and no
-/// component observed an integrity breach.
+/// reached a clean exit, every queued write has a terminal result, no
+/// component observed an integrity breach, and the world's own join handle
+/// yielded an ordinary ending.
 ///
 /// The world-exit term is the one that closes the panic hole: a world task that
 /// unwound mid-command still drops its job sender, so the writer drains
 /// perfectly and the latch stays clear — and the old two-term gate would then
 /// promote whatever RAM had reached the store to the on-disk truth. A world
 /// that did not finish is not a world worth snapshotting.
+///
+/// The fault term is deliberately *not* folded into it, because the two facts
+/// are separately derived and fail in different directions. `world_exited_cleanly`
+/// is a flag the world loop publishes as its own last statement; `world_faulted`
+/// is what the join handle yielded — a caught [`WorldOutcome::Faulted`] or a real
+/// task panic across an `.await`, where no statement of the loop ever ran. Either
+/// one alone refuses the snapshot, so neither may later be dropped as redundant.
 const fn shutdown_bgsave_allowed(
     world_exited_cleanly: bool,
     writer_drained: bool,
     integrity_latched: bool,
+    world_faulted: bool,
 ) -> bool {
-    world_exited_cleanly && writer_drained && !integrity_latched
+    world_exited_cleanly && writer_drained && !integrity_latched && !world_faulted
+}
+
+/// Classify how the world task ended: `None` is an ordinary exit, `Some(detail)`
+/// is a fault this process must not survive quietly.
+///
+/// `@shutdown`, Ctrl-C and SIGTERM all end the loop through one of its own
+/// breaks and land on `Clean`. Anything else means the world stopped without
+/// finishing: [`WorldOutcome::Faulted`] is the fault the world task's own
+/// dispatch boundary caught and froze on, and a `JoinError` is the net for the
+/// panics that boundary cannot cover — one across an `.await`, or a task
+/// cancelled out from under this function.
+///
+/// Before this classification every one of those endings was `let _ = …`, so a
+/// panicked world was indistinguishable from an in-game `@shutdown`: `mushd`
+/// logged "world task ended on its own" at INFO and returned
+/// [`ExitCode::SUCCESS`], leaving a supervisor with nothing to restart and the
+/// test harness with no fault signal at all.
+fn world_fault_detail(result: Result<WorldOutcome, tokio::task::JoinError>) -> Option<String> {
+    match result {
+        Ok(WorldOutcome::Clean) => None,
+        Ok(WorldOutcome::Faulted(fault)) => {
+            Some(format!("caught at {}: {}", fault.site, fault.detail.trim()))
+        }
+        Err(e) if e.is_panic() => Some(format!("panicked outside its dispatch boundary: {e}")),
+        Err(e) => Some(format!("ended without a value: {e}")),
+    }
 }
 
 fn main() -> ExitCode {
@@ -593,7 +628,11 @@ async fn serve(config: Config, mut quarantine_spool: QuarantineSpool) -> Result<
     );
 
     tracing::info!(ssh = %listener.addr(), web = %web_listen, "up; press Ctrl-C to shut down");
-    tokio::select! {
+    // Set when the world task did NOT walk out of its own state machine. Every
+    // arm below binds the join result rather than dropping it, because all
+    // three can carry a fault: a world can panic while the operator's Ctrl-C
+    // shutdown is already in flight just as easily as it can die on its own.
+    let world_fault: Option<String> = tokio::select! {
         _ = tokio::signal::ctrl_c() => {
             tracing::info!("Ctrl-C: shutting down");
             // Stop accepting first (PLAN shutdown order), then announce +
@@ -601,7 +640,7 @@ async fn serve(config: Config, mut quarantine_spool: QuarantineSpool) -> Result<
             // to every connection before exiting.
             listener.stop_accepting();
             world.inbound(Inbound::Control(ControlMsg::Shutdown)).await;
-            let _ = world_join.await;
+            world_fault_detail(world_join.await)
         }
         // systemd stop / `kill <pid>` on the production box (PLAN gap
         // closures: the shutdown sequence "also SIGTERM"). Never resolves
@@ -610,14 +649,28 @@ async fn serve(config: Config, mut quarantine_spool: QuarantineSpool) -> Result<
             tracing::info!("SIGTERM: shutting down");
             listener.stop_accepting();
             world.inbound(Inbound::Control(ControlMsg::Shutdown)).await;
-            let _ = world_join.await;
+            world_fault_detail(world_join.await)
         }
-        // The world task can also end itself (in-game `@shutdown`): it has
-        // already stepped ControlMsg::Shutdown and announced.
-        _ = &mut world_join => {
-            tracing::info!("world task ended on its own");
+        // The world task can also end itself — an in-game `@shutdown` (it has
+        // already stepped ControlMsg::Shutdown and announced), or a fault that
+        // stopped the loop mid-command. The two are not the same event and no
+        // longer log the same way.
+        joined = &mut world_join => {
+            let fault = world_fault_detail(joined);
+            if fault.is_none() {
+                tracing::info!("world task ended on its own");
+            }
             listener.stop_accepting();
+            fault
         }
+    };
+    // Said once, before the shutdown tail, so the fault is on the record ahead
+    // of every decision the tail makes about it.
+    if let Some(detail) = &world_fault {
+        tracing::error!(
+            %detail,
+            "world task faulted; shutting down and exiting on failure"
+        );
     }
     // Stop the web ingress (graceful: in-flight requests finish; WS conns
     // saw the shutdown announce before the world task exited).
@@ -663,12 +716,25 @@ async fn serve(config: Config, mut quarantine_spool: QuarantineSpool) -> Result<
     }
     let integrity_latched = persistence_integrity.is_latched();
     let world_exited_cleanly = world_exit.is_clean();
-    if shutdown_bgsave_allowed(world_exited_cleanly, writer_drained, integrity_latched) {
+    if shutdown_bgsave_allowed(
+        world_exited_cleanly,
+        writer_drained,
+        integrity_latched,
+        world_fault.is_some(),
+    ) {
         match tokio::time::timeout(SHUTDOWN_STORE_TIMEOUT, store.bgsave()).await {
             Ok(Ok(())) => tracing::info!("shutdown BGSAVE triggered"),
             Ok(Err(e)) => tracing::error!(error = %e, "shutdown BGSAVE failed"),
             Err(_) => tracing::error!("shutdown BGSAVE timed out (store down?)"),
         }
+    } else if let Some(detail) = &world_fault {
+        // First, because it is the most specific: it names WHY the world did
+        // not finish. The clean-exit branch below would otherwise swallow it.
+        tracing::error!(
+            %detail,
+            "shutdown BGSAVE skipped: the world task faulted, so its RAM is a torn \
+             mid-command state and a snapshot would canonize it"
+        );
     } else if !world_exited_cleanly {
         tracing::error!(
             "shutdown BGSAVE skipped: the world task did not reach a clean exit; its RAM never \
@@ -695,6 +761,13 @@ async fn serve(config: Config, mut quarantine_spool: QuarantineSpool) -> Result<
     // Give transports a beat to flush the shutdown notice, then exit;
     // dropping the runtime tears the listener and connections down.
     tokio::time::sleep(Duration::from_millis(200)).await;
+    // Only NOW, with the writer drained, the store drained and closed and the
+    // transports flushed, is the failure raised. An exit code is never worth
+    // bypassing a drain, and it is never raised by `process::exit`/`abort` from
+    // inside a catch handler. `main` maps this `Err` to `ExitCode::FAILURE`.
+    if let Some(detail) = world_fault {
+        return Err(format!("world task faulted: {detail}"));
+    }
     tracing::info!("mushd exiting at {}", unix_now_s());
     Ok(())
 }
@@ -732,23 +805,83 @@ fn banner(name: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::shutdown_bgsave_allowed;
+    use super::{WorldOutcome, shutdown_bgsave_allowed, world_fault_detail};
 
-    /// The full truth table of the three-term gate. Exactly one row may
+    /// The full truth table of the four-term gate. Exactly one row may
     /// snapshot; every row with an unclean world exit must refuse, including
     /// the one that otherwise looks perfect (drained writer, clear latch) —
     /// that row is the panicked world task, and it is the whole point of the
     /// world-exit term.
     #[test]
     fn shutdown_bgsave_requires_clean_drain_and_clear_integrity() {
-        assert!(shutdown_bgsave_allowed(true, true, false));
-        assert!(!shutdown_bgsave_allowed(true, true, true));
-        assert!(!shutdown_bgsave_allowed(true, false, false));
-        assert!(!shutdown_bgsave_allowed(true, false, true));
-        // Every unclean-world-exit row refuses, whatever the other two say.
-        assert!(!shutdown_bgsave_allowed(false, true, false));
-        assert!(!shutdown_bgsave_allowed(false, true, true));
-        assert!(!shutdown_bgsave_allowed(false, false, false));
-        assert!(!shutdown_bgsave_allowed(false, false, true));
+        assert!(shutdown_bgsave_allowed(true, true, false, false));
+        assert!(!shutdown_bgsave_allowed(true, true, true, false));
+        assert!(!shutdown_bgsave_allowed(true, false, false, false));
+        assert!(!shutdown_bgsave_allowed(true, false, true, false));
+        // Every unclean-world-exit row refuses, whatever the others say.
+        assert!(!shutdown_bgsave_allowed(false, true, false, false));
+        assert!(!shutdown_bgsave_allowed(false, true, true, false));
+        assert!(!shutdown_bgsave_allowed(false, false, false, false));
+        assert!(!shutdown_bgsave_allowed(false, false, true, false));
+    }
+
+    /// The two rows this step exists for, kept apart from the table above so
+    /// neither can be quietly folded into the other later.
+    ///
+    /// - The UNCAUGHT class: a panic across an `.await`, or one outside the
+    ///   world loop's guarded sites. The join handle carries the fault and
+    ///   nothing else does — the writer drained perfectly, no latch was set —
+    ///   and this is exactly how a torn mid-command world used to get
+    ///   snapshotted as the on-disk truth.
+    /// - The CAUGHT class: the world loop's own dispatch boundary caught the
+    ///   panic, froze persistence and stopped, so the latch is already set. The
+    ///   row is here to pin the interaction: both gates must refuse
+    ///   independently, so neither is later removed as redundant.
+    #[test]
+    fn a_faulted_world_refuses_the_snapshot_latch_or_no_latch() {
+        // Uncaught: drained, unlatched — and still refused.
+        assert!(!shutdown_bgsave_allowed(true, true, false, true));
+        assert!(!shutdown_bgsave_allowed(false, true, false, true));
+        // Caught: the integrity freeze already latched.
+        assert!(!shutdown_bgsave_allowed(true, true, true, true));
+        assert!(!shutdown_bgsave_allowed(false, true, true, true));
+    }
+
+    /// An ordinary ending is not a fault. This is the row that keeps a false
+    /// positive from restart-looping a live box: only a `Faulted` outcome or a
+    /// real `JoinError` sets the flag.
+    #[test]
+    fn a_clean_world_outcome_is_never_a_fault() {
+        assert_eq!(world_fault_detail(Ok(WorldOutcome::Clean)), None);
+    }
+
+    /// The caught class: the world loop's own boundary reports where and what.
+    #[test]
+    fn a_caught_fault_carries_its_site_and_payload() {
+        let detail = world_fault_detail(Ok(WorldOutcome::Faulted(mushd::world_task::WorldFault {
+            site: "engine.step",
+            detail: "the sky fell".to_owned(),
+        })))
+        .expect("a caught fault is a fault");
+        assert!(detail.contains("engine.step"), "{detail}");
+        assert!(detail.contains("the sky fell"), "{detail}");
+    }
+
+    /// The uncaught class, against a REAL `JoinError` rather than a stand-in:
+    /// a task that panics across the boundary the guarded sites cannot cover,
+    /// and a task cancelled out from under the join.
+    #[tokio::test]
+    async fn a_real_join_error_is_a_fault_panicked_or_cancelled() {
+        let panicked = tokio::spawn(async { panic!("across an await") })
+            .await
+            .expect_err("the task panicked");
+        let detail = world_fault_detail(Err(panicked)).expect("a panic is a fault");
+        assert!(detail.contains("outside its dispatch boundary"), "{detail}");
+
+        let handle = tokio::spawn(std::future::pending::<()>());
+        handle.abort();
+        let cancelled = handle.await.expect_err("the task was cancelled");
+        let detail = world_fault_detail(Err(cancelled)).expect("a cancellation is a fault");
+        assert!(detail.contains("without a value"), "{detail}");
     }
 }

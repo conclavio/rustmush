@@ -78,6 +78,13 @@ smol_str.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+# WS01-S7: `tests/world_fault.rs` runs the real `mushd` binary with ONE world
+# turn armed to panic, so it can prove the process exits non-zero and skips the
+# shutdown BGSAVE. Arming lives behind `mush-server`'s `fault-injection`
+# feature, and this `[dev-dependencies]` edge is the only thing that turns it on
+# for `cargo test -p mushd` — the normal dependency above stays featureless, so
+# no release build of `mushd` carries the seam.
+mush-server = { workspace = true, features = ["fault-injection"] }
 # start_paused tests (virtual clock) need tokio's test-util.
 tokio = { workspace = true, features = ["test-util"] }
 # Real SSH client for the full-stack loopback and e2e tests.
