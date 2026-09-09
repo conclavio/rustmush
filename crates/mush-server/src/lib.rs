@@ -697,6 +697,34 @@ struct ServerConnectionClaims {
 /// the request back with `Rejected { retryable: true }`.
 const MAX_CLAIM_REARMS: u8 = 3;
 
+/// How long one claim may sit in [`ClaimState::Retained`] before the reaper
+/// frees its custody outright.
+///
+/// Retention costs the gateway nothing — it publishes no disposition, so the
+/// gateway keeps its own replay copy — but it does cost the *server* a custody
+/// slot, and only [`ServerInputClaims::dispose`] returns one. Fill a
+/// connection's `MAX_IN_FLIGHT_GATEWAY_INPUTS_PER_CONNECTION` slots with
+/// retentions and that connection answers `Full` for the life of the boundary;
+/// this TTL is the floor under that.
+///
+/// The number is derived from the gateway's replay cadence, because a replay
+/// that re-arms a claim has to win the race against the reaper: a reaped claim
+/// the gateway replays returns as a *fresh* `New` admission with a fresh
+/// re-arm budget, so a reaper that fired early would be a loop rather than a
+/// bound. The gateway re-sends a held request only when it replays its whole
+/// input custody onto a fresh boundary, and the slowest heal it can take is
+/// roughly `EXIT_WAIT` (5 s) + `BACKOFF_CAP` (5 s) + `RECONNECT_TIMEOUT`
+/// (10 s) + `RESYNC_TIMEOUT` (10 s) ≈ 30 s — the same order as the gateway's
+/// own `CRASH_WINDOW`. This is **10×** that, so the reaper is the slow path.
+const RETAINED_CLAIM_TTL: Duration = Duration::from_secs(300);
+
+/// How often the retained-claim reaper wakes to scan for expired retentions.
+///
+/// A tenth of [`RETAINED_CLAIM_TTL`], so a reaped claim's real age is within
+/// 10% of the TTL. Each pass is one bounded scan of a table the admission cap
+/// already holds at `MAX_IN_FLIGHT_GATEWAY_INPUTS`.
+const RETAINED_CLAIM_REAP_INTERVAL: Duration = Duration::from_secs(30);
+
 /// How many read-only preflight lookups one handler may spend on a store that
 /// keeps answering transiently, and the wall-clock window they must fit in.
 ///
@@ -895,6 +923,63 @@ impl ServerInputClaims {
         true
     }
 
+    /// Free every claim that has been [`ClaimState::Retained`] for longer than
+    /// `ttl`, reporting the uids so one pass can be logged as one line.
+    ///
+    /// A reaped claim is answered with the same silence retention itself keeps:
+    /// no disposition at all. That is what makes the reap safe — the gateway
+    /// still holds its replay copy, so nothing is lost, and its next replay is
+    /// admitted as an ordinary `New` claim. What the reap buys back is the
+    /// custody slot, through [`ServerInputClaims::dispose`]'s saturating
+    /// accounting, so a connection that filled its budget with retentions is
+    /// not `Full` forever.
+    ///
+    /// `Active` claims are never touched: a handler still owns each one's
+    /// single disposition, and an entry taken out from under it would let a
+    /// replay of that uid spawn a second handler.
+    fn reap_retained(&mut self, ttl: Duration) -> Vec<RequestUid> {
+        let expired: Vec<RequestUid> = self
+            .entries
+            .iter()
+            .filter_map(|(uid, claim)| match claim.state {
+                ClaimState::Retained { since, .. } if since.elapsed() >= ttl => Some(*uid),
+                _ => None,
+            })
+            .collect();
+        for uid in &expired {
+            let _ = self.dispose(*uid);
+        }
+        expired
+    }
+
+    /// Free one connection's retained claims because that connection detached.
+    ///
+    /// A detached connection has no session left to answer, and its retentions
+    /// are waiting on a replay that will now never come from it — but the
+    /// custody they hold is charged to a `per_connection` account that a
+    /// reconnect reuses. `Active` claims survive for the same reason the reap
+    /// leaves them alone.
+    ///
+    /// This is a full scan of `entries`, bounded by the admission cap
+    /// `MAX_IN_FLIGHT_GATEWAY_INPUTS`, because `per_connection` keys **counts
+    /// only**: there is no uid index on this table and WS03-S15 deliberately
+    /// adds none, so anything restructuring the table later should know it is
+    /// building that index from scratch.
+    fn release_connection_retained(&mut self, conn: u64) -> Vec<RequestUid> {
+        let detached: Vec<RequestUid> = self
+            .entries
+            .iter()
+            .filter_map(|(uid, claim)| {
+                let retained = matches!(claim.state, ClaimState::Retained { .. });
+                (retained && claim.request.input.conn() == conn).then_some(*uid)
+            })
+            .collect();
+        for uid in &detached {
+            let _ = self.dispose(*uid);
+        }
+        detached
+    }
+
     /// Surrender custody of one claim unconditionally and reconcile the
     /// accounting. This is the *owner's* disposal path: the coordinator (and
     /// the legacy release below) already decided this request's fate.
@@ -1015,6 +1100,84 @@ fn retain_input_claim(
             reason,
             "retention named a claim the custody table no longer holds"
         );
+    }
+}
+
+/// The retained-claim reaper's handle, which aborts the task when it drops.
+///
+/// The reaper is spawned inside [`reader_loop`] and must not outlive it. That
+/// loop has several early `return Err(..)` exits — the raw-input guard, the
+/// invalid/conflicting-identity arms, every `world_is_gone` — and `serve` can
+/// also drop the reader future outright, so a task cancelled only at the tail
+/// of the function would survive most of the ways the boundary actually ends,
+/// holding an `Arc` to a claim table nobody else can reach.
+///
+/// Two independent mechanisms end it, because an abort is scheduling and the
+/// stop signal is not: dropping `_stop` closes the reaper's oneshot, which the
+/// sleep is selected against, so a reaper parked for the whole interval wakes
+/// and returns at once instead of sleeping through the teardown; and the abort
+/// covers a reaper caught mid-pass. The claim table is held only by a `Weak`,
+/// so even a reaper that somehow outlived both finds nothing to reap.
+struct RetainedClaimReaper {
+    handle: tokio::task::JoinHandle<()>,
+    _stop: tokio::sync::oneshot::Sender<()>,
+}
+
+impl Drop for RetainedClaimReaper {
+    fn drop(&mut self) {
+        self.handle.abort();
+    }
+}
+
+/// Spawn the boundary's retained-claim reaper.
+///
+/// Retention (WS03-S4) is the honest answer to an unprovable durable fate, but
+/// it is only bounded while replays keep arriving. Within one long-lived
+/// boundary no replay ever comes — the gateway re-sends its custody pool on
+/// re-attach, and a re-attach means a *new* boundary with an empty table — so
+/// without this pass a retained claim holds its slot until the boundary ends.
+///
+/// The reap publishes nothing: see [`ServerInputClaims::reap_retained`].
+fn spawn_retained_claim_reaper(
+    claims: &Arc<Mutex<ServerInputClaims>>,
+    metrics: &Arc<Metrics>,
+) -> RetainedClaimReaper {
+    // WEAK on purpose: the reader loop owns the table's lifetime, and a reaper
+    // that kept it alive would keep a dead boundary's custody alive with it.
+    let claims = Arc::downgrade(claims);
+    let metrics = Arc::clone(metrics);
+    let (stop, mut stopped) = tokio::sync::oneshot::channel::<()>();
+    let handle = tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                () = tokio::time::sleep(RETAINED_CLAIM_REAP_INTERVAL) => {}
+                // The reader loop dropped the guard: stop now rather than
+                // finish a sleep the boundary has no use for.
+                _ = &mut stopped => return,
+            }
+            let Some(claims) = claims.upgrade() else {
+                return;
+            };
+            // The guard is a statement temporary: the claim table's mutex is
+            // never held across the awaits above or below it.
+            let reaped = claims_guard(&claims).reap_retained(RETAINED_CLAIM_TTL);
+            drop(claims);
+            if !reaped.is_empty() {
+                metrics.ipc_retained_claims_reaped(reaped.len() as u64);
+                tracing::warn!(
+                    reaped = reaped.len(),
+                    ttl_s = RETAINED_CLAIM_TTL.as_secs(),
+                    "freed retained coordinator claims that aged out; the gateway keeps its replay copies"
+                );
+                for request in reaped {
+                    tracing::debug!(%request, "retained claim reaped");
+                }
+            }
+        }
+    });
+    RetainedClaimReaper {
+        handle,
+        _stop: stop,
     }
 }
 
@@ -1374,12 +1537,16 @@ pub async fn reader_loop(
     store: Arc<dyn ObjectStore>,
     offer_routes: Arc<OfferRouteTable>,
     reply_sink: SocketSink,
-    metrics: &Metrics,
+    metrics: &Arc<Metrics>,
     world_exit: WorldExitStatus,
 ) -> std::io::Result<()> {
     let mut reader = FrameReader::new(r);
     let service_requests = ServiceRequestLimiter::new();
     let input_claims = Arc::new(Mutex::new(ServerInputClaims::default()));
+    // Held in this function's own state, so EVERY way out of it — the early
+    // `return Err(..)` guards below, a clean EOF, or `serve` dropping the
+    // reader future — drops the guard and ends the reaper with the boundary.
+    let _retained_claim_reaper = spawn_retained_claim_reaper(&input_claims, metrics);
     // Set the moment this reader forwards a `ControlMsg::Shutdown`, so the
     // closed channel that follows reads as the exit it asked for.
     let mut shutdown_seen = false;
@@ -1695,8 +1862,25 @@ pub async fn reader_loop(
                 }
             }
             // Per-connection session bookkeeping — the forked server keeps no
-            // session mirror (the gateway owns it), so accept and ignore.
-            ToServer::Attach { .. } | ToServer::Detach { .. } => {}
+            // session mirror (the gateway owns it), so an attach is accepted
+            // and ignored.
+            ToServer::Attach { .. } => {}
+            // A detach is not: this connection's RETAINED claims are waiting on
+            // a replay it can no longer send, and their custody is charged to a
+            // `per_connection` account a reconnect reuses. Free them here
+            // rather than leave them to the TTL. Active claims stay — a handler
+            // still owns each one's single disposition — and nothing is
+            // published, exactly as at the reaper.
+            ToServer::Detach { conn, .. } => {
+                let released = claims_guard(&input_claims).release_connection_retained(conn);
+                if !released.is_empty() {
+                    tracing::warn!(
+                        conn,
+                        released = released.len(),
+                        "freed retained coordinator claims for a detached connection"
+                    );
+                }
+            }
         }
     }
     Ok(())
@@ -1847,10 +2031,11 @@ mod world_exit_tests {
 mod service_request_tests {
     use super::{
         Arc, CreatePlayerErr, GatewayInput, GatewayRequest, MAX_CLAIM_REARMS,
-        MAX_IN_FLIGHT_GATEWAY_INPUTS_PER_CONNECTION, MAX_IN_FLIGHT_SERVICE_REQUESTS, Mutex,
-        ServerClaimAdmission, ServerClaimRelease, ServerInputClaims, ServiceRequestLimiter,
-        ServiceResp, WorldReadError, admit_with_custody_snapshot, barrier_response, claims_guard,
-        create_player_response, release_input_claim,
+        MAX_IN_FLIGHT_GATEWAY_INPUTS_PER_CONNECTION, MAX_IN_FLIGHT_SERVICE_REQUESTS, Metrics,
+        Mutex, Notify, RETAINED_CLAIM_REAP_INTERVAL, RETAINED_CLAIM_TTL, ServerClaimAdmission,
+        ServerClaimRelease, ServerInputClaims, ServiceRequestLimiter, ServiceResp, SocketSink,
+        ToGateway, WorldReadError, admit_with_custody_snapshot, barrier_response, claims_guard,
+        create_player_response, release_input_claim, spawn_retained_claim_reaper,
     };
     use mush_core::{ActionOfferId, CanonicalHash, Inbound, ObjId, PerceivedRef};
     use mush_ipc::GatewayAction;
@@ -2234,6 +2419,163 @@ mod service_request_tests {
         }
         assert!(claims.retain(action.uid, "test retention"));
         assert_eq!(claims.admit(action), ServerClaimAdmission::Exhausted);
+    }
+
+    /// The wedge WS03-S4's retention bought and WS03-S15 pays for. A retained
+    /// claim keeps its custody slot and only `dispose` gives one back, so a
+    /// connection whose per-connection budget filled with retentions answered
+    /// `Full` for the life of the boundary: within one boundary no gateway
+    /// replay ever arrives to re-arm them (the gateway replays its custody pool
+    /// onto a *fresh* boundary, whose table is empty).
+    ///
+    /// The reaper is the floor under that. Time is paused, so the retentions
+    /// really do reach `RETAINED_CLAIM_TTL` instead of the test waiting five
+    /// minutes — `ClaimState::Retained` records a `tokio::time::Instant` for
+    /// exactly this reason.
+    #[tokio::test(start_paused = true)]
+    async fn retained_claims_do_not_wedge_a_connection_forever() {
+        let claims = Arc::new(Mutex::new(ServerInputClaims::default()));
+        let metrics = Arc::new(Metrics::new());
+        {
+            let mut table = claims_guard(&claims);
+            for sequence in 0..MAX_IN_FLIGHT_GATEWAY_INPUTS_PER_CONNECTION as u64 {
+                let request = action_request(sequence, 9);
+                assert_eq!(table.admit(request.clone()), ServerClaimAdmission::New);
+                assert!(table.retain(request.uid, "test retention"));
+            }
+            assert_eq!(
+                table.admit(action_request(10_000, 9)),
+                ServerClaimAdmission::Full { warn: true },
+                "the connection is wedged Full by its own retentions"
+            );
+        }
+
+        let reaper = spawn_retained_claim_reaper(&claims, &metrics);
+
+        // A pass that runs before the TTL frees nothing: the reaper must be the
+        // SLOW path, because a claim it reaps early is one the gateway replays
+        // as a fresh admission with a fresh re-arm budget.
+        tokio::time::advance(RETAINED_CLAIM_REAP_INTERVAL).await;
+        tokio::task::yield_now().await;
+        assert_eq!(
+            claims_guard(&claims).entries.len(),
+            MAX_IN_FLIGHT_GATEWAY_INPUTS_PER_CONNECTION,
+            "a retention younger than the TTL is not reaped"
+        );
+
+        // Past the TTL, one pass frees every one of them.
+        for _ in 0..(2 + RETAINED_CLAIM_TTL.as_secs() / RETAINED_CLAIM_REAP_INTERVAL.as_secs()) {
+            let empty = claims_guard(&claims).entries.is_empty();
+            if empty {
+                break;
+            }
+            tokio::time::advance(RETAINED_CLAIM_REAP_INTERVAL).await;
+            tokio::task::yield_now().await;
+        }
+        assert!(
+            claims_guard(&claims).entries.is_empty(),
+            "every retention older than the TTL must be freed"
+        );
+        assert_eq!(
+            metrics.snapshot().ipc_retained_claims_reaped_total,
+            MAX_IN_FLIGHT_GATEWAY_INPUTS_PER_CONNECTION as u64,
+            "a silent reap still has to be countable"
+        );
+        assert_eq!(
+            claims_guard(&claims).admit(action_request(10_000, 9)),
+            ServerClaimAdmission::New,
+            "the freed slots are real capacity: the wedged request now admits"
+        );
+        drop(reaper);
+    }
+
+    /// A reaped claim is answered with silence, which is the whole reason the
+    /// reap is safe: the gateway still holds its replay copy, so the request
+    /// can come back as a fresh `New` admission. Publishing `Busy` or
+    /// `Rejected` here would make the gateway drop that copy on a request whose
+    /// durable fate was never proven either way.
+    ///
+    /// The reaper is handed no sink by construction; this pins the observable
+    /// consequence — the boundary's whole reply path stays empty across a reap.
+    #[tokio::test(start_paused = true)]
+    async fn the_reaper_publishes_no_disposition() {
+        let (tx, mut replies) = super::mpsc::channel::<ToGateway>(8);
+        let metrics = Arc::new(Metrics::new());
+        // The real reply path every disposition travels, kept alive for the
+        // whole test so an empty receiver means "nothing was sent", never "the
+        // sink was gone".
+        let _sink = SocketSink::new(tx, Arc::clone(&metrics), Arc::new(Notify::new()), 8, 90);
+
+        let claims = Arc::new(Mutex::new(ServerInputClaims::default()));
+        let request = action_request(1, 9);
+        {
+            let mut table = claims_guard(&claims);
+            assert_eq!(table.admit(request.clone()), ServerClaimAdmission::New);
+            assert!(table.retain(request.uid, "test retention"));
+        }
+
+        let reaper = spawn_retained_claim_reaper(&claims, &metrics);
+        for _ in 0..(2 + RETAINED_CLAIM_TTL.as_secs() / RETAINED_CLAIM_REAP_INTERVAL.as_secs()) {
+            let empty = claims_guard(&claims).entries.is_empty();
+            if empty {
+                break;
+            }
+            tokio::time::advance(RETAINED_CLAIM_REAP_INTERVAL).await;
+            tokio::task::yield_now().await;
+        }
+        assert!(
+            claims_guard(&claims).entries.is_empty(),
+            "the claim is gone"
+        );
+        assert!(
+            replies.try_recv().is_err(),
+            "a reap that published anything would take the gateway's replay copy with it, and \
+             that copy is the only thing left that can retry the request"
+        );
+        drop(reaper);
+    }
+
+    /// `ToServer::Detach` used to be an empty arm. A detached connection can
+    /// never send the replay its retentions are waiting for, so they go with
+    /// it — but only *its* retentions: an `Active` claim on the same connection
+    /// still has a live handler owning its single disposition, and another
+    /// connection's retention is none of this frame's business.
+    #[test]
+    fn detach_releases_that_connections_retained_claims_only() {
+        let mut claims = ServerInputClaims::default();
+        let active = action_request(1, 9);
+        let retained = action_request(2, 9);
+        let elsewhere = action_request(3, 11);
+        for request in [&active, &retained, &elsewhere] {
+            assert_eq!(claims.admit(request.clone()), ServerClaimAdmission::New);
+        }
+        assert!(claims.retain(retained.uid, "test retention"));
+        assert!(claims.retain(elsewhere.uid, "test retention"));
+
+        assert_eq!(
+            claims.release_connection_retained(9),
+            vec![retained.uid],
+            "exactly the detached connection's retained claim"
+        );
+        assert_eq!(
+            claims.admit(active.clone()),
+            ServerClaimAdmission::Duplicate,
+            "the in-flight handler on that connection keeps its claim"
+        );
+        assert_eq!(
+            claims.admit(elsewhere.clone()),
+            ServerClaimAdmission::Rearm,
+            "another connection's retention is untouched and still re-armable"
+        );
+        assert_eq!(
+            claims.admit(retained.clone()),
+            ServerClaimAdmission::New,
+            "the released uid is free again, custody accounting and all"
+        );
+
+        // A connection holding nothing retained loses nothing to a detach.
+        assert!(claims.release_connection_retained(9).is_empty());
+        assert_eq!(claims.entries.len(), 3);
     }
 
     /// Retention names a claim the table holds. A caller that retains a uid

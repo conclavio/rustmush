@@ -1317,3 +1317,182 @@ async fn a_permanently_transient_preflight_retains_and_then_stops_at_the_rearm_b
     .await
     .unwrap();
 }
+
+// ---------------------------------------------------------------------------
+// WS03-S15: the retained-claim reaper never outlives its reader loop
+// ---------------------------------------------------------------------------
+
+/// The world loop needs a sink; the reaper proof inspects no delivery.
+struct BlackholeGateway;
+
+impl mush_server::gateway_sink::GatewaySink for BlackholeGateway {
+    fn transmit(&self, _sends: Vec<(mush_ipc::SendTarget, Arc<mush_proto::OutputEvent>)>) {}
+
+    fn set_flood_exempt(&self, _char: u64, _exempt: bool) {}
+
+    fn is_socket(&self) -> bool {
+        false
+    }
+
+    fn close_session(&self, _char: u64, _cause: mush_ipc::DetachCause) {}
+
+    fn close_web_sessions(
+        &self,
+        _chars: Vec<u64>,
+        _notice: Option<mush_proto::OutputEvent>,
+        _cause: mush_ipc::DetachCause,
+    ) {
+    }
+
+    fn close_char_connections(&self, _char: u64) -> Vec<u64> {
+        Vec::new()
+    }
+
+    fn structured_conns_of(&self, _chars: &[u64]) -> Vec<(u64, u64)> {
+        Vec::new()
+    }
+
+    fn detach_conn_local(&self, _conn: u64) {}
+
+    fn session_counts(&self) -> (i64, i64) {
+        (0, 0)
+    }
+}
+
+/// A live world task, so `reader_loop` is driven against the real handle it
+/// takes in production. This proof never reaches the world: the frame it feeds
+/// is refused by the reader's own guard first.
+fn boot_world() -> mush_server::world_task::PersistHandles {
+    let store: Arc<dyn ObjectStore> = Arc::new(InMemoryStore::new());
+    let engine = mush_core::Engine::with_modules(
+        mush_core::World::new_minimal(),
+        mush_server::world_task::base_registry(),
+        Vec::new(),
+    )
+    .expect("the minimal engine composes");
+    mush_server::world_task::spawn_persist_with_gateway(
+        engine,
+        mush_server::world_task::ServerDeps {
+            store,
+            guard: Arc::new(mush_config::ipguard::IpGuard::new()),
+            staff: Arc::new(mush_server::staff::StaffQueue::new()),
+            llm: None,
+            metrics: Arc::new(mush_config::metrics::Metrics::new()),
+            quarantine_spool: mush_server::quarantine::QuarantineSpool::in_memory(),
+            outbox_adapters: Vec::new(),
+        },
+        |_| -> mush_server::world_task::Gateway { Arc::new(BlackholeGateway) },
+    )
+}
+
+/// Watch one runtime's live task count until `ready` accepts it. The reader
+/// loop is the only thing on that runtime, so the count is exactly the reader
+/// task plus whatever the reader task spawned.
+fn wait_for_tasks(rt: &tokio::runtime::Runtime, ready: impl Fn(usize) -> bool, what: &str) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        let alive = rt.metrics().num_alive_tasks();
+        if ready(alive) {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "{what} (live tasks on the reader's runtime: {alive})"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// The retained-claim reaper is spawned at the TOP of `reader_loop` and holds
+/// an `Arc` to that boundary's claim table, so it may not survive the loop.
+/// `reader_loop` does not merely fall off its end: it has several early
+/// `return Err(..)` exits — the raw-input guard proven here, the
+/// invalid/conflicting-identity arms, every `world_is_gone` — and `serve` can
+/// drop the reader future outright. A reaper cancelled only at the tail of the
+/// function would outlive every one of those, sleeping forever on a dead
+/// boundary's custody.
+///
+/// The proof runs the real reader on a runtime of its own, so the live-task
+/// count is unambiguous: it must rise (the reaper exists at all) and then fall
+/// back to nothing once the guard's early return drops the abort-on-drop
+/// handle. A leaked reaper never lets it fall.
+#[test]
+fn an_early_reader_loop_error_does_not_leave_a_reaper_running() {
+    // The world lives on its own runtime, so the runtime under test carries
+    // the reader loop and nothing else.
+    let world_rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .enable_all()
+        .build()
+        .unwrap();
+    let (world, world_exit) = world_rt.block_on(async {
+        let handles = boot_world();
+        (handles.handle.clone(), handles.world_exit.clone())
+    });
+
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .enable_all()
+        .build()
+        .unwrap();
+    assert_eq!(rt.metrics().num_alive_tasks(), 0, "a runtime of its own");
+
+    // A duplex whose peer end this test holds open, so the reader parks on the
+    // socket instead of ending at EOF before anything can be observed.
+    let (mut peer, wire) = tokio::io::duplex(64 * 1024);
+    let reader = rt.spawn(async move {
+        let (tx, _replies) = tokio::sync::mpsc::channel(64);
+        let metrics = Arc::new(mush_config::metrics::Metrics::new());
+        let sink = mush_server::gateway_sink::SocketSink::new(
+            tx,
+            Arc::clone(&metrics),
+            Arc::new(tokio::sync::Notify::new()),
+            64,
+            90,
+        );
+        let store: Arc<dyn ObjectStore> = Arc::new(InMemoryStore::new());
+        mush_server::reader_loop(
+            Box::new(wire),
+            world,
+            store,
+            Arc::new(mush_core::OfferRouteTable::default()),
+            sink,
+            &metrics,
+            world_exit,
+        )
+        .await
+    });
+
+    wait_for_tasks(
+        &rt,
+        |alive| alive >= 2,
+        "the reader loop must spawn its retained-claim reaper",
+    );
+
+    // Raw player input that bypassed the custody envelope: an early
+    // `return Err(..)`, nowhere near the end of the function.
+    rt.block_on(write_frame(
+        &mut peer,
+        &ToServer::Inbound(WireInbound::Cmd {
+            conn: 1,
+            actor: GOD,
+            line: "look".to_string(),
+        }),
+    ))
+    .expect("the frame is written to the reader's socket");
+    let error = rt
+        .block_on(reader)
+        .expect("the reader task itself must not panic")
+        .expect_err("raw player input must end the boundary");
+    assert_eq!(
+        error.kind(),
+        std::io::ErrorKind::InvalidData,
+        "the raw-input guard is the exit taken: {error}"
+    );
+
+    wait_for_tasks(
+        &rt,
+        |alive| alive == 0,
+        "the reaper must die with the reader loop's early return, not outlive it",
+    );
+}

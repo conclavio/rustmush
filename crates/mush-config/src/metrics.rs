@@ -222,6 +222,12 @@ pub struct Metrics {
     /// down so the gateway-retained roster can retry; no partial snapshot is
     /// ever applied.
     ipc_reannounce_protocol_violations_total: AtomicU64,
+    /// Coordinator claims the server had RETAINED (custody kept, no
+    /// disposition published) and later reaped because they aged past the
+    /// retention TTL. Monotonic counter — retention is silent by design, so
+    /// this is the only operational signal that a boundary is accumulating
+    /// requests whose durable fate nothing could prove.
+    ipc_retained_claims_reaped_total: AtomicU64,
     /// High-water mark of the gateway->server (`to_server`) queue depth
     /// (`fetch_max` gauge).
     ipc_queue_high_water_to_server: AtomicU64,
@@ -556,6 +562,14 @@ impl Metrics {
             .fetch_add(1, Ordering::Relaxed);
     }
 
+    /// Count `reaped` retained coordinator claims freed by one reaper pass.
+    /// The reap publishes nothing to the gateway (which still holds its own
+    /// replay copy), so this counter and one warn are the whole signal.
+    pub fn ipc_retained_claims_reaped(&self, reaped: u64) {
+        self.ipc_retained_claims_reaped_total
+            .fetch_add(reaped, Ordering::Relaxed);
+    }
+
     /// Record a gateway->server (`to_server`) queue occupancy observation,
     /// keeping the high-water mark (`fetch_max`).
     pub fn observe_ipc_to_server_depth(&self, depth: u64) {
@@ -746,6 +760,9 @@ impl Metrics {
             ipc_to_gw_overflow_total: self.ipc_to_gw_overflow_total.load(Ordering::Relaxed),
             ipc_reannounce_protocol_violations_total: self
                 .ipc_reannounce_protocol_violations_total
+                .load(Ordering::Relaxed),
+            ipc_retained_claims_reaped_total: self
+                .ipc_retained_claims_reaped_total
                 .load(Ordering::Relaxed),
             ipc_queue_high_water_to_server: self
                 .ipc_queue_high_water_to_server
@@ -977,6 +994,8 @@ pub struct MetricsSnapshot {
     pub ipc_to_gw_overflow_total: u64,
     /// Oversized `ReAnnounce` protocol violations since boot.
     pub ipc_reannounce_protocol_violations_total: u64,
+    /// Retained coordinator claims reaped at the retention TTL since boot.
+    pub ipc_retained_claims_reaped_total: u64,
     /// High-water mark of the gateway->server (`to_server`) queue depth (M18).
     pub ipc_queue_high_water_to_server: u64,
     /// High-water mark of the server->gateway (`to_gw`) queue depth (M18).
@@ -1225,6 +1244,13 @@ impl MetricsSnapshot {
             "counter",
             "Oversized ReAnnounce snapshots rejected atomically before boundary teardown.",
             &[(&[], self.ipc_reannounce_protocol_violations_total as f64)],
+        );
+        metric(
+            &mut o,
+            "mush_ipc_retained_claims_reaped_total",
+            "counter",
+            "Retained coordinator claims freed by the server's retention reaper.",
+            &[(&[], self.ipc_retained_claims_reaped_total as f64)],
         );
         metric(
             &mut o,
@@ -1935,6 +1961,7 @@ mod tests {
         assert_eq!(s.ipc_write_timeouts_total, 0);
         assert_eq!(s.ipc_to_gw_overflow_total, 0);
         assert_eq!(s.ipc_reannounce_protocol_violations_total, 0);
+        assert_eq!(s.ipc_retained_claims_reaped_total, 0);
         assert_eq!(s.ipc_queue_high_water_to_server, 0);
         assert_eq!(s.ipc_queue_high_water_to_gw, 0);
 
@@ -1946,6 +1973,10 @@ mod tests {
         m.ipc_write_timeout();
         m.ipc_to_gw_overflow();
         m.ipc_reannounce_protocol_violation();
+        // A reaper pass frees a whole batch at once, so this counter takes the
+        // pass's count rather than one bump per claim.
+        m.ipc_retained_claims_reaped(2);
+        m.ipc_retained_claims_reaped(3);
 
         // High-water keeps the max, not the last observation.
         m.observe_ipc_to_server_depth(5);
@@ -1960,6 +1991,7 @@ mod tests {
         assert_eq!(s.ipc_write_timeouts_total, 2);
         assert_eq!(s.ipc_to_gw_overflow_total, 1);
         assert_eq!(s.ipc_reannounce_protocol_violations_total, 1);
+        assert_eq!(s.ipc_retained_claims_reaped_total, 5);
         assert_eq!(s.ipc_queue_high_water_to_server, 12);
         assert_eq!(s.ipc_queue_high_water_to_gw, 4000);
 
@@ -1971,6 +2003,7 @@ mod tests {
         assert!(text.contains("mush_ipc_write_timeouts_total 2"));
         assert!(text.contains("mush_ipc_to_gw_overflow_total 1"));
         assert!(text.contains("mush_ipc_reannounce_protocol_violations_total 1"));
+        assert!(text.contains("mush_ipc_retained_claims_reaped_total 5"));
         assert!(text.contains("# TYPE mush_ipc_queue_high_water gauge"));
         assert!(text.contains("mush_ipc_queue_high_water{dir=\"to_server\"} 12"));
         assert!(text.contains("mush_ipc_queue_high_water{dir=\"to_gw\"} 4000"));
