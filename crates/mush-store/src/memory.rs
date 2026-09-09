@@ -791,6 +791,32 @@ fn first_replay_mismatch<'a>(
     })
 }
 
+/// Which finalize readback disagreements are still refusals.
+///
+/// The live script applies its replay writes and re-reads them inside one
+/// EVAL, so its `json_set` arm can only ever catch RedisJSON respelling a
+/// document it has already stored — the write landed, and refusing would
+/// strand it. That arm therefore observes rather than refuses, while
+/// `string_set` (byte-exact `GET` after `SET`) and `delete` (exact `EXISTS`
+/// after `DEL`) keep refusing. This mirrors the split so a store-contract
+/// failure reads the same on both backends; the fake itself can never
+/// disagree at all, since [`apply_replay`] stores the identical `String`.
+fn finalize_readback_refusal(write: &PlannedReplayWrite) -> Option<StoreError> {
+    match write {
+        // `json_set` on the live server: observed, never refused.
+        PlannedReplayWrite::ObjectSet { .. } | PlannedReplayWrite::ModuleJsonSet { .. } => None,
+        // `string_set` and `delete`: exact on both sides of the round trip.
+        PlannedReplayWrite::ObjectAllocatorSet { .. }
+        | PlannedReplayWrite::ObjectDelete { .. }
+        | PlannedReplayWrite::ModuleDelete { .. } => {
+            Some(StoreError::AuthoritativeReadbackMismatch {
+                key: planned_write_key(write),
+                phase: AuthoritativeReadbackPhase::Finalize,
+            })
+        }
+    }
+}
+
 /// The Redis key a planned write addresses, so a readback refusal names the
 /// same target on the fake as it does on the live server.
 fn planned_write_key(write: &PlannedReplayWrite) -> String {
@@ -1294,11 +1320,19 @@ impl AuthoritativeStore for InMemoryStore {
                 }
             }
             apply_replay(&mut inner, &planned);
-            if let Some(write) = first_replay_mismatch(&inner, &planned) {
-                return Err(StoreError::AuthoritativeReadbackMismatch {
-                    key: planned_write_key(write),
-                    phase: AuthoritativeReadbackPhase::Finalize,
-                });
+            let mismatch = first_replay_mismatch(&inner, &planned);
+            debug_assert!(
+                mismatch.is_none(),
+                "the fake stores the exact String apply_replay just wrote, so no                  finalize readback can disagree with the plan"
+            );
+            if let Some(write) = mismatch {
+                if let Some(refusal) = finalize_readback_refusal(write) {
+                    return Err(refusal);
+                }
+                tracing::warn!(
+                    key = %planned_write_key(write),
+                    "in-memory finalize readback observed a renormalized post-image"
+                );
             }
             for (item_id, doc) in outbox_records {
                 inner.authoritative_outbox.insert(item_id, doc);
@@ -3133,6 +3167,71 @@ mod tests {
             );
         }
         Ok(())
+    }
+
+    /// The fake's finalize readback splits the same way the live script does.
+    ///
+    /// `finalize_authoritative.lua` observes a `json_set` disagreement (the
+    /// write landed; RedisJSON merely respelled it) and refuses a `string_set`
+    /// or `delete` one, both of which are byte-exact. The fake cannot disagree
+    /// at all — `apply_replay` stores the identical `String`, which is why the
+    /// call site carries a `debug_assert` — so this pins the disposition
+    /// itself, the half no live server can demonstrate: finalize writes and
+    /// re-reads inside one EVAL, leaving no seam to interpose a defeated write
+    /// through.
+    #[test]
+    fn finalize_readback_observation_is_not_a_refusal() {
+        for write in [
+            PlannedReplayWrite::ObjectSet {
+                id: 7,
+                doc: "{}".to_owned(),
+            },
+            PlannedReplayWrite::ModuleJsonSet {
+                namespace: "mail".to_owned(),
+                key: "inbox".to_owned(),
+                doc: "{}".to_owned(),
+            },
+        ] {
+            assert!(
+                finalize_readback_refusal(&write).is_none(),
+                "a json post-image finalize itself just wrote is observed, never refused: {}",
+                planned_write_key(&write)
+            );
+        }
+
+        for (write, expected) in [
+            (
+                PlannedReplayWrite::ObjectAllocatorSet { next_id: 9 },
+                META_NEXT_ID.to_owned(),
+            ),
+            (
+                PlannedReplayWrite::ObjectDelete { id: 7 },
+                "obj:7".to_owned(),
+            ),
+            (
+                PlannedReplayWrite::ModuleDelete {
+                    namespace: "mail".to_owned(),
+                    key: "inbox".to_owned(),
+                },
+                "mod:mail:inbox".to_owned(),
+            ),
+        ] {
+            let refusal = finalize_readback_refusal(&write).unwrap_or_else(|| {
+                panic!("an exact write that did not take must refuse: {expected}")
+            });
+            assert!(
+                matches!(
+                    &refusal,
+                    StoreError::AuthoritativeReadbackMismatch { key, phase }
+                        if *key == expected && *phase == AuthoritativeReadbackPhase::Finalize
+                ),
+                "{refusal:?} must name {expected} in the finalize phase"
+            );
+            assert!(
+                !refusal.is_transient(),
+                "a readback mismatch is deterministic, never a retry"
+            );
+        }
     }
 
     #[test]

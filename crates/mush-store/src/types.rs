@@ -1335,6 +1335,13 @@ pub struct BanRec {
 /// not land, `Checkpoint` says a target that *did* land has since been
 /// clobbered under a finalized action whose full intent is about to be
 /// released. Naming the phase keeps those two apart in a log line.
+///
+/// `Finalize` covers only the exact-by-construction writes — the object
+/// allocator's `SET` and the deletes. Its JSON arm observes instead of
+/// refusing, because the write and the readback are one script and the only
+/// disagreement it can see is the backend respelling a document it has already
+/// stored; refusing there would strand a durably applied post-image. See
+/// `lua/finalize_authoritative.lua`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AuthoritativeReadbackPhase {
     /// Materialization inside `reconcile_authoritative`.

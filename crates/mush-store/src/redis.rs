@@ -440,6 +440,40 @@ fn authoritative_readback_error(
     })
 }
 
+/// The prefix finalize returns when its own `JSON.SET` read back as different
+/// bytes.
+const FINALIZED_RENORMALISED: &str = "FINALIZED_RENORMALISED:";
+
+/// Resolve finalize's renormalisation *observation*.
+///
+/// `finalize_authoritative.lua` applies its replay writes and re-reads them in
+/// one script, so a `json_set` target that reads back as different bytes says
+/// only that RedisJSON re-serialized the document the same script had just
+/// handed it — the write landed. That is not a refusal (refusing would strand a
+/// durably applied post-image), so the script finishes and reports the first
+/// index it saw; the caller logs it and counts it.
+///
+/// `Some` means "this code is that observation", with the planned key the index
+/// names, or `None` inside it when the index is not one this plan can explain.
+/// An unexplained index is still an observation and never a refusal: the script
+/// has already written the receipt by the time it returns this code, and a
+/// retry would take the idempotent arm and answer `FINALIZED` anyway, so
+/// refusing here would be a coin toss rather than a verdict.
+fn finalize_renormalisation<'a>(
+    code: &str,
+    planned: &'a [RedisReplayWrite],
+) -> Option<Option<&'a str>> {
+    let index = code.strip_prefix(FINALIZED_RENORMALISED)?;
+    Some(
+        index
+            .parse::<usize>()
+            .ok()
+            .and_then(|index| index.checked_sub(1))
+            .and_then(|index| planned.get(index))
+            .map(|write| write.key.as_str()),
+    )
+}
+
 fn authoritative_script_error(code: &str) -> StoreError {
     if code == "TOKEN_CONFLICT" {
         return StoreError::AuthoritativeTokenConflict;
@@ -690,6 +724,12 @@ pub struct RedisStore {
     client: Client,
     /// The ledger archive tier, when attached (J5).
     archive: Option<std::sync::Arc<crate::archive::LedgerArchive>>,
+    /// How many finalize readbacks have observed RedisJSON renormalizing a
+    /// post-image the same script had just written. Not an error count: the
+    /// write landed. It is the only witness that the relaxed `json_set` arm
+    /// ever fires, so an operator can tell "provably cannot happen" from
+    /// "happens on every write" without a live experiment.
+    renormalised_finalize_readbacks: std::sync::atomic::AtomicU64,
 }
 
 impl RedisStore {
@@ -719,6 +759,7 @@ impl RedisStore {
         Ok(RedisStore {
             client,
             archive: None,
+            renormalised_finalize_readbacks: std::sync::atomic::AtomicU64::new(0),
         })
     }
 
@@ -758,6 +799,7 @@ impl RedisStore {
         RedisStore {
             client,
             archive: None,
+            renormalised_finalize_readbacks: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
@@ -766,6 +808,19 @@ impl RedisStore {
     #[must_use]
     pub fn client(&self) -> &Client {
         &self.client
+    }
+
+    /// How many finalize readbacks have observed a renormalized JSON
+    /// post-image on this connection (see the field, and the readback loop in
+    /// `lua/finalize_authoritative.lua`).
+    ///
+    /// Zero is the expected reading; a non-zero one says RedisJSON does not
+    /// echo `serde_json`'s bytes, which is exactly the fact the byte compare
+    /// used to hide behind a refusal.
+    #[must_use]
+    pub fn renormalised_finalize_readbacks(&self) -> u64 {
+        self.renormalised_finalize_readbacks
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Refuse the stronger host-power-loss receipt promise unless the live
@@ -1626,7 +1681,21 @@ impl AuthoritativeStore for RedisStore {
                 .client
                 .eval(FINALIZE_AUTHORITATIVE_LUA, keys, args)
                 .await?;
-            if code != "FINALIZED" {
+            if let Some(key) = finalize_renormalisation(&code, &planned) {
+                // Not a fault: the script applied the write and then read its
+                // own JSON.SET back as different bytes. Loud, counted, and
+                // finalized — the alternative is stranding a post-image that
+                // is durably on disk.
+                let observed = self
+                    .renormalised_finalize_readbacks
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                    .saturating_add(1);
+                tracing::warn!(
+                    key = key.unwrap_or("<unresolved index>"),
+                    observed,
+                    "RedisJSON renormalized a finalize post-image; the write landed"
+                );
+            } else if code != "FINALIZED" {
                 return Err(authoritative_readback_error(
                     &code,
                     &planned,
@@ -3544,5 +3613,103 @@ mod tests {
             authoritative_script_error("TOKEN_CONFLICT"),
             StoreError::AuthoritativeTokenConflict
         ));
+    }
+
+    /// Finalize's `json_set` readback is an observation, and an observation is
+    /// never a refusal.
+    ///
+    /// The script applies its writes and re-reads them in one EVAL, so by the
+    /// time this code comes back the post-image is durably stored and the
+    /// receipt is written: the only question left is whether the caller says so
+    /// out loud. Every shape of the code answers "finalized", including an
+    /// index the plan cannot explain — a retry would take the script's
+    /// idempotent arm and answer `FINALIZED` anyway, so refusing on one would
+    /// be a coin toss rather than a verdict.
+    #[test]
+    fn a_renormalised_finalize_readback_is_observed_not_refused() {
+        fn planned_write(key: &str) -> RedisReplayWrite {
+            RedisReplayWrite {
+                key: key.to_owned(),
+                kind: "json_set",
+                post_image: "{}".to_owned(),
+            }
+        }
+        let planned = vec![planned_write("obj:1"), planned_write("mod:mail:inbox")];
+
+        for (code, expected) in [
+            ("FINALIZED_RENORMALISED:1", Some("obj:1")),
+            ("FINALIZED_RENORMALISED:2", Some("mod:mail:inbox")),
+            // Still an observation, just an unnameable one.
+            ("FINALIZED_RENORMALISED:0", None),
+            ("FINALIZED_RENORMALISED:3", None),
+            ("FINALIZED_RENORMALISED:", None),
+            ("FINALIZED_RENORMALISED:two", None),
+        ] {
+            assert_eq!(
+                finalize_renormalisation(code, &planned),
+                Some(expected),
+                "{code} must be finalize's observation"
+            );
+        }
+
+        // Everything else is somebody else's code: the plain success, the
+        // refusals the string_set and delete arms still return, and the shared
+        // translator's vocabulary.
+        for code in [
+            "FINALIZED",
+            "FINALIZED_RENORMALISED",
+            "READBACK_MISMATCH:1",
+            "TOKEN_CONFLICT",
+        ] {
+            assert_eq!(
+                finalize_renormalisation(code, &planned),
+                None,
+                "{code} is not an observation"
+            );
+        }
+        assert!(
+            authoritative_readback_error(
+                "READBACK_MISMATCH:1",
+                &planned,
+                AuthoritativeReadbackPhase::Finalize
+            )
+            .is_some(),
+            "relaxing the json arm must not disarm the refusal the other two arms still return"
+        );
+    }
+
+    /// The relaxation is one arm wide.
+    ///
+    /// Only finalize's `json_set` readback observes; its `string_set` and
+    /// `delete` arms are byte-exact (`GET` after `SET`, `EXISTS` after `DEL`)
+    /// and still refuse, and checkpoint — the readback with a real clobber to
+    /// catch, because other writers have had time to touch its targets — still
+    /// refuses on all three. No live server can prove this: finalize writes and
+    /// re-reads inside one script, so there is no seam to interpose a defeated
+    /// `SET` through. The script text is the witness.
+    #[test]
+    fn only_the_finalize_json_readback_arm_was_relaxed() {
+        assert_eq!(
+            FINALIZE_AUTHORITATIVE_LUA
+                .matches("return 'READBACK_MISMATCH:'")
+                .count(),
+            2,
+            "finalize keeps exactly the string_set and delete refusals"
+        );
+        assert!(
+            FINALIZE_AUTHORITATIVE_LUA.contains("return 'FINALIZED_RENORMALISED:'"),
+            "finalize must report the observation it recorded"
+        );
+        assert_eq!(
+            CHECKPOINT_AUTHORITATIVE_LUA
+                .matches("return 'READBACK_MISMATCH:'")
+                .count(),
+            3,
+            "checkpoint's three arms all still refuse"
+        );
+        assert!(
+            !CHECKPOINT_AUTHORITATIVE_LUA.contains("FINALIZED_RENORMALISED"),
+            "the observation belongs to finalize alone"
+        );
     }
 }

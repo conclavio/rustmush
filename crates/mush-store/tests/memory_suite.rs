@@ -150,6 +150,11 @@ async fn authoritative_contract_number_shaped_post_images() {
 }
 
 #[tokio::test]
+async fn authoritative_contract_finalize_survives_renormalisation() {
+    suite::authoritative_finalize_survives_a_renormalised_post_image(&InMemoryStore::new()).await;
+}
+
+#[tokio::test]
 async fn module_kv_round_trip() {
     suite::module_kv_round_trip(&InMemoryStore::new()).await;
 }

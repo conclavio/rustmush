@@ -345,6 +345,20 @@ redis_gated!(authoritative_contract_retention_generation, store, {
 redis_gated!(authoritative_contract_number_shaped_post_images, store, {
     suite::authoritative_number_shaped_post_image_round_trips(&store).await;
 });
+// The live half of the finalize relaxation: a bundle whose post-images a real
+// RedisJSON may respell must finalize, keep its receipt and keep its retained
+// intent. Against the old byte compare this is the test that would strand.
+redis_gated!(
+    authoritative_contract_finalize_survives_renormalisation,
+    store,
+    {
+        suite::authoritative_finalize_survives_a_renormalised_post_image(&store).await;
+        // Zero says RedisJSON echoed serde_json's bytes; anything else says the
+        // relaxed arm is load-bearing on this server. Both are legal, and the
+        // counter is the only place either fact is visible.
+        assert!(store.renormalised_finalize_readbacks() <= 2);
+    }
+);
 redis_gated!(module_kv_round_trip, store, {
     suite::module_kv_round_trip(&store).await;
 });
