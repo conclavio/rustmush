@@ -328,9 +328,9 @@ them at apply (3.2). Prose fields are prose; the digest covers them like any fie
 
 Two packs ship in the repository and apply at first boot when `[game].starter_area = true`
 (default; the testkit's `boot_world` leaves it false). Names and voices are the owner's
-(2026-09-09) where given; two NPCs carry placeholders until named. Three of the names and two of
-the lines are an homage to a 2004 film about a high school: per doc 06 §15 the packs' `brief`
-records that origin, the quotations stay short, and nothing else is imported.
+(2026-09-09). Most of the names and two of the lines are an homage to a 2004 film about a high
+school: per doc 06 §15 the packs' `brief` records that origin, the quotations stay short, and
+nothing else is imported.
 
 **`region.limbo`** — one surface region, "the lot", 400 m square, flat at datum 0 with a raised
 loading dock (+1.2 m) on the back lot; locality `locality.lot`; background recipe "paved lot";
@@ -365,8 +365,8 @@ games room allowed):
 | Production Office | Lobby building, floor 1 (mezzanine, +3.6 m) | **restricted** to staff: the one locked room, and the stair portal's `dz` |
 | Souvenir Shop | its own site | **Gretchen** |
 | Backlot | ground, outdoor; the loading dock | circulation; **Karen Smith**, the meteorologist |
-| Coffee Shop | its own site on the back lot | the open house venue; the **Economist** (placeholder) |
-| Writers' Room | its own site | the **Set Designer** (placeholder): the builder's front desk |
+| Coffee Shop | its own site on the back lot | the open house venue; **Cady Heron**, the economist |
+| Writers' Room | its own site | **Janis Ian**, the set designer: the builder's front desk |
 
 **NPCs** — all minor tier, enabled, on the default per-NPC budget, each with fallback lines so
 the lot works with `[llm].enabled = false`; the interface abilities are §4.6:
@@ -398,9 +398,23 @@ the lot works with `[llm].enabled = false`; the interface abilities are §4.6:
   journey). Public lore: the bus loop, the checkpoints, who got off last; guarded: why she
   watches for it so carefully. Fallback: "The bus? It's coming. It's always coming. …Stand back
   from the curb."
-- **The Economist** (placeholder) — Coffee Shop; shows you the markets (`market.quote`,
-  `market.list` over the public projection). **The Set Designer** (placeholder) — Writers' Room;
-  the builder's front desk (`build.propose`, `build.status`, `build.answer`).
+- **Cady Heron** — the economist, Coffee Shop, doing the studio's books at the corner table.
+  Shows you the markets (`market.quote`, `market.list` over the public projection) and explains
+  what a listing, a quote and a hold are. Public lore: how the market commands work, what is
+  cheap this week; guarded: whose books do not add up. Fallback: "The limit does not exist. The
+  price, however, is on the board."
+- **Janis Ian** — the set designer, Writers' Room: the builder's front desk. Talks a brief into
+  a plan (`build.propose`, `build.status`, `build.answer`) and never applies it. Public lore: how
+  a neighborhood pack is shaped, what the validator refuses and why; guarded: which sets on the
+  lot she thinks should be torn down. Fallback: "Tell me what the place is for. Then tell me what
+  it looks like. In that order."
+- **Aaron Samuels** — the tour bus's driver, aboard `room.bus`: the carrier's declared NPC
+  fallback at its one station (C30A); fronts nothing; drives the bus Regina is watching for
+  (owner, 2026-09-09: decided). Fallback: "Next stop, the lobby. Please stay seated."
+- **Bench** (owner-supplied names, proposed assignments; no new rooms): **Sharon Norbury** as the
+  OOC Area's docent in the Welcome Hall (extra tier; walks newcomers through the tutorial rooms;
+  fronts `help`); **Ron Duvall** in the Lobby as the front for filing a request with staff
+  (`request.file`, `request.status` over `+request` and `+job`, the asker's own tickets only).
 
 **Hooks**: `hook.open_house` — Susie's set at the coffee shop, an invitation and a place
 strangers meet, no mechanic. **Items**: the tutorial pamphlet (readable), the shooting-schedule
@@ -640,6 +654,8 @@ a ruleset sheet, registered through the same seam and invoked the same way:
 | `market.quote(…)`, `market.list(…)` | the economist | `+market`'s public projection (`crates/mush-market/src/commands.rs`), never the book beneath it (doc 10 §14's safe projection) |
 | `build.propose(brief)`, `build.status(id)`, `build.answer(q, a)` | the set designer | the authoring agent (4.1); the conversation *is* the proposal record's question loop; the NPC never applies |
 | `chargen.explain(topic)`, `rules.lookup(topic)` | the off-duty gamemaster | the help topics and the loaded ruleset's chargen schema |
+| `request.file(text)`, `request.status()` | the front office (proposed: Ron Duvall) | `+request` and `+job` (`crates/mush-jobs/src/api.rs` `open_job`), the asker's own tickets only |
+| `help.topic(name)` | the docent (proposed: Sharon Norbury) | the help topics, verbatim |
 
 Four rules keep an interface NPC exactly as powerful as the person talking to it:
 
@@ -754,6 +770,9 @@ propellant, alignment bands). A WoD or Shadowrun ruleset registers pedestrians a
 
 ## 7. Build order and acceptance
 
+The build plan is [14-spatial-implementation-plan.md](14-spatial-implementation-plan.md); it
+splits cut 2 in two and adds the interface NPCs as their own cut, keeping this order.
+
 | # | Cut | Delivers | Proves (starter area as the fixture) | Depends on |
 |---|---|---|---|---|
 | 1 | `mush-content` + `mush-atlas` records | pack loader and latch lifted from `ruleset-tacsim` with update/retire; the `atlas` family; the rasterizer; `@atlas/pack`; first-boot starter packs; `+atlas` text views | both packs import in either order; unchanged reapply is a no-op; retire with references refused; boot makes no LLM call; the testkit stays minimal (P4, P8, P9, P10 for the atlas view) | nothing new |
@@ -796,5 +815,5 @@ pins both fine tile sets and the background; a hyphenated id is refused at load 
   lands (cut 2 chooses the record; the layer may absorb it).
 - The pedestrian encounter policy for unwatched hazard bands in city campaigns (a ruleset
   decision; the engine only exposes the band).
-- Names for the Economist and the Set Designer (Susie, Phil, Gretchen, Karen Smith and Regina are
-  the owner's, 2026-09-09).
+- The bench's remaining proposed assignments (Norbury, Duvall) await the owner's nod; every
+  named role is cast and Aaron drives the bus.
