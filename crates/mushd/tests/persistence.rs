@@ -2344,6 +2344,56 @@ async fn persisted_bans_load_into_ipguard_at_boot() {
     assert!(!guard.is_blocked("10.6.6.6".parse().unwrap()));
 }
 
+/// The all-in-one keeps the SINGLE shared guard: `@siteban` mirrors into the
+/// very `IpGuard` the listeners consult, so it bites instantly and needs no
+/// refresh at all. The forked gateway does need one (its guard is a different
+/// object over the same store), and the reload it runs must be safely
+/// repeatable — `load_sitebans` replaces the mirror wholesale, so running it
+/// over and over neither multiplies entries nor un-bans anything.
+#[tokio::test(flavor = "multi_thread")]
+async fn repeated_ban_reloads_leave_the_shared_guard_unchanged() {
+    let store: Arc<dyn ObjectStore> = Arc::new(InMemoryStore::new());
+    let guard = Arc::new(IpGuard::new());
+    let (sessions, handles) = boot_rig(&store, &guard).await;
+    let world = handles.handle.clone();
+    let mut god_rx = attach_direct(&sessions, &world, 1, GOD, "god").await;
+    let banned: IpAddr = "10.9.8.7".parse().unwrap();
+
+    god_cmd(&world, "@siteban 10.9.8.7=1h flooding the login").await;
+    expect_text(&mut god_rx, "@siteban: 10.9.8.7 banned until unix").await;
+    // In-process: one guard, no seam, no latency — the mirror is already right.
+    assert!(guard.is_blocked(banned));
+    assert_eq!(guard.siteban_count(), 1);
+
+    // The gateway's refresh step, run five times over the same store.
+    for _ in 0..5 {
+        let bans = store.get_bans().await.unwrap();
+        guard.load_sitebans(
+            bans.into_iter()
+                .filter_map(|b| b.ip.parse().ok().map(|ip| (ip, b.until_unix))),
+        );
+        assert_eq!(
+            guard.siteban_count(),
+            1,
+            "a wholesale reload must not multiply mirror entries"
+        );
+        assert!(guard.is_blocked(banned), "a reload must not un-ban");
+    }
+
+    // And a clear survives the same treatment.
+    god_cmd(&world, "@siteban/clear 10.9.8.7").await;
+    expect_text(&mut god_rx, "@siteban: ban on 10.9.8.7 lifted.").await;
+    for _ in 0..3 {
+        let bans = store.get_bans().await.unwrap();
+        guard.load_sitebans(
+            bans.into_iter()
+                .filter_map(|b| b.ip.parse().ok().map(|ip| (ip, b.until_unix))),
+        );
+        assert_eq!(guard.siteban_count(), 0);
+        assert!(!guard.is_blocked(banned));
+    }
+}
+
 // ---------------------------------------------------------------------------
 // 5. @dump rides the writer queue and confirms after the ack
 // ---------------------------------------------------------------------------

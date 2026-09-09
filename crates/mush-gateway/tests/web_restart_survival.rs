@@ -193,6 +193,7 @@ async fn start_split_web(launcher: Box<dyn ServerLauncher>) -> (SocketAddr, Rest
                 ssh_ready: None,
                 web_ready: Some(web_tx),
                 restart_ready: Some(restart_tx),
+                siteban_refresh: None,
             },
         ))
         .unwrap();

@@ -95,7 +95,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use mush_config::ipguard::IpGuard;
+use mush_config::ipguard::{IpGuard, SITEBAN_REFRESH};
 use mush_config::metrics::{LlmFeatureStat, LlmTodaySpend, Metrics, WorldSample};
 use mush_core::commands::movement::find_exit;
 use mush_core::{
@@ -7673,6 +7673,22 @@ async fn run_newchar(
     }
 }
 
+/// The sentence appended to every acknowledged `@siteban` set/clear.
+///
+/// The confirmation is gated on the STORE acknowledgement, never on the
+/// gateway: this half's own [`IpGuard`] is mirrored immediately, but in a
+/// forked deployment the guard that admits connections lives in the gateway
+/// process and re-seeds itself from the store on its own clock
+/// ([`SITEBAN_REFRESH`]). Staff who are told "banned" and then watch the
+/// address connect for another few seconds should know why before they file it
+/// as a bug.
+fn siteban_latency_note() -> String {
+    format!(
+        "Connection gateways re-read the ban list every {}s, so it can take that long to bite.",
+        SITEBAN_REFRESH.as_secs()
+    )
+}
+
 /// The sequential staff-op executor: one task, one queue, ops applied to
 /// the store (and mirrored into the [`IpGuard`]) strictly in the order
 /// staff issued them — a `@siteban/clear` can never lose to the `@siteban`
@@ -7702,10 +7718,11 @@ async fn staff_ops_loop(
             } => match store.set_ban(&ip.to_string(), until_unix, &reason).await {
                 Ok(()) => {
                     guard.set_siteban(ip, until_unix);
-                    match until_unix {
+                    let head = match until_unix {
                         None => format!("@siteban: {ip} banned permanently."),
                         Some(until) => format!("@siteban: {ip} banned until unix {until}."),
-                    }
+                    };
+                    format!("{head} {}", siteban_latency_note())
                 }
                 Err(e) => format!("@siteban failed: {e}"),
             },
@@ -7713,7 +7730,7 @@ async fn staff_ops_loop(
                 Ok(removed) => {
                     guard.clear_siteban(ip);
                     if removed {
-                        format!("@siteban: ban on {ip} lifted.")
+                        format!("@siteban: ban on {ip} lifted. {}", siteban_latency_note())
                     } else {
                         format!("@siteban: no ban on {ip}.")
                     }

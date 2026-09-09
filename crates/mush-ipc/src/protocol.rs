@@ -5,6 +5,26 @@
 //! former oneshot service calls (`CreatePlayer`/`NameFree`/`InInputContext`/
 //! `ConnectionReady`/`Barrier`) become correlated [`ServiceReq`]/[`ServiceResp`]
 //! pairs matched by a `u64` request id.
+//!
+//! # A new arm is not a free extension
+//!
+//! Adding a variant to either enum is wire-compatible in ONE direction only: a
+//! new peer reading an old peer's frames. The reverse — an old peer meeting a
+//! frame it has no arm for — is an rmp decode error, which [`crate::codec`]
+//! maps to an `io::Error` and [`crate::io`] treats as a dead boundary: the
+//! connection tears down and every player on it drops. Nor is there a
+//! gateway→server handshake to gate emission on ([`ToGateway::Hello`] carries
+//! `proto`/`features` server→gateway only; [`ToServer`] has no counterpart), so
+//! a sender cannot learn what its peer understands before it speaks.
+//!
+//! A new arm is therefore a deploy-order hazard, not an extension point, and
+//! the standing rule is: **reach for a new frame last.** Both halves already
+//! share the object store, so a fact one half needs from the other is usually
+//! already written down there, and re-reading it costs one small query and no
+//! version skew. The gateway's siteban mirror is the worked example —
+//! `@siteban` runs in the server, the guard that admits connections lives in
+//! the gateway, and the gap is closed by the gateway re-reading `ban:*` rather
+//! than by a `ToGateway::SetSiteban`.
 
 use mush_core::{
     AccountId, ActionOfferId, CommitToken, DisconnectKind, Inbound, ObjId, PerceivedRef,

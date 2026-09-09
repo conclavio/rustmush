@@ -324,6 +324,7 @@ async fn start_gateway(
                     ssh_ready: Some(ssh_tx),
                     web_ready: None,
                     restart_ready: Some(restart_tx),
+                    siteban_refresh: None,
                 },
             ))
             .unwrap();

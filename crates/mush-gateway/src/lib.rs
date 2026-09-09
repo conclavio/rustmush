@@ -35,7 +35,7 @@ use std::time::{Duration, Instant};
 
 use futures::future::BoxFuture;
 use mush_config::config::Config;
-use mush_config::ipguard::IpGuard;
+use mush_config::ipguard::{IpGuard, SITEBAN_REFRESH};
 use mush_config::metrics::Metrics;
 use mush_core::DisconnectKind;
 use mush_ipc::{
@@ -157,6 +157,11 @@ pub struct GatewayOptions {
     /// that do not need to trigger restarts (or non-supervised
     /// [`ServerSource::Connect`], where it never fires).
     pub restart_ready: Option<oneshot::Sender<RestartTrigger>>,
+    /// How often the siteban mirror is re-seeded from the store. `None` uses
+    /// [`SITEBAN_REFRESH`] (production). Tests shorten it so a `@siteban`
+    /// issued on the server half bites within the test's patience rather than
+    /// within the operator's.
+    pub siteban_refresh: Option<Duration>,
 }
 
 /// The bounded shared table of parked service-request waiters, plus a `down`
@@ -732,6 +737,109 @@ impl BoundaryHandle {
     /// Whether the boundary is currently in a restart gap.
     fn is_restarting(&self) -> bool {
         self.restarting.load(Ordering::SeqCst)
+    }
+}
+
+/// The gateway's siteban mirror keeper.
+///
+/// `@siteban` runs in the SERVER half: it writes `ban:{ip}` through the store,
+/// waits for the acknowledgement, and mirrors the ban into *its* [`IpGuard`].
+/// In the forked deployment that guard admits nothing — the guard the SSH and
+/// web listeners consult lives here, in the gateway, and was seeded once at
+/// boot. So a staff `@siteban` used to persist correctly and never take effect
+/// until the gateway was restarted.
+///
+/// The fix is deliberately NOT a new `ToGateway` frame. An unknown enum arm is
+/// an rmp decode error, which [`gateway_reader`] maps to a boundary teardown
+/// that drops every player, and there is no gateway→server handshake to gate
+/// emission on ([`ToGateway::Hello`] carries `proto`/`features` one way only) —
+/// so a new frame would be an unavoidable deploy-order hazard. Both halves
+/// already share the store, so the gateway simply re-reads it: every
+/// [`SitebanMirror::interval`] it replaces the whole mirror from `ban:*`, which
+/// propagates a set, a clear and an expiry alike, and then drops any live
+/// connection whose peer address the refreshed mirror now blocks.
+#[derive(Clone)]
+struct SitebanMirror {
+    store: Arc<dyn ObjectStore>,
+    guard: Arc<IpGuard>,
+    sessions: Arc<SessionManager>,
+    /// Reporting a drop needs the CURRENT boundary: a detach the server never
+    /// hears about would leave it announcing a player who is gone.
+    boundary: BoundaryHandle,
+    interval: Duration,
+}
+
+impl SitebanMirror {
+    /// Re-seed the mirror from the store and enforce it against live
+    /// connections. Returns the number of connections dropped. A store read
+    /// failure leaves the previous mirror in place — a transient Redis blip
+    /// must never un-ban the site.
+    async fn refresh(&self) -> usize {
+        let bans = match self.store.get_bans().await {
+            Ok(bans) => bans,
+            Err(e) => {
+                tracing::warn!(error = %e, "siteban refresh failed; keeping the current mirror");
+                return 0;
+            }
+        };
+        // `load_sitebans` replaces the mirror wholesale and drops entries that
+        // have already expired, so this one call covers set, clear and expiry.
+        self.guard.load_sitebans(
+            bans.into_iter()
+                .filter_map(|b| b.ip.parse().ok().map(|ip| (ip, b.until_unix))),
+        );
+        self.drop_banned_connections()
+    }
+
+    /// Close every live connection whose peer address the mirror now blocks
+    /// (owner decision: a siteban ejects, it does not merely lock the door
+    /// behind the people already inside). Idempotent — the connections it
+    /// drops are gone by the next pass.
+    fn drop_banned_connections(&self) -> usize {
+        if self.guard.siteban_count() == 0 {
+            return 0;
+        }
+        let Some(conn) = self.boundary.current() else {
+            // Restart gap: the server cannot be told about the detach yet. The
+            // mirror is already refreshed, so new connections stay refused, and
+            // the re-seed on reconnect ejects these the moment the boundary is
+            // back.
+            return 0;
+        };
+        let to_server_tx = conn.tx.clone();
+        let now = mush_config::unix_now_s();
+        let mut dropped = 0usize;
+        for meta in self.sessions.who() {
+            for handle in self.sessions.conns_of_session(meta.sess) {
+                if !self.guard.siteban_active_at(handle.addr, now) {
+                    continue;
+                }
+                detach_one_conn(
+                    &self.sessions,
+                    &to_server_tx,
+                    handle.id.0,
+                    DetachCause::Booted,
+                );
+                dropped += 1;
+            }
+        }
+        if dropped > 0 {
+            tracing::info!(dropped, "siteban refresh ejected live connections");
+        }
+        dropped
+    }
+}
+
+/// The refresh task: one small store read per [`SitebanMirror::interval`], for
+/// the gateway's whole lifetime.
+async fn siteban_refresh_loop(mirror: SitebanMirror) {
+    let mut ticker = tokio::time::interval(mirror.interval);
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    // The first tick completes immediately; the boot seed already happened.
+    ticker.tick().await;
+    loop {
+        ticker.tick().await;
+        mirror.refresh().await;
     }
 }
 
@@ -1871,6 +1979,10 @@ impl CrashGuard {
 /// reconnect and re-attach the held sessions, and resume. Gives up (telling
 /// players) if the crash-loop guard trips (R3). Returns when the supervisor can
 /// no longer keep a server up.
+// Eight collaborators, each already its own type: bundling them into a
+// "supervisor env" struct would only move the list, and the siteban mirror in
+// particular is built after the boundary env is (it needs the store).
+#[allow(clippy::too_many_arguments)]
 async fn supervise(
     launcher: Box<dyn ServerLauncher>,
     boundary: BoundaryHandle,
@@ -1879,6 +1991,7 @@ async fn supervise(
     first_instance: LaunchedServer,
     first_wired: WiredBoundary,
     env: BoundaryEnv,
+    siteban_mirror: SitebanMirror,
 ) {
     let mut instance = first_instance;
     let mut wired = first_wired;
@@ -1999,6 +2112,11 @@ async fn supervise(
         // publish the fresh boundary and tell players input is safe again. ---
         boundary.connect(Arc::clone(&new_wired.conn));
         broadcast(&sessions, reconnected_notice());
+        // Re-seed the siteban mirror on every reconnect, not just on the
+        // periodic tick: a ban staff issued while the boundary was down (or one
+        // whose ejection the gap swallowed) heals here instead of waiting out
+        // the interval with the banned address still connected.
+        siteban_mirror.refresh().await;
         instance = new_instance;
         wired = new_wired;
     }
@@ -2125,12 +2243,19 @@ pub async fn serve(config: Config, opts: GatewayOptions) -> Result<(), String> {
     };
 
     let guard = Arc::new(IpGuard::new());
-    if let Ok(bans) = store.get_bans().await {
-        guard.load_sitebans(
-            bans.into_iter()
-                .filter_map(|b| b.ip.parse().ok().map(|ip| (ip, b.until_unix))),
-        );
-    }
+    // Seed the siteban mirror, then keep seeding it. `@siteban` lands in the
+    // SERVER half's guard, which admits nothing in a forked deployment; this
+    // task is the only thing that carries a staff ban across the fork without
+    // a restart (and without a new boundary frame — see `SitebanMirror`).
+    let siteban_mirror = SitebanMirror {
+        store: Arc::clone(&store),
+        guard: Arc::clone(&guard),
+        sessions: Arc::clone(&sessions),
+        boundary: boundary.clone(),
+        interval: opts.siteban_refresh.unwrap_or(SITEBAN_REFRESH),
+    };
+    siteban_mirror.refresh().await;
+    let siteban_task = tokio::spawn(siteban_refresh_loop(siteban_mirror.clone()));
 
     let link_dyn: Arc<dyn GatewayLink> = link;
     let accounts = Arc::new(Accounts::with_link(
@@ -2255,6 +2380,7 @@ pub async fn serve(config: Config, opts: GatewayOptions) -> Result<(), String> {
                 first_instance,
                 first_wired,
                 env,
+                siteban_mirror,
             ));
             let _ = tokio::signal::ctrl_c().await;
             tracing::info!("gateway shutting down");
@@ -2262,6 +2388,7 @@ pub async fn serve(config: Config, opts: GatewayOptions) -> Result<(), String> {
             stop_web(web_stop, web_join).await;
             discord.stop().await;
             sup.abort();
+            siteban_task.abort();
         }
         None => {
             // Non-supervised Connect (M16b): keep the first boundary alive (its
@@ -2275,6 +2402,7 @@ pub async fn serve(config: Config, opts: GatewayOptions) -> Result<(), String> {
             listener.stop_accepting();
             stop_web(web_stop, web_join).await;
             discord.stop().await;
+            siteban_task.abort();
         }
     }
     Ok(())
@@ -2472,6 +2600,96 @@ mod tests {
 
     fn addr(last: u8) -> IpAddr {
         IpAddr::V4(Ipv4Addr::new(127, 0, 0, last))
+    }
+
+    /// The refresh replaces the mirror wholesale, so running it repeatedly is
+    /// a no-op: entries never multiply, and a clear propagates the same way a
+    /// set does.
+    #[tokio::test]
+    async fn siteban_refresh_reloads_wholesale_and_is_idempotent() {
+        let store: Arc<dyn ObjectStore> = Arc::new(mush_store::InMemoryStore::new());
+        let guard = Arc::new(IpGuard::new());
+        let mirror = SitebanMirror {
+            store: Arc::clone(&store),
+            guard: Arc::clone(&guard),
+            sessions: Arc::new(SessionManager::new()),
+            // No boundary: a refresh during a restart gap still updates the
+            // mirror, it just cannot report a detach to a server that is gone.
+            boundary: BoundaryHandle::default(),
+            interval: SITEBAN_REFRESH,
+        };
+
+        store.set_ban("127.0.0.9", None, "wholesale").await.unwrap();
+        for _ in 0..5 {
+            assert_eq!(mirror.refresh().await, 0, "no live connections to eject");
+        }
+        assert_eq!(
+            guard.siteban_count(),
+            1,
+            "repeated reloads must not multiply mirror entries"
+        );
+        assert!(guard.is_blocked(addr(9)));
+
+        // A clear crosses the same way a set does — the mirror is replaced, not
+        // merged into.
+        store.clear_ban("127.0.0.9").await.unwrap();
+        mirror.refresh().await;
+        assert_eq!(guard.siteban_count(), 0);
+        assert!(!guard.is_blocked(addr(9)));
+    }
+
+    /// The eject limb: a refresh that finds a live connection from a banned
+    /// address detaches it AND tells the server, so the world announces the
+    /// disconnect instead of talking to a socket that is already closing.
+    #[tokio::test]
+    async fn siteban_refresh_ejects_live_connections_from_banned_addresses() {
+        let sessions = Arc::new(SessionManager::new());
+        let (output_tx, _output_rx) = mpsc::channel::<Arc<OutputEvent>>(8);
+        let handle = ConnectionHandle::new(ConnId(5), addr(9), ansi_caps(false), output_tx);
+        sessions.attach(handle, CharKey(42), "boss".to_string());
+        let (other_tx, _other_rx) = mpsc::channel::<Arc<OutputEvent>>(8);
+        let other = ConnectionHandle::new(ConnId(6), addr(8), ansi_caps(false), other_tx);
+        sessions.attach(other, CharKey(43), "innocent".to_string());
+
+        let (raw_tx, mut raw_rx) = mpsc::unbounded_channel::<ToServer>();
+        let (tx, _metrics, _lifecycle) = test_tx(raw_tx, usize::MAX, 0);
+        let boundary = BoundaryHandle::default();
+        boundary.connect(Arc::new(BoundaryConn {
+            tx,
+            pending: SocketGatewayLink::pending_table(),
+        }));
+
+        let store: Arc<dyn ObjectStore> = Arc::new(mush_store::InMemoryStore::new());
+        store.set_ban("127.0.0.9", None, "eject").await.unwrap();
+        let guard = Arc::new(IpGuard::new());
+        let mirror = SitebanMirror {
+            store,
+            guard,
+            sessions: Arc::clone(&sessions),
+            boundary,
+            interval: SITEBAN_REFRESH,
+        };
+
+        assert_eq!(
+            mirror.refresh().await,
+            1,
+            "the banned connection is ejected"
+        );
+        assert!(sessions.conn_handle(ConnId(5)).is_none());
+        assert!(
+            sessions.conn_handle(ConnId(6)).is_some(),
+            "an unbanned address keeps playing"
+        );
+        match raw_rx.try_recv() {
+            Ok(ToServer::Inbound(WireInbound::ConnDown { conn, reason, .. })) => {
+                assert_eq!(conn, 5);
+                assert_eq!(reason, DisconnectKind::Boot);
+            }
+            other => panic!("expected a ConnDown for the ejected connection, got {other:?}"),
+        }
+
+        // Idempotent: the second pass has nothing left to eject.
+        assert_eq!(mirror.refresh().await, 0);
     }
 
     /// `CloseWebSessions` resolution (D4): only the **structured** (web)
@@ -2852,6 +3070,13 @@ mod tests {
             input_custody: Arc::new(Mutex::new(InputCustody::default())),
         };
 
+        let siteban_mirror = SitebanMirror {
+            store: Arc::new(mush_store::InMemoryStore::new()),
+            guard: Arc::new(IpGuard::new()),
+            sessions: Arc::clone(&sessions),
+            boundary: boundary.clone(),
+            interval: SITEBAN_REFRESH,
+        };
         let supervisor = tokio::spawn(supervise(
             launcher,
             boundary.clone(),
@@ -2860,6 +3085,7 @@ mod tests {
             first_instance,
             first_wired,
             env,
+            siteban_mirror,
         ));
         tokio::task::yield_now().await;
         tokio::time::advance(EXIT_WAIT + Duration::from_millis(1)).await;

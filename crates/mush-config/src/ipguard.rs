@@ -13,11 +13,27 @@
 //! the persisted set at boot ([`IpGuard::load_sitebans`]) and updates the
 //! mirror after every acknowledged `@siteban` store write. Expiry is
 //! checked lazily against the wall clock (mirroring the store's TTL).
+//!
+//! In the **forked** deployment that `set_siteban` call lands in the SERVER
+//! process, while the guard that actually admits connections lives in the
+//! GATEWAY process — a different `IpGuard` over the same store. The gateway
+//! closes that gap by re-seeding its mirror from `ban:*` every
+//! [`SITEBAN_REFRESH`], which is why the constant lives here (both halves
+//! quote it: the gateway to schedule the refresh, the server to tell staff
+//! how long their `@siteban` takes to bite).
 
 use std::net::IpAddr;
 use std::time::{Duration, Instant};
 
 use dashmap::DashMap;
+
+/// How often a connection-owning gateway re-reads the persisted siteban set
+/// into its [`IpGuard`] mirror, and therefore the worst-case latency between
+/// an acknowledged `@siteban` store write and the address being refused.
+///
+/// A whole-mirror reload is one small store read, so this can be short; it is
+/// not so short that a fleet of gateways becomes a poll storm.
+pub const SITEBAN_REFRESH: Duration = Duration::from_secs(10);
 
 /// Tunables for [`IpGuard`].
 #[derive(Clone, Copy, Debug)]

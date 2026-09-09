@@ -242,6 +242,7 @@ async fn start_split(launcher: Box<dyn ServerLauncher>) -> (SocketAddr, RestartT
                 ssh_ready: Some(ssh_tx),
                 web_ready: None,
                 restart_ready: Some(restart_tx),
+                siteban_refresh: None,
             },
         ))
         .unwrap();
@@ -399,6 +400,7 @@ async fn server_restart_keeps_connections_and_world() {
                 ssh_ready: Some(ssh_tx),
                 web_ready: None,
                 restart_ready: Some(restart_tx),
+                siteban_refresh: None,
             },
         ))
         .unwrap();

@@ -120,6 +120,7 @@ async fn boot_split_web(
                 ssh_ready: Some(ssh_tx),
                 web_ready: Some(web_tx),
                 restart_ready: None,
+                siteban_refresh: None,
             },
         ))
         .unwrap();

@@ -222,6 +222,7 @@ async fn two_process_connect_play_boot_disconnect() {
                 ssh_ready: Some(ssh_tx),
                 web_ready: None,
                 restart_ready: None,
+                siteban_refresh: None,
             },
         ))
         .unwrap();
@@ -322,6 +323,7 @@ async fn boot_split(
                 ssh_ready: Some(ssh_tx),
                 web_ready: None,
                 restart_ready: None,
+                siteban_refresh: None,
             },
         ))
         .unwrap();
@@ -420,5 +422,220 @@ async fn two_process_multiconnect_linkdead_and_newpassword() {
 
     drop(god1);
     drop(god2);
+    let _ = (server_thread, gateway_thread);
+}
+
+// ---------------------------------------------------------------------------
+// The siteban seam (WS02-S7): `@siteban` runs in the SERVER half and mirrors
+// the ban into the SERVER's `IpGuard` — which, in a fork, admits nothing. The
+// guard the SSH listener actually consults lives in the GATEWAY, and used to be
+// seeded once at boot: a staff ban persisted correctly and never took effect
+// until the gateway was restarted. The gateway now re-reads `ban:*` from the
+// shared store on a fixed interval, so a set, a clear and an expiry all
+// propagate across the fork with no new boundary frame and no restart.
+// ---------------------------------------------------------------------------
+
+/// The refresh interval used while a staff confirmation is in flight. It is
+/// deliberately not the shortest interval the mechanism allows: the ban ejects
+/// the staff member who issued it (everyone here speaks from loopback), so the
+/// confirmation needs room to reach the terminal before the socket closes.
+/// Production is `SITEBAN_REFRESH` (10s); this is the same mechanism on a
+/// shorter clock, not a different one.
+const BAN_REFRESH: Duration = Duration::from_secs(1);
+
+/// The refresh interval for the expiry proof, where nothing is in flight and a
+/// tight loop just means a shorter test.
+const EXPIRY_REFRESH: Duration = Duration::from_millis(250);
+
+/// Boot a server + gateway pair sharing ONE store, exactly as the split
+/// deployment shares one Redis. That sharing is the whole mechanism: the server
+/// half writes `ban:{ip}`, the gateway half reads it back.
+async fn boot_split_sharing_store(
+    tag: &str,
+    store: Arc<dyn ObjectStore>,
+    refresh: Duration,
+) -> (
+    SocketAddr,
+    std::thread::JoinHandle<()>,
+    std::thread::JoinHandle<()>,
+) {
+    let (ipc_tx, ipc_rx) = tokio::sync::oneshot::channel();
+    let server_cfg = test_config(&format!("{tag}-server"));
+    let server_store = Arc::clone(&store);
+    let server_thread = std::thread::spawn(move || {
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(mush_server::serve_with_store(
+            server_cfg,
+            Some(ipc_tx),
+            Some(server_store),
+        ))
+        .unwrap();
+    });
+    let endpoint = tokio::time::timeout(Duration::from_secs(30), ipc_rx)
+        .await
+        .expect("server bound its IPC socket")
+        .expect("ipc endpoint");
+
+    // Seed the wizard account AFTER the server has seeded its world into the
+    // same store, so the two never race over a fresh one.
+    store
+        .create_account(AccountRec {
+            id: None,
+            name: "boss".to_string(),
+            argon2_hash: hash_password(GM_PASSWORD).unwrap(),
+            created: 0,
+            characters: vec![CharacterRef {
+                id: GOD,
+                name: "God".to_string(),
+            }],
+            ssh_keys: vec![],
+            discord: None,
+        })
+        .await
+        .unwrap();
+
+    let (ssh_tx, ssh_rx) = tokio::sync::oneshot::channel();
+    let gw_cfg = test_config(&format!("{tag}-gateway"));
+    let gateway_thread = std::thread::spawn(move || {
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(mush_gateway::serve(
+            gw_cfg,
+            GatewayOptions {
+                source: ServerSource::Connect(endpoint),
+                store: Some(store),
+                ssh_ready: Some(ssh_tx),
+                web_ready: None,
+                restart_ready: None,
+                siteban_refresh: Some(refresh),
+            },
+        ))
+        .unwrap();
+    });
+    let ssh_addr = tokio::time::timeout(Duration::from_secs(30), ssh_rx)
+        .await
+        .expect("gateway bound SSH")
+        .expect("ssh addr");
+    (ssh_addr, server_thread, gateway_thread)
+}
+
+/// Try the anonymous front door. `false` when the gateway refuses the address —
+/// a live siteban rejects `auth_none` before a welcome screen ever exists.
+async fn front_door_admits(addr: SocketAddr) -> bool {
+    let config = Arc::new(russh::client::Config::default());
+    match russh::client::connect(config, addr, AcceptAll).await {
+        Ok(mut handle) => matches!(handle.authenticate_none("play").await, Ok(a) if a.success()),
+        Err(_) => false,
+    }
+}
+
+/// Poll the front door until it reports `want`, or fail the test.
+async fn wait_front_door(addr: SocketAddr, want: bool, poll: Duration, what: &str) {
+    let deadline = tokio::time::Instant::now() + STEP_TIMEOUT;
+    loop {
+        if front_door_admits(addr).await == want {
+            return;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "timeout waiting for the gateway to {what}"
+        );
+        tokio::time::sleep(poll).await;
+    }
+}
+
+/// The core defect: a staff `@siteban` issued in the server half must reach the
+/// gateway's admission guard without a gateway restart.
+///
+/// Pre-fix, the marked assertions below fail — the gateway seeded its mirror
+/// once at boot, so a brand-new connection from the banned address sailed
+/// through the front door and the already-connected player kept playing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn split_siteban_reaches_the_gateway_without_a_restart() {
+    let store: Arc<dyn ObjectStore> = Arc::new(InMemoryStore::new());
+    let (ssh_addr, server_thread, gateway_thread) =
+        boot_split_sharing_store("siteban", Arc::clone(&store), BAN_REFRESH).await;
+
+    let (_g, mut god) = play_client(ssh_addr).await;
+    god.send_line(&format!("connect boss {GM_PASSWORD}")).await;
+    god.expect("Connected as God (account boss, 1 connection).")
+        .await;
+
+    // Every client in this rig speaks from loopback, so staff ban themselves
+    // along with everyone else — which is exactly what makes the eject limb
+    // observable on God's own channel.
+    let after_ban = god.mark();
+    god.send_line("@siteban 127.0.0.1=1h split-seam proof")
+        .await;
+    god.expect_after(after_ban, "@siteban: 127.0.0.1 banned until unix")
+        .await;
+    // The confirmation says out loud that it is gated on the store, not on the
+    // gateway, so staff do not read the refresh window as a bug. (The needle is
+    // short because the note wraps at the 80-column pty.)
+    god.expect_after(after_ban, "ban list every").await;
+    assert_eq!(store.get_bans().await.unwrap().len(), 1, "ban persisted");
+
+    // 1. The established connection from the newly banned address is dropped.
+    god.expect_close().await;
+
+    // 2. A NEW connection attempt is refused. THIS is the pre-fix failure: the
+    //    gateway's boot-seeded mirror knew nothing about the ban and admitted
+    //    the address.
+    wait_front_door(
+        ssh_addr,
+        false,
+        BAN_REFRESH,
+        "refuse the newly banned address",
+    )
+    .await;
+
+    // 3. Lifting re-admits on the next refresh. `@siteban/clear` writes exactly
+    //    this store record and nothing else; it is issued through the store
+    //    here because the ban just locked every staff member out of the game.
+    store.clear_ban("127.0.0.1").await.unwrap();
+    wait_front_door(ssh_addr, true, BAN_REFRESH, "re-admit the lifted address").await;
+
+    // ...and the front door is a real front door again.
+    let (_g2, mut god2) = play_client(ssh_addr).await;
+    god2.send_line(&format!("connect boss {GM_PASSWORD}")).await;
+    god2.expect("Connected as God (account boss, 1 connection).")
+        .await;
+
+    drop(god);
+    drop(god2);
+    let _ = (server_thread, gateway_thread);
+}
+
+/// A ban that lapses by its own `until_unix` stops blocking with no command run
+/// anywhere and no restart: the refresh replaces the mirror wholesale, and
+/// `load_sitebans` drops what has already expired on the way in.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn split_siteban_expiry_stops_blocking_without_any_command() {
+    let store: Arc<dyn ObjectStore> = Arc::new(InMemoryStore::new());
+    let (ssh_addr, server_thread, gateway_thread) =
+        boot_split_sharing_store("expiry", Arc::clone(&store), EXPIRY_REFRESH).await;
+
+    // Timed from AFTER boot, so a slow boot cannot expire the ban before the
+    // test has looked at it once.
+    store
+        .set_ban("127.0.0.1", Some(mush_config::unix_now_s() + 4), "lapses")
+        .await
+        .unwrap();
+    wait_front_door(
+        ssh_addr,
+        false,
+        EXPIRY_REFRESH,
+        "refuse the timed ban's address",
+    )
+    .await;
+
+    // No `@siteban/clear`, no restart: just the clock.
+    wait_front_door(ssh_addr, true, EXPIRY_REFRESH, "forget the expired ban").await;
+
     let _ = (server_thread, gateway_thread);
 }

@@ -48,6 +48,7 @@ fn main() -> ExitCode {
         ssh_ready: None,
         web_ready: None,
         restart_ready: None,
+        siteban_refresh: None,
     };
     match runtime.block_on(serve(config, opts)) {
         Ok(()) => ExitCode::SUCCESS,
