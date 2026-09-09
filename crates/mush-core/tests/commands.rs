@@ -4,8 +4,8 @@
 //! ("@dig/@desc/look/say/pose/movement in in-process tests").
 
 use mush_core::{
-    AliasOutcome, AliasStage, Audience, Flags, GOD, LIMBO, ObjId, ObjKind, Outbox, Powers,
-    Registry, World, dispatch, register_core_commands,
+    AliasOutcome, AliasStage, Attr, AttrFlags, Audience, Flags, GOD, LIMBO, ObjId, ObjKind, Outbox,
+    Powers, Registry, World, dispatch, register_core_commands,
 };
 use mush_proto::{NarrativeKind, OutputEvent};
 
@@ -1405,6 +1405,128 @@ fn speech_lock_gates_room_speech() {
     let out = g.run(ann, "whisper Bob=psst");
     assert_error_contains(&out, ann, "You whisper \"psst\" to Bob.");
     let _ = bob;
+}
+
+/// Put `name`=`value` on `id` carrying `flags`. `examine` is the only thing
+/// that has ever enforced the read flags, so a test that wants one has to set
+/// it through the World rather than through `@set`.
+fn set_flagged_attr(g: &mut Game, id: ObjId, name: &str, value: &str, flags: AttrFlags) {
+    let mut a = Attr::text(value, GOD);
+    a.flags = flags;
+    g.w.set_attr(id, name, a).unwrap();
+}
+
+/// A world where Ann carries `wod:secret`=`value` under `flags` and Limbo's
+/// speech lock is `key`; returns what Ann gets back for trying to speak.
+fn speech_probe(value: &str, flags: AttrFlags, key: &str) -> (Vec<String>, Vec<String>) {
+    let mut g = Game::new();
+    let ann = g.ann;
+    set_flagged_attr(&mut g, ann, "wod:secret", value, flags);
+    let set = g.run(GOD, &format!("@lock/speech here={key}"));
+    assert_error_contains(&set, GOD, "Locked.");
+    let out = g.run(ann, "say hi");
+    (actor_texts(&out, ann), room_texts(&out, LIMBO))
+}
+
+#[test]
+fn a_lock_key_cannot_probe_a_read_restricted_attribute() {
+    // The unflagged baseline: an attribute lock is a real gate, and it is the
+    // *value* that decides. This is the oracle the flags have to close.
+    let (hit, room) = speech_probe("Ventrue", AttrFlags::empty(), "wod:secret:V*");
+    assert!(
+        hit.is_empty(),
+        "an unflagged match must still pass: {hit:?}"
+    );
+    assert!(room.iter().any(|t| t == "hi"), "{room:?}");
+    let (miss, room) = speech_probe("Tremere", AttrFlags::empty(), "wod:secret:V*");
+    assert!(
+        miss.iter().any(|t| t == "You can't speak here."),
+        "an unflagged miss must still refuse: {miss:?}"
+    );
+    assert!(room.is_empty(), "{room:?}");
+
+    for flag in [AttrFlags::WIZARD_ONLY, AttrFlags::SELF_ONLY] {
+        // A key over a read-restricted attribute is refused, and refused
+        // *identically* whether the value matches the glob or not: the two
+        // outcomes differed above, so if they still differ here the lock is a
+        // one-bit read of an attribute `examine` would not show.
+        let (hit, hit_room) = speech_probe("Ventrue", flag, "wod:secret:V*");
+        let (miss, miss_room) = speech_probe("Tremere", flag, "wod:secret:V*");
+        assert!(
+            hit.iter().any(|t| t == "You can't speak here."),
+            "{flag:?} must fail closed: {hit:?}"
+        );
+        assert_eq!(hit, miss, "{flag:?} leaks the value through the refusal");
+        assert!(
+            hit_room.is_empty() && miss_room.is_empty(),
+            "speech escaped"
+        );
+
+        // Negated, the term must still be false — not true. `Tremere` does
+        // not match `V*`, so an ordinary `!` key would open here; the
+        // restricted read has to poison the `!` above it instead of handing
+        // back a plain `false` for it to invert.
+        let (neg, neg_room) = speech_probe("Tremere", flag, "!wod:secret:V*");
+        assert!(
+            neg.iter().any(|t| t == "You can't speak here."),
+            "{flag:?} negated into a pass: {neg:?}"
+        );
+        assert!(neg_room.is_empty(), "{neg_room:?}");
+
+        // And it poisons the key it sits in rather than reading as one false
+        // term: a disjunction whose other branch is reached only after the
+        // restricted read does not open either.
+        let (dis, dis_room) = speech_probe("Tremere", flag, "wod:secret:V*|#TRUE");
+        assert!(
+            dis.iter().any(|t| t == "You can't speak here."),
+            "{flag:?} was absorbed as a plain false: {dis:?}"
+        );
+        assert!(dis_room.is_empty(), "{dis_room:?}");
+    }
+
+    // HIDDEN is the documented carve-out: `examine/all` shows a hidden
+    // attribute to any examiner with no role test, so it is a display flag,
+    // not a confidentiality boundary — and honouring it would let a player
+    // defeat every attribute lock aimed at them by flagging their own
+    // attribute. It still matches. Changing that is a deliberate act.
+    let (hidden, room) = speech_probe("Ventrue", AttrFlags::HIDDEN, "wod:secret:V*");
+    assert!(hidden.is_empty(), "HIDDEN must still match: {hidden:?}");
+    assert!(room.iter().any(|t| t == "hi"), "{room:?}");
+}
+
+#[test]
+fn a_page_lock_cannot_probe_a_read_restricted_attribute() {
+    // Bob is a builder, not staff: he cannot `examine` Ann's WIZARD_ONLY
+    // attribute, so he must not be able to spell it out one `@lock/page` at a
+    // time either. Whether his page arrives is the bit he would be reading.
+    for flag in [AttrFlags::WIZARD_ONLY, AttrFlags::SELF_ONLY] {
+        let mut refusals = Vec::new();
+        for value in ["Ventrue", "Tremere"] {
+            let mut g = Game::new();
+            let (ann, bob) = (g.ann, g.bob);
+            set_flagged_attr(&mut g, ann, "wod:secret", value, flag);
+            g.run(bob, "@lock/page me=wod:secret:V*");
+            let out = g.run(ann, "page Bob=hello?");
+            assert_error_contains(&out, ann, "does not wish to be disturbed");
+            assert!(
+                out.events().iter().all(|(a, _)| *a != Audience::Actor(bob)),
+                "a refused page must deliver nothing: {:?}",
+                out.events()
+            );
+            refusals.push(actor_texts(&out, ann));
+        }
+        assert_eq!(
+            refusals[0], refusals[1],
+            "{flag:?} leaks the value through the page refusal"
+        );
+    }
+    // Unflagged, the same key still works as a lock in both directions.
+    let mut g = Game::new();
+    let (ann, bob) = (g.ann, g.bob);
+    set_flagged_attr(&mut g, ann, "wod:secret", "Ventrue", AttrFlags::empty());
+    g.run(bob, "@lock/page me=wod:secret:V*");
+    let out = g.run(ann, "page Bob=hello?");
+    assert_error_contains(&out, ann, "You paged Bob");
 }
 
 #[test]
