@@ -1,5 +1,9 @@
 # 14a — The integrated spatial/room system: owner questions
 
+**Answered 2026-09-09: the owner took every recommended option (1A–29A) and the §5 defaults, with
+seven sharpenings recorded in §8; all binding. Doc [14](14-spatial-room-system.md) is written from
+them.**
+
 **Draft 0.1 — 2026-09-09.** The survey the owner answers before doc 14 — the design proposal for
 one integrated spatial/room system — is written **from first principles** off the inputs in §1 and
 the answers here, in the shape of [10a](10a-tacsim-e7-owner-questions.md) and
@@ -463,35 +467,57 @@ tier** (owner supplies the word). **29C — other** (owner supplies).
 
 ## 7. Answer sheet
 
-| Q | Recommended | Your answer |
+| Q | Recommended | Owner's answer (2026-09-09) |
 |---|---|---|
-| 1 | 1A | |
-| 2 | 2A | |
-| 3 | 3A | |
-| 4 | 4A | |
-| 5 | 5A | |
-| 6 | 6A | |
-| 7 | 7A | |
-| 8 | 8A | |
-| 9 | 9A | |
-| 10 | 10A | |
-| 11 | 11A | |
-| 12 | 12A | |
-| 13 | 13A | |
-| 14 | 14A | |
-| 15 | 15A | |
-| 16 | 16A | |
-| 17 | 17A | |
-| 18 | 18A | |
-| 19 | 19A | |
-| 20 | 20A | |
-| 21 | 21A | |
-| 22 | 22A | |
-| 23 | 23A | |
-| 24 | 24A | |
-| 25 | 25A | |
-| 26 | 26A | |
-| 27 | 27A | |
-| 28 | 28A | |
-| 29 | 29A | |
-| I1–I9 | defaults in §5 | |
+| 1 | 1A | **1A** |
+| 2 | 2A | **2A** |
+| 3 | 3A | **3A** |
+| 4 | 4A | **4A, sharpened**: strike hexes everywhere; square grids for all maps (§8 S1) |
+| 5 | 5A | **5A** |
+| 6 | 6A | **6A** |
+| 7 | 7A | **7A** |
+| 8 | 8A | **8A** |
+| 9 | 9A | **9A** |
+| 10 | 10A | **10A, sharpened**: the engine defines the world; rulesets add definitions (§8 S2) |
+| 11 | 11A | **11A** |
+| 12 | 12A | **12A** |
+| 13 | 13A | **13A** |
+| 14 | 14A | **14A**; WoD runs IC at a multiple of real time, travel takes its IC time with a cap (§8 S7) |
+| 15 | 15A | **15A** |
+| 16 | 16A | **16A** |
+| 17 | 17A | **17A** |
+| 18 | 18A | **18A** |
+| 19 | 19A | **19A** |
+| 20 | 20A | **20A** |
+| 21 | 21A | **21A** |
+| 22 | 22A | **22A**; $5 hard cap, $2 target (§8 S6) |
+| 23 | 23A | **23A** |
+| 24 | 24A | **24A** |
+| 25 | 25A | **25A, sharpened**: cap 2, staff-settable per character, strikes to zero, good conduct earns more (§8 S3) |
+| 26 | 26A | **26A, sharpened**: ship built, and ship the brief so it can be reconceptualized (§8 S4) |
+| 27 | 27A | **27A** |
+| 28 | 28A | **28A** |
+| 29 | 29A | **29A** |
+| I1–I9 | defaults in §5 | **defaults**, except I3 ($5 hard / $2 target), I7 (SSH first, §8 S5), I8 (no hexes) |
+
+## 8. The owner's sharpenings (2026-09-09, binding)
+
+- **S1 — No hexes.** "Remove any references to hexes because they're difficult to display in
+  text/SSH; prefer an x-y grid for all maps." Applies to every map, driver and document; doc 14
+  D-14-4 records it and §8 there lists the superseded hex references in docs 04, 06 and 10.
+- **S2 — The engine defines the world.** Terrain types and the movement impacts on bipeds,
+  wheeled and tracked movers are engine-level concepts; rulesets provide definitions such as
+  weapons that use the engine's line-of-sight, projectile and laser/energy rules, and may extend
+  the vocabularies. Doc 14 §5.
+- **S3 — Caps are staff-settable with strikes.** The default cap of two outstanding reviews is
+  per character and staff-settable; a player who behaves earns a higher cap; one who generates
+  trash earns strikes and is set to zero. Doc 14 §4.5.
+- **S4 — Built and reconceptualizable.** Ship a built starter area with no LLM involvement, and
+  ship its brief, so a staffer can re-run the authoring workflow from the Staff Lobby brief with
+  different answers. Doc 14 §3.7.
+- **S5 — SSH first for maps.** Anything SSH can display the web can display; the reverse is not
+  true; the SSH client must never be unable to show something critical. Doc 14 §6.
+- **S6 — Cost.** $5 is an appropriate hard limit for a large neighborhood; $2 a reasonable
+  average target. Doc 14 §4.1.
+- **S7 — WoD time.** WoD campaigns run IC time at a multiple of real time so vampires are not
+  stuck inside all day; travel takes whatever its IC time is, with a cap. Doc 14 §3.3.

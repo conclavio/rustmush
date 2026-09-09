@@ -1,9 +1,13 @@
 # Neighborhood geography, movement, and authoring
 
-**Design draft — 2026-09-07; owner rulings R1–R4 added 2026-09-09 (§11).** Records the owner's
-neighborhood-first direction and proposes vocabulary and contracts for implementation. Where §11
-conflicts with the text above it, §11 governs; the [review](11a-neighborhood-geography-review.md)
-records what the tree holds and what the rulings decided. The requirements below come from that conversation;
+**Design draft — 2026-09-07; owner rulings R1–R4 added 2026-09-09 (§11); superseded by
+[doc 14](14-spatial-room-system.md) where the two differ (2026-09-09).** Records the owner's
+neighborhood-first direction and proposes vocabulary and contracts for implementation. Doc 14 is
+the design of record for geography, travel, terrain, tactical windows, packs, the building agent
+and hydration (its §8 lists what it replaces here); §§6 and 9 below remain this document's until
+14b and 14c. Where §11 conflicts with the text above it, §11 governs; the
+[review](11a-neighborhood-geography-review.md) records what the tree holds and what the rulings
+decided. The requirements below come from that conversation;
 the particular names, records, defaults, and build sequence are recommendations, not previously
 ratified decisions. This document adds no runtime features.
 

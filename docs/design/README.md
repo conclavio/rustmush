@@ -34,7 +34,8 @@ critique pass. They are the *reference* design; where they conflict with each ot
 | [11-h-implementation-plan.md](11-h-implementation-plan.md) | H implementation plan (Draft 0.2, reviewed): four cuts of low-level work beside E7 and I — the module store-read seam (H1), the K7 production NPC cutover (H2a–c), authoritative-lane instrumentation and the scale harness (H3), the kernel-edge debt sweep (H4) |
 | [12-economy-checkpoint-review.md](12-economy-checkpoint-review.md) | The economy checkpoint review (C17): where a cold replay's time goes, the checkpoint designed, the owner's decisions (D-12-1..6), and the cuts as built — J1 parse once, J2 the bounded RAM tail, J5 the ledger archive tier, J3 the checkpoint, J4 the narrow fetch |
 | [13-idempotency-window.md](13-idempotency-window.md) | The idempotency window (D-12-6): every key on disk forever, a bounded window in RAM, a scalable Bloom filter gating the off-loop lookup with a transient refusal on the rare positive; cuts W1 (mechanism) and W2 (window) |
-| [14a-spatial-owner-questions.md](14a-spatial-owner-questions.md) | **Owner survey (Draft 0.1, 2026-09-09)** for doc 14, the integrated spatial/room system proposal to be written from first principles: the givens (premises 1–6, rulings R1–R4, the no-spend boot rule), what the tree has, 29 questions with recommended options across scope, what space is, elevation and terrain, movement, domains, authoring and the building agent, the starter area, and what moves onto the atlas; the facts needed (I1–I9); the defaults taken unless vetoed; the outline of doc 14 |
+| [14-spatial-room-system.md](14-spatial-room-system.md) | **The integrated spatial/room system (Draft 0.1, 2026-09-09)**, written from first principles off 14a's answers: the model and its invariants (rooms on one metric substrate, layered 2.5D elevation, tiles and features, portals, region-owned connections, one journey record, windows over the map, the resolver), the records and the JSON pack schema with the starter area as content, boot and apply, travel and stake-outs, windows and write-back, the building agent's contract and validator, hydration with caps and strikes, engine-owned physics versus ruleset definitions, SSH-first map rendering, six build cuts, supersessions, decisions D-14-1..31 |
+| [14a-spatial-owner-questions.md](14a-spatial-owner-questions.md) | **Owner survey (answered 2026-09-09, all recommendations plus seven sharpenings)** for doc 14, the integrated spatial/room system proposal to be written from first principles: the givens (premises 1–6, rulings R1–R4, the no-spend boot rule), what the tree has, 29 questions with recommended options across scope, what space is, elevation and terrain, movement, domains, authoring and the building agent, the starter area, and what moves onto the atlas; the facts needed (I1–I9); the defaults taken unless vetoed; the outline of doc 14 |
 
 `06-object-behaviors-spatial-domains.md` and its later companion proposals are
 implementation-informed drafts produced by dedicated design conversations deferred in `PLAN.md`.
@@ -42,7 +43,7 @@ For their subject areas, prefer them over the earlier sketches while they procee
 
 ## Superseded decisions
 
-Three choices in these docs were overridden after review (owner's call) — read the docs with these
+Five choices in these docs were overridden after review (owner's call) — read the docs with these
 substitutions in mind:
 
 1. **Persistence is Redis 8+, not SQLite.** 01-server-core §5 (rusqlite/write-behind/snapshots) and
@@ -62,3 +63,13 @@ substitutions in mind:
    **trust-but-verify** — a restriction whose only purpose is to keep an LLM from doing what a trusted
    builder may do is not load-bearing, and is struck when it blocks the model. `help worldgen`'s
    "describes; never digs" stays accurate for the shipped `@gen` until the builder lands.
+4. **No hex maps; square grids everywhere.** 04's "hex maps with terrain types and elevation per
+   hex", 06 §3.3's "hex-map terrain and coordinate data", §6.1's `tactics.hex`, §10's "N-hex radius"
+   and "hex-by-hex", and the tactics seam stub's hex vocabulary are superseded (owner, 2026-09-09,
+   [14 D-14-4](14-spatial-room-system.md)): a hex cannot be shown honestly in a text terminal, and
+   the terminal is the floor for every map.
+5. **The engine defines the world.** 06 §3.3's "terrain-cost and kinematics maths to the ruleset"
+   is superseded (owner, 2026-09-09, [14 §5](14-spatial-room-system.md)): terrain classes,
+   locomotion classes and their movement effects, line of sight, projectile and energy propagation
+   are engine concepts; rulesets register definitions — units, weapons, damage — that consume them
+   and may extend the vocabularies.
