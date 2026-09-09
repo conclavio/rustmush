@@ -33,14 +33,10 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use std::time::Duration;
 
-use mush_config::accounts::import_accounts_json;
 use mush_config::config::{Config, StoreBackend};
-use mush_config::decision_keys::DurableDecisionKeyStore;
 use mush_config::ipguard::IpGuard;
 use mush_config::metrics::Metrics;
-use mush_config::offer_keys::DurableOfferKeyStore;
-use mush_config::resolution_keys::DurableResolutionKeyStore;
-use mush_core::{ControlMsg, Engine, Inbound, OfferRouteTable, OfferSubmission};
+use mush_core::{ControlMsg, Inbound, OfferRouteTable, OfferSubmission};
 use mush_ipc::{
     BoxWrite, FrameReader, GatewayInput, GatewayRequest, GatewayRequestDisposition, IPC_VERSION,
     IpcEndpoint, LegalActionsError, MAX_IN_FLIGHT_GATEWAY_INPUT_BYTES,
@@ -48,10 +44,7 @@ use mush_ipc::{
     MAX_IN_FLIGHT_GATEWAY_INPUTS_PER_CONNECTION, MAX_IN_FLIGHT_LIFECYCLE_OBLIGATIONS,
     MAX_IN_FLIGHT_SERVICE_REQUESTS, RequestUid, ServiceReq, ServiceResp, ToGateway, ToServer,
 };
-use mush_llm::LlmService;
-use mush_store::{
-    BundleStatus, InMemoryStore, ObjectStore, RedisStore, core_migrations, run_migrations,
-};
+use mush_store::{BundleStatus, InMemoryStore, ObjectStore, RedisStore};
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore};
@@ -92,11 +85,8 @@ pub mod world_task;
 use crate::action_coordinator::{ActionCoordinator, ActionPreflight};
 use crate::gateway_sink::SocketSink;
 use crate::persist::AuthoritativeCommitFailure;
-use crate::persist::{
-    WorldExitStatus, load_or_seed_world, reconcile_authoritative_for_writable_boot,
-};
+use crate::persist::WorldExitStatus;
 use crate::quarantine::QuarantineSpool;
-use crate::staff::{StaffQueue, register_server_commands_with_cap};
 use crate::world_task::{
     CreatePlayerErr, LegalActionReadError, ServerDeps, WorldHandle, WorldOutcome, WorldReadError,
 };
@@ -180,186 +170,6 @@ pub async fn prepare_quarantine_for_writable_boot(
         .map_err(|error| format!("quarantine recovery required: {error}"))
 }
 
-/// Boot the full engine (world load/seed + modules + rulesets), exactly the
-/// roster the all-in-one binary builds. Returns the engine plus the
-/// [`StaffQueue`] its `@siteban`/`@boot`/... handlers push into — the SAME
-/// queue the world loop must drain (`ServerDeps::staff`), matching `main.rs`.
-async fn build_engine(
-    config: &Config,
-    store: &Arc<dyn ObjectStore>,
-    _validated_spool: &QuarantineSpool,
-) -> Result<(Engine, Arc<StaffQueue>, Arc<LlmService>), String> {
-    let offer_keys = DurableOfferKeyStore::new(config.offer_key_dir())
-        .load_or_create()
-        .map_err(|error| format!("offer key provisioning failed: {error}"))?;
-    tracing::info!(
-        current_version = offer_keys.current_version(),
-        key_dir = %config.offer_key_dir().display(),
-        "durable legal-action offer keys loaded"
-    );
-    let resolution_keys = DurableResolutionKeyStore::new(config.resolution_key_dir())
-        .load_or_create()
-        .map_err(|error| format!("resolution key provisioning failed: {error}"))?;
-    tracing::info!(
-        current_version = resolution_keys.current_version(),
-        key_dir = %config.resolution_key_dir().display(),
-        "durable authoritative resolution keys loaded"
-    );
-    let decision_keys = DurableDecisionKeyStore::new(config.decision_key_dir())
-        .load_or_create()
-        .map_err(|error| format!("decision key provisioning failed: {error}"))?;
-    tracing::info!(
-        current_version = decision_keys.current_version(),
-        key_dir = %config.decision_key_dir().display(),
-        "durable delayed-decision keys loaded"
-    );
-    let authoritative = store.authoritative_store().ok_or_else(|| {
-        "configured store does not implement K3 exact-token durability; refusing writable boot"
-            .to_owned()
-    })?;
-    let recovery = reconcile_authoritative_for_writable_boot(authoritative).await?;
-    tracing::info!(
-        indexed = recovery.indexed,
-        retained = recovery.retained,
-        retained_bytes = recovery.retained_bytes,
-        retention_counters_repaired = recovery.retention_counters_repaired,
-        reconciled = recovery.reconciled,
-        already_finalized = recovery.already_finalized,
-        checkpointed = recovery.checkpointed,
-        checkpoint_deferred_outbox = recovery.checkpoint_deferred_outbox,
-        scan_pages = recovery.scan_pages,
-        "authoritative intent recovery barrier complete"
-    );
-    store
-        .bootstrap_writable()
-        .await
-        .map_err(|error| format!("store writable bootstrap failed: {error}"))?;
-    let version = run_migrations(&**store, &core_migrations())
-        .await
-        .map_err(|e| format!("store migrations failed: {e}"))?;
-    tracing::info!(schema = version, "store schema current");
-    let imported = import_accounts_json(&**store, &config.server.data_dir).await?;
-    if imported > 0 {
-        tracing::info!(imported, "M1 accounts.json imported");
-    }
-    // E7c5 B1: build the account-distinctness oracle from the store, once,
-    // before composition (the store is in scope and async here). A legacy
-    // account with no stored id is minted on the fly (deterministic); a
-    // character claimed by two accounts is left unmapped and paged.
-    let account_identity = crate::accounts_identity::hydrate(&**store).await?;
-    tracing::info!(
-        mapped_characters = account_identity.len(),
-        "M-E7c5 account oracle hydrated"
-    );
-    let staff = Arc::new(StaffQueue::new());
-    let mut registry = world_task::base_registry();
-    register_server_commands_with_cap(&mut registry, &staff, config.game.max_characters as usize)
-        .map_err(|e| format!("server command registration: {e}"))?;
-    match crate::help::load_help_topics(&mut registry, &config.server.help_dir) {
-        Ok(n) => tracing::info!(topics = n, "help topics loaded"),
-        Err(e) => tracing::warn!(error = %e, "help topics failed to load; continuing"),
-    }
-    let llm_config = crate::config_ext::llm_config(&config.llm)?;
-    let llm =
-        Arc::new(LlmService::from_config(&llm_config).map_err(|e| format!("llm config: {e}"))?);
-    let onboarding = crate::config_ext::onboarding_ruleset(&config.onboarding);
-    // E5c: `[wod.economy]`, validated here (an unknown mode is a hard boot error).
-    // `None` when no WoD ruleset is enabled — that is what gates the housing title
-    // issuer (08d §2).
-    let wod_economy = crate::config_ext::wod_economy_config(&config.wod)?;
-    let wod_selected = config
-        .rulesets
-        .enabled
-        .iter()
-        .any(|r| r.trim().eq_ignore_ascii_case("wod"));
-    // E6a: `[shadowrun.economy]`, validated here (an unknown lifestyle tier is a hard
-    // boot error). `None` when no Shadowrun ruleset is enabled — that is what gates
-    // the run board's economy observer (08f §2's `issuers` pattern).
-    let sr_economy = crate::config_ext::shadowrun_economy_config(&config.shadowrun)?;
-    let sr_selected = config
-        .rulesets
-        .enabled
-        .iter()
-        .any(|r| r.trim().eq_ignore_ascii_case("shadowrun"));
-    // SP1 / D-LBK-7: a Shadowrun server needs `sr.month` declared or no lifestyle
-    // obligation can exist, so the host contributes the stanza — unless the operator
-    // declared one of that name themselves, in which case theirs stands.
-    let contributed: Vec<(String, mush_economy::DeclaredCadence)> = if sr_selected {
-        crate::config_ext::shadowrun_cadences(&sr_economy)
-    } else {
-        Vec::new()
-    };
-    let contributed: Vec<(&str, mush_economy::DeclaredCadence)> = contributed
-        .iter()
-        .map(|(n, d)| (n.as_str(), d.clone()))
-        .collect();
-    let mut mods = modules::server_modules_with(
-        crate::config_ext::weather_config(&config.weather),
-        crate::config_ext::economy_config_with(&config.economy, &contributed)?,
-        &onboarding,
-        wod_selected.then_some(&wod_economy),
-        sr_selected.then_some(&sr_economy),
-        // E7r1 R4: this bootstrap composes no TacSim layer, so the recovery provider
-        // is disabled here — fail closed, and `@recovery` says so out loud.
-        mush_campaign::RecoveryConfig::default(),
-    );
-    mods.push(modules::worldgen_module_with(
-        Arc::clone(&llm),
-        crate::config_ext::worldgen_config(&config.worldgen),
-    ));
-    let npc_grounding = modules::npc_agent_adapter(&config.rulesets.enabled);
-    mods.push(modules::npc_module_with(npc_grounding, &config.npc));
-    let rulesets = modules::ruleset_modules(
-        &config.rulesets.enabled,
-        &onboarding,
-        &wod_economy,
-        &sr_economy,
-    )
-    .map_err(|e| format!("ruleset selection: {e}"))?;
-    mods.extend(rulesets);
-    // Compose and freeze every mechanics registry before any persisted world
-    // record is loaded. Rules-bearing attrs must never be interpreted against
-    // a half-built definition/bridge set (K1 / C1 boot ordering).
-    let composition =
-        Engine::compose_modules(registry, mods).map_err(|e| format!("module registration: {e}"))?;
-    let mut world = load_or_seed_world(&**store).await?;
-    let clock = config.game.game_clock().map_err(|e| e.to_string())?;
-    timeline::hydrate_world_timeline(&mut world, &**store, clock).await?;
-    let mut engine = Engine::from_composition(world, composition);
-    engine.set_offer_keys(offer_keys);
-    engine.set_resolution_keys(resolution_keys);
-    engine.set_decision_keys(decision_keys);
-    // E7c5 B1: upgrade the sim's account oracle (installed unwired at register)
-    // with the boot-hydrated map, so cut 5's `+focus` consults it synchronously
-    // inside a world command. If the sim did not compose the slot the oracle
-    // stays absent and every consumer fails closed.
-    let account_identity: std::sync::Arc<dyn mush_core::AccountIdentity> =
-        std::sync::Arc::new(account_identity);
-    // Programme D4: the relay's `(account, actor)` re-validation reads the
-    // same oracle from the engine.
-    engine.set_account_identity(std::sync::Arc::clone(&account_identity));
-    if let Some(slot) = engine.world.module_state_mut::<mush_sim::AccountOracle>() {
-        *slot = mush_sim::AccountOracle::new(account_identity);
-    }
-    // E7c8 B1: upgrade the pulse cadence from `[tacsim]`, on the same
-    // post-composition device — §7 lists `ground_pulse_ms`/`space_pulse_ms` as
-    // "parsed and inert until cut 8", and this is the cut that reads them. A
-    // value outside the constructible band is CLAMPED, not refused: a knob that
-    // configures a cadence must not be able to stop a world booting, and the
-    // clamp is visible in `@domain/status`.
-    if let Some(slot) = engine
-        .world
-        .module_state_mut::<mush_sim::tick::PulseConfig>()
-    {
-        *slot = mush_sim::tick::PulseConfig {
-            ground_ms: config.tacsim.ground_pulse_ms,
-            space_ms: config.tacsim.space_pulse_ms,
-        };
-    }
-    modules::boot_modules(&mut engine, &**store).await?;
-    Ok((engine, staff, llm))
-}
-
 /// Run the server: boot the world, then bind the IPC socket and serve one
 /// gateway connection for the life of the boundary. Returns when the gateway
 /// disconnects (clean EOF) or the world shuts down.
@@ -422,14 +232,39 @@ pub async fn serve_with_quarantine_spool(
 ) -> Result<(), String> {
     let endpoint = config.ipc_endpoint().map_err(|e| e.to_string())?;
     prepare_quarantine_for_writable_boot(&config, &mut quarantine_spool, store.as_deref()).await?;
-    let store = match store {
-        Some(s) => s,
+    let (store, ledger_archive) = match store {
+        // A caller who brought their own store owns its tiering: this branch
+        // never reaches `open_store`, so `[store.archive]` composes nothing and
+        // schedules nothing. That is defensible, but it is also the exact "knob
+        // wired into one path only" shape WS04 exists to abolish, so it is said
+        // out loud rather than discovered by an operator whose ledger never
+        // stopped growing. (See this module's own doc comment.)
+        Some(s) => {
+            if config.store.archive.enabled {
+                tracing::warn!(
+                    "[store.archive].enabled is ignored on this boot: the caller supplied \
+                     the object store, so no archive tier is attached and no nightly pass \
+                     is scheduled"
+                );
+            }
+            (s, None)
+        }
         // WS04-S1: the archive tier is attached to the store here, so the READ
-        // fall-through is live on this half; WS04-S2 owns the nightly WRITE pass
-        // (it needs the booted engine's namespace list, which does not exist yet).
-        None => boot::open_store(&config).await?.store,
+        // fall-through is live on this half. WS04-S2: the handle rides along to
+        // the nightly WRITE pass below, which needs the booted engine's
+        // namespace list and so cannot be scheduled until the engine exists.
+        None => {
+            let opened = boot::open_store(&config).await?;
+            (opened.store, opened.archive)
+        }
     };
-    let (engine, staff, llm) = build_engine(&config, &store, &quarantine_spool).await?;
+    let boot::BootedEngine {
+        engine,
+        staff,
+        llm,
+        decision_workers,
+        archive_namespaces,
+    } = boot::build_engine(&config, &store, &quarantine_spool).await?;
     let offer_routes = Arc::new(
         engine
             .registry
@@ -496,10 +331,26 @@ pub async fn serve_with_quarantine_spool(
     // dropped `Reply` would hang its `ServiceReq` oneshot (I1).
     let reply_sink = sink.clone();
     let ingress_store = Arc::clone(&store);
-    // H2a: the production decision composition. The provider registry is
-    // built over the same LLM service the modules were composed with; the
-    // worker limit is `[llm].decision_workers`.
-    let decision_workers = crate::config_ext::llm_config(&config.llm)?.decision_workers;
+    // J5: the nightly ledger archive pass, once a UTC day inside its window,
+    // beside the store writer and never on the world task — the WRITE/purge half
+    // of the tier `open_store` attached above. Its handle is HELD, and joined in
+    // the shutdown tail below: a detached pass is a task this function returns
+    // out from under, mid-copy, with nobody waiting.
+    //
+    // Scheduled BEFORE the world task spawns, because a malformed
+    // `[store.archive].window` refuses the boot: raising that after the world
+    // was serving would abandon a live world task to the runtime drop.
+    let archive_job = boot::spawn_ledger_archive(
+        &config,
+        &store,
+        ledger_archive,
+        archive_namespaces,
+        &metrics,
+    )?;
+    // H2a: the production decision composition. The provider registry is built
+    // over the same LLM service the modules were composed with, and the worker
+    // limit (`[llm].decision_workers`) comes from the same reading of `[llm]`
+    // that built it — this function no longer re-parses the stanza to find it.
     let handles = world_task::spawn_persist_with_gateway_production(
         engine,
         deps,
@@ -623,8 +474,15 @@ pub async fn serve_with_quarantine_spool(
     // world believed shutdown sequencing had transferred custody.
     let _ = store_writer_join.await;
     let _ = ipc_writer_join.await;
-    // Only now, with the outbox, the store writer and the IPC writer all
-    // joined, is the failure raised: an exit code is never worth bypassing a
+    // The J5 pass is the fourth task this function owns, and it is joined like
+    // the other three. It has no shutdown seam of its own (it sleeps in a loop
+    // for the life of the process), so the join is a cancel-then-await; both
+    // halves of a pass are idempotent, so a cancelled one costs the next night's
+    // pass a re-copy and nothing else.
+    boot::stop_ledger_archive(archive_job).await;
+    // Only now, with the outbox, the store writer, the IPC writer and the
+    // archive pass all joined, is the failure raised: an exit code is never
+    // worth bypassing a
     // drain, and it is never raised by `process::exit`/`abort` from inside a
     // catch handler or a driver.
     world_exit_result(world_result).inspect_err(|detail| {

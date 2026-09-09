@@ -500,3 +500,38 @@ async fn a_peer_release_of_a_coordinator_action_cannot_kill_the_reader_loop() {
     .await
     .unwrap();
 }
+
+/// WS04-S2: the boot `Hello` advertises the TacSim layer, because the split half
+/// now composes it.
+///
+/// One feature id per composed module is what the gateway copies into the web
+/// client's `hello` frame, so a module the forked half never composed was a
+/// capability the split web client could not see. `[tacsim].enabled` is false on
+/// this config and that is deliberate: the layer composes either way (its verbs
+/// answer "not enabled" rather than vanishing), which is exactly what makes the
+/// advertised feature list the same on both halves.
+///
+/// This file's own rig boots through `serve_with_store(Some(store))` — the
+/// caller-supplied branch that bypasses `open_store` and therefore arms no
+/// archive tier. The assertion is unaffected: `Hello` is built from the booted
+/// engine, not from the store.
+#[tokio::test]
+async fn hello_advertises_the_tacsim_feature() {
+    let (endpoint, _store) = boot_server("hello-features").await;
+    let (reader, _writer) = mush_ipc::connect(&endpoint).await.unwrap();
+    let mut frames = FrameReader::new(reader);
+    let ToGateway::Hello { features, .. } = frames.read::<ToGateway>().await.unwrap().unwrap()
+    else {
+        panic!("the boundary opens with a Hello");
+    };
+    assert!(
+        features.iter().any(|f| f == "tacsim"),
+        "the split half must advertise the TacSim layer it now composes: {features:?}"
+    );
+    // The renaming the manifest has always done, asserted beside it so the two
+    // halves of `build_hello_manifest` are pinned by one case.
+    assert!(
+        features.iter().any(|f| f == "channels"),
+        "comsys still advertises as `channels`: {features:?}"
+    );
+}
