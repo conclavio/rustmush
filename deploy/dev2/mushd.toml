@@ -14,6 +14,28 @@ redis_url = "redis://127.0.0.1:6791"     # the dev2 instance — NOT the dev 637
 [ssh]
 listen = "__EXTERNAL_IP__:6792"          # external IP only (off tailscale)
 
+# The forked gateway<->server boundary socket (M16c). IGNORED by the all-in-one
+# `mushd`; read by `mush-gateway`/`mush-server` in the split (hot-restart)
+# deployment — see deploy/dev1-split/. The boundary is UNAUTHENTICATED (the
+# server trusts whatever connects to assert authenticated sessions), so it must
+# never be reachable off-box. A UNIX SOCKET (not a localhost TCP port) is used so
+# only the mush user can connect — a 127.0.0.1 port would let ANY local process
+# impersonate the gateway. The socket lives in /run/rustmush, which the gateway's
+# systemd unit provides via `RuntimeDirectory=rustmush` (mode 0750). On Windows
+# dev / a portable setup use a TCP addr instead, e.g. "127.0.0.1:6795".
+#
+# This section is NOT optional here: the unset default is "127.0.0.1:6791",
+# which is dev2's own Redis port above — the boundary would fail to bind and
+# the split would crash-loop. `Config::ipc_endpoint()` refuses that config.
+[ipc]
+listen = "/run/rustmush/dev2.sock"       # dev2's private boundary (unix socket)
+# M18 boundary bounding (DoS/robustness; defaults shown). Old configs without
+# these keys keep the defaults.
+# to_server_cap = 1024        # gateway->server queue; over cap, INPUT (Cmd/Query) is shed + logged
+# to_gw_cap = 8192            # server->gateway queue; over cap, the boundary is torn down (re-attach heals)
+# write_timeout_ms = 5000     # per-frame IPC write timeout; a wedged peer past this tears the boundary down
+# high_water_warn_pct = 80    # edge-gated high-water warn threshold (percent of a queue's cap)
+
 [web]
 listen = "__EXTERNAL_IP__:6793"          # external IP only (off tailscale)
 [web.tls]                                # native HTTPS (self-signed for now)

@@ -76,7 +76,7 @@
 //! starting).
 
 use std::collections::BTreeMap;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
 
 use mush_core::{CivilDate, GameClock};
@@ -140,6 +140,23 @@ pub enum ConfigError {
         value: String,
         /// The parse detail.
         detail: String,
+    },
+    /// `[ipc].listen` names the same host+port the store already occupies:
+    /// the boundary listener would fail to bind, and the split would
+    /// crash-loop under the gateway's relaunch guard.
+    #[error(
+        "[ipc].listen {ipc_listen:?} would bind port {port}, which \
+         [store].redis_url {redis_url:?} already uses on the same host — the \
+         gateway<->server boundary cannot share the store's port; give \
+         [ipc].listen its own port (or, on Linux, a Unix socket path)"
+    )]
+    IpcStorePortCollision {
+        /// The offending `[ipc].listen` value.
+        ipc_listen: String,
+        /// The `[store].redis_url` it collides with.
+        redis_url: String,
+        /// The shared TCP port.
+        port: u16,
     },
 }
 
@@ -1080,6 +1097,54 @@ impl Default for IpcCfg {
     }
 }
 
+/// The host and TCP port a `[store].redis_url` points at, when it names one.
+///
+/// Deliberately small: enough of `redis://[user:pass@]host[:port][/db]` (and
+/// `rediss://`) to answer "does this occupy the port `[ipc].listen` wants".
+/// A `unix://` URL — or anything unparseable — is `None`, i.e. no TCP port to
+/// collide with.
+fn redis_url_authority(url: &str) -> Option<(String, u16)> {
+    let (scheme, rest) = url.split_once("://")?;
+    let default_port: u16 = match scheme.to_ascii_lowercase().as_str() {
+        "redis" | "rediss" => 6379,
+        _ => return None,
+    };
+    // Drop the path/query (`/0`, `?db=0`), then any `user:pass@` userinfo.
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or(rest);
+    let host_port = authority.rsplit_once('@').map_or(authority, |(_, hp)| hp);
+    if host_port.is_empty() {
+        return None;
+    }
+    // A bracketed IPv6 literal: `[::1]` or `[::1]:6791`.
+    if let Some(after_bracket) = host_port.strip_prefix('[') {
+        let (host, tail) = after_bracket.split_once(']')?;
+        let port = match tail.strip_prefix(':') {
+            Some(p) => p.parse().ok()?,
+            None => default_port,
+        };
+        return Some((host.to_string(), port));
+    }
+    match host_port.rsplit_once(':') {
+        Some((host, port)) => Some((host.to_string(), port.parse().ok()?)),
+        None => Some((host_port.to_string(), default_port)),
+    }
+}
+
+/// Whether binding `ipc` would land on the same box+interface the store host
+/// names — the only case where equal ports actually collide. A remote store on
+/// the same port number is not a collision, and must not be refused.
+fn same_host(ipc: SocketAddr, redis_host: &str) -> bool {
+    let ipc_ip = ipc.ip();
+    // `0.0.0.0`/`::` binds loopback too, so it collides with a local store.
+    let ipc_is_local = ipc_ip.is_loopback() || ipc_ip.is_unspecified();
+    match redis_host.parse::<IpAddr>() {
+        Ok(redis_ip) => ipc_ip == redis_ip || (ipc_is_local && redis_ip.is_loopback()),
+        // A hostname we will not resolve here; only `localhost` is knowably
+        // this box.
+        Err(_) => ipc_is_local && redis_host.eq_ignore_ascii_case("localhost"),
+    }
+}
+
 /// The whole configuration (unknown sections/keys ignored).
 #[derive(Clone, Debug, Deserialize)]
 #[serde(default)]
@@ -1213,17 +1278,64 @@ impl Config {
             })
     }
 
-    /// The parsed `[ipc].listen` boundary endpoint (M16b).
+    /// The parsed and validated `[ipc].listen` boundary endpoint (M16b).
+    ///
+    /// Validation lives here, not at a call site, so it fires on every load
+    /// path (gateway, server, and any future reader):
+    ///
+    /// - a TCP endpoint whose port is already the store's port on the same
+    ///   host is **refused**. The default `[ipc].listen` is `127.0.0.1:6791`,
+    ///   and an instance whose Redis happens to live on 6791 and which never
+    ///   wrote an `[ipc]` section would try to bind the boundary on top of its
+    ///   own store, fail, and crash-loop under the gateway's relaunch guard.
+    /// - a TCP endpoint at all logs a loud warn. It is not refused — Windows
+    ///   and portable development have no Unix sockets — but the boundary is
+    ///   unauthenticated, so on Linux prod a `127.0.0.1` port lets *any* local
+    ///   process impersonate the gateway and assert authenticated sessions
+    ///   (`docs/ops.md`, "Prefer the Unix-socket form on Linux prod").
     ///
     /// # Errors
     ///
     /// [`ConfigError::BadIpcListen`] when the value is neither a socket address
-    /// nor (where supported) a usable Unix path.
+    /// nor (where supported) a usable Unix path;
+    /// [`ConfigError::IpcStorePortCollision`] when it would bind the store's
+    /// own port.
     pub fn ipc_endpoint(&self) -> Result<mush_ipc::IpcEndpoint, ConfigError> {
-        mush_ipc::IpcEndpoint::parse(&self.ipc.listen).map_err(|msg| ConfigError::BadIpcListen {
-            value: self.ipc.listen.clone(),
-            detail: msg,
-        })
+        let endpoint = mush_ipc::IpcEndpoint::parse(&self.ipc.listen).map_err(|msg| {
+            ConfigError::BadIpcListen {
+                value: self.ipc.listen.clone(),
+                detail: msg,
+            }
+        })?;
+        // A Unix socket (where the platform has them) is the recommended prod
+        // form: nothing further to check, and nothing to warn about.
+        let addr = match &endpoint {
+            mush_ipc::IpcEndpoint::Tcp(addr) => *addr,
+            #[cfg(unix)]
+            mush_ipc::IpcEndpoint::Unix(_) => return Ok(endpoint),
+        };
+        // Only a Redis-backed instance actually has a listener on that port;
+        // `store = "memory"` never contacts `redis_url` at all.
+        if self.store.store.eq_ignore_ascii_case("redis")
+            && let Some((redis_host, redis_port)) = redis_url_authority(&self.store.redis_url)
+            && addr.port() == redis_port
+            && same_host(addr, &redis_host)
+        {
+            return Err(ConfigError::IpcStorePortCollision {
+                ipc_listen: self.ipc.listen.clone(),
+                redis_url: self.store.redis_url.clone(),
+                port: redis_port,
+            });
+        }
+        tracing::warn!(
+            endpoint = %addr,
+            "[ipc].listen is a TCP port, not a Unix socket: the \
+             gateway<->server boundary is UNAUTHENTICATED, so any local \
+             process can connect and impersonate the gateway. TCP is for \
+             Windows/portable development; on Linux prod use a Unix socket \
+             path in a mode-0750 RuntimeDirectory (docs/ops.md)"
+        );
+        Ok(endpoint)
     }
 
     /// The `[ipc].to_server_cap` bound (M18): gateway->server input-shed cap.
