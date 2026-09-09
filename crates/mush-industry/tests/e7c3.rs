@@ -2404,7 +2404,10 @@ fn file_parameters(filer: ObjId, issuer: &str, staff: bool, vouched: &[&str]) ->
         "object": 9_100,
         "exclusivity": "shared",
         "priority": 1,
-        "term": later(100_000),
+        // WS02-A2: an integer, the shape the offer declares and the command
+        // stages. `now()` is generation 1, so `term_field` rebuilds exactly
+        // `later(100_000)`.
+        "term": 100_000,
         "transferability": "bound",
         "claim_filed_by": filer.0,
         "claim_file_staff": staff,
@@ -2731,5 +2734,198 @@ fn ws02_s3_a_staffer_files_under_an_arbitrary_authority() {
         filed[0].issuer(),
         &PrincipalId::Organization(mush_org::OrgId(4242)),
         "an authority no organization record vouches for is still staff's to name"
+    );
+}
+
+// ---- WS02-A2 — `@claim/file` submits a term the offer accepts ---------------
+//
+// The projection declares `integer("term", …)`; the command staged a
+// `ClockStamp` **object**. Every shipped test either files a `ClaimRecord` by
+// hand or hands `prepare_registered_authoritative_action` an invocation it built
+// itself, and both routes skip the one rung that reads the offer's schema — so
+// nothing here noticed that on a real server no player could file tenure at all.
+// The two tests below stand on that rung.
+
+/// `boot_orgs`, plus the one line of composition the *whole* `@claim/file`
+/// command needs: `EconomyModule::with_title_issuers`, which the composition
+/// root in `mush-server` gives it (`issuers.push(mush_industry::industry_title_issuer())`).
+/// Without it `issue_title` answers `Unauthorized` and the command refuses
+/// before it stages anything at all — so the route under test here is only
+/// reachable from a rig that composes the server's own wiring.
+fn boot_filing() -> (TestWorld, IndustryFamilies) {
+    let cell: InventoryHandleCell = Arc::default();
+    let world = TestWorld::with_modules(vec![
+        Box::new(mush_org::OrgModule::new()),
+        Box::new(
+            mush_economy::EconomyModule::new()
+                .with_title_issuers(vec![mush_industry::industry_title_issuer()]),
+        ),
+        Box::new(
+            InventoryModule::new()
+                .with_quantity_delegates(["industry"])
+                .with_handle_cell(Arc::clone(&cell)),
+        ),
+        Box::new(IndustryModule::new().with_inventory(Arc::clone(&cell))),
+    ]);
+    let families = world
+        .world()
+        .module_state::<IndustryHandles>()
+        .expect("industry publishes its handles")
+        .0
+        .clone();
+    (world, families)
+}
+
+/// Drive the one staged submission the way the world task does: regenerate the
+/// actor's **own** offer, resolve the staged parameters against it (this is
+/// `ProjectedParameterSchema::validate`, the rung that refuses a parameter of
+/// the wrong type), then prepare and install.
+fn land(world: &mut TestWorld, token: u8) -> Result<(), String> {
+    let submit = world
+        .engine_mut()
+        .take_authoritative_submit()
+        .ok_or_else(|| "nothing was staged".to_owned())?;
+    let (action, resolved) = {
+        let engine = world.engine();
+        let query = engine
+            .legal_action_query(
+                mush_core::PrincipalId::Object { id: submit.actor },
+                submit.actor,
+                submit.subject.clone(),
+            )
+            .map_err(|error| error.to_string())?;
+        let offers = engine
+            .project_legal_actions(&query)
+            .map_err(|error| error.to_string())?;
+        let projected = offers
+            .projected_for_action(&submit.action)
+            .ok_or_else(|| "that action is not currently offered".to_owned())?;
+        let submission = mush_core::OfferSubmission {
+            offer: projected.offer(),
+            subject: projected.subject().clone(),
+            targets: Vec::new(),
+            parameters: submit.parameters.clone(),
+        };
+        let execution = mush_core::OfferExecutionContext {
+            request: RequestUid::from_bytes([token; 16]),
+            principal: mush_core::PrincipalId::Object { id: submit.actor },
+            actor: submit.actor,
+            idempotency: ScopedIdempotencyKey::new(
+                IdempotencyScope {
+                    principal: mush_core::PrincipalId::Object { id: submit.actor },
+                    owner: submit.action.key().owner.clone(),
+                    namespace: mush_core::CanonicalId::new(submit.action.key().id.as_str())
+                        .map_err(|_| "namespace".to_owned())?,
+                },
+                1,
+                IdempotencyKey::Request(RequestUid::from_bytes([token; 16])),
+            ),
+            viewer_scope: query.viewer_scope(),
+            now: None,
+        };
+        let resolved = engine
+            .resolve_legal_action(&offers, execution, submission)
+            .map_err(|error| format!("{error:?}"))?;
+        let (action, resolved, _guards) = resolved.into_authoritative_parts();
+        (action, resolved)
+    };
+    let (prepared, _) = world
+        .engine_mut()
+        .prepare_registered_resolved_authoritative_action(
+            &action,
+            &resolved,
+            CommitToken::from_bytes([token; 16]),
+        )
+        .map_err(|error| format!("{error:?}"))?;
+    world
+        .engine_mut()
+        .install_prepared_action(prepared.into_parts().1)
+        .map_err(|error| format!("{error:?}"))?;
+    Ok(())
+}
+
+/// One authorised filer: an org, and the grant that makes `issuable_authorities`
+/// name it for `who`.
+fn vouch(world: &mut TestWorld, who: ObjId) -> mush_org::OrgId {
+    let _ = world.run(GOD, "@org/create Ironhold");
+    let org = org_state(world).orgs().next().expect("the org").id;
+    let _ = world.run(
+        GOD,
+        &format!("@org/grant #{}=Ironhold economy.account.post", who.0),
+    );
+    while world.engine_mut().take_authoritative_submit().is_some() {}
+    org
+}
+
+/// **The regression.** `@claim/file` typed at the keyboard, resolved against the
+/// actor's own regenerated offer, prepared and installed — the whole route a
+/// real server takes. Before this fix the staged `ClockStamp` object met
+/// `integer("term", …)` and `resolve_legal_action` answered `InvalidParameters`,
+/// so this filing (and every other) never reached the provider.
+///
+/// The term is pinned exactly: the record keeps a `ClockStamp` whose generation
+/// is the world's and whose second is the one the command computed.
+#[test]
+fn ws02_a2_claim_file_lands_through_the_real_offer_route() {
+    let (mut world, families) = boot_filing();
+    install_offer_keys(&mut world);
+    let alice = world.spawn_player("alice");
+    let org = vouch(&mut world, alice);
+    let ic = world.world().world_ic_now();
+
+    let _ = world.run(
+        alice,
+        &format!(
+            "@claim/file place:7=org:{}/obj:{}/shared/1/1000/bound",
+            org.0, alice.0
+        ),
+    );
+    land(&mut world, 0xA2).expect("@claim/file resolves — this is the WS02-A2 regression");
+
+    let filed = filed_claims(&mut world, &families);
+    assert_eq!(filed.len(), 1, "the filing landed");
+    assert_eq!(
+        filed[0].issuer(),
+        &PrincipalId::Organization(org),
+        "under the authority the offer vouched for"
+    );
+    assert_eq!(
+        filed[0].term(),
+        &ClockStamp {
+            clock: ic.clock.clone(),
+            at: ic.at + 1_000,
+        },
+        "the rebuilt stamp is exactly the absolute IC second the command computed, \
+         under the world's own generation"
+    );
+}
+
+/// The old wire shape is not silently accepted. A hand-built invocation skips
+/// the offer schema entirely — it is the only way a `ClockStamp` object can
+/// still reach `term_field` — and `term_field` refuses it there, so the type is
+/// enforced on both rungs rather than only on the one the schema guards.
+#[test]
+fn ws02_a2_a_clockstamp_object_submitted_for_term_stays_refused() {
+    let (mut world, families) = boot_orgs();
+    let alice = world.spawn_player("alice");
+    let action = claim_file_action(&world);
+    let mut parameters = file_parameters(alice, "org:1", false, &["org:1"]);
+    parameters["term"] = serde_json::json!(later(100_000));
+    let refusal = world
+        .engine_mut()
+        .prepare_registered_authoritative_action(
+            &action,
+            &file_invocation(&action, alice, 0xA3, parameters),
+            CommitToken::from_bytes([0xA3; 16]),
+        )
+        .expect_err("the object shape is not a term");
+    assert_eq!(
+        provider_code(&refusal),
+        mush_core::ActionErrorCode::InvalidRequest,
+        "a term of the wrong type is an invalid request, not a silent acceptance"
+    );
+    assert!(
+        filed_claims(&mut world, &families).is_empty(),
+        "and nothing was written"
     );
 }

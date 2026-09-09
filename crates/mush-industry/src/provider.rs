@@ -1893,7 +1893,7 @@ impl ActionProvider for IndustryProvider {
         let summary = match self.verb {
             IndustryVerb::DepositOpen => self.open(txn, invocation, &parameters, &mut data)?,
             IndustryVerb::DepositAccess => self.access(txn, &parameters, &mut data)?,
-            IndustryVerb::ClaimFile => self.file(txn, invocation, &parameters, &mut data)?,
+            IndustryVerb::ClaimFile => self.file(txn, invocation, &parameters, &now, &mut data)?,
             IndustryVerb::ClaimMove => self.mv(txn, &parameters, &mut data)?,
             IndustryVerb::ClaimContest => self.contest(txn, &parameters, &now, actor, &mut data)?,
             IndustryVerb::ExtractStart => self.start(txn, &parameters, actor, &mut data)?,
@@ -2021,6 +2021,7 @@ impl IndustryProvider {
         txn: &mut ActionTxn<'_>,
         invocation: &ActionInvocation,
         parameters: &serde_json::Map<String, Value>,
+        now: &ClockStamp,
         data: &mut BTreeMap<String, Value>,
     ) -> Result<String, ActionError> {
         let subject = subject_field(parameters)?;
@@ -2059,7 +2060,7 @@ impl IndustryProvider {
                     format!("a claim priority is 0..={MAX_CLAIM_PRIORITY}"),
                 )
             })?;
-        let term = term_field(parameters)?;
+        let term = term_field(parameters, now)?;
         let id = derive_claim_id(invocation.request(), 0).map_err(|source| refuse(&source))?;
 
         // Exclusivity is enforced against the live set, not against a count:
@@ -3220,16 +3221,42 @@ fn revision_field(parameters: &serde_json::Map<String, Value>) -> Result<u64, Ac
         })
 }
 
-fn term_field(parameters: &serde_json::Map<String, Value>) -> Result<ClockStamp, ActionError> {
-    parameters
+/// A claim's term, carried on the wire as the **absolute IC second** it expires
+/// at and rebuilt here into the [`ClockStamp`] the record keeps.
+///
+/// ---- WS02-A2: `@claim/file` never resolved on a real server ----
+///
+/// [`required_endpoint`]'s defect, one arm over. `IndustryVerb::ClaimFile`'s
+/// projection declares `integer("term", …)` and `@claim/file` staged a
+/// `ClockStamp` **object**, so `ProjectedParameterSchema::validate` answered
+/// `InvalidParameters` on every submission that actually went through
+/// `resolve_legal_action` — no player could file tenure at all. Nothing caught
+/// it because the shipped tests file a `ClaimRecord` by hand or build the
+/// invocation themselves and never resolve it.
+///
+/// So the wire is an integer end to end, and the generation comes from the
+/// offer's own fixed `now` rather than from the client: a submitted stamp could
+/// have named any generation it liked, and this one cannot name a generation the
+/// world is not living in. The old object shape stays refused — `Value::as_i64`
+/// is None for it — which is what keeps the declaration, the staging and the
+/// read one shape rather than two that happen to agree.
+fn term_field(
+    parameters: &serde_json::Map<String, Value>,
+    now: &ClockStamp,
+) -> Result<ClockStamp, ActionError> {
+    let at = parameters
         .get("term")
-        .and_then(|value| serde_json::from_value::<ClockStamp>(value.clone()).ok())
+        .and_then(Value::as_i64)
         .ok_or_else(|| {
             error(
                 ActionErrorCode::InvalidRequest,
-                "a claim names the stamp its term expires at",
+                "a claim names the IC second its term expires at",
             )
-        })
+        })?;
+    Ok(ClockStamp {
+        clock: now.clock.clone(),
+        at,
+    })
 }
 
 fn subject_field(parameters: &serde_json::Map<String, Value>) -> Result<ClaimSubject, ActionError> {

@@ -560,12 +560,14 @@ fn cmd_claim(
             }
             return Err(CmdError::msg(NO_SUCH_CLAIM));
         }
-        let term = ctx.w.world_ic_now();
+        // WS02-A2: the offer declares `term` as an INTEGER, so what goes on the
+        // wire is the absolute IC second the tenure expires at, not a
+        // `ClockStamp` object — that shape was refused `InvalidParameters` by
+        // `ProjectedParameterSchema::validate` before the provider ever ran, so
+        // no filing could land. `term_field` rebuilds the stamp against the
+        // offer's own fixed `now`, whose generation is this same tick's.
         let term_secs: i64 = parts[4].trim().parse().unwrap_or(0);
-        let term = mush_core::ClockStamp {
-            clock: term.clock,
-            at: term.at.saturating_add(term_secs),
-        };
+        let term = ctx.w.world_ic_now().at.saturating_add(term_secs);
         let parameters = json!({
             "subject": lhs,
             // The **canonical** token, not the raw text: the projection's
