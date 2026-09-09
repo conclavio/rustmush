@@ -22,6 +22,10 @@ external_dependencies:
 
 # Lantern Ward
 
+> **Format superseded (doc 11 §11 R2, 2026-09-09):** briefs and manifests are JSON packs. This
+> Markdown/YAML form stays as the *field reference* until the neighborhood pack schema lands, and is
+> then re-expressed as a pack; it is never the digested artifact.
+
 Fictional urban example for the [template](../TEMPLATE.md). No campaign canon or runtime objects
 are created by this file. External region/locality/corridor records are proposed companion content
 and must exist before activation; the other authored endpoint is in [Mill Creek](mill-creek.md).

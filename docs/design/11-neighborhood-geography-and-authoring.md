@@ -1,7 +1,9 @@
 # Neighborhood geography, movement, and authoring
 
-**Design draft — 2026-09-07.** Records the owner's neighborhood-first direction and proposes
-vocabulary and contracts for implementation. The requirements below come from that conversation;
+**Design draft — 2026-09-07; owner rulings R1–R4 added 2026-09-09 (§11).** Records the owner's
+neighborhood-first direction and proposes vocabulary and contracts for implementation. Where §11
+conflicts with the text above it, §11 governs; the [review](11a-neighborhood-geography-review.md)
+records what the tree holds and what the rulings decided. The requirements below come from that conversation;
 the particular names, records, defaults, and build sequence are recommendations, not previously
 ratified decisions. This document adds no runtime features.
 
@@ -248,7 +250,8 @@ cases need explicit privacy tests.
 
 ## 7. Neighborhood briefs and the two-stage builder
 
-Use **Markdown with small YAML front matter** for the author-controlled brief. Keep stable IDs,
+Use **Markdown with small YAML front matter** for the author-controlled brief *(superseded by ruling
+R2, §11: the brief and the manifest are JSON packs; Markdown is at most a rendering)*. Keep stable IDs,
 geographic anchors, external references, status, and budgets structured; use prose and tables for
 atmosphere, local history, sites, room intent, characters, relationships, and hooks. The template is
 an authoring convention pending a real schema/parser. Unknown required fields must not silently
@@ -367,7 +370,8 @@ brief revision and allowed dependencies and produces a separate,
 typed **build manifest**: exact room/exit topology, object identities, descriptions/details, NPC
 profiles and lore, supported sheets/behaviors, and hook bindings. An LLM may propose topology in
 this new planning stage. A deterministic validator and normal server mutation paths apply it.
-The existing `@gen` description generator remains restricted to already established topology.
+The existing `@gen` description generator remains restricted to already established topology
+*(ruling R1, §11: that sentence describes the shipped command only; the builder digs)*.
 
 The manifest/build report must expose:
 
@@ -486,8 +490,10 @@ Quota amounts and renewal periods remain tunable. Proposed accounting is one cre
 successfully activated site, reserved during generation; provider/validation failure releases the
 creation reservation. Actual LLM usage remains metered even when a request fails. Technical retries
 reuse the request ID and budget, with bounded attempts. Returning an existing site consumes no
-creation allowance. Account-level limits prevent alts or tabs multiplying the quota; compute and
-neighborhood limits address different resources. Inactivity or account deletion leaves sites intact.
+creation allowance. Account-level limits prevent alts or tabs multiplying the quota *(superseded by
+ruling R3, §11: the limit is character-scoped and counts outstanding pending reviews, not
+creations)*; compute and neighborhood limits address different resources. Inactivity or account
+deletion leaves sites intact.
 
 ### Review is independent of existence
 
@@ -709,3 +715,81 @@ Faction review policy must also define resource evidence, power benchmarks, staf
 the first supported acquisition/construction/service bindings.
 These can be settled independently of the owner's central
 requirement: focus playable detail into neighborhoods while preserving the geography between them.
+
+## 11. Owner rulings (2026-09-09, binding)
+
+Recorded from the owner's response to the [review](11a-neighborhood-geography-review.md). They
+override the text above where the two conflict; the review's decision table (11a §8) is updated to
+match. R1–R3 are decided. R4 is the owner's direction with the review's worked shape; the shape is
+open to edits, the direction is not.
+
+**R1. Worldgen digs; trust but verify.** Supersedes doc 03 §10 item 5 and the "never invents
+topology" rule of doc 03 §5.2–5.3 (README "Superseded decisions" 3). The building agent may
+propose everything a trusted builder may create: rooms, exits, sites, structures, features, NPC
+profiles and lore, hooks, and their descriptions. The intended flow is the one this document
+sketches in §7 with the file as an input: an author describes a neighborhood in a file (R2) or
+in-game; the model validates it against the template's rules and the neighborhood's constraints,
+asks clarifying questions, and then builds it. What stays, because it is verification rather than
+distrust: the deterministic validator between proposal and world (geometry, topology, budgets,
+policy, secrets, supported definitions); the typed-proposal boundary of doc 03 §7 (the model emits
+typed records, never command text); metering, audit and kill switches; and human review *after*
+activation where the neighborhood's policy calls for it. Standing principle: a restriction whose
+only purpose is to keep an LLM from doing what a trusted builder may do is not load-bearing; when
+one blocks this model it is struck in favor of trust-but-verify, and the strike is recorded here.
+Site-kind templates (review H5) are authoring aids, never a constraint. Review D-11a-8 is decided.
+
+**R2. Briefs and manifests are JSON.** §7's "Markdown with small YAML front matter" was a slip; the
+agreed format is JSON, in the pack shape the tree already digests (`ruleset-tacsim` `PackManifest`
+plus entries; review §3, M1, M3). The [template](neighborhoods/TEMPLATE.md) and the two examples
+remain the *field reference* until the neighborhood pack schema lands (review §7 cut 0/1), and are
+then re-expressed as JSON packs; the starter area (R4) is the first real pack. Markdown may exist
+as a rendering for reading, never as the digested artifact. Review D-11a-3 is decided.
+
+**R3. Quotas are character-scoped and count outstanding reviews, not creations.** Accounts are not
+principals (doc 10 C1A, R3, R7), so there is no account-level counter; the review's H6 account-lane
+proposal is withdrawn. A requester does not own what they hydrate, so a successful site is never
+charged against them for good. The limit is a per-character cap on hydrations that are activated
+and still `pending_review`, plus any still generating; a reviewer's approval or correction releases
+the slot. Compute stays on the requester's actor budget (`BudgetScope::Actor`) under the builder's
+own feature route. Neighborhood and locality caps bound the map (§8; review §6 "Sprawl"). Review
+D-11a-7 is decided, differently from its recommendation.
+
+**R4. The starter area is the reference fixture.** The review's first finding was that this
+document specifies almost no data. The owner's answer is to build real data into the default
+database: a starter area every new game boots with, which doubles as the standard test world for
+every cut and as the demonstration of what an IC area looks like. Direction (owner): Limbo stays
+the spawn room and gains a `Staff <S>` exit into a **Staff Lobby** neighborhood — a Hollywood-lot
+tour, a behind-the-scenes area that shows what an IC neighborhood on a real game might look like —
+and an **OOC Area** neighborhood, out of character by definition, where a RustMUSH tutorial lives.
+Both are neighborhoods, so transit between them is a standard test; items and NPCs are dropped
+throughout (a receptionist in the lobby, an off-shift gamemaster in the coffee shop).
+
+What exists to build on: first boot seeds a minimal world of Limbo `#0` and God `#1` and writes
+it through before the server accepts anyone (`crates/mush-server/src/persist.rs`); `[onboarding]
+start_room` defaults to Limbo with an optional `start_room_unapproved` for the chargen gate
+(`crates/mush-config/src/config.rs`); the tacsim seed pack shows a pack becoming objects through a
+latch (`crates/ruleset-tacsim/src/seed.rs`). The starter area is therefore **a JSON pack (R2)
+applied by the same loader and latch the neighborhood builder uses**, first-boot after `#0`/`#1`,
+idempotent, re-applicable by staff, disable-able in config, retirable only through the reviewed
+retirement path. It must never be hand-coded objects: it is the first proof that R2's format and
+the builder's apply path work.
+
+The worked shape (review's proposal; sizes are budgets, not targets):
+
+| Piece | Content | What it exercises |
+|---|---|---|
+| Region `limbo` | A small metric frame ("the lot", 400 m square, flat datum, one raised loading dock) | frames, elevation datum, background terrain |
+| Limbo `#0` | The spawn room, hub of the lot: exits `OOC Area <O>` (open) and `Staff <S>` (open by default so the tour is a tour; operators may lock it to staff in config) | boundary connections from a room in neither neighborhood |
+| Neighborhood `ooc_area` (≤ 6 rooms) | Welcome Hall (arrival, signposts), Tutorial: Moving, Tutorial: Talking, Tutorial: Building (a sandbox where `BUILDER`-flagged players may `@dig`), Lounge, Tram Stop | the tutorial; a public neighborhood with no secrets; a `HydrationPolicy` allowing one player-hydrated site (a games room) so the hydration cut has a fixture |
+| Neighborhood `staff_lobby` (≤ 7 rooms) | Lobby (receptionist), Coffee Shop, Tour Corridor, Back Lot (outdoor circulation with the loading dock), Writers' Room (restricted), Props Department (restricted; scenery and container demos), Tram Stop | private ingress / free egress; a restricted-room presence exclusion; a bar-level map (Coffee Shop) and a street-level map (Back Lot) for the substrate cut; a mezzanine floor for `dz` |
+| Connection `lot_tram` | A journey connection between the two Tram Stops through implicit lot space, one checkpoint (Security Gate), served by a tram car — a carrier with a one-room interior — so the standard transit test is a real carrier journey with passengers aboard | the one travel system; checkpoints; a vehicle interior; premise 6 at toy scale |
+| NPCs | `receptionist` (minor tier, Lobby: public lore — directions, hours, how to file `+request`; guarded — the tour schedule is running late; fallback lines), `gamemaster` (minor, Coffee Shop, off shift: public lore — where the tutorial is, what a scene is; jokes about being off shift), optional `docent` (extra tier, Welcome Hall) | lore tiers and pools; NPCs that work with `[llm].enabled = false` through fallback lines, so the fixture needs no provider |
+| Items | A tutorial pamphlet (readable), the shooting schedule clipboard (details), a lost-and-found box (container), the notice board (details), a coffee cup | details, containers, scenery that must not become rooms |
+| Secrets | One staff-only fact (why the tour is late) stored `Secret`, never in a prompt | the secret filter, end to end |
+| Optional | A `Studio Security` faction with a control record over the Back Lot | `RegionRef::Atlas`, `+territory` |
+
+Rules for it: total room budget under fifteen; every room justified by a tutorial step or a demo;
+no supernatural or ruleset canon; the Staff Lobby's IC texture is a film lot, so it demonstrates
+an IC area without pretending to be one game's setting. The pack is the fixture for the review's
+§10 acceptance scenarios and for cuts 1–3 and 5 of its build order, in that order: import (cut 1),
+tram and timed walk (cut 2), the games-room hydration (cut 3), the two maps (cut 5).

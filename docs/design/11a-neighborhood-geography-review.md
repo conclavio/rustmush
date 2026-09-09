@@ -2,6 +2,11 @@
 
 **Status:** review, 2026-09-09, on main `0bc5e92`. Written for the owner. Nothing here is built;
 §5 is a proposal, §8 the decisions it needs, §9 the edits owed to doc 11 and its fixtures.
+**Rulings received the same day** (doc 11 §11): R1 decides D-11a-8 (worldgen digs; trust but
+verify), R2 decides D-11a-3 (JSON), R3 decides D-11a-7 differently from the recommendation
+(character-scoped cap on outstanding pending reviews), and R4 answers verdict item 1 with a starter
+area as the reference fixture (D-11a-14). The table in §8 carries the rulings; the findings' text is
+left as written so the reasoning stays visible.
 
 **Subject.** `docs/design/11-neighborhood-geography-and-authoring.md` (doc 11), its
 [brief template](neighborhoods/TEMPLATE.md), and the [urban](neighborhoods/examples/lantern-ward.md)
@@ -77,7 +82,8 @@ Five things stop the document from being buildable as written.
 1. **It specifies almost no data.** Every sibling doc (06, 08, 09, 10, 13) fixes record shapes,
    identity types, bounds and the storage lane; doc 11 names concepts (region, locality,
    neighborhood, site, structure, room, connection, manifest, hydration request) and gives none of
-   them a record, an id type, a namespace or a cap. §5 below proposes the records.
+   them a record, an id type, a namespace or a cap. §5 below proposes the records. *Ruled: doc 11
+   §11 R4 adds a starter area as the reference fixture — real data in the default database.*
 2. **The tactical tie-in stands on a terrain layer that does not exist in any form.** The tree has
    no coordinate, frame, transform, footprint, resolution, elevation, cover, line of sight or
    terrain anywhere: `DomainRecord` is `{id, host, driver, status, clock, presentation_location,
@@ -229,7 +235,8 @@ deterministic validator checks for footprint containment, non-overlap with reser
 footprints, portal adjacency, reachability from a public access point, budget, and floor
 consistency; and for hydration prefer **template-constrained topology** — a small library of site
 kinds (bar, shop, park, flat, workshop) each with an allowed room set — so the validator's surface
-and the duplicate check are both bounded (D-11a-8).
+and the duplicate check are both bounded (D-11a-8). *Ruled 2026-09-09 (doc 11 §11 R1): the
+reversal is recorded and the builder digs; templates are aids, never a constraint.*
 
 **H6 — Quota scope contradicts the account rule and the budget model.** §8: "account-level limits
 prevent alts or tabs multiplying the quota." Doc 10 C1A/R3/R7: the account is never a principal;
@@ -239,7 +246,9 @@ scope. *Fix:* separate the two limits doc 11 already distinguishes. The **creati
 a per-account counter kept in the account-integrity lane beside the `AccountOracle` (opaque,
 audit-only, never journaled), consulted through a `same_account`-style provider that fails closed;
 the **compute** limit is `BudgetScope::Actor` on the requesting character under a new
-`LlmFeature::WorldgenSite` route with its own per-feature cap (D-11a-7).
+`LlmFeature::WorldgenSite` route with its own per-feature cap (D-11a-7). *Ruled 2026-09-09 (doc 11
+§11 R3): no account counter; the limit is a per-character cap on outstanding pending-review
+hydrations, released on review; compute per actor as recommended.*
 
 ### MEDIUM
 
@@ -266,7 +275,8 @@ no parser in the tree; 10b cut 1 chose JSON packs over TOML because the digest's
 *is* JSON and a second front end would add a second canonicalization. *Fix:* the durable, digested
 artifact is canonical JSON (the pack); Markdown+YAML is an **export rendering and an import
 front end** whose parse must be byte-stable into that JSON before digesting (D-11a-3). Prose
-sections become string fields; tables become entries.
+sections become string fields; tables become entries. *Ruled 2026-09-09 (doc 11 §11 R2): JSON;
+the Markdown form was a slip and stays only as the field reference until the pack schema lands.*
 
 **M4 — Staff submissions need a typed, revision-bound, linkable ticket.** `JobPayload.data` is an
 untyped `Value`; there is no schema version, revision, digest or `supersedes` field on `Job`; plain
@@ -621,7 +631,7 @@ amendment, and hydration is split from terrain.
 | # | Cut | Proves | Depends on |
 |---|---|---|---|
 | 0 | Doc amendment: §5 records, id scheme, lane, pack kind, travel decision | — | D-11a-1..5 |
-| 1 | `mush-content`: the pack loader and latch lifted from `ruleset-tacsim`, with update/retire; the `atlas` family and `@atlas` staff verbs; region + neighborhood pack import; room membership; `+atlas` player view | two neighborhoods and one corridor imported from packs, rooms classified, unchanged pack reapplied is a no-op, a retire with references refused | nothing new |
+| 1 | `mush-content`: the pack loader and latch lifted from `ruleset-tacsim`, with update/retire; the `atlas` family and `@atlas` staff verbs; region + neighborhood pack import; room membership; `+atlas` player view; **the starter area pack applied at first boot (R4)** | the starter area's two neighborhoods and tram connection imported from packs, rooms classified, unchanged pack reapplied is a no-op, a retire with references refused | nothing new |
 | 2 | One travel system (H4/§5.6): connections, travelers, `+travel`, local timed exits, checkpoints, interception promotion; `route.rs` retired | the §10 acceptance list for travel: uncrossable river, foot vs road, timed rural path, mid-route restart, checkpoint interception | cut 1 |
 | 3 | Narrative-first hydration (§6): reservations, request record, site-kind templates, rasterized coarse terrain, validator, latch apply, review queue, canon events, export | the §10 hydration list minus fine terrain | cuts 1, C8 book |
 | 4 | Presence (M6) | the §6 privacy tests | cut 1 |
@@ -636,17 +646,18 @@ amendment, and hydration is split from terrain.
 |---|---|---|
 | D-11a-1 | Content identity: pack-scoped `CanonicalId` (`lantern_ward` + `room.bar`) vs a new geographic id type admitting `-` and `/` | **Pack-scoped `CanonicalId`.** One id type, one digest discipline; fixtures are renamed, not re-typed |
 | D-11a-2 | Manifest/apply: lift the E7 pack loader + seed latch into `mush-content` and extend to update/retire vs a new registry in worldgen | **Lift and extend** (M1) |
-| D-11a-3 | Brief storage: canonical JSON pack as the digested artifact with Markdown+YAML as import/export rendering vs Markdown+YAML as the source of truth | **JSON is truth; Markdown is a view** (M3) |
+| D-11a-3 | Brief storage: canonical JSON pack as the digested artifact with Markdown+YAML as import/export rendering vs Markdown+YAML as the source of truth | **JSON is truth; Markdown is a view** (M3). **Ruled 2026-09-09: JSON** (doc 11 §11 R2) |
 | D-11a-4 | Travel: one system grown from `CarrierJourney` over atlas connections, retiring `route.rs` vs a third journey type | **One system** (H4) |
 | D-11a-5 | Pose: canonical metric pose in region coordinates, drivers derive lattice cells vs driver-owned opaque poses (doc 06 §5.1) | **Metric pose** (§5.3). This is the decision that makes rooms and maps one system; doc 06 §5.1's `RulesValue` pose stays for driver-private posture only |
 | D-11a-6 | First hydration slice: narrative-first with rasterized coarse terrain vs terrain-required from day one | **Narrative-first** (§6) |
-| D-11a-7 | Creation allowance: per-account counter in the integrity lane via a fail-closed provider; compute as `BudgetScope::Actor` under a `WorldgenSite` feature vs per-character only | **Per-account allowance, per-actor compute** (H6) |
-| D-11a-8 | LLM topology: typed site plan under a deterministic validator, template-constrained for hydration vs free topology | **Typed plan, templates for hydration**; record the reversal of "never digs" (H5) |
+| D-11a-7 | Creation allowance: per-account counter in the integrity lane via a fail-closed provider; compute as `BudgetScope::Actor` under a `WorldgenSite` feature vs per-character only | **Per-account allowance, per-actor compute** (H6). **Ruled 2026-09-09: per-character cap on outstanding pending-review hydrations, no consumed allowance, compute per actor** (doc 11 §11 R3) |
+| D-11a-8 | LLM topology: typed site plan under a deterministic validator, template-constrained for hydration vs free topology | **Typed plan, templates for hydration**; record the reversal of "never digs" (H5). **Ruled 2026-09-09: worldgen digs, trust but verify; validator stays, templates are aids only** (doc 11 §11 R1) |
 | D-11a-9 | Theme and grouping: theme resolves along the atlas hierarchy, zones keep locks/exits, `RegionRef::Atlas` vs zones stay the theme carrier | **Atlas carries theme** (M7) |
 | D-11a-10 | Naming: keep "Region" for the atlas with `@atlas/*` commands vs rename the tier | **Keep, under `@atlas`**; faction docs say "control region" |
 | D-11a-11 | Doc structure: renumber to 14 and split three ways vs keep one doc | **Split** (M11) |
 | D-11a-12 | Elevation: region DEM + neighborhood fine tiles + structure floors as one field vs per-room `z` | **One field** (§5.1) |
 | D-11a-13 | Scales: nested region kinds (surface, orbital, system, interstellar) with cross-frame connections and ships as carrier travelers vs a separate strategic graph beside the atlas | **One atlas, nested frames** (§5.9); the tacsim corridor pack's locations and routes become atlas entries |
+| D-11a-14 | Reference data: a starter area (Limbo hub, OOC Area and Staff Lobby neighborhoods, a tram connection, NPCs, items, one secret) shipped as a first-boot JSON pack vs prose fixtures only | **Ruled 2026-09-09: adopt** (doc 11 §11 R4); it is the fixture for §10's scenarios and cuts 1–3 and 5 of §7 |
 
 ## 9. Amendments owed
 

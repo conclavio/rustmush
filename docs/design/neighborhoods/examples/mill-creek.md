@@ -23,6 +23,10 @@ external_dependencies:
 
 # Mill Creek
 
+> **Format superseded (doc 11 §11 R2, 2026-09-09):** briefs and manifests are JSON packs. This
+> Markdown/YAML form stays as the *field reference* until the neighborhood pack schema lands, and is
+> then re-expressed as a pack; it is never the digested artifact.
+
 Fictional rural companion to [Lantern Ward](lantern-ward.md), using the same [template](../TEMPLATE.md).
 External geography and movement policy are proposed fixture dependencies, not shipped content.
 

@@ -17,6 +17,10 @@ external_dependencies: []
 
 # Neighborhood brief: Replace me
 
+> **Format superseded (doc 11 §11 R2, 2026-09-09):** briefs and manifests are JSON packs. This
+> Markdown/YAML form stays as the *field reference* until the neighborhood pack schema lands, and is
+> then re-expressed as a pack; it is never the digested artifact.
+
 This is a proposed authoring convention, not a runnable importer. Coordinates use the named
 regional frame, +x east / +y north / +z up; this initial template uses zero rotation. Replace all
 placeholders and declare external IDs before treating a brief as build-ready. Short IDs in tables

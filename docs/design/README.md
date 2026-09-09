@@ -41,7 +41,7 @@ For their subject areas, prefer them over the earlier sketches while they procee
 
 ## Superseded decisions
 
-Two choices in these docs were overridden after review (owner's call) — read the docs with these
+Three choices in these docs were overridden after review (owner's call) — read the docs with these
 substitutions in mind:
 
 1. **Persistence is Redis 8+, not SQLite.** 01-server-core §5 (rusqlite/write-behind/snapshots) and
@@ -52,3 +52,12 @@ substitutions in mind:
 2. **Scripting is Rhai, not mlua/Luau.** 01-server-core §8's mlua recommendation is superseded;
    the sandbox/budget/hook design carries over onto Rhai's built-in limits
    (`set_max_operations`, call-depth and size caps). Script API namespace is the `mush` Rhai module.
+3. **Worldgen digs.** 03 §10 item 5 ("worldgen digs rooms/exits as well as describing them" —
+   rejected, "revisit as a `@gen/plan` proposal-only feature") and the "never invents topology" rule
+   of 03 §5.2–5.3 are superseded by the owner's ruling of 2026-09-09
+   ([11 §11 R1](11-neighborhood-geography-and-authoring.md#11-owner-rulings-2026-09-09-binding)):
+   the building agent proposes topology, objects, NPCs and hooks; a deterministic validator checks;
+   humans review after activation where policy says so. The standing principle is
+   **trust-but-verify** — a restriction whose only purpose is to keep an LLM from doing what a trusted
+   builder may do is not load-bearing, and is struck when it blocks the model. `help worldgen`'s
+   "describes; never digs" stays accurate for the shipped `@gen` until the builder lands.
